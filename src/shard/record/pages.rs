@@ -54,12 +54,6 @@ impl PageSlice {
         self.last.saturating_sub(self.first).saturating_add(1)
     }
 
-    /// Whether the slice serves every record of its page, so copying the
-    /// page copies exactly the slice.
-    pub(crate) fn is_whole(&self) -> bool {
-        self.first == self.page.first() && self.last == self.page.last()
-    }
-
     /// The stored page bytes the slice was read from.
     pub(crate) fn stored_len(&self) -> usize {
         self.page.raw().len()

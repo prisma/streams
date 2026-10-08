@@ -720,3 +720,43 @@ async fn a_merged_read_refuses_a_lost_history_page() {
     assert_eq!(read_from(&engine, hash, 20, Some("")).await, Ok(tail));
     engine.begin_close();
 }
+
+/// An absorbed boundary inside a page, which only a corrupt advance can
+/// commit, does not stop the stream's absorption: the next gather copies the
+/// page holding it whole, under its last offset, and advances past its end,
+/// and the history then serves every record exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_gather_from_inside_a_page_copies_it_whole_and_advances_past_it() {
+    let (engine, absorber, _store) = rig("history-cut-page").await;
+    let hash = [0x65; 16];
+    let records: Vec<_> = (0..20).map(|offset| payload("", offset)).collect();
+    assert_eq!(append(&engine, hash, "", &records[..10]).await, 9);
+    assert_eq!(absorb_once(&engine, &absorber, hash).await, 10);
+    assert_eq!(append(&engine, hash, "", &records[10..]).await, 19);
+    // A corrupt advance to 14, inside the page [10, 19]. It copied no page,
+    // so the ledger still holds the page's bytes, as it holds every page's
+    // until the page is copied.
+    let cut = (hash, 14, crate::shard::CopiedBytes::new(10, 0));
+    engine.submit_absorbed_batch_v2(vec![cut]).await;
+    let handle = engine.stream_handle(hash).await.unwrap();
+    let mut waited = 0;
+    while handle.state.lock().unwrap().durable.absorbed != 14 {
+        assert!(waited < 5_000, "the cut advance never applied");
+        waited += 1;
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    assert_eq!(absorb_once(&engine, &absorber, hash).await, 20);
+    let lasts: Vec<u64> = history_rows(&engine, hash)
+        .await
+        .into_iter()
+        .map(|row| row.0)
+        .collect();
+    assert_eq!(lasts, [9, 19], "the cut page is copied whole");
+    let expected: Vec<_> = (0u64..).zip(records).collect();
+    assert_eq!(read_from(&engine, hash, 0, None).await.unwrap(), expected);
+    assert_eq!(
+        read_from(&engine, hash, 12, None).await.unwrap(),
+        expected.get(12..).unwrap()
+    );
+    engine.begin_close();
+}

@@ -90,11 +90,6 @@ pub(crate) enum StreamGatherFailure {
     PostingsSelfDecode,
     /// The chunk's postings pages decoded to overlapping runs.
     PostingsOverlap,
-    /// The chunk's window started or ended inside a page. The absorbed
-    /// boundary and the durable frontier are page edges, so only a corrupt
-    /// boundary cuts one, and copying the page would claim records outside
-    /// the window.
-    PageCut,
 }
 
 impl std::fmt::Display for StreamGatherFailure {
@@ -103,7 +98,6 @@ impl std::fmt::Display for StreamGatherFailure {
             Self::Corrupt(corruption) => write!(f, "{corruption}"),
             Self::PostingsSelfDecode => f.write_str("postings page failed its self-decode"),
             Self::PostingsOverlap => f.write_str("postings pages overlap"),
-            Self::PageCut => f.write_str("the absorb window cut a stored page"),
         }
     }
 }
@@ -201,7 +195,7 @@ fn check_postings(pages: PageBuilder) -> Result<ChunkPostings, StreamGatherFailu
 }
 
 /// Stage a checked chunk: its canonical rows — each page is stored once,
-/// byte for byte, under its last offset — then its postings pages (ROUTING-V3 §3):
+/// byte for byte and whole, under its last offset — then its postings pages (ROUTING-V3 §3):
 /// every routing key, INCLUDING the empty/default key, gets compact
 /// offset-run pages in the SAME WriteBatch, so the index adds no request,
 /// manifest, database, namespace or GC surface of its own. Returns the
@@ -536,6 +530,11 @@ impl Absorber {
     /// the budget waits for a batch of its own — unless the batch is
     /// empty, in which case it proceeds alone (one oversized frame must
     /// still make progress; frame bodies can reach the 32 MiB API cap).
+    /// Every page is copied whole. The absorbed boundary and the durable
+    /// frontier are page edges, so a window cut inside a page means a
+    /// corrupt boundary: the page holding it is copied whole all the same
+    /// and the boundary moves past it, so absorption never stops on it, and
+    /// history reads refuse any page that would then overlap another.
     /// Deliberately not async: staging never waits on the pool.
     fn stage_chunk(
         &self,
@@ -546,17 +545,6 @@ impl Absorber {
     ) {
         if chunk.frames.is_empty() {
             staged.out.no_work.push(plan.hash);
-            return;
-        }
-        if !chunk
-            .frames
-            .iter()
-            .all(crate::shard::record::PageSlice::is_whole)
-        {
-            staged
-                .out
-                .failed
-                .push((plan.hash, StreamGatherFailure::PageCut));
             return;
         }
         let (chunk_bytes, chunk_raw) = chunk_cost(chunk);

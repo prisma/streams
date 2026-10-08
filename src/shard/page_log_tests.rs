@@ -312,7 +312,16 @@ async fn a_scan_starting_mid_page_serves_from_its_first_offset() {
         assert_eq!(firsts, [(4, 9), (10, 19)], "ring {ring}");
         assert_eq!((range.frames.len(), range.last_offset), (16, Some(19)));
         assert_eq!(range.frames[0].view().header.offset, 4);
-        assert!(!range.frames[0].is_whole() && range.frames[1].is_whole());
+        let pages: Vec<(u64, u64)> = range
+            .frames
+            .iter()
+            .map(|s| (s.page().first(), s.page().last()))
+            .collect();
+        assert_eq!(
+            pages,
+            [(0, 9), (10, 19)],
+            "the first page is cut, the second whole"
+        );
         assert_eq!(served(&range), expected(4..20));
         let hit = engine.ring_hits.load(std::sync::atomic::Ordering::Relaxed) > hits;
         assert_eq!(
