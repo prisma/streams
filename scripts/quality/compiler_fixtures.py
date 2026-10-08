@@ -76,6 +76,9 @@ def copy_source(destination):
     (destination / 'conformance').mkdir()
     for name in ('package.json', 'expected.json'):
         shutil.copy2(ROOT / 'conformance' / name, destination / 'conformance' / name)
+    # The keys-feed parser's golden-vector test includes the platform contract's vectors.
+    golden = 'contracts/streams-platform/v1/golden'
+    shutil.copytree(ROOT / golden, destination / golden)
     with (destination / 'src/lib.rs').open('a') as root:
         root.write('\nmod quality_boundary_fixture;\n')
 
