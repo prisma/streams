@@ -1623,12 +1623,15 @@ segment) are separate layers, as Pravega's containers and segments are.
   retry across a split can commit twice (B2, open item F1-b), and watches miss
   the child (B3).
 - **Decided (2026-10-07), implemented: cross-server splits are off.** The
-  controller declines a split while the ring has more than one active server
+  controller declines a split while the server runs in a fleet, that is
+  once its fleet loop has published a ring of any size
   (`Controller::declines`, `src/scaler3/controller.rs`, through
-  `ShardDirectory::ring_spans_servers`), pinned by
+  `ShardDirectory::ring_published`), pinned by
   `dst_tests::scaler_split_gate`; a hot stream then gets `429` at its
-  per-stream limit instead. Edge record #119, awaiting ratification. The
-  split package's last commit removes the gate and inverts that DST.
+  per-stream limit instead. A ring of one is gated too: a split there
+  became cross-server once the ring grew (review finding F1, option B).
+  Fleet off still splits. Edge record #119, awaiting ratification. The
+  split package's last commit removes the gate and inverts those DSTs.
 - The Compute cluster rung C1 (`bench/docker/harness/cluster-run.sh`) splits
   inside a four-server fleet, which the gate refuses: it takes its split on
   streams-1 outside fleet mode, then redeploys all four in fleet mode over

@@ -254,13 +254,14 @@ crashes: the append path re-seals and publishes the missing transition
 itself (`resume_split`). `SCALE_FAULT_POINT=after_seal` and
 `ABSORB_PAUSE=1` are test-only fault hooks (docker ladder D3/D4).
 
-While the fleet ring has more than one active server, the scaler splits
-nothing (edge change #119): a split's child could land on another server,
-which does not yet serve it correctly. A hot stream stays one segment on
-its owner, and its appends past the per-stream limits get
-`429 limit_*_per_sec`; each declined split logs `split declined: the fleet
-ring has more than one active server`. Merges still run, and a server
-alone in its ring (or with no fleet) splits as before.
+While the server runs in a fleet (`FLEET_PREFIX` set, once its fleet loop
+has published a ring, of any size), the scaler splits nothing (edge change
+#119): a split's child lands on another shard, which is another server's
+now or once the ring grows, and that server does not yet serve it
+correctly. A hot stream stays one segment on its owner, and its appends
+past the per-stream limits get `429 limit_*_per_sec`; each declined split
+logs `split declined: the server runs in a fleet`. Merges still run, and a
+server with fleet off splits as before.
 
 ### 3.6 Admission control (run with these ON in production)
 

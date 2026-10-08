@@ -54,12 +54,14 @@ Pravega's two-minute-rate style):
   single total order is definitionally one segment, enforced at create).
   There is no cap on the number of segments.
 - Gate (edge change #119, the owner's decision of 2026-10-07): while the
-  fleet ring has more than one active server, the controller declines
-  every split (`Controller::declines`, `src/scaler3/controller.rs`). A
-  child placed on another server is not yet served correctly there:
-  consumer pulls, producer lanes, watches and merges do not follow it. The
-  stream stays one segment on its owner and meets its per-stream limits
-  with `429`. Merges are not gated. The split package
+  server runs in a fleet (its fleet loop has published a ring, of any
+  size), the controller declines every split (`Controller::declines`,
+  `src/scaler3/controller.rs`). The high child lands on another shard,
+  which is another server's now or once the ring grows, and a child on
+  another server is not yet served correctly there: consumer pulls,
+  producer lanes, watches and merges do not follow it. The stream stays
+  one segment on its owner and meets its per-stream limits with `429`.
+  Merges are not gated, and fleet off splits. The split package
   (`docs/reviews/2026-09-hardening/NEXT-WORK.md` §14.6) lifts the gate.
 
 Mechanics (all steps CAS-guarded, crash-resumable; the scaler is the only
@@ -237,11 +239,10 @@ previous holder's shard log — existing R2/R3 machinery.
 ## 8. Validation plan
 
 Docker ladder (all on this machine, 1 GB-limited containers to mirror
-Compute). Since edge change #119 a fleet of three splits nothing (the gate
-in §2), so D1, D2 and D4 take their splits on streams-1 alone outside
-fleet mode (`bench/docker/compose.solo.yml`, `harness/phases.sh`) and run
-their order checks through the fleet formed afterwards over the same
-PATH_PREFIX:
+Compute). Since edge change #119 a fleet splits nothing (the gate in §2),
+so D1, D2 and D4 take their splits on streams-1 alone outside fleet mode
+(`bench/docker/compose.solo.yml`, `harness/phases.sh`) and run their order
+checks through the fleet formed afterwards over the same PATH_PREFIX:
 
 - D1: 3 servers + s3lite + 1 scaler; one per-key stream driven past 75 %
   → observe exactly one split, zero append errors during seal (clients

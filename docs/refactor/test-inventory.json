@@ -800,11 +800,22 @@
     "scenarios": []
   },
   {
-    "name": "a_hot_stream_on_a_one_server_ring_still_splits",
+    "name": "a_hot_stream_on_a_one_server_ring_never_splits_so_a_grown_ring_keeps_it_on_its_owner",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "cb8872272437640bb3293ca764f282c807f5075f612d3251e7ffb4072837b7e0",
+    "function_sha256": "b8f62827ced74bfae255aaa5a8036c449b39a567e710128724104540f37a36a5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/scaler_split_gate.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_hot_stream_on_a_server_without_a_fleet_ring_still_splits",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a42d71e3884d0c6899bb237813831e1097c342a65e8dc8b1efa1dec08f8cd844",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/scaler_split_gate.rs",

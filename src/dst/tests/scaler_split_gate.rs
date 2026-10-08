@@ -1,10 +1,11 @@
 //! The split gate (the owner's decision of 2026-10-07, NEXT-WORK §14.6;
-//! edge change #119): while the fleet ring has more than one active server,
-//! the scaler's controller declines every split. A hot stream stays one
-//! segment on its owner and meets its per-stream limit with a 429. A split
-//! would put the high child on the other server, where consumer pulls,
-//! producer lanes, watches and merges do not follow it yet. A ring of one
-//! active server still splits; the unnamed single server is `scaler_loop`'s.
+//! edge change #119): while the server runs in a fleet, that is once the
+//! fleet loop has published a ring of any size, the scaler's controller
+//! declines every split. A hot stream stays one segment on its owner and
+//! meets its per-stream limit with a 429. A split would put the high child
+//! on another shard, which is another server's now or once the ring grows,
+//! where consumer pulls, producer lanes, watches and merges do not follow it
+//! yet. A server with no fleet ring (fleet off) still splits.
 //!
 //! Each instance has two one-bit shards over the shared store. The stream's
 //! shard is `inst-a`'s and the other is `inst-b`'s while `inst-b` is active,
@@ -192,13 +193,65 @@ async fn a_hot_stream_on_a_two_server_ring_never_splits_and_meets_its_limit() {
     a.shutdown().await;
 }
 
-/// On a ring of one active server (a fleet of one) the controller still
-/// splits the hot stream at the scaler's median: the parent is sealed and
-/// both children are live, all on the one server.
+/// The servers that own the stream's live segments under `state`'s ring:
+/// the stream's own owner while it is unsplit, else one per live segment.
+async fn live_owners(state: &crate::http::AppState) -> Vec<String> {
+    let sref = state.deployment.raw_adapter_sref(NAME);
+    state.registry.invalidate(&sref);
+    let desc = state.registry.get(&sref).await.unwrap().unwrap();
+    let routes: Vec<[u8; 16]> = match desc.segments.as_ref() {
+        None => vec![desc.route_hash().0],
+        Some(map) => map
+            .segments
+            .iter()
+            .filter(|s| s.is_live())
+            .map(|s| desc.segment_route(s))
+            .collect(),
+    };
+    routes
+        .iter()
+        .map(|route| {
+            let prefix = crate::registry::shard_for_hash(state.shards.prefixes(), route);
+            state.ownership.effective_owner(&prefix).unwrap_or_default()
+        })
+        .collect()
+}
+
+/// On a ring of one active server (a fleet of one, as an autoscaled fleet
+/// idles, a peer drains or goes dark) the controller declines the split
+/// too: a child on the other shard would be another server's once the ring
+/// grows. When `inst-b` joins, the whole stream is still `inst-a`'s.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_hot_stream_on_a_one_server_ring_still_splits() {
-    let a = instance(mem(), "inst-a", 1).await;
+async fn a_hot_stream_on_a_one_server_ring_never_splits_so_a_grown_ring_keeps_it_on_its_owner() {
+    let store = mem();
+    let a = instance(store.clone(), "inst-a", 1).await;
+    let b = instance(store, "inst-b", 2).await;
     ring(&a, &["inst-a"]);
+    ring(&b, &["inst-a"]);
+    let split = hot_stream(&a).await;
+    let report = one_pass(&a.state, split).await;
+    ring(&a, &["inst-a", "inst-b"]);
+    ring(&b, &["inst-a", "inst-b"]);
+    assert_eq!(
+        (
+            (report.attempted, report.completed, report.deferred),
+            live_owners(&a.state).await
+        ),
+        ((1, 0, 0), vec!["inst-a".to_owned()]),
+        "the controller declines the split on a one-server ring and keeps no debt, so the grown ring leaves the whole stream on its owner"
+    );
+    assert_eq!(segments(&a.state).await, None, "the stream stays unsplit");
+    assert_eq!(splits_committed(&a.state), 0);
+    b.shutdown().await;
+    a.shutdown().await;
+}
+
+/// A server with no fleet ring (fleet off, the launch shape) still splits
+/// the hot stream at the scaler's median: the parent is sealed and both
+/// children are live, all on the one server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hot_stream_on_a_server_without_a_fleet_ring_still_splits() {
+    let a = instance(mem(), "inst-a", 1).await;
     let split = hot_stream(&a).await;
     let report = one_pass(&a.state, split).await;
     assert_eq!(

@@ -231,10 +231,13 @@ impl ShardDirectory {
         crate::registry::shard_for_hash(&self.inner.prefixes, hash)
     }
 
-    /// Whether the published ring names more than one active server, so a
-    /// route the topology mints may land on a shard another server owns.
-    pub(crate) fn ring_spans_servers(&self) -> bool {
-        self.inner.ownership.ring_active().len() > 1
+    /// Whether the fleet loop has published a ring, of any size: this
+    /// server coordinates with a fleet, so a route the topology mints may
+    /// land on a shard another server owns, now or once the ring grows.
+    /// Fleet off (and a fleet server before its first complete pass)
+    /// publishes none.
+    pub(crate) fn ring_published(&self) -> bool {
+        !self.inner.ownership.ring_active().is_empty()
     }
 
     /// Shard engine for `hash`, opening the shard log on first use (which
@@ -685,16 +688,16 @@ mod directory_tests {
         }
     }
 
-    /// The ring spans servers only once it names two active servers: no
-    /// published ring (fleet off) and a ring of one do not.
+    /// A ring is published once the fleet names one active member or more;
+    /// with no published ring (fleet off) there is none.
     #[test]
-    fn the_ring_spans_servers_only_with_two_active_members() {
+    fn the_ring_is_published_once_the_fleet_names_a_member() {
         let (dir, ownership, _c) = directory("a", || anyhow::bail!("unused"));
-        let mut spans = vec![dir.ring_spans_servers()];
+        let mut published = vec![dir.ring_published()];
         for members in [&["a"][..], &["a", "b"], &["a", "b", "c"]] {
             ownership.set_ring_active(members.iter().map(|m| (*m).to_owned()).collect());
-            spans.push(dir.ring_spans_servers());
+            published.push(dir.ring_published());
         }
-        assert_eq!(spans, [false, false, true, true]);
+        assert_eq!(published, [false, true, true, true]);
     }
 }
