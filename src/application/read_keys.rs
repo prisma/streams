@@ -28,8 +28,14 @@ impl<'a> ReadKeys<'a> {
     }
     /// Open an admitted page of this segment under its lane's page key. The
     /// whole page authenticates and parses before any record is returned.
-    /// A lane past the cache bound derives its cipher for this page only.
-    pub(crate) fn open_page(&mut self, page: &CheckedPage) -> Result<OpenedPage, String> {
+    /// None when the page's one record is surely longer than `limit` (it is
+    /// then neither decrypted nor inflated). A lane past the cache bound
+    /// derives its cipher for this page only.
+    pub(crate) fn open_page(
+        &mut self,
+        page: &CheckedPage,
+        limit: usize,
+    ) -> Result<Option<OpenedPage>, String> {
         let refused = |error| {
             format!(
                 "stored page [{}, {}] did not open: {error:?}",
@@ -39,11 +45,15 @@ impl<'a> ReadKeys<'a> {
         };
         let lanes = self.pages.entry(page.key_version()).or_default();
         if let Some(cipher) = lanes.get(page.routing_key()) {
-            return cipher.open_with(page, &mut self.decoder).map_err(refused);
+            return cipher
+                .open_within(page, &mut self.decoder, limit)
+                .map_err(refused);
         }
         let subkey = derive_subkey(self.key, self.epoch, page.routing_key(), page.key_version());
         let cipher = PageCipher::new(&subkey, &self.segment);
-        let opened = cipher.open_with(page, &mut self.decoder).map_err(refused);
+        let opened = cipher
+            .open_within(page, &mut self.decoder, limit)
+            .map_err(refused);
         if self.pages_cached < MAX_CIPHERS {
             self.pages_cached += 1;
             lanes.insert(page.routing_key().to_owned(), cipher);
@@ -83,7 +93,9 @@ mod tests {
     }
 
     fn payload(keys: &mut ReadKeys<'_>, page: &CheckedPage) -> Result<Vec<u8>, String> {
-        let opened = keys.open_page(page)?;
+        let opened = keys
+            .open_page(page, usize::MAX)?
+            .ok_or_else(|| "over the limit".to_owned())?;
         Ok(opened
             .records()
             .flat_map(|record| record.payload.to_vec())

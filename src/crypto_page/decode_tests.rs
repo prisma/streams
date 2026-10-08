@@ -112,3 +112,39 @@ fn a_declared_size_past_the_cap_is_refused_without_inflating_it() {
     assert!(body_cap(1) < 1 << 30);
     assert_eq!(cipher().open(&one).err(), Some(OpenError::BodyTooLarge));
 }
+
+/// A single-record page whose record is surely longer than the caller's
+/// limit is not opened: a raw one is not even decrypted, a compressed one
+/// not inflated. The pages below would fail if they were (a forged
+/// ciphertext; a frame that declares 1,000 bytes and holds 2,000).
+#[test]
+fn a_single_record_past_the_limit_is_neither_decrypted_nor_inflated() {
+    use super::{CheckedPage, PAGE_VER, PageDecoder};
+    use bytes::Bytes;
+    let mut decoder = PageDecoder::default();
+    let forged = super::admission_tests::forged(PAGE_VER, 0, 1, 1_000 + 16);
+    let raw = CheckedPage::admit(Bytes::from(forged), 0).unwrap();
+    let open = |page: &CheckedPage, limit, decoder: &mut PageDecoder| {
+        cipher()
+            .open_within(page, decoder, limit)
+            .map(|opened| opened.map(|opened| opened.body_len()))
+    };
+    // The body holds at least 995 payload bytes.
+    assert_eq!(open(&raw, 994, &mut decoder), Ok(None));
+    assert_eq!(
+        open(&raw, 995, &mut decoder),
+        Err(OpenError::Authentication)
+    );
+    let mut frame = vec![0x28, 0xb5, 0x2f, 0xfd, 0x60];
+    frame.extend_from_slice(&(1_000u16 - 256).to_le_bytes());
+    // One RLE block of 2,000 zero bytes: last, type 1, size 2,000 << 3.
+    let block = 1 | (1 << 1) | (2_000 << 3);
+    frame.extend_from_slice(u32::to_le_bytes(block).get(..3).unwrap());
+    frame.push(0);
+    let compressed = authentic(PAGE_VER_Z, 1, TS, &frame);
+    assert_eq!(open(&compressed, 994, &mut decoder), Ok(None));
+    assert_eq!(
+        open(&compressed, 995, &mut decoder),
+        Err(OpenError::Decompression)
+    );
+}

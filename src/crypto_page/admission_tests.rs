@@ -20,7 +20,7 @@ fn admit_at(raw: &[u8], last: u64) -> Result<CheckedPage, PageCorruption> {
 
 /// A page whose clear header says `ver`, `first` and `count` and whose
 /// ciphertext is `sealed` zero bytes; nothing in it authenticates.
-fn forged(ver: u8, first: u64, count: usize, sealed: usize) -> Vec<u8> {
+pub(super) fn forged(ver: u8, first: u64, count: usize, sealed: usize) -> Vec<u8> {
     let lane = lane();
     let fields = HeaderFields {
         ver,

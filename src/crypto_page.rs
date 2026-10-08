@@ -71,7 +71,7 @@ pub(crate) const PAGE_MAX_RECORDS: usize = 4096;
 const PAGE_COMPRESS_MIN_BYTES: usize = 256;
 /// The table bytes of a single-record page: a length of at most the record
 /// cap (four varint bytes) and the first record's zero delta (one).
-const SINGLE_RECORD_TABLE_MAX: usize = 5;
+pub(super) const SINGLE_RECORD_TABLE_MAX: usize = 5;
 /// The body cap of a single-record page: one record at the record cap.
 const SINGLE_RECORD_BODY_MAX: usize = MAX_RECORD_PLAINTEXT + SINGLE_RECORD_TABLE_MAX;
 const PAGE_KEY_INFO: &[u8] = b"prisma-streams/page/v6/aes-256-gcm-siv";

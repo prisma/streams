@@ -14,7 +14,10 @@ use aes_gcm_siv::aead::{Aead, Payload};
 use zstd::zstd_safe;
 
 use super::body::{PageTable, RecordSpan, parse_body};
-use super::{CheckedPage, OpenError, PAGE_COMPRESS_MIN_BYTES, PageCipher, body_cap};
+use super::{
+    CheckedPage, OpenError, PAGE_COMPRESS_MIN_BYTES, PageCipher, SINGLE_RECORD_TABLE_MAX, TAG_LEN,
+    body_cap,
+};
 
 /// The frame header descriptor bits the writer never sets: a dictionary id
 /// (bits 0 and 1), the content checksum (bit 2) and the reserved bit 3.
@@ -73,25 +76,41 @@ fn declared_size(message: &[u8]) -> Result<usize, OpenError> {
     }
 }
 
+/// Whether a page of `count` records whose body is `body` bytes holds one
+/// record that is surely longer than `limit`: its table takes at most
+/// SINGLE_RECORD_TABLE_MAX of the body.
+fn surely_over(count: usize, body: usize, limit: usize) -> bool {
+    count == 1 && body.saturating_sub(SINGLE_RECORD_TABLE_MAX) > limit
+}
+
 impl PageCipher {
     /// Open an admitted page of this cipher's lane with a decoder of its
-    /// own. Every record is returned or none.
+    /// own and no limit. Every record is returned or none.
     #[cfg(test)]
     pub(crate) fn open(&self, page: &CheckedPage) -> Result<OpenedPage, OpenError> {
-        self.open_with(page, &mut PageDecoder::default())
+        self.open_within(page, &mut PageDecoder::default(), usize::MAX)?
+            .ok_or(OpenError::BodyTooLarge)
     }
 
     /// Open an admitted page of this cipher's lane, decompressing with
     /// `decoder`. Every record is returned or none: authentication,
     /// decompression and the exact body parse all succeed before any record
-    /// is visible.
-    pub(crate) fn open_with(
+    /// is visible. None when the page holds one record that is surely
+    /// longer than `limit` (a read's remaining budget): a raw page is then
+    /// not decrypted and a compressed one not inflated.
+    pub(crate) fn open_within(
         &self,
         page: &CheckedPage,
         decoder: &mut PageDecoder,
-    ) -> Result<OpenedPage, OpenError> {
+        limit: usize,
+    ) -> Result<Option<OpenedPage>, OpenError> {
+        let sealed = page.sealed_bytes();
+        let raw_body = sealed.len().saturating_sub(TAG_LEN);
+        if !page.is_compressed() && surely_over(page.count(), raw_body, limit) {
+            return Ok(None);
+        }
         let payload = Payload {
-            msg: page.sealed_bytes(),
+            msg: sealed,
             aad: &self.aad(page.header_bytes()),
         };
         let plain = self
@@ -101,17 +120,20 @@ impl PageCipher {
         // A raw body is bounded by admission: its ciphertext is at most the
         // cap plus the tag.
         let body = if page.is_compressed() {
+            if surely_over(page.count(), declared_size(&plain)?, limit) {
+                return Ok(None);
+            }
             decoder.decompress(&plain, body_cap(page.count()))?
         } else {
             plain
         };
         let table = parse_body(&body, page.count(), page.ts_ms()).map_err(OpenError::Body)?;
-        Ok(OpenedPage {
+        Ok(Some(OpenedPage {
             first: page.first(),
             last: page.last(),
             body,
             table,
-        })
+        }))
     }
 }
 

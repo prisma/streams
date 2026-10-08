@@ -55,7 +55,12 @@ impl Decoded {
             out.last = slice.first().checked_sub(1);
             return Ok(false);
         }
-        let opened = keys.open_page(page)?;
+        // A page whose one record surely passes the budget is not opened:
+        // the read stops before it, as the budget would refuse it.
+        let Some(opened) = keys.open_page(page, budget.decode_limit())? else {
+            out.last = slice.first().checked_sub(1);
+            return Ok(false);
+        };
         let records = opened
             .records()
             .filter(|record| record.offset >= slice.first());
