@@ -1,5 +1,8 @@
-//! The durable-tail ring's eviction bookkeeping across a gap reset.
-use crate::shard::{RingBatch, ShardConfig, ShardEngine, ShardMaintenance, StreamHandle};
+//! The durable-tail ring's eviction bookkeeping across a gap reset, and the
+//! pages a ring read inspects.
+use crate::crypto::{StreamKey, derive_subkey};
+use crate::crypto_page::{PageCipher, PageLane, stamped};
+use crate::shard::{RingBatch, RingScan, ShardConfig, ShardEngine, ShardMaintenance, StreamHandle};
 use bytes::Bytes;
 use slatedb::Db;
 use std::sync::Arc;
@@ -77,4 +80,46 @@ async fn gap_reset_keeps_the_other_streams_eviction_slots() {
         "the other stream's slot was evicted first"
     );
     assert_eq!(engine.ring_resident_bytes(), 3 * 1024);
+}
+
+/// The stored page of the one record at `offset`, as the shard log seals it.
+fn sealed_page(offset: u64) -> Bytes {
+    let subkey = derive_subkey(&StreamKey([7; 32]), &[9; 16], "", 1);
+    let lane = PageLane {
+        key_version: 1,
+        routing_key: "",
+    };
+    let page = PageCipher::new(&subkey, &[8; 16])
+        .seal(&lane, offset, &stamped(0, &[b"record"]))
+        .unwrap();
+    Bytes::from(page.bytes)
+}
+
+/// A ring read inspects no batch that starts at its window's end: the
+/// window [0, 2) is served from its own batch although the next batch, at
+/// 2, holds a page that fails admission. The control: the window [0, 3),
+/// which reaches that page, is refused, so the served window never
+/// admitted it.
+#[tokio::test]
+async fn a_ring_read_inspects_no_batch_from_its_window_end() {
+    let engine = engine(1 << 20).await;
+    let handle = engine.stream_handle([3; 16]).await.unwrap();
+    let mut window = RingBatch::default();
+    window.push_page(0, 0, sealed_page(0));
+    window.push_page(1, 1, sealed_page(1));
+    engine.ring_publish(&handle, &window);
+    let mut beyond = RingBatch::default();
+    beyond.push_page(2, 2, Bytes::from_static(b"broken"));
+    engine.ring_publish(&handle, &beyond);
+    handle.state.lock().unwrap().durable.next = 3;
+    let scan = |to| RingScan {
+        from: 0,
+        to,
+        max_bytes: usize::MAX,
+    };
+    let hit = engine.ring_read(&handle, scan(2), None).unwrap();
+    let served: Vec<(u64, u64)> = hit.frames.iter().map(|s| (s.first(), s.last())).collect();
+    assert_eq!(served, vec![(0, 0), (1, 1)]);
+    assert_eq!(hit.last_offset, Some(1));
+    assert!(engine.ring_read(&handle, scan(3), None).is_none());
 }
