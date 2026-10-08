@@ -108,27 +108,23 @@ const serveDownloadFailure = (err: unknown) => {
 }
 }
 await chmod(bin, 0o755);
-// MT campaign: materialize the auth feed FILES before the binary
-// starts — enforce mode refuses to serve without them. The bundle is
-// one JSON {keys, policies, grants}; files are written atomically
-// (tmp + rename) exactly like a platform projector would.
+// Shared cells and MT campaigns: materialize the auth feed FILES before
+// the binary starts — enforce mode refuses to serve without them — then
+// keep them current while it runs (feeds.ts: a 15 s If-None-Match poll, an
+// atomic rewrite on change, and the files deleted after 120 s of awake
+// time without a successful poll).
 if (process.env.FEEDS_S3_KEY) {
   const { downloadFile } = await import("./downloader");
+  const { FeedPoller, materialize, s3BundleFetcher } = await import("./feeds");
   const bundlePath = "/tmp/feeds-bundle.json";
   try {
     await downloadFile(process.env.FEEDS_S3_KEY, bundlePath, console.log);
+    const version = materialize("/tmp/feeds", await Bun.file(bundlePath).text());
+    console.log(`feeds materialized: /tmp/feeds/{keys,policies,grants}.json gen=${version}`);
   } catch (e) {
     await serveDownloadFailure(e);
   }
-  const { mkdirSync, writeFileSync, renameSync } = await import("node:fs");
-  mkdirSync("/tmp/feeds", { recursive: true });
-  const bundle = JSON.parse(await Bun.file(bundlePath).text());
-  for (const [name, doc] of [["keys", bundle.keys], ["policies", bundle.policies], ["grants", bundle.grants]]) {
-    const path = `/tmp/feeds/${name}.json`;
-    writeFileSync(`${path}.tmp`, JSON.stringify(doc));
-    renameSync(`${path}.tmp`, path);
-  }
-  console.log(`feeds materialized: /tmp/feeds/{keys,policies,grants}.json gen=${bundle.keys?.feed_version}`);
+  new FeedPoller(s3BundleFetcher(process.env.FEEDS_S3_KEY), "/tmp/feeds", console.log).start();
 }
 // R26-9 build identity: hash the binary we actually downloaded and pass
 // it into the child's env; the server echoes it on /v1/debug/load and

@@ -73,10 +73,20 @@ The state directory holds `cell-state.json` (the source of truth),
 `feeds-bundle.json` (what to publish) and the denylist. Back the directory
 up after every change. Versions only move forward: a state restored from
 an older copy is refused, because republishing from it could revive a
-revoked credential at a version the cell already saw. Today a bundle
-reaches a cell only when it boots (`deploy/app-server` downloads
-`FEEDS_S3_KEY` once), so publishing means uploading the bundle and
-restarting the cell. Live delivery is PLAN step 4.
+revoked credential at a version the cell already saw. Publishing means
+uploading the bundle to `FEEDS_S3_KEY`, nothing more: the cell's wrapper
+(`deploy/app-server/feeds.ts`) polls it every 15 s with `If-None-Match`
+and rewrites the three feed files atomically when it changed, and the
+server reads them at its next 30 s refresh, so an admission or a revocation
+takes effect within about 45 s without a restart. A wrapper that cannot
+fetch the bundle for 120 s of awake time deletes the feed files, and the
+cell then refuses every request once its feeds' freshness window (300 s)
+passes, until a poll succeeds again: keep the bundle's bucket reachable.
+A published bundle that is not JSON or lacks one of its three feeds is a
+failed poll too: it replaces nothing, and left in place it deletes the feed
+files after the same 120 s, so the cell stops serving about 7 minutes after
+a bad publish. Publish only what `cell-admin` wrote, and republish a good
+bundle at once if a bad one went up.
 
 ## Offboarding
 

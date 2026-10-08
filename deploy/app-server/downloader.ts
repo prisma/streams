@@ -65,20 +65,24 @@ export async function downloadBinary(key: string, dest: string, log: (s: string)
   if (machine !== 0x3e) throw new Error(`machine ${machine} != x86_64`);
 }
 
-// Small-object variant for campaign side-files (feeds bundle, token
-// map): single GET, retries, and NO minimum-size gate — that gate is
-// binary-corruption armor and would refuse a 500 KB JSON document.
-export async function downloadFile(key: string, dest: string, log: (s: string) => void) {
-  const env = process.env;
-  // Same BIN_S3_* fallback chain as downloadBinary: the server deploy
-  // passes BIN_S3_* for the artifact bucket (S3_* is the gen's name).
-  const c = new S3Client({
+// The artifact bucket's client for side-files (feeds bundle, token map).
+// Same BIN_S3_* fallback chain as downloadBinary: the server deploy passes
+// BIN_S3_* for the artifact bucket (S3_* is the gen's name).
+export function artifactClient(env: Record<string, string | undefined> = process.env): S3Client {
+  return new S3Client({
     endpoint: env.BIN_S3_ENDPOINT ?? env.S3_ENDPOINT!,
     bucket: env.BIN_S3_BUCKET ?? env.S3_BUCKET!,
     region: env.BIN_S3_REGION ?? env.S3_REGION ?? "auto",
     accessKeyId: env.BIN_S3_ACCESS_KEY_ID ?? env.S3_ACCESS_KEY_ID!,
     secretAccessKey: env.BIN_S3_SECRET_ACCESS_KEY ?? env.S3_SECRET_ACCESS_KEY!,
   });
+}
+
+// Small-object variant for campaign side-files (feeds bundle, token
+// map): single GET, retries, and NO minimum-size gate — that gate is
+// binary-corruption armor and would refuse a 500 KB JSON document.
+export async function downloadFile(key: string, dest: string, log: (s: string) => void) {
+  const c = artifactClient();
   for (let attempt = 1; ; attempt++) {
     try {
       const b = new Uint8Array(await Promise.race([
