@@ -1229,7 +1229,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "3d89fc5887a3f1ded46ef81ad6d432a0749a827bbb12cc0aef376026aaff5937",
+    "function_sha256": "8d289fd6b40a82dfd5756edae3ef9ac65167ab8452e028ef947437f38d660eae",
     "mechanisms": [],
     "configuration": [
       "crate::failpoints::park_pull_before_receive(Q);",
@@ -2299,7 +2299,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "f291593415a82b7878c56ca5d86f074bb43c5dccb635c32cf670f5df52dc43e1",
+    "function_sha256": "01260f7aa3b118e652d78d7b699f7fc152b49a95054aef5e22ff41be67ff6fa5",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_memory.rs",

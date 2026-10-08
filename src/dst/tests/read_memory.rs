@@ -171,6 +171,55 @@ async fn settle_at(cell: &Cell, i: usize, want: (u64, u64)) -> (u64, u64) {
     ledgers(cell, i)
 }
 
+/// Project `i` at rest: (its whole estimated pressure, the instance's read
+/// memory) once both are 0, or after 10 s. A leg waits for this before it
+/// lowers the project's line or pulls under it: the frames its appends
+/// committed weigh in the estimate, 64 KiB more for each stream holding
+/// them, until the absorber takes them, and a write's latch and a body
+/// buffered under the line (a pull's beside its coverage reservation) see
+/// them, as they see a page still held.
+async fn at_baseline(cell: &Cell, i: usize) -> (u64, u64) {
+    let id = ProjectId::new(&project(i)).unwrap();
+    let now = || {
+        let estimate = cell.state.quotas.pressure_handle(&id);
+        (
+            estimate.map_or(0, |e| e.estimated_pressure_bytes()),
+            cell.state.admission.read_memory().0,
+        )
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while now() != (0, 0) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    now()
+}
+
+/// Project `i`'s memory pressure, for a failure message: its estimate,
+/// its `/v1/debug/load` row (each dimension but its read bytes and parked
+/// waits, and its latch's engage and shed counts; no row while the
+/// estimate is 0 and the latch is clear), its read bytes and the
+/// instance's parked waits. A 429 `project_memory_pressure` names its
+/// cause here: the latch counts an engage, a read reservation refused at
+/// the line counts a shed, a body refused while it is buffered counts
+/// neither.
+fn pressure(cell: &Cell, i: usize) -> String {
+    let id = ProjectId::new(&project(i)).unwrap();
+    let line = cell.state.admission.project_memory_pressure_bytes();
+    let load = cell.state.quotas.memory_pressure_json(line, usize::MAX);
+    let row = load["rows"].as_array().and_then(|rows| {
+        rows.iter()
+            .find(|row| row["project"].as_str() == Some(id.as_str()))
+    });
+    let estimate = cell.state.quotas.pressure_handle(&id);
+    format!(
+        "estimate {:?} B under line {line} B, read bytes {}, parked waits {}, row {}",
+        estimate.map(|e| e.estimated_pressure_bytes()),
+        ledgers(cell, i).0,
+        cell.state.admission.parked(),
+        row.map_or_else(|| "none".to_string(), ToString::to_string)
+    )
+}
+
 /// A page's body holds the page's exact bytes in its project's read bytes
 /// and in the instance's read memory while its client has not read it,
 /// and releases them when the client leaves; a scan's page and a consumer
@@ -616,6 +665,8 @@ async fn a_projects_pulls_reserve_their_coverage_inside_its_line_and_its_neighbo
     let cell = open_cell(CellSpec::open(2)).await;
     keyed_queue(&cell, 0, Q, 3).await;
     big_stream(&cell, 1).await;
+    let rest = at_baseline(&cell, 0).await;
+    assert_eq!(rest, (0, 0), "project 0 at rest: {}", pressure(&cell, 0));
     let coverage = u64::try_from(crate::application::consumer::PULL_COVERAGE_BYTES).unwrap();
     let line = 2 * coverage + BODY_ROOM;
     cell.state.admission.set_project_memory_pressure_bytes(line);
@@ -641,6 +692,7 @@ async fn a_projects_pulls_reserve_their_coverage_inside_its_line_and_its_neighbo
     let third = cell.call(0, "POST", &path, br#"{"max":48}"#);
     let third = tokio::time::timeout(Duration::from_secs(5), third).await;
     let waited = started.elapsed();
+    let at_third = pressure(&cell, 0);
     let third = third.map(|(status, headers, body)| {
         let refusal: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let code = refusal["error"]["code"].as_str().map(str::to_string);
@@ -656,7 +708,7 @@ async fn a_projects_pulls_reserve_their_coverage_inside_its_line_and_its_neighbo
     assert_eq!(
         (past_admission, reserved, third.ok()),
         (2, (2 * coverage, 2 * coverage), Some(refused)),
-        "the third pull, after {waited:?}"
+        "the third pull, after {waited:?}, with project 0 at {at_third}"
     );
     assert!(waited >= Duration::from_secs(2), "refused after {waited:?}");
     let (hostile, instance) = at_rest(&cell, 0).await;
@@ -682,7 +734,6 @@ async fn a_projects_pulls_reserve_their_coverage_inside_its_line_and_its_neighbo
 async fn a_woken_pull_without_room_for_its_coverage_answers_empty_and_leases_nothing() {
     let cell = open_cell(CellSpec::open(1)).await;
     let page = big_stream(&cell, 0).await;
-    assert_eq!(settle_at(&cell, 0, (0, 0)).await, (0, 0), "big's read left");
     let created = cell
         .call(0, "PUT", "/v1/streams/wq", br#"{"format":{"kind":"json"}}"#)
         .await;
@@ -691,13 +742,20 @@ async fn a_woken_pull_without_room_for_its_coverage_answers_empty_and_leases_not
         .call(0, "PUT", "/v1/streams/wq/consumers/g", b"{}")
         .await;
     assert_eq!(consumer.0, 201, "{}", String::from_utf8_lossy(&consumer.2));
+    let rest = at_baseline(&cell, 0).await;
+    assert_eq!(rest, (0, 0), "project 0 at rest: {}", pressure(&cell, 0));
     let coverage = u64::try_from(crate::application::consumer::PULL_COVERAGE_BYTES).unwrap();
     cell.state
         .admission
         .set_project_memory_pressure_bytes(coverage + BODY_ROOM);
     let path = "/v1/streams/wq/consumers/g:pull";
     let started = Instant::now();
-    let waiting = cell.call(0, "POST", path, br#"{"max":1,"waitMs":1500}"#);
+    let waiting = async {
+        let answer = cell
+            .call(0, "POST", path, br#"{"max":1,"waitMs":1500}"#)
+            .await;
+        (answer, started.elapsed(), pressure(&cell, 0))
+    };
     let wake = async {
         let deadline = Instant::now() + Duration::from_secs(10);
         while cell.state.admission.parked() < 1 && Instant::now() < deadline {
@@ -711,9 +769,12 @@ async fn a_woken_pull_without_room_for_its_coverage_answers_empty_and_leases_not
             .await;
         (unread, parked, held, appended.0)
     };
-    let ((status, _, body), (unread, parked, held, appended)) =
+    let (((status, _, body), answered, at_answer), (unread, parked, held, appended)) =
         futures_util::future::join(waiting, wake).await;
     let waited = started.elapsed();
+    let code = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v["error"]["code"].as_str().map(str::to_string));
     let messages = |body: &[u8]| {
         serde_json::from_slice::<serde_json::Value>(body)
             .ok()
@@ -722,7 +783,9 @@ async fn a_woken_pull_without_room_for_its_coverage_answers_empty_and_leases_not
     assert_eq!(
         (parked, held, appended, status, messages(&body)),
         ((0, 0), (page, page), 200, 200, Some(0)),
-        "the woken pull, after {waited:?}"
+        "the woken pull, after {waited:?}: answered {code:?} after {answered:?} with project 0 \
+         at {at_answer}; project 0 now {}",
+        pressure(&cell, 0)
     );
     assert!(
         waited >= Duration::from_millis(1400),
@@ -730,12 +793,19 @@ async fn a_woken_pull_without_room_for_its_coverage_answers_empty_and_leases_not
     );
     assert_eq!(settle_at(&cell, 0, (page, page)).await, (page, page));
     drop(unread);
-    assert_eq!(settle_at(&cell, 0, (0, 0)).await, (0, 0));
+    let rest = at_baseline(&cell, 0).await;
+    assert_eq!(
+        rest,
+        (0, 0),
+        "project 0 at rest again: {}",
+        pressure(&cell, 0)
+    );
     let (status, _, body) = cell.call(0, "POST", path, br#"{"max":1}"#).await;
     assert_eq!(
         (status, messages(&body)),
         (200, Some(1)),
-        "the message waited"
+        "the message waited: {}",
+        String::from_utf8_lossy(&body)
     );
     engine_shutdown(&cell.state).await;
 }
