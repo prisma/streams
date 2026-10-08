@@ -2525,6 +2525,17 @@
     "scenarios": []
   },
   {
+    "name": "an_append_after_a_drain_round_reaches_the_ledger_one_default_cadence_later",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6829defadf5f1cc2445d016b87633a24eb299c7840519e8158420048bdd998e4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_controller.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_append_counts_when_its_descriptor_cannot_be_read_again",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -6552,7 +6563,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "96a9261edc3ebdf4548d1967b313bed4c6bf3df26a68f1d582e3f4b3fdc8a720",
+    "function_sha256": "2650b67760cf16525b0b5fb1eb18a93d592deb67befc65ed391860a5c9ea1673",
     "mechanisms": [],
     "configuration": [
       "..FaultPlan::CLEAN",

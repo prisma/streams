@@ -339,7 +339,7 @@ fn default_values_are_pinned() {
     assert!(!c.cli.billing_required());
     assert!(!c.cli.runs_rollup());
     assert_eq!(c.billing.outbox_sweep_secs, 300);
-    assert_eq!(c.billing.telemetry_drain_secs, 2);
+    assert_eq!(c.billing.telemetry_drain_secs, 8); // the write tier, edge change #117
     assert_eq!(c.billing.metrics_interval_secs, 15);
     assert_eq!(c.billing.month_close_grace_ms, 86_400_000);
     assert_eq!(c.billing.telemetry_cache_bytes, 16 * 1024 * 1024);

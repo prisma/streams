@@ -84,11 +84,11 @@ async fn r09_active_telemetry_cancels_entered_storage_and_preserves_debt() {
     .expect("both real storage operations must be entered before cancellation");
     assert_eq!(state.billing.unflushed_reads().2, 0, "drain owns the batch");
     // Item 26: a stop runs one terminal round; it parks on the same held
-    // PUT and is cut after one drain cadence, so the grace sits above the
-    // cadence and the stop still needs no abort (R09).
+    // PUT and is cut after one drain cadence (8 s), so production's 10 s
+    // grace sits above the cadence and the stop needs no abort (R09).
     let cadence = Duration::from_secs(state.config.billing.telemetry_drain_secs);
     let stop = std::time::Instant::now();
-    let report = tasks.shutdown(Duration::from_secs(5)).await;
+    let report = tasks.shutdown(Duration::from_secs(10)).await;
     assert!(
         report.aborted.is_empty(),
         "active passes must stop cooperatively: {report:?}"
@@ -177,6 +177,71 @@ async fn usage_read_rows(
             )
         })
         .collect()
+}
+
+/// (payload bytes, records) of each `_usage` segment snapshot of `stream`
+/// that carries ingest; none before the ledger exists.
+async fn usage_ingest(state: &Arc<crate::http::AppState>, stream: &str) -> Vec<(u64, u64)> {
+    let key = state.billing.usage_key().unwrap();
+    let read = crate::billing::system_read(state, crate::billing::USAGE_STREAM, &key, None);
+    let Some((body, _)) = read.await.unwrap().filter(|(body, _)| !body.is_empty()) else {
+        return Vec::new();
+    };
+    let envelopes: Vec<crate::billing::UsageEnvelope> = serde_json::from_slice(&body).unwrap();
+    envelopes
+        .iter()
+        .filter_map(|e| match &e.payload {
+            crate::billing::UsagePayload::SegmentSnapshot(s) => Some(s),
+            crate::billing::UsagePayload::ReadBatch(_)
+            | crate::billing::UsagePayload::StreamLifecycle(_)
+            | crate::billing::UsagePayload::UsageCorrection(_) => None,
+        })
+        .filter(|s| s.identity.stream_name == stream && s.ingest_payload_bytes_month > 0)
+        .map(|s| (s.ingest_payload_bytes_month, s.ingest_records_month))
+        .collect()
+}
+
+/// The owner's write tier (2026-10-07): a server that does not set
+/// `TELEMETRY_DRAIN_SECS` runs one drain round every 8 s. The loop's first
+/// round runs as it starts; an append acknowledged after that round reaches
+/// `_usage` at the next one, a whole cadence after the start and before a
+/// third round, exactly once. The usage answers read what the rollup took
+/// from `_usage`, so this is how stale they may be.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_append_after_a_drain_round_reaches_the_ledger_one_default_cadence_later() {
+    let _clock = crate::billing::billing_clock_lock().read().await;
+    let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
+    let (state, json) = (rig.state.clone(), [("content-type", "application/json")]);
+    let path = "/v1/stream/cadence";
+    assert_eq!(hreq(rig.addr, "PUT", path, &json, b"").await.0, 201);
+    let started = std::time::Instant::now();
+    crate::billing::spawn_telemetry(state.clone(), &rig.tasks);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while ops_metrics_records(&state).await != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the first round ends with the metrics emission");
+    let appended = hreq(rig.addr, "POST", path, &json, br#"[{"n":1}]"#).await;
+    assert_eq!(appended.0, 204);
+    assert!(usage_ingest(&state, "cadence").await.is_empty());
+    let reached = tokio::time::timeout(Duration::from_secs(20), async {
+        while usage_ingest(&state, "cadence").await.is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        started.elapsed()
+    })
+    .await
+    .expect("a later round drains the append");
+    let cadence = Duration::from_secs(8);
+    assert!(
+        reached >= cadence && reached < 2 * cadence,
+        "an append acknowledged after the first round reaches `_usage` at the next, one default cadence (8 s) after the loop started; it took {reached:?}"
+    );
+    let one_record = vec![(7, 1)]; // `{"n":1}`: 7 payload bytes
+    assert_eq!(usage_ingest(&state, "cadence").await, one_record);
+    rig.shutdown().await;
 }
 
 /// Review item 26: a graceful stop owes the ledger the read window the

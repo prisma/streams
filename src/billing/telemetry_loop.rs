@@ -9,7 +9,7 @@ use super::{drain_once, open_read_spool, sweep_owned_outboxes};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// The drainer task: every TELEMETRY_DRAIN_SECS (default 2), one drain
+/// The drainer task: every TELEMETRY_DRAIN_SECS (default 8), one drain
 /// round. Errors log and retry — the durable outbox holds the truth.
 pub(crate) fn spawn_telemetry(
     state: Arc<crate::http::AppState>,

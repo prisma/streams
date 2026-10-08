@@ -262,7 +262,9 @@ pub struct HttpConfig {
 pub struct BillingConfig {
     /// OUTBOX_SWEEP_SECS, default 300.
     pub outbox_sweep_secs: u64,
-    /// TELEMETRY_DRAIN_SECS, default 2. Also bounds the terminal drain
+    /// TELEMETRY_DRAIN_SECS, default 8 (the write tier; 2 before edge
+    /// change #117): usage reaches `_usage`, and so the usage answers, up to
+    /// one cadence after it is metered. Also bounds the terminal drain
     /// round a graceful stop runs; keep it below the 10 s supervisor
     /// grace, above it the supervisor's abort is the bound.
     pub telemetry_drain_secs: u64,
@@ -500,7 +502,7 @@ impl Default for BillingConfig {
     fn default() -> Self {
         Self {
             outbox_sweep_secs: 300,
-            telemetry_drain_secs: 2,
+            telemetry_drain_secs: 8,
             metrics_interval_secs: 15,
             month_close_grace_ms: 24 * 3_600_000,
             telemetry_cache_bytes: 16 * 1024 * 1024,

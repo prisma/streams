@@ -97,7 +97,7 @@ Two product rules shape the read and queue points:
      L1, L2 and L3 full points pass it as `WAL_GAP`, default 100),
      `TAIL_RING_BYTES` (0),
      the manifest and compactor polls, `OUTBOX_SWEEP_SECS` (300) and
-     `TELEMETRY_DRAIN_SECS` (2);
+     `TELEMETRY_DRAIN_SECS` (8, 2 before edge change #117);
    - the release posture: `STREAMS_AUTH_MODE=enforce` with the
      emulator's feed files, `FLEET_AUTH_MODE=workload` with its rotating
      `WORKLOAD_TOKEN_FILE`, `STREAMS_RELEASE_POSTURE=1`,

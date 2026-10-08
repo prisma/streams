@@ -434,8 +434,9 @@ check("cell B independently refuses beyond ITS feed-delivered cap (seeded from t
 // ---- §15 item 7: billing reconciliation through the usage surface ---------
 // proj-b (workspace never changed — rows land under workspace-at-event,
 // so the transferred project would legitimately read zero) appended one
-// record earlier; the outbox sweeps every 2s here, the rollup applies
-// every 2s, so the project row must show ingest bytes within ~20s.
+// record earlier; the usage drain appends it to _usage within its 8 s
+// cadence (the binary's default, edge change #117), the rollup applies
+// within 2s, so the project row must show ingest bytes within ~20s.
 const credU = await mkCred("proj-b", "usage probe",
   ["streams.usage.read", "streams.records.append", "streams.records.read"]);
 const tokU = await j(await exchange(credU.body.secret));

@@ -97,9 +97,9 @@ Exact synchronous read metering would require waiting for a durable telemetry wr
 
 The chosen posture is:
 
-- active read deltas flush every 10 seconds by default, earlier by size/cardinality thresholds;
-- graceful shutdown seals the active read window and waits one drain cadence (`TELEMETRY_DRAIN_SECS`) for the final batch to reach the spool and the ledger;
-- a hard process loss can undercount only the unflushed active interval;
+- active read deltas flush at the first drain round after their window is 10 seconds old (every 16 s in steady state at the default 8 s drain cadence, at most 18 s), earlier by size/cardinality thresholds;
+- graceful shutdown seals the active read window and waits up to one drain cadence (`TELEMETRY_DRAIN_SECS`, 8 s by default) for the final batch to reach the spool and the ledger;
+- a hard process loss can undercount only the unflushed active interval: at most the 10 s flush interval plus one drain cadence;
 - source epochs and batch sequences prevent overbilling after restart;
 - the system exposes estimated unflushed read bytes and maximum possible loss.
 
@@ -381,6 +381,8 @@ shutdown/drain
 
 When the active map reaches its entry or size bound, it is sealed into a batch and a fresh map is installed. No per-stream attribution is discarded.
 
+The interval is checked by the drain round (§6.3), every `TELEMETRY_DRAIN_SECS` (8 s by default; 2 s before edge change #117): a window seals at the first round after it is 10 s old, so a window that opens just after a round seals two rounds later (16 s), and no window lasts longer than the interval plus one cadence (18 s). The round that seals a window spools it in the same pass.
+
 ### 7.3 Source identity and idempotence
 
 Each process boot has:
@@ -422,7 +424,7 @@ A restart creates a new boot ID; counters restart from zero without re-billing p
 ### 7.4 Accuracy contract
 
 - Graceful stops seal the active read window and drain it in one terminal round bounded by one drain cadence (`TELEMETRY_DRAIN_SECS`, which must stay below the 10 s supervisor grace); what the spool accepted is durable, and a store that does not answer inside the cadence leaves the batch under the same custody as an interrupted round.
-- Hard process loss may undercount at most one active flush interval.
+- Hard process loss may undercount at most one active flush interval plus one drain cadence (18 s at the defaults), the oldest a window gets before the round that seals and spools it. The per-stream answer's `metering.possibleReadLossWindowSeconds` (§10.2) still states the flush interval alone, 10.
 - No restart path can overcount an already emitted batch.
 - `/operator` exposes current unflushed read bytes and the maximum possible loss window.
 - The invoice report states the read-meter interval used during the month.
@@ -655,6 +657,14 @@ remote object GETs: <= 1 on a cold rollup block
 ledger scans: 0
 LIST requests: 0
 ```
+
+### 10.5 Freshness
+
+The answers are the rollup's view of `_usage`, so they trail the meters:
+
+- Ingest, records, append requests and storage: a write's usage is in its segment's durable outbox (§6.3) when the write is acknowledged. The next drain round, every `TELEMETRY_DRAIN_SECS` (8 s by default; 2 s before edge change #117), appends it to `_usage`, and the rollup applies it within about 2 s (its poll when idle). An answer trails an acknowledged write by up to about 10 s.
+- Reads: a delivery reaches `_usage` when its read window seals and is drained (§7.2), up to 18 s after the window opened, then the rollup's 2 s: up to about 20 s.
+- One round takes at most 64 dirty segments from each of at most 4 shards, and at most 1,000 envelopes or 1 MB; the rest wait for later rounds, so a cell that dirties more segments per cadence than that trails further.
 
 ---
 
@@ -1054,7 +1064,8 @@ The telemetry design must not recreate the per-stream request tax removed by his
 ### 17.1 Default cadences
 
 ```text
-read usage batches:       10 s active; early by 10k entries / 1 MiB
+usage drain:              8 s (TELEMETRY_DRAIN_SECS): one _usage append per round with content
+read usage batches:       10 s active, sealed at the next drain round (16-18 s); early by 10k entries / 1 MiB
 segment snapshot drain:   included in the same instance usage batch
 ops metrics snapshots:    15 s
 usage rollup flush:       1–5 s, batched across rows
