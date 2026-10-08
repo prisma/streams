@@ -1788,8 +1788,8 @@ pub(crate) async fn product_entry_axum_inner(
     crate::admission::park::bind_principal(&state.quotas, principal);
     // Round-13 and H3: the memory backstops, after ordinary project
     // admission and before body work — a write's project pressure gate,
-    // a page read's memory reservation. Established SSE delivery and
-    // other reads continue while a project is engaged.
+    // a page read's memory reservation (a pull's follows its body). SSE
+    // delivery and other reads continue while a project is engaged.
     if let Some(r) =
         crate::product::read_memory::refusal(&state, principal, &method, &name, &query).await
     {
@@ -1817,18 +1817,14 @@ pub(crate) async fn product_entry_axum_inner(
         }
         return crate::product::with_product_cors(r);
     }
-    // Only mutations consume a body. GET/HEAD/watch and OPTIONS discard it
+    // Only mutations consume a body, and a pull reserves its coverage only
+    // once its body is buffered (C1). GET/HEAD/watch and OPTIONS discard it
     // without polling; an unverified watch claim never acquires body memory.
-    let (body, _body_charge) = if method == Method::POST || method == Method::PUT {
-        match crate::product::read_memory::buffered_body(&state, principal, req.into_body()).await {
-            Ok(b) => b,
-            Err(refusal) => {
-                let refusal = crate::product::read_memory::body_refusal(refusal, principal);
-                return crate::product::with_product_cors(refusal);
-            }
-        }
-    } else {
-        (Bytes::new(), None)
+    let body = req.into_body();
+    let read = crate::product::read_memory::body(&state, principal, &method, &name, body);
+    let (body, _body_charge) = match read.await {
+        Ok(b) => b,
+        Err(r) => return crate::product::with_product_cors(*r),
     };
     // Round-13: this surface's queued/committer accounting takes over
     // beyond this point (product_append charges queued bytes) — the

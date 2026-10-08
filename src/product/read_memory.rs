@@ -10,11 +10,12 @@
 //! (`product_read`, `product_scan`): an unparseable `maxBytes` reserves
 //! the cap and is refused 400 by the route, as before. A pull, which also
 //! passes the write gate, reserves what one walk of its lineage reads
-//! before it leases (`PULL_COVERAGE_BYTES`); its batch replaces the
-//! reservation when it renders. Its project's memory line makes it wait,
-//! then refuses it (429 `project_memory_pressure`, as a write's); the
-//! instance's read memory makes it wait, then refuses it (503
-//! `read_memory_busy`). Both are retryable after 1 s.
+//! before it leases (`PULL_COVERAGE_BYTES`), once its body is buffered, so
+//! its own reservation never weighs on its own body (landing call C1); its
+//! batch replaces the reservation when it renders. Its project's memory
+//! line makes it wait, then refuses it (429 `project_memory_pressure`, as
+//! a write's); the instance's read memory makes it wait, then refuses it
+//! (503 `read_memory_busy`). Both are retryable after 1 s.
 
 use axum::http::{HeaderValue, Method, StatusCode};
 use axum::response::Response;
@@ -29,8 +30,10 @@ use crate::application::consumer::PULL_COVERAGE_BYTES;
 use crate::auth::RequestPrincipal;
 
 /// The memory backstops for one admitted request on the product surface
-/// (`path` is the route's whole wildcard path, subresource and verb
-/// included): the refusal to answer with, or `None` to serve it.
+/// before its body (`path` is the route's whole wildcard path, subresource
+/// and verb included): a write's latch and a page read's reservation; a
+/// pull reserves its coverage in `body`, after its body. The refusal to
+/// answer with, or `None` to serve it.
 pub(crate) async fn refusal(
     state: &AppState,
     principal: Option<&RequestPrincipal>,
@@ -43,7 +46,17 @@ pub(crate) async fn refusal(
     {
         return Some(refusal);
     }
-    let bytes = page_bytes(method, path, query)?;
+    reserve(state, principal, page_bytes(method, path, query)?).await
+}
+
+/// Reserve `bytes` for the request's page in its project's read bytes and
+/// the instance's read memory: the refusal to answer, or `None` once the
+/// hold is bound to the request.
+async fn reserve(
+    state: &AppState,
+    principal: Option<&RequestPrincipal>,
+    bytes: u64,
+) -> Option<Response> {
     let project = principal.and_then(|p| state.quotas.read_bytes(&p.project_id));
     let line = state.admission.project_memory_pressure_bytes();
     match ReadHold::reserve(&state.admission, project, line, bytes).await {
@@ -65,26 +78,41 @@ fn memory_pressure(principal: Option<&RequestPrincipal>) -> Response {
     }
 }
 
-/// A write's body, buffered under its project's memory line
-/// (`admission::body`); `body_refusal` answers a refusal.
-pub(crate) async fn buffered_body(
+/// The request's body: a `POST` or `PUT` buffers it under its project's
+/// memory line (`admission::body`), and a consumer pull then reserves its
+/// coverage, so the pull's own reservation is never one of the bytes its
+/// body is buffered beside (landing call C1). Every other method discards
+/// its body without polling it. `Err` is the refusal to answer.
+pub(crate) async fn body(
     state: &AppState,
     principal: Option<&RequestPrincipal>,
-    body: axum::body::Body,
-) -> Result<(bytes::Bytes, Option<crate::quota::BufferedBodyGuard>), BodyRefusal> {
-    crate::admission::body::buffer_within(
-        body,
+    method: &Method,
+    path: &str,
+    incoming: axum::body::Body,
+) -> Result<(bytes::Bytes, Option<crate::quota::BufferedBodyGuard>), Box<Response>> {
+    if method != Method::POST && method != Method::PUT {
+        return Ok((bytes::Bytes::new(), None));
+    }
+    let buffered = crate::admission::body::buffer_within(
+        incoming,
         state.config.cli.max_request_body_bytes,
         principal.and_then(|p| state.quotas.pressure_handle(&p.project_id)),
         state.admission.project_memory_pressure_bytes(),
     )
     .await
+    .map_err(|refusal| Box::new(body_refusal(refusal, principal)))?;
+    if let Some(coverage) = pull_coverage(method, path)
+        && let Some(refusal) = reserve(state, principal, coverage).await
+    {
+        return Err(Box::new(refusal));
+    }
+    Ok(buffered)
 }
 
 /// A body that was not buffered: 413 `body_too_large` past the body
 /// limit, as before, and 429 `project_memory_pressure` (retryable after
 /// 1 s, as a read's) when it would have taken its project past the line.
-pub(crate) fn body_refusal(refusal: BodyRefusal, principal: Option<&RequestPrincipal>) -> Response {
+fn body_refusal(refusal: BodyRefusal, principal: Option<&RequestPrincipal>) -> Response {
     match refusal {
         BodyRefusal::TooLarge => perr(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -97,22 +125,26 @@ pub(crate) fn body_refusal(refusal: BodyRefusal, principal: Option<&RequestPrinc
     }
 }
 
-/// The bytes a page read or a consumer pull on the route `path` may hold:
-/// `None` for every request that renders no page.
+/// The coverage a consumer pull on the route `path` reserves once its body
+/// is buffered: `None` for every other request.
+fn pull_coverage(method: &Method, path: &str) -> Option<u64> {
+    let route = classify_route(path).ok()?;
+    match (method == Method::POST, route, strip_verb(path).1) {
+        (true, ProductRoute::Consumer { .. }, Some("pull")) => {
+            u64::try_from(PULL_COVERAGE_BYTES).ok()
+        }
+        _ => None,
+    }
+}
+
+/// The bytes a page read on the route `path` may hold: `None` for every
+/// request that renders no page before its body is buffered.
 fn page_bytes(method: &Method, path: &str, query: &str) -> Option<u64> {
-    if method != Method::GET && method != Method::POST {
+    if method != Method::GET {
         return None;
     }
     let route = classify_route(path).ok()?;
     let verb = strip_verb(path).1;
-    if method == Method::POST {
-        return match (route, verb) {
-            (ProductRoute::Consumer { .. }, Some("pull")) => {
-                u64::try_from(PULL_COVERAGE_BYTES).ok()
-            }
-            _ => None,
-        };
-    }
     let default = match (route, verb) {
         (ProductRoute::Records { .. }, None | Some("long-poll")) => READ_MAX_BYTES_CAP,
         (ProductRoute::Collection { .. }, Some("scan")) => SCAN_DEFAULT_BYTES,

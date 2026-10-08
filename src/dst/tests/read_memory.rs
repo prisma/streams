@@ -23,8 +23,9 @@ const MIB: u64 = 1 << 20;
 /// The default page budget a read without `maxBytes` reserves.
 const PAGE_BUDGET: u64 = 8 * MIB;
 const RECORDS: &str = "/v1/streams/big/records";
-/// Room under a line for the small bodies of pulls, which are buffered
-/// under it as a write's are (`admission::body`).
+/// Room under a line for the small body of a pull beside other pulls'
+/// coverage, which it is buffered under as a write's is (`admission::body`);
+/// its own coverage is reserved after it.
 const BODY_ROOM: u64 = 64 << 10;
 
 /// Record `n`: a JSON object of 64 KiB and a few bytes.
@@ -176,7 +177,7 @@ async fn settle_at(cell: &Cell, i: usize, want: (u64, u64)) -> (u64, u64) {
 /// lowers the project's line or pulls under it: the frames its appends
 /// committed weigh in the estimate, 64 KiB more for each stream holding
 /// them, until the absorber takes them, and a write's latch and a body
-/// buffered under the line (a pull's beside its coverage reservation) see
+/// buffered under the line (a pull's, before its coverage reservation) see
 /// them, as they see a page still held.
 async fn at_baseline(cell: &Cell, i: usize) -> (u64, u64) {
     let id = ProjectId::new(&project(i)).unwrap();
@@ -726,10 +727,11 @@ async fn a_projects_pulls_reserve_their_coverage_inside_its_line_and_its_neighbo
 
 /// A pull waiting for messages holds nothing, and takes its coverage
 /// reservation again before it walks: woken while an unread page of its
-/// project fills its line of one coverage and room for the pull's body,
-/// it finds no room before its wait ends, answers empty and leases
-/// nothing, and the message is pulled once the line has room. Before: a
-/// woken pull walked unreserved and leased the message past the line.
+/// project fills its line of one coverage (its body, buffered before its
+/// coverage was reserved, needs no room beside it), it finds no room
+/// before its wait ends, answers empty and leases nothing, and the message
+/// is pulled once the line has room. Before: a woken pull walked
+/// unreserved and leased the message past the line.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_woken_pull_without_room_for_its_coverage_answers_empty_and_leases_nothing() {
     let cell = open_cell(CellSpec::open(1)).await;
@@ -747,7 +749,7 @@ async fn a_woken_pull_without_room_for_its_coverage_answers_empty_and_leases_not
     let coverage = u64::try_from(crate::application::consumer::PULL_COVERAGE_BYTES).unwrap();
     cell.state
         .admission
-        .set_project_memory_pressure_bytes(coverage + BODY_ROOM);
+        .set_project_memory_pressure_bytes(coverage);
     let path = "/v1/streams/wq/consumers/g:pull";
     let started = Instant::now();
     let waiting = async {
@@ -807,6 +809,56 @@ async fn a_woken_pull_without_room_for_its_coverage_answers_empty_and_leases_not
         "the message waited: {}",
         String::from_utf8_lossy(&body)
     );
+    engine_shutdown(&cell.state).await;
+}
+
+/// A pull's body is buffered before its coverage is reserved, so its own
+/// reservation never refuses its own body (landing call C1): beside two
+/// parked waits of its project (96 KiB, no read bytes) under a line of one
+/// coverage and 64 KiB, a pull's 23-byte body is buffered, its coverage
+/// fits and it leases its message at once. Before: the body was buffered
+/// beside the pull's own 4 MiB reservation and refused 429
+/// `project_memory_pressure` at once, no shed counted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pulls_own_coverage_reservation_never_refuses_its_body() {
+    let cell = open_cell(CellSpec::open(1)).await;
+    let json = &br#"{"format":{"kind":"json"}}"#[..];
+    for (path, body) in [
+        ("/v1/streams/wq", json),
+        ("/v1/streams/wq/consumers/g", b"{}"),
+    ] {
+        let created = cell.call(0, "PUT", path, body).await;
+        assert_eq!(created.0, 201, "{}", String::from_utf8_lossy(&created.2));
+    }
+    let appended = cell.call(0, "POST", "/v1/streams/wq/records", b"{}").await;
+    assert_eq!(appended.0, 200);
+    assert_eq!(
+        at_baseline(&cell, 0).await,
+        (0, 0),
+        "{}",
+        pressure(&cell, 0)
+    );
+    let polls = parked_polls(&cell, 2, "waitMs=10000").await;
+    let coverage = u64::try_from(crate::application::consumer::PULL_COVERAGE_BYTES).unwrap();
+    let line = coverage + BODY_ROOM;
+    cell.state.admission.set_project_memory_pressure_bytes(line);
+    let load = || cell.state.quotas.memory_pressure_json(line, 0);
+    let sheds = load()["project_memory_shed_total"].as_u64();
+    let (path, started) = ("/v1/streams/wq/consumers/g:pull", Instant::now());
+    let pulled = cell.call(0, "POST", path, br#"{"max":1,"waitMs":1500}"#);
+    let (status, _, body) = pulled.await;
+    let (answered, at_answer) = (started.elapsed(), pressure(&cell, 0));
+    let messages = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v["messages"].as_array().map(Vec::len));
+    let counted = load()["project_memory_shed_total"].as_u64() != sheds;
+    assert_eq!(
+        (status, messages, counted, answered < Duration::from_secs(1)),
+        (200, Some(1), false, true),
+        "the pull after {answered:?}, project 0 at {at_answer}: {}",
+        String::from_utf8_lossy(&body)
+    );
+    drop(polls);
     engine_shutdown(&cell.state).await;
 }
 

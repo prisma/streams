@@ -1418,6 +1418,17 @@
     "scenarios": []
   },
   {
+    "name": "a_pulls_own_coverage_reservation_never_refuses_its_body",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "443569a1dd77d39ce6878c028d9a8d407a2176a4d94963c1beb9eac637467902",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_memory.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_raw_close_that_takes_over_an_abandoned_final_claim_seals_with_its_record",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -2477,7 +2488,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "01260f7aa3b118e652d78d7b699f7fc152b49a95054aef5e22ff41be67ff6fa5",
+    "function_sha256": "c1089d2bba02204192183e778ebee556e715e8633ec1c704ef6e3517c199418d",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_memory.rs",
