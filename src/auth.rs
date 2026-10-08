@@ -35,7 +35,7 @@ use publication::HighWater;
 pub(crate) use refusal::{Denial, Refusal};
 #[cfg(test)]
 pub(crate) use signing_key::key_fp;
-pub(crate) use signing_key::{JwksKey, KeyAudience};
+pub(crate) use signing_key::{JwksKey, KeyAudience, audience_shared};
 
 use arc_swap::ArcSwap;
 use jsonwebtoken::{Algorithm, Validation, decode, decode_header};
@@ -811,13 +811,14 @@ mod tests {
     use crate::project_policy::{CredentialGrant, ProjectPolicy, ProjectQuotas};
     use jsonwebtoken::{EncodingKey, Header, encode};
 
-    // Test-only keypair, checked in as a fixture (never deployed).
+    // Test-only keypairs, checked in as fixtures (never deployed).
     const PRIV: &str = include_str!("dst/fixtures/mt-test-rsa.pem");
     const PUB: &str = include_str!("dst/fixtures/mt-test-rsa.pub.pem");
     pub(super) const KID: &str = "test-1";
-    /// Shared-cells H6: the fleet's workload key, the same fixture
-    /// material under its own kid, pinned to the internal audience.
+    /// H6, F2: the fleet's workload key, its own material under its own kid.
     pub(super) const FLEET_KID: &str = "fleet-1";
+    const FLEET_PRIV: &str = include_str!("dst/fixtures/mt-test-fleet-rsa.pem");
+    pub(super) const FLEET_PUB: &str = include_str!("dst/fixtures/mt-test-fleet-rsa.pub.pem");
     const ISS: &str = "https://auth.prisma.io";
     const CELL: &str = "fra-cell-07";
     pub(super) const NOW: i64 = 1_786_600_600;
@@ -864,10 +865,15 @@ mod tests {
         sign_with(c, KID, jsonwebtoken::Algorithm::RS256)
     }
 
-    pub(super) fn sign_with(c: &C, kid: &str, alg: jsonwebtoken::Algorithm) -> String {
+    pub(super) fn sign_with(
+        c: &impl serde::Serialize,
+        kid: &str,
+        alg: jsonwebtoken::Algorithm,
+    ) -> String {
         let mut h = Header::new(alg);
         h.kid = Some(kid.to_string());
-        encode(&h, c, &EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap()).unwrap()
+        let pem = if kid == FLEET_KID { FLEET_PRIV } else { PRIV };
+        encode(&h, c, &EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap()).unwrap()
     }
 
     pub(super) fn service() -> AuthService {
@@ -876,7 +882,7 @@ mod tests {
             (KID.to_string(), JwksKey::rs256(PUB, KeyAudience::Customer)),
             (
                 FLEET_KID.to_string(),
-                JwksKey::rs256(PUB, KeyAudience::Internal),
+                JwksKey::rs256(FLEET_PUB, KeyAudience::Internal),
             ),
         ]);
         svc.publish_jwks(JwksSnapshot {
@@ -1155,16 +1161,7 @@ mod tests {
             operations: vec!["segment-read".into()],
             exp: NOW + 300,
         };
-        let signed = |kid: &str| {
-            let mut h = Header::new(jsonwebtoken::Algorithm::RS256);
-            h.kid = Some(kid.into());
-            encode(
-                &h,
-                &ic,
-                &EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
-            )
-            .unwrap()
-        };
+        let signed = |kid: &str| sign_with(&ic, kid, jsonwebtoken::Algorithm::RS256);
         let p = svc.verify_internal(&signed(FLEET_KID), NOW).unwrap();
         assert_eq!(p.operations, vec!["segment-read"]);
         assert_eq!(

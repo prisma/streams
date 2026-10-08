@@ -10,7 +10,13 @@
 //! mint a customer token for any project. A kid names its algorithm, its
 //! key material and its audience forever: the fingerprint covers material
 //! and audience, so a feed that re-pins a kid is refused exactly like one
-//! that rebinds its material (`publish_jwks`, SR3-3).
+//! that rebinds its material (`publish_jwks`, SR3-3). And one key MATERIAL
+//! signs for one audience whatever kid names it (isolation review F2): a
+//! key set that names one public key under both audiences is refused whole,
+//! or the customer issuer's key would sign workload tokens under a second,
+//! internal kid.
+
+use std::collections::HashMap;
 
 use jsonwebtoken::{Algorithm, DecodingKey};
 
@@ -58,6 +64,9 @@ pub(crate) struct JwksKey {
     /// computed at parse. Same kid + different fp is a publisher defect,
     /// and the snapshot is refused.
     pub fp: [u8; 32],
+    /// F2: the fingerprint of the key material alone ([`material_fp`]),
+    /// which one audience owns whatever kid names it.
+    pub material: [u8; 32],
 }
 
 impl JwksKey {
@@ -67,6 +76,7 @@ impl JwksKey {
             key,
             aud,
             fp: key_fp(pem, aud),
+            material: material_fp(pem),
         }
     }
 
@@ -107,15 +117,188 @@ pub(crate) fn key_fp(pem: &[u8], aud: KeyAudience) -> [u8; 32] {
     h.finalize().into()
 }
 
+/// F2: the fingerprint of a key's material whatever PEM armour, line
+/// breaks or kid carry it: the SHA-256 of the key bytes jsonwebtoken
+/// verifies with, an SPKI's subjectPublicKey (RSA and Ed25519 `PUBLIC
+/// KEY`) or a PKCS#1 key's whole DER (`RSA PUBLIC KEY`).
+pub(crate) fn material_fp(pem: &[u8]) -> [u8; 32] {
+    use sha2::Digest;
+    let der = pem_der(pem);
+    let key = spki_public_key(&der).unwrap_or(&der);
+    sha2::Sha256::digest(key).into()
+}
+
+/// F2: two kids of `keys` that name one key material under two audiences,
+/// in kid order, or `None` when every material signs for one audience.
+pub(crate) fn audience_shared(keys: &HashMap<String, JwksKey>) -> Option<(&str, &str)> {
+    let mut kids: Vec<_> = keys.iter().collect();
+    kids.sort_unstable_by_key(|(kid, _)| kid.as_str());
+    let mut owner: HashMap<[u8; 32], (KeyAudience, &str)> = HashMap::new();
+    for (kid, key) in kids {
+        let &mut (aud, first) = owner.entry(key.material).or_insert((key.aud, kid.as_str()));
+        if aud != key.aud {
+            return Some((first, kid.as_str()));
+        }
+    }
+    None
+}
+
+/// The DER a PEM armours: its base64 body without the armour lines and
+/// whitespace (the PEM bytes themselves if the body is not base64, which a
+/// key jsonwebtoken parsed never is).
+fn pem_der(pem: &[u8]) -> Vec<u8> {
+    use base64::Engine;
+    let body: String = String::from_utf8_lossy(pem)
+        .lines()
+        .filter(|line| !line.starts_with("-----"))
+        .flat_map(|line| line.chars().filter(|c| !c.is_whitespace()))
+        .collect();
+    base64::engine::general_purpose::STANDARD
+        .decode(body)
+        .unwrap_or_else(|_| pem.to_vec())
+}
+
+/// The subjectPublicKey of an SPKI, `SEQUENCE { SEQUENCE algorithm, BIT
+/// STRING key }`, without the BIT STRING's unused-bits octet.
+fn spki_public_key(der: &[u8]) -> Option<&[u8]> {
+    let (0x30, spki, _) = der_element(der)? else {
+        return None;
+    };
+    let (0x30, _, rest) = der_element(spki)? else {
+        return None;
+    };
+    let (0x03, bits, _) = der_element(rest)? else {
+        return None;
+    };
+    bits.split_first().map(|(_, key)| key)
+}
+
+/// A DER element's tag, its contents and the bytes that follow it.
+type DerElement<'a> = (u8, &'a [u8], &'a [u8]);
+
+/// The first DER element of `der` (definite lengths of at most four
+/// octets, as every key here has).
+fn der_element(der: &[u8]) -> Option<DerElement<'_>> {
+    let (&tag, rest) = der.split_first()?;
+    let (&first, rest) = rest.split_first()?;
+    let (len, rest) = if first < 0x80 {
+        (usize::from(first), rest)
+    } else {
+        let (octets, rest) = rest.split_at_checked(usize::from(first & 0x7f))?;
+        if octets.is_empty() || octets.len() > 4 {
+            return None;
+        }
+        let len = octets
+            .iter()
+            .fold(0usize, |len, &octet| len << 8 | usize::from(octet));
+        (len, rest)
+    };
+    let (contents, rest) = rest.split_at_checked(len)?;
+    Some((tag, contents, rest))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
-    use super::super::tests::{FLEET_KID, KID, NOW, claims, service, sign_with};
+    use super::super::tests::{FLEET_KID, FLEET_PUB, KID, NOW, claims, service, sign_with};
     use super::super::{AUD_CUSTOMER, AUD_INTERNAL, AuthError, JwksSnapshot};
-    use super::{JwksKey, KeyAudience};
+    use super::{JwksKey, KeyAudience, material_fp};
 
     const PUB: &str = include_str!("../dst/fixtures/mt-test-rsa.pub.pem");
+    /// The same public key as [`PUB`], armoured as PKCS#1.
+    const PKCS1_PUB: &str = include_str!("../dst/fixtures/mt-test-rsa.pkcs1.pub.pem");
+
+    /// F2: a key's material is the key, not its armour. The same public
+    /// key rewrapped at 76 columns with CRLF line ends, or armoured as
+    /// PKCS#1, names one material (each a key jsonwebtoken reads); the
+    /// fleet's key names another.
+    #[test]
+    fn a_key_material_is_the_key_whatever_its_armour() {
+        let body: String = PUB.lines().filter(|l| !l.starts_with("-----")).collect();
+        let lines: Vec<_> = body
+            .as_bytes()
+            .chunks(76)
+            .map(String::from_utf8_lossy)
+            .collect();
+        let rewrapped = format!(
+            "-----BEGIN PUBLIC KEY-----\r\n{}\r\n-----END PUBLIC KEY-----\r\n",
+            lines.join("\r\n")
+        );
+        let armours = [PUB, rewrapped.as_str(), PKCS1_PUB];
+        for pem in armours {
+            assert!(jsonwebtoken::DecodingKey::from_rsa_pem(pem.as_bytes()).is_ok());
+        }
+        let material = material_fp(PUB.as_bytes());
+        assert_eq!(
+            armours.map(|pem| material_fp(pem.as_bytes())),
+            [material; 3]
+        );
+        assert_ne!(material_fp(FLEET_PUB.as_bytes()), material);
+    }
+
+    /// F2 at publication: the customer key armoured as PKCS#1 under an
+    /// internal kid is the same material under a second audience, and is
+    /// refused; the fleet's own key under that kid is published.
+    #[test]
+    fn a_rearmoured_customer_key_cannot_be_published_for_the_fleet() {
+        let svc = service();
+        let snapshot = |fleet_pem: &str, feed_version| JwksSnapshot {
+            keys: HashMap::from([
+                (KID.to_string(), JwksKey::rs256(PUB, KeyAudience::Customer)),
+                (
+                    "fleet-2".to_string(),
+                    JwksKey::rs256(fleet_pem, KeyAudience::Internal),
+                ),
+            ]),
+            fetched_at_unix: NOW,
+            feed_version,
+        };
+        assert_eq!(
+            svc.publish_jwks(snapshot(PKCS1_PUB, 2)),
+            Err("one key material published under two audiences")
+        );
+        assert!(!svc.jwks.load().keys.contains_key("fleet-2"));
+        assert_eq!(svc.publish_jwks(snapshot(FLEET_PUB, 2)), Ok(()));
+        assert!(svc.jwks.load().keys.contains_key("fleet-2"));
+    }
+
+    /// Isolation review F2: the audience pin binds a kid, not the key it
+    /// names. A key set that publishes ONE public key under a customer kid
+    /// and under an internal kid makes the customer signing key a fleet
+    /// key: whoever signs customer tokens signs a workload token under the
+    /// internal kid, and the internal surface accepts it for every project
+    /// on the cell (exactly what `rig_keys` and A10's positive control
+    /// publish). A key material must sign for one audience, whatever kid
+    /// names it: such a set is refused, and the internal kid verifies
+    /// nothing.
+    #[test]
+    fn one_key_material_signs_for_one_audience_whatever_its_kid() {
+        let svc = super::super::AuthService::new(
+            super::super::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "fra-cell-07",
+        )
+        .unwrap();
+        let both = JwksSnapshot {
+            keys: HashMap::from([
+                (KID.to_string(), JwksKey::rs256(PUB, KeyAudience::Customer)),
+                (
+                    FLEET_KID.to_string(),
+                    JwksKey::rs256(PUB, KeyAudience::Internal),
+                ),
+            ]),
+            fetched_at_unix: NOW,
+            feed_version: 1,
+        };
+        let published = svc.publish_jwks(both);
+        let internal = svc.jwks.load().keys.contains_key(FLEET_KID);
+        assert_eq!(
+            (published.is_err(), internal),
+            (true, false),
+            "one public key published for both audiences: {published:?}"
+        );
+    }
 
     #[test]
     fn a_feed_names_exactly_the_two_audiences() {

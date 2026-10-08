@@ -8,7 +8,7 @@
 //! AEAD error. Each record names its project, stream, key and sequence,
 //! and the test keeps the exact ledger of what it appended.
 
-use super::fixture_auth::{RIG_PRIV, RIG_PUB, rig_sse};
+use super::fixture_auth::{FLEET_PUB, RIG_PRIV, RIG_PUB, rig_sse};
 use super::fixture_http::{HttpRigOptions, http_rig_build, install_rollup};
 use super::fixture_livefeed::{hub_sse_collect, sse_head};
 use super::fixture_requests::{PRISMA_KEY, preq};
@@ -152,10 +152,11 @@ pub(super) fn jwks_key(kid: &str) -> (String, crate::auth::JwksKey) {
     (kid.to_string(), key)
 }
 
-/// The same material under `kid`, pinned to the fleet audience (H6). A
-/// single-server shared cell publishes none.
+/// The fleet's own fixture key under `kid`, pinned to the fleet audience
+/// (H6; F2: never the customer key's material). A single-server shared
+/// cell publishes none.
 pub(super) fn fleet_key(kid: &str) -> (String, crate::auth::JwksKey) {
-    let key = crate::auth::JwksKey::rs256(RIG_PUB, crate::auth::KeyAudience::Internal);
+    let key = crate::auth::JwksKey::rs256(FLEET_PUB, crate::auth::KeyAudience::Internal);
     (kid.to_string(), key)
 }
 

@@ -30,7 +30,7 @@ impl AccessClaims<'_> {
         let token = jsonwebtoken::encode(
             &header,
             self,
-            &jsonwebtoken::EncodingKey::from_rsa_pem(RIG_PRIV.as_bytes()).unwrap(),
+            &jsonwebtoken::EncodingKey::from_rsa_pem(rig_private_key(kid).as_bytes()).unwrap(),
         )
         .unwrap();
         format!("Bearer {token}")
@@ -129,13 +129,27 @@ pub(super) async fn sr_rig(
 // confirmed FAILING at ce475426 — findings 1-3 of the follow-up review.
 // ---------------------------------------------------------------------------
 
-/// Shared-cells H6: the kid the rigs publish the fixture key under for
-/// the fleet audience. A kid signs for one audience, so workload tokens
-/// sign with this one, never with a rig's customer kid.
+/// Shared-cells H6: the kid the rigs publish the fleet's own fixture key
+/// under, for the fleet audience. A kid signs for one audience, so
+/// workload tokens sign with this one, never with a rig's customer kid;
+/// and one key material signs for one audience (F2), so the fleet's key
+/// is not the customer key.
 pub(super) const FLEET_KID: &str = "fleet-1";
+pub(super) const FLEET_PRIV: &str = include_str!("../fixtures/mt-test-fleet-rsa.pem");
+pub(super) const FLEET_PUB: &str = include_str!("../fixtures/mt-test-fleet-rsa.pub.pem");
 
-/// The fixture key under `kid` for customer tokens and under
-/// [`FLEET_KID`] for workload tokens.
+/// The private key a rig publishes under `kid`: the fleet's key under
+/// [`FLEET_KID`], the customer fixture key under every other kid.
+pub(super) fn rig_private_key(kid: &str) -> &'static str {
+    if kid == FLEET_KID {
+        FLEET_PRIV
+    } else {
+        RIG_PRIV
+    }
+}
+
+/// The customer fixture key under `kid` for customer tokens and the
+/// fleet's key under [`FLEET_KID`] for workload tokens.
 pub(super) fn rig_keys(kid: &str) -> std::collections::HashMap<String, crate::auth::JwksKey> {
     use crate::auth::{JwksKey, KeyAudience};
     std::collections::HashMap::from([
@@ -145,7 +159,7 @@ pub(super) fn rig_keys(kid: &str) -> std::collections::HashMap<String, crate::au
         ),
         (
             FLEET_KID.to_string(),
-            JwksKey::rs256(RIG_PUB, KeyAudience::Internal),
+            JwksKey::rs256(FLEET_PUB, KeyAudience::Internal),
         ),
     ])
 }
@@ -157,7 +171,6 @@ pub(super) fn sr2_workload_jwt(kid: &str, operations: &[&str], now: i64) -> Stri
 
 /// Round-4 finding 2: same, with an explicit expiry.
 pub(super) fn sr2_workload_jwt_exp(kid: &str, operations: &[&str], exp: i64) -> String {
-    const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");
     let now = crate::shard::now_ms() / 1000;
     #[derive(serde::Serialize)]
     struct W<'a> {
@@ -182,7 +195,7 @@ pub(super) fn sr2_workload_jwt_exp(kid: &str, operations: &[&str], exp: i64) -> 
             iat: now - 1,
             exp,
         },
-        &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
+        &jsonwebtoken::EncodingKey::from_rsa_pem(rig_private_key(kid).as_bytes()).unwrap(),
     )
     .unwrap()
 }

@@ -134,6 +134,7 @@ fn keys(version: u64, fingerprint: u8) -> JwksSnapshot {
                 key: jsonwebtoken::DecodingKey::from_rsa_pem(public).unwrap(),
                 aud: crate::auth::KeyAudience::Customer,
                 fp: [fingerprint; 32],
+                material: [0; 32],
             },
         )]),
         fetched_at_unix: 100,

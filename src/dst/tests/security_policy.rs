@@ -163,7 +163,7 @@ async fn raw_and_operator_surfaces_are_internal_under_enforce() {
 
     // A short-lived WORKLOAD JWT authorizes it too (§14.1 — the
     // static token's replacement path).
-    const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");
+    const PRIV: &str = include_str!("../fixtures/mt-test-fleet-rsa.pem");
     let now = crate::shard::now_ms() / 1000;
     #[derive(serde::Serialize)]
     struct W<'a> {

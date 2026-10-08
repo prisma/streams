@@ -323,11 +323,22 @@ impl HighWater {
 }
 
 impl AuthService {
+    /// Publish a full key set. One key material signs for one audience
+    /// whatever kid names it (isolation review F2): a set that names one
+    /// public key under both audiences is refused before the monotonic
+    /// checks, and the published set stays.
+    pub(crate) fn publish_jwks(&self, snapshot: JwksSnapshot) -> Result<(), &'static str> {
+        if super::audience_shared(&snapshot.keys).is_some() {
+            return Err("one key material published under two audiences");
+        }
+        self.commit_jwks(snapshot)
+    }
+
     #[expect(
         clippy::unwrap_used,
         reason = "AuthService publication; poisoned history may be partially changed; recovering could restore revoked authority"
     )]
-    pub(crate) fn publish_jwks(&self, snapshot: JwksSnapshot) -> Result<(), &'static str> {
+    fn commit_jwks(&self, snapshot: JwksSnapshot) -> Result<(), &'static str> {
         let mut hw = self.high_water.lock().unwrap();
         let cur = self.jwks.load();
         if snapshot.feed_version < cur.feed_version {

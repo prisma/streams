@@ -36,7 +36,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::auth::{AUD_CUSTOMER, AUD_INTERNAL, AuthService, JwksKey, JwksSnapshot, KeyAudience};
+use crate::auth::{
+    AUD_CUSTOMER, AUD_INTERNAL, AuthService, JwksKey, JwksSnapshot, KeyAudience, audience_shared,
+};
 use crate::project_policy::{
     CredentialGrant, CredentialStatus, GrantSnapshot, GrantSource, PolicySnapshot, PolicySource,
     ProjectPolicy, ProjectQuotas, ProjectStatus,
@@ -158,6 +160,9 @@ pub(crate) fn parse_keys(json: &str) -> anyhow::Result<JwksSnapshot> {
             "duplicate kid {:?}",
             k.kid
         );
+    }
+    if let Some((first, second)) = audience_shared(&keys) {
+        anyhow::bail!("kids {first:?} and {second:?} name one key material under two audiences");
     }
     Ok(JwksSnapshot {
         keys,
@@ -710,6 +715,24 @@ mod tests {
         });
         assert!(parse_keys(&hmac.to_string()).is_err());
         assert!(parse_keys(r#"{"keys":[]}"#).is_err());
+    }
+
+    /// Isolation review F2: a keys feed that names one public key under a
+    /// customer kid and again under an internal kid pins nothing: the
+    /// customer issuer's key would sign workload tokens under the second
+    /// kid. Such a feed is refused whole, as a key without `aud` is.
+    #[test]
+    fn a_key_signs_for_one_audience_whatever_kid_names_it() {
+        let mut doc: serde_json::Value = serde_json::from_str(&keys_json()).unwrap();
+        let mut fleet = doc["keys"][0].clone();
+        fleet["kid"] = "fleet-1".into();
+        fleet["aud"] = AUD_INTERNAL.into();
+        doc["keys"].as_array_mut().unwrap().push(fleet);
+        let parsed = parse_keys(&doc.to_string()).map(|s| s.keys.len());
+        assert!(
+            parsed.is_err(),
+            "one PEM under both audiences parsed as {parsed:?}"
+        );
     }
 
     /// Shared-cells H6: every key names the ONE audience it may sign for,
