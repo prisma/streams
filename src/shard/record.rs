@@ -10,7 +10,8 @@
 //! needs keys past `to - 1 + PAGE_MAX_RECORDS`.
 use super::{Deliver, ShardEngine, StreamHandle};
 use crate::crypto_page::{
-    CheckedPage, PageCorruption, page_scan_bound, shard_page_key, shard_page_prefix,
+    CheckedPage, PAGE_TARGET_PLAINTEXT, PageCorruption, page_scan_bound, shard_page_key,
+    shard_page_prefix,
 };
 mod pages;
 pub(crate) use pages::{PageSlice, PageSlices};
@@ -116,6 +117,17 @@ impl FrameReadResult {
     }
 }
 
+/// The read-ahead of a page scan whose stored-byte budget is `max_bytes`:
+/// the budget and one page past it, at least 64 KiB and at most 2 MiB. The
+/// scan stops at its budget, so a larger read-ahead only fetches (and in
+/// history caches) blocks the read never uses; a 64 KiB window scanned with
+/// 2 MiB of read-ahead fetched several store bytes per byte it served.
+pub(crate) fn scan_read_ahead(max_bytes: usize) -> usize {
+    max_bytes
+        .saturating_add(PAGE_TARGET_PLAINTEXT)
+        .clamp(64 << 10, 2 << 20)
+}
+
 /// Range-bounded frame read: scans `[scan_from, scan_to)` regardless of the
 /// durable frontier. Offsets below the frontier are dense, so disjoint
 /// ranges partition the log exactly — the absorber issues several of these
@@ -181,7 +193,7 @@ impl ShardEngine {
                 range,
                 &ScanOptions {
                     durability_filter: durability,
-                    read_ahead_bytes: 2 * 1024 * 1024,
+                    read_ahead_bytes: scan_read_ahead(max_bytes),
                     max_fetch_tasks: 4,
                     ..Default::default()
                 },

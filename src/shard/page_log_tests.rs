@@ -761,3 +761,16 @@ async fn a_multi_page_request_is_all_or_nothing_across_a_crash() {
         engine.begin_close();
     }
 }
+
+/// A page scan reads ahead its byte budget and one page, between 64 KiB and
+/// 2 MiB: a 64 KiB window no longer fetches 2 MiB it never reads, and a
+/// default 8 MiB read keeps the 2 MiB read-ahead.
+#[test]
+fn a_scan_reads_ahead_its_budget_and_one_page() {
+    use super::record::scan_read_ahead;
+    assert_eq!(scan_read_ahead(0), 64 << 10);
+    assert_eq!(scan_read_ahead(64 << 10), 128 << 10);
+    assert_eq!(scan_read_ahead(1 << 20), (1 << 20) + (64 << 10));
+    assert_eq!(scan_read_ahead(8 << 20), 2 << 20);
+    assert_eq!(scan_read_ahead(usize::MAX), 2 << 20);
+}

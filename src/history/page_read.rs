@@ -24,14 +24,16 @@ use super::postings_read::execute_postings_plan;
 use super::{POSTINGS_CORRUPT, postings_scan_opts};
 use crate::crypto::{RouteHash, SegmentHash};
 use crate::crypto_page::{CheckedPage, history_page_key, history_page_prefix, page_scan_bound};
-use crate::shard::record::{PageSlice, PageSlices, RecordCorruption};
+use crate::shard::record::{PageSlice, PageSlices, RecordCorruption, scan_read_ahead};
 
-/// Scan options for history reads: without readahead, slatedb fetches one
-/// (compressed, ~200B) block per sequential GET — thousands of round-trips
-/// per page on a 25ms store. 2MB readahead turns that into a few large GETs.
-fn hist_scan_opts() -> ScanOptions {
+/// Scan options for a history read of at most `max_bytes` stored bytes:
+/// without readahead, slatedb fetches one (compressed, ~200B) block per
+/// sequential GET — thousands of round-trips per page on a 25ms store. Up
+/// to 2MB readahead turns that into a few large GETs; it is scaled to the
+/// read's budget (`scan_read_ahead`), since the scan stops there.
+fn hist_scan_opts(max_bytes: usize) -> ScanOptions {
     ScanOptions {
-        read_ahead_bytes: 2 * 1024 * 1024,
+        read_ahead_bytes: scan_read_ahead(max_bytes),
         max_fetch_tasks: 2,
         cache_blocks: true,
         ..Default::default()
@@ -197,7 +199,7 @@ pub(super) async fn read_history2_scan(
     upto: u64,
     max_bytes: usize,
 ) -> anyhow::Result<(PageSlices, Option<u64>, bool)> {
-    let pages = PageScan::open(part, route, inc, from..upto, &hist_scan_opts()).await?;
+    let pages = PageScan::open(part, route, inc, from..upto, &hist_scan_opts(max_bytes)).await?;
     pages.collect(None, max_bytes).await
 }
 
@@ -329,7 +331,7 @@ pub(super) async fn read_history2_keyed_envelope(
     upto: u64,
     max_bytes: usize,
 ) -> anyhow::Result<(PageSlices, Option<u64>, bool)> {
-    let pages = PageScan::open(part, route, inc, from..upto, &hist_scan_opts()).await?;
+    let pages = PageScan::open(part, route, inc, from..upto, &hist_scan_opts(max_bytes)).await?;
     let (pages, mut last, completed) = pages.collect(Some(rk), max_bytes).await?;
     if completed {
         // The whole range was verified page by page.
