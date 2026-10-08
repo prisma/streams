@@ -645,6 +645,52 @@ async fn tail_repair_from_inside_a_page_counts_it_whole_and_refuses_an_overlap()
     db.close().await.unwrap();
 }
 
+/// A commit that stores no page of a stream publishes nothing to its ring:
+/// after an absorbed advance the ring holds the two batches the appends
+/// published, with their bytes, and the publish count is unchanged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_commit_that_stores_no_page_publishes_nothing_to_the_ring() {
+    let engine = engine("pages-ring-quiet", 1 << 20).await;
+    two_pages(&engine).await;
+    let handle = engine.stream_handle(HASH).await.unwrap();
+    let rows = record_rows(&engine).await;
+    let stored: usize = rows.iter().map(|(_, _, page)| page.len()).sum();
+    let ring = || {
+        let ring = handle.ring.lock().unwrap();
+        let batches: Vec<(u64, u64, usize)> = ring
+            .batches
+            .iter()
+            .map(|batch| (batch.first, batch.next, batch.bytes))
+            .collect();
+        let published = engine
+            .ring_published
+            .load(std::sync::atomic::Ordering::Relaxed);
+        (batches, ring.bytes, published, engine.ring_resident_bytes())
+    };
+    let pages = vec![(0, 10, rows[0].2.len()), (10, 20, rows[1].2.len())];
+    let published = (pages, stored, 2, stored as u64);
+    assert_eq!(ring(), published);
+    let advance = CommitOp::Absorbed {
+        hash: HASH,
+        upto: 10,
+        bytes: CopiedBytes::new(0, rows[0].2.len() as u64),
+        v2: true,
+    };
+    engine
+        .commit_group(vec![advance], &ShardConfig::default())
+        .await;
+    // A group's ring publications run when it turns durable, before its
+    // durable tail moves.
+    let mut waited = 0;
+    while handle.state.lock().unwrap().durable.absorbed != 10 {
+        assert!(waited < 5_000, "the advance never turned durable");
+        waited += 1;
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    assert_eq!(ring(), published, "the advance published to the ring");
+    engine.begin_close();
+}
+
 /// The ring serves durable reads only: a durable read of a window the ring
 /// holds is served from it and carries its coverage witness, while an
 /// applied read of the same window scans the store and carries none; both
