@@ -8,6 +8,6 @@
   },
   "dependencies": {
     "@durable-streams/server-conformance-tests": "0.3.6",
-    "vitest": "4.1.10"
+    "vitest": "4.1.11"
   }
 }

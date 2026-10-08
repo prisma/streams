@@ -8,6 +8,7 @@ unmodified.
 |---|---|
 | suite | `@durable-streams/server-conformance-tests@0.3.6` |
 | recorded in | `src/protocol_pin.rs`, `conformance/package.json` (locked) |
+| runner | `vitest@4.1.11`, exact in `conformance/package.json` and `src/protocol_pin.rs` (locked with `@vitest/mocker@4.1.11`) |
 | expected outcome | `conformance/expected.json` |
 
 Latest run — 2026-07-31, after the audit response (auth, create

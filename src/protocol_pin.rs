@@ -17,6 +17,20 @@ mod tests {
         "npm:@durable-streams/server-conformance-tests@0.3.6";
     const DURABLE_STREAMS_SERVER_CONFORMANCE_VERSION: &str = "0.3.6";
     const DURABLE_STREAMS_CLIENT_CONFORMANCE_VERSION: &str = "0.2.12";
+    /// The conformance runner: vitest 4.1.11, the release its advisory
+    /// names as fixed. vitest pins its own @vitest/mocker exactly, so the
+    /// lockfile `npm ci` checks against this manifest locks that too.
+    const VITEST_VERSION: &str = "4.1.11";
+
+    #[test]
+    fn the_conformance_runner_is_pinned_exactly() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../conformance/package.json")).unwrap();
+        assert_eq!(
+            manifest["dependencies"]["vitest"].as_str(),
+            Some(VITEST_VERSION)
+        );
+    }
 
     #[test]
     fn release_pins_match_the_executable_conformance_manifest() {
