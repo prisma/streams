@@ -1685,9 +1685,11 @@ segment) are separate layers, as Pravega's containers and segments are.
 - The pilot router hashes the bare stream name, which no longer matches the
   layout-4 route hash: about 63-65% of first hops in a 4-server cell get `409`
   and are replayed. The SDK never follows `Streams-Replay-To`.
-- Two `sharddir` mutants (`492:28`, `653:26`) differ only when the clock reads
-  exactly the holdoff deadline; removing them needs one `holdoff_verdict(now)`
-  helper and owner-approved exception-growth rows.
+- Fixed (2026-10-08, T6): the two `sharddir` mutants (`492:28`, `653:26`)
+  that differed only when the clock read exactly the holdoff deadline are
+  gone: `OpenGate`'s two holdoff checks ask one
+  `PrefixGate::holdoff_verdict(now)`, pinned at the deadline by
+  `sharddir::open_gate_tests`.
 
 ### 14.8 Measurements to run when the machine is idle
 

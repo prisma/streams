@@ -17,8 +17,8 @@ use tokio::sync::watch;
 
 use super::holdoff::Departure;
 use super::{
-    EngineIncarnation, HOLDOFF_BASE, HOLDOFF_CAP, OpenFn, OpenGate, OpenOutcome, Retirement,
-    arm_holdoff_locked, holdoff_for, spawn_unready_watchdog, unready_exit_after,
+    EngineIncarnation, HOLDOFF_BASE, HOLDOFF_CAP, OpenFn, OpenGate, OpenOutcome, PrefixGate,
+    Retirement, arm_holdoff_locked, holdoff_for, spawn_unready_watchdog, unready_exit_after,
 };
 use crate::config::ShardRuntimeConfig;
 use crate::runtime::{Clock, ManualClock};
@@ -620,5 +620,38 @@ async fn an_engine_closed_before_its_open_lands_is_refused() {
             started: 1,
             ..Opens::default()
         }
+    );
+}
+
+/// Kills `< with <=`, `< with ==` and `< with >` in `PrefixGate::holdoff_verdict`,
+/// the one holdoff check `get_or_open` and `wait_retired` both ask, and the
+/// body's `None`: at an explicit instant the holdoff runs strictly before its
+/// deadline, answering `shard_moving` with the whole seconds left and at
+/// least one, and has run out AT the deadline. Before the shared verdict the
+/// two checks read `Instant::now()` themselves, so no test could land on the
+/// deadline: `< with <=` in `get_or_open` and `> with >=` in `wait_retired`
+/// survived the nightly rotation of 2026-10-07.
+#[test]
+fn the_holdoff_turns_callers_away_until_its_deadline_and_not_at_it() {
+    let base = Instant::now();
+    let until = base + Duration::from_millis(2_500);
+    let gate = PrefixGate {
+        holdoff_until: Some(until),
+        ..PrefixGate::default()
+    };
+    let at = |ms: u64| {
+        gate.holdoff_verdict(base + Duration::from_millis(ms))
+            .map(verdict)
+    };
+    let moving = |secs| Some(Verdict::Wait("shard_moving", secs));
+    assert_eq!(
+        [0, 1_499, 1_500, 2_499, 2_500, 2_501].map(at),
+        [moving(2), moving(1), moving(1), moving(1), None, None],
+        "2.5 s before, 1.001 s, 1 s, 1 ms, at the deadline, and after it"
+    );
+    assert_eq!(
+        PrefixGate::default().holdoff_verdict(base).map(verdict),
+        None,
+        "no holdoff armed"
     );
 }

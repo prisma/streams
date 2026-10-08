@@ -260,6 +260,18 @@ struct PrefixGate {
     opened_at: Option<Instant>,
 }
 
+impl PrefixGate {
+    /// The holdoff's answer at `now`: `shard_moving` with the whole seconds
+    /// left (at least one) while it runs, `None` once it has run out.
+    fn holdoff_verdict(&self, now: Instant) -> Option<OpenOutcome> {
+        let until = self.holdoff_until?;
+        (now < until).then(|| OpenOutcome::Wait {
+            code: "shard_moving",
+            retry_after_secs: (until - now).as_secs().max(1),
+        })
+    }
+}
+
 /// Arm the anti-flap holdoff for `prefix` under an ALREADY-HELD gate
 /// state. PR 6.1.2-A: it takes the guard, never `st`, so a caller holding
 /// the gate state cannot reach for it in the forbidden order (`ServingMap`).
@@ -489,14 +501,8 @@ impl OpenGate {
                 self.inner.opens.coalesced.fetch_add(1, Ordering::Relaxed);
                 rx.clone()
             } else {
-                if let Some(until) = g.holdoff_until {
-                    let now = Instant::now();
-                    if now < until {
-                        return OpenOutcome::Wait {
-                            code: "shard_moving",
-                            retry_after_secs: (until - now).as_secs().max(1),
-                        };
-                    }
+                if let Some(moving) = g.holdoff_verdict(Instant::now()) {
+                    return moving;
                 }
                 // PR 6.1.2-A: the forced-interleaving site. This is the
                 // exact window the old retirement order deadlocked
@@ -651,13 +657,8 @@ impl OpenGate {
                 return Some(closing_outcome());
             }
             let gate = state.get(prefix)?;
-            if let Some(until) = gate.holdoff_until
-                && until > Instant::now()
-            {
-                return Some(OpenOutcome::Wait {
-                    code: "shard_moving",
-                    retry_after_secs: (until - Instant::now()).as_secs().max(1),
-                });
+            if let Some(moving) = gate.holdoff_verdict(Instant::now()) {
+                return Some(moving);
             }
             gate.closing.clone()
         };

@@ -686,6 +686,29 @@
       "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
     },
     {
+      "path": "src/sharddir.rs",
+      "owner": "crate::OpenGate::get_or_open",
+      "scope": "function",
+      "lint": "clippy::unwrap_used",
+      "metrics": {
+        "unwrap_site:path::8b560361a288e106": 1
+      },
+      "rationale": "The holdoff check asks PrefixGate::holdoff_verdict(Instant::now()) and returns the verdict it binds as `moving` (a new path); the comparison and the shard_moving answer moved into the helper, whose explicit instant lets a unit test land on the deadline (the nightly's equivalent `< with <=` mutant). No unwrap is added.",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-08 (\"all recommended\", item T6: approve exception-growth rows for one holdoff_verdict(now) helper, shape B)"
+    },
+    {
+      "path": "src/sharddir.rs",
+      "owner": "crate::OpenGate::wait_retired",
+      "scope": "function",
+      "lint": "clippy::unwrap_used",
+      "metrics": {
+        "unwrap_site:ordinary-call::07df77f78434ed90": 1,
+        "unwrap_site:path::8b560361a288e106": 1
+      },
+      "rationale": "The holdoff check asks PrefixGate::holdoff_verdict(Instant::now()) and returns Some(moving): one new path (`moving`) and one new call site (`Some(moving)`); the comparison, its second clock read and the shard_moving answer moved into the helper, whose explicit instant lets a unit test land on the deadline (the nightly's equivalent `> with >=` mutant). No unwrap is added.",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-08 (\"all recommended\", item T6: approve exception-growth rows for one holdoff_verdict(now) helper, shape B)"
+    },
+    {
       "path": "tools/quality-invariants/src/lib.rs",
       "owner": "crate::postings",
       "scope": "module",
