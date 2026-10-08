@@ -11,6 +11,8 @@
     "append_contract": 54,
     "append_route": 5,
     "append_submit": 13,
+    "auth_ceiling": 34,
+    "auth_signing_key": 11,
     "batch": 35,
     "billing": 375,
     "billing_replaced": 25,

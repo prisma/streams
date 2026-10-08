@@ -76,6 +76,11 @@ OWNERS = (
     owner('offsets', 'src/offsets.rs', 'offsets::'),
     owner('segmap', 'src/segmap.rs', 'segmap::'),
     owner('telemetry_batch', 'src/telemetry_batch.rs', 'telemetry_batch::'),
+    # Isolation owners outside the critical prefixes (owner decision of
+    # 2026-10-08, shared cells Q3(d)): a shared cell's per-project ceiling
+    # and reserved identities, and each signing key's one audience.
+    owner('auth_ceiling', 'src/auth/ceiling.rs', 'auth:: dst_tests::shared_cell_hostile::reserved_ids'),
+    owner('auth_signing_key', 'src/auth/signing_key.rs', 'auth:: auth_feed::'),
     owner('shard_directory', 'src/shard_directory.rs', 'shard_directory:: shard::task_lifecycle_tests::'),
     owner('history_partition', 'src/shard/history_partition.rs', 'shard::'),
     owner('ops', 'src/ops.rs', 'ops:: dst_tests::fork_debt:: dst_tests::runtime_journals::'),
