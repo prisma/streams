@@ -1562,6 +1562,20 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
 - **Rejected:** a WAL journal shared by a cell's servers (servers must stay
   uncoupled, so more servers do more work); durability classes, lazy leases
   and a pump linger (they save nothing once every writer is saturated).
+- **Phase A after it lands** (README rows "Shared cells Q0" to "Q10",
+  2026-10-08), in order: the `bootstrap::run` wiring of the cell ceiling
+  (Q2(a): the owner updates its six rows; TLA-011; Q10(b)'s queued-bytes
+  axis; an edge record); the heap profile and fix of 14.7's RSS retention
+  (Q0); the profile's Q1(A) values (`PROJECT_MEMORY_PRESSURE_BYTES=33554432`,
+  `MAX_REQUEST_BODY_BYTES=8388608`; edge #110 amended; the C5 and C6 legs);
+  the wrapper's feed polling (Q6(a)) and the release posture on a fleet-off
+  cell (Q6(b)), each with an edge record; idle journal retirement (Q10(a))
+  and the lifecycle walk's close retiring an expired stream's journal; the
+  runbook (key custody, the keys-feed cutover, u = 0.5 packing by hand, what
+  to alert on); `cell-admin rotate`; then the harness and the certification
+  (Q5). Before self-serve: C4 (watch definition bytes), C7 (empty pulls
+  charged to the read quota), C8 with Q2(b)'s row, Q1(D), the four mutation
+  owners Q3(d) defers, and phase B.
 
 ### 14.5 Multi-server cells and routing (later, on the new Compute generation)
 
@@ -1610,6 +1624,14 @@ segment) are separate layers, as Pravega's containers and segments are.
 - After a load, RSS stays at 499-562 MB and never returns below the 500 MB
   shed line: the idle server refuses its own telemetry appends and a second
   load is shed from its first request. Needs a heap profile.
+  On the single-server shared cell (14.4) that is an instance-wide write shed
+  no tenant caused and nothing attributes; it is fixed before the first cell
+  (README, "Shared cells Q0").
+- A history partition's manifest poll (300 s, `src/history.rs`) turns a full
+  history L0 into an absorption stall of up to 300 s: Layer A's A6 at 1,000
+  projects stalls that long beside the scale module. Watched for in the
+  shared-cell certification; shortening the poll stales TLA-016, TLA-018 and
+  TLA-019 and the 300 s assumption in `verification/assumptions.md`.
 - The pilot router hashes the bare stream name, which no longer matches the
   layout-4 route hash: about 63-65% of first hops in a 4-server cell get `409`
   and are replayed. The SDK never follows `Streams-Replay-To`.
