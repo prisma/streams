@@ -156,20 +156,20 @@ pub(crate) fn pressure_model_json() -> serde_json::Value {
 
 impl ProjectAdmission {
     /// Under the tracker lock: an entry in use is never evicted. An
-    /// admission in progress or a request in flight, a live subscription
-    /// and outstanding memory pressure all hold the Arc an eviction would
-    /// orphan (Round-13: feed/body/frame attribution); an idle one has
-    /// admitted nothing for `IDLE_EVICT_MS`. Item 50: so does ANY other
-    /// holder, whatever its counters read: a resident stream's pressure
-    /// binding binds once and never rebinds, so evicting its entry at zero
-    /// debt would send that stream's later frame debt to an orphan the
-    /// project's live entry never reads. Every clone is minted under this
-    /// lock or from a counted holder, so a count read here is final.
+    /// admission in progress or a request in flight pins it, and every
+    /// pressure dimension is charged by a holder of the Arc an eviction
+    /// would orphan (a subscription, a parked wait, a read hold, a feed and
+    /// its retention, a body, a queued append, a stream binding), so the
+    /// holder count reads them all; an idle one has admitted nothing for
+    /// `IDLE_EVICT_MS`. Item 50: a holder keeps it whatever its counters
+    /// read: a resident stream's pressure binding binds once and never
+    /// rebinds, so evicting its entry at zero debt would send that stream's
+    /// later frame debt to an orphan the project's live entry never reads.
+    /// Every clone is minted under this lock or from a counted holder, so a
+    /// count read here is final.
     fn in_use(self: &Arc<Self>, now_ms: i64) -> bool {
         Arc::strong_count(self) > 1
             || self.counters.active()
-            || self.live_subs.load(Ordering::Relaxed) > 0
-            || self.has_pressure()
             || now_ms - self.last_seen_ms.load(Ordering::Relaxed) < IDLE_EVICT_MS
     }
 

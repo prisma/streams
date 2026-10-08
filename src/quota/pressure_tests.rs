@@ -253,6 +253,49 @@ fn eviction_cannot_orphan_a_zero_debt_stream_binding() {
     );
 }
 
+/// Battery 12c (model version 2): held read bytes, a parked wait and a
+/// live subscription each keep their entry through a sweep at the idle
+/// horizon by their holder alone, so each release lands on the project's
+/// live entry: the three read exactly their own charge, then 0.
+#[test]
+fn read_parked_and_subscription_holders_keep_their_entry_through_a_sweep() {
+    let r = QuotaRegistry::default();
+    let quotas = ProjectQuotas::default();
+    let old_ms = 1_000;
+    for i in 0..MAX_TRACKED_PROJECTS {
+        drop(
+            r.admit(&pid(&format!("f{i}")), &quotas, old_ms)
+                .expect("seed every tracker entry"),
+        );
+    }
+    let reads = r.read_bytes(&pid("f3")).unwrap();
+    assert!(reads.try_reserve(8_192, 0), "no line");
+    let parked = r.park_share(&pid("f5"), &quotas).unwrap().park().unwrap();
+    let subscription = r
+        .admit_subscription(&pid("f7"), &quotas)
+        .unwrap()
+        .expect("tracked");
+    drop(
+        r.admit(&pid("fresh"), &quotas, old_ms + IDLE_EVICT_MS)
+            .expect("the sweep evicts idle peers at the horizon"),
+    );
+    assert!(r.pressure_handle(&pid("f8")).is_none(), "idle peer evicted");
+    let live = |name: &str| {
+        r.pressure_handle(&pid(name))
+            .map(|a| a.estimated_pressure_bytes())
+    };
+    assert_eq!(
+        (live("f3"), live("f5"), live("f7")),
+        (Some(8_192), Some(49_152), Some(32_768))
+    );
+    reads.release(8_192);
+    drop((parked, subscription));
+    assert_eq!(
+        (live("f3"), live("f5"), live("f7")),
+        (Some(0), Some(0), Some(0))
+    );
+}
+
 /// Battery 13: project A engaging its latch never rejects
 /// project B (isolation is the whole point).
 #[test]
@@ -308,4 +351,48 @@ fn parked_waits_weigh_48_kib_and_read_bytes_enter_exactly() {
         ),
         (Some(2), Some(48 * 1024))
     );
+}
+
+/// Model version 2's estimate, one dimension at a time through each
+/// dimension's own holder: a subscription weighs 32 KiB, a feed 16 KiB, a
+/// dirty stream 64 KiB and a parked wait 48 KiB; retained, body, queued,
+/// frame and read bytes enter exactly. Each total is the sum so far.
+#[test]
+fn every_dimension_enters_the_estimate_at_its_own_weight() {
+    let r = QuotaRegistry::default();
+    let p = pid("p16");
+    let a = adm(&r, "p16");
+    let quotas = ProjectQuotas::default();
+    let subscriptions: Vec<_> = (0..2)
+        .map(|_| r.admit_subscription(&p, &quotas).unwrap().expect("tracked"))
+        .collect();
+    let mut totals = vec![a.estimated_pressure_bytes()];
+    let feeds: Vec<_> = (0..3)
+        .map(|_| FeedPressureGuard::acquire(a.clone()))
+        .collect();
+    totals.push(a.estimated_pressure_bytes());
+    a.retained_sse_add(5);
+    totals.push(a.estimated_pressure_bytes());
+    let body = BufferedBodyGuard::reserve(a.clone(), 7);
+    totals.push(a.estimated_pressure_bytes());
+    let queued = r.charge_queued(&p, &quotas, 11).unwrap().expect("tracked");
+    totals.push(a.estimated_pressure_bytes());
+    let stream = StreamPressureBinding::bind(a.clone(), 13);
+    totals.push(a.estimated_pressure_bytes());
+    let reads = r.read_bytes(&p).unwrap();
+    reads.charge(17);
+    totals.push(a.estimated_pressure_bytes());
+    let share = r.park_share(&p, &quotas).unwrap();
+    let parked: Vec<_> = (0..2).map(|_| share.park().unwrap()).collect();
+    totals.push(a.estimated_pressure_bytes());
+    assert_eq!(
+        totals,
+        [
+            65_536, 114_688, 114_693, 114_700, 114_711, 180_260, 180_277, 278_581
+        ]
+    );
+    drop((subscriptions, feeds, body, queued, stream, parked));
+    reads.release(17);
+    a.retained_sse_sub(5);
+    assert_eq!(a.estimated_pressure_bytes(), 0);
 }

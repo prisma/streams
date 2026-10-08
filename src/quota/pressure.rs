@@ -31,16 +31,4 @@ impl ProjectAdmission {
             + self.read_held.load(Ordering::Relaxed)
             + self.parked.load(Ordering::Relaxed) * PRESSURE_PARKED_WEIGHT_BYTES
     }
-
-    /// Any nonzero pressure dimension pins the entry against tracker
-    /// eviction (review: eviction must not orphan outstanding
-    /// pressure).
-    pub(super) fn has_pressure(&self) -> bool {
-        self.live_feeds.load(Ordering::Relaxed) > 0
-            || self.retained_sse_bytes.load(Ordering::Relaxed) > 0
-            || self.buffered_body_bytes.load(Ordering::Relaxed) > 0
-            || self.queued_bytes.load(Ordering::Relaxed) > 0
-            || self.unabsorbed_frame_bytes.load(Ordering::Relaxed) > 0
-            || self.dirty_streams.load(Ordering::Relaxed) > 0
-    }
 }

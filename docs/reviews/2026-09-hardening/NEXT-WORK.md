@@ -774,11 +774,11 @@ before marking it complete."
 ## 10. Smaller items
 
 - **Item 50 cleanup.** 45f8711c added the holder rule (`Arc::strong_count > 1`)
-  beside the counted admission pin. `plans/plans18/tracker-live-eviction.md`
-  §2.1 retires the pin (`admitting`, `pin`/`unpin`/`active`,
-  `AdmissionPin::drop`) and deletes `has_pressure` and the `live_subs` term,
-  re-pointing the Loom model. Optional. If done, delete the redundant terms
-  in the same commit, or they leave equivalent mutants. The owner also asked
+  beside the counted admission pin. `has_pressure` and the `live_subs` term
+  are deleted (2026-10-08: CI's mutation leg found their equivalent
+  mutants). `plans/plans18/tracker-live-eviction.md` §2.1 also retires the
+  pin (`admitting`, `pin`/`unpin`/`active`, `AdmissionPin::drop`),
+  re-pointing the Loom model. Optional. The owner also asked
   to validate sustained churn beyond the ~905 s residence horizon and actual
   memory use in the Compute profile (≈36 first-seen projects/s at 32,768 is
   an estimate). Both figures are those of `ABSORB_AGE_SECS=300`; at 60, the
