@@ -316,9 +316,12 @@ stream-specific key everywhere at rest in shared infrastructure. *Upheld
 by:* the envelope in §3.7 (per-routing-key subkeys, ciphertext on the wire
 and at the CDN, client-side decryption); block-transformer encryption
 (post-compression) in the history tier; keys held in memory only while
-streams are active; crypto-erasure on deletion plus asynchronous physical
-prefix deletion. *Boundaries:* routing keys are visible metadata (C10);
-index-block coverage is verification item V1 (L6).
+streams are active; crypto-erasure on deletion. *Boundaries:* routing keys
+are visible metadata (C10); index-block coverage is verification item V1
+(L6); a deleted stream's objects stay in the bucket, unreadable without the
+key the server never stored, until stream reclamation (cost lever E11)
+removes them, and their names, routing keys and sizes stay visible to the
+operator until then (owner decision of 2026-10-08).
 
 **G9 — Bounded resources, explicit overload.** Ingest queues, connection
 counts, cache, and memtables are capped; overload surfaces as `429`/`503`,
