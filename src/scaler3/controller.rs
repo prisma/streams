@@ -111,8 +111,36 @@ impl Controller {
         report
     }
 
+    /// The split gate (the owner's decision of 2026-10-07, NEXT-WORK §14.6).
+    /// While the fleet ring has more than one active server, a split's high
+    /// child can land on another server, where consumer pulls, producer
+    /// lanes, watches and merges do not follow it yet. The split is declined,
+    /// so the stream stays one segment on its owner and meets its per-stream
+    /// limit with 429. Merges are not gated, and a transition already pending
+    /// completes through the reads and appends that resume it. The split
+    /// package that makes children correct across servers removes this gate.
+    fn declines(&self, work: &Decision) -> bool {
+        let Decision::Split(name, epoch, seg_id, _) = work else {
+            return false;
+        };
+        let declined = self.topology.shards.ring_spans_servers();
+        if declined {
+            tracing::info!(
+                project = name.project_id().as_str(),
+                stream = name.name().as_str(),
+                epoch = epoch.as_str(),
+                seg_id,
+                "split declined: the fleet ring has more than one active server"
+            );
+        }
+        declined
+    }
+
     /// Some(false) means a confirmed stale/inapplicable hint; None is debt.
     async fn execute(&self, work: &Decision) -> Option<bool> {
+        if self.declines(work) {
+            return Some(false);
+        }
         let (name, epoch) = work.key();
         let desc = match self.topology.registry.get(&name).await {
             Ok(Some(desc)) if desc.stream_epoch == epoch => desc,

@@ -331,6 +331,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::scaler_split_gate",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The split gate's scenarios (the owner's decision of 2026-10-07, NEXT-WORK section 14.6, edge change #119): on a ring of two active servers over one store the controller declines the scaler's split, the stream stays one segment and its next append past the per-stream bucket is refused 429; on a ring of one active server the same split commits. Removed or inverted by the split package; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/scaler_split_gate.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::billing_closure_debts",
       "path": "src/dst/dst_tests.rs",
       "reason": "Closure-debt scenarios for replaced incarnations (NEXT-WORK section 2): raw and product recreation, month crossing, crashes at each handoff boundary, a CAS lost to a TTL renewal, split incarnations and fork retention, over real HTTP rigs and the production billing sweep; compiler and the full DST suite exercise the module.",

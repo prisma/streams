@@ -231,6 +231,12 @@ impl ShardDirectory {
         crate::registry::shard_for_hash(&self.inner.prefixes, hash)
     }
 
+    /// Whether the published ring names more than one active server, so a
+    /// route the topology mints may land on a shard another server owns.
+    pub(crate) fn ring_spans_servers(&self) -> bool {
+        self.inner.ownership.ring_active().len() > 1
+    }
+
     /// Shard engine for `hash`, opening the shard log on first use (which
     /// fences any previous owner). Possession yields to the ring: an
     /// engine this instance still holds for a shard the ring moved away
@@ -677,5 +683,18 @@ mod directory_tests {
                 crate::registry::shard_for_hash(dir.prefixes(), &h)
             );
         }
+    }
+
+    /// The ring spans servers only once it names two active servers: no
+    /// published ring (fleet off) and a ring of one do not.
+    #[test]
+    fn the_ring_spans_servers_only_with_two_active_members() {
+        let (dir, ownership, _c) = directory("a", || anyhow::bail!("unused"));
+        let mut spans = vec![dir.ring_spans_servers()];
+        for members in [&["a"][..], &["a", "b"], &["a", "b", "c"]] {
+            ownership.set_ring_active(members.iter().map(|m| (*m).to_owned()).collect());
+            spans.push(dir.ring_spans_servers());
+        }
+        assert_eq!(spans, [false, false, true, true]);
     }
 }

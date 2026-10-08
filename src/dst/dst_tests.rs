@@ -307,6 +307,8 @@ mod runtime_usage;
 mod scaler_controller;
 #[path = "tests/scaler_loop.rs"]
 mod scaler_loop;
+#[path = "tests/scaler_split_gate.rs"]
+mod scaler_split_gate;
 
 #[path = "tests/read_page_limits.rs"]
 mod read_page_limits;
