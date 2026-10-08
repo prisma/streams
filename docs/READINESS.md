@@ -1,8 +1,8 @@
 # Readiness matrix (authoritative)
 
-Updated 2026-08-14 (R30). Older campaign documents are historical
-evidence; where a status here disagrees with an older doc, THIS table
-wins.
+Updated 2026-08-14 (R30); the tenancy verdict 2026-10-08. Older campaign
+documents are historical evidence; where a status here disagrees with an
+older doc, THIS table wins.
 
 ## Launch-scope verdicts (R30 review)
 
@@ -13,7 +13,7 @@ wins.
 | Larger unbilled private preview, dedicated cells | Go after rc.1 exact-binary certification |
 | Public preview, dedicated tenancy | Conditional: platform availability + external security review |
 | Paid dedicated-tenant GA | No-go until invoice/reconciliation closes |
-| Shared multitenant GA | No-go until per-request principals + tenant quotas |
+| Shared multitenant GA | No-go until Stage 8 (`docs/MULTITENANCY.md` §18): the shared-cell battery and the external security review. Per-request principals and project quotas are in; one single-server shared cell for hand-admitted design partners opens after its own certification (owner decisions of 2026-10-07 and 2026-10-08) |
 
 ## Engine (application) — DONE
 - Durable maintenance backpressure, exact frame-byte ledger, typed shed:
@@ -40,7 +40,10 @@ exact ownership/grant version checks, project/workspace quotas,
 transfer without data rewrite, separate customer/fleet/operator/watch
 trust boundaries, shared-cell field battery + external security
 review. Until Stage 8 exits, deployments remain
-one-project-per-cell dedicated.
+one-project-per-cell dedicated, except the one single-server shared cell
+for design partners the owner chose on 2026-10-07, which opens after its
+certification (`docs/reviews/2026-09-hardening/README.md`, rows "Launch
+shape and routing" and "Shared cells Q5").
 
 ## Platform (Prisma Compute) — BLOCKING GA
 1. Stale-build serving: deploys must carry an expected digest, VMs must

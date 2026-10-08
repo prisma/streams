@@ -1349,13 +1349,17 @@ Add weighted deficit round-robin inside shard committers only if noisy-neighbor 
 
 ### Stage 2 — Local token verification
 
-* [ ] Add `tenant.rs`.
-* [ ] Add `auth.rs`.
-* [ ] Implement JWKS verification.
-* [ ] Add project and credential caches.
-* [ ] Implement exact ownership/grant version checks.
-* [ ] Add separate customer/internal/operator audiences.
-* [ ] Authenticate before body work.
+* [x] Add `tenant.rs`.
+* [x] Add `auth.rs`.
+* [x] Implement JWKS verification. *(Alg-pinned kids from the keys feed;
+  since r7 each key also names the one audience it signs for.)*
+* [x] Add project and credential caches. *(The published policy and
+  grant snapshots, refreshed by the auth refresher.)*
+* [x] Implement exact ownership/grant version checks.
+* [x] Add separate customer/internal/operator audiences. *(Customer and
+  internal tokens by the keys feed's `aud` pin (§14.1 r7); the operator
+  surface by the deployment bearer.)*
+* [x] Authenticate before body work.
 
 **Exit:** every public request yields a verified project principal without remote lookup.
 
@@ -1426,7 +1430,9 @@ certified at Stage 8.)*
   `KeySource`/`PolicySource`/`GrantSource` traits when Stage 1 lands.
   Shadow mode observes every product bearer through the full customer
   pipeline — `/v1/debug/auth` reports counters + feed freshness.
-  Enforce refuses boot until the Stage-5b route-scope matrix.)*
+  Enforce boots once the deployment names an explicit `PROJECT_ID` and
+  the three `STREAMS_AUTH_*_FILE` feeds; the Stage-5b route-scope
+  matrix is live.)*
 * [~] Publish credential-grant snapshots/deltas. *(Same: data-plane
   done via `STREAMS_AUTH_GRANTS_FILE`; platform feed pending.)*
 * [x] Implement suspension. *(Data-plane: a non-`Active` `ProjectStatus`
@@ -1452,8 +1458,9 @@ deletion sagas and the Control-Plane feed remain platform-side.)*
   body buffering, quotas read from the CURRENT policy snapshot.)*
 * [x] Remove overflow coupling. *(Projects never share a bucket; a
   full tracker refuses to TRACK new projects rather than merging.)*
-* [x] Bound project trackers. *(16,384-project cap since the
-  workload-cert round — the cap holds the certified TENANT POPULATION,
+* [x] Bound project trackers. *(32,768-project cap,
+  `MAX_TRACKED_PROJECTS` in src/quota.rs; 16,384 from the workload-cert
+  round until it was raised — the cap holds the certified TENANT POPULATION,
   not just its active window: a 10,000-tenant rotation at 20 first-seen
   projects/s demands 20/s x 300s = 6,000 un-evictable entries, which
   the old 4,096 cap shed at 19%; over the cap, NEW projects get 503
