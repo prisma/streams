@@ -382,6 +382,22 @@ async fn absorbed_reaches(engine: &ShardEngine, visibility: Deliver, absorbed: u
     );
 }
 
+/// Wait until a shard-log WAL write reaches the store's hold. A gather's
+/// advance is applied when the committer writes it; its WAL reaches the
+/// store only on SlateDB's next 5 ms flush tick, which can fire after all
+/// three gathers. The parked write is the first WAL PUT after the hold, and
+/// SlateDB's WAL writer flushes one WAL at a time, so every advance not in
+/// it waits behind it.
+async fn wal_write_parks(engaged: &AtomicU64) {
+    let parked = tokio::time::timeout(Duration::from_secs(10), async {
+        while engaged.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    assert!(parked.is_ok(), "the advances' WAL write never parked");
+}
+
 /// The offsets one unfiltered read of `deliver` from `from` serves, and
 /// its last consumed offset.
 async fn offsets_from(
@@ -434,10 +450,7 @@ async fn an_applied_read_from_inside_a_page_its_trim_deleted_rereads_it_from_his
         assert_eq!(outcome.advanced.first().map(|a| a.1), Some(upto));
         absorbed_reaches(&engine, Deliver::Applied, upto).await;
     }
-    assert!(
-        engaged.load(Ordering::SeqCst) > 0,
-        "the advances' WAL write is parked"
-    );
+    wal_write_parks(&engaged).await;
     let handle = engine.stream_handle(HASH).await.unwrap();
     let (durable, applied) = {
         let st = handle.state.lock().unwrap();
