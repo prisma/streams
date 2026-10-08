@@ -13,15 +13,6 @@ const ROOT = join(import.meta.dir, "..", "..");
 const src = (path: string) => readFileSync(join(ROOT, path), "utf8");
 const SHARED = join(ROOT, "deploy", "profiles", "shared-cell.env");
 
-/// The names the PENDING WIRING paragraph of the profile lists: the
-/// binary does not read them until the owner's bootstrap::run rows land.
-const AWAITING_WIRING = [
-  "CELL_ENVELOPE_APPEND_BYTES_PER_SEC",
-  "CELL_ENVELOPE_READ_BYTES_PER_SEC",
-  "CELL_ENVELOPE_REQUESTS_PER_SEC",
-  "PROJECT_SHARE_K",
-];
-
 /// Every environment name the server binary or its wrapper reads, found
 /// the way bench/k2cost/field/deploy.py's known_names finds them.
 function namesTheServerReads(): Set<string> {
@@ -56,6 +47,7 @@ describe("the shared-cell profile", () => {
         max_inflight_requests: 512,
         max_live_subscriptions: 1200,
         max_streams: 65536,
+        queued_append_bytes: 536870912,
       },
       ceilings: {
         requests_per_sec: 176,
@@ -64,6 +56,7 @@ describe("the shared-cell profile", () => {
         max_inflight_requests: 64,
         max_live_subscriptions: 150,
         max_streams: 8192,
+        queued_append_bytes: 67108864,
       },
     });
     const env = readProfiles(DEFAULT_PROFILES);
@@ -73,13 +66,10 @@ describe("the shared-cell profile", () => {
     ]);
   });
 
-  test("every name it sets is one the server reads, except the four awaiting the owner's wiring", () => {
+  test("every name it sets is one the server reads", () => {
     const reads = namesTheServerReads();
     const set = [...readProfiles([SHARED]).keys()];
-    expect(set.filter((n) => !reads.has(n)).sort()).toEqual(AWAITING_WIRING);
-    // When the binary starts reading one of them, the profile's PENDING
-    // WIRING paragraph and this list must change with it.
-    expect(AWAITING_WIRING.filter((n) => reads.has(n))).toEqual([]);
+    expect(set.filter((n) => !reads.has(n)).sort()).toEqual([]);
   });
 
   const breaks: [string, string | undefined, string][] = [
@@ -95,6 +85,7 @@ describe("the shared-cell profile", () => {
     ["SSE_FEED_PROJECT_BYTES", "33554432", "needs SSE_FEED_TOTAL_BYTES / k = 8388608"],
     ["PROJECT_MEMORY_PRESSURE_BYTES", "16384001", "exceeds the instance read memory / k = 16384000"],
     ["CELL_ENVELOPE_REQUESTS_PER_SEC", undefined, "profile does not set CELL_ENVELOPE_REQUESTS_PER_SEC"],
+    ["MAX_UNABSORBED_BYTES_PER_INSTANCE", undefined, "profile does not set MAX_UNABSORBED_BYTES_PER_INSTANCE"],
     ["ADMIT_MAX_INFLIGHT", "5e2", "ADMIT_MAX_INFLIGHT=5e2 is not a positive integer"],
   ];
   test.each(breaks)("refuses %s=%s", (name, value, message) => {

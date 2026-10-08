@@ -15,20 +15,33 @@
 //!
 //! No customer project may take an identity the cell reserves: the system
 //! project, the deployment's `PROJECT_ID` (the raw surface's tenant, open
-//! to fleet credentials) or its `ACCOUNT_ID` (the account every unowned
-//! meter event bills to). A policy naming one is dropped before
-//! publication, so the cell answers its tokens as for a project it does
-//! not serve, and the number the published snapshot dropped is reported
-//! (`/v1/debug/auth`, `policies.reservedDropped`).
+//! to fleet credentials) and, on a cell shared more than one way, its
+//! `ACCOUNT_ID` (the account every unowned meter event bills to; on a
+//! dedicated cell it may be the customer's own workspace). A policy naming
+//! one is dropped before publication, so the cell answers its tokens as
+//! for a project it does not serve, and the number the published snapshot
+//! dropped is reported (`/v1/debug/auth`, `policies.reservedDropped`).
 //!
-//! The ceiling is applied once, where `AuthService` publishes a policy
+//! Boot installs the cell's ceiling from its settings (`of_config`):
+//! `PROJECT_SHARE_K`, the measured envelope (`CELL_ENVELOPE_*`), the
+//! instance bounds the server already enforces, and its deployment
+//! identity. It is applied once, where `AuthService` publishes a policy
 //! snapshot, so every reader of a published policy (token verification,
 //! capability status, the lease) holds the project to the same quotas.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::config::ServerConfig;
+use crate::deployment::DeploymentIdentity;
 use crate::project_policy::{PolicySnapshot, ProjectPolicy, ProjectQuotas};
+use crate::registry::cache::REGISTRY_CACHE_MAX;
 use crate::tenant::ProjectId;
+
+// The per-stream maps every project shares have one size: the descriptor
+// cache's and the usage limiter's are this constant, and the key cache's
+// (`history::KEY_CACHE_MAX`, private to a receipt-bearing file) is the
+// same 65,536.
+const _: () = assert!(crate::usage::MAX_TRACKED == REGISTRY_CACHE_MAX);
 
 /// The bounds every project on one instance shares; 0 means the axis
 /// has no shared bound.
@@ -46,6 +59,9 @@ pub(crate) struct SharedBounds {
     pub(crate) subscriptions: u64,
     /// Entries of the per-stream maps (descriptor cache, limiter, key cache).
     pub(crate) streams: u64,
+    /// Appended bytes not yet absorbed (`MAX_UNABSORBED_BYTES_PER_INSTANCE`):
+    /// past it every project's appends are shed, attributed to none.
+    pub(crate) queued_append_bytes: u64,
 }
 
 /// See the module documentation.
@@ -78,12 +94,34 @@ impl CellCeiling {
         }
     }
 
-    /// The same cell, also reserving its deployment's `PROJECT_ID` and
-    /// `ACCOUNT_ID`.
-    #[cfg(test)]
-    pub(crate) fn reserving(mut self, deployment: &crate::deployment::DeploymentIdentity) -> Self {
+    /// The cell `config` describes: shared `PROJECT_SHARE_K` ways over its
+    /// measured envelope and the instance bounds it enforces, with
+    /// `subscriptions` the effective SSE cap (the descriptor limit may
+    /// clamp the configured one), reserving `deployment`'s identities.
+    pub(crate) fn of_config(
+        config: &ServerConfig,
+        subscriptions: u64,
+        deployment: &DeploymentIdentity,
+    ) -> Self {
+        let cli = &config.cli;
+        let bounds = SharedBounds {
+            requests_per_sec: cli.cell_envelope_requests_per_sec,
+            append_bytes_per_sec: cli.cell_envelope_append_bytes_per_sec,
+            read_bytes_per_sec: cli.cell_envelope_read_bytes_per_sec,
+            inflight: u64::try_from(cli.admit_max_inflight).unwrap_or(0),
+            subscriptions,
+            streams: REGISTRY_CACHE_MAX as u64,
+            queued_append_bytes: config.admission.unabsorbed_bytes_instance,
+        };
+        Self::shared(cli.project_share_k, bounds).reserving(deployment)
+    }
+
+    /// The same cell, also reserving its deployment's `PROJECT_ID` and,
+    /// when it is shared more than one way, its `ACCOUNT_ID`.
+    pub(crate) fn reserving(mut self, deployment: &DeploymentIdentity) -> Self {
+        // mt-lint: allow(state-tenant-read): read only to refuse it — a policy naming the deployment tenant is dropped (#101); no request adopts this identity
         self.deployment_project = Some(deployment.deployment_tenant().clone());
-        self.deployment_account = Some(deployment.account_id().to_string());
+        self.deployment_account = (self.share_k > 1).then(|| deployment.account_id().to_string());
         self
     }
 
@@ -101,8 +139,8 @@ impl CellCeiling {
         }
     }
 
-    /// A project's effective quotas on this cell. Append records and
-    /// queued append bytes have no shared bound of their own.
+    /// A project's effective quotas on this cell. Append records have no
+    /// shared bound of their own.
     pub(crate) fn effective(&self, feed: &ProjectQuotas) -> ProjectQuotas {
         let b = &self.bounds;
         ProjectQuotas {
@@ -113,7 +151,7 @@ impl CellCeiling {
             max_inflight_requests: self.cap(feed.max_inflight_requests, b.inflight),
             max_live_subscriptions: self.cap(feed.max_live_subscriptions, b.subscriptions),
             max_streams: self.cap(feed.max_streams, b.streams),
-            queued_append_bytes: feed.queued_append_bytes,
+            queued_append_bytes: self.cap(feed.queued_append_bytes, b.queued_append_bytes),
         }
     }
 
@@ -158,6 +196,8 @@ impl CellCeiling {
 #[cfg(test)]
 mod tests {
     use super::{CellCeiling, SharedBounds};
+    use crate::config::{MapEnvironment, ServerConfig};
+    use crate::deployment::DeploymentIdentity;
     use crate::project_policy::{PolicySnapshot, ProjectPolicy, ProjectQuotas, ProjectStatus};
     use crate::tenant::{CellId, ProjectId, WorkspaceId};
 
@@ -168,6 +208,7 @@ mod tests {
         inflight: 512,
         subscriptions: 1_200,
         streams: 65_536,
+        queued_append_bytes: 512 << 20,
     };
 
     fn quotas(each: u64) -> ProjectQuotas {
@@ -198,12 +239,12 @@ mod tests {
     }
 
     /// k = 8 over the plan's bounds: a 0 takes bound / 8, a value above
-    /// it is cut to it, a value below it stands; the two axes without a
-    /// shared bound keep the feed value, 0 included.
+    /// it is cut to it, a value below it stands; append records, the one
+    /// axis without a shared bound, keep the feed value, 0 included.
     #[test]
     fn a_shared_cell_holds_every_bounded_axis_to_its_share() {
         let cell = CellCeiling::shared(8, BOUNDS);
-        let share = [176, 257_500, 0, 3_750_000, 64, 150, 8_192, 0];
+        let share = [176, 257_500, 0, 3_750_000, 64, 150, 8_192, 64 << 20];
         assert_eq!(
             fields(&cell.effective(&quotas(0))),
             share,
@@ -274,18 +315,23 @@ mod tests {
         (ids, dropped)
     }
 
-    /// L2: every cell drops a policy naming the system project; a cell
-    /// that knows its deployment also drops one naming its `PROJECT_ID`
-    /// and every project in its `ACCOUNT_ID` workspace. Each drop is
-    /// counted; the rest publish at their effective quotas.
-    #[test]
-    fn reserved_identities_are_dropped_and_counted() {
-        let deployment = crate::deployment::DeploymentIdentity::new(
+    fn deployment() -> DeploymentIdentity {
+        DeploymentIdentity::new(
             ProjectId::new("proj-deploy").unwrap(),
             "acct-deploy".to_string(),
             CellId::new("cell").unwrap(),
             "test".to_string(),
-        );
+        )
+    }
+
+    /// L2: every cell drops a policy naming the system project; a cell
+    /// that knows its deployment also drops one naming its `PROJECT_ID`,
+    /// and, shared more than one way, every project in its `ACCOUNT_ID`
+    /// workspace (a dedicated cell's `ACCOUNT_ID` may be its customer's).
+    /// Each drop is counted; the rest publish at their effective quotas.
+    #[test]
+    fn reserved_identities_are_dropped_and_counted() {
+        let deployment = deployment();
         let snapshot = PolicySnapshot {
             projects: [
                 policy(crate::tenant::SYSTEM_PROJECT, "ws-a"),
@@ -303,10 +349,49 @@ mod tests {
             1,
         );
         assert_eq!(dedicated, want, "dedicated: the system project only");
+        let own_cell = CellCeiling::shared(1, BOUNDS).reserving(&deployment);
+        let want = (vec!["proj-a".into(), "proj-b".into()], 2);
+        assert_eq!(served(&own_cell, &snapshot), want, "k = 1: not the account");
         let shared = CellCeiling::shared(8, BOUNDS).reserving(&deployment);
         assert_eq!(served(&shared, &snapshot), (vec!["proj-b".into()], 3));
         let (published, _) = shared.apply(snapshot);
         let quotas = &published.projects[&ProjectId::new("proj-b").unwrap()].quotas;
         assert_eq!(quotas.max_inflight_requests, 64, "the rest at the share");
+    }
+
+    /// Boot's ceiling is the shared-cell profile's: k and the envelope
+    /// from its settings, inflight, the effective SSE cap, the stream maps
+    /// and the unabsorbed-bytes line from the bounds the server enforces,
+    /// and the deployment's identities reserved. A server that sets none
+    /// of them is a dedicated cell: every quota passes unchanged.
+    #[test]
+    fn boot_installs_the_ceiling_of_the_configured_cell() {
+        let mut cli = crate::config::CliArgs::deterministic();
+        cli.project_share_k = 8;
+        cli.cell_envelope_requests_per_sec = 1_411;
+        cli.cell_envelope_append_bytes_per_sec = 2_060_000;
+        cli.cell_envelope_read_bytes_per_sec = 30_000_000;
+        let shared = ServerConfig::load(
+            cli,
+            &MapEnvironment::from([("MAX_UNABSORBED_BYTES_PER_INSTANCE", "536870912")]),
+        );
+        let cell = CellCeiling::of_config(&shared, 1_200, &deployment());
+        assert_eq!(cell.bounds, BOUNDS);
+        assert_eq!(
+            fields(&cell.effective(&quotas(0))),
+            [176, 257_500, 0, 3_750_000, 64, 150, 8_192, 64 << 20]
+        );
+        let (_, dropped) = cell.apply(PolicySnapshot {
+            projects: [policy("proj-deploy", "ws"), policy("proj-a", "acct-deploy")].into(),
+            fetched_at_unix: 0,
+            feed_version: 1,
+        });
+        assert_eq!(dropped, 2, "PROJECT_ID and ACCOUNT_ID reserved");
+        let plain = ServerConfig::load(
+            crate::config::CliArgs::deterministic(),
+            &MapEnvironment::empty(),
+        );
+        let dedicated = CellCeiling::of_config(&plain, 1_200, &deployment());
+        assert_eq!(fields(&dedicated.effective(&quotas(0))), [0; 8]);
     }
 }

@@ -50,6 +50,30 @@
       "old_semantics": "no drain floor: a connection whose client stopped accepting a pending response held its buffers until the client went away",
       "commit": "40603091",
       "edge_record": 107
+    },
+    {
+      "new": "cli.project_share_k",
+      "old_semantics": "no cell ceiling: every project took its feed quotas unchanged, a 0 quota meant no project limit, and only the system project was reserved",
+      "commit": null,
+      "edge_record": 130
+    },
+    {
+      "new": "cli.cell_envelope_requests_per_sec",
+      "old_semantics": "no cell ceiling: every project took its feed quotas unchanged, a 0 quota meant no project limit, and only the system project was reserved",
+      "commit": null,
+      "edge_record": 130
+    },
+    {
+      "new": "cli.cell_envelope_append_bytes_per_sec",
+      "old_semantics": "no cell ceiling: every project took its feed quotas unchanged, a 0 quota meant no project limit, and only the system project was reserved",
+      "commit": null,
+      "edge_record": 130
+    },
+    {
+      "new": "cli.cell_envelope_read_bytes_per_sec",
+      "old_semantics": "no cell ceiling: every project took its feed quotas unchanged, a 0 quota meant no project limit, and only the system project was reserved",
+      "commit": null,
+      "edge_record": 130
     }
   ],
   "removed": [

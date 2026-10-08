@@ -356,6 +356,16 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
         config.cli.streams_auth_issuer.clone(),
         &config.cli.cell_id,
     )?);
+    // Shared cells H1/L2: every policy snapshot publishes through the
+    // ceiling of the cell `config` describes, so it goes in before the
+    // feed refresher publishes the first one.
+    auth_service
+        .install_cell_ceiling(crate::auth::ceiling::CellCeiling::of_config(
+            &config,
+            effective.sse_max_connections,
+            &deployment,
+        ))
+        .map_err(|_| anyhow::anyhow!("cell ceiling installed twice"))?;
     // Only relevant when no topology exists yet; an existing topology
     // wins. The effective count was resolved and PROVEN by validate().
     let topology = load_or_init_topology(

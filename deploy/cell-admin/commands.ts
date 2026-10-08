@@ -127,8 +127,9 @@ function checkSizing(state: CellState): void {
 
 /// The project's quotas: every bounded axis at most its ceiling and a
 /// missing one AT the ceiling; 0 is refused because a binary without the
-/// cell ceiling reads it as "no limit". The two unbounded axes keep the
-/// value given, 0 (no project limit) when absent, as the server does.
+/// cell ceiling reads it as "no limit". The unbounded axis (append
+/// records/s) keeps the value given, 0 (no project limit) when absent, as
+/// the server does.
 export function admittedQuotas(state: CellState, given: readonly string[]): Quotas {
   const quotas = Object.fromEntries(QUOTA_FIELDS.map((q) => [q, 0])) as Quotas;
   const seen = new Set<string>();

@@ -26,13 +26,11 @@ and what must stay absent. In particular, no `FLEET_PREFIX`, no
 `FLEET_INTERNAL_TOKEN`, and no key for `prisma-streams-internal` in the
 keys feed, so nothing can open the cell's internal surface.
 
-Two parts of the profile are pending:
-- `PROJECT_SHARE_K` and the `CELL_ENVELOPE_*` values are not yet read by
-  the binary. They wait for the owner's `bootstrap::run` wiring. Until
-  then `cell-admin` is their only reader, and it publishes every quota
-  explicitly at or below its ceiling.
-- `PROJECT_MEMORY_PRESSURE_BYTES` and the envelope values await
-  certification on the one-shard shape.
+The server installs its ceilings at boot from `PROJECT_SHARE_K`, the
+`CELL_ENVELOPE_*` values and the bounds the profile states; `cell-admin`
+derives the same ceilings and publishes every quota explicitly at or below
+them. `PROJECT_MEMORY_PRESSURE_BYTES` and the envelope values await
+certification on the one-shard shape.
 
 ## The signing key
 

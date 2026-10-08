@@ -71,7 +71,7 @@ COMPUTE_SCRIPTS = ['bench/fleet/deploy-fleet.sh', 'bench/soak/deploy-region.sh',
                    'bench/soak/wc-ladder.sh', 'scripts/bench-fra-ab.sh']
 # Pins (K9, E1, E2): a new field, knob or reader changes one of these and the
 # tool fails until the pin is updated deliberately.
-PIN_OLD_LEAVES, PIN_NEW_LEAVES = 156, 133
+PIN_OLD_LEAVES, PIN_NEW_LEAVES = 156, 137
 PIN_ARGS_LINES = 522
 PIN_RC4_NAMES, PIN_ENV_KNOBS, PIN_HELPERS = 72, 70, 6
 

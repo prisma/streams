@@ -429,6 +429,28 @@ pub struct CliArgs {
     #[arg(long, env = "ADMIT_MAX_INFLIGHT", default_value_t = 512)]
     pub(crate) admit_max_inflight: i64,
 
+    /// k, the number of projects this cell is shared by (shared-cells
+    /// PLAN step 2, finding H1): each project's quota on every shared
+    /// bound (the envelope below, ADMIT_MAX_INFLIGHT, the SSE cap, the
+    /// per-stream maps, MAX_UNABSORBED_BYTES_PER_INSTANCE) is at most
+    /// bound / k, and a 0 or missing quota takes exactly that. Default 1,
+    /// a dedicated cell: quotas pass unchanged. At least 1.
+    #[arg(long, env = "PROJECT_SHARE_K", default_value_t = 1,
+          value_parser = clap::value_parser!(u64).range(1..))]
+    pub(crate) project_share_k: u64,
+    /// The requests per second this cell was measured to carry, divided
+    /// by PROJECT_SHARE_K into each project's ceiling (0 = no shared bound).
+    #[arg(long, env = "CELL_ENVELOPE_REQUESTS_PER_SEC", default_value_t = 0)]
+    pub(crate) cell_envelope_requests_per_sec: u64,
+    /// The appended payload bytes per second it was measured to carry
+    /// (0 = no shared bound).
+    #[arg(long, env = "CELL_ENVELOPE_APPEND_BYTES_PER_SEC", default_value_t = 0)]
+    pub(crate) cell_envelope_append_bytes_per_sec: u64,
+    /// The read payload bytes per second it was measured to carry
+    /// (0 = no shared bound).
+    #[arg(long, env = "CELL_ENVELOPE_READ_BYTES_PER_SEC", default_value_t = 0)]
+    pub(crate) cell_envelope_read_bytes_per_sec: u64,
+
     /// Measured per-instance ingress-concurrency capacity through the
     /// platform front door. Two-layer model confirmed by the platform team
     /// and six independent sources (2026-07-15): each SOURCE Compute
@@ -545,6 +567,10 @@ impl CliArgs {
             sse_max_connections: 1_200,
             admit_max_inflight_per_stream: 256,
             admit_max_inflight: 512,
+            project_share_k: 1,
+            cell_envelope_requests_per_sec: 0,
+            cell_envelope_append_bytes_per_sec: 0,
+            cell_envelope_read_bytes_per_sec: 0,
             scale_edge_slots: 140,
             shared_cache_bytes: 128 * 1024 * 1024,
             scale_in_secs: 60,

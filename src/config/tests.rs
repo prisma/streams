@@ -641,6 +641,22 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
         "256",
     ),
     ("admit-max-inflight", "ADMIT_MAX_INFLIGHT", "512"),
+    ("project-share-k", "PROJECT_SHARE_K", "1"),
+    (
+        "cell-envelope-requests-per-sec",
+        "CELL_ENVELOPE_REQUESTS_PER_SEC",
+        "0",
+    ),
+    (
+        "cell-envelope-append-bytes-per-sec",
+        "CELL_ENVELOPE_APPEND_BYTES_PER_SEC",
+        "0",
+    ),
+    (
+        "cell-envelope-read-bytes-per-sec",
+        "CELL_ENVELOPE_READ_BYTES_PER_SEC",
+        "0",
+    ),
     ("scale-edge-slots", "SCALE_EDGE_SLOTS", "140"),
     ("shared-cache-bytes", "SHARED_CACHE_BYTES", "134217728"),
     ("scale-in-secs", "SCALE_IN_SECS", "60"),

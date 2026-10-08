@@ -29,7 +29,7 @@ const CEILINGS = {
   max_inflight_requests: 64,
   max_live_subscriptions: 150,
   max_streams: 8192,
-  queued_append_bytes: 0,
+  queued_append_bytes: 67108864,
 };
 
 /// Nothing cell-admin writes may hold private key material or a token
@@ -61,6 +61,7 @@ describe("init", () => {
       max_inflight_requests: 64,
       max_live_subscriptions: 150,
       max_streams: 8192,
+      queued_append_bytes: 67108864,
     });
     expect(statSync(c.state).mode & 0o777).toBe(0o700);
     expectNoSecrets(c.state);

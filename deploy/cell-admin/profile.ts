@@ -28,9 +28,8 @@ export const QUOTA_FIELDS = [
 export type QuotaField = (typeof QUOTA_FIELDS)[number];
 export type Quotas = Record<QuotaField, number>;
 
-/// The axes with a shared bound, and so a ceiling. The other two
-/// (append records/s, queued append bytes) keep their feed value on the
-/// server too.
+/// The axes with a shared bound, and so a ceiling. The other one
+/// (append records/s) keeps its feed value on the server too.
 export const BOUNDED_FIELDS = [
   "requests_per_sec",
   "append_bytes_per_sec",
@@ -38,6 +37,7 @@ export const BOUNDED_FIELDS = [
   "max_inflight_requests",
   "max_live_subscriptions",
   "max_streams",
+  "queued_append_bytes",
 ] as const satisfies readonly QuotaField[];
 export type BoundedField = (typeof BOUNDED_FIELDS)[number];
 export type Ceilings = Record<BoundedField, number>;
@@ -141,6 +141,7 @@ export function cellSizing(env: Map<string, string>): CellSizing {
     max_inflight_requests: positive(env, "ADMIT_MAX_INFLIGHT"),
     max_live_subscriptions: positive(env, "SSE_MAX_CONNECTIONS"),
     max_streams: STREAM_MAP_ENTRIES,
+    queued_append_bytes: positive(env, "MAX_UNABSORBED_BYTES_PER_INSTANCE"),
   };
   const ceilings = Object.fromEntries(
     BOUNDED_FIELDS.map((f) => [f, ceilingOf(bounds[f], k)]),

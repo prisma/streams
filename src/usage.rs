@@ -31,7 +31,7 @@ pub(crate) use capacity::CapacityRefusal;
 /// traffic instead shares ONE conservative bucket and ONE aggregate
 /// counter set, and idle tracked entries are opportunistically evicted
 /// to make room for new streams.
-const MAX_TRACKED: usize = 65_536;
+pub(crate) const MAX_TRACKED: usize = 65_536;
 
 /// A tracked entry idle at least this long may be evicted at cap. The
 /// billing emitter runs every minute, so anything idle this long has

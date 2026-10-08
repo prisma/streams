@@ -33,7 +33,7 @@ use super::{CachedDesc, Registry, StreamDesc, decode_desc, desc_path};
 /// in it). At the cap, slots untouched for a TTL purge first (TTL is
 /// seconds, so this is almost always enough), then the least recently
 /// touched falls out.
-const REGISTRY_CACHE_MAX: usize = 65_536;
+pub(crate) const REGISTRY_CACHE_MAX: usize = 65_536;
 
 pub(super) struct DescriptorCache {
     slots: Mutex<Slots>,

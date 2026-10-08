@@ -398,10 +398,9 @@ impl AuthService {
         Ok(())
     }
 
-    /// TEST HOOK until boot installs the cell's own ceiling (shared-cells
-    /// step 2: the `bootstrap::run` wiring is the owner's). Refused once a
-    /// policy snapshot was published, so no snapshot escapes the ceiling.
-    #[cfg(test)]
+    /// Install the cell's ceiling (boot, from `CellCeiling::of_config`; the
+    /// test rigs, from their own bounds). Refused once a policy snapshot
+    /// was published, so no snapshot escapes the ceiling.
     pub(crate) fn install_cell_ceiling(&self, ceiling: CellCeiling) -> Result<(), CellCeiling> {
         self.cell_ceiling.set(ceiling)
     }
