@@ -6,6 +6,15 @@
 // from the platform emulator, per-instance rotating workload JWTs,
 // and a REAL scaler split forced by load (the field-gate recipe).
 //
+// The split is taken before the fleet forms. A server in fleet mode
+// splits no stream (the split gate, edge change #119), so streams-1
+// first boots OUTSIDE fleet mode (no FLEET_PREFIX: no ring, splits
+// allowed), takes the split, and stops; then all three boot in fleet
+// mode over the same bucket and PATH_PREFIX. The lineage's segments
+// then sit on shards the fleet spreads over its servers: the state a
+// cell that split before it became a fleet reaches, which is what the
+// remote-paging legs certify.
+//
 // Legs marked COVERED_INPROC are protocol cases that need staged
 // state divergence a shared overrides file cannot express (the
 // redirect LOOP) — the in-process three-instance suite certifies
@@ -114,19 +123,35 @@ const args = (name) => [
 ];
 const procs = {};
 mkdirSync("target/cert-logs", { recursive: true });
-for (const n of Object.keys(PORTS)) {
-  const log = openSync(`target/cert-logs/${n}.log`, "w");
-  procs[n] = spawn("./target/release/streams-slate", args(n), { env: instEnv(n), stdio: ["ignore", log, log] });
-}
+const boot = (n, env, log) => {
+  const fd = openSync(`target/cert-logs/${log}.log`, "w");
+  procs[n] = spawn("./target/release/streams-slate", args(n), { env, stdio: ["ignore", fd, fd] });
+};
+// Outside fleet mode: the same settings without FLEET_PREFIX, so the
+// server runs no fleet loop, publishes no ring and owns every shard.
+const soloEnv = (name) => {
+  const { FLEET_PREFIX: _fleet, ...solo } = instEnv(name);
+  return solo;
+};
+// A graceful stop (SIGTERM), bounded: its storage is closed before the
+// fleet boots over it.
+const stop = async (n) => {
+  const p = procs[n];
+  if (p.exitCode !== null || p.signalCode !== null) return p.exitCode ?? p.signalCode;
+  const exited = new Promise((r) => p.once("exit", (code, signal) => r(code ?? signal)));
+  p.kill("SIGTERM");
+  const how = await Promise.race([exited, sleep(45000).then(() => "timeout")]);
+  if (how === "timeout") { p.kill("SIGKILL"); await exited; }
+  return how;
+};
 const kill = () => {
   if (holdActive) return;
   for (const p of [...Object.values(procs), s3, emu]) try { p.kill("SIGKILL"); } catch {}
 };
 process.on("exit", kill);
+boot("streams-1", soloEnv("streams-1"), "streams-1-solo");
 await sleep(3000);
-for (const n of Object.keys(PORTS)) {
-  leg(`boot ${n} (livefeed + enforce + workload)`, procs[n].exitCode === null);
-}
+leg("boot streams-1 outside fleet mode (livefeed + enforce + workload)", procs["streams-1"].exitCode === null);
 
 const base = (n) => `http://127.0.0.1:${PORTS[n]}`;
 const sfetch = async (...a) => {
@@ -189,14 +214,19 @@ const ownerFetch = async (path, opts) => {
   return last;
 };
 
-// Wait for fleet convergence: every instance serves basic requests.
-for (let i = 0; i < 60; i++) {
-  const ok = (await Promise.all(Object.keys(PORTS).map(async (n) =>
-    (await sfetch(`${base(n)}/v1/debug/load`, { headers: { authorization: `Bearer ${DEBUG_TOKEN}` } })).status
-  ))).every((s) => s === 200);
-  if (ok) break;
-  await sleep(500);
-}
+const serving = async (names) => {
+  for (let i = 0; i < 60; i++) {
+    const ok = (await Promise.all(names.map(async (n) =>
+      (await sfetch(`${base(n)}/v1/debug/load`, { headers: { authorization: `Bearer ${DEBUG_TOKEN}` } })).status
+    ))).every((s) => s === 200);
+    if (ok) return true;
+    await sleep(500);
+  }
+  return false;
+};
+leg("streams-1 serves outside fleet mode with no ring",
+  (await serving(["streams-1"])) && ((await debug("streams-1"))?.ring?.active ?? []).length === 0,
+  JSON.stringify((await debug("streams-1"))?.ring ?? null));
 
 // SSE collector over fetch streaming.
 async function sseCollect(url, { headers = {}, ms = 10000, until = () => false } = {}) {
@@ -269,7 +299,7 @@ async function makeSplitStream(name) {
       })));
     rounds++;
     if (rounds % 4 === 0) {
-      for (const n of Object.keys(PORTS)) {
+      for (const n of Object.keys(procs)) {
         try {
           const d = await debug(n);
           console.log(`  [diag ${n}] scaler=${JSON.stringify(d.scaler)}`);
@@ -304,10 +334,33 @@ async function ownerOf(name, segId) {
   return null;
 }
 
-console.log("== forcing a real scaler split ==");
+console.log("== forcing a real scaler split on streams-1 outside fleet mode ==");
 const segs = await makeSplitStream("certsplit");
 leg("real scaler split lands (multi-segment, nothing pending)", !!segs, JSON.stringify(segs ?? {}));
 if (!segs) { finish(); }
+
+// ---- The fleet forms over the split stream ---------------------------
+console.log("== streams-1 stops; all three boot in fleet mode over the same storage ==");
+const soloStop = await stop("streams-1");
+leg("streams-1 stops gracefully after the split", soloStop === 0, `exit=${soloStop}`);
+for (const n of Object.keys(PORTS)) boot(n, instEnv(n), n);
+await sleep(3000);
+for (const n of Object.keys(PORTS)) {
+  leg(`boot ${n} (livefeed + enforce + workload)`, procs[n].exitCode === null);
+}
+// Wait for fleet convergence: every instance serves basic requests and
+// its ring lists all three servers.
+await serving(Object.keys(PORTS));
+let rings = {};
+for (let i = 0; i < 60; i++) {
+  rings = Object.fromEntries(await Promise.all(Object.keys(PORTS).map(async (n) =>
+    [n, (await debug(n))?.ring?.active ?? []])));
+  if (Object.values(rings).every((a) => Object.keys(PORTS).every((n) => a.includes(n)))) break;
+  await sleep(500);
+}
+leg("every instance's ring lists all three servers",
+  Object.values(rings).every((a) => Object.keys(PORTS).every((n) => a.includes(n))), JSON.stringify(rings));
+TOK = await tokenOf();
 
 // Identify the live child (contains the hot key) and the sealed parent.
 const live = segs.segments.filter((s) => s.live);

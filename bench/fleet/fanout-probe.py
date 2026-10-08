@@ -15,6 +15,14 @@
      saga    — versioned DELETE completes (relayed per-segment sweep)
 
 Exit 0 = all pass. Env: AUTH_TOKEN, STREAM_KEY, LB, A, B.
+
+FAN_PHASE splits the run in two around a fleet that forms after the split
+(a server in fleet mode splits no stream, edge change #119):
+  FAN_PHASE=split     step 1 only, against a server outside fleet mode
+                      (LB, A and B may all name it); writes the stream and
+                      its acked counts to FAN_STATE
+  FAN_PHASE=verdicts  step 2 only, over the stream FAN_STATE names
+  (unset)             both, in one process
 """
 import json, os, sys, threading, time, urllib.error, urllib.request
 
@@ -26,6 +34,10 @@ H = {"authorization": f"Bearer {AUTH}", "prisma-encryption-key": KEY}
 JH = {**H, "content-type": "application/json"}
 S = f"fan/probe-{int(time.time())}"
 KEYS = "abcdefgh"
+PHASE = os.environ.get("FAN_PHASE", "all")
+STATE = os.environ.get("FAN_STATE")
+if PHASE not in ("all", "split", "verdicts") or (PHASE != "all" and not STATE):
+    sys.exit("[fanout] FAN_PHASE is all, split or verdicts; split and verdicts need FAN_STATE")
 
 def req(method, url, body=None, headers=None, timeout=30):
     r = urllib.request.Request(url, method=method,
@@ -52,42 +64,99 @@ def verdict(name, ok, detail=""):
         rc = 1
 
 # ---- 1. hammer with ack counting ----
-st, _, _ = req("PUT", f"{LB}/v1/streams/{S}", {"format": {"kind": "json"}}, JH)
-if st != 201:
-    print(f"[fanout] RIG-FAIL create: {st}"); sys.exit(2)
-acked = {k: 0 for k in KEYS}
-lock = threading.Lock()
+def hammer():
+    st, _, _ = req("PUT", f"{LB}/v1/streams/{S}", {"format": {"kind": "json"}}, JH)
+    if st != 201:
+        print(f"[fanout] RIG-FAIL create: {st}"); sys.exit(2)
+    acked = {k: 0 for k in KEYS}
+    lock = threading.Lock()
 # Cloud-leg findings: the hot detector needs SUSTAINED windowed rate.
 # urllib opens a TLS connection per request, so one WAN thread manages
 # ~1 req/s — 8 threads sit exactly at the 1% hot threshold and never
 # cross it. FAN_THREADS_PER_KEY raises aggregate rate; FAN_FLOOR_SECS
 # keeps the hammer running long enough for the eval windows.
-TPK = int(os.environ.get("FAN_THREADS_PER_KEY", "1"))
-FLOOR = float(os.environ.get("FAN_FLOOR_SECS", "0"))
-t_end = time.time() + FLOOR
-def worker(k, quota):
-    i = 0
-    while i < quota or time.time() < t_end:
-        st, _, _ = req("POST", f"{LB}/v1/streams/{S}/records", {"i": i, "k": k},
-                       {**JH, "prisma-routing-key": f"key-{k}"}, timeout=15)
-        if st == 200:
-            with lock:
-                acked[k] += 1
-        i += 1
-ts = []
-for k in KEYS:
-    base_q, rem = divmod(250, TPK)
-    for t in range(TPK):
-        ts.append(threading.Thread(target=worker, args=(k, base_q + (1 if t < rem else 0))))
-for t in ts: t.start()
-for t in ts: t.join()
-print(f"[fanout] {S}: {sum(acked.values())} acked ({dict(acked)})")
-time.sleep(8)
-st, _, b = req("GET", f"{LB}/v1/segments/{S}")
-nseg = len(json.loads(b).get("segments", [])) if st == 200 else 0
-print(f"[fanout] {nseg} segments")
-if nseg < 3:
-    print("[fanout] RIG-FAIL: no split (check SCALE_HOT knobs)"); sys.exit(2)
+    TPK = int(os.environ.get("FAN_THREADS_PER_KEY", "1"))
+    FLOOR = float(os.environ.get("FAN_FLOOR_SECS", "0"))
+    t_end = time.time() + FLOOR
+    def worker(k, quota):
+        i = 0
+        while i < quota or time.time() < t_end:
+            st, _, _ = req("POST", f"{LB}/v1/streams/{S}/records", {"i": i, "k": k},
+                           {**JH, "prisma-routing-key": f"key-{k}"}, timeout=15)
+            if st == 200:
+                with lock:
+                    acked[k] += 1
+            i += 1
+    ts = []
+    for k in KEYS:
+        base_q, rem = divmod(250, TPK)
+        for t in range(TPK):
+            ts.append(threading.Thread(target=worker, args=(k, base_q + (1 if t < rem else 0))))
+    for t in ts: t.start()
+    for t in ts: t.join()
+    print(f"[fanout] {S}: {sum(acked.values())} acked ({dict(acked)})")
+    time.sleep(8)
+    st, _, b = req("GET", f"{LB}/v1/segments/{S}")
+    nseg = len(json.loads(b).get("segments", [])) if st == 200 else 0
+    print(f"[fanout] {nseg} segments")
+    if nseg < 3:
+        print("[fanout] RIG-FAIL: no split (check SCALE_HOT knobs)"); sys.exit(2)
+    return acked
+
+if PHASE == "verdicts":
+    with open(STATE) as f:
+        state = json.load(f)
+    S, acked = state["stream"], state["acked"]
+    print(f"[fanout] {S}: verdicts over {sum(acked.values())} acked records ({dict(acked)})")
+else:
+    acked = hammer()
+if PHASE == "split":
+    with open(STATE, "w") as f:
+        json.dump({"stream": S, "acked": acked}, f)
+    print(f"[fanout] split phase done; state in {STATE}")
+    sys.exit(0)
+
+def scan_all(base):
+    tok, tot, hops = None, 0, 0
+    while hops < 300:
+        hops += 1
+        q = "?maxBytes=200000" + (f"&cursor={tok}" if tok else "")
+        st, h, b = req("GET", f"{base}/v1/streams/{S}:scan{q}")
+        if st != 200:
+            return tot, f"{st}@hop{hops}:{b[:80]!r}"
+        d = json.loads(b) if b.strip() else []
+        items = d if isinstance(d, list) else d.get("items", d.get("records", []))
+        tot += len(items)
+        # Scan continuation is its own header pair — run-2 cloud finding:
+        # listening for the records-read headers made every >1-page scan
+        # look complete at exactly one maxBytes page (~4,436 items), and
+        # two phantom "boundary" bugs were chased before the real one.
+        if hget(h, "Prisma-Scan-Complete"):
+            return tot, None
+        nxt = hget(h, "Prisma-Next-Scan-Cursor")
+        if not nxt or nxt == tok:
+            return tot, "no cursor and not complete"
+        tok = nxt
+    return tot, "no-convergence"
+
+# ---- 2. settle: the fleet formed after the split ----
+# In the verdicts phase the fleet has just formed over a store its servers
+# all opened before their first fleet pass, so they fenced one another's
+# boot-time engines and a moved shard can answer its anti-flap 503 for a
+# few seconds. A client retries those; the verdicts below do not, so they
+# wait until one full scan through the LB reads every acked record.
+if PHASE == "verdicts":
+    total = sum(acked.values())
+    t_settle, last = time.time() + 90, None
+    while time.time() < t_settle:
+        n, err = scan_all(LB)
+        if not err and n == total:
+            break
+        last = f"{n}/{total} {err}"
+        time.sleep(2)
+    else:
+        print(f"[fanout] RIG-FAIL: the fleet never served the split stream ({last})"); sys.exit(2)
+    print(f"[fanout] settled: one scan through the LB reads {total}/{total}")
 
 # ---- 2a. keyed walks: exact acked counts on every base ----
 def walk(base, key):
@@ -114,28 +183,6 @@ for key in KEYS:
 verdict("reads-all-bases-exact", not bad, str(bad[:4]))
 
 # ---- 2b. scan snapshot on every base ----
-def scan_all(base):
-    tok, tot, hops = None, 0, 0
-    while hops < 300:
-        hops += 1
-        q = "?maxBytes=200000" + (f"&cursor={tok}" if tok else "")
-        st, h, b = req("GET", f"{base}/v1/streams/{S}:scan{q}")
-        if st != 200:
-            return tot, f"{st}@hop{hops}:{b[:80]!r}"
-        d = json.loads(b) if b.strip() else []
-        items = d if isinstance(d, list) else d.get("items", d.get("records", []))
-        tot += len(items)
-        # Scan continuation is its own header pair — run-2 cloud finding:
-        # listening for the records-read headers made every >1-page scan
-        # look complete at exactly one maxBytes page (~4,436 items), and
-        # two phantom "boundary" bugs were chased before the real one.
-        if hget(h, "Prisma-Scan-Complete"):
-            return tot, None
-        nxt = hget(h, "Prisma-Next-Scan-Cursor")
-        if not nxt or nxt == tok:
-            return tot, "no cursor and not complete"
-        tok = nxt
-    return tot, "no-convergence"
 total = sum(acked.values())
 sbad = []
 for nm, base in BASES.items():

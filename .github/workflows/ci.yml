@@ -193,7 +193,10 @@ jobs:
   # 11.4). Three streams-slate processes over one shared s3lite store,
   # real TCP listeners, real fleet heartbeats + overrides steering,
   # enforce-mode auth from the platform emulator, rotating workload
-  # JWTs, a REAL scaler split — then the battery: cross-instance
+  # JWTs, a REAL scaler split — taken on streams-1 booted outside fleet
+  # mode, which then stops while all three boot in fleet mode over the
+  # same storage (a server in fleet mode splits no stream: the split
+  # gate, edge change #119) — then the battery: cross-instance
   # replays, typed reroutes, ownership movement under established and
   # parked sessions, a SIGSTOP'd (blackholed) remote owner, workload
   # rotation, revocation, and residual accounting. Produces

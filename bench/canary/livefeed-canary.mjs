@@ -19,6 +19,13 @@
 // pressure, and the largest LEGAL record including worst-case text
 // framing (plus the one-over refusal).
 //
+// The blackhole campaign's split is taken before the fleet forms. A
+// server in fleet mode splits no stream (the split gate, edge change
+// #119), so streams-1 first boots OUTSIDE fleet mode (no FLEET_PREFIX),
+// builds and splits that campaign's stream, and stops; then all three
+// boot in fleet mode over the same bucket and PATH_PREFIX, and the
+// campaigns run on the fleet.
+//
 // Produces target/livefeed-canary-manifest.json:
 //   { commit, server_sha256, verdict, legs, reconciliation }.
 import { spawn, execSync } from "node:child_process";
@@ -124,15 +131,33 @@ const args = (name) => [
 ];
 const procs = {};
 mkdirSync("target/canary-logs", { recursive: true });
-for (const n of Object.keys(PORTS)) {
-  const log = openSync(`target/canary-logs/${n}.log`, "w");
-  procs[n] = spawn(SERVER_BIN, args(n), { env: instEnv(n), stdio: ["ignore", log, log] });
-}
+const boot = (n, env, log) => {
+  const fd = openSync(`target/canary-logs/${log}.log`, "w");
+  procs[n] = spawn(SERVER_BIN, args(n), { env, stdio: ["ignore", fd, fd] });
+};
+// Outside fleet mode: the same settings without FLEET_PREFIX, so the
+// server runs no fleet loop, publishes no ring and owns every shard.
+const soloEnv = (name) => {
+  const { FLEET_PREFIX: _fleet, ...solo } = instEnv(name);
+  return solo;
+};
+// A graceful stop (SIGTERM), bounded: its storage is closed before the
+// fleet boots over it.
+const stop = async (n) => {
+  const p = procs[n];
+  if (p.exitCode !== null || p.signalCode !== null) return p.exitCode ?? p.signalCode;
+  const exited = new Promise((r) => p.once("exit", (code, signal) => r(code ?? signal)));
+  p.kill("SIGTERM");
+  const how = await Promise.race([exited, sleep(45000).then(() => "timeout")]);
+  if (how === "timeout") { p.kill("SIGKILL"); await exited; }
+  return how;
+};
 const kill = () => {
   if (holdActive) return;
   for (const p of [...Object.values(procs), s3, emu]) try { p.kill("SIGKILL"); } catch {}
 };
 process.on("exit", kill);
+boot("streams-1", soloEnv("streams-1"), "streams-1-solo");
 await sleep(3000);
 
 const base = (n) => `http://127.0.0.1:${PORTS[n]}`;
@@ -204,18 +229,90 @@ const ownerFetch = async (path, opts) => {
   return last;
 };
 
-for (let i = 0; i < 120; i++) {
-  const ok = (await Promise.all(Object.keys(PORTS).map(async (n) =>
-    (await sfetch(`${base(n)}/v1/debug/load`, { headers: { authorization: `Bearer ${DEBUG_TOKEN}` } })).status
-  ))).every((s) => s === 200);
-  if (ok) break;
-  await sleep(500);
+const serving = async (names) => {
+  for (let i = 0; i < 120; i++) {
+    const ok = (await Promise.all(names.map(async (n) =>
+      (await sfetch(`${base(n)}/v1/debug/load`, { headers: { authorization: `Bearer ${DEBUG_TOKEN}` } })).status
+    ))).every((s) => s === 200);
+    if (ok) return true;
+    await sleep(500);
+  }
+  return false;
+};
+leg("release-posture streams-1 boots outside fleet mode with the pinned 1-GiB profile and no ring",
+  (await serving(["streams-1"])) && ((await debug("streams-1"))?.ring?.active ?? []).length === 0,
+  JSON.stringify((await debug("streams-1"))?.ring ?? null));
+
+// ---- The blackhole campaign's split, outside fleet mode ---------------
+// A hot0-heavy split stream (the 11.4 recipe): sealed spans large
+// enough that unread sessions wedge INSIDE the lineage.
+const BLACKHOLE_STREAM = "cblack";
+async function buildBlackholeStream(nm) {
+  const c = await ownerFetch(`/v1/streams/${nm}`, {
+    method: "PUT", headers: H(), body: JSON.stringify({ format: { kind: "json" } }),
+  });
+  leg("blackhole setup: stream created", [200, 201].includes(c.status), `status=${c.status}`);
+  for (let i = 0; i < 3; i++) {
+    await ownerFetch(`/v1/streams/${nm}/records`, {
+      method: "POST", headers: H({ "prisma-routing-key": "hot0" }), body: JSON.stringify({ seed: i }),
+    });
+  }
+  const hot = Array.from({ length: 32 }, (_, i) => `hot${i}`);
+  // hot0 at ~11% of round bytes (the scaler still finds effective
+  // split points) but sized so the SEALED hot0 lane reaches ~5 MB —
+  // far past any client/socket buffering, so 25 unread sessions all
+  // wedge INSIDE the sealed lineage.
+  const PAD = "x".repeat(16384);
+  const PADS = "y".repeat(4096);
+  const deadline = Date.now() + 240_000;
+  let seg = null;
+  let rounds = 0;
+  while (Date.now() < deadline) {
+    await Promise.all(hot.map((k) =>
+      ownerFetch(`/v1/streams/${nm}/records`, {
+        method: "POST", headers: H({ "prisma-routing-key": k }), body: JSON.stringify({ k, r: rounds, pad: k === "hot0" ? PAD : PADS }),
+      })));
+    rounds++;
+    if (rounds % 4 === 0) {
+      const sr = await ownerFetch(`/v1/segments/${nm}`, { headers: { authorization: `Bearer ${await freshWl(["segment-read"])}` } });
+      if (rounds % 40 === 0) console.log(`  [diag] split poll status=${sr.status} rounds=${rounds}`);
+      if (sr.status === 200) {
+        const m = await sr.json();
+        const live = (m.segments ?? []).filter((x) => x.live !== false).length;
+        const sealed = (m.segments ?? []).map((x) => x.sealed_next_offset ?? 0).reduce((a, b) => a + b, 0);
+        if (live > 1 && !m.pending && sealed >= 10000) { seg = m; break; }
+      }
+    }
+  }
+  leg("blackhole setup: real scaler split with a wedgeable sealed lane", !!seg, `rounds=${rounds}`);
+  return seg;
 }
+console.log("== blackhole stream: a real scaler split on streams-1 outside fleet mode ==");
+await buildBlackholeStream(BLACKHOLE_STREAM);
+
+// ---- The fleet forms over the split stream ---------------------------
+console.log("== streams-1 stops; all three boot in fleet mode over the same storage ==");
+const soloStop = await stop("streams-1");
+leg("streams-1 stops gracefully after the split", soloStop === 0, `exit=${soloStop}`);
+for (const n of Object.keys(PORTS)) boot(n, instEnv(n), n);
+await sleep(3000);
+await serving(Object.keys(PORTS));
 const boots = await Promise.all(Object.keys(PORTS).map(async (n) =>
   (await sfetch(`${base(n)}/v1/debug/load`, { headers: { authorization: `Bearer ${DEBUG_TOKEN}` } })).status));
 leg("release-posture fleet boots with the pinned 1-GiB profile", boots.every((s) => s === 200),
   Object.keys(PORTS).map((n, i) => `${n}:${boots[i]}`).join(" "));
 if (boots.some((s) => s !== 200)) finish();
+let rings = {};
+for (let i = 0; i < 60; i++) {
+  rings = Object.fromEntries(await Promise.all(Object.keys(PORTS).map(async (n) =>
+    [n, (await debug(n))?.ring?.active ?? []])));
+  if (Object.values(rings).every((a) => Object.keys(PORTS).every((n) => a.includes(n)))) break;
+  await sleep(500);
+}
+leg("every instance's ring lists all three servers",
+  Object.values(rings).every((a) => Object.keys(PORTS).every((n) => a.includes(n))), JSON.stringify(rings));
+TOK = await tokenFor(credLc);
+TOK_NOISY = await tokenFor(credNoisy);
 
 // SSE collector (always drops its connection on return).
 async function sseCollect(url, { headers = {}, ms = 15000, until = () => false } = {}) {
@@ -431,46 +528,9 @@ async function moveEverythingTo(target) {
 // ---- Failure campaign: blackholed remote owner under active herd ----
 {
   console.log("== failure: blackholed remote owner ==");
-  // A hot0-heavy split stream (the 11.4 recipe): sealed spans large
-  // enough that unread sessions wedge INSIDE the lineage.
-  const nm = "cblack";
-  const c = await ownerFetch(`/v1/streams/${nm}`, {
-    method: "PUT", headers: H(), body: JSON.stringify({ format: { kind: "json" } }),
-  });
-  leg("blackhole setup: stream created", [200, 201].includes(c.status), `status=${c.status}`);
-  for (let i = 0; i < 3; i++) {
-    await ownerFetch(`/v1/streams/${nm}/records`, {
-      method: "POST", headers: H({ "prisma-routing-key": "hot0" }), body: JSON.stringify({ seed: i }),
-    });
-  }
-  const hot = Array.from({ length: 32 }, (_, i) => `hot${i}`);
-  // hot0 at ~11% of round bytes (the scaler still finds effective
-  // split points) but sized so the SEALED hot0 lane reaches ~5 MB —
-  // far past any client/socket buffering, so 25 unread sessions all
-  // wedge INSIDE the sealed lineage.
-  const PAD = "x".repeat(16384);
-  const PADS = "y".repeat(4096);
-  const deadline = Date.now() + 240_000;
-  let seg = null;
-  let rounds = 0;
-  while (Date.now() < deadline) {
-    await Promise.all(hot.map((k) =>
-      ownerFetch(`/v1/streams/${nm}/records`, {
-        method: "POST", headers: H({ "prisma-routing-key": k }), body: JSON.stringify({ k, r: rounds, pad: k === "hot0" ? PAD : PADS }),
-      })));
-    rounds++;
-    if (rounds % 4 === 0) {
-      const sr = await ownerFetch(`/v1/segments/${nm}`, { headers: { authorization: `Bearer ${await freshWl(["segment-read"])}` } });
-      if (rounds % 40 === 0) console.log(`  [diag] split poll status=${sr.status} rounds=${rounds}`);
-      if (sr.status === 200) {
-        const m = await sr.json();
-        const live = (m.segments ?? []).filter((x) => x.live !== false).length;
-        const sealed = (m.segments ?? []).map((x) => x.sealed_next_offset ?? 0).reduce((a, b) => a + b, 0);
-        if (live > 1 && !m.pending && sealed >= 10000) { seg = m; break; }
-      }
-    }
-  }
-  leg("blackhole setup: real scaler split with a wedgeable sealed lane", !!seg, `rounds=${rounds}`);
+  // The stream was built and split outside fleet mode, before the fleet
+  // formed (buildBlackholeStream above).
+  const nm = BLACKHOLE_STREAM;
   const own = await ownerOfStream(nm, "hot0");
   const target = Object.keys(PORTS).find((n) => n !== own);
   // 25 wedged sessions (unread bodies) mid-lineage at the owner.

@@ -6,7 +6,16 @@
 # launch posture left unproven. fanout-probe.py drives splits and issues
 # the verdicts.
 #
-#   bench/fleet/local-fanout.sh [out-dir]
+# The split is taken before the fleet forms. A server in fleet mode
+# splits no stream (the split gate, edge change #119), so streams-1 first
+# boots OUTSIDE fleet mode (no FLEET_PREFIX) and fanout-probe.py's split
+# phase hammers it directly; then streams-1 stops, both instances boot in
+# fleet mode over the same PATH_PREFIX, the LB starts, and the verdicts
+# run over the split stream (its state in $OUT/fanout-split.json).
+# INITIAL_SHARDS=8 is pinned: the topology the split phase creates is the
+# one the fleet serves, and outside fleet mode the default is one shard.
+#
+#   bench/fleet/local-fanout.sh [out-dir] [hold]
 #
 # Requires target/release/{streams-slate,pilot,s3lite} (built here if
 # missing). Servers get the field-gate split knobs; desired.json is
@@ -37,24 +46,15 @@ trap cleanup EXIT
 S3_PID=$!
 sleep 1
 
-# Seed desired=2 before boot: bootstrap would publish 1 and the LB would
-# route everything to streams-1, making every segment single-owner.
-# SCALE_IN_SECS below keeps the fleet from shrinking it back.
-python3 - <<'PY'
-import boto3
-s3 = boto3.client("s3", endpoint_url="http://127.0.0.1:9500",
-    aws_access_key_id="test", aws_secret_access_key="test", region_name="local")
-s3.put_object(Bucket="fanout", Key="fleetops/fleet/desired.json",
-    Body=b'{"count":2,"reason":"seeded by local-fanout.sh","epoch":1,"computed_at_ms":0}')
-PY
-
-server() { # ordinal, port
-  env SLATE_S3_ENDPOINT=http://127.0.0.1:9500 SLATE_S3_BUCKET=fanout \
+server() { # ordinal, port, fleet prefix ("" = outside fleet mode)
+  local log="$OUT/server-$1.log"
+  [ -n "$3" ] || log="$OUT/server-$1-solo.log"
+  env ${3:+FLEET_PREFIX=$3} SLATE_S3_ENDPOINT=http://127.0.0.1:9500 SLATE_S3_BUCKET=fanout \
     SLATE_S3_REGION=local SLATE_S3_ACCESS_KEY_ID=test SLATE_S3_SECRET_ACCESS_KEY=test \
     AUTH_TOKEN=$AUTH PATH_PREFIX=fand INSTANCE_NAME="streams-$1" \
     SELF_URL="http://127.0.0.1:$2" \
     FLEET_INTERNAL_TOKEN="$FLEET_TOKEN" USAGE_STREAM_KEY="$KEY" TELEMETRY_DRAIN_SECS=1 ROLLUP=$( [ "$2" = 8091 ] && echo 1 || echo 0 ) FLEET_ALLOW_HTTP_PEERS=1 \
-    FLEET_PREFIX=fleetops FLEET_MAX=2 SCALE_IN_SECS=999999 \
+    FLEET_MAX=2 INITIAL_SHARDS=8 SCALE_IN_SECS=999999 \
     WAL_GROUP_COMMIT=1 WAL_FLUSH_GAP_MS=100 FLUSH_INTERVAL_MS=25 \
     WAL_POST_ACK_GATHER_MS=6 FRAME_COMPRESS=1 \
     L0_SST_SIZE_BYTES=16777216 MAX_UNFLUSHED_BYTES=33554432 L0_MAX_SSTS=64 \
@@ -66,17 +66,53 @@ server() { # ordinal, port
     SCALE_HOT_EVALS=1 SCALE_COOLDOWN_SECS=5 \
     RUST_LOG=warn \
     "$ROOT/target/release/streams-slate" --listen "127.0.0.1:$2" \
-    > "$OUT/server-$1.log" 2>&1 &
+    > "$log" 2>&1 &
 }
-server 1 8091; S1_PID=$!
-server 2 8092; S2_PID=$!
-
-for port in 8091 8092; do
-  for i in $(seq 1 60); do
-    curl -sf -o /dev/null -H "authorization: Bearer $AUTH" \
-      "http://127.0.0.1:$port/health" && break
-    sleep 1
+healthy() { # port...
+  for port in "$@"; do
+    for i in $(seq 1 60); do
+      curl -sf -o /dev/null -H "authorization: Bearer $AUTH" \
+        "http://127.0.0.1:$port/health" && break
+      sleep 1
+    done
   done
+}
+
+# 1. The split, outside fleet mode: streams-1 alone owns every shard.
+server 1 8091 ""; S1_PID=$!
+healthy 8091
+AUTH_TOKEN=$AUTH STREAM_KEY=$KEY LB=http://127.0.0.1:8091 \
+  A=http://127.0.0.1:8091 B=http://127.0.0.1:8091 \
+  FAN_PHASE=split FAN_STATE="$OUT/fanout-split.json" \
+  python3 "$HERE/fanout-probe.py"
+kill -TERM "$S1_PID"
+wait "$S1_PID" 2>/dev/null || true
+
+# 2. The fleet forms over the split stream.
+# Seed desired=2 before boot: bootstrap would publish 1 and the LB would
+# route everything to streams-1, making every segment single-owner.
+# SCALE_IN_SECS below keeps the fleet from shrinking it back.
+python3 - <<'PY'
+import boto3
+s3 = boto3.client("s3", endpoint_url="http://127.0.0.1:9500",
+    aws_access_key_id="test", aws_secret_access_key="test", region_name="local")
+s3.put_object(Bucket="fanout", Key="fleetops/fleet/desired.json",
+    Body=b'{"count":2,"reason":"seeded by local-fanout.sh","epoch":1,"computed_at_ms":0}')
+PY
+
+server 1 8091 fleetops; S1_PID=$!
+server 2 8092 fleetops; S2_PID=$!
+healthy 8091 8092
+# Every ring lists both servers before the LB routes.
+for i in $(seq 1 60); do
+  ok=1
+  for port in 8091 8092; do
+    curl -s -H "authorization: Bearer $AUTH" "http://127.0.0.1:$port/v1/debug/load" \
+      | python3 -c 'import json,sys; a=json.load(sys.stdin)["ring"]["active"]; sys.exit(0 if {"streams-1","streams-2"} <= set(a) else 1)' \
+      2>/dev/null || ok=0
+  done
+  [ "$ok" = 1 ] && break
+  sleep 1
 done
 
 env MODE=lb UPSTREAMS="http://127.0.0.1:8091,http://127.0.0.1:8092" \
@@ -100,6 +136,7 @@ if [ "${2:-}" = hold ]; then
 fi
 AUTH_TOKEN=$AUTH STREAM_KEY=$KEY LB=http://127.0.0.1:8090 \
   A=http://127.0.0.1:8091 B=http://127.0.0.1:8092 \
+  FAN_PHASE=verdicts FAN_STATE="$OUT/fanout-split.json" \
   python3 "$HERE/fanout-probe.py"
 RC=$?
 echo "fanout probe rc=$RC"

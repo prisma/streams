@@ -4,6 +4,7 @@
 # certification instrument (sealed-publish delay).
 source bench/canary/livefeed-canary.mjs "const instEnv = (name) => ({"
 note The canary spreads ...process.env first (non-hermetic): the invoking shell's variables reach the server too. Modelled hermetically here.
+note The canary first boots streams-1 alone without FLEET_PREFIX to take the blackhole campaign's split (a server in fleet mode splits no stream, edge change #119), then this fleet-mode boot over the same storage. Modelled here: the fleet-mode boot.
 note AUTH_TOKEN is the canary's DEBUG_TOKEN, substituted by a placeholder; USAGE_STREAM_KEY is the canary's own 32 x 0x09 test key. Temp-dir paths use a fixed stand-in.
 argv --listen 127.0.0.1:9872 --s3-endpoint http://127.0.0.1:9873 --bucket lfcanary-placeholder --flush-interval-ms 1 --wal-flush-gap-ms 2
 

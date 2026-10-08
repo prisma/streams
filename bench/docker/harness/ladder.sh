@@ -6,6 +6,10 @@ S=$(dirname "$0"); P=${1:?passtag}
 CD=/Users/sorenschmidt/code/streams/bench/docker
 LOG="$S/ladder-$P.log"
 say() { echo "[$(date +%T)] $*" | tee -a "$LOG"; }
+# D1, D2 and D4 split on streams-1 outside fleet mode, then read their
+# lineage through the fleet (phases.sh; the split gate, edge change #119).
+LADDER_CD=$CD
+. "$S/phases.sh"
 
 say "=== fresh world for pass $P (emulator recreated; a pass writes ~2 GB raw and the in-memory store must start empty) ==="
 # STOP servers BEFORE wiping the world: live servers write manifests
@@ -19,20 +23,26 @@ sleep 12
 curl -s -X PUT "http://127.0.0.1:9500/ladder/ladder-fleet/fleet/desired.json" -d '{"count":3,"reason":"ladder","epoch":1,"computed_at_ms":0}' -o /dev/null
 sleep 5
 
-say "=== D1 ($P) ==="
+say "=== D1 ($P): split on streams-1 outside fleet mode ==="
+ladder_solo
 "$S/setup.sh" "d1$P"
 rm -f "/tmp/ladder-seqs-d1$P.json"
 BATCH=100 python3 -u "$S/driver.py" "d1$P" "$S/key.txt" 4300 360 100 32 | tee -a "$LOG"
 sleep 20
+say "D1: the fleet forms over the split stream; order check through it"
+ladder_fleet
 python3 "$S/checker.py" "d1$P" "$S/key.txt" --expect-segments 2 | tail -4 | tee -a "$LOG"
 
-say "=== D2 ($P) ==="
+say "=== D2 ($P): recursive splits and merges on streams-1 outside fleet mode ==="
+ladder_solo
 "$S/setup.sh" "d2$P"
 rm -f "/tmp/ladder-seqs-d2$P.json"
 BATCH=200 python3 -u "$S/driver.py" "d2$P" "$S/key.txt" 14000 420 100 32 | tee -a "$LOG"
 say "D2 merge watch (10 min)"
 sleep 600
 python3 "$S/showmap.py" | tee -a "$LOG"
+say "D2: the fleet forms over the stream; order check through it"
+ladder_fleet
 python3 "$S/checker.py" "d2$P" "$S/key.txt" | tail -4 | tee -a "$LOG"
 
 say "=== D3 ($P): absorb-pause on the OWNER of the test stream ==="
@@ -80,9 +90,8 @@ python3 "$S/checker.py" "$D3STREAM" "$S/key.txt" | tail -3 | tee -a "$LOG"
 curl -s -m 10 -X POST "http://127.0.0.1:$OWNPORT/v1/debug/absorb-pause?on=0" >>"$LOG" 2>&1
 sleep 5
 
-say "=== D4 ($P): fault-injected splits ==="
-(cd "$CD" && docker compose -f compose.yml -f compose.d4.yml up -d) >>"$LOG" 2>&1
-sleep 5
+say "=== D4 ($P): fault-injected splits on streams-1 outside fleet mode ==="
+ladder_solo -f compose.d4.yml
 "$S/setup.sh" "d4$P"
 rm -f "/tmp/ladder-seqs-d4$P.json"
 BATCH=100 python3 -u "$S/driver.py" "d4$P" "$S/key.txt" 4300 300 100 32 | tee -a "$LOG"
@@ -96,9 +105,9 @@ python3 "$S/showmap.py" | tee -a "$LOG"
     RESUMES=$(for i in 1 2 3; do docker logs --since 10m "slate-ladder-streams-$i-1" 2>&1; done | grep -c "resumed crashed split" || true)
     say "D4 faults injected: $FAULTS, crash-resumes: $RESUMES"
     if [ "$FAULTS" -lt 1 ] || [ "$RESUMES" -lt 1 ]; then say "D4 FAIL: fault path not exercised (rung vacuous)"; exit 1; fi
-    python3 "$S/checker.py" "d4$P" "$S/key.txt" --expect-segments 2 | tail -3 | tee -a "$LOG"
-(cd "$CD" && docker compose up -d --force-recreate streams-1 streams-2 streams-3) >>"$LOG" 2>&1
-sleep 8
+say "D4: the fleet forms (without the fault overlay) over the stream; order check through it"
+ladder_fleet
+python3 "$S/checker.py" "d4$P" "$S/key.txt" --expect-segments 2 | tail -3 | tee -a "$LOG"
 
 say "=== D5 ($P): 30-min chaos soak ==="
 bash "$S/d5run.sh" "d5$P" 1800 | tee -a "$LOG"

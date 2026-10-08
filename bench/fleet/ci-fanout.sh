@@ -50,7 +50,10 @@ curl -s -D- -o /dev/null "$S1/health" | grep -qi "prisma-streams-origin" \
 pass "every response carries Prisma-Streams-Origin"
 
 # ---- functional cross-owner battery ------------------------------------
+# The rig split its stream on streams-1 outside fleet mode before the
+# fleet formed (local-fanout.sh; edge change #119): the verdicts run over it.
 AUTH_TOKEN=$AUTH STREAM_KEY=$KEY LB=$LB A=$S1 B=$S2 \
+  FAN_PHASE=verdicts FAN_STATE="$OUT/fanout-split.json" \
   python3 "$HERE/fanout-probe.py" || fail "cross-owner battery"
 pass "cross-owner reads/scan/pull/settle/deletion"
 

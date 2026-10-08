@@ -1,0 +1,11 @@
+# Ladder overlay: streams-1 OUTSIDE fleet mode. A server in fleet mode
+# splits no stream (the split gate, edge change #119), so the rungs that
+# need splits (D1, D2, D4) drive streams-1 alone with FLEET_PREFIX unset
+# (no fleet loop, no ring: it owns every shard and its scaler may split),
+# then recreate all three in fleet mode over the same PATH_PREFIX and
+# read the lineage through the fleet (harness/phases.sh).
+#   docker compose stop streams-2 streams-3
+#   docker compose -f compose.yml [-f compose.d4.yml] -f compose.solo.yml up -d --force-recreate streams-1
+services:
+  streams-1:
+    command: ["sh", "-c", "unset FLEET_PREFIX; exec streams-slate --listen 0.0.0.0:8080"]

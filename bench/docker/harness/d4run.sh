@@ -5,13 +5,20 @@
 #   path must self-heal via resume_split with zero client errors.
 # Phase B (real kill): docker kill a server mid-run; fencing + replay-to
 #   must keep the driver at zero errors.
+# The splits run on streams-1 outside fleet mode (a server in fleet mode
+# splits no stream, edge change #119); the order check runs through the
+# fleet formed over the same PATH_PREFIX afterwards (phases.sh).
 set -e
 S=$(dirname "$0")
 STREAM=${1:-d4s}
+. "$S/phases.sh"
+ladder_solo -f compose.d4.yml
 "$S/setup.sh" "$STREAM"
 rm -f "/tmp/ladder-seqs-$STREAM.json"
 echo "=== A: drive past hot with fault injection ON (compose override) ==="
 BATCH=100 python3 -u "$S/driver.py" "$STREAM" "$S/key.txt" 4300 240 100 32
 python3 "$S/showmap.py"
+echo "=== the fleet forms (without the fault overlay) over the stream ==="
+ladder_fleet
 echo "=== checker (must PASS despite injected crash) ==="
 python3 "$S/checker.py" "$STREAM" "$S/key.txt"

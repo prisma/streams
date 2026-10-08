@@ -12,6 +12,7 @@ from a scratchpad path (`platform-token.txt`, `key.txt`, `bkey-*.json`,
 | file | role |
 |---|---|
 | `ladder.sh <tag>` | full pass: fresh world → D1 → D2 → D3 → D4 → D5 |
+| `phases.sh` | sourced: `ladder_solo` (streams-1 alone outside fleet mode, `../compose.solo.yml`) and `ladder_fleet` (all three in fleet mode, every ring lists all three); D1, D2 and D4 split in the first and check order through the second, because a server in fleet mode splits no stream (edge change #119) |
 | `driver.py` | idempotent-producer load generator (docker ports or `CLUSTER_URLS`) |
 | `checker.py` | per-key gapless order check across the full segment lineage |
 | `setup.sh` | create one scaled stream + seed `desired.json` |
