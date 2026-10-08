@@ -1526,11 +1526,18 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
    retries a key's later messages after `msg.retry()` come later, together
    (T10).
 2. **The 100 ms write tier**, the single tier for everyone, with the WAL
-   failsafe at 60 s and the usage drain at 8 s (each an edge record). The gap and the failsafe are on slate (#97, #98, 2026-10-08); the
-   8 s drain is built on branch `tier100` and waits for the owner's word on
-   its re-pinned R09 mechanism test, the cross-server split gate waits for
-   the owner's choice on CI's `livefeed-fleet-cert` split, and the fleet
-   shard default waits behind the gate (`~/.streams-k2/analysis/tier100/`).
+   failsafe at 60 s and the usage drain at 8 s (each an edge record).
+   **Implemented:** `WAL_FLUSH_GAP_MS` defaults to 100 (edge record #97),
+   SlateDB's own flush timer on a shard log under the pump runs every 60 s
+   plus the per-shard offset (#98), `TELEMETRY_DRAIN_SECS` defaults to 8
+   (#117; its R09 mechanism test re-pinned on the owner's approval of
+   2026-10-08), and the per-stream usage answer states the read-loss window
+   of that cadence (#118), each awaiting ratification. The cross-server
+   split gate in fleet mode (#119, 14.6; CI's `livefeed-fleet-cert` and the
+   other split rigs take their split outside fleet mode first) and the
+   fleet shard default (#120, 14.4; the fleet rigs pin their shard counts
+   until `home-v1`) land with it. The 100 ms point of 14.8 is not yet
+   measured.
    Two drain bounds follow (T9, 2026-10-08): a round takes up to 256 dirty
    rows per shard, not 64, and a graceful stop's terminal round is bounded
    by min(cadence, 5 s), not one cadence, each with a low-risk edge record.
@@ -1579,7 +1586,13 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
   `src/ownership.rs`), `S = n` leaves servers without a shard: over
   `streams-1..n` the draw is `[0, 2]` for 2 over 2, `[0, 1, 1]` for 2 over 3,
   `[1, 1, 0, 2]` for 4 over 4 and `[1, 1, 0, 1, 1]` for 4 over 5 (the old 16
-  over 4 drew `[4, 3, 1, 8]`). Only the rebalancer evens it out, and only
+  over 4 drew `[4, 3, 1, 8]`). While an autoscaled fleet grows from one
+  server (`FLEET_MIN` 1), the step to two servers moves both shards of a
+  `FLEET_MAX` 2 or 3 fleet to `streams-2` at once, and with 4 shards the
+  step from three servers to four leaves `streams-3` without a shard (edge
+  record #120). Until `home-v1` the fleet rigs pin their own shard counts
+  (16 over four servers, 8 over two or three; the owner's decisions of
+  2026-10-08, T3 and T8). Only the rebalancer evens it out, and only
   once the loaded server's absorber lags more than `REBALANCE_LAG_SECS` (60 s)
   for two ticks; the load-aware return-home then keeps the move.
 - **Rejected:** a WAL journal shared by a cell's servers (servers must stay

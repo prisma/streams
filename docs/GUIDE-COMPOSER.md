@@ -217,9 +217,10 @@ const env = {
   // "invalid configuration".
   MAX_UNFLUSHED_BYTES: "67108864",
 };
+// One shard, the default out of fleet mode: every shard is its own
+// SlateDB and WAL writer, so run as few as the load needs (RUNBOOK §3.2).
 const args = [
   "--listen", `0.0.0.0:${port}`,
-  "--initial-shards", "4",
   "--path-prefix", "composer",
   "--conformance-default-key", DEFAULT_KEY,
 ];
