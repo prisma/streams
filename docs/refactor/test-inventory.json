@@ -2262,6 +2262,28 @@
     "scenarios": []
   },
   {
+    "name": "a_woken_long_poll_on_applied_records_without_room_keeps_its_durable_cursor_at_the_frontier",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "37f08e8ab86e8e1241e9f1cb430ebe1c33338b69b90e66d5145217a008cb4784",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_memory.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_woken_long_poll_sealed_while_it_waits_at_the_line_answers_the_seal_at_once",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7dfe100f67550ece8669464cbecd6c08402297941c7874fd845a3f0464472cd5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_memory.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_woken_long_poll_without_room_ends_its_wait_as_a_timeout_holding_its_cursor",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

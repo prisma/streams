@@ -738,3 +738,137 @@ async fn a_woken_pull_without_room_for_its_coverage_answers_empty_and_leases_not
     );
     engine_shutdown(&cell.state).await;
 }
+
+/// The answer to a long-poll on project 0's `lp` (created here) that
+/// parks, finds an unread page of `big` holding its project's line of one
+/// page budget when it wakes, and is woken by `then` (a request on `lp`):
+/// (its status, headers, body, the wait in ms, `then`'s status). The
+/// unread page is released before it returns.
+async fn woken_at_the_line(cell: &Cell, poll: &str, then: (&str, &str, &[u8])) -> WokenAnswer {
+    let page = big_stream(cell, 0).await;
+    let created = cell
+        .call(0, "PUT", "/v1/streams/lp", br#"{"format":{"kind":"json"}}"#)
+        .await;
+    assert_eq!(created.0, 201);
+    cell.state
+        .admission
+        .set_project_memory_pressure_bytes(PAGE_BUDGET);
+    let started = Instant::now();
+    let wake = async {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while cell.state.admission.parked() < 1 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let unread = never_read(cell, 0, "GET", RECORDS, b"").await;
+        assert_eq!(settle_at(cell, 0, (page, page)).await, (page, page));
+        let (method, path, body) = then;
+        (unread, cell.call(0, method, path, body).await.0)
+    };
+    let ((status, headers, body), (unread, woke)) =
+        futures_util::future::join(cell.call(0, "GET", poll, b""), wake).await;
+    let waited = started.elapsed().as_millis();
+    drop(unread);
+    assert_eq!(settle_at(cell, 0, (0, 0)).await, (0, 0));
+    (status, headers, body, waited, woke)
+}
+
+type WokenAnswer = (
+    u16,
+    std::collections::HashMap<String, String>,
+    Vec<u8>,
+    u128,
+    u16,
+);
+
+/// Waits, up to 10 s, until `ready` holds.
+async fn until(ready: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ready() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(ready(), "never ready");
+}
+
+/// An applied long-poll woken by records its project's line has no room
+/// for answers its timeout with its durable cursor at the durable frontier
+/// it waited with, never past it (`resumed` caps the durable position at
+/// the start). With the shard's dispatch held, r1 is applied but not
+/// durable when the poll starts from the applied tail, and r2 wakes it;
+/// once dispatch resumes, a read from that durable cursor serves r1 and r2.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_woken_long_poll_on_applied_records_without_room_keeps_its_durable_cursor_at_the_frontier()
+ {
+    const LP: &str = "/v1/streams/lp/records";
+    let cell = open_cell(CellSpec::open(1)).await;
+    let page = big_stream(&cell, 0).await;
+    let json = br#"{"format":{"kind":"json"}}"#;
+    assert_eq!(cell.call(0, "PUT", "/v1/streams/lp", json).await.0, 201);
+    assert_eq!(cell.call(0, "POST", LP, br#"{"n":0}"#).await.0, 200);
+    cell.state
+        .admission
+        .set_project_memory_pressure_bytes(PAGE_BUDGET);
+    let sref = ProjectId::new(&project(0)).unwrap().stream_ref("lp");
+    let desc = cell.state.registry.get(&sref).await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
+    let engine = cell.state.engine_for(&route).await.unwrap();
+    let handle = engine.stream_handle(seg.identity).await.unwrap();
+    let applied = || handle.state.lock().unwrap().applied.next;
+    let guard = engine.test_hold_dispatch().await;
+    let polled = async {
+        until(|| applied() >= 2).await;
+        let poll = "/v1/streams/lp/records:long-poll?cursor=now&deliver=applied&waitMs=1500";
+        let answer = cell.call(0, "GET", poll, b"").await;
+        drop(guard);
+        answer
+    };
+    let woken = async {
+        until(|| applied() >= 2 && cell.state.admission.parked() >= 1).await;
+        let unread = never_read(&cell, 0, "GET", RECORDS, b"").await;
+        let held = settle_at(&cell, 0, (page, page)).await;
+        (
+            unread,
+            held,
+            cell.call(0, "POST", LP, br#"{"n":2}"#).await.0,
+        )
+    };
+    let r1 = cell.call(0, "POST", LP, br#"{"n":1}"#);
+    let ((status, headers, body), r1, (unread, held, r2)) =
+        futures_util::future::join3(polled, r1, woken).await;
+    drop(unread);
+    assert_eq!(settle_at(&cell, 0, (0, 0)).await, (0, 0));
+    assert_eq!(
+        (held, r1.0, r2, status, body.len()),
+        ((page, page), 200, 200, 204, 0)
+    );
+    let durable = &headers["prisma-durable-cursor"];
+    let from = format!("{LP}?cursor={durable}");
+    let (status, _, read) = cell.call(0, "GET", &from, b"").await;
+    assert_eq!(
+        (status, String::from_utf8_lossy(&read).as_ref()),
+        (200, r#"[{"n":1},{"n":2}]"#)
+    );
+    engine_shutdown(&cell.state).await;
+}
+
+/// A long-poll whose stream is sealed while it waits at its project's line
+/// answers the seal at once: a seal brings no records past its cursor, so
+/// it takes no reservation again and never waits for room.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_woken_long_poll_sealed_while_it_waits_at_the_line_answers_the_seal_at_once() {
+    let cell = open_cell(CellSpec::open(1)).await;
+    let poll = "/v1/streams/lp/records:long-poll?cursor=now&waitMs=1500";
+    let seal = ("POST", "/v1/streams/lp:seal", b"{}".as_slice());
+    let (status, headers, _, waited, sealed) = woken_at_the_line(&cell, poll, seal).await;
+    assert_eq!(
+        (
+            sealed,
+            status,
+            headers.get("prisma-sealed").map(String::as_str)
+        ),
+        (200, 204, Some("true")),
+        "after {waited} ms"
+    );
+    assert!(waited < 1_000, "answered after {waited} ms");
+    engine_shutdown(&cell.state).await;
+}
