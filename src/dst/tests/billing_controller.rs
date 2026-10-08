@@ -85,9 +85,9 @@ async fn r09_active_telemetry_cancels_entered_storage_and_preserves_debt() {
     .expect("both real storage operations must be entered before cancellation");
     assert_eq!(state.billing.unflushed_reads().2, 0, "drain owns the batch");
     // Item 26: a stop runs one terminal round; it parks on the same held
-    // PUT and is cut after one drain cadence (8 s), so production's 10 s
-    // grace sits above the cadence and the stop needs no abort (R09).
-    let cadence = Duration::from_secs(state.config.billing.telemetry_drain_secs);
+    // PUT and is cut after min(cadence, 5 s), 5 s at the default 8 s (T9(b)),
+    // so production's 10 s grace sits above the bound: no abort (R09).
+    let cadence = Duration::from_secs(5);
     let stop = std::time::Instant::now();
     let report = tasks.shutdown(Duration::from_secs(10)).await;
     assert!(
@@ -96,7 +96,7 @@ async fn r09_active_telemetry_cancels_entered_storage_and_preserves_debt() {
     );
     assert!(
         stop.elapsed() >= cadence,
-        "the terminal round must be attempted and given one cadence, not {:?}",
+        "the terminal round must be attempted and given its bound, not {:?}",
         stop.elapsed()
     );
     assert_eq!(report.outcomes.len(), 2);

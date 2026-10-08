@@ -134,7 +134,7 @@ which `FLUSH_INTERVAL_MS` set before:
 | `BILLING_MODE` | `off` | `required` = refuse to serve without ledger key, real identities, an open read spool (and rollup DB on the rollup owner) |
 | `ACCOUNT_ID` / `PROJECT_ID` / `CELL_ID` | `acct_local`/`proj_local`/`local` | the cell's tenant identity (one project per cell); placeholders are refused in required mode |
 | `ROLLUP` | — | `1` = this instance runs the usage rollup consumer + month closer |
-| `TELEMETRY_DRAIN_SECS` | 8 | drain cadence: sealed reads + dirty snapshots -> `_usage`, and the ops, audit and fleet-event journals; usage reaches the usage answers up to one cadence (plus the rollup's 2 s poll) after it is metered, reads only once their 10 s window has sealed. Also bounds a graceful stop's terminal round: keep it below the 10 s supervisor grace. 2 before the write tier (edge change #117) |
+| `TELEMETRY_DRAIN_SECS` | 8 | drain cadence: sealed reads + dirty snapshots -> `_usage`, and the ops, audit and fleet-event journals; usage reaches the usage answers up to one cadence (plus the rollup's 2 s poll) after it is metered, reads only once their 10 s window has sealed. A graceful stop's terminal round gets one cadence and at most 5 s (edge change #122), so any value stays inside the 10 s supervisor grace. 2 before the write tier (edge change #117) |
 | `OUTBOX_SWEEP_SECS` | 300 | owned-shard outbox sweep + billing tombstone walk cadence |
 | `FORK_DEBT_SWEEP_SECS` | 300 | pause between fork-debt reconciler circles (releases source references deleted forks still owe; a backlog, and the one-time backfill, drain back to back); alert `fork_debt_stale` fires after 3 periods (§8) |
 | `MONTH_CLOSE_GRACE_MS` | 86400000 | wait after a month boundary before closing it |

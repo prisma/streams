@@ -423,7 +423,7 @@ A restart creates a new boot ID; counters restart from zero without re-billing p
 
 ### 7.4 Accuracy contract
 
-- Graceful stops seal the active read window and drain it in one terminal round bounded by one drain cadence (`TELEMETRY_DRAIN_SECS`, which must stay below the 10 s supervisor grace); what the spool accepted is durable, and a store that does not answer inside the cadence leaves the batch under the same custody as an interrupted round.
+- Graceful stops seal the active read window and drain it in one terminal round bounded by one drain cadence and at most 5 s (`TELEMETRY_DRAIN_SECS`; edge change #122, one cadence before), so it ends inside the 10 s supervisor grace whatever the cadence; what the spool accepted is durable, and a store that does not answer inside that bound leaves the batch under the same custody as an interrupted round.
 - Hard process loss may undercount at most one active flush interval plus one drain cadence (18 s at the defaults), the oldest a window gets before the round that seals and spools it. The per-stream answer's `metering.possibleReadLossWindowSeconds` (§10.2) states this window, the flush interval plus one drain cadence (it stated the flush interval alone, 10, before edge change #118).
 - No restart path can overcount an already emitted batch.
 - `/operator` exposes current unflushed read bytes and the maximum possible loss window.

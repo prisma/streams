@@ -823,6 +823,19 @@
     "scenarios": []
   },
   {
+    "name": "a_graceful_stop_cuts_a_wedged_terminal_round_at_five_seconds",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0314f8816ae4a959894be22b1a49476172c0de5c3ddf668e74e855f8b479457d",
+    "mechanisms": [],
+    "configuration": [
+      "let spool_store = FaultStore::uniform(mem(), 911, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/tests/billing_drain_bounds.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_half_deleted_fork_finishes_its_cleanup",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -6739,7 +6752,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "2650b67760cf16525b0b5fb1eb18a93d592deb67befc65ed391860a5c9ea1673",
+    "function_sha256": "a50e7d655155488987c4d9515bd8d1fb83f82e44835023eb6abf46cb8db604fd",
     "mechanisms": [],
     "configuration": [
       "..FaultPlan::CLEAN",
