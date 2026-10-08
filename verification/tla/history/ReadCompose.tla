@@ -158,7 +158,7 @@ PageEnd(o) == o
 \* h is a page edge: no page holds both h - 1 and h.  Appends, the history
 \* frontier and the absorbed boundary only ever land on page edges.
 PageEdge(h) == h = 0 \/ h = N \/ (h \in 1..(N - 1) /\ PageEnd(h - 1) = h - 1)
-\* page_read::PageScan (c9a0a8e7): every page a history scan meets must
+\* page_read::PageScan (13aee2c0): every page a history scan meets must
 \* start at the offset due and the pages must reach the window's end, so a
 \* lost page fails the read.  FALSE is the read before that fix, which
 \* passed a lost page's records off as consumed progress.
