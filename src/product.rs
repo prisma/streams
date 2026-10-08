@@ -621,13 +621,13 @@ pub(crate) fn auth_failure_response(e: &crate::auth::AuthError) -> Response {
         ),
     };
     let mut r = perr(status, e.kind(), msg, None, retryable);
-    if refusal == R::WrongCell {
-        // §8.1 fallback form: the header survives body-less handling.
-        r.headers_mut().insert(
-            "prisma-error-code",
-            axum::http::HeaderValue::from_static("wrong_cell"),
-        );
-    }
+    let headers = r.headers_mut();
+    match refusal {
+        // §8.1 fallback form (survives body-less handling); a stale feed's 503: retry in 1 s.
+        R::WrongCell => headers.insert("prisma-error-code", HeaderValue::from_static("wrong_cell")),
+        R::FeedStale => headers.insert("retry-after", HeaderValue::from_static("1")),
+        R::Denied(_) | R::Unverified => None,
+    };
     // Journal scope (§10.4): wrong_cell is PLACEMENT (§8.1 — the
     // credential is fine) and the stale classes are the cell's OWN
     // feed health — neither is a denial of the caller. Journaling

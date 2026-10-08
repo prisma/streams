@@ -413,6 +413,14 @@ async fn every_auth_refusal_keeps_its_response() {
             placement,
             "{kind}"
         );
+        // Shared cells Q10(c): a stale feed's 503 asks for a retry after
+        // 1 s, so a raw client waits as the SDK does; nothing else does.
+        let stale = status == StatusCode::SERVICE_UNAVAILABLE;
+        assert_eq!(
+            response.headers().get("retry-after").map(|v| v.as_bytes()),
+            stale.then_some(b"1".as_slice()),
+            "{kind}"
+        );
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
