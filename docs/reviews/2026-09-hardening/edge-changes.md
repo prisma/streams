@@ -146,7 +146,7 @@ Surface values: **product** is the `/v1/streams` API; **raw** is the `/v1/stream
 | 119 | 894c9595, d582cafc | While the server runs in a fleet (a published ring of any size) the scaler splits no stream: a hot stream stays one segment on its owner and meets its per-stream limit with 429 | both | medium | owner decision (2026-10-07, "Launch shape and routing"); awaits ratification |
 | 120 | 137dfee7 | A fleet that does not set INITIAL_SHARDS starts a fresh topology with the largest power of two at most FLEET_MAX shards, and one that sets more than FLEET_MAX is warned | process | medium | owner decision (2026-10-07, "Shards and WAL writers"); awaits ratification |
 | 121 | 030eea63 | One usage drain round takes up to 256 of each shard's dirty rows, not 64: a shard that dirties more than 64 segments within one cadence reaches the usage answers in a quarter of the rounds | product | low | owner decision (2026-10-08, "all recommended", T9(a)); awaits ratification |
-| 123 | this record's commit | A consumer pull leases consecutive records of a routing key up to max, each under its own lease token, and the key stays blocked for every other pull while any of them is leased | product | medium | owner decision (2026-10-07, "Consumer groups"); awaits ratification |
+| 123 | 412a560a, b0e308c0 | A consumer pull leases consecutive records of a routing key up to max, each under its own lease token, and the key stays blocked for every other pull while any of them is leased | product | medium | owner decision (2026-10-07, "Consumer groups"); awaits ratification |
 
 ## High risk (10)
 
@@ -344,7 +344,7 @@ In each of these changes, a request that used to succeed can now fail permanentl
 
 These changes alter a status, error code or retry behaviour on an error case clients may branch on, or change the semantics of a successful path (redelivery timing, connection lifetime, subscription lifetime, new quota refusals).
 
-### #123 this record's commit — A consumer pull leases consecutive records of a routing key up to max, each under its own lease token, and the key stays blocked for every other pull while any of them is leased
+### #123 412a560a — A consumer pull leases consecutive records of a routing key up to max, each under its own lease token, and the key stays blocked for every other pull while any of them is leased
 
 - **Program item:** The owner's decision of 2026-10-07 (README, "Owner decisions", row "Consumer groups": "A pull may lease up to its `max` consecutive records of one routing key to one consumer while the key stays blocked for the group's other consumers; acks stay per record, in any order; unacked records return after their visibility window from the lowest unacked offset"; NEXT-WORK §14.2 item 1). A consumer says how many records it takes per pull (`max`), acks them one by one (`:settle` with per-record lease tokens), and may stop part-way. Until this change one pull took at most one record per routing key, so a producer that appends 1,000 records under one key was consumed one record per pull.
 - **Surface:** product
