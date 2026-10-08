@@ -910,7 +910,10 @@ before marking it complete."
 These block deployment sign-off, not merging (README, "Deployment gates"):
 - Compute validation of the wrapper -> binary -> platform lifecycle: startup,
   readiness, restart, signal delivery (does Compute signal PID 1, the process
-  group, or tear the VM down?), memory pressure, rollback.
+  group, or tear the VM down?), memory pressure, rollback. The wrapper's feed
+  polling (#131: presigned URLs with `If-None-Match` every 15 s), tested only
+  against a local fake store, is validated in the Q5 certification run in
+  fra (landing call C9, 2026-10-08), with no extra deployment.
 - The Compute deployment owner enumerates every target project and exports
   its redacted configuration; `scripts/effective-config/` then re-runs the
   comparison and boot validation on the final candidate with the actual
@@ -1525,7 +1528,12 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
    reviews, KANI-017 on pages, the new KANI-097, the TLA-016 and TLA-018
    page models, the five records (#125-#129, ratified) and L2-L4; TLA-016's
    and TLA-018's receipts are re-recorded before the model commit lands, and
-   L5's measurements follow (14.8). After landing, the keys CLI decrypts a page on the library crate
+   L5's measurements are part of Q0 (14.8). **Needs the owner (C10 (c),
+   2026-10-08):** removing `read_payload`'s dead `compress` parameter, which
+   makes #128 structural, needs two exception-growth rows, not the one C10
+   approved: `render_raw_read`'s row takes the new call's fingerprint, and
+   `render_product_read`'s row gains one (`~/.streams-k2/analysis/final-batch.md`
+   has the exact rows and the patch). After landing, the keys CLI decrypts a page on the library crate
    (crypto review F9) and `frame_bytes` keeps its name until the billing
    meter renames it (L6). Run leases' option 3 and the SDK iterator that
    retries a key's later messages after `msg.retry()` come later, together
@@ -1537,15 +1545,16 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
    plus the per-shard offset (#98), `TELEMETRY_DRAIN_SECS` defaults to 8
    (#117; its R09 mechanism test re-pinned on the owner's approval of
    2026-10-08), and the per-stream usage answer states the read-loss window
-   of that cadence (#118), each awaiting ratification. The cross-server
+   of that cadence (#118); #97 and #98 await ratification, and the owner
+   ratified #117 and #118 on 2026-10-08 (landing call C3). The cross-server
    split gate in fleet mode (#119, 14.6; CI's `livefeed-fleet-cert` and the
    other split rigs take their split outside fleet mode first) and the
    fleet shard default (#120, 14.4; the fleet rigs pin their shard counts
    until `home-v1`) land with it. The 100 ms point of 14.8 is not yet
    measured.
    Two drain bounds follow (T9, 2026-10-08): a round takes up to 256 dirty
-   rows per shard, not 64 (implemented, edge record #121, awaiting
-   ratification), and a graceful stop's terminal round is bounded by
+   rows per shard, not 64 (implemented, edge record #121, ratified on
+   2026-10-08, landing call C3), and a graceful stop's terminal round is bounded by
    min(cadence, 5 s), not one cadence (implemented, edge record #122,
    awaiting ratification; its R09 mechanism test re-pinned, which the owner
    approved on 2026-10-08, landing call C6).
@@ -1589,7 +1598,8 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
   `next_pow2(4 x FLEET_MAX)`, 16 shards for a 4-server cell), and the notice
   inverts: `ShardsExceedFleetMax` warns when a fleet sets `INITIAL_SHARDS`
   above `FLEET_MAX` (more WAL writers than servers), where `CoarseInitialShards`
-  warned below `4 x FLEET_MAX`. Edge record #120, awaiting ratification. Until
+  warned below `4 x FLEET_MAX`. Edge record #120, ratified on 2026-10-08
+  (landing call C3). Until
   `home-v1` (14.5) replaces the rendezvous draw (`ring_pick`,
   `src/ownership.rs`), `S = n` leaves servers without a shard: over
   `streams-1..n` the draw is `[0, 2]` for 2 over 2, `[0, 1, 1]` for 2 over 3,
@@ -1612,8 +1622,11 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
   axis; an edge record); the heap profile and fix of 14.7's RSS retention
   (Q0); the profile's Q1(A) values (`PROJECT_MEMORY_PRESSURE_BYTES=33554432`,
   `MAX_REQUEST_BODY_BYTES=8388608`; edge #110 amended; the C5 and C6 legs);
-  the wrapper's feed polling (Q6(a)) and the release posture on a fleet-off
-  cell (Q6(b)), each with an edge record; idle journal retirement (Q10(a))
+  the wrapper's feed polling (Q6(a), #131; it re-opened the Compute
+  lifecycle gate, and is validated in the Q5 certification run in fra with no
+  extra deployment, landing call C9 of 2026-10-08: if presigned conditional
+  GETs misbehave there, the fallback is a stat then a GET) and the release
+  posture on a fleet-off cell (Q6(b)), each with an edge record; idle journal retirement (Q10(a))
   and the lifecycle walk's close retiring an expired stream's journal; the
   runbook (key custody, the keys-feed cutover, u = 0.5 packing by hand, what
   to alert on); `cell-admin rotate`; then the harness and the certification
@@ -1661,7 +1674,8 @@ segment) are separate layers, as Pravega's containers and segments are.
   `dst_tests::scaler_split_gate`; a hot stream then gets `429` at its
   per-stream limit instead. A ring of one is gated too: a split there
   became cross-server once the ring grew (review finding F1, option B).
-  Fleet off still splits. Edge record #119, awaiting ratification. The
+  Fleet off still splits. Edge record #119, ratified on 2026-10-08 (landing
+  call C3). The
   split package's last commit removes the gate and inverts those DSTs.
 - The Compute cluster rung C1 (`bench/docker/harness/cluster-run.sh`) split
   inside a four-server fleet, which the gate refuses. Implemented (T7,
@@ -1683,7 +1697,8 @@ segment) are separate layers, as Pravega's containers and segments are.
   load is shed from its first request. Needs a heap profile.
   On the single-server shared cell (14.4) that is an instance-wide write shed
   no tenant caused and nothing attributes; it is fixed before the first cell
-  (README, "Shared cells Q0").
+  (README, "Shared cells Q0"). Layout 5's heap profiles and its
+  single-record rerun (L5, 14.8) are part of that work.
 - **Needs the owner: the absorber stalls at the history L0 cap.** A history
   partition's Db learns that compaction freed an L0 slot only when it writes
   its own manifest, which no flush can do at the cap, or at its manifest poll
@@ -1725,11 +1740,12 @@ segment) are separate layers, as Pravega's containers and segments are.
   (runs R1-R4), about 12 h plus 1 h of builds. The 27 MB/s of July was
   x-padded data compressed 17-30x with absorption deferred; nothing shows a
   regression for the same job.
-- Layout 5, after it lands (L5, 2026-10-08): one heap profile per arm, with
-  Q0's memory work (incompressible data reaches the RSS shed line sooner; the
-  cause is not found), and a controlled single-record rerun on an idle host
-  (1.25x layout 4's CPU; the codec explains 0.02-0.05 ms of the 0.16 ms
-  gap). No rule that skips zstd for small bodies: stored bytes are billed,
+- Layout 5, after it lands (L5, 2026-10-08), part of Q0 (README "Shared
+  cells Q0"; 14.7's RSS retention), so before the first cell: one heap
+  profile per arm (incompressible data reaches the RSS shed line sooner;
+  the cause is not found), and a controlled single-record rerun on an idle
+  host (1.25x layout 4's CPU; the codec explains 0.02-0.05 ms of the
+  0.16 ms gap). No rule that skips zstd for small bodies: stored bytes are billed,
   so it would be an edge change.
 
 ### 14.9 Held cost levers
