@@ -13,9 +13,12 @@ publish = false
 [workspace]
 
 [dependencies]
-aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls", "rt-tokio"] }
-aws-sdk-kinesis = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
-aws-sdk-sqs = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
+# The AWS clients use the SDK's current HTTPS client (`default-https-client`:
+# hyper 1 and rustls 0.23), not the legacy `rustls` connector (hyper 0.14 and
+# rustls 0.21); aws-config's STS client follows its selection.
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
+aws-sdk-kinesis = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-sqs = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 tokio = { version = "1", features = ["full"] }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
