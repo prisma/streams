@@ -54,12 +54,19 @@
 (* byte, so the tail's exact unabsorbed_bytes ledger `ub` must equal       *)
 (* next - abs.                                                             *)
 (*                                                                         *)
+(* Layout 5 stores records in pages (PageEnd): a request is appended as   *)
+(* one page, a gather copies whole pages and stops at a page edge, and a   *)
+(* trim deletes a page once its last record is below the trim point, so   *)
+(* the absorbed boundary is always a page edge (BoundaryOnPageEdge, the    *)
+(* invariant the G3 review asked to state: a gather never cuts a page).    *)
+(*                                                                         *)
 (* The action -> production-function mapping and the atomicity table are  *)
 (* in README.md.  Mutation points used by the negative controls are the    *)
 (* operators SubmitReady, PostingsWrite, AdvanceTrimTarget,                *)
 (* TickTrimTarget, SafeRaisedOnDuplicate, Retires, WarmInstallFrom,        *)
-(* RollbackGate, HeldPastWal and ScanView; the MC module overrides them    *)
-(* through the cfg (Op <- MutOp).  This module never enables a mutation.   *)
+(* RollbackGate, HeldPastWal, ScanView and ReadStopsAt; the MC module      *)
+(* overrides them through the cfg (Op <- MutOp).  PageEnd shapes the       *)
+(* pages.  This module never enables a mutation.                           *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
@@ -213,6 +220,16 @@ HeldPastWal(h) == h
 \* was created (its first row), ASM-SLATEDB-DURABLE (j).
 ScanView(a) == IF a.snap.set THEN a.snap
                ELSE [set |-> TRUE, trimmed |-> D.trimmed, next |-> D.next]
+\* Layout 5 pages (crypto_page; shard::record; history::gather).  The last
+\* offset of the stored page that holds o.  Baseline: every record is a
+\* page of its own; the paged cfgs substitute MCPageEnd.
+PageEnd(o) == o
+\* h is a page edge: no page holds both h - 1 and h.
+PageEdge(h) == h = 0 \/ h = N \/ (h \in 1..(N - 1) /\ PageEnd(h - 1) = h - 1)
+\* read_frames_range keeps whole pages: a gather that reached its per-stream
+\* cap stops only at the page edge after the page that reached it, and the
+\* window's ends (the plan's boundary and P.next) are page edges.
+ReadStopsAt(a) == Cardinality(a.chunk) >= Cap /\ PageEdge(a.cur)
 
 -----------------------------------------------------------------------------
 FlushAll(h) == [o \in Offs |-> IF h[o] = "mem" THEN "dur" ELSE h[o]]
@@ -322,9 +339,10 @@ CacheLoad ==       \* runs_for Lead: cold store load of the key's postings pages
 -----------------------------------------------------------------------------
 (* Shard log / committer / durability pipeline                             *)
 
-CustomerAppend ==
+CustomerAppend ==  \* one request: its records sealed as one page, one byte each
     /\ A.next < N
-    /\ NewGroup([A EXCEPT !.next = A.next + 1, !.ub = A.ub + 1])
+    /\ LET e == PageEnd(A.next) + 1 IN
+         NewGroup([A EXCEPT !.next = e, !.ub = A.ub + (e - A.next)])
     /\ UNCHANGED <<durHeld, D, P, hc, hp, ab, mark, due, mateBusy, chan, rd, cacheVars,
                    pageVars, crashes, flushFails, rejects, drops, reads, ghostVars>>
 
@@ -429,20 +447,20 @@ AbsorberPlan ==
 \* Remote-durable scan, observed one row per step.  The scan reads the
 \* snapshot of D taken when it is created (its first row), so it skips the
 \* rows trimmed by then and none that a later trim deletes.
-AbsorberRead ==
+AbsorberRead ==     \* a page survives a trim until its last record is below it
     /\ ab.ph = "reading"
     /\ ab.cur < ab.upto
-    /\ Cardinality(ab.chunk) < Cap
+    /\ ~ReadStopsAt(ab)
     /\ LET sn == ScanView(ab)
        IN ab' = [ab EXCEPT !.cur = ab.cur + 1, !.snap = sn,
-                           !.chunk = IF ab.ring \/ (ab.cur >= sn.trimmed /\ ab.cur < sn.next)
+                           !.chunk = IF ab.ring \/ (PageEnd(ab.cur) >= sn.trimmed /\ ab.cur < sn.next)
                                        THEN ab.chunk \cup {ab.cur} ELSE ab.chunk]
     /\ UNCHANGED <<A, pend, held, durHeld, D, P, hc, hp, mark, due, mateBusy, chan, rd,
                    cacheVars, pageVars, crashes, flushFails, rejects, drops, reads, ghostVars>>
 
 AbsorberReadEnd == \* range exhausted, or the per-stream byte cap is reached
     /\ ab.ph = "reading"
-    /\ ab.cur = ab.upto \/ Cardinality(ab.chunk) = Cap
+    /\ ab.cur = ab.upto \/ ReadStopsAt(ab)
     /\ ab' = [ab EXCEPT !.ph = "readdone"]
     /\ UNCHANGED <<A, pend, held, durHeld, D, P, hc, hp, mark, due, mateBusy, chan, rd,
                    cacheVars, pageVars, crashes, flushFails, rejects, drops, reads, ghostVars>>
@@ -754,6 +772,11 @@ StaleReaderRangeIntact ==
 \* let plan_read skip an unabsorbed range forever).
 MarkBackedByHistory ==
     \A o \in Offs : o < mark => hc[o] = "dur" /\ hp[o] = "dur"
+
+\* Layout 5: every tail view's absorbed boundary is a page edge, so no
+\* gather window starts inside a page (a cut page would be copied whole and
+\* claim records outside its window; G3 review F4).
+BoundaryOnPageEdge == \A T \in TailStates : PageEdge(T.abs)
 
 \* The exact per-stream unabsorbed_bytes ledger equals the stored frame bytes
 \* in [absorbed, next) (src/shard.rs TailFields doc) in every tail view.

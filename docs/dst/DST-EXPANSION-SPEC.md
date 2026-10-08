@@ -778,9 +778,13 @@ page; canonical envelope scan, exact frames, honest incomplete/error".
   envelope (`read_history2_keyed_envelope`) also complete over a missing
   canonical row.
 
-The model probes `probe_lost_postings` and `probe_lost_canonical`
-(`verification/tla/history/MC_ReadCompose_probe_lost_*.cfg`) each produce a
-false complete page. The existing HIS-019 test,
+The model probe `probe_lost_postings`
+(`verification/tla/history/MC_ReadCompose_probe_lost_postings.cfg`) produces
+a false complete page, and `probe_lost_canonical` did until layout 5: since
+then a history read checks that the pages it meets tile its window
+(`page_read::PageScan`, 13aee2c0), so a lost canonical page fails the read,
+which TLA-018's `baseline-lost-page-refused` checks and `nc-no-tiling-check`
+shows failing without the check. The existing HIS-019 test,
 `corrupt_postings_fall_back_to_the_envelope`, exercises only a corrupt page.
 
 **What the remaining completeness rests on.** A page or row that was durable

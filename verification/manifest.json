@@ -2211,6 +2211,15 @@
           "timeout_seconds": 3600
         },
         {
+          "id": "TLA-016/baseline-layout5-pages",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_pages_layout5.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
           "id": "TLA-016/nc-publish-before-flush",
           "role": "negative-control",
           "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
@@ -2358,6 +2367,16 @@
           "expect": {
             "result": "violation",
             "property": "PagesAdmit"
+          }
+        },
+        {
+          "id": "TLA-016/nc-cut-mid-page",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
+          "config": "verification/tla/history/MC_HistoryAbsorb_nc_cut_mid_page.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "BoundaryOnPageEdge"
           }
         },
         {
@@ -2703,6 +2722,33 @@
           "timeout_seconds": 5400
         },
         {
+          "id": "TLA-018/baseline-pages-applied-unfiltered",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_pages_applied_unfiltered.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-018/baseline-pages-durable-keyed",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_pages_durable_keyed.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "TLA-018/baseline-lost-page-refused",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_lost_page_refused.cfg",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
           "id": "TLA-018/nc-old-history-view",
           "role": "negative-control",
           "spec": "verification/tla/history/MC_ReadCompose.tla",
@@ -2773,10 +2819,10 @@
           }
         },
         {
-          "id": "TLA-018/probe-lost-durable-canonical",
+          "id": "TLA-018/nc-no-tiling-check",
           "role": "negative-control",
           "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_probe_lost_canonical.cfg",
+          "config": "verification/tla/history/MC_ReadCompose_nc_no_tiling_check.cfg",
           "expect": {
             "result": "violation",
             "property": "ExactDurablePrefix"
@@ -2910,6 +2956,16 @@
           "expect": {
             "result": "violation",
             "property": "Witness_StaleContinuationResynced"
+          }
+        },
+        {
+          "id": "TLA-018/witness-CursorInsidePage",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_ReadCompose.tla",
+          "config": "verification/tla/history/MC_ReadCompose_w_CursorInsidePage.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CursorInsidePage"
           }
         }
       ],

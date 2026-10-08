@@ -132,6 +132,8 @@ checks on `3f386070` and is stale until it is re-recorded.
 | `nc-ungated-rollback` | `HistoryAbsorb` / `nc_ungated_rollback` | negative-control | violation `DetachedOnlyAfterFault` | violation `DetachedOnlyAfterFault` | 4,035 | 1.3 |
 | `nc-settle-before-publish` | `HistoryAbsorb` / `nc_settle_before_publish` | negative-control | violation `NoRegatherUnderInFlight` | violation `NoRegatherUnderInFlight` | 667 | 1.1 |
 | `nc-no-plan-rollback` | `HistoryAbsorb` / `nc_no_plan_rollback` | negative-control | violation `AbsorptionCompletes` | violation (temporal) | 20,012 | 4.5 |
+| `baseline-layout5-pages` | `HistoryAbsorb` / `pages_layout5` | baseline | pass | to be recorded (layout 5, 2026-10-08) | | |
+| `nc-cut-mid-page` | `HistoryAbsorb` / `nc_cut_mid_page` | negative-control | violation `BoundaryOnPageEdge` | to be recorded | | |
 | `probe-scan-per-row` | `HistoryAbsorb` / `probe_scan_per_row` | negative-control | violation `PagesAdmit` | violation `PagesAdmit` | 23,559 | 2.4 |
 | `witness-TrimDurable` | `HistoryAbsorb` / `w_TrimDurable` | witness | violation `Witness_TrimDurable` | violation `Witness_TrimDurable` | 22,098 | 2.0 |
 | `witness-FullyAbsorbedDurable` | `HistoryAbsorb` / `w_FullyAbsorbedDurable` | witness | violation `Witness_FullyAbsorbedDurable` | violation `Witness_FullyAbsorbedDurable` | 41,145 | 2.6 |
@@ -173,7 +175,11 @@ Receipt `verification/receipts/TLA-018.json`, recorded on `cb4c6b47`: 29 checks,
 | `nc-applied-race-remote-unfiltered` | `ReadCompose` / `nc_applied_race_remote_unfiltered` | negative-control | violation `TailGapExplained` | violation `TailGapExplained` | 42,301 | 1.4 |
 | `nc-no-continuation-check` | `ReadCompose` / `nc_no_continuation_check` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 2,566,966 | 25.3 |
 | `probe-lost-durable-postings` | `ReadCompose` / `probe_lost_postings` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 7,254 | 1.1 |
-| `probe-lost-durable-canonical` | `ReadCompose` / `probe_lost_canonical` | negative-control | violation `ExactDurablePrefix` | violation `ExactDurablePrefix` | 8,401 | 1.1 |
+| `baseline-pages-applied-unfiltered` | `ReadCompose` / `pages_applied_unfiltered` | baseline | pass | to be recorded (layout 5, 2026-10-08) | | |
+| `baseline-pages-durable-keyed` | `ReadCompose` / `pages_durable_keyed` | baseline | pass | to be recorded | | |
+| `baseline-lost-page-refused` | `ReadCompose` / `lost_page_refused` | baseline | pass | to be recorded | | |
+| `nc-no-tiling-check` | `ReadCompose` / `nc_no_tiling_check` | negative-control | violation `ExactDurablePrefix` | to be recorded | | |
+| `witness-CursorInsidePage` | `ReadCompose` / `w_CursorInsidePage` | witness | violation `Witness_CursorInsidePage` | to be recorded | | |
 | `witness-BoundaryRaceAdopted` | `ReadCompose` / `w_BoundaryRaceAdopted` | witness | violation `Witness_BoundaryRaceAdopted` | violation `Witness_BoundaryRaceAdopted` | 9,545 | 1.1 |
 | `witness-UnfilteredRaceAdopted` | `ReadCompose` / `w_UnfilteredRaceAdopted` | witness | violation `Witness_BoundaryRaceAdopted` | violation `Witness_BoundaryRaceAdopted` | 153,749 | 2.6 |
 | `witness-AppliedRaceAdopted` | `ReadCompose` / `w_AppliedRaceAdopted` | witness | violation `Witness_AppliedRaceAdopted` | violation `Witness_AppliedRaceAdopted` | 3,262 | 0.9 |
@@ -642,8 +648,13 @@ The keyed reader treats zero postings pages as proof that a range has no
 matches (`docs/ROUTING-V3.md`; `read_history2_keyed`, `src/history.rs:916`).
 The unfiltered scan, the corruption envelope and `execute_postings_plan` all
 skip a missing canonical row and still complete. The probes show the
-consequence: `probe-lost-durable-postings` and `probe-lost-durable-canonical`
-each produce a false complete page. Before their fixes, TLA-016-F3 and the
+consequence: `probe-lost-durable-postings` produces a false complete page,
+and so did the canonical probe before layout 5. Since layout 5 a history
+read checks that the pages it meets tile its window (`page_read::PageScan`,
+13aee2c0), so a lost canonical page fails the read instead:
+`baseline-lost-page-refused` (the old canonical probe's shape, with pages)
+holds `ExactDurablePrefix`, and `nc-no-tiling-check` shows the pre-fix read
+skipping the lost page. Before their fixes, TLA-016-F3 and the
 cache-bridge defect were production paths to the same observable.
 
 H11 ("missing postings cannot produce a false complete result") therefore
@@ -1106,6 +1117,8 @@ and only the rescan re-pends it. A scratch run of `liveness_refusal` without
 in production the heal waits for the next rescan, up to 120 ticks (about 10
 minutes at the 5 s tick).
 
+Layout 5 pages (2026-10-08): `PageEnd(o)` is the identity in every shape but `pages_layout5` and `nc_cut_mid_page`, which substitute `MCPageEnd` (records 0 and 1 are one stored page, record 2 another) with 2 records durable at Init and a per-stream cap of 1 record. With pages an append is a whole page, a gather that reaches its cap reads on to the next page edge (`ReadStopsAt`), and a scan sees a record while its page's last record is not below the trim point; `BoundaryOnPageEdge` says every tail view's absorbed boundary is a page edge. With the identity every changed action is the old one.
+
 ### Negative controls
 
 | Control | Operator substituted | Must violate | Why |
@@ -1125,6 +1138,7 @@ minutes at the 5 s tick).
 | `nc_settle_before_publish` | `HeldPastWal <- MutSettleAtWal`: a group's receipts settle once it is remote-durable, before dispatch publishes its tails | `NoRegatherUnderInFlight` | The plan sees the bucket settled while `P.abs` still lags the durable boundary, rolls the mark back and re-gathers below the applied boundary. This is the order `882004d9` says no test isolates. |
 | `nc_no_plan_rollback` | `RollbackGate <- MutRollbackNever` (slate's planted "rollback removed") | `AbsorptionCompletes` | Now that the rescan only seeds work, nothing else heals a stranded mark. In the counterexample a dropped op leaves the mark at 2 over boundary 0; every later plan starts at the mark and finds no work, and the rescan re-pends the stream forever (with new data the gather would be Detached instead). |
 | `probe_scan_per_row` | `ScanView <- MutScanPerRow`: the Remote scan reads the trim point row by row instead of one snapshot (ASM-SLATEDB-DURABLE (j)) | `PagesAdmit` | After the ungated prune, a stale re-gather reads row 0; the three queued advances land and trim row 1; the scan stages `{0, 2}`, whose first-0 page disagrees with row 1's page, and the index is refused. The admission rests on dense chunks. Re-evaluated for the merge: the gated rollback never re-gathers while an advance can land, so the probe now needs the prune and three queued batches. |
+| `nc_cut_mid_page` (layout 5 pages) | `ReadStopsAt <- MutStopMidPage`: a gather that reaches its per-stream cap stops after that record, inside its page | `BoundaryOnPageEdge` | The absorbed boundary lands inside a page; production keeps whole pages, and `baseline-layout5-pages` holds the invariant. |
 
 `LastRecoverableCopy` cannot be broken by a trim mutation that stays within
 the absorbed boundary, because H3 then guarantees the history copy. Its two
@@ -1318,7 +1332,9 @@ offsets 0, 1, 2 (offset 0 exceeds the page), `Req = 2`, `MaxPend = 2`,
 | `applied_unfiltered_expanded`, `nc_no_continuation_check`, `w_ContinuedAcrossMove`, `w_StaleContinuationResynced` | applied | none | 1 (2 appends; applied suffix lost on the move) | 5 | (n/a) | no | no | no | — |
 | `applied_keyed_expanded` | applied | K1 | 1 (2 appends; applied suffix lost on the move) | 5 | (n/a) | yes | yes | no | — |
 | `probe_lost_postings` | durable | K1 | 3 | 4 | yes | yes | yes | yes | postings |
-| `probe_lost_canonical` | durable | none | 3 | 4 | yes | no | no | yes | canonical |
+| `lost_page_refused`, `nc_no_tiling_check` | durable | none | 3 | 4 | yes | no | no | yes | canonical page (records 0 and 1, `MCPageEnd`) |
+| `pages_applied_unfiltered` | applied | none | 3 | 4 | (n/a) | no | no | no | — (pages `MCPageEnd`) |
+| `pages_durable_keyed`, `w_CursorInsidePage` | durable | K1 (`pages_durable_keyed`) / none | 3 | 4 | yes | yes (keyed) | no | no | — (pages `MCPageEnd`) |
 
 Every baseline checks every property, `ExactDurablePrefix` included; before
 the TLA-018-F3 fix `applied_unfiltered_expanded` left it to a known-defect
@@ -1328,7 +1344,18 @@ prefixes of existing behaviours and cannot create a violation of these
 properties; the small shapes and `witness-ReadErrorCurrentEngine` exercise
 it. `WAppend` and `RReconnect` are disabled by construction in the small
 shapes (no appends, no pending records); the expanded applied shapes exercise
-them, and only they produce continuations over a suffix a move can lose. `WLosePostings` and `WLoseCanonical` are enabled only in the probes.
+them, and only they produce continuations over a suffix a move can lose. `WLosePostings` and `WLoseCanonical` are enabled only in the probes and the lost-page shapes.
+
+Layout 5 pages (2026-10-08): `PageEnd(o)`, the last offset of the stored page
+holding `o`, is the identity in every shape above except the paged ones,
+which substitute `MCPageEnd` (records 0 and 1 are one page, record 2 another).
+With pages a request appends a whole page, the history frontier and the
+absorbed boundary advance only to page edges, a trim deletes a page only once
+its last record is below the trim point (`TailVisible`), and a lost canonical
+page is lost whole. A scan of `[from, to)` reaches `PageEnd(to - 1)` in the
+code through `crypto_page::page_scan_bound(to)`, the key of `to - 1 + 4,095`,
+which the shard log and history share. With the identity every changed action
+is the old one, so the earlier shapes check what they checked before.
 
 ### Negative controls and probes
 
@@ -1341,7 +1368,7 @@ them, and only they produce continuations over a suffix a move can lose. `WLoseP
 | `nc_applied_race_remote_unfiltered` (applied unfiltered) | `RaceBoundary <- MutRaceBoundaryRemote` (pre-fix F1) | `TailGapExplained` | The page ends as an honest partial with no progress. |
 | `nc_no_continuation_check` (applied unfiltered expanded) | `ContinuationCheck <- MutNoContinuationCheck` (pre-fix F3): only `start > end` guards the entry span | `ExactDurablePrefix` | A continuation over a lost, rewritten suffix is accepted once the new tail passes it. |
 | `probe_lost_postings` (keyed; **probe**) | `AllowLostPostings = TRUE`: a durable postings page disappears after the advance (a dependency-contract mutation) | `ExactDurablePrefix` | The reader cannot detect a lost page (H11 open obligation, DST-EXPANSION-SPEC §9.12.2); a slice that falsely proves absence (TLA-016-F3) has the same observable. |
-| `probe_lost_canonical` (unfiltered; **probe**) | `AllowLostCanonical = TRUE`: a durable canonical row disappears | `ExactDurablePrefix` | Every history source skips a missing row and reports completion (F2). |
+| `nc_no_tiling_check` (unfiltered, pages) | `TilingCheck <- MutNoTilingCheck` with `AllowLostCanonical = TRUE`: a durable canonical page disappears and the history scan does not check that its pages tile the window (the read before 13aee2c0) | `ExactDurablePrefix` | The scan skips the lost page and reports completion; with the check (`baseline-lost-page-refused`) the read fails instead. |
 
 ### Witnesses
 

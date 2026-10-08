@@ -10,6 +10,10 @@ EXTENDS ReadCompose
 MCKeyOf == [o \in 0..2 |-> IF o = 1 THEN "K2" ELSE "K1"]
 \* Offset 0 is larger than a whole requested page (first-record exception).
 MCSize == [o \in 0..2 |-> IF o = 0 THEN 3 ELSE 1]
+\* Layout 5 pages (the paged cfgs): records 0 and 1 are one stored page,
+\* record 2 another, so a read that stops after record 0 resumes inside a
+\* page.
+MCPageEnd(o) == IF o <= 1 THEN 1 ELSE o
 
 \* NC new-frontier/old-history-view: the history leg reads a history view
 \* captured at page start while the race check adopts a newer boundary.
@@ -34,4 +38,9 @@ MutRaceBoundaryRemote == VD.abs
 \* checks neither a continuation's history nor a position's durability; the
 \* only guard left is `start > end` against the current owner's tail.
 MutNoContinuationCheck == FALSE
+
+\* NC pre-fix layout 5 tiling (before "A history read refuses pages that do
+\* not tile its window"): a history scan does not check that the pages it
+\* meets tile its window, so a lost page's records pass as consumed.
+MutNoTilingCheck == FALSE
 =============================================================================

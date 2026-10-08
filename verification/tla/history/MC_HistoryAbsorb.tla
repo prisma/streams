@@ -17,6 +17,9 @@ MCKeyOf4 == [o \in 0..3 |-> IF o = 2 THEN "K2" ELSE "K1"]
 \* Every record under one key (the scan-snapshot probe): a page then spans
 \* every row between its first and last offset.
 MCKeyOfOne == [o \in 0..2 |-> "K1"]
+\* Layout 5 pages (the paged cfgs): records 0 and 1 are one stored page,
+\* record 2 another.
+MCPageEnd(o) == IF o <= 1 THEN 1 ELSE o
 
 \* NC publish-before-flush: the gather submits AbsorbedBatch as soon as the
 \* rows are staged in the (WAL-less) partition memtable, before part.flush().
@@ -76,4 +79,8 @@ MutSettleAtWal(h) == FALSE
 \* row from the middle of a chunk.
 MutScanPerRow(a) == [set |-> TRUE, trimmed |-> D.trimmed,
                      next |-> IF a.snap.set THEN a.snap.next ELSE D.next]
+
+\* NC a gather cut inside a page (layout 5): the per-stream cap stops the
+\* read after the record that reaches it, wherever that falls in its page.
+MutStopMidPage(a) == Cardinality(a.chunk) >= Cap
 =============================================================================

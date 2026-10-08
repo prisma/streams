@@ -38,8 +38,13 @@
 (*   Filter = "none" is the unfiltered replay path; Filter = a routing key *)
 (*   is the keyed path (product reads always pass Some(routing_key)).      *)
 (*                                                                         *)
+(* Layout 5 stores records in pages (PageEnd): a request's records are     *)
+(* appended, absorbed, flushed and trimmed page by page, a read cursor may *)
+(* fall inside a page, and a history scan refuses pages that do not tile   *)
+(* its window (TilingCheck), so a lost page fails the read.                *)
+(*                                                                         *)
 (* Mutation points: HistView, FilteredRace, ShortIndexAccepted,            *)
-(* RaceBoundary, ContinuationCheck.                                         *)
+(* RaceBoundary, ContinuationCheck, TilingCheck; PageEnd shapes the pages. *)
 (* Assumption probes (dependency contract, not production): AllowLost*.    *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -145,6 +150,20 @@ RaceBoundary == IF Mode = "durable" THEN VD.abs ELSE VA.abs
 \* refused a start beyond the current owner's tail.
 ContinuationCheck == TRUE
 
+(* Layout 5 stored pages (crypto_page, shard::record, history::page_read). *)
+\* The last offset of the stored page that holds o.  Baseline: every record
+\* is a page of its own; the paged cfgs substitute MCPageEnd, pages of
+\* several records that a read cursor can fall inside.
+PageEnd(o) == o
+\* h is a page edge: no page holds both h - 1 and h.  Appends, the history
+\* frontier and the absorbed boundary only ever land on page edges.
+PageEdge(h) == h = 0 \/ h = N \/ (h \in 1..(N - 1) /\ PageEnd(h - 1) = h - 1)
+\* page_read::PageScan (c9a0a8e7): every page a history scan meets must
+\* start at the offset due and the pages must reach the window's end, so a
+\* lost page fails the read.  FALSE is the read before that fix, which
+\* passed a lost page's records off as consumed progress.
+TilingCheck == TRUE
+
 -----------------------------------------------------------------------------
 (* PageBudget contract (src/application/read_budget.rs): the first record  *)
 (* of a page is admitted up to the record limit; later ones need room.     *)
@@ -171,6 +190,13 @@ HistSources ==
 \* A missing canonical row is skipped silently by every source: the scan
 \* and the envelope never see it, and execute_postings_plan consumes a
 \* planned span "fully even if nothing matched" (postings_read.rs).
+\* A history scan of [lo, hi) by src meets a lost page: the unfiltered scan
+\* and the envelope read every page of the window; the postings plan reads
+\* the spans that hold the key's records, so it meets a lost page that held
+\* one (a lost page of other keys alone holds nothing it serves).
+MeetsLost(src, lo, hi) ==
+    \E o \in lostCanon : lo <= o /\ o < hi /\ o < HistView
+                         /\ (src # "index" \/ KeyOf[o] = Filter)
 Cands(src, lo, hi) ==
     CASE src = "scan"     -> {o \in lo..(hi-1) : o < HistView /\ o \notin lostCanon}
       [] src = "index"    -> {o \in lo..(hi-1) : o < HistView /\ o \notin lostPost
@@ -178,9 +204,11 @@ Cands(src, lo, hi) ==
       [] src = "envelope" -> {o \in lo..(hi-1) : o < HistView /\ o \notin lostCanon
                                                   /\ KeyOf[o] = Filter}
 
+\* A trim deletes a page only once its last offset is below the trim point
+\* (a page holding a record at or past it stays whole).
 TailVisible(o) ==
-    IF Mode = "durable" THEN o >= VD.trimmed /\ o < VD.next
-    ELSE o >= VA.trimmed /\ o < VA.next
+    IF Mode = "durable" THEN PageEnd(o) >= VD.trimmed /\ o < VD.next
+    ELSE PageEnd(o) >= VA.trimmed /\ o < VA.next
 
 ReadEndNow == IF Mode = "durable" THEN P.next ELSE Max(A.next, P.next)
 DurCursor == IF Mode = "durable" THEN pos ELSE dpos
@@ -222,10 +250,11 @@ NewGroup(T) == Len(pend) < MaxPend /\ A' = T /\ pend' = Append(pend, T)
 -----------------------------------------------------------------------------
 (* Writer (coarse; see header).                                             *)
 
-WAppend ==
+WAppend ==         \* one request: its records sealed as one page
     /\ A.next < N
-    /\ NewGroup([A EXCEPT !.next = A.next + 1])
-    /\ gen' = [gen EXCEPT ![A.next] = @ + 1]
+    /\ LET e == PageEnd(A.next) + 1 IN
+       /\ NewGroup([A EXCEPT !.next = e])
+       /\ gen' = [o \in Offs |-> IF A.next <= o /\ o < e THEN gen[o] + 1 ELSE gen[o]]
     /\ UNCHANGED <<D, P, hF, eng, old, moves, lostPost, lostCanon, cvars, gvars>>
 
 WDurable ==
@@ -239,12 +268,13 @@ WDispatch ==
 
 WHistFlush ==      \* gather + one WriteBatch (canonical+postings) + part.flush()
     /\ hF < P.next
-    /\ \E h \in (hF + 1)..P.next : hF' = h
+    /\ \E h \in (hF + 1)..P.next : PageEdge(h) /\ hF' = h
     /\ UNCHANGED <<A, pend, D, P, gen, eng, old, moves, lostPost, lostCanon, cvars, gvars>>
 
 WAdvance ==        \* CommitOp::Absorbed applied by the committer
     /\ A.abs < hF
     /\ \E u \in (A.abs + 1)..hF, allowed \in TrimBudgets :
+         PageEdge(u) /\
          LET prev == A.abs
              safe == Max(A.safe, prev)
          IN NewGroup([A EXCEPT !.abs = Min(u, A.next), !.safe = safe,
@@ -272,11 +302,11 @@ WLosePostings ==   \* assumption probe: a durable postings page disappears
          /\ lostPost' = lostPost \cup {o}
     /\ UNCHANGED <<A, pend, D, P, hF, gen, eng, old, moves, lostCanon, cvars, gvars>>
 
-WLoseCanonical ==  \* assumption probe: a durable canonical row disappears
+WLoseCanonical ==  \* assumption probe: a durable history page disappears
     /\ AllowLostCanonical
     /\ \E o \in Offs :
-         /\ o < hF /\ o \notin lostCanon
-         /\ lostCanon' = lostCanon \cup {o}
+         /\ PageEnd(o) < hF /\ o \notin lostCanon
+         /\ lostCanon' = lostCanon \cup {p \in Offs : PageEnd(p) = PageEnd(o)}
     /\ UNCHANGED <<A, pend, D, P, hF, gen, eng, old, moves, lostPost, cvars, gvars>>
 
 -----------------------------------------------------------------------------
@@ -383,6 +413,15 @@ RHist ==           \* decode_history_range over [cur, min(boundary, end))
               /\ UNCHANGED <<wvars, pos, dpos, dgen, pages, kvars, gvars>>
          ELSE
            \/ \E src \in HistSources :
+                /\ TilingCheck /\ MeetsLost(src, rd.cur, hup)
+                /\ rd' = IdleRd                      \* RecordCorruption: the page fails
+                /\ readErr' = (readErr \/ Cur)
+                /\ UNCHANGED <<wvars, pos, dpos, dgen, pages, kvars, dupSeen, underClaim,
+                               ceilBreach, raceAdopted, unexplainedGap, envelopeUsed,
+                               shortPartial, bigDelivered, readOld, ringUsed, contVerified,
+                               refusedStale>>
+           \/ \E src \in HistSources :
+                ~(TilingCheck /\ MeetsLost(src, rd.cur, hup)) /\
                 \E res \in Walk(rd.pg, SeqOf(Cands(src, rd.cur, hup)), hup, TRUE) :
                   /\ envelopeUsed' = (envelopeUsed \/ src = "envelope")
                   /\ IF res.complete
@@ -553,6 +592,9 @@ Witness_RingServed == ~ringUsed
 Witness_ReaderCompletes ==
     ~(pos = N /\ \A o \in Offs : Eligible(o) => dgen[o] # 0)
 Witness_TrimBelowReaderCursor == ~(rd.ph = "tail" /\ VD.trimmed > rd.cur)
+\* A read starts inside a stored page (paged cfgs): its cursor lies after
+\* the page's first record.
+Witness_CursorInsidePage == ~(rd.ph = "hist" /\ ~PageEdge(rd.cur))
 Witness_ReadErrorCurrentEngine == ~readErr
 \* A continuation served by another (fenced) engine was proven by the
 \* current engine's re-read, and the read continued without resync.
