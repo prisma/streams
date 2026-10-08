@@ -788,3 +788,25 @@ fn a_history_scan_reads_ahead_its_budget_on_two_cached_fetch_tasks() {
         );
     }
 }
+
+/// An empty window reads nothing and asks the store nothing: its scan opens
+/// no iterator, so it opens and ends even on a closed partition, where a
+/// scan of any non-empty window fails.
+#[tokio::test]
+async fn an_empty_history_window_opens_no_store_scan() {
+    let db = three_pages("history-empty-window").await;
+    db.close().await.unwrap();
+    let opts = hist_scan_opts(1 << 20);
+    for (from, to) in [(0, 0), (12, 12), (25, 25), (12, 5)] {
+        let mut scan = PageScan::open(&db, ROUTE, INC, from..to, &opts)
+            .await
+            .unwrap();
+        assert!(scan.rows.is_none(), "window [{from}, {to})");
+        assert!(
+            scan.next().await.unwrap().is_none(),
+            "window [{from}, {to})"
+        );
+    }
+    let refused = PageScan::open(&db, ROUTE, INC, 12..13, &opts).await;
+    assert!(refused.is_err(), "the closed partition served a scan");
+}
