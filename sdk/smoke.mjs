@@ -98,13 +98,15 @@ const scanned = [];
 for await (const rec of orders.scan()) scanned.push(rec.routingKey);
 check("scan sees every record once", scanned.length === 5, JSON.stringify(scanned));
 
-// Consumer: per-key FIFO pull + ack via batch settle.
+// Consumer: a pull leases each key's run in offset order (#123) + ack
+// via batch settle: c1's four records and c2's one.
 const workers = await orders.consumer("fulfilment", { maxAttempts: 3 });
 const batch = await workers.pull({ max: 10 });
-check("pull leases per-key heads", batch.messages.length === 2, `got ${batch.messages.length}`);
+const leased = JSON.stringify(batch.messages.map((m) => `${m.routingKey}:${m.value.n}`));
+check("pull leases each key's run", leased === '["c1:0","c1:1","c1:2","c1:3","c2:0"]', leased);
 for (const m of batch.messages) m.ack();
 const settled = await batch.settle();
-check("settle acks", settled.acked === 2);
+check("settle acks", settled.acked === 5, `acked ${settled.acked}`);
 
 // Watch: the SDK derives the watch key and signs the observation URL
 // offline. This only works if the client's derivation matches the
