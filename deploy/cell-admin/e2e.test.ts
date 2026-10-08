@@ -68,6 +68,7 @@ maybe("a shared cell admits, serves and offboards projects on the real binary", 
   const bin = resolve(BIN_DIR ?? "");
   children.push(Bun.spawn([join(bin, "s3lite"), "--listen", `127.0.0.1:${s3Port}`, "--latency-ms", "2"],
     { stdout: "ignore", stderr: "ignore" }));
+  const operator = randomBytes(24).toString("hex");
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? "",
     HOME: process.env.HOME ?? "",
@@ -80,7 +81,7 @@ maybe("a shared cell admits, serves and offboards projects on the real binary", 
     PROJECT_ID: "proj_deploy",
     ACCOUNT_ID: "acct_sink",
     USAGE_STREAM_KEY: randomBytes(32).toString("base64url"),
-    AUTH_TOKEN: randomBytes(24).toString("hex"),
+    AUTH_TOKEN: operator,
   };
   const log = join(c.root, "server.log");
   children.push(Bun.spawn([join(bin, "streams-slate"), "--listen", `127.0.0.1:${port}`,
@@ -110,6 +111,25 @@ maybe("a shared cell admits, serves and offboards projects on the real binary", 
     answered(await as(p, "PUT", `/v1/streams/${name}`, JSON.stringify({ format: { kind: "json" } })), 201);
   for (const name of ["orders", "dir/x", "events"]) expect(await created("proj_a", name)).toBe("201");
   expect(await created("proj_b", "orders")).toBe("201");
+  // At boot the billing sweep opens the cell's one shard to probe it for
+  // debt and, finding none on a new cell, closes it and holds it off for
+  // 3 s (edge record #17). Until a customer request adopts the shard, a
+  // request to it can be refused retryably: 503 temporarily_unavailable
+  // inside the holdoff, or 429 rate_limited when it joined the probe's
+  // open and the sweep retired the engine before the request adopted it.
+  // The appends below need the shard serving the projects, so wait for
+  // exactly that: the first open has completed with none in flight (the
+  // open gate's counters, behind the deployment bearer), and a read sent
+  // after that is served, which adopts the shard so no sweep closes it.
+  const shardOpens = async () =>
+    (await (await fetch(`${cell}/v1/debug/store`, { headers: { authorization: `Bearer ${operator}` } })).json())
+      .shard_opens as { completed: number; in_flight: number };
+  await until("the shard to serve after the boot sweep's probe", 30, async () => {
+    const opens = await shardOpens();
+    const read = await as("proj_a", "GET", "/v1/streams/orders/records?cursor=beginning");
+    await read.arrayBuffer();
+    return opens.completed >= 1 && opens.in_flight === 0 && read.status === 200 ? true : undefined;
+  });
   const appended = async (p: string, body: string) =>
     answered(await as(p, "POST", "/v1/streams/orders/records", body), 200);
   expect(await appended("proj_a", '{"m":"a-marker"}')).toBe("200");
