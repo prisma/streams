@@ -63,7 +63,10 @@ fn r01_segments_and_reused_offsets_have_safe_invocation_domains() {
 fn r01_retained_legacy_frames_and_new_versions_read_together() {
     let sub = [7; 32];
     let segment = [8; 16];
-    for (version, compressed) in [(LEGACY_FRAME_VER, false), (LEGACY_FRAME_VER_Z, true)] {
+    for (version, compressed, compression) in [
+        (LEGACY_FRAME_VER, false, FrameCompression::Disabled),
+        (LEGACY_FRAME_VER_Z, true, FrameCompression::ZstdLevel1),
+    ] {
         let payload = vec![b'x'; 1024];
         let message = if compressed {
             zstd::bulk::compress(&payload, 1).unwrap()
@@ -92,9 +95,8 @@ fn r01_retained_legacy_frames_and_new_versions_read_together() {
             decrypt_frame(&sub, &segment, &decode_frame(&frame).unwrap(), &frame).unwrap(),
             payload
         );
-        let replacement =
-            FrameCipher::new(&sub, &segment, FrameCompression::from_enabled(compressed))
-                .encrypt(&segment, 0, 1000, 0, "k", &payload);
+        let replacement = FrameCipher::new(&sub, &segment, compression)
+            .encrypt(&segment, 0, 1000, 0, "k", &payload);
         assert_eq!(
             decode_frame(&replacement).unwrap().ver,
             if compressed { FRAME_VER_Z } else { FRAME_VER }

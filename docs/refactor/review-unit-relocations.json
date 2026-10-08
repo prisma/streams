@@ -41,8 +41,8 @@
     "from_commit": "6f308ced95ef896b9398ed1c385dbb3d60edc9fe",
     "from_file": "src/crypto.rs",
     "to_file": "src/crypto/invocation_tests.rs",
-    "function_sha256": "c25a3eecea6759e7163e891a7470d1ee09bebf4a58e374f65269dcbf48f872eb",
-    "reason": "Invocation-domain mechanism test moved with its module into the file-split test module; the fixture's ciphertext length now converts checked (u32::try_from(...).unwrap()) instead of through a truncating cast, with the same inputs and assertions."
+    "function_sha256": "cd3677ccfacabca72c4c86c3c38f490f2f7ae39534cdfc0e313cef2fcf87ad9d",
+    "reason": "Invocation-domain mechanism test moved with its module into the file-split test module; the fixture's ciphertext length now converts checked (u32::try_from(...).unwrap()) instead of through a truncating cast, with the same inputs and assertions. Repinned when FrameCompression::from_enabled was removed with CryptoConfig::frame_compress (landing call L4, 2026-10-08): the loop names each legacy version's writer policy, FrameCompression::Disabled or ZstdLevel1, beside its compressed flag, with the same inputs and assertions."
   },
   {
     "name": "r01_frame_golden_header_and_ciphertext",

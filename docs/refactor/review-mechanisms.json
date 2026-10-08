@@ -82,7 +82,7 @@
         {
           "file": "src/crypto/invocation_tests.rs",
           "name": "r01_retained_legacy_frames_and_new_versions_read_together",
-          "sha256": "c25a3eecea6759e7163e891a7470d1ee09bebf4a58e374f65269dcbf48f872eb"
+          "sha256": "cd3677ccfacabca72c4c86c3c38f490f2f7ae39534cdfc0e313cef2fcf87ad9d"
         },
         {
           "file": "src/crypto/invocation_tests.rs",

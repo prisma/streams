@@ -74,7 +74,6 @@ impl Rig {
             &config.cli,
             config.history.clone(),
             config.engine.compactor_options(),
-            config.crypto.frame_compress,
         );
         let db = slatedb::Db::builder("write-tier", store.clone())
             .with_settings(settings)

@@ -335,10 +335,10 @@ fn typed_refusal(error: ReadFailure) -> Response {
     reason = "read_payload; the raw and filtered switches are independent rendering options the caller resolved from the request; an enum would force one axis onto independent flags"
 )]
 /// The response body of a read. With `frames`, each record is re-encrypted
-/// as its own frame under the selector's subkey, compressed only when
-/// `compress` asks, and every caller passes false: the raw read passes the
-/// constant `CryptoConfig::frame_compress`, so wire frames are version 4
-/// and no response length tells an observer how well a record compresses.
+/// as its own frame under the selector's subkey (`reencrypt_frames`),
+/// compressed only when `compress` asks, and every caller passes false, so
+/// wire frames are version 4 and no response length tells an observer how
+/// well a record compresses.
 pub(crate) fn read_payload(
     out: &ReadOutcome,
     frames: bool,
@@ -373,22 +373,7 @@ pub(crate) fn read_payload(
         body.extend_from_slice(b"]");
     } else if frames {
         if let Some(key) = key {
-            let selector = selector.unwrap_or("");
-            let subkey = derive_subkey(key, &out.descriptor.epoch(), selector, 0);
-            for record in &out.records {
-                body.extend_from_slice(&encrypt_frame(
-                    &subkey,
-                    &out.identity,
-                    &FrameHeader {
-                        offset: record.off,
-                        ts_ms: 0,
-                        key_version: 0,
-                        routing_key: selector.to_string(),
-                    },
-                    &record.payload,
-                    crate::crypto::FrameCompression::from_enabled(compress),
-                ));
-            }
+            reencrypt_frames(&mut body, out, key, selector.unwrap_or(""), compress);
         }
     } else {
         for record in &out.records {
@@ -400,6 +385,39 @@ pub(crate) fn read_payload(
     }
     body.freeze()
 }
+
+/// Appends each record of `out` to `body` as its own frame, re-encrypted
+/// under the selector's subkey at the record's offset: a version 5 frame
+/// only when `compress` asks and zstd shrinks the record, else version 4.
+fn reencrypt_frames(
+    body: &mut BytesMut,
+    out: &ReadOutcome,
+    key: &StreamKey,
+    selector: &str,
+    compress: bool,
+) {
+    let compression = if compress {
+        crate::crypto::FrameCompression::ZstdLevel1
+    } else {
+        crate::crypto::FrameCompression::Disabled
+    };
+    let subkey = derive_subkey(key, &out.descriptor.epoch(), selector, 0);
+    for record in &out.records {
+        body.extend_from_slice(&encrypt_frame(
+            &subkey,
+            &out.identity,
+            &FrameHeader {
+                offset: record.off,
+                ts_ms: 0,
+                key_version: 0,
+                routing_key: selector.to_string(),
+            },
+            &record.payload,
+            compression,
+        ));
+    }
+}
+
 /// Whether the stream has split or is splitting, so its raw offsets name a
 /// segment: one rule for parsing a client's offset and rendering ours.
 fn segmented(desc: &StreamDesc) -> bool {
@@ -466,13 +484,7 @@ fn render_raw_read(
     let payload = if empty {
         Bytes::new()
     } else {
-        read_payload(
-            &out,
-            frames,
-            key,
-            params.key.as_deref(),
-            state.config.crypto.frame_compress,
-        )
+        read_payload(&out, frames, key, params.key.as_deref(), false)
     };
     if !params.internal {
         meter_read_outcome(state, &out);

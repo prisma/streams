@@ -38,9 +38,9 @@ const COMPRESS_MIN_BYTES: usize = 256;
 /// Whether a frame writer attempts compress-then-encrypt. Read-side
 /// support is unconditional (the version byte in the AAD-bound header
 /// decides), so this is a writer policy, not a wire capability. Since
-/// layout 5 frames are only written for `format=frames` responses, which
-/// never compress; tools/benches pass their own choice. No ambient
-/// lookup: the flag travels with the cipher.
+/// layout 5, frames are only written for `format=frames` responses, which
+/// never compress; tools and benches pass their own choice. No ambient
+/// lookup: the choice travels with the cipher.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum FrameCompression {
     #[default]
@@ -49,16 +49,6 @@ pub(crate) enum FrameCompression {
     /// attempted only at/above COMPRESS_MIN_BYTES and kept only when it
     /// actually shrinks the payload.
     ZstdLevel1,
-}
-
-impl FrameCompression {
-    pub(crate) fn from_enabled(enabled: bool) -> Self {
-        if enabled {
-            FrameCompression::ZstdLevel1
-        } else {
-            FrameCompression::Disabled
-        }
-    }
 }
 
 #[derive(Clone)]

@@ -367,10 +367,6 @@ fn default_values_are_pinned() {
     assert_eq!(c.admission.limit_reqs_per_sec, 1_000.0);
     assert_eq!(c.admission.limit_recs_per_sec, 5_000.0);
     assert_eq!(c.admission.limit_burst_secs, 2.0);
-    assert!(
-        !c.crypto.frame_compress,
-        "the retired constant frozen scopes still pass is off"
-    );
     assert_eq!(c.runtime.memprofile_cert, None);
     assert_eq!(c.runtime.cert_sealed_publish_delay_ms_raw, None);
     assert_eq!(c.runtime.certification_mode, None);

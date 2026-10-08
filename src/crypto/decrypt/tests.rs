@@ -10,7 +10,10 @@ fn e03_one_decryptor_preserves_mixed_legacy_new_frames_and_decoded_bounds() {
     let decoder = FrameDecryptor::new(&subkey, &segment);
     let payload = vec![b'x'; 1024];
     let mut frames = Vec::new();
-    for (version, compressed) in [(LEGACY_FRAME_VER, false), (LEGACY_FRAME_VER_Z, true)] {
+    for (version, compressed, compression) in [
+        (LEGACY_FRAME_VER, false, FrameCompression::Disabled),
+        (LEGACY_FRAME_VER_Z, true, FrameCompression::ZstdLevel1),
+    ] {
         let message = if compressed {
             zstd::bulk::compress(&payload, 1).unwrap()
         } else {
@@ -35,12 +38,8 @@ fn e03_one_decryptor_preserves_mixed_legacy_new_frames_and_decoded_bounds() {
         header.extend(ciphertext);
         frames.push(header);
         frames.push(
-            FrameCipher::new(
-                &subkey,
-                &segment,
-                FrameCompression::from_enabled(compressed),
-            )
-            .encrypt(&segment, 0, 1000, 0, "k", &payload),
+            FrameCipher::new(&subkey, &segment, compression)
+                .encrypt(&segment, 0, 1000, 0, "k", &payload),
         );
     }
     for _ in 0..3 {

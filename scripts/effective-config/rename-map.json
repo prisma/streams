@@ -190,6 +190,12 @@
       "commit": "the commit of edge record #85",
       "edge_record": 85,
       "why": "the switch that turned ingest metering off is removed: true (metered) was the default and the value of every family"
+    },
+    {
+      "old": "crypto.frame_compress",
+      "commit": "the commit of edge record #127 and the one after it (landing call L4)",
+      "edge_record": 127,
+      "why": "FRAME_COMPRESS is no longer read: layout 5 pages compress whenever that pays and format=frames answers version 4 frames (#128); the constant false the field was left at went with CryptoConfig (landing call L4)"
     }
   ]
 }

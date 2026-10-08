@@ -72,7 +72,7 @@ fn the_parsed_shard_settings_reach_every_shard_engine() {
     let cli = crate::config::CliArgs::deterministic();
     let history = crate::config::HistoryConfig::default();
     let compactor = crate::config::EngineConfig::default().compactor_options();
-    let active = shard_config(&cli, history.clone(), compactor.clone(), false);
+    let active = shard_config(&cli, history.clone(), compactor.clone());
     assert_eq!(
         shard_settings(&active),
         (
@@ -115,7 +115,7 @@ fn the_parsed_shard_settings_reach_every_shard_engine() {
         poll_interval: Duration::from_millis(19),
         ..crate::config::EngineConfig::default().compactor_options()
     };
-    let changed = shard_config(&tuned, history.clone(), compactor, true);
+    let changed = shard_config(&tuned, history.clone(), compactor);
     assert_eq!(
         shard_settings(&changed),
         (

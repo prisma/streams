@@ -108,12 +108,11 @@ fn absorber_config(args: &crate::config::CliArgs, gather_max_bytes: usize) -> Ab
 /// options. `run` adds the runtime's shared handles once and hands each
 /// engine a clone, so this is where a setting is shown to reach the engine.
 /// FRAME_COMPRESS is a retired name: layout 5 pages compress whenever that
-/// pays. The frozen `run` still passes the constant `frame_compress` field.
+/// pays.
 fn shard_config(
     args: &crate::config::CliArgs,
     history: crate::config::HistoryConfig,
     compactor_options: slatedb::config::CompactorOptions,
-    _frame_compress: bool,
 ) -> ShardConfig {
     let mut config = ShardConfig {
         max_trim_per_op: args.trim_per_op,
@@ -456,7 +455,6 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
             &config.cli,
             config.history.clone(),
             config.engine.compactor_options(),
-            config.crypto.frame_compress,
         );
         shard_config.shared_postings_cache = Some(runtime_caps.postings.clone());
         shard_config.shared_history = Some(runtime_caps.history.clone());

@@ -40,7 +40,6 @@ pub struct ServerConfig {
     pub fleet: FleetConfig,
     pub scaler: ScaleConfig,
     pub admission: AdmissionConfig,
-    pub crypto: CryptoConfig,
     pub runtime: RuntimeConfig,
 }
 
@@ -347,22 +346,6 @@ pub struct AdmissionConfig {
     pub limit_burst_secs: f64,
 }
 
-/// Crypto framing: no setting since layout 5. Stored pages compress
-/// whenever that pays, and `format=frames` responses never compress (every
-/// frame is version 4), so no response length depends on how well a record
-/// compresses. FRAME_COMPRESS is no longer read: a retired name, like the
-/// names of edge records #80 to #85.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct CryptoConfig {
-    /// Always false: the wire's compression choice the frozen
-    /// `render_raw_read` passes to `read_payload`, so `format=frames`
-    /// answers version 4 frames. Nothing sets it; `bootstrap::run` also
-    /// hands it to `shard_config`, which ignores it. It stays a field only
-    /// because those frozen scopes read it, and goes with the next approved
-    /// change to them.
-    pub frame_compress: bool,
-}
-
 /// Process/runtime identity and certification controls.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RuntimeConfig {
@@ -417,7 +400,6 @@ impl ServerConfig {
             fleet: Default::default(),
             scaler: Default::default(),
             admission: Default::default(),
-            crypto: Default::default(),
             runtime: Default::default(),
         }
     }
