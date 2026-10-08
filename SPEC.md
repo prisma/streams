@@ -52,7 +52,7 @@ tails, routing-key reads) re-architected so that:
 | D4 | One **shard log** SlateDB per shard: ingest, durable+speculative tails, transient tail storage | group commit across all streams on the shard → PUT rate ∝ active shards (bounded), not active streams |
 | D5 | **Two-tier storage**: absorber drains shard log into per-stream **WAL-less SlateDBs** (history tier) | this is the no-dictionary path to ~90% compression (block zstd over plaintext inside the per-stream DB), gives exact per-stream physical size (manifest), and real byte deletion (prefix delete) |
 | D6 | **One shared bucket** for the three roles (ops, shard logs, data; roles and streams are key prefixes), not per-stream buckets. The decision was three shared buckets, one per role. The binary takes one bucket name (`SLATE_S3_BUCKET`) and one credential pair, and since 2026-09-29 it accepts no per-role bucket argument (edge record #80, which awaits the owner's ratification): a split of the roles over buckets is a code change | avoids bucket-quota and provisioning friction at billions of streams; isolation moves into cryptography (D7); per-stream physical accounting comes from the per-stream DB manifest. Tigris has a global namespace with no per-prefix throughput limits, so bucket *pools* are unnecessary; splitting into pools remains a later option if provider limits ever appear |
-| D7 | Per-stream encryption keys attached to requests, never persisted; **payloads encrypted under per-routing-key subkeys** with deterministic nonces (see §3.7) | shard log stores per-record ciphertext; history tier uses SlateDB's `BlockTransformer` (encryption after compression) with the stream key; tenant deletion = crypto-erasure + async prefix delete |
+| D7 | Per-stream encryption keys attached to requests, never persisted; **payloads encrypted under per-routing-key subkeys**, since layout 5 as pages under page keys derived from them, with random nonces (see §3.7) | the shard log and history store the same pages: one append request's records of one routing key, compressed together when that pays, then encrypted once ([docs/crypto-page-v6.md](docs/crypto-page-v6.md)); history copies them without decrypting; tenant deletion = crypto-erasure + async prefix delete. (The original design, per-record ciphertext with deterministic nonces and a block-transformer-encrypted history tier, was replaced by random-nonce frames in R01 and by pages in layout 5.) |
 | D8 | No zstd dictionaries | complexity rejected; the history tier's block compression makes them unnecessary |
 | D9 | Tigris for **everything** (WAL + SSTs); no S3 Express | benchmarked ~14–18 ms small-object ops → durable tail latency ~25–45 ms; single provider, zero egress fees on Standard |
 | D10 | Archive Instant Retrieval tiering **deferred** | designed (COMPUTE-SPEC §7) but not built now |
@@ -136,11 +136,11 @@ Shard log (one SlateDB per shard; payload bytes are ciphertext):
                                 encrypted once (src/crypto_page.rs)
 ```
 
-Per-stream history DB (block-transformer encrypted with the stream key,
-block-zstd compressed; WAL disabled — the shard log *is* its WAL):
+History (one shared partition per shard, WAL disabled — the shard log *is*
+its WAL; layout 5):
 ```
-r!<offset u64 BE>               record (plaintext inside encrypted blocks)
-k!<routing-key>!<offset BE>     routing-key index → record copy (fast key streaming)
+<route16> <inc16> g <last offset u64 BE>   page: the shard log's page, byte for byte
+<route16> <inc16> p ...                    postings pages: each routing key's offset runs
 ```
 
 `hash16` = first 16 bytes of SHA-256 of the stream name. Offsets are a
@@ -242,20 +242,27 @@ The envelope that makes this coherent across both tiers and the wire:
   identity change (delete + recreate) always mints a new `streamKey`, and
   `streamEpoch` (minted per creation) is bound into the derivation so a
   violated rule fails closed; key rotation bumps `keyVersion`.
-- **Record wire/storage format:** plaintext header (offset, timestamp,
-  routing key, key version) + AEAD ciphertext payload (AES-256-GCM under the
-  subkey), with the header bound as AAD (tamper-evident).
-- **Deterministic nonces:** nonce = record offset (unique per (stream,
-  subkey) by construction). Consequences: re-encrypting the same record
-  yields byte-identical ciphertext, so catch-up chunk responses are
-  byte-immutable regardless of which tier serves them — the CDN caching
-  contract holds; and the shard-log stored form can be served on the wire
-  with **zero cryptographic work on the tail path**.
-- **Tiers:** the shard log stores the wire form as-is. The history tier
-  stores plaintext payloads inside block-zstd-compressed, block-transformer-
-  encrypted SSTs (stream key) — that's the ~90% compression — and origin
-  reads from history decrypt blocks and deterministically re-encrypt records
-  to the identical wire form.
+- **Stored format (layout 5):** pages. One append request's records of one
+  routing key and key version, cut at 64 KiB of body and 4,096 records,
+  compressed together with zstd-1 when that pays, then encrypted once with
+  AES-256-GCM-SIV under a page key derived from the subkey and the physical
+  segment identity. The clear header (first offset, record count, timestamp,
+  key version, routing key, nonce) is bound as AAD; record lengths and
+  timestamps are inside the ciphertext. A page is admitted against its row
+  key before any key is touched and opens only whole and authenticated
+  ([docs/crypto-page-v6.md](docs/crypto-page-v6.md)).
+- **Wire format:** `format=frames` re-encrypts each served record as its own
+  version 4 frame (AES-256-GCM-SIV under a segment frame key derived from
+  the subkey, header bound as AAD, never compressed); JSON and raw reads
+  return plaintext ([docs/crypto-frame-v4.md](docs/crypto-frame-v4.md)).
+- **Random nonces:** 12 bytes from the OS per page and per frame, stored in
+  the authenticated header; AES-GCM-SIV tolerates an accidental repeat. The
+  original design's deterministic nonces (nonce = offset, byte-identical
+  re-encryption) were replaced in R01, so a frames response is not
+  byte-identical across tiers or reads.
+- **Tiers:** the shard log and history store the same pages; the absorber
+  copies them byte for byte under history's own keys without decrypting.
+  Reads open pages and serve the records of their window.
 - **Visibility boundary (accepted):** routing keys are *not* confidential to
   infrastructure — they appear in read URLs (CDN cache keys) and record
   headers. Payloads are confidential everywhere. Customers must not put

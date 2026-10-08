@@ -140,7 +140,7 @@ which `FLUSH_INTERVAL_MS` set before:
 | `MONTH_CLOSE_GRACE_MS` | 86400000 | wait after a month boundary before closing it |
 | `METRICS_INTERVAL_SECS` | 15 | `_ops_metrics` snapshot cadence |
 | `ALERT_USAGE_OUTBOX_DIRTY` | 1000 | unacked usage snapshots that open the outbox-lag alert |
-| `ABSORB_GLOBAL_BUDGET_BYTES` | 100859904 | active PROCESS-WIDE absorber gather budget; every gather reserves (estimate x build multiplier) BEFORE reading frames. The default is one worst-frame build at the 32 MiB body ceiling, (32 MiB + 64 KiB) x 3; a smaller value is raised to that build for the server's own ceiling |
+| `ABSORB_GLOBAL_BUDGET_BYTES` | 100859904 | active PROCESS-WIDE absorber gather budget; every gather reserves (estimate x build multiplier) BEFORE reading pages. The default is one worst-page build at the 32 MiB body ceiling, (32 MiB + 64 KiB) x 3; a smaller value is raised to that build for the server's own ceiling |
 | `ABSORB_GLOBAL_GATHERS` | 1 | active concurrent-gather ceiling, process-wide and further bounded by the byte budget. 2 until 2026-09-29; a gather reserves its adaptive estimate (about 12 MiB at the floor), so at 2 slots two gathers did run at once. Do not raise it on a 1 GiB instance (4 slots were OOM-killed, docs/CHAOS-CAMPAIGN.md CHAOS-5) |
 | `TELEMETRY_CACHE_BYTES` | 16777216 | ONE bounded cache shared by the read-spool and rollup SlateDB DBs (they must never inherit SlateDB's per-DB defaults) |
 | `SLATEDB_RT_THREADS` | 4 | worker threads of the dedicated SlateDB runtime (two-runtime split). 4 is what every deployed family runs; 2 was the default until 2026-09-29. Tests that open storage directly run on 2 |
@@ -154,7 +154,8 @@ can never be admitted and is a permanent 413 `payload_too_large` with no
 names the requested size and the capacity, and the product error adds them
 as `details {dimension, capacity, requested}`. `/v1/debug/usage` (bearer) exposes
 per-stream cumulative requests, records, bytes_in, bytes_out,
-plaintext_bytes, frame_bytes, and the derived compression ratio. The
+plaintext_bytes, frame_bytes (since layout 5 the stored page bytes, after
+compression), and the derived compression ratio. The
 billing emitter appends a JSON array per interval to the billing stream —
 one record per active stream with DELTA requests/records/bytes_in/bytes_out
 plus cumulative plaintext/frame byte totals (stored-volume-pre-compression
@@ -705,7 +706,7 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
 | env | default | what it does |
 |---|---|---|
 | `WAL_POST_ACK_GATHER_MS` | 6 (0 = off) | Pump releases each flush's acks itself (explicit barrier on the durable watch), then waits this long before the next freeze — closed-loop herds join one WAL instead of straddling two. Local A/B (25 ms store): c2 append p50 1.97x -> 1.01x of c1; c32 throughput +70 %, WAL PUT/s down. Soaked at 6. Gathers only when the completed flush left work in flight (drift), so a solo producer pays ~1 ms (herd-settle), not the window. Adaptive gather: the window is skipped when the NEXT WAL already holds 32 requests or 1 MiB — the window exists for a small next generation; at drift+saturation it is a tax (review #2's CDG throughput question). The two thresholds are fixed: `WAL_GATHER_SKIP_REQS` and `WAL_GATHER_SKIP_BYTES` are not read (since 2026-09-29). `/v1/debug/timings` pump block: gathers_applied vs gathers_skipped_busy, gathered_reqs, flushed_{reqs,records,bytes} (requests-per-WAL), ack_to_enqueue_{sum_us,count}. |
-| `TAIL_RING_BYTES` | 0 (off) | Per-engine durable-tail ring: dispatch publishes freshly-durable frames to memory BEFORE acks; woken live reads serve from it instead of scanning SlateDB. Canonical scan remains the fallback (restart/eviction/lag/filters). 32 MiB suggested. `/v1/debug/timings` -> `tail_ring{published,hits,misses,evicted}`. A read WOKEN by a long-poll wait (a fresh commit group, not a backlog) has a page budget of 1 MiB, fixed: `TAIL_MAX_BYTES` is not read (since 2026-09-29). Bulk reads keep 8 MiB. |
+| `TAIL_RING_BYTES` | 0 (off) | Per-engine durable-tail ring: dispatch publishes freshly-durable pages to memory BEFORE acks; woken live reads serve from it instead of scanning SlateDB. Canonical scan remains the fallback (restart/eviction/lag/filters). 32 MiB suggested. `/v1/debug/timings` -> `tail_ring{published,hits,misses,evicted}`. A read WOKEN by a long-poll wait (a fresh commit group, not a backlog) has a page budget of 1 MiB, fixed: `TAIL_MAX_BYTES` is not read (since 2026-09-29). Bulk reads keep 8 MiB. |
 | `HIST_READER_CAP` | 8 | Cached history DbReaders per process. **Size it ≥ the number of streams concurrently reading history**: LRU with a rotating working set of cap+1 reopens on ~every read (the DST thrash test pins this behavior). Each cached reader costs one manifest poll (5 s) + one checkpoint. |
 | `HIST_READER_IDLE_SECS` | 120 | Idle eviction for cached history readers. |
 | `STREAMS_DEBUG_TIMING` | off | Benchmark-only: woken long-poll responses carry `Streams-Debug-Wait: waited arm_us read_us`, splitting the roundtrip-minus-append interval into wait-wake vs read-build stages. Do not enable outside benches. |

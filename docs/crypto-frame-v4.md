@@ -1,5 +1,7 @@
 # R01: frame v4/v5 encryption and rollout
 
+**Since storage layout 5 (2026-10) frames are a wire format only.** The server stores pages, not frames ([crypto-page-v6.md](crypto-page-v6.md)): a frame is written only when a `format=frames` read re-encrypts a record for the client, always as version 4 (uncompressed, so no response length depends on how well a record compresses), and by the `streams-keys` CLI. The statements below about stored frames, history copies and the layout 4 rollout are the record of layout 4.
+
 New writes use RustCrypto `aes-gcm-siv` 0.11.1 implementing RFC 8452 AES-256-GCM-SIV. The existing AES-256-GCM reader remains only for retained frame versions 2 and 3. No legacy version is reinterpreted. Layout namespace version 4 and the frame's version byte are independent.
 
 ## Key and invocation domain

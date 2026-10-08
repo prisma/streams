@@ -243,11 +243,15 @@ isolation unit so pages carry a cell id and a blast-radius statement.
 Measured inputs (pilot + benchmarks): ~220-byte single-record appends cost
 1 gateway hop + share of one WAL PUT (25 ms window) + share of one L0 PUT +
 compaction amplification ≈ **3–4 object-store ops amortized per 1,000
-records at healthy batching**, ~90 % zstd compression in history tier.
+records at healthy batching**. Since layout 5 each append request is stored
+as pages of up to 64 KiB compressed together (zstd-1) before encryption, in
+the shard log and history alike: about a third of the raw bytes for batched
+JSON, about the same bytes for single-record requests and incompressible
+data ([docs/crypto-page-v6.md](docs/crypto-page-v6.md)).
 
 | driver | model |
 |---|---|
-| storage | raw bytes × ~0.12 (compression) × provider $/GB-mo; history >30 d quiet → archive tier at 1/5 cost (COMPUTE-SPEC §7) |
+| storage | stored page bytes (raw bytes × ~0.25–0.35 for batched JSON, × ~1 for single records and incompressible data) × provider $/GB-mo; history >30 d quiet → archive tier at 1/5 cost (COMPUTE-SPEC §7) |
 | requests | WAL PUTs ≈ shards × 40/s max (25 ms) but load-proportional under batching; per-million-appends object-op cost ≈ (1M / effective batch size) × 2.5 ops |
 | compute | instances = max over §4.2 dims; ~6k appends/s/core target, 8k conns/instance |
 | capacity planning | reactive autoscaler (§4) for minutes-scale; forecasted floor per cell from 7-day peak × 1.3, pre-provisioned as cell weights in `cells.json`; new-cell lead time is the planning horizon (< 1 h, it's stateless) |
