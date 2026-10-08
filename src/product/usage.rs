@@ -289,7 +289,7 @@ pub(super) async fn product_usage(
         "incarnations": name_agg.map(|a| a.incarnations).unwrap_or_default(),
         "metering": {
             "readFlushIntervalSeconds": crate::billing::READ_FLUSH_INTERVAL_MS / 1000,
-            "possibleReadLossWindowSeconds": crate::billing::READ_FLUSH_INTERVAL_MS / 1000,
+            "possibleReadLossWindowSeconds": state.config.billing.read_loss_window_secs(),
         }
     }))
 }

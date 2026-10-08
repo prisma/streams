@@ -8210,6 +8210,17 @@
     "scenarios": []
   },
   {
+    "name": "the_usage_answer_states_the_read_loss_window_of_the_drain_cadence",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "ca733d6e64865f9cfea36439f8ab0dbd272f843559be0f9ed92f6ce1da01526e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_usage.rs",
+    "scenarios": []
+  },
+  {
     "name": "tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

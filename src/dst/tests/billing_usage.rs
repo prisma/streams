@@ -959,3 +959,27 @@ async fn read_batches_survive_crash_in_the_spool() {
     assert_eq!(state.billing.read_spool().unwrap().depth().await, 0);
     engine_shutdown(&state).await;
 }
+
+/// The per-stream usage answer states the longest a metered read stays in
+/// memory, what a hard process loss can drop: its window seals at the first
+/// drain round after the 10 s flush interval and that round spools it, so
+/// the interval plus one drain cadence, 18 s at the default 8 s.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_usage_answer_states_the_read_loss_window_of_the_drain_cadence() {
+    let (state, addr) = http_rig(mem()).await;
+    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config);
+    install_rollup(&state, rollup.await.unwrap());
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let format = br#"{"format":{"kind":"json"}}"#;
+    let (st, _, _) = preq(addr, "PUT", "/v1/streams/window", &key, format).await;
+    assert_eq!(st, 201);
+    let path = "/v1/streams/window/usage/current";
+    let (st, _, body) = preq(addr, "GET", path, &key, b"").await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&body));
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let metering = &v["metering"];
+    assert_eq!(metering["readFlushIntervalSeconds"], 10);
+    assert_eq!(metering["possibleReadLossWindowSeconds"], 18);
+    assert_eq!(metering.as_object().map(serde_json::Map::len), Some(2));
+    engine_shutdown(&state).await;
+}

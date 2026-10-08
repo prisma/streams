@@ -373,6 +373,21 @@ fn default_values_are_pinned() {
     assert_eq!(c.runtime.certification_mode, None);
 }
 
+/// The window a hard process loss can drop metered reads from is the 10 s
+/// read flush interval plus one drain round (edge change #118): the loop
+/// floors its cadence at 1 s, and the sum saturates rather than wraps.
+#[test]
+fn the_read_loss_window_is_the_flush_interval_plus_one_drain_cadence() {
+    let window = |cadence: u64| {
+        let mut c = load_with(&[]);
+        c.billing.telemetry_drain_secs = cadence;
+        c.billing.read_loss_window_secs()
+    };
+    let windows: Vec<u64> = [0, 1, 2, 8, u64::MAX].map(window).to_vec();
+    assert_eq!(windows, [11, 11, 12, 18, u64::MAX]);
+    assert_eq!(load_with(&[]).billing.read_loss_window_secs(), 18);
+}
+
 /// The shipped absorber posture, built the way bootstrap builds it
 /// (`RuntimeCaps::production(..).with_config`). The default budget is one
 /// worst-frame build at the 32 MiB body ceiling, (32 MiB + 64 KiB) x3,

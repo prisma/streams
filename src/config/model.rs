@@ -514,6 +514,17 @@ impl Default for BillingConfig {
     }
 }
 
+impl BillingConfig {
+    /// The longest a metered read stays in memory only, so what a hard
+    /// process loss can drop (OBSERVABILITY-BILLING §7.4): its window seals
+    /// at the first drain round after it is `READ_FLUSH_INTERVAL_MS` old,
+    /// and that round spools it. The loop floors its cadence at 1 s.
+    pub(crate) fn read_loss_window_secs(&self) -> u64 {
+        let interval = (crate::billing::READ_FLUSH_INTERVAL_MS / 1000).unsigned_abs();
+        interval.saturating_add(self.telemetry_drain_secs.max(1))
+    }
+}
+
 impl FleetConfig {
     /// Bounds runtime ring allocation and every persisted membership document.
     pub const MAX_MEMBERS: u64 = 4096;

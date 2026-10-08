@@ -485,6 +485,17 @@
       "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
     },
     {
+      "path": "src/product/usage.rs",
+      "owner": "crate::product_usage",
+      "scope": "function",
+      "lint": "clippy::unwrap_used",
+      "metrics": {
+        "unwrap_site:ordinary-call::27c987284f8662c9": 1
+      },
+      "rationale": "The per-stream usage answer's possibleReadLossWindowSeconds states the read flush interval plus the drain cadence (BillingConfig::read_loss_window_secs, edge change #118), so the json_ok call's argument text changes; no unwrap is added.",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-08 (\"all recommended\", item T1: fix possibleReadLossWindowSeconds with the growth row the usage-drain notes propose)"
+    },
+    {
       "path": "src/shard.rs",
       "owner": "crate::CommitOp",
       "scope": "enum",
