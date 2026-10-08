@@ -2035,6 +2035,17 @@
     "scenarios": []
   },
   {
+    "name": "a_shard_whose_history_partition_is_at_its_l0_cap_closes_and_loses_nothing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ffe108a9841d637a39d642aa217430bf187997772e735b111b7d4c9430a02e93",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/runtime_retirement.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_signed_month_is_refused_on_both_usage_routes",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

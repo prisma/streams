@@ -135,10 +135,23 @@ impl HistoryPartition {
                 .await
                 .map_err(|e| format!("history open join: {e}"))?;
         }
-        if let Some(db) = self.get() {
-            close_db(&db).await?;
-        }
-        Ok(())
+        self.close_opened().await
+    }
+
+    /// Closes the opened database without a final memtable flush. Nothing
+    /// unflushed here was ever relied on: a gather writes, flushes, and only
+    /// then submits its boundary, so a write whose flush never returned left
+    /// its debt in the shard log for the next owner. A final flush could only
+    /// wait: at the L0 cap for a slot the database learns of at its next
+    /// manifest poll (300 s for a history database), or for good while
+    /// compaction frees none, and the engine's close with it.
+    async fn close_opened(&self) -> Result<(), String> {
+        let Some(db) = self.get() else {
+            return Ok(());
+        };
+        let unflushed = slatedb::config::CloseOptions::default().with_flush_memtables(false);
+        let closed = db.close_with_options(unflushed).await;
+        close_verdict(closed, db.status().close_reason)
     }
 }
 
@@ -198,7 +211,7 @@ fn copy_error(error: Arc<slatedb::Error>) -> slatedb::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{close_db, close_verdict};
+    use super::{HistoryPartition, close_db, close_verdict};
     use slatedb::{CloseReason, Db, Error};
     use std::{sync::Arc, time::Duration};
 
@@ -320,5 +333,61 @@ mod tests {
         assert_eq!(close_db(&db).await, Ok(()));
         assert_eq!(db.status().close_reason, Some(CloseReason::Clean));
         assert_eq!(close_db(&db).await, Ok(()));
+    }
+
+    /// The shard-close hang of 2026-10-08: a partition whose L0 is at its cap
+    /// as the Db last saw it, with a write in its memtable, closes at once.
+    /// A final flush would wait for a slot the Db learns of at its next
+    /// manifest poll (300 s for a history database), or never while
+    /// compaction frees none. The Db closes Clean; the flushed rows reopen,
+    /// and the unflushed one, which no flush ever acknowledged, does not.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_partition_at_its_l0_cap_closes_without_waiting_for_a_slot() {
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        let shard = crate::shard::ShardConfig::default();
+        let settings = slatedb::config::Settings {
+            l0_max_ssts: 2,
+            l0_max_ssts_per_key: 2,
+            ..crate::history::history2_settings(&shard.history, &shard.compactor_options)
+        };
+        let partition = Arc::new(HistoryPartition::default());
+        let (opened, at) = (settings.clone(), store.clone());
+        let db = partition
+            .open(move || Db::builder("capped", at).with_settings(opened).build())
+            .await
+            .unwrap();
+        for key in [b"flushed-1", b"flushed-2"] {
+            db.put(key, b"row").await.unwrap();
+            db.flush().await.unwrap();
+        }
+        assert_eq!(
+            db.manifest().l0().len(),
+            2,
+            "the partition's L0 is at its cap"
+        );
+        db.put(b"unflushed", b"row").await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), db.flush())
+                .await
+                .is_err(),
+            "a flush waits for an L0 slot"
+        );
+        let closed = tokio::time::timeout(Duration::from_secs(10), partition.close()).await;
+        assert_eq!(closed, Ok(Ok(())), "the close does not wait for a slot");
+        assert_eq!(db.status().close_reason, Some(CloseReason::Clean));
+        let reopened = Db::builder("capped", store)
+            .with_settings(settings)
+            .build()
+            .await
+            .unwrap();
+        for key in [&b"flushed-1"[..], b"flushed-2"] {
+            assert_eq!(
+                reopened.get(key).await.unwrap().as_deref(),
+                Some(&b"row"[..])
+            );
+        }
+        assert_eq!(reopened.get(b"unflushed").await.unwrap(), None);
+        reopened.close().await.unwrap();
     }
 }

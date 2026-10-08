@@ -1,7 +1,8 @@
 //! Runtime retirement.
 
-use super::fixture_http::{engine_shutdown, http_rig};
-use super::fixture_requests::hreq;
+use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig, http_rig_build};
+use super::fixture_requests::{drain_no_closure, hreq};
+use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::{mem, open_engine};
 use object_store::ObjectStore;
 use std::sync::Arc;
@@ -445,4 +446,81 @@ async fn a_sweep_eviction_arms_only_the_base_holdoff() {
         }
         _ => panic!("a just-retired shard must not reopen immediately"),
     }
+}
+
+/// The shard-close hang of 2026-10-08: a shard whose history partition is
+/// at its L0 cap closes at once and loses nothing. The rig's absorber
+/// gathers every 20 ms and each gather flushes one L0 SST, so a burst of
+/// appends fills the partition's 64 slots before its compactor frees one,
+/// and the partition learns of freed slots only at its manifest poll
+/// (300 s). Once a gather's write waits at the cap, the stop still settles
+/// every engine within the rig's 10 s, the partition closes Clean, and the
+/// next process reads every acknowledged record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shard_whose_history_partition_is_at_its_l0_cap_closes_and_loses_nothing() {
+    let store = mem();
+    let rig = http_rig_build(
+        store.clone(),
+        RigRuntime::first(),
+        HttpRigOptions::default(),
+    )
+    .await;
+    let json = [("content-type", "application/json")];
+    let mut streams = 0;
+    let capped = loop {
+        assert!(streams < 1_000, "no gather's write waited at an L0 cap");
+        let path = format!("/v1/stream/capped-{streams}");
+        assert_eq!(hreq(rig.addr, "PUT", &path, &json, b"").await.0, 201);
+        let appended = hreq(rig.addr, "POST", &path, &json, br#"[{"n":1}]"#).await;
+        assert_eq!(appended.0, 204);
+        streams += 1;
+        if let Some(history) = waiting_at_its_cap(&rig.state).await {
+            break history;
+        }
+    };
+    rig.shutdown().await;
+    let (closes, opens) = rig.state.shards.pending_work();
+    assert_eq!(opens, 0);
+    assert!(closes.iter().all(crate::shard::EngineShutdown::terminated));
+    assert_eq!(
+        capped.status().close_reason,
+        Some(slatedb::CloseReason::Clean)
+    );
+    let next = http_rig_build(store, RigRuntime::incarnation(1), HttpRigOptions::default()).await;
+    for n in 0..streams {
+        let (records, _) = drain_no_closure(next.addr, &format!("capped-{n}"), None).await;
+        assert_eq!(records, vec![serde_json::json!({"n": 1})], "capped-{n}");
+    }
+    next.shutdown().await;
+}
+
+/// The history partition of an open shard whose L0 is at its 64-slot cap
+/// as the database last saw it and whose memtable holds a write no flush
+/// has made durable: the state a final flush waits in.
+async fn waiting_at_its_cap(state: &crate::http::AppState) -> Option<Arc<slatedb::Db>> {
+    for engine in state.shards.engines() {
+        let Some(history) = engine.history_partition_if_open() else {
+            continue;
+        };
+        if history.manifest().l0().len() >= 64
+            && rows(&history, slatedb::config::DurabilityLevel::Memory).await
+                > rows(&history, slatedb::config::DurabilityLevel::Remote).await
+        {
+            return Some(history);
+        }
+    }
+    None
+}
+
+async fn rows(db: &slatedb::Db, durability_filter: slatedb::config::DurabilityLevel) -> usize {
+    let options = slatedb::config::ScanOptions {
+        durability_filter,
+        ..Default::default()
+    };
+    let mut scan = db.scan_with_options(.., &options).await.unwrap();
+    let mut rows = 0;
+    while scan.next().await.unwrap().is_some() {
+        rows += 1;
+    }
+    rows
 }
