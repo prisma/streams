@@ -1712,7 +1712,8 @@ segment) are separate layers, as Pravega's containers and segments are.
   (edge record #134: the history partition closes without its final flush),
   the absorber's stall is not. Options, for the owner's call (performance):
   (a) `Db::refresh_manifest()` when a gather's flush passes a bound (one
-  manifest GET per stall; `src/history/gather.rs`, no formal receipt);
+  manifest GET per stall; `src/history/gather.rs`, which stales TLA-016,
+  about 17 min);
   (b) a shorter history manifest poll (GETs per open history Db, the cost
   posture of #80 and `docs/TIGRIS-404-COST.md`; stales TLA-016, TLA-018 and
   TLA-019, about 103 min serial, and the 300 s assumption in
