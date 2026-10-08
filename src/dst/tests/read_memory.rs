@@ -682,6 +682,7 @@ async fn a_projects_pulls_reserve_their_coverage_inside_its_line_and_its_neighbo
 async fn a_woken_pull_without_room_for_its_coverage_answers_empty_and_leases_nothing() {
     let cell = open_cell(CellSpec::open(1)).await;
     let page = big_stream(&cell, 0).await;
+    assert_eq!(settle_at(&cell, 0, (0, 0)).await, (0, 0), "big's read left");
     let created = cell
         .call(0, "PUT", "/v1/streams/wq", br#"{"format":{"kind":"json"}}"#)
         .await;
@@ -746,6 +747,7 @@ async fn a_woken_pull_without_room_for_its_coverage_answers_empty_and_leases_not
 /// unread page is released before it returns.
 async fn woken_at_the_line(cell: &Cell, poll: &str, then: (&str, &str, &[u8])) -> WokenAnswer {
     let page = big_stream(cell, 0).await;
+    assert_eq!(settle_at(cell, 0, (0, 0)).await, (0, 0), "big's read left");
     let created = cell
         .call(0, "PUT", "/v1/streams/lp", br#"{"format":{"kind":"json"}}"#)
         .await;
