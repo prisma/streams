@@ -57,6 +57,20 @@ have persisted, depending on the store's contract; recover the store's outcome
 before continuing. `bumpEpoch()` intentionally starts a fresh sequence and
 cannot determine whether an earlier uncertain append committed.
 
+## Security notes
+
+Records are encrypted with the stream's key before they are stored. From
+storage layout 5 on, the records of one append request are also compressed
+together before they are encrypted, so a stored page's size shows how well
+its request compressed, and the storage provider, anyone who can list the
+bucket and the stored-byte usage counters can see that size. If the storage
+operator is outside your trust boundary, do not batch secrets together with
+attacker-controlled data into one append: a gateway that appends many end
+users' events in one request lets one user's chosen fields be compressed
+together with another user's secret. Append them separately. Layout 5's
+page format and this guidance are in `docs/crypto-page-v6.md` ("Compression
+and length") in the Prisma Streams repository, a document that layout adds.
+
 ## Request failures and endpoint recovery
 
 `WrongCellError` is never retried at the current endpoint, including the
