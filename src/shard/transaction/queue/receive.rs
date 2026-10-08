@@ -88,13 +88,17 @@ impl CommitTransaction<'_> {
                 }
                 // Open key: every lease of it, `prev` included, has expired.
                 let prev = cs.leases.get(&off).copied();
-                if let Some(l) = prev
-                    && l.delivery_count >= max_deliveries
-                {
-                    poisoned.push((off, l.lease_gen, l.delivery_count, kh));
-                    // The check above skips this offset and the key's later ones.
-                    blocked.insert(kh);
-                    continue;
+                if let Some(l) = prev {
+                    if l.delivery_count >= max_deliveries {
+                        poisoned.push((off, l.lease_gen, l.delivery_count, kh));
+                        // The check above skips this offset and the key's later ones.
+                        blocked.insert(kh);
+                        continue;
+                    }
+                    // Delivered twice: it goes alone, and its run waits for it.
+                    if l.delivery_count >= 2 {
+                        blocked.insert(kh);
+                    }
                 }
                 let lease = Lease {
                     deadline_ms: now + visibility_ms as i64,
@@ -106,7 +110,6 @@ impl CommitTransaction<'_> {
                     .put(lease_key(&hash, &consumer, cgen, off), encode_lease(&lease));
                 self.extra_writes = true;
                 cs.leases.insert(off, lease);
-                // The key stays open to this Receive: its run continues.
                 leased.push((off, lease.lease_gen, lease.delivery_count, kh));
                 off += 1;
             }

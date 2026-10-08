@@ -390,3 +390,39 @@ async fn an_expired_record_waits_while_a_record_of_its_run_is_still_leased() {
     );
     rig.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_record_delivered_twice_goes_alone_until_settled_and_its_run_resumes_after_it() {
+    let rig = Rig::new("run-lease-isolate", "aaaaaa").await;
+    assert_eq!(rig.pull(4, BRIEF_MS, 5).await.0, fresh(&[0, 1, 2, 3]));
+    tokio::time::sleep(EXPIRE).await;
+    let second: Granted = (0..4).map(|off| (off, 2, 2)).collect();
+    assert_eq!(
+        rig.pull(4, BRIEF_MS, 5).await.0,
+        second,
+        "one failure keeps the run"
+    );
+    tokio::time::sleep(EXPIRE).await;
+    assert_eq!(
+        rig.pull(4, HOLD_MS, 5).await.0,
+        vec![(0, 3, 3)],
+        "a head delivered twice goes alone: its successors keep their attempts"
+    );
+    for off in 0..4 {
+        assert_eq!(rig.ack(&[(off, 3)]).await, (1, 0), "offset {off}");
+        let next = if off < 3 {
+            vec![(off + 1, 3, 3)]
+        } else {
+            fresh(&[4, 5])
+        };
+        assert_eq!(
+            rig.pull(4, HOLD_MS, 5).await.0,
+            next,
+            "after offset {off}: each record of the failed run alone, then a fresh run"
+        );
+    }
+    let a = key_hash(b'a');
+    assert_eq!(rig.lease_row(3).await, None, "acked");
+    assert_eq!(rig.lease_row(5).await, Some((1, 1, a)));
+    rig.close().await;
+}
