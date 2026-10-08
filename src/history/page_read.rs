@@ -23,12 +23,8 @@ use slatedb::config::ScanOptions;
 use super::postings_read::execute_postings_plan;
 use super::{POSTINGS_CORRUPT, postings_scan_opts};
 use crate::crypto::{RouteHash, SegmentHash};
-use crate::crypto_page::{CheckedPage, PAGE_MAX_RECORDS, history_page_key, history_page_prefix};
+use crate::crypto_page::{CheckedPage, history_page_key, history_page_prefix, page_scan_bound};
 use crate::shard::record::{PageSlice, PageSlices, RecordCorruption};
-
-/// How far past `to - 1` a window's scan may have to read to meet the page
-/// holding `to - 1`.
-const PAGE_SPAN: u64 = PAGE_MAX_RECORDS as u64;
 
 /// Scan options for history reads: without readahead, slatedb fetches one
 /// (compressed, ~200B) block per sequential GET — thousands of round-trips
@@ -76,7 +72,7 @@ impl PageScan {
             end: to,
         } = window;
         let rows = if from < to {
-            let bound = to.saturating_sub(1).saturating_add(PAGE_SPAN);
+            let bound = page_scan_bound(to);
             let range = history_page_key(route, inc, from)..history_page_key(route, inc, bound);
             Some(part.scan_with_options(range, opts).await?)
         } else {

@@ -96,6 +96,17 @@ pub(crate) fn last_offset(first: u64, count: usize) -> Option<u64> {
     first.checked_add(extra)
 }
 
+/// The row-key offset a forward scan of the window `[from, to)` must reach,
+/// exclusive, to meet the page that holds `to - 1`: a page holds at most
+/// PAGE_MAX_RECORDS records, so that page's last offset is below
+/// `to - 1 + PAGE_MAX_RECORDS`. Both the shard log and history scan to it
+/// and stop at the first page that starts at or after `to`. It saturates:
+/// a page keyed u64::MAX is never reached, and none is ever written (a
+/// stream's next offset cannot pass u64::MAX).
+pub(crate) fn page_scan_bound(to: u64) -> u64 {
+    to.saturating_sub(1).saturating_add(PAGE_MAX_RECORDS as u64)
+}
+
 /// Shard-log row key of the page whose last offset is `last`.
 pub(crate) fn shard_page_key(hash: &[u8; 16], last: u64) -> Vec<u8> {
     let mut key = Vec::with_capacity(25);

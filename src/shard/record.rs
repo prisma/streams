@@ -10,15 +10,11 @@
 //! needs keys past `to - 1 + PAGE_MAX_RECORDS`.
 use super::{Deliver, ShardEngine, StreamHandle};
 use crate::crypto_page::{
-    CheckedPage, PAGE_MAX_RECORDS, PageCorruption, shard_page_key, shard_page_prefix,
+    CheckedPage, PageCorruption, page_scan_bound, shard_page_key, shard_page_prefix,
 };
 mod pages;
 pub(crate) use pages::{PageSlice, PageSlices};
 use slatedb::config::{DurabilityLevel, ScanOptions};
-
-/// How far past `to - 1` a window's scan may have to read to meet the page
-/// holding `to - 1`.
-const PAGE_SPAN: u64 = PAGE_MAX_RECORDS as u64;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RecordCorruption {
@@ -178,8 +174,7 @@ impl ShardEngine {
             return Ok(out);
         }
         let prefix = shard_page_prefix(&hash);
-        let bound = to.saturating_sub(1).saturating_add(PAGE_SPAN);
-        let range = shard_page_key(&hash, from)..shard_page_key(&hash, bound);
+        let range = shard_page_key(&hash, from)..shard_page_key(&hash, page_scan_bound(to));
         let mut iter = self
             .db
             .scan_with_options(

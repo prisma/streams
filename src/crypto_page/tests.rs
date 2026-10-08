@@ -435,6 +435,17 @@ fn every_page_gets_a_fresh_nonce() {
     assert_ne!(first, second);
 }
 
+/// A window's scan reaches, exclusive, 4,095 offsets past its last record:
+/// the page holding that record ends below there whatever its size.
+#[test]
+fn a_scan_bound_reaches_the_page_holding_the_last_record() {
+    use super::page_scan_bound;
+    assert_eq!(page_scan_bound(1), PAGE_MAX_RECORDS as u64);
+    assert_eq!(page_scan_bound(10), 9 + PAGE_MAX_RECORDS as u64);
+    assert_eq!(page_scan_bound(u64::MAX - 1), u64::MAX);
+    assert_eq!(page_scan_bound(u64::MAX), u64::MAX);
+}
+
 #[test]
 fn row_keys_are_namespace_tag_and_last_offset() {
     let last = 0x0102_0304_0506_0708;
