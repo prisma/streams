@@ -62,8 +62,8 @@ impl PageCipher {
     }
 }
 
-/// An authenticated page whose tables parsed exactly.
-#[derive(Debug)]
+/// An authenticated page whose tables parsed exactly. It holds decrypted
+/// plaintext, so it has no Debug form (nor has `PageRecord`).
 pub(crate) struct OpenedPage {
     first: u64,
     last: u64,
@@ -100,7 +100,7 @@ impl OpenedPage {
 }
 
 /// One record of an opened page.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PageRecord<'a> {
     pub(crate) offset: u64,
     pub(crate) ts_ms: i64,

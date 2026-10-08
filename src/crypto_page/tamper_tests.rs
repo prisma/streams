@@ -202,7 +202,7 @@ fn a_timestamp_delta_is_added_to_the_page_timestamp() {
 #[test]
 fn a_compressed_body_must_be_zstd() {
     let page = authentic(PAGE_VER_Z, 1, TS, b"not a zstd frame");
-    assert_eq!(cipher().open(&page).unwrap_err(), OpenError::Decompression);
+    assert_eq!(cipher().open(&page).err(), Some(OpenError::Decompression));
 }
 
 #[test]
@@ -221,7 +221,7 @@ fn a_compressed_body_opens_at_exactly_its_cap_and_not_one_byte_past() {
 
     let past = zstd::bulk::compress(&[0; PAGE_TARGET_PLAINTEXT + 1], 1).unwrap();
     let page = authentic(PAGE_VER_Z, 2, TS, &past);
-    assert_eq!(cipher().open(&page).unwrap_err(), OpenError::BodyTooLarge);
+    assert_eq!(cipher().open(&page).err(), Some(OpenError::BodyTooLarge));
 }
 
 #[test]
@@ -236,9 +236,35 @@ fn a_decompression_bomb_is_cut_at_the_cap_without_inflating_it() {
     let gib = rle_bomb(8192);
     assert_eq!(gib.len(), 6 + 8192 * 4);
     let page = authentic(PAGE_VER_Z, 2, TS, &gib);
-    assert_eq!(cipher().open(&page).unwrap_err(), OpenError::BodyTooLarge);
+    assert_eq!(cipher().open(&page).err(), Some(OpenError::BodyTooLarge));
     // A single-record page stops at the record cap's body, not 64 MiB.
     let page = authentic(PAGE_VER_Z, 1, TS, &rle_bomb(512));
     assert_eq!(body_cap(1), (32 << 20) + 14);
-    assert_eq!(cipher().open(&page).unwrap_err(), OpenError::BodyTooLarge);
+    assert_eq!(cipher().open(&page).err(), Some(OpenError::BodyTooLarge));
+}
+
+/// Decrypted plaintext has no `{:?}` form: neither an opened page nor one
+/// of its records implements Debug, so no log field, failed assertion or
+/// `unwrap_err` can print a customer's payload. The probe resolves to the
+/// inherent `DEBUG` only for a type that is Debug; `u8` shows it does.
+#[test]
+fn opened_plaintext_has_no_debug_form() {
+    trait NotDebug {
+        const DEBUG: bool = false;
+    }
+    impl<T: ?Sized> NotDebug for T {}
+    struct Probe<T: ?Sized>(std::marker::PhantomData<T>);
+    impl<T: ?Sized + std::fmt::Debug> Probe<T> {
+        const DEBUG: bool = true;
+    }
+    let printable = [
+        Probe::<u8>::DEBUG,
+        Probe::<super::OpenedPage>::DEBUG,
+        Probe::<super::open::PageRecord<'static>>::DEBUG,
+    ];
+    assert_eq!(
+        printable,
+        [true, false, false],
+        "[u8, OpenedPage, PageRecord] have a Debug form"
+    );
 }
