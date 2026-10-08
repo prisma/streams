@@ -664,7 +664,7 @@ The answers are the rollup's view of `_usage`, so they trail the meters:
 
 - Ingest, records, append requests and storage: a write's usage is in its segment's durable outbox (§6.3) when the write is acknowledged. The next drain round, every `TELEMETRY_DRAIN_SECS` (8 s by default; 2 s before edge change #117), appends it to `_usage`, and the rollup applies it within about 2 s (its poll when idle). An answer trails an acknowledged write by up to about 10 s.
 - Reads: a delivery reaches `_usage` when its read window seals and is drained (§7.2), up to 18 s after the window opened, then the rollup's 2 s: up to about 20 s.
-- One round takes at most 64 dirty segments from each of at most 4 shards, and at most 1,000 envelopes or 1 MB; the rest wait for later rounds, so a cell that dirties more segments per cadence than that trails further.
+- One round takes at most 256 dirty segments from each of at most 4 shards (64 before edge change #121), and at most 1,000 envelopes or 1 MB; the rest wait for later rounds, so a cell that dirties more segments per cadence than that trails further.
 
 ---
 

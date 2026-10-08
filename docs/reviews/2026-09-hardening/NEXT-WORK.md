@@ -1539,8 +1539,9 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
    until `home-v1`) land with it. The 100 ms point of 14.8 is not yet
    measured.
    Two drain bounds follow (T9, 2026-10-08): a round takes up to 256 dirty
-   rows per shard, not 64, and a graceful stop's terminal round is bounded
-   by min(cadence, 5 s), not one cadence, each with a low-risk edge record.
+   rows per shard, not 64 (implemented, edge record #121, awaiting
+   ratification), and a graceful stop's terminal round is bounded by
+   min(cadence, 5 s), not one cadence, with a low-risk edge record.
 3. **"WAL plus one copy" (design B) as layout 6, before launch,** after a
    throwaway seal spike proves at most 2.2 uploads per stored byte and bounded
    memory. Each stored byte is uploaded about 8 times today: WAL 1.16, shard

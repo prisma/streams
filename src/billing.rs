@@ -825,7 +825,7 @@ pub(crate) async fn drain_once(
     // events count against the budget like everything else. A row's
     // contribution (finals + live snapshot + lifecycle) is admitted
     // atomically: over budget, the whole row waits for the next round
-    // (2 s later) with its dirty marker intact.
+    // (one cadence later) with its dirty marker intact.
     const DRAIN_MAX_ENVELOPES: usize = 1000;
     const DRAIN_MAX_BYTES: usize = 1_000_000;
     const LIFECYCLE_EST: usize = 512;
@@ -837,7 +837,7 @@ pub(crate) async fn drain_once(
         // retries — instead of treating "scan failed" as "nothing
         // exists" and acking finals away against an empty list.
         let (dirty, more_dirty) = match engine
-            .usage_dirty_page(state.billing.drain_row_cursor(&engine.prefix), 64)
+            .usage_dirty_page(state.billing.drain_row_cursor(&engine.prefix), 256)
             .await
         {
             Ok(page) => page,

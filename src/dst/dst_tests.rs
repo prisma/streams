@@ -37,6 +37,9 @@ mod billing_walk_custody;
 #[path = "tests/billing_controller.rs"]
 mod billing_controller;
 
+#[path = "tests/billing_drain_bounds.rs"]
+mod billing_drain_bounds;
+
 #[path = "tests/billing_maintenance.rs"]
 mod billing_maintenance;
 

@@ -54,7 +54,7 @@ R03 follow-up audit found that queue generation/config refusals still escaped di
 
 ## R09 — billing/history controller continuation (storage portion)
 
-Billing discovery visits at most four rotating engines, 64 dirty rows per engine and 32 month-final rows per segment. Dirty and history cursors use exclusive storage seeks. Partial final acknowledgements delete exact published keys while retaining the dirty marker until all finals were emitted. Residency probes read at most one row per outbox index. Error/cancellation leaves durable debt discoverable. Optional-mode read batches now have a Drop guard which requeues them if cancellation occurs at any await before ledger acceptance.
+Billing discovery visits at most four rotating engines, 64 dirty rows per engine (256 since edge change #121) and 32 month-final rows per segment. Dirty and history cursors use exclusive storage seeks. Partial final acknowledgements delete exact published keys while retaining the dirty marker until all finals were emitted. Residency probes read at most one row per outbox index. Error/cancellation leaves durable debt discoverable. Optional-mode read batches now have a Drop guard which requeues them if cancellation occurs at any await before ledger acceptance.
 
 History restart discovery reads 256 dirty identities per page and continues subsequent ticks from the stored-in-owner cursor. Pending work is capped at 8,192 streams; excess signals rely on their durable dirty markers. Bounded due selection rotates in hash order so an indefinitely hot prefix cannot starve eligible successors. The redundant whole-resident backlog materialization was removed.
 

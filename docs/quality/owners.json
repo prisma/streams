@@ -2947,6 +2947,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::billing_drain_bounds",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The usage drain's bounds (the owner's decision of 2026-10-08, T9; edge change #121): one drain round takes up to 256 of each shard's dirty rows over a real HTTP rig with many streams; selected by the billing mutation owner's filter; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/billing_drain_bounds.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::billing_readiness",
       "path": "src/dst/dst_tests.rs",
       "reason": "Billing-readiness scenarios for the clap-resolved billing selectors; real HTTP /health and /operator/billing.json against argv-configured rigs, and the read-spool root under the clap PATH_PREFIX; compiled and executed with DST.",

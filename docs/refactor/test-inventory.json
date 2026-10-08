@@ -5463,6 +5463,17 @@
     "scenarios": []
   },
   {
+    "name": "one_drain_round_takes_up_to_256_dirty_rows_of_each_shard",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "45a4b780b2c1f90379b653572f2dbaa6a7e9984f772b9ab09ddd29a074f8d301",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_drain_bounds.rs",
+    "scenarios": []
+  },
+  {
     "name": "only_the_exact_signed_watch_route_skips_the_token",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
