@@ -918,3 +918,71 @@ the workload token file MUST be replaced atomically: write a
 temporary file, flush, `rename(2)` over the live path — never
 truncate-and-rewrite in place (docs/CONTROL-PLANE-INTEGRATION.md
 §7.2/§8.2).
+
+## Shared cells (single-server, design partners)
+
+One 1 GiB server, one shard, the fleet off, `deploy/profiles/shared-cell.env`
+layered on `compute-1g.env`, projects placed by `deploy/cell-admin` (its
+README holds the commands). Owner decisions: README "Shared cells Q0"-"Q10"
+(`docs/reviews/2026-09-hardening/`).
+
+**Key custody.** One signing key per cell (RSA of 2,048 bits or more, or
+Ed25519), made offline, kept in one mode-0600 file on the operator's
+machine and in its backup, never on the cell, in the bucket or in a
+deploy environment. Only `cell-admin` reads it (`--key-file`), only the
+public half is published, pinned to `prisma-streams-data`; tokens are
+minted per credential for at most 24 h and handed over as mode-0600 files.
+The audience pin makes separate custody enforceable (a customer key cannot
+sign for `prisma-streams-internal`); it does not create it: whoever holds
+the file can mint any partner's token. Rehearse a rotation on a scratch
+cell before the first rotation of a live one (`cell-admin rotate` is not
+built yet). A lost key means re-minting every credential under a new key.
+
+**Keys feed and binary change together.** Every key in the keys feed names
+its audience (`aud`, contract r7). A binary from before r7 refuses a feed
+that carries `aud`, a binary from r7 on refuses one without it, and either
+mismatch answers every token `401 kid_unknown`. `cell-admin` always writes
+`aud`, so a cell's binary and its feed bundle come from one tree: deploy
+the r7 binary with the r7 bundle in one step, and keep campaign tools
+(`bench/k2cost/field`) on the same tree as the binary they deploy. Never
+redeploy the six-region Tigris observatory probes for it (§14).
+
+**Publishing.** A publish is an upload of `feeds-bundle.json` to the
+cell's `FEEDS_S3_KEY`. The wrapper (`deploy/app-server/feeds.ts`) polls
+it every 15 s with `If-None-Match` and rewrites the three feed files
+atomically; the server reads them at its next refresh (30 s), so an
+admission or revocation lands within about 45 s, with no restart. After
+120 s of awake time without a successful poll the wrapper deletes the
+files (`feeds deleted` in the log), and the cell refuses every request
+once its policies are 300 s stale, until a poll succeeds: an unreachable
+bundle bucket takes the cell down within about 7 minutes. A fetched bundle
+that is not JSON or lacks a feed is a failed poll (`feeds bundle refused`
+in the log) and replaces nothing, so a malformed bundle left published
+takes the cell down the same way: republish a good bundle at once.
+
+**Packing by hand (u = 0.5).** Quotas oversubscribe by design: k = 8
+projects at their ceilings fill each shared bound exactly. Place projects
+by their expected load instead: on each envelope axis (requests/s,
+appended bytes/s, read bytes/s; `CELL_ENVELOPE_*` in the profile) the sum
+of the admitted projects' expected rates must stay at or below half the
+envelope (705 req/s, 1,030,000 B/s appended, 15,000,000 B/s read on the
+current profile). Ask each partner for its expected peak rates before `admit`, write the
+sum down beside the cell's state directory, and refuse the next partner
+that would pass a half. `cell-admin` checks this itself once phase B
+declares load.
+
+**What to alert on** (scrape with the deployment bearer):
+
+| signal | where | alert when |
+|---|---|---|
+| read memory | `/operator/data.json` `local.read_memory_bytes` / `local.read_memory_capacity_bytes` | above 80 % for 5 min: neighbours' reads are waiting, then `503 read_memory_busy` |
+| RSS at idle | `local.rss_mb` vs `local.rss_shed_mb` | above the shed line with no load (NEXT-WORK 14.7, "Shared cells Q0"): every tenant's writes are shed |
+| instance and shard sheds | `local.admit_shed`; `/v1/debug/load` `admit_shed_rss` and `maintenance_backpressure` (`appends_shed`, `cause`) | any growth: look at the largest writers (per-project attribution is phase B) |
+| parked waits | `local.parked` | near `SSE_MAX_CONNECTIONS` (1,200): waits stop parking |
+| reserved policies | `/v1/debug/auth` `feeds.policies.reservedDropped` | above 0: a feed names the system project, `PROJECT_ID` or `ACCOUNT_ID` |
+| unowned usage | `unowned_meter_events_total` | not flat: usage billed to the cell's `ACCOUNT_ID` sink |
+| feed delivery | wrapper log `feeds poll failed` / `feeds deleted`; `503 policy_stale` | any `feeds deleted`; polls failing for over a minute |
+
+A single-server shared cell publishes no `prisma-streams-internal` key and
+sets no `FLEET_INTERNAL_TOKEN`: its internal surface opens to nothing. A
+key for that audience in its keys feed is an incident.
