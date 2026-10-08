@@ -645,6 +645,31 @@ async fn tail_repair_from_inside_a_page_counts_it_whole_and_refuses_an_overlap()
     db.close().await.unwrap();
 }
 
+/// The ring serves durable reads only: a durable read of a window the ring
+/// holds is served from it and carries its coverage witness, while an
+/// applied read of the same window scans the store and carries none; both
+/// serve the same records.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn only_a_durable_read_is_served_from_the_ring() {
+    let engine = engine("pages-ring-durable", 1 << 20).await;
+    two_pages(&engine).await;
+    let handle = engine.stream_handle(HASH).await.unwrap();
+    let hits = || engine.ring_hits.load(std::sync::atomic::Ordering::Relaxed);
+    for (deliver, from_ring) in [(Deliver::Durable, true), (Deliver::Applied, false)] {
+        let before = hits();
+        let read = read_frames(&engine, &handle, 4, None, 1 << 20, deliver)
+            .await
+            .unwrap();
+        assert_eq!(served(&read), expected(4..20), "{deliver:?}");
+        assert_eq!(
+            (hits() - before, read.proves_durable_ring(&engine, HASH, 4)),
+            (u64::from(from_ring), from_ring),
+            "{deliver:?}"
+        );
+    }
+    engine.begin_close();
+}
+
 /// A trim deletes a shard-log page only once its LAST offset is below the
 /// trim point: a budget that stops inside an absorbed page keeps the page,
 /// and a page holding an unabsorbed record is never deleted, even when the
