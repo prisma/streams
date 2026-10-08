@@ -276,6 +276,54 @@ async fn load_or_rebuild_covers_present_missing_and_corrupt() {
     db.close().await.unwrap();
 }
 
+/// R26-4: the rebuild repairs only a tail that holds unabsorbed records with
+/// a zero gauge. A fully absorbed stream whose trims are pending keeps its
+/// dirty mark, and its zero gauge is exact: the rebuild counts it as no
+/// backlog and leaves its tail row as stored. The row is the pre-gauge
+/// layout, so a repair would show: it rewrites the row with its gauge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rebuild_keeps_a_fully_absorbed_tail_with_pending_trims() {
+    let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let db = Db::builder("m5/shard", store).build().await.unwrap();
+    let h = [5u8; 16];
+    let stored = encode_tail_without_gauge_for_tests(&TailFields {
+        next: 10,
+        absorbed: 10,
+        trimmed: 4,
+        trim_safe_to: 10,
+        ..Default::default()
+    });
+    let mut wb = WriteBatch::new();
+    wb.put(tail_key(&h), stored.clone());
+    wb.put(
+        dirty_key(&h),
+        dirty_value(&StreamMaintenance {
+            absorbed: 10,
+            next: 10,
+            ..Default::default()
+        }),
+    );
+    db.write_with_options(wb, &WriteOptions::default())
+        .await
+        .unwrap();
+    let got = load_or_rebuild_maintenance(&db).await.unwrap();
+    assert_eq!(
+        (
+            got.unabsorbed_frame_bytes,
+            got.backlog_started_ms,
+            got.last_progress_ms
+        ),
+        (0, 0, 0)
+    );
+    let tail = db.get(tail_key(&h)).await.unwrap().unwrap();
+    assert_eq!(
+        tail.as_ref(),
+        stored.as_slice(),
+        "the tail row was rewritten"
+    );
+    db.close().await.unwrap();
+}
+
 // ---- absorbed-boundary retirement (release hold: the capacity run's
 // one-off 500). An absorbed advance that re-covers bytes an earlier
 // advance retired used to retire them again; once the stream ledger was
