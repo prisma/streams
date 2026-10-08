@@ -1865,6 +1865,14 @@
       "syntax": "tokio::spawn"
     },
     {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::revalidating",
+      "path": "src/bin/pilot/lb.rs",
+      "reason": "The router's revalidating store, which answers an unchanged document its fleet poll re-reads from its last copy after the object store's 304, with its own test; the explicit path keeps it beside the pilot router that is its only user. Compiled into the pilot binary.",
+      "syntax": "path = \"lb/revalidating.rs\""
+    },
+    {
       "category": "effect",
       "count": 1,
       "owner": "crate::spawn_load_report",

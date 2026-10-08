@@ -17,6 +17,9 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
+#[path = "lb/revalidating.rs"]
+mod revalidating;
+
 /// The router's one process-wide report of every daemon it owns; each
 /// runs until the process exits, so there is nothing to join.
 pub(super) async fn run() {
@@ -39,6 +42,19 @@ fn required(key: &str) -> String {
 
 fn path(name: &str) -> object_store::path::Path {
     object_store::path::Path::from(name)
+}
+
+/// The fleet poller's store under `prefix` (`poller_store`).
+fn revalidated(prefix: &str) -> Arc<dyn ObjectStore> {
+    poller_store(fleet_store(prefix))
+}
+
+/// The fleet poller's store over `inner`: it re-reads each unchanged
+/// document it polls from its last copy, which the store confirms with a 304
+/// (`revalidating`). `spawn_fleet_poller` builds both its stores with it
+/// (`revalidated`), and the poll test reads through it.
+fn poller_store(inner: Arc<dyn ObjectStore>) -> Arc<dyn ObjectStore> {
+    Arc::new(revalidating::Revalidating::new(inner))
 }
 
 /// One JSON document from the store, or None when it is absent,
@@ -122,7 +138,8 @@ impl Lb {
 
 // ---------------------------------------------------------- fleet poll ---
 
-/// Fleet poller: desired.json + heartbeats every 2 s, topology every 60 s.
+/// Fleet poller: desired.json + heartbeats every 2 s, topology every 60 s,
+/// each unchanged document revalidated rather than read again.
 /// The LB emulates the platform: it routes to only the first `desired`
 /// upstreams, so the rest idle and scale to zero.
 #[expect(
@@ -130,8 +147,8 @@ impl Lb {
     reason = "lb::spawn_fleet_poller; the poller lives as long as the router process and produces nothing to join; a supervisor would only hold a handle that ends with the process"
 )]
 fn spawn_fleet_poller(lb: Arc<Lb>, n_up: usize) {
-    let fstore = fleet_store(&required("FLEET_PREFIX"));
-    let dstore = fleet_store(&required("DATA_PREFIX"));
+    let fstore = revalidated(&required("FLEET_PREFIX"));
+    let dstore = revalidated(&required("DATA_PREFIX"));
     tokio::spawn(async move {
         let mut topo_age = 0u32;
         loop {
