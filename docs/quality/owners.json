@@ -2091,6 +2091,14 @@
     {
       "category": "effect",
       "count": 1,
+      "owner": "crate::start_idle_sweep",
+      "path": "src/touch.rs",
+      "reason": "The touch registry's idle sweep, started with the registry and ended when the registry is dropped (it holds only a weak reference to the journal map); no supervisor is reachable where registries are built, and the task owns nothing beyond its own look at the journals.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
       "owner": "crate::TaskSupervisor::launch_shutdown",
       "path": "src/tasks/shutdown.rs",
       "reason": "The one shutdown driver: it joins the supervised set and publishes the report every observer waits on, so it cannot itself be supervised.",

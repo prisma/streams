@@ -3,9 +3,10 @@
 //! this journal owns only epochs, bounded touch history and pending waiters.
 //! Per-key waiter indexing bounds flush work to touched keys. Expired history
 //! and overflow buckets require resynchronization; closing wakes waiters stale.
+//! A journal idle for `IDLE_RETIREMENT` is retired, as at a fence.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use tokio::sync::oneshot;
@@ -15,6 +16,18 @@ const BUCKET_KEY_CAP: usize = 65_536;
 const HISTORY_BUCKETS: usize = 4_096;
 /// Global cap on retained history keys (~8 MB as sorted u32 vecs).
 const HISTORY_KEY_BUDGET: usize = 2_000_000;
+/// A journal with no parked waiter, no pending touch, no new wait or
+/// published touch and no request holding it for this long is retired
+/// (shared cells Q10 (a)): its 40 Hz flusher ends, and a watcher returning
+/// with its cursor is answered stale once by a fresh journal and
+/// resynchronises.
+const IDLE_RETIREMENT: Duration = Duration::from_secs(600);
+/// How often the registry's idle sweep looks at every journal.
+const IDLE_SWEEP_EVERY: Duration = Duration::from_secs(60);
+/// The holders of an open journal that the registry accounts for: its map
+/// slot and its flusher. Any other (an admitted append's touch feed
+/// awaiting durability, a wait about to register) is a request using it.
+const REGISTRY_HOLDERS: usize = 2;
 struct ClosedBucket {
     generation: u64,
     keys: Vec<u32>, // sorted
@@ -51,6 +64,8 @@ struct Inner {
     next_waiter_id: u64,
     key_index: HashMap<u32, Vec<u64>>,
     closed: bool,
+    /// Waits ever registered: activity for the idle sweep.
+    registrations: u64,
 }
 
 pub(crate) struct TouchJournal {
@@ -107,6 +122,16 @@ impl TouchJournal {
 
     fn cursor(&self, generation: u64) -> String {
         format!("{}:{}", self.epoch, generation)
+    }
+
+    /// What the idle sweep compares between two looks: `None` while a
+    /// waiter is parked or a touch is pending, else the generations
+    /// published and the waits ever registered. A poisoned journal is
+    /// never idle, so the sweep leaves it to a fence.
+    fn activity(&self) -> Option<(u64, u64)> {
+        let inner = self.inner.lock().ok()?;
+        (inner.waiters.is_empty() && !inner.dirty)
+            .then_some((inner.generation, inner.registrations))
     }
 
     /// Record touched key IDs (shard acker, post-durability).
@@ -300,6 +325,7 @@ impl Inner {
                 proven,
             });
         }
+        self.registrations += 1;
         let id = self.next_waiter_id;
         self.next_waiter_id += 1;
         let (tx, rx) = oneshot::channel();
@@ -372,20 +398,88 @@ fn remove_waiter(inner: &mut Inner, id: u64) -> Option<Waiter> {
 /// One registry slot: the stream's shard route (for close_shard
 /// matching) alongside its journal.
 type JournalSlot = (crate::crypto::RouteHash, Arc<TouchJournal>);
+type JournalMap = Mutex<HashMap<[u8; 16], JournalSlot>>;
 
 pub(crate) struct TouchRegistry {
-    map: Mutex<HashMap<[u8; 16], JournalSlot>>,
+    map: Arc<JournalMap>,
     /// Journal epoch discriminators draw from the runtime's
     /// entropy capability, not the ambient process RNG.
     entropy: Arc<dyn crate::runtime::Entropy>,
 }
 
+/// What the idle sweep last saw of one journal: its activity, and when
+/// that last changed.
+struct Seen {
+    activity: Option<(u64, u64)>,
+    since: tokio::time::Instant,
+}
+
+/// One look of the idle sweep at every journal in `map`: a journal whose
+/// activity has not changed, and that has been idle and held by no request,
+/// for IDLE_RETIREMENT is closed (its waiters, if one raced in, woken
+/// stale) and dropped, so its flusher ends. Under the map lock no request
+/// can take a new hold, so a journal no request holds has no touch in
+/// flight that its close would drop. A poisoned map retires nothing.
+fn retire_idle(map: &JournalMap, seen: &mut HashMap<[u8; 16], Seen>, now: tokio::time::Instant) {
+    let Ok(mut map) = map.lock() else {
+        return;
+    };
+    seen.retain(|hash, _| map.contains_key(hash));
+    let mut idle = Vec::new();
+    for (hash, (_, journal)) in map.iter() {
+        let activity = journal.activity();
+        let held = Arc::strong_count(journal) > REGISTRY_HOLDERS;
+        let last = seen.entry(*hash).or_insert(Seen {
+            activity,
+            since: now,
+        });
+        if held || activity.is_none() || activity != last.activity {
+            *last = Seen {
+                activity,
+                since: now,
+            };
+        } else if now.duration_since(last.since) >= IDLE_RETIREMENT {
+            idle.push(*hash);
+        }
+    }
+    for hash in idle {
+        seen.remove(&hash);
+        if let Some((_, journal)) = map.remove(&hash) {
+            journal.close();
+        }
+    }
+}
+
+/// The registry's idle sweep, every IDLE_SWEEP_EVERY until the registry
+/// is dropped. Outside a runtime (a registry no journal flusher could run
+/// in either) there is none.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "start_idle_sweep; the sweep is started with its registry, where no supervisor is reachable, and it ends on its own once the registry is dropped; a supervised sweep would thread the supervisor through every registry for a task that ends itself"
+)]
+fn start_idle_sweep(map: Weak<JournalMap>) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(IDLE_SWEEP_EVERY);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut seen = HashMap::new();
+        loop {
+            tick.tick().await;
+            let Some(map) = map.upgrade() else {
+                return;
+            };
+            retire_idle(&map, &mut seen, tokio::time::Instant::now());
+        }
+    });
+}
+
 impl TouchRegistry {
     pub(crate) fn with_entropy(entropy: Arc<dyn crate::runtime::Entropy>) -> Self {
-        Self {
-            map: Mutex::new(HashMap::new()),
-            entropy,
-        }
+        let map = Arc::new(Mutex::new(HashMap::new()));
+        start_idle_sweep(Arc::downgrade(&map));
+        Self { map, entropy }
     }
 
     #[expect(

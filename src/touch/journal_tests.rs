@@ -299,3 +299,124 @@ async fn retiring_an_identity_closes_and_forgets_exactly_its_journal() {
     kept.close();
     reopened.close();
 }
+
+/// Shared cells Q10 (a): a journal with no waiter and no touch for ten
+/// minutes is retired by the registry's idle sweep (which looks every
+/// minute), so its flusher ends; a watcher that returns with its old
+/// cursor is answered stale once, by a fresh journal, and resynchronises.
+/// A journal with a parked waiter, or touched within the ten minutes,
+/// stays. The test holds no journal it expects retired: a held one is
+/// kept (the next test).
+#[tokio::test(start_paused = true)]
+async fn a_journal_idle_for_ten_minutes_is_retired_and_its_watchers_resynchronise() {
+    let registry = TouchRegistry::with_entropy(Arc::new(crate::runtime::OsEntropy));
+    let route = RouteHash([0x40; 16]);
+    let (idle_hash, waited_hash, touched_hash) = ([0x01; 16], [0x02; 16], [0x03; 16]);
+    let idle = registry.journal(idle_hash, route);
+    idle.ingest(&[7], 1);
+    let mut first = Box::pin(idle.wait("now", vec![7], LONG));
+    assert_eq!(ready(futures_util::poll!(first.as_mut())), "pending");
+    let cursor = match first.await {
+        WaitOutcome::Touched { cursor, .. } => cursor,
+        other => panic!("the idle journal's touch: {}", render(other)),
+    };
+    let retired = Arc::downgrade(&idle);
+    drop(idle);
+    let waited = registry.journal(waited_hash, route);
+    let mut parked = Box::pin(waited.wait("now", vec![7], 2 * LONG));
+    assert_eq!(ready(futures_util::poll!(parked.as_mut())), "pending");
+    registry.journal(touched_hash, route);
+
+    tokio::time::sleep(Duration::from_secs(9 * 60)).await;
+    registry.journal(touched_hash, route).ingest(&[7], 2);
+    tokio::time::sleep(Duration::from_secs(3 * 60)).await;
+
+    let held: Vec<[u8; 16]> = {
+        let map = registry.map.lock().unwrap();
+        let mut held: Vec<[u8; 16]> = map.keys().copied().collect();
+        held.sort_unstable();
+        held
+    };
+    assert_eq!(
+        held,
+        [waited_hash, touched_hash],
+        "the idle journal is retired"
+    );
+    assert!(retired.upgrade().is_none(), "its flusher ended");
+    assert_eq!(ready(futures_util::poll!(parked.as_mut())), "pending");
+    let fresh = registry.journal(idle_hash, route);
+    assert!(
+        !std::ptr::eq(Arc::as_ptr(&fresh), retired.as_ptr()),
+        "a returning watcher's journal is fresh"
+    );
+    assert_eq!(
+        render(fresh.wait(&cursor, vec![7], Duration::ZERO).await),
+        format!("stale {}:0", fresh.epoch)
+    );
+    for journal in [&fresh, &waited, &registry.journal(touched_hash, route)] {
+        journal.close();
+    }
+}
+
+/// An append resolves its stream's journal when it is admitted and feeds
+/// the journal its touch only once the batch is durable. A journal that a
+/// request still holds (here an admitted append's touch feed) is not idle,
+/// however long it sat quiet before: the sweep keeps it, so the touch
+/// reaches the journal a watcher arriving in between finds.
+#[tokio::test(start_paused = true)]
+async fn a_journal_an_admitted_append_holds_is_kept_until_its_touch_lands() {
+    let registry = TouchRegistry::with_entropy(Arc::new(crate::runtime::OsEntropy));
+    let (hash, route) = ([0x01; 16], RouteHash([0x40; 16]));
+    registry.journal(hash, route);
+    tokio::time::sleep(Duration::from_secs(9 * 60 + 30)).await;
+    let feed = crate::shard::TouchFeed {
+        journal: registry.journal(hash, route),
+        key_ids: vec![7],
+        next_offset: 9,
+    };
+    tokio::time::sleep(Duration::from_secs(2 * 60)).await;
+    let watcher = registry.journal(hash, route);
+    let mut wait = Box::pin(watcher.wait("now", vec![7], LONG));
+    assert_eq!(ready(futures_util::poll!(wait.as_mut())), "pending");
+    feed.journal.ingest(&feed.key_ids, feed.next_offset);
+    tokio::time::sleep(Duration::from_millis(2 * BUCKET_MS)).await;
+    assert_eq!(
+        ready(futures_util::poll!(wait.as_mut())),
+        format!("touched {}:1 end 9 proven true", watcher.epoch),
+        "the admitted append's touch reaches the journal its watcher found"
+    );
+    watcher.close();
+}
+
+/// The idle sweep counts a wait as activity: a journal whose watcher waits
+/// (and times out) between every two looks is never idle, however long
+/// that goes on; once the waits stop it is retired ten minutes after the
+/// last one. A journal built here has no flusher: the test's own handle
+/// stands where the flusher's would, so the journal counts as unheld.
+#[tokio::test(start_paused = true)]
+async fn a_journal_waited_on_between_looks_stays_until_ten_minutes_after_the_last_wait() {
+    let hash = [0x01; 16];
+    let journal = fixed("polled");
+    let slot = (RouteHash([0x40; 16]), journal.clone());
+    let map: super::JournalMap = Mutex::new(HashMap::from([(hash, slot)]));
+    let mut seen = HashMap::new();
+    let start = tokio::time::Instant::now();
+    let look = |seen: &mut HashMap<[u8; 16], super::Seen>, minute: u64| {
+        super::retire_idle(&map, seen, start + Duration::from_secs(60 * minute));
+        map.lock().unwrap().contains_key(&hash)
+    };
+    for minute in 0..=20 {
+        let timed_out = render(journal.wait("now", vec![7], Duration::ZERO).await);
+        assert_eq!(timed_out, "timeout polled:0 end 0");
+        journal.flush_bucket(true);
+        assert!(look(&mut seen, minute), "waited on at minute {minute}");
+    }
+    let kept: Vec<u64> = (21..=31)
+        .filter(|minute| look(&mut seen, *minute))
+        .collect();
+    assert_eq!(kept, (21..30).collect::<Vec<u64>>());
+    assert!(
+        journal.inner.lock().unwrap().closed,
+        "retired as at a fence"
+    );
+}
