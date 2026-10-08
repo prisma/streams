@@ -85,6 +85,9 @@ mod durability_fences;
 #[path = "tests/fixture_auth.rs"]
 mod fixture_auth;
 
+#[path = "tests/fixture_billing.rs"]
+mod fixture_billing;
+
 #[path = "tests/fixture_cell.rs"]
 mod fixture_cell;
 

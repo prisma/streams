@@ -1,6 +1,7 @@
 //! Bounded billing passes and cancellation at entered storage operations.
 
 use super::fixture_auth::{auth_rig, mint_token, rig_append, rig_create};
+use super::fixture_billing::ack_clean;
 use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, hreq};
 use super::fixture_runtime::RigRuntime;
@@ -226,15 +227,16 @@ async fn an_append_after_a_drain_round_reaches_the_ledger_one_default_cadence_la
     let appended = hreq(rig.addr, "POST", path, &json, br#"[{"n":1}]"#).await;
     assert_eq!(appended.0, 204);
     assert!(usage_ingest(&state, "cadence").await.is_empty());
-    let reached = tokio::time::timeout(Duration::from_secs(20), async {
+    let cadence = Duration::from_secs(8);
+    let deadline = tokio::time::Instant::from_std(started + 2 * cadence);
+    let reached = tokio::time::timeout_at(deadline, async {
         while usage_ingest(&state, "cadence").await.is_empty() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         started.elapsed()
     })
     .await
-    .expect("a later round drains the append");
-    let cadence = Duration::from_secs(8);
+    .expect("a later round drains the append within two cadences of the start");
     assert!(
         reached >= cadence && reached < 2 * cadence,
         "an append acknowledged after the first round reaches `_usage` at the next, one default cadence (8 s) after the loop started; it took {reached:?}"
@@ -390,22 +392,8 @@ async fn tombstone_walk_closes_clean_terminal_rows_of_every_project() {
         .expect("the rig's one shard is open");
     // Ack every row CLEAN while its stream is alive: from here on the
     // dirty-path reconciler never revisits them, only the walk can.
-    let mut clean = false;
-    for _ in 0..200 {
-        crate::billing::drain_once(&state).await.expect("drain");
-        let dirty = engine.usage_dirty_scan().await.unwrap();
-        clean = rows
-            .iter()
-            .all(|(_, identity)| dirty.iter().all(|(hash, _)| hash != identity));
-        if clean {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(
-        clean,
-        "rows must be acked clean before the streams turn terminal"
-    );
+    let ids: Vec<[u8; 16]> = rows.iter().map(|(_, identity)| *identity).collect();
+    ack_clean(&state, &engine, &ids).await;
     for (sref, identity) in &rows {
         let meta = engine.billing_meta(*identity).await.unwrap();
         assert!(
@@ -505,19 +493,8 @@ async fn a_recreation_over_an_idle_expired_incarnation_still_closes_its_storage(
         .open(&prefix(&rows[0]))
         .expect("the stream's shard is open");
     let identity = |d: &crate::registry::StreamDesc| d.resolve_segment("").identity;
-    let mut clean = false;
-    for _ in 0..200 {
-        crate::billing::drain_once(&state).await.expect("drain");
-        let dirty = engine.usage_dirty_scan().await.unwrap();
-        clean = rows
-            .iter()
-            .all(|d| dirty.iter().all(|(hash, _)| *hash != identity(d)));
-        if clean {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(clean, "rows must be acked clean first");
+    let ids: Vec<[u8; 16]> = rows.iter().map(identity).collect();
+    ack_clean(&state, &engine, &ids).await;
     let open = |meta: Option<crate::billing::SegmentBillingMetaV1>| {
         meta.map_or(0, |m| m.owned_frame_bytes_current)
     };
@@ -644,17 +621,7 @@ async fn the_closure_debt_pass_reaches_a_debt_behind_waiting_ones() {
         )
         .expect("the stream's shard is open");
     let identity = old.resolve_segment("").identity;
-    let mut clean = false;
-    for _ in 0..200 {
-        crate::billing::drain_once(&state).await.expect("drain");
-        let dirty = engine.usage_dirty_scan().await.unwrap();
-        clean = dirty.iter().all(|(hash, _)| *hash != identity);
-        if clean {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(clean, "the row must be acked clean first");
+    ack_clean(&state, &engine, &[identity]).await;
     assert!(
         engine
             .billing_meta(identity)

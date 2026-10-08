@@ -36,7 +36,8 @@ review security/readiness modules retain their registrations.
 
 Shared support is divided by capability: `fixture_storage`, `fixture_runtime`,
 `fixture_http`, `fixture_requests`, `fixture_auth`, `fixture_livefeed`,
-`fixture_failpoints`, and `fixture_cell` (the many-project shared-cell rig). Fixture visibility is limited to the test subtree with
+`fixture_failpoints`, `fixture_cell` (the many-project shared-cell rig), and
+`fixture_billing` (drain waits that check each round against `_usage`). Fixture visibility is limited to the test subtree with
 `pub(super)`, and each module imports its dependencies explicitly. Helpers
 used by just one contract remain private in that contract's module.
 

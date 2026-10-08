@@ -6,9 +6,10 @@
 //! helpers it shares.
 
 use super::billing_closure_debts::{
-    JSON, ROW, ack_clean, assert_billed, closed, debts, engine_of, expected_close, expire,
-    hub_split, key_for, keyed_append, product_put, raw_put, settled, single_debt, stored,
+    JSON, ROW, assert_billed, closed, debts, engine_of, expected_close, expire, hub_split, key_for,
+    keyed_append, product_put, raw_put, settled, single_debt, stored,
 };
+use super::fixture_billing::ack_clean;
 use super::fixture_http::{HttpRig, http_rig_owner_whole};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;

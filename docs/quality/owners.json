@@ -379,6 +379,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::fixture_billing",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Bounded waits on the usage drain shared by the billing scenarios: every round a wait takes is checked against the `_usage` ledger (drain_once answers exactly the envelopes it appended) and a wait fails once the drain appends nothing for more rounds than it takes to visit every open shard twice, so a misreporting drain fails fast instead of polling out the budget; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/fixture_billing.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::read_peer_compatibility",
       "path": "src/dst/dst_tests.rs",
       "reason": "Scan wire regression module; real old-header requests and current sender against the legacy omission contract; compiled and executed with DST.",

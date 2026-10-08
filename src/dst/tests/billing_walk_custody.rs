@@ -12,6 +12,7 @@ use super::billing_closure_debts::{
     JSON, ROW, assert_billed, closed, debts as closure_debts, engine_of, expected_close, expire,
     raw_put, settled, single_debt, stored,
 };
+use super::fixture_billing::DrainWait;
 use super::fixture_failpoints::sweep_lock;
 use super::fixture_http::{
     HttpRig, HttpRigOptions, engine_shutdown, http_rig_build, http_rig_opts,
@@ -89,11 +90,13 @@ async fn debts(state: &State) -> (bool, bool) {
 /// Drains billing and waits for absorption until no shard carries any debt,
 /// so every residency in the sweeps under test is the walk's own.
 async fn quiesce(state: &State) {
+    let mut wait = DrainWait::default();
     for _ in 0..200 {
         match debts(state).await {
             (false, false) => return,
             (true, _) => {
-                crate::billing::drain_once(state).await.expect("drain");
+                wait.still_dirty(state, "billing debt");
+                wait.round(state).await;
             }
             (false, true) => {}
         }

@@ -8,6 +8,7 @@
 //! incarnation and fork retention. Two instances are in
 //! `billing_closure_owners.rs`.
 
+use super::fixture_billing::{DrainWait, ack_clean};
 use super::fixture_http::{
     HttpRigOptions, engine_shutdown, http_rig, http_rig_build, install_rollup,
 };
@@ -126,20 +127,6 @@ pub(super) async fn expire(states: &[&State], sref: &Ref, at: i64) {
     for state in states {
         state.registry.invalidate(sref);
     }
-}
-
-/// Drains until none of `ids` is dirty. A row acked CLEAN is never revisited
-/// by the dirty-row reconciler: only the walk or the debt pass can close it.
-pub(super) async fn ack_clean(state: &State, engine: &Engine, ids: &[[u8; 16]]) {
-    for _ in 0..200 {
-        crate::billing::drain_once(state).await.expect("drain");
-        let dirty = engine.usage_dirty_scan().await.unwrap();
-        if dirty.iter().all(|(hash, _)| !ids.contains(hash)) {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!("rows were never acked clean");
 }
 
 /// The row once its gauge reads zero within five seconds: a close is a
@@ -329,7 +316,8 @@ async fn a_dirty_row_of_a_replaced_incarnation_still_closes_at_its_expiry() {
     assert_eq!(debt.debt.close_ms, expired_at);
     // The drain's cadence, then the sweep's. The drain's close lands before
     // the sweep reads the row, so the drain is the one that closes it.
-    crate::billing::drain_once(&state).await.expect("drain");
+    let emitted = DrainWait::default().round(&state).await;
+    assert!(emitted > 0, "the drain emits the replaced row");
     closed(&engine, id)
         .await
         .expect("the drain closes the replaced row");
