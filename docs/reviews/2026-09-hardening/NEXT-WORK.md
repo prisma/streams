@@ -1515,12 +1515,25 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
    timestamp per record (they keep cross-request pages possible without a new
    layout). History pages use the row tag `'g'`, because the history keyspace
    already uses `'p'` for postings (`src/postings.rs:65`).
+   The owner's landing calls of 2026-10-08 (README rows L1-L6 and T10): its
+   five edge records (#125-#129) are ratified as drafted; `CheckedPage`
+   replaces `CheckedFrame` in the compiler fixtures and the source gate (L2);
+   `decode_frame` keeps one reasoned `dead_code` allow (L3); and
+   `CryptoConfig::frame_compress` is removed in one commit before it lands
+   (L4). After landing, the keys CLI decrypts a page on the library crate
+   (crypto review F9) and `frame_bytes` keeps its name until the billing
+   meter renames it (L6). Run leases' option 3 and the SDK iterator that
+   retries a key's later messages after `msg.retry()` come later, together
+   (T10).
 2. **The 100 ms write tier**, the single tier for everyone, with the WAL
    failsafe at 60 s and the usage drain at 8 s (each an edge record). The gap and the failsafe are on slate (#97, #98, 2026-10-08); the
    8 s drain is built on branch `tier100` and waits for the owner's word on
    its re-pinned R09 mechanism test, the cross-server split gate waits for
    the owner's choice on CI's `livefeed-fleet-cert` split, and the fleet
    shard default waits behind the gate (`~/.streams-k2/analysis/tier100/`).
+   Two drain bounds follow (T9, 2026-10-08): a round takes up to 256 dirty
+   rows per shard, not 64, and a graceful stop's terminal round is bounded
+   by min(cadence, 5 s), not one cadence, each with a low-risk edge record.
 3. **"WAL plus one copy" (design B) as layout 6, before launch,** after a
    throwaway seal spike proves at most 2.2 uploads per stored byte and bounded
    memory. Each stored byte is uploaded about 8 times today: WAL 1.16, shard
@@ -1613,6 +1626,11 @@ segment) are separate layers, as Pravega's containers and segments are.
   off** (the controller declines a split while the ring has more than one
   active server, `src/scaler3/controller.rs:115-135`, pinned by a DST); a hot
   stream then gets `429` at its per-stream limit instead. Edge record.
+- The Compute cluster rung C1 (`bench/docker/harness/cluster-run.sh`) splits
+  inside a four-server fleet, which the gate refuses: it takes its split on
+  streams-1 outside fleet mode, then redeploys all four in fleet mode over
+  the same `PATH_PREFIX`, as T2's rigs do (T7, 2026-10-08; a script change,
+  the run stays the owner's).
 - **Before public launch:** the split package (consumer record relay and an
   ancestry-based stop rule, F1-b with its fleet-internal lane read, a touch
   relay for watches, DLQ through forwarding, per-segment rate buckets, a
@@ -1648,6 +1666,12 @@ segment) are separate layers, as Pravega's containers and segments are.
   (runs R1-R4), about 12 h plus 1 h of builds. The 27 MB/s of July was
   x-padded data compressed 17-30x with absorption deferred; nothing shows a
   regression for the same job.
+- Layout 5, after it lands (L5, 2026-10-08): one heap profile per arm, with
+  Q0's memory work (incompressible data reaches the RSS shed line sooner; the
+  cause is not found), and a controlled single-record rerun on an idle host
+  (1.25x layout 4's CPU; the codec explains 0.02-0.05 ms of the 0.16 ms
+  gap). No rule that skips zstd for small bodies: stored bytes are billed,
+  so it would be an edge change.
 
 ### 14.9 Held cost levers
 
