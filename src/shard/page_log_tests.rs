@@ -774,3 +774,31 @@ fn a_scan_reads_ahead_its_budget_and_one_page() {
     assert_eq!(scan_read_ahead(8 << 20), 2 << 20);
     assert_eq!(scan_read_ahead(usize::MAX), 2 << 20);
 }
+
+/// A shard-log page scan reads at the durability its read asks for, reads
+/// ahead its budget and one page on four concurrent block fetches, and does
+/// not cache the blocks. No result shows these, so they are pinned exactly;
+/// the durability, the read-ahead and the fetch count each differ from
+/// slatedb's default (Memory, one block, one fetch).
+#[test]
+fn a_page_scan_reads_at_its_durability_on_four_fetch_tasks() {
+    use super::record::page_scan_opts;
+    use slatedb::config::DurabilityLevel::{Memory, Remote};
+    for (budget, durability, read_ahead) in [
+        (0, Remote, 64 << 10),
+        (1 << 20, Memory, (1 << 20) + (64 << 10)),
+        (8 << 20, Remote, 2 << 20),
+    ] {
+        let opts = page_scan_opts(budget, durability);
+        assert_eq!(
+            (
+                opts.durability_filter,
+                opts.read_ahead_bytes,
+                opts.max_fetch_tasks,
+                opts.cache_blocks
+            ),
+            (durability, read_ahead, 4, false),
+            "budget {budget}"
+        );
+    }
+}

@@ -127,6 +127,18 @@ pub(crate) fn scan_read_ahead(max_bytes: usize) -> usize {
     max_bytes.saturating_add(PAGE_TARGET_PLAINTEXT).min(2 << 20)
 }
 
+/// Scan options for a shard-log page scan at `durability` whose stored-byte
+/// budget is `max_bytes`: its read-ahead on four concurrent block fetches,
+/// and slatedb's defaults otherwise (the fetched blocks are not cached).
+pub(super) fn page_scan_opts(max_bytes: usize, durability: DurabilityLevel) -> ScanOptions {
+    ScanOptions {
+        durability_filter: durability,
+        read_ahead_bytes: scan_read_ahead(max_bytes),
+        max_fetch_tasks: 4,
+        ..Default::default()
+    }
+}
+
 /// Range-bounded frame read: scans `[scan_from, scan_to)` regardless of the
 /// durable frontier. Offsets below the frontier are dense, so disjoint
 /// ranges partition the log exactly — the absorber issues several of these
@@ -188,15 +200,7 @@ impl ShardEngine {
         let range = shard_page_key(&hash, from)..shard_page_key(&hash, page_scan_bound(to));
         let mut iter = self
             .db
-            .scan_with_options(
-                range,
-                &ScanOptions {
-                    durability_filter: durability,
-                    read_ahead_bytes: scan_read_ahead(max_bytes),
-                    max_fetch_tasks: 4,
-                    ..Default::default()
-                },
-            )
+            .scan_with_options(range, &page_scan_opts(max_bytes, durability))
             .await?;
         let mut total = 0usize;
         while let Some(kv) = iter.next().await? {
