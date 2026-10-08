@@ -156,6 +156,13 @@ export interface ConsumerMessage<T> {
 }
 
 export interface PullOptions {
+  /** The most records one batch leases; the server caps it at the
+   * consumer's `maxBatchRecords`, which also applies when it is unset.
+   * A batch can hold several consecutive records of one routing key (a
+   * run), each with its own lease; no other pull receives the key while
+   * any of them is leased. Handle a key's messages in batch order, one at
+   * a time, to keep its order: a message retried (or left undecided)
+   * returns after the same key's later messages that were acknowledged. */
   max?: number;
   waitMs?: number;
   visibilityMs?: number;

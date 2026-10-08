@@ -86,6 +86,23 @@ credential-provider failures propagate unchanged. Concurrent 401 responses
 for the same cached credential share one refresh, and late responses cannot
 invalidate its successor.
 
+## Consumer batches and per-key order
+
+A pull (`consumer.pull({ max })`, or each batch of `for await (const message
+of consumer)`, which pulls the consumer's `maxBatchRecords`) can hold several
+consecutive records of one routing key, a run, each with its own lease. While
+any of them is leased, no other pull receives that key. To keep a key's
+order, handle its messages in batch order and one at a time: processing one
+batch's messages concurrently processes a key's records concurrently, and
+acknowledging a key's later message after retrying an earlier one has
+processed them out of order, because the retried message returns after them.
+A consumer that keeps order stops at a failed message and leaves the key's
+later messages of the batch undecided; they come back with the failed one.
+A record that has been delivered twice is leased alone, so a failing record
+takes at most two attempts from each record of its run: with `maxAttempts`
+of 3 or more (the default is 5) its successors are not dead-lettered for
+its failure.
+
 ## Consumer cleanup and cancellation
 
 `for await (const message of consumer)` submits recorded `ack`, `retry` and
