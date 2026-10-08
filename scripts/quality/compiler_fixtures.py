@@ -28,7 +28,7 @@ fn controls(page: &Page, batch: &Batch, payload: &Payload) {
 fn released_before_await(window: Window) -> impl std::future::Future<Output=()> { drop(window); async { tokio::task::yield_now().await; } }
 '''
 CASES = [
- ('page_construct', 'E0451', 'fn page_construct() { let _x = Page { raw:bytes::Bytes::new(), header:bytes::Bytes::new(), sealed:bytes::Bytes::new(), nonce:[0; 12], ver:0, first:0, last:0, count:1, ts_ms:0, key_version:0, routing_key:Box::from("") }; }'),
+ ('page_construct', 'E0451', 'fn page_construct() { let _x = Page { raw:bytes::Bytes::new(), header_len:0, sealed_from:0, nonce:[0; 12], ver:0, first:0, last:0, count:1, ts_ms:0, key_version:0, routing_key:Box::from("") }; }'),
  ('page_mutate', 'E0616', 'fn page_mutate(x: &mut Page) { x.last = 0; }'),
  ('runs_construct', 'E0423', 'fn runs_construct() { let _x = Runs(std::sync::Arc::from([])); }'),
  ('runs_mutate', 'E0616', 'fn runs_mutate(x: &mut Runs) { x.0 = std::sync::Arc::from([]); }'),

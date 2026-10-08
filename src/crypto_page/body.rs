@@ -110,13 +110,16 @@ pub(super) fn build_body(records: &[SealRecord<'_>]) -> Option<Vec<u8>> {
 
 /// Parse the body of a page of `count` records whose header timestamp is
 /// `ts_ms`. Ok only when both tables hold exactly `count` minimal varints,
-/// no length passes the record cap, the first delta is 0, every timestamp (the previous record's plus its
-/// delta) fits an i64, and the lengths sum to the remaining bytes.
+/// no length passes the record cap, the first delta is 0, every timestamp
+/// (the previous record's plus its delta) fits an i64, and the lengths sum
+/// to the remaining bytes. Every loop is bounded by `count` itself, which
+/// keeps the parser's loops finite for the verifier (KANI-097).
 pub(crate) fn parse_body(body: &[u8], count: usize, ts_ms: i64) -> Result<PageTable, BodyError> {
     let mut input = body;
-    // Each record takes at least two table bytes, so a claimed count can
-    // never reserve more than the body could describe.
-    let mut records = Vec::with_capacity(count.min(body.len()));
+    // Admission bounds the count to 4,096, so this reserves at most 64 KiB,
+    // and only for an authenticated page.
+    let mut records = Vec::with_capacity(count);
+    let mut payloads = 0usize;
     for _ in 0..count {
         let len = get_varint(&mut input)
             .and_then(|len| usize::try_from(len).ok())
@@ -124,10 +127,12 @@ pub(crate) fn parse_body(body: &[u8], count: usize, ts_ms: i64) -> Result<PageTa
         if len > MAX_RECORD_PLAINTEXT {
             return Err(BodyError::RecordTooLarge);
         }
+        // At most 4,096 records of at most 32 MiB: the sum never saturates.
+        payloads = payloads.saturating_add(len);
         records.push(RecordSpan { len, ts_ms });
     }
     let mut previous = None;
-    for record in &mut records {
+    for record in records.iter_mut().take(count) {
         let delta = get_varint(&mut input).ok_or(BodyError::DeltaTable)?;
         record.ts_ms = match previous {
             None if delta != 0 => return Err(BodyError::FirstDelta),
@@ -139,10 +144,12 @@ pub(crate) fn parse_body(body: &[u8], count: usize, ts_ms: i64) -> Result<PageTa
         previous = Some(record.ts_ms);
     }
     let payload_start = body.len().saturating_sub(input.len());
-    for record in &records {
-        input = input.get(record.len..).ok_or(BodyError::PayloadShort)?;
+    // The payloads follow the tables back to back: they tile the rest of
+    // the body exactly when their lengths sum to it.
+    if payloads > input.len() {
+        return Err(BodyError::PayloadShort);
     }
-    if !input.is_empty() {
+    if payloads < input.len() {
         return Err(BodyError::Trailing);
     }
     Ok(PageTable {

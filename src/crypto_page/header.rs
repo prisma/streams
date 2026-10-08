@@ -47,8 +47,10 @@ struct ClearPage<'a> {
     key_version: u32,
     routing_key: &'a str,
     nonce: [u8; NONCE_LEN],
-    header: &'a [u8],
-    sealed: &'a [u8],
+    /// The header bytes, ver through nonce, are the row's first
+    /// `header_len` bytes; the ciphertext and tag are its last `ct_len`.
+    header_len: usize,
+    ct_len: usize,
 }
 
 /// Advance past the next complete fixed-width field.
@@ -82,16 +84,13 @@ fn parse(raw: &[u8]) -> Result<ClearPage<'_>, PageCorruption> {
     input = rest;
     let routing_key = std::str::from_utf8(routing_key).map_err(|_| PageCorruption::RoutingKey)?;
     let nonce = field::<NONCE_LEN>(&mut input)?;
-    let (header, rest) = raw
-        .split_at_checked(raw.len().saturating_sub(input.len()))
-        .ok_or(PageCorruption::Truncated)?;
-    input = rest;
+    let header_len = raw.len().saturating_sub(input.len());
     let ct_len = usize::try_from(u32::from_be_bytes(field(&mut input)?))
         .map_err(|_| PageCorruption::Truncated)?;
-    let (sealed, trailing) = input
-        .split_at_checked(ct_len)
-        .ok_or(PageCorruption::Truncated)?;
-    if !trailing.is_empty() {
+    if input.len() < ct_len {
+        return Err(PageCorruption::Truncated);
+    }
+    if input.len() > ct_len {
         return Err(PageCorruption::Trailing);
     }
     let body = ct_len.checked_sub(TAG_LEN).ok_or(PageCorruption::Tag)?;
@@ -106,9 +105,43 @@ fn parse(raw: &[u8]) -> Result<ClearPage<'_>, PageCorruption> {
         key_version,
         routing_key,
         nonce,
-        header,
-        sealed,
+        header_len,
+        ct_len,
     })
+}
+
+/// The last offset a row key names under `prefix`, the canonical page-key
+/// prefix of the selected segment: its namespace and its keyspace's page tag
+/// (`'p'` in the shard log, `'g'` in history). The key must be exactly that
+/// prefix and eight bytes.
+fn row_last(key: &[u8], prefix: &[u8]) -> Result<u64, PageCorruption> {
+    if page_tag(prefix.len()).is_none_or(|tag| prefix.last() != Some(&tag)) {
+        return Err(PageCorruption::RowTag);
+    }
+    let (namespace, last) = key
+        .split_last_chunk::<8>()
+        .ok_or(PageCorruption::KeyWidth)?;
+    if namespace.len() != prefix.len() {
+        return Err(PageCorruption::KeyWidth);
+    }
+    if namespace != prefix {
+        return Err(PageCorruption::Namespace);
+    }
+    Ok(u64::from_be_bytes(*last))
+}
+
+/// A row's bytes parsed as one whole page whose first offset and record
+/// count end at `last`, the offset its key names.
+fn page_at(raw: &[u8], last: u64) -> Result<ClearPage<'_>, PageCorruption> {
+    let page = parse(raw)?;
+    let derived = last_offset(page.first, page.count).ok_or(PageCorruption::OffsetOverflow)?;
+    if derived != last {
+        return Err(PageCorruption::Offset {
+            key: last,
+            page: derived,
+        });
+    }
+    Ok(page)
 }
 
 /// A stored page admitted against its row key without decrypting. It
@@ -117,8 +150,10 @@ fn parse(raw: &[u8]) -> Result<ClearPage<'_>, PageCorruption> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CheckedPage {
     raw: Bytes,
-    header: Bytes,
-    sealed: Bytes,
+    /// `raw[..header_len]` is the header, ver through nonce (the AAD after
+    /// the segment); `raw[sealed_from..]` the ciphertext and tag.
+    header_len: usize,
+    sealed_from: usize,
     nonce: [u8; NONCE_LEN],
     ver: u8,
     first: u64,
@@ -135,40 +170,20 @@ impl CheckedPage {
     /// the shard log, `'g'` in history); the row key is that prefix and the
     /// page's last offset.
     pub(crate) fn from_row(key: &[u8], prefix: &[u8], raw: Bytes) -> Result<Self, PageCorruption> {
-        if page_tag(prefix.len()).is_none_or(|tag| prefix.last() != Some(&tag)) {
-            return Err(PageCorruption::RowTag);
-        }
-        let (namespace, last) = key
-            .split_last_chunk::<8>()
-            .ok_or(PageCorruption::KeyWidth)?;
-        if namespace.len() != prefix.len() {
-            return Err(PageCorruption::KeyWidth);
-        }
-        if namespace != prefix {
-            return Err(PageCorruption::Namespace);
-        }
-        Self::admit(raw, u64::from_be_bytes(*last))
+        Self::admit(raw, row_last(key, prefix)?)
     }
 
     /// Admit page bytes held under `last`, as the tail ring holds them.
     pub(crate) fn admit(raw: Bytes, last: u64) -> Result<Self, PageCorruption> {
-        let page = parse(&raw)?;
-        let derived = last_offset(page.first, page.count).ok_or(PageCorruption::OffsetOverflow)?;
-        if derived != last {
-            return Err(PageCorruption::Offset {
-                key: last,
-                page: derived,
-            });
-        }
-        let header = raw.slice_ref(page.header);
-        let sealed = raw.slice_ref(page.sealed);
+        let page = page_at(&raw, last)?;
+        let (header_len, sealed_from) = (page.header_len, raw.len().saturating_sub(page.ct_len));
         let routing_key = Box::from(page.routing_key);
         let (ver, first, count) = (page.ver, page.first, page.count);
         let (ts_ms, key_version, nonce) = (page.ts_ms, page.key_version, page.nonce);
         Ok(Self {
             raw,
-            header,
-            sealed,
+            header_len,
+            sealed_from,
             nonce,
             ver,
             first,
@@ -216,15 +231,23 @@ impl CheckedPage {
         &self.raw
     }
 
+    /// The header bytes, ver through nonce. Admission proved the range;
+    /// an empty slice, which no admitted page yields, would only fail
+    /// authentication.
     pub(super) fn header_bytes(&self) -> &[u8] {
-        &self.header
+        self.raw.get(..self.header_len).unwrap_or_default()
     }
 
+    /// The ciphertext and its tag. Admission proved the range; an empty
+    /// slice, which no admitted page yields, would only fail authentication.
     pub(super) fn sealed_bytes(&self) -> &[u8] {
-        &self.sealed
+        self.raw.get(self.sealed_from..).unwrap_or_default()
     }
 
     pub(super) fn nonce(&self) -> &[u8; NONCE_LEN] {
         &self.nonce
     }
 }
+
+#[cfg(kani)]
+mod proofs;

@@ -1,0 +1,13 @@
+diff --git a/src/crypto_page/body.rs b/src/crypto_page/body.rs
+--- a/src/crypto_page/body.rs
++++ b/src/crypto_page/body.rs
+@@ -135,8 +135,7 @@
+     for record in records.iter_mut().take(count) {
+         let delta = get_varint(&mut input).ok_or(BodyError::DeltaTable)?;
+         record.ts_ms = match previous {
+-            None if delta != 0 => return Err(BodyError::FirstDelta),
+-            None => ts_ms,
++            None => i64::checked_add_unsigned(ts_ms, delta).ok_or(BodyError::Timestamp)?,
+             Some(previous) => {
+                 i64::checked_add_unsigned(previous, delta).ok_or(BodyError::Timestamp)?
+             }

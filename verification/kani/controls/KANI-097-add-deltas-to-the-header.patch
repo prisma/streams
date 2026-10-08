@@ -1,0 +1,14 @@
+diff --git a/src/crypto_page/body.rs b/src/crypto_page/body.rs
+--- a/src/crypto_page/body.rs
++++ b/src/crypto_page/body.rs
+@@ -137,9 +137,7 @@
+         record.ts_ms = match previous {
+             None if delta != 0 => return Err(BodyError::FirstDelta),
+             None => ts_ms,
+-            Some(previous) => {
+-                i64::checked_add_unsigned(previous, delta).ok_or(BodyError::Timestamp)?
+-            }
++            Some(_) => i64::checked_add_unsigned(ts_ms, delta).ok_or(BodyError::Timestamp)?,
+         };
+         previous = Some(record.ts_ms);
+     }

@@ -1,0 +1,12 @@
+diff --git a/src/crypto_page.rs b/src/crypto_page.rs
+--- a/src/crypto_page.rs
++++ b/src/crypto_page.rs
+@@ -93,7 +93,7 @@
+ /// None when there is no record or the offset space ends inside the page.
+ pub(crate) fn last_offset(first: u64, count: usize) -> Option<u64> {
+     let extra = u64::try_from(count.checked_sub(1)?).ok()?;
+-    first.checked_add(extra)
++    Some(first.wrapping_add(extra))
+ }
+ 
+ /// The row-key offset a forward scan of the window `[from, to)` must reach,

@@ -1,0 +1,170 @@
+{
+  "checks": [
+    {
+      "check": "KANI-097/one-record",
+      "covers": 3,
+      "covers_satisfied": 3,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "0c908ed744b5926d03407df0da7334b76c9898443aff157747a4f4cde1f4909f",
+      "role": "baseline",
+      "seconds": 35.6,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-097/two-records",
+      "covers": 3,
+      "covers_satisfied": 3,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "f849b49bf48548e9011a3d8641b1f4e02d8ad90439da3de673cd75eace0e0b00",
+      "role": "baseline",
+      "seconds": 45.0,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-097/three-records",
+      "covers": 3,
+      "covers_satisfied": 3,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "61d1fffd17c3976a32a9b8fdf39954dc2b755b2d691f31bc20fb3fa8e0881202",
+      "role": "baseline",
+      "seconds": 59.8,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-097/nc-accept-an-overlong-varint",
+      "covers": 3,
+      "covers_satisfied": 3,
+      "expected": "fail:an accepted body is exactly the minimal encoding of its tables and payloads",
+      "failed_checks": [
+        "\"an accepted body is exactly the minimal encoding of its tables and payloads\""
+      ],
+      "log_sha256": "db621d2442fafe4a98b53623f075aaa5c44f36bdf798c4160fa7e278aa32ce5d",
+      "mutated": {
+        "src/crypto_page/body.rs": {
+          "baseline": "b2fb7cebe0157d00b6ee6ab5f02d76a058b3377ae5834bcf3e1a853ed725b226",
+          "control": "f515efe0b30719daf76429773c9ae09b56928e18c8367744273c4ff10efcce1d"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 36.0,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-097/nc-add-deltas-to-the-header",
+      "covers": 3,
+      "covers_satisfied": 3,
+      "expected": "fail:the first record is at the page timestamp and none goes back",
+      "failed_checks": [
+        "\"the first record is at the page timestamp and none goes back\"",
+        "\"an accepted body is exactly the minimal encoding of its tables and payloads\""
+      ],
+      "log_sha256": "e825e470bcd488a8da46aa8497cc98f5c2f8576422c9d0a39ff01c20b57435ee",
+      "mutated": {
+        "src/crypto_page/body.rs": {
+          "baseline": "b2fb7cebe0157d00b6ee6ab5f02d76a058b3377ae5834bcf3e1a853ed725b226",
+          "control": "97462b496a4627a2b7ac07f96f23344885fc2d00890a5b7fce018dedc685c395"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 58.5,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-097/nc-accept-a-nonzero-first-delta",
+      "covers": 3,
+      "covers_satisfied": 3,
+      "expected": "fail:the first record is at the page timestamp and none goes back",
+      "failed_checks": [
+        "\"the first record is at the page timestamp and none goes back\""
+      ],
+      "log_sha256": "59a309b19a63797e5ef271f9088259a53e70c0ef8b54d62c364cc86abe071ed4",
+      "mutated": {
+        "src/crypto_page/body.rs": {
+          "baseline": "b2fb7cebe0157d00b6ee6ab5f02d76a058b3377ae5834bcf3e1a853ed725b226",
+          "control": "f4988ea1e899cc4ae5ad37679550b7d418fe6d4f9f35af8a7db085a35564478b"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 36.0,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-097/nc-ignore-trailing-bytes",
+      "covers": 3,
+      "covers_satisfied": 3,
+      "expected": "fail:the lengths tile the payload bytes exactly",
+      "failed_checks": [
+        "\"the lengths tile the payload bytes exactly\""
+      ],
+      "log_sha256": "9bfbc531611eb9b9d332f2338ef00a5f9ad53b0993205c322504b1fb67fb866e",
+      "mutated": {
+        "src/crypto_page/body.rs": {
+          "baseline": "b2fb7cebe0157d00b6ee6ab5f02d76a058b3377ae5834bcf3e1a853ed725b226",
+          "control": "66e64ff21e528bded2ea4551ba80f3610ba82dc0e198123acfc8ddfcc7979c53"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 35.4,
+      "verdict": "fail"
+    }
+  ],
+  "complete": true,
+  "id": "KANI-097",
+  "inputs": {
+    "assumptions": {
+      "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
+      "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
+    },
+    "files": {
+      "Cargo.lock": "2bb3b0ec7217d6e97175f2ce947b4284ccb6a872eceb439b5589a556cfa00f0c",
+      "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
+      "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
+      "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
+      "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
+      "src/crypto_page.rs": "b12dfa9f14e5a86582978415d2dde34ebf75748775e2141af11d5d1586aac458",
+      "src/crypto_page/body.rs": "b2fb7cebe0157d00b6ee6ab5f02d76a058b3377ae5834bcf3e1a853ed725b226",
+      "src/crypto_page/proofs.rs": "000d96fbd2cae23fca52e4db7f070a7466f7aa889c4ca108753f5b82a6e6fe1a",
+      "verification/kani/controls/KANI-097-accept-a-nonzero-first-delta.patch": "bef3e7cfc69c1b5636dce8ed2d62c2282d259cbaa8fe32283cd5f6a00e8a1503",
+      "verification/kani/controls/KANI-097-accept-an-overlong-varint.patch": "9df1b95c4a349f49d5ceb5364bf026f6221b29c74d8ba877e73931c5178ab3f3",
+      "verification/kani/controls/KANI-097-add-deltas-to-the-header.patch": "ea4935a43e753c6c97892b21a2e412e2b606bdb597d28e0693d727fda7e99bfb",
+      "verification/kani/controls/KANI-097-ignore-trailing-bytes.patch": "6775dfe9210fa6b9de1ac04be2a06fd79076172c47aa100960a4df79e84d0823"
+    },
+    "manifest_entry": "0ce793a9e5c4d264706102d02766bcf8a849b60a198bb26e654c5e022f08fa15",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "git": "https://github.com/slatedb/slatedb.git",
+        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+      }
+    }
+  },
+  "inputs_sha256": "097436eca9e543351b0fb6227f04ebeee237071b4aacc31f392d9a86a8977f4f",
+  "run_on": {
+    "dirty_tree": true,
+    "revision": "fe177a74c6824878901a96bd58d71ebdf31b838b"
+  },
+  "schema": 2,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "aarch64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

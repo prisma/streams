@@ -1,0 +1,12 @@
+diff --git a/src/crypto_page/body.rs b/src/crypto_page/body.rs
+--- a/src/crypto_page/body.rs
++++ b/src/crypto_page/body.rs
+@@ -51,7 +51,7 @@
+         }
+         value |= group << shift;
+         if byte & 0x80 == 0 {
+-            return (byte != 0 || shift == 0).then_some(value);
++            return Some(value);
+         }
+     }
+     None

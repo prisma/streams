@@ -1,0 +1,12 @@
+diff --git a/src/crypto_page/header.rs b/src/crypto_page/header.rs
+--- a/src/crypto_page/header.rs
++++ b/src/crypto_page/header.rs
+@@ -73,7 +73,7 @@
+     let first = u64::from_be_bytes(field(&mut input)?);
+     let count = get_varint(&mut input)
+         .and_then(|count| usize::try_from(count).ok())
+-        .filter(|count| (1..=PAGE_MAX_RECORDS).contains(count))
++        .filter(|count| *count >= 1)
+         .ok_or(PageCorruption::Count)?;
+     let ts_ms = i64::from_be_bytes(field(&mut input)?);
+     let key_version = u32::from_be_bytes(field(&mut input)?);

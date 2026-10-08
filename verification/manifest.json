@@ -317,7 +317,7 @@
         "src/crypto_page/body.rs"
       ],
       "verification_paths": [
-        "src/shard/record/proofs.rs"
+        "src/crypto_page/header/proofs.rs"
       ],
       "requirements": [
         "D8",
@@ -332,12 +332,12 @@
         "ASM-KANI-SCOPE",
         "ASM-KANI-COMPILER"
       ],
-      "input_scope": "CheckedPage::from_row (and through it CheckedPage::admit, the clear-header parser and get_varint) over a 64-byte row of symbolic bytes, a key of up to 26 symbolic bytes and the prefix shard_page_prefix gives a symbolic stream hash; the record count is a one-byte varint (1 to 127 records) and the routing-key length field is fixed per harness at 0 and 4 bytes (the key bytes symbolic), every other field, including the version byte, the first offset, the nonce and the ciphertext length, is symbolic",
+      "input_scope": "CheckedPage::from_row's two steps, row_last (the key against the prefix) and page_at (the clear-header parser, get_varint, last_offset and the offset comparison), over a 64-byte row of symbolic bytes, a key of up to 26 symbolic bytes and the prefix shard_page_prefix gives a symbolic stream hash; every field is symbolic (the version byte, the first offset, the timestamp, the key version, the nonce, the ciphertext length and the routing key's bytes) except the record count and the routing-key length, which are fixed per harness so every later field has a known position: 2 records keyless, 1 record with a 4-byte routing key, 4,096 records (two-byte count) and 4,097 records (refused). CheckedPage::admit's wrapping of the admitted fields around the row's Bytes is outside the proof (a symbolic Bytes row did not finish in the solver)",
       "checks": [
         {
           "id": "KANI-017/keyless-row",
           "role": "baseline",
-          "harness": "shard::record::proofs::kani_017_a_keyless_row_is_admitted_only_under_its_own_key",
+          "harness": "crypto_page::header::proofs::kani_017_a_keyless_row_is_admitted_only_under_its_own_key",
           "expect": {
             "result": "pass"
           }
@@ -345,7 +345,23 @@
         {
           "id": "KANI-017/keyed-row",
           "role": "baseline",
-          "harness": "shard::record::proofs::kani_017_a_keyed_row_is_admitted_only_under_its_own_key",
+          "harness": "crypto_page::header::proofs::kani_017_a_keyed_row_is_admitted_only_under_its_own_key",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-017/4096-records",
+          "role": "baseline",
+          "harness": "crypto_page::header::proofs::kani_017_a_row_of_4096_records_is_admitted_only_under_its_own_key",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-017/4097-records-refused",
+          "role": "baseline",
+          "harness": "crypto_page::header::proofs::kani_017_a_row_of_4097_records_is_refused",
           "expect": {
             "result": "pass"
           }
@@ -353,17 +369,17 @@
         {
           "id": "KANI-017/nc-skip-the-offset-comparison",
           "role": "negative-control",
-          "harness": "shard::record::proofs::kani_017_a_keyless_row_is_admitted_only_under_its_own_key",
+          "harness": "crypto_page::header::proofs::kani_017_a_keyless_row_is_admitted_only_under_its_own_key",
           "patch": "verification/kani/controls/KANI-017-skip-the-offset-comparison.patch",
           "expect": {
             "result": "fail",
-            "property": "an admitted frame carries its key's offset"
+            "property": "an admitted page carries its key's offset"
           }
         },
         {
           "id": "KANI-017/nc-check-a-short-prefix",
           "role": "negative-control",
-          "harness": "shard::record::proofs::kani_017_a_keyless_row_is_admitted_only_under_its_own_key",
+          "harness": "crypto_page::header::proofs::kani_017_a_keyless_row_is_admitted_only_under_its_own_key",
           "patch": "verification/kani/controls/KANI-017-check-a-short-prefix.patch",
           "expect": {
             "result": "fail",
@@ -373,11 +389,41 @@
         {
           "id": "KANI-017/nc-allow-trailing-bytes",
           "role": "negative-control",
-          "harness": "shard::record::proofs::kani_017_a_keyless_row_is_admitted_only_under_its_own_key",
+          "harness": "crypto_page::header::proofs::kani_017_a_keyless_row_is_admitted_only_under_its_own_key",
           "patch": "verification/kani/controls/KANI-017-allow-trailing-bytes.patch",
           "expect": {
             "result": "fail",
-            "property": "an admitted row is exactly one whole frame with its tag"
+            "property": "an admitted row is exactly one whole page with its tag"
+          }
+        },
+        {
+          "id": "KANI-017/nc-drop-the-count-bound",
+          "role": "negative-control",
+          "harness": "crypto_page::header::proofs::kani_017_a_row_of_4097_records_is_refused",
+          "patch": "verification/kani/controls/KANI-017-drop-the-count-bound.patch",
+          "expect": {
+            "result": "fail",
+            "property": "an admitted page holds 1 to 4,096 records"
+          }
+        },
+        {
+          "id": "KANI-017/nc-compare-the-key-with-first",
+          "role": "negative-control",
+          "harness": "crypto_page::header::proofs::kani_017_a_keyless_row_is_admitted_only_under_its_own_key",
+          "patch": "verification/kani/controls/KANI-017-compare-the-key-with-first.patch",
+          "expect": {
+            "result": "fail",
+            "property": "an admitted page carries its key's offset"
+          }
+        },
+        {
+          "id": "KANI-017/nc-let-the-last-offset-wrap",
+          "role": "negative-control",
+          "harness": "crypto_page::header::proofs::kani_017_a_keyless_row_is_admitted_only_under_its_own_key",
+          "patch": "verification/kani/controls/KANI-017-let-the-last-offset-wrap.patch",
+          "expect": {
+            "result": "fail",
+            "property": "an admitted page carries its key's offset"
           }
         }
       ],
@@ -1059,6 +1105,104 @@
       "regressions": [
         "shard::maintenance_tests::apply_delta_is_checked_and_tracks_progress",
         "shard::maintenance_tests::codec_roundtrips_v2_and_refuses_v1_values"
+      ]
+    },
+    {
+      "id": "KANI-097",
+      "kind": "kani",
+      "title": "Layout 5 page-body parser exactness",
+      "status": "pass-with-recorded-scope",
+      "owner": "Layout 5 page codec (crypto_page::body)",
+      "source_paths": [
+        "src/crypto_page.rs",
+        "src/crypto_page/body.rs"
+      ],
+      "verification_paths": [
+        "src/crypto_page/proofs.rs"
+      ],
+      "requirements": [
+        "D8",
+        "H2"
+      ],
+      "models": [
+        "TLA-016",
+        "TLA-018"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER"
+      ],
+      "input_scope": "parse_body (and through it get_varint) over every body of 0 to 4, 6 and 7 symbolic bytes for a record count of 1, 2 and 3 (one harness each) and a symbolic header timestamp; the tables are compared with an independent minimal-LEB128 oracle. Bodies are at most 7 bytes, so a record past the 32 MiB record cap is outside the scope (the unit tests pin that refusal), and that build_body writes what the parser reads back is pinned by the unit and property tests, not the proof (a symbolic build allocates a buffer of symbolic size, which the solver could not finish)",
+      "checks": [
+        {
+          "id": "KANI-097/one-record",
+          "role": "baseline",
+          "harness": "crypto_page::proofs::kani_097_a_one_record_body_parses_exactly",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-097/two-records",
+          "role": "baseline",
+          "harness": "crypto_page::proofs::kani_097_a_two_record_body_parses_exactly",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-097/three-records",
+          "role": "baseline",
+          "harness": "crypto_page::proofs::kani_097_a_three_record_body_parses_exactly",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-097/nc-accept-an-overlong-varint",
+          "role": "negative-control",
+          "harness": "crypto_page::proofs::kani_097_a_one_record_body_parses_exactly",
+          "patch": "verification/kani/controls/KANI-097-accept-an-overlong-varint.patch",
+          "expect": {
+            "result": "fail",
+            "property": "an accepted body is exactly the minimal encoding of its tables and payloads"
+          }
+        },
+        {
+          "id": "KANI-097/nc-add-deltas-to-the-header",
+          "role": "negative-control",
+          "harness": "crypto_page::proofs::kani_097_a_three_record_body_parses_exactly",
+          "patch": "verification/kani/controls/KANI-097-add-deltas-to-the-header.patch",
+          "expect": {
+            "result": "fail",
+            "property": "the first record is at the page timestamp and none goes back"
+          }
+        },
+        {
+          "id": "KANI-097/nc-accept-a-nonzero-first-delta",
+          "role": "negative-control",
+          "harness": "crypto_page::proofs::kani_097_a_one_record_body_parses_exactly",
+          "patch": "verification/kani/controls/KANI-097-accept-a-nonzero-first-delta.patch",
+          "expect": {
+            "result": "fail",
+            "property": "the first record is at the page timestamp and none goes back"
+          }
+        },
+        {
+          "id": "KANI-097/nc-ignore-trailing-bytes",
+          "role": "negative-control",
+          "harness": "crypto_page::proofs::kani_097_a_one_record_body_parses_exactly",
+          "patch": "verification/kani/controls/KANI-097-ignore-trailing-bytes.patch",
+          "expect": {
+            "result": "fail",
+            "property": "the lengths tile the payload bytes exactly"
+          }
+        }
+      ],
+      "regressions": [
+        "crypto_page::tamper_tests::an_authenticated_body_must_parse_exactly",
+        "crypto_page::tamper_tests::a_timestamp_delta_is_to_the_record_before",
+        "crypto_page::properties::quality_page_bodies_parse_exactly"
       ]
     },
     {

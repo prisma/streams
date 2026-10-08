@@ -1,13 +1,13 @@
 diff --git a/src/crypto_page/header.rs b/src/crypto_page/header.rs
 --- a/src/crypto_page/header.rs
 +++ b/src/crypto_page/header.rs
-@@ -89,9 +89,6 @@ fn parse(raw: &[u8]) -> Result<ClearPage<'_>, PageCorruption> {
-     let (sealed, trailing) = input
-         .split_at_checked(ct_len)
-         .ok_or(PageCorruption::Truncated)?;
--    if !trailing.is_empty() {
--        return Err(PageCorruption::Trailing);
+@@ -89,9 +89,6 @@
+         .map_err(|_| PageCorruption::Truncated)?;
+     if input.len() < ct_len {
+         return Err(PageCorruption::Truncated);
 -    }
+-    if input.len() > ct_len {
+-        return Err(PageCorruption::Trailing);
+     }
      let body = ct_len.checked_sub(TAG_LEN).ok_or(PageCorruption::Tag)?;
      if body > body_cap(count) {
-         return Err(PageCorruption::Oversized);

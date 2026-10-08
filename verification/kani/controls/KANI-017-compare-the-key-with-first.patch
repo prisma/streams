@@ -6,7 +6,7 @@ diff --git a/src/crypto_page/header.rs b/src/crypto_page/header.rs
      let page = parse(raw)?;
      let derived = last_offset(page.first, page.count).ok_or(PageCorruption::OffsetOverflow)?;
 -    if derived != last {
-+    if false {
++    if page.first != last {
          return Err(PageCorruption::Offset {
              key: last,
              page: derived,

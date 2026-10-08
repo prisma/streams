@@ -1,0 +1,13 @@
+diff --git a/src/crypto_page/body.rs b/src/crypto_page/body.rs
+--- a/src/crypto_page/body.rs
++++ b/src/crypto_page/body.rs
+@@ -149,9 +149,6 @@
+     if payloads > input.len() {
+         return Err(BodyError::PayloadShort);
+     }
+-    if payloads < input.len() {
+-        return Err(BodyError::Trailing);
+-    }
+     Ok(PageTable {
+         payload_start,
+         records,

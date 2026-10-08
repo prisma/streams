@@ -1,12 +1,12 @@
 diff --git a/src/crypto_page/header.rs b/src/crypto_page/header.rs
 --- a/src/crypto_page/header.rs
 +++ b/src/crypto_page/header.rs
-@@ -142,7 +142,7 @@ impl CheckedPage {
-         if namespace.len() != prefix.len() {
-             return Err(PageCorruption::KeyWidth);
-         }
--        if namespace != prefix {
-+        if namespace.get(..16) != prefix.get(..16) {
-             return Err(PageCorruption::Namespace);
-         }
-         Self::admit(raw, u64::from_be_bytes(*last))
+@@ -124,7 +124,7 @@
+     if namespace.len() != prefix.len() {
+         return Err(PageCorruption::KeyWidth);
+     }
+-    if namespace != prefix {
++    if namespace.get(..16) != prefix.get(..16) {
+         return Err(PageCorruption::Namespace);
+     }
+     Ok(u64::from_be_bytes(*last))

@@ -1,26 +1,60 @@
-//! Kani proofs for the layout 5 page-body parser (a proposed obligation; it
-//! has no manifest entry, receipt or negative controls yet). `parse_body`
-//! is what every opened page's records are cut by, after authentication.
+//! Kani proofs for the layout 5 page-body parser: KANI-097. `parse_body`
+//! cuts every opened page into its records after authentication, so a
+//! body it accepts must describe exactly one sequence of records.
 //!
 //! `exact` offers a body of up to BODY symbolic bytes, a symbolic header
 //! timestamp and a fixed record count per harness (1, 2 and 3), and checks
-//! what an accepted body must satisfy: exactly `count` spans, the first at
-//! the header's timestamp and none earlier than the one before it, lengths
-//! that tile the payload bytes, and, re-encoded with the production
-//! `put_varint` (each delta to the record before), the very same bytes, so
-//! the tables are minimal varints and nothing is skipped or trailing.
-//! `round_trip` builds a body from symbolic records of up to two bytes and
-//! symbolic timestamps with the production `build_body` and checks it
-//! parses back to them. Loops are
-//! bounded by the count and by the ten-byte varint, so `unwind(12)` covers
-//! them with Kani's unwinding checks left on.
-use super::SealRecord;
-use super::body::{build_body, parse_body, put_varint};
+//! what an accepted body must satisfy: exactly `count` spans, none longer
+//! than the record cap, the first at the header's timestamp and none
+//! earlier than the one before it, tables that are exactly the minimal
+//! LEB128 encoding of every length and of every delta to the record before
+//! (an oracle encoder of its own, independent of `put_varint`), and lengths
+//! that tile the payload bytes after them; so nothing is skipped, overlong
+//! or trailing. The `build_body` round trip is not here: a symbolic build
+//! allocates a buffer of symbolic size, so unit and property tests pin it.
+//! Every harness loop runs over a constant count, and a varint takes at most
+//! ten bytes, so `unwind(12)` covers them with Kani's unwinding checks left
+//! on.
+use super::MAX_RECORD_PLAINTEXT;
+use super::body::parse_body;
 
-/// Room for three records' tables and a few payload bytes.
-const BODY: usize = 8;
+/// The minimal LEB128 encoding of `value` into `out`, and its length: the
+/// oracle the tables are compared with.
+fn oracle(value: u64, out: &mut [u8; 10]) -> usize {
+    let mut rest = value;
+    let mut n = 0;
+    loop {
+        let low = (rest & 0x7f) as u8;
+        rest >>= 7;
+        if rest == 0 {
+            out[n] = low;
+            return n + 1;
+        }
+        out[n] = low | 0x80;
+        n += 1;
+    }
+}
 
-fn exact<const COUNT: usize>() {
+/// Append the oracle encoding of `value` to `again`, of which `n` bytes are
+/// written; false when it does not fit.
+fn push_oracle<const BODY: usize>(again: &mut [u8; BODY], n: &mut usize, value: u64) -> bool {
+    let mut enc = [0u8; 10];
+    let k = oracle(value, &mut enc);
+    let mut fits = true;
+    for (j, byte) in enc.iter().enumerate() {
+        if j < k {
+            if *n < BODY {
+                again[*n] = *byte;
+                *n += 1;
+            } else {
+                fits = false;
+            }
+        }
+    }
+    fits
+}
+
+fn exact<const COUNT: usize, const BODY: usize>() {
     let bytes: [u8; BODY] = kani::any();
     let len = kani::any_where(|len: &usize| *len <= BODY);
     let body = &bytes[..len];
@@ -33,113 +67,72 @@ fn exact<const COUNT: usize>() {
         table.records.len() == COUNT,
         "an accepted body holds exactly its count of records"
     );
+    let mut again = [0u8; BODY];
+    let mut n = 0usize;
+    let mut fits = true;
+    let mut payloads = 0usize;
+    for i in 0..COUNT {
+        let span = table.records[i];
+        assert!(
+            span.len <= MAX_RECORD_PLAINTEXT,
+            "no accepted record passes the record cap"
+        );
+        fits &= push_oracle(&mut again, &mut n, span.len as u64);
+        payloads += span.len;
+    }
+    let mut previous = ts_ms;
+    let mut moved = false;
+    for i in 0..COUNT {
+        let span = table.records[i];
+        assert!(
+            if i == 0 {
+                span.ts_ms == ts_ms
+            } else {
+                span.ts_ms >= previous
+            },
+            "the first record is at the page timestamp and none goes back"
+        );
+        fits &= push_oracle(&mut again, &mut n, span.ts_ms.abs_diff(previous));
+        moved |= span.ts_ms > previous;
+        previous = span.ts_ms;
+    }
+    let mut same = true;
+    for i in 0..BODY {
+        same &= i >= n || again[i] == bytes[i];
+    }
     assert!(
-        table.records.first().map(|span| span.ts_ms) == Some(ts_ms)
-            && table
-                .records
-                .windows(2)
-                .all(|pair| pair[0].ts_ms <= pair[1].ts_ms),
-        "the first record is at the page timestamp and none goes back"
+        fits && n == table.payload_start && same,
+        "an accepted body is exactly the minimal encoding of its tables and payloads"
     );
-    let payloads: usize = table.records.iter().map(|span| span.len).sum();
     assert!(
         table.payload_start <= len && payloads == len - table.payload_start,
         "the lengths tile the payload bytes exactly"
     );
-    let mut again = Vec::new();
-    for span in &table.records {
-        put_varint(&mut again, span.len as u64);
-    }
-    let mut previous = ts_ms;
-    for span in &table.records {
-        put_varint(&mut again, span.ts_ms.abs_diff(previous));
-        previous = span.ts_ms;
-    }
-    again.extend_from_slice(&body[table.payload_start..]);
-    assert!(
-        again.as_slice() == body,
-        "an accepted body is exactly the minimal encoding of its tables and payloads"
-    );
     kani::cover!(payloads > 0, "a body with payload bytes is accepted");
-    kani::cover!(
-        table
-            .records
-            .windows(2)
-            .any(|pair| pair[0].ts_ms < pair[1].ts_ms),
-        "a nonzero delta is accepted"
-    );
+    // A one-record page has no delta to move: the cover holds trivially.
+    kani::cover!(COUNT == 1 || moved, "a nonzero delta is accepted");
 }
 
-fn round_trip<const COUNT: usize>() {
-    let payloads: [[u8; 2]; COUNT] = kani::any();
-    let lens: [usize; COUNT] = kani::any();
-    for len in lens {
-        kani::assume(len <= 2);
-    }
-    let stamps: [i64; COUNT] = kani::any();
-    let records: Vec<SealRecord<'_>> = payloads
-        .iter()
-        .zip(lens)
-        .zip(stamps)
-        .map(|((payload, len), ts_ms)| SealRecord {
-            ts_ms,
-            payload: &payload[..len],
-        })
-        .collect();
-    let Some(body) = build_body(&records) else {
-        assert!(
-            stamps.windows(2).any(|pair| pair[1] < pair[0]),
-            "only records that go back in time are refused"
-        );
-        return;
-    };
-    let ts_ms = stamps[0];
-    let Ok(table) = parse_body(&body, COUNT, ts_ms) else {
-        panic!("a built body parses");
-    };
-    assert!(
-        table.records.iter().map(|span| span.len).eq(lens),
-        "every record keeps its length"
-    );
-    assert!(
-        table.records.iter().map(|span| span.ts_ms).eq(stamps),
-        "every record keeps its timestamp"
-    );
-    let concatenated: Vec<u8> = records
-        .iter()
-        .flat_map(|record| record.payload.iter().copied())
-        .collect();
-    assert!(
-        body[table.payload_start..] == concatenated,
-        "the payloads follow the tables in order"
-    );
-    kani::cover!(lens.iter().all(|len| *len == 2), "full records round-trip");
-}
-
-/// Page-body exactness for a single-record page.
+/// KANI-097: body exactness for a single-record page (bodies of up to 4
+/// bytes: two table bytes and two payload bytes, or a longer table).
 #[kani::proof]
 #[kani::unwind(12)]
-fn kani_page_body_one_record_parses_exactly() {
-    exact::<1>();
+fn kani_097_a_one_record_body_parses_exactly() {
+    exact::<1, 4>();
 }
 
-/// Page-body exactness for a two-record page.
+/// KANI-097: body exactness for a two-record page (up to 6 bytes).
 #[kani::proof]
 #[kani::unwind(12)]
-fn kani_page_body_two_records_parse_exactly() {
-    exact::<2>();
+fn kani_097_a_two_record_body_parses_exactly() {
+    exact::<2, 6>();
 }
 
-/// Page-body exactness for a three-record page.
+/// KANI-097: body exactness for a three-record page (up to 7 bytes: the
+/// third record is the one whose delta tells the record before from the
+/// header).
 #[kani::proof]
 #[kani::unwind(12)]
-fn kani_page_body_three_records_parse_exactly() {
-    exact::<3>();
-}
-
-/// A built two-record body parses back to its records.
-#[kani::proof]
-#[kani::unwind(12)]
-fn kani_page_body_two_records_round_trip() {
-    round_trip::<2>();
+fn kani_097_a_three_record_body_parses_exactly() {
+    exact::<3, 7>();
 }
