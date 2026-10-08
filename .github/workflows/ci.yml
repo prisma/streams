@@ -228,6 +228,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Certification smoke at 1,000 projects
         run: MT_CERT_PROJECTS=1000 scripts/test-leg.sh target/legs/mt-cert.log --exact dst::dst_tests::security_audit::shared_cell_certification_smoke -- --release --lib shared_cell_certification_smoke -- --nocapture
+      # Layer A of the shared-cells plan at 1,000 projects (owner decision
+      # 2026-10-08, Q3(c)): every shared_cell_ leg but A6, then A6 alone,
+      # which fails only beside the scale module (the history partitions'
+      # 300 s manifest poll under a full L0; NEXT-WORK section 14.7).
+      - name: Shared-cell Layer A at 1,000 projects, A6 aside
+        run: MT_CERT_PROJECTS=1000 scripts/test-leg.sh target/legs/layer-a.log --min 17 -- --release --lib dst::dst_tests::shared_cell_ -- --skip per_project_state_is_bounded_and_released
+      - name: Shared-cell Layer A's A6 alone at 1,000 projects
+        run: MT_CERT_PROJECTS=1000 scripts/test-leg.sh target/legs/layer-a6.log --exact dst::dst_tests::shared_cell_lifecycle::per_project_state_is_bounded_and_released -- --release --lib per_project_state_is_bounded_and_released
 
   # Job: the SDK ships as an npm package, so CI validates the PACKAGE,
   # not the source tree: build, pack, install the tarball into a clean
