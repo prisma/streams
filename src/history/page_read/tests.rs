@@ -3,7 +3,9 @@
 //! their clear routing key, and never confused with postings rows.
 use super::super::bounded_discovery_tests::rig;
 use super::super::{Absorber, AbsorberConfig};
-use super::{PageScan, read_history2, read_history2_keyed_envelope, read_history2_scan};
+use super::{
+    PageScan, hist_scan_opts, read_history2, read_history2_keyed_envelope, read_history2_scan,
+};
 use crate::crypto::{RouteHash, SegmentHash, StreamKey};
 use crate::crypto_page::{
     CheckedPage, PageCipher, PageLane, SealedPage, history_page_key, history_page_prefix,
@@ -759,4 +761,30 @@ async fn a_gather_from_inside_a_page_copies_it_whole_and_advances_past_it() {
         expected.get(12..).unwrap()
     );
     engine.begin_close();
+}
+
+/// A history scan reads ahead its byte budget and one page, at most 2 MiB,
+/// with two block fetches in flight, and caches the blocks it fetches. No
+/// result shows these three, so they are pinned exactly; each differs from
+/// slatedb's default of one block of read-ahead, one fetch at a time and no
+/// block cache.
+#[test]
+fn a_history_scan_reads_ahead_its_budget_on_two_cached_fetch_tasks() {
+    for (budget, read_ahead) in [
+        (0, 64 << 10),
+        (64 << 10, 128 << 10),
+        (1 << 20, (1 << 20) + (64 << 10)),
+        (8 << 20, 2 << 20),
+    ] {
+        let opts = hist_scan_opts(budget);
+        assert_eq!(
+            (
+                opts.read_ahead_bytes,
+                opts.max_fetch_tasks,
+                opts.cache_blocks
+            ),
+            (read_ahead, 2, true),
+            "budget {budget}"
+        );
+    }
 }
