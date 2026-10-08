@@ -188,9 +188,9 @@ fn der_element(der: &[u8]) -> Option<DerElement<'_>> {
         if octets.is_empty() || octets.len() > 4 {
             return None;
         }
-        let len = octets
-            .iter()
-            .fold(0usize, |len, &octet| len << 8 | usize::from(octet));
+        let len = octets.iter().try_fold(0usize, |len, &octet| {
+            len.checked_mul(256)?.checked_add(usize::from(octet))
+        })?;
         (len, rest)
     };
     let (contents, rest) = rest.split_at_checked(len)?;
@@ -203,7 +203,7 @@ mod tests {
 
     use super::super::tests::{FLEET_KID, FLEET_PUB, KID, NOW, claims, service, sign_with};
     use super::super::{AUD_CUSTOMER, AUD_INTERNAL, AuthError, JwksSnapshot};
-    use super::{JwksKey, KeyAudience, material_fp};
+    use super::{JwksKey, KeyAudience, der_element, material_fp};
 
     const PUB: &str = include_str!("../dst/fixtures/mt-test-rsa.pub.pem");
     /// The same public key as [`PUB`], armoured as PKCS#1.
@@ -235,6 +235,35 @@ mod tests {
             [material; 3]
         );
         assert_ne!(material_fp(FLEET_PUB.as_bytes()), material);
+    }
+
+    /// A DER length is one short octet below 0x80, or 0x81-0x84 and that
+    /// many big-endian octets; the indefinite form 0x80 and five or more
+    /// length octets are refused, whatever bytes follow.
+    #[test]
+    fn a_der_length_takes_one_to_four_octets() {
+        let element = |head: &[u8], tail: usize| {
+            let der: Vec<u8> = head
+                .iter()
+                .copied()
+                .chain(std::iter::repeat_n(0, tail))
+                .collect();
+            der_element(&der).map(|(tag, contents, rest)| (tag, contents.len(), rest.len()))
+        };
+        assert_eq!(element(&[0x04, 0x7f], 130), Some((0x04, 127, 3)));
+        assert_eq!(element(&[0x04, 0x80], 130), None);
+        assert_eq!(element(&[0x04, 0x81, 0x80], 130), Some((0x04, 128, 2)));
+        assert_eq!(
+            element(&[0x04, 0x82, 0x01, 0x02], 300),
+            Some((0x04, 258, 42))
+        );
+        assert_eq!(
+            element(&[0x04, 0x84, 0, 0, 0x01, 0x02], 300),
+            Some((0x04, 258, 42))
+        );
+        assert_eq!(element(&[0x04, 0x85, 0, 0, 0, 0x01, 0x02], 300), None);
+        assert_eq!(element(&[0x04, 0x82, 0x01], 0), None);
+        assert_eq!(element(&[0x04, 0x82, 0x01, 0x02], 257), None);
     }
 
     /// F2 at publication: the customer key armoured as PKCS#1 under an
