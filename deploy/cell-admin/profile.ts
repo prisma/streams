@@ -103,9 +103,14 @@ function checkPosture(env: Map<string, string>): void {
 
 const ceilingOf = (bound: number, k: number) => Math.max(1, Math.floor(bound / k));
 
-/// The profile's LiveFeed share and memory line must both be the cell's
-/// divided by k: one project at its share must leave the rest to the
-/// other k - 1.
+/// The fewest projects whose memory lines may fill the instance read
+/// memory: the owner accepted four (README "Shared cells Q1" (A)).
+const READ_MEMORY_FILLERS = 4;
+
+/// The profile's LiveFeed share must be the cell's divided by k: one
+/// project at its share leaves the rest to the other k - 1. Its memory
+/// line may be larger than the read memory divided by k, but it must take
+/// at least READ_MEMORY_FILLERS projects at their lines to fill it.
 function checkShares(env: Map<string, string>, k: number): void {
   const feedTotal = positive(env, "SSE_FEED_TOTAL_BYTES");
   const feedProject = positive(env, "SSE_FEED_PROJECT_BYTES");
@@ -119,10 +124,10 @@ function checkShares(env: Map<string, string>, k: number): void {
   // (src/admission/read_memory.rs, READ_MEMORY_SHARE_OF_SHED).
   const readMemory = Math.floor((positive(env, "ADMIT_RSS_SHED_MB") * 1024 * 1024) / 4);
   const line = positive(env, "PROJECT_MEMORY_PRESSURE_BYTES");
-  if (line > Math.floor(readMemory / k)) {
+  if ((READ_MEMORY_FILLERS - 1) * line >= readMemory) {
     throw new AdminError(
-      `profile PROJECT_MEMORY_PRESSURE_BYTES=${line} exceeds the instance read memory / k ` +
-        `= ${Math.floor(readMemory / k)}: one project's held pages would make its neighbours wait`,
+      `profile PROJECT_MEMORY_PRESSURE_BYTES=${line}: ${READ_MEMORY_FILLERS - 1} projects at their lines ` +
+        `would fill the instance read memory (${readMemory}); the owner accepted ${READ_MEMORY_FILLERS}`,
     );
   }
 }

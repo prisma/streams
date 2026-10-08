@@ -243,24 +243,38 @@ async fn a_rendered_hold_rides_its_body_and_an_unrendered_one_is_released() {
     drop(response);
 }
 
-/// Capacity review C5: the shared-cell profile's memory line
-/// (`deploy/profiles/shared-cell.env`, `PROJECT_MEMORY_PRESSURE_BYTES` =
-/// 16,384,000) is below two default page budgets (2 x 8 MiB = 16,777,216),
-/// so one project's second concurrent read without `maxBytes` waits for
-/// its first and is refused after 2 s while the first still runs (a cold
-/// read): a compliant project reads one default page at a time.
+/// The shared-cell profile's memory line, `PROJECT_MEMORY_PRESSURE_BYTES`
+/// in `deploy/profiles/shared-cell.env`.
+fn shared_cell_profile_line() -> u64 {
+    include_str!("../../../deploy/profiles/shared-cell.env")
+        .lines()
+        .find_map(|line| line.strip_prefix("PROJECT_MEMORY_PRESSURE_BYTES="))
+        .expect("the shared-cell profile sets a memory line")
+        .parse()
+        .expect("the memory line is a byte count")
+}
+
+/// Capacity review C5, as the owner sized it (README "Shared cells Q1"
+/// (A)): the shared-cell profile's memory line holds four default page
+/// budgets (4 x 8 MiB) of one project at once, so a compliant project
+/// reads four default pages together; a fifth, with the four still held
+/// (cold reads), waits its 2 s and is refused as the project's.
 #[tokio::test(start_paused = true)]
-#[ignore = "red until the owner decides capacity review C5: the shared-cell line admits one default read per project"]
-async fn the_shared_cell_line_admits_two_default_reads_of_one_project_at_once() {
-    const PROFILE_LINE: u64 = 16_384_000;
+async fn the_shared_cell_line_admits_four_default_reads_of_one_project_at_once() {
+    let line = shared_cell_profile_line();
     let ctl = ctl(500);
     let registry = QuotaRegistry::default();
     let id = project(&registry);
-    let first = ReadHold::reserve(&ctl, registry.read_bytes(&id), PROFILE_LINE, 8 * MIB).await;
-    assert!(first.is_ok(), "the first default read");
-    let second = ReadHold::reserve(&ctl, registry.read_bytes(&id), PROFILE_LINE, 8 * MIB)
-        .await
-        .map(drop);
-    assert_eq!(second, Ok(()), "the second default read of one project");
-    drop(first);
+    let mut held = Vec::new();
+    for read in 1..=4 {
+        let hold = ReadHold::reserve(&ctl, registry.read_bytes(&id), line, 8 * MIB).await;
+        held.push(hold.unwrap_or_else(|refusal| panic!("default read {read}: {refusal:?}")));
+    }
+    let fifth = ReadHold::reserve(&ctl, registry.read_bytes(&id), line, 8 * MIB).await;
+    assert_eq!(
+        fifth.err(),
+        Some(ReadRefusal::Project),
+        "a fifth default read"
+    );
+    drop(held);
 }

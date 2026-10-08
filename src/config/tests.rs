@@ -81,6 +81,39 @@ pub(super) fn load_with(entries: &[(&str, &str)]) -> ServerConfig {
     ServerConfig::load(test_cli(), &MapEnvironment::from(entries.iter().copied()))
 }
 
+/// The shared-cell profile as a deploy layers it: compute-1g.env, then
+/// shared-cell.env (later wins), then the per-cell values the deploy
+/// sets; clap's names go on argv, the rest into the environment.
+pub(super) fn shared_cell_profile(per_cell: &[(&str, &str)]) -> ServerConfig {
+    let mut env = std::collections::BTreeMap::new();
+    let files = [
+        include_str!("../../deploy/profiles/compute-1g.env"),
+        include_str!("../../deploy/profiles/shared-cell.env"),
+    ];
+    let lines = files.iter().flat_map(|text| text.lines());
+    for line in lines.filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        let (name, value) = line.split_once('=').expect("a KEY=VALUE line");
+        env.insert(name, value);
+    }
+    env.extend(per_cell.iter().copied());
+    let command = CliArgs::command();
+    let mut argv = vec!["streams-slate".to_string()];
+    let mut rest = Vec::new();
+    for (name, value) in env {
+        let arg = command
+            .get_arguments()
+            .find(|a| a.get_env() == Some(name.as_ref()));
+        match arg.map(|a| (a.get_long(), a.get_action().takes_values())) {
+            Some((Some(long), true)) => argv.push(format!("--{long}={value}")),
+            Some((Some(long), false)) if value == "1" => argv.push(format!("--{long}")),
+            Some(_) => panic!("{name}={value} has no argv form"),
+            None => rest.push((name, value)),
+        }
+    }
+    let cli = CliArgs::try_parse_from(argv).unwrap_or_else(|e| panic!("{e}"));
+    ServerConfig::load(cli, &MapEnvironment::from(rest))
+}
+
 #[test]
 fn load_with_empty_environment_equals_knob_defaults() {
     let a = load_with(&[]);
@@ -887,27 +920,31 @@ fn process_environment_smoke_test() {
     assert!(stdout.contains("1 passed"), "helper did not run: {stdout}");
 }
 
-/// Capacity review C6: a shared cell (compute-1g's budgets, which are the
-/// defaults, and shared-cell.env's 1,200 SSE cap) must fit its
-/// instance-wide memory bounds together under the RSS shed line: the fixed
-/// caches and absorber budget, the read memory step 6 added (a quarter of
-/// the line), the LiveFeed total, and the connections the SSE cap admits at
-/// #269's ~44 KB each. Past the line the instance sheds every project's
-/// writes, attributed to none, while every project is inside its ceilings.
+/// Capacity review C6, as the owner accepted it (README "Shared cells Q1"
+/// (A), 2026-10-08): a shared cell's instance-wide memory budgets (the
+/// fixed caches and absorber budget, the read memory, a quarter of the
+/// RSS shed line, the LiveFeed total and the connections the 1,200 SSE cap
+/// admits at #269's ~44 KB each) sum to 603,499,008 bytes against the
+/// 524,288,000-byte line, which they pass only when every one is full at
+/// once. That sum is pinned as a ceiling on the profile a shared cell
+/// deploys (compute-1g.env under shared-cell.env, `shared_cell_profile`),
+/// not on the binary's defaults: a change that raises any of them, in
+/// either file or in a default the files leave alone, fails here and goes
+/// back to the owner with the new sum.
 #[test]
-#[ignore = "red until the owner sizes the shared cell's instance budgets (capacity review C6)"]
-fn the_shared_cells_instance_bounds_fit_under_the_shed_line_together() {
-    let c = load_with(&[]);
+fn the_shared_cells_instance_bounds_stay_within_the_sum_the_owner_accepted() {
+    const ACCEPTED: u64 = 603_499_008;
+    // The one per-cell value the parse requires; it holds no memory.
+    let c = shared_cell_profile(&[("SLATE_S3_ENDPOINT", "http://127.0.0.1:1")]);
     let mib = 1u64 << 20;
     let fixed = shipped_fixed_memory_budget_bytes(&c);
     let read_memory = c.cli.admit_rss_shed_mb * mib / 4;
     let livefeed = c.sse.feed_total_bytes;
     let connections = c.cli.sse_max_connections * 44_000;
-    let line = c.cli.admit_rss_shed_mb * mib;
     let sum = fixed + read_memory + livefeed + connections;
     assert!(
-        sum <= line,
+        sum <= ACCEPTED,
         "fixed {fixed} + read memory {read_memory} + LiveFeed {livefeed} + connections \
-         {connections} = {sum} > the shed line {line}"
+         {connections} = {sum} > the {ACCEPTED} bytes the owner accepted"
     );
 }

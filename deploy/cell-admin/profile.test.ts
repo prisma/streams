@@ -60,10 +60,9 @@ describe("the shared-cell profile", () => {
       },
     });
     const env = readProfiles(DEFAULT_PROFILES);
-    expect([env.get("SSE_FEED_PROJECT_BYTES"), env.get("PROJECT_MEMORY_PRESSURE_BYTES")]).toEqual([
-      "8388608",
-      "16384000",
-    ]);
+    expect(
+      ["SSE_FEED_PROJECT_BYTES", "PROJECT_MEMORY_PRESSURE_BYTES", "MAX_REQUEST_BODY_BYTES"].map((n) => env.get(n)),
+    ).toEqual(["8388608", "33554432", "8388608"]);
   });
 
   test("every name it sets is one the server reads", () => {
@@ -83,7 +82,7 @@ describe("the shared-cell profile", () => {
     ["PROJECT_SHARE_K", "1", "a shared cell needs k >= 2"],
     ["PROJECT_SHARE_K", undefined, "profile does not set PROJECT_SHARE_K"],
     ["SSE_FEED_PROJECT_BYTES", "33554432", "needs SSE_FEED_TOTAL_BYTES / k = 8388608"],
-    ["PROJECT_MEMORY_PRESSURE_BYTES", "16384001", "exceeds the instance read memory / k = 16384000"],
+    ["PROJECT_MEMORY_PRESSURE_BYTES", "43690667", "3 projects at their lines would fill the instance read memory (131072000)"],
     ["CELL_ENVELOPE_REQUESTS_PER_SEC", undefined, "profile does not set CELL_ENVELOPE_REQUESTS_PER_SEC"],
     ["MAX_UNABSORBED_BYTES_PER_INSTANCE", undefined, "profile does not set MAX_UNABSORBED_BYTES_PER_INSTANCE"],
     ["ADMIT_MAX_INFLIGHT", "5e2", "ADMIT_MAX_INFLIGHT=5e2 is not a positive integer"],
