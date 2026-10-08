@@ -317,7 +317,9 @@ pub(crate) async fn read_history2_keyed_cached(
 /// Corruption envelope (spec §8.6): one bounded canonical scan of the
 /// requested range, filtered by EXACT routing-key bytes. Never lies
 /// about completeness — a byte-truncated envelope returns an honest
-/// partial with a resume cursor.
+/// partial with a resume cursor. A completed scan met pages tiling the
+/// whole range, another key's included, so its consumed progress is
+/// already `upto - 1`.
 #[expect(
     clippy::too_many_arguments,
     reason = "read_history2_keyed_envelope; a history read names its partition, route, segment, key and offset window separately as the planner produced them; a query struct would repeat the same fields at every call"
@@ -332,12 +334,7 @@ pub(super) async fn read_history2_keyed_envelope(
     max_bytes: usize,
 ) -> anyhow::Result<(PageSlices, Option<u64>, bool)> {
     let pages = PageScan::open(part, route, inc, from..upto, &hist_scan_opts(max_bytes)).await?;
-    let (pages, mut last, completed) = pages.collect(Some(rk), max_bytes).await?;
-    if completed {
-        // The whole range was verified page by page.
-        last = Some(last.map_or(upto - 1, |l| l.max(upto - 1)));
-    }
-    Ok((pages, last, completed))
+    pages.collect(Some(rk), max_bytes).await
 }
 
 #[cfg(test)]
