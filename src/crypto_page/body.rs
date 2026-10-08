@@ -1,11 +1,13 @@
 //! The page body: every record's length, then every record's timestamp
-//! delta, then the payloads. The parser reads exactly that and nothing else:
-//! each table entry is a minimal varint, a delta keeps the record's
-//! timestamp within i64, and the lengths cover the remaining bytes exactly.
+//! delta to the record before it (0 for the first, whose timestamp is the
+//! header's), then the payloads. The parser reads exactly that and nothing
+//! else: each table entry is a minimal varint, the first delta is 0, every
+//! timestamp stays within i64, and the lengths cover the remaining bytes
+//! exactly.
 //! It is a pure function over a byte slice so the Kani harnesses in
 //! `proofs.rs` can check it over symbolic bodies.
 
-use super::BodyError;
+use super::{BodyError, SealRecord};
 
 /// One record's place in a parsed body: its payload length and timestamp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,34 +63,55 @@ pub(super) fn varint_len(value: u64) -> usize {
     bits.div_ceil(7) as usize
 }
 
-/// Body bytes one record of `len` payload bytes adds to a page: its length
-/// entry, its zero timestamp delta and its payload.
-pub(super) fn record_body_bytes(len: usize) -> usize {
-    varint_len(len as u64).saturating_add(1).saturating_add(len)
+/// Body bytes one record of `len` payload bytes adds to a page whose
+/// previous record is `delta` milliseconds older: its length entry, its
+/// delta entry and its payload.
+pub(super) fn record_body_bytes(len: usize, delta: u64) -> usize {
+    varint_len(len as u64)
+        .saturating_add(varint_len(delta))
+        .saturating_add(len)
 }
 
-/// The body of a page of `records`, every timestamp delta 0. The caller
-/// bounds the records; the body is not compressed here.
-pub(super) fn build_body<R: AsRef<[u8]>>(records: &[R]) -> Vec<u8> {
-    let size = records.iter().fold(0usize, |size, record| {
-        size.saturating_add(record_body_bytes(record.as_ref().len()))
-    });
+/// The delta a record at `ts_ms` stores after a record at `previous`: 0 for
+/// a page's first record, None when it would go back in time.
+pub(super) fn timestamp_delta(previous: Option<i64>, ts_ms: i64) -> Option<u64> {
+    match previous {
+        None => Some(0),
+        Some(previous) => (ts_ms >= previous).then(|| ts_ms.abs_diff(previous)),
+    }
+}
+
+/// The body of a page of `records`, each timestamp a delta to the record
+/// before it; None when a timestamp goes back. The caller bounds the
+/// records; the body is not compressed here.
+pub(super) fn build_body(records: &[SealRecord<'_>]) -> Option<Vec<u8>> {
+    let mut previous = None;
+    let mut size = 0usize;
+    for record in records {
+        let delta = timestamp_delta(previous, record.ts_ms)?;
+        size = size.saturating_add(record_body_bytes(record.payload.len(), delta));
+        previous = Some(record.ts_ms);
+    }
     let mut body = Vec::with_capacity(size);
     for record in records {
-        put_varint(&mut body, record.as_ref().len() as u64);
+        put_varint(&mut body, record.payload.len() as u64);
     }
-    for _ in records {
-        put_varint(&mut body, 0);
+    // In order, as checked above: the first record's delta is 0.
+    let mut previous = records.first().map_or(0, |record| record.ts_ms);
+    for record in records {
+        put_varint(&mut body, record.ts_ms.abs_diff(previous));
+        previous = record.ts_ms;
     }
     for record in records {
-        body.extend_from_slice(record.as_ref());
+        body.extend_from_slice(record.payload);
     }
-    body
+    Some(body)
 }
 
 /// Parse the body of a page of `count` records whose header timestamp is
 /// `ts_ms`. Ok only when both tables hold exactly `count` minimal varints,
-/// every timestamp fits an i64, and the lengths sum to the remaining bytes.
+/// the first delta is 0, every timestamp (the previous record's plus its
+/// delta) fits an i64, and the lengths sum to the remaining bytes.
 pub(crate) fn parse_body(body: &[u8], count: usize, ts_ms: i64) -> Result<PageTable, BodyError> {
     let mut input = body;
     // Each record takes at least two table bytes, so a claimed count can
@@ -100,11 +123,17 @@ pub(crate) fn parse_body(body: &[u8], count: usize, ts_ms: i64) -> Result<PageTa
             .ok_or(BodyError::LengthTable)?;
         records.push(RecordSpan { len, ts_ms });
     }
+    let mut previous = None;
     for record in &mut records {
         let delta = get_varint(&mut input).ok_or(BodyError::DeltaTable)?;
-        record.ts_ms = ts_ms
-            .checked_add_unsigned(delta)
-            .ok_or(BodyError::Timestamp)?;
+        record.ts_ms = match previous {
+            None if delta != 0 => return Err(BodyError::FirstDelta),
+            None => ts_ms,
+            Some(previous) => {
+                i64::checked_add_unsigned(previous, delta).ok_or(BodyError::Timestamp)?
+            }
+        };
+        previous = Some(record.ts_ms);
     }
     let payload_start = body.len().saturating_sub(input.len());
     for record in &records {

@@ -853,14 +853,15 @@ mod o2_tests {
         let subkey = crate::crypto::derive_subkey(key, epoch, "", 0);
         let cipher = PageCipher::new(&subkey, segment);
         let lane = PageLane {
-            ts_ms: 123,
             key_version: 0,
             routing_key: "",
         };
         let records: Vec<Vec<u8>> = (0..64u8).map(|n| vec![n; 1024]).collect();
         let mut slices = PageSlices::default();
         for (chunk, first) in records.chunks(16).zip((0..).step_by(16)) {
-            let sealed = cipher.seal(&lane, first, chunk).unwrap();
+            let sealed = cipher
+                .seal(&lane, first, &crate::crypto_page::stamped(123, chunk))
+                .unwrap();
             let page = CheckedPage::admit(Bytes::from(sealed.bytes), sealed.last).unwrap();
             slices.push(PageSlice::clip(page, 0, 64).unwrap());
         }

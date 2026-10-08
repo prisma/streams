@@ -5,12 +5,15 @@
 #![cfg(test)]
 
 use bytes::Bytes;
-use proptest::prelude::{Strategy, any};
+use proptest::prelude::{Just, Strategy, any};
 
 use super::body::{build_body, parse_body, record_body_bytes};
 use super::seal::split_pages;
-use super::tests::{HASH, cipher, expected, lane, noise, prefix, round_trip};
-use super::{CheckedPage, PAGE_MAX_RECORDS, PAGE_TARGET_PLAINTEXT, body_cap, shard_page_key};
+use super::tests::{HASH, TS, cipher, expected_at, lane, noise, prefix, round_trip_at};
+use super::{
+    CheckedPage, PAGE_MAX_RECORDS, PAGE_TARGET_PLAINTEXT, SealRecord, body_cap, shard_page_key,
+    stamped,
+};
 
 /// One record: a size class, a size jitter, a fill byte, and whether its
 /// bytes compress. Mostly small; some near half a page, some past a page.
@@ -33,22 +36,46 @@ fn record() -> impl Strategy<Value = Vec<u8>> {
     )
 }
 
-/// The body bytes of a group of records, as the splitter counts them.
-fn body_of(records: &[Vec<u8>]) -> usize {
+/// `payloads` stamped from TS on: each record `step` milliseconds after
+/// the one before it.
+fn timeline(payloads: &[(Vec<u8>, u32)]) -> Vec<SealRecord<'_>> {
+    let mut ts_ms = TS;
+    payloads
+        .iter()
+        .map(|(payload, step)| {
+            ts_ms = ts_ms.saturating_add(i64::from(*step));
+            SealRecord { ts_ms, payload }
+        })
+        .collect()
+}
+
+/// The delta a record at `ts_ms` takes after a record at `before`.
+fn delta(before: Option<&SealRecord<'_>>, ts_ms: i64) -> u64 {
+    before.map_or(0, |before| ts_ms.abs_diff(before.ts_ms))
+}
+
+/// The body bytes of a group of records, as the splitter counts them: each
+/// length and each delta to the record before at its varint width.
+fn body_of(records: &[SealRecord<'_>]) -> usize {
+    let mut before = None;
     records
         .iter()
-        .map(|record| record_body_bytes(record.len()))
+        .map(|record| {
+            let bytes = record_body_bytes(record.payload.len(), delta(before, record.ts_ms));
+            before = Some(record);
+            bytes
+        })
         .sum()
 }
 
-/// Every page but the last is full: the next record would pass the count
-/// or the body cap.
-fn greedy(pages: &[&[Vec<u8>]]) -> bool {
+/// Every page but the last is full: the next record, with its delta to the
+/// page's last record, would pass the count or the body cap.
+fn greedy(pages: &[&[SealRecord<'_>]]) -> bool {
     pages.windows(2).all(|window| match window {
         [page, next] => {
-            let next_body = next
-                .first()
-                .map_or(0, |record| record_body_bytes(record.len()));
+            let next_body = next.first().map_or(0, |record| {
+                record_body_bytes(record.payload.len(), delta(page.last(), record.ts_ms))
+            });
             page.len() == PAGE_MAX_RECORDS
                 || body_of(page).saturating_add(next_body) > PAGE_TARGET_PLAINTEXT
         }
@@ -59,15 +86,17 @@ fn greedy(pages: &[&[Vec<u8>]]) -> bool {
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig { cases: 48, ..proptest::prelude::ProptestConfig::default() })]
 
-    /// Any request reads back exactly, in contiguous pages of greedy size
-    /// within their caps, from any first offset.
+    /// Any request reads back exactly, every record with its own
+    /// timestamp, in contiguous pages of greedy size within their caps,
+    /// from any first offset.
     #[test]
     fn quality_page_requests_round_trip_exactly(
-        records in proptest::collection::vec(record(), 0..=24),
+        payloads in proptest::collection::vec((record(), proptest::prop_oneof![Just(0u32), 0u32..300_000]), 0..=24),
         first in 0u64..=u64::MAX - 64,
     ) {
-        let (pages, opened) = round_trip(&records, first);
-        proptest::prop_assert_eq!(&opened, &expected(&records, first));
+        let records = timeline(&payloads);
+        let (pages, opened) = round_trip_at(&records, first);
+        proptest::prop_assert_eq!(&opened, &expected_at(&records, first));
         let groups = split_pages(&records).unwrap();
         proptest::prop_assert_eq!(groups.len(), pages.len());
         proptest::prop_assert!(greedy(&groups));
@@ -85,6 +114,7 @@ proptest::proptest! {
         lens in proptest::collection::vec(0usize..4, 0..=9000),
     ) {
         let records: Vec<Vec<u8>> = lens.iter().map(|len| vec![7; *len]).collect();
+        let records = stamped(TS, &records);
         let groups = split_pages(&records).unwrap();
         let counts: Vec<usize> = groups.iter().map(|group| group.len()).collect();
         let full = records.len() / PAGE_MAX_RECORDS;
@@ -104,7 +134,7 @@ proptest::proptest! {
         at in any::<proptest::sample::Index>(),
         mask in 1u8..,
     ) {
-        let sealed = cipher().seal_request(&lane(), 77, &records).unwrap();
+        let sealed = cipher().seal_request(&lane(), 77, &stamped(TS, &records)).unwrap();
         let [page] = sealed.as_slice() else {
             return Err(proptest::test_runner::TestCaseError::fail("one page"));
         };
@@ -133,25 +163,29 @@ proptest::proptest! {
         }
     }
 
-    /// Built bodies parse back to their records; arbitrary bodies parse
-    /// only into spans that tile their payload bytes exactly.
+    /// Built bodies parse back to their records and timestamps; arbitrary
+    /// bodies parse only into spans that tile their payload bytes exactly,
+    /// the first at the header's timestamp and none going back.
     #[test]
     fn quality_page_bodies_parse_exactly(
-        records in proptest::collection::vec(proptest::collection::vec(any::<u8>(), 0..300), 1..=40),
+        payloads in proptest::collection::vec((proptest::collection::vec(any::<u8>(), 0..300), any::<u32>()), 1..=40),
         arbitrary in proptest::collection::vec(any::<u8>(), 0..=48),
         count in 1usize..=6,
         ts_ms in any::<i64>(),
     ) {
-        let body = build_body(&records);
-        let table = parse_body(&body, records.len(), ts_ms).unwrap();
-        let lens: Vec<usize> = records.iter().map(Vec::len).collect();
-        proptest::prop_assert_eq!(table.records.iter().map(|span| span.len).collect::<Vec<_>>(), lens);
-        proptest::prop_assert!(table.records.iter().all(|span| span.ts_ms == ts_ms));
+        let records = timeline(&payloads);
+        let body = build_body(&records).unwrap();
+        let head = records.first().map_or(TS, |record| record.ts_ms);
+        let table = parse_body(&body, records.len(), head).unwrap();
+        let built: Vec<(usize, i64)> = records.iter().map(|record| (record.payload.len(), record.ts_ms)).collect();
+        let parsed: Vec<(usize, i64)> = table.records.iter().map(|span| (span.len, span.ts_ms)).collect();
+        proptest::prop_assert_eq!(parsed, built);
         if let Ok(table) = parse_body(&arbitrary, count, ts_ms) {
             let payloads: usize = table.records.iter().map(|span| span.len).sum();
             proptest::prop_assert_eq!(table.records.len(), count);
             proptest::prop_assert_eq!(table.payload_start.checked_add(payloads), Some(arbitrary.len()));
-            proptest::prop_assert!(table.records.iter().all(|span| span.ts_ms >= ts_ms));
+            proptest::prop_assert_eq!(table.records.first().map(|span| span.ts_ms), Some(ts_ms));
+            proptest::prop_assert!(table.records.windows(2).all(|pair| matches!(pair, [a, b] if a.ts_ms <= b.ts_ms)));
         }
     }
 }

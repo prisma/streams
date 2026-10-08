@@ -6,6 +6,7 @@
 //! version: a zstd upgrade may change the encode bytes, never the decode.
 #![cfg(test)]
 
+use super::stamped;
 use bytes::Bytes;
 
 use super::tests::Opened;
@@ -34,9 +35,11 @@ const COMPRESSED_PAGE: &str = concat!(
     "93245fbf899506b37dfc9d75d0426d43a0a17f27f73923a31aad784c",
 );
 
+/// The fixture records' timestamp.
+const TS_MS: i64 = 1_760_000_000_000;
+
 fn lane() -> PageLane<'static> {
     PageLane {
-        ts_ms: 1_760_000_000_000,
         key_version: 1,
         routing_key: "rk",
     }
@@ -58,7 +61,7 @@ fn compressed_records() -> Vec<Vec<u8>> {
 /// Seal `records` from FIRST under the fixed nonce.
 fn sealed(records: &[Vec<u8>]) -> String {
     let cipher = PageCipher::new(&SUBKEY, &SEGMENT);
-    let page = cipher.seal_with_nonce(&lane(), FIRST, records, NONCE);
+    let page = cipher.seal_with_nonce(&lane(), FIRST, &stamped(TS_MS, records), NONCE);
     hex(&page.unwrap().bytes)
 }
 
@@ -77,7 +80,7 @@ fn expected(records: Vec<Vec<u8>>) -> Vec<Opened> {
     records
         .into_iter()
         .zip(FIRST..)
-        .map(|(record, offset)| (offset, lane().ts_ms, record))
+        .map(|(record, offset)| (offset, TS_MS, record))
         .collect()
 }
 

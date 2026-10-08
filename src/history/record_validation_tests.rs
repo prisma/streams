@@ -10,12 +10,15 @@ use std::sync::Arc;
 /// A history page of one "other" record at `first`.
 fn page_at(inc: SegmentHash, first: u64) -> Vec<u8> {
     let lane = PageLane {
-        ts_ms: 1,
         key_version: 1,
         routing_key: "other",
     };
     PageCipher::new(&[7; 32], &inc.0)
-        .seal(&lane, first, &[b"retained".to_vec()])
+        .seal(
+            &lane,
+            first,
+            &crate::crypto_page::stamped(1, &[b"retained".to_vec()]),
+        )
         .unwrap()
         .bytes
 }

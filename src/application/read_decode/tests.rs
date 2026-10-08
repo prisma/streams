@@ -54,7 +54,6 @@ impl Pages {
         let (key, epoch, segment) = (StreamKey([7; 32]), [8; 16], [9; 16]);
         let cipher = PageCipher::new(&derive_subkey(&key, &epoch, "", 0), &segment);
         let lane = PageLane {
-            ts_ms: 123,
             key_version: 0,
             routing_key: "",
         };
@@ -63,7 +62,9 @@ impl Pages {
             .chunks(usize::from(PER_PAGE))
             .zip((0..).step_by(usize::from(PER_PAGE)))
             .map(|(records, first)| {
-                let sealed = cipher.seal(&lane, first, records).unwrap();
+                let sealed = cipher
+                    .seal(&lane, first, &crate::crypto_page::stamped(123, records))
+                    .unwrap();
                 CheckedPage::admit(Bytes::from(sealed.bytes), sealed.last).unwrap()
             })
             .collect();

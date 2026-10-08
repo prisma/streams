@@ -34,13 +34,12 @@ fn payload(rk: &str, offset: u64) -> Vec<u8> {
 /// One page of `count` records of `rk` from `first`, as a request seals it.
 fn page(rk: &str, first: u64, count: u64) -> SealedPage {
     let lane = PageLane {
-        ts_ms: 1,
         key_version: 0,
         routing_key: rk,
     };
     let records: Vec<_> = (first..first + count).map(|o| payload(rk, o)).collect();
     PageCipher::new(&[9; 32], &INC.0)
-        .seal(&lane, first, &records)
+        .seal(&lane, first, &crate::crypto_page::stamped(1, &records))
         .unwrap()
 }
 
@@ -671,13 +670,12 @@ async fn a_merged_read_refuses_an_overlapping_history_page() {
     absorbed_three_requests(&engine, &absorber, hash).await;
     let subkey = crate::crypto::derive_subkey(&KEY, &hash, "", 0);
     let lane = PageLane {
-        ts_ms: 1,
         key_version: 0,
         routing_key: "",
     };
     let records: Vec<_> = (5..15).map(|o| payload("", o)).collect();
     let planted = PageCipher::new(&subkey, &hash)
-        .seal(&lane, 5, &records)
+        .seal(&lane, 5, &crate::crypto_page::stamped(1, &records))
         .unwrap();
     let part = engine.history_partition().await.unwrap();
     let key = history_page_key(RouteHash(hash), SegmentHash(hash), planted.last);

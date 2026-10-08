@@ -66,12 +66,15 @@ mod tests {
     ) -> CheckedPage {
         let subkey = derive_subkey(key, epoch, lane, version);
         let lane = PageLane {
-            ts_ms: 123,
             key_version: version,
             routing_key: lane,
         };
         let sealed = PageCipher::new(&subkey, segment)
-            .seal(&lane, 7, &[b"same payload"])
+            .seal(
+                &lane,
+                7,
+                &crate::crypto_page::stamped(123, &[b"same payload"]),
+            )
             .unwrap();
         CheckedPage::admit(bytes::Bytes::from(sealed.bytes), sealed.last).unwrap()
     }

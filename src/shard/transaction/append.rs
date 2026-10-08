@@ -304,8 +304,9 @@ impl CommitTransaction<'_> {
 }
 
 /// A request's records sealed into pages from the stream's next offset, all
-/// or none, under the group's cipher for the request's subkey. A close-only
-/// request has no page.
+/// or none, under the group's cipher for the request's subkey. Every record
+/// of a request carries the request's timestamp. A close-only request has no
+/// page.
 fn seal_pages(
     local: &mut StreamOverlay,
     hash: [u8; 16],
@@ -316,14 +317,18 @@ fn seal_pages(
         return Ok(Vec::new());
     }
     let lane = crate::crypto_page::PageLane {
-        ts_ms: ts,
         key_version: req.key_version,
         routing_key: &req.routing_key,
     };
+    let records: Vec<_> = req
+        .entries
+        .iter()
+        .map(|payload| crate::crypto_page::SealRecord { ts_ms: ts, payload })
+        .collect();
     local
         .frames
         .cipher(&req.subkey, &hash)
-        .seal_request(&lane, local.fields.next, &req.entries)
+        .seal_request(&lane, local.fields.next, &records)
         .map_err(seal_refusal)
 }
 

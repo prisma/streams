@@ -12,12 +12,15 @@ use tokio::sync::mpsc;
 /// A one-record page at `offset` in `lane`.
 fn encoded_record(offset: u64, lane: &str) -> Bytes {
     let lane = PageLane {
-        ts_ms: 1,
         key_version: 1,
         routing_key: lane,
     };
     let page = PageCipher::new(&[7; 32], &[8; 16])
-        .seal(&lane, offset, &[b"retained payload"])
+        .seal(
+            &lane,
+            offset,
+            &crate::crypto_page::stamped(1, &[b"retained payload"]),
+        )
         .unwrap();
     Bytes::from(page.bytes)
 }

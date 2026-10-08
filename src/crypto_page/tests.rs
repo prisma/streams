@@ -2,13 +2,14 @@
 //! fixtures the other page test modules share.
 #![cfg(test)]
 
+use super::stamped;
 use bytes::Bytes;
 
 use super::body::{get_varint, put_varint, varint_len};
 use super::seal::split_pages;
 use super::{
-    CheckedPage, PAGE_MAX_RECORDS, PageCipher, PageLane, SHARD_PAGE_TAG, SealError, SealedPage,
-    history_page_key, shard_page_key,
+    CheckedPage, PAGE_MAX_RECORDS, PageCipher, PageLane, SHARD_PAGE_TAG, SealError, SealRecord,
+    SealedPage, history_page_key, shard_page_key,
 };
 use crate::crypto::{MAX_RECORD_PLAINTEXT, RouteHash, SegmentHash, StreamKey, derive_subkey};
 
@@ -30,7 +31,6 @@ pub(super) fn cipher() -> PageCipher {
 
 pub(super) fn lane() -> PageLane<'static> {
     PageLane {
-        ts_ms: TS,
         key_version: 1,
         routing_key: "rk",
     }
@@ -47,9 +47,18 @@ pub(super) fn admit(page: &SealedPage) -> CheckedPage {
     CheckedPage::from_row(&key, &prefix(), Bytes::from(page.bytes.clone())).unwrap()
 }
 
+/// Seal `records` as one request from `first`, every record at TS, admit
+/// every page under its canonical key and open it with the fixture cipher.
+pub(super) fn round_trip(records: &[Vec<u8>], first: u64) -> (Vec<CheckedPage>, Vec<Opened>) {
+    round_trip_at(&stamped(TS, records), first)
+}
+
 /// Seal `records` as one request from `first`, admit every page under its
 /// canonical key and open it with the fixture cipher.
-pub(super) fn round_trip(records: &[Vec<u8>], first: u64) -> (Vec<CheckedPage>, Vec<Opened>) {
+pub(super) fn round_trip_at(
+    records: &[SealRecord<'_>],
+    first: u64,
+) -> (Vec<CheckedPage>, Vec<Opened>) {
     let cipher = cipher();
     let sealed = cipher.seal_request(&lane(), first, records).unwrap();
     let pages: Vec<CheckedPage> = sealed.iter().map(admit).collect();
@@ -69,12 +78,18 @@ pub(super) fn round_trip(records: &[Vec<u8>], first: u64) -> (Vec<CheckedPage>, 
     (pages, opened)
 }
 
-/// What a request of `records` from `first` must read back as.
+/// What a request of `records` from `first`, every record at TS, must read
+/// back as.
 pub(super) fn expected(records: &[Vec<u8>], first: u64) -> Vec<Opened> {
+    expected_at(&stamped(TS, records), first)
+}
+
+/// What a request of `records` from `first` must read back as.
+pub(super) fn expected_at(records: &[SealRecord<'_>], first: u64) -> Vec<Opened> {
     records
         .iter()
         .zip(first..)
-        .map(|(record, offset)| (offset, TS, record.clone()))
+        .map(|(record, offset)| (offset, record.ts_ms, record.payload.to_vec()))
         .collect()
 }
 
@@ -88,7 +103,7 @@ pub(super) const FIRST: u64 = 40;
 pub(super) fn reference() -> Vec<u8> {
     let records = [b"alpha".to_vec(), b"beta".to_vec(), b"gamma".to_vec()];
     cipher()
-        .seal_with_nonce(&lane(), FIRST, &records, NONCE)
+        .seal_with_nonce(&lane(), FIRST, &stamped(TS, &records), NONCE)
         .unwrap()
         .bytes
 }
@@ -239,9 +254,77 @@ fn a_record_at_the_record_cap_round_trips_and_one_byte_more_is_refused() {
     assert_eq!(opened, expected(&records, 9));
 
     let over = vec![b"small".to_vec(), vec![0; MAX_RECORD_PLAINTEXT + 1]];
-    assert_eq!(split_pages(&over).unwrap_err(), SealError::RecordTooLarge);
-    let refused = cipher().seal_request(&lane(), 9, &over);
+    assert_eq!(
+        split_pages(&stamped(TS, &over)).err(),
+        Some(SealError::RecordTooLarge)
+    );
+    let refused = cipher().seal_request(&lane(), 9, &stamped(TS, &over));
     assert_eq!(refused.unwrap_err(), SealError::RecordTooLarge);
+}
+
+/// Each record keeps its own timestamp through its page, stored as a delta
+/// to the record before it, and a seal refuses records that go back in
+/// time, within a page and across the pages of a request.
+#[test]
+fn every_record_keeps_its_own_timestamp() {
+    let payloads = [b"a".to_vec(), b"b".to_vec(), b"c".to_vec(), b"d".to_vec()];
+    let stamps = [TS, TS, TS + 1, TS + 300_000];
+    let records: Vec<SealRecord<'_>> = payloads
+        .iter()
+        .zip(stamps)
+        .map(|(payload, ts_ms)| SealRecord { ts_ms, payload })
+        .collect();
+    let (pages, opened) = round_trip_at(&records, 9);
+    assert_eq!(pages.len(), 1);
+    let [page] = pages.as_slice() else {
+        panic!("one page")
+    };
+    assert_eq!(page.ts_ms(), TS, "the header holds the first timestamp");
+    let seen: Vec<(u64, i64)> = opened.iter().map(|(at, ts, _)| (*at, *ts)).collect();
+    assert_eq!(seen, [(9, TS), (10, TS), (11, TS + 1), (12, TS + 300_000)]);
+    let mut back = records.clone();
+    back.swap(2, 3);
+    assert_eq!(
+        cipher().seal(&lane(), 0, &back).err(),
+        Some(SealError::TimestampOrder)
+    );
+    let wide = [noise(1, 40_000), noise(2, 40_000)];
+    let mut across = stamped(TS, &wide);
+    across.get_mut(1).unwrap().ts_ms = TS - 1;
+    assert_eq!(
+        cipher().seal_request(&lane(), 0, &across).err(),
+        Some(SealError::TimestampOrder),
+        "the second page may not start before the first ends"
+    );
+}
+
+/// The cut counts each delta at its varint width: 4,094 records whose
+/// bodies fill a page exactly with one-byte deltas split once each delta
+/// takes three bytes.
+#[test]
+fn the_cut_counts_each_timestamp_delta() {
+    // 4,094 records of 14 payload bytes: 1 + 1 + 14 = 16 body bytes each,
+    // 65,504 in all, plus one record of 30 bytes (32 body bytes): 65,536.
+    let mut payloads = vec![vec![b'x'; 14]; 4094];
+    payloads.push(vec![b'y'; 30]);
+    let flat = stamped(TS, &payloads);
+    assert_eq!(split_pages(&flat).unwrap().len(), 1);
+    // A 16,384 ms step is a three-byte delta: two more bytes per record.
+    let mut ts_ms = TS;
+    let stepped: Vec<SealRecord<'_>> = payloads
+        .iter()
+        .map(|payload| {
+            ts_ms += 16_384;
+            SealRecord { ts_ms, payload }
+        })
+        .collect();
+    let groups = split_pages(&stepped).unwrap();
+    let counts: Vec<usize> = groups.iter().map(|group| group.len()).collect();
+    // 2 + 16 + (n - 1) * 18 <= 65,536 gives n = 3,641.
+    assert_eq!(counts, [3641, 454]);
+    let (pages, opened) = round_trip_at(&stepped, 0);
+    assert_eq!(pages.len(), 2);
+    assert_eq!(opened, expected_at(&stepped, 0));
 }
 
 #[test]
@@ -267,23 +350,28 @@ fn sealing_refuses_what_no_page_can_hold() {
     let cipher = cipher();
     let none: [&[u8]; 0] = [];
     assert_eq!(
-        cipher.seal(&lane(), 0, &none).unwrap_err(),
+        cipher.seal(&lane(), 0, &stamped(TS, &none)).unwrap_err(),
         SealError::Empty
     );
-    assert!(cipher.seal_request(&lane(), 0, &none).unwrap().is_empty());
+    assert!(
+        cipher
+            .seal_request(&lane(), 0, &stamped(TS, &none))
+            .unwrap()
+            .is_empty()
+    );
     let many = vec![Vec::new(); PAGE_MAX_RECORDS + 1];
     assert_eq!(
-        cipher.seal(&lane(), 0, &many).unwrap_err(),
+        cipher.seal(&lane(), 0, &stamped(TS, &many)).unwrap_err(),
         SealError::TooManyRecords
     );
     let wide = vec![noise(1, 40_000), noise(2, 40_000)];
     assert_eq!(
-        cipher.seal(&lane(), 0, &wide).unwrap_err(),
+        cipher.seal(&lane(), 0, &stamped(TS, &wide)).unwrap_err(),
         SealError::PageTooLarge
     );
     let huge = vec![vec![0; MAX_RECORD_PLAINTEXT + 1]];
     assert_eq!(
-        cipher.seal(&lane(), 0, &huge).unwrap_err(),
+        cipher.seal(&lane(), 0, &stamped(TS, &huge)).unwrap_err(),
         SealError::RecordTooLarge
     );
     let long_key = "k".repeat(usize::from(u16::MAX) + 1);
@@ -293,16 +381,18 @@ fn sealing_refuses_what_no_page_can_hold() {
     };
     let one = [b"x".to_vec()];
     assert_eq!(
-        cipher.seal(&long, 0, &one).unwrap_err(),
+        cipher.seal(&long, 0, &stamped(TS, &one)).unwrap_err(),
         SealError::RoutingKeyTooLong
     );
     let two = [b"x".to_vec(), b"y".to_vec()];
     assert_eq!(
-        cipher.seal(&lane(), u64::MAX, &two).unwrap_err(),
+        cipher
+            .seal(&lane(), u64::MAX, &stamped(TS, &two))
+            .unwrap_err(),
         SealError::OffsetOverflow
     );
     assert!(
-        cipher.seal(&lane(), u64::MAX, &one).is_ok(),
+        cipher.seal(&lane(), u64::MAX, &stamped(TS, &one)).is_ok(),
         "the last offset is u64::MAX"
     );
 }
@@ -312,12 +402,14 @@ fn a_request_may_end_at_the_last_offset_but_not_pass_it() {
     let cipher = cipher();
     let records = vec![Vec::new(); PAGE_MAX_RECORDS + 1];
     let first = u64::MAX - PAGE_MAX_RECORDS as u64;
-    let pages = cipher.seal_request(&lane(), first, &records).unwrap();
+    let pages = cipher
+        .seal_request(&lane(), first, &stamped(TS, &records))
+        .unwrap();
     let ends: Vec<u64> = pages.iter().map(|page| page.last).collect();
     assert_eq!(ends, [u64::MAX - 1, u64::MAX]);
     let mut past = records;
     past.push(Vec::new());
-    let refused = cipher.seal_request(&lane(), first, &past);
+    let refused = cipher.seal_request(&lane(), first, &stamped(TS, &past));
     assert_eq!(refused.unwrap_err(), SealError::OffsetOverflow);
 }
 
@@ -326,11 +418,13 @@ fn every_page_gets_a_fresh_nonce() {
     let cipher = cipher();
     let one = [b"same".to_vec()];
     assert_ne!(
-        cipher.seal(&lane(), 0, &one).unwrap().bytes,
-        cipher.seal(&lane(), 0, &one).unwrap().bytes
+        cipher.seal(&lane(), 0, &stamped(TS, &one)).unwrap().bytes,
+        cipher.seal(&lane(), 0, &stamped(TS, &one)).unwrap().bytes
     );
     let records = vec![noise(1, 40_000), noise(2, 40_000)];
-    let pages = cipher.seal_request(&lane(), 0, &records).unwrap();
+    let pages = cipher
+        .seal_request(&lane(), 0, &stamped(TS, &records))
+        .unwrap();
     let nonces: Vec<Vec<u8>> = pages
         .iter()
         .map(|page| page.bytes.get(26..38).unwrap().to_vec())
@@ -353,7 +447,9 @@ fn row_keys_are_namespace_tag_and_last_offset() {
         [&[0x0a; 16][..], &[0x0b; 16], b"g", &last.to_be_bytes()].concat()
     );
 
-    let sealed = cipher().seal_request(&lane(), 5, &[b"a".to_vec()]).unwrap();
+    let sealed = cipher()
+        .seal_request(&lane(), 5, &stamped(TS, &[b"a".to_vec()]))
+        .unwrap();
     let [page] = sealed.as_slice() else {
         panic!("one page")
     };

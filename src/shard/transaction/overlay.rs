@@ -134,11 +134,12 @@ mod tests {
         payload: &[u8],
     ) -> Option<Vec<u8>> {
         let lane = PageLane {
-            ts_ms: 2,
             key_version: 0,
             routing_key: "",
         };
-        let sealed = cipher.seal(&lane, first, &[payload]).unwrap();
+        let sealed = cipher
+            .seal(&lane, first, &crate::crypto_page::stamped(2, &[payload]))
+            .unwrap();
         let page = CheckedPage::admit(Bytes::from(sealed.bytes), sealed.last).unwrap();
         let opened = PageCipher::new(subkey, segment).open(&page).ok()?;
         opened

@@ -12,7 +12,9 @@
 //!
 //! body, the plaintext (compressed when ver is 7):
 //!   count x record length         varint
-//!   count x timestamp delta (ms)  varint, after ts_ms; all 0 in layout 5
+//!   count x timestamp delta (ms)  varint, to the previous record's
+//!                                 timestamp; the first record's is 0, so
+//!                                 ts_ms is the first record's timestamp
 //!   payloads, concatenated
 //!
 //! AAD      = segment identity (16 B) || header bytes from ver through nonce
@@ -148,9 +150,29 @@ const fn page_tag(len: usize) -> Option<u8> {
 
 /// The lane fields every page of one request carries in its clear header.
 pub(crate) struct PageLane<'a> {
-    pub(crate) ts_ms: i64,
     pub(crate) key_version: u32,
     pub(crate) routing_key: &'a str,
+}
+
+/// One record to seal: its timestamp and its payload. A page stores each
+/// record's timestamp as its delta to the previous record's, so the records
+/// of one seal never go back in time.
+#[derive(Clone, Copy)]
+pub(crate) struct SealRecord<'a> {
+    pub(crate) ts_ms: i64,
+    pub(crate) payload: &'a [u8],
+}
+
+/// `records` stamped with one timestamp, as one append request's are.
+#[cfg(test)]
+pub(crate) fn stamped<R: AsRef<[u8]>>(ts_ms: i64, records: &[R]) -> Vec<SealRecord<'_>> {
+    records
+        .iter()
+        .map(|record| SealRecord {
+            ts_ms,
+            payload: record.as_ref(),
+        })
+        .collect()
 }
 
 /// One sealed page of a request and the row key offset it is stored under.
@@ -164,6 +186,8 @@ pub(crate) struct SealedPage {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SealError {
     Empty,
+    /// A record's timestamp precedes the record before it.
+    TimestampOrder,
     TooManyRecords,
     RecordTooLarge,
     PageTooLarge,
@@ -212,6 +236,9 @@ pub(crate) enum OpenError {
 pub(crate) enum BodyError {
     LengthTable,
     DeltaTable,
+    /// The first record's delta is not 0: the header's timestamp is the
+    /// first record's.
+    FirstDelta,
     Timestamp,
     PayloadShort,
     Trailing,

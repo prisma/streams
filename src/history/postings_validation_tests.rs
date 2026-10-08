@@ -7,12 +7,15 @@ use crate::postings::{PostingRun, encode_page, postings_key, rk_hash};
 /// copies it from the shard log.
 fn stored_page(inc: SegmentHash, offset: u64, payload: &[u8]) -> Vec<u8> {
     let lane = PageLane {
-        ts_ms: 1,
         key_version: 0,
         routing_key: "wanted",
     };
     let page = PageCipher::new(&[7; 32], &inc.0)
-        .seal(&lane, offset, &[payload.to_vec()])
+        .seal(
+            &lane,
+            offset,
+            &crate::crypto_page::stamped(1, &[payload.to_vec()]),
+        )
         .unwrap();
     assert_eq!(page.last, offset);
     page.bytes
@@ -23,7 +26,6 @@ fn stored_page(inc: SegmentHash, offset: u64, payload: &[u8]) -> Vec<u8> {
 /// offset is in exactly one page.
 async fn fill_around(db: &Db, route: RouteHash, inc: SegmentHash, window: (u64, u64), offset: u64) {
     let lane = PageLane {
-        ts_ms: 1,
         key_version: 0,
         routing_key: "other",
     };
@@ -32,7 +34,9 @@ async fn fill_around(db: &Db, route: RouteHash, inc: SegmentHash, window: (u64, 
     for (first, end) in [(window.0, offset), (offset + 1, window.1)] {
         if first < end {
             let records: Vec<Vec<u8>> = (first..end).map(|_| b"other".to_vec()).collect();
-            let page = cipher.seal(&lane, first, &records).unwrap();
+            let page = cipher
+                .seal(&lane, first, &crate::crypto_page::stamped(1, &records))
+                .unwrap();
             batch.put(history_page_key(route, inc, page.last), page.bytes);
         }
     }

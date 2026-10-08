@@ -2,6 +2,7 @@
 //! row key alone, before any key is used.
 #![cfg(test)]
 
+use super::stamped;
 use bytes::Bytes;
 
 use super::header::{HeaderFields, encode_header};
@@ -25,6 +26,7 @@ fn forged(ver: u8, first: u64, count: usize, sealed: usize) -> Vec<u8> {
         ver,
         first,
         count,
+        ts_ms: TS,
         lane: &lane,
         nonce: NONCE,
     };
@@ -181,7 +183,10 @@ fn a_routing_key_of_the_full_u16_length_is_admitted() {
         routing_key: &routing_key,
         ..lane()
     };
-    let raw = cipher().seal(&lane, 0, &[b"x".to_vec()]).unwrap().bytes;
+    let raw = cipher()
+        .seal(&lane, 0, &stamped(TS, &[b"x".to_vec()]))
+        .unwrap()
+        .bytes;
     let page = admit_at(&raw, 0).unwrap();
     assert_eq!(page.routing_key(), routing_key);
     let records = cipher().open(&page).unwrap();

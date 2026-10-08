@@ -4,14 +4,17 @@
 //!
 //! `exact` offers a body of up to BODY symbolic bytes, a symbolic header
 //! timestamp and a fixed record count per harness (1, 2 and 3), and checks
-//! what an accepted body must satisfy: exactly `count` spans, timestamps
-//! that never precede the header's, lengths that tile the payload bytes,
-//! and, re-encoded with the production `put_varint`, the very same bytes,
-//! so the tables are minimal varints and nothing is skipped or trailing.
-//! `round_trip` builds a body from symbolic records of up to two bytes with
-//! the production `build_body` and checks it parses back to them. Loops are
+//! what an accepted body must satisfy: exactly `count` spans, the first at
+//! the header's timestamp and none earlier than the one before it, lengths
+//! that tile the payload bytes, and, re-encoded with the production
+//! `put_varint` (each delta to the record before), the very same bytes, so
+//! the tables are minimal varints and nothing is skipped or trailing.
+//! `round_trip` builds a body from symbolic records of up to two bytes and
+//! symbolic timestamps with the production `build_body` and checks it
+//! parses back to them. Loops are
 //! bounded by the count and by the ten-byte varint, so `unwind(12)` covers
 //! them with Kani's unwinding checks left on.
+use super::SealRecord;
 use super::body::{build_body, parse_body, put_varint};
 
 /// Room for three records' tables and a few payload bytes.
@@ -31,8 +34,9 @@ fn exact<const COUNT: usize>() {
         "an accepted body holds exactly its count of records"
     );
     assert!(
-        table.records.iter().all(|span| span.ts_ms >= ts_ms),
-        "no record precedes the page timestamp"
+        table.records.first().map(|span| span.ts_ms) == Some(ts_ms)
+            && table.records.windows(2).all(|pair| pair[0].ts_ms <= pair[1].ts_ms),
+        "the first record is at the page timestamp and none goes back"
     );
     let payloads: usize = table.records.iter().map(|span| span.len).sum();
     assert!(
@@ -43,9 +47,10 @@ fn exact<const COUNT: usize>() {
     for span in &table.records {
         put_varint(&mut again, span.len as u64);
     }
+    let mut previous = ts_ms;
     for span in &table.records {
-        let delta = i128::from(span.ts_ms) - i128::from(ts_ms);
-        put_varint(&mut again, delta as u64);
+        put_varint(&mut again, span.ts_ms.abs_diff(previous));
+        previous = span.ts_ms;
     }
     again.extend_from_slice(&body[table.payload_start..]);
     assert!(
@@ -54,7 +59,7 @@ fn exact<const COUNT: usize>() {
     );
     kani::cover!(payloads > 0, "a body with payload bytes is accepted");
     kani::cover!(
-        table.records.iter().any(|span| span.ts_ms > ts_ms),
+        table.records.windows(2).any(|pair| pair[0].ts_ms < pair[1].ts_ms),
         "a nonzero delta is accepted"
     );
 }
@@ -65,13 +70,24 @@ fn round_trip<const COUNT: usize>() {
     for len in lens {
         kani::assume(len <= 2);
     }
-    let records: Vec<&[u8]> = payloads
+    let stamps: [i64; COUNT] = kani::any();
+    let records: Vec<SealRecord<'_>> = payloads
         .iter()
         .zip(lens)
-        .map(|(payload, len)| &payload[..len])
+        .zip(stamps)
+        .map(|((payload, len), ts_ms)| SealRecord {
+            ts_ms,
+            payload: &payload[..len],
+        })
         .collect();
-    let ts_ms: i64 = kani::any();
-    let body = build_body(&records);
+    let Some(body) = build_body(&records) else {
+        assert!(
+            stamps.windows(2).any(|pair| pair[1] < pair[0]),
+            "only records that go back in time are refused"
+        );
+        return;
+    };
+    let ts_ms = stamps[0];
     let Ok(table) = parse_body(&body, COUNT, ts_ms) else {
         panic!("a built body parses");
     };
@@ -80,11 +96,15 @@ fn round_trip<const COUNT: usize>() {
         "every record keeps its length"
     );
     assert!(
-        table.records.iter().all(|span| span.ts_ms == ts_ms),
-        "every record keeps the page timestamp"
+        table.records.iter().map(|span| span.ts_ms).eq(stamps),
+        "every record keeps its timestamp"
     );
+    let concatenated: Vec<u8> = records
+        .iter()
+        .flat_map(|record| record.payload.iter().copied())
+        .collect();
     assert!(
-        body[table.payload_start..] == records.concat(),
+        body[table.payload_start..] == concatenated,
         "the payloads follow the tables in order"
     );
     kani::cover!(lens.iter().all(|len| *len == 2), "full records round-trip");

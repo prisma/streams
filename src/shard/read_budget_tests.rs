@@ -14,11 +14,16 @@ use bytes::Bytes;
 fn record_page(key: &StreamKey, offset: u64, lane: &str, size: usize) -> Bytes {
     let cipher = PageCipher::new(&derive_subkey(key, &[9; 16], lane, 1), &[8; 16]);
     let lane = PageLane {
-        ts_ms: 0,
         key_version: 1,
         routing_key: lane,
     };
-    let page = cipher.seal(&lane, offset, &[vec![b'x'; size]]).unwrap();
+    let page = cipher
+        .seal(
+            &lane,
+            offset,
+            &crate::crypto_page::stamped(0, &[vec![b'x'; size]]),
+        )
+        .unwrap();
     assert_eq!(page.last, offset);
     Bytes::from(page.bytes)
 }
@@ -358,14 +363,13 @@ async fn r06a_metadata_and_individual_decompression_are_bounded() {
     // to seal, and a stored page claiming one fails admission before any
     // decryption (its ciphertext exceeds the single-record body cap).
     let lane = PageLane {
-        ts_ms: 0,
         key_version: 1,
         routing_key: "",
     };
     let oversized = vec![0u8; crate::crypto::MAX_RECORD_PLAINTEXT + 1];
     assert_eq!(
         PageCipher::new(&[1; 32], &[8; 16])
-            .seal(&lane, 0, &[oversized])
+            .seal(&lane, 0, &crate::crypto_page::stamped(0, &[oversized]))
             .unwrap_err(),
         SealError::RecordTooLarge
     );

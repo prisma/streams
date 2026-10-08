@@ -3,6 +3,7 @@
 //! decompresses only up to its cap. No failure returns any record.
 #![cfg(test)]
 
+use super::stamped;
 use aes_gcm_siv::Aes256GcmSiv;
 use aes_gcm_siv::aead::KeyInit;
 use bytes::Bytes;
@@ -13,7 +14,7 @@ use super::header::HeaderFields;
 use super::tests::{FIRST, NONCE, SEGMENT, TS, cipher, flip, lane, reference, subkey};
 use super::{
     BodyError, CheckedPage, OpenError, PAGE_TARGET_PLAINTEXT, PAGE_VER, PAGE_VER_Z, PageCipher,
-    PageLane, body_cap, page_key,
+    body_cap, page_key,
 };
 
 fn opened(cipher: &PageCipher, raw: Vec<u8>, last: u64) -> Result<Vec<(u64, i64)>, OpenError> {
@@ -28,11 +29,12 @@ fn opened(cipher: &PageCipher, raw: Vec<u8>, last: u64) -> Result<Vec<(u64, i64)
 /// An authentic page of `count` records from offset 0 whose message (the
 /// body, compressed when `ver` is 7) is exactly `message`.
 fn authentic(ver: u8, count: usize, ts_ms: i64, message: &[u8]) -> CheckedPage {
-    let lane = PageLane { ts_ms, ..lane() };
+    let lane = lane();
     let fields = HeaderFields {
         ver,
         first: 0,
         count,
+        ts_ms,
         lane: &lane,
         nonce: NONCE,
     };
@@ -184,19 +186,27 @@ fn an_authenticated_body_must_parse_exactly() {
         refusal(1, TS, &[1, 0x80, 0x00, 7]),
         body(BodyError::DeltaTable)
     );
-    assert_eq!(refusal(1, i64::MAX, &[1, 1, 7]), body(BodyError::Timestamp));
+    // The header's timestamp is the first record's: its delta is 0.
+    assert_eq!(refusal(1, TS, &[1, 1, 7]), body(BodyError::FirstDelta));
     assert_eq!(refusal(1, i64::MAX, &[1, 0, 7]), Ok(1));
+    let two = [1, 1, 0, 1, 7, 7];
+    assert_eq!(refusal(2, i64::MAX - 1, &two), Ok(2));
+    assert_eq!(refusal(2, i64::MAX, &two), body(BodyError::Timestamp));
 }
 
 #[test]
-fn a_timestamp_delta_is_added_to_the_page_timestamp() {
-    let page = authentic(PAGE_VER, 2, -5, &[1, 1, 0, 0x83, 0x01, b'a', b'b']);
+fn a_timestamp_delta_is_to_the_record_before() {
+    let body = [1, 1, 1, 0, 0x83, 0x01, 2, b'a', b'b', b'c'];
+    let page = authentic(PAGE_VER, 3, -5, &body);
     let records = cipher().open(&page).unwrap();
     let seen: Vec<(u64, i64, &[u8])> = records
         .records()
         .map(|record| (record.offset, record.ts_ms, record.payload))
         .collect();
-    assert_eq!(seen, [(0, -5, &b"a"[..]), (1, 126, &b"b"[..])]);
+    assert_eq!(
+        seen,
+        [(0, -5, &b"a"[..]), (1, 126, &b"b"[..]), (2, 128, &b"c"[..])]
+    );
 }
 
 #[test]
@@ -208,7 +218,9 @@ fn a_compressed_body_must_be_zstd() {
 #[test]
 fn a_compressed_body_opens_at_exactly_its_cap_and_not_one_byte_past() {
     let at_cap = vec![vec![0; 32_764], vec![0; 32_764]];
-    let sealed = cipher().seal_request(&lane(), 0, &at_cap).unwrap();
+    let sealed = cipher()
+        .seal_request(&lane(), 0, &stamped(TS, &at_cap))
+        .unwrap();
     let [page] = sealed.as_slice() else {
         panic!("one page")
     };

@@ -16,6 +16,8 @@ pub(super) struct HeaderFields<'a> {
     pub(super) ver: u8,
     pub(super) first: u64,
     pub(super) count: usize,
+    /// The first record's timestamp.
+    pub(super) ts_ms: i64,
     pub(super) lane: &'a PageLane<'a>,
     pub(super) nonce: [u8; NONCE_LEN],
 }
@@ -28,7 +30,7 @@ pub(super) fn encode_header(fields: &HeaderFields<'_>) -> Result<Vec<u8>, SealEr
     header.push(fields.ver);
     header.extend_from_slice(&fields.first.to_be_bytes());
     put_varint(&mut header, fields.count as u64);
-    header.extend_from_slice(&fields.lane.ts_ms.to_be_bytes());
+    header.extend_from_slice(&fields.ts_ms.to_be_bytes());
     header.extend_from_slice(&fields.lane.key_version.to_be_bytes());
     header.extend_from_slice(&rk_len.to_be_bytes());
     header.extend_from_slice(routing_key);
