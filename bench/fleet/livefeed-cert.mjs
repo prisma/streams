@@ -200,13 +200,16 @@ const rfetch = async (url, opts) => {
 };
 // Owner-following request: the fleet routes by shard, so a request
 // landing on a non-owner answers 409/421 — try each instance and
-// return the owner's answer (production has a gateway for this).
+// return the owner's answer (production has a gateway for this). When
+// none serves, the answer returned is the last REFUSAL, not a closed
+// port: outside fleet mode only streams-1 listens, and its 409/421
+// (with its body) is the diagnosis.
 const ownerFetch = async (path, opts) => {
   let last = null;
   for (let round = 0; round < 3; round++) {
     for (const n of Object.keys(PORTS)) {
       const r = await rfetch(`${base(n)}${path}`, opts);
-      last = r;
+      if (r.status !== 0 || last === null) last = r;
       if (r.status !== 409 && r.status !== 421 && r.status !== 0) return r;
     }
     await sleep(1000);
