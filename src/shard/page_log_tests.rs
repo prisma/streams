@@ -685,3 +685,79 @@ async fn scans_at_the_top_of_the_offset_space_are_exact() {
     }
     engine.begin_close();
 }
+
+/// G4 across a crash: a request cut into three pages is one write batch,
+/// so it reaches the store in one WAL object or not at all. With that
+/// object's PUT parked, a replacement owner opened over the same store
+/// (the crash: the PUT has not landed when the new owner fences the old
+/// one) finds none of the request's pages, the stream's tail where it was,
+/// and the old owner's answer is no acknowledgement; released before the
+/// replacement opens, the request is acknowledged and the replacement finds
+/// all three pages and the tail past them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_multi_page_request_is_all_or_nothing_across_a_crash() {
+    use crate::dst::{FaultProfile, FaultStore, ObjClass, StoreOp};
+    for lands in [false, true] {
+        let path = if lands {
+            "pages-crash-lands"
+        } else {
+            "pages-crash-lost"
+        };
+        let store = FaultStore::new(
+            Arc::new(object_store::memory::InMemory::new()),
+            7,
+            FaultProfile::clean(),
+        );
+        let engine = engine_on(store.clone(), path, 0).await;
+        assert_eq!(
+            append(&engine, &records(1, 10)).await.unwrap().last_offset,
+            0
+        );
+        let engaged = store.hold_class(StoreOp::Put, ObjClass::Wal, 1);
+        let (req, answer) = request(&records(3, 40 << 10));
+        assert!(engine.try_enqueue(req).is_ok(), "enqueue");
+        let deadline = std::time::Instant::now() + ANSWER_WITHIN;
+        while engaged.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the WAL PUT never parked"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        let unanswered = if lands {
+            store.release_hold();
+            let ack = tokio::time::timeout(ANSWER_WITHIN, answer).await.unwrap();
+            assert_eq!(ack.unwrap().unwrap().last_offset, 3);
+            None
+        } else {
+            Some(answer)
+        };
+        let replacement = engine_on(store.clone(), path, 0).await;
+        let lasts: Vec<u64> = record_rows(&replacement)
+            .await
+            .iter()
+            .map(|r| r.1)
+            .collect();
+        let handle = replacement.stream_handle(HASH).await.unwrap();
+        let next = handle.state.lock().unwrap().durable.next;
+        if let Some(answer) = unanswered {
+            assert_eq!((lasts, next), (vec![0], 1), "no page landed");
+            store.release_hold();
+            let answered = tokio::time::timeout(ANSWER_WITHIN, answer).await.unwrap();
+            assert!(
+                !matches!(answered, Ok(Ok(_))),
+                "a fenced owner acknowledged a request no replacement holds"
+            );
+            let lasts: Vec<u64> = record_rows(&replacement)
+                .await
+                .iter()
+                .map(|r| r.1)
+                .collect();
+            assert_eq!(lasts, [0], "the fenced write never lands");
+        } else {
+            assert_eq!((lasts, next), (vec![0, 1, 2, 3], 4), "every page landed");
+        }
+        replacement.begin_close();
+        engine.begin_close();
+    }
+}
