@@ -18,6 +18,8 @@ use object_store::{
 
 use super::{Desired, Heartbeat, Overrides};
 
+mod members;
+
 /// Coordination documents this instance may address. Naming them here
 /// keeps the layout in one place instead of spelling paths at every
 /// call site.
@@ -27,6 +29,9 @@ const URLS_DOC: &str = "fleet/urls.json";
 // Single coordination documents are read sequentially. The same ceiling applies
 // to streamed bodies and writes, independent of provider metadata accuracy.
 const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
+/// A population's ceilings: each member document's bytes, and all of them.
+const MAX_OBJECT_BYTES: usize = 128 * 1024;
+const MAX_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 #[expect(
     clippy::cast_possible_truncation,
     reason = "MAX_MEMBERS; the member cap is a small u32 constant and usize is at least 32 bits on every supported target; a checked conversion is not available in a const"
@@ -41,6 +46,8 @@ pub(crate) struct FleetRepository {
     /// the repository the heartbeat is published through, so each runtime
     /// has its own.
     standing: Arc<super::standing::Standing>,
+    /// Whom the fleet tick reads, and the copies it revalidates.
+    members: Arc<members::Members>,
 }
 
 impl FleetRepository {
@@ -48,7 +55,14 @@ impl FleetRepository {
         Self {
             store,
             standing: Arc::default(),
+            members: Arc::default(),
         }
+    }
+
+    /// This runtime takes part in its fleet as `instance`: its tick reads
+    /// that heartbeat beside the members it names (`read_heartbeat_set`).
+    pub(crate) fn join(&self, instance: &str) {
+        self.members.join(instance);
     }
 
     pub(crate) fn standing(&self) -> &super::standing::Standing {
@@ -79,13 +93,18 @@ impl FleetRepository {
         Ok(())
     }
 
-    /// Complete bounded populations. An incomplete/invalid snapshot is
-    /// an error, so the controller retains its prior ownership view.
+    /// The members' heartbeats, each read by name and revalidated, and
+    /// listed only to find the members no desired count names (`members`).
+    /// An incomplete/invalid snapshot is an error, so the controller retains
+    /// its prior ownership view.
     /// The fleet tick's read, and only the tick's: the live draining beats it
     /// finds are recorded as those its next published view read
     /// (`Standing::mark_progress`). Every other reader peeks.
     pub(crate) async fn read_heartbeat_set(&self) -> anyhow::Result<Vec<Heartbeat>> {
-        let beats: Vec<Heartbeat> = self.read_population("fleet", true).await?;
+        let Some(store) = self.store.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let beats = self.members.heartbeats(store.as_ref()).await?;
         self.standing.read(
             beats
                 .iter()
@@ -103,37 +122,36 @@ impl FleetRepository {
     }
 
     /// The heartbeat set for any reader but the tick (a drain's poll, the
-    /// operator view): it is not recorded as what a view read.
+    /// operator view), listed so that every beat in the namespace is seen:
+    /// it is not recorded as what a view read.
     pub(crate) async fn peek_heartbeat_set(&self) -> anyhow::Result<Vec<Heartbeat>> {
-        self.read_population("fleet", true).await
+        self.read_population().await
     }
 
+    /// The router reports, discovered by a listing and revalidated between
+    /// listings (`members`).
     pub(crate) async fn read_router_reports(&self) -> anyhow::Result<Vec<serde_json::Value>> {
-        self.read_population("routers", false).await
+        let Some(store) = self.store.as_ref() else {
+            return Ok(Vec::new());
+        };
+        self.members.router_reports(store.as_ref()).await
     }
 
     #[expect(
         clippy::excessive_nesting,
         reason = "FleetRepository::read_population; the population read nests the per-document byte guard inside the chunk stream of each fetched path; flattening it would separate the guard from the document it bounds"
     )]
-    async fn read_population<T: serde::de::DeserializeOwned>(
-        &self,
-        prefix: &str,
-        heartbeat: bool,
-    ) -> anyhow::Result<Vec<T>> {
+    async fn read_population(&self) -> anyhow::Result<Vec<Heartbeat>> {
         // The heartbeat namespace also contains the three coordination
         // documents. They consume provider work, not member capacity.
-        let max_objects = MAX_MEMBERS + if heartbeat { 3 } else { 0 };
-        const MAX_OBJECT_BYTES: usize = 128 * 1024;
-        const MAX_TOTAL_BYTES: usize = 8 * 1024 * 1024;
+        let max_objects = MAX_MEMBERS + 3;
         let Some(store) = self.store.as_ref() else {
             return Ok(Vec::new());
         };
         let pass = async {
             let mut paths = Vec::new();
             let mut listed = 0usize;
-            let prefix = ObjPath::from(prefix);
-            let mut listing = store.list(Some(&prefix));
+            let mut listing = store.list(Some(&ObjPath::from("fleet")));
             while let Some(meta) = listing.try_next().await? {
                 listed += 1;
                 anyhow::ensure!(
@@ -141,11 +159,10 @@ impl FleetRepository {
                     "fleet population exceeds {max_objects} objects"
                 );
                 let loc = meta.location.as_ref();
-                if heartbeat
-                    && (!loc.ends_with(".json")
-                        || ["desired.json", "overrides.json", "urls.json"]
-                            .iter()
-                            .any(|n| loc.ends_with(n)))
+                if !loc.ends_with(".json")
+                    || ["desired.json", "overrides.json", "urls.json"]
+                        .iter()
+                        .any(|n| loc.ends_with(n))
                 {
                     continue;
                 }

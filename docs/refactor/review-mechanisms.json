@@ -779,7 +779,7 @@
         {
           "file": "src/fleet/repository/document_tests.rs",
           "name": "r09_fleet_population_budget_includes_its_coordination_documents",
-          "sha256": "aadd100817e5c00247290e5a26516fda3ab81b7927906c2092fc360106100ba2"
+          "sha256": "a2f97492b3398ee6f0c88713e262fc1aa2d66519a83db30480b042c1d0e17946"
         }
       ]
     },

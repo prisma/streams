@@ -3027,6 +3027,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::reads",
+      "path": "src/dst/tests/fleet_controller.rs",
+      "reason": "The member-read scenarios (the tick lists its members and the router reports only on its first pass, an unchanged member answers 304 at every later pass, a member that boots or stops is read by the next pass, and a count beyond FLEET_MAX names its members in the pass that reads it) use the controller scenarios' private heartbeat and settling helpers, and their module path keeps them inside the fleet mutation owners' filter; the file they would grow has 38 lines of headroom. Compiled and executed with DST.",
+      "syntax": "path = \"fleet_reads.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::fleet_drain",
       "path": "src/dst/dst_tests.rs",
       "reason": "Planned-drain scenarios (item 40): two instances sharing data and fleet stores hand a shard over while the draining one keeps beating, a peer that never reads the drain times it out, a fleet of one has no peer, and a requested stop drains first; compiled and executed with DST.",

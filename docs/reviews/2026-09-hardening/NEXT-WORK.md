@@ -1709,5 +1709,7 @@ segment) are separate layers, as Pravega's containers and segments are.
 
 E2 (a live-read block cache for the shard log, `keep/e2-live-read-cache`) is
 held because layout 5 rewrites the shard-log scan it changes. E7 (fleet reads
-without LIST, `keep/e7-fleet-reads`) waits for the owner's choice on its edit
-of the R09 mechanism test.
+without LIST) is implemented: the fleet tick reads its members by name with
+conditional GETs and lists only to discover (edge record #124, awaiting
+ratification; the owner accepted its edit of the R09 mechanism test on
+2026-10-08, T6).

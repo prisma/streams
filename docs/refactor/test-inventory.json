@@ -238,6 +238,17 @@
     "scenarios": []
   },
   {
+    "name": "a_count_beyond_fleet_max_names_its_members_in_the_pass_that_reads_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "06ef4f15d83a919b0dcad3c9380aa379af2c717a9c7fdd7e2604f5320c86e6e6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_reads.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_crash_left_debt_is_walked_closed_behind_another_instances_dead_stream",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -429,6 +440,17 @@
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
     "function_sha256": "8b2d88f5b888d06c8b0f60251c4c057becb68321f5a0b383b48ff1b91e4150a3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_drain.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_drain_beyond_the_count_is_read_by_its_peer",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6cb582e3187776bde6df790e7a994d6845bb44bc1eff3dafc5f9e4a144d039d0",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_drain.rs",
@@ -937,6 +959,17 @@
     "scenarios": [
       "SEL-023"
     ]
+  },
+  {
+    "name": "a_member_that_boots_or_stops_is_read_by_the_next_pass",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "fb239a96f0d4f0e62788d905812f351301a382d10d717b88479ef329f8a08c3f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_reads.rs",
+    "scenarios": []
   },
   {
     "name": "a_merge_the_segment_map_refuses_keeps_its_intent_pending",
@@ -8284,6 +8317,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_routes.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_tick_lists_its_members_only_to_discover_them",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "62950d2edc9e0d375394f524a47879e7657830fc76fc3dbfb8731717a5664958",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_reads.rs",
     "scenarios": []
   },
   {

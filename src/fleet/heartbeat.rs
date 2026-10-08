@@ -138,8 +138,11 @@ pub(crate) struct Heartbeat {
     pub viewed: standing::Viewed,
 }
 
-/// Start this runtime's heartbeat beside its fleet tick.
+/// Start this runtime's heartbeat beside its fleet tick. It joins the fleet
+/// first: the tick reads this instance's heartbeat beside the members it
+/// names (`FleetRepository::join`).
 pub(super) fn start(state: Arc<AppState>, instance: String, tasks: &TaskSupervisor) {
+    state.fleet.join(&instance);
     if let Err(rejected) = tasks.spawn("fleet-heartbeat", Policy::Critical, move |cancel| {
         run(state, instance, cancel)
     }) {

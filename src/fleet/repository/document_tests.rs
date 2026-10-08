@@ -372,17 +372,34 @@ async fn r09_fleet_population_budget_includes_its_coordination_documents() {
             .await
             .unwrap();
     }
-    assert_eq!(
-        repository.read_heartbeat_set().await.unwrap().len(),
-        MAX_MEMBERS,
-        "three owner documents must not consume configured member slots"
-    );
+    for read in [
+        repository.read_heartbeat_set().await,
+        repository.peek_heartbeat_set().await,
+    ] {
+        assert_eq!(
+            read.unwrap().len(),
+            MAX_MEMBERS,
+            "three owner documents must not consume configured member slots"
+        );
+    }
     inner
         .put(&ObjPath::from("fleet/extra.json"), PutPayload::from("{}"))
         .await
         .unwrap();
-    assert!(
-        repository.read_heartbeat_set().await.is_err(),
-        "provider work beyond the declared cap must still fail closed"
+    assert_eq!(
+        repository.read_heartbeat_set().await.unwrap().len(),
+        MAX_MEMBERS,
+        "between its listings the tick reads the members it holds and names: an object beyond them is no provider work"
     );
+    for read in [
+        FleetRepository::new(Some(inner.clone()))
+            .read_heartbeat_set()
+            .await,
+        repository.peek_heartbeat_set().await,
+    ] {
+        assert!(
+            read.is_err(),
+            "provider work beyond the declared cap must still fail closed"
+        );
+    }
 }

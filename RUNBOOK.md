@@ -229,6 +229,18 @@ hot instance, ack latency, router-observed edge latency), clamped to
 the reason string is logged on every change. The model is generalized in
 [AUTOSCALING-DESIGN.md](./AUTOSCALING-DESIGN.md).
 
+The fleet tick reads its members by name, with conditional GETs (an
+unchanged document answers 304, which is not billed): `fleet/desired.json`,
+then the heartbeats of the ordinals its count names, of every member it has
+read before, and its own. It lists `fleet/` and `routers/` only on its first
+pass and every 30th after it (about once a minute), to find the members no
+count names and the router reports, so a member above the count that boots
+between listings counts toward `live` from the next listing, and its planned
+drain waits up to that long for its peers to read it. An absent ordinal
+within the count costs a billed 404 per pass; when more than nine are
+absent, the pass lists instead. `FLEET_MAX` does not change what the tick
+reads.
+
 ### 3.5b Stream auto-scaling (segments) & shard rebalancing
 
 Per-stream Pravega-style segment splits/merges and absorb-lag-driven

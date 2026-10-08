@@ -673,3 +673,51 @@ async fn a_passing_read_error_before_announcing_is_retried() {
     );
     engine_shutdown(&member.state).await;
 }
+
+/// Whether `instance` publishes its heartbeat within ten seconds.
+async fn beats(fleet: &Arc<dyn ObjectStore>, instance: &str) -> bool {
+    let path = Path::from(format!("fleet/{instance}.json"));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while fleet.head(&path).await.is_err() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .is_ok()
+}
+
+/// An instance no desired count names (an ordinal above the count and above
+/// its peers' FLEET_MAX; a name that is not an ordinal is the same case)
+/// drains like any other: its peer's tick found it by a listing and reads it
+/// at every pass, so the peer publishes a view that read its drain, and the
+/// drain hands off instead of waiting out its budget. The count is pinned:
+/// the rigs report the whole test process's CPU.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_drain_beyond_the_count_is_read_by_its_peer() {
+    let data = mem();
+    let seeded = mem();
+    seed_ring(&seeded, 1).await;
+    let fleet: Arc<dyn ObjectStore> = Arc::new(RiggedFleet {
+        inner: seeded,
+        parked: None,
+        pinned: Some("fleet/desired.json"),
+        unreachable: Arc::default(),
+    });
+    let above = start(&data, &fleet, 1, "streams-5").await;
+    assert!(beats(&fleet, "streams-5").await, "streams-5 beats first");
+    let member = start(&data, &fleet, 0, "streams-1").await;
+    assert_eq!(member.state.config.cli.fleet_max, 4);
+    assert!(beats(&fleet, "streams-1").await, "its peer beats");
+    let outcome = drain(&above.state, "streams-5", Duration::from_secs(20)).await;
+    assert_eq!(outcome, DrainOutcome::HandedOff);
+    for rig in [&above, &member] {
+        assert!(
+            rig.tasks
+                .shutdown(Duration::from_secs(5))
+                .await
+                .aborted
+                .is_empty()
+        );
+        engine_shutdown(&rig.state).await;
+    }
+}

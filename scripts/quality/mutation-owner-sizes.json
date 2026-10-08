@@ -35,6 +35,7 @@
     "fleet_document_tests": 0,
     "fleet_drain": 52,
     "fleet_heartbeat": 73,
+    "fleet_members": 49,
     "fleet_outbox": 9,
     "fleet_planning": 50,
     "fleet_repository": 64,

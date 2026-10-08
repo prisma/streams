@@ -165,6 +165,9 @@ OWNERS = (
     # The repository hands each runtime its standing; only the rigs read a
     # standing back through a published heartbeat.
     owner('fleet_repository', 'src/fleet/repository.rs', 'fleet:: dst_tests::fleet_controller::'),
+    # Whom the tick reads and its revalidated copies: the module tests pin
+    # each GET and listing, the rigs the passes that list only to discover.
+    owner('fleet_members', 'src/fleet/repository/members.rs', 'fleet:: dst_tests::fleet_controller::'),
     # The drain's handoff is proven by the two-instance rigs.
     owner('fleet_drain', 'src/fleet/drain.rs', 'fleet:: dst_tests::fleet_drain::'),
     owner('fleet_document_tests', 'src/fleet/repository/document_tests.rs', 'fleet::'),

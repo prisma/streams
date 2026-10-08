@@ -12,6 +12,8 @@ use std::time::Duration;
 
 #[path = "fleet_desired.rs"]
 mod desired;
+#[path = "fleet_reads.rs"]
+mod reads;
 
 #[derive(Debug)]
 struct HeldDocument {
