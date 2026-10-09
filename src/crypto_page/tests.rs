@@ -5,7 +5,7 @@
 use super::stamped;
 use bytes::Bytes;
 
-use super::body::{get_varint, put_varint, varint_len};
+use super::body::{build_body, get_varint, put_varint, varint_len};
 use super::seal::split_pages;
 use super::{
     CheckedPage, PAGE_MAX_RECORDS, PageCipher, PageLane, SHARD_PAGE_TAG, SealError, SealRecord,
@@ -366,6 +366,28 @@ fn compression_needs_a_256_byte_body_and_a_gain() {
         "a 256-byte body that shrinks is compressed"
     );
     assert_eq!(flags(&incompressible), vec![false], "no gain, stored raw");
+}
+
+/// Compression must shrink a body, not only match it: 300 noise bytes and
+/// 20 zeros make a 323-byte body that zstd level 1 also writes in 323
+/// bytes, stored raw; one more zero makes a 324-byte body zstd writes in
+/// 323, stored compressed.
+#[test]
+fn a_body_compression_only_matches_in_length_is_stored_raw() {
+    let payload = |zeros: usize| {
+        let mut payload = noise(1, 300);
+        payload.extend(std::iter::repeat_n(0, zeros));
+        payload
+    };
+    for (zeros, body_len, compressed) in [(20, 323, false), (21, 324, true)] {
+        let payloads = [payload(zeros)];
+        let body = build_body(&stamped(TS, &payloads)).unwrap();
+        let zstd_len = zstd::bulk::compress(&body, 1).unwrap().len();
+        assert_eq!((body.len(), zstd_len), (body_len, 323), "{zeros} zeros");
+        let pages = round_trip(&payloads, 0).0;
+        let flags: Vec<bool> = pages.iter().map(CheckedPage::is_compressed).collect();
+        assert_eq!(flags, [compressed], "{zeros} zeros");
+    }
 }
 
 #[test]
