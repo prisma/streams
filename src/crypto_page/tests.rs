@@ -298,6 +298,29 @@ fn every_record_keeps_its_own_timestamp() {
     );
 }
 
+/// A seal refuses a record older than the one before it at the cuts the
+/// page cut makes without reading that record: after a record whose body
+/// alone passes the page target, and after the 4,096-record cap. The same
+/// requests in order seal as two pages each.
+#[test]
+fn a_seal_refuses_time_going_back_where_a_page_is_cut_before_it() {
+    let big = [noise(3, 70_000), b"next".to_vec()];
+    let capped = vec![b"r".to_vec(); PAGE_MAX_RECORDS + 1];
+    for payloads in [&big[..], &capped[..]] {
+        let mut records = stamped(TS, payloads);
+        assert_eq!(split_pages(&records).unwrap().len(), 2);
+        let sealed = cipher().seal_request(&lane(), 0, &records).unwrap();
+        assert_eq!(sealed.len(), 2);
+        records.last_mut().unwrap().ts_ms = TS - 1;
+        assert_eq!(
+            cipher().seal_request(&lane(), 0, &records).err(),
+            Some(SealError::TimestampOrder),
+            "{} records",
+            records.len()
+        );
+    }
+}
+
 /// The cut counts each delta at its varint width: 4,094 records whose
 /// bodies fill a page exactly with one-byte deltas split once each delta
 /// takes three bytes.
