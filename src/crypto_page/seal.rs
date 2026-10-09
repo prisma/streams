@@ -16,20 +16,23 @@ use super::{
 /// its body, each record's length and timestamp delta counted at its real
 /// varint width, stays within PAGE_TARGET_PLAINTEXT and it holds at most
 /// PAGE_MAX_RECORDS; a record whose body alone is larger is a page by itself.
+/// Every page takes at least its first record, so each turn shortens what
+/// is left and the cut always ends.
 pub(crate) fn split_pages<'r, 'a>(
     records: &'r [SealRecord<'a>],
 ) -> Result<Vec<&'r [SealRecord<'a>]>, SealError> {
     let mut pages = Vec::new();
     let mut rest = records;
-    while !rest.is_empty() {
-        let (page, tail) = rest.split_at(page_len(rest)?);
+    while let [_, ..] = rest {
+        let (page, tail) = rest.split_at(page_len(rest)?.max(1));
         pages.push(page);
         rest = tail;
     }
     Ok(pages)
 }
 
-/// How many of the leading `records` the next page takes; at least one.
+/// How many of the leading `records` fit the next page's target and record
+/// cap: 0 when the first record's body alone is larger than the target.
 fn page_len(records: &[SealRecord<'_>]) -> Result<usize, SealError> {
     let (mut body, mut taken, mut previous) = (0usize, 0usize, None);
     for record in records.iter().take(PAGE_MAX_RECORDS) {
@@ -39,7 +42,7 @@ fn page_len(records: &[SealRecord<'_>]) -> Result<usize, SealError> {
         }
         let delta = timestamp_delta(previous, record.ts_ms).ok_or(SealError::TimestampOrder)?;
         let grown = body.saturating_add(record_body_bytes(len, delta));
-        if taken > 0 && grown > PAGE_TARGET_PLAINTEXT {
+        if grown > PAGE_TARGET_PLAINTEXT {
             break;
         }
         body = grown;
