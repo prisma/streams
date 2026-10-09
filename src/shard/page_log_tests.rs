@@ -194,6 +194,24 @@ async fn a_request_is_stored_as_pages_keyed_by_their_last_offset() {
     engine.begin_close();
 }
 
+/// A commit group counts the payload bytes of the records it appends, not
+/// their stored page bytes: one request of a 100-byte and a 23-byte record
+/// is a group of one request, two records and 123 bytes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_commit_group_counts_its_records_payload_bytes() {
+    let engine = engine("group-payload", 0).await;
+    append(&engine, &[vec![1; 100], vec![2; 23]]).await.unwrap();
+    let groups: Vec<(u32, u32, u64)> = engine
+        .timings
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|group| (group.reqs, group.records, group.bytes))
+        .collect();
+    assert_eq!(groups, [(1, 2, 123)]);
+    engine.begin_close();
+}
+
 /// A request whose pages refuse to seal stages nothing, even in a group that
 /// writes: no page, no sequence row, no advance; it is refused as a bad
 /// body, and the request committed beside it takes its offsets.
