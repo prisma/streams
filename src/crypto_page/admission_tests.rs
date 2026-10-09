@@ -63,6 +63,22 @@ fn an_admitted_page_keeps_its_exact_clear_fields_and_bytes() {
     assert_eq!(ring, page, "the ring admits what the row admits");
 }
 
+/// An admitted page reports the key version its header holds, all four
+/// bytes of it: the reference page's version 1, and 0x0a0b_0c0d once its
+/// bytes say so.
+#[test]
+fn an_admitted_page_reports_the_key_version_its_header_holds() {
+    let raw = reference();
+    assert_eq!(
+        raw.get(18..22),
+        Some(&1u32.to_be_bytes()[..]),
+        "key version"
+    );
+    assert_eq!(admit_at(&raw, 42).unwrap().key_version(), 1);
+    let other = spliced(&raw, 18..22, &0x0a0b_0c0d_u32.to_be_bytes());
+    assert_eq!(admit_at(&other, 42).unwrap().key_version(), 0x0a0b_0c0d);
+}
+
 #[test]
 fn a_row_key_outside_the_page_namespace_is_refused() {
     let raw = reference();
