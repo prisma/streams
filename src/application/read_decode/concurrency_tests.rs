@@ -144,11 +144,19 @@ struct Progress {
     end: AtomicU64,
 }
 
+/// Reads in a row that may leave a pager's cursor where it was once the
+/// writer is done; one more is a stuck pager. Only the read at the end
+/// leaves it there in a round that passes.
+const STALLED_READS: u32 = 1000;
+
 /// Page from 0 until the writer is done and the pager has consumed the
-/// whole stream, resuming each read at its consumed offset.
+/// whole stream, resuming each read at its consumed offset. Once the writer
+/// is done every record is durable, so a read moves the cursor until the
+/// end: a pager whose reads stop moving it fails at once, not at the
+/// round's deadline.
 async fn run_pager(engine: &Arc<ShardEngine>, pager: Pager, progress: &Progress) -> Vec<Served> {
     let (selector, budget, deliver) = pager;
-    let (mut from, mut all) = (0u64, Vec::new());
+    let (mut from, mut all, mut stalled) = (0u64, Vec::new(), 0u32);
     loop {
         let finished = progress.done.load(Ordering::SeqCst);
         let page = read(engine, from, selector, budget, deliver).await;
@@ -157,6 +165,15 @@ async fn run_pager(engine: &Arc<ShardEngine>, pager: Pager, progress: &Progress)
         assert!(
             next >= from,
             "{pager:?}: the cursor went back from {from} to {next}"
+        );
+        stalled = if finished && next == from {
+            stalled + 1
+        } else {
+            0
+        };
+        assert!(
+            stalled < STALLED_READS,
+            "{pager:?}: {STALLED_READS} reads after the writer finished left the cursor at {from}"
         );
         from = next;
         if finished && from >= progress.end.load(Ordering::SeqCst) {
