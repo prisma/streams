@@ -24,17 +24,18 @@ pub(crate) struct PageTable {
     pub(super) records: Vec<RecordSpan>,
 }
 
-/// Append `value` as a minimal LEB128 varint.
+/// Append `value` as a minimal LEB128 varint: its `varint_len` seven-bit
+/// groups, low first. A group that another follows is the remaining
+/// value's low byte with its top bit set; the last is the remaining value,
+/// below 0x80. The group count bounds the loop, so the writer always ends.
 pub(super) fn put_varint(out: &mut Vec<u8>, mut value: u64) {
-    loop {
-        let low = (value & 0x7f) as u8;
-        value >>= 7;
-        if value == 0 {
-            out.push(low);
-            return;
-        }
+    for _ in 1..varint_len(value) {
+        let [low, ..] = value.to_le_bytes();
         out.push(low | 0x80);
+        value >>= 7;
     }
+    let [last, ..] = value.to_le_bytes();
+    out.push(last);
 }
 
 /// Read one minimal LEB128 varint and consume exactly its bytes. An
