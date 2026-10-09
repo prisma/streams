@@ -210,8 +210,4 @@ impl<'a> Iterator for PageRecords<'a> {
             payload,
         })
     }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.spans.size_hint()
-    }
 }
