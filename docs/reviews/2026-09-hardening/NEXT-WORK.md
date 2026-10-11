@@ -915,15 +915,33 @@ before marking it complete."
   the cap in every mutant log's test phase (cargo's `Running` line names
   `prlimit`); an owner whose unmutated baseline fails under it (exit 4)
   needs the cap raised to 12 GiB (12884901888). The production guards
-  against those runaways are question N2's, not N3's. **Open (the owner's
-  call):** a Loom model that fails panics again while unwinding and aborts
-  the test binary, so a mutant a Loom model's assertion catches is listed
-  incomplete: reproduced on 2026-10-11 with `stop_on_exit -> bool with
-  true` (src/tasks/exits.rs) under `cargo test --lib -- tasks::`
-  (loom_tests.rs:94 fails, then "thread caused non-unwinding panic.
-  aborting.", SIGABRT); the filters of 43 owners select a Loom model. A
-  thread-local destructor that panics after failed tests aborts the same
-  way (`tasks_refusal`'s local run of 2026-09-24, `take_set_aside -> vec![]`).
+  against those runaways are question N2's, not N3's. **Resolved
+  (2026-10-11) by test-only changes; the rule stays as decided:** a
+  Loom model that failed panicked again while unwinding and aborted the
+  test binary, so a mutant a Loom model's assertion caught was listed
+  incomplete (reproduced with `stop_on_exit -> bool with true`,
+  src/tasks/exits.rs, under `cargo test --lib -- tasks::`:
+  loom_tests.rs:94 fails, then "thread caused non-unwinding panic.
+  aborting.", SIGABRT; the filters of 43 owners select a Loom model).
+  881e1654 runs every Loom model through `loom_check::check`
+  (src/loom_check.rs), which catches a failing execution inside it, ends
+  the exploration at the next one and fails the test with the first
+  failure; the same mutant now fails 7 tests with no signal. The F-G rig's
+  late guard, parked by `take_set_aside -> vec![]` (`tasks_refusal`) until
+  its thread's teardown, panicked in that thread-local destructor and
+  aborted the same way; 7269ff5a makes the guard keep the panic for the
+  rig's assertion, and that mutant now fails 5 tests with no signal.
+  These fixes are not part of N3's decision, which has no Loom item. The
+  Fable reviewer raised the abort as an open item in its 2026-10-11 review
+  of N3's implementation (a review made under the owner's delegation of
+  2026-10-11 to Fable 5.1), listed four options for the owner and
+  recommended option (2), changing the Loom tests so a failing model does
+  not abort, which it called a test-only change under the ordinary rules.
+  881e1654 carries out that option, and 7269ff5a does the same for the
+  F-G rig's thread-local abort, which the item also named. Neither
+  changes a rule or anything a gate counts, selects or excludes (AGENTS.md
+  section 1); the options that would, narrowing the rule or taking Loom
+  models out of the mutation filters, were not taken.
   The rotation of 2026-10-10 failed differently: four of its eight runners
   were cancelled at the 360-minute limit (03:54 to 09:54 UTC), the `shard`
   owner's 44-45 mutants taking 3-4 h of each; the cost model is question
