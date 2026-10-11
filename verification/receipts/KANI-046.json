@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "1bef3969b3ebb361cf9371c64bc23a47dec90738014c42da57be015588a1f4ea",
+      "log_sha256": "d15d7b0ceb4f473e0683f9145e6f26ea25a63c00b9b48fba2045fe188ec6eaa8",
       "role": "baseline",
-      "seconds": 29.3,
+      "seconds": 33.9,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "2a6c10664b4bc16efde241bb6071b19d3f611945c1c946be45822d796d32ae29",
+      "log_sha256": "095ecc4beef9b0656ba47102481efcfc0febbff5cd70fcf1dd115797f3064c29",
       "role": "baseline",
-      "seconds": 30.1,
+      "seconds": 34.7,
       "verdict": "pass"
     },
     {
@@ -30,15 +30,15 @@
       "failed_checks": [
         "\"a trim never passes the safe boundary\""
       ],
-      "log_sha256": "6dcbf40cdd6fff39c9d8b032c4e09d4b5bea7f3c01fd6eb8605249a28541b520",
+      "log_sha256": "199d5fb46f338183e29605fff5df442c78f14533b105d90d166a704fc1aa8768",
       "mutated": {
         "src/shard/commit_plan.rs": {
-          "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
-          "control": "f67e368a725275f29b0c011a742ffdc4224bcd64b70ce0b20934a41433ef0616"
+          "baseline": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
+          "control": "1e0d51accd377a5e1f9039cdf4c8082427f8cfa2ea018198a4701a87d4872823"
         }
       },
       "role": "negative-control",
-      "seconds": 28.7,
+      "seconds": 32.7,
       "verdict": "fail"
     },
     {
@@ -49,15 +49,15 @@
       "failed_checks": [
         "\"a trim never moves backwards\""
       ],
-      "log_sha256": "cfa4da8c9ef1c7c73daeddcbcffa0cfbb45ba5fb17554fcbf39d7565fa69c056",
+      "log_sha256": "3f28466a5579838ac0dedbda097182b3c013919e7011457daaa6340b4deca850",
       "mutated": {
         "src/shard/commit_plan.rs": {
-          "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
-          "control": "b7be3962dff229b3b3e1b9475fbe137ccb5d1dbb039d5175263bb62c5be1c128"
+          "baseline": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
+          "control": "ca0bc2ca22bf505071bf6e659940c0b590881429a4518243d2e1c221548ecdf4"
         }
       },
       "role": "negative-control",
-      "seconds": 29.2,
+      "seconds": 34.2,
       "verdict": "fail"
     },
     {
@@ -68,15 +68,15 @@
       "failed_checks": [
         "\"the boundary moves forward within the log\""
       ],
-      "log_sha256": "b44207a608e327026d2b12556b0ab90a24f0f13b466f62b794bd4825d494707f",
+      "log_sha256": "ee717d98f83ef8c9073cbe81c304fe0686c8ae5fc029023f7482a20cf1f2e6d0",
       "mutated": {
         "src/shard/commit_plan.rs": {
-          "baseline": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
-          "control": "2c1d61b31e9ff25bd63c8636ea2744879f9c78b295614e7dbfadd0ed9113f767"
+          "baseline": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
+          "control": "8cb10ad9ff67a525971b1d117746cdbd976d11f8107e9869c2fab11315aa17d7"
         }
       },
       "role": "negative-control",
-      "seconds": 29.8,
+      "seconds": 34.5,
       "verdict": "fail"
     }
   ],
@@ -93,9 +93,9 @@
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
-      "src/shard/commit_plan.rs": "832d81527ef0a3e21745dd43f78b1f6f3c2652b88602a782b2dae077be14bd4a",
+      "src/shard/commit_plan.rs": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
       "src/shard/commit_plan/proofs.rs": "e36f40866891e8314a9d4dd4837936484ad4d3a66b945b5c8a0f4329b26e249c",
-      "src/shard/transaction/maintenance.rs": "4ef48725ee123ea17639d0e2d475abd08ee9985d67cae205e8b1304cfafd9ed5",
+      "src/shard/transaction/maintenance.rs": "fb46b7e2476ff0b31d11c69e65e819625496f0236e1115e69261f1d16a8200dc",
       "verification/kani/controls/KANI-046-boundary-past-the-log.patch": "236fd88b2a80b24c4c9f9e9cc5060438f242b7a412ea4fa4a3a3bc8f6a9e4ce5",
       "verification/kani/controls/KANI-046-trim-past-the-safe-boundary.patch": "70992b4aab103423293966f35600547b98216513c19772c34bfbc38107d7a75a",
       "verification/kani/controls/KANI-046-wrap-the-trim-budget.patch": "1406ffa749af0cf52e40ba7d566962d48ff72bf13370a20d8fa03ac892d38e4d"
@@ -122,10 +122,10 @@
       }
     }
   },
-  "inputs_sha256": "dccd04aa92bba90047989d412fe9f4c0c643594fbbe2992751a7c28638354691",
+  "inputs_sha256": "605992532e496322192be7bef6b9dc23665fc66f93ff3efcc1f3870b95c29056",
   "run_on": {
     "dirty_tree": false,
-    "revision": "464a16245ef3a7c6fa0e7698a53e4d046268a8bc"
+    "revision": "443843ec572bbc33064b982367483c0f36f36316"
   },
   "schema": 2,
   "tools": {
