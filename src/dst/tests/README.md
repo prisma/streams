@@ -10,6 +10,7 @@ schedules, coverage requirements, assertions and test names were preserved.
 | Producer ordering and handoff | `producer_protocol`, `producer_handoff` |
 | History absorption and budgets (incl. a gather whose flush waits at the history L0 cap resumes once compaction frees a slot, within its 5 s manifest refresh, not at the 300 s poll: `history_absorption`) | `history_absorption`, `history_gather`, `history_recovery` |
 | Read protocols and visibility (incl. layout 5 pages: a fork whose boundary falls inside a parent's absorbed page, or inside a page its parent still holds in the shard-log tail, reads the parent exactly to the boundary: `reads_history`) | `reads_applied`, `reads_history`, `reads_product`, `reads_raw`, `reads_ring` |
+| Durable collection scan (one byte budget across frozen segments; a page filled exactly by a segment's last record completes the scan; a foreign-epoch cursor is refused by `product_scan` before `execute_scan`, pinned in `reads_product`; selected by the `read_scan` mutation owner) | `read_page_assembly`, `read_subset_retention` |
 | Registry read classification (a store failure is retryable, corruption is final) | `product_descriptor_reads` |
 | JSON record fidelity (stored text, admission, identities, every read surface) | `json_fidelity` |
 | Lifecycle and topology | `lifecycle_*`, `fork_*`, `seal_*`, `topology_*`, `product_lifecycle` |

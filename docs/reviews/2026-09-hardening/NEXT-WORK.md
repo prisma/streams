@@ -907,6 +907,41 @@ before marking it complete."
   changes the file selects both: the whole file is in its diff. A
   `debug_assert_eq!(upto, boundary, ..)` before the month close, outside
   the N2 decision, contains both (probed by hand: 21.4 s, 40 failed each).
+  **Open, the filter-gap audit (decided under the owner's delegation of
+  2026-10-11 to Fable 5.1, question N4):** an owner whose filter selects no
+  test that reaches its source reports every mutant MISSED, as `read_scan`
+  did on 2026-10-09; the decision's own two commits fix it (the row widened
+  to the DSTs that reach `execute_scan`, two dead branches removed, one
+  exact-fit scan DST). A static pre-screen (service-lib owners whose filters
+  are module prefixes only and whose source has no test module of its own)
+  names 19 candidates, not an exact list: `tasks_refusal`,
+  `bootstrap_s3_store`, `record_pages`, `lane_rows`, `transaction_billing`,
+  `transaction_prepare` (MISSED on 2026-10-09 at 61:40), `transaction_publish`,
+  `queue_config`, `queue_load`, `queue_settle`, `read_scan` (fixed),
+  `crypto_page_body`, `crypto_page_header`, `crypto_page_seal`,
+  `sharddir_health`, `sse_source_spans`, `sse_feed_retention`,
+  `sse_feed_test_support` and `sse_budget`. Still to do: (1) a read-only
+  coverage census, `scripts/dev/owner_reach.py`, never a gate input:
+  cargo-llvm-cov pinned in the script's header (not `quality-tools.toml`),
+  installed `--version <x> --locked` and checked at startup, in its own
+  worktree and `CARGO_TARGET_DIR` (instrument-coverage RUSTFLAGS, which
+  `quality.sh` refuses), with `--ignore-run-fail`, run as a heavy leg; per
+  distinct filter set it prints each owner's covered lines and the functions
+  no selected test executes, and its table lands here. (2) A reporting
+  label in `mutation_driver.report_survivors`, "filter gap: no selected
+  test reaches <sources>" when an owner's caught.txt is empty and
+  missed.txt is not (it prints and selects nothing), with a unit test.
+  (3) Each gap fixed as `read_scan` was: widening (adds tests, excludes
+  nothing) and new tests proceed under the decision, with that owner's
+  whole-owner leg run locally; the owner decides, costed, any fix that
+  edits a formal-receipt input (six candidates are: `transaction_prepare`
+  TLA-016, `transaction_publish` two receipts, `bootstrap_s3_store`
+  TLA-001, `sse_source_spans` KANI-005, `crypto_page_body` two,
+  `crypto_page_header` KANI-017), a by-path harness include or an
+  `#[expect]` scope, whose only reaching tests are heavy legs, that pushes a
+  rotation group past the 270-minute cap, or that a client can see. The
+  census table and the fixes taken are reported before any fix beyond pure
+  widening lands.
 - **Deferred with reasons (2026-09-28):** the 83 `gap_lock` holders that
   serialize about 126 s of CI's 154 s suite (drop the lock test by test,
   loop each in the parallel suite); Kani recompiling the crate for every

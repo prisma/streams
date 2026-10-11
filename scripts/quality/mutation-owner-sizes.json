@@ -1,6 +1,6 @@
 {
   "command": "python3 scripts/quality/mutation_driver.py --measure-sizes",
-  "commit": "a4a5a1c295f28ad908c08afa6823df5c02505003",
+  "commit": "2d77788aa0c84a5dfd9dd112bd4ab6dd635d2f56",
   "measured_on": "2026-10-11",
   "owners": {
     "admission_body": 9,
@@ -112,7 +112,7 @@
     "read_remote_tests": 0,
     "read_request": 180,
     "read_retention_probe": 0,
-    "read_scan": 31,
+    "read_scan": 26,
     "read_spool": 58,
     "read_wire": 28,
     "read_wire_tests": 0,

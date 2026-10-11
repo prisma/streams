@@ -6731,6 +6731,17 @@
     "scenarios": []
   },
   {
+    "name": "r06a_a_scan_page_filled_by_its_last_record_completes_the_scan",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "eb7caede1f9f0dc5b111f0b66186b79682a383691b084e75fae417ef43dcb407",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_page_assembly.rs",
+    "scenarios": []
+  },
+  {
     "name": "r06a_collection_scan_shares_one_budget_across_frozen_segments",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

@@ -156,3 +156,59 @@ async fn r06a_collection_scan_shares_one_budget_across_frozen_segments() {
     }
     engine_shutdown(&state).await;
 }
+
+/// A page whose budget fills on a segment's last record steps past that
+/// segment: the scan is complete, and no cursor hands the record out again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn r06a_a_scan_page_filled_by_its_last_record_completes_the_scan() {
+    use crate::application::read_scan::ScanCommand;
+    let (state, addr) = http_rig(mem()).await;
+    let headers = [("prisma-encryption-key", PRISMA_KEY)];
+    assert_eq!(
+        preq(
+            addr,
+            "PUT",
+            "/v1/streams/full-scan",
+            &headers,
+            br#"{"format":{"kind":"bytes"}}"#
+        )
+        .await
+        .0,
+        201
+    );
+    let payload = vec![b'f'; 4096];
+    assert_eq!(
+        preq(
+            addr,
+            "POST",
+            "/v1/streams/full-scan/records",
+            &headers,
+            &payload
+        )
+        .await
+        .0,
+        200
+    );
+    let desc = state
+        .registry
+        .get(&state.deployment.raw_adapter_sref("full-scan"))
+        .await
+        .unwrap()
+        .unwrap();
+    let page = state
+        .read_service()
+        .execute_scan(ScanCommand {
+            descriptor: desc,
+            key: skey(),
+            cursor: None,
+            max_bytes: 4096,
+            now_ms: crate::shard::now_ms(),
+            lifetime_ms: 60_000,
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.records.len(), 1);
+    assert_eq!(page.records[0].payload.as_ref(), payload.as_slice());
+    assert!(page.continuation.is_none(), "{:?}", page.continuation);
+    engine_shutdown(&state).await;
+}

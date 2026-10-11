@@ -163,7 +163,11 @@ OWNERS = (
     owner('read_remote', 'src/application/read_remote.rs', 'application::read dst_tests::read_application:: dst_tests::read_page_limits::'),
     owner('read_remote_tests', 'src/application/read_remote_tests.rs', 'application::read'),
     owner('read_continuation', 'src/application/read_continuation.rs', 'application::read dst_tests::reads_applied_history::'),
-    owner('read_scan', 'src/application/read_scan.rs', 'application::read'),
+    # execute_scan has no module tests: the frozen-scan rigs reach it (the
+    # r06a page assembly, o2a's retained owners and the product scans).
+    owner('read_scan', 'src/application/read_scan.rs',
+          'application::read dst_tests::read_page_assembly:: '
+          'dst_tests::read_subset_retention::o2a_frozen_scan dst_tests::reads_product::product_scan_'),
     owner('read_wire', 'src/application/read_wire.rs', 'application::read'),
     owner('read_wire_tests', 'src/application/read_wire_tests.rs', 'application::read'),
     owner('read_batch_tests', 'src/application/read_batch/tests.rs', 'application::read_batch::'),
