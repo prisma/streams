@@ -194,13 +194,12 @@ owners, each split owner's share, complete discovery source set, rotation slot
 and group count must agree in the plan, driver receipt and actual
 cargo-mutants file and shard arguments. The union of the N groups covers every
 active registered owner's mutants exactly once; zero discovery is reported
-only after that owner's discovery command actually ran. A scheduled group runs
-every one of its owners even when an earlier one has survivors (cargo-mutants
-answers 2 for a missed mutant, 3 for a timeout) and fails once, at the end,
-listing each such owner with its `missed.txt` and `timeout.txt`; any other
-nonzero answer (a failing unmutated baseline, an error, a signal) measured
-nothing and stops the run at once. A diff-scoped selection stops at its first
-owner with a survivor.
+only after that owner's discovery command actually ran. Every selection,
+scheduled or diff-scoped, runs every one of its owners even when an earlier
+one has survivors (cargo-mutants answers 2 for a missed mutant, 3 for a
+timeout) and fails once, at the end, listing each such owner with its
+`missed.txt` and `timeout.txt`; any other nonzero answer (a failing unmutated
+baseline, an error, a signal) measured nothing and stops the run at once.
 
 The groups are sized so a night finishes inside the `mutants` job's 240
 minutes. `scripts/quality/mutation-owner-sizes.json` records every registered

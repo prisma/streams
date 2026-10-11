@@ -287,8 +287,9 @@ CI deals the same leg over the `mutants` job's eight matrix jobs of
 round-robin): each tests every eighth selected mutant, together each one
 once. A push selecting more than about 900 mutants does not fit: split it
 into smaller pushes (preflight's `plan.json` lists the selection). Locally
-run it whole, or one share with the same variable. The driver stops at the first owner with a
-survivor: fix it, then re-run for the owners after it.
+run it whole, or one share with the same variable. The driver runs every selected owner and
+fails once at the end with each owner's missed and timed-out mutants (survivors print live in
+the log); an answer that measured nothing, such as a failing baseline, stops it at once.
 
 Miri and the saved fuzz corpus: `scripts/quality/nightly.sh miri`,
 `scripts/quality/nightly.sh corpus` (under a minute).

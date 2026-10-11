@@ -132,15 +132,12 @@ def check_tool_version():
 SURVIVOR_STATUSES = {2: 'missed', 3: 'timeout'}
 
 
-def run_owner(command, keep_going):
+def run_owner(command):
     """Run one owner's mutants; True when the answer is a survivor status.
 
-    The per-push leg stops at the first nonzero answer. The scheduled rotation
-    keeps going past survivors, so one night reports every owner of its group,
-    and still stops at once on an answer that measured nothing."""
-    if not keep_going:
-        subprocess.run(command, cwd=ROOT, check=True)
-        return False
+    Every selection, diff-scoped or scheduled, keeps going past survivors, so
+    one run reports every owner it selected, once, at the end; an answer that
+    measured nothing stops it at once."""
     status = subprocess.run(command, cwd=ROOT).returncode
     if status in SURVIVOR_STATUSES:
         return True
@@ -150,7 +147,7 @@ def run_owner(command, keep_going):
 
 
 def report_survivors(survivors, owners):
-    print(f'Mutation survivors in {len(survivors)} of {owners} owner(s) of this scheduled group:')
+    print(f'Mutation survivors in {len(survivors)} of {owners} owner(s) of this selection:')
     for name, listing in survivors:
         listed = False
         for kind in SURVIVOR_STATUSES.values():
@@ -225,7 +222,7 @@ def execute(out):
             print(f'{entry.name}: no executable mutants in the selected scope')
             continue
         total += count
-        if run_owner(mutation_command(entry, out, output, mutation_diff, share), scheduled):
+        if run_owner(mutation_command(entry, out, output, mutation_diff, share)):
             survivors.append((entry.name, output / 'mutants.out'))
 
     if total == 0:

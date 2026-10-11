@@ -143,12 +143,31 @@ class ScheduledRotation(unittest.TestCase):
 
 
 class PushedChange(unittest.TestCase):
-    def test_the_first_owner_with_survivors_stops_the_leg(self):
+    def test_every_selected_owner_runs_and_the_push_fails_once_with_every_survivor(self):
         fake, outcome, printed = run_driver(PUSHED, {'alpha': 2, 'gamma': 3})
-        self.assertEqual(fake.ran, ['alpha'])
-        self.assertIsInstance(outcome, subprocess.CalledProcessError)
-        self.assertEqual(outcome.returncode, 2)
-        self.assertNotIn('Mutation survivors', printed)
+        self.assertEqual(fake.ran, ['alpha', 'beta', 'gamma'])
+        self.assertIsInstance(outcome, SystemExit)
+        self.assertEqual(outcome.code, 1)
+        summary = printed[printed.index('Mutation survivors'):]
+        self.assertIn('2 of 3 owner(s)', summary)
+        self.assertIn('alpha: missed', summary)
+        self.assertIn('gamma: timeout', summary)
+        self.assertNotIn('beta', summary)
+        self.assertIn('alpha/mutants.out/missed.txt', summary)
+        self.assertIn('gamma/mutants.out/timeout.txt', summary)
+        self.assertIn('src/alpha.rs:1:1: replace alpha with ()', summary)
+        self.assertIn('src/gamma.rs:1:1: replace gamma with ()', summary)
+
+    def test_a_status_that_measured_nothing_stops_the_push_at_once(self):
+        # 1 usage or error, 4 a failed baseline, 70 internal, -9 a signal:
+        # none of them is a survivor, so the remaining owners do not run.
+        for status in (1, 4, 70, -9):
+            with self.subTest(status=status):
+                fake, outcome, printed = run_driver(PUSHED, {'alpha': 2, 'beta': status})
+                self.assertEqual(fake.ran, ['alpha', 'beta'])
+                self.assertIsInstance(outcome, subprocess.CalledProcessError)
+                self.assertEqual(outcome.returncode, status)
+                self.assertNotIn('Mutation survivors', printed)
 
     def test_a_pushed_plan_never_reads_a_share(self):
         plan = {**PUSHED, 'scheduled_owner_shares': {'beta': [1, 2]}}

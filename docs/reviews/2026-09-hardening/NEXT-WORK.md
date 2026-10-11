@@ -882,7 +882,18 @@ before marking it complete."
   fits about 900 selected mutants. Still open: a MISSED backlog with dispositions as the
   groups report, and re-measuring the sizes as owners grow
   (`python3 scripts/quality/mutation_driver.py --measure-sizes`; a new owner
-  row needs its count before the unit tests pass).
+  row needs its count before the unit tests pass). **Done (2026-10-11,
+  decided under the owner's delegation of 2026-10-11 to Fable 5.1, question
+  G1):** the per-push leg does the same: it runs every selected owner and
+  fails once at the end with every owner's missed and timed-out mutants,
+  and an answer that measured nothing still stops it at once. A push is
+  compared only with the revision before it, so the owners after a stop were
+  never tested in CI: 443843ec's push stopped five of eight runners at their
+  first owner (`history_page_read`, 7-8 mutants each, 44-52 min), one at its
+  third (`shard`, 11 mutants) and two at their fifth (`record`, 15 each),
+  testing 79 of the 398 mutants it selected (11 MISSED); the fix push
+  selected only its own diff, so the leg was run locally instead (377
+  mutants on the fixed tree: 350 caught, 27 unviable).
 - **Deferred with reasons (2026-09-28):** the 83 `gap_lock` holders that
   serialize about 126 s of CI's 154 s suite (drop the lock test by test,
   loop each in the parallel suite); Kani recompiling the crate for every
