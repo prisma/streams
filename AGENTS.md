@@ -292,6 +292,9 @@ fails once at the end with each owner's missed, timed-out and incomplete mutants
 whose tests died by a signal, or one cargo-mutants could not classify; MISSED and TIMEOUT
 print live in the log); an answer that measured nothing, such as a failing baseline, stops
 it at once.
+CI runs each mutant's test process under a 10 GiB `RLIMIT_DATA` through cargo's target
+runner (`prlimit`, set in the `mutants` step), so a mutant that allocates without end
+aborts and is listed incomplete; local runs are uncapped (macOS has no `prlimit`).
 
 Miri and the saved fuzz corpus: `scripts/quality/nightly.sh miri`,
 `scripts/quality/nightly.sh corpus` (under a minute).

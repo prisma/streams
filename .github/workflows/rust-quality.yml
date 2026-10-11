@@ -140,8 +140,22 @@ jobs:
         # overrides the incremental build [profile.quality] declares: each
         # mutant was a full rebuild (127-222 s against 25-65 s locally).
         # Same mutants, tests and timeouts; only the rebuild is incremental.
+        # The runner caps each test process at 10 GiB of writable data
+        # (RLIMIT_DATA): a mutant that allocates without end aborts in
+        # seconds ("memory allocation of N bytes failed", SIGABRT) instead
+        # of exhausting the 16 GiB runner, as five shards of the 2026-10-09
+        # rotation (run 37881618221) did in owner billing. Cargo's runner
+        # wraps only the test binaries: rustc, cargo and cargo-mutants are
+        # uncapped. The unmutated baseline runs under the same cap, so a cap
+        # too tight for an owner fails its baseline (exit 4), never a mutant
+        # silently; the driver lists a caught mutant whose test process died
+        # by a signal ("(signal: " in cargo's account, or "memory allocation
+        # of") as incomplete. cargo prints the runner in every mutant log's
+        # test phase (Running `prlimit --data=... -- <test binary>`), so any
+        # mutation run shows the cap is in effect. Local runs are uncapped.
         env:
           CARGO_INCREMENTAL: "1"
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=10737418240:10737418240 --
           QUALITY_MUTANT_SHARD: ${{ matrix.shard }}/8
         run: scripts/quality/mutations.sh
   formal:

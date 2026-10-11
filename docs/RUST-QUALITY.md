@@ -209,8 +209,14 @@ is counted nowhere. Neither is an assertion-detected failure, so after each
 owner the driver reads `mutants.out/outcomes.json` and lists in
 `incomplete.txt` every caught mutant whose test phase's output carries
 cargo's `(signal: ` or Rust's `memory allocation of`, and every unclassified
-one; they fail the selection as missed mutants do (decided under the owner's
-delegation of 2026-10-11 to Fable 5.1, question N3).
+one; they fail the selection as missed mutants do. In CI each test process a
+mutant runs is capped at 10 GiB of writable data (`RLIMIT_DATA`, set by
+cargo's target runner `prlimit` in the `mutants` step), so a mutant that
+allocates without end aborts within seconds and is listed incomplete instead
+of exhausting the runner; rustc, cargo and cargo-mutants are uncapped, and a
+cap too tight for an owner's tests fails its unmutated baseline. Both rules
+were decided under the owner's delegation of 2026-10-11 to Fable 5.1
+(question N3).
 
 The groups are sized so a night finishes inside the `mutants` job's 360
 minutes on each of its eight runners.

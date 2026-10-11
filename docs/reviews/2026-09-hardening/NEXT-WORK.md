@@ -893,7 +893,41 @@ before marking it complete."
   third (`shard`, 11 mutants) and two at their fifth (`record`, 15 each),
   testing 79 of the 398 mutants it selected (11 MISSED); the fix push
   selected only its own diff, so the leg was run locally instead (377
-  mutants on the fixed tree: 350 caught, 27 unviable).
+  mutants on the fixed tree: 350 caught, 27 unviable). **Done (2026-10-11,
+  decided under the owner's delegation of 2026-10-11 to Fable 5.1, question
+  N3):** a memory cap per test process, and incomplete catches. Five
+  runners of the rotation of 2026-10-09 (run 37881618221) died in owner
+  `billing` (46-47 mutants each): after the billing baseline each
+  printed at most one mutant (a TIMEOUT at 90 s), then
+  "ERROR interrupted" and "The runner has received a shutdown signal" at
+  05:21, 05:42, 06:17, 05:38 and 06:05 UTC, and the owners after `billing`
+  never ran. The diagnosis attributes it to month-math mutants under which
+  `rollup::month_spans` or the storage clock allocate without end, filling
+  the 16 GiB runner before the 90 s timeout acts (cargo-mutants sends one
+  SIGTERM and then waits). Now the `mutants` step runs each test binary
+  under `prlimit --data=10737418240:10737418240` through cargo's target
+  runner (rustc, cargo and cargo-mutants uncapped), so such a mutant aborts
+  in seconds, and the driver lists in `incomplete.txt`, as a survivor, a
+  caught mutant whose test phase shows "(signal: " or "memory allocation
+  of" and every mutant cargo-mutants could not classify (it would count the
+  abort as a catch and answer 0). Stack overflows and crashes under a mutant
+  count as incomplete too. The first CI mutation run after the push shows
+  the cap in every mutant log's test phase (cargo's `Running` line names
+  `prlimit`); an owner whose unmutated baseline fails under it (exit 4)
+  needs the cap raised to 12 GiB (12884901888). The production guards
+  against those runaways are question N2's, not N3's. **Open (the owner's
+  call):** a Loom model that fails panics again while unwinding and aborts
+  the test binary, so a mutant a Loom model's assertion catches is listed
+  incomplete: reproduced on 2026-10-11 with `stop_on_exit -> bool with
+  true` (src/tasks/exits.rs) under `cargo test --lib -- tasks::`
+  (loom_tests.rs:94 fails, then "thread caused non-unwinding panic.
+  aborting.", SIGABRT); the filters of 43 owners select a Loom model. A
+  thread-local destructor that panics after failed tests aborts the same
+  way (`tasks_refusal`'s local run of 2026-09-24, `take_set_aside -> vec![]`).
+  The rotation of 2026-10-10 failed differently: four of its eight runners
+  were cancelled at the 360-minute limit (03:54 to 09:54 UTC), the `shard`
+  owner's 44-45 mutants taking 3-4 h of each; the cost model is question
+  N6, put back to the owner.
   Re-measured on 2026-10-11
   when the storage clock left `src/billing.rs` (N2): 7,301 mutants over 181
   owners; `billing` 375 -> 361 and the new `billing_storage_clock` 14, the
