@@ -1,6 +1,7 @@
 # Readiness matrix (authoritative)
 
-Updated 2026-08-14 (R30); the tenancy verdict 2026-10-08. Older campaign
+Updated 2026-08-14 (R30); the tenancy verdict 2026-10-08; the public-beta
+row and the security review's amendment 2026-10-11. Older campaign
 documents are historical evidence; where a status here disagrees with an
 older doc, THIS table wins.
 
@@ -13,6 +14,7 @@ older doc, THIS table wins.
 | Larger unbilled private preview, dedicated cells | Go after rc.1 exact-binary certification |
 | Public preview, dedicated tenancy | Conditional: platform availability + external security review |
 | Paid dedicated-tenant GA | No-go until invoice/reconciliation closes |
+| Public beta: single-server shared cells, kept awake, self-serve for the accounts a Prisma Console feature flag whitelists, metered and not charged (owner decisions of 2026-10-11) | Conditional: the public-beta work list (`docs/reviews/2026-09-hardening/NEXT-WORK.md`, "Public beta (decided 2026-10-11)"). The external security review is not required for the public beta: asked whether it is required or waived, the owner answered "not required" (`docs/reviews/2026-09-hardening/README.md`, "Owner decisions", row "Public beta (decided 2026-10-11)"). The other rows, the GA rows included, are unchanged |
 | Shared multitenant GA | No-go until Stage 8 (`docs/MULTITENANCY.md` §18): the shared-cell battery and the external security review. Per-request principals and project quotas are in; one single-server shared cell for hand-admitted design partners opens after its own certification (owner decisions of 2026-10-07 and 2026-10-08) |
 
 ## Engine (application) — DONE
@@ -43,7 +45,12 @@ review. Until Stage 8 exits, deployments remain
 one-project-per-cell dedicated, except the one single-server shared cell
 for design partners the owner chose on 2026-10-07, which opens after its
 certification (`docs/reviews/2026-09-hardening/README.md`, rows "Launch
-shape and routing" and "Shared cells Q5").
+shape and routing" and "Shared cells Q5"). Amended 2026-10-11: the public
+beta also runs on single-server shared cells, kept awake and self-serve for
+Console-whitelisted accounts, and opens without the external security
+review, which the owner waived for the beta ("not required"; the same
+README, row "Public beta (decided 2026-10-11)"); the GA blockers listed
+here are unchanged.
 
 ## Platform (Prisma Compute) — BLOCKING GA
 1. Stale-build serving: deploys must carry an expected digest, VMs must
@@ -66,8 +73,10 @@ acceptance, ops-history/SLO work, documented terminal-closure residual.
 ## Ops & security before GA
 - Two+ ready instances per active cell; stable service/LB endpoint
   (never version-scoped preview URLs); documented SLO regions only.
-- External security review; token rotation/revocation; dependency
-  scanning; restore/corruption/region-loss drills on record.
+- External security review (not required for the public beta: the
+  owner's "not required" of 2026-10-11, an amendment for the beta only);
+  token rotation/revocation; dependency scanning;
+  restore/corruption/region-loss drills on record.
 - Alerts: maintenance backlog, bulk-gate waits, compaction working set,
   scheduler deferrals (walk_deferred_total), terminal billing debt,
   fork cleanup debt (fork_debt_stale: a pending marker or a stalled

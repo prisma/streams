@@ -1,6 +1,6 @@
 # Prisma Streams — Shared-Cell Multitenancy Implementation Plan
 
-**Status:** FROZEN CONTRACT (Stage 0, committed 2026-08-15; revision 6, 2026-10-02 — see Revision log)
+**Status:** FROZEN CONTRACT (Stage 0, committed 2026-08-15; revision 8, 2026-10-11 — see Revision log)
 **Author:** Søren Bramer Schmidt (implementation plan, delivered 2026-08-15)
 **Target:** Many projects in each Prisma Streams cell
 **Migration posture:** Clean layout switch; no mixed-layout operation
@@ -58,7 +58,8 @@
   fence relay of 433b60e5 and 82a14a8f, edge records #88 and #89). The
   platform contract (`contracts/streams-platform/v1/workload-token-claims.schema.json`)
   and the reference emulator name both since 89011daa (edge record #90).
-- r7 (2026-10-07, shared-cells H6, awaiting the owner's ratification):
+- r7 (2026-10-07, shared-cells H6; accepted by the owner on 2026-10-08,
+  `docs/reviews/2026-09-hardening/README.md` row "Shared cells Q8"):
   §4.5 and §14.1 — the keys feed pins every kid to ONE token audience
   (`aud`: `prisma-streams-data` or `prisma-streams-internal`, required;
   `contracts/streams-platform/v1/keys.schema.json`). A token verifies
@@ -68,6 +69,14 @@
   for life. §15 (shared-cells M5): under enforce, a watch request that
   carries a capability must verify it; a stream key observes only beside
   a verified principal.
+- r8 (2026-10-11, the owner's public-beta decisions;
+  `docs/reviews/2026-09-hardening/README.md` row "Public beta (decided
+  2026-10-11)"): Stage 8 and §20 — the external security review is not
+  required for the public beta. Asked "Whether the external security
+  review is required or waived", the owner answered "not required". An
+  amendment, not a deletion: Stage 8's item and §20's criterion stay as
+  written for shared-cell GA, and each carries a note; nothing else in
+  the contract changes.
 
 ---
 
@@ -1520,7 +1529,9 @@ deletion sagas and the Control-Plane feed remain platform-side.)*
 * [ ] Exercise splits, owner movement, suspension, revocation, and transfer.
 * [ ] Reconcile operations and billing.
 * [ ] Prove zero cross-project leakage.
-* [ ] Complete external security review.
+* [ ] Complete external security review. *(Not required for the public
+      beta: the owner's "not required" of 2026-10-11 (r8); §20 keeps it
+      for GA.)*
 
 **Exit:** exact release-candidate binary passes the shared-cell GA battery.
 
@@ -1622,6 +1633,16 @@ Billing correctly splits ownership at project transfer.
 The exact release binary passes the shared-cell field battery.
 An external security review is complete.
 ```
+
+**Amendment (r8, 2026-10-11).** The owner waived the last criterion, the
+external security review, for the public beta: asked whether the review is
+required or waived, he answered "not required"
+(`docs/reviews/2026-09-hardening/README.md`, "Owner decisions", row
+"Public beta (decided 2026-10-11)"). The amendment waives only the review,
+and only for the public beta; the criteria above stand as written for
+shared-cell GA, and the beta's own work list is
+`docs/reviews/2026-09-hardening/NEXT-WORK.md`, "Public beta (decided
+2026-10-11)".
 
 ## 21. Fastest critical path
 
