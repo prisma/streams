@@ -201,18 +201,19 @@ timeout) and fails once, at the end, listing each such owner with its
 `missed.txt` and `timeout.txt`; any other nonzero answer (a failing unmutated
 baseline, an error, a signal) measured nothing and stops the run at once.
 
-The groups are sized so a night finishes inside the `mutants` job's 240
-minutes. `scripts/quality/mutation-owner-sizes.json` records every registered
+The groups are sized so a night finishes inside the `mutants` job's 360
+minutes on each of its eight runners.
+`scripts/quality/mutation-owner-sizes.json` records every registered
 owner's whole-scope mutant count; `python3 scripts/quality/mutation_driver.py
 --measure-sizes` rewrites it and only lists. A new owner row needs its count:
 a missing or retired one fails the planner and its tests. `mutation_owners.py`
 models an owner's minutes on the job's slowest runner from the scheduled runs'
 measured times: every runner builds and tests the owner's unmutated baseline,
-then its round-robin quarter of the mutants. An owner whose minutes exceed a
-night's cap of 180, three quarters of the job's limit, is dealt over the
+then its round-robin eighth of the mutants. An owner whose minutes exceed a
+night's cap of 270, three quarters of the job's limit, is dealt over the
 fewest nights that each fit, as round-robin shares of its mutants (night
-`part` of `parts`, runner k of 4: cargo-mutants shard `part × 4 + k` of
-`parts × 4`). The shares are packed largest first, each into the least-filled
+`part` of `parts`, runner k of 8: cargo-mutants shard `part × 8 + k` of
+`parts × 8`). The shares are packed largest first, each into the least-filled
 group, with the group count N raised from its lower bound until every group
 fits the cap, and UTC day d runs group `d mod N`. The packing follows the table and the sizes file, so the
 cycle that spans a change to either can test an owner twice or skip it once.
