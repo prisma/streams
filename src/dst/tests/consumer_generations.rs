@@ -712,7 +712,7 @@ async fn a_bounded_cleanup_drains_residue_without_touching_the_live_generation()
 #[test]
 fn failpoint_registry_is_enumerable_and_described() {
     use crate::failpoints::Fp;
-    assert_eq!(Fp::ALL.len(), 25);
+    assert_eq!(Fp::ALL.len(), 26);
     for fp in Fp::ALL {
         assert!(!fp.site().is_empty(), "{fp:?} has no site contract");
     }

@@ -1,6 +1,6 @@
 use super::{APPEND_TIMEOUT, AppendCode, AppendFailure, AppendService, FailureClass, fail};
 use crate::registry::{SegRoute, StreamDesc};
-use crate::shard::{AppendAck, AppendErr, AppendReq};
+use crate::shard::{AppendAck, AppendErr, AppendReq, EnqueueError};
 use tokio::sync::oneshot;
 
 pub(super) async fn submit(
@@ -23,6 +23,8 @@ pub(super) async fn submit(
         Ok(e) => e,
         Err(e) => return Err(AppendFailure::from_resolve(e)),
     };
+    #[cfg(test)]
+    crate::failpoints::pause_append_after_resolve(name).await;
     // Round-13: bind this SEGMENT's durable-write pressure attribution
     // to the project's admission entry (once per resident handle
     // incarnation; seeded from the applied tail's exact
@@ -76,12 +78,8 @@ pub(super) async fn submit(
         )
         .map_err(|e| e.retry(2));
     }
-    if engine.try_enqueue(req).is_err() {
-        return fail(
-            FailureClass::Capacity,
-            AppendCode::Overloaded,
-            "append queue full",
-        );
+    if let Err(error) = engine.try_enqueue(req) {
+        return Err(enqueue_refused(&error));
     }
     match tokio::time::timeout(APPEND_TIMEOUT, rx).await {
         Ok(Ok(o)) => Ok(o),
@@ -90,5 +88,73 @@ pub(super) async fn submit(
             AppendCode::AppendTimeout,
             "append timed out; outcome unknown",
         ),
+    }
+}
+
+/// The answer to an enqueue the engine refused. A full queue is the bounded
+/// ingest queue's 429 (SPEC 3.4). A closed engine was closed after this
+/// request resolved it, retired (a sweep eviction, an ownership move, a
+/// fleet eviction, a shutdown) or closed by its own storage (a fence, a
+/// failed write, a failed worker): the request reached no committer, so
+/// nothing was written, and it is answered as the moved shard it met, as a
+/// group that engine stranded (`AppendErr::Moved`) and a request meeting
+/// the holdoff after a retirement are.
+fn enqueue_refused(error: &EnqueueError) -> AppendFailure {
+    match error {
+        EnqueueError::Full => AppendFailure::new(
+            FailureClass::Capacity,
+            AppendCode::Overloaded,
+            "append queue full",
+        ),
+        EnqueueError::Closed => AppendFailure::new(
+            FailureClass::Unavailable,
+            AppendCode::ShardMoving,
+            "shard closed under the request; nothing was written; retry",
+        )
+        .retry(1),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppendCode, EnqueueError, FailureClass, enqueue_refused};
+
+    /// W3: an engine retired between the request's resolve and its enqueue
+    /// is the moved shard its neighbours answer (the committer-stranded
+    /// `AppendErr::Moved`, the holdoff after the retirement): unavailable,
+    /// `shard_moving`, one second to retry. Only a full queue is the
+    /// bounded-ingest 429 (SPEC 3.4), and it keeps its answer.
+    #[test]
+    fn a_closed_engine_is_a_moved_shard_and_a_full_queue_stays_overloaded() {
+        let closed = enqueue_refused(&EnqueueError::Closed);
+        assert_eq!(
+            (
+                closed.class,
+                closed.code,
+                closed.retry_after,
+                closed.message.as_str()
+            ),
+            (
+                FailureClass::Unavailable,
+                AppendCode::ShardMoving,
+                Some(1),
+                "shard closed under the request; nothing was written; retry"
+            )
+        );
+        let full = enqueue_refused(&EnqueueError::Full);
+        assert_eq!(
+            (
+                full.class,
+                full.code,
+                full.retry_after,
+                full.message.as_str()
+            ),
+            (
+                FailureClass::Capacity,
+                AppendCode::Overloaded,
+                None,
+                "append queue full"
+            )
+        );
     }
 }

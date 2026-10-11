@@ -1279,6 +1279,17 @@
     "scenarios": []
   },
   {
+    "name": "a_product_append_whose_engine_closes_between_resolve_and_enqueue_is_temporarily_unavailable",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "3ec76480b8bf2d04bf0fde34e5af9dfeda6747baf96f7f4afd5afb35ec547f37",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/append_application.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_product_create_that_loses_to_a_live_forked_incarnation_is_idempotent",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -2806,6 +2817,17 @@
     "scenarios": []
   },
   {
+    "name": "an_append_whose_engine_closes_between_resolve_and_enqueue_is_answered_as_a_moved_shard",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "195317293b162e8ea58544a555d2e991a5c79439536f3fd235ab45cd5505d807",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/append_application.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_empty_catch_up_page_is_read_again_after_a_bounded_wait",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -4023,7 +4045,7 @@
     "attributes": [
       "#[test]"
     ],
-    "function_sha256": "dd676afb13d5f3f7ffbabb285f84540fd397ddf1090da303355494d193ac315b",
+    "function_sha256": "15a1da6008eab503242a38c4bd9be2e4962482b833a87754dbece44526e95d87",
     "mechanisms": [],
     "configuration": [
       "fn failpoint_registry_is_enumerable_and_described() {",

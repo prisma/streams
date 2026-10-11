@@ -593,3 +593,140 @@ async fn a_retry_across_two_splits_meets_its_row_when_the_clocks_disagree() {
     }
     engine_shutdown(&state).await;
 }
+
+/// A reply as the wire gave it: status, lowercased headers, body.
+type Reply = (u16, std::collections::HashMap<String, String>, Vec<u8>);
+
+/// W3: runs `request`, an append to `name`, parks it after its shard engine
+/// resolved, and retires that engine as the sweep's eviction does (remove,
+/// arm the holdoff, close) before letting it reach its enqueue. Then waits
+/// for the retired engine to terminate and lifts the holdoff, so the caller
+/// can retry at once and read what the refused append left.
+async fn closed_under(
+    state: &std::sync::Arc<crate::http::AppState>,
+    name: &str,
+    request: impl std::future::Future<Output = Reply>,
+) -> Reply {
+    use super::fixture_livefeed::wait_parked;
+    use crate::shard_directory::{RetireOutcome, RetirementReason};
+    let sref = state.deployment.raw_adapter_sref(name);
+    let desc = state.registry.get(&sref).await.unwrap().unwrap();
+    let prefix = state
+        .shards
+        .prefix_for(&desc.resolve_segment("").shard_route);
+    crate::failpoints::park_append_after_resolve(name);
+    let retire = async {
+        wait_parked(crate::failpoints::Fp::AppendAfterResolve, name, 1).await;
+        let retired = state
+            .shards
+            .retire(&prefix, RetirementReason::SweepEviction, |_, _| true);
+        let RetireOutcome::Retired(engine) = retired else {
+            panic!("the engine serving {name} was not retired");
+        };
+        assert!(engine.is_closed(), "the retirement closed {prefix:?}");
+        crate::failpoints::release_append_after_resolve(name);
+        engine.shutdown_handle()
+    };
+    let (reply, shutdown) = futures_util::future::join(request, retire).await;
+    for _ in 0..1000 {
+        if shutdown.terminated() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(shutdown.terminated(), "the retired engine terminates");
+    state.shards.clear_holdoff(&prefix);
+    reply
+}
+
+/// The answer's status, `Retry-After` and JSON body, in one comparable tuple.
+fn answer(reply: &Reply) -> (u16, Option<&str>, serde_json::Value) {
+    let (status, headers, body) = reply;
+    let body = serde_json::from_slice(body)
+        .unwrap_or_else(|_| String::from_utf8_lossy(body).into_owned().into());
+    (
+        *status,
+        headers.get("retry-after").map(String::as_str),
+        body,
+    )
+}
+
+/// W3 over the raw wire: an append whose shard engine is retired between
+/// its resolve and its enqueue is answered as the moved shard it met, 503
+/// `shard_moving` with `Retry-After: 1` (as the committer-stranded group
+/// and the holdoff after it are), never as a rate limit. Nothing was
+/// written: the retry is the stream's first record. Red before: 429
+/// `overloaded` "append queue full" with no `Retry-After`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_append_whose_engine_closes_between_resolve_and_enqueue_is_answered_as_a_moved_shard() {
+    use super::fixture_requests::hreq;
+    let (state, addr) = http_rig(mem()).await;
+    let name = "w3-closed";
+    let path = format!("/v1/stream/{name}");
+    let json = [("content-type", "application/json")];
+    let (status, _, _) = hreq(addr, "PUT", &path, &json, b"").await;
+    assert!(status == 200 || status == 201, "create {name}: {status}");
+    let request = hreq(addr, "POST", &path, &json, br#"[{"n":1}]"#);
+    let reply = closed_under(&state, name, request).await;
+    let message = "shard closed under the request; nothing was written; retry";
+    assert_eq!(
+        answer(&reply),
+        (
+            503,
+            Some("1"),
+            serde_json::json!({"error": {"code": "shard_moving", "message": message}})
+        )
+    );
+    let (status, headers, _) = hreq(addr, "POST", &path, &json, br#"[{"n":1}]"#).await;
+    let first = crate::http::tail_token(1);
+    assert_eq!(
+        (status, headers.get("stream-next-offset")),
+        (204, Some(&first)),
+        "the retry is the stream's first record: {headers:?}"
+    );
+    let (status, _, body) = hreq(addr, "GET", &path, &[], b"").await;
+    let records: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!((status, records), (200, serde_json::json!([{"n": 1}])));
+    engine_shutdown(&state).await;
+}
+
+/// W3 over the product surface: the same closed engine is the product's
+/// 503 `temporarily_unavailable`, retryable, `Retry-After: 1`, as every
+/// other raw 503; the retry lands once. Red before: 429 `rate_limited`
+/// "admission or rate limit" with no `Retry-After`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_product_append_whose_engine_closes_between_resolve_and_enqueue_is_temporarily_unavailable()
+ {
+    let (state, addr) = http_rig(mem()).await;
+    let name = "w3-closed-p";
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let path = format!("/v1/streams/{name}");
+    let format = br#"{"format":{"kind":"json"}}"#;
+    assert_eq!(preq(addr, "PUT", &path, &key, format).await.0, 201);
+    let records = format!("{path}/records");
+    let request = preq(addr, "POST", &records, &key, br#"{"n":1}"#);
+    let reply = closed_under(&state, name, request).await;
+    assert_eq!(
+        answer(&reply),
+        (
+            503,
+            Some("1"),
+            serde_json::json!({"error": {
+                "code": "temporarily_unavailable",
+                "message": "retry shortly",
+                "retryable": true,
+            }})
+        )
+    );
+    let (status, _, body) = preq(addr, "POST", &records, &key, br#"{"n":1}"#).await;
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        (status, &body["count"], &body["duplicate"]),
+        (200, &serde_json::json!(1), &serde_json::json!(false)),
+        "the retry lands once: {body}"
+    );
+    let (status, _, body) = preq(addr, "GET", &records, &key, b"").await;
+    let stored: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!((status, stored), (200, serde_json::json!([{"n": 1}])));
+    engine_shutdown(&state).await;
+}

@@ -50,6 +50,7 @@ pub(crate) enum Fp {
     // Parks (the site awaits release).
     CreateBeforeReady,
     AppendBeforeEnqueue,
+    AppendAfterResolve,
     CloseBeforeEnqueue, // one-shot composite: consume arm, hold
     CloseBeforeMark,
     ProductSealBeforeClaim,
@@ -74,12 +75,13 @@ pub(crate) enum Fp {
 }
 
 impl Fp {
-    pub(crate) const ALL: [Fp; 25] = [
+    pub(crate) const ALL: [Fp; 26] = [
         Fp::StopAfterTombstone,
         Fp::StopBeforeMarkCommitted,
         Fp::StopAfterSealIntent,
         Fp::CreateBeforeReady,
         Fp::AppendBeforeEnqueue,
+        Fp::AppendAfterResolve,
         Fp::CloseBeforeEnqueue,
         Fp::CloseBeforeMark,
         Fp::ProductSealBeforeClaim,
@@ -134,6 +136,10 @@ impl Fp {
                  readiness publishes"
             }
             Fp::AppendBeforeEnqueue => "append: before the committer enqueue",
+            Fp::AppendAfterResolve => {
+                "append: after the shard engine resolved, before the \
+                 committer enqueue"
+            }
             Fp::CloseBeforeEnqueue => {
                 "close: before its enqueue; ONE-SHOT — first arrival \
                  consumes the arm and holds until release"
@@ -433,6 +439,16 @@ pub(crate) fn release_append_before_enqueue(name: &str) {
 }
 pub(crate) async fn pause_append_before_enqueue(name: &str) {
     pause(Fp::AppendBeforeEnqueue, name).await;
+}
+
+pub(crate) fn park_append_after_resolve(name: &str) {
+    arm(Fp::AppendAfterResolve, name);
+}
+pub(crate) fn release_append_after_resolve(name: &str) {
+    release(Fp::AppendAfterResolve, name);
+}
+pub(crate) async fn pause_append_after_resolve(name: &str) {
+    pause(Fp::AppendAfterResolve, name).await;
 }
 
 pub(crate) fn park_close_before_enqueue(name: &str) {
