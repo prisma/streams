@@ -65,6 +65,11 @@ describe("the shared-cell profile", () => {
     ).toEqual(["8388608", "33554432", "8388608"]);
   });
 
+  test("it keeps the cell awake for good: KEEP_AWAKE=1, with no KEEP_AWAKE_UNTIL_MS to bound it", () => {
+    const env = readProfiles(DEFAULT_PROFILES);
+    expect([env.get("KEEP_AWAKE"), env.has("KEEP_AWAKE_UNTIL_MS")]).toEqual(["1", false]);
+  });
+
   test("every name it sets is one the server reads", () => {
     const reads = namesTheServerReads();
     const set = [...readProfiles([SHARED]).keys()];
@@ -80,6 +85,9 @@ describe("the shared-cell profile", () => {
     ["FLEET_PREFIX", "fleet/", "profile sets FLEET_PREFIX: a single-server shared cell runs without it"],
     ["FLEET_INTERNAL_TOKEN", "x".repeat(32), "profile sets FLEET_INTERNAL_TOKEN"],
     ["WORKLOAD_TOKEN_FILE", "/tmp/w", "profile sets WORKLOAD_TOKEN_FILE"],
+    ["KEEP_AWAKE", undefined, "a shared cell needs KEEP_AWAKE=1"],
+    ["KEEP_AWAKE", "0", "a shared cell needs KEEP_AWAKE=1"],
+    ["KEEP_AWAKE_UNTIL_MS", "1767225600000", "profile sets KEEP_AWAKE_UNTIL_MS: a shared cell is kept awake for good"],
     ["PROJECT_SHARE_K", "1", "a shared cell needs k >= 2"],
     ["PROJECT_SHARE_K", undefined, "profile does not set PROJECT_SHARE_K"],
     ["SSE_FEED_PROJECT_BYTES", "33554432", "needs SSE_FEED_TOTAL_BYTES / k = 8388608"],
@@ -129,6 +137,13 @@ describe("constants cell-admin shares with the server", () => {
     expect(MAX_TOKEN_LIFETIME_SECS).toBe(24 * 3600);
     expect(src("src/auth.rs")).toContain("pub(crate) const MAX_TOKEN_LIFETIME_SECS: i64 = 24 * 3600;");
     expect(src("src/admission/read_memory.rs")).toContain("const READ_MEMORY_SHARE_OF_SHED: u64 = 4;");
+  });
+
+  test("the wrapper holds its keep-awake guard for KEEP_AWAKE=1, for good unless KEEP_AWAKE_UNTIL_MS bounds it", () => {
+    const wrapper = src("deploy/app-server/index.ts");
+    expect(wrapper).toContain('if (process.env.KEEP_AWAKE !== "1") return null;');
+    expect(wrapper).toContain("const until = Number(process.env.KEEP_AWAKE_UNTIL_MS ?? 0);");
+    expect(wrapper).toContain("if (!until) return new KeepAwakeGuard();");
   });
 
   test("the quota fields are the policy contract's, in its order", () => {

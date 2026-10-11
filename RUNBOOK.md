@@ -452,7 +452,8 @@ N server services (`streams-1…N`), M pilot-LB services (`lb-1…M`), all in
 one project/region. Servers carry `FLEET_PREFIX`; LBs front them; clients
 hit the LBs. Compute wakes instances on request and sleeps them when idle
 (`KEEP_AWAKE=1` via the wrapper's guard opts out during soak tests — never
-leave it on after a test; it bills continuously).
+leave it on after a test; it bills continuously). The one exception is a
+shared cell, kept awake for good ("Shared cells" below).
 
 ### 7.2 The wrapper app
 
@@ -576,7 +577,9 @@ a reference implementation.
 Routing must never be the wake mechanism — the LB sends out-of-band
 `/health` pings (§6). Any client that talks to instances directly must
 treat 404 as retryable and health-ping to wake the target, or it will
-drop writes that would have succeeded.
+drop writes that would have succeeded. A kept-awake shared cell does not
+sleep, so its clients meet this 404 only while it boots after a deploy or
+a restart.
 
 ### 7.5 Platform failure modes you will meet
 
@@ -925,6 +928,13 @@ One 1 GiB server, one shard, the fleet off, `deploy/profiles/shared-cell.env`
 layered on `compute-1g.env`, projects placed by `deploy/cell-admin` (its
 README holds the commands). Owner decisions: README "Shared cells Q0"-"Q10"
 (`docs/reviews/2026-09-hardening/`).
+
+**Kept awake.** The profile sets `KEEP_AWAKE=1` (the owner's public-beta
+answer (4) of 2026-10-11, "Keep awake"): the wrapper holds Compute's
+keep-awake guard for the process's life, so the cell does not sleep when
+idle and bills every hour it is up. Never set `KEEP_AWAKE_UNTIL_MS` on it
+(that ends the guard); `cell-admin` refuses a profile without the one or
+with the other.
 
 **Key custody.** One signing key per cell (RSA of 2,048 bits or more, or
 Ed25519), made offline, kept in one mode-0600 file on the operator's

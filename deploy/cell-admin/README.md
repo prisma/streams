@@ -26,6 +26,17 @@ and what must stay absent. In particular, no `FLEET_PREFIX`, no
 `FLEET_INTERNAL_TOKEN`, and no key for `prisma-streams-internal` in the
 keys feed, so nothing can open the cell's internal surface.
 
+The cell is kept awake (the owner's public-beta answer (4) of 2026-10-11,
+"Keep awake"). The profile sets `KEEP_AWAKE=1`, which the wrapper
+(`deploy/app-server/index.ts`), not the binary, reads: it holds Compute's
+keep-awake guard for the process's life, so the cell does not sleep when
+idle and its clients meet no wake after a quiet spell. Only a deploy or a
+restart boots it cold. `init`, and `admit`, which re-reads the profiles,
+refuse a profile that leaves `KEEP_AWAKE` unset or sets it to anything
+but `1`, or that sets `KEEP_AWAKE_UNTIL_MS` (which ends the guard at that
+instant); never set `KEEP_AWAKE_UNTIL_MS` per cell either. An awake cell
+bills for every hour it is up.
+
 The server installs its ceilings at boot from `PROJECT_SHARE_K`, the
 `CELL_ENVELOPE_*` values and the bounds the profile states; `cell-admin`
 derives the same ceilings and publishes every quota explicitly at or below

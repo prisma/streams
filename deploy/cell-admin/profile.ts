@@ -89,13 +89,21 @@ function requireValue(env: Map<string, string>, name: string, want: string): voi
 }
 
 /// A single-server shared cell's posture (PLAN section 1.2 shape (a)).
+/// It is kept awake for good (the owner's public-beta answer (4) of
+/// 2026-10-11, "Keep awake"): the wrapper (deploy/app-server/index.ts)
+/// holds Compute's keep-awake guard for KEEP_AWAKE=1, for the process's
+/// life unless KEEP_AWAKE_UNTIL_MS bounds it.
 function checkPosture(env: Map<string, string>): void {
   requireValue(env, "STREAMS_AUTH_MODE", "enforce");
   requireValue(env, "STREAMS_RELEASE_POSTURE", "1");
   requireValue(env, "BILLING_MODE", "required");
   requireValue(env, "ROLLUP", "1");
   requireValue(env, "INITIAL_SHARDS", "1");
-  for (const name of ["FLEET_PREFIX", "FLEET_INTERNAL_TOKEN", "WORKLOAD_TOKEN_FILE", "KEEP_AWAKE"]) {
+  requireValue(env, "KEEP_AWAKE", "1");
+  if (env.has("KEEP_AWAKE_UNTIL_MS")) {
+    throw new AdminError("profile sets KEEP_AWAKE_UNTIL_MS: a shared cell is kept awake for good");
+  }
+  for (const name of ["FLEET_PREFIX", "FLEET_INTERNAL_TOKEN", "WORKLOAD_TOKEN_FILE"]) {
     if (env.has(name)) {
       throw new AdminError(`profile sets ${name}: a single-server shared cell runs without it`);
     }
