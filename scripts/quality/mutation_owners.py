@@ -260,6 +260,9 @@ OWNERS = (
     owner('product_answers', 'src/product/answers.rs',
           'dst_tests::product_lifecycle:: dst_tests::consumer_product::'),
     owner('billing', 'src/billing.rs', 'billing'),
+    # The storage clock left src/billing.rs (no line headroom) for its own
+    # module; the row keeps it under mutation selection with billing's filter.
+    owner('billing_storage_clock', 'src/billing/storage_clock.rs', 'billing'),
     owner('billing_replaced', 'src/billing/replaced.rs',
           'dst_tests::billing_closure_debts:: dst_tests::billing_closure_owners:: '
           'dst_tests::billing_walk_custody:: dst_tests::billing_controller::'),

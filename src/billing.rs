@@ -37,6 +37,7 @@ pub(crate) use sweep_custody::SweepCustody;
 mod telemetry_loop;
 pub(crate) use telemetry_loop::spawn_telemetry;
 pub(crate) mod replaced;
+mod storage_clock;
 mod walk;
 
 // ---------------------------------------------------------------------
@@ -237,54 +238,6 @@ pub(crate) struct SegmentBillingMetaV1 {
 
     #[serde(default)]
     pub retained_by_forks: bool,
-}
-
-impl SegmentBillingMetaV1 {
-    pub(crate) fn month_byte_ms(&self) -> u128 {
-        self.month_storage_byte_ms.parse().unwrap_or(0)
-    }
-
-    /// Advance the storage integral to `now_ms`, splitting at UTC month
-    /// boundaries. Each closed month's final accumulators are handed to
-    /// `on_month_close` BEFORE the month fields reset — the committer
-    /// stages them into the usage outbox in the same WriteBatch.
-    pub(crate) fn advance_storage_clock(
-        &mut self,
-        now_ms: i64,
-        mut on_month_close: impl FnMut(&SegmentBillingMetaV1),
-    ) {
-        if self.storage_accounted_through_ms == 0 {
-            // First observation: start the clock, open the month.
-            let (y, m) = utc_year_month(now_ms);
-            self.storage_accounted_through_ms = now_ms;
-            self.month_year = y;
-            self.month_month = m;
-            return;
-        }
-        if now_ms <= self.storage_accounted_through_ms {
-            return;
-        }
-        loop {
-            let (ny, nm) = next_month(self.month_year, self.month_month);
-            let boundary = month_start_ms(ny, nm);
-            let upto = now_ms.min(boundary);
-            let dt = u128::try_from((upto - self.storage_accounted_through_ms).max(0)).unwrap_or(0);
-            let add = dt * self.owned_frame_bytes_current as u128;
-            let cur = self.month_byte_ms();
-            self.month_storage_byte_ms = (cur + add).to_string();
-            self.storage_accounted_through_ms = upto;
-            if upto < boundary {
-                return;
-            }
-            // Month closed: report final numbers, then open the next.
-            on_month_close(self);
-            self.month_year = ny;
-            self.month_month = nm;
-            self.month_ingest_payload_bytes = 0;
-            self.month_ingest_records = 0;
-            self.month_storage_byte_ms = "0".to_string();
-        }
-    }
 }
 
 /// What an append request carries so the committer can attribute its

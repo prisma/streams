@@ -894,6 +894,19 @@ before marking it complete."
   testing 79 of the 398 mutants it selected (11 MISSED); the fix push
   selected only its own diff, so the leg was run locally instead (377
   mutants on the fixed tree: 350 caught, 27 unviable).
+  Re-measured on 2026-10-11
+  when the storage clock left `src/billing.rs` (N2): 7,301 mutants over 181
+  owners; `billing` 375 -> 361 and the new `billing_storage_clock` 14, the
+  code that moved; the other fourteen changed counts are drift since 10-08.
+  **Open (found 2026-10-11, the owner's):** two storage-clock mutants still
+  run away, `src/billing/storage_clock.rs` 55:21 `<` -> `==` and `<` -> `>`
+  in `advance_storage_clock`'s loop exit, which then closes one month a turn
+  without end (each applied by hand, the `billing` filter at 4 threads:
+  6 GiB resident in 6 s; `src/billing.rs` 276:21 held the same two before
+  the move). A push that
+  changes the file selects both: the whole file is in its diff. A
+  `debug_assert_eq!(upto, boundary, ..)` before the month close, outside
+  the N2 decision, contains both (probed by hand: 21.4 s, 40 failed each).
 - **Deferred with reasons (2026-09-28):** the 83 `gap_lock` holders that
   serialize about 126 s of CI's 154 s suite (drop the lock test by test,
   loop each in the parallel suite); Kani recompiling the crate for every
