@@ -594,7 +594,7 @@ pub(crate) fn auth_failure_response(e: &crate::auth::AuthError) -> Response {
     let (status, msg, retryable) = match refusal {
         R::WrongCell => (
             StatusCode::MISDIRECTED_REQUEST,
-            "this cell does not serve the project; re-resolve the              project's endpoint (the credential itself is fine)",
+            "this cell does not serve the project; re-resolve the project's endpoint (the credential itself is fine)",
             false,
         ),
         R::FeedStale => (

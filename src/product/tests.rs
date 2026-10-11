@@ -350,7 +350,7 @@ async fn every_auth_refusal_keeps_its_response() {
     );
     const WRONG_CELL: (StatusCode, &str) = (
         StatusCode::MISDIRECTED_REQUEST,
-        "this cell does not serve the project; re-resolve the              project's endpoint (the credential itself is fine)",
+        "this cell does not serve the project; re-resolve the project's endpoint (the credential itself is fine)",
     );
     let denied = |message| (StatusCode::FORBIDDEN, message);
     let rows = [
