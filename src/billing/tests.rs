@@ -30,6 +30,12 @@ fn month_math_round_trips() {
         assert_eq!(next_month(py, pm), cur, "instant before {cur:?}");
         cur = next_month(cur.0, cur.1);
     }
+    // The century corrections: 2000-02-29 (a leap day of a year divisible
+    // by 400) is February, and March 1900 and 2100 (century years that are
+    // not leap years) start in March.
+    assert_eq!(utc_year_month(month_start_ms(2000, 3) - 1), (2000, 2));
+    assert_eq!(utc_year_month(month_start_ms(1900, 3)), (1900, 3));
+    assert_eq!(utc_year_month(month_start_ms(2100, 3)), (2100, 3));
     assert_eq!(parse_month("2026-08"), Some((2026, 8)));
     assert_eq!(parse_month("2026-13"), None);
     assert_eq!(parse_month("junk"), None);
