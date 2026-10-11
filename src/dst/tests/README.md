@@ -8,7 +8,7 @@ schedules, coverage requirements, assertions and test names were preserved.
 |---|---|
 | Persistence and durability | `persistence_faults`, `durability_failures`, `durability_fences` |
 | Producer ordering and handoff | `producer_protocol`, `producer_handoff` |
-| History absorption and budgets | `history_absorption`, `history_gather`, `history_recovery` |
+| History absorption and budgets (incl. a gather whose flush waits at the history L0 cap resumes once compaction frees a slot, within its 5 s manifest refresh, not at the 300 s poll: `history_absorption`) | `history_absorption`, `history_gather`, `history_recovery` |
 | Read protocols and visibility (incl. layout 5 pages: a fork whose boundary falls inside a parent's absorbed page, or inside a page its parent still holds in the shard-log tail, reads the parent exactly to the boundary: `reads_history`) | `reads_applied`, `reads_history`, `reads_product`, `reads_raw`, `reads_ring` |
 | Registry read classification (a store failure is retryable, corruption is final) | `product_descriptor_reads` |
 | JSON record fidelity (stored text, admission, identities, every read surface) | `json_fidelity` |

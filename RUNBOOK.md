@@ -978,6 +978,7 @@ declares load.
 | read memory | `/operator/data.json` `local.read_memory_bytes` / `local.read_memory_capacity_bytes` | above 80 % for 5 min: neighbours' reads are waiting, then `503 read_memory_busy` |
 | RSS at idle | `local.rss_mb` vs `local.rss_shed_mb` | above the shed line with no load (NEXT-WORK 14.7, "Shared cells Q0"): every tenant's writes are shed |
 | instance and shard sheds | `local.admit_shed`; `/v1/debug/load` `admit_shed_rss` and `maintenance_backpressure` (`appends_shed`, `cause`) | any growth: look at the largest writers (per-project attribution is phase B) |
+| history flush wait | `_ops_metrics` gauge `history_flush_wait_ms_max` (the peak since the previous snapshot; a gather's flush that waits raises it every 5 s) | above 30,000: a gather has waited 30 s at the history L0 cap because compaction frees no slot (one long sorted-run merge on the only compaction slot, or failing compactions), and with one gather permit (`ABSORB_GLOBAL_GATHERS=1`) no shard absorbs meanwhile. Check `history_l0_ssts_max` (64 is the cap) and `history_compacted_runs_max`; detail `GET /v1/debug/absorb` |
 | parked waits | `local.parked` | near `SSE_MAX_CONNECTIONS` (1,200): waits stop parking |
 | reserved policies | `/v1/debug/auth` `feeds.policies.reservedDropped` | above 0: a feed names the system project, `PROJECT_ID` or `ACCOUNT_ID` |
 | unowned usage | `unowned_meter_events_total` | not flat: usage billed to the cell's `ACCOUNT_ID` sink |

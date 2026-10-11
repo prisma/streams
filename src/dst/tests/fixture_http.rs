@@ -800,3 +800,38 @@ pub(super) async fn http_rig_owner_whole(
     )
     .await
 }
+
+/// The history partition of an open shard whose L0 is at its 64-slot cap
+/// as the database last saw it and whose memtable holds a write no flush
+/// has made durable: the state a gather's flush and a final flush wait in.
+pub(super) async fn waiting_at_its_cap(state: &crate::http::AppState) -> Option<Arc<slatedb::Db>> {
+    for engine in state.shards.engines() {
+        let Some(history) = engine.history_partition_if_open() else {
+            continue;
+        };
+        if history.manifest().l0().len() >= 64
+            && rows(&history, slatedb::config::DurabilityLevel::Memory).await
+                > rows(&history, slatedb::config::DurabilityLevel::Remote).await
+        {
+            return Some(history);
+        }
+    }
+    None
+}
+
+/// The rows a scan of `db` at `durability_filter` sees.
+pub(super) async fn rows(
+    db: &slatedb::Db,
+    durability_filter: slatedb::config::DurabilityLevel,
+) -> usize {
+    let options = slatedb::config::ScanOptions {
+        durability_filter,
+        ..Default::default()
+    };
+    let mut scan = db.scan_with_options(.., &options).await.unwrap();
+    let mut rows = 0;
+    while scan.next().await.unwrap().is_some() {
+        rows += 1;
+    }
+    rows
+}

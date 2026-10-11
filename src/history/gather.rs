@@ -23,6 +23,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+mod flush_wait;
+
 /// Rough WriteBatch bookkeeping cost per entry, on top of key+value.
 const ENTRY_OVERHEAD: usize = 64;
 
@@ -649,7 +651,10 @@ impl Absorber {
             // nothing.
             tokio::time::sleep(Duration::from_millis(stall)).await;
         }
-        part.flush().await?; // wal off => memtable -> L0, manifest published
+        // wal off => memtable -> L0, manifest published. A flush waiting at
+        // the L0 cap refreshes the manifest every 5 s, so it resumes once
+        // compaction frees a slot, not at the 300 s poll.
+        flush_wait::flush_refreshing(part, flush_wait::REFRESH_AFTER).await?;
         // Flush wait is the review's leading indicator: when history L0
         // approaches its cap, THIS is what starts blocking.
         let flush_ms = millis(t_flush.elapsed());

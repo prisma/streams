@@ -525,3 +525,53 @@ async fn tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch() {
         .expect("fat stream readable after absorption");
     absorber.abort();
 }
+
+/// S1, decided under the owner's delegation of 2026-10-11 to Fable 5.1: a
+/// gather whose flush waits at the history L0 cap resumes once compaction
+/// frees a slot, not at the partition's next manifest poll (300 s). The
+/// rig's absorber gathers every 20 ms and each gather flushes one L0 SST,
+/// so a burst of appends fills a partition's 64 slots before its compactor
+/// frees one. Once a gather's write waits there, every row the memtable
+/// holds is durable within 20 s and the Db's view of L0 is below the cap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_gather_waiting_at_the_history_l0_cap_resumes_when_compaction_frees_a_slot() {
+    use super::fixture_http::{HttpRigOptions, http_rig_build, rows, waiting_at_its_cap};
+    use slatedb::config::DurabilityLevel::{Memory, Remote};
+    let rig = http_rig_build(
+        mem(),
+        super::fixture_runtime::RigRuntime::first(),
+        HttpRigOptions::default(),
+    )
+    .await;
+    let json = [("content-type", "application/json")];
+    let mut streams = 0;
+    let history = loop {
+        assert!(streams < 1_000, "no gather's write waited at an L0 cap");
+        let path = format!("/v1/stream/capped-{streams}");
+        let created = super::fixture_requests::hreq(rig.addr, "PUT", &path, &json, b"").await;
+        assert_eq!(created.0, 201);
+        let body = br#"[{"n":1}]"#;
+        let appended = super::fixture_requests::hreq(rig.addr, "POST", &path, &json, body).await;
+        assert_eq!(appended.0, 204);
+        streams += 1;
+        if let Some(history) = waiting_at_its_cap(&rig.state).await {
+            break history;
+        }
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let (memory, remote) = (rows(&history, Memory).await, rows(&history, Remote).await);
+        let l0 = history.manifest().l0().len();
+        if memory == remote && l0 < 64 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the gather's flush still waited after 20 s: {l0} L0 in the Db's view, {} \
+             memtable-only rows",
+            memory.saturating_sub(remote)
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    rig.shutdown().await;
+}

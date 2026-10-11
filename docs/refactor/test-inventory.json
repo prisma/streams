@@ -823,6 +823,17 @@
     "scenarios": []
   },
   {
+    "name": "a_gather_waiting_at_the_history_l0_cap_resumes_when_compaction_frees_a_slot",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d01c3c7ffc474d8b3d462abeb46eaf78af3c1929d4f0987755e65dca9dd37c06",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/history_absorption.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_graceful_stop_cuts_a_wedged_terminal_round_at_five_seconds",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
