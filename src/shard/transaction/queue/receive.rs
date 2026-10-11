@@ -113,12 +113,6 @@ impl CommitTransaction<'_> {
                 leased.push((off, lease.lease_gen, lease.delivery_count, kh));
                 off += 1;
             }
-            while cs.acked.remove(&cs.cursor) {
-                self.batch
-                    .delete(ack_key(&hash, &consumer, cgen, cs.cursor));
-                cs.cursor += 1;
-                self.extra_writes = true;
-            }
             self.batch
                 .put(cursor_key(&hash, &consumer, cgen), cs.cursor.to_le_bytes());
             let backlog = (local.fields.next - cs.cursor).saturating_sub(cs.acked.len() as u64);
