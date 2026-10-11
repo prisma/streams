@@ -11,7 +11,7 @@ use super::{
     CheckedPage, PAGE_MAX_RECORDS, PageCipher, PageLane, SHARD_PAGE_TAG, SealError, SealRecord,
     SealedPage, history_page_key, shard_page_key,
 };
-use crate::crypto::{MAX_RECORD_PLAINTEXT, RouteHash, SegmentHash, StreamKey, derive_subkey};
+use crate::crypto::{MAX_RECORD_PLAINTEXT, RouteHash, SegmentHash, StreamKey, derive_subkey, hex};
 
 pub(super) const SEGMENT: [u8; 16] = [0x22; 16];
 pub(super) const HASH: [u8; 16] = [0x44; 16];
@@ -516,25 +516,37 @@ fn row_keys_are_namespace_tag_and_last_offset() {
     assert_eq!(admitted.unwrap(), admit(page));
 }
 
+/// The writer's bytes are pinned at every width from one group to ten.
+/// Production writes at most four (a length up to 32 MiB; one request's
+/// records share a timestamp, so every delta is 0), so this test alone
+/// covers the wider ones.
 #[test]
 fn varints_are_minimal_leb128_and_refuse_every_other_spelling() {
     let read = |bytes: &[u8]| {
         let mut input = bytes;
         get_varint(&mut input).map(|value| (value, input.len()))
     };
-    for value in [
-        0,
-        1,
-        127,
-        128,
-        16_383,
-        16_384,
-        1 << 28,
-        u64::MAX >> 1,
-        u64::MAX,
+    for (value, spelling) in [
+        (0, "00"),
+        (1, "01"),
+        (127, "7f"),
+        (128, "8001"),
+        (16_383, "ff7f"),
+        (16_384, "808001"),
+        (1 << 21, "80808001"),
+        (1 << 28, "8080808001"),
+        (1 << 35, "808080808001"),
+        ((1 << 42) - 1, "ffffffffff7f"),
+        (1 << 42, "80808080808001"),
+        ((1 << 49) - 1, "ffffffffffff7f"),
+        (1 << 49, "8080808080808001"),
+        ((1 << 56) - 1, "ffffffffffffff7f"),
+        (u64::MAX >> 1, "ffffffffffffffff7f"),
+        (u64::MAX, "ffffffffffffffffff01"),
     ] {
         let mut encoded = Vec::new();
         put_varint(&mut encoded, value);
+        assert_eq!(hex(&encoded), spelling, "{value}");
         assert_eq!(encoded.len(), varint_len(value), "{value}");
         encoded.push(0xee);
         assert_eq!(
