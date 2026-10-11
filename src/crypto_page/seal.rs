@@ -18,6 +18,14 @@ use super::{
 /// PAGE_MAX_RECORDS; a record whose body alone is larger is a page by itself.
 /// Every page takes at least its first record, so each turn shortens what
 /// is left and the cut always ends.
+///
+/// Order is checked only between records one turn reads: a record older
+/// than the one before it is TimestampOrder inside a page and when it is
+/// the record that did not fit, but after a record that is a page by itself
+/// or after PAGE_MAX_RECORDS records the next page starts without comparing
+/// it, and the cut is Ok. seal_request, its one production caller, refuses
+/// any request whose timestamps go back before it cuts; a direct caller
+/// must do the same.
 pub(crate) fn split_pages<'r, 'a>(
     records: &'r [SealRecord<'a>],
 ) -> Result<Vec<&'r [SealRecord<'a>]>, SealError> {
