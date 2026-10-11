@@ -65,7 +65,7 @@ impl CommitTransaction<'_> {
             let mut blocked: std::collections::HashSet<[u8; 16]> = cs
                 .leases
                 .values()
-                .filter(|l| l.deadline_ms > now)
+                .filter(|l| l.holds_key_at(now))
                 .map(|l| l.key_hash)
                 .collect();
             let mut off = cs.cursor;
@@ -123,6 +123,14 @@ impl CommitTransaction<'_> {
             }
         };
         self.effects.queue_acks.push((resp, Ok(out)));
+    }
+}
+impl Lease {
+    /// A lease holds its key strictly before its deadline, never at it: the
+    /// verdict `pull_wait::consumer_digest` wakes on, so a pull woken in the
+    /// deadline millisecond finds the key open.
+    pub(crate) fn holds_key_at(&self, now_ms: i64) -> bool {
+        self.deadline_ms > now_ms
     }
 }
 #[cfg(test)]

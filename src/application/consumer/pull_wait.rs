@@ -180,7 +180,7 @@ fn consumer_digest(cs: &crate::queue::ConsumerState, now_ms: i64) -> (u64, Optio
     let mut next = None;
     for (offset, lease) in &cs.leases {
         (offset, lease.deadline_ms, lease.lease_gen).hash(&mut digest);
-        if lease.deadline_ms > now_ms {
+        if lease.holds_key_at(now_ms) {
             next = next.into_iter().chain([lease.deadline_ms]).min();
         }
     }

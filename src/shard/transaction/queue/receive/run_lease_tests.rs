@@ -5,7 +5,7 @@
 //! record in any order; an expired run is delivered again from its lowest
 //! unacked offset; max-deliveries poison is judged per record, only while
 //! its key is open, the lowest poisoned record of a key per Receive.
-use crate::queue::{self, QueueOp, QueueOut};
+use crate::queue::{self, Lease, QueueOp, QueueOut};
 use crate::shard::{AbsorbSignal, AppendFinish, AppendReq, ShardConfig, ShardEngine};
 use bytes::Bytes;
 use std::collections::HashMap;
@@ -425,4 +425,20 @@ async fn a_record_delivered_twice_goes_alone_until_settled_and_its_run_resumes_a
     assert_eq!(rig.lease_row(3).await, None, "acked");
     assert_eq!(rig.lease_row(5).await, Some((1, 1, a)));
     rig.close().await;
+}
+
+/// The receive that blocks a key and the long-poll waiter that wakes on
+/// the key's deadline agree on one verdict: the key is held strictly
+/// before the deadline and open at it.
+#[test]
+fn a_lease_holds_its_key_until_its_deadline_and_not_at_it() {
+    let lease = Lease {
+        deadline_ms: 1_000,
+        delivery_count: 1,
+        lease_gen: 1,
+        key_hash: [1; 16],
+    };
+    assert!(lease.holds_key_at(999));
+    assert!(!lease.holds_key_at(1_000));
+    assert!(!lease.holds_key_at(1_001));
 }
