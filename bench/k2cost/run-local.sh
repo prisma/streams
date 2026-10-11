@@ -77,8 +77,6 @@ CELL=cell-k2
 # Defaults; a value from the caller's environment survives into the point
 # file, so ${VAR:-default} in a point can be overridden per run.
 S3LITE_LATENCY_MS=${S3LITE_LATENCY_MS:-20}
-# L6 spike (review B4): s3lite's PUT/UploadPart body bandwidth, bytes/s (0 = uncapped).
-S3LITE_PUT_BPS=${S3LITE_PUT_BPS:-0}
 SERVERS=${SERVERS:-1}
 SERVER_ENV_EXTRA=${SERVER_ENV_EXTRA:-}
 PHASES=${PHASES:-}
@@ -93,6 +91,9 @@ POINT_NAME=${POINT_NAME:-}
 # shellcheck source=/dev/null
 . "$POINT"
 [ -n "$POINT_NAME" ] || POINT_NAME=$(basename "$POINT" .env)
+# L6 spike (review B4): s3lite's PUT/UploadPart body bandwidth, bytes/s
+# (0 = uncapped); defaulted after the point, so a point's default wins.
+S3LITE_PUT_BPS=${S3LITE_PUT_BPS:-0}
 case "$SERVERS" in 1|2) ;; *) echo "run-local: SERVERS must be 1 or 2" >&2; exit 2 ;; esac
 
 for bin in streams-slate s3lite pilot; do
