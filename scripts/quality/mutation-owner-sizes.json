@@ -140,6 +140,7 @@
     "shard_directory": 51,
     "shard_lifecycle": 20,
     "sharddir": 62,
+    "sharddir_adoption": 6,
     "sharddir_health": 13,
     "sharddir_holdoff": 8,
     "sharddir_unwind": 3,

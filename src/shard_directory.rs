@@ -106,8 +106,8 @@ pub(crate) enum RetireOutcome {
 /// The shard directory: the topology prefixes, the serving map, the
 /// single-flight open gate and the ownership policy, behind narrow
 /// methods. Resolution policy (possession yields to the ring, external
-/// adoption stamps under the READ guard, single-flight bounded opens)
-/// lives here; no caller reaches the map.
+/// adoption stamps under the READ guard or at the open's publication,
+/// single-flight bounded opens) lives here; no caller reaches the map.
 #[derive(Clone)]
 pub(crate) struct ShardDirectory {
     inner: Arc<DirInner>,
@@ -286,20 +286,15 @@ impl ShardDirectory {
         // continues in its own task regardless of what this request does
         // — the caller only ever gets a retryable refusal, never the
         // power to abandon or duplicate an open (the eu-central-1 storm).
+        // R29: a customer who joins (or races) an open the sweep started is
+        // adopted at its publication (`sharddir::adoption`).
         match self
             .inner
             .gate
-            .get_or_open(&prefix, self.inner.open_wait)
+            .get_or_open_as(&prefix, self.inner.open_wait, external)
             .await
         {
-            OpenOutcome::Ready(engine) => {
-                // R29: a customer who coalesced into (or raced) an open
-                // the sweep started still counts as external adoption.
-                if external {
-                    crate::billing::stamp_external(&engine);
-                }
-                Ok(engine)
-            }
+            OpenOutcome::Ready(engine) => Ok(engine),
             OpenOutcome::Wait {
                 code,
                 retry_after_secs,

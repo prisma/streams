@@ -79,6 +79,8 @@ struct OpenCounters {
     reaped: AtomicU64,
 }
 
+/// A customer's open: its adoption is stamped at publication (R29).
+mod adoption;
 mod health;
 pub(crate) use health::ShardHealth;
 /// The anti-flap ledger's verdict on a departure: evidence, or a release.
@@ -258,9 +260,29 @@ struct PrefixGate {
     /// When the currently-serving engine was opened (for lifetime-based
     /// strike reset on close).
     opened_at: Option<Instant>,
+    /// Customers resolving this prefix through the gate (`adoption`): an
+    /// engine published while any waits is adopted before anyone sees it.
+    external_waiters: u32,
 }
 
 impl PrefixGate {
+    /// The open of `engine` lands as the prefix's resident. R29: with a
+    /// customer waiting it is stamped as adopted here, under the gate state
+    /// and the serving map's write guard, before the publication wakes any
+    /// subscriber, so the billing sweep that started the open cannot take
+    /// custody of it.
+    fn published(&mut self, engine: &Arc<ShardEngine>, incarnation: EngineIncarnation) -> Resident {
+        self.opened_at = Some(Instant::now());
+        self.holdoff_until = None;
+        if self.external_waiters > 0 {
+            crate::billing::stamp_external(engine);
+        }
+        Resident {
+            engine: engine.clone(),
+            incarnation,
+        }
+    }
+
     /// The holdoff's answer at `now`: `shard_moving` with the whole seconds
     /// left (at least one) while it runs, `None` once it has run out.
     fn holdoff_verdict(&self, now: Instant) -> Option<OpenOutcome> {
@@ -912,15 +934,11 @@ fn publish_open(
             gate.closing = Some(engine.shutdown_handle());
             true
         } else {
-            inner.shards.write().unwrap().insert(
-                prefix.to_string(),
-                Resident {
-                    engine: engine.clone(),
-                    incarnation,
-                },
-            );
-            gate.opened_at = Some(Instant::now());
-            gate.holdoff_until = None;
+            inner
+                .shards
+                .write()
+                .unwrap()
+                .insert(prefix.to_string(), gate.published(&engine, incarnation));
             false
         }
     };

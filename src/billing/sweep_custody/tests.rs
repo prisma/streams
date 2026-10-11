@@ -24,13 +24,15 @@ impl CustodyWord for loom::sync::atomic::AtomicU64 {
 }
 
 /// Item 63: a customer's stamp and a sweep's install race with nothing
-/// ordering them (the gate's Ready path stamps outside the map guard, and
-/// the install holds none). Whatever the interleaving, once both have
-/// returned the sweep must not hold custody: custody over external history
-/// lets a later debt-free sweep retire an engine a customer adopted. One
-/// spawned stamper plus the installing model thread, preemption bound 2.
-/// The close CAS runs under the directory's write guard and stays covered
-/// by the DST revoked-close rig; it is not modelled here.
+/// ordering them (a customer resolving a resident engine stamps under the
+/// serving map's read guard, and the install holds none). Whatever the
+/// interleaving, once both have returned the sweep must not hold custody:
+/// custody over external history lets a later debt-free sweep retire an
+/// engine a customer adopted. One spawned stamper plus the installing model
+/// thread, preemption bound 2. The close CAS runs under the directory's
+/// write guard and stays covered by the DST revoked-close rig and, for a
+/// customer that joined the sweep's open, by `sharddir::open_gate_tests`;
+/// it is not modelled here.
 #[test]
 fn quality_loom_external_stamp_never_coexists_with_custody() {
     use loom::sync::Arc;

@@ -54,8 +54,12 @@ impl CustodyWord for std::sync::atomic::AtomicU64 {
 ///     in-flight open) makes the install DECLINE, closing the
 ///     pre-mark window the R28 baseline model left open;
 ///   * an external resolution atomically revokes custody
-///     (`stamp_external`) — from the gate's Ready path outside the
-///     serving map's guard, so the handshake, not a lock, orders it;
+///     (`stamp_external`): at the publication of an open it waited on,
+///     before the sweep that started the open sees the engine, or under
+///     the serving map's read guard while the engine is still resident
+///     (`sharddir::adoption`). No lock orders that stamp against the
+///     install, so the handshake does; the close's write guard orders it
+///     against the close;
 ///   * internal paths (tombstone walk, scaler) never stamp, so
 ///     maintenance cannot leak an engine out of the rotation;
 ///   * a close succeeds only via compare_exchange on the installer's

@@ -98,6 +98,7 @@ OWNERS = (
     owner('sharddir', 'src/sharddir.rs', 'sharddir::'),
     owner('sharddir_unwind', 'src/sharddir/unwind.rs', 'sharddir::'),
     owner('sharddir_holdoff', 'src/sharddir/holdoff.rs', 'sharddir::'),
+    owner('sharddir_adoption', 'src/sharddir/adoption.rs', 'sharddir::'),
     owner('crypto', 'src/crypto.rs', 'crypto::'),
     owner('tail_ring', 'src/shard/tail_ring.rs', 'shard:: dst_tests::reads_ring::'),
     owner('tail_ring_tests', 'src/shard/tail_ring_tests.rs', 'shard:: dst_tests::reads_ring::'),

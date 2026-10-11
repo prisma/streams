@@ -8,9 +8,11 @@
 #![cfg(test)]
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
-use std::task::{Context, Waker};
+use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use tokio::sync::watch;
@@ -23,7 +25,9 @@ use super::{
 use crate::config::ShardRuntimeConfig;
 use crate::runtime::{Clock, ManualClock};
 use crate::shard::ShardEngine;
-use crate::shard_directory::{OpenTiming, RetirementReason, ShardDirectory};
+use crate::shard_directory::{
+    Adoption, OpenTiming, ResolveError, RetireOutcome, RetirementReason, ShardDirectory,
+};
 use crate::tasks::{Policy, TaskOutcome, TaskState, TaskStatus, TaskSupervisor};
 
 const PREFIX: &str = "0";
@@ -654,4 +658,182 @@ fn the_holdoff_turns_callers_away_until_its_deadline_and_not_at_it() {
         None,
         "no holdoff armed"
     );
+}
+
+/// The route hash of `PREFIX` in `held_directory`'s topology ("0" and "1").
+const IN_PREFIX: [u8; 16] = [0; 16];
+
+/// A resolution, pinned so the test decides when it runs again.
+type Resolution<'a> = Pin<Box<dyn Future<Output = Result<Arc<ShardEngine>, ResolveError>> + 'a>>;
+
+fn poll_once<F: Future + ?Sized>(future: Pin<&mut F>) -> Poll<F::Output> {
+    future.poll(&mut Context::from_waker(Waker::noop()))
+}
+
+/// A directory over two prefixes whose opens wait for the returned release.
+fn held_directory() -> (ShardDirectory, watch::Sender<bool>) {
+    let (release, released) = watch::channel(false);
+    let opener = scripted_opener(Script::Held, Arc::new(AtomicUsize::new(0)), released);
+    let directory = ShardDirectory::new(
+        vec![PREFIX.to_string(), "1".to_string()],
+        crate::ownership::OwnershipService::new(""),
+        OpenTiming {
+            open_deadline: OPEN_DEADLINE,
+            open_wait: OPEN_WAIT,
+        },
+        |_notifier| opener,
+    );
+    (directory, release)
+}
+
+/// The billing sweep's discovery open of `PREFIX` (`open_or_wait`, phase 2 of
+/// `sweep_owned_outboxes`) starts, a resolution with `adoption` joins it, and
+/// the open lands: the sweep, woken by the same publication, holds the engine
+/// before the resolution runs again, as a busy runtime may order the two.
+async fn join_the_sweeps_open<'a>(
+    dir: &'a ShardDirectory,
+    release: &watch::Sender<bool>,
+    adoption: Adoption,
+) -> (Arc<ShardEngine>, Resolution<'a>) {
+    let mut sweep = Box::pin(dir.open_or_wait(PREFIX, OPEN_WAIT));
+    assert!(
+        poll_once(sweep.as_mut()).is_pending(),
+        "the sweep's open waits for its release"
+    );
+    let mut joined: Resolution<'a> = Box::pin(dir.resolve(&IN_PREFIX, adoption));
+    assert!(
+        poll_once(joined.as_mut()).is_pending(),
+        "the resolution waits on the sweep's open"
+    );
+    assert_eq!(
+        dir.open_stats()["coalesced"],
+        1,
+        "the resolution joined the sweep's open"
+    );
+    release.send_replace(true);
+    let engine = ready(
+        tokio::time::timeout(OPEN_WAIT, sweep)
+            .await
+            .expect("the sweep's open lands"),
+    );
+    (engine, joined)
+}
+
+/// R29's promise: a customer that joins the sweep's open is adoption before
+/// the sweep sees the engine, so the sweep's custody install declines, its
+/// close keeps the engine, and the customer is served by that very engine.
+/// The customer's interest ends with its call: the prefix's next open, with
+/// no customer waiting, is the sweep's to take. Kills `PrefixGate::published`
+/// with its stamp skipped (`> with <`) and `ExternalInterest::drop with ()`.
+#[tokio::test(flavor = "current_thread")]
+async fn a_customer_that_joins_the_sweeps_open_keeps_the_engine_and_the_sweep_cannot_take_custody()
+{
+    let (dir, release) = held_directory();
+    let (engine, customer) = join_the_sweeps_open(&dir, &release, Adoption::External).await;
+    // The sweep's next steps, before the customer runs again: `mark`, then
+    // `close_scheduler_engine`'s custody CAS under the directory's guard.
+    assert!(
+        !engine.sweep_custody.install(7),
+        "the sweep took custody of an engine a customer had joined the open of"
+    );
+    assert!(
+        matches!(
+            dir.retire(PREFIX, RetirementReason::SweepEviction, |e, _| {
+                e.sweep_custody.revoke_if(7)
+            }),
+            RetireOutcome::Kept
+        ),
+        "the sweep's close retired the customer's engine"
+    );
+    let served = tokio::time::timeout(OPEN_WAIT, customer)
+        .await
+        .expect("the customer answers")
+        .expect("the customer is served");
+    assert!(
+        Arc::ptr_eq(&served, &engine),
+        "served by the engine it joined"
+    );
+    assert!(!served.is_closed(), "an open engine");
+    assert_eq!(engine.sweep_custody.value(), 0, "no custody over it");
+    assert!(dir.is_open(PREFIX), "it stays resident");
+
+    assert!(matches!(
+        dir.retire(PREFIX, RetirementReason::Shutdown, |_, _| true),
+        RetireOutcome::Retired(_)
+    ));
+    dir.clear_holdoff(PREFIX);
+    let next = ready(dir.open_or_wait(PREFIX, OPEN_WAIT).await);
+    assert!(!Arc::ptr_eq(&next, &engine), "a new incarnation");
+    assert!(
+        next.sweep_custody.install(8),
+        "an open no customer waited on was stamped as adopted"
+    );
+    next.begin_close();
+}
+
+/// The defect: a customer that joined an open is never handed the engine a
+/// retirement removed before the customer ran again (the sweep's close once
+/// its install won, or any unconditional retirement), whether the prefix is
+/// then empty or a replacement already serves it. It gets the retired
+/// prefix's refusal, `shard_closing` with Retry-After 1, as a caller that
+/// arrives during the close does. Kills the residency check in
+/// `OpenGate::get_or_open_as` (`Arc::ptr_eq` -> `true` with the replacement).
+#[tokio::test(flavor = "current_thread")]
+async fn a_customer_is_never_handed_an_engine_retired_before_it_resumed() {
+    for replaced in [false, true] {
+        let (dir, release) = held_directory();
+        let (engine, customer) = join_the_sweeps_open(&dir, &release, Adoption::External).await;
+        assert!(matches!(
+            dir.retire(PREFIX, RetirementReason::Shutdown, |_, _| true),
+            RetireOutcome::Retired(_)
+        ));
+        let replacement = if replaced {
+            dir.clear_holdoff(PREFIX);
+            Some(ready(dir.open_or_wait(PREFIX, OPEN_WAIT).await))
+        } else {
+            None
+        };
+        let outcome = tokio::time::timeout(OPEN_WAIT, customer)
+            .await
+            .expect("the customer answers");
+        assert_eq!(
+            outcome.map(|served| served.is_closed()),
+            Err(ResolveError::Opening {
+                prefix: PREFIX.to_string(),
+                code: "shard_closing",
+                retry_after_secs: 1,
+            }),
+            "a customer was handed the engine a retirement closed before it resumed \
+             (a replacement serving: {replaced})"
+        );
+        assert!(engine.is_closed());
+        if let Some(replacement) = replacement {
+            assert!(!replacement.is_closed(), "the replacement keeps serving");
+            replacement.begin_close();
+        }
+    }
+}
+
+/// The contrast: an internal resolution (the scaler, the tombstone walk) that
+/// joins the sweep's open never stamps, even once it holds the engine, so the
+/// engine stays in the sweep's rotation. Kills `PrefixGate::published`'s
+/// `> with >=` and `> with ==`, and `delete !` in `OpenGate::get_or_open_as`.
+#[tokio::test(flavor = "current_thread")]
+async fn an_internal_resolution_that_joins_the_sweeps_open_leaves_custody_to_the_sweep() {
+    let (dir, release) = held_directory();
+    let (engine, internal) = join_the_sweeps_open(&dir, &release, Adoption::Internal).await;
+    let served = tokio::time::timeout(OPEN_WAIT, internal)
+        .await
+        .expect("the internal resolution answers")
+        .expect("it is served");
+    assert!(Arc::ptr_eq(&served, &engine));
+    assert!(
+        !engine.sweep_custody.externally_resolved(),
+        "an internal resolution stamped adoption"
+    );
+    assert!(
+        engine.sweep_custody.install(7),
+        "an internal resolution took the engine out of the sweep's rotation"
+    );
+    engine.begin_close();
 }
