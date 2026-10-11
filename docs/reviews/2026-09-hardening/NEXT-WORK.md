@@ -9,6 +9,7 @@ previous session.
 
 Contents:
 
+- [Public beta (decided 2026-10-11)](#public-beta-decided-2026-10-11)
 - [0. How work is done in this repository](#0-how-work-is-done-in-this-repository)
 - [1. Composed test: a refused chain's overlapping pages read exactly](#1-composed-test-a-refused-chains-overlapping-pages-read-exactly)
 - [2. Closure debts: a paging bug and missing tests](#2-closure-debts-a-paging-bug-and-missing-tests)
@@ -24,6 +25,334 @@ Contents:
 - [12. Formal verification: new obligations and what blocks them](#12-formal-verification-new-obligations-and-what-blocks-them)
 - [13. Configuration: fewer settings, and defaults that are what production runs](#13-configuration-fewer-settings-and-defaults-that-are-what-production-runs)
 - [14. K2 parity: storage layout 5, fewer uploads, shared cells](#14-k2-parity-storage-layout-5-fewer-uploads-shared-cells)
+
+---
+
+## Public beta (decided 2026-10-11)
+
+The owner answered the public-beta decision list on 2026-10-11 (README,
+"Owner decisions", row "Public beta (decided 2026-10-11)", which quotes his
+eleven answers and states in full the two calls he left to the lead). The
+work list below is drawn from the read-only gap analysis of 50fab9d9 made
+the same day (`~/.streams-k2/analysis/public-beta-gap.json` on the owner's
+machine): its blockers that remain under these answers, in the order to
+start them. Sizes are the sources' where the analysis cites one; no
+calendar sum is given. PLAN and DECISIONS are the shared-cells notes under
+`~/.streams-k2/analysis/shared-cells/` (14's working notes).
+
+### What the public beta is
+
+- **Admission:** self-serve behind a Prisma Console feature flag: the
+  accounts the flag whitelists sign up and serve themselves. The owner:
+  "Self serve behind a feature flag - so we whitelist a number of accounts
+  on Prisma Console who can then self serve".
+- **Billing:** metered, not charged ("metered but not charged"): usage is
+  metered and exported as today, and nothing is invoiced.
+- **Storage:** layout 6 first ("layout 6 first"): the beta opens on design
+  B, "WAL plus one copy" (14.2, item 3); layout 5 data is not carried
+  over, since no user stores any.
+- **Cells:** one server per cell, kept awake, on the current Compute
+  generation ("Keep awake"; "single server on the existing generation").
+- **Credentials:** an interim token issuer that Streams builds, deployable
+  with Prisma Composer together with Streams ("Build interim one - make it
+  something I can deploy with Prisma Composer together with streams.").
+- **No external security review before the beta** ("not required").
+  READINESS.md and MULTITENANCY.md §20 are amended (r8), not deleted; the
+  GA criterion's text is unchanged.
+- **Production target:** the owner provides the workspace, region and
+  buckets later ("I will provide this later.").
+- **Decided by the lead under the owner's "you decide" of 2026-10-11, not
+  by the owner:** which legs certify a single-server, fleet-off release
+  candidate (question 7), and the mutation-campaign hold for the beta and
+  N6 (question 10). The README row states both in full; items 10-12 below
+  carry them out.
+
+### What these answers retire
+
+Each is retired for the public beta; where it returns is noted.
+
+- **The wake 404 and W1's wake window.** A kept-awake cell does not wake,
+  so the edge's 404 while an instance wakes (RUNBOOK) needs neither the
+  new Compute generation nor an SDK or raw-client 404-retry rule, and W1
+  is settled with no code change (the lead's reading, README row "W1"):
+  its `503` window remains only after a deploy or a restart. A cell that
+  sleeps meets both again.
+- **The external security review** (READINESS's public-preview condition,
+  MULTITENANCY Stage 8 and §20), waived for the beta by the owner.
+- **The layout-5 data-reset notice** (README "Shared cells Q6" (c) waived
+  it for the first cell, "settled by no users"): with layout 6 first no
+  beta user stores layout-5 data, and no 5-to-6 migration path is needed.
+- **Invoicing, for now:** the produce meter (stored bytes written), the
+  1 KiB minimum per append (14.1, "Needs code"), invoice export and
+  live-month reconciliation (READINESS, "Billing") are not beta gates.
+  They come before the first month anyone intends to invoice and cannot be
+  back-filled: no monotonic stored-bytes-written record exists, and a
+  per-request minimum cannot be derived from monthly totals.
+- **The new Compute generation for one server.** It stays the
+  precondition of multi-server cells (14.5); the asks that bind one server
+  (the connection cap, long-lived unbuffered responses) are measured in
+  the Q5 run instead (item 9).
+- **The split and core packages** (14.5, 14.6): before the first
+  multi-server cell, not before the beta.
+- **The fleet-only certification legs** for a single-server release
+  candidate (handoff, the LiveFeed fleet certification, the canary's fleet
+  arm, post-split capacity scaling as product evidence), by the lead's
+  call on question 7.
+- **The whole-range mutation campaign as the beta's hold:** a scoped
+  campaign holds the beta (item 12); the whole range stays the hold for
+  the multi-server public launch (the lead's call on question 10).
+
+### Work list, in order
+
+Items 1-7 can start now and run in parallel; item 8 is the owner's and
+gates the field runs; items 9-12 certify the release candidate, and since
+the lead's call on question 7 runs every certifying leg on the exact
+x86_64-musl RC binary, they follow layout 6 (item 2); items 13-18 run
+alongside and finish before admission opens.
+
+1. **Q0, RSS after a load** (README "Shared cells Q0"; 14.7). After a load
+   RSS stays at 499-562 MB, above the 500 MB shed line, so an idle server
+   sheds every tenant's writes. Re-measure on the current binary (the
+   figure predates layout 5), take the heap profile, fix the retention;
+   layout 5's heap profiles and single-record rerun fold in (14.8). Size:
+   unestimated until the profile exists. Who: engineering; memory
+   acceptance is the owner's. Keeping the cell awake also makes F1's climb
+   bind (+4.07 MB/h on the rollup owner in the F1 field run, unmeasured on
+   the launch shape; at that rate an awake cell crosses the shed line in
+   about 4-5 days): SC0-1s (item 9) gains an RSS-slope bar over its whole
+   72 h with the cell awake (the lead's reading); if the climb reproduces,
+   it is fixed before the beta or the owner accepts a scheduled restart,
+   itself an outage of the whole cell.
+2. **Layout 6, design B** (14.2, item 3; README "Storage plan"). The seal
+   spike first (6-9 days), then the build (70-105 engineer-days;
+   `~/.streams-k2/analysis/upload-once/DESIGN.md`): 76-114 engineer-days
+   in all, the beta's critical path. One
+   `LAYOUT_VERSION` and no legacy decoders: a layout-6 binary reads no
+   layout-5 namespace (#126). Who: engineering; cryptographic acceptance
+   reopens with the layout (the owner's). E11's physical reclamation and
+   per-stream retention ride design B's stage 3b; whether either gates the
+   beta is open (below).
+3. **The interim token issuer and an unattended admit-to-bundle path**
+   (README "Shared cells Q9" left self-serve to the platform's Stage 1
+   issuer; the owner chose an interim one). A Streams-run issuer (PLAN
+   step 19: the account model, KMS custody of the signing key, exchange
+   rate limits), 7-13 engineer-days, plus a thin slice from a whitelisted
+   Console sign-up through `cell-admin admit` to a published feed bundle,
+   deployable with Prisma Composer together with Streams. Its keys reach
+   the cell through the keys feed under contract r7 (`aud` required, one
+   key material per audience); the server caps a token at 24 h. Suspension
+   and per-project quota, which DECISIONS 2.2 (item 8) puts before more
+   than a handful of partners, live with it or in `cell-admin`: today an
+   abusive tenant can only be offboarded. Who: engineering; key custody is
+   the owner's cryptographic acceptance; each client-visible surface gets
+   an edge record, "decided by the owner on 2026-10-11 (public-beta
+   decisions)" and ratified by answer (9) only where it covers the change
+   exactly, otherwise awaiting ratification.
+4. **The Q5 harness and a shared-cell deploy path** (README "Shared cells
+   Q5"). Neither exists: `bench/` has no shared-cell tenants, runner or
+   plans, and `bench/k2cost/field/deploy.py` builds fleet-mode cells only,
+   so nothing stands up `compute-1g.env`, `shared-cell.env` and the
+   per-cell values on Compute. 7-11 engineer-days (Layer B 5-8, field
+   tooling 2-3). Who: engineering. Layer A (isolation at 1,000 projects)
+   already runs in CI on every push (`mt-cert-1000`).
+5. **Keep the cell awake.** `KEEP_AWAKE=1` in
+   `deploy/profiles/shared-cell.env` (unset today, so the cell sleeps about
+   3 s after its last request), and `cell-admin`'s refusal of a profile
+   that sets it (`deploy/cell-admin/profile.ts`) lifted. Small; about $98
+   a month per awake 1 GiB cell (the F1 measurement, $0.134 an hour). Who:
+   engineering. A client observes it (no wake 404, no wake latency): its
+   edge record states "decided by the owner on 2026-10-11 (public-beta
+   decisions)" and is ratified by answer (4), which covers it exactly.
+6. **Phase B, narrowed to one shard** (14.4, "Before self-serve"; PLAN):
+   step 14 (counted denials, weighted request tokens and the free-tier
+   rate, the only bound on an internet-exposed tenant's store-request
+   spend; 2-4 days), step 15 (an anonymous `cap=` flood exhausts the
+   process-wide `LookupBudget` and is a timing oracle; 1-2 days), step 13
+   (a per-workspace project cap in what admits self-serve projects, item
+   3; small), C4 (watch-definition and descriptor-cache bytes), C8 (64
+   concurrent listings of one project can materialise about 1 GiB; the
+   growth row README "Shared cells Q2" (b) provides for), Q1(D) (a read
+   reserves the bytes between its cursor and the tail, inside
+   `execute_read` and `ResolvedRead::execute`), the dead-letter handoff of
+   `delivery::settle` reading up to 4 MiB unreserved, and C7 (who pays for
+   an empty pull's coverage read). C4, C8, Q1(D) and the settle handoff go
+   in one `src/product.rs` batch (an extraction first: it has no line
+   headroom), so TLA-003 and TLA-018 re-record once; the four mutation
+   owners Q3(d) deferred (`src/admission/read_memory.rs`,
+   `src/admission/park.rs`, `src/product/read_memory.rs`,
+   `src/application/consumer/pull_wait.rs`; about a day) register with
+   them. C4, C8, Q1(D) and the settle handoff are unestimated; phase B
+   taken whole is 16.5-30 days. Step 12 is moot on one shard; steps 16-18
+   follow the beta. Who: the owner first (C4 and C7 are open capacity
+   decisions; growth rows are his), then engineering.
+7. **A per-project stored-bytes cap.** Metered and not charged, nothing
+   bounds what a project stores: a quota field, a policy-contract
+   revision and an edge record; small to medium. Until it lands,
+   `cell-admin admit --quota` can lower `append_bytes_per_sec` and
+   `max_streams`. Who: engineering; its edge record awaits the owner's
+   ratification, since answer (2) does not decide the cap's shape.
+8. **The production target** (the owner: "I will provide this later."):
+   the Compute workspace on a paid plan, the region, the Tigris data
+   bucket, the `FEEDS_S3_KEY` bundle bucket, the artifact bucket and the
+   operator machine that holds the cell's signing key. A bucket takes its
+   project's region when it is created and a project cannot be re-homed,
+   so this precedes the envelope arm and the first deploy. Who: the owner,
+   with the Compute workspace admin; then a few lines in RUNBOOK's
+   shared-cells section.
+9. **The Q5 certification runs and the deployment gates they carry**, on
+   the layout-6 binary in the production region: Layer B locally (about
+   4 h a run: 0 leaks over at least 2,000 probe pairs, usage equal to the
+   ledger for 1,000 projects, Q0's bar); a stream-count arm at the claimed
+   scale (the largest measured shape is Layer A's 1,000 projects x 3
+   streams; for example 1,000 x 30 with churn past the ~665 s residence
+   horizon; a cell tracks at most 65,536 streams); the one-shard envelope
+   arm that sets `CELL_ENVELOPE_*` (Q2(a)'s rows and an edge record);
+   SC0-1s (72 h, with item 1's slope bar) and SC1 (about 30 h). About
+   6 days of wall time and $40-60. They carry the deployment gates on the
+   existing Compute generation (section 11; README "Deployment gates"):
+   Compute lifecycle validation (startup, readiness, restart, the stop
+   signal and its kill wait, OOM under 1 GiB, rollback, the wrapper's feed
+   poll of #131), the platform export with a shared-cell configuration
+   family (about an hour), the edge's idle keep-alive against the 120 s
+   header timeout, the release-posture deploy, and, for answer (5), the
+   ~1,500-connection edge cap (about 1,200 live subscribers per cell, 150
+   per project at k = 8) and long-lived unbuffered responses through the
+   edge. Who: the owner approves and accepts (field runs and memory,
+   performance and deployment acceptance are his holds); engineering runs
+   them.
+10. **The release candidate** (the lead's call on question 7). Fix the
+    flaky `billing_read_tests` first (it reads the process-global
+    `BILLING_OPS_REFUSED` counter and fails about 1 run in 4 beside other
+    billing tests, and one flake at the RC SHA forces a new one; under half
+    a day); bump the versions (`Cargo.toml` and `sdk/package.json` still
+    say 0.2.0-rc.4); re-record the formal receipts once after the last
+    receipt-input commit; tag; build x86_64-musl; run
+    `scripts/release-gate.sh` on an idle host and the provider-contract
+    suite against Tigris with its log retained (the keyed `DELETE` of #96
+    has had no real-provider run); and give `rc-certify.sh` the
+    single-cell manifest set (today it requires fleet-shaped capacity,
+    handoff, LiveFeed-fleet and canary manifests; a gate-selection change,
+    decided by the lead under the owner's "you decide"). Who: engineering;
+    the owner supplies the Tigris credentials and starts the field legs.
+11. **The shared-cell battery, reshaped for one server**, on the exact RC
+    binary (the lead's call on question 7; MULTITENANCY Stage 8): hostile
+    and cost-hostile tenants, 1,000 parked consumers (SC0b), the CH probe,
+    suspension and revocation under load (item 3's suspension), and
+    billing reconciled against the ledger at 1,000 projects. PLAN §4.2
+    estimated about $150 and 7 days at the 1 s tier, not re-estimated for
+    100 ms, with harness work beyond Q5's. Who: the owner approves the
+    budget and accepts; engineering builds and runs it.
+12. **The scoped mutation campaign** (the lead's call on question 10), on
+    the RC artifact over `billing*`, `rollup*`, `product*`, `usage*`,
+    `auth*`, `quota*`, `project_policy*`, `shard*`, `sharddir*`,
+    `queue*`, the critical read owners `read_*` and `history_*`, and
+    `crypto_page*`, with zero MISSED, TIMEOUT and incomplete: days
+    locally, at about a minute a mutant. Before it: N6 as the lead decided
+    it (the rotation's cost model becomes the measured 7.5 min baseline
+    and 5.0 min per mutant on 8 runners, where `mutation_owners.py` models
+    6.0 and 2.5; the `shard` owner's survivors are killed with shard-local
+    unit tests, with no filter widening; the pump's pacing, herd-settle
+    and durable-wait mutants are documented as performance posture until a
+    counter-based oracle exists; the three log-only guards are removed and
+    the real-time boundaries extracted into pure `fn(now)` helpers in one
+    receipt-staling `src/shard.rs` commit); the filter-gap census of
+    section 10 (N4); and the named survivors on authorization and
+    isolation guards (the seal-claim conjunction in
+    `src/application/append/close.rs`, the shed guards in
+    `src/application/append/submit.rs`, the consumer-generation fence in
+    `src/shard/transaction/queue/load.rs`, the per-project reservation arm
+    in `src/sse/feed.rs`, and `src/shard/transaction/queue/mod.rs`).
+    Per-mutant `outcomes.json` stays local: raw-evidence upload stays the
+    owner's hold. How the pump's accepted mutants count here, the lead's
+    reading, recorded for the owner to correct: their acceptance is a
+    disposition, not an exclusion, so they count as MISSED and the
+    counter-based oracle that kills them is written before this campaign;
+    leaving them out of the count instead would change what a gate counts
+    (AGENTS.md section 1, (3)) and be the allowlist section 5 rules out,
+    so only the owner could choose it. Who: engineering.
+13. **Publish the SDK** (`@prisma/streams` is not on npm and its version
+    is frozen at 0.2.0-rc.4): a version bump, a changelog from the edge
+    records, a publish step, and the plain-append duplicate-on-retry fix
+    folded in (the SDK retries a retryable `503` up to three times and
+    `appendRaw` sends no producer identity, so an append whose outcome is
+    unknown can be stored twice: do not auto-retry a plain append's `503`,
+    or compare `Stream-Next-Offset`; an edge record). Small. Who: the
+    owner (npm organisation access, the channel) and engineering. With W1
+    settled and the wake 404 retired, its retry semantics are final.
+14. **A customer reference page and SPEC §6** (about half a day): the
+    per-project ceilings a shared-cell tenant meets at k = 8 (today's
+    profile values, pending item 9's envelope arm: 176 requests/s,
+    257,500 B/s appended, 3,750,000 B/s read, 64 in flight, 150
+    subscriptions, 8,192 streams; 8 MiB bodies; 131,072-byte records), the
+    `413`, `429` and `503` answers with `Retry-After` and `retryable`, the
+    G7 retry rule, and SPEC §6's five stale claims. Who: engineering; the
+    owner adopts the wording, and H11's contract is his choice.
+15. **Terms and a written data posture:** the backup posture item 18
+    picks, retention and erasure as built (a deleted stream is
+    crypto-erased at once and its objects reclaimed later), content
+    unreadable to the operator, one instance, no SLA, and where data lives;
+    with layout 6 first, no layout-reset clause. Who: Prisma legal (the
+    owner records whether Compute's platform terms cover Streams) and
+    engineering (a page and the OPERATIONS.md §2.4 correction; hours).
+16. **Support, notices and escalation:** a support route, an outage and
+    maintenance notice channel, and a named Compute escalation contact.
+    Who: the owner and Prisma; a line in RUNBOOK §7.5.
+17. **Minimum alerting:** one poller outside the cell that pages a named
+    human on the signals RUNBOOK lists; days. A kept-awake cell removes
+    the objection to scraping (a scrape no longer wakes a sleeping cell or
+    defeats its idle floor; the lead's reading). Who: the owner (scrape or
+    push, and who is paged), then engineering.
+18. **Durability posture:** decide it, enable the cheap protection (bucket
+    versioning or soft-delete, if the production buckets offer it) and
+    record it; hours if versioning exists, more if a nightly prefix copy
+    must be wired (STAGING B6). Who: the owner and the Compute or Tigris
+    bucket admin.
+
+### Should-haves before admission opens (same analysis)
+
+- Pin `runs-on: ubuntu-24.04` in the three workflows before 2026-10-19,
+  when GitHub moves `ubuntu-latest` to Ubuntu 26 (one commit).
+- `cell-admin rotate` and a rehearsed key-rotation drill on a scratch
+  cell (a day or less; RUNBOOK says it is not built yet).
+- A release procedure for a live single-server cell, with one rehearsed
+  rollback (RUNBOOK §7.4 is fleet-shaped).
+- A written availability and latency expectation for one kept-awake
+  server, published only after the envelope arm and the owner's
+  acceptance.
+- A stable endpoint: ask whether a Prisma-owned hostname can front the
+  Compute service, and have `cell-admin admit` record the endpoint it
+  hands out.
+- A custody table for the cell's other secrets (`USAGE_STREAM_KEY`,
+  `STREAMS_CURSOR_KEY`, `AUTH_TOKEN`, `SLATE_S3_*`, `FEEDS_S3_KEY`).
+- Operator hygiene: RUNBOOK still calls `/operator` unsecured (it answers
+  401), and the wrapper's download failure serves `{stage, key, error}` on
+  the public port.
+- Security-scanning hygiene: the jsonwebtoken triage recorded in the
+  repository, CodeQL's false positives dismissed, workflow permissions
+  added (about half a day).
+- A spend alert in the Tigris and Compute consoles, and a daily human
+  check for the first two weeks.
+- Pricing validation (the 2 h local 100 ms point, the K2 cost re-run in
+  the Q5 arms); beta prices are labelled anticipated until measured.
+- The F2 fenced-write `500` (`src/shard/transaction/finalize.rs`), before
+  the beta if the lifecycle validation shows Compute overlapping an old
+  and a new process.
+
+### Open for the owner
+
+- The production target (item 8).
+- C4 and C7, the capacity decisions phase B needs (item 6).
+- Where suspension and per-project quota live: `cell-admin`, with the
+  operator still the feed producer, or the interim issuer (item 3).
+- The stream-count claim: certify tens of thousands of streams in a Q5
+  arm, or declare a beta stream ceiling at what Layer B measures (item 9).
+- The alerting choice and the durability posture (items 17 and 18), and
+  whether Compute's terms cover Streams (item 15).
+- Whether E11's physical reclamation and per-stream retention policies
+  (8-9 edge records with design B's stage 3b) gate the beta.
+- Whether fresh cells start on physical rollup keying (Bug #7 C2 and its
+  knob, so no migration is ever needed), before the first invoiced month.
+- "Also seed": the create-with-initial-body `429` (14.7).
 
 ---
 
@@ -945,7 +1274,9 @@ before marking it complete."
   The rotation of 2026-10-10 failed differently: four of its eight runners
   were cancelled at the 360-minute limit (03:54 to 09:54 UTC), the `shard`
   owner's 44-45 mutants taking 3-4 h of each; the cost model is question
-  N6, put back to the owner.
+  N6, put back to the owner and decided by the lead under his "You decide"
+  of 2026-10-11 (README row "Public beta", (10); section "Public beta",
+  item 12).
   Re-measured on 2026-10-11
   when the storage clock left `src/billing.rs` (N2): 7,301 mutants over 181
   owners; `billing` 375 -> 361 and the new `billing_storage_clock` 14, the
@@ -1720,10 +2051,12 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
    ratified 2026-10-11 under the owner's delegation, S2; its R09 mechanism
    test re-pinned, which the owner approved on 2026-10-08, landing call
    C6).
-3. **"WAL plus one copy" (design B) as layout 6, before launch,** after a
-   throwaway seal spike proves at most 2.2 uploads per stored byte and bounded
-   memory. Each stored byte is uploaded about 8 times today: WAL 1.16, shard
-   L0 1.05, shard compaction 1.56, history L0 1.02, history compaction 2.9 and
+3. **"WAL plus one copy" (design B) as layout 6, before launch,** and so
+   before the public beta (the owner's "layout 6 first" of 2026-10-11;
+   section "Public beta", item 2), after a throwaway seal spike proves at
+   most 2.2 uploads per stored byte and bounded memory. Each stored byte
+   is uploaded about 8 times today: WAL 1.16, shard L0 1.05, shard
+   compaction 1.56, history L0 1.02, history compaction 2.9 and
    growing. Only the WAL and one final copy are required by a guarantee. Design
    B seals each shard's unabsorbed pages from the ring into one immutable
    object per retention class before each memtable flush, writes index rows
@@ -1749,8 +2082,10 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
 ### 14.4 Shared cells and shards
 
 - **Launch shape: one single-server shared cell** (one 1 GiB single-core
-  server, one shard, no routers, fleet off). Phase A of the shared-cells plan
-  applies to it, without router hardening.
+  server, one shard, no routers, fleet off; for the public beta kept awake,
+  on the current Compute generation, the owner's answers of 2026-10-11).
+  Phase A of the shared-cells plan applies to it, without router
+  hardening.
 - **As few shards as possible.** Every shard is its own SlateDB with its own
   WAL writer, and at the 100 ms tier each busy writer costs up to about $97 a
   month whatever it carries. The WAL bill follows the number of writers, not
@@ -1794,7 +2129,9 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
   to alert on); `cell-admin rotate`; then the harness and the certification
   (Q5). Before self-serve: C4 (watch definition bytes), C7 (empty pulls
   charged to the read quota), C8 with Q2(b)'s row, Q1(D), the four mutation
-  owners Q3(d) defers, and phase B.
+  owners Q3(d) defers, and phase B. The public beta is self-serve (the
+  owner's answers of 2026-10-11), so these come before it, phase B narrowed
+  to one shard (section "Public beta", item 6).
 
 ### 14.5 Multi-server cells and routing (later, on the new Compute generation)
 
@@ -1846,7 +2183,11 @@ segment) are separate layers, as Pravega's containers and segments are.
   in fleet mode over the same `PATH_PREFIX` (`cluster-deploy.sh up`,
   `cluster-run.sh`), as T2's rigs do; a script change, not run (the field
   run stays the owner's).
-- **Before public launch:** the split package (consumer record relay and an
+- **Before the first multi-server cell** (reworded on 2026-10-11 from
+  "before public launch", written for the superseded four-server launch
+  cell: the public beta runs one server per cell, section "Public beta";
+  the rewording is the lead's reading, for the owner to correct): the
+  split package (consumer record relay and an
   ancestry-based stop rule, F1-b with its fleet-internal lane read, a touch
   relay for watches, DLQ through forwarding, per-segment rate buckets, a
   cross-server merge probe, and a two-server DST written red first), about
