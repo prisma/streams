@@ -4,7 +4,12 @@
 # CANDIDATE is an annotated tag minted only from a certified tree.
 #
 #   scripts/promote-rc.sh <commit-ish> <rc-tag> \
-#     [--capacity-run <id> --handoff-run <id>]   # rc-certify field legs
+#     [--capacity-run <id> --handoff-run <id> ...]   # rc-certify field legs
+#   scripts/promote-rc.sh <commit-ish> <rc-tag> \
+#     --shape single-cell --artifact-run <id> ...      # single-cell, fleet off
+#
+# Everything after the tag goes to scripts/rc-certify.sh as given; its
+# usage names both shapes' arguments (docs/OPS-RELEASE.md §7).
 #
 # Round-3 finding 4 hardening:
 #   * every local gate runs in a CLEAN DETACHED WORKTREE at the exact
@@ -21,8 +26,8 @@
 #     digest, and the explicitly NOT-certified legs.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-COMMIT=${1:?usage: promote-rc.sh <commit-ish> <rc-tag> [--capacity-run id --handoff-run id | --field-legs manifest.json]}
-TAG=${2:?usage: promote-rc.sh <commit-ish> <rc-tag> [--capacity-run id --handoff-run id | --field-legs manifest.json]}
+COMMIT=${1:?usage: promote-rc.sh <commit-ish> <rc-tag> [<rc-certify.sh arguments, either shape> | --field-legs manifest.json]}
+TAG=${2:?usage: promote-rc.sh <commit-ish> <rc-tag> [<rc-certify.sh arguments, either shape> | --field-legs manifest.json]}
 shift 2
 CAP_ARGS=()
 FIELD_LEGS=""
@@ -133,8 +138,13 @@ fi
 SDK_TGZ=$(ls -t /tmp/prisma-streams-*.tgz | head -1)
 SDK_SHA=$(shasum -a 256 "$SDK_TGZ" | cut -d' ' -f1)
 
-FIELD_LINE="capacity + handoff manifests verified via rc-certify.sh"
-[ ${#CAP_ARGS[@]} -eq 0 ] && FIELD_LINE="capacity + handoff campaigns: NOT certified by this tag"
+if [ ${#CAP_ARGS[@]} -gt 0 ]; then
+  # rc-certify.sh states what its shape certified and, for a single-cell
+  # RC, which fleet legs it waived (scripts/quality/test_rc_certify.py).
+  FIELD_LINE=$(python3 -E -c 'import json, sys; print("\n- ".join(json.load(open(sys.argv[1]))["tag_lines"]))' "$CERT_MANIFEST")
+else
+  FIELD_LINE="capacity + handoff campaigns: NOT certified by this tag"
+fi
 
 if [ -n "$FIELD_LEGS" ]; then
   MSGFILE=$(mktemp /tmp/rc-tagmsg.XXXXXX)

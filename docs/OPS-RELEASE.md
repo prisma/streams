@@ -206,11 +206,106 @@ Performance acceptance is separate from these rules: the recount read-ahead
 bridging change carry measured costs (docs/PRISMA-STREAMS-FORMAL-VERIFICATION-ROADMAP.md
 §0) that still need workload acceptance.
 
+## 7. Release-candidate certification: the fleet and single-cell shapes
+
+`scripts/promote-rc.sh <sha> <rc-tag> <arguments>` mints a release-candidate
+tag. It requires every `REQUIRED_CHECKS` check run green at the SHA, then
+runs `scripts/rc-certify.sh <arguments>` in a clean detached worktree at
+that SHA. rc-certify has two shapes, and each refuses the other's
+arguments before the gate runs. Both start the same way: the local
+release gate (`scripts/release-gate.sh`, with the capacity mechanism test
+run alone, so on an idle host), then the RC identity from the
+`binaries.json` that `bench/soak/build-upload.sh` wrote. Its server entry's
+`gitCommit` must be the tagged commit, and its `sha256` is the RC identity
+that every later manifest must name. Every check runs as `python3 -E`, so
+the caller's `PYTHONOPTIMIZE` cannot strip its asserts.
+
+**Fleet** (`--shape fleet`, the default): the capacity campaign (its
+`binaries.json` is the identity), handoff, LiveFeed fleet and LiveFeed
+canary manifests. The script's header lists each check.
+
+**Single-cell** (`--shape single-cell`): a single-server, fleet-off RC,
+which is the public beta's shape (the owner's answers (1) and (5) of
+2026-10-11). The leg set is the lead's call on question 7, made under the
+owner's "you decide" of 2026-10-11, not an owner decision (hardening README,
+"Public beta (decided 2026-10-11)"):
+
+| argument | evidence | what rc-certify checks |
+|---|---|---|
+| `--artifact-run <id>` | `$SOAK_HOME/results/<id>/binaries.json` from `build-upload.sh` | server `gitCommit` equals HEAD; its `sha256` is the RC identity |
+| `--provider-contract-log <path>` | the real-provider contract log against Tigris, as `scripts/test-leg.sh` kept it ([PROVIDER-CONTRACT.md](PROVIDER-CONTRACT.md)) | `tests_ran.py --exact ...::real_provider_meets_the_provider_contract` passes; exactly one `qualifying endpoint` line, whose endpoint is https on a `storage.dev` or `tigris.dev` host; the `real-provider: provider contract passed` line; no `SKIPPED:` line |
+| `--layer-b-run <m>` | Layer B on the single-server shape | legs `H9`, `H9b`, `H11t`; `projects` at least 1,000 |
+| `--envelope-run <m>` | the one-shard envelope arm (`WC_PMP`; it sets `CELL_ENVELOPE_*`) | the common contract below |
+| `--sc0-1s-run <m>` | SC0-1s, the 72 h idle floor with its RSS-slope bar | the common contract; a run window of at least 259,200 s (72 h) |
+| `--sc1-run <m>` | SC1, about 30 h of wakes | the common contract; a run window of at least 108,000 s (30 h, the length of its probe schedule in the Q5 design: the lead's reading of call 7's "about 30 h" as a floor, recorded for the owner to correct) |
+| `--stream-count-run <m>` | the stream-count arm at the claimed scale | `streams`, a positive integer: the scale the tag states |
+| `--battery-run <m>` | the shared-cell battery reshaped for one server | legs `hostile-tenants`, `cost-hostile-tenants`, `parked-consumers` (SC0b, 1,000 parked consumers), `ch-probe`, `suspension-under-load`, `revocation-under-load`, `billing-reconcile` (against the ledger); `projects` at least 1,000 |
+
+Each `<m>` is a manifest path, or a run id whose
+`$SOAK_HOME/results/<id>/` holds `<arm>-manifest.json` (`layer-b`,
+`envelope`, `sc0-1s`, `sc1`, `stream-count`, `battery`). The common
+contract every arm manifest meets:
+
+```json
+{"arm": "battery", "server_sha256": "sha256:<RC identity>", "verdict": "PASS",
+ "legs": {"hostile-tenants": "PASS", "...": "PASS"},
+ "started_unix": 1791000000, "finished_unix": 1791043200, "projects": 1000}
+```
+
+`arm` is the arm's own name. `server_sha256` (with or without the
+`sha256:` prefix) is the RC identity: every arm runs the exact
+x86_64-musl RC binary, so an arm run on a host build cannot certify.
+`verdict` is `PASS`, and `legs` is non-empty with every value `PASS`.
+`started_unix` and `finished_unix` are the run's window in unix seconds
+(integers); `finished_unix` is later than `started_unix`, and for SC0-1s
+and SC1 later by at least the arm's floor in the table, so a short run
+that writes `PASS` does not certify either arm. Like the verdict, the
+window is the harness's own statement: rc-certify checks it but cannot
+re-derive it from raw results. The Q5 harness and the reshaped battery
+that will write these manifests do not exist yet (NEXT-WORK, public beta
+items 9 and 11). This table is the contract they write to.
+
+Waived for a single-cell RC: the script prints each waiver, and the
+certification manifest and the tag record them. They are the capacity
+campaign as product evidence (post-split scaling needs a fleet; the
+release gate still runs the capacity mechanism test alone), handoff (one
+server owns every shard), the LiveFeed fleet certification (`promote-rc.sh`
+still requires CI's `livefeed-fleet-cert` check at the SHA) and the
+LiveFeed canary (its battery runs a three-instance fleet). The tag says
+that it certifies no multi-server operation.
+
+rc-certify writes `target/rc-certify-manifest.json`: `shape`,
+`server_sha256`, the provider log's sha256 and endpoint, each arm's
+manifest sha256, legs, scale and run window, the waivers, and
+`tag_lines` (naming the SC0-1s and SC1 hours), which `promote-rc.sh`
+prints in the tag. The provider-contract log names no commit.
+rc-certify re-checks its content and records its sha256, but it cannot
+prove which tree ran it, so run it from the RC worktree.
+
+```sh
+SOAK_HOME=~/.streams-soak scripts/promote-rc.sh <sha> <rc-tag> --shape single-cell \
+  --artifact-run <build-run> --provider-contract-log <path> \
+  --layer-b-run <id> --envelope-run <id> --sc0-1s-run <id> --sc1-run <id> \
+  --stream-count-run <id> --battery-run <id>
+```
+
+`scripts/quality/test_rc_certify.py` runs the real script against
+disposable evidence for both shapes. It covers each refused mutation,
+each shape's refusal of the other's arguments, and the waivers.
+`quality.sh` collects it through `python3 -m unittest discover -s scripts/quality`,
+so `gate.sh` and the rust-quality workflow run it too. rc-certify does
+not hold the public beta's other holds: the scoped mutation campaign on
+the RC artifact (the lead's call 10) and the deployment gates (hardening
+README, "Deployment gates").
+
 ## Release checklist (the short form)
 
 1. `scripts/release-gate.sh` (everything `scripts/quality.sh` checks, every
    formal receipt `check --fresh`, the debug-profile suite over every
-   target, the capacity gate alone).
+   target, the capacity gate alone). For a release candidate,
+   `scripts/promote-rc.sh` runs it through `scripts/rc-certify.sh` in the
+   fleet shape, or in the single-cell shape for a single-server, fleet-off
+   RC (§7).
 1a. Mixed-version rules (§6) decided for this release; the provider
    contract suite (docs/PROVIDER-CONTRACT.md) run against the production
    provider, endpoint and configuration, with its log retained.
