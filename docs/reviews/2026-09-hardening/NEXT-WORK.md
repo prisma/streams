@@ -155,14 +155,25 @@ alongside and finish before admission opens.
    per-cell values on Compute. 7-11 engineer-days (Layer B 5-8, field
    tooling 2-3). Who: engineering. Layer A (isolation at 1,000 projects)
    already runs in CI on every push (`mt-cert-1000`).
-5. **Keep the cell awake.** `KEEP_AWAKE=1` in
-   `deploy/profiles/shared-cell.env` (unset today, so the cell sleeps about
-   3 s after its last request), and `cell-admin`'s refusal of a profile
-   that sets it (`deploy/cell-admin/profile.ts`) lifted. Small; about $98
-   a month per awake 1 GiB cell (the F1 measurement, $0.134 an hour). Who:
-   engineering. A client observes it (no wake 404, no wake latency): its
-   edge record states "decided by the owner on 2026-10-11 (public-beta
-   decisions)" and is ratified by answer (4), which covers it exactly.
+5. **Keep the cell awake.** Done in bdf93160: `KEEP_AWAKE=1` in
+   `deploy/profiles/shared-cell.env` (unset until then, so the cell slept
+   about 3 s after its last request), and `cell-admin`
+   (`deploy/cell-admin/profile.ts`) requires it where it refused it, and
+   refuses `KEEP_AWAKE_UNTIL_MS`, which would end the guard. The cell
+   bills every hour it is up: F1 measured $0.0795 an hour, about $58 a
+   month, for one kept-awake 1 GiB server owning one shard (streams-1, the
+   rollup owner, scraped every 20 s and running the fleet tick, which a
+   fleet-off cell does not run); the shared cell's own floor is SC0-1s's
+   to measure (item 9). F1's two-server launch cell is another shape (its
+   requests alone $0.151 an hour measured with the routers modelled,
+   $0.134 in the composition model). A client observes the kept-awake
+   cell (no wake 404, no wake latency after an idle spell): edge record
+   #140 states "decided by the owner on 2026-10-11 (public-beta
+   decisions)" and is ratified by answer (4), which covers that change
+   exactly. `cell-admin`'s requirement and its refusal of
+   `KEEP_AWAKE_UNTIL_MS` are operator-side, no client observes them, and
+   they are put to the owner to confirm or drop. The awake cell's RSS
+   climb is item 1's.
 6. **Phase B, narrowed to one shard** (14.4, "Before self-serve"; PLAN):
    step 14 (counted denials, weighted request tokens and the free-tier
    rate, the only bound on an internet-exposed tenant's store-request
@@ -353,6 +364,9 @@ alongside and finish before admission opens.
 - Whether fresh cells start on physical rollup keying (Bug #7 C2 and its
   knob, so no migration is ever needed), before the first invoiced month.
 - "Also seed": the create-with-initial-body `429` (14.7).
+- Whether `cell-admin` keeps requiring `KEEP_AWAKE=1` and refusing
+  `KEEP_AWAKE_UNTIL_MS` (item 5, #140): the implementer's operator-side
+  additions to "Keep awake", which no client observes; confirm or drop.
 
 ---
 
