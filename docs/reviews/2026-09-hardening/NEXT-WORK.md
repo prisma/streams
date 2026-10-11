@@ -1870,7 +1870,7 @@ segment) are separate layers, as Pravega's containers and segments are.
   up to 300 s with no absorption on the instance, since on the 1 GiB posture
   (`ABSORB_GLOBAL_GATHERS=1`) the waiting gather holds the only gather
   permit. Option (a), as a loop, landed in 050ed33e (edge record #138,
-  awaiting ratification): every 5 s while the flush has not returned, the
+  ratified by the owner on 2026-10-11): every 5 s while the flush has not returned, the
   gather raises `history_flush_wait_ms_max` to its wait and calls
   `Db::refresh_manifest()` (`src/history/gather/flush_wait.rs`), so it resumes
   within 5 s of a slot freeing. (b) a shorter history manifest poll and (c)
