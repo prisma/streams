@@ -550,6 +550,20 @@ async fn a_pull_walks_at_most_eight_offsets_per_max_plus_4096() {
     rig.close().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pull_reports_every_unsettled_record_past_the_cursor_as_backlog() {
+    let rig = Rig::new("run-lease-backlog", "aaaaa").await;
+    assert_eq!(rig.pull(3, HOLD_MS, 5).await.0, fresh(&[0, 1, 2]));
+    assert_eq!(rig.ack(&[(2, 1), (0, 1)]).await, (2, 0));
+    assert_eq!(rig.cursor().await, 1, "2 is acked past the cursor");
+    assert_eq!(
+        rig.receive_at(1, 10, rig.keys.clone(), rig.next).await,
+        Ok((fresh(&[]), 3)),
+        "a1 holds a; 1, 3 and 4 are unsettled"
+    );
+    rig.close().await;
+}
+
 /// The receive that blocks a key and the long-poll waiter that wakes on
 /// the key's deadline agree on one verdict: the key is held strictly
 /// before the deadline and open at it.
