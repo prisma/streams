@@ -902,6 +902,44 @@ before marking it complete."
   code from base and head and compares), so CI refuses that commit. The
   clean fix is a planner rule that honours the parent's `#[cfg(test)]`
   declaration; it changes what the gate selects, so it is the owner's.
+- **Tail-ring positional search (deferred 2026-10-11, layout 5 survivor
+  review; decided under the owner's delegation of 2026-10-11 to Fable 5.1,
+  question N1).** `TailRing::serve` (`src/shard/tail_ring.rs`) passes the
+  batches before its window with a linear `.filter(|b| b.next > from)`, one
+  48-byte `RingBatch` header comparison per batch, under the stream's ring
+  lock, which `dispatch_durable`'s `ring_pub` loop
+  (`self.ring_publish(handle, recs)`, inside the `dispatch_gate`, before
+  tails and acks) also takes. The review of fab525ce (a branch commit that
+  dropped the filter; slate kept it, and 4a92e8a3 kills its mutant with a
+  malformed batch) proposed a positional search instead:
+  `self.batches.partition_point(|b| b.next <= from)`, then
+  `range(start..)`. It is sound on the ring's contiguity invariant (the
+  `TailRing` doc in `src/shard.rs`: `ring_publish` clears the ring on a gap,
+  eviction pops the front) and changes no result (the density check decides
+  every one). Not done now: the ring is off by default
+  (`TAIL_RING_BYTES=0`) and in every deploy profile, family and field
+  deploy, so nothing deployed can observe it, and the ring's own
+  disposition is open (section 13). Do it, measured first (performance
+  acceptance stays with the owner), in the work that makes the ring the
+  permanent path; drop it if that decision removes the ring. Sizing: soak7
+  (2026-07-28) ran one stream per region, the campaign shape before R26-9
+  (f9e05f05, 2026-08-12, introduced `SOAK_STREAMS_N=32`); resident batches
+  171,176 - 147,751 = 23,425 (nrt, SOAK7-REPORT §2), so about 23k 48-byte
+  headers (about 1.1 MB) per woken read, inside the 2.2-2.8 ms woken-read
+  stage. The worst shape is about 218k batches (154-byte pages, one stream
+  owning 32 MiB, one page per group), which no deploy, family or bench
+  runs. The measurement: a scratch bench outside the checkout, a `TailRing`
+  of 32 MiB of 154-byte sealed pages in batches of 1, 32 and 256 pages,
+  timing `serve(ceil - 1, ceil, 1 MiB, None)` old against new, in ns per
+  read and lock hold time. Pins already in place:
+  `shard::tail_ring_tests::a_ring_read_inspects_no_batch_that_ends_at_its_window_start`
+  (kills the `<` boundary mutant of a `partition_point` predicate as it
+  kills today's 171:32) and
+  `::a_ring_read_inspects_no_batch_from_its_window_end`, and
+  `dst_tests::reads_ring` (6 tests). Ledgers when done: the `tail_ring`
+  mutation owner exists (`shard:: dst_tests::reads_ring::`); no formal
+  receipt is staled; `serve` is outside both `#[expect]` scopes of the
+  file; no edge record, since no result changes.
 
 ---
 
@@ -1484,6 +1522,16 @@ then the five rows of package 5):
   cannot be read or is invalid; the record said without a condition that
   no answer of an append changes and was corrected after the review of
   2026-09-29.
+
+Still open from the audit: the `TAIL_RING_BYTES` one-path decision
+(`config-simplification.md`, "Kept, with the reason";
+`evidence/config-audit-2026-09-29/detail.md`, "#### TAIL_RING_BYTES"):
+either the ring always on under a process-wide budget (16 shards x 32 MiB
+= 512 MiB exceeds the 500 MB shed line, so a per-engine budget cannot be
+the one) or the ring removed. The owner's decision, not yet taken. The
+tail-ring positional search (section 10) rides with it: done, measured
+first, if the ring becomes the permanent path; dropped if the ring is
+removed.
 
 ---
 
