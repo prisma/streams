@@ -1,8 +1,10 @@
 #![cfg(test)]
 
 use super::{Phase, Policy, SpawnRejected, TaskOutcome, TaskResult, TaskSupervisor};
+use std::any::Any;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Mutex, TryLockError};
+use std::sync::{Mutex, PoisonError, TryLockError};
 use std::{future::pending, sync::Arc, time::Duration};
 
 #[tokio::test]
@@ -533,17 +535,56 @@ enum LateDrop {
     SpawnsAgain,
 }
 
+/// What the rig's refused futures did: how many were dropped, not merely
+/// set aside, and the first panic a late guard's drop raised.
+#[derive(Default)]
+struct Rig {
+    dropped: AtomicUsize,
+    failed: Mutex<Option<String>>,
+}
+
+impl Rig {
+    fn keep(&self, panic: &(dyn Any + Send)) {
+        let message = panic
+            .downcast_ref::<&str>()
+            .map(|text| (*text).to_owned())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        let mut failed = self.failed.lock().unwrap_or_else(PoisonError::into_inner);
+        failed.get_or_insert(message);
+    }
+
+    /// How many refused futures were dropped; fails first if a drop panicked.
+    fn dropped_without_panic(&self) -> usize {
+        let failed = self.failed.lock().unwrap().take();
+        assert_eq!(failed, None, "a refused future's drop panicked");
+        self.dropped.load(Ordering::SeqCst)
+    }
+}
+
 /// Counts the refused futures that were dropped, not merely set aside.
-struct Counted(Arc<AtomicUsize>);
+struct Counted(Arc<Rig>);
 impl Drop for Counted {
     fn drop(&mut self) {
-        self.0.fetch_add(1, Ordering::SeqCst);
+        self.0.dropped.fetch_add(1, Ordering::SeqCst);
     }
 }
 
 struct LateGuard(TaskSupervisor, LateDrop, Counted);
 impl Drop for LateGuard {
+    /// A guard a thread's set-aside slot still holds when the thread ends
+    /// (a slot left open) is dropped by that thread-local's destructor,
+    /// where it cannot spawn; a panic out of that destructor aborts the test
+    /// binary, so the guard keeps it for the rig's assertion instead.
     fn drop(&mut self) {
+        if let Err(panic) = catch_unwind(AssertUnwindSafe(|| self.act())) {
+            self.2.0.keep(panic.as_ref());
+        }
+    }
+}
+
+impl LateGuard {
+    fn act(&self) {
         match self.1 {
             LateDrop::ShutsDown => {
                 self.0
@@ -565,7 +606,7 @@ impl Drop for LateGuard {
     }
 }
 
-struct SpawnsOnDrop(TaskSupervisor, LateDrop, Arc<AtomicUsize>);
+struct SpawnsOnDrop(TaskSupervisor, LateDrop, Arc<Rig>);
 impl Drop for SpawnsOnDrop {
     fn drop(&mut self) {
         let guard = LateGuard(self.0.clone(), self.1, Counted(self.2.clone()));
@@ -579,11 +620,11 @@ impl Drop for SpawnsOnDrop {
 
 /// Drops `runtime` while `owners` tasks each hold a supervisor that spawns
 /// from its own drop, and fails (instead of hanging) if the teardown does not
-/// finish or leaves a refused future undropped.
+/// finish, a refused future's drop panics, or one is left undropped.
 fn assert_teardown_completes(runtime: tokio::runtime::Runtime, owners: usize, late: LateDrop) {
-    let dropped = Arc::new(AtomicUsize::new(0));
+    let rig = Arc::new(Rig::default());
     for _ in 0..owners {
-        let owner = SpawnsOnDrop(TaskSupervisor::new(), late, dropped.clone());
+        let owner = SpawnsOnDrop(TaskSupervisor::new(), late, rig.clone());
         #[expect(
             clippy::disallowed_methods,
             reason = "F-G deadlock rig; the task exists only to be dropped by the runtime teardown under test; supervising it would put the supervisor under test in its own teardown path"
@@ -614,7 +655,7 @@ fn assert_teardown_completes(runtime: tokio::runtime::Runtime, owners: usize, la
         LateDrop::SpawnsAgain => 2,
     };
     assert_eq!(
-        dropped.load(Ordering::SeqCst),
+        rig.dropped_without_panic(),
         owners * per_owner,
         "every refused future is dropped once its spawn has released the lock"
     );
