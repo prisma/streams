@@ -34,8 +34,7 @@ impl ReadService {
             return Err(ReadFailure::WrongKey);
         }
         let mut cursor = match command.cursor {
-            Some(cursor) if cursor.epoch == desc.epoch() => cursor,
-            Some(_) => return Err(ReadFailure::ChangedIncarnation),
+            Some(cursor) => cursor,
             None => {
                 self.snapshot_scan(desc, &command.key, command.now_ms, command.lifetime_ms)
                     .await?
@@ -72,7 +71,8 @@ impl ReadService {
                 break 'segments;
             }
             cursor.current_offset = if page.completed { end } else { consumed };
-            if cursor.current_offset == before && !page.completed {
+            // A completed page set the offset to `end`, which lies past `before`.
+            if cursor.current_offset == before {
                 break;
             }
         }
