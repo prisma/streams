@@ -104,13 +104,19 @@ impl Fp {
 
     /// The site contract: WHERE the point fires, stated as the
     /// window it opens. This is the enumerable registry the DST
-    /// program audits against.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Fp::site; the site registry states every failpoint's window in the one match the DST program audits; splitting it would separate the sites from the registry that enumerates them"
-    )]
+    /// program audits against: every point of `ALL` states its window in
+    /// one of the two family tables below, and a point in neither has an
+    /// empty site, which the audit refuses.
     pub(crate) fn site(self) -> &'static str {
-        match self {
+        self.live_site()
+            .or_else(|| self.write_site())
+            .unwrap_or_default()
+    }
+
+    /// The write, lifecycle and seal points: creation, append, close,
+    /// seal, fork, delete, consumer and scaler windows.
+    fn write_site(self) -> Option<&'static str> {
+        Some(match self {
             Fp::StopAfterTombstone => {
                 "delete cascade: after the named generation is tombstoned \
                  and its debt recorded, before the parent ref releases"
@@ -160,17 +166,25 @@ impl Fp {
                  the NAMED stream parks (readers only ever spawn \
                  resume, so no request blocks here)"
             }
-            Fp::SseBeforeLeaseGate => {
-                "live subscription: after the request token verifies, \
-                 BEFORE the response body's lease gate is built — the \
-                 window in which a published revocation used to be \
-                 missed by construction (round-4 finding 1)"
-            }
             Fp::StopBeforeSealedPublish => {
                 "collection seal: after EVERY live segment's close is \
                  durable, BEFORE the SEALED publication CAS — exactly \
                  the state a crash between the close loop and step 3 \
                  leaves; a plain retry must resume and complete"
+            }
+            _ => return None,
+        })
+    }
+
+    /// The live-subscription points: the SSE lease gate, producer and
+    /// body, and the LiveFeed session and driver windows.
+    fn live_site(self) -> Option<&'static str> {
+        Some(match self {
+            Fp::SseBeforeLeaseGate => {
+                "live subscription: after the request token verifies, \
+                 BEFORE the response body's lease gate is built — the \
+                 window in which a published revocation used to be \
+                 missed by construction (round-4 finding 1)"
             }
             Fp::SseFeedAfterSubscribe => {
                 "livefeed session: AFTER the atomic registry attach \
@@ -210,7 +224,8 @@ impl Fp {
                  discard it unyielded AND unbilled (round-9 metering \
                  boundary)"
             }
-        }
+            _ => return None,
+        })
     }
 }
 
