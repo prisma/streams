@@ -496,12 +496,15 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
                 Box::pin(async move {
                     let path = crate::sharddir::shard_db_path(&prefix);
                     tracing::info!("opening shard log {path} (lazy; fences prior owner)");
+                    // L6 spike M1: SlateDB's own metrics for this shard DB.
+                    let l6_metrics = crate::l6_metrics::for_db(&path);
                     let db = {
                         let p2 = path.clone();
                         crate::bootstrap::on_slatedb_rt(async move {
                             Db::builder(p2.as_str(), shard_store)
                                 .with_settings(settings)
                                 .with_db_cache(shared_cache)
+                                .with_metrics_recorder(l6_metrics.recorder())
                                 .build()
                                 .await
                         })

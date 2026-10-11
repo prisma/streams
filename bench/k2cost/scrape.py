@@ -399,10 +399,15 @@ def cmd_snapshot(args) -> int:
     for name, url in parse_servers(args.servers):
         _, store, serr = get_json(f"{url}/v1/debug/store?window=10", auth)
         _, load, lerr = get_json(f"{url}/v1/debug/load", auth)
+        # L6 spike: the usage aggregate (per-stream frame bytes) at the
+        # snapshot, so stored bytes are read at the phase boundaries.
+        _, usage, uerr = get_json(f"{url}/v1/debug/usage", auth)
         servers[name] = {
             "store": shape_store(store) if store and not serr else None,
             "boot_id": (load or {}).get("boot_id") if not lerr else None,
-            "error": serr or lerr,
+            "rss_mb": (load or {}).get("rss_mb") if not lerr else None,
+            "usage": shape_usage(usage) if usage and not uerr else None,
+            "error": serr or lerr or uerr,
         }
     procs = proc_stats(args.pids)
     if args.boundary:
@@ -660,7 +665,8 @@ def cmd_posture(args) -> int:
         "k2gen_sources_sha256": {f: sha256_file(os.path.join(root, "bench", "k2cost", f))
                                  for f in ("common.ts", "produce.ts", "consume.ts", "churn.ts", "corpus.ts")},
         "bun_version": tool_version(["bun", "--version"]),
-        "s3lite": {"latency_ms": int(args.latency_ms), "bucket": args.bucket, "url": args.s3lite},
+        "s3lite": {"latency_ms": int(args.latency_ms), "put_bytes_per_sec": int(args.put_bps or 0),
+                   "bucket": args.bucket, "url": args.s3lite},
         "base": args.base,
         "customer_project": args.project,
         "servers": servers,
@@ -742,6 +748,7 @@ def main() -> int:
     p.add_argument("--point", required=True)
     p.add_argument("--base", required=True)
     p.add_argument("--latency-ms", required=True)
+    p.add_argument("--put-bps", default="0")
     p.add_argument("--bucket", required=True)
     p.add_argument("--project", required=True)
     sub.add_parser("envfile")

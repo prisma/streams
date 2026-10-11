@@ -21,6 +21,7 @@ pub(super) fn state(latency: Duration) -> Arc<AppState> {
         etag_counter: AtomicU64::new(1),
         upload_counter: AtomicU64::new(1),
         stats: Stats::default(),
+        put_bytes_per_sec: AtomicU64::new(0),
     })
 }
 
@@ -381,4 +382,93 @@ fn poisoned_ledger_cannot_publish_or_accept_cost_observations() {
         ))
         .is_err()
     );
+}
+
+/// L6 spike: every path that adds or removes census bytes books them in the
+/// byte ledger under the census locks, so the per-cell PUT bytes sum to the
+/// global counter and live bytes equal put minus out, per tier and in total.
+#[tokio::test]
+async fn byte_ledger_reconciles_with_the_global_counter_and_the_live_census() {
+    let state = state(Duration::ZERO);
+    let seg = "/b/p/shards/00/hseg/0000000000000001/0000000000000001";
+    let part = "/b/p/shards/00/history2/compacted/2.sst";
+    let gone = "/b/p/shards/00/compacted/9.sst";
+    let steps: [(Method, String, &'static str, u16); 14] = [
+        (Method::PUT, "/b/p/shards/00/wal/1".into(), "first", 200),
+        (Method::PUT, seg.into(), "segment-body", 200),
+        // a conditional create that loses: sent, rejected
+        (Method::PUT, seg.into(), "xx", 200),
+        (Method::PUT, "/b/p/shards/00/wal/1".into(), "overwrite!", 200),
+        (Method::DELETE, "/b/p/shards/00/wal/1".into(), "", 204),
+        (Method::POST, format!("{part}?uploads"), "", 200),
+        (Method::PUT, format!("{part}?partNumber=1&uploadId=u1"), "p1-old", 200),
+        (Method::PUT, format!("{part}?partNumber=1&uploadId=u1"), "p1", 200),
+        (Method::PUT, format!("{part}?partNumber=2&uploadId=u1"), "p2", 200),
+        (Method::POST, format!("{part}?uploadId=u1"), "", 200),
+        (Method::PUT, format!("{part}?partNumber=3&uploadId=u1"), "late", 404),
+        (Method::POST, format!("{gone}?uploads"), "", 200),
+        (Method::PUT, format!("{gone}?partNumber=1&uploadId=u2"), "aborted", 200),
+        (Method::DELETE, format!("{gone}?uploadId=u2"), "", 204),
+    ];
+    for (method, uri, body, status) in steps {
+        let mut req = axum::http::Request::builder().method(method).uri(&uri);
+        if body == "xx" {
+            req = req.header("if-none-match", "*");
+        }
+        let response = handle(State(state.clone()), req.body(Body::from(body)).unwrap()).await;
+        let want = if body == "xx" { 412 } else { status };
+        assert_eq!(response.status().as_u16(), want, "{uri}");
+    }
+    let stats2 = json_body(request(&state, Method::GET, "/_s3lite/stats2", "").await).await;
+    let put = &stats2["put_bytes"];
+    // 5 + 12 + 2 + 10 + 6 + 2 + 2 + 4 + 7
+    assert_eq!(put["total"], json!(50));
+    assert_eq!(put["cells_sum"], json!(50));
+    assert_eq!(put["cells"]["hseg/seg/put"], json!(14));
+    assert_eq!(put["cells"]["shard/wal/put"], json!(15));
+    assert_eq!(put["cells"]["hist/sst/multipart"], json!(14));
+    assert_eq!(put["cells"]["shard/sst/multipart"], json!(7));
+    assert_eq!(
+        put["out"]["hseg/seg"],
+        json!({"rejected": 2, "replaced": 0, "deleted": 0, "aborted": 0})
+    );
+    assert_eq!(
+        put["out"]["shard/wal"],
+        json!({"rejected": 0, "replaced": 5, "deleted": 10, "aborted": 0})
+    );
+    assert_eq!(
+        put["out"]["hist/sst"],
+        json!({"rejected": 4, "replaced": 6, "deleted": 0, "aborted": 0})
+    );
+    assert_eq!(
+        put["out"]["shard/sst"],
+        json!({"rejected": 0, "replaced": 0, "deleted": 0, "aborted": 7})
+    );
+    assert_eq!(
+        put["check"],
+        json!({"cells_sum_eq_total": true, "live_eq_put_minus_out": true, "tiers_reconcile": true})
+    );
+    assert_eq!(stats2["live_bytes"]["total"], json!({"objects": 2, "bytes": 16}));
+    assert_eq!(stats2["live_bytes"]["cells"]["hseg/seg"], json!({"objects": 1, "bytes": 12}));
+    assert_eq!(stats2["cells"]["hseg/seg/put"], json!({"2xx": 1, "412": 1}));
+    let basic = json_body(request(&state, Method::GET, "/_s3lite/stats", "").await).await;
+    assert_eq!(basic["put_bytes"], json!(50));
+}
+
+/// L6 spike (review B4): a PUT body pays len / cap seconds on top of the
+/// latency; uncapped it pays nothing.
+#[tokio::test]
+async fn put_bandwidth_cap_delays_a_body_by_its_length() {
+    let body = "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789";
+    let state = state(Duration::ZERO);
+    state.set_put_bytes_per_sec(1000);
+    let t0 = std::time::Instant::now();
+    let put = request(&state, Method::PUT, "/b/p/shards/00/wal/1", body).await;
+    assert_eq!(put.status(), StatusCode::OK);
+    assert!(t0.elapsed() >= Duration::from_millis(100), "{:?}", t0.elapsed());
+    state.set_put_bytes_per_sec(0);
+    let t1 = std::time::Instant::now();
+    let put = request(&state, Method::PUT, "/b/p/shards/00/wal/2", body).await;
+    assert_eq!(put.status(), StatusCode::OK);
+    assert!(t1.elapsed() < Duration::from_millis(100), "{:?}", t1.elapsed());
 }

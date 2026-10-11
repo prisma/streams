@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use super::{AppState, Stats, get_object, put_object};
+use super::{AppState, RequestClass, Stats, get_object, put_object};
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, StatusCode};
 use std::collections::{BTreeMap, HashMap};
@@ -17,12 +17,18 @@ async fn populated(discard_substr: Option<&str>) -> Arc<AppState> {
         etag_counter: AtomicU64::new(1),
         upload_counter: AtomicU64::new(1),
         stats: Stats::default(),
+        put_bytes_per_sec: AtomicU64::new(0),
     });
     assert_eq!(
         put_object(
             &state,
             "b/history/data.sst",
             &HeaderMap::new(),
+            RequestClass {
+                tier: "other",
+                kind: "sst",
+                op: "put"
+            },
             Body::from("abcdefg")
         )
         .await

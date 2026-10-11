@@ -39,19 +39,26 @@ struct Args {
     /// reads SST bodies back. Never used in correctness tests.
     #[arg(long)]
     discard_substr: Option<String>,
+    /// L6 spike (review B4): every PUT and UploadPart body is delayed by
+    /// its length / this many bytes per second, on top of --latency-ms
+    /// (0 = no bandwidth term).
+    #[arg(long, default_value_t = 0)]
+    put_bytes_per_sec: u64,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let app = emulator::router(emulator::AppState::new(
+    let state = emulator::AppState::new(
         Duration::from_millis(args.latency_ms),
         args.discard_substr,
-    ));
+    );
+    state.set_put_bytes_per_sec(args.put_bytes_per_sec);
+    let app = emulator::router(state);
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
     eprintln!(
-        "s3lite listening on {} (latency {}ms per op)",
-        args.listen, args.latency_ms
+        "s3lite listening on {} (latency {}ms per op, put bandwidth {} B/s, 0 = uncapped)",
+        args.listen, args.latency_ms, args.put_bytes_per_sec
     );
     axum::serve(listener, app).await?;
     Ok(())

@@ -984,7 +984,9 @@ async fn debug_store(
         .clamp(1, 300);
     let swap = q.get("swap").map(|v| v == "1").unwrap_or(false);
     let opens = state.shards.open_stats();
-    let snap = crate::store_timing::snapshot(window, swap, &state.runtime.store_io, &opens);
+    let mut snap = crate::store_timing::snapshot(window, swap, &state.runtime.store_io, &opens);
+    // L6 spike M1: SlateDB's metrics per shard DB.
+    snap["l6_slatedb"] = crate::l6_metrics::snapshot_json();
     axum::Json(snap).into_response()
 }
 

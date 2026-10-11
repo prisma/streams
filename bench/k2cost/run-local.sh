@@ -77,6 +77,8 @@ CELL=cell-k2
 # Defaults; a value from the caller's environment survives into the point
 # file, so ${VAR:-default} in a point can be overridden per run.
 S3LITE_LATENCY_MS=${S3LITE_LATENCY_MS:-20}
+# L6 spike (review B4): s3lite's PUT/UploadPart body bandwidth, bytes/s (0 = uncapped).
+S3LITE_PUT_BPS=${S3LITE_PUT_BPS:-0}
 SERVERS=${SERVERS:-1}
 SERVER_ENV_EXTRA=${SERVER_ENV_EXTRA:-}
 PHASES=${PHASES:-}
@@ -173,7 +175,8 @@ PIDS_EMU=$!
 
 # ---- fresh s3lite -------------------------------------------------------
 "$ROOT/target/release/s3lite" --listen 127.0.0.1:$S3_PORT \
-  --latency-ms "$S3LITE_LATENCY_MS" > "$RUN/s3lite.log" 2>&1 < /dev/null &
+  --latency-ms "$S3LITE_LATENCY_MS" --put-bytes-per-sec "$S3LITE_PUT_BPS" \
+  > "$RUN/s3lite.log" 2>&1 < /dev/null &
 PID_S3=$!
 for i in $(seq 1 50); do
   curl -sf -o /dev/null "$EMU/admin/placement" && curl -sf -o /dev/null "$S3/_s3lite/stats" && break
@@ -316,13 +319,13 @@ if [ "$SERVERS" = 2 ]; then
   done
   BASE=http://127.0.0.1:$LB_PORT
 fi
-log "cell up: $SERVERS server(s), base $BASE, s3lite latency ${S3LITE_LATENCY_MS} ms, bucket $BUCKET"
+log "cell up: $SERVERS server(s), base $BASE, s3lite latency ${S3LITE_LATENCY_MS} ms, put bandwidth ${S3LITE_PUT_BPS} B/s, bucket $BUCKET"
 
 SCRAPE_COMMON=(--run "$RUN" --servers "$SERVER_SPECS" --s3lite "$S3" --auth-file "$SECRETS/debug.hdr")
 prc=0
 python3 "$HERE/scrape.py" posture "${SCRAPE_COMMON[@]}" --root "$ROOT" \
   --env-dir "$SECRETS" --point "$POINT_NAME" --base "$BASE" \
-  --latency-ms "$S3LITE_LATENCY_MS" --bucket "$BUCKET" --project "$CUSTOMER_PROJECT" || prc=$?
+  --latency-ms "$S3LITE_LATENCY_MS" --put-bps "$S3LITE_PUT_BPS" --bucket "$BUCKET" --project "$CUSTOMER_PROJECT" || prc=$?
 if [ $prc != 0 ] && [ "${K2_ALLOW_COMMIT_MISMATCH:-0}" != 1 ]; then
   echo "run-local: refusing the point (posture.json; set K2_ALLOW_COMMIT_MISMATCH=1 to run it anyway)" >&2
   exit 2

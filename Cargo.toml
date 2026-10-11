@@ -30,6 +30,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip", "raw_value"] }
 sha2 = "0.10"
 slatedb = { version = "0.15.0", features = ["zstd", "wal_disable"] }
+# L6 spike only (M1 instrumentation): SlateDB's DefaultMetricsRecorder and
+# its MetricsRecorder trait are not re-exported by slatedb; this names the
+# crate slatedb already builds, at the same pinned rev (no new package in
+# Cargo.lock, one line in streams-slate's dependency list).
+slatedb-common = { git = "https://github.com/slatedb/slatedb.git", rev = "0717cc1e4e9bad10a4773760f66bac4264ecf05e" }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

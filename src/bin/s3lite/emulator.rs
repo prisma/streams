@@ -46,6 +46,47 @@ struct Stats {
     /// Class A on 2xx and 404; GET/HEAD billable Class B on 2xx and 404;
     /// 304/412, other errors and deletes free).
     detailed: Mutex<HashMap<RequestClass, [u64; 6]>>,
+    /// L6 spike: the byte ledger. Every increment of `put_bytes` happens
+    /// while this lock is held, together with the per-cell increment, and
+    /// every change to the live census (objects, open uploads) records the
+    /// bytes it removes here under the same lock, so `/_s3lite/stats2`
+    /// reads one consistent snapshot of both (`put_bytes` member).
+    bytes: Mutex<ByteLedger>,
+}
+
+/// L6 spike: PUT and UploadPart body bytes per request class, and the bytes
+/// that left the live census per (tier, kind). Live bytes always equal
+/// put - (rejected + replaced + deleted + aborted).
+#[derive(Default)]
+struct ByteLedger {
+    put: BTreeMap<RequestClass, u64>,
+    out: BTreeMap<(&'static str, &'static str), [u64; 4]>,
+}
+
+/// Indices into `ByteLedger::out`.
+const OUT_REJECTED: usize = 0;
+const OUT_REPLACED: usize = 1;
+const OUT_DELETED: usize = 2;
+const OUT_ABORTED: usize = 3;
+const OUT_NAMES: [&str; 4] = ["rejected", "replaced", "deleted", "aborted"];
+
+impl ByteLedger {
+    /// A body of `n` bytes received for `class`; `put_bytes` is the global
+    /// counter, bumped under the same lock.
+    fn put(&mut self, put_bytes: &AtomicU64, class: RequestClass, n: u64) {
+        *self.put.entry(class).or_default() += n;
+        put_bytes.fetch_add(n, Ordering::Relaxed);
+    }
+
+    fn out(&mut self, (tier, kind): (&'static str, &'static str), which: usize, n: u64) {
+        self.out.entry((tier, kind)).or_default()[which] += n;
+    }
+}
+
+/// The (tier, kind) the live census files a fully-prefixed key under.
+fn live_class(full_key: &str) -> (&'static str, &'static str) {
+    let key = full_key.split_once('/').map_or(full_key, |x| x.1);
+    (tier_class(&Method::PUT, key, &HashMap::new()), kind_class(key))
 }
 
 /// Stable identity of a physical request in the emulator's cost ledger.
@@ -195,6 +236,7 @@ fn tier_class(method: &Method, key: &str, query: &HashMap<String, String>) -> &'
     if key.is_empty() && *method == Method::GET {
         // bucket-level list: classify by the prefix= it scans
         return match query.get("prefix") {
+            Some(p) if p.contains("hseg") => "hseg",
             Some(p) if p.contains("history2") => "hist",
             Some(p) if p.contains("shards/") => "shard",
             Some(p) if p.contains("registry") => "registry",
@@ -209,7 +251,12 @@ fn tier_class(method: &Method, key: &str, query: &HashMap<String, String>) -> &'
     // A stream descriptor (registry/v4/projects/<hex>/streams/<hex>.json)
     // is the registry's, checked before the streams/ match.
 
-    (if key.contains("history2/") {
+    // L6 spike: the seal's segment objects (<shard db>/hseg/...) also live
+    // under the shard prefix; their own tier, matched before history2/ and
+    // shards/.
+    (if key.contains("/hseg/") || key.starts_with("hseg/") {
+        "hseg"
+    } else if key.contains("history2/") {
         "hist"
     } else if key.contains("shards/") {
         "shard"
@@ -228,7 +275,9 @@ fn tier_class(method: &Method, key: &str, query: &HashMap<String, String>) -> &'
 
 /// Object kind within the tier — the second classification axis.
 fn kind_class(key: &str) -> &'static str {
-    if key.contains("/wal/") || key.starts_with("wal/") {
+    if key.contains("/hseg/") || key.starts_with("hseg/") {
+        "seg"
+    } else if key.contains("/wal/") || key.starts_with("wal/") {
         "wal"
     } else if key.contains("compaction") {
         "compactions"
@@ -277,9 +326,25 @@ pub(crate) struct AppState {
     etag_counter: AtomicU64,
     upload_counter: AtomicU64,
     stats: Stats,
+    /// L6 spike (review B4): PUT and UploadPart bodies are delayed by
+    /// len / this many bytes per second (0 = no cap), on top of `latency`.
+    put_bytes_per_sec: AtomicU64,
 }
 
 impl AppState {
+    /// L6 spike: cap every PUT and UploadPart body at `bps` bytes per second.
+    pub(crate) fn set_put_bytes_per_sec(&self, bps: u64) {
+        self.put_bytes_per_sec.store(bps, Ordering::Relaxed);
+    }
+
+    /// The bandwidth term of one body of `n` bytes.
+    async fn put_bandwidth_delay(&self, n: usize) {
+        let bps = self.put_bytes_per_sec.load(Ordering::Relaxed);
+        if bps > 0 && n > 0 {
+            tokio::time::sleep(Duration::from_secs_f64(n as f64 / bps as f64)).await;
+        }
+    }
+
     pub(crate) fn new(latency: Duration, discard_substr: Option<String>) -> Arc<Self> {
         Arc::new(AppState {
             latency,
@@ -289,6 +354,7 @@ impl AppState {
             etag_counter: AtomicU64::new(1),
             upload_counter: AtomicU64::new(1),
             stats: Stats::default(),
+            put_bytes_per_sec: AtomicU64::new(0),
         })
     }
 
@@ -419,6 +485,11 @@ async fn dispatch(state: &Arc<AppState>, request: Request) -> Response {
         return StatusCode::BAD_REQUEST.into_response();
     }
     let full_key = format!("{bucket}/{key}");
+    let class = RequestClass {
+        tier: tier_class(&parts.method, &key, &query),
+        kind: kind_class(&key),
+        op: op_name(&parts.method, key.is_empty(), &query),
+    };
     let response = match (parts.method.clone(), key.is_empty()) {
         (Method::GET, true) => list_objects(state, bucket, &query),
         (Method::POST, true) if query.contains_key("delete") => {
@@ -432,12 +503,12 @@ async fn dispatch(state: &Arc<AppState>, request: Request) -> Response {
             complete_multipart(state, bucket, &key, &full_key, &query).await
         }
         (Method::PUT, false) if query.contains_key("uploadId") => {
-            upload_part(state, &full_key, &query, state.counted_part(body).await).await
+            upload_part(state, &full_key, &query, class, body).await
         }
         (Method::DELETE, false) if query.contains_key("uploadId") => {
             abort_multipart(state, &full_key, &query)
         }
-        (Method::PUT, false) => put_object(state, &full_key, &parts.headers, body).await,
+        (Method::PUT, false) => put_object(state, &full_key, &parts.headers, class, body).await,
         (Method::GET, false) => get_object(state, &full_key, &parts.headers, false),
         (Method::HEAD, false) => get_object(state, &full_key, &parts.headers, true),
         (Method::DELETE, false) => delete_object(state, &full_key),
@@ -487,6 +558,7 @@ async fn upload_part(
     state: &Arc<AppState>,
     full_key: &str,
     query: &HashMap<String, String>,
+    class: RequestClass,
     body: Body,
 ) -> Response {
     state.stats.multipart.fetch_add(1, Ordering::Relaxed);
@@ -499,11 +571,20 @@ async fn upload_part(
         Ok(data) => data,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
+    state.put_bandwidth_delay(data.len()).await;
     let mut uploads = state.uploads.lock().unwrap();
+    let mut bytes = state.stats.bytes.lock().unwrap();
+    // A part's body was sent whether or not it is ever completed.
+    let sent = data.len() as u64;
+    bytes.put(&state.stats.put_bytes, class, sent);
+    let census = (class.tier, class.kind);
     let Some(parts) = uploads.get_mut(&format!("{full_key}:{upload_id}")) else {
+        bytes.out(census, OUT_REJECTED, sent);
         return s3_error(StatusCode::NOT_FOUND, "NoSuchUpload", "upload not found");
     };
-    parts.insert(part, data);
+    if let Some(old) = parts.insert(part, data) {
+        bytes.out(census, OUT_REPLACED, old.len() as u64);
+    }
     ([(header::ETAG, state.next_etag())], "").into_response()
 }
 
@@ -520,25 +601,43 @@ fn abort_multipart(
     query: &HashMap<String, String>,
 ) -> Response {
     let upload_id = query.get("uploadId").cloned().unwrap_or_default();
-    state
-        .uploads
-        .lock()
-        .unwrap()
-        .remove(&format!("{full_key}:{upload_id}"));
+    let mut uploads = state.uploads.lock().unwrap();
+    if let Some(parts) = uploads.remove(&format!("{full_key}:{upload_id}")) {
+        let aborted = parts.values().map(|part| part.len() as u64).sum::<u64>();
+        state
+            .stats
+            .bytes
+            .lock()
+            .unwrap()
+            .out(live_class(full_key), OUT_ABORTED, aborted);
+    }
     StatusCode::NO_CONTENT.into_response()
 }
 
+fn delete_object(state: &Arc<AppState>, full_key: &str) -> Response {
+    state.stats.delete.fetch_add(1, Ordering::Relaxed);
+    remove_object(state, full_key);
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// Remove one object, booking its bytes out of the census under the
+/// objects lock.
 #[cfg_attr(
     not(test),
     expect(
         clippy::unwrap_used,
-        reason = "S3 emulator deletion; a delete acknowledgement must observe an intact object map; poisoned-state recovery would hide a failed storage operation"
+        reason = "L6 spike: S3 emulator deletion and its byte ledger share the object-map lock"
     )
 )]
-fn delete_object(state: &Arc<AppState>, full_key: &str) -> Response {
-    state.stats.delete.fetch_add(1, Ordering::Relaxed);
-    state.objects.lock().unwrap().remove(full_key);
-    StatusCode::NO_CONTENT.into_response()
+fn remove_object(state: &Arc<AppState>, full_key: &str) {
+    let mut objects = state.objects.lock().unwrap();
+    if let Some(old) = objects.remove(full_key) {
+        state.stats.bytes.lock().unwrap().out(
+            live_class(full_key),
+            OUT_DELETED,
+            old.orig_len as u64,
+        );
+    }
 }
 
 fn s3_error(status: StatusCode, code: &str, message: &str) -> Response {
@@ -560,6 +659,7 @@ async fn put_object(
     state: &Arc<AppState>,
     full_key: &str,
     headers: &HeaderMap,
+    class: RequestClass,
     body: Body,
 ) -> Response {
     state.stats.put.fetch_add(1, Ordering::Relaxed);
@@ -567,10 +667,7 @@ async fn put_object(
         Ok(b) => b,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
-    state
-        .stats
-        .put_bytes
-        .fetch_add(data.len() as u64, Ordering::Relaxed);
+    state.put_bandwidth_delay(data.len()).await;
 
     let if_none_match = headers
         .get(header::IF_NONE_MATCH)
@@ -578,8 +675,13 @@ async fn put_object(
     let if_match = headers.get(header::IF_MATCH).and_then(|v| v.to_str().ok());
 
     let mut objects = state.objects.lock().unwrap();
+    let mut bytes = state.stats.bytes.lock().unwrap();
+    let sent = data.len() as u64;
+    bytes.put(&state.stats.put_bytes, class, sent);
+    let census = (class.tier, class.kind);
     let existing = objects.get(full_key);
     if if_none_match == Some("*") && existing.is_some() {
+        bytes.out(census, OUT_REJECTED, sent);
         return s3_error(
             StatusCode::PRECONDITION_FAILED,
             "PreconditionFailed",
@@ -590,6 +692,7 @@ async fn put_object(
         match existing {
             Some(obj) if obj.etag == expected.trim() => {}
             _ => {
+                bytes.out(census, OUT_REJECTED, sent);
                 return s3_error(
                     StatusCode::PRECONDITION_FAILED,
                     "PreconditionFailed",
@@ -598,6 +701,10 @@ async fn put_object(
             }
         }
     }
+    if let Some(old) = existing {
+        bytes.out(census, OUT_REPLACED, old.orig_len as u64);
+    }
+    drop(bytes);
     let etag = state.next_etag();
     let orig_len = data.len();
     let discard = state
@@ -850,13 +957,6 @@ fn list_objects(state: &Arc<AppState>, bucket: &str, query: &HashMap<String, Str
     ([(header::CONTENT_TYPE, "application/xml")], xml).into_response()
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        clippy::unwrap_used,
-        reason = "S3 emulator batch deletion; each acknowledgement must remove from intact object state; recovering a poisoned map would hide failed storage operations"
-    )
-)]
 async fn batch_delete(state: &Arc<AppState>, bucket: &str, body: Body) -> Response {
     state.stats.delete.fetch_add(1, Ordering::Relaxed);
     let data = match axum::body::to_bytes(body, usize::MAX).await {
@@ -878,11 +978,7 @@ async fn batch_delete(state: &Arc<AppState>, bucket: &str, body: Body) -> Respon
             .replace("&quot;", "\"")
             .replace("&apos;", "'")
             .replace("&amp;", "&");
-        state
-            .objects
-            .lock()
-            .unwrap()
-            .remove(&format!("{bucket}/{key}"));
+        remove_object(state, &format!("{bucket}/{key}"));
         deleted.push(key.to_string());
         rest = &after[end + 6..];
     }
@@ -912,6 +1008,10 @@ async fn complete_multipart(
 ) -> Response {
     state.stats.multipart.fetch_add(1, Ordering::Relaxed);
     let upload_id = query.get("uploadId").cloned().unwrap_or_default();
+    // L6 spike: the parts leave the open uploads and become the object
+    // under both locks (objects, then uploads, as the census takes them),
+    // so no snapshot sees the bytes in neither place.
+    let mut objects = state.objects.lock().unwrap();
     let parts = state
         .uploads
         .lock()
@@ -924,6 +1024,13 @@ async fn complete_multipart(
     for (_, part) in parts {
         data.extend_from_slice(&part);
     }
+    if let Some(old) = objects.get(full_key) {
+        state.stats.bytes.lock().unwrap().out(
+            live_class(full_key),
+            OUT_REPLACED,
+            old.orig_len as u64,
+        );
+    }
     let etag = state.next_etag();
     let orig_len = data.len();
     let discard = state
@@ -931,7 +1038,7 @@ async fn complete_multipart(
         .as_deref()
         .map(|sub| full_key.contains(sub) && full_key.ends_with(".sst"))
         .unwrap_or(false);
-    state.objects.lock().unwrap().insert(
+    objects.insert(
         full_key.to_string(),
         StoredObject {
             data: if discard {

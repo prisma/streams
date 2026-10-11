@@ -1588,13 +1588,21 @@ impl ShardEngine {
                 let appended = ticker.stats_appended.load(Ordering::Relaxed);
                 if appended != last_appended {
                     last_appended = appended;
-                    if let Err(e) = ticker
+                    // L6 spike M1: count the ticker's forced flushes and
+                    // attribute SlateDB's freezes to them by delta.
+                    let l6 = crate::l6_metrics::get(&crate::sharddir::shard_db_path(&ticker.prefix));
+                    let before = l6.as_ref().map_or(0, |m| m.counter(slatedb::db_stats::IMMUTABLE_MEMTABLE_FLUSHES));
+                    let flushed = ticker
                         .db
                         .flush_with_options(FlushOptions {
                             flush_type: FlushType::MemTable,
                         })
-                        .await
-                    {
+                        .await;
+                    if let Some(m) = &l6 {
+                        let after = m.counter(slatedb::db_stats::IMMUTABLE_MEMTABLE_FLUSHES);
+                        m.ticker_flush(before, after, flushed.is_err());
+                    }
+                    if let Err(e) = flushed {
                         tracing::warn!(shard = %ticker.prefix, "memtable flush tick failed: {e}");
                     }
                 }
