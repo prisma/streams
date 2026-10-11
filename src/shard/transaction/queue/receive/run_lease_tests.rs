@@ -66,13 +66,18 @@ impl Rig {
     }
 
     async fn append(&mut self, key: u8) {
+        self.append_run(key, 1).await;
+    }
+
+    /// `n` records of routing key `key` in one append request.
+    async fn append_run(&mut self, key: u8, n: u64) {
         let (resp, ack) = oneshot::channel();
         let key_hash = key_hash(key);
         let req = AppendReq {
             enqueued_at: std::time::Instant::now(),
             hash: HASH,
             route: HASH,
-            entries: vec![Bytes::from(vec![key; 8])],
+            entries: (0..n).map(|_| Bytes::from(vec![key; 8])).collect(),
             usage: crate::usage::counters(&HASH),
             routing_key: char::from(key).to_string(),
             key_hash,
@@ -93,9 +98,11 @@ impl Rig {
         };
         assert!(self.engine.try_enqueue(req).is_ok(), "enqueue");
         let last = ack.await.unwrap().unwrap().last_offset;
-        assert_eq!(last, self.next, "one record per append");
-        self.keys.insert(last, key_hash);
-        self.next += 1;
+        assert_eq!(last, self.next + n - 1, "{n} records in one append");
+        for off in self.next..=last {
+            self.keys.insert(off, key_hash);
+        }
+        self.next = last + 1;
     }
 
     /// One Receive by group `g`; answers `(leased, poisoned)`.
@@ -518,6 +525,28 @@ async fn a_pull_never_leases_at_or_past_the_tail_whatever_coverage_it_is_handed(
         "coverage of offset 2 leases only the stream's two records"
     );
     assert_eq!(rig.lease_row(2).await, None, "no lease row at the tail");
+    rig.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pull_walks_at_most_eight_offsets_per_max_plus_4096() {
+    // a0..a4102 b4103 c4104; with max 1 a pull walks at most 1 * 8 + 4096
+    // = 4104 offsets, the 4103 of a and b.
+    let mut rig = Rig::new("run-lease-budget", "").await;
+    rig.append_run(b'a', 4_103).await;
+    rig.append(b'b').await;
+    rig.append(b'c').await;
+    assert_eq!(rig.pull(1, HOLD_MS, 5).await.0, fresh(&[0]), "a0 holds a");
+    assert_eq!(
+        rig.pull(1, HOLD_MS, 5).await.0,
+        fresh(&[4_103]),
+        "b is the budget's last offset"
+    );
+    assert_eq!(
+        rig.pull(1, HOLD_MS, 5).await.0,
+        fresh(&[]),
+        "c lies one offset past the budget"
+    );
     rig.close().await;
 }
 
