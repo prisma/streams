@@ -1783,6 +1783,19 @@ segment) are separate layers, as Pravega's containers and segments are.
   so it ends unless shard compaction stops for good, and item 38's verdict
   and the formal models pin it. Analysis:
   `~/.streams-k2/analysis/shard-close-hang.md`.
+- **Needs the owner: a create with an initial body whose shard engine closes
+  under it answers `429 overloaded` "queue full".** Edge record #136 (W3,
+  decided under the owner's delegation of 2026-10-11 to Fable 5.1) answers
+  an append whose engine closed between its resolve and its enqueue as the
+  moved shard it met (raw `503 shard_moving`, product `503
+  temporarily_unavailable`, `Retry-After: 1`). Its sibling in creation,
+  `seed` (`src/application/creation/initialization.rs:144`), still maps
+  every enqueue refusal to `CreationFailure::Overloaded` (raw and product
+  `429 overloaded`, no `Retry-After`), a closed engine included. `seed`
+  carries three `#[expect]` scopes (`too_many_arguments`, `too_many_lines`,
+  `unwrap_used`), so the same match there changes accepted exception scopes:
+  the owner's call (say "also seed" to take it with an approved growth row).
+  A full queue keeps its `429` either way (SPEC §3.4).
 - The pilot router hashes the bare stream name, which no longer matches the
   layout-4 route hash: about 63-65% of first hops in a 4-server cell get `409`
   and are replayed. The SDK never follows `Streams-Replay-To`.
