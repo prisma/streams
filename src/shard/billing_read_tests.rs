@@ -377,6 +377,16 @@ fn billed_request(
     (CommitOp::Append(request), reply)
 }
 
+/// `billed_append` without its attribution: a reserved stream's append, which
+/// meters nothing.
+fn unbilled_append() -> (CommitOp, oneshot::Receiver<Result<AppendAck, AppendErr>>) {
+    let (mut append, reply) = billed_append();
+    if let CommitOp::Append(request) = &mut append {
+        request.billing = None;
+    }
+    (append, reply)
+}
+
 /// Layout 5: retention is billed on the bytes stored. A billed request
 /// split over three pages and one whose ten records share a page raise the
 /// row's gauge by exactly the bytes of the four pages they stored, far
@@ -538,6 +548,47 @@ async fn a_skipped_close_after_an_append_in_its_group_leaves_the_row_dirty_and_w
         .unwrap()
         .unwrap();
     assert_eq!(ack.next_offset, 1);
+    rig.stop().await;
+}
+
+/// An unbilled append needs no billing row, so a group of them reads none: a
+/// billing read that would fail cannot refuse it, and the stored row stays as
+/// it was, unmarked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_group_of_unbilled_appends_reads_no_billing_row() {
+    let rig = CloseRig::start("unbilled-append", Some(&open_row())).await;
+    billing_read_faults()
+        .lock()
+        .unwrap()
+        .insert("unbilled-append".into(), ());
+    let (append, reply) = unbilled_append();
+    rig.commit(vec![append]).await;
+    assert!(
+        billing_read_faults()
+            .lock()
+            .unwrap()
+            .remove("unbilled-append")
+            .is_some(),
+        "the group read no billing row"
+    );
+    let ack = tokio::time::timeout(std::time::Duration::from_secs(5), reply)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(ack.next_offset, 1);
+    assert!(
+        rig.db
+            .get(shard_page_key(&SEGMENT, 0))
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        rig.stored().await,
+        (Some(json(&open_row())), None),
+        "the row is untouched and unmarked"
+    );
     rig.stop().await;
 }
 
