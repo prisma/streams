@@ -1,4 +1,5 @@
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -168,19 +169,51 @@ class MutationOwnership(unittest.TestCase):
             self.assertLessEqual(sum(share.minutes for share in group),
                                  mutation_owners.SCHEDULE_CAP_MINUTES)
 
+    def test_each_night_fits_the_cap_at_the_slowest_runner_costs_measured_on_2026_10_10(self):
+        # The scheduled run of 2026-10-10 (run 38022201458) on eight runners:
+        # a service-crate baseline took 435-734 s as the night's first and
+        # 293-495 s after it, a mutant 3.1-4.7 min, and the `shard` owner's
+        # 354 mutants (44-45 a runner) 144-213 min a runner. Charged those
+        # worst costs (harness owners at their model), every group fits.
+        # This pins the sizes measured on 2026-10-11, not an invariant of the
+        # packer: the night's first baseline costs 4.7 min over the model, each
+        # later one 0.75 and each mutant 0.3 under, so a night of many small
+        # service owners can pass the cap here while its model fits. If it fails after a re-measure
+        # or new owner rows, re-pack: raise DEFAULT_NIGHT_MINUTES (a cost-model
+        # call, as N6 was) until the packer deals more nights. Never loosen
+        # these measured costs, the cap or a filter to make it pass.
+        first, later, each = 734 / 60, 495 / 60, 4.7
+        sizes = mutation_owners.owner_sizes()
+        jobs = mutation_owners.SCHEDULE_JOBS
+        for group in mutation_owners.schedule_groups():
+            minutes, built = 0.0, False
+            for share in group:
+                mutants = math.ceil(sizes[share.owner.name] / (share.parts * jobs))
+                if share.owner.target != 'service-lib' or not mutants:
+                    minutes += share.minutes
+                    continue
+                minutes += (later if built else first) + mutants * each
+                built = True
+            self.assertLessEqual(minutes, mutation_owners.SCHEDULE_CAP_MINUTES,
+                                 f'{[share.owner.name for share in group]}: over the cap at the '
+                                 'measured costs; re-pack by raising DEFAULT_NIGHT_MINUTES, '
+                                 'never by loosening these costs, the cap or a filter')
+        shard = next(entry for entry in OWNERS if entry.name == 'shard')
+        self.assertGreaterEqual(mutation_owners.night_minutes(shard, 354), 495 / 60 + 213)
+
     def test_the_night_model_charges_each_runner_its_baseline_and_largest_share(self):
         service = MutationOwner('service', ('src/service.rs',), ('service::',))
         harness = MutationOwner('harness', ('src/harness.rs',), ('harness::',), 'harness-lib')
         minutes = mutation_owners.night_minutes
         self.assertEqual(minutes(service, 0), 0)
-        self.assertEqual(minutes(service, 1), 6 + 2.5)
-        self.assertEqual(minutes(service, 9, jobs=4), 6 + 3 * 2.5)
-        self.assertEqual(minutes(service, 9, parts=2, jobs=4), 6 + 2 * 2.5)
+        self.assertEqual(minutes(service, 1), 7.5 + 5)
+        self.assertEqual(minutes(service, 9, jobs=4), 7.5 + 3 * 5)
+        self.assertEqual(minutes(service, 9, parts=2, jobs=4), 7.5 + 2 * 5)
         self.assertEqual(minutes(harness, 9, jobs=4), 1 + 3 * 0.25)
         # The job's default width, eight runners: 17 mutants are 3 on runner 0.
         self.assertEqual(mutation_owners.SCHEDULE_JOBS, 8)
-        self.assertEqual(minutes(service, 17), 6 + 3 * 2.5)
-        self.assertEqual(minutes(service, 17, parts=2), 6 + 2 * 2.5)
+        self.assertEqual(minutes(service, 17), 7.5 + 3 * 5)
+        self.assertEqual(minutes(service, 17, parts=2), 7.5 + 2 * 5)
 
     def test_an_owner_too_large_for_one_night_is_dealt_over_several_nights(self):
         big = MutationOwner('big', ('src/big.rs',), ('big::',))
@@ -194,10 +227,11 @@ class MutationOwnership(unittest.TestCase):
         placed = [(index, share.owner.name, share.part, share.parts)
                   for index, group in enumerate(groups) for share in group]
         big_parts = [row for row in placed if row[1] == 'big']
-        # 1,000 mutants are 125 per runner of eight, 6 + 125 x 2.5 = 318.5 minutes,
-        # over the 270-minute night: two parts of 6 + 63 x 2.5 = 163.5.
-        self.assertEqual(sorted(row[2:] for row in big_parts), [(0, 2), (1, 2)])
-        self.assertEqual(len({row[0] for row in big_parts}), 2)
+        # 1,000 mutants are 125 per runner of eight, 7.5 + 125 x 5 = 632.5 minutes,
+        # over the 270-minute night, and two parts of 7.5 + 63 x 5 = 322.5 are
+        # too: three parts of 7.5 + 42 x 5 = 217.5.
+        self.assertEqual(sorted(row[2:] for row in big_parts), [(0, 3), (1, 3), (2, 3)])
+        self.assertEqual(len({row[0] for row in big_parts}), 3)
         self.assertCountEqual([row[1] for row in placed if row[1] != 'big'],
                               [entry.name for entry in (*small, idle)])
         for group in groups:
@@ -205,7 +239,7 @@ class MutationOwnership(unittest.TestCase):
                                  mutation_owners.SCHEDULE_CAP_MINUTES)
             self.assertEqual([share.owner for share in group],
                              [entry for entry in owners if entry in {s.owner for s in group}])
-        self.assertEqual(len(groups), 3)  # 2 x 163.5 + 6 x 38.5 = 558 minutes: at least 3.
+        self.assertEqual(len(groups), 5)  # 3 x 217.5 + 6 x 72.5 = 1,087.5 minutes: at least 5.
 
     def test_table_names_and_sources_are_unique(self):
         self.assertEqual(len({entry.name for entry in OWNERS}), len(OWNERS))

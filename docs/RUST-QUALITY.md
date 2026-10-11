@@ -226,7 +226,12 @@ owner's whole-scope mutant count; `python3 scripts/quality/mutation_driver.py
 a missing or retired one fails the planner and its tests. `mutation_owners.py`
 models an owner's minutes on the job's slowest runner from the scheduled runs'
 measured times: every runner builds and tests the owner's unmutated baseline,
-then its round-robin eighth of the mutants. An owner whose minutes exceed a
+then its round-robin eighth of the mutants. A service-crate share costs 7.5
+minutes of baseline and 5.0 a mutant, measured on the scheduled run of
+2026-10-10 (N6, decided by the lead under the owner's "you decide" of
+2026-10-11), and the model's unit tests require every group to fit the cap
+at that night's slowest measured costs; the sizes measured on 2026-10-11
+deal the owners into 22 nights on 8 runners. An owner whose minutes exceed a
 night's cap of 270, three quarters of the job's limit, is dealt over the
 fewest nights that each fit, as round-robin shares of its mutants (night
 `part` of `parts`, runner k of 8: cargo-mutants shard `part × 8 + k` of

@@ -375,8 +375,9 @@ record `docs/quality/pr19-merge-review.md`. Open work, in priority order:
 - `slate` is the default branch (2026-09-28), so the nightly legs run for
   it: the noisy-neighbor campaign (03:17 UTC) and rust-quality's full
   formal run, fuzzing and mutation rotation (03:43 UTC). The rotation
-  deals the owners into 12 groups sized to the 360-minute job (a full cycle
-  is 12 nights), runs every owner of the night's group and fails once at the
-  end; a new owner needs its size measured (`python3
+  deals the owners into 22 groups sized to the 360-minute job at the
+  measured 7.5 min baseline and 5.0 min per mutant on 8 runners (a full
+  cycle is 22 nights), runs every owner of the night's group and fails once
+  at the end; a new owner needs its size measured (`python3
   scripts/quality/mutation_driver.py --measure-sizes`, NEXT-WORK "Nightly
   mutation rotation").

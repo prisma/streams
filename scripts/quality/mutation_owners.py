@@ -472,18 +472,24 @@ SIZES_COMMAND = 'python3 scripts/quality/mutation_driver.py --measure-sizes'
 # rust-quality's `mutants` job. The job deals each owner's n mutants over
 # SCHEDULE_JOBS runners round-robin, so runner 0 tests ceil(n / jobs) of them,
 # and every runner with a share first builds and tests the owner's unmutated
-# baseline. Measured on the scheduled runs of 2026-09-29 to 2026-10-02: a
-# service-crate baseline took 293-348 s (430-543 s for the night's first)
-# and a mutant 1.4-3.4 min, 2.3 on average, nearly all of it the rebuild;
-# the harness crate's baseline under 40 s and its mutants seconds. A group
-# may hold 270 minutes, three quarters of the job's 360: the rest is the
+# baseline. Measured on the scheduled run of 2026-10-10 (run 38022201458):
+# a service-crate baseline took 293-734 s (435-734 s for the night's first),
+# and the `shard` owner's 44-45 mutants a runner took 144-213 min, 3.1-4.7
+# min a mutant, 3.9 on average, nearly all of it the rebuild; the slowest
+# runner was 1.5x the fastest on the same work. Under the 6.0 and 2.5 of the
+# runs of 2026-09-29 to 10-02, four of that night's runners took 276-349 min
+# and four were cancelled at 360; the model now charges 7.5 and 5.0 (N6,
+# decided by the lead under the owner's "you decide" of 2026-10-11). The
+# harness crate's baseline is under 40 s and its mutants seconds. A group may
+# hold 270 minutes, three quarters of the job's 360: the rest is the
 # runner's setup, the night's first cold build and slower mutants. Eight
 # runners of 360 min since the owner's decision of 2026-10-08 (four of 240
-# before), which deals the owners into 12 nights instead of 29.
+# before): the sizes measured on 2026-10-11 (7,307 mutants over 183 owners)
+# deal the owners into 22 nights, 13 under the old costs.
 SCHEDULE_JOBS = 8
 SCHEDULE_CAP_MINUTES = 270.0
 NIGHT_MINUTES = {'harness-lib': (1.0, 0.25)}  # target: (baseline, each mutant)
-DEFAULT_NIGHT_MINUTES = (6.0, 2.5)
+DEFAULT_NIGHT_MINUTES = (7.5, 5.0)
 
 
 @dataclass(frozen=True)

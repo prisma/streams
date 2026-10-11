@@ -139,8 +139,8 @@ class Triggers(unittest.TestCase):
 
     def test_a_scheduled_receipt_cannot_change_a_split_owners_share_or_the_group_count(self):
         # No measured owner is too large for one night of eight runners, so
-        # billing is made one: 2,000 mutants take three parts.
-        sizes = {**mutation_owners.owner_sizes(), 'billing': 2000}
+        # billing is made one: 1,000 mutants take three parts.
+        sizes = {**mutation_owners.owner_sizes(), 'billing': 1000}
         with patch.object(mutation_owners, 'owner_sizes', lambda owners=OWNERS: sizes):
             groups = plan_schedule(0)['schedule_groups']
             checks = next(plan_schedule(slot) for slot in range(groups)

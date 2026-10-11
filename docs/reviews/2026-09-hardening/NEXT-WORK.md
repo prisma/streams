@@ -260,11 +260,12 @@ alongside and finish before admission opens.
     `crypto_page*`, with zero MISSED, TIMEOUT and incomplete: days
     locally, at about a minute a mutant. Before it: N6 as the lead decided
     it (the rotation's cost model becomes the measured 7.5 min baseline
-    and 5.0 min per mutant on 8 runners, where `mutation_owners.py` models
-    6.0 and 2.5; the `shard` owner's survivors are killed with shard-local
-    unit tests, with no filter widening; the pump's pacing, herd-settle
-    and durable-wait mutants are documented as performance posture until a
-    counter-based oracle exists; the three log-only guards are removed and
+    and 5.0 min per mutant on 8 runners, done on 2026-10-11 with a
+    22-night cycle; the `shard` owner's survivors are killed with
+    shard-local unit tests, with no filter widening; the pump's pacing,
+    herd-settle and durable-wait mutants are documented as performance
+    posture until a counter-based oracle exists, recorded on 2026-10-11 in
+    "Nightly mutation rotation"; the three log-only guards are removed and
     the real-time boundaries extracted into pure `fn(now)` helpers in one
     receipt-staling `src/shard.rs` commit); the filter-gap census of
     section 10 (N4); and the named survivors on authorization and
@@ -1290,7 +1291,32 @@ before marking it complete."
   owner's 44-45 mutants taking 3-4 h of each; the cost model is question
   N6, put back to the owner and decided by the lead under his "You decide"
   of 2026-10-11 (README row "Public beta", (10); section "Public beta",
-  item 12).
+  item 12). **Done (2026-10-11, N6, decided by the lead under the owner's
+  "you decide" of 2026-10-11):** `mutation_owners.py` charges a
+  service-crate share 7.5 min of baseline and 5.0 min a mutant on the
+  slowest runner (it charged 6.0 and 2.5, the runs of 2026-09-29 to 10-02),
+  the costs that night measured (run 38022201458: the `shard` owner's 44-45
+  mutants took 144-213 min a runner, 3.1-4.7 min a mutant, 3.9 on average;
+  baselines 293-734 s; four runners finished at 276-349 min and four were
+  cancelled at 360). A unit test charges every group that night's slowest
+  costs (a 734 s first baseline, 495 s for each later one, 4.7 min a
+  mutant) and requires it to fit the 270-minute cap; under the old model one
+  group came to 437 min. The sizes of 2026-10-11 now deal the owners into 22
+  nights on 8 runners (13 under the old model); the runner count, the cap
+  and every filter are unchanged. The rest of call 10, recorded here: the
+  pump's pacing, herd-settle and durable-wait mutants in
+  `ShardEngine::start` are accepted as documented performance posture until
+  a counter-based oracle (`pump_gathers`, `pump_gathers_skipped_busy`,
+  `pump_flushes`) is written; acceptance is their disposition, not an
+  exclusion, so a night that runs them still lists them MISSED and fails,
+  and item 12's zero-MISSED campaign over `shard*` meets them again. The
+  per-mutant `mutants.out/outcomes.json` stays local and is never uploaded
+  as a CI artifact (raw-evidence upload stays the owner's hold). Still open
+  under the same call: the `shard` owner's survivors killed with
+  shard-local unit tests, with no filter widening; and the three log-only
+  guards removed and the real-time boundaries extracted into pure
+  `fn(now)` helpers, in one `src/shard.rs` commit that stales six formal
+  receipts (a later shard round).
   Re-measured on 2026-10-11
   when the storage clock left `src/billing.rs` (N2): 7,301 mutants over 181
   owners; `billing` 375 -> 361 and the new `billing_storage_clock` 14, the
