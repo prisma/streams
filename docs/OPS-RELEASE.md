@@ -101,10 +101,11 @@ cdg 68 / sjc 87 — all regions PASS except **us-east-1 (iad1, 341 ms):
 excluded from the SLO region set** until the PoP improves (its
 mutating-op store costs are 5–12× peers; documented in
 SOAK-REGIONS).
-That envelope predates the 100 ms write tier (edge change #97, awaiting
-ratification): at the default `WAL_FLUSH_GAP_MS=100` an append on a busy
-shard waits up to the rest of the gap before its WAL write, about half a
-gap more on average. The SLO has not been re-measured at 100 ms; the
+That envelope predates the 100 ms write tier (edge change #97, ratified
+2026-10-11 under the owner's delegation, S2): at the default
+`WAL_FLUSH_GAP_MS=100` an append on a busy shard waits up to the rest of
+the gap before its WAL write, about half a gap more on average. The SLO
+has not been re-measured at 100 ms; the
 interpolated fra p50 is about 0.09-0.14 s (NEXT-WORK §14.8 holds the
 local model check still to run).
 

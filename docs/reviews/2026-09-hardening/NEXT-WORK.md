@@ -292,7 +292,7 @@ the walk's retention flag) make the losing order certain with a committer
 that gathers for 2 s (`pace_min_reqs: 1`) and were red 5 of 5 runs each.
 
 **The lost close's exact fix landed (owner decision of 2026-10-01; edge
-change #91, the commit that records it, awaits ratification).** #87 left a
+change #91, the commit that records it, ratified 2026-10-02).** #87 left a
 window: phase 1 decides from the durable index, so an op still unapplied a
 sweep interval later met the same drop, as did the drain's closes and
 retention flags on a resident phase 1 retired. Now each
@@ -317,7 +317,7 @@ the `src/shard.rs` and `src/shard/transaction/mod.rs` edits stale
 (KANI-047, TLA-002, TLA-005, TLA-006, TLA-011, TLA-016) are to be
 re-recorded; the counter has no debug surface, because `src/http.rs` is at
 its line ceiling and `ops::collect_snapshot` is a frozen exception scope
-(tests read it); and #91 awaits ratification.
+(tests read it); and #91 was ratified on 2026-10-02.
 
 Rollback note for the record: an older binary ignores the debt objects (they
 live outside the descriptor), so a rollback leaves debts unsettled until
@@ -596,7 +596,7 @@ the owner, and violates `ClosureAuthorized`. (5) The platform contract
 (`contracts/streams-platform/v1/workload-token-claims.schema.json`,
 CONTROL-PLANE-INTEGRATION §8.1) names `segment-close` and `seal-fence`,
 the emulator's default workload token carries both, and the platform e2e
-checks each on its route (edge #90, awaiting ratification). Still the
+checks each on its route (edge #90, ratified 2026-10-02). Still the
 owner's: a mutation owner for `fence_relay.rs`. Not changed:
 MULTITENANCY.md §14.1's r4 status block lists the eight operations of
 r4; that document is a frozen contract, changed only by a
@@ -1379,7 +1379,7 @@ then the five rows of package 5):
   the owner's instruction ("Please do the cleanup"): the counter, the
   gauge and the two fields are gone, the row of `collect_snapshot` reads
   `syntax_facts` 457 (was 466), and the removal is edge record #86
-  (operator-debug, low; awaits ratification) with the WIRE-MATRIX lines
+  (operator-debug, low; ratified 2026-09-30) with the WIRE-MATRIX lines
   of both routes. The platform export
   (§11) must show no project that passes one of the two arguments or holds
   `ABSORB_PACE_MS` above 0.
@@ -1545,9 +1545,9 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
    plus the per-shard offset (#98), `TELEMETRY_DRAIN_SECS` defaults to 8
    (#117; its R09 mechanism test re-pinned on the owner's approval of
    2026-10-08), and the per-stream usage answer states the read-loss window
-   of that cadence (#118); #97 and #98 await ratification, and the owner
-   ratified #117 and #118 on 2026-10-08 (landing call C3). The cross-server
-   split gate in fleet mode (#119, 14.6; CI's `livefeed-fleet-cert` and the
+   of that cadence (#118); #97 and #98 were ratified on 2026-10-11 under the
+   owner's delegation (S2), #117 and #118 by the owner on 2026-10-08
+   (landing call C3). The cross-server split gate in fleet mode (#119, 14.6; CI's `livefeed-fleet-cert` and the
    other split rigs take their split outside fleet mode first) and the
    fleet shard default (#120, 14.4; the fleet rigs pin their shard counts
    until `home-v1`) land with it. The 100 ms point of 14.8 is not yet
@@ -1556,8 +1556,9 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
    rows per shard, not 64 (implemented, edge record #121, ratified on
    2026-10-08, landing call C3), and a graceful stop's terminal round is bounded by
    min(cadence, 5 s), not one cadence (implemented, edge record #122,
-   awaiting ratification; its R09 mechanism test re-pinned, which the owner
-   approved on 2026-10-08, landing call C6).
+   ratified 2026-10-11 under the owner's delegation, S2; its R09 mechanism
+   test re-pinned, which the owner approved on 2026-10-08, landing call
+   C6).
 3. **"WAL plus one copy" (design B) as layout 6, before launch,** after a
    throwaway seal spike proves at most 2.2 uploads per stored byte and bounded
    memory. Each stored byte is uploaded about 8 times today: WAL 1.16, shard
@@ -1754,6 +1755,6 @@ segment) are separate layers, as Pravega's containers and segments are.
 E2 (a live-read block cache for the shard log, `keep/e2-live-read-cache`) is
 held because layout 5 rewrites the shard-log scan it changes. E7 (fleet reads
 without LIST) is implemented: the fleet tick reads its members by name with
-conditional GETs and lists only to discover (edge record #124, awaiting
-ratification; the owner accepted its edit of the R09 mechanism test on
-2026-10-08, T6).
+conditional GETs and lists only to discover (edge record #124, ratified on
+2026-10-08, landing call C3; the owner accepted its edit of the R09
+mechanism test on 2026-10-08, T6).

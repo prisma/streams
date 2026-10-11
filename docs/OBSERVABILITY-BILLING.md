@@ -98,7 +98,7 @@ Exact synchronous read metering would require waiting for a durable telemetry wr
 The chosen posture is:
 
 - active read deltas flush at the first drain round after their window is 10 seconds old (every 16 s in steady state at the default 8 s drain cadence, at most 18 s), earlier by size/cardinality thresholds;
-- graceful shutdown seals the active read window and waits up to one drain cadence (`TELEMETRY_DRAIN_SECS`, 8 s by default) for the final batch to reach the spool and the ledger;
+- graceful shutdown seals the active read window and waits up to min(one drain cadence, 5 s) (`TELEMETRY_DRAIN_SECS` is 8 s by default, so 5 s; edge change #122) for the final batch to reach the spool and the ledger;
 - a hard process loss can undercount only the unflushed active interval: at most the 10 s flush interval plus one drain cadence;
 - source epochs and batch sequences prevent overbilling after restart;
 - the system exposes estimated unflushed read bytes and maximum possible loss.
