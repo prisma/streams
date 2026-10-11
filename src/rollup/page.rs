@@ -206,7 +206,7 @@ impl<'a> Page<'a> {
         // metered dimension — one byte can never bill twice, and a
         // batch spanning many months (a long outage) covers the
         // intermediate months too.
-        let spans = month_spans(rb.from_ms, rb.to_ms);
+        let spans = month_spans(rb.from_ms, rb.to_ms)?;
         if spans.len() == 1 {
             for row in &rb.rows {
                 self.apply_read_row(rb, row, &spans[0].0).await?;

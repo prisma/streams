@@ -305,8 +305,9 @@ impl AggRow {
 }
 
 /// Every (month, duration-ms) span of [from, to): walks each UTC month
-/// boundary the interval crosses.
-fn month_spans(from_ms: i64, to_ms: i64) -> Vec<(String, i64)> {
+/// boundary the interval crosses. Fails when the month math does not
+/// advance; no instant reaches that with correct math.
+fn month_spans(from_ms: i64, to_ms: i64) -> anyhow::Result<Vec<(String, i64)>> {
     let to = to_ms.max(from_ms + 1);
     let mut out = Vec::new();
     let mut cur = from_ms;
@@ -314,10 +315,14 @@ fn month_spans(from_ms: i64, to_ms: i64) -> Vec<(String, i64)> {
         let (y, m) = crate::billing::utc_year_month(cur);
         let (ny, nm) = next_month(y, m);
         let boundary = month_start_ms(ny, nm).min(to);
+        anyhow::ensure!(
+            boundary > cur,
+            "month math did not advance past {cur}: next boundary {boundary}"
+        );
         out.push((crate::billing::month_str(y, m), boundary - cur));
         cur = boundary;
     }
-    out
+    Ok(out)
 }
 
 /// The invoice-reconciliation verdict for one month (Stage 7): counts
