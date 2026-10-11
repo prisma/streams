@@ -1759,30 +1759,29 @@ segment) are separate layers, as Pravega's containers and segments are.
   no tenant caused and nothing attributes; it is fixed before the first cell
   (README, "Shared cells Q0"). Layout 5's heap profiles and its
   single-record rerun (L5, 14.8) are part of that work.
-- **Needs the owner: the absorber stalls at the history L0 cap.** A history
+- Fixed (2026-10-11, S1, decided under the owner's delegation of 2026-10-11
+  to Fable 5.1): the absorber's stall at the history L0 cap. A history
   partition's Db learns that compaction freed an L0 slot only when it writes
   its own manifest, which no flush can do at the cap, or at its manifest poll
-  (300 s, `src/history.rs`). So a gather whose flush meets a full L0 (64 as
-  the Db last saw it) waits until the next poll after compaction frees a
-  slot: up to 300 s of no absorption on that shard. Layer A's A6 at 1,000
-  projects stalls that long beside the scale module, and production reaches
-  the cap whenever one sorted-run merge holds the only compaction slot
-  (`compactor_max_concurrent` 1) for 64 gathers (at least 320 s). The same
-  wait held a shard's close for up to 300 s, or for good; that is fixed
-  (edge record #134: the history partition closes without its final flush),
-  the absorber's stall is not. Options, for the owner's call (performance):
-  (a) `Db::refresh_manifest()` when a gather's flush passes a bound (one
-  manifest GET per stall; `src/history/gather.rs`, which stales TLA-016,
-  about 17 min);
-  (b) a shorter history manifest poll (GETs per open history Db, the cost
-  posture of #80 and `docs/TIGRIS-404-COST.md`; stales TLA-016, TLA-018 and
-  TLA-019, about 103 min serial, and the 300 s assumption in
-  `verification/assumptions.md`); (c) leave it and alarm on
-  `history_flush_wait_ms_max`. Watched for in the shared-cell certification
-  either way. The shard log's close keeps its final flush: its poll is 2 s,
-  so it ends unless shard compaction stops for good, and item 38's verdict
-  and the formal models pin it. Analysis:
-  `~/.streams-k2/analysis/shard-close-hang.md`.
+  (300 s, `src/history.rs`), so a gather whose flush met a full L0 (64 as the
+  Db last saw it) waited until the next poll after compaction freed a slot:
+  up to 300 s with no absorption on the instance, since on the 1 GiB posture
+  (`ABSORB_GLOBAL_GATHERS=1`) the waiting gather holds the only gather
+  permit. Option (a), as a loop, landed in 050ed33e (edge record #138,
+  awaiting ratification): every 5 s while the flush has not returned, the
+  gather raises `history_flush_wait_ms_max` to its wait and calls
+  `Db::refresh_manifest()` (`src/history/gather/flush_wait.rs`), so it resumes
+  within 5 s of a slot freeing. (b) a shorter history manifest poll and (c)
+  an alarm alone were dropped. The same wait held a shard's close; #134 fixed
+  that. Residual: the compaction's own duration (one sorted-run merge holding
+  the only compaction slot frees no slot); RUNBOOK's shared-cell "What to
+  alert on" table alerts on `history_flush_wait_ms_max` above 30,000, and the
+  shared-cell certification watches for it. TLA-016 digests the gather and
+  awaits its re-record. The shard log's close keeps its final flush: its poll
+  is 2 s, so it ends unless shard compaction stops for good, and item 38's
+  verdict and the formal models pin it. Analysis:
+  `~/.streams-k2/analysis/shard-close-hang.md`; the decision:
+  `~/.streams-k2/analysis/round3-impl/S1.json`.
 - **Needs the owner: a create with an initial body whose shard engine closes
   under it answers `429 overloaded` "queue full".** Edge record #136 (W3,
   decided under the owner's delegation of 2026-10-11 to Fable 5.1) answers
