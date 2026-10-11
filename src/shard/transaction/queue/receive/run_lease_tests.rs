@@ -138,6 +138,47 @@ impl Rig {
         (strip(leased), strip(poisoned))
     }
 
+    /// One Receive by group `g` at consumer generation `cgen`, handed the
+    /// coverage `keys` up to `covered_to`; answers `(leased, backlog)`, or
+    /// the committer's refusal.
+    async fn receive_at(
+        &self,
+        cgen: u64,
+        max: usize,
+        keys: HashMap<u64, [u8; 16]>,
+        covered_to: u64,
+    ) -> Result<(Granted, u64), String> {
+        let out = self
+            .engine
+            .submit_queue(
+                HASH,
+                QueueOp::Receive {
+                    consumer: GROUP.into(),
+                    cgen,
+                    max,
+                    visibility_ms: HOLD_MS,
+                    max_deliveries: 5,
+                    keys,
+                    covered_to,
+                },
+            )
+            .await?;
+        let QueueOut::Received {
+            leased,
+            backlog,
+            poisoned,
+        } = out
+        else {
+            panic!("a Receive answers Received, got {out:?}")
+        };
+        assert!(poisoned.is_empty(), "nothing is poisoned: {poisoned:?}");
+        let leased = leased
+            .into_iter()
+            .map(|(off, lease_gen, attempts, _)| (off, lease_gen, attempts))
+            .collect();
+        Ok((leased, backlog))
+    }
+
     /// Acks `(offset, lease generation)` tokens; answers `(acked, stale)`.
     async fn ack(&self, tokens: &[(u64, u32)]) -> (usize, usize) {
         let (acked, _, stale) = self.settle(tokens.to_vec(), Vec::new()).await;
@@ -189,9 +230,14 @@ impl Rig {
 
     /// The stored lease row of `off`: `(delivery count, lease generation, key hash)`.
     async fn lease_row(&self, off: u64) -> Option<(u32, u32, [u8; 16])> {
+        self.lease_row_of(1, off).await
+    }
+
+    /// The stored lease row of `off` under consumer generation `cgen`.
+    async fn lease_row_of(&self, cgen: u64, off: u64) -> Option<(u32, u32, [u8; 16])> {
         let row = self
             .db
-            .get(queue::lease_key(&HASH, GROUP, 1, off))
+            .get(queue::lease_key(&HASH, GROUP, cgen, off))
             .await
             .unwrap()?;
         let lease = queue::decode_lease(&row).unwrap();
@@ -424,6 +470,40 @@ async fn a_record_delivered_twice_goes_alone_until_settled_and_its_run_resumes_a
     let a = key_hash(b'a');
     assert_eq!(rig.lease_row(3).await, None, "acked");
     assert_eq!(rig.lease_row(5).await, Some((1, 1, a)));
+    rig.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_newer_generation_starts_the_consumer_afresh_and_fences_the_older_one() {
+    let rig = Rig::new("run-lease-generation", "aa").await;
+    assert_eq!(
+        rig.pull(1, HOLD_MS, 5).await.0,
+        fresh(&[0]),
+        "generation 1 holds a"
+    );
+    assert_eq!(
+        rig.receive_at(2, 10, rig.keys.clone(), rig.next).await,
+        Ok((fresh(&[0, 1]), 2)),
+        "generation 2 starts afresh: generation 1's lease does not block a"
+    );
+    assert_eq!(
+        rig.receive_at(1, 10, rig.keys.clone(), rig.next).await,
+        Err("consumer_generation_fenced: generation 1 superseded by 2".to_string()),
+        "the older generation is fenced"
+    );
+    assert_eq!(
+        rig.receive_at(2, 10, rig.keys.clone(), rig.next).await,
+        Ok((fresh(&[]), 2)),
+        "generation 2 continues: its own run holds a"
+    );
+    let a = key_hash(b'a');
+    assert_eq!(rig.lease_row_of(2, 0).await, Some((1, 1, a)));
+    assert_eq!(rig.lease_row_of(2, 1).await, Some((1, 1, a)));
+    assert_eq!(
+        rig.lease_row_of(1, 0).await,
+        Some((1, 1, a)),
+        "the reset leaves generation 1's rows to the delete saga"
+    );
     rig.close().await;
 }
 
