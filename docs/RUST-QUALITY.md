@@ -197,9 +197,20 @@ active registered owner's mutants exactly once; zero discovery is reported
 only after that owner's discovery command actually ran. Every selection,
 scheduled or diff-scoped, runs every one of its owners even when an earlier
 one has survivors (cargo-mutants answers 2 for a missed mutant, 3 for a
-timeout) and fails once, at the end, listing each such owner with its
-`missed.txt` and `timeout.txt`; any other nonzero answer (a failing unmutated
-baseline, an error, a signal) measured nothing and stops the run at once.
+timeout; the driver adds incomplete mutants) and fails once, at the end,
+listing each such owner with its `missed.txt`, `timeout.txt` and
+`incomplete.txt`; any other nonzero answer (a failing unmutated baseline, an
+error, a signal) measured nothing and stops the run at once. cargo-mutants
+counts a mutant caught whenever `cargo test` failed: a test binary killed by
+a signal (an abort on a failed allocation, a stack overflow, a crash) makes
+cargo exit 101, so the mutant is caught and the answer stays 0, and a mutant
+it cannot classify at all (summary `Failure`: cargo itself died by a signal)
+is counted nowhere. Neither is an assertion-detected failure, so after each
+owner the driver reads `mutants.out/outcomes.json` and lists in
+`incomplete.txt` every caught mutant whose test phase's output carries
+cargo's `(signal: ` or Rust's `memory allocation of`, and every unclassified
+one; they fail the selection as missed mutants do (decided under the owner's
+delegation of 2026-10-11 to Fable 5.1, question N3).
 
 The groups are sized so a night finishes inside the `mutants` job's 360
 minutes on each of its eight runners.

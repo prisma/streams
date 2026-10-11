@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tomllib
@@ -131,26 +132,74 @@ def check_tool_version():
 # not change the answer.
 SURVIVOR_STATUSES = {2: 'missed', 3: 'timeout'}
 
+# cargo-mutants counts a mutant caught whenever `cargo test` failed, whatever
+# stopped the tests (src/outcome.rs, mutant_caught). A test binary killed by a
+# signal (an abort on a failed allocation, a stack overflow, a crash) makes
+# cargo exit 101 with the line "process didn't exit successfully: `...`
+# (signal: N, ...)", so the mutant lands in caught.txt and the answer stays 0;
+# a mutant it cannot classify at all (summary "Failure": cargo itself died by
+# a signal) it only warns about and counts nowhere. Neither is a failure an
+# assertion detected (RUST-QUALITY.md), so the driver lists both in
+# incomplete.txt, a survivor beside missed and timeout, whatever the answer.
+# Only the test phase's output is read: the log also holds the mutation diff
+# and the build's output, where source text such as
+# `fn deliver_to_helper(signal: libc::c_int)` (src/tasks/signal.rs) matches.
+INCOMPLETE_SIGNATURES = ('(signal: ', 'memory allocation of ')
+SURVIVOR_KINDS = (*SURVIVOR_STATUSES.values(), 'incomplete')
 
-def run_owner(command):
-    """Run one owner's mutants; True when the answer is a survivor status.
+
+def last_phase_output(log):
+    """The output after a scenario log's last command header: a caught
+    mutant's last phase is its test phase (cargo-mutants writes each command
+    and each result as a line starting with "*** ")."""
+    start = 0
+    for header in re.finditer(r'^\*\*\* (?!result: ).*$', log, re.MULTILINE):
+        start = header.end()
+    return log[start:]
+
+
+def is_incomplete(listing, outcome):
+    if outcome['summary'] == 'Failure':
+        return True
+    if outcome['summary'] != 'CaughtMutant':
+        return False
+    output = last_phase_output((listing / outcome['log_path']).read_text(errors='replace'))
+    return any(signature in output for signature in INCOMPLETE_SIGNATURES)
+
+
+def incomplete_mutants(listing):
+    """Write listing/incomplete.txt from cargo-mutants' outcomes.json, one
+    mutant name per line as missed.txt lists them, and return the names."""
+    path = listing / 'outcomes.json'
+    if not path.is_file():
+        return []
+    names = [outcome['scenario']['Mutant']['name']
+             for outcome in json.loads(path.read_text())['outcomes']
+             if isinstance(outcome['scenario'], dict) and 'Mutant' in outcome['scenario']
+             and is_incomplete(listing, outcome)]
+    (listing / 'incomplete.txt').write_text(''.join(f'{name}\n' for name in names))
+    return names
+
+
+def run_owner(command, listing):
+    """Run one owner's mutants; True when the answer is a survivor status or
+    a mutant's run was incomplete.
 
     Every selection, diff-scoped or scheduled, keeps going past survivors, so
     one run reports every owner it selected, once, at the end; an answer that
     measured nothing stops it at once."""
     status = subprocess.run(command, cwd=ROOT).returncode
-    if status in SURVIVOR_STATUSES:
-        return True
-    if status:
+    if status and status not in SURVIVOR_STATUSES:
         raise subprocess.CalledProcessError(status, command)
-    return False
+    incomplete = incomplete_mutants(listing)  # listed whatever the answer
+    return status in SURVIVOR_STATUSES or bool(incomplete)
 
 
 def report_survivors(survivors, owners):
     print(f'Mutation survivors in {len(survivors)} of {owners} owner(s) of this selection:')
     for name, listing in survivors:
         listed = False
-        for kind in SURVIVOR_STATUSES.values():
+        for kind in SURVIVOR_KINDS:
             path = listing / f'{kind}.txt'
             lines = [line for line in path.read_text().splitlines() if line.strip()] \
                 if path.is_file() else []
@@ -160,7 +209,8 @@ def report_survivors(survivors, owners):
                 for line in lines:
                     print(f'    {line}')
         if not listed:
-            print(f'  {name}: no mutant listed in missed.txt or timeout.txt under {listing}')
+            print(f'  {name}: no mutant listed in missed.txt, timeout.txt or incomplete.txt '
+                  f'under {listing}')
 
 
 def execute(out):
@@ -222,7 +272,8 @@ def execute(out):
             print(f'{entry.name}: no executable mutants in the selected scope')
             continue
         total += count
-        if run_owner(mutation_command(entry, out, output, mutation_diff, share)):
+        if run_owner(mutation_command(entry, out, output, mutation_diff, share),
+                     output / 'mutants.out'):
             survivors.append((entry.name, output / 'mutants.out'))
 
     if total == 0:

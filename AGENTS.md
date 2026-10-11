@@ -224,7 +224,7 @@ The gates enforce these; plan for them before writing
 | `FORMAL_FAIL` / `FORMAL_CHECK_FAIL` | Invalid receipt (checks changed): re-record in the same commit. |
 | `FORMAL_STALE` | Inputs changed: re-record before release (section 6). |
 | `register every changed critical mutation owner` | Add a `mutation_owners.py` row. |
-| `MISSED` / `TIMEOUT` (mutants) | Add or sharpen a test that kills that mutant; an equivalent mutant is removed from the code (no allowlist). |
+| `MISSED` / `TIMEOUT` / `incomplete` (mutants) | Add or sharpen a test that kills that mutant by an assertion (`incomplete`: its tests died by a signal, or cargo-mutants could not classify it); an equivalent mutant is removed from the code (no allowlist). |
 
 ## 6. Formal verification (Kani and TLA+)
 
@@ -279,7 +279,7 @@ the background, alone on the machine:
 ```bash
 export QUALITY_EVENT_NAME=push QUALITY_HEAD_SHA=$(git rev-parse HEAD) \
        QUALITY_BEFORE_SHA=$(git rev-parse origin/slate) QUALITY_BASE_REF=origin/slate
-scripts/quality/mutations.sh    # zero MISSED and TIMEOUT; ~1 min per mutant locally
+scripts/quality/mutations.sh    # zero MISSED, TIMEOUT and incomplete; ~1 min per mutant locally
 ```
 
 CI deals the same leg over the `mutants` job's eight matrix jobs of
@@ -288,8 +288,10 @@ round-robin): each tests every eighth selected mutant, together each one
 once. A push selecting more than about 900 mutants does not fit: split it
 into smaller pushes (preflight's `plan.json` lists the selection). Locally
 run it whole, or one share with the same variable. The driver runs every selected owner and
-fails once at the end with each owner's missed and timed-out mutants (survivors print live in
-the log); an answer that measured nothing, such as a failing baseline, stops it at once.
+fails once at the end with each owner's missed, timed-out and incomplete mutants (a catch
+whose tests died by a signal, or one cargo-mutants could not classify; MISSED and TIMEOUT
+print live in the log); an answer that measured nothing, such as a failing baseline, stops
+it at once.
 
 Miri and the saved fuzz corpus: `scripts/quality/nightly.sh miri`,
 `scripts/quality/nightly.sh corpus` (under a minute).

@@ -17,10 +17,91 @@ OWNERS = tuple(
     for name in ('alpha', 'beta', 'gamma')
 )
 
+CARGO = '/home/runner/.cargo/bin/cargo test --profile=quality --verbose --package=streams-slate@0.1.0'
+TEST_BINARY = "prlimit --data=10737418240:10737418240 -- /t/{name}-0123 '{name}::'"
+PANIC = ("test {name}::works ... FAILED\n\nfailures:\n\n---- {name}::works stdout ----\n"
+         "thread '{name}::works' panicked at src/{name}.rs:9:5:\n")
+CARGO_FAILED = ('error: test failed, to rerun pass `-p streams-slate --lib`\n\nCaused by:\n'
+                f"  process didn't exit successfully: `{TEST_BINARY}` ({{ending}})\n")
+ABORTED = 'signal: 6, SIGABRT: process abort signal'
+EXITED = 'exit status: 101'
+
+# How a test phase ends, by kind of catch: the tests' output, cargo's account
+# of the test binary, its process_status in outcomes.json, the log's result
+# line and the mutant's summary. A test binary that died by a signal still
+# makes cargo exit 101, so cargo-mutants counts the mutant caught.
+TEST_ENDINGS = {
+    # An assertion failed.
+    'caught': (PANIC + 'assertion failed: ok\n', EXITED,
+               {'Failure': 101}, 'Failure(101)', 'CaughtMutant'),
+    # The test binary aborted on a failed allocation, as under the memory cap.
+    'signalled': ('memory allocation of 1073741824 bytes failed\n', ABORTED,
+                  {'Failure': 101}, 'Failure(101)', 'CaughtMutant'),
+    # The test binary overflowed its stack.
+    'overflowed': ("\nthread '{name}::works' has overflowed its stack\n"
+                   'fatal runtime error: stack overflow\n', ABORTED,
+                   {'Failure': 101}, 'Failure(101)', 'CaughtMutant'),
+    # Only the allocation failure's message, as when the process that aborted
+    # is a child the test spawned, not the one cargo waited on.
+    'allocation-failed': (PANIC + 'helper failed: memory allocation of 1073741824 bytes failed\n',
+                          EXITED, {'Failure': 101}, 'Failure(101)', 'CaughtMutant'),
+    # cargo itself died by a signal: cargo-mutants cannot classify the mutant,
+    # only warns, counts it nowhere and answers 0.
+    'unclassified': ('', None, {'Signalled': 9}, 'Signalled(9)', 'Failure'),
+}
+
+
+def mutant_outcome(listing, name, line, kind):
+    """One mutant's outcomes.json entry and log, as cargo-mutants 27.1.0 writes
+    them (src/outcome.rs, src/mutant.rs, src/output.rs). The mutation diff and
+    the build's output come before the test phase in the log; the diff shows a
+    parameter named `signal`, as src/tasks/signal.rs has one."""
+    label = f'src/{name}.rs:{line}:1: replace {name} with ()'
+    log_path = f'log/src__{name}.rs_line_{line}_col_1.log'
+    output, ending, status, result, summary = TEST_ENDINGS[kind]
+    tests = (output + (CARGO_FAILED if ending else '')).format(name=name, ending=ending)
+    (listing / log_path).write_text(
+        f'\n*** {label}\n\n*** mutation diff:\n--- src/{name}.rs\n+++ replace {name} with ()\n'
+        f'@@ -{line},3 +{line},3 @@\n fn {name}(signal: i32) -> u32 {{\n-    signal as u32\n'
+        f'+    ()\n }}\n\n*** {CARGO} --no-run --lib\n   Compiling streams-slate v0.1.0\n'
+        f'\n*** result: Success\n\n*** {CARGO} --lib {name}::\n'
+        f'     Running `{TEST_BINARY.format(name=name)}`\nrunning 4 tests\n'
+        f'{tests}\n*** result: {result}\n')
+    return {
+        'scenario': {'Mutant': {
+            'name': label, 'package': 'streams-slate', 'file': f'src/{name}.rs',
+            'function': None,
+            'span': {'start': {'line': line, 'column': 1}, 'end': {'line': line, 'column': 5}},
+            'replacement': '()', 'genre': 'FnValue',
+        }},
+        'summary': summary,
+        'log_path': log_path,
+        'diff_path': f'diff/src__{name}.rs_line_{line}_col_1.diff',
+        'phase_results': [
+            {'phase': 'Build', 'duration': 1.0, 'process_status': 'Success',
+             'argv': [*CARGO.split(), '--no-run', '--lib']},
+            {'phase': 'Test', 'duration': 1.0, 'process_status': status,
+             'argv': [*CARGO.split(), '--lib', f'{name}::']},
+        ],
+    }
+
+
+def write_outcomes(listing, name, kind):
+    """The owner's outcomes.json: the baseline passed, its first mutant ended
+    as `kind` and its second was caught by an assertion."""
+    (listing / 'log').mkdir(parents=True, exist_ok=True)
+    baseline = {'scenario': 'Baseline', 'summary': 'Success', 'log_path': 'log/baseline.log',
+                'diff_path': None, 'phase_results': []}
+    outcomes = [baseline, mutant_outcome(listing, name, 1, kind),
+                mutant_outcome(listing, name, 2, 'caught')]
+    (listing / 'outcomes.json').write_text(json.dumps({'outcomes': outcomes, 'total_mutants': 2}))
+
 
 class FakeCargo:
     """Stands in for the planner, git and cargo-mutants: every owner lists two
-    mutants, and each owner's run answers the exit status the test assigns."""
+    mutants, and each owner's run answers the exit status the test assigns, or
+    writes the outcomes of a run that answered 0 when it assigns a kind of
+    catch from TEST_ENDINGS."""
 
     def __init__(self, out, plan, statuses):
         self.out = out
@@ -48,6 +129,9 @@ class FakeCargo:
             name = Path(command[command.index('--output') + 1]).name
             self.ran.append(name)
             status = self.statuses.get(name, 0)
+            if status in TEST_ENDINGS:
+                write_outcomes(self.out / name / 'mutants.out', name, status)
+                status = 0
             if status in (2, 3):
                 listing = self.out / name / 'mutants.out'
                 listing.mkdir(parents=True, exist_ok=True)
@@ -119,6 +203,38 @@ class ScheduledRotation(unittest.TestCase):
         self.assertIsNone(outcome)
         self.assertNotIn('Mutation survivors', printed)
 
+    def test_a_caught_mutant_whose_tests_died_by_a_signal_is_a_survivor(self):
+        for kind in ('signalled', 'overflowed', 'allocation-failed'):
+            with self.subTest(kind=kind):
+                fake, outcome, printed = run_driver(SCHEDULED, {'beta': kind})
+                self.assertEqual(fake.ran, ['alpha', 'beta', 'gamma'])
+                self.assertIsInstance(outcome, SystemExit)
+                self.assertEqual(outcome.code, 1)
+                summary = printed[printed.index('Mutation survivors'):]
+                self.assertIn('1 of 3 owner(s)', summary)
+                self.assertIn('beta: incomplete 1', summary)
+                self.assertIn('beta/mutants.out/incomplete.txt', summary)
+                self.assertIn('    src/beta.rs:1:1: replace beta with ()\n', summary)
+                self.assertNotIn('src/beta.rs:2:1', summary)
+
+    def test_a_mutant_cargo_mutants_could_not_classify_is_a_survivor(self):
+        fake, outcome, printed = run_driver(SCHEDULED, {'gamma': 'unclassified'})
+        self.assertEqual(fake.ran, ['alpha', 'beta', 'gamma'])
+        self.assertIsInstance(outcome, SystemExit)
+        self.assertEqual(outcome.code, 1)
+        summary = printed[printed.index('Mutation survivors'):]
+        self.assertIn('1 of 3 owner(s)', summary)
+        self.assertIn('gamma: incomplete 1', summary)
+        self.assertIn('    src/gamma.rs:1:1: replace gamma with ()\n', summary)
+        self.assertNotIn('src/gamma.rs:2:1', summary)
+
+    def test_a_catch_by_an_assertion_stays_caught_whatever_its_diff_shows(self):
+        # The diff shows `fn beta(signal: i32)`: only the test phase is read.
+        fake, outcome, printed = run_driver(SCHEDULED, {'beta': 'caught'})
+        self.assertEqual(fake.ran, ['alpha', 'beta', 'gamma'])
+        self.assertIsNone(outcome)
+        self.assertNotIn('Mutation survivors', printed)
+
     def test_a_status_that_measured_nothing_stops_the_night_at_once(self):
         # 1 usage or error, 4 a failed baseline, 70 internal, -9 a signal:
         # none of them is a survivor, so the remaining owners do not run.
@@ -157,6 +273,19 @@ class PushedChange(unittest.TestCase):
         self.assertIn('gamma/mutants.out/timeout.txt', summary)
         self.assertIn('src/alpha.rs:1:1: replace alpha with ()', summary)
         self.assertIn('src/gamma.rs:1:1: replace gamma with ()', summary)
+
+    def test_a_signalled_catch_fails_the_push_though_cargo_mutants_answered_0(self):
+        fake, outcome, printed = run_driver(PUSHED, {'alpha': 'signalled', 'gamma': 2})
+        self.assertEqual(fake.ran, ['alpha', 'beta', 'gamma'])
+        self.assertIsInstance(outcome, SystemExit)
+        self.assertEqual(outcome.code, 1)
+        summary = printed[printed.index('Mutation survivors'):]
+        self.assertIn('2 of 3 owner(s)', summary)
+        self.assertIn('alpha: incomplete 1', summary)
+        self.assertIn('alpha/mutants.out/incomplete.txt', summary)
+        self.assertIn('    src/alpha.rs:1:1: replace alpha with ()\n', summary)
+        self.assertIn('gamma: missed 1', summary)
+        self.assertNotIn('beta', summary)
 
     def test_a_status_that_measured_nothing_stops_the_push_at_once(self):
         # 1 usage or error, 4 a failed baseline, 70 internal, -9 a signal:
