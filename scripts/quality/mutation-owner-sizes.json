@@ -1,6 +1,6 @@
 {
   "command": "python3 scripts/quality/mutation_driver.py --measure-sizes",
-  "commit": "2d77788aa0c84a5dfd9dd112bd4ab6dd635d2f56",
+  "commit": "7cf8d3fbc197f876b186326f7ae161bca7e7bcd0",
   "measured_on": "2026-10-11",
   "owners": {
     "admission_body": 9,
@@ -11,7 +11,7 @@
     "append_content": 12,
     "append_contract": 54,
     "append_route": 5,
-    "append_submit": 13,
+    "append_submit": 14,
     "auth_ceiling": 39,
     "auth_signing_key": 39,
     "batch": 35,
@@ -140,7 +140,8 @@
     "shard_billing_ops": 29,
     "shard_directory": 54,
     "shard_lifecycle": 20,
-    "sharddir": 58,
+    "sharddir": 62,
+    "sharddir_adoption": 6,
     "sharddir_health": 13,
     "sharddir_holdoff": 8,
     "sharddir_unwind": 3,
