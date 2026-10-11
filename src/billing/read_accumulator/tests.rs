@@ -164,7 +164,7 @@ fn quality_loom_sealing_transfers_rows_and_sequence_as_one_operation() {
     model.preemption_bound = Some(2);
     model.max_permutations = None;
     model.max_duration = None;
-    model.check(|| {
+    crate::loom_check::check(&model, || {
         let owner = Arc::new(accumulator());
         let state = Arc::new(Mutex::new(ReadUsageState {
             active: ActiveMap {

@@ -1217,6 +1217,14 @@
       "syntax": "path = \"../src/bin/pilot/generator/membership.rs\""
     },
     {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::loom_check",
+      "path": "tests/pilot_membership.rs",
+      "reason": "The membership Loom model runs through the library's one test-only exploration helper, so a failing model fails its test instead of aborting the test binary; the explicit path compiles that same source, with its own tests, into this test crate.",
+      "syntax": "path = \"../src/loom_check.rs\""
+    },
+    {
       "category": "effect",
       "count": 1,
       "owner": "crate::Generator::launch",
@@ -1959,6 +1967,14 @@
       "path": "src/bin/pilot.rs",
       "reason": "The pilot binary keeps its modules under src/bin/pilot/; a bin root resolves plain child modules beside itself, so the explicit path names the same layout as its siblings.",
       "syntax": "path = \"pilot/lb.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::loom_check",
+      "path": "src/bin/pilot.rs",
+      "reason": "The pilot benchmark's Loom model runs through the library's one test-only exploration helper, so a failing model fails its test instead of aborting the test binary; the cfg(test) explicit path compiles that same source, with its own tests, into the pilot test binary.",
+      "syntax": "path = \"../loom_check.rs\""
     },
     {
       "category": "unresolved-glob",

@@ -480,7 +480,7 @@ fn quality_loom_completion_and_freeze_use_the_actual_window_transitions() {
     model.max_threads = 4;
     model.max_branches = 1000;
     model.preemption_bound = Some(2);
-    model.check(|| {
+    crate::loom_check::check(&model, || {
         let mut window = Window::new().unwrap();
         window.start().unwrap();
         let window = LoomArc::new(LoomMutex::new(window));

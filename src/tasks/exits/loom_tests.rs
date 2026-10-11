@@ -81,7 +81,7 @@ fn cells() -> Cells {
 /// when neither racer has claimed yet.
 #[test]
 fn quality_loom_one_cause_at_most_and_the_stop_always_published() {
-    model().check(|| {
+    crate::loom_check::check(&model(), || {
         let (flag, cause) = cells();
         let racers: Vec<_> = ["fleet", "telemetry-drain"]
             .into_iter()
@@ -111,7 +111,7 @@ fn quality_loom_one_cause_at_most_and_the_stop_always_published() {
 /// recorded before the stop is published.
 #[test]
 fn quality_loom_a_published_exit_stop_carries_its_cause() {
-    model().check(|| {
+    crate::loom_check::check(&model(), || {
         let (flag, cause) = cells();
         let (f, c) = (flag.clone(), cause.clone());
         let exit = loom::thread::spawn(move || stop_on_exit(&*f, &*c, "fleet"));

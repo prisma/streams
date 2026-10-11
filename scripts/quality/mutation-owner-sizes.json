@@ -26,6 +26,7 @@
     "bootstrap_service_runtime": 2,
     "bootstrap_tests": 0,
     "commit_handoff": 13,
+    "commit_handoff_loom_tests": 0,
     "commit_plan": 69,
     "crypto": 121,
     "crypto_decrypt": 24,

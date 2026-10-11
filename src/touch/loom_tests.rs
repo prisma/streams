@@ -15,7 +15,7 @@ fn quality_loom_retirement_cannot_leave_a_late_registered_waiter() {
     model.preemption_bound = Some(2);
     model.max_permutations = None;
     model.max_duration = None;
-    model.check(|| {
+    crate::loom_check::check(&model, || {
         let state = Arc::new(Mutex::new(Inner::default()));
         let waiter = state.clone();
         let waiter =

@@ -27,6 +27,10 @@ mod workload_generator;
 #[path = "pilot/lb.rs"]
 mod lb;
 
+#[cfg(test)]
+#[path = "../loom_check.rs"]
+mod loom_check;
+
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

@@ -38,7 +38,7 @@ fn quality_loom_a_sweep_never_evicts_an_entry_mid_admission() {
     model.preemption_bound = Some(2);
     model.max_permutations = None;
     model.max_duration = None;
-    model.check(|| {
+    crate::loom_check::check(&model, || {
         let entry: Entry = Arc::new(AdmissionCounters {
             admitting: AtomicU64::new(0),
             inflight: AtomicU64::new(0),

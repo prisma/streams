@@ -43,7 +43,7 @@ fn quality_loom_external_stamp_never_coexists_with_custody() {
     model.preemption_bound = Some(2);
     model.max_permutations = None;
     model.max_duration = None;
-    model.check(|| {
+    crate::loom_check::check(&model, || {
         let custody = Arc::new(SweepCustody::<AtomicU64>::default());
         let customer = custody.clone();
         let stamp = loom::thread::spawn(move || customer.stamp_external(1));

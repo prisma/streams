@@ -134,6 +134,8 @@ OWNERS = (
     owner('quota_read_reservation', 'src/quota/read_reservation.rs', 'quota::read_reservation:: dst_tests::read_memory::a_project_at_its_memory_line'),
     owner('registry_cache', 'src/registry/cache.rs', 'registry::'),
     owner('commit_handoff', 'src/shard/commit_handoff.rs', 'shard::'),
+    owner('commit_handoff_loom_tests', 'src/shard/commit_handoff/loom_tests.rs',
+          'shard::commit_handoff::'),
     owner('commit_plan', 'src/shard/commit_plan.rs', 'shard::'),
     owner('shard_lifecycle', 'src/shard/lifecycle.rs', 'shard::'),
     owner('transaction_finalize', 'src/shard/transaction/finalize.rs', 'shard::'),

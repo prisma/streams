@@ -8,6 +8,9 @@ mod synchronization {
 #[path = "../src/bin/pilot/generator/membership.rs"]
 mod membership;
 
+#[path = "../src/loom_check.rs"]
+mod loom_check;
+
 #[test]
 fn quality_loom_final_membership_acquires_all_accounting_and_prevents_late_work() {
     use loom::sync::Arc;
@@ -16,7 +19,7 @@ fn quality_loom_final_membership_acquires_all_accounting_and_prevents_late_work(
     model.max_threads = 4;
     model.max_branches = 1000;
     model.preemption_bound = Some(2);
-    model.check(|| {
+    loom_check::check(&model, || {
         let members = Arc::new(membership::Membership::new());
         let accepted = Arc::new(AtomicU64::new(0));
         let completed = Arc::new(AtomicU64::new(0));

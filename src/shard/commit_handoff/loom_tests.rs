@@ -12,7 +12,7 @@ fn explore(f: impl Fn() + Send + Sync + 'static) {
     model.preemption_bound = Some(2);
     model.max_permutations = None;
     model.max_duration = None;
-    model.check(f);
+    crate::loom_check::check(&model, f);
 }
 
 fn group(seq: u64) -> InFlightGroup {

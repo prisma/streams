@@ -115,7 +115,7 @@ fn quality_loom_replacement_and_removal_publish_consistent_totals() {
     model.preemption_bound = Some(2);
     model.max_permutations = None;
     model.max_duration = None;
-    model.check(|| {
+    crate::loom_check::check(&model, || {
         let state = Arc::new(Mutex::new(ResidentRows {
             sizes: HashMap::from([(vec![1], 5)]),
             bytes: 5,

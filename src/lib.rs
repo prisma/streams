@@ -39,6 +39,8 @@ mod golden_tests;
 mod history;
 mod http;
 #[cfg(test)]
+mod loom_check;
+#[cfg(test)]
 mod mt_lint;
 mod offsets;
 mod operator;
