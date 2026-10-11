@@ -381,10 +381,10 @@
       "scope": "function",
       "lint": "clippy::unwrap_used",
       "metrics": {
-        "unwrap_site:ordinary-call::9d1c47bdd20a5215": 1
+        "unwrap_site:ordinary-call::5442d3639217e7cc": 1
       },
-      "rationale": "The raw read passes false, the wire's compression choice, to read_payload instead of the removed constant CryptoConfig::frame_compress (layout 5's FRAME_COMPRESS retirement, edge change #127), so the read_payload call's argument text changes; no unwrap is added.",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-08 (\"all recommended\", item L4: remove CryptoConfig::frame_compress entirely, render_raw_read calls read_payload(.., false) with one growth row for its unwrap_used fingerprint)"
+      "rationale": "The raw read calls read_payload without a compression argument: the parameter is removed, so a wire frame is uncompressed by construction (edge change #128); before that it passed false in place of the removed constant CryptoConfig::frame_compress (layout 5's FRAME_COMPRESS retirement, #127). Each time only the read_payload call's argument text changed; no unwrap is added.",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-08 (\"all recommended\", item L4: remove CryptoConfig::frame_compress entirely, render_raw_read calls read_payload(.., false) with one growth row for its unwrap_used fingerprint); the C10 (c) change of the same fingerprint (landing call C10 (c) of 2026-10-08: read_payload's dead compress parameter is removed with a growth row on a render function) decided under the owner's delegation of 2026-10-11 to Fable 5.1 (question G2: 'if the answer is clear, just go ahead with Fable's recommendations')"
     },
     {
       "path": "src/ops.rs",
@@ -489,11 +489,12 @@
       "lint": "clippy::unwrap_used",
       "metrics": {
         "unwrap_site:ordinary-call::5dd710938bd0d475": 1,
+        "unwrap_site:ordinary-call::fb6a7c7d7610ac40": 1,
         "unwrap_site:path::3311b7b0ec5c14cf": 13,
         "unwrap_site:path::3e18471a105d8dcc": 1
       },
-      "rationale": "The product read renders the session cursor that carries a provisional continuation (TLA-018-F3, 55881d7a).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+      "rationale": "The product read renders the session cursor that carries a provisional continuation (TLA-018-F3, 55881d7a), and calls read_payload without the removed compression argument (landing call C10 (c); edge #128's amendment), so that call's argument text changes; no unwrap is added.",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge; the read_payload fingerprint (ordinary-call::fb6a7c7d7610ac40) decided under the owner's delegation of 2026-10-11 to Fable 5.1 (question G2), implementing landing call C10 (c) of 2026-10-08 (read_payload's dead compress parameter is removed with a growth row on a render function); Fable 5.1 judged this second row clear: a fingerprint-only change identical in kind to the render_raw_read row the owner approved under L4"
     },
     {
       "path": "src/product/consumer_pull.rs",

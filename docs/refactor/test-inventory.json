@@ -5491,7 +5491,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "a7328a8f76c6b9163e60a502aaa0984f11b148d402332ce8829758693240c887",
+    "function_sha256": "72bb50a84232afc99fc4822a85eaf910aa0e46340f146b3ff07a4bc2be61da82",
     "mechanisms": [],
     "configuration": [
       "seed(state, &parent, 0, &vec![b'y'; 512 << 10], 14).await;"

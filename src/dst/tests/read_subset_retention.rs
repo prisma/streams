@@ -214,7 +214,7 @@ async fn o2a_clipped_fork_body_holds_only_selected_storage_until_cancel() {
         .unwrap();
     assert_eq!(out.next.after, 1);
     assert!(out.up_to_date);
-    let payload = crate::http::read_payload(&out, false, Some(&skey()), Some(""), false);
+    let payload = crate::http::read_payload(&out, false, Some(&skey()), Some(""));
     assert_eq!(payload.as_ref(), b"x");
     drop(out);
     let live = probe.live();

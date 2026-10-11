@@ -2598,7 +2598,7 @@ fn render_product_read(
     let payload = if out.kind == ReadResultKind::Timeout {
         Bytes::new()
     } else {
-        crate::http::read_payload(out, false, Some(key), Some(routing_key), false)
+        crate::http::read_payload(out, false, Some(key), Some(routing_key))
     };
     crate::http::meter_read_outcome(state, out);
     debit_read_bytes(state, principal, payload.len());
