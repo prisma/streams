@@ -507,6 +507,20 @@ async fn a_newer_generation_starts_the_consumer_afresh_and_fences_the_older_one(
     rig.close().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pull_never_leases_at_or_past_the_tail_whatever_coverage_it_is_handed() {
+    let rig = Rig::new("run-lease-tail", "ab").await;
+    let mut keys = rig.keys.clone();
+    keys.insert(2, key_hash(b'c'));
+    assert_eq!(
+        rig.receive_at(1, 10, keys, 3).await,
+        Ok((fresh(&[0, 1]), 2)),
+        "coverage of offset 2 leases only the stream's two records"
+    );
+    assert_eq!(rig.lease_row(2).await, None, "no lease row at the tail");
+    rig.close().await;
+}
+
 /// The receive that blocks a key and the long-poll waiter that wakes on
 /// the key's deadline agree on one verdict: the key is held strictly
 /// before the deadline and open at it.
