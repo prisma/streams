@@ -8,7 +8,7 @@
 //! incarnation and fork retention. Two instances are in
 //! `billing_closure_owners.rs`.
 
-use super::fixture_billing::{DrainWait, ack_clean};
+use super::fixture_billing::{DrainWait, ack_clean, billing_clock_past};
 use super::fixture_http::{
     HttpRigOptions, engine_shutdown, http_rig, http_rig_build, install_rollup,
 };
@@ -246,9 +246,7 @@ async fn a_raw_recreation_over_an_idle_expired_incarnation_closes_at_its_expiry(
     let expired_at = billing_now_ms();
     expire(&[&state], &sref, expired_at).await;
     // The recreation must judge the incarnation expired, not at its expiry.
-    while billing_now_ms() < expired_at + 100 {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    billing_clock_past(expired_at + 99).await;
     raw_put(addr, "raw-idle", &[JSON], b"").await;
     let fresh = stored(&state, &sref).await;
     assert_ne!(fresh.stream_epoch, old.stream_epoch, "a new incarnation");
@@ -732,9 +730,7 @@ async fn a_recreation_that_loses_its_cas_to_a_ttl_renewal_leaves_a_debt_the_pass
         renewed.expires_at_ms > Some(lapse + 1),
         "the append renewed the TTL"
     );
-    while billing_now_ms() <= lapse + 50 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    billing_clock_past(lapse + 50).await;
     let lost = single_debt(&state, "after the lost recreation").await;
     assert_eq!(lost.debt.close_ms, lapse, "the debt outlives the lost CAS");
     for _ in 0..3 {

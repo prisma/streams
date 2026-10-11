@@ -1,11 +1,14 @@
-//! Bounded waits on the usage drain. A wait checks every round it takes
-//! against the ledger, since `drain_once` answers exactly the envelopes its
-//! round appended to `_usage`, and fails as soon as the drain stops emitting
-//! while the rows it waits on stay dirty. A drain that misreports its rounds
-//! (answering a constant 0 or 1, as cargo-mutants' replacements of
-//! `drain_once` do) fails the waiting scenario within a few rounds instead of
-//! polling out the wait's whole budget, so the billing filter ends long
-//! before its mutation timeout.
+//! Bounded waits on the usage drain and the billing clock. A drain wait
+//! checks every round it takes against the ledger, since `drain_once`
+//! answers exactly the envelopes its round appended to `_usage`, and fails as
+//! soon as the drain stops emitting while the rows it waits on stay dirty. A
+//! drain that misreports its rounds (answering a constant 0 or 1, as
+//! cargo-mutants' replacements of `drain_once` do) fails the waiting scenario
+//! within a few rounds instead of polling out the wait's whole budget, so the
+//! billing filter ends long before its mutation timeout. A wait on the
+//! billing clock is bounded by the wall clock the same way: a clock that
+//! stands still (cargo-mutants' constant `billing_now_ms`) fails the scenario
+//! 2 s past the instant it waits for, releasing the locks it holds.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -96,6 +99,25 @@ async fn ledger_after(state: &State, from: Option<String>) -> (usize, Option<Str
         at = Some(next);
     }
     (envelopes, at)
+}
+
+/// Waits until the billing clock reads past `at`. The bound is the wall
+/// clock, not a count of rounds, so a target seconds ahead (a TTL lapse)
+/// waits as long as it needs: the wait fails only once the wall clock is
+/// 2 s past `at` and the billing clock, read after it, still is not.
+pub(super) async fn billing_clock_past(at: i64) {
+    loop {
+        let wall = crate::shard::now_ms();
+        let billing = crate::billing::billing_now_ms();
+        if billing > at {
+            return;
+        }
+        assert!(
+            wall <= at + 2_000,
+            "the billing clock read {billing} when the wall clock read {wall}, more than 2 s past {at}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 /// Drains until none of `ids` is dirty on `engine`. A row acked CLEAN is

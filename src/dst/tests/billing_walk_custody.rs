@@ -12,7 +12,7 @@ use super::billing_closure_debts::{
     JSON, ROW, assert_billed, closed, debts as closure_debts, engine_of, expected_close, expire,
     raw_put, settled, single_debt, stored,
 };
-use super::fixture_billing::DrainWait;
+use super::fixture_billing::{DrainWait, billing_clock_past};
 use super::fixture_failpoints::sweep_lock;
 use super::fixture_http::{
     HttpRig, HttpRigOptions, engine_shutdown, http_rig_build, http_rig_opts,
@@ -396,9 +396,7 @@ async fn a_row_the_walk_closed_at_its_expiry_is_not_closed_again_at_its_later_to
     let closed_at_expiry = expected_close(&open, expired_at);
     assert_billed(&at_expiry, &closed_at_expiry, "the walk closed the expiry");
     // The tombstone must stamp an instant past the closed row's clock.
-    while billing_now_ms() <= expired_at {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    billing_clock_past(expired_at).await;
     let (st, _, _) = hreq(addr, "DELETE", &format!("/v1/stream/{kid}"), &[], b"").await;
     assert!(st == 204 || st == 200, "delete: {st}");
     let dead = stored(&state, &ss).await;
@@ -462,9 +460,7 @@ async fn a_close_the_debt_pass_submits_on_a_shard_it_opened_is_applied_before_th
     let expired_at = billing_now_ms();
     expire(&[&setup.state], &sz, expired_at).await;
     // The recreation must judge the incarnation expired, not at its expiry.
-    while billing_now_ms() < expired_at + 100 {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    billing_clock_past(expired_at + 99).await;
     raw_put(setup.addr, z, &[JSON], b"").await;
     let fresh = stored(&setup.state, &sz).await;
     assert_ne!(fresh.stream_epoch, old.stream_epoch, "a new incarnation");
@@ -526,9 +522,7 @@ async fn expired_open_row(rig: &HttpRig, name: &str) -> (Desc, [u8; 16], Meta, i
 async fn replaced_open_row(rig: &HttpRig, name: &str) -> (Desc, [u8; 16], Meta, i64) {
     let (dead, id, row, at) = expired_open_row(rig, name).await;
     // The recreation must judge the incarnation expired, not at its expiry.
-    while billing_now_ms() < at + 100 {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    billing_clock_past(at + 99).await;
     raw_put(rig.addr, name, &[JSON], b"").await;
     let fresh = stored(&rig.state, &rig.state.deployment.raw_adapter_sref(name)).await;
     assert_ne!(fresh.stream_epoch, dead.stream_epoch, "a new incarnation");
