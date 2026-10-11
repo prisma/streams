@@ -38,6 +38,27 @@ fn month_math_round_trips() {
     }
 }
 
+/// Billing time is the real clock unless a test injects one: with no
+/// injection it reads between two real-clock reads around it, and an
+/// injected instant is what it reads. The billing clock's exclusive side
+/// keeps every other month-sensitive test out while the injection lasts.
+#[tokio::test]
+async fn billing_now_ms_reads_real_time_unless_a_test_injects_one() {
+    let _exclusive = billing_clock_lock().write().await;
+    let before = crate::shard::now_ms();
+    let read = billing_now_ms();
+    let after = crate::shard::now_ms();
+    assert!(
+        (before..=after).contains(&read),
+        "with no injected clock billing_now_ms read {read}, outside the real clock's [{before}, {after}]"
+    );
+    let injected = month_start_ms(2026, 7) + 5;
+    BILLING_CLOCK_OVERRIDE.store(injected, std::sync::atomic::Ordering::Relaxed);
+    let seen = billing_now_ms();
+    BILLING_CLOCK_OVERRIDE.store(0, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(seen, injected, "billing_now_ms reads the injected clock");
+}
+
 #[expect(
     clippy::cast_sign_loss,
     reason = "storage_clock_splits_at_month_boundaries; the fixture advances the clock by positive epoch milliseconds, so the integral it checks is non-negative by construction; a checked conversion would only restate the arithmetic the assertion pins"
