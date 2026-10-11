@@ -22,7 +22,7 @@ env STREAMS_AUTH_REFRESH_SECS=1
 env FLEET_AUTH_MODE=workload
 env WORKLOAD_TOKEN_FILE=/tmp/lfcanary-placeholder/a/workload.jwt
 env CELL_ID=cell-a
-env PROJECT_ID=proj-lc
+env PROJECT_ID=proj-lc-deploy
 env USAGE_STREAM_KEY=CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=
 env AUTH_TOKEN=placeholder-lfcanary-debug-token-0123456789
 env FLEET_ALLOW_HTTP_PEERS=1

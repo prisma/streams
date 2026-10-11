@@ -40,6 +40,10 @@ const PORTS = { "streams-1": 9872, "streams-2": 9874, "streams-3": 9876 };
 const BUCKET = `lfcanary-${Date.now()}`;
 const KEY_B64 = Buffer.from(Array(32).fill(9)).toString("base64");
 const DEBUG_TOKEN = "lfcanary-debug-token-0123456789";
+// The customer project the battery certifies (the emulator places it on
+// cell-a), and the cell's own deployment project, which no feed names.
+const CERT_PROJECT = "proj-lc";
+const DEPLOY_PROJECT = "proj-lc-deploy";
 // Exact-artifact mode (round 11.8 RC mint): point both binaries at
 // verified release artifacts and pin the manifest commit when git is
 // not resolvable in the sandbox (defaults = the local build/repo).
@@ -67,7 +71,7 @@ const emu = spawn(process.execPath, [
   "platform-demo/src/emulator.mjs",
   "--port", String(EMU),
   "--cells", `cell-a=${dirA}`,
-  "--fixture", "proj-lc:ws-lc:cell-a",
+  "--fixture", `${CERT_PROJECT}:ws-lc:cell-a`,
   "--fixture", "proj-noisy:ws-noisy:cell-a",
   "--enable-fault-api",
 ], { stdio: ["ignore", "inherit", "inherit"] });
@@ -101,7 +105,10 @@ const instEnv = (name) => ({
   FLEET_AUTH_MODE: "workload",
   WORKLOAD_TOKEN_FILE: join(dirA, "workload.jwt"),
   CELL_ID: "cell-a",
-  PROJECT_ID: "proj-lc",
+  // The deployment's own project, never the certified one: a cell
+  // reserves its PROJECT_ID and answers that project's tokens
+  // 421 wrong_cell (edge change #101, live since #130).
+  PROJECT_ID: DEPLOY_PROJECT,
   USAGE_STREAM_KEY: KEY_B64,
   AUTH_TOKEN: DEBUG_TOKEN,
   // Round-11.7: NO engine selection — the release binary defaults to
@@ -185,7 +192,7 @@ const tokenFor = async (cred) =>
   (await (await sfetch(`http://127.0.0.1:${EMU}/v1/token/streams`, {
     method: "POST", headers: { authorization: `StreamsCredential ${cred.secret}` },
   })).json()).accessToken;
-const credLc = await mkCred("proj-lc");
+const credLc = await mkCred(CERT_PROJECT);
 const credNoisy = await mkCred("proj-noisy");
 await sleep(1600); // feeds land
 let TOK = await tokenFor(credLc);
@@ -208,6 +215,34 @@ const freshWl = async (ops) => (await (await sfetch(`http://127.0.0.1:${EMU}/adm
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ cell: "cell-a", operations: ops }),
 })).json()).jwt;
+// A certified stream's segment map, read where the server keeps it: its
+// registry descriptor in the store (the path is desc_path's in
+// src/registry.rs; a layout that moves it fails the split leg with
+// status 404 in the poll's diag), in the raw surface's shape
+// ({version, pending, segments: [{seg_id, live, sealed_next_offset,
+// predecessors}]}). The raw observability surface (/v1/segments)
+// reaches only the deployment project's streams, which the certified
+// project never is. A descriptor without a map is one live segment.
+const hex = (s) => Buffer.from(s, "utf8").toString("hex");
+const storedSegments = async (name) => {
+  const r = await sfetch(`http://127.0.0.1:${S3}/${BUCKET}/registry/v4/projects/${hex(CERT_PROJECT)}/streams/${hex(name)}.json`);
+  if (r.status !== 200) return { status: r.status, map: null };
+  const map = (await r.json().catch(() => ({}))).segments;
+  const segments = map?.segments ?? [{ seg_id: 0, sealed_ms: null }];
+  return {
+    status: r.status,
+    map: {
+      version: map?.version ?? 0,
+      pending: map?.pending?.kind ?? null,
+      segments: segments.map((s) => ({
+        seg_id: s.seg_id,
+        live: s.sealed_ms == null,
+        sealed_next_offset: s.sealed_next_offset ?? null,
+        predecessors: s.predecessors ?? [],
+      })),
+    },
+  };
+};
 
 const rfetch = async (url, opts) => {
   for (let i = 0; ; i++) {
@@ -281,13 +316,17 @@ async function buildBlackholeStream(nm) {
       })));
     rounds++;
     if (rounds % 4 === 0) {
-      const sr = await ownerFetch(`/v1/segments/${nm}`, { headers: { authorization: `Bearer ${await freshWl(["segment-read"])}` } });
+      const sr = await storedSegments(nm);
       if (rounds % 40 === 0) console.log(`  [diag] split poll status=${sr.status} rounds=${rounds}`);
-      if (sr.status === 200) {
-        const m = await sr.json();
+      if (sr.map) {
+        const m = sr.map;
         const live = (m.segments ?? []).filter((x) => x.live !== false).length;
         const sealed = (m.segments ?? []).map((x) => x.sealed_next_offset ?? 0).reduce((a, b) => a + b, 0);
-        if (live > 1 && !m.pending && sealed >= 10000) { seg = m; break; }
+        if (live > 1 && !m.pending && sealed >= 10000) {
+          console.log(`  [diag] split landed rounds=${rounds} live=${live} sealed=${sealed} version=${m.version}`);
+          seg = m;
+          break;
+        }
       }
     }
   }
@@ -683,11 +722,13 @@ async function moveEverythingTo(target) {
 {
   console.log("== failure: largest legal record ==");
   const nm = "cbig";
-  // The PRODUCT surface canonicalizes JSON — raw whitespace never
-  // reaches storage — so worst-case text framing (a payload of 0x0A
-  // bytes, 6 output bytes per input byte) is a RAW-surface property:
-  // create + append through the raw adapter under workload identity,
-  // then replay through the livefeed product SSE (default lane).
+  // Worst-case text framing: a text/plain payload of 0x0A bytes, 6
+  // output bytes per input byte (one "data:" line each). The probe is
+  // created, appended and read back on the RAW surface under workload
+  // identity, so it lives in the raw surface's tenant, the deployment
+  // project (DEPLOY_PROJECT), never the certified one: the product
+  // surface resolves a name in its principal's project and never sees
+  // it. SSE data framing is common to both surfaces (src/sse/wire.rs).
   const rawH = async (extra = {}) => ({
     authorization: `Bearer ${await freshWl(["raw-lifecycle", "raw-append", "raw-read"])}`,
     "stream-encryption-key": KEY_B64,
@@ -710,9 +751,25 @@ async function moveEverythingTo(target) {
   leg("one byte over the ceiling is refused (413)",
     over.status === 413, `status=${over.status}`);
   // The worst frame must ride the livefeed ring end to end with NO
-  // lag disconnect (release geometry: 6x ceiling + framing <= ring).
-  const own = await ownerOfStream(nm, "");
-  const r = await sseRetry(own ?? "streams-1", `/v1/streams/${nm}/records:sse`, {
+  // lag disconnect (release geometry: 6x ceiling + framing <= ring),
+  // replayed from the offset the create answered (the beginning). A
+  // non-owner answers 409, so the read goes round the fleet until an
+  // instance serves it, for up to 60 s.
+  const from = cr.headers?.get?.("stream-next-offset") ?? "-1";
+  const rawSse = async (path, opts, deadlineMs = 60000) => {
+    const t0 = Date.now();
+    for (;;) {
+      let last = null;
+      for (const n of Object.keys(PORTS)) {
+        const got = await sseCollect(`${base(n)}${path}`, { ...opts, headers: await rawH() });
+        if (![0, 409, 421, 503].includes(got.status)) return got;
+        if (got.status !== 0 || last === null) last = got;
+      }
+      if (Date.now() - t0 > deadlineMs) return last;
+      await sleep(1500);
+    }
+  };
+  const r = await rawSse(`/v1/stream/${nm}?live=sse&offset=${from}`, {
     ms: 30000, until: (t) => t.includes('"upToDate":true'),
   });
   leg("the worst-case frame serves through the livefeed ring to upToDate",
