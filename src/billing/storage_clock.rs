@@ -17,9 +17,12 @@ impl SegmentBillingMetaV1 {
     /// boundary lies past the accounted-through instant. A debug build (the
     /// tests, and the mutation leg's quality profile) asserts it, so month
     /// math that does not advance panics instead of closing months without
-    /// end. A release build keeps the bounded catch-up: returning early
-    /// would leave storage unbilled, since a storage close zeroes the gauge
-    /// after this advance.
+    /// end. It also asserts that a month closes only at its boundary, which
+    /// the two lines before the close already imply: it guards that loop
+    /// exit's comparison, so an exit that does not return panics instead of
+    /// closing one month a turn. A release build keeps the bounded catch-up:
+    /// returning early would leave storage unbilled, since a storage close
+    /// zeroes the gauge after this advance.
     pub(crate) fn advance_storage_clock(
         &mut self,
         now_ms: i64,
@@ -56,6 +59,7 @@ impl SegmentBillingMetaV1 {
                 return;
             }
             // Month closed: report final numbers, then open the next.
+            debug_assert_eq!(upto, boundary, "a month closes only at its boundary");
             on_month_close(self);
             self.month_year = ny;
             self.month_month = nm;

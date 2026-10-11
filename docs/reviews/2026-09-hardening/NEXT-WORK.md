@@ -950,15 +950,17 @@ before marking it complete."
   when the storage clock left `src/billing.rs` (N2): 7,301 mutants over 181
   owners; `billing` 375 -> 361 and the new `billing_storage_clock` 14, the
   code that moved; the other fourteen changed counts are drift since 10-08.
-  **Open (found 2026-10-11, the owner's):** two storage-clock mutants still
-  run away, `src/billing/storage_clock.rs` 55:21 `<` -> `==` and `<` -> `>`
-  in `advance_storage_clock`'s loop exit, which then closes one month a turn
-  without end (each applied by hand, the `billing` filter at 4 threads:
-  6 GiB resident in 6 s; `src/billing.rs` 276:21 held the same two before
-  the move). A push that
-  changes the file selects both: the whole file is in its diff. A
-  `debug_assert_eq!(upto, boundary, ..)` before the month close, outside
-  the N2 decision, contains both (probed by hand: 21.4 s, 40 failed each).
+  **Done (2026-10-11, decided under the owner's delegation of 2026-10-11
+  to Fable 5.1, question N2b):** two storage-clock mutants ran away,
+  `src/billing/storage_clock.rs` 55:21 `<` -> `==` and `<` -> `>` in
+  `advance_storage_clock`'s loop exit, closing one month a turn without end
+  (`src/billing.rs` 276:21 held the same two before the move). A
+  `debug_assert_eq!(upto, boundary, ..)` before the month close now panics
+  them in debug builds (each applied by hand, the `billing` filter at 4
+  threads: before, killed at 6.3-6.9 GiB after 15 s; after, 37 and 38
+  failed in 21.4 s); release is unchanged. The assertion is implied by the
+  two lines before it, so it detects nothing on unmutated code: it guards
+  that loop exit's comparison.
   **Open, the filter-gap audit (decided under the owner's delegation of
   2026-10-11 to Fable 5.1, question N4):** an owner whose filter selects no
   test that reaches its source reports every mutant MISSED, as `read_scan`
