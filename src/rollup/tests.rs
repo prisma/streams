@@ -352,6 +352,71 @@ async fn read_batch_month_split_is_exact() {
     );
 }
 
+/// One read operation of `id()` metered over [from, to) by source `boot`.
+fn one_read(boot: &str, from_ms: i64, to_ms: i64) -> UsageEnvelope {
+    let rb = ReadBatch {
+        source: MeterSource {
+            cell: "c".into(),
+            instance: "i".into(),
+            boot: boot.into(),
+        },
+        seq: 0,
+        from_ms,
+        to_ms,
+        rows: vec![ReadRow {
+            identity: id(),
+            read_payload_bytes: 0,
+            read_records: 0,
+            read_operations: 1,
+            queue_operations: 0,
+            append_requests: 0,
+        }],
+    };
+    UsageEnvelope {
+        v: 1,
+        event_id: format!("read/{boot}/0"),
+        event_time_ms: 0,
+        emitted_ms: 0,
+        cell: "c".into(),
+        payload: UsagePayload::ReadBatch(rb),
+    }
+}
+
+/// The read operations `id()` holds in `month` (0 with no row).
+async fn read_operations(r: &UsageRollup, month: &str) -> u64 {
+    r.month_row(month, "acct", "proj", &id().stream_id)
+        .await
+        .unwrap()
+        .unwrap_or_default()
+        .read_operations
+}
+
+/// A read batch walks at most the month close's 600 months: one that
+/// spans 600 applies, and one that spans 601 fails its page whole, so
+/// nothing of it commits and the cursor stays, the fail-closed policy a
+/// carried storage span past the same cap follows (edge change #139).
+#[tokio::test]
+async fn a_read_batch_spanning_more_months_than_the_close_cap_fails_its_page() {
+    let r = mem_rollup("cap").await;
+    let (from, to) = (month_start_ms(1970, 1) + 1, month_start_ms(2020, 1));
+    r.apply_page(&[one_read("cap-a", from, to)], "c1")
+        .await
+        .unwrap();
+    // The integer allocation leaves the one operation to the last span.
+    assert_eq!(read_operations(&r, "2019-12").await, 1);
+    assert_eq!(read_operations(&r, "1970-01").await, 0);
+    let refused = r
+        .apply_page(&[one_read("cap-b", from, to + 1)], "c2")
+        .await
+        .unwrap_err();
+    assert_eq!(refused.to_string(), "read batch spans more than 600 months");
+    assert_eq!(r.cursor().await.unwrap().as_deref(), Some("c1"));
+    let stream = id().stream_id;
+    let past = r.month_row("2020-01", "acct", "proj", &stream).await;
+    assert!(past.unwrap().is_none(), "nothing of the batch committed");
+    assert_eq!(read_operations(&r, "2019-12").await, 1);
+}
+
 /// Round-22 item 8: a rollup that was down across several
 /// boundaries closes every overdue month IN ORDER from the
 /// persisted oldest-unclosed marker, and the marker survives so

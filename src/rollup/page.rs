@@ -5,8 +5,9 @@
 //! A failed read or validation drops the entire pending transaction.
 
 use super::{
-    AggRow, K_CURSOR, MonthRow, SegmentState, decode_json, get_json, k_month, k_name, k_project,
-    k_segment, k_source, month_spans, month_start_ms, next_month, parse_month, read_bytes,
+    AggRow, K_CURSOR, MONTH_CLOSE_CAP, MonthRow, SegmentState, decode_json, get_json, k_month,
+    k_name, k_project, k_segment, k_source, month_spans, month_start_ms, next_month, parse_month,
+    read_bytes,
 };
 use crate::billing::{
     BillingIdentity, ReadBatch, ReadRow, SegmentSnapshot, UsageCorrection, UsageEnvelope,
@@ -591,7 +592,6 @@ fn settles(snap: &SegmentSnapshot) -> bool {
 /// first. A span beyond the month close's own cap is no carry: it fails
 /// the page before any month is read.
 fn carried_months(month: &str, through: i64) -> anyhow::Result<Vec<(i32, u32)>> {
-    const MONTH_CLOSE_CAP: usize = 600;
     let (mut year, mut number) =
         parse_month(month).ok_or_else(|| anyhow::anyhow!("invalid snapshot month"))?;
     let mut months = Vec::new();

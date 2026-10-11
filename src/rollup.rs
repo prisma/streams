@@ -304,9 +304,16 @@ impl AggRow {
     }
 }
 
+/// The widest month span one rollup page walks: carried storage spans
+/// (`page::carried_months`) and read-batch spans (`month_spans`) fail past
+/// it. The month close's own loop bound in `close.rs` is the same figure
+/// and stays its own literal.
+const MONTH_CLOSE_CAP: usize = 600;
+
 /// Every (month, duration-ms) span of [from, to): walks each UTC month
 /// boundary the interval crosses. Fails when the month math does not
-/// advance; no instant reaches that with correct math.
+/// advance, which no instant reaches with correct math, and past
+/// `MONTH_CLOSE_CAP` spans.
 fn month_spans(from_ms: i64, to_ms: i64) -> anyhow::Result<Vec<(String, i64)>> {
     let to = to_ms.max(from_ms + 1);
     let mut out = Vec::new();
@@ -318,6 +325,10 @@ fn month_spans(from_ms: i64, to_ms: i64) -> anyhow::Result<Vec<(String, i64)>> {
         anyhow::ensure!(
             boundary > cur,
             "month math did not advance past {cur}: next boundary {boundary}"
+        );
+        anyhow::ensure!(
+            out.len() < MONTH_CLOSE_CAP,
+            "read batch spans more than {MONTH_CLOSE_CAP} months"
         );
         out.push((crate::billing::month_str(y, m), boundary - cur));
         cur = boundary;
