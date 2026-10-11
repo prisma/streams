@@ -27,6 +27,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 S=${SOAK_HOME:?set SOAK_HOME}
+# The checks below are Python `assert`s, which PYTHONOPTIMIZE strips. Each
+# runs as `python3 -E`, so no PYTHON* variable of the caller's environment
+# (PYTHONOPTIMIZE, PYTHONPATH, ...) can switch a check off.
 
 CAP_RUN=""; HANDOFF_RUN=""; LF_FLEET_RUN=""; LF_CANARY_RUN=""
 while [ $# -gt 0 ]; do
@@ -59,7 +62,7 @@ echo "== 2/6 release identity: campaign artifact + commit provenance =="
 # every other campaign to have run the identical sha.
 CAPD="$S/results/$CAP_RUN"
 HEAD_COMMIT=$(git rev-parse HEAD)
-RC_SHA=$(python3 - "$CAPD" "$HEAD_COMMIT" <<'PY'
+RC_SHA=$(python3 -E - "$CAPD" "$HEAD_COMMIT" <<'PY'
 import json, sys
 d, head = sys.argv[1], sys.argv[2]
 bins = json.load(open(f"{d}/binaries.json"))
@@ -74,7 +77,7 @@ PY
 echo "RC binary sha256 (campaign artifact): $RC_SHA"
 
 echo "== 3/6 capacity manifest ($CAP_RUN) =="
-python3 - "$CAPD" "$RC_SHA" <<'PY'
+python3 -E - "$CAPD" "$RC_SHA" <<'PY'
 import json, sys
 d, rc = sys.argv[1], sys.argv[2]
 v = json.load(open(f"{d}/capacity-verdict.json"))
@@ -87,7 +90,7 @@ PY
 
 echo "== 4/6 handoff manifest ($HANDOFF_RUN) =="
 HD="$S/results/$HANDOFF_RUN"
-python3 - "$HD" "$RC_SHA" <<'PY'
+python3 -E - "$HD" "$RC_SHA" <<'PY'
 import json, sys
 d, rc = sys.argv[1], sys.argv[2]
 sha = open(f"{d}/binary.sha").read().strip()
@@ -102,7 +105,7 @@ PY
 
 echo "== 5/6 livefeed fleet manifest ($LF_FLEET_RUN) =="
 LF_FLEET_MANIFEST=$(resolve_manifest "$LF_FLEET_RUN" livefeed-cert-manifest.json)
-python3 - "$LF_FLEET_MANIFEST" "$HEAD_COMMIT" <<'PY'
+python3 -E - "$LF_FLEET_MANIFEST" "$HEAD_COMMIT" <<'PY'
 import json, sys
 m, head = json.load(open(sys.argv[1])), sys.argv[2]
 assert m.get("commit") == head, \
@@ -115,7 +118,7 @@ PY
 
 echo "== 6/6 livefeed canary manifest ($LF_CANARY_RUN) =="
 LF_CANARY_MANIFEST=$(resolve_manifest "$LF_CANARY_RUN" livefeed-canary-manifest.json)
-python3 - "$LF_CANARY_MANIFEST" "$RC_SHA" <<'PY'
+python3 -E - "$LF_CANARY_MANIFEST" "$RC_SHA" <<'PY'
 import json, sys
 m, rc = json.load(open(sys.argv[1])), sys.argv[2]
 sha = m.get("server_sha256", "").removeprefix("sha256:")
@@ -129,7 +132,7 @@ PY
 # Review round 3: the certification result as data — promote-rc.sh
 # records THIS server_sha256 as the tag's artifact identity.
 mkdir -p target
-python3 - "$RC_SHA" "$CAP_RUN" "$HANDOFF_RUN" "$LF_FLEET_RUN" "$LF_CANARY_RUN" <<'PY'
+python3 -E - "$RC_SHA" "$CAP_RUN" "$HANDOFF_RUN" "$LF_FLEET_RUN" "$LF_CANARY_RUN" <<'PY'
 import json, subprocess, sys
 sha, cap, hand, lfleet, lcanary = sys.argv[1:6]
 head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
