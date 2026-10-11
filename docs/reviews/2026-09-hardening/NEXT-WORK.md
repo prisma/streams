@@ -322,8 +322,11 @@ alongside and finish before admission opens.
 
 ### Should-haves before admission opens (same analysis)
 
-- Pin `runs-on: ubuntu-24.04` in the three workflows before 2026-10-19,
-  when GitHub moves `ubuntu-latest` to Ubuntu 26 (one commit).
+- Done 2026-10-11: every job of the three workflows runs on
+  `ubuntu-24.04` (the image `ubuntu-latest` resolved to, 20261004.327.1),
+  held by `scripts/quality/test_workflow_runners.py`. Moving to Ubuntu 26
+  is a later deliberate commit: validate one full nightly there first, and
+  bump actionlint with it (1.7.12 does not know `ubuntu-26.04`).
 - `cell-admin rotate` and a rehearsed key-rotation drill on a scratch
   cell (a day or less; RUNBOOK says it is not built yet).
 - A release procedure for a live single-server cell, with one rehearsed

@@ -8,7 +8,9 @@ detail. Where private notes or older handoffs disagree with this file, this
 file wins — verify against the tree, then fix whichever is wrong.
 
 Timings below were measured on the owner's Mac (M1 Ultra, 20 cores, 64 GiB)
-on 2026-09-27; CI runs on 4-vCPU `ubuntu-latest`.
+on 2026-09-27; CI runs on 4-vCPU `ubuntu-24.04`, pinned in every job (never
+`ubuntu-latest`, which moves to Ubuntu 26 from 2026-10-19;
+`scripts/quality/test_workflow_runners.py` holds the pin).
 
 ## 1. Working agreement (the owner is Søren Bramer Schmidt)
 
