@@ -290,6 +290,22 @@ for (const kind of STORES) {
         .toBe("cell-admin disallow: workspace wksp_a is not on the allow-list");
     });
 
+    test("gate opens and closes self-serve admission and sets its project count, publishing nothing", async () => {
+      const c = await initCell();
+      expect(readState(c.state).cell.gate).toEqual({ open: true, n_max: 50 });
+      const v = readBundle(c.state).keys.feed_version;
+      let r = await run("gate", "--state", c.state, "--close");
+      expect([r.code, r.out, readState(c.state).cell.gate]).toEqual(
+        [0, "gate: closed, n_max 50 (0 project(s) placed)", { open: false, n_max: 50 }]);
+      r = await run("gate", "--state", c.state, "--open", "--n-max", "10");
+      expect([r.code, readState(c.state).cell.gate]).toEqual([0, { open: true, n_max: 10 }]);
+      expect(readBundle(c.state).keys.feed_version).toBe(v);
+      for (const flags of [[], ["--open", "--close"], ["--n-max", "0"]]) {
+        expect((await run("gate", "--state", c.state, ...flags)).code).toBe(2);
+      }
+      expect(readState(c.state).journal.map((j) => j.command).slice(-2)).toEqual(["gate", "gate"]);
+    });
+
     test("quota sets a project's quotas at most their ceilings at a newer policy version, keeping the rest", async () => {
       const c = await initCell();
       await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w", "--quota", "max_streams=50");

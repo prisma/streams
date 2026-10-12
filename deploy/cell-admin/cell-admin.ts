@@ -13,7 +13,7 @@ import { AdminError } from "./errors";
 import { credential } from "./credentials";
 import { keysAdd, keysRetire } from "./keys";
 import { offboard } from "./offboard";
-import { allow, disallow, quota, resume, suspend } from "./owner";
+import { allow, disallow, gate, quota, resume, suspend } from "./owner";
 
 const USAGE = `usage: cell-admin <command> --state DIR|s3://BUCKET/cells/CELL [--s3-credentials FILE] [flags]
   init      --cell-id C --deployment-project P --account A (--key-file K | --public-key FILE)
@@ -29,6 +29,7 @@ const USAGE = `usage: cell-admin <command> --state DIR|s3://BUCKET/cells/CELL [-
   quota     --project P --quota field=value...
   allow     --workspace W [--max-projects N] [--requests-per-sec R] [--note TEXT]
   disallow  --workspace W
+  gate      --open | --close | --n-max N
   credential --project P --pepper-file F --out FILE [--scopes "s ..."] [--prefix p]... [--name N] [--hidden]
   keys add  --public-key FILE [--retire-others]
   keys retire --kid K`;
@@ -93,6 +94,7 @@ const COMMANDS = {
     },
   },
   disallow: { run: disallow, spec: { single: ["state", "s3-credentials", "workspace"], required: ["state", "workspace"] } },
+  gate: { run: gate, spec: { single: ["state", "s3-credentials", "n-max"], bool: ["open", "close"], required: ["state"] } },
   quota: {
     run: quota,
     spec: { single: ["state", "s3-credentials", "project"], multi: ["quota"], required: ["state", "project"] },

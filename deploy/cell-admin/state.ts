@@ -38,7 +38,15 @@ export interface CellConfig {
   /// One project id per line; shared by every cell that should never
   /// reuse each other's ids.
   denylist: string;
+  /// Self-serve admission: the issuer places a project only while the gate
+  /// is open and fewer than `n_max` customer projects are placed (the
+  /// static u = 0.5 rule until measured per-tenant shapes replace it).
+  gate: { open: boolean; n_max: number };
 }
+
+/// The gate a new cell starts with: open, 50 projects (design §4.1: 1 % of
+/// the envelope each, at most half the envelope in all).
+export const GATE_DEFAULT = { open: true, n_max: 50 } as const;
 
 export interface KeyRecord {
   kid: string;

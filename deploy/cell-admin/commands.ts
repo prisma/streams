@@ -22,7 +22,7 @@ import {
   SYSTEM_PROJECT,
   scopesOf,
 } from "./rules";
-import { type CellState, journal, STATE_FORMAT, writeDurable } from "./state";
+import { type CellState, GATE_DEFAULT, journal, STATE_FORMAT, writeDurable } from "./state";
 import { Conflict } from "./store";
 import { openStore, publishNote } from "./stores";
 import { cellSigningKey, customerClaims, loadSigningKey, readPublicKey, signJwt } from "./tokens";
@@ -69,6 +69,7 @@ export async function init(f: Flags, io: Io): Promise<void> {
       workspace_cap,
       max_projects,
       denylist,
+      gate: { ...GATE_DEFAULT },
     },
     keys: [key],
     retired_kids: [],

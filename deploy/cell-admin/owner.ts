@@ -1,6 +1,6 @@
 // The owner's controls over a shared cell beside the interim issuer
-// (public-beta issuer triage B1.8): suspend, resume and quota, each one
-// change through `mutate`; allow and disallow, each one compare-and-swap
+// (public-beta issuer triage B1.8): suspend, resume, quota and gate, each
+// one change through `mutate`; allow and disallow, each one compare-and-swap
 // of the allow-list. Both land safely beside the issuer's writes.
 import type { Flags } from "./args";
 import type { Io } from "./commands";
@@ -138,4 +138,23 @@ export async function disallow(f: Flags, io: Io): Promise<void> {
     `${workspace} creates no new project; its ${running.length} project(s) keep running` +
       `${running.length ? `: ${running.join(", ")}` : ""} (suspend them with cell-admin suspend)`,
   );
+}
+
+/// Open or close self-serve admission, or set how many customer projects
+/// it places (`--n-max`). The gate is the issuer's, not the cell's: it
+/// publishes nothing.
+export async function gate(f: Flags, io: Io): Promise<void> {
+  const store = await openStore(f);
+  const [open, close] = [f.has("open"), f.has("close")];
+  if (open && close) throw new AdminError("give --open or --close, not both", 2);
+  if (!open && !close && !f.has("n-max")) throw new AdminError("give --open, --close or --n-max N", 2);
+  const n_max = f.has("n-max") ? f.count("n-max", 1) : undefined;
+  await store.exclusive(async () => {
+    const { state } = await mutate(store, (s) => {
+      s.cell.gate = { open: open ? true : close ? false : s.cell.gate.open, n_max: n_max ?? s.cell.gate.n_max };
+      journal(s, "gate", `${s.cell.gate.open ? "open" : "closed"} n_max=${s.cell.gate.n_max}`);
+    });
+    const g = state.cell.gate;
+    io.out(`gate: ${g.open ? "open" : "closed"}, n_max ${g.n_max} (${placedProjects(state).length} project(s) placed)`);
+  });
 }
