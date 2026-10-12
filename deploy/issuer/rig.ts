@@ -1,7 +1,8 @@
 // Shared rig for the issuer's tests: a cell initialised by cell-admin on
 // the in-process fake S3 (deploy/cell-admin/fake-s3.ts), with an Ed25519
-// signing key and a pepper made for the test only, and the environment
-// the issuer would be given for it.
+// signing key and a pepper made for the test only, the environment the
+// issuer would be given for it, and an issuer booted on it that the
+// management tests call as a signed-in browser.
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -18,7 +19,11 @@ import {
   scratchDir,
   useStore,
 } from "../cell-admin/test-rig";
-import type { Env } from "./config";
+import { boot } from "./boot";
+import { StateCache } from "./cache";
+import { type Env, readConfig } from "./config";
+import { Issuer } from "./server";
+import { newSession, type Session, sessionCookie } from "./session";
 
 export interface IssuerCell {
   root: string;
@@ -101,3 +106,34 @@ export const wrongSecret = (id: string) => presentedSecret(id, randomBytes(32).t
 export const envWith = (cell: IssuerCell, patch: Record<string, string | undefined>): Env => ({ ...cell.env, ...patch });
 
 export { fakeS3 };
+
+/// When the management tests' clock starts.
+export const T0 = 1_800_000_000_000;
+
+/// An issuer booted on `cell` with a clock the test moves, and the
+/// management API's calls made as a browser signed in to a workspace.
+export async function managed(cell: IssuerCell, env: Env = cell.env) {
+  const clock = { t: T0 };
+  const now = () => clock.t;
+  const cfg = readConfig(env);
+  const b = await boot(cfg);
+  const cache = new StateCache(b.store, b, { now, log: () => {} });
+  const issuer = new Issuer(cfg, { store: b.store, cache, now, log: () => {} });
+  const session = (workspace: string, patch: Partial<Session> = {}): Session => ({
+    ...newSession({ user_id: `usr_${workspace}`, email: `owner@${workspace}.example.com`, workspace_id: workspace }, clock.t),
+    ...patch,
+  });
+  /// The Cookie header of a new session signed in to `workspace`.
+  const signIn = (workspace: string, patch: Partial<Session> = {}) =>
+    sessionCookie(cfg.sessionKey, session(workspace, patch)).split(";")[0];
+  const call = (method: string, path: string, cookie?: string, init: { body?: string; headers?: Record<string, string> } = {}) =>
+    issuer.fetch(
+      new Request(`https://issuer.example.com${path}`, {
+        method,
+        headers: { ...(cookie === undefined ? {} : { cookie }), ...init.headers },
+        body: init.body,
+      }),
+    );
+  const get = (path: string, cookie?: string) => call("GET", path, cookie);
+  return { cfg, cache, clock, issuer, store: b.store, session, signIn, call, get };
+}

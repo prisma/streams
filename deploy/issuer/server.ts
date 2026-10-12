@@ -5,12 +5,16 @@
 //   POST /v1/token/streams   the exchange (exchange.ts)
 //   GET  /healthz            whether it can mint (ops.ts)
 //   GET  /v1/admin/metrics   its counters, behind the metrics bearer (ops.ts)
+//   /v1/workspaces/{w}/streams/projects...
+//                            the management API, for a signed-in browser
+//                            (management.ts)
 import type { StateStore } from "../cell-admin/store";
 import { Audit } from "./audit";
 import type { StateCache } from "./cache";
 import type { IssuerConfig } from "./config";
 import { Exchange } from "./exchange";
 import { RateLimits } from "./limits";
+import { Management } from "./management";
 import { Ops } from "./ops";
 import { Rehasher } from "./rehash";
 import { refuse } from "./respond";
@@ -30,6 +34,7 @@ export class Issuer {
   readonly rehasher: Rehasher;
   private readonly exchange: Exchange;
   private readonly ops: Ops;
+  private readonly management: Management;
 
   constructor(cfg: IssuerConfig, deps: IssuerDeps) {
     const now = deps.now ?? Date.now;
@@ -39,6 +44,13 @@ export class Issuer {
     const shared = { cache: deps.cache, limits: this.limits, audit: this.audit, rehasher: this.rehasher, now };
     this.exchange = new Exchange(cfg, { ...shared, ...(deps.ipHeader !== undefined ? { ipHeader: deps.ipHeader } : {}) });
     this.ops = new Ops(cfg, shared);
+    this.management = new Management(cfg, {
+      cache: deps.cache,
+      store: deps.store,
+      limits: this.limits,
+      now,
+      log: deps.log ?? console.log,
+    });
   }
 
   async fetch(req: Request): Promise<Response> {
@@ -53,7 +65,7 @@ export class Issuer {
       case "/v1/admin/metrics":
         return only("GET") ?? this.ops.metrics(req);
       default:
-        return refuse(404, "not_found", `no route ${pathname}`);
+        return (await this.management.handle(req, pathname)) ?? refuse(404, "not_found", `no route ${pathname}`);
     }
   }
 }

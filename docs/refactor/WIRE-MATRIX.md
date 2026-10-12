@@ -298,3 +298,9 @@ Handler: `Ops.health` (`deploy/issuer/ops.ts`); unauthenticated; edge change #NE
 
 ### 5.3 `GET /v1/admin/metrics` — the issuer's counters
 Handler: `Ops.metrics` (`deploy/issuer/ops.ts`); `Authorization: Bearer <STREAMS_ISSUER_METRICS_TOKEN>`, else 401 `unauthorized` with `WWW-Authenticate: Bearer realm="streams-issuer"`. 200 flat JSON: `cell_id`, `kid`, `uptime_secs`, `healthy`, `cache_age_secs`, `cache_fresh`, `state_feed_version`, `published_feed_version`, `gate_open`, `gate_n_max`, `exchanges` (by outcome), `rate_limit_refusals` (by bucket), `revalidation_failures`, `republishes`, `rehash_pending`, `live_credentials_by_pepper`. Another method: 405 with `Allow: GET`.
+
+### 5.4 The management API — a signed-in workspace's projects
+Handler: `Management.handle` (`deploy/issuer/management.ts`); edge change #NEW-issuer-3. Every response carries `X-Request-Id` (16 hex). A path id outside `^[A-Za-z0-9_-]{1,128}$` (percent-decoded): 404 `not_found`; another method: 405 with `Allow`.
+- **Session**: cookie `__Host-streams-session=<base64url JSON {sid,user_id,email,workspace_id,iat}>.<HMAC-SHA-256 under STREAMS_ISSUER_SESSION_KEY>` (`deploy/issuer/session.ts`), issued < 8 h ago; sign-in that sets it is the issuer triage's B4.
+- **Order**: session (401 `unauthorized`) → 60 calls a minute per session (429 `rate_limited`, `Retry-After`) → state copy revalidated within 300 s (503 `issuer_unavailable`, `Retry-After: 5`) → path workspace = session's (403 `forbidden`) → session's workspace on `beta/allowlist.json`, read at most every 5 s, refused while missing (403 `workspace_not_allowed`; 503 while unreadable) → the route.
+- **`GET /v1/workspaces/{w}/streams/projects`**: 200 `{"projects":[{"id","workspaceId","displayName","status":"active"|"suspended"|"deleting","createdAt","createdBy"?:{"userId","email"},"cellId","endpoint","quotas"}]}`, the workspace's projects not offboarded, not the canary, oldest first. Writes: none.
