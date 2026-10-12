@@ -1,0 +1,400 @@
+// The watch's rules on the cell's own surfaces (public-beta alerting
+// triage B2, rows 3-17, 20 and 26): each opens as its row states, holds,
+// and resolves after four clean polls. Run with `bun test ./deploy/cell-watch`.
+import { describe, expect, test } from "bun:test";
+import type { Class, HealthPoll, Json, Poll } from "./rules";
+import { CFG, DATA, GIT, healthyPoll, kinds, ofRow, patch, Watch } from "./rig";
+
+const MIN_POLLS = 4;
+const data = (edits: Record<string, Json>): Partial<Poll> => ({ data: patch(DATA, edits) });
+const health = (h: Partial<HealthPoll>): Partial<Poll> => ({ health: { ...healthyPoll(0).health, ...h } });
+/// The row's events as `[kind, class]`, and its triggers' values and labels.
+const row = (w: Watch, n: number) => kinds(ofRow(w.events, n));
+const fired = (w: Watch, n: number) => ofRow(w.events, n).filter((e) => e.kind === "trigger");
+
+describe("row 3: no 2xx from inside", () => {
+  const down = (h: Partial<HealthPoll>) => health({ git: null, bootId: null, ...h });
+
+  test("pages after two minutes of non-200, not before, and resolves after four 200s", () => {
+    const w = new Watch();
+    w.polls(8, down({ status: 503, bodyPrefix: "runtime draining" }));
+    expect(row(w, 3)).toEqual([]);
+    w.poll(down({ status: 503, bodyPrefix: "runtime draining" }));
+    expect(row(w, 3)).toEqual([["trigger", "PAGE"]]);
+    expect(fired(w, 3)[0]?.values).toEqual({ status: 503, down_secs: 120 });
+    w.polls(3);
+    w.poll(down({ status: 503, bodyPrefix: "runtime draining" }));
+    w.polls(3);
+    expect(row(w, 3)).toEqual([["trigger", "PAGE"]]);
+    w.poll();
+    expect(row(w, 3)).toEqual([["trigger", "PAGE"], ["resolve", "PAGE"]]);
+  });
+
+  test("names the server and its reason from the 503 body, the wrapper, or the platform, never the text", () => {
+    const cases: [Partial<HealthPoll>, Record<string, string>, number][] = [
+      [{ status: 503, origin: true, bodyPrefix: "runtime supervisor unavailable" }, { origin: "server", reason: "tasks", answer: "status" }, 503],
+      [{ status: 503, origin: true, bodyPrefix: "critical task terminated: absorber" }, { origin: "server", reason: "tasks", answer: "status" }, 503],
+      [{ status: 503, origin: true, bodyPrefix: "auth feeds not yet published: jwks" }, { origin: "server", reason: "feeds_unpublished", answer: "status" }, 503],
+      [{ status: 503, origin: true, bodyPrefix: "shard storage unavailable: open failed" }, { origin: "server", reason: "shard_storage", answer: "status" }, 503],
+      [{ status: 503, origin: true, bodyPrefix: "billing not ready (spool=false, rollup=true)" }, { origin: "server", reason: "billing_not_ready", answer: "status" }, 503],
+      [{ status: 503, origin: true, bodyPrefix: "something new" }, { origin: "server", reason: "other", answer: "status" }, 503],
+      [{ status: 500, origin: true, bodyPrefix: "runtime stopped" }, { origin: "server", reason: "other", answer: "status" }, 500],
+      [{ status: 500, origin: false, bodyPrefix: '{"error":"binary_exited","message":"the service is not running"}' }, { origin: "wrapper", answer: "status" }, 500],
+      [{ status: 500, origin: false, bodyPrefix: "Internal Server Error" }, { origin: "platform", answer: "status" }, 500],
+      [{ status: 503, origin: false, bodyPrefix: "upstream connect error" }, { origin: "platform", answer: "status" }, 503],
+      [{ status: 404, origin: false, bodyPrefix: "" }, { origin: "platform", answer: "status" }, 404],
+      [{ status: null, timedOut: true, origin: false, bodyPrefix: "" }, { origin: "platform", answer: "timeout" }, 0],
+      [{ status: null, timedOut: false, origin: false, bodyPrefix: "" }, { origin: "platform", answer: "no_answer" }, 0],
+    ];
+    for (const [h, labels, status] of cases) {
+      const w = new Watch();
+      w.polls(9, down(h));
+      expect([h.bodyPrefix, fired(w, 3).map((e) => [e.labels, e.values.status])]).toEqual([h.bodyPrefix, [[labels, status]]]);
+    }
+  });
+});
+
+describe("row 4: restarts", () => {
+  test("one boot id change notifies; three boot ids within 30 min page; older ones age out", () => {
+    const w = new Watch();
+    w.polls(2);
+    w.poll(health({ bootId: "boot-2" }));
+    expect(row(w, 4)).toEqual([["trigger", "NOTIFY"]]);
+    expect(fired(w, 4)[0]?.values).toEqual({ boot_ids_30m: 2 });
+    w.polls(MIN_POLLS, health({ bootId: "boot-2" }));
+    expect(row(w, 4)).toEqual([["trigger", "NOTIFY"], ["resolve", "NOTIFY"]]);
+    w.polls(20, health({ bootId: "boot-2" }));
+    w.poll(health({ bootId: "boot-3" }));
+    expect(row(w, 4).slice(2)).toEqual([["trigger", "PAGE"]]);
+    expect(fired(w, 4)[1]?.values).toEqual({ boot_ids_30m: 3 });
+    // 30 min after the first boot id was last seen, two remain: clean.
+    w.polls(4 * 30, health({ bootId: "boot-3" }));
+    expect(row(w, 4).slice(2)).toEqual([["trigger", "PAGE"], ["resolve", "PAGE"]]);
+    w.poll(health({ bootId: "boot-4" }));
+    expect(row(w, 4).slice(4)).toEqual([["trigger", "NOTIFY"]]);
+  });
+
+  test("a boot id is read from a 200 only", () => {
+    const w = new Watch();
+    w.polls(2);
+    w.polls(3, health({ status: 503, bootId: "boot-2" }));
+    w.polls(2);
+    expect(row(w, 4)).toEqual([]);
+  });
+
+  test("the first boot id the watch sees is not a change", () => {
+    const w = new Watch();
+    w.polls(3, health({ status: 503, bootId: null, git: null }));
+    w.polls(3);
+    expect(row(w, 4)).toEqual([]);
+  });
+});
+
+describe("row 5: wrong build", () => {
+  test("notifies after 10 min of a build other than EXPECTED_GIT; a prefix matches; a 503 does not count", () => {
+    const w = new Watch({ ...CFG, expectedGit: GIT.slice(0, 12) });
+    w.polls(4 * 20);
+    expect(row(w, 5)).toEqual([]);
+    const wrong = health({ git: "0123456789abcdef" });
+    w.polls(4 * 10, wrong);
+    w.polls(4, health({ status: 503, git: null, bootId: null }));
+    expect(row(w, 5)).toEqual([]);
+    w.poll(wrong);
+    expect(row(w, 5)).toEqual([["trigger", "NOTIFY"]]);
+    expect(fired(w, 5)[0]?.values).toEqual({ wrong_build_secs: 660 });
+    w.polls(MIN_POLLS);
+    expect(row(w, 5)).toEqual([["trigger", "NOTIFY"], ["resolve", "NOTIFY"]]);
+  });
+
+  test("is off without EXPECTED_GIT", () => {
+    const w = new Watch();
+    w.polls(4 * 15, health({ git: "0123456789abcdef" }));
+    expect(row(w, 5)).toEqual([]);
+  });
+});
+
+describe("row 6: feed delivery", () => {
+  test("pages on an age above 75 s or a stale feed; 75 s and a never-published feed do not", () => {
+    for (const [edits, want] of [
+      [{ "feeds.jwks.ageSecs": 76 }, { jwks_age_secs: 76, policies_age_secs: 0, grants_age_secs: 0, policies_stale: 0, grants_stale: 0 }],
+      [{ "feeds.grants.ageSecs": 200 }, { jwks_age_secs: 0, policies_age_secs: 0, grants_age_secs: 200, policies_stale: 0, grants_stale: 0 }],
+      [{ "feeds.policies.stale": true }, { jwks_age_secs: 0, policies_age_secs: 0, grants_age_secs: 0, policies_stale: 1, grants_stale: 0 }],
+      [{ "feeds.grants.stale": true }, { jwks_age_secs: 0, policies_age_secs: 0, grants_age_secs: 0, policies_stale: 0, grants_stale: 1 }],
+      [{ "feeds.policies.ageSecs": 75 }, undefined],
+      [{ "feeds.jwks.ageSecs": null, "feeds.policies.ageSecs": null }, undefined],
+    ] as [Record<string, Json>, Record<string, number> | undefined][]) {
+      const w = new Watch();
+      w.poll(data(edits));
+      expect([edits, fired(w, 6)[0]?.values]).toEqual([edits, want]);
+      expect(row(w, 6)).toEqual(want === undefined ? [] : [["trigger", "PAGE"]]);
+    }
+    const w = new Watch();
+    w.polls(3, data({ "feeds.jwks.ageSecs": 90 }));
+    w.polls(MIN_POLLS);
+    expect(row(w, 6)).toEqual([["trigger", "PAGE"], ["resolve", "PAGE"]]);
+  });
+});
+
+describe("row 7: a reserved policy dropped", () => {
+  test("pages on any drop", () => {
+    const w = new Watch();
+    w.poll(data({ "feeds.policies.reservedDropped": 3 }));
+    expect(fired(w, 7).map((e) => [e.class, e.values])).toEqual([["PAGE", { reserved_dropped: 3 }]]);
+  });
+});
+
+describe("row 8: RSS at the shed line", () => {
+  test("pages after 10 min at or above the line, with the absorber's reservation counted", () => {
+    const w = new Watch();
+    const at = data({ "local.rss_mb": 499, "local.absorb_reserved_bytes_now": 2 ** 20 });
+    w.polls(40, at);
+    expect(row(w, 8)).toEqual([]);
+    w.poll(at);
+    expect(fired(w, 8).map((e) => [e.class, e.values])).toEqual([["PAGE", { pressure_mb: 500, rss_shed_mb: 500, held_secs: 600 }]]);
+    w.polls(MIN_POLLS);
+    expect(row(w, 8)).toEqual([["trigger", "PAGE"], ["resolve", "PAGE"]]);
+  });
+
+  test("notifies after 30 min at 90 % of the line; a line of 0 (no shed) is not evaluated", () => {
+    const w = new Watch();
+    w.polls(120, data({ "local.rss_mb": 450 }));
+    expect(row(w, 8)).toEqual([]);
+    w.poll(data({ "local.rss_mb": 450 }));
+    expect(fired(w, 8).map((e) => [e.class, e.values])).toEqual([["NOTIFY", { pressure_mb: 450, rss_shed_mb: 500, held_secs: 1800 }]]);
+    const below = new Watch();
+    below.polls(200, data({ "local.rss_mb": 449.9 }));
+    expect(row(below, 8)).toEqual([]);
+    const off = new Watch();
+    off.polls(200, data({ "local.rss_mb": 900, "local.rss_shed_mb": 0 }));
+    expect(row(off, 8)).toEqual([]);
+  });
+});
+
+describe("rows 9 to 11: shed counters", () => {
+  const grow = (w: Watch, key: string, from: number, polls: number) => {
+    for (let i = 0; i < polls; i++) w.poll(data({ [key]: from + i }));
+  };
+
+  test("row 9: one poll of RSS-shed growth notifies, two consecutive page", () => {
+    const w = new Watch();
+    grow(w, "local.admit_shed_rss", 10, 2);
+    w.poll(data({ "local.admit_shed_rss": 11 }));
+    w.polls(MIN_POLLS, data({ "local.admit_shed_rss": 11 }));
+    expect(row(w, 9)).toEqual([["trigger", "NOTIFY"], ["resolve", "NOTIFY"]]);
+    grow(w, "local.admit_shed_rss", 12, 2);
+    expect(row(w, 9).slice(2)).toEqual([["trigger", "NOTIFY"], ["trigger", "PAGE"]]);
+    expect(fired(w, 9)[2]?.values).toEqual({ admit_shed_rss: 13, growth: 1, polls: 2 });
+  });
+
+  test("row 10: inflight and survival sheds together; three consecutive growths page", () => {
+    const w = new Watch();
+    w.poll(data({ "local.admit_shed_inflight": 5, "local.admit_shed_survival": 5 }));
+    w.poll(data({ "local.admit_shed_inflight": 5, "local.admit_shed_survival": 6 }));
+    w.poll(data({ "local.admit_shed_inflight": 7, "local.admit_shed_survival": 6 }));
+    expect(row(w, 10)).toEqual([["trigger", "NOTIFY"]]);
+    w.poll(data({ "local.admit_shed_inflight": 8, "local.admit_shed_survival": 6 }));
+    expect(row(w, 10)).toEqual([["trigger", "NOTIFY"], ["trigger", "PAGE"]]);
+    expect(fired(w, 10)[1]?.values).toEqual({ admit_shed_inflight: 8, admit_shed_survival: 6, growth: 1, polls: 3 });
+    w.polls(MIN_POLLS, data({ "local.admit_shed_inflight": 8, "local.admit_shed_survival": 6 }));
+    expect(row(w, 10)).toEqual([["trigger", "NOTIFY"], ["trigger", "PAGE"], ["resolve", "PAGE"]]);
+  });
+
+  test("row 11: any wedge-shed growth pages", () => {
+    const w = new Watch();
+    w.poll(data({ "local.wedge_shed": 4 }));
+    w.poll(data({ "local.wedge_shed": 4 }));
+    expect(row(w, 11)).toEqual([]);
+    w.poll(data({ "local.wedge_shed": 5 }));
+    w.polls(MIN_POLLS, data({ "local.wedge_shed": 5 }));
+    expect(row(w, 11)).toEqual([["trigger", "PAGE"], ["resolve", "PAGE"]]);
+    expect(fired(w, 11)[0]?.values).toEqual({ wedge_shed: 5, growth: 1 });
+  });
+});
+
+describe("row 12: the backlog latch", () => {
+  const latch = (edits: Record<string, Json>) =>
+    data(Object.fromEntries(Object.entries(edits).map(([k, v]) => [`local.maintenance_backpressure.${k}`, v])));
+
+  test("pages while engaged or on appends shed, notifies on lag above 450 s or 256 MiB unabsorbed", () => {
+    const cases: [Record<string, Json>, Class | undefined][] = [
+      [{ engaged: true }, "PAGE"],
+      [{ absorb_lag_secs: 451 }, "NOTIFY"],
+      [{ unabsorbed_bytes: 256 * 2 ** 20 + 1 }, "NOTIFY"],
+      [{ absorb_lag_secs: 450, unabsorbed_bytes: 256 * 2 ** 20 }, undefined],
+    ];
+    for (const [edits, want] of cases) {
+      const w = new Watch();
+      w.poll(latch(edits));
+      expect([edits, fired(w, 12).map((e) => e.class)]).toEqual([edits, want === undefined ? [] : [want]]);
+    }
+    const w = new Watch();
+    w.poll(latch({ appends_shed: 7 }));
+    w.poll(latch({ appends_shed: 9 }));
+    expect(fired(w, 12).map((e) => [e.class, e.values])).toEqual([
+      ["PAGE", { engaged: 0, appends_shed_growth: 2, absorb_lag_secs: 1, unabsorbed_bytes: 2075 }],
+    ]);
+    w.polls(3, latch({ engaged: true, appends_shed: 9 }));
+    w.polls(MIN_POLLS, latch({ appends_shed: 9 }));
+    expect(row(w, 12)).toEqual([["trigger", "PAGE"], ["resolve", "PAGE"]]);
+    // A counter that went down is no growth, never a negative one.
+    w.poll(latch({ engaged: true, appends_shed: 2 }));
+    expect(fired(w, 12)[1]?.values.appends_shed_growth).toBe(0);
+  });
+});
+
+describe("row 13: history flush wait", () => {
+  test("pages above 30 s with the L0 and sorted-run gauges", () => {
+    const w = new Watch();
+    w.poll(data({ "ops.gauges.history_flush_wait_ms_max": 30_000 }));
+    expect(row(w, 13)).toEqual([]);
+    w.poll(data({ "ops.gauges.history_flush_wait_ms_max": 30_001, "ops.gauges.history_l0_ssts_max": 64, "ops.gauges.history_compacted_runs_max": 9 }));
+    expect(fired(w, 13).map((e) => [e.class, e.values])).toEqual([
+      ["PAGE", { history_flush_wait_ms_max: 30_001, history_l0_ssts_max: 64, history_compacted_runs_max: 9 }],
+    ]);
+    w.polls(MIN_POLLS);
+    expect(row(w, 13)).toEqual([["trigger", "PAGE"], ["resolve", "PAGE"]]);
+  });
+});
+
+describe("row 14: read memory", () => {
+  test("pages after 5 min above 80 %", () => {
+    const w = new Watch();
+    const high = data({ "local.read_memory_bytes": 104_857_601 });
+    w.polls(20, high);
+    expect(row(w, 14)).toEqual([]);
+    w.poll(high);
+    expect(fired(w, 14).map((e) => [e.class, e.values])).toEqual([
+      ["PAGE", { read_memory_ratio: 0.8, read_memory_capacity_bytes: 131_072_000, held_secs: 300 }],
+    ]);
+    w.polls(MIN_POLLS, data({ "local.read_memory_bytes": 104_857_600 }));
+    expect(row(w, 14)).toEqual([["trigger", "PAGE"], ["resolve", "PAGE"]]);
+  });
+});
+
+describe("row 15: the live pool", () => {
+  test("notifies after 1 min at 90 %, pages after 1 min full, counting parked waits", () => {
+    const below = new Watch();
+    below.polls(20, data({ "local.sse_connections": 1000, "local.parked": 79 }));
+    expect(row(below, 15)).toEqual([]);
+    const w = new Watch();
+    w.polls(4, data({ "local.sse_connections": 1000, "local.parked": 80 }));
+    expect(row(w, 15)).toEqual([]);
+    w.poll(data({ "local.sse_connections": 1000, "local.parked": 80 }));
+    expect(row(w, 15)).toEqual([["trigger", "NOTIFY"]]);
+    w.polls(4, data({ "local.sse_connections": 1000, "local.parked": 200 }));
+    expect(row(w, 15)).toEqual([["trigger", "NOTIFY"]]);
+    w.poll(data({ "local.sse_connections": 1000, "local.parked": 200 }));
+    expect(fired(w, 15).map((e) => [e.class, e.values])).toEqual([
+      ["NOTIFY", { live_pool_ratio: 0.9, sse_connections: 1000, parked: 80, sse_max_connections: 1200 }],
+      ["PAGE", { live_pool_ratio: 1, sse_connections: 1000, parked: 200, sse_max_connections: 1200 }],
+    ]);
+    w.polls(MIN_POLLS);
+    expect(row(w, 15)).toEqual([["trigger", "NOTIFY"], ["trigger", "PAGE"], ["resolve", "PAGE"]]);
+  });
+});
+
+describe("row 16: the object store", () => {
+  const cell = (n: number, err: number, p99 = 5) => ({ n, err, p50_ms: 4, p90_ms: 4, p99_ms: p99, max_ms: p99 });
+
+  test("pages on put:wal or put:manifest errors at 5 % or more on two consecutive polls", () => {
+    const w = new Watch();
+    w.poll(data({ "local.store.ops.put:wal": cell(100, 5) }));
+    w.poll(data({ "local.store.ops.put:wal": cell(100, 4) }));
+    w.poll(data({ "local.store.ops.put:manifest": cell(20, 1) }));
+    expect(row(w, 16)).toEqual([]);
+    w.poll(data({ "local.store.ops.put:wal": cell(100, 9) }));
+    expect(fired(w, 16).map((e) => [e.class, e.values])).toEqual([
+      ["PAGE", { put_wal_n: 100, put_wal_err: 9, put_manifest_n: 10, put_manifest_err: 0, put_wal_p99_ms: 5 }],
+    ]);
+    w.polls(MIN_POLLS);
+    expect(row(w, 16)).toEqual([["trigger", "PAGE"], ["resolve", "PAGE"]]);
+  });
+
+  test("notifies after 5 min of put:wal p99 above 2 s; a window with no puts is clean", () => {
+    const w = new Watch();
+    w.polls(20, data({ "local.store.ops.put:wal": cell(50, 0, 2001) }));
+    expect(row(w, 16)).toEqual([]);
+    w.poll(data({ "local.store.ops.put:wal": cell(50, 0, 2001) }));
+    expect(row(w, 16)).toEqual([["trigger", "NOTIFY"]]);
+    w.polls(MIN_POLLS, data({ "local.store.ops": {} }));
+    expect(row(w, 16)).toEqual([["trigger", "NOTIFY"], ["resolve", "NOTIFY"]]);
+  });
+});
+
+describe("row 17: unowned usage", () => {
+  test("notifies on growth and holds 15 min after the last growth", () => {
+    const w = new Watch();
+    w.poll(data({ "ops.counters.unowned_meter_events_total": 2 }));
+    w.poll(data({ "ops.counters.unowned_meter_events_total": 3 }));
+    expect(fired(w, 17).map((e) => [e.class, e.values])).toEqual([
+      ["NOTIFY", { unowned_meter_events_total: 3, since_growth_secs: 0 }],
+    ]);
+    const flat = data({ "ops.counters.unowned_meter_events_total": 3 });
+    w.polls(60 + MIN_POLLS - 1, flat);
+    expect(row(w, 17)).toEqual([["trigger", "NOTIFY"]]);
+    w.poll(flat);
+    expect(row(w, 17)).toEqual([["trigger", "NOTIFY"], ["resolve", "NOTIFY"]]);
+  });
+});
+
+describe("row 20: the snapshot cache", () => {
+  test("notifies when ops is null more than 60 s after the boot id was first seen", () => {
+    const w = new Watch();
+    w.polls(5, data({ ops: null }));
+    expect(row(w, 20)).toEqual([]);
+    w.poll(data({ ops: null }));
+    expect(fired(w, 20).map((e) => [e.class, e.values])).toEqual([["NOTIFY", { ops_null_secs: 75 }]]);
+    w.polls(MIN_POLLS);
+    expect(row(w, 20)).toEqual([["trigger", "NOTIFY"], ["resolve", "NOTIFY"]]);
+    w.poll({ ...health({ bootId: "boot-2" }), ...data({ ops: null }) });
+    expect(row(w, 20)).toEqual([["trigger", "NOTIFY"], ["resolve", "NOTIFY"]]);
+  });
+
+  test("notifies when the snapshot is older than 60 s by the cell's clock", () => {
+    const w = new Watch();
+    const opsAt = (DATA as { ops: { ts_ms: number } }).ops.ts_ms;
+    w.poll(data({ ts_ms: opsAt + 60_000 }));
+    expect(row(w, 20)).toEqual([]);
+    w.poll(data({ ts_ms: opsAt + 61_000 }));
+    expect(fired(w, 20).map((e) => [e.class, e.values])).toEqual([["NOTIFY", { ops_age_secs: 61 }]]);
+  });
+});
+
+describe("row 20 across a restart", () => {
+  test("the restart's unready polls, before the new boot id is seen, are not judged against the old boot", () => {
+    const w = new Watch();
+    w.polls(20);
+    w.polls(3, { ...health({ status: 503, git: null, bootId: null, bodyPrefix: "auth feeds not yet published: jwks" }), ...data({ ops: null }) });
+    w.polls(2, { ...health({ bootId: "boot-2" }), ...data({ ops: null }) });
+    w.polls(4, health({ bootId: "boot-2" }));
+    expect(row(w, 20)).toEqual([]);
+  });
+});
+
+describe("row 20 before any boot id is seen", () => {
+  test("a null snapshot is not judged: it neither holds the rule nor cleans it", () => {
+    const w = new Watch();
+    const unready = health({ status: 503, git: null, bootId: null });
+    const opsAt = (DATA as { ops: { ts_ms: number } }).ops.ts_ms;
+    w.poll({ ...unready, ...data({ ts_ms: opsAt + 90_000 }) });
+    expect(row(w, 20)).toEqual([["trigger", "NOTIFY"]]);
+    w.polls(2, unready);
+    w.polls(6, { ...unready, ...data({ ops: null }) });
+    w.polls(1, unready);
+    expect(row(w, 20)).toEqual([["trigger", "NOTIFY"]]);
+    w.poll(unready);
+    expect(row(w, 20)).toEqual([["trigger", "NOTIFY"], ["resolve", "NOTIFY"]]);
+  });
+});
+
+describe("row 26: usage overflow", () => {
+  test("notifies on any overflow admit", () => {
+    const w = new Watch();
+    w.poll(data({ "local.usage_overflow_admits": 1 }));
+    expect(fired(w, 26).map((e) => [e.class, e.values])).toEqual([["NOTIFY", { usage_overflow_admits: 1 }]]);
+    // The counter is the process's: it stays open until a restart zeroes it.
+    w.polls(20, data({ "local.usage_overflow_admits": 1 }));
+    w.polls(MIN_POLLS, health({ bootId: "boot-2" }));
+    expect(row(w, 26)).toEqual([["trigger", "NOTIFY"], ["resolve", "NOTIFY"]]);
+  });
+});

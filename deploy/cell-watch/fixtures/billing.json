@@ -1,0 +1,27 @@
+{
+  "artifactContentMismatches": 0,
+  "drain": {
+    "lastOkAgeSecs": 2,
+    "lastOkMs": 1791830620679
+  },
+  "mode": "required",
+  "openAlerts": [],
+  "ready": true,
+  "rollup": {
+    "lastApplyAgeSecs": -1,
+    "lastApplyMs": 0,
+    "oldestUnclosedMonth": "2026-10",
+    "pendingArtifacts": 0,
+    "pendingArtifactsBlockedCorrupt": 0,
+    "pendingArtifactsTotal": 0,
+    "pendingCorrectionArtifacts": 0,
+    "running": true
+  },
+  "spool": {
+    "depth": 0,
+    "open": true,
+    "quarantined": 0
+  },
+  "tombstoneWalkCloseSubmits": 0,
+  "usageLedgerConfigured": true
+}

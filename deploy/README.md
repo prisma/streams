@@ -12,7 +12,7 @@ only in scratch directories, and one was deleted by a cleanup mid-campaign
 | `app-lb/` | `pilot` (`LB_BINARY_S3_KEY`), `MODE=lb` | rendezvous-hash router; the only client entry point |
 | `app-gen/` | `awsbench` (`AWSBENCH_S3_KEY`) | in-region load generator for soaks and benchmarks |
 
-Five more directories:
+Six more directories:
 - `profiles/` holds the environment files deploy scripts pass as `--env`
   lines: `compute-1g.env` for every server on the 1 GiB class, and
   `shared-cell.env` on top of it for a single-server shared cell.
@@ -74,6 +74,14 @@ Five more directories:
   --frozen-lockfile` in `deploy/composer`, then
   `CELL_ADMIN_E2E_BIN_DIR=target/release bun test ./deploy/composer`
   (its good boot runs on an x86_64 Linux host only).
+- `cell-watch/` is the shared cell's alerting watch (the public-beta
+  alerting design). So far it holds `rules.ts`, a pure step from the
+  previous state and one poll of the cell's `/health`, `/operator/data.json`
+  and `/operator/billing.json` and the issuer's `/healthz` and metrics to
+  the next state and the trigger and resolve events, one rule per row of
+  the design's table, and its tests against answers captured from a local
+  cell (`fixtures/`). Payloads carry named numbers and fixed enums only.
+  Tests: `bun test ./deploy/cell-watch`.
 
 All verify the download is an **x86_64 ELF** before exec. That check is
 not politeness: an aarch64 binary deploys "successfully" and crash-loops

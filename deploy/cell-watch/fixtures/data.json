@@ -1,0 +1,317 @@
+{
+  "feeds": {
+    "grants": {
+      "ageSecs": 0,
+      "credentials": 2,
+      "feedVersion": 2,
+      "stale": false
+    },
+    "jwks": {
+      "ageSecs": 0,
+      "keys": 1
+    },
+    "policies": {
+      "ageSecs": 0,
+      "feedVersion": 2,
+      "projects": 2,
+      "reservedDropped": 0,
+      "stale": false
+    },
+    "stalenessMaxSecs": 300
+  },
+  "fleet": {
+    "desired": null,
+    "heartbeats": null
+  },
+  "local": {
+    "absorb_reserved_bytes_now": 0,
+    "admit_max_inflight": 512,
+    "admit_max_inflight_per_stream": 256,
+    "admit_shed": 0,
+    "admit_shed_inflight": 0,
+    "admit_shed_rss": 0,
+    "admit_shed_survival": 0,
+    "inflight": 1,
+    "inflight_peak": 1,
+    "instance": "streams",
+    "maintenance_backpressure": {
+      "absorb_lag_secs": 1,
+      "appends_shed": 0,
+      "cause": null,
+      "engage_count": 0,
+      "engaged": false,
+      "instance_cause": null,
+      "instance_engaged": false,
+      "unabsorbed_bytes": 2075
+    },
+    "open_shards": 1,
+    "parked": 0,
+    "read_memory_bytes": 0,
+    "read_memory_capacity_bytes": 131072000,
+    "ring_active": [],
+    "rss_mb": 18.8763427734375,
+    "rss_shed_mb": 500,
+    "sse_connections": 0,
+    "sse_max_connections": 1200,
+    "store": {
+      "bulk_gate": {
+        "cap_bytes": 33554432,
+        "classes": "sst",
+        "inflight_bytes": 0,
+        "inflight_peak_bytes": 1311,
+        "oversized_total": 0,
+        "wait_ms_total": 0,
+        "waits_total": 0
+      },
+      "ops": {
+        "delete:other": {
+          "err": 0,
+          "max_ms": 4,
+          "n": 3,
+          "p50_ms": 4,
+          "p90_ms": 4,
+          "p99_ms": 4
+        },
+        "get:manifest": {
+          "err": 96,
+          "max_ms": 5,
+          "n": 99,
+          "p50_ms": 4,
+          "p90_ms": 4,
+          "p99_ms": 5
+        },
+        "get:other": {
+          "err": 39,
+          "max_ms": 5,
+          "n": 43,
+          "p50_ms": 3,
+          "p90_ms": 4,
+          "p99_ms": 5
+        },
+        "head:wal": {
+          "err": 24,
+          "max_ms": 5,
+          "n": 27,
+          "p50_ms": 4,
+          "p90_ms": 5,
+          "p99_ms": 5
+        },
+        "list:manifest": {
+          "err": 0,
+          "max_ms": 4,
+          "n": 6,
+          "p50_ms": 4,
+          "p90_ms": 4,
+          "p99_ms": 4
+        },
+        "list:other": {
+          "err": 0,
+          "max_ms": 4,
+          "n": 21,
+          "p50_ms": 4,
+          "p90_ms": 4,
+          "p99_ms": 4
+        },
+        "put:manifest": {
+          "err": 0,
+          "max_ms": 4,
+          "n": 10,
+          "p50_ms": 4,
+          "p90_ms": 4,
+          "p99_ms": 4
+        },
+        "put:other": {
+          "err": 0,
+          "max_ms": 7,
+          "n": 16,
+          "p50_ms": 4,
+          "p90_ms": 4,
+          "p99_ms": 7
+        },
+        "put:sst": {
+          "err": 0,
+          "max_ms": 3,
+          "n": 1,
+          "p50_ms": 3,
+          "p90_ms": 3,
+          "p99_ms": 3
+        },
+        "put:wal": {
+          "err": 0,
+          "max_ms": 8,
+          "n": 24,
+          "p50_ms": 4,
+          "p90_ms": 7,
+          "p99_ms": 8
+        }
+      },
+      "out_inflight_now": 0,
+      "out_inflight_peak": 11,
+      "served_from": {},
+      "served_from_by_class": {},
+      "shard_opens": {
+        "coalesced": 1,
+        "completed": 1,
+        "deadlined": 0,
+        "failed": 0,
+        "in_flight": 0,
+        "reaped": 0,
+        "started": 1
+      },
+      "slow": [],
+      "steal_pct": -1,
+      "timer_thread": {
+        "max_us": 5979,
+        "n": 169,
+        "over_50ms": 0,
+        "p50_us": 2851,
+        "p99_us": 5098
+      },
+      "timer_tokio": {
+        "max_us": 5074,
+        "n": 179,
+        "over_50ms": 0,
+        "p50_us": 2235,
+        "p99_us": 3859
+      },
+      "totals": {
+        "bytes_got": 462,
+        "bytes_put": 25968,
+        "ops": {
+          "delete:other": {
+            "err": 0,
+            "not_found": 0,
+            "ok": 3,
+            "unbilled": 0
+          },
+          "get:manifest": {
+            "err": 0,
+            "not_found": 96,
+            "ok": 3,
+            "unbilled": 0
+          },
+          "get:other": {
+            "err": 0,
+            "not_found": 39,
+            "ok": 4,
+            "unbilled": 0
+          },
+          "head:wal": {
+            "err": 0,
+            "not_found": 24,
+            "ok": 3,
+            "unbilled": 0
+          },
+          "list:manifest": {
+            "err": 0,
+            "not_found": 0,
+            "ok": 6,
+            "unbilled": 0
+          },
+          "list:other": {
+            "err": 0,
+            "not_found": 0,
+            "ok": 21,
+            "unbilled": 0
+          },
+          "put:manifest": {
+            "err": 0,
+            "not_found": 0,
+            "ok": 10,
+            "unbilled": 0
+          },
+          "put:other": {
+            "err": 0,
+            "not_found": 0,
+            "ok": 16,
+            "unbilled": 0
+          },
+          "put:sst": {
+            "err": 0,
+            "not_found": 0,
+            "ok": 1,
+            "unbilled": 0
+          },
+          "put:wal": {
+            "err": 0,
+            "not_found": 0,
+            "ok": 24,
+            "unbilled": 0
+          }
+        },
+        "since_ms": 1791830620434
+      },
+      "ts_ms": 1791830622871,
+      "wal_read_storm": {
+        "sst_puts": 1,
+        "stalled": false,
+        "wal_deletes": 0,
+        "wal_gets": 0
+      },
+      "window_secs": 60
+    },
+    "stream_shed": 0,
+    "usage_overflow_admits": 0,
+    "wedge_shed": 0
+  },
+  "ops": {
+    "cell": "cell_sc1",
+    "counters": {
+      "absorb_bytes_total": 0,
+      "audit_events_dropped_total": 0,
+      "fleet_ops_total": 0,
+      "ingest_bytes_total": 0,
+      "ops_events_dropped_total": 0,
+      "read_meter_seal_deferrals_total": 0,
+      "segment_identity_drift_total": 0,
+      "unowned_meter_events_total": 0
+    },
+    "gauges": {
+      "absorb_gathers_inflight": 0,
+      "absorb_reserved_bytes": 0,
+      "fork_debt_backfill_complete": 0,
+      "fork_debt_circle_age_ms": 2,
+      "fork_debt_deferred": 0,
+      "fork_debt_oldest_pending_age_ms": 0,
+      "fork_debt_pending": 0,
+      "fork_debt_stale_after_ms": 900000,
+      "gather_last_actual_bytes": 0,
+      "gather_last_flush_ms": 0,
+      "gather_last_read_ms": 0,
+      "gather_last_reserved_bytes": 0,
+      "gather_last_write_ms": 0,
+      "history_compacted_runs_max": 0,
+      "history_flush_injected_stall_ms": 0,
+      "history_flush_wait_ms_max": 0,
+      "history_l0_bytes_total": 0,
+      "history_l0_ssts_max": 0,
+      "history_partitions_open": 0,
+      "mi_current_commit_mb": 32,
+      "mi_peak_commit_mb": 32,
+      "open_engines": 0,
+      "read_meter_sealed_batches": 0,
+      "read_meter_unflushed_bytes_est": 0,
+      "read_meter_unflushed_rows": 0,
+      "read_spool_pending_bytes": 0,
+      "read_spool_pending_rows": 0,
+      "read_spool_quarantined": 0,
+      "rollup_apply_duration_ms": 0,
+      "rollup_l0_bytes": 0,
+      "rollup_l0_ssts": 0,
+      "rss_mb": 11,
+      "rss_peak_since_scrape_mb": 11,
+      "spool_l0_bytes": 0,
+      "spool_l0_ssts": 0,
+      "sweep_open_peak": 0,
+      "sweep_resident_engines": 0,
+      "telemetry_cache_capacity_bytes": 16777216,
+      "walk_deferred_total": 0
+    },
+    "instance": "streams",
+    "region": "",
+    "role": "rollup",
+    "ts_ms": 1791830620680,
+    "v": 1
+  },
+  "ts_ms": 1791830622870
+}
