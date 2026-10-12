@@ -192,3 +192,26 @@ test("a run writes exact per-project ledgers, per-class windows and typed refusa
     .toEqual([false, 1, 1]);
   expect(json(join(out, "audit.json")).projects[app1!.id].prefixes["t/"].ok).toBe(true);
 }, 30_000);
+
+test("a subscription refused at connect counts its status and code among the project's typed refusals", async () => {
+  const m: Manifest = {
+    name: "sse", seed: 9, duration: 2.5, classes: [
+      { class: "storm", count: 1, role: "hostile", streams: 2, phases: [
+        { mode: "setup", at: 0 },
+        { mode: "subs", at: 0.5, secs: 1.8, args: { count: 3, via: "sse", "connect-rate": 100 } },
+      ] },
+    ],
+  };
+  const plan = expand(m, "sha");
+  const p = plan.projects[0]!;
+  const mapFile = join(dir, "tokens-sse.json");
+  writeFileSync(mapFile, JSON.stringify([{ project: p.id, token: `tok-${p.id}` }]));
+  cell.tokens.set(`tok-${p.id}`, p.id);
+  setTimeout(() => cell.refuse(p.id, 3, 429, "live_subscription_limit"), 300);
+  const out = join(dir, "run-sse");
+  expect((await run(plan, cell.base, mapFile, out, 1)).phases_failed).toEqual([]);
+  const ledger = json(join(out, "projects", p.id, "ledger.json"));
+  expect(ledger.refusals).toEqual({ typed: { "429:live_subscription_limit": 3 }, untyped: {}, transport: 0 });
+  expect(ledger.totals.status_counts["429"]).toBe(3);
+}, 20_000);
+

@@ -120,6 +120,8 @@ class Reader {
       if (res.status !== 200) {
         const body = new Uint8Array(await res.arrayBuffer().catch(() => new ArrayBuffer(0)));
         this.meter.add("wire_bytes_down", body.byteLength);
+        // A refused subscription counts like any refused request (Http.call).
+        if (res.status >= 400) this.meter.errorCode(`${res.status}:${errCode({ status: res.status, headers: res.headers, body, ms: 0 }) || "-"}`);
         await sleep(res.status === 429 || res.status === 503 ? 2000 : 1000, signal);
         continue;
       }
