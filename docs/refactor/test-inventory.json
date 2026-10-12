@@ -2548,14 +2548,36 @@
     "scenarios": []
   },
   {
+    "name": "a_woken_long_poll_held_out_of_room_never_takes_the_read_memory_past_its_capacity",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "aada164c5da4ddc7c70a68c074af6a95da1631f179659136821edde837533f06",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_memory_wakes.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_woken_long_poll_on_applied_records_without_room_keeps_its_durable_cursor_at_the_frontier",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "37f08e8ab86e8e1241e9f1cb430ebe1c33338b69b90e66d5145217a008cb4784",
+    "function_sha256": "6a0bdf6ee129bbb5ed541d5c13497af1d41ca4877dcd5781f3d6dfc663049a37",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_memory.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_woken_long_poll_reserves_what_was_appended_while_it_waited",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "71d5fbadff25ab28b34fde23eb1c6ad2081417baf235673b72919a42861df61b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_memory_wakes.rs",
     "scenarios": []
   },
   {
@@ -2570,11 +2592,22 @@
     "scenarios": []
   },
   {
+    "name": "a_woken_long_poll_takes_what_was_appended_with_its_framing_and_no_more",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0c290f1e1a9d62ebe7d8ac1f61a8afbd3a481138b7c3d2e869af55009742fad1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_memory_wakes.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_woken_long_poll_without_room_ends_its_wait_as_a_timeout_holding_its_cursor",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "c9cdfe957a607dc2a58dd25d44fe74c43512ef4aa30b8a68a83351a27207dbcc",
+    "function_sha256": "a77681d062a31ea75b5c13d30fd3a5d40acdcb51a4eb30b2c447949fc1f46c04",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_memory.rs",

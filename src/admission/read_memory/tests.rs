@@ -1,5 +1,6 @@
 #![cfg(test)]
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use axum::body::Body;
@@ -200,7 +201,12 @@ async fn a_woken_wait_takes_its_reservation_again_or_ends_at_its_deadline() {
         .await
         .unwrap();
     woken.unreserve();
-    assert!(woken.resume(tokio::time::Instant::now()).await, "room");
+    assert!(
+        woken
+            .resume_with(tokio::time::Instant::now(), || None)
+            .await,
+        "room"
+    );
     assert_eq!(ledgers(), (8 * MIB, 8 * MIB), "taken again");
 
     woken.unreserve();
@@ -213,7 +219,8 @@ async fn a_woken_wait_takes_its_reservation_again_or_ends_at_its_deadline() {
     };
     let started = tokio::time::Instant::now();
     let deadline = started + READ_MEMORY_WAIT;
-    let (resumed, ()) = futures_util::future::join(woken.resume(deadline), release).await;
+    let (resumed, ()) =
+        futures_util::future::join(woken.resume_with(deadline, || None), release).await;
     assert_eq!(
         (resumed, started.elapsed()),
         (true, Duration::from_millis(400))
@@ -226,7 +233,10 @@ async fn a_woken_wait_takes_its_reservation_again_or_ends_at_its_deadline() {
         .unwrap();
     let started = tokio::time::Instant::now();
     let deadline = started + Duration::from_millis(1_500);
-    assert!(!woken.resume(deadline).await, "no room by the deadline");
+    assert!(
+        !woken.resume_with(deadline, || None).await,
+        "no room by the deadline"
+    );
     assert_eq!(started.elapsed(), Duration::from_millis(1_500));
     assert_eq!(ledgers(), (8 * MIB, 8 * MIB), "nothing taken");
     let shed = &registry.memory_pressure_json(1, 8)["project_memory_shed_total"];
@@ -234,11 +244,90 @@ async fn a_woken_wait_takes_its_reservation_again_or_ends_at_its_deadline() {
     drop(other);
 
     woken.settle(1_000);
-    assert!(woken.resume(tokio::time::Instant::now()).await);
+    assert!(
+        woken
+            .resume_with(tokio::time::Instant::now(), || None)
+            .await
+    );
     assert_eq!(ledgers(), (1_000, 1_000), "a rendered hold takes nothing");
     let unreserved = ReadHold::unreserved(&ctl, registry.read_bytes(&id));
-    assert!(unreserved.resume(tokio::time::Instant::now()).await);
+    assert!(
+        unreserved
+            .resume_with(tokio::time::Instant::now(), || None)
+            .await
+    );
     assert_eq!(ledgers(), (1_000, 1_000), "nor one no admission reserved");
+}
+
+/// A woken wait that measures its page (a long-poll, public-beta phase B
+/// item B8) takes what its measure asks, at most its budget, and measures
+/// again on every attempt: a release with room for what it asked when it
+/// woke but not for what arrived since leaves it waiting, so its project
+/// never passes its line, and a release with room for all of it lets it
+/// take all of it.
+#[tokio::test(start_paused = true)]
+async fn a_woken_wait_takes_what_its_measure_asks_when_room_comes() {
+    let ctl = ctl(500);
+    let line = 12 * MIB;
+    ctl.set_project_memory_pressure_bytes(line);
+    let registry = QuotaRegistry::default();
+    let id = project(&registry);
+    let entry = registry.pressure_handle(&id).unwrap();
+    let ledgers = || (ctl.read_memory().0, entry.estimated_pressure_bytes());
+    let woken = ReadHold::reserve(&ctl, registry.read_bytes(&id), line, 8 * MIB)
+        .await
+        .unwrap();
+    woken.unreserve();
+    let measure = AtomicU64::new(2 * MIB);
+    let measured = || Some(measure.load(Ordering::Relaxed));
+    assert!(
+        woken
+            .resume_with(tokio::time::Instant::now(), measured)
+            .await
+    );
+    assert_eq!(ledgers(), (2 * MIB, 2 * MIB), "what it measured");
+    woken.unreserve();
+    measure.store(20 * MIB, Ordering::Relaxed);
+    assert!(
+        woken
+            .resume_with(tokio::time::Instant::now(), measured)
+            .await
+    );
+    assert_eq!(ledgers(), (8 * MIB, 8 * MIB), "at most its budget");
+
+    woken.unreserve();
+    measure.store(5 * MIB, Ordering::Relaxed);
+    let other = ReadHold::reserve(&ctl, registry.read_bytes(&id), line, 8 * MIB)
+        .await
+        .unwrap();
+    let grows = async {
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        measure.store(7 * MIB, Ordering::Relaxed);
+        other.settle(6 * MIB);
+    };
+    let started = tokio::time::Instant::now();
+    let deadline = started + Duration::from_millis(1_500);
+    let (resumed, ()) =
+        futures_util::future::join(woken.resume_with(deadline, measured), grows).await;
+    assert_eq!(
+        (resumed, started.elapsed(), ledgers()),
+        (false, Duration::from_millis(1_500), (6 * MIB, 6 * MIB)),
+        "room for the 5 MiB it asked when it woke, not for the 7 MiB it asks since"
+    );
+
+    let release = async {
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        drop(other);
+    };
+    let started = tokio::time::Instant::now();
+    let deadline = started + Duration::from_millis(1_500);
+    let (resumed, ()) =
+        futures_util::future::join(woken.resume_with(deadline, measured), release).await;
+    assert_eq!(
+        (resumed, started.elapsed(), ledgers()),
+        (true, Duration::from_millis(400), (7 * MIB, 7 * MIB)),
+        "what it asks when room came"
+    );
 }
 
 /// A rendered page's hold rides its body: the body keeps its exact length,

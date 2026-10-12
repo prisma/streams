@@ -554,9 +554,17 @@ fn tail_state(handle: &StreamHandle, visibility: Deliver) -> (u64, bool, u64) {
         durable,
     )
 }
+/// What a woken long-poll's page may render beside the payload appended
+/// while it waited (public-beta phase B item B8): a JSON page frames each
+/// record with one delimiter and itself with two, so 64 B a record and
+/// 4 KiB a page are slack.
+const WOKEN_RECORD_FRAMING: u64 = 64;
+const WOKEN_PAGE_FRAMING: u64 = 4096;
+
 /// A long-poll's wait for the tail to pass `start`, parked (M1). A wait
 /// that ends with records to read takes its page's read reservation again
-/// first (`resumed`).
+/// first (`resumed`), at most what was appended since it saw the tail at
+/// most `start` (`parked_at`, the payload bytes before the tail then).
 async fn wait_tail(
     handle: &StreamHandle,
     visibility: Deliver,
@@ -565,33 +573,73 @@ async fn wait_tail(
 ) -> (u64, bool, u64) {
     let deadline = tokio::time::Instant::now() + wait.min(Duration::from_secs(25));
     let _parked = crate::admission::park::park();
+    let mut parked_at = None;
+    let appended = |parked_at| move || appended_since(handle, visibility, start, parked_at);
     loop {
         let durable = handle.notify.notified();
         let applied = handle.applied_notify.notified();
+        // Read before the tail is checked, so a tail found at most `start`
+        // proves nothing past `start` is counted in it.
+        let before = tail_payload(handle, visibility);
         let state = tail_state(handle, visibility);
         if state.0 > start || state.1 {
-            return resumed(state, start, deadline).await;
+            return resumed(state, start, deadline, appended(parked_at)).await;
         }
+        parked_at = parked_at.or(before.map(|(_, payload)| payload));
         if visibility == Deliver::Applied {
-            tokio::select! {_=durable=>{},_=applied=>{},_=tokio::time::sleep_until(deadline)=>return resumed(tail_state(handle,visibility),start,deadline).await}
+            tokio::select! {_=durable=>{},_=applied=>{},_=tokio::time::sleep_until(deadline)=>return resumed(tail_state(handle,visibility),start,deadline,appended(parked_at)).await}
         } else {
-            tokio::select! {_=durable=>{},_=tokio::time::sleep_until(deadline)=>return resumed(tail_state(handle,visibility),start,deadline).await}
+            tokio::select! {_=durable=>{},_=tokio::time::sleep_until(deadline)=>return resumed(tail_state(handle,visibility),start,deadline,appended(parked_at)).await}
         }
     }
 }
 
+/// The tail a wait at `visibility` sees and the payload bytes before it
+/// (`TailFields.logical`); `None` from a poisoned handle.
+fn tail_payload(handle: &StreamHandle, visibility: Deliver) -> Option<(u64, u64)> {
+    let state = handle.state.lock().ok()?;
+    let durable = (state.durable.next, state.durable.logical);
+    Some(match visibility {
+        Deliver::Durable => durable,
+        Deliver::Applied => (
+            state.applied.next.max(durable.0),
+            state.applied.logical.max(durable.1),
+        ),
+    })
+}
+
+/// What a woken long-poll's page may render: the payload appended since
+/// its wait saw the tail at most `start` (`parked_at`, the payload bytes
+/// before that tail) and its framing. `None`, its whole reservation, when
+/// its wait never saw the tail there or the handle is poisoned.
+fn appended_since(
+    handle: &StreamHandle,
+    visibility: Deliver,
+    start: u64,
+    parked_at: Option<u64>,
+) -> Option<u64> {
+    let parked_at = parked_at?;
+    let (next, payload) = tail_payload(handle, visibility)?;
+    Some(
+        payload.saturating_sub(parked_at)
+            + WOKEN_RECORD_FRAMING * next.saturating_sub(start)
+            + WOKEN_PAGE_FRAMING,
+    )
+}
+
 /// The tail `state` a long-poll's wait ended with. With records past
 /// `start` to read, the request's read reservation (H3: released while it
-/// waited) is taken again first, waiting, still parked, until `deadline`;
-/// when no room comes the wait ends as if nothing had arrived, holding the
-/// cursor, and the client's next read is admitted under its own
-/// reservation.
+/// waited) is taken again first, at most what `appended` measures when
+/// room comes, waiting, still parked, until `deadline`; when no room comes
+/// the wait ends as if nothing had arrived, holding the cursor, and the
+/// client's next read is admitted under its own reservation.
 async fn resumed(
     state: (u64, bool, u64),
     start: u64,
     deadline: tokio::time::Instant,
+    appended: impl Fn() -> Option<u64>,
 ) -> (u64, bool, u64) {
-    if state.0 > start && !crate::admission::park::resume(deadline).await {
+    if state.0 > start && !crate::admission::park::resume_at_most(deadline, appended).await {
         return (start, false, state.2.min(start));
     }
     state

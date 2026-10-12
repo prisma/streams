@@ -19,23 +19,23 @@ use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
-const MIB: u64 = 1 << 20;
+pub(super) const MIB: u64 = 1 << 20;
 /// The default page budget a read without `maxBytes` reserves.
-const PAGE_BUDGET: u64 = 8 * MIB;
-const RECORDS: &str = "/v1/streams/big/records";
+pub(super) const PAGE_BUDGET: u64 = 8 * MIB;
+pub(super) const RECORDS: &str = "/v1/streams/big/records";
 /// Room under a line for the small body of a pull beside other pulls'
 /// coverage, which it is buffered under as a write's is (`admission::body`);
 /// its own coverage is reserved after it.
 const BODY_ROOM: u64 = 64 << 10;
 
 /// Record `n`: a JSON object of 64 KiB and a few bytes.
-fn padded(n: usize) -> String {
+pub(super) fn padded(n: usize) -> String {
     format!(r#"{{"n":{n},"pad":"{}"}}"#, "x".repeat(64 * 1024))
 }
 
 /// Project `i`'s JSON stream `big`: 48 records of 64 KiB appended in one
 /// batch. Returns the length of the page a whole read of it renders.
-async fn big_stream(cell: &Cell, i: usize) -> u64 {
+pub(super) async fn big_stream(cell: &Cell, i: usize) -> u64 {
     let created = cell
         .call(
             i,
@@ -142,7 +142,13 @@ async fn keyed_queue(cell: &Cell, i: usize, name: &str, consumers: usize) {
 }
 
 /// Send `method path body` as project `i` and never read the response.
-async fn never_read(cell: &Cell, i: usize, method: &str, path: &str, body: &[u8]) -> TcpStream {
+pub(super) async fn never_read(
+    cell: &Cell,
+    i: usize,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> TcpStream {
     let socket = tokio::net::TcpSocket::new_v4().unwrap();
     socket.set_recv_buffer_size(4096).unwrap();
     let mut stream = socket.connect(cell.addr).await.unwrap();
@@ -157,14 +163,14 @@ async fn never_read(cell: &Cell, i: usize, method: &str, path: &str, body: &[u8]
 }
 
 /// (project `i`'s read bytes, the instance's read memory).
-fn ledgers(cell: &Cell, i: usize) -> (u64, u64) {
+pub(super) fn ledgers(cell: &Cell, i: usize) -> (u64, u64) {
     let id = ProjectId::new(&project(i)).unwrap();
     let held = cell.state.quotas.read_bytes(&id).map_or(0, |b| b.held());
     (held, cell.state.admission.read_memory().0)
 }
 
 /// The ledgers once they read `want`, or after 10 s.
-async fn settle_at(cell: &Cell, i: usize, want: (u64, u64)) -> (u64, u64) {
+pub(super) async fn settle_at(cell: &Cell, i: usize, want: (u64, u64)) -> (u64, u64) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while ledgers(cell, i) != want && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -485,7 +491,7 @@ async fn prompt_read(cell: &Cell, i: usize) -> (u16, Option<String>, bool) {
 }
 
 /// The ledgers once they have not moved for 300 ms, or after 10 s.
-async fn at_rest(cell: &Cell, i: usize) -> (u64, u64) {
+pub(super) async fn at_rest(cell: &Cell, i: usize) -> (u64, u64) {
     let deadline = Instant::now() + Duration::from_secs(10);
     let (mut last, mut since) = (ledgers(cell, i), Instant::now());
     while Instant::now() < deadline && since.elapsed() < Duration::from_millis(300) {
@@ -524,7 +530,7 @@ async fn parked_polls(cell: &Cell, polls: usize, query: &str) -> Vec<TcpStream> 
 }
 
 /// `n` records of 64 KiB appended to project 0's stream `lp` in one batch.
-async fn append_to_lp(cell: &Cell, n: usize) {
+pub(super) async fn append_to_lp(cell: &Cell, n: usize) {
     let records: Vec<String> = (0..n).map(padded).collect();
     let batch = format!("[{}]", records.join(","));
     let path = "/v1/streams/lp/records:batch";
@@ -595,13 +601,13 @@ async fn woken_default_long_polls_stay_inside_their_projects_line_and_its_neighb
     engine_shutdown(&cell.state).await;
 }
 
-/// A woken long-poll whose page finds no room under its project's line
-/// before its wait ends answers as a timeout (204) holding its cursor and
-/// charges nothing; a read from that cursor serves the record once the
-/// line has room. Project 0's line is one page budget and an unread page
-/// of `big` holds part of it, so the long-poll's default budget cannot be
-/// taken again. Before: the woken page was rendered and served (200) past
-/// the line.
+/// A woken long-poll whose page finds no room in the read memory before
+/// its wait ends answers as a timeout (204) holding its cursor and charges
+/// nothing; a read from that cursor serves the record once there is room.
+/// The instance's read memory is one page of `big`, which an unread page
+/// holds (its project's line could not be: the append that wakes the
+/// poll would latch, phase B item B8). Before: the woken page was rendered
+/// and served (200) past the line.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_woken_long_poll_without_room_ends_its_wait_as_a_timeout_holding_its_cursor() {
     let cell = open_cell(CellSpec::open(1)).await;
@@ -610,9 +616,7 @@ async fn a_woken_long_poll_without_room_ends_its_wait_as_a_timeout_holding_its_c
         .call(0, "PUT", "/v1/streams/lp", br#"{"format":{"kind":"json"}}"#)
         .await;
     assert_eq!(created.0, 201);
-    cell.state
-        .admission
-        .set_project_memory_pressure_bytes(PAGE_BUDGET);
+    cell.state.admission.set_read_memory_capacity(page);
     let started = Instant::now();
     let poll = "/v1/streams/lp/records:long-poll?cursor=now&waitMs=1500";
     let waiting = cell.call(0, "GET", poll, b"");
@@ -863,8 +867,8 @@ async fn a_pulls_own_coverage_reservation_never_refuses_its_body() {
 }
 
 /// The answer to a long-poll on project 0's `lp` (created here) that
-/// parks, finds an unread page of `big` holding its project's line of one
-/// page budget when it wakes, and is woken by `then` (a request on `lp`):
+/// parks, finds an unread page of `big` holding all the instance's read
+/// memory when it wakes, and is woken by `then` (a request on `lp`):
 /// (its status, headers, body, the wait in ms, `then`'s status). The
 /// unread page is released before it returns.
 async fn woken_at_the_line(cell: &Cell, poll: &str, then: (&str, &str, &[u8])) -> WokenAnswer {
@@ -874,9 +878,7 @@ async fn woken_at_the_line(cell: &Cell, poll: &str, then: (&str, &str, &[u8])) -
         .call(0, "PUT", "/v1/streams/lp", br#"{"format":{"kind":"json"}}"#)
         .await;
     assert_eq!(created.0, 201);
-    cell.state
-        .admission
-        .set_project_memory_pressure_bytes(PAGE_BUDGET);
+    cell.state.admission.set_read_memory_capacity(page);
     let started = Instant::now();
     let wake = async {
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -905,7 +907,7 @@ type WokenAnswer = (
 );
 
 /// Waits, up to 10 s, until `ready` holds.
-async fn until(ready: impl Fn() -> bool) {
+pub(super) async fn until(ready: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !ready() && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -913,7 +915,7 @@ async fn until(ready: impl Fn() -> bool) {
     assert!(ready(), "never ready");
 }
 
-/// An applied long-poll woken by records its project's line has no room
+/// An applied long-poll woken by records the read memory has no room
 /// for answers its timeout with its durable cursor at the durable frontier
 /// it waited with, never past it (`resumed` caps the durable position at
 /// the start). With the shard's dispatch held, r1 is applied but not
@@ -928,9 +930,7 @@ async fn a_woken_long_poll_on_applied_records_without_room_keeps_its_durable_cur
     let json = br#"{"format":{"kind":"json"}}"#;
     assert_eq!(cell.call(0, "PUT", "/v1/streams/lp", json).await.0, 201);
     assert_eq!(cell.call(0, "POST", LP, br#"{"n":0}"#).await.0, 200);
-    cell.state
-        .admission
-        .set_project_memory_pressure_bytes(PAGE_BUDGET);
+    cell.state.admission.set_read_memory_capacity(page);
     let sref = ProjectId::new(&project(0)).unwrap().stream_ref("lp");
     let desc = cell.state.registry.get(&sref).await.unwrap().unwrap();
     let seg = desc.resolve_segment("");
@@ -975,8 +975,8 @@ async fn a_woken_long_poll_on_applied_records_without_room_keeps_its_durable_cur
     engine_shutdown(&cell.state).await;
 }
 
-/// A long-poll whose stream is sealed while it waits at its project's line
-/// answers the seal at once: a seal brings no records past its cursor, so
+/// A long-poll whose stream is sealed while it waits with no read memory
+/// left answers the seal at once: a seal brings no records past its cursor, so
 /// it takes no reservation again and never waits for room.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_woken_long_poll_sealed_while_it_waits_at_the_line_answers_the_seal_at_once() {

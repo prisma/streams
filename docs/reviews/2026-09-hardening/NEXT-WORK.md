@@ -2175,6 +2175,23 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
   owners Q3(d) defers, and phase B. The public beta is self-serve (the
   owner's answers of 2026-10-11), so these come before it, phase B narrowed
   to one shard (section "Public beta", item 6).
+- **Phase B lane, owner questions its review of 2026-10-12 opened** (none is
+  covered by the decisions of 2026-10-12; the lane's records state each):
+  (1) Q1(D) is not closed: the lane builds D′ in its place for woken tail
+  long-polls only (fresh reads keep Q1(A)'s whole budget; Q1(B) stays the
+  fallback), which awaits the owner's ratification; (2) a fork's woken
+  long-poll can still render a page larger than it took (the fork read
+  measures its end after awaits on the ancestors' descriptors), and closing
+  it touches the frozen `execute_fork_read` or `read_stitched`: a growth row
+  for a whole-budget re-take, a growth row bounding the page at the waited
+  tail, or a recorded residual, each with a red leg; (3) the scaler's
+  segment map can take a customer's descriptor past the catalog's 128 KiB
+  guard and fail the cell-wide reconciliation page (#NEW-phase-b-5): a split
+  decline past about 192 segments, or a reconciliation guard of its own;
+  (4) the denial journal's allowance of 64 single events (#NEW-phase-b-2)
+  or the triage's literal with R10 re-pinned; (5) at ratification of
+  #NEW-phase-b-1, the off-and-shadow refusal of a key beside a capability
+  that does not verify, and the served-project signal.
 
 ### 14.5 Multi-server cells and routing (later, on the new Compute generation)
 

@@ -14,8 +14,9 @@
 //!
 //! The scope also carries the request's read memory (shared cells H3,
 //! `read_memory::ReadHold`): bound at admission, released while the request
-//! waits, taken again before a woken wait renders (`resume`), settled when
-//! its page renders, and attached to the response body when the handler
+//! waits, taken again before a woken wait renders (`resume`, or at most
+//! what a woken long-poll measures, `resume_at_most`), settled when its
+//! page renders, and attached to the response body when the handler
 //! returns, so the page's bytes stay counted until the body ends. A read
 //! beside that page (a settle's dead-letter handoff) reserves its own bytes
 //! without waiting (`try_reserve_read`) and holds them itself.
@@ -188,18 +189,30 @@ pub(crate) fn park() -> Option<Parked> {
         .flatten()
 }
 
-/// The served request's wait ended with a page to render: take its read
-/// reservation, released while it waited, again (`ReadHold::resume`),
-/// waiting for room until `deadline`, the wait's own; the caller keeps its
-/// `Parked` across this, so the request waits for room parked. False: no
-/// room came, and the wait must end as if nothing had arrived. True
-/// outside a served request or for a request no admission reserved.
+/// The served request's wait ended with a page to render: take its whole
+/// read reservation, released while it waited, again (`resume_at_most`
+/// with no measure).
 pub(crate) async fn resume(deadline: tokio::time::Instant) -> bool {
+    resume_at_most(deadline, || None).await
+}
+
+/// The served request's wait ended with a page to render: take its read
+/// reservation, released while it waited, again, at most what `at_most`
+/// measures on each attempt (`ReadHold::resume_with`; a woken long-poll
+/// measures what was appended while it waited, public-beta phase B item
+/// B8), waiting for room until `deadline`, the wait's own; the caller
+/// keeps its `Parked` across this, so the request waits for room parked.
+/// False: no room came, and the wait must end as if nothing had arrived.
+/// True outside a served request or for a request no admission reserved.
+pub(crate) async fn resume_at_most(
+    deadline: tokio::time::Instant,
+    at_most: impl Fn() -> Option<u64>,
+) -> bool {
     let Ok(read) = REQUEST.try_with(|request| request.read.clone()) else {
         return true;
     };
     match read.get() {
-        Some(hold) => hold.resume(deadline).await,
+        Some(hold) => hold.resume_with(deadline, at_most).await,
         None => true,
     }
 }

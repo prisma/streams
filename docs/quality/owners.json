@@ -315,6 +315,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::read_memory_wakes",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Woken long-poll DSTs (public-beta phase B item B8, D′ for the owner's shared cells Q1 (D)): a woken long-poll takes again only what was appended while it waited, plus 64 B a record and 4 KiB a page, measured when room comes, so a project's fan-out wake fits beside its held pages and a waiter held out of room never takes the read memory past its capacity on the plain path (a publish racing the synchronous window between the take and the page's tail snapshot can add up to tail_max_bytes a waiter; a fork's woken long-poll is not covered, an open owner question); the compiler and the DST suite exercise the module.",
+      "syntax": "path = \"tests/read_memory_wakes.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::shared_cell_capacity",
       "path": "src/dst/dst_tests.rs",
       "reason": "Shared-cell capacity DSTs (the capacity review of 2026-10-07): what one project inside its quotas can hold of what a shared cell's projects share besides read memory, one bound per test; the compiler and the DST suite exercise the module.",
