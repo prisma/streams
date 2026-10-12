@@ -1,0 +1,368 @@
+{
+ "name": "layer-b-tiny",
+ "seed": 1,
+ "duration": 240,
+ "comment": "Layer B's classes, one project each (three warm and cold), for building the harness: about 4 min. Writers stop 10 s before the readers of their window, so a subscriber cut at the end has read everything it was sent.",
+ "periods": {
+  "solo": [
+   40,
+   90
+  ],
+  "noisy": [
+   100,
+   230
+  ]
+ },
+ "quota_sets": {
+  "q-hostile": {
+   "requests_per_sec": 20,
+   "append_bytes_per_sec": 64000,
+   "append_records_per_sec": 200,
+   "read_bytes_per_sec": 256000,
+   "max_inflight_requests": 8,
+   "max_live_subscriptions": 16,
+   "max_streams": 50,
+   "queued_append_bytes": 1048576
+  }
+ },
+ "classes": [
+  {
+   "class": "s0",
+   "count": 1,
+   "role": "compliant",
+   "streams": 3,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 30,
+     "secs": 200,
+     "args": {
+      "rate": 1,
+      "records": 41,
+      "record-bytes": 300
+     }
+    },
+    {
+     "mode": "walk",
+     "at": 30,
+     "secs": 200,
+     "args": {
+      "from": "lag:10"
+     }
+    }
+   ]
+  },
+  {
+   "class": "s1",
+   "count": 1,
+   "role": "compliant",
+   "streams": 2,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 30,
+     "secs": 200,
+     "args": {
+      "rate": 41,
+      "record-bytes": 300
+     }
+    },
+    {
+     "mode": "group",
+     "at": 30,
+     "secs": 200,
+     "args": {
+      "pull": 10,
+      "consumers": 1,
+      "wait-ms": 1000
+     }
+    }
+   ]
+  },
+  {
+   "class": "s2",
+   "count": 1,
+   "role": "compliant",
+   "streams": 2,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "churn",
+     "at": 30,
+     "secs": 200,
+     "args": {
+      "rate": 0.1,
+      "count": 20,
+      "size-kib": 40,
+      "end": "ttl:3600",
+      "record-bytes": 1024,
+      "records": 40,
+      "prefix": "c/"
+     }
+    },
+    {
+     "mode": "produce",
+     "at": 30,
+     "secs": 200,
+     "args": {
+      "rate": 1,
+      "record-bytes": 512
+     }
+    },
+    {
+     "mode": "tail",
+     "at": 30,
+     "secs": 200,
+     "args": {
+      "via": "sse",
+      "readers": 1
+     }
+    }
+   ]
+  },
+  {
+   "class": "s3s",
+   "count": 1,
+   "role": "compliant",
+   "streams": 2,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 30,
+     "secs": 200,
+     "args": {
+      "rate": 0.4,
+      "record-bytes": 300
+     }
+    },
+    {
+     "mode": "subs",
+     "at": 30,
+     "secs": 200,
+     "args": {
+      "count": 10,
+      "via": "sse",
+      "connect-rate": 10
+     }
+    }
+   ]
+  },
+  {
+   "class": "n0",
+   "count": 1,
+   "role": "compliant",
+   "streams": 5,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 30,
+     "secs": 200,
+     "args": {
+      "rate": 0.41,
+      "record-bytes": 300
+     }
+    },
+    {
+     "mode": "group",
+     "at": 30,
+     "secs": 200,
+     "args": {
+      "pull": 10,
+      "consumers": 1,
+      "wait-ms": 2000
+     }
+    }
+   ]
+  },
+  {
+   "class": "victim",
+   "count": 1,
+   "role": "victim",
+   "streams": 4,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 30,
+     "secs": 200,
+     "args": {
+      "rate": 5,
+      "record-bytes": 512
+     }
+    },
+    {
+     "mode": "walk",
+     "at": 30,
+     "secs": 200,
+     "args": {
+      "from": "lag:2"
+     }
+    }
+   ]
+  },
+  {
+   "class": "h1",
+   "count": 1,
+   "role": "hostile",
+   "quotas": "q-hostile",
+   "streams": 4,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 90,
+     "secs": 140,
+     "args": {
+      "rate": 100,
+      "record-bytes": 256
+     }
+    }
+   ]
+  },
+  {
+   "class": "h2",
+   "count": 1,
+   "role": "hostile",
+   "quotas": "q-hostile",
+   "streams": 2,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 90,
+     "secs": 140,
+     "args": {
+      "rate": 4,
+      "record-bytes": 131072
+     }
+    }
+   ]
+  },
+  {
+   "class": "h4",
+   "count": 1,
+   "role": "hostile",
+   "quotas": "q-hostile",
+   "streams": 4,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "subs",
+     "at": 90,
+     "secs": 140,
+     "args": {
+      "count": 40,
+      "via": "sse",
+      "connect-rate": 20
+     }
+    }
+   ]
+  },
+  {
+   "class": "h6",
+   "count": 1,
+   "role": "hostile",
+   "quotas": "q-hostile",
+   "streams": 4,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "tail",
+     "at": 90,
+     "secs": 140,
+     "args": {
+      "via": "long-poll",
+      "readers": 8,
+      "wait-ms": 25000
+     }
+    }
+   ]
+  },
+  {
+   "class": "warm",
+   "count": 3,
+   "role": "idle",
+   "streams": 1,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 10
+    },
+    {
+     "mode": "produce",
+     "at": 15,
+     "secs": 10,
+     "args": {
+      "rate": 2,
+      "records": 32,
+      "record-bytes": 1024
+     }
+    }
+   ]
+  },
+  {
+   "class": "cold",
+   "count": 3,
+   "role": "idle",
+   "streams": 3,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 10
+    }
+   ]
+  },
+  {
+   "class": "cold-none",
+   "count": 2,
+   "role": "idle",
+   "phases": []
+  }
+ ]
+}

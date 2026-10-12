@@ -1,0 +1,711 @@
+{
+ "name": "layer-b",
+ "seed": 1,
+ "duration": 4200,
+ "comment": "Layer B on the single-server shape (deploy-q5 design \u00a73.3; shared-cells PLAN \u00a74.1): 1,000 projects. Setup 0-600 s, the compliant classes 600-4200 s, the hostile classes from 1800 s. The victim's period solo is 900-1800 s, noisy 2100-4200 s. Writers stop 60 s before the readers of their window, so a subscriber cut at the end has read everything it was sent. Quota posture: the compliant, victim and idle classes are admitted at the cell's ceilings (no quota set), the hostile ones at q-hostile and again at the ceilings. The beta admits every project at the issuer's free-tier table (owner decision I7 (a): requests_per_sec 10, the other axes at the ceilings), so this load certifies isolation at the ceilings, not the beta's posture (S1's 41 single appends a second is above what a beta project may send); a free-tier variant is the lead's call. shared_verdict.py records the posture in the arm manifest.",
+ "periods": {
+  "solo": [
+   900,
+   1800
+  ],
+  "noisy": [
+   2100,
+   4200
+  ]
+ },
+ "quota_sets": {
+  "q-hostile": {
+   "requests_per_sec": 20,
+   "append_bytes_per_sec": 64000,
+   "append_records_per_sec": 200,
+   "read_bytes_per_sec": 256000,
+   "max_inflight_requests": 8,
+   "max_live_subscriptions": 16,
+   "max_streams": 50,
+   "queued_append_bytes": 1048576
+  }
+ },
+ "classes": [
+  {
+   "class": "s0",
+   "count": 8,
+   "role": "compliant",
+   "streams": 3,
+   "comment": "S0, K2-shaped small: one :batch of 41 x 300 B a second; a reader catches up every 10 s",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 300
+    },
+    {
+     "mode": "produce",
+     "at": 600,
+     "secs": 3540,
+     "args": {
+      "rate": 1,
+      "records": 41,
+      "record-bytes": 300
+     }
+    },
+    {
+     "mode": "walk",
+     "at": 600,
+     "secs": 3600,
+     "args": {
+      "from": "lag:10",
+      "max-bytes": 1048576
+     }
+    }
+   ]
+  },
+  {
+   "class": "s1",
+   "count": 8,
+   "role": "compliant",
+   "streams": 2,
+   "comment": "S1, small app events: 41 req/s of 300 B singles; one live group pulling 10",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 300
+    },
+    {
+     "mode": "produce",
+     "at": 600,
+     "secs": 3540,
+     "args": {
+      "rate": 41,
+      "record-bytes": 300
+     }
+    },
+    {
+     "mode": "group",
+     "at": 600,
+     "secs": 3600,
+     "args": {
+      "pull": 10,
+      "consumers": 1,
+      "wait-ms": 1000
+     }
+    }
+   ]
+  },
+  {
+   "class": "s2",
+   "count": 12,
+   "role": "compliant",
+   "streams": 2,
+   "comment": "S2, agent sessions: 210 lifecycles an hour of 40 KiB (create, append, replay, TTL 1 day); an SSE tail on two live streams",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 300
+    },
+    {
+     "mode": "churn",
+     "at": 600,
+     "secs": 3600,
+     "args": {
+      "rate": 0.0583,
+      "count": 210,
+      "size-kib": 40,
+      "end": "ttl:86400",
+      "record-bytes": 1024,
+      "records": 40,
+      "prefix": "c/"
+     }
+    },
+    {
+     "mode": "produce",
+     "at": 600,
+     "secs": 3540,
+     "args": {
+      "rate": 1,
+      "record-bytes": 512
+     }
+    },
+    {
+     "mode": "tail",
+     "at": 600,
+     "secs": 3600,
+     "args": {
+      "via": "sse",
+      "readers": 1
+     }
+    }
+   ]
+  },
+  {
+   "class": "s3s",
+   "count": 4,
+   "role": "compliant",
+   "streams": 2,
+   "comment": "S3s, small fan-out: 0.01 GiB/day on 2 streams, 100 SSE subscribers",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 300
+    },
+    {
+     "mode": "produce",
+     "at": 600,
+     "secs": 3540,
+     "args": {
+      "rate": 0.4,
+      "record-bytes": 300
+     }
+    },
+    {
+     "mode": "subs",
+     "at": 600,
+     "secs": 3600,
+     "args": {
+      "count": 100,
+      "via": "sse",
+      "connect-rate": 10
+     }
+    }
+   ]
+  },
+  {
+   "class": "n0",
+   "count": 8,
+   "role": "compliant",
+   "streams": 5,
+   "comment": "N0, nearly idle events: 0.41 singles/s of 300 B over 5 streams, a live consumer group",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 300
+    },
+    {
+     "mode": "produce",
+     "at": 600,
+     "secs": 3540,
+     "args": {
+      "rate": 0.41,
+      "record-bytes": 300
+     }
+    },
+    {
+     "mode": "group",
+     "at": 600,
+     "secs": 3600,
+     "args": {
+      "pull": 10,
+      "consumers": 1,
+      "wait-ms": 2000
+     }
+    }
+   ]
+  },
+  {
+   "class": "victim",
+   "count": 1,
+   "role": "victim",
+   "streams": 4,
+   "comment": "the victim probe: 5 appends/s and a reader 2 s behind, alone (period solo) and under the hostile load (period noisy)",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 300
+    },
+    {
+     "mode": "produce",
+     "at": 600,
+     "secs": 3540,
+     "args": {
+      "rate": 5,
+      "record-bytes": 512
+     }
+    },
+    {
+     "mode": "walk",
+     "at": 600,
+     "secs": 3600,
+     "args": {
+      "from": "lag:2"
+     }
+    }
+   ]
+  },
+  {
+   "class": "h1",
+   "count": 1,
+   "role": "hostile",
+   "comment": "H1 request flood: 400 req/s of small singles (at Q-hostile)",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 1800,
+     "secs": 2340,
+     "args": {
+      "rate": 400,
+      "record-bytes": 256
+     }
+    }
+   ],
+   "quotas": "q-hostile",
+   "streams": 4
+  },
+  {
+   "class": "h2",
+   "count": 1,
+   "role": "hostile",
+   "comment": "H2 byte flood: 128 KiB records (at Q-hostile)",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 1800,
+     "secs": 2340,
+     "args": {
+      "rate": 8,
+      "record-bytes": 131072
+     }
+    }
+   ],
+   "quotas": "q-hostile",
+   "streams": 2
+  },
+  {
+   "class": "h3",
+   "count": 1,
+   "role": "hostile",
+   "comment": "H3 scan flood: writes 5 min, then walks everything again and again (at Q-hostile)",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 1800,
+     "secs": 300,
+     "args": {
+      "rate": 20,
+      "records": 16,
+      "record-bytes": 1024
+     }
+    },
+    {
+     "mode": "walk",
+     "at": 2100,
+     "secs": 2100,
+     "repeat": true,
+     "args": {
+      "parallel": 8,
+      "readers": 4
+     }
+    }
+   ],
+   "quotas": "q-hostile",
+   "streams": 4
+  },
+  {
+   "class": "h4",
+   "count": 1,
+   "role": "hostile",
+   "comment": "H4 SSE connect storm: 300 subscriptions at 50/s (at Q-hostile)",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "subs",
+     "at": 1800,
+     "secs": 2400,
+     "args": {
+      "count": 300,
+      "via": "sse",
+      "connect-rate": 50
+     }
+    }
+   ],
+   "quotas": "q-hostile",
+   "streams": 4
+  },
+  {
+   "class": "h5",
+   "count": 1,
+   "role": "hostile",
+   "comment": "H5 stream-create flood: 20 creates/s, each kept 2 h (at Q-hostile)",
+   "phases": [
+    {
+     "mode": "churn",
+     "at": 1800,
+     "secs": 2400,
+     "args": {
+      "rate": 20,
+      "count": 48000,
+      "size-kib": 1,
+      "end": "ttl:7200",
+      "record-bytes": 256,
+      "records": 4,
+      "prefix": "f/"
+     }
+    }
+   ],
+   "quotas": "q-hostile"
+  },
+  {
+   "class": "h6",
+   "count": 1,
+   "role": "hostile",
+   "comment": "H6 held long-polls: 50 per stream on 4 streams (at Q-hostile)",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "tail",
+     "at": 1800,
+     "secs": 2400,
+     "args": {
+      "via": "long-poll",
+      "readers": 50,
+      "wait-ms": 25000
+     }
+    }
+   ],
+   "quotas": "q-hostile",
+   "streams": 4
+  },
+  {
+   "class": "h7",
+   "count": 1,
+   "role": "hostile",
+   "comment": "H7 incompressible appends at its byte quota (one shard: every tenant shares it) (at Q-hostile)",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 1800,
+     "secs": 2340,
+     "args": {
+      "mbps": 0.3,
+      "record-bytes": 16384
+     }
+    }
+   ],
+   "quotas": "q-hostile",
+   "streams": 2
+  },
+  {
+   "class": "h8",
+   "count": 1,
+   "role": "hostile",
+   "comment": "H8 many dirty streams and subscribers (at Q-hostile)",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0,
+     "args": {
+      "parallel": 16
+     }
+    },
+    {
+     "mode": "produce",
+     "at": 1800,
+     "secs": 2340,
+     "args": {
+      "rate": 50,
+      "record-bytes": 512
+     }
+    },
+    {
+     "mode": "subs",
+     "at": 1800,
+     "secs": 2400,
+     "args": {
+      "count": 100,
+      "via": "sse",
+      "connect-rate": 20
+     }
+    }
+   ],
+   "quotas": "q-hostile",
+   "streams": 400
+  },
+  {
+   "class": "h1k",
+   "count": 1,
+   "role": "hostile",
+   "comment": "H1 request flood: 400 req/s of small singles (at the cell's k ceilings)",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 1800,
+     "secs": 2340,
+     "args": {
+      "rate": 400,
+      "record-bytes": 256
+     }
+    }
+   ],
+   "streams": 4
+  },
+  {
+   "class": "h2k",
+   "count": 1,
+   "role": "hostile",
+   "comment": "H2 byte flood: 128 KiB records (at the cell's k ceilings)",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 1800,
+     "secs": 2340,
+     "args": {
+      "rate": 8,
+      "record-bytes": 131072
+     }
+    }
+   ],
+   "streams": 2
+  },
+  {
+   "class": "h3k",
+   "count": 1,
+   "role": "hostile",
+   "comment": "H3 scan flood: writes 5 min, then walks everything again and again (at the cell's k ceilings)",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 1800,
+     "secs": 300,
+     "args": {
+      "rate": 20,
+      "records": 16,
+      "record-bytes": 1024
+     }
+    },
+    {
+     "mode": "walk",
+     "at": 2100,
+     "secs": 2100,
+     "repeat": true,
+     "args": {
+      "parallel": 8,
+      "readers": 4
+     }
+    }
+   ],
+   "streams": 4
+  },
+  {
+   "class": "h4k",
+   "count": 1,
+   "role": "hostile",
+   "comment": "H4 SSE connect storm: 300 subscriptions at 50/s (at the cell's k ceilings)",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "subs",
+     "at": 1800,
+     "secs": 2400,
+     "args": {
+      "count": 300,
+      "via": "sse",
+      "connect-rate": 50
+     }
+    }
+   ],
+   "streams": 4
+  },
+  {
+   "class": "h5k",
+   "count": 1,
+   "role": "hostile",
+   "comment": "H5 stream-create flood: 20 creates/s, each kept 2 h (at the cell's k ceilings)",
+   "phases": [
+    {
+     "mode": "churn",
+     "at": 1800,
+     "secs": 2400,
+     "args": {
+      "rate": 20,
+      "count": 48000,
+      "size-kib": 1,
+      "end": "ttl:7200",
+      "record-bytes": 256,
+      "records": 4,
+      "prefix": "f/"
+     }
+    }
+   ]
+  },
+  {
+   "class": "h6k",
+   "count": 1,
+   "role": "hostile",
+   "comment": "H6 held long-polls: 50 per stream on 4 streams (at the cell's k ceilings)",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "tail",
+     "at": 1800,
+     "secs": 2400,
+     "args": {
+      "via": "long-poll",
+      "readers": 50,
+      "wait-ms": 25000
+     }
+    }
+   ],
+   "streams": 4
+  },
+  {
+   "class": "h7k",
+   "count": 1,
+   "role": "hostile",
+   "comment": "H7 incompressible appends at its byte quota (one shard: every tenant shares it) (at the cell's k ceilings)",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 1800,
+     "secs": 2340,
+     "args": {
+      "mbps": 0.3,
+      "record-bytes": 16384
+     }
+    }
+   ],
+   "streams": 2
+  },
+  {
+   "class": "h8k",
+   "count": 1,
+   "role": "hostile",
+   "comment": "H8 many dirty streams and subscribers (at the cell's k ceilings)",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0,
+     "args": {
+      "parallel": 16
+     }
+    },
+    {
+     "mode": "produce",
+     "at": 1800,
+     "secs": 2340,
+     "args": {
+      "rate": 50,
+      "record-bytes": 512
+     }
+    },
+    {
+     "mode": "subs",
+     "at": 1800,
+     "secs": 2400,
+     "args": {
+      "count": 100,
+      "via": "sse",
+      "connect-rate": 20
+     }
+    }
+   ],
+   "streams": 400
+  },
+  {
+   "class": "warm",
+   "count": 200,
+   "role": "idle",
+   "streams": 1,
+   "comment": "warm idle: about 1 MiB written at setup, then silent",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 300
+    },
+    {
+     "mode": "produce",
+     "at": 300,
+     "secs": 16,
+     "spread": 280,
+     "args": {
+      "rate": 2,
+      "records": 32,
+      "record-bytes": 1024
+     }
+    }
+   ]
+  },
+  {
+   "class": "cold",
+   "count": 600,
+   "role": "idle",
+   "streams": 3,
+   "comment": "cold idle: 3 empty streams",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 300
+    }
+   ]
+  },
+  {
+   "class": "cold-none",
+   "count": 143,
+   "role": "idle",
+   "comment": "cold idle with no stream",
+   "phases": []
+  }
+ ]
+}

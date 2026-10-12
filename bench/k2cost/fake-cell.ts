@@ -57,6 +57,9 @@ export class FakeCell {
   meters = new Map<string, Meters>();
   refusals = new Map<string, Refusal>();
   requests = new Map<string, number>();
+  /** Pages are metered when rendered and sent this many ms later (a slow
+   * transfer): a reader that abandons one leaves it metered, uncounted. */
+  pageDelayMs = 0;
   groups = new Map<string, number>();
   /** Watch lookups: never-seen names answer after this many ms. */
   coldLookupMs = 0;
@@ -223,7 +226,9 @@ export class FakeCell {
         return new Response(null, { status: 204, headers: { "prisma-next-cursor": cursorOf(from), "prisma-up-to-date": "true" } });
       }
     }
-    return this.page(project, recs, from, maxBytes);
+    const page = this.page(project, recs, from, maxBytes);
+    if (this.pageDelayMs > 0) await Bun.sleep(this.pageDelayMs);
+    return page;
   }
 
   private async consumer(project: string, name: string, op: string, recs: string[], req: Request): Promise<Response> {

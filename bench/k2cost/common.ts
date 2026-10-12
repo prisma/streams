@@ -281,7 +281,7 @@ export const BASE_FIELDS = [
   "delivered_payload_bytes",
 ] as const;
 
-class Counters {
+export class Counters {
   f = new Map<string, number>();
   status: Record<string, number> = {};
   append = new Hist();
@@ -455,6 +455,40 @@ export class Reporter {
     this.server?.stop(true);
     return t;
   }
+}
+
+// ---------------------------------------------------------------- modes
+
+/** Each k2gen mode's flags (k2gen.ts validates its argv against them;
+ * tenants.ts validates a manifest's phase arguments). */
+const PRODUCER = ["rate", "mbps", "concurrency", "records", "record-bytes", "payload", "zipf", "routing-keys", "pool", "timeout-ms", "drain-secs"];
+const COMMON = ["base", "headers-file", "streams", "prefix", "duration", "seed", "out", "ledger", "key", "window", "port"];
+export const MODE_FLAGS: Record<string, string[]> = {
+  setup: [...COMMON, "format", "ttl", "parallel", "payload"],
+  produce: [...COMMON, ...PRODUCER],
+  walk: [...COMMON, ...PRODUCER, "from", "readers", "stagger", "parallel", "max-bytes", "expect"],
+  tail: [...COMMON, ...PRODUCER, "via", "readers", "wait-ms", "from"],
+  group: [...COMMON, ...PRODUCER, "pull", "consumers", "group", "settle", "wait-ms", "visibility-ms", "retry-frac", "extend-frac", "until-empty", "dlq", "max-attempts"],
+  churn: [...COMMON, "count", "size-kib", "end", "record-bytes", "payload", "concurrency", "rate", "records"],
+  subs: [...COMMON, ...PRODUCER, "count", "via", "connect-rate", "wait-ms"],
+  audit: [...COMMON, "parallel", "max-bytes", "expect"],
+  "corpus-stats": ["seed", "samples", "sizes", "payloads", "out", "sample"],
+};
+
+/** Bun's fetch queues requests beyond BUN_CONFIG_MAX_HTTP_REQUESTS (256
+ * by default) inside the runtime, which would silently close an open
+ * loop; the variable is read once at start, so a generator re-executes
+ * itself with it raised. Returns in the child (or when already raised);
+ * the parent forwards SIGINT/SIGTERM and exits with the child's code. */
+export const MAX_HTTP = 16384;
+export async function ensureHttpHeadroom(): Promise<void> {
+  if (process.env.K2GEN_CHILD === "1" || Number(process.env.BUN_CONFIG_MAX_HTTP_REQUESTS ?? 0) >= MAX_HTTP) return;
+  const child = Bun.spawn([process.execPath, ...(Bun.main.startsWith("/$bunfs") ? [] : [process.argv[1]!]), ...process.argv.slice(2)], {
+    env: { ...process.env, BUN_CONFIG_MAX_HTTP_REQUESTS: String(MAX_HTTP), K2GEN_CHILD: "1" },
+    stdio: ["inherit", "inherit", "inherit"],
+  });
+  for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => child.kill(sig));
+  process.exit(await child.exited);
 }
 
 // ---------------------------------------------------------------- stop

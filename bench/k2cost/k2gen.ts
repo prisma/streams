@@ -13,7 +13,8 @@
 
 import { writeFileSync } from "node:fs";
 import {
-  DEFAULT_KEY_B64, HeaderSource, badJson, Http, Meter, Opts, Reporter, deadlineSignal, installSignals, parseFlags, stop,
+  DEFAULT_KEY_B64, HeaderSource, MODE_FLAGS, badJson, ensureHttpHeadroom, Http, Meter, Opts, Reporter, deadlineSignal,
+  installSignals, parseFlags, stop,
 } from "./common.ts";
 import { corpusSample, corpusStats } from "./corpus.ts";
 import { produce, setup, type Ctx } from "./produce.ts";
@@ -53,19 +54,7 @@ Producer (produce; walk/tail/group/subs run one in-process when given --rate/--m
   --pool N (cycle N pregenerated records)  --timeout-ms 60000  --drain-secs 60
 `;
 
-const PRODUCER = ["rate", "mbps", "concurrency", "records", "record-bytes", "payload", "zipf", "routing-keys", "pool", "timeout-ms", "drain-secs"];
-const COMMON = ["base", "headers-file", "streams", "prefix", "duration", "seed", "out", "ledger", "key", "window", "port"];
-const KNOWN: Record<string, string[]> = {
-  setup: [...COMMON, "format", "ttl", "parallel", "payload"],
-  produce: [...COMMON, ...PRODUCER],
-  walk: [...COMMON, ...PRODUCER, "from", "readers", "stagger", "parallel", "max-bytes", "expect"],
-  tail: [...COMMON, ...PRODUCER, "via", "readers", "wait-ms", "from"],
-  group: [...COMMON, ...PRODUCER, "pull", "consumers", "group", "settle", "wait-ms", "visibility-ms", "retry-frac", "extend-frac", "until-empty", "dlq", "max-attempts"],
-  churn: [...COMMON, "count", "size-kib", "end", "record-bytes", "payload", "concurrency", "rate", "records"],
-  subs: [...COMMON, ...PRODUCER, "count", "via", "connect-rate", "wait-ms"],
-  audit: [...COMMON, "parallel", "max-bytes", "expect"],
-  "corpus-stats": ["seed", "samples", "sizes", "payloads", "out", "sample"],
-};
+const KNOWN = MODE_FLAGS;
 // An earliest walk, setup and churn run to completion; --duration caps them.
 const UNTIL_DONE = 7 * 86_400;
 
@@ -85,18 +74,8 @@ if (unknown.length) {
   process.exit(2);
 }
 
-// Bun's fetch queues requests beyond BUN_CONFIG_MAX_HTTP_REQUESTS (256
-// by default) inside the runtime, which would silently close the open
-// loop; the variable is read once at start, so re-exec with it raised.
-const MAX_HTTP = 16384;
-if (mode !== "corpus-stats" && process.env.K2GEN_CHILD !== "1" && Number(process.env.BUN_CONFIG_MAX_HTTP_REQUESTS ?? 0) < MAX_HTTP) {
-  const child = Bun.spawn([process.execPath, ...(Bun.main.startsWith("/$bunfs") ? [] : [process.argv[1]!]), ...process.argv.slice(2)], {
-    env: { ...process.env, BUN_CONFIG_MAX_HTTP_REQUESTS: String(MAX_HTTP), K2GEN_CHILD: "1" },
-    stdio: ["inherit", "inherit", "inherit"],
-  });
-  for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => child.kill(sig));
-  process.exit(await child.exited);
-}
+// A raised in-runtime HTTP request cap, or the open loop closes silently.
+if (mode !== "corpus-stats") await ensureHttpHeadroom();
 installSignals();
 
 const o = new Opts(flags);

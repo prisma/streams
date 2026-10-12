@@ -17,6 +17,7 @@ ratchet here is 1,000 lines per file; the s3lite census it reads (C2) is
 | `price.py [run-dir] [--baseline run-dir]` | Tigris pricing, the §4.3 allocation, K2 revenue, per-GiB costs and margins, W(r), calibration, validity; with `k2cells.py` (cell pricing and allocation), `k2store.py` (stored bytes, k, the a/b/c fit, U) and `k2valid.py` (§8 checks) |
 | `points/*.env` | one tiny smoke point and one full-scale point per design run (L0, L1, L2, L3, L5, L6, L7) |
 | `oracle.ts` | the shared-cell leak oracle: a `--payload oracle` record names its project and carries a MAC under that project's harness key, which the server never sees. Every read path (pages, long-polls, SSE, pulls, churn's read-back, the audit) counts each record it is delivered as `oracle_ok`, `oracle_foreign` (another project's record: a leak), `oracle_bad_mac` (corruption) or `oracle_unmarked`. Only a generator that names an owner writes it (`tenants.ts`) |
+| `tenants.ts` (+ `tenant-plan.ts`, `tenants/*.json`) | the shared-cell harness's multi-project driver: a tenants manifest of classes, counts, quotas and phases, every project on k2gen's own modes under its own token (below) |
 | `fake-cell.ts`, `*.test.ts` | the harness's tests, against a product-surface fake: `bun test ./bench/k2cost` |
 
 ## Running a point
@@ -420,3 +421,44 @@ does, is void.
   debug routes and s3lite's stats routes, which make no store
   requests. The usage poll runs after the `end` snapshot, so it is
   outside every priced window.
+
+## Shared-cell tenants (the Q5 harness)
+
+`tenants.ts` drives one shared cell with many projects (deploy-q5 design
+§3.2; shared-cells PLAN §4.1). A manifest (`tenant-plan.ts` documents the
+shape) names tenant classes with a count, a role (`compliant`, `victim`,
+`hostile`, `idle`), an optional quota set and phases. Each phase is a k2gen
+mode (`setup`, `produce`, `walk`, `tail`, `group`, `churn`, `subs`) or
+`idle`, started at `at` seconds (project j of n at `at + spread * j / n`)
+and bounded by `secs`. Every project of the class runs every phase, in the
+same process, under its own token and its own record key, and writes
+oracle records (`oracle.ts`), so every read is checked for leaks. A reader
+phase embeds no producer and a produce phase never repeats, so the audit
+can replay every acked record.
+
+```bash
+bun bench/k2cost/tenants.ts plan  --manifest bench/k2cost/tenants/layer-b.json
+bun bench/k2cost/tenants.ts run   --manifest M --base URL --token-map F --out DIR [--time-scale F]
+bun bench/k2cost/tenants.ts usage --manifest M --base URL --token-map F --out DIR    # after the drain
+bun bench/k2cost/tenants.ts audit --manifest M --base URL --token-map F --out DIR    # after usage
+```
+
+| Manifest | What |
+|---|---|
+| `tenants/layer-b.json` | Layer B on the single-server shape, 1,000 projects: S0 ×8, S1 ×8, S2 ×12, S3s ×4 (100 SSE subscribers each), N0 ×8, the victim, H1-H8 at Q-hostile and again at the cell's k ceilings, 200 warm idle (about 1 MiB each) and cold idle (3 empty streams, or none). Setup 0-600 s, the compliant classes 600-4,200 s, the hostile ones from 1,800 s; the victim's periods `solo` 900-1,800 s and `noisy` 2,100-4,200 s. Writers stop 60 s before the readers of their window |
+| `tenants/layer-b-tiny.json` | one project per class (three warm, three cold), about 4 min: for building the harness |
+
+The token map is a JSON list `[{"project", "token"}]`, re-read every 10 min
+and soon after a 401. Outputs under `--out`:
+
+| File | Content |
+|---|---|
+| `run.json` | the manifest's name and sha256, the run's window, the classes, the token map's reads, failed phases |
+| `windows.jsonl` | one line per class per 10 s window: the class's summed counters, latency percentiles, error codes (`status:code`, the typed refusals), connections and requests in flight |
+| `loop.jsonl` | one line per 10 s window: the driver's own event-loop lag (a timer due every 50 ms, how late it fired: p50, p99, max, ticks); `run.json`'s `loop_lag` has it over the run and each manifest period. One process drives every project, so this lag is in every latency the run measures |
+| `classes.json` | per class: totals, error codes, refusals (`typed` by code, `untyped` by status, `transport`), latency over the whole run (`run`) and over each manifest period |
+| `projects/<id>/phase-<i>.ledger.json` | k2gen's ledger of each phase (the audit's `--expect`) |
+| `projects/<id>/ledger.json` | the project's totals, oracle counts, error codes and refusals |
+| `usage.json` | `usage`: every project's meters (`GET /v1/projects/{p}/usage`) polled until they reach its ledger and two polls agree |
+| `audit.json` | `audit`: every project's produced streams read back record for record against its produce ledgers, with the oracle's counts |
+

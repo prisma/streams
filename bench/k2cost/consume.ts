@@ -263,10 +263,14 @@ export async function walk(ctx: Ctx, signal: AbortSignal): Promise<Record<string
   if (prod && lagSecs >= 0) prod.p.timelineKeepMs = lagSecs * 1000 + 60_000;
   const perRecord = prod ? prod.p.spec.recordBytes : o.int("record-bytes", 1024);
 
+  // A page is never cancelled at the deadline: the server meters a page it
+  // serves, so an aborted fetch would be metered and never counted (the
+  // project's usage would exceed its ledger). The deadline stops the walk
+  // from asking for the next page; the one in flight finishes (h9 too).
   const walkOne = async (r: number, t: Target): Promise<void> => {
     let cursor = "beginning";
     while (!sig.aborted) {
-      const pg = await rd.page(t, cursor, { maxBytes, signal: sig });
+      const pg = await rd.page(t, cursor, { maxBytes });
       if (!pg.ok) {
         await sleep(backoffMs(pg.r), sig);
         continue;
@@ -292,7 +296,7 @@ export async function walk(ctx: Ctx, signal: AbortSignal): Promise<Record<string
         // No producer in this process: a periodic catch-up every SECS.
         await sleep(lagSecs * 1000, sig);
         while (!sig.aborted) {
-          const pg = await rd.page(t, cursor, { maxBytes, signal: sig });
+          const pg = await rd.page(t, cursor, { maxBytes });
           if (!pg.ok) {
             await sleep(backoffMs(pg.r), sig);
             continue;
@@ -309,7 +313,7 @@ export async function walk(ctx: Ctx, signal: AbortSignal): Promise<Record<string
         await sleep(200, sig);
         continue;
       }
-      const pg = await rd.page(t, cursor, { maxBytes: Math.min(maxBytes ?? MAX_PAGE, want * perRecord), signal: sig });
+      const pg = await rd.page(t, cursor, { maxBytes: Math.min(maxBytes ?? MAX_PAGE, want * perRecord) });
       if (!pg.ok) {
         await sleep(backoffMs(pg.r), sig);
         continue;
