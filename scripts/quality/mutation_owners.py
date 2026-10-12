@@ -84,6 +84,26 @@ OWNERS = (
     # and reserved identities, and each signing key's one audience.
     owner('auth_ceiling', 'src/auth/ceiling.rs', 'auth:: dst_tests::shared_cell_hostile::reserved_ids'),
     owner('auth_signing_key', 'src/auth/signing_key.rs', 'auth:: auth_feed::'),
+    # The four tenant-memory owners Q3(d) deferred until they settled after
+    # the Q1 and C7 work (public-beta phase B item B10): the read
+    # reservation, the request scope that carries it and the request's store
+    # work, the product surface's memory backstops, and a pull's parked wait.
+    # Past the triage's filters, each names the legs that alone killed a
+    # hand-applied mutant of its file: the store debit and the registry-write
+    # and catalog binds (`a_create_pays_...`, `a_listing_pays_...`), and a
+    # woken pull's coverage retake (`a_woken_pull`).
+    owner('admission_read_memory', 'src/admission/read_memory.rs',
+          'admission:: dst_tests::read_memory::'),
+    owner('admission_park', 'src/admission/park.rs',
+          'admission:: dst_tests::parked_waits:: dst_tests::read_memory:: '
+          'dst_tests::shared_cell_hostile::a_create_pays_for_its_registry_writes '
+          'dst_tests::shared_cell_hostile::a_listing_pays_for_the_descriptors_it_reads'),
+    owner('product_read_memory', 'src/product/read_memory.rs',
+          'dst_tests::read_memory:: dst_tests::shared_cell_capacity:: '
+          'dst_tests::shared_cell_hostile::a_create_pays_for_its_registry_writes '
+          'dst_tests::shared_cell_hostile::a_listing_pays_for_the_descriptors_it_reads'),
+    owner('consumer_pull_wait', 'src/application/consumer/pull_wait.rs',
+          'dst_tests::parked_waits:: dst_tests::consumer_ dst_tests::read_memory::a_woken_pull'),
     owner('shard_directory', 'src/shard_directory.rs', 'shard_directory:: shard::task_lifecycle_tests::'),
     owner('history_partition', 'src/shard/history_partition.rs', 'shard::'),
     owner('history_page_read', 'src/history/page_read.rs',
