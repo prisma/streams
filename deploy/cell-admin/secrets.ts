@@ -13,9 +13,10 @@
 // Peppers are versioned, newest first: `v<N>:<base64>[,v<M>:<base64>]...`
 // with N > M, each at least 32 bytes. A credential is hashed under the
 // newest; an older one still verifies until its credentials are re-hashed.
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { AdminError } from "./errors";
+import type { CredentialRecord } from "./state";
 import { checkCustody } from "./tokens";
 
 export interface Pepper {
@@ -71,4 +72,25 @@ export const hashSecret = (pepper: Pepper, secret: string) =>
 export function secretFields(peppers: readonly Pepper[], secret: string): { secret_hash: string; hv: number; hint: string } {
   const [newest] = peppers;
   return { secret_hash: hashSecret(newest, secret), hv: newest.version, hint: secret.slice(-HINT_CHARS) };
+}
+
+/// Compared against when there is no stored hash to compare with.
+const DUMMY_HASH = randomBytes(32);
+
+/// The pepper under which `secret` (the part after the credential id's
+/// dot) matches `cred`'s stored hash, or null: no record, a record that
+/// is not a customer's or has no secret, a pepper no longer configured,
+/// or another secret. One HMAC and one constant-time comparison run in
+/// every case, so the answer's timing does not tell whether the id exists.
+export function verifySecret(
+  peppers: readonly Pepper[],
+  cred: CredentialRecord | undefined,
+  secret: string,
+): Pepper | null {
+  const stored = cred?.role === "customer" ? cred.secret_hash : undefined;
+  const pepper = stored === undefined ? undefined : peppers.find((p) => p.version === cred?.hv);
+  const expected = pepper && stored !== undefined ? Buffer.from(stored, "base64url") : DUMMY_HASH;
+  const computed = createHmac("sha256", (pepper ?? peppers[0]).key).update(secret).digest();
+  const same = expected.length === computed.length && timingSafeEqual(expected, computed);
+  return pepper !== undefined && same ? pepper : null;
 }

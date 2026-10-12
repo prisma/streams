@@ -281,3 +281,14 @@ One gate for the whole prefix (`src/http/debug.rs::gated`, a layer on the nested
 - Product route verbs not in the known set stay part of the stream name (`:` is a legal name character) — `PUT /v1/streams/x:sealed` CREATES a stream named `x:sealed`.
 - `json_ok` (usage endpoints, internal sweep/cursor/scan) sets no `Cache-Control`, unlike the `no-store` used elsewhere on the product surface.
 - Axum-default 404/405 bodies (empty/plain) appear for unmatched paths and for non-GET/OPTIONS on `/v1/streams` and `/v1/projects/{p}/usage` — still origin-marked by the response layer.
+## 5. The interim token issuer (`deploy/issuer`, a separate Bun service, not the server binary)
+
+The public beta's self-serve token issuer (edge change #NEW-issuer-1; the issuer triage's B2). Every answer is `application/json` with `Cache-Control: no-store`, errors in the product envelope without `retryable` (`{"error":{"code","message"}}`, `deploy/issuer/respond.ts`). No answer carries a CORS header. Unmatched paths: 404 `not_found`; another method on a matched path: 405 `method_not_allowed` with `Allow`.
+
+### 5.1 `POST /v1/token/streams` — the credential exchange
+Handler: `Exchange.handle` (`deploy/issuer/exchange.ts`).
+- **Request**: `Authorization: StreamsCredential prisma_streams_strcred_<32 hex>.<43 base64url>`; optional JSON object body (at most 4,096 bytes) with `requestedScopes` (non-empty string array) and `ttlSecs` (300 to the issuer's lifetime, default 3,600); no other member.
+- **Order**: credential form → body → secret (HMAC-SHA-256 under the credential's pepper version, constant time, a dummy HMAC for an unknown id) → credential active, not omitted, not expired → project active and not suspended → state copy revalidated within 300 s and the signing key in the cell's keys feed → scope narrowing.
+- **Success**: 200 `{"accessToken","tokenType":"Bearer","expiresIn","projectId","cellId","endpoint"}`; `expiresIn` = `exp` − now (the lifetime less the 60 s `iat` backdate); `endpoint` = `STREAMS_CELL_ORIGIN`; claims per `customer-token-claims.schema.json` (`sub` `cred:<credential id>`, `scope` the granted scopes asked for).
+- **Errors**: 401 `invalid_credential` (malformed header; unknown id, wrong secret, a secretless or non-customer credential) with `WWW-Authenticate: StreamsCredential realm="streams"`; 400 `invalid_request` (body; no granted scope asked for); 403 `credential_not_active` / `project_not_active`; 503 `issuer_unavailable` with `Retry-After: 5`.
+- **Writes**: none (the in-memory copy of the cell's state).
