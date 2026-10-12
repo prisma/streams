@@ -6,7 +6,9 @@ the noisy-neighbor campaign, `scripts/verify-rc-evidence.py`) are stubs:
 they are the release gate's business, not this file's. `gh`, `npm` and
 `node` are stubs on PATH; the `npm` stub packs a real gzip tarball and
 refuses a pack destination outside the fixture, so a tarball can only
-land where the test can see it.
+land where the test can see it. The real `scripts/publish-sdk.sh --dry-run`
+then reads each tag it mints (its `npm view` meets an empty answer: not
+yet published).
 """
 import base64
 import hashlib
@@ -27,7 +29,8 @@ STUB = '#!/bin/bash\nset -eu\necho "$(basename "$0") stub ok"\n'
 GATE_STUB = ('#!/bin/bash\nset -eu\nmkdir -p target/release\n'
              'printf server-binary > target/release/streams-slate\necho RELEASE_GATE_LOCAL_OK\n')
 # npm: `ci` and `run build` succeed; `pack` writes a real tarball of the
-# package.json in its working directory and answers as npm pack --json does.
+# package.json, README.md and CHANGELOG.md in its working directory and
+# answers as npm pack --json does.
 NPM_STUB = r'''#!/usr/bin/env python3
 import base64, hashlib, io, json, os, sys, tarfile
 from pathlib import Path
@@ -41,12 +44,13 @@ root = Path(os.environ['FIXTURE_ROOT']).resolve()
 if root not in dest.parents:
     sys.exit(f'stub npm: pack destination {dest} is outside the fixture')
 manifest = json.loads(Path('package.json').read_text())
-data = json.dumps(manifest).encode()
 raw = io.BytesIO()
 with tarfile.open(fileobj=raw, mode='w:gz') as tar:
-    info = tarfile.TarInfo('package/package.json')
-    info.size = len(data)
-    tar.addfile(info, io.BytesIO(data))
+    for file in ('package.json', 'README.md', 'CHANGELOG.md'):
+        data = Path(file).read_bytes()
+        info = tarfile.TarInfo('package/' + file)
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
 name = manifest['name'].lstrip('@').replace('/', '-') + '-' + manifest['version'] + '.tgz'
 (dest / name).write_bytes(raw.getvalue())
 integrity = 'sha512-' + base64.b64encode(hashlib.sha512(raw.getvalue()).digest()).decode()
@@ -82,6 +86,8 @@ class PromoteRc(unittest.TestCase):
         scripts = self.repo / 'scripts'
         scripts.mkdir(parents=True)
         shutil.copy(ROOT / 'scripts' / 'promote-rc.sh', scripts / 'promote-rc.sh')
+        shutil.copy(ROOT / 'scripts' / 'publish-sdk.sh', scripts / 'publish-sdk.sh')
+        self.executable(scripts / 'dev' / 'ci-status.sh', '#!/bin/bash\necho "commit $1"\necho CI_GREEN\n')
         self.executable(scripts / 'release-gate.sh', GATE_STUB)
         self.executable(scripts / 'multitenancy-audit.sh', STUB)
         (scripts / 'mt-noisy-campaign.mjs').write_text('// stub\n')
@@ -89,6 +95,8 @@ class PromoteRc(unittest.TestCase):
         (self.repo / 'sdk').mkdir()
         (self.repo / 'sdk' / 'package.json').write_text(
             json.dumps({'name': '@prisma/streams', 'version': VERSION}))
+        (self.repo / 'sdk' / 'README.md').write_text('# @prisma/streams\n')
+        (self.repo / 'sdk' / 'CHANGELOG.md').write_text(f'# Changelog\n\n## {VERSION}\n')
         checks = [{'name': name, 'conclusion': 'success'} for name in required_checks()]
         self.executable(self.bin / 'gh', '#!/bin/bash\necho "gh $*" >> "$STUB_LOG"\n'
                         f"echo '{json.dumps(checks)}'\n")
@@ -133,6 +141,13 @@ class PromoteRc(unittest.TestCase):
         self.assertIn(f'- sdk tarball sha256:   {hashlib.sha256(data).hexdigest()} ({TARBALL})\n', message)
         self.assertIn(f'- sdk tarball sha512:   {integrity(data)} (npm integrity)\n', message)
         self.assertEqual(sorted(p.name for p in self.kept().parent.iterdir()), [TARBALL])
+        # The tag and the kept file are what scripts/publish-sdk.sh publishes.
+        publish = subprocess.run(['bash', 'scripts/publish-sdk.sh', '--dry-run', TAG], cwd=self.repo,
+                                 env={**os.environ, 'PATH': f'{self.bin}:{os.environ["PATH"]}',
+                                      'STUB_LOG': str(self.log), 'FIXTURE_ROOT': str(self.tmp)},
+                                 text=True, capture_output=True)
+        self.assertIn(f'PUBLISH_SDK_DRY_RUN_OK: would publish {self.kept()} as @prisma/streams@{VERSION}',
+                      publish.stdout, publish.stdout + publish.stderr)
 
     def test_the_local_half_keeps_the_tarball_under_the_tag_and_records_both_digests(self):
         result = self.promote()

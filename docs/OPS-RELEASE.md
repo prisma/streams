@@ -316,6 +316,28 @@ not certify these bytes.
 `scripts/quality/test_promote_rc.py` runs the real script with stubbed
 gates, `gh` and `npm`.
 
+**Publishing the SDK** (the owner's, a release hold): `scripts/publish-sdk.sh
+<rc-tag>`, in the checkout that minted the tag, publishes that kept
+tarball and nothing else. It refuses a lightweight tag, a commit without
+`CI_GREEN` from `scripts/dev/ci-status.sh`, a tarball whose sha256 or
+integrity differs from the tag's, another package, a version the tag is
+not a release candidate of (`v<version>-rc.<n>`: the SDK moves in lockstep
+with the server, the owner's N2 of 2026-10-12), a README that still holds
+a placeholder of the beta (a line with a `<...>` and "published with the
+beta" or "before publishing"), a CHANGELOG whose first release heading is
+not `## <version>` (an `(unreleased)` one included), and a version already
+on npm. npm versions are immutable, so each of these is checked before
+anything reaches the registry, by `--dry-run` too. It then refuses to publish while `NPM_TOKEN`, `NODE_AUTH_TOKEN`
+or an `npm_config_*_auth*` variable is set, runs `npm publish <tgz> --tag
+beta --access public --registry https://registry.npmjs.org/` (every npm
+call names that registry, whatever an npmrc's `@prisma` scope says; npm
+asks the owner's account for its 2FA code),
+reads the registry's integrity back against the tarball's, prints `npm
+dist-tag ls @prisma/streams` and a `RELEASE_NOTES:` line, and ends
+`PUBLISH_SDK_OK`. `--dry-run` runs the checks and stops before the publish
+(`PUBLISH_SDK_DRY_RUN_OK`). `scripts/quality/test_publish_sdk.py` covers
+each refusal with a stubbed `npm`.
+
 ## Release checklist (the short form)
 
 1. `scripts/release-gate.sh` (everything `scripts/quality.sh` checks, every
@@ -334,3 +356,6 @@ gates, `gh` and `npm`.
    relevant to the change — e.g. `scripts/consumer-saga-smoke.sh`).
 5. `scripts/release-provenance.sh` → paste into
    RELEASE-PRODUCT-SURFACE.md → docs commit → tag.
+6. The SDK, after the RC is certified and by the owner (§7, "Publishing
+   the SDK"): `scripts/publish-sdk.sh --dry-run <rc-tag>`, then
+   `scripts/publish-sdk.sh <rc-tag>`.
