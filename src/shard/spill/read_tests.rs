@@ -721,3 +721,34 @@ async fn the_dst_fixture_absorber_is_the_sealer_at_its_cadence() {
     assert_eq!(absorbed(&engine).await, (1, 2), "an aborted fixture absorber stops the sealer");
     engine.begin_close();
 }
+
+/// Byte anchors bound a read's GET (DESIGN §3.2 item 8): a read from inside
+/// a 2 MB chunk with a small budget fetches from the last anchor at or
+/// before its start to the first anchor past its budget, never the chunk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_inside_a_chunk_fetches_from_its_anchor_within_its_budget() {
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let (engine, _) = engine_on(store, "anchor", manual(8192), false, Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0xa4c);
+    let hash = hashes(&mut rng, 1)[0];
+    let oracle = Mutex::new(Oracle::new());
+    for _ in 0..100 {
+        let rec = random_bytes(&mut rng, 20_000);
+        append_recorded(&engine, &oracle, hash, vec![rec]).await;
+    }
+    engine.spill_once(Trigger::Manual).await.expect("seal");
+    let oracle = oracle.into_inner().unwrap().remove(&hash).unwrap();
+    let r = reads(&engine);
+    let anchor = crate::spill::object::ANCHOR_BYTES;
+    for from in [0u64, 37, 63, 99] {
+        let before = get(&r.get_bytes);
+        let page = merged(&engine, hash, from, 4096, Deliver::Durable).await.unwrap();
+        assert_eq!(check_page(&oracle, from, &page).unwrap(), 1, "from {from}: the first record always fits");
+        let fetched = get(&r.get_bytes) - before;
+        assert!(
+            fetched <= anchor + 2 * 20_200,
+            "from {from}: fetched {fetched} B for one 20 kB record (anchors every {anchor} B)"
+        );
+    }
+    engine.begin_close();
+}
