@@ -40,9 +40,10 @@ import {
 import { audit } from "./audit.ts";
 import { churn } from "./churn.ts";
 import { group, subs, tail, walk } from "./consume.ts";
+import { HOSTILE_LEGS, HOSTILE_MODES } from "./hostile.ts";
 import { produce, setup, type Ctx } from "./produce.ts";
 import {
-  EXTRA_MODES, type LegSpec, type PhaseSpec, type Plan, type Project, expand, phaseEnd, phaseFlags, phaseStart,
+  type LegSpec, type PhaseSpec, type Plan, type Project, expand, phaseEnd, phaseFlags, phaseStart,
   readManifest,
 } from "./tenant-plan.ts";
 
@@ -279,18 +280,13 @@ export const MODES: Record<string, Mode> = {
     await sleep(7 * 86_400_000, signal);
     return {};
   },
+  ...HOSTILE_MODES,
 };
 
-/** A run-level leg (hostile.ts registers them): it gets the run's
- * environment and writes its own result. */
+/** A run-level leg (hostile.ts): it gets the run's environment, and its
+ * result is written to legs/<leg>-<i>.json. */
 export type Leg = (env: RunEnv, leg: LegSpec, signal: AbortSignal) => Promise<Record<string, unknown>>;
-export const LEGS: Record<string, Leg> = {};
-
-/** Register a phase mode (or a leg) that tenants runs besides k2gen's. */
-export function registerMode(name: string, flags: string[], mode: Mode): void {
-  EXTRA_MODES[name] = flags;
-  MODES[name] = mode;
-}
+export const LEGS: Record<string, Leg> = { ...HOSTILE_LEGS };
 
 export interface RunEnv {
   plan: Plan;

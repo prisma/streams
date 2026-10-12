@@ -63,6 +63,11 @@ export class FakeCell {
   groups = new Map<string, number>();
   /** Watch lookups: never-seen names answer after this many ms. */
   coldLookupMs = 0;
+  /** A defect to detect: a read of a name another project holds is
+   * refused instead of answering like a name nobody holds. */
+  existenceLeak = false;
+  /** When set, every authenticated request as [project, method, path]. */
+  trace: Array<[string, string, string]> | null = null;
   private waiters = new Set<() => void>();
 
   constructor() {
@@ -177,6 +182,7 @@ export class FakeCell {
     const project = this.tokens.get(token);
     if (!project) return error(401, "unauthorized");
     this.requests.set(project, (this.requests.get(project) ?? 0) + 1);
+    this.trace?.push([project, req.method, path]);
     const refusal = this.refusals.get(project);
     if (refusal && refusal.left > 0) {
       refusal.left--;
@@ -202,6 +208,7 @@ export class FakeCell {
       if (req.method === "GET") return ns.has(name) ? json(200, { name, contentType: "application/json" }) : error(404, "stream_not_found");
     }
     const recs = ns.get(name);
+    if (!recs && this.existenceLeak && [...this.streams.values()].some((n) => n.has(name))) return error(403, "forbidden");
     if (!recs) return error(404, "stream_not_found");
     const meter = this.meter(project);
     if (req.method === "POST" && op.startsWith("/records")) {

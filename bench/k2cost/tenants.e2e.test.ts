@@ -11,6 +11,9 @@
 // every path of the real server, every project's meters settle at its
 // ledger, the audit passes every producing project, compliant tenants are
 // never refused, and a hostile tenant at Q-hostile is refused with a code.
+// The hostile legs run too (H9, H9b, the cost mix, H11t, the probes): their
+// answers are checked, and H11t's KS result is printed, not judged (its bar
+// is shared_verdict.py's, and it is known red until phase B step 15).
 import { afterAll, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -104,6 +107,27 @@ maybe("the tiny Layer B manifest runs clean on the real binary: oracle, meters, 
   for (const h of ["h1", "h2", "h4", "h6"]) {
     expect([h, Object.keys(classes[h].refusals.typed).some((k) => k.startsWith("429:")), classes[h].refusals.untyped])
       .toEqual([h, true, {}]);
+  }
+  // The hostile legs ran and saw what they report.
+  const leg = (name: string) => JSON.parse(readFileSync(join(out, "legs", name), "utf8"));
+  const h11t = leg("h11t-0.json");
+  const probes = leg("probes-1.json");
+  console.log(JSON.stringify({ h11t: { pairs: h11t.pairs, answers: h11t.answers, ks: h11t.ks, used_p50_ms: h11t.used_p50_ms, never_p50_ms: h11t.never_p50_ms },
+    probes: { pairs: probes.pairs, first_contacts: probes.first_contacts, differences: probes.differences, usage: probes.usage_answers, put: probes.put, examples: probes.examples } }));
+  expect([h11t.pairs, h11t.differences]).toEqual([400, 0]);
+  // Every (prober, target name) once: 2 probers x 13 names in the tiny manifest.
+  expect([probes.pairs, probes.first_contacts, probes.differences, probes.put]).toEqual([26, 26, { name: 0, usage: 0 }, { "201": 26 }]);
+  const phase = (cls: string, i: number) => JSON.parse(readFileSync(join(out, "projects", plan.projects.find((p) => p.cls.class === cls)!.id, `phase-${i}.ledger.json`), "utf8"));
+  const h9 = phase("h9", 2).h9;
+  const h9b = phase("h9b", 2).h9b;
+  const costAnswers = phase("cost", 0).cost.answers;
+  console.log(JSON.stringify({ h9: h9.bursts.map((b: any) => [b.answers, b.payload_bytes, b.p99_ms, b.debt_clear_ms]), h9b, cost: costAnswers }));
+  expect(h9.bursts.length).toBeGreaterThan(0);
+  expect([h9b.statuses, h9b.cut_short]).toEqual([{ "200": 8 }, 0]);
+  // Every kind of the cost mix was answered, every error answer with a code.
+  for (const kind of ["catalog", "create", "missing", "refused"]) {
+    const keys = Object.keys(costAnswers[kind]);
+    expect([kind, keys.length > 0, keys.filter((k) => Number(k.split(":")[0]) >= 400 && k.endsWith(":-"))]).toEqual([kind, true, []]);
   }
   for (const p of plan.projects) {
     const e = u[p.id];

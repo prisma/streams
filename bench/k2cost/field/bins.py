@@ -37,8 +37,8 @@ import fieldlib as F
 
 BIN_HOME = os.path.expanduser("~/.streams-k2/bin")
 K2GEN_DEFAULT = os.path.abspath(os.path.join(F.HERE, ".."))
-GEN_SOURCES = ("k2gen.ts", "tenants.ts", "tenant-plan.ts", "common.ts", "produce.ts", "consume.ts", "churn.ts", "corpus.ts",
-               "audit.ts", "oracle.ts")
+GEN_SOURCES = ("k2gen.ts", "tenants.ts", "tenant-plan.ts", "hostile.ts", "common.ts", "produce.ts", "consume.ts", "churn.ts",
+               "corpus.ts", "audit.ts", "oracle.ts")
 GENERATORS = ("k2gen", "tenants")
 
 

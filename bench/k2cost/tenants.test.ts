@@ -83,7 +83,7 @@ test("a manifest expands into projects with their own ids, seeds, keys and quota
   expect(bad((m) => (m.classes[0]!.phases[1]!.mode = "audit"))).toContain("unknown mode");
   for (const f of ["layer-b", "layer-b-tiny"]) {
     const { manifest: m } = readManifest(join(import.meta.dir, "tenants", `${f}.json`));
-    expect([f, expand(m, "").projects.length]).toEqual([f, f === "layer-b" ? 1000 : 18]);
+    expect([f, expand(m, "").projects.length]).toEqual([f, f === "layer-b" ? 1000 : 22]);
   }
 });
 

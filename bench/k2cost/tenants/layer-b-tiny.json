@@ -323,6 +323,107 @@
    ]
   },
   {
+   "class": "cost",
+   "count": 1,
+   "role": "hostile",
+   "phases": [
+    {
+     "mode": "cost",
+     "at": 90,
+     "secs": 140,
+     "args": {
+      "rate": 10
+     }
+    }
+   ]
+  },
+  {
+   "class": "h9",
+   "count": 1,
+   "role": "hostile",
+   "streams": 2,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 20,
+     "secs": 40,
+     "args": {
+      "mbps": 0.1,
+      "records": 16,
+      "record-bytes": 16384
+     }
+    },
+    {
+     "mode": "h9",
+     "at": 90,
+     "secs": 60,
+     "args": {
+      "readers": 16
+     }
+    }
+   ]
+  },
+  {
+   "class": "h9b",
+   "count": 1,
+   "role": "hostile",
+   "streams": 2,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 20,
+     "secs": 40,
+     "args": {
+      "mbps": 0.1,
+      "records": 16,
+      "record-bytes": 16384
+     }
+    },
+    {
+     "mode": "h9b",
+     "at": 160,
+     "secs": 60,
+     "args": {
+      "readers": 8,
+      "hold-secs": 20
+     }
+    }
+   ]
+  },
+  {
+   "class": "h11t-target",
+   "count": 1,
+   "role": "compliant",
+   "streams": 8,
+   "prefix": "u/",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 30,
+     "secs": 190,
+     "args": {
+      "rate": 10,
+      "record-bytes": 256
+     }
+    }
+   ]
+  },
+  {
    "class": "warm",
    "count": 3,
    "role": "idle",
@@ -343,7 +444,8 @@
       "record-bytes": 1024
      }
     }
-   ]
+   ],
+   "prefix": "w/"
   },
   {
    "class": "cold",
@@ -363,6 +465,27 @@
    "count": 2,
    "role": "idle",
    "phases": []
+  }
+ ],
+ "legs": [
+  {
+   "leg": "h11t",
+   "at": 150,
+   "args": {
+    "pairs": 400,
+    "rate": 20,
+    "target": "h11t-target"
+   }
+  },
+  {
+   "leg": "probes",
+   "at": 170,
+   "args": {
+    "pairs": 200,
+    "rate": 10,
+    "from": "cold-none",
+    "to": "warm,victim,h11t-target"
+   }
   }
  ]
 }

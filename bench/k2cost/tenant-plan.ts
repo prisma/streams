@@ -41,8 +41,18 @@ const RESERVED = new Set(["base", "headers-file", "out", "ledger", "key", "windo
 /** Modes whose acked records the audit replays from the seed: a rerun
  * would repeat them, so they never `repeat`. */
 const NO_REPEAT = new Set(["produce", "tail", "subs", "group"]);
-/** Modes tenants.ts runs besides k2gen's (hostile.ts registers more). */
-export const EXTRA_MODES: Record<string, string[]> = { idle: [] };
+/** Modes tenants.ts runs besides k2gen's, with their flags (hostile.ts
+ * implements h9, h9b and cost), and the run-level legs (hostile.ts). */
+export const EXTRA_MODES: Record<string, string[]> = {
+  idle: [],
+  h9: ["streams", "prefix", "readers", "max-bytes", "probe-ms"],
+  h9b: ["streams", "prefix", "readers", "max-bytes", "hold-secs"],
+  cost: ["streams", "prefix", "rate"],
+};
+export const LEG_ARGS: Record<string, string[]> = {
+  h11t: ["pairs", "rate", "target", "seed"],
+  probes: ["pairs", "rate", "from", "to", "seed"],
+};
 
 export interface PhaseSpec {
   mode: string;
@@ -170,9 +180,17 @@ export function checkManifest(m: Manifest): void {
     c.phases.forEach((ph, i) => checkPhase(c, ph, i, m.duration));
   }
   for (const [i, leg] of (m.legs ?? []).entries()) {
-    if (typeof leg.leg !== "string") fail(`leg ${i}: no name`);
+    const args = LEG_ARGS[leg.leg];
+    if (!args) fail(`leg ${i}: unknown leg ${JSON.stringify(leg.leg)} (${Object.keys(LEG_ARGS).join(", ")})`);
     checkTime(`leg ${i} at`, leg.at);
     if (leg.secs !== undefined) checkTime(`leg ${i} secs`, leg.secs, true);
+    if (leg.at >= m.duration) fail(`leg ${i} starts at or after the run's duration ${m.duration}`);
+    for (const k of Object.keys(leg.args ?? {})) if (!args!.includes(k)) fail(`leg ${i}: ${leg.leg} takes no ${k}`);
+    for (const k of ["target", "from"]) {
+      const cls = leg.args?.[k];
+      if (cls !== undefined && !seen.has(String(cls))) fail(`leg ${i}: no class ${cls}`);
+    }
+    for (const cls of String(leg.args?.to ?? "").split(",").filter(Boolean)) if (!seen.has(cls)) fail(`leg ${i}: no class ${cls}`);
   }
 }
 

@@ -662,6 +662,111 @@
    "streams": 400
   },
   {
+   "class": "cost",
+   "count": 1,
+   "role": "hostile",
+   "comment": "the cost-hostile tenant: catalog reads, creates, reads of names that never existed and refused usage reads, at 100 req/s (the cell's k ceilings)",
+   "phases": [
+    {
+     "mode": "cost",
+     "at": 1800,
+     "secs": 2340,
+     "args": {
+      "rate": 100
+     }
+    }
+   ]
+  },
+  {
+   "class": "h9",
+   "count": 1,
+   "role": "hostile",
+   "streams": 4,
+   "comment": "H9: writes 120 MB over 4 streams, then 64 concurrent 8 MiB reads from the beginning, again each time the read debt clears (k ceilings)",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 600,
+     "secs": 600,
+     "args": {
+      "mbps": 0.2,
+      "records": 16,
+      "record-bytes": 16384
+     }
+    },
+    {
+     "mode": "h9",
+     "at": 2400,
+     "secs": 600,
+     "args": {
+      "readers": 64
+     }
+    }
+   ]
+  },
+  {
+   "class": "h9b",
+   "count": 1,
+   "role": "hostile",
+   "streams": 4,
+   "comment": "H9b: writes 60 MB, then 64 readers of an 8 MiB page each that stall after the headers for 240 s (k ceilings)",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 600,
+     "secs": 600,
+     "args": {
+      "mbps": 0.1,
+      "records": 16,
+      "record-bytes": 16384
+     }
+    },
+    {
+     "mode": "h9b",
+     "at": 3000,
+     "secs": 300,
+     "args": {
+      "readers": 64,
+      "hold-secs": 240
+     }
+    }
+   ]
+  },
+  {
+   "class": "h11t-target",
+   "count": 1,
+   "role": "compliant",
+   "streams": 16,
+   "prefix": "u/",
+   "comment": "the H11t target: 10 appends/s over 16 streams, so each name is used every few seconds",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 0
+    },
+    {
+     "mode": "produce",
+     "at": 600,
+     "secs": 3540,
+     "args": {
+      "rate": 10,
+      "record-bytes": 256
+     }
+    }
+   ]
+  },
+  {
    "class": "warm",
    "count": 200,
    "role": "idle",
@@ -684,7 +789,8 @@
       "record-bytes": 1024
      }
     }
-   ]
+   ],
+   "prefix": "w/"
   },
   {
    "class": "cold",
@@ -702,10 +808,33 @@
   },
   {
    "class": "cold-none",
-   "count": 143,
+   "count": 139,
    "role": "idle",
    "comment": "cold idle with no stream",
    "phases": []
+  }
+ ],
+ "legs": [
+  {
+   "leg": "h11t",
+   "at": 3300,
+   "secs": 300,
+   "args": {
+    "pairs": 2000,
+    "rate": 20,
+    "target": "h11t-target"
+   }
+  },
+  {
+   "leg": "probes",
+   "at": 3600,
+   "secs": 540,
+   "args": {
+    "pairs": 2000,
+    "rate": 10,
+    "from": "cold-none",
+    "to": "warm,victim,s0,h11t-target"
+   }
   }
  ]
 }
