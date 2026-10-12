@@ -19,6 +19,7 @@ ratchet here is 1,000 lines per file; the s3lite census it reads (C2) is
 | `oracle.ts` | the shared-cell leak oracle: a `--payload oracle` record names its project and carries a MAC under that project's harness key, which the server never sees. Every read path (pages, long-polls, SSE, pulls, churn's read-back, the audit) counts each record it is delivered as `oracle_ok`, `oracle_foreign` (another project's record: a leak), `oracle_bad_mac` (corruption) or `oracle_unmarked`. Only a generator that names an owner writes it (`tenants.ts`) |
 | `tenants.ts` (+ `tenant-plan.ts`, `tenants/*.json`) | the shared-cell harness's multi-project driver: a tenants manifest of classes, counts, quotas and phases, every project on k2gen's own modes under its own token (below) |
 | `hostile.ts` | the hostile legs `tenants.ts` runs: phase modes `h9`, `h9b`, `cost` and run-level legs `h11t`, `probes` (below) |
+| `shared_verdict.py` (+ `test_shared_verdict.py`) | the Q5 arms' bars and the arm manifest the single-cell RC gate reads (below) |
 | `tenants-admit.ts` | the manifest's projects onto a cell-admin cell (its own CLI's `init` and `admit`, each with its class's quota set), the token map (12 h tokens, re-minted every 8 h, optionally uploaded), and the bundle's publication |
 | `fake-cell.ts`, `*.test.ts` | the harness's tests, against a product-surface fake: `bun test ./bench/k2cost` |
 
@@ -489,4 +490,44 @@ and soon after a 401. Outputs under `--out`:
 | `legs/<leg>-<i>.json` | a run-level leg's result (`h11t`: answers, differences, the timing samples and their KS; `probes`: pairs, differences, examples, answers) |
 | `usage.json` | `usage`: every project's meters (`GET /v1/projects/{p}/usage`) polled until they reach its ledger and two polls agree |
 | `audit.json` | `audit`: every project's produced streams read back record for record against its produce ledgers, with the oracle's counts |
+
+### The verdict and the arm manifest
+
+```bash
+python3 bench/k2cost/shared_verdict.py layer-b RUN_DIR        # writes RUN_DIR/layer-b-manifest.json
+python3 -m unittest discover -s bench/k2cost -p 'test_*.py'
+```
+
+`shared_verdict.py` judges a `run-shared.sh` run (its `rig.json`,
+`marks.jsonl`, `scrape.jsonl` and `tenants/`) against named bars and writes
+the manifest `scripts/rc-certify.sh --shape single-cell` reads (arm,
+`server_sha256`, verdict, legs, run window, projects; docs/OPS-RELEASE.md
+§7) plus the fence fields: commit, the profiles' sha256s and pins,
+`cell_env_sha256`, the harness trees, the region, every bar's value. The
+layer-b legs: `H9`, `H9b` (each ran, 0 `admit_shed_rss` in its window),
+`H11t` (2,000 pairs, identical answers, KS p > 0.01; as built it times a
+name used in the last few seconds against a never-held one, which phase B
+step 15 leaves apart, the residual the owner accepted in P4, so it is red
+until the owner re-specifies it), `leaks` (0 foreign,
+bad-MAC or unmarked records on any read, every producing project's audit
+passes), `probes` (2,000 first contacts, every pair one; 0 differences,
+every create 201),
+`compliant-refusals` (0, every typed code counted), `hostile-typed`
+(untyped answers under 0.5%), `victim-p99` (noisy <= max(2 x solo, 25 ms),
+appends and reads; flagged `harness_bound` when the driver's own event-loop
+lag p99 in the noisy period is at least a quarter of the victim's p99, as
+the victim is timed in the process that drives every project), `billing` (every project's meters settled at its
+ledger), `memory` (peak < 500 MB, slope < 2 MB/min over the load's last
+30 min), `Q0` (back within the idle baseline + 20 MB 10 min after the
+load), `load` (the run's manifest is the server commit's
+`tenants/layer-b.json` byte for byte, at time scale 1: an edited manifest
+or a `--time-scale` rehearsal cannot certify; the manifest records both,
+and the quota posture: which classes ran at the cell's ceilings, which
+under a quota set),
+`identity` (the wrapper's `binary sha256` line, `/v1/debug/load`
+and the shipped file agree), `release-binary` (not a `--binary`
+rehearsal). Known-red legs (H11t as built, Q0) fail like any
+other; `known_red` only says why. The owner question D4's bars (SC0-1s
+projection, day-90 open, idle RSS, restart window) are constants here for
+the field arms, which take their evidence from the field adapters.
 

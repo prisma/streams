@@ -13,7 +13,11 @@
 // never refused, and a hostile tenant at Q-hostile is refused with a code.
 // The hostile legs run too (H9, H9b, the cost mix, H11t, the probes): their
 // answers are checked, and H11t's KS result is printed, not judged (its bar
-// is shared_verdict.py's, and it is known red until phase B step 15).
+// is shared_verdict.py's). As built H11t cannot pass, before or after phase
+// B step 15: a name the target used in the last few seconds is answered
+// from its held descriptor slot and a never-held name after a store fetch,
+// the timing residual the owner accepted (P4, 2026-10-12); its
+// re-specification is the owner's call.
 import { afterAll, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -50,9 +54,6 @@ async function until<T>(what: string, secs: number, probe: () => Promise<T | und
   throw new Error(`timed out waiting for ${what}`);
 }
 
-/** Codes a compliant tenant may meet on a fresh cell: the first touch of
- * the cell's one shard while the boot sweep holds it (edge record #17). */
-const COLD_SHARD = new Set(["503:temporarily_unavailable"]);
 
 maybe("the tiny Layer B manifest runs clean on the real binary: oracle, meters, audit and refusals", async () => {
   const root = scratchDir();
@@ -100,8 +101,8 @@ maybe("the tiny Layer B manifest runs clean on the real binary: oracle, meters, 
   for (const [cls, c] of Object.entries(classes) as Array<[string, any]>) {
     expect([cls, c.totals.oracle_foreign ?? 0, c.totals.oracle_bad_mac ?? 0, c.totals.oracle_unmarked ?? 0]).toEqual([cls, 0, 0, 0]);
     if (c.role === "hostile") continue;
-    expect([cls, Object.keys(c.refusals.typed).filter((k) => !COLD_SHARD.has(k)), c.refusals.untyped, c.refusals.transport])
-      .toEqual([cls, [], {}, 0]);
+    // 0 refusals, every code counted (shared_verdict.py's compliant bar).
+    expect([cls, c.refusals.typed, c.refusals.untyped, c.refusals.transport]).toEqual([cls, {}, {}, 0]);
   }
   // Every hostile class at Q-hostile is refused, each refusal typed.
   for (const h of ["h1", "h2", "h4", "h6"]) {
@@ -132,8 +133,8 @@ maybe("the tiny Layer B manifest runs clean on the real binary: oracle, meters, 
   for (const p of plan.projects) {
     const e = u[p.id];
     const t = JSON.parse(readFileSync(join(out, "projects", p.id, "ledger.json"), "utf8")).totals;
-    expect([p.id, e.settled, e.meters.ingestRecords, e.meters.readPayloadBytes])
-      .toEqual([p.id, true, t.acked_records ?? 0, t.delivered_payload_bytes ?? 0]);
+    expect([p.id, e.settled, e.meters.ingestRecords, e.meters.readPayloadBytes, e.meters.readRecords])
+      .toEqual([p.id, true, t.acked_records ?? 0, t.delivered_payload_bytes ?? 0, t.delivered_records ?? 0]);
   }
   for (const [id, x] of Object.entries(a)) {
     for (const [prefix, c] of Object.entries(x.prefixes) as Array<[string, any]>) {
