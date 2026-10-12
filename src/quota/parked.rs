@@ -24,6 +24,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use super::read_reservation::ProjectReadBytes;
 use super::{ProjectAdmission, QuotaRegistry};
 use crate::project_policy::ProjectQuotas;
 use crate::tenant::ProjectId;
@@ -83,6 +84,12 @@ impl ParkShare {
         Some(ProjectParked {
             admission: admission.clone(),
         })
+    }
+
+    /// The project's read bytes, for a read the request makes beside the
+    /// page its admission reserved (a settle's dead-letter handoff).
+    pub(crate) fn read_bytes(&self) -> ProjectReadBytes {
+        ProjectReadBytes::of(self.admission.clone())
     }
 
     /// Debit `weight` units of the registry store work one served request

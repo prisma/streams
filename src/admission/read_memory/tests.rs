@@ -127,6 +127,35 @@ async fn a_read_is_refused_for_the_ledger_that_stayed_full_for_the_wait() {
     drop(own);
 }
 
+/// A reservation that does not wait (a settle's dead-letter handoff) takes
+/// its bytes in both ledgers, or nothing when either has no room: the
+/// instance's memory held by another read, or its project's line held by
+/// its own. It counts no memory shed (its caller defers the read), and its
+/// hold's drop releases both ledgers.
+#[test]
+fn a_reservation_that_does_not_wait_takes_both_ledgers_or_neither() {
+    let ctl = ctl(4);
+    let registry = QuotaRegistry::default();
+    let id = project(&registry);
+    let entry = registry.pressure_handle(&id).unwrap();
+    let ledgers = || (ctl.read_memory().0, entry.estimated_pressure_bytes());
+    let held = ReadHold::try_reserve(&ctl, None, 0, 900 * KIB).expect("room");
+    let full = ReadHold::try_reserve(&ctl, registry.read_bytes(&id), 0, 200 * KIB);
+    assert!(full.is_none(), "the instance's memory is held");
+    assert_eq!(ledgers(), (900 * KIB, 0));
+    drop(held);
+    let line = MIB;
+    let own = ReadHold::try_reserve(&ctl, registry.read_bytes(&id), line, 768 * KIB);
+    assert_eq!(ledgers(), (768 * KIB, 768 * KIB));
+    let past = ReadHold::try_reserve(&ctl, registry.read_bytes(&id), line, 512 * KIB);
+    assert!(past.is_none(), "past its project's line");
+    assert_eq!(ledgers(), (768 * KIB, 768 * KIB));
+    let shed = &registry.memory_pressure_json(1, 8)["project_memory_shed_total"];
+    assert_eq!(shed.as_u64(), Some(0), "no memory shed");
+    drop(own);
+    assert_eq!(ledgers(), (0, 0), "dropped");
+}
+
 /// A read waiting at its project's line is admitted when the project's own
 /// read releases, and only then.
 #[tokio::test(start_paused = true)]

@@ -236,6 +236,13 @@ OWNERS = (
     # 14(b)); the owner decided the row on 2026-10-12 (OWNER-DECISIONS-2 X1 (b)).
     owner('store_timing', 'src/store_timing.rs',
           'store_timing:: dst_tests::shared_cell_hostile::a_create_pays_for_its_registry_writes'),
+    # A pull's and a settle's delivery, the dead-letter handoff included
+    # (phase B item B7); the owner decided the row on 2026-10-12
+    # (OWNER-DECISIONS-2 X1 (b)).
+    owner('consumer_delivery', 'src/application/consumer/delivery.rs',
+          'application::consumer:: dst_tests::consumer_product:: dst_tests::consumer_dlq:: '
+          'dst_tests::consumer_runs:: dst_tests::consumer_atomicity:: dst_tests::consumer_generations:: '
+          'dst_tests::shared_cell_capacity::a_poisoning_settle_reads_only_what_its_project_can_hold'),
     owner('sse_source', 'src/sse/source.rs', 'sse:: livefeed_engine_retired'),
     owner('sse_source_tests', 'src/sse/source/tests.rs', 'sse::'),
     owner('sse_source_spans', 'src/sse/source/spans.rs', 'sse::'),

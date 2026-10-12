@@ -12,7 +12,10 @@
 //! release enough (`READ_MEMORY_WAIT`), then is refused retryably, so a
 //! burst of a project's reads (a herd of long-polls re-arming) queues for
 //! milliseconds and only memory held for seconds refuses. One read always
-//! fits, so a page larger than a budget is served alone.
+//! fits, so a page larger than a budget is served alone. A read a request
+//! makes beside its page (a settle's dead-letter handoff) reserves without
+//! waiting (`ReadHold::try_reserve`) and, without room, is deferred by its
+//! caller rather than refused.
 //!
 //! A request's hold (`ReadHold`) lives in its request scope
 //! (`admission::park`): it reserves `min(maxBytes, 8 MiB)` at admission,
@@ -181,13 +184,32 @@ impl ReadHold {
             deadline,
         )
         .await?;
-        Ok(Self {
+        Ok(Self::holding(ctl, project, bytes))
+    }
+
+    /// Reserve `bytes` in both ledgers as `reserve` does, without waiting:
+    /// `None` when either has no room now. A read that does not reserve is
+    /// deferred by its caller, not refused, so no memory shed is counted.
+    pub(crate) fn try_reserve(
+        ctl: &AdmissionController,
+        project: Option<ProjectReadBytes>,
+        line: u64,
+        bytes: u64,
+    ) -> Option<Self> {
+        let memory = &ctl.inner.read_memory;
+        Self::take(memory, project.as_ref(), line, bytes).ok()?;
+        Some(Self::holding(ctl, project, bytes))
+    }
+
+    /// The hold of `bytes` a reservation took in both ledgers.
+    fn holding(ctl: &AdmissionController, project: Option<ProjectReadBytes>, bytes: u64) -> Self {
+        Self {
             ctl: ctl.clone(),
             project,
             budget: bytes,
             bytes: AtomicU64::new(bytes),
             rendered: AtomicBool::new(false),
-        })
+        }
     }
 
     /// A woken wait is about to render: take what admission reserved

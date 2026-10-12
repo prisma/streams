@@ -16,7 +16,9 @@
 //! `read_memory::ReadHold`): bound at admission, released while the request
 //! waits, taken again before a woken wait renders (`resume`), settled when
 //! its page renders, and attached to the response body when the handler
-//! returns, so the page's bytes stay counted until the body ends.
+//! returns, so the page's bytes stay counted until the body ends. A read
+//! beside that page (a settle's dead-letter handoff) reserves its own bytes
+//! without waiting (`try_reserve_read`) and holds them itself.
 //!
 //! And it counts the registry store work the request's own task makes
 //! (public-beta phase B step 14(b)): `store_timing` charges each registry
@@ -123,6 +125,38 @@ pub(crate) fn settle_read(served: u64, unreserved: impl FnOnce() -> ReadHold) {
     REQUEST
         .try_with(|request| request.read.get_or_init(unreserved).settle(served))
         .unwrap_or(());
+}
+
+/// What a read beside the served request's page reserved
+/// (`try_reserve_read`).
+pub(crate) enum ReadReservation {
+    /// The bytes, held in both ledgers until the hold drops.
+    Reserved(ReadHold),
+    /// No room now under the project's line or in the instance's read
+    /// memory: the read is deferred.
+    NoRoom,
+    /// Outside a served request: nothing to reserve against, so the read is
+    /// made as before.
+    Unscoped,
+}
+
+/// Reserve `bytes` for a read the served request makes beside the page its
+/// admission reserved (a settle's dead-letter handoff, public-beta phase B
+/// item B7), in its bound project's read bytes under the project's line and
+/// in the instance's read memory, without waiting. The hold is the
+/// caller's, for as long as it holds what it read: it is never bound to the
+/// request, where a second read's hold would not bind and so would drop at
+/// once.
+pub(crate) fn try_reserve_read(bytes: u64) -> ReadReservation {
+    REQUEST
+        .try_with(|request| {
+            let ctl = &request.ticket.ctl;
+            let project = request.share.get().map(ParkShare::read_bytes);
+            let line = ctl.project_memory_pressure_bytes();
+            ReadHold::try_reserve(ctl, project, line, bytes)
+                .map_or(ReadReservation::NoRoom, ReadReservation::Reserved)
+        })
+        .unwrap_or(ReadReservation::Unscoped)
 }
 
 /// While held, the served request is parked in a wait.

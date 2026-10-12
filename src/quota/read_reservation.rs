@@ -29,12 +29,16 @@ impl QuotaRegistry {
     /// `project`'s read bytes; `None` for a project the tracker does not
     /// hold (admission tracks every verified project first).
     pub(crate) fn read_bytes(&self, project: &ProjectId) -> Option<ProjectReadBytes> {
-        self.tracked(project)
-            .map(|admission| ProjectReadBytes { admission })
+        self.tracked(project).map(ProjectReadBytes::of)
     }
 }
 
 impl ProjectReadBytes {
+    /// The read bytes of the project `admission` is the entry of.
+    pub(super) fn of(admission: Arc<ProjectAdmission>) -> Self {
+        Self { admission }
+    }
+
     /// Reserve `bytes`: `false` when the project already holds read bytes
     /// and these would take it over `line`. A `line` of 0 is no line.
     pub(crate) fn try_reserve(&self, bytes: u64, line: u64) -> bool {

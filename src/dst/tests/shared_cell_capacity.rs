@@ -4,8 +4,9 @@
 //!
 //! Green: a write's buffered bodies share their project's memory line
 //! (C3), a creation document holds at most 64 KiB (C4), a catalog page
-//! reserves what it may hold as a read does (C8), and a deleted or expired
-//! watched stream's touch journal ends with it (C9).
+//! reserves what it may hold as a read does (C8), a settle's dead-letter
+//! handoff reads only what its project can hold (C1's residual), and a
+//! deleted or expired watched stream's touch journal ends with it (C9).
 //! Ignored, red until the owner decides it (`impl/fixes.md`): the coverage
 //! a pull reads charged to nobody (C7).
 //!
@@ -18,6 +19,7 @@ use super::fixture_http::engine_shutdown;
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_storage::mem;
 use crate::dst::{FaultProfile, FaultStore, ObjClass, StoreOp};
+use crate::failpoints::Fp;
 use crate::project_policy::ProjectQuotas;
 use crate::registry::Registry;
 use crate::tenant::ProjectId;
@@ -568,5 +570,157 @@ async fn a_listing_holds_its_reservation_until_it_has_answered() {
         "held while the page is read, then the answer"
     );
     assert_eq!(read_held(&cell, 0), 0, "held once the listing answered");
+    engine_shutdown(&cell.state).await;
+}
+
+/// One POST as project `i`: its status and its JSON answer (`Null` if none).
+async fn posted(cell: &Cell, i: usize, path: &str, body: &[u8]) -> (u16, serde_json::Value) {
+    let (status, _, answer) = cell.call(i, "POST", path, body).await;
+    let value = serde_json::from_slice(&answer).unwrap_or(serde_json::Value::Null);
+    (status, value)
+}
+
+/// `work`'s output and the most project `i` held in read bytes while it
+/// ran, sampled every millisecond.
+async fn peak_while<T>(cell: &Cell, i: usize, work: impl Future<Output = T>) -> (T, u64) {
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let working = async {
+        let output = work.await;
+        done.store(true, Ordering::SeqCst);
+        output
+    };
+    let sampling = async {
+        let mut peak = 0;
+        while !done.load(Ordering::SeqCst) {
+            peak = peak.max(read_held(cell, i));
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        peak
+    };
+    futures_util::future::join(working, sampling).await
+}
+
+/// `work`'s output, run with appends to `stream` parked before their
+/// enqueue, and what project `i` held in read bytes once one was parked
+/// there (`None` if none came within 5 s), released after.
+async fn held_at_append<T>(
+    cell: &Cell,
+    i: usize,
+    stream: &str,
+    work: impl Future<Output = T>,
+) -> (T, Option<u64>) {
+    let before = crate::failpoints::parked(Fp::AppendBeforeEnqueue, stream);
+    crate::failpoints::park_append_before_enqueue(stream);
+    let probe = async {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut held = None;
+        while held.is_none() && Instant::now() < deadline {
+            if crate::failpoints::parked(Fp::AppendBeforeEnqueue, stream) > before {
+                held = Some(read_held(cell, i));
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        crate::failpoints::release_append_before_enqueue(stream);
+        held
+    };
+    futures_util::future::join(work, probe).await
+}
+
+/// C1's residual (phase B item B7). A settle that poisons records (a
+/// retry at `maxAttempts`) hands them to the dead-letter stream from a read
+/// of up to 4 MiB from the lowest poisoned offset, and that read was
+/// reserved nowhere: a project settling poison at its 64-inflight ceiling
+/// held about 256 MiB beside its memory line. The read now takes its
+/// reservation (`PULL_COVERAGE_BYTES`) without waiting, in its project's
+/// read bytes and the instance's read memory, held until the handoff
+/// ends; without room it reads nothing, the poisoned lease stays held, and
+/// the first pull after it expires hands the record off under the pull's
+/// own coverage. Here project 0's stream holds 72 records of 64 KiB, its
+/// consumer dead-letters at the first retry, and one pull leases two of
+/// them for 1 s. Pass: with nothing else held, a settle poisoning record 0
+/// holds exactly the coverage while its dead-letter copy is appended, then
+/// nothing; beside an unread page of 96 records under a line of 8 MiB, a
+/// settle poisoning record 1 dead-letters nothing and the project's read
+/// bytes never pass the line; the page released, the first pull after the
+/// lease expired dead-letters record 1, and nothing stays held.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_poisoning_settle_reads_only_what_its_project_can_hold() {
+    let cell = open_cell(CellSpec::open(1)).await;
+    big_stream(&cell, 0, "page", 96).await;
+    big_stream(&cell, 0, "poison", 72).await;
+    assert_eq!(
+        cell.call(0, "PUT", "/v1/streams/b7-dead", CREATE).await.0,
+        201
+    );
+    let consumer = "/v1/streams/poison/consumers/g0";
+    let config = br#"{"maxAttempts":1,"deadLetterStream":"b7-dead"}"#;
+    assert_eq!(cell.call(0, "PUT", consumer, config).await.0, 201);
+    cell.state
+        .admission
+        .set_project_memory_pressure_bytes(PAGE_BUDGET);
+    let (pull, settle) = (format!("{consumer}:pull"), format!("{consumer}:settle"));
+    let (status, leased) = posted(&cell, 0, &pull, br#"{"max":2,"visibilityMs":1000}"#).await;
+    let leased_at = Instant::now();
+    let tokens: Vec<String> = leased["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m["leaseToken"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!((status, tokens.len()), (200, 2), "the leasing pull");
+    let retry = |n: usize| {
+        let token = &tokens[n];
+        format!(r#"{{"retries":[{{"leaseToken":"{token}","delayMs":0}}]}}"#)
+    };
+    assert_eq!(at_rest(|| read_held(&cell, 0)).await, 0, "after the pull");
+    let body = retry(0);
+    let at_once = posted(&cell, 0, &settle, body.as_bytes());
+    let ((status, at_once), held) = held_at_append(&cell, 0, "b7-dead", at_once).await;
+    let coverage = crate::application::consumer::PULL_COVERAGE_BYTES as u64;
+    assert_eq!(
+        (status, at_once["dlq"].as_u64(), held, read_held(&cell, 0)),
+        (200, Some(1), Some(coverage), 0),
+        "a settle with room: its answer {at_once}, held while its dead-letter copy was \
+         appended, held after"
+    );
+
+    let unread = never_read(&cell, 0, "GET", "/v1/streams/page/records", b"").await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while matches!(read_held(&cell, 0), 0 | PAGE_BUDGET) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let held = read_held(&cell, 0);
+    let body = retry(1);
+    let deferred = posted(&cell, 0, &settle, body.as_bytes());
+    let ((status, deferred), peak) = peak_while(&cell, 0, deferred).await;
+    assert!(
+        peak <= PAGE_BUDGET,
+        "the project held {peak} read bytes under a line of {PAGE_BUDGET} while the settle ran"
+    );
+    let counts = (deferred["dlq"].as_u64(), deferred["dlqBlocked"].as_u64());
+    assert_eq!(
+        (status, counts),
+        (200, (Some(0), Some(0))),
+        "beside {held} bytes of unread page held under a line of {PAGE_BUDGET}, a settle \
+         poisoning a record dead-lettered it from an unreserved read: {deferred}"
+    );
+
+    drop(unread);
+    let released = at_rest(|| read_held(&cell, 0)).await;
+    assert_eq!(released, 0, "the page released");
+    tokio::time::sleep(Duration::from_millis(1100).saturating_sub(leased_at.elapsed())).await;
+    let (status, _) = posted(&cell, 0, &pull, br#"{"max":1}"#).await;
+    assert_eq!(status, 200, "the first pull after the lease expired");
+    let dead = cell
+        .call(0, "GET", "/v1/streams/b7-dead/records", b"")
+        .await;
+    let copies: Vec<serde_json::Value> = serde_json::from_slice(&dead.2).unwrap_or_default();
+    let numbers: Vec<Option<u64>> = copies.iter().map(|c| c["value"]["n"].as_u64()).collect();
+    assert_eq!(
+        (dead.0, numbers),
+        (200, vec![Some(0), Some(1)]),
+        "the dead-letter stream once the first pull after the lease's expiry has run"
+    );
+    assert_eq!(at_rest(|| read_held(&cell, 0)).await, 0, "held at the end");
     engine_shutdown(&cell.state).await;
 }

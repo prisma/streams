@@ -29,6 +29,7 @@
     "commit_handoff": 13,
     "commit_handoff_loom_tests": 0,
     "commit_plan": 69,
+    "consumer_delivery": 86,
     "crypto": 121,
     "crypto_decrypt": 24,
     "crypto_decrypt_tests": 0,

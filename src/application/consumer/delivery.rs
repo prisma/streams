@@ -4,6 +4,8 @@ use super::{
     DeliveryMessage, FailureClass, PullInput, PullOutcome, SettleInput, SettleOutcome,
     consumer_segments, failure,
 };
+use crate::admission::park::ReadReservation;
+use crate::admission::read_memory::ReadHold;
 use crate::application::append::AppendCode;
 use crate::application::consumer_remote::relay_queue_cursor;
 use crate::application::read_remote::InternalTarget;
@@ -569,35 +571,14 @@ pub(crate) async fn settle(
         if poisoned.is_empty() {
             dlq += d;
         } else {
-            let handle = match engine.stream_handle(identity).await {
-                Ok(h) => h,
-                Err(e) => {
-                    return Err(failure(
-                        FailureClass::Internal,
-                        "internal",
-                        &e.to_string(),
-                        None,
-                        true,
-                    ));
-                }
+            let read = DeliveryRead {
+                state: &state,
+                key: &skey,
+                epoch,
+                consumer: &cname,
+                generation: cgen,
             };
-            state.keys.put(identity, skey.clone(), epoch);
-            let lo = poisoned.iter().map(|(o, ..)| *o).min().unwrap_or(0);
-            let mut by_off: DeliveryRecords = Default::default();
-            if let Ok(out) = crate::application::read::read_merged(
-                &skey,
-                &epoch,
-                &handle,
-                &engine,
-                lo,
-                None,
-                4 << 20,
-                crate::shard::Deliver::Durable,
-            )
-            .await
-            {
-                by_off = DeliveryRecords::new(out.recs);
-            }
+            let (_hold, by_off) = handoff_records(read, &cfg, &engine, identity, &poisoned).await?;
             let handoff = dlq_and_settle(
                 &state, &desc, &cfg, cgen, &cname, &skey, &epoch, identity, &engine, seg_id,
                 &poisoned, &by_off,
@@ -616,6 +597,68 @@ pub(crate) async fn settle(
         backlog,
         dlq_blocked,
     })
+}
+
+/// The stored records a settle's dead-letter handoff embeds: up to
+/// `PULL_COVERAGE_BYTES` from the lowest poisoned offset, the window a
+/// pull's walk reads. They are read only under a reservation of that many
+/// bytes in the request's project read bytes and the instance's read
+/// memory, taken without waiting and returned with them, so it holds while
+/// the handoff runs (public-beta phase B item B7). Nothing is read for a
+/// consumer with no dead-letter stream, whose handoff settles without the
+/// records, nor without room: the handoff then skips the poisoned records,
+/// their leases stay held, and the first pull after they expire hands them
+/// off under its own coverage. Outside a served request they are read
+/// unreserved, as before.
+async fn handoff_records(
+    input: DeliveryRead<'_>,
+    cfg: &crate::queue::ConsumerConfig,
+    engine: &Arc<crate::shard::ShardEngine>,
+    identity: [u8; 16],
+    poisoned: &[(u64, u32, u32, [u8; 16])],
+) -> Result<(Option<ReadHold>, DeliveryRecords), ConsumerFailure> {
+    let DeliveryRead {
+        state,
+        key: skey,
+        epoch,
+        ..
+    } = input;
+    let mut by_off = DeliveryRecords::default();
+    if cfg.dead_letter_stream.is_none() {
+        return Ok((None, by_off));
+    }
+    let coverage = u64::try_from(PULL_COVERAGE_BYTES).unwrap_or(u64::MAX);
+    let hold = match crate::admission::park::try_reserve_read(coverage) {
+        ReadReservation::Reserved(hold) => Some(hold),
+        ReadReservation::Unscoped => None,
+        ReadReservation::NoRoom => return Ok((None, by_off)),
+    };
+    let handle = engine.stream_handle(identity).await.map_err(|e| {
+        failure(
+            FailureClass::Internal,
+            "internal",
+            &e.to_string(),
+            None,
+            true,
+        )
+    })?;
+    state.keys.put(identity, skey.clone(), epoch);
+    let lo = poisoned.iter().map(|(o, ..)| *o).min().unwrap_or(0);
+    if let Ok(out) = crate::application::read::read_merged(
+        skey,
+        &epoch,
+        &handle,
+        engine,
+        lo,
+        None,
+        PULL_COVERAGE_BYTES,
+        crate::shard::Deliver::Durable,
+    )
+    .await
+    {
+        by_off = DeliveryRecords::new(out.recs);
+    }
+    Ok((hold, by_off))
 }
 
 /// What one dead-letter pass did with the poisoned leases it was handed. A

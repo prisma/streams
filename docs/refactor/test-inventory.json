@@ -1330,6 +1330,17 @@
     "scenarios": []
   },
   {
+    "name": "a_poisoning_settle_reads_only_what_its_project_can_hold",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b1ffa3c91b6c83b3c5a43080aff8876bd0c12a17c58721f2df83c33f044f0311",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_capacity.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_position_at_a_sealed_span_end_continues_in_its_successor",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
