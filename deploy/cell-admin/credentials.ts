@@ -1,18 +1,26 @@
-// Customer credentials with a secret, made by the owner (public-beta
-// issuer triage B1.8): `credential` adds one to a project and writes its
+// Credentials the owner uses (public-beta issuer triage B1.8):
+// `credential` adds a customer credential to a project and writes its
 // secret, once, to a new file only its owner can read; the state keeps the
 // secret's peppered hash (secrets.ts), exactly as the issuer stores the
-// credentials it creates, so the issuer's exchange serves both.
+// credentials it creates, so the issuer's exchange serves both. `canary`
+// mints a token for the canary's catalog-read credential to prove the cell
+// serves a key (the rotation drill's check, design §7.3).
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Flags } from "./args";
+import { call, cellBase, describeReply } from "./cell-client";
 import type { Io } from "./commands";
-import { AdminError } from "./errors";
-import { mutate } from "./publish";
-import { addCredential, isCanary, newCredentialId, prefixesOf, scopesOf } from "./rules";
+import { AdminError, notYet } from "./errors";
+import { loadChecked, mutate } from "./publish";
+import { addCredential, canaryProbeCredential, isCanary, newCredentialId, prefixesOf, scopesOf } from "./rules";
 import { newSecret, presentedSecret, readPepperFile, secretFields } from "./secrets";
 import { journal, writeDurable } from "./state";
 import { openStore, publishNote } from "./stores";
+import { cellSigningKey, customerClaims, signJwt } from "./tokens";
+
+/// A canary token lives 5 minutes (design §5.1).
+const CANARY_TOKEN_TTL_SECS = 300;
+const CANARY_POLL_MS = 2_000;
 
 export async function credential(f: Flags, io: Io): Promise<void> {
   const store = await openStore(f);
@@ -47,4 +55,34 @@ export async function credential(f: Flags, io: Io): Promise<void> {
     io.out(`its secret is in ${out} (mode 0600) and nowhere else: hand the file over, never paste it`);
     io.out(`bundle: ${store.bundlePath} (feed_version ${state.feed_version}); ${publishNote(store)}`);
   });
+}
+
+/// Mint a canary token under `--key-file` (a key the cell's state holds)
+/// and send `GET /v1/streams?limit=1` until it answers 200, for at most
+/// `--wait-secs` (default 120). A 200 proves the cell serves that key and
+/// a grants generation holding the canary credential's current version;
+/// anything else after the wait is exit 3 (publish, wait, run again).
+export async function canary(f: Flags, io: Io): Promise<void> {
+  const store = await openStore(f);
+  const base = cellBase(f.must("cell-url"));
+  const waitMs = f.count("wait-secs", 120) * 1000;
+  const { state } = await loadChecked(store);
+  const sk = cellSigningKey(state, f.must("key-file"));
+  const id = canaryProbeCredential(state);
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    const token = signJwt(sk, customerClaims(state, id, CANARY_TOKEN_TTL_SECS, "cell-admin-canary"));
+    const reply = await call(base, "GET", "/v1/streams?limit=1", token);
+    if (reply.status === 200) {
+      io.out(`canary: the cell serves key ${sk.record.kid}: GET /v1/streams?limit=1 answered 200`);
+      return;
+    }
+    if (Date.now() + CANARY_POLL_MS > deadline) {
+      throw notYet(
+        `the canary answered ${describeReply(reply)} for ${waitMs / 1000} s, not 200: the cell does not serve ` +
+          `kid ${sk.record.kid} yet; publish the bundle, wait, run again`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, CANARY_POLL_MS));
+  }
 }

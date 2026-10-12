@@ -360,3 +360,21 @@ export function placeCanary(state: CellState): void {
     credential: { id: newCredentialId(state), display_name: "catalog-read", hidden: true },
   });
 }
+
+/// The canary's catalog-read credential: hidden, `streams.catalog.read`
+/// only, without a secret, live. The issuer's and `cell-admin canary`'s
+/// probes mint tokens for it.
+export function canaryProbeCredential(state: CellState): string {
+  const project = canaryProjectId(state.cell.cell_id);
+  const found = Object.entries(state.credentials).find(
+    ([, c]) =>
+      c.project_id === project &&
+      c.hidden === true &&
+      c.scopes === "streams.catalog.read" &&
+      c.secret_hash === undefined &&
+      c.status === "active" &&
+      !c.omitted,
+  );
+  if (!found) throw new AdminError(`cell ${state.cell.cell_id} has no live canary catalog-read credential`);
+  return found[0];
+}

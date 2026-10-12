@@ -2,6 +2,7 @@
 // (public-beta issuer triage B1.6-B1.8), on both state stores. Run with
 // `bun test ./deploy/cell-admin`.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { FakeCell } from "./fake-cell";
 import { bundleOf } from "./feeds";
 import { unversionedChanges } from "./publish";
 import { admitProject, admittedQuotas, newCredentialId, setCredentialField, setProjectField } from "./rules";
@@ -28,7 +29,12 @@ import {
 import { parsePeppers, secretFields } from "./secrets";
 import { loadSigningKeyFromPem, publicKeyRecord } from "./tokens";
 
-afterEach(cleanup);
+let fake: FakeCell | undefined;
+afterEach(() => {
+  fake?.stop();
+  fake = undefined;
+  cleanup();
+});
 
 const policyOf = (where: string, project: string) =>
   (readBundle(where).policies.projects as any[]).find((p) => p.project_id === project);
@@ -304,6 +310,29 @@ for (const kind of STORES) {
         expect((await run("gate", "--state", c.state, ...flags)).code).toBe(2);
       }
       expect(readState(c.state).journal.map((j) => j.command).slice(-2)).toEqual(["gate", "gate"]);
+    });
+
+    test("canary proves the cell serves a key: 200 under a published kid, exit 3 until the bundle lands", async () => {
+      const c = await initCell();
+      fake = new FakeCell();
+      fake.publish(readBundle(c.state));
+      const canary = (key: string, ...extra: string[]) =>
+        run("canary", "--state", c.state, "--key-file", key, "--cell-url", fake!.url, ...extra);
+      let r = await canary(c.key);
+      expect([r.code, r.err, r.out.split("\n")[0]]).toEqual([0, "",
+        `canary: the cell serves key ${readState(c.state).keys[0].kid}: GET /v1/streams?limit=1 answered 200`]);
+      // The rotation drill: the new key is in the state, not yet at the cell.
+      const next = keyFile(c.root, "ed25519", 0o600, "next.pem");
+      await run("keys", "add", "--state", c.state, "--public-key", publicKeyFile(next, "next.pub"));
+      r = await canary(next, "--wait-secs", "1");
+      expect([r.code, r.err.replace(/kid \S+/, "kid K")]).toEqual([3, "cell-admin canary: the canary answered 401 " +
+        "bad_signature for 1 s, not 200: the cell does not serve kid K yet; publish the bundle, wait, run again"]);
+      fake.publish(readBundle(c.state));
+      expect((await canary(next)).code).toBe(0);
+      const probes = fake.requests.filter((q) => q.path === "/v1/streams?limit=1");
+      expect(probes.map((q) => q.status).slice(-1)).toEqual([200]);
+      const stranger = keyFile(c.root, "ed25519", 0o600, "stranger.pem");
+      expect((await canary(stranger)).err).toBe(`cell-admin canary: key file ${stranger} is not a key of cell cell_sc1`);
     });
 
     test("quota sets a project's quotas at most their ceilings at a newer policy version, keeping the rest", async () => {

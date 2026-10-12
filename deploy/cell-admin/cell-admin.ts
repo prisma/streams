@@ -10,7 +10,7 @@
 import { parseFlags } from "./args";
 import { admit, bundle, init, type Io, list, token } from "./commands";
 import { AdminError } from "./errors";
-import { credential } from "./credentials";
+import { canary, credential } from "./credentials";
 import { keysAdd, keysRetire } from "./keys";
 import { offboard } from "./offboard";
 import { allow, disallow, gate, quota, resume, suspend } from "./owner";
@@ -31,6 +31,7 @@ const USAGE = `usage: cell-admin <command> --state DIR|s3://BUCKET/cells/CELL [-
   disallow  --workspace W
   gate      --open | --close | --n-max N
   credential --project P --pepper-file F --out FILE [--scopes "s ..."] [--prefix p]... [--name N] [--hidden]
+  canary    --key-file K --cell-url URL [--wait-secs S]
   keys add  --public-key FILE [--retire-others]
   keys retire --kid K`;
 
@@ -79,6 +80,13 @@ const COMMANDS = {
       multi: ["prefix"],
       bool: ["hidden"],
       required: ["state", "project", "pepper-file", "out"],
+    },
+  },
+  canary: {
+    run: canary,
+    spec: {
+      single: ["state", "s3-credentials", "key-file", "cell-url", "wait-secs"],
+      required: ["state", "key-file", "cell-url"],
     },
   },
   "keys add": {
