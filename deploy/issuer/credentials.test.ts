@@ -6,7 +6,7 @@ import { FakeCell } from "../cell-admin/fake-cell";
 import { CUSTOMER_SCOPES } from "../cell-admin/rules";
 import { hashSecret, parsePeppers } from "../cell-admin/secrets";
 import { cleanup, customerOnly, decodeJwt, readBundle, storeTexts } from "../cell-admin/test-rig";
-import { admin, cellState, customerSecret, type IssuerCell, issuerCell, managed, managementAudits } from "./rig";
+import { admin, cellState, customerSecret, fakeS3, type IssuerCell, issuerCell, managed, managementAudits } from "./rig";
 
 afterEach(cleanup);
 
@@ -120,6 +120,33 @@ describe("a project's credentials", () => {
     expect([res.headers.get("retry-after"), ...(await answer(res))]).toEqual([
       "4320", 429, refusal("rate_limited", `project ${id} may create or rotate 20 credentials a day; retry after 4320 s`),
     ]);
+  });
+
+  test("answers 503 issuer_unavailable with Retry-After when five compare-and-swaps in a row lose to other writers", async () => {
+    const { cell, m, a, path } = await withProject("--max-projects", "2");
+    const fake = fakeS3();
+    // Another writer rewrites the state just before each of the issuer's.
+    fake.beforePut = (key) => {
+      if (!key.endsWith("/cell-state.json")) return;
+      const [bucket, ...rest] = key.split("/");
+      fake.put(bucket, rest.join("/"), fake.objects.get(key)!.body);
+    };
+    const before = cellState(cell).feed_version;
+    const calls: [() => Promise<Response>, string][] = [
+      [() => m.send("POST", path, a, {}), "credential.create"],
+      [() => m.send("POST", "/v1/workspaces/ws_a/streams/projects", a, { displayName: "Two" }), "project.create"],
+    ];
+    for (const [call, action] of calls) {
+      const res = await call();
+      expect([res.headers.get("retry-after"), ...(await answer(res))]).toEqual([
+        "5", 503, refusal("issuer_unavailable", "the cell's state is busy; retry shortly"),
+      ]);
+      expect(managementAudits(cell).at(-1)).toMatchObject({
+        action, outcome: "refused",
+        reason: `issuer_unavailable: s3://${cell.env.STREAMS_CONTROL_S3_BUCKET}/cells/cell_sc1/cell-state.json changed under 5 attempts: run again`,
+      });
+    }
+    expect(cellState(cell).feed_version).toBe(before);
   });
 
   test("answers 404 for a project that is not the workspace's, and 409 project_not_active for one being deleted", async () => {

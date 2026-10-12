@@ -80,15 +80,28 @@ export class Refusal extends Error {
     readonly code: string,
     message: string,
     readonly detail?: string,
+    readonly headers?: Record<string, string>,
   ) {
     super(message);
   }
 }
 
+/// The refusal for what a compare-and-swap path threw: a Refusal as
+/// itself, five lost compare-and-swaps (cell-admin's exit 3) as 503
+/// issuer_unavailable; null for anything else.
+export function refusalOf(e: unknown): Refusal | null {
+  if (e instanceof Refusal) return e;
+  if (e instanceof AdminError && e.code === 3) {
+    return new Refusal(503, "issuer_unavailable", "the cell's state is busy; retry shortly", e.message, {
+      "retry-after": String(UNAVAILABLE_RETRY_SECS),
+    });
+  }
+  return null;
+}
+
 /// Make `change` on the issuer's copy of the state (StateCache.mutate:
 /// one compare-and-swap, re-applied on a lost one, then the bundle
-/// published). A Refusal it throws is answered as one; five lost
-/// compare-and-swaps answer 503 issuer_unavailable.
+/// published), answering what it throws by refusalOf.
 export async function commit<T>(
   deps: ManagementDeps,
   asker: Asker,
@@ -97,16 +110,9 @@ export async function commit<T>(
   try {
     return await deps.cache.mutate(change);
   } catch (e) {
-    if (e instanceof Refusal) {
-      return refused(deps, asker, { status: e.status, code: e.code, message: e.message, detail: e.detail });
-    }
-    if (e instanceof AdminError && e.code === 3) {
-      return refused(deps, asker, {
-        status: 503, code: "issuer_unavailable", message: "the cell's state is busy; retry shortly", detail: e.message,
-        headers: { "retry-after": String(UNAVAILABLE_RETRY_SECS) },
-      });
-    }
-    throw e;
+    const refusal = refusalOf(e);
+    if (refusal === null) throw e;
+    return refused(deps, asker, refusal);
   }
 }
 

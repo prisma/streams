@@ -1,6 +1,7 @@
 // The management API (public-beta issuer triage B3; design §3.2, §3.3,
 // §4, §5, §6.1): a workspace's Streams projects and their credentials,
-// for a browser signed in to that workspace (session.ts). Every call is checked, in order:
+// for a browser signed in to that workspace (session.ts). Every call is
+// checked, in order:
 //
 //   1. the route (else the server's 404) and its method (405 with Allow);
 //   2. a session cookie the issuer's key made, issued < 8 h ago (401);

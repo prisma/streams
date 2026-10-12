@@ -40,9 +40,18 @@ import {
 } from "../cell-admin/rules";
 import { newSecret, presentedSecret, secretFields } from "../cell-admin/secrets";
 import { type CellState, journal } from "../cell-admin/state";
-import { audited, type Call, commit, displayNameOf, type ManagementDeps, readObject, Refusal, refused } from "./calls";
+import {
+  audited,
+  type Call,
+  commit,
+  displayNameOf,
+  type ManagementDeps,
+  readObject,
+  Refusal,
+  refusalOf,
+  refused,
+} from "./calls";
 import type { IssuerConfig } from "./config";
-import { UNAVAILABLE_RETRY_SECS } from "./exchange";
 import { LIMITS } from "./limits";
 import { BUNDLED_PROFILE } from "./profiles";
 import { json } from "./respond";
@@ -74,6 +83,23 @@ function gateRefusal(state: CellState): string | null {
   if (!gate.open) return "the admission gate is closed";
   const active = placedProjects(state).filter(([, p]) => p.phase === "active").length;
   return active >= gate.n_max ? `${active} customer project(s) active, the gate's n_max ${gate.n_max}` : null;
+}
+
+/// The refusal of a placement the gate or checkPlacement refused;
+/// anything else is thrown on.
+function placementRefusal(e: unknown, w: string, cap: number): Refusal {
+  if (e instanceof GateClosed) return new Refusal(409, "beta_at_capacity", AT_CAPACITY, e.message);
+  if (!(e instanceof PlacementRefused)) throw e;
+  switch (e.refusal) {
+    case "workspace_full":
+      return new Refusal(409, "project_limit", `workspace ${w} already has ${cap} Streams project(s), its limit`, e.message);
+    case "reserved_workspace":
+      return new Refusal(403, "workspace_not_allowed", `workspace ${w} cannot hold Streams projects`, e.message);
+    case "cell_full":
+      return new Refusal(409, "beta_at_capacity", AT_CAPACITY, e.message);
+    default:
+      throw e;
+  }
 }
 
 /// Why `w`'s project `id` cannot be deleted on `state`, or null.
@@ -127,30 +153,6 @@ export class Projects {
     return json(200, { ...projectView(this.cfg, state, id, p), ready });
   }
 
-  /// A refusal of a placement: the gate, or checkPlacement's.
-  private placementRefused(c: Call, e: unknown, cap: number): Promise<Response> {
-    if (e instanceof GateClosed) {
-      return refused(this.deps, c, { status: 409, code: "beta_at_capacity", message: AT_CAPACITY, detail: e.message });
-    }
-    if (!(e instanceof PlacementRefused)) throw e;
-    const w = c.session.workspace_id;
-    switch (e.refusal) {
-      case "workspace_full":
-        return refused(this.deps, c, {
-          status: 409, code: "project_limit",
-          message: `workspace ${w} already has ${cap} Streams project(s), its limit`, detail: e.message,
-        });
-      case "reserved_workspace":
-        return refused(this.deps, c, {
-          status: 403, code: "workspace_not_allowed", message: `workspace ${w} cannot hold Streams projects`, detail: e.message,
-        });
-      case "cell_full":
-        return refused(this.deps, c, { status: 409, code: "beta_at_capacity", message: AT_CAPACITY, detail: e.message });
-      default:
-        throw e;
-    }
-  }
-
   async create(c: Call): Promise<Response> {
     const body = await readObject(c.req, ["displayName"]);
     const name = typeof body === "string" ? null : displayNameOf(body.displayName);
@@ -186,9 +188,9 @@ export class Projects {
     try {
       place(state);
     } catch (e) {
-      return this.placementRefused(c, e, cap);
+      return refused(this.deps, c, placementRefusal(e, w, cap));
     }
-    return this.place(c, { id, name, cap, denylist, place });
+    return this.place(c, { id, name, cap, place });
   }
 
   /// Delete a project (design §10): offboarding's first phase in one
@@ -225,7 +227,7 @@ export class Projects {
   /// Burn the id, then place the project in one compare-and-swap.
   private async place(
     c: Call,
-    a: { id: string; name: string; cap: number; denylist: Set<string>; place: (s: CellState) => void },
+    a: { id: string; name: string; cap: number; place: (s: CellState) => void },
   ): Promise<Response> {
     const w = c.session.workspace_id;
     const by = { user_id: c.session.user_id, email: c.session.email };
@@ -233,34 +235,33 @@ export class Projects {
     const fields = secretFields(this.cfg.peppers, secret);
     const before = this.deps.cache.state.feed_version;
     const rps = c.entry.requests_per_sec ?? FREE_TIER_REQUESTS_PER_SEC;
-    let done: { result: string; state: CellState };
     try {
       await burnId(this.deps.store, a.id);
-      done = await this.deps.cache.mutate((s) => {
-        a.place(s);
-        const cid = newCredentialId(s);
-        admitProject(s, {
-          project: a.id,
-          workspace: w,
-          quotas: admittedQuotas(s, [`requests_per_sec=${rps}`]),
-          scopes: CUSTOMER_SCOPES.join(" "),
-          display_name: a.name,
-          created_by: by,
-          credential: { id: cid, ...fields, display_name: FIRST_CREDENTIAL_NAME, created_by: by },
-        });
-        journal(s, "project.create", `${a.id} workspace=${w} credential=${cid} user=${by.user_id}`);
-        return cid;
-      });
     } catch (e) {
-      if (e instanceof GateClosed || e instanceof PlacementRefused) return this.placementRefused(c, e, a.cap);
-      if (e instanceof AdminError && e.code === 3) {
-        return refused(this.deps, c, {
-          status: 503, code: "issuer_unavailable", message: "the cell's state is busy; retry shortly", detail: e.message,
-          headers: { "retry-after": String(UNAVAILABLE_RETRY_SECS) },
-        });
-      }
-      throw e;
+      const refusal = refusalOf(e);
+      if (refusal === null) throw e;
+      return refused(this.deps, c, refusal);
     }
+    const done = await commit(this.deps, c, (s) => {
+      try {
+        a.place(s);
+      } catch (e) {
+        throw placementRefusal(e, w, a.cap);
+      }
+      const cid = newCredentialId(s);
+      admitProject(s, {
+        project: a.id,
+        workspace: w,
+        quotas: admittedQuotas(s, [`requests_per_sec=${rps}`]),
+        scopes: CUSTOMER_SCOPES.join(" "),
+        display_name: a.name,
+        created_by: by,
+        credential: { id: cid, ...fields, display_name: FIRST_CREDENTIAL_NAME, created_by: by },
+      });
+      journal(s, "project.create", `${a.id} workspace=${w} credential=${cid} user=${by.user_id}`);
+      return cid;
+    });
+    if (done instanceof Response) return done;
     const { result: cid, state } = done;
     await audited(this.deps, c, {
       outcome: "done",
