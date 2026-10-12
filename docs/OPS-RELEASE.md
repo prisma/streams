@@ -298,6 +298,24 @@ not hold the public beta's other holds: the scoped mutation campaign on
 the RC artifact (the lead's call 10) and the deployment gates (hardening
 README, "Deployment gates").
 
+**The SDK tarball.** promote-rc builds and packs the SDK at the RC's
+commit, in its worktree, and keeps the tarball in `target/rc/<rc-tag>/`
+of the checkout it runs from. It refuses to start when the tag exists or
+that directory exists, so a kept tarball is never overwritten, and a run
+that mints no tag removes the directory it made, so the next run is not
+refused. The tag records the tarball's name and sha256, and npm's
+integrity (`sha512-...`), the digest the registry reports for a published
+version. The tarball lives under `target/`: `cargo clean` (or deleting
+`target/rc/`) loses it, and `scripts/publish-sdk.sh` then refuses the tag
+until the RC is promoted again under a new tag. No gate runs this
+tarball: `scripts/release-gate.sh` and `scripts/rc-certify.sh` never touch
+`sdk/`, and CI's required `sdk-package` check smoked a pack it made itself
+from the same commit, with Node 22's npm. So the tag pins the bytes of a
+pack of the certified commit, and CI smoked an equivalent pack; it does
+not certify these bytes.
+`scripts/quality/test_promote_rc.py` runs the real script with stubbed
+gates, `gh` and `npm`.
+
 ## Release checklist (the short form)
 
 1. `scripts/release-gate.sh` (everything `scripts/quality.sh` checks, every

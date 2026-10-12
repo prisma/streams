@@ -22,8 +22,10 @@
 #     x86_64-musl binary sha as RC identity, capacity + handoff
 #     manifests) is SUBSUMED when field-run ids are supplied — there is
 #     one definition of "certified", not two;
-#   * the tag records the server-binary digest, the SDK tarball
-#     digest, and the explicitly NOT-certified legs.
+#   * the tag records the server-binary digest, the SDK tarball's
+#     sha256 and npm integrity (sha512), and the explicitly
+#     NOT-certified legs; the tarball itself is kept in
+#     target/rc/<rc-tag>/, which scripts/publish-sdk.sh publishes.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 COMMIT=${1:?usage: promote-rc.sh <commit-ish> <rc-tag> [<rc-certify.sh arguments, either shape> | --field-legs manifest.json]}
@@ -44,6 +46,21 @@ if [ "${1:-}" = "--field-legs" ]; then
 fi
 [ $# -gt 0 ] && CAP_ARGS=("$@")
 SHA=$(git rev-parse --verify "$COMMIT^{commit}")
+# A tag that exists is refused now, not after hours of gates.
+if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+  echo "FAIL: tag $TAG exists"
+  exit 1
+fi
+# The SDK tarball of the tag's commit is packed into, and kept in, its own
+# directory; scripts/publish-sdk.sh publishes exactly that file. A
+# directory left by an earlier promotion is never overwritten, and one this
+# run makes is removed when it mints no tag (the EXIT trap).
+SDK_DIR="$PWD/target/rc/$TAG"
+SDK_DIR_MADE=""
+if [ -e "$SDK_DIR" ]; then
+  echo "FAIL: $SDK_DIR exists (an earlier promotion's kept SDK tarball); remove it if no tag $TAG was minted from it"
+  exit 1
+fi
 
 echo "== promote-rc: $SHA -> $TAG =="
 
@@ -76,7 +93,12 @@ done
 
 echo "== 2/4 clean detached worktree at $SHA =="
 WORKTREE=$(mktemp -d /tmp/promote-rc.XXXXXX)
-cleanup() { git worktree remove --force "$WORKTREE" 2>/dev/null || true; }
+cleanup() {
+  git worktree remove --force "$WORKTREE" 2>/dev/null || true
+  if [ -n "$SDK_DIR_MADE" ] && ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+    rm -rf "$SDK_DIR"
+  fi
+}
 trap cleanup EXIT
 git worktree add --detach "$WORKTREE" "$SHA" >/dev/null
 DIRTY=$(git -C "$WORKTREE" status --porcelain=v1 --untracked-files=all)
@@ -134,9 +156,27 @@ else
   SRV_SHA_NOTE="LOCAL build only — no field-certified artifact for this tag"
   REPRO_LINE="no field certification: local SHA recorded, NOT a certified artifact"
 fi
-(cd "$WORKTREE/sdk" && npm ci >/dev/null 2>&1 && npm run build >/dev/null 2>&1 && npm pack --pack-destination /tmp >/dev/null 2>&1)
-SDK_TGZ=$(ls -t /tmp/prisma-streams-*.tgz | head -1)
+# The build has just run, so the pack skips prepack's second build. Its
+# --json answer names the tarball and npm's integrity, which must be the
+# sha512 of the bytes kept: the digest the registry reports after a publish.
+mkdir -p "$SDK_DIR"
+SDK_DIR_MADE=1
+SDK_PACK=$(cd "$WORKTREE/sdk" && npm ci >/dev/null 2>&1 && npm run build >/dev/null 2>&1 &&
+  npm pack --ignore-scripts --json --pack-destination "$SDK_DIR" 2>/dev/null) ||
+  { echo "FAIL: the SDK build or pack failed in $WORKTREE/sdk"; exit 1; }
+SDK_NAME=$(printf '%s' "$SDK_PACK" | python3 -c 'import json, sys; print(json.load(sys.stdin)[0]["filename"])')
+SDK_NPM_INTEGRITY=$(printf '%s' "$SDK_PACK" | python3 -c 'import json, sys; print(json.load(sys.stdin)[0]["integrity"])')
+SDK_TGZ="$SDK_DIR/$SDK_NAME"
+case "$SDK_NAME" in
+  ''|*/*) echo "FAIL: npm pack named no tarball ($SDK_NAME)"; exit 1 ;;
+esac
+[ -f "$SDK_TGZ" ] || { echo "FAIL: npm pack left no $SDK_TGZ"; exit 1; }
 SDK_SHA=$(shasum -a 256 "$SDK_TGZ" | cut -d' ' -f1)
+SDK_INTEGRITY=$(python3 -c 'import base64, hashlib, sys; print("sha512-" + base64.b64encode(hashlib.sha512(open(sys.argv[1], "rb").read()).digest()).decode())' "$SDK_TGZ")
+if [ "$SDK_INTEGRITY" != "$SDK_NPM_INTEGRITY" ]; then
+  echo "FAIL: npm pack reported integrity $SDK_NPM_INTEGRITY, but $SDK_TGZ is $SDK_INTEGRITY"
+  exit 1
+fi
 
 if [ ${#CAP_ARGS[@]} -gt 0 ]; then
   # rc-certify.sh states what its shape certified and, for a single-cell
@@ -148,10 +188,10 @@ fi
 
 if [ -n "$FIELD_LEGS" ]; then
   MSGFILE=$(mktemp /tmp/rc-tagmsg.XXXXXX)
-  python3 - "$FIELD_LEGS" "$TAG" "$SHA" "$SRV_SHA" "$SDK_SHA" "$(basename "$SDK_TGZ")" "$REPRO_LINE" > "$MSGFILE" <<'PY'
+  python3 - "$FIELD_LEGS" "$TAG" "$SHA" "$SRV_SHA" "$SDK_SHA" "$SDK_NAME" "$REPRO_LINE" "$SDK_INTEGRITY" > "$MSGFILE" <<'PY'
 import json, sys
 m = json.load(open(sys.argv[1]))
-tag, sha, srv, sdk, sdk_name, repro = sys.argv[2:8]
+tag, sha, srv, sdk, sdk_name, repro, sdk_integrity = sys.argv[2:9]
 print(f"release candidate {tag}\n")
 print(f"Certified at {sha} (all gates ran in a clean detached worktree):")
 print("- required check runs green at the SHA")
@@ -172,6 +212,7 @@ print("\nArtifacts:")
 print(f"- server binary sha256: {srv}  [exact-artifact canary-certified]")
 print(f"- reproducibility:      {repro}")
 print(f"- sdk tarball sha256:   {sdk} ({sdk_name})")
+print(f"- sdk tarball sha512:   {sdk_integrity} (npm integrity)")
 print("\nNOT certified by this tag (schedule before GA):")
 for x in m["not_certified"]:
     print(f"- {x}")
@@ -179,6 +220,7 @@ PY
   git tag -a "$TAG" "$SHA" -F "$MSGFILE"
   rm -f "$MSGFILE"
   echo "PROMOTE_RC_OK: annotated tag $TAG at $SHA (push with: git push origin $TAG)"
+  echo "NOTE: the SDK tarball packed at the certified commit is kept at $SDK_TGZ (scripts/publish-sdk.sh $TAG)"
   exit 0
 fi
 
@@ -193,7 +235,8 @@ Certified at $SHA (all gates ran in a clean detached worktree):
 Artifacts:
 - server binary sha256: $SRV_SHA  [$SRV_SHA_NOTE]
 - reproducibility:      $REPRO_LINE
-- sdk tarball sha256:   $SDK_SHA ($(basename "$SDK_TGZ"))
+- sdk tarball sha256:   $SDK_SHA ($SDK_NAME)
+- sdk tarball sha512:   $SDK_INTEGRITY (npm integrity)
 
 NOT certified by this tag (schedule before GA):
 - fleet owner-movement campaign at scale
@@ -203,5 +246,6 @@ NOT certified by this tag (schedule before GA):
   static under STREAMS_RELEASE_POSTURE=1; the platform must mint the
   JWTs)"
 echo "PROMOTE_RC_OK: annotated tag $TAG at $SHA (push with: git push origin $TAG)"
+echo "NOTE: the SDK tarball packed at the certified commit is kept at $SDK_TGZ (scripts/publish-sdk.sh $TAG)"
 echo "NOTE: protect the rc/GA tag pattern from force updates in the repo settings,"
 echo "      and prefer signing (git tag -s) once a release key exists."
