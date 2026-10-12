@@ -71,5 +71,30 @@ for (const kind of STORES) {
       expect((await run("suspend", "--state", c.state, "--project", "proj_a")).err)
         .toBe("cell-admin suspend: project proj_a is offboarding: only an active project is suspended or resumed");
     });
+
+    test("quota sets a project's quotas at most their ceilings at a newer policy version, keeping the rest", async () => {
+      const c = await initCell();
+      await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w", "--quota", "max_streams=50");
+      const before = policyOf(c.state, "proj_a").quotas;
+      const r = await run("quota", "--state", c.state, "--project", "proj_a", "--quota", "requests_per_sec=10",
+        "--quota", "append_records_per_sec=500");
+      expect([r.code, r.err]).toEqual([0, ""]);
+      expect(policyOf(c.state, "proj_a")).toMatchObject({
+        project_policy_version: 2,
+        quotas: { ...before, requests_per_sec: 10, append_records_per_sec: 500, max_streams: 50 },
+      });
+      const refused: [string[], string][] = [
+        [["--quota", "requests_per_sec=177"],
+          "--quota requests_per_sec=177 exceeds the cell's ceiling 176 (bound / k, k = 8)"],
+        [["--quota", "max_stream=1"], "--quota max_stream: not a quota field"],
+        [["--quota", "requests_per_sec=10"], "project proj_a already has these quotas"],
+      ];
+      for (const [flags, message] of refused) {
+        const no = await run("quota", "--state", c.state, "--project", "proj_a", ...flags);
+        expect([no.code === 0, no.err.split("\n")[0]]).toEqual([false, expect.stringContaining(message)]);
+      }
+      expect((await run("quota", "--state", c.state, "--project", "proj_a")).code).toBe(2);
+      expect(policyOf(c.state, "proj_a").project_policy_version).toBe(2);
+    });
   });
 }

@@ -1,8 +1,8 @@
 // The owner's controls over a shared cell beside the interim issuer
-// (public-beta issuer triage B1.8): suspend and resume. Each is one
+// (public-beta issuer triage B1.8): suspend, resume and quota. Each is one
 // change through `mutate`, so it lands safely beside the issuer's writes.
 import type { Flags } from "./args";
-import type { Io } from "./commands";
+import { type Io, quotaValues } from "./commands";
 import { AdminError } from "./errors";
 import { mutate } from "./publish";
 import { projectOf, setProjectField } from "./rules";
@@ -33,3 +33,26 @@ async function setStatus(f: Flags, io: Io, status: "active" | "suspended"): Prom
 
 export const suspend = (f: Flags, io: Io) => setStatus(f, io, "suspended");
 export const resume = (f: Flags, io: Io) => setStatus(f, io, "active");
+
+/// Set some of an active project's quotas (`--quota field=value`, each at
+/// most its ceiling), keeping the others, at a newer policy version.
+export async function quota(f: Flags, io: Io): Promise<void> {
+  const store = await openStore(f);
+  const project = f.must("project");
+  if (f.all("quota").length === 0) throw new AdminError("--quota field=value is required", 2);
+  await store.exclusive(async () => {
+    const { state } = await mutate(store, (s) => {
+      const p = projectOf(s, project);
+      if (p.phase !== "active") throw new AdminError(`project ${project} is ${p.phase}: its quotas are final`);
+      const quotas = { ...p.quotas, ...quotaValues(s, f.all("quota")) };
+      if (!setProjectField(s, project, { quotas })) {
+        throw new AdminError(`project ${project} already has these quotas`);
+      }
+      journal(s, "quota", `${project} ${f.all("quota").join(" ")}`);
+    });
+    const p = state.projects[project];
+    io.out(`${project} at project_policy_version ${p.project_policy_version}: ` +
+      `${Object.entries(p.quotas).map(([q, v]) => `${q}=${v}`).join(" ")}`);
+    io.out(`bundle: ${store.bundlePath} (feed_version ${state.feed_version}); ${publishNote(store)}`);
+  });
+}

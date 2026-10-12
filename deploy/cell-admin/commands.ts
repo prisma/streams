@@ -147,6 +147,16 @@ export function checkSizing(state: CellState, bundledProfiles: readonly string[]
 /// the server does.
 export function admittedQuotas(state: CellState, given: readonly string[]): Quotas {
   const quotas = Object.fromEntries(QUOTA_FIELDS.map((q) => [q, 0])) as Quotas;
+  const set = quotaValues(state, given);
+  for (const q of QUOTA_FIELDS) if (set[q] !== undefined) quotas[q] = set[q];
+  for (const q of BOUNDED_FIELDS) if (set[q] === undefined) quotas[q] = state.cell.ceilings[q];
+  return quotas;
+}
+
+/// The `field=value` quota settings given, each a known field, given once,
+/// at least 1 and at most its ceiling.
+export function quotaValues(state: CellState, given: readonly string[]): Partial<Quotas> {
+  const quotas: Partial<Quotas> = {};
   const seen = new Set<string>();
   for (const item of given) {
     const m = /^([a-z_]+)=([0-9]+)$/.exec(item);
@@ -170,7 +180,6 @@ export function admittedQuotas(state: CellState, given: readonly string[]): Quot
     }
     quotas[field as QuotaField] = value;
   }
-  for (const q of BOUNDED_FIELDS) if (!seen.has(q)) quotas[q] = state.cell.ceilings[q];
   return quotas;
 }
 
