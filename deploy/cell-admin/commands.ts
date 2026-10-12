@@ -21,7 +21,7 @@ import {
 import { type CellState, journal, STATE_FORMAT, writeDurable } from "./state";
 import { Conflict } from "./store";
 import { openStore, publishNote } from "./stores";
-import { cellSigningKey, customerClaims, loadSigningKey, signJwt } from "./tokens";
+import { cellSigningKey, customerClaims, loadSigningKey, readPublicKey, signJwt } from "./tokens";
 
 export interface Io {
   out: (line: string) => void;
@@ -44,7 +44,10 @@ export async function init(f: Flags, io: Io): Promise<void> {
   const profiles = profilesOf(f);
   const env = readProfiles(profiles);
   const sizing = cellSizing(env);
-  const sk = loadSigningKey(f.must("key-file"));
+  if (f.has("key-file") === f.has("public-key")) {
+    throw new AdminError("give one of --key-file K or --public-key FILE (the public half only)", 2);
+  }
+  const key = f.has("public-key") ? readPublicKey(resolve(f.must("public-key"))) : loadSigningKey(f.must("key-file")).record;
   const [workspace_cap, max_projects] = [f.count("workspace-cap", 1), f.count("max-projects", 1000)];
   const denylist = store.denylistAt(f.get("denylist"));
   const state: CellState = {
@@ -62,14 +65,14 @@ export async function init(f: Flags, io: Io): Promise<void> {
       max_projects,
       denylist,
     },
-    keys: [sk.record],
+    keys: [key],
     feed_version: 1,
     projects: {},
     credentials: {},
     journal: [],
   };
   await store.exclusive(async () => {
-    journal(state, "init", `k=${sizing.share_k} kid=${sk.record.kid}`);
+    journal(state, "init", `k=${sizing.share_k} kid=${key.kid}`);
     try {
       await store.save(state, null);
     } catch (e) {
@@ -78,7 +81,7 @@ export async function init(f: Flags, io: Io): Promise<void> {
     }
     await new BundlePublisher(store).publish(state);
   });
-  io.out(`cell ${cell}: k=${sizing.share_k}, key ${sk.record.kid} (${sk.record.alg}, aud prisma-streams-data)`);
+  io.out(`cell ${cell}: k=${sizing.share_k}, key ${key.kid} (${key.alg}, aud prisma-streams-data)`);
   io.out(`ceilings: ${BOUNDED_FIELDS.map((q) => `${q}=${sizing.ceilings[q]}`).join(" ")}`);
   io.out(`denylist: ${denylist}`);
   io.out(`bundle: ${store.bundlePath} (feed_version 1)`);

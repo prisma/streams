@@ -16,6 +16,7 @@ import {
   freshState,
   initCell,
   keyFile,
+  publicKeyFile,
   readBundle,
   readBundleText,
   readState,
@@ -95,6 +96,27 @@ for (const kind of STORES) {
           "--account", "acct_s", "--key-file", junk);
         expect([r.code, r.err]).toEqual([1, `cell-admin init: key file ${junk} does not hold a PEM private key`]);
         expect(stateExists(state)).toBe(false);
+      });
+
+      test("--public-key initialises the cell from the public half alone, which the private key then signs for", async () => {
+        const root = scratchDir();
+        const key = keyFile(root, "ed25519");
+        const state = freshState(root);
+        const init = (...flags: string[]) => run("init", "--state", state, "--cell-id", "cell_sc1",
+          "--deployment-project", "proj_deploy", "--account", "acct_sink", ...flags);
+        expect((await init("--public-key", key)).err).toBe(
+          `cell-admin init: --public-key ${key} holds a private key: give the public half (openssl pkey -pubout)`);
+        expect((await init("--public-key", publicKeyFile(key), "--key-file", key)).code).toBe(2);
+        expect((await init()).code).toBe(2);
+        const r = await init("--public-key", publicKeyFile(key));
+        expect([r.code, r.err]).toEqual([0, ""]);
+        expect(readBundle(state).keys.keys).toEqual([readState(state).keys[0]]);
+        expect((readBundle(state).keys.keys[0] as any).kid).toMatch(/^streams-eddsa-[0-9a-f]{16}$/);
+        await run("admit", "--state", state, "--project", "proj_a", "--workspace", "w");
+        const out = join(root, "t.jwt");
+        expect((await run("token", "--state", state, "--credential", customerCredential(state, "proj_a"),
+          "--key-file", key, "--out", out)).code).toBe(0);
+        expect(verifiedClaims(readBundle(state), readFileSync(out, "utf8"))?.project_id).toBe("proj_a");
       });
 
       test("refuses placeholder identities and a second init", async () => {

@@ -64,29 +64,68 @@ export function kidOf(alg: KeyRecord["alg"], publicKey: KeyObject): string {
   return `streams-${alg === "RS256" ? "rs256" : "eddsa"}-${fp}`;
 }
 
+/// The JWT algorithm a key signs with: RS256 for RSA of at least 2,048
+/// bits, EdDSA for Ed25519; `what` names the key in a refusal.
+function algOf(key: KeyObject, what: string): KeyRecord["alg"] {
+  if (key.asymmetricKeyType === "rsa") {
+    if ((key.asymmetricKeyDetails?.modulusLength ?? 0) < 2048) {
+      throw new AdminError(`${what} holds an RSA key shorter than 2048 bits`);
+    }
+    return "RS256";
+  }
+  if (key.asymmetricKeyType === "ed25519") return "EdDSA";
+  throw new AdminError(`${what} holds a ${key.asymmetricKeyType} key; use RSA or Ed25519`);
+}
+
+/// The keys feed's record of a public key, pinned to the customer audience.
+function recordOf(alg: KeyRecord["alg"], pub: KeyObject): KeyRecord {
+  const pem = pub.export({ type: "spki", format: "pem" }).toString();
+  return { kid: kidOf(alg, pub), alg, aud: AUDIENCE, pem };
+}
+
+/// The signing key from its PEM text, with every check but the file's
+/// custody (the issuer reads it from its environment). `what` names it in
+/// a refusal, which never quotes the key.
+export function loadSigningKeyFromPem(pem: string, what = "the signing key"): SigningKey {
+  let key: KeyObject;
+  try {
+    key = createPrivateKey({ key: pem, format: "pem" });
+  } catch {
+    throw new AdminError(`${what} does not hold a PEM private key`);
+  }
+  return { key, record: recordOf(algOf(key, what), createPublicKey(key)) };
+}
+
 /// Load the signing key from `path` after the custody checks.
 export function loadSigningKey(path: string): SigningKey {
   checkCustody(path);
-  let key: KeyObject;
+  return loadSigningKeyFromPem(readFileSync(path, "utf8"), `key file ${path}`);
+}
+
+/// The keys feed's record of a public key in SPKI PEM (`openssl pkey
+/// -pubout`): how a key enters the state without its private half.
+export function publicKeyRecord(spkiPem: string, what = "the public key"): KeyRecord {
+  if (spkiPem.includes("PRIVATE KEY")) {
+    throw new AdminError(`${what} holds a private key: give the public half (openssl pkey -pubout)`);
+  }
+  let pub: KeyObject;
   try {
-    key = createPrivateKey({ key: readFileSync(path), format: "pem" });
+    pub = createPublicKey({ key: spkiPem, format: "pem" });
   } catch {
-    throw new AdminError(`key file ${path} does not hold a PEM private key`);
+    throw new AdminError(`${what} does not hold a PEM public key`);
   }
-  let alg: KeyRecord["alg"];
-  if (key.asymmetricKeyType === "rsa") {
-    if ((key.asymmetricKeyDetails?.modulusLength ?? 0) < 2048) {
-      throw new AdminError(`key file ${path} holds an RSA key shorter than 2048 bits`);
-    }
-    alg = "RS256";
-  } else if (key.asymmetricKeyType === "ed25519") {
-    alg = "EdDSA";
-  } else {
-    throw new AdminError(`key file ${path} holds a ${key.asymmetricKeyType} key; use RSA or Ed25519`);
+  return recordOf(algOf(pub, what), pub);
+}
+
+/// The public-key file `path`, read as publicKeyRecord reads its text.
+export function readPublicKey(path: string): KeyRecord {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    throw new AdminError(`--public-key ${path} cannot be read`);
   }
-  const pub = createPublicKey(key);
-  const pem = pub.export({ type: "spki", format: "pem" }).toString();
-  return { key, record: { kid: kidOf(alg, pub), alg, aud: AUDIENCE, pem } };
+  return publicKeyRecord(text, `--public-key ${path}`);
 }
 
 /// The signing key, refused unless the cell's keys feed carries it.

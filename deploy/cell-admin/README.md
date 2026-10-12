@@ -53,6 +53,12 @@ kept in one file that only its owner can read:
 openssl genpkey -algorithm ed25519 -out cell-sc1.pem && chmod 600 cell-sc1.pem
 ```
 
+A cell can be initialised from the public half alone, so the private key
+never meets the state's machine: `openssl pkey -in cell-sc1.pem -pubout
+-out cell-sc1.pub`, then `init --public-key cell-sc1.pub`. This is how the
+interim issuer's key enters a cell: the private half becomes its
+environment, the public half the cell's keys feed.
+
 `cell-admin` reads the key only from the `--key-file` path you give it.
 It refuses a key file that group or others can read, and it never copies,
 prints or logs the key. Only the public half goes into the keys feed,
@@ -62,7 +68,7 @@ pinned to the customer audience `prisma-streams-data`.
 
 | Command | What it does |
 |---|---|
-| `init --cell-id C --deployment-project P --account A --key-file K` | Creates the state and the first bundle. It reads the profiles (by default the two above; `--profile` repeats, later wins), checks they describe a single-server shared cell, and fixes the cell's ceilings at bound ÷ k. Also: `--workspace-cap N` (default 1), `--max-projects N` (default 1,000), `--denylist FILE` (default `DIR/denylist.txt`; point several cells at one file) and `--issuer URL` |
+| `init --cell-id C --deployment-project P --account A (--key-file K \| --public-key FILE)` | Creates the state and the first bundle. It reads the profiles (by default the two above; `--profile` repeats, later wins), checks they describe a single-server shared cell, and fixes the cell's ceilings at bound ÷ k. Also: `--workspace-cap N` (default 1), `--max-projects N` (default 1,000), `--denylist FILE` (default `DIR/denylist.txt`; point several cells at one file) and `--issuer URL` |
 | `admit --project P --workspace W` | Places a project and creates its customer credential. Each bounded quota defaults to the cell's ceiling; `--quota field=value` sets a lower one. Also `--scopes "..."` (default: every scope), `--prefix p` (repeatable) and `--profile F` (repeatable; default the two shipped profiles), the profile it checks against the one `init` recorded |
 | `token --credential C --key-file K --out FILE [--ttl SECS]` | Mints a customer token, valid at most 24 h (default 1 h; the first minute is backdated for clock skew). The token goes to FILE with mode 0600 and is never printed. Hand the file over; never paste the token |
 | `offboard --project P` | First run: revokes the project's customer credentials and adds an operator credential. Publish the bundle |

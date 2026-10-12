@@ -5,10 +5,10 @@
 // The suite runs once per store (`useStore` in a beforeEach); every
 // helper below takes the `--state` value and reads whichever store it
 // names.
-import { generateKeyPairSync, verify } from "node:crypto";
+import { createPublicKey, generateKeyPairSync, verify } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { main } from "./cell-admin";
 import { FakeS3 } from "./fake-s3";
 import type { Bundle } from "./feeds";
@@ -153,6 +153,15 @@ export function keyFile(dir: string, kind: "rsa" | "ed25519" = "rsa", mode = 0o6
       : generateKeyPairSync("ed25519");
   const path = join(dir, name);
   writeFileSync(path, privateKey.export({ type: "pkcs8", format: "pem" }), { mode });
+  return path;
+}
+
+/// The public half of the key in `privatePath`, as `openssl pkey -pubout`
+/// writes it.
+export function publicKeyFile(privatePath: string, name = "cell.pub"): string {
+  const pub = createPublicKey(readFileSync(privatePath)).export({ type: "spki", format: "pem" });
+  const path = join(dirname(privatePath), name);
+  writeFileSync(path, pub, { mode: 0o644 });
   return path;
 }
 

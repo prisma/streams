@@ -5,7 +5,18 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { bundleOf } from "./feeds";
 import { unversionedChanges } from "./publish";
 import { admitProject, admittedQuotas, newCredentialId, setCredentialField, setProjectField } from "./rules";
-import { cleanup, customerCredential, initCell, readBundle, readState, run, STORES, useStore } from "./test-rig";
+import { generateKeyPairSync } from "node:crypto";
+import {
+  cleanup,
+  customerCredential,
+  initCell,
+  readBundle,
+  readState,
+  run,
+  STORES,
+  useStore,
+} from "./test-rig";
+import { loadSigningKeyFromPem, publicKeyRecord } from "./tokens";
 
 afterEach(cleanup);
 
@@ -44,6 +55,28 @@ describe("the version-bump invariant", () => {
     setProjectField(s, "proj_a", { status: "suspended" });
     setCredentialField(s, cred, { status: "revoked" });
     expect(s.feed_version).toBe(readState(c.state).feed_version + 1);
+  });
+});
+
+describe("keys from PEM text", () => {
+  test("the signing key and its public half load from text with the file's checks, never quoting the key", () => {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const sk = loadSigningKeyFromPem(pem, "STREAMS_ISSUER_SIGNING_KEY");
+    expect(publicKeyRecord(publicKey.export({ type: "spki", format: "pem" }).toString())).toEqual(sk.record);
+    const weak = generateKeyPairSync("rsa", { modulusLength: 1024 }).privateKey.export({ type: "pkcs8", format: "pem" });
+    expect(() => loadSigningKeyFromPem(weak.toString(), "STREAMS_ISSUER_SIGNING_KEY"))
+      .toThrow("STREAMS_ISSUER_SIGNING_KEY holds an RSA key shorter than 2048 bits");
+    const ec = generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ type: "pkcs8", format: "pem" });
+    expect(() => loadSigningKeyFromPem(ec.toString(), "STREAMS_ISSUER_SIGNING_KEY"))
+      .toThrow("STREAMS_ISSUER_SIGNING_KEY holds a ec key; use RSA or Ed25519");
+    let message = "";
+    try {
+      loadSigningKeyFromPem(`${pem.slice(0, 60)}garbage`, "STREAMS_ISSUER_SIGNING_KEY");
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toBe("STREAMS_ISSUER_SIGNING_KEY does not hold a PEM private key");
   });
 });
 

@@ -14,7 +14,7 @@ import { offboard } from "./offboard";
 import { quota, resume, suspend } from "./owner";
 
 const USAGE = `usage: cell-admin <command> --state DIR|s3://BUCKET/cells/CELL [--s3-credentials FILE] [flags]
-  init      --cell-id C --deployment-project P --account A --key-file K
+  init      --cell-id C --deployment-project P --account A (--key-file K | --public-key FILE)
             [--profile F]... [--issuer URL] [--workspace-cap N] [--max-projects N] [--denylist FILE]
   admit     --project P --workspace W [--quota field=value]... [--scopes "s ..."] [--prefix p]...
             [--profile F]...
@@ -30,9 +30,12 @@ const COMMANDS = {
   init: {
     run: init,
     spec: {
-      single: ["state", "s3-credentials", "cell-id", "deployment-project", "account", "key-file", "issuer", "workspace-cap", "max-projects", "denylist"],
+      single: [
+        "state", "s3-credentials", "cell-id", "deployment-project", "account", "key-file", "public-key", "issuer",
+        "workspace-cap", "max-projects", "denylist",
+      ],
       multi: ["profile"],
-      required: ["state", "cell-id", "deployment-project", "account", "key-file"],
+      required: ["state", "cell-id", "deployment-project", "account"],
     },
   },
   admit: {
