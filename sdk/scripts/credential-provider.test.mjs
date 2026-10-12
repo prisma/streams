@@ -63,19 +63,26 @@ function client(tokenProvider, refused = []) {
 
 // ---- tokens with an expiry ----------------------------------------------
 
-clocked("an issuer token of 3600 s is refreshed by the first request at 2880 s, not at 2879 s", async () => {
+// The request that reaches a token's refresh point starts the refresh and
+// is sent with the cached token at once; the refresh runs beside it, and
+// the requests after it arrives send its token.
+clocked("an issuer token of 3600 s is refreshed from the first request at 2880 s, not at 2879 s", async () => {
   const p = provider(3600 * SECOND, 3600 * SECOND);
   const { stream, sent } = client(p);
   await stream.metadata();
   clock = T0 + 2879 * SECOND;
   await stream.metadata();
+  assert.equal(p.calls, 1);
   clock = T0 + 2880 * SECOND;
   await stream.metadata();
-  assert.deepEqual(sent, ["Bearer t1", "Bearer t1", "Bearer t2"]);
+  assert.equal(p.calls, 2, "the request at 2880 s started the refresh");
+  await drain();
+  await stream.metadata();
+  assert.deepEqual(sent, ["Bearer t1", "Bearer t1", "Bearer t1", "Bearer t2"]);
   assert.equal(p.calls, 2);
 });
 
-clocked("an emulator token of 600 s is refreshed at 480 s, not at 479 s, and its successor 480 s after it", async () => {
+clocked("an emulator token of 600 s is refreshed at 480 s, not at 479 s, and its successor 480 s after it arrives", async () => {
   const p = provider(600 * SECOND, 600 * SECOND, 600 * SECOND);
   const { stream, sent } = client(p);
   await stream.metadata();
@@ -83,11 +90,14 @@ clocked("an emulator token of 600 s is refreshed at 480 s, not at 479 s, and its
   await stream.metadata();
   clock = T0 + 480 * SECOND;
   await stream.metadata();
+  await drain();
   clock = T0 + 959 * SECOND;
   await stream.metadata();
   clock = T0 + 960 * SECOND;
   await stream.metadata();
-  assert.deepEqual(sent, ["Bearer t1", "Bearer t1", "Bearer t2", "Bearer t2", "Bearer t3"]);
+  await drain();
+  await stream.metadata();
+  assert.deepEqual(sent, ["Bearer t1", "Bearer t1", "Bearer t1", "Bearer t2", "Bearer t2", "Bearer t3"]);
   assert.equal(p.calls, 3);
 });
 
@@ -97,9 +107,13 @@ clocked("a 300 s token is refreshed two minutes before it expires, at 180 s", as
   await stream.metadata();
   clock = T0 + 179 * SECOND;
   await stream.metadata();
+  assert.equal(p.calls, 1);
   clock = T0 + 180 * SECOND;
   await stream.metadata();
-  assert.deepEqual(sent, ["Bearer t1", "Bearer t1", "Bearer t2"]);
+  await drain();
+  await stream.metadata();
+  assert.deepEqual(sent, ["Bearer t1", "Bearer t1", "Bearer t1", "Bearer t2"]);
+  assert.equal(p.calls, 2);
 });
 
 clocked("expiresAt may be a Date", async () => {
@@ -110,10 +124,12 @@ clocked("expiresAt may be a Date", async () => {
   await stream.metadata();
   clock = T0 + 480 * SECOND;
   await stream.metadata();
-  assert.deepEqual(sent, ["Bearer d1", "Bearer d1", "Bearer d2"]);
+  await drain();
+  await stream.metadata();
+  assert.deepEqual(sent, ["Bearer d1", "Bearer d1", "Bearer d1", "Bearer d2"]);
 });
 
-clocked("requests at the refresh threshold share one refresh and all send its token", async () => {
+clocked("requests past the refresh point are sent at once with the cached token while one refresh runs beside them", async () => {
   let release;
   const held = new Promise(resolve => { release = resolve; });
   let calls = 0;
@@ -124,28 +140,67 @@ clocked("requests at the refresh threshold share one refresh and all send its to
   });
   await stream.metadata();
   clock = T0 + 2880 * SECOND;
+  // An issuer answering 503 with Retry-After: 5 holds a refresh for 15 s.
   const pending = Array.from({ length: 5 }, () => stream.metadata());
+  try {
+    await drain();
+    assert.equal(calls, 2, "one refresh for five requests");
+    assert.deepEqual(sent, Array(6).fill("Bearer t1"), "no request waits for the refresh");
+  } finally {
+    release();
+    await Promise.all(pending);
+  }
   await drain();
-  assert.equal(calls, 2, "one refresh for five requests");
-  assert.deepEqual(sent, ["Bearer t1"], "the requests wait for the refresh");
-  release();
-  await Promise.all(pending);
-  assert.deepEqual(sent, ["Bearer t1", ...Array(5).fill("Bearer t2")]);
+  await stream.metadata();
+  assert.equal(sent.at(-1), "Bearer t2");
+  assert.equal(calls, 2);
 });
 
-clocked("a failed refresh is not surfaced while the cached token is valid: the request sends it, and the next request refreshes again", async () => {
+clocked("a request made after the token expired waits for the refresh already running and sends its token", async () => {
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  let calls = 0;
+  const { stream, sent } = client(async () => {
+    calls++;
+    if (calls === 2) await held;
+    return { token: `t${calls}`, expiresAt: clock + 600 * SECOND };
+  });
+  await stream.metadata();
+  clock = T0 + 480 * SECOND;
+  const started = stream.metadata();
+  await drain();
+  clock = T0 + 600 * SECOND;
+  const waiting = stream.metadata();
+  try {
+    await drain();
+    assert.equal(calls, 2);
+    assert.deepEqual(sent, ["Bearer t1", "Bearer t1"], "the request at 600 s does not send the expired token");
+  } finally {
+    release();
+    await Promise.all([started, waiting]);
+  }
+  assert.deepEqual(sent, ["Bearer t1", "Bearer t1", "Bearer t2"]);
+  assert.equal(calls, 2);
+});
+
+clocked("a failed refresh is not surfaced while the cached token is valid, and is tried again 30 s later, not by the next request", async () => {
   const down = new Error("issuer unavailable");
   const p = provider(3600 * SECOND, down, 3600 * SECOND);
   const { stream, sent } = client(p);
   await stream.metadata();
   clock = T0 + 2880 * SECOND;
-  const both = await Promise.all([stream.metadata(), stream.metadata()]);
-  assert.equal(both.length, 2);
+  await Promise.all([stream.metadata(), stream.metadata()]);
+  await drain();
   assert.equal(p.calls, 2, "the two requests shared the failed refresh");
-  clock = T0 + 2881 * SECOND;
+  clock = T0 + 2909 * SECOND;
+  await stream.metadata();
+  assert.equal(p.calls, 2, "no refresh within 30 s of the failed one");
+  clock = T0 + 2910 * SECOND;
   await stream.metadata();
   assert.equal(p.calls, 3);
-  assert.deepEqual(sent, ["Bearer t1", "Bearer t1", "Bearer t1", "Bearer t3"]);
+  await drain();
+  await stream.metadata();
+  assert.deepEqual(sent, ["Bearer t1", "Bearer t1", "Bearer t1", "Bearer t1", "Bearer t1", "Bearer t3"]);
 });
 
 clocked("once the cached token has expired, a failed refresh rejects the request with the provider's error and sends nothing", async () => {
@@ -155,6 +210,7 @@ clocked("once the cached token has expired, a failed refresh rejects the request
   await stream.metadata();
   clock = T0 + 599 * SECOND;
   await stream.metadata();
+  await drain();
   clock = T0 + 600 * SECOND;
   assert.equal(await rejection(stream.metadata()), down);
   assert.equal(p.calls, 3);
@@ -179,7 +235,7 @@ clocked("a token the server refused is never sent again when the refresh after t
   assert.deepEqual(sent, ["Bearer t1", "Bearer t3"]);
 });
 
-clocked("a token sent after a failed refresh is dropped at its 401 and the refresh's failure surfaces", async () => {
+clocked("a cached token is dropped at its 401 after a failed refresh, and the refresh the request waits for surfaces its failure", async () => {
   const down = new Error("issuer unavailable");
   const refused = [];
   const p = provider(3600 * SECOND, down, down, down);
@@ -187,11 +243,78 @@ clocked("a token sent after a failed refresh is dropped at its 401 and the refre
   await stream.metadata();
   clock = T0 + 2880 * SECOND;
   await stream.metadata();
+  await drain();
   refused.push("Bearer t1");
   clock = T0 + 2881 * SECOND;
   assert.equal(await rejection(stream.metadata()), down);
-  assert.equal(p.calls, 4);
+  assert.equal(p.calls, 3, "the background refresh and the refresh after the 401");
   assert.deepEqual(sent, ["Bearer t1", "Bearer t1", "Bearer t1"]);
+});
+
+clocked("a 401 for the cached token while a refresh runs beside it drops that token: the requests surface the next refresh's failure and never resend it", async () => {
+  const revoked = new Error("credential_not_active");
+  let rejectHeld;
+  const held = new Promise((_resolve, reject) => { rejectHeld = reject; });
+  let calls = 0;
+  const tokenProvider = async () => {
+    calls++;
+    if (calls === 1) return { token: "t1", expiresAt: clock + 3600 * SECOND };
+    if (calls === 2) return held;
+    throw revoked;
+  };
+  let releaseFirst;
+  const firstAnswer = new Promise(resolve => { releaseFirst = resolve; });
+  const sent = [];
+  // The credential is revoked after the first request: the cell refuses
+  // every later one 401, the request sent at 2879 s late.
+  const c = new StreamsClient({ url: "https://cell.example", tokenProvider, fetch: async (_url, init) => {
+    sent.push(init.headers.authorization);
+    if (sent.length === 1) return new Response("{}");
+    if (sent.length === 2) await firstAnswer;
+    return new Response("", { status: 401 });
+  } });
+  const stream = c.stream("orders", { encryptionKey: KEY });
+  await stream.metadata();
+  clock = T0 + 2879 * SECOND;
+  const r1 = rejection(stream.metadata());
+  await drain();
+  clock = T0 + 2880 * SECOND;
+  const r2 = rejection(stream.metadata());
+  await drain();
+  releaseFirst();
+  await drain();
+  rejectHeld(revoked);
+  assert.equal(await r1, revoked);
+  assert.equal(await r2, revoked);
+  assert.deepEqual(sent, ["Bearer t1", "Bearer t1", "Bearer t1"], "t1 is not sent again after a 401");
+});
+
+clocked("a late 401 for a token a later refresh replaced reuses the new token and costs no exchange", async () => {
+  const down = new Error("issuer unavailable");
+  const p = provider(3600 * SECOND, down, 3600 * SECOND, 3600 * SECOND);
+  let releaseLate;
+  const late = new Promise(resolve => { releaseLate = resolve; });
+  const sent = [];
+  const c = new StreamsClient({ url: "https://cell.example", tokenProvider: p, fetch: async (_url, init) => {
+    sent.push(init.headers.authorization);
+    if (sent.length === 2) {
+      await late;
+      return new Response("", { status: 401 });
+    }
+    return new Response("{}");
+  } });
+  const stream = c.stream("orders", { encryptionKey: KEY });
+  await stream.metadata();
+  clock = T0 + 2880 * SECOND;
+  const ra = stream.metadata();
+  await drain();
+  clock = T0 + 2910 * SECOND;
+  await stream.metadata();
+  await drain();
+  releaseLate();
+  await ra;
+  assert.equal(p.calls, 3, "the late 401 cost no exchange");
+  assert.deepEqual(sent, ["Bearer t1", "Bearer t1", "Bearer t1", "Bearer t3"]);
 });
 
 clocked("a provider returning a string is refreshed only after a 401 (pin)", async () => {
@@ -433,7 +556,7 @@ clocked("an issuer endpoint that is neither https nor loopback is refused before
   assert.equal(p.served[0].url, "http://cell.example/v1/streams/orders");
 });
 
-clocked("a refresh that names a new endpoint sends the request that triggered it to the new host, and the producer's state is found there", async () => {
+clocked("a refresh that names a new endpoint moves the requests after it to the new host, and the producer's state is found there", async () => {
   const p = platform(
     { endpoint: "https://cell-a.example", expiresIn: 600 },
     { endpoint: "https://cell-b.example", expiresIn: 600 },
@@ -443,13 +566,35 @@ clocked("a refresh that names a new endpoint sends the request that triggered it
   const producer = client.stream("orders", { encryptionKey: KEY }).producer("checkout", { state });
   await producer.append({ n: 1 });
   clock = T0 + 480 * SECOND;
+  // The refresh runs beside this append, which keeps the cached token and host.
   await producer.append({ n: 2 });
+  await drain();
   await producer.append({ n: 3 });
   assert.equal(p.issued.length, 2);
   assert.deepEqual(p.served.map(c => [c.url, c.headers.authorization, c.headers["producer-seq"]]), [
     ["https://cell-a.example/v1/streams/orders/records", "Bearer jwt-1", "0"],
-    ["https://cell-b.example/v1/streams/orders/records", "Bearer jwt-2", "1"],
+    ["https://cell-a.example/v1/streams/orders/records", "Bearer jwt-1", "1"],
     ["https://cell-b.example/v1/streams/orders/records", "Bearer jwt-2", "2"],
+  ]);
+});
+
+clocked("a request that waits for the exchange (its token expired, or refused 401) goes to the endpoint that exchange names", async () => {
+  const expired = platform(
+    { endpoint: "https://cell-a.example", expiresIn: 600 },
+    { endpoint: "https://cell-b.example", expiresIn: 600 },
+  );
+  const late = await StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: ISSUER, fetch: expired.fetch });
+  clock = T0 + 600 * SECOND;
+  await late.stream("orders", { encryptionKey: KEY }).metadata();
+  assert.deepEqual(expired.served.map(c => [c.url, c.headers.authorization]),
+    [["https://cell-b.example/v1/streams/orders", "Bearer jwt-2"]]);
+  const refused = platform({ endpoint: "https://cell-a.example" }, { endpoint: "https://cell-b.example" });
+  refused.refused.push("Bearer jwt-1");
+  const moved = await StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: ISSUER, fetch: refused.fetch });
+  await moved.stream("orders", { encryptionKey: KEY }).metadata();
+  assert.deepEqual(refused.served.map(c => [c.url, c.headers.authorization]), [
+    ["https://cell-a.example/v1/streams/orders", "Bearer jwt-1"],
+    ["https://cell-b.example/v1/streams/orders", "Bearer jwt-2"],
   ]);
 });
 
@@ -459,11 +604,87 @@ clocked("an explicit url is never left for the issuer's endpoint, and an insecur
   const insecure = platform({ endpoint: "https://cell-a.example", expiresIn: 600 }, { endpoint: "http://cell-b.example", expiresIn: 600 });
   const guarded = await StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: ISSUER, fetch: insecure.fetch });
   clock = T0 + 480 * SECOND;
-  await pinned.stream("orders", { encryptionKey: KEY }).metadata();
-  await guarded.stream("orders", { encryptionKey: KEY }).metadata();
+  for (const client of [pinned, guarded]) {
+    await client.stream("orders", { encryptionKey: KEY }).metadata();
+    await drain();
+    await client.stream("orders", { encryptionKey: KEY }).metadata();
+  }
   assert.deepEqual([explicit.issued.length, insecure.issued.length], [2, 2]);
-  assert.deepEqual(explicit.served.map(c => [c.url, c.headers.authorization]), [["https://gateway.example/v1/streams/orders", "Bearer jwt-2"]]);
-  assert.deepEqual(insecure.served.map(c => [c.url, c.headers.authorization]), [["https://cell-a.example/v1/streams/orders", "Bearer jwt-2"]]);
+  assert.deepEqual(explicit.served.map(c => [c.url, c.headers.authorization]), [
+    ["https://gateway.example/v1/streams/orders", "Bearer jwt-1"],
+    ["https://gateway.example/v1/streams/orders", "Bearer jwt-2"],
+  ]);
+  assert.deepEqual(insecure.served.map(c => [c.url, c.headers.authorization]), [
+    ["https://cell-a.example/v1/streams/orders", "Bearer jwt-1"],
+    ["https://cell-a.example/v1/streams/orders", "Bearer jwt-2"],
+  ]);
+});
+
+// Timers of `ms` are parked until released; after that they run at once.
+function parkTimers(ms) {
+  const native = globalThis.setTimeout;
+  const parked = [];
+  let released = false;
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    if (delay !== ms) return native(callback, delay, ...args);
+    if (released) return native(callback, 0, ...args);
+    parked.push(() => callback(...args));
+    return {};
+  };
+  return {
+    parked: () => parked.length,
+    release() { released = true; for (const run of parked.splice(0)) run(); },
+    restore() { globalThis.setTimeout = native; },
+  };
+}
+
+clocked("a connected client past its refresh point is served at once while the issuer answers 503 with Retry-After: 5", async () => {
+  const busy = () => envelope(503, "issuer_unavailable", true, { "retry-after": "5" });
+  const p = platform({}, busy(), busy(), busy(), busy());
+  const client = await StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: ISSUER, fetch: p.fetch });
+  const orders = client.stream("orders", { encryptionKey: KEY });
+  clock = T0 + 2880 * SECOND;
+  const timers = parkTimers(5000);
+  let first;
+  try {
+    first = orders.metadata().then(() => "served", e => e);
+    // Until the refresh sits in its Retry-After (bounded: a request that
+    // waited for the refresh would never be served meanwhile).
+    for (let i = 0; i < 50 && (timers.parked() === 0 || p.served.length === 0); i++) await drain();
+    assert.equal(p.issued.length, 2, "the refresh started and met the issuer's 503");
+    assert.equal(timers.parked(), 1, "the refresh waits out the Retry-After");
+    assert.deepEqual(p.served.map(c => c.headers.authorization), ["Bearer jwt-1"],
+      "the request was sent with the cached token without waiting");
+  } finally {
+    timers.release();
+    // The released Retry-After waits run as 0 ms timers: wait in real time
+    // (bounded), not in event-loop turns, which can outrun a timer.
+    const tick = () => new Promise(resolve => setTimeout(resolve, 1));
+    for (let i = 0; i < 500 && p.issued.length < 5; i++) await tick();
+    for (let i = 0; i < 5; i++) await tick();
+    timers.restore();
+  }
+  assert.equal(await first, "served");
+  assert.equal(p.issued.length, 5, "the refresh made its four attempts and failed");
+  clock = T0 + 2890 * SECOND;
+  await orders.metadata();
+  assert.equal(p.issued.length, 5, "no new exchange within 30 s of the failed one");
+  assert.deepEqual(p.served.map(c => c.headers.authorization), ["Bearer jwt-1", "Bearer jwt-1"]);
+});
+
+clocked("a plain append whose expired token's exchange the issuer answers 502 rejects with that CredentialExchangeError and sends nothing to the cell", async () => {
+  const gateway = () => new Response("bad gateway", { status: 502 });
+  const p = platform({ expiresIn: 600 }, gateway(), gateway(), gateway());
+  const client = await StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: ISSUER, fetch: p.fetch });
+  const orders = client.stream("orders", { encryptionKey: KEY });
+  clock = T0 + 600 * SECOND;
+  for (const append of [s => s.append({ n: 1 }), s => s.appendBytes(new Uint8Array([1])), s => s.appendMany([{ n: 1 }])]) {
+    const error = await rejection(append(orders));
+    assert.ok(error instanceof CredentialExchangeError, error.name);
+    assert.deepEqual([error.status, error.code, error.retryable], [502, "exchange_failed", false]);
+  }
+  assert.equal(p.issued.length, 4);
+  assert.equal(p.served.length, 0);
 });
 
 clocked("a 401 from the service exchanges the credential again and replays", async () => {

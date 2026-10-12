@@ -59,14 +59,15 @@ export interface StreamsClientOptions {
 
 /**
  * A bearer token and when it expires (epoch milliseconds or a `Date`), as
- * a `tokenProvider` may return it. The client refreshes it at the first
- * request made after 80% of its lifetime, or two minutes before it
- * expires when that is earlier (a 3600 s token at 2880 s, a 600 s token
- * at 480 s), through the provider and shared by concurrent requests; it
- * starts no timer. If that refresh fails while the token is still valid,
- * the request is sent with it and the failure is not surfaced; the next
- * request tries again. Once the token has expired, the failure rejects
- * the request.
+ * a `tokenProvider` may return it. The first request made after 80% of
+ * its lifetime, or two minutes before it expires when that is earlier (a
+ * 3600 s token at 2880 s, a 600 s token at 480 s), starts a refresh
+ * through the provider and is sent with this token at once: while the
+ * token is valid no request waits for a refresh, one refresh runs at a
+ * time, and the new token replaces this one when it arrives. A failed
+ * refresh is not surfaced then; the first request 30 s later tries again.
+ * A request made once the token has expired waits for a refresh, and its
+ * failure rejects the request. The client starts no timer.
  */
 export interface TokenWithExpiry {
   token: string;
@@ -454,15 +455,23 @@ interface CachedToken {
   refreshAt?: number;
 }
 
+/** A refresh's token and the generation the cache gave it. */
+interface Refreshed {
+  value: string;
+  generation: number;
+}
+
 /** The tokenProvider cache; single-flight so a burst of requests after
- * expiry fetches ONE token, not one per request. */
+ * expiry fetches ONE token, not one per request. `generation` moves on at
+ * each 401 invalidation and each token a refresh caches, so a request's 401
+ * invalidates only the token that request sent. */
 interface TokenCache {
   generation: number;
   token?: CachedToken;
-  inflight?: Promise<string>;
-  /** The token a proactive refresh is replacing: sent while it is valid
-   * if the refresh fails, dropped at a 401. */
-  fallback?: { value: string; expiresAt: number };
+  inflight?: Promise<Refreshed>;
+  /** After a refresh fails, a valid cached token starts no new refresh
+   * before this time (epoch ms). */
+  retryAt?: number;
 }
 
 interface Ctx {
@@ -486,6 +495,9 @@ interface Ctx {
  * left: 20% of it, at least two minutes. */
 const REFRESH_MARGIN_MIN_MS = 120_000;
 const REFRESH_MARGIN_FRACTION = 0.2;
+/** While the cached token is valid, a failed refresh is tried again at the
+ * first request this long after it, not at every request. */
+const REFRESH_RETRY_MS = 30_000;
 
 function cachedToken(t: string | TokenWithExpiry): CachedToken {
   if (typeof t === "string") return { value: t };
@@ -493,6 +505,36 @@ function cachedToken(t: string | TokenWithExpiry): CachedToken {
   if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt)) return { value: t.token };
   const margin = Math.max(REFRESH_MARGIN_MIN_MS, REFRESH_MARGIN_FRACTION * (expiresAt - Date.now()));
   return { value: t.token, expiresAt, refreshAt: expiresAt - margin };
+}
+
+/** One provider call, shared by every request that waits for it. A token it
+ * returns while it is still the cache's refresh is cached under a new
+ * generation; one a 401 invalidated meanwhile is handed only to the
+ * requests that waited for it. */
+function refreshToken(ctx: Ctx, cache: TokenCache): Promise<Refreshed> {
+  const generation = cache.generation;
+  // Defer invocation so synchronous provider throws also reach every
+  // waiter on the same promise and leave the cache recoverable.
+  const inflight: Promise<Refreshed> = Promise.resolve().then(() => ctx.tokenProvider!()).then(
+    (t) => {
+      const token = cachedToken(t);
+      if (cache.inflight !== inflight) return { value: token.value, generation };
+      cache.generation++;
+      cache.token = token;
+      cache.inflight = undefined;
+      cache.retryAt = undefined;
+      return { value: token.value, generation: cache.generation };
+    },
+    (e) => {
+      if (cache.inflight === inflight) {
+        cache.inflight = undefined;
+        cache.retryAt = Date.now() + REFRESH_RETRY_MS;
+      }
+      throw e;
+    },
+  );
+  cache.inflight = inflight;
+  return inflight;
 }
 
 async function authHeader(
@@ -507,45 +549,28 @@ async function authHeader(
       cache.generation++;
       cache.token = undefined;
       cache.inflight = undefined;
-      cache.fallback = undefined;
-    } else if (cache.token?.refreshAt !== undefined && Date.now() >= cache.token.refreshAt) {
-      // A proactive refresh, like a 401's, except that the token it
-      // replaces stays usable until it expires.
-      cache.generation++;
-      cache.fallback = { value: cache.token.value, expiresAt: cache.token.expiresAt! };
-      cache.token = undefined;
-      cache.inflight = undefined;
     }
-    const generation = cache.generation;
-    if (cache.token !== undefined) {
-      return { header: `Bearer ${cache.token.value}`, generation };
-    }
-    const fallback = cache.fallback;
-    // Defer invocation so synchronous provider throws also reach every
-    // waiter on the same promise and leave the cache recoverable.
-    cache.inflight ??= Promise.resolve().then(() => ctx.tokenProvider!()).then(
-      (t) => {
-        const token = cachedToken(t);
-        if (cache.generation === generation) {
-          cache.token = token;
-          cache.inflight = undefined;
-          cache.fallback = undefined;
-        }
-        return token.value;
-      },
-      (e) => {
-        if (cache.generation === generation) cache.inflight = undefined;
-        throw e;
-      },
-    );
-    try {
-      return { header: `Bearer ${await cache.inflight}`, generation };
-    } catch (e) {
-      if (fallback !== undefined && Date.now() < fallback.expiresAt) {
-        return { header: `Bearer ${fallback.value}`, generation };
+    const now = Date.now();
+    const token = cache.token;
+    if (token !== undefined && (token.expiresAt === undefined || now < token.expiresAt)) {
+      // Past its refresh point a valid token is still sent, at once: the
+      // refresh runs beside the request, one at a time, and replaces the
+      // token when it arrives. No request waits for it.
+      if (
+        token.refreshAt !== undefined && now >= token.refreshAt &&
+        cache.inflight === undefined && (cache.retryAt === undefined || now >= cache.retryAt)
+      ) {
+        refreshToken(ctx, cache).catch(() => {
+          // Not surfaced while the token is valid; tried again after
+          // REFRESH_RETRY_MS, and a request after expiry waits for one.
+        });
       }
-      throw e;
+      return { header: `Bearer ${token.value}`, generation: cache.generation };
     }
+    // No token, or an expired one: wait for a refresh (the one running, if
+    // any), and surface its failure.
+    const refreshed = await (cache.inflight ?? refreshToken(ctx, cache));
+    return { header: `Bearer ${refreshed.value}`, generation: refreshed.generation };
   }
   return { header: ctx.token ? `Bearer ${ctx.token}` : undefined };
 }
@@ -973,9 +998,11 @@ export class StreamsClient {
    * `allowInsecureEndpoint`); the project is the credential's. Tokens are
    * exchanged again before they expire and after a `401`; when an
    * exchange names a new endpoint and no `url` was given, the client
-   * moves there, starting with the request that triggered the exchange.
-   * Producer state is keyed on the issuer URL, so a move keeps every
-   * producer's sequence.
+   * moves there: every request made after the exchange returns goes to
+   * it, a request that waited for the exchange (its token had expired, or
+   * was refused `401`) included; one sent while a refresh ran beside it
+   * went to the old endpoint. Producer state is keyed on the issuer URL,
+   * so a move keeps every producer's sequence.
    */
   static async connect(options: ConnectOptions): Promise<StreamsClient> {
     const allowInsecure = options.allowInsecureEndpoint ?? false;

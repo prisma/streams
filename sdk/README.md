@@ -74,8 +74,11 @@ anything else is refused before the first request (`insecure_endpoint`)
 unless you pass `allowInsecureEndpoint: true`. Tokens are exchanged again
 at 80% of their lifetime and after a `401`, as described under "Errors and
 retries". When an exchange names a different endpoint (and no `url` was
-given), the client moves there, starting with the request that triggered
-the exchange; an insecure endpoint is not followed.
+given), the client moves there: every request made after the exchange
+returns goes to it, a request that waited for the exchange (its token had
+expired, or the server refused it `401`) included, while a request sent
+when a refresh started beside it goes to the old one. An insecure endpoint
+is not followed.
 
 To build a client yourself, `prismaStreamsCredential` turns the credential
 into a token source (this sketch exchanges twice; `connect` seeds its
@@ -173,16 +176,18 @@ credential share one refresh, and late responses cannot invalidate its
 successor.
 
 A `tokenProvider` may return `{ token, expiresAt }` (epoch milliseconds or
-a `Date`) instead of a string. Such a token is refreshed at the first
-request made after 80% of its lifetime, or two minutes before it expires
-when that is earlier (a 3600 s token at 2880 s, a 600 s token at 480 s);
-requests made while the refresh runs wait for it and share it, and the
-client starts no timer. If the refresh fails while the cached token is
-still valid, the request is sent with that token and the failure is not
-surfaced; the next request tries again, and once the token has expired
-the provider's error rejects the request. A token the server refuses with
-`401` is never sent again. A provider that returns a string is refreshed
-only after a `401`, as before.
+a `Date`) instead of a string. The first request made after 80% of such a
+token's lifetime, or two minutes before it expires when that is earlier (a
+3600 s token at 2880 s, a 600 s token at 480 s), starts a refresh and is
+sent with the cached token at once. While that token is valid no request
+waits for a refresh, even when the issuer is slow or busy; one refresh
+runs at a time, and its token replaces the cached one when it arrives. The
+client starts no timer. A failed refresh is not surfaced while the cached
+token is valid, and the first request 30 s later tries again; a request
+made once the token has expired waits for a refresh, and the provider's
+error rejects it. A token the server refuses with `401` is never sent
+again: the request waits for a new one. A provider that returns a string
+is refreshed only after a `401`, as before.
 
 ## Producer state ownership
 
