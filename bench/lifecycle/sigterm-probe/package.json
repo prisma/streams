@@ -1,0 +1,10 @@
+{
+  "name": "streams-sigterm-probe",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@prisma/composer": "0.29.1",
+    "@prisma/composer-prisma-cloud": "0.29.1",
+    "prisma": "8.0.0-rc.22"
+  }
+}
