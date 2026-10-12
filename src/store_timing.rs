@@ -8,6 +8,9 @@
 //!
 //! Admission is shared across the stores of one runtime. Diagnostic latency
 //! and physical process-egress counters remain process-wide measurements.
+//!
+//! It also weighs the registry store work a served request makes for its
+//! project to pay (public-beta phase B step 14(b), `charge`).
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -77,7 +80,9 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
             .await;
         let g = OpGuard::new(0, location);
         let r = self.inner.put_opts(location, payload, opts).await;
-        g.finish_put(Outcome::of(&r), bytes);
+        let outcome = Outcome::of(&r);
+        g.finish_put(outcome, bytes);
+        charge(location.as_ref(), billed(outcome, CLASS_A));
         r
     }
 
@@ -126,7 +131,9 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         // is what the egress path gates on, and it keeps the guard simple.
         // A 304 on a conditional GET is a successful revalidation (the
         // registry's TTL refresh), not an error: `Outcome::NotModified`.
-        g.finish(Outcome::of(&r));
+        let outcome = Outcome::of(&r);
+        g.finish(outcome);
+        charge(location.as_ref(), billed(outcome, 1));
         // R25-F: count ACTUAL transferred bytes by wrapping the payload
         // stream — the R23-6 version counted object METADATA size, so a
         // ranged read billed the whole object. GET_BYTES is now the
@@ -210,6 +217,9 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
     }
 
     fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, Result<ObjectMeta>> {
+        // Charged when the listing starts: a caller that takes what it
+        // needs drops the stream before it ends.
+        charge(prefix.map_or("", AsRef::as_ref), CLASS_A);
         let g = OpGuard::new(5, prefix.unwrap_or(&Path::default()));
         TimedStream {
             inner: self.inner.list(prefix),
@@ -219,6 +229,7 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
     }
 
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
+        charge(prefix.map_or("", AsRef::as_ref), CLASS_A);
         let g = OpGuard::new(5, prefix.unwrap_or(&Path::default()));
         let r = self.inner.list_with_delimiter(prefix).await;
         g.finish(Outcome::of(&r));
@@ -228,8 +239,43 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
     async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> Result<()> {
         let g = OpGuard::new(6, from);
         let r = self.inner.copy_opts(from, to, options).await;
-        g.finish(Outcome::of(&r));
+        let outcome = Outcome::of(&r);
+        g.finish(outcome);
+        charge(to.as_ref(), billed(outcome, CLASS_A));
         r
+    }
+}
+
+/// The root every registry object lives under (descriptors, fork debts,
+/// replaced incarnations). Paths arrive fully prefixed; no SlateDB object
+/// is under it, so a shard's reads and writes, which can run inline in a
+/// request's task, are never charged.
+const REGISTRY_ROOT: &str = "registry/v4/";
+
+/// A PUT, a listing (charged once, however many provider pages it reads)
+/// or a COPY: the provider's class A, which Tigris and S3 price at ten
+/// times a GET.
+const CLASS_A: u64 = 10;
+
+/// Charge the request this task serves `weight` units for one operation
+/// on the object (or under the prefix) `path`, when it is in the registry
+/// (phase B step 14(b)): its project pays them once it is served.
+fn charge(path: &str, weight: u64) {
+    if path.contains(REGISTRY_ROOT) {
+        crate::admission::park::charge_store_weight(weight);
+    }
+}
+
+/// An operation's weight by how it ended: its `class` (1 for a GET or a
+/// HEAD, `CLASS_A` for a PUT or a COPY) when the provider bills it (a
+/// success or a 404), nothing for a 304, a refused precondition or a
+/// failure. It is charged once the call answers, so a call cancelled
+/// before it answered is charged nothing.
+fn billed(outcome: Outcome, class: u64) -> u64 {
+    if matches!(outcome, Outcome::Ok | Outcome::NotFound) {
+        class
+    } else {
+        0
     }
 }
 

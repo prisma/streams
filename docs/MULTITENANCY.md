@@ -1346,6 +1346,29 @@ declared quotas are live:
 * `max_live_subscriptions` — SSE subscriptions AND capability watch
   waits draw from the same pool.
 
+*Store work* (shared-cells A10 cost, public-beta phase B step 14(b);
+edge change #NEW-phase-b-3, awaiting ratification). A verified request
+also pays for the registry store work its own task makes, once it is
+served (or its handler is dropped): a GET or HEAD the provider bills (a
+body or a 404) weighs 1, a PUT, a listing (once, however many provider
+pages it reads) or a COPY 10 (the class-A price ratio), a 304, a refusal
+or a failure nothing. SlateDB objects and the store work of other tasks
+(the committer, sweeps) are charged to no request. The weight is debited
+from the project's **store budget**, a second bucket at its
+`requests_per_sec` with one second's burst, without a floor (a cap would
+bound the debt by one request's work instead of the rate). While the
+store budget is in debt, the project's creates (recreates and forks
+included), deletes and seals answer `429 project_rate_limit` with the
+whole seconds until it is not; every other request only pays into it,
+and the request bucket still charges every request exactly 1. A fresh
+create weighs 11 (a 404 and a PUT): at 20 requests a second a project
+creates two streams back to back and then one every 0.55 s. The catalog
+joins the refused routes once it binds its share (phase B item B6),
+where a listing of N streams weighs N + 10. Owner question Q1: built as
+(b′), a budget at the request rate; (b) would publish its own
+`store_ops_per_sec`, (a) would debit the request bucket and refuse every
+route.
+
 ### 17.4 Fairness
 
 Start with:

@@ -306,3 +306,120 @@ async fn debug_store_totals_count_every_wrapped_operation_by_billed_outcome() {
         assert!(grew >= least, "{key} grew {grew}, under {least}: {after}");
     }
 }
+
+/// One of each operation a served request can make on `store`: on the
+/// registry object `doc`, a PUT (10), a GET and a HEAD (1 each), a 304 and
+/// a refused conditional GET (nothing), a COPY (10), a refused conditional
+/// PUT and a refused conditional COPY (nothing: the provider bills neither),
+/// a LIST abandoned unpolled and a delimited LIST (10 each), and a 404 GET
+/// of another registry object (1); beside them a PUT, a GET and a LIST
+/// outside the registry, and a LIST of the whole store (nothing). 43 in all.
+async fn weigh_every_operation(
+    store: &impl object_store::ObjectStore,
+    doc: &object_store::path::Path,
+) {
+    use object_store::{Error, GetOptions, ObjectStoreExt, PutPayload, path::Path};
+    let put = store
+        .put(doc, PutPayload::from_static(b"{}"))
+        .await
+        .unwrap();
+    store.get(doc).await.unwrap();
+    store.head(doc).await.unwrap();
+    let revalidate = GetOptions {
+        if_none_match: put.e_tag,
+        ..GetOptions::default()
+    };
+    let unchanged = store.get_opts(doc, revalidate).await;
+    assert!(matches!(unchanged, Err(Error::NotModified { .. })));
+    let stale = GetOptions {
+        if_match: Some("\"stale\"".into()),
+        ..GetOptions::default()
+    };
+    let refused = store.get_opts(doc, stale).await;
+    assert!(matches!(refused, Err(Error::Precondition { .. })));
+    let registry = Path::from("cell/registry/v4/projects/70");
+    let copy = Path::from("cell/registry/v4/projects/70/copy.json");
+    store.copy(doc, &copy).await.unwrap();
+    let create = object_store::PutOptions::from(object_store::PutMode::Create);
+    let exists = store
+        .put_opts(doc, PutPayload::from_static(b"{}"), create)
+        .await;
+    assert!(matches!(exists, Err(Error::AlreadyExists { .. })));
+    let taken = store.copy_if_not_exists(doc, &copy).await;
+    assert!(matches!(taken, Err(Error::AlreadyExists { .. })));
+    drop(store.list(Some(&registry)));
+    store.list_with_delimiter(Some(&registry)).await.unwrap();
+    let missing = Path::from("cell/registry/v4/projects/70/missing.json");
+    let missing = store.get(&missing).await;
+    assert!(matches!(missing, Err(Error::NotFound { .. })));
+    let wal = Path::from("cell/shards/root-0/wal/00000001.sst");
+    store
+        .put(&wal, PutPayload::from_static(b"w"))
+        .await
+        .unwrap();
+    store.get(&wal).await.unwrap();
+    drop(store.list(Some(&Path::from("cell/shards"))));
+    drop(store.list(None));
+}
+
+/// Public-beta phase B step 14(b): the registry store work a served
+/// request's own task makes is weighed (a PUT, a COPY or a LIST 10; a GET
+/// or a HEAD the provider bills, a body or a 404, 1; a 304 or a refusal
+/// nothing; nothing outside the registry) and debited from its bound
+/// project's store budget once the request is served. Store work outside
+/// a served request is charged to no one.
+#[tokio::test]
+async fn a_served_requests_registry_work_is_weighed_for_its_project() {
+    use crate::admission::{AdmissionController, AdmissionKnobs, SubscriptionCapacity};
+    let config = crate::config::StorageConfig::default();
+    let resources = std::sync::Arc::new(StoreResources::new(&config));
+    let store = super::TimingStore::new(object_store::memory::InMemory::new(), resources);
+    let doc = object_store::path::Path::from("cell/registry/v4/projects/70/streams/71.json");
+    let quotas = crate::quota::QuotaRegistry::default();
+    let project = crate::tenant::ProjectId::new("proj-weigh").unwrap();
+    let limits = crate::project_policy::ProjectQuotas {
+        requests_per_sec: 1_000,
+        ..Default::default()
+    };
+    drop(
+        quotas
+            .admit(&project, &limits, crate::shard::now_ms())
+            .unwrap(),
+    );
+    weigh_every_operation(&store, &doc).await;
+    let share = quotas.park_share(&project, &limits).unwrap();
+    assert_eq!(share.store_ops_level(), 1_000.0, "outside a served request");
+    let principal = crate::auth::RequestPrincipal {
+        project_id: project.clone(),
+        quotas: limits.clone(),
+        credential_id: "c-weigh".into(),
+        ownership_version: 1,
+        grant_version: 1,
+        scopes: crate::tenant::ScopeSet::default(),
+        grant: crate::tenant::StreamGrant::All,
+        expires_at: i64::MAX,
+    };
+    let ctl = AdmissionController::new(AdmissionKnobs {
+        max_inflight: 0,
+        per_stream_cap: 0,
+        rss_shed_mb: 0,
+        project_memory_pressure_bytes: 0,
+        project_memory_release_pct: 75,
+        subscriptions: SubscriptionCapacity {
+            effective: 0,
+            configured: 0,
+        },
+        record_ceiling_bytes: 0,
+    });
+    let served = async {
+        assert!(crate::admission::park::bind_principal(
+            &quotas,
+            Some(&principal)
+        ));
+        weigh_every_operation(&store, &doc).await;
+        assert_eq!(share.store_ops_level(), 1_000.0, "paid once served");
+        axum::response::Response::default()
+    };
+    drop(ctl.enter().serve(served).await);
+    assert_eq!(share.store_ops_level(), 1_000.0 - 43.0);
+}

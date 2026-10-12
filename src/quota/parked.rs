@@ -9,6 +9,17 @@
 //!
 //! The waits stay inside the project's in-flight quota: a parked request
 //! keeps the request slot its admission charged.
+//!
+//! The share also carries the project's store budget (public-beta phase B
+//! step 14(b), owner question Q1 at its recommended (b')): the registry
+//! store work a served request's own task made (`store_timing` weighs it:
+//! a GET or a 404 1, a PUT, LIST or COPY 10) is debited from a second
+//! bucket of the project's after the request is served, at the request
+//! rate it was admitted under, one second's burst, debt allowed. Requests
+//! that write the registry are refused while it is in debt
+//! (`store_ops_available`); every other route only pays into it. The
+//! catalog joins the refused routes once it binds its share (phase B item
+//! B6); until then it neither pays nor is refused.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -23,6 +34,9 @@ use crate::tenant::ProjectId;
 pub(crate) struct ParkShare {
     admission: Arc<ProjectAdmission>,
     limit: u64,
+    /// The store budget's rate a second: the request rate (Q1 (b'); (b)
+    /// would publish its own quota and read it here). 0 sets no budget.
+    store_rate: u64,
 }
 
 /// RAII place in a project's share, held while one wait is parked.
@@ -47,6 +61,7 @@ impl QuotaRegistry {
         self.tracked(project).map(|admission| ParkShare {
             admission,
             limit: quotas.max_live_subscriptions,
+            store_rate: quotas.requests_per_sec,
         })
     }
 }
@@ -70,10 +85,53 @@ impl ParkShare {
         })
     }
 
+    /// Debit `weight` units of the registry store work one served request
+    /// made from the project's store budget, refilled to `now_ms` first.
+    /// The request was served, so the debt stands however deep (a cap
+    /// would bound it by one request's work instead of the rate); a
+    /// poisoned budget is left as it is.
+    pub(crate) fn debit_store_ops(&self, weight: u64, now_ms: i64) {
+        if self.store_rate == 0 || weight == 0 {
+            return;
+        }
+        if let Ok(mut budget) = self.admission.store_ops.lock() {
+            budget.refill(self.store_rate as f64, now_ms);
+            budget.level -= weight as f64;
+        }
+    }
+
+    /// Whether a request that writes the registry may be served at
+    /// `now_ms`: refused while the project's store budget is in debt,
+    /// with the whole seconds until it is not; a poisoned budget refuses
+    /// for one second.
+    pub(crate) fn store_ops_available(&self, now_ms: i64) -> Result<(), u64> {
+        if self.store_rate == 0 {
+            return Ok(());
+        }
+        let rate = self.store_rate as f64;
+        let Ok(mut budget) = self.admission.store_ops.lock() else {
+            return Err(1);
+        };
+        budget.refill(rate, now_ms);
+        if budget.level < 0.0 {
+            return Err(budget.retry_after(rate, 0.0));
+        }
+        Ok(())
+    }
+
     /// The project's parked waits now.
     #[cfg(test)]
     pub(crate) fn parked(&self) -> u64 {
         self.admission.parked.load(Ordering::Relaxed)
+    }
+
+    /// The project's store budget now, unrefilled.
+    #[cfg(test)]
+    pub(crate) fn store_ops_level(&self) -> f64 {
+        self.admission
+            .store_ops
+            .lock()
+            .map_or(f64::NAN, |budget| budget.level)
     }
 }
 
@@ -119,6 +177,68 @@ mod tests {
         assert_eq!(open.parked(), 67);
         drop(held);
         assert_eq!(open.parked(), 3);
+    }
+
+    fn rated(requests_per_sec: u64) -> ProjectQuotas {
+        ProjectQuotas {
+            requests_per_sec,
+            ..ProjectQuotas::default()
+        }
+    }
+
+    /// Phase B step 14(b), owner question Q1 (b'): a served request's store
+    /// work is paid from its project's store budget, full at its request
+    /// rate, into debt. A registry write is refused while the budget is in
+    /// debt, for the whole seconds its refill takes, and served again from
+    /// zero. A request that made no store work leaves the budget as it is,
+    /// and a rate of 0 sets no budget: nothing is debited or refused.
+    #[test]
+    fn store_work_is_paid_from_the_store_budget_into_debt() {
+        let registry = super::QuotaRegistry::default();
+        let project = ProjectId::new("proj-store").unwrap();
+        let _request = registry.admit(&project, &rated(20), 1_000).unwrap();
+        let share = registry.park_share(&project, &rated(20)).unwrap();
+        assert_eq!(share.store_ops_level(), 20.0, "one second's burst");
+        share.debit_store_ops(11, 1_000);
+        assert_eq!(share.store_ops_level(), 9.0);
+        share.debit_store_ops(0, 1_500);
+        assert_eq!(share.store_ops_level(), 9.0, "no work, no refill");
+        share.debit_store_ops(11, 1_000);
+        assert_eq!(share.store_ops_level(), -2.0, "a debt stands");
+        assert_eq!(share.store_ops_available(1_000), Err(1));
+        assert_eq!(share.store_ops_available(1_050), Err(1));
+        assert_eq!(share.store_ops_available(1_100), Ok(()), "zero is no debt");
+        share.debit_store_ops(100, 1_100);
+        assert_eq!(share.store_ops_level(), -100.0, "no cap on the debt");
+        assert_eq!(share.store_ops_available(1_100), Err(5));
+        assert_eq!(share.store_ops_available(5_000), Err(2));
+        assert_eq!(share.store_ops_level(), -22.0);
+        assert_eq!(share.store_ops_available(6_100), Ok(()));
+
+        let unrated = registry.park_share(&project, &rated(0)).unwrap();
+        unrated.debit_store_ops(100, 6_100);
+        assert_eq!(unrated.store_ops_level(), 0.0, "no budget to debit");
+        share.debit_store_ops(10, 6_100);
+        assert_eq!(unrated.store_ops_available(6_100), Ok(()), "nor to refuse");
+        assert_eq!(share.store_ops_available(6_100), Err(1));
+    }
+
+    /// A store budget whose lock a panic poisoned refuses a registry write
+    /// for one second and takes no debit.
+    #[test]
+    fn a_poisoned_store_budget_refuses_and_takes_no_debit() {
+        let registry = super::QuotaRegistry::default();
+        let project = ProjectId::new("proj-poisoned").unwrap();
+        let _request = registry.admit(&project, &rated(20), 1_000).unwrap();
+        let share = registry.park_share(&project, &rated(20)).unwrap();
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = share.admission.store_ops.lock();
+            panic!("poison the store budget");
+        }));
+        assert!(poisoned.is_err() && share.admission.store_ops.is_poisoned());
+        share.debit_store_ops(11, 1_000);
+        assert_eq!(share.store_ops_available(1_000), Err(1));
+        assert!(share.store_ops_level().is_nan(), "still poisoned");
     }
 
     /// The tracker holds no entry for a project that was never admitted,

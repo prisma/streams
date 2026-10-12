@@ -160,6 +160,8 @@ queued_append_bytes
 
 A quota value of `0` means that no project-level limit is configured at that layer; cell safety limits still apply.
 
+`requests_per_sec` also sets the rate of the project's store budget: each request pays, after it is served, for the registry store work it made (a billed GET or HEAD 1, a PUT, a listing or a COPY 10), and while that budget is in debt the project's creates, deletes and seals are refused `429 project_rate_limit` (MULTITENANCY §17.3; edge change #NEW-phase-b-3, awaiting ratification). Every request still takes exactly one token of the request rate.
+
 ### 4.3 Version rules
 
 `project_policy_version` increments whenever status, placement, quota, or other policy content changes.

@@ -16,13 +16,20 @@
 //! line makes it wait, then refuses it (429 `project_memory_pressure`, as
 //! a write's); the instance's read memory makes it wait, then refuses it
 //! (503 `read_memory_busy`). Both are retryable after 1 s.
+//!
+//! A request that writes the registry (a create, recreate or fork, a
+//! delete, a seal) is refused while its project's store budget is in debt
+//! (public-beta phase B step 14(b), owner question Q1 at its recommended
+//! (b')): 429 `project_rate_limit` with the seconds until it is not, as
+//! the request-rate bucket answers. Every other route only pays into the
+//! budget (`quota::parked`).
 
 use axum::http::{HeaderValue, Method, StatusCode};
 use axum::response::Response;
 
 use super::{
-    AppState, ProductRoute, READ_MAX_BYTES_CAP, SCAN_DEFAULT_BYTES, classify_route, parse_query,
-    perr, project_memory_gate, quota_refusal_response, strip_verb,
+    AppState, ProductOperation, ProductRoute, READ_MAX_BYTES_CAP, SCAN_DEFAULT_BYTES,
+    classify_route, parse_query, perr, project_memory_gate, quota_refusal_response, strip_verb,
 };
 use crate::admission::body::BodyRefusal;
 use crate::admission::read_memory::{ReadHold, ReadRefusal};
@@ -31,9 +38,9 @@ use crate::auth::RequestPrincipal;
 
 /// The memory backstops for one admitted request on the product surface
 /// before its body (`path` is the route's whole wildcard path, subresource
-/// and verb included): a write's latch and a page read's reservation; a
-/// pull reserves its coverage in `body`, after its body. The refusal to
-/// answer with, or `None` to serve it.
+/// and verb included): a write's latch, a registry write's store budget
+/// and a page read's reservation; a pull reserves its coverage in `body`,
+/// after its body. The refusal to answer with, or `None` to serve it.
 pub(crate) async fn refusal(
     state: &AppState,
     principal: Option<&RequestPrincipal>,
@@ -46,7 +53,40 @@ pub(crate) async fn refusal(
     {
         return Some(refusal);
     }
+    if writes_registry(method, path)
+        && let Some(refusal) = store_budget_refusal(state, principal)
+    {
+        return Some(refusal);
+    }
     reserve(state, principal, page_bytes(method, path, query)?).await
+}
+
+/// Whether the request names an operation that writes the registry: a
+/// create (a recreate and a fork are creates), a delete or a seal.
+fn writes_registry(method: &Method, path: &str) -> bool {
+    let Ok(route) = classify_route(path) else {
+        return false;
+    };
+    matches!(
+        ProductOperation::resolve(&route, strip_verb(path).1, method),
+        Some(ProductOperation::Create | ProductOperation::Delete | ProductOperation::Seal)
+    )
+}
+
+/// 429 `project_rate_limit`, tagged with the project, while its store
+/// budget is in debt; `None` without a verified project.
+fn store_budget_refusal(
+    state: &AppState,
+    principal: Option<&RequestPrincipal>,
+) -> Option<Response> {
+    let p = principal?;
+    let share = state.quotas.park_share(&p.project_id, &p.quotas)?;
+    let retry_after_secs = share.store_ops_available(crate::shard::now_ms()).err()?;
+    let refusal = crate::quota::QuotaRefusal::Rate { retry_after_secs };
+    Some(crate::audit::tag_project(
+        quota_refusal_response(&refusal),
+        &p.project_id,
+    ))
 }
 
 /// Reserve `bytes` for the request's page in its project's read bytes and

@@ -76,6 +76,7 @@ pub(crate) struct ProjectAdmission {
     /// only after serving), so this bucket runs negative and reads are
     /// refused while it is in debt.
     read_bytes: Mutex<Bucket>,
+    store_ops: Mutex<Bucket>, // weighted registry store work: `parked`
     /// Admissions in progress and admitted requests in flight.
     counters: AdmissionCounters,
     live_subs: AtomicU64,
@@ -548,6 +549,7 @@ impl QuotaRegistry {
             append_bytes: Mutex::new(Bucket::full(quotas.append_bytes_per_sec, now_ms)),
             append_records: Mutex::new(Bucket::full(quotas.append_records_per_sec, now_ms)),
             read_bytes: Mutex::new(Bucket::full(quotas.read_bytes_per_sec, now_ms)),
+            store_ops: Mutex::new(Bucket::full(quotas.requests_per_sec, now_ms)),
             counters: AdmissionCounters::default(),
             live_subs: AtomicU64::new(0),
             parked: AtomicU64::new(0),

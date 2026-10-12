@@ -223,6 +223,10 @@ OWNERS = (
     owner('audit', 'src/audit.rs',
           'audit:: dst_tests::security_audit:: dst_tests::runtime_journals:: '
           'dst_tests::shared_cell_hostile::an_anonymous_denial_flood'),
+    # The registry store work a served request pays for (phase B step
+    # 14(b)); the owner decided the row on 2026-10-12 (OWNER-DECISIONS-2 X1 (b)).
+    owner('store_timing', 'src/store_timing.rs',
+          'store_timing:: dst_tests::shared_cell_hostile::a_create_pays_for_its_registry_writes'),
     owner('sse_source', 'src/sse/source.rs', 'sse:: livefeed_engine_retired'),
     owner('sse_source_tests', 'src/sse/source/tests.rs', 'sse::'),
     owner('sse_source_spans', 'src/sse/source/spans.rs', 'sse::'),

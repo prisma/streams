@@ -357,6 +357,17 @@
     ]
   },
   {
+    "name": "a_create_pays_for_its_registry_writes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e84a50948528b91bdbb0082585aecd417a34f96fd1134b773d5cfea741f96864",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_hostile.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_critical_loop_failure_withdraws_the_instance_from_every_ring",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

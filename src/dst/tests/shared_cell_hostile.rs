@@ -19,8 +19,9 @@ use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
 use crate::auth::ceiling::SharedBounds;
 use crate::dst::StoreOp;
-use crate::dst::trace_store::TraceStore;
+use crate::dst::trace_store::{TraceOutcome, TraceStore};
 use crate::project_policy::{CredentialStatus, ProjectQuotas};
+use crate::store_timing::{StoreResources, TimingStore};
 use crate::tenant::ProjectId;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -710,6 +711,100 @@ async fn a_capability_naming_an_unserved_project_reads_no_descriptor() {
         .count();
     assert_eq!(reads, 0, "descriptor GETs under {root}");
     engine_shutdown(&cell.state).await;
+}
+
+/// A10 (phase B step 14(b), owner question Q1 at its default (b')): a
+/// request pays for the registry store work its own task makes (a GET or
+/// a 404 1, a PUT, LIST or COPY 10) from its project's store budget, its
+/// request rate a second with one second's burst, once it is served.
+/// While the budget is in debt the project's creates, deletes and seals are
+/// refused `429 project_rate_limit` with a `Retry-After` and store nothing;
+/// its appends are not refused. A create's weight is read off the trace (two
+/// creates weigh the same) and the rate is set to it, so the first create
+/// spends the burst, the second is admitted at zero and leaves one
+/// create's debt, and the third is refused unless a second has passed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_create_pays_for_its_registry_writes() {
+    let trace = TraceStore::verbatim(mem());
+    let traced: Arc<dyn object_store::ObjectStore> = trace.clone();
+    let io = Arc::new(StoreResources::new(&crate::config::StorageConfig::default()));
+    let mut cell = open_cell(CellSpec {
+        store: Arc::new(TimingStore::new(traced, io)),
+        ..CellSpec::open(2)
+    })
+    .await;
+    let mut weights = Vec::new();
+    for name in ["w0", "w1"] {
+        let after = trace.events().last().map_or(0, |e| e.seq);
+        let path = format!("/v1/streams/{name}");
+        assert_eq!(cell.call(0, "PUT", &path, CREATE).await.0, 201);
+        weights.push(registry_weight(&trace, 0, after));
+    }
+    let weight = weights[0];
+    assert_eq!(weights, [weight; 2], "two creates' registry work");
+    assert!(weight >= 10, "a create writes its descriptor: {weight}");
+    let rated = cell.policy_mut(1);
+    rated.quotas.requests_per_sec = weight;
+    rated.project_policy_version = 2;
+    cell.publish();
+    let mut answers = Vec::new();
+    for s in 0..3 {
+        let path = format!("/v1/streams/c{s}");
+        let (st, headers, b) = cell.call(1, "PUT", &path, CREATE).await;
+        answers.push((st, error_code(&b), headers.get("retry-after").cloned()));
+    }
+    let created = (201, None, None);
+    let spent = Some("project_rate_limit".to_string());
+    let refused = (429, spent, Some("1".to_string()));
+    let shown = format!("creates weighing {weight} at {weight} requests a second");
+    assert_eq!(
+        answers,
+        [created.clone(), created, refused.clone()],
+        "{shown}"
+    );
+    let mut writes = Vec::new();
+    for (method, path) in [
+        ("DELETE", "/v1/streams/c0"),
+        ("POST", "/v1/streams/c0:seal"),
+    ] {
+        let (st, headers, b) = cell.call(1, method, path, b"").await;
+        writes.push((st, error_code(&b), headers.get("retry-after").cloned()));
+    }
+    assert_eq!(
+        writes,
+        [refused.clone(), refused],
+        "a delete and a seal in debt"
+    );
+    let kept = cell.json(1, "GET", "/v1/streams/c0").await;
+    assert_eq!(
+        kept["sealed"], false,
+        "the refused writes left c0 as it was: {kept}"
+    );
+    let stored = cell.call(1, "GET", "/v1/streams/c2", b"").await;
+    assert_eq!(stored.0, 404, "the refused create stored nothing");
+    let record = br#"{"n":1}"#;
+    let append = cell.call(1, "POST", "/v1/streams/c0/records", record).await;
+    assert_eq!(append.0, 200, "an append beside a spent store budget");
+    engine_shutdown(&cell.state).await;
+}
+
+/// The registry store work project `i`'s requests made after trace event
+/// `after`, as 14(b) weighs it: a GET or HEAD the provider bills (a body
+/// or a 404) 1, a PUT, LIST or COPY 10, anything else nothing, over the
+/// registry objects keyed by the project.
+fn registry_weight(trace: &TraceStore, i: usize, after: u64) -> u64 {
+    let hex: String = project(i).bytes().map(|b| format!("{b:02x}")).collect();
+    let key = format!("/{hex}/");
+    trace
+        .events()
+        .into_iter()
+        .filter(|e| e.seq > after && e.path.starts_with("registry/v4/") && e.path.contains(&key))
+        .map(|e| match (e.op, e.outcome) {
+            (StoreOp::Get, TraceOutcome::Ok | TraceOutcome::NotFound) => 1,
+            (StoreOp::Put | StoreOp::List | StoreOp::Copy, _) => 10,
+            _ => 0,
+        })
+        .sum()
 }
 
 /// A valid two-minute observation capability for project `i`'s `w`.

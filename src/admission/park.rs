@@ -17,8 +17,17 @@
 //! waits, taken again before a woken wait renders (`resume`), settled when
 //! its page renders, and attached to the response body when the handler
 //! returns, so the page's bytes stay counted until the body ends.
+//!
+//! And it counts the registry store work the request's own task makes
+//! (public-beta phase B step 14(b)): `store_timing` charges each registry
+//! operation's weight (`charge_store_weight`), and when the request is
+//! served, or its handler dropped, the total is debited from its bound
+//! project's store budget (`ParkShare::debit_store_ops`). Store work
+//! outside a served request (the committer, sweeps, other tasks) is
+//! charged to no one.
 
 use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use axum::response::Response;
@@ -38,6 +47,18 @@ struct Request {
     ticket: InflightTicket,
     share: OnceLock<ParkShare>,
     read: Arc<OnceLock<ReadHold>>,
+    /// The weighted registry store work the request's task has made.
+    weight: AtomicU64,
+}
+
+impl Drop for Request {
+    /// The request was served (or its handler dropped, its store work
+    /// done all the same): its bound project pays for that work.
+    fn drop(&mut self) {
+        if let Some(share) = self.share.get() {
+            share.debit_store_ops(*self.weight.get_mut(), crate::shard::now_ms());
+        }
+    }
 }
 
 impl InflightTicket {
@@ -50,6 +71,7 @@ impl InflightTicket {
             ticket: self,
             share: OnceLock::new(),
             read: read.clone(),
+            weight: AtomicU64::new(0),
         };
         let response = REQUEST.scope(request, handler).await;
         match Arc::into_inner(read).and_then(OnceLock::into_inner) {
@@ -73,6 +95,16 @@ pub(crate) fn bind_principal(quotas: &QuotaRegistry, principal: Option<&RequestP
             request.share.get().is_some()
         })
         .unwrap_or(false)
+}
+
+/// Charge `weight` units of registry store work to the served request,
+/// which its project pays once it is served; nothing outside one.
+pub(crate) fn charge_store_weight(weight: u64) {
+    REQUEST
+        .try_with(|request| {
+            request.weight.fetch_add(weight, Ordering::Relaxed);
+        })
+        .unwrap_or(());
 }
 
 /// Bind the served request's read hold. The first bind stands; a hold that

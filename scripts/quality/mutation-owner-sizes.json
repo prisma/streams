@@ -165,6 +165,7 @@
     "sse_source_spans": 9,
     "sse_source_tests": 0,
     "sse_wire": 8,
+    "store_timing": 47,
     "sweep_custody": 20,
     "system_append": 14,
     "tail_ring": 57,
