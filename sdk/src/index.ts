@@ -683,6 +683,26 @@ function plainAppendFailure(e: unknown): unknown {
   return e;
 }
 
+/** A plain append's 2xx answer. The server wrote the record, so a body that
+ * cannot be read (not JSON, or a connection lost mid-body) is neither a
+ * retryable failure nor an unknown outcome: a second append would be a
+ * second copy. */
+async function appendedResult(res: Response): Promise<AppendResult> {
+  try {
+    return (await res.json()) as AppendResult;
+  } catch (cause) {
+    const error = new StreamsError(
+      res.status,
+      "unreadable_response",
+      `the server accepted the append (HTTP ${res.status}), so it was written, ` +
+        "but its answer could not be read; do not send it again",
+      false,
+    );
+    error.cause = cause;
+    throw error;
+  }
+}
+
 function retryableRequestError(error: unknown): boolean {
   return error instanceof StreamsTransportError ||
     (error instanceof StreamsError && error.retryable &&
@@ -1113,7 +1133,7 @@ export class Stream<T = unknown> {
       false,
       plainAppendFailure,
     );
-    return (await res.json()) as AppendResult;
+    return appendedResult(res);
   }
 
   private async appendRaw(
@@ -1132,7 +1152,7 @@ export class Stream<T = unknown> {
       this.ctx, "POST", this.path("/records"), h, body, undefined, producerHeaders !== undefined,
       producerHeaders ? undefined : plainAppendFailure,
     );
-    return (await res.json()) as AppendResult;
+    return producerHeaders ? (await res.json()) as AppendResult : appendedResult(res);
   }
 
   // ---- producer sessions (spec Stage 5) -----------------------------

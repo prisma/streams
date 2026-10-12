@@ -134,6 +134,34 @@ for (const op of plainAppends) {
   });
 }
 
+// A 2xx means the record was written: an answer that cannot be read after
+// it is neither a retryable failure nor an unknown outcome.
+const unreadable = [
+  ["a 200 whose body is not JSON", () => new Response("<html>ok</html>", { headers: { "content-type": "text/html" } }), SyntaxError],
+  ["a 200 whose body breaks off", () => new Response(new ReadableStream({ start(c) {
+    c.enqueue(new TextEncoder().encode('{"cursor":'));
+    c.error(new TypeError("terminated"));
+  } }), { headers: JSON_HEADERS }), TypeError],
+];
+for (const op of plainAppends) {
+  for (const [label, reply, Cause] of unreadable) {
+    test(`${op.name}: ${label} rejects as written but unreadable, sent once`, async () => {
+      const { s, calls } = stream([reply]);
+      const error = await rejection(op.run(s));
+      assert.equal(calls.length, 1);
+      assert.ok(error instanceof StreamsError);
+      assert.ok(!(error instanceof sdk.AppendOutcomeUnknownError));
+      assert.equal(error.name, "StreamsError");
+      assert.equal(error.status, 200);
+      assert.equal(error.code, "unreadable_response");
+      assert.equal(error.retryable, false);
+      assert.equal(error.message,
+        "the server accepted the append (HTTP 200), so it was written, but its answer could not be read; do not send it again");
+      assert.ok(error.cause instanceof Cause, "the cause is the read failure");
+    });
+  }
+}
+
 // Pins: answers that prove nothing was written, or that S-1 leaves alone.
 
 test("append: a retryable 503 and then a transport failure are two requests and the unknown outcome of the last", async () => {
