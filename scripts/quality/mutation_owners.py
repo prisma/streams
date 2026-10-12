@@ -133,6 +133,10 @@ OWNERS = (
     owner('quota_pressure', 'src/quota/pressure.rs', 'quota::'),
     owner('quota_read_reservation', 'src/quota/read_reservation.rs', 'quota::read_reservation:: dst_tests::read_memory::a_project_at_its_memory_line'),
     owner('registry_cache', 'src/registry/cache.rs', 'registry::'),
+    # The catalog page's byte bounds (phase B item B5); the owner decided the
+    # row on 2026-10-12 (OWNER-DECISIONS-2 X1 (b)).
+    owner('registry_catalog', 'src/registry/catalog.rs',
+          'registry::catalog:: dst_tests::shared_cell_capacity::'),
     owner('commit_handoff', 'src/shard/commit_handoff.rs', 'shard::'),
     owner('commit_handoff_loom_tests', 'src/shard/commit_handoff/loom_tests.rs',
           'shard::commit_handoff::'),

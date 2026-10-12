@@ -85,6 +85,65 @@ async fn reconciliation_page_fails_closed_on_a_key_it_cannot_bind() {
     assert!(reg.list_page(&a, None, 10).await.is_ok());
 }
 
+/// Create `name`'s live descriptor in "proj-a" and store it again padded
+/// with trailing JSON whitespace to exactly `len` bytes.
+async fn stored_at(store: &Arc<dyn ObjectStore>, reg: &Registry, name: &str, len: usize) {
+    let d = filed("proj-a", name, false);
+    assert!(reg.create(d.clone()).await.unwrap().0);
+    let path = desc_path("test-cell", &d.sref());
+    let mut raw = store
+        .get(&path)
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap()
+        .to_vec();
+    raw.resize(len, b' ');
+    store.put(&path, raw.into()).await.unwrap();
+}
+
+/// C4 (c): a catalog page materializes at most 4 MiB of descriptors.
+/// Forty descriptors of exactly 128 KiB list as a page of 32 (4 MiB to
+/// the byte) continued after the 32nd, then a final page of 8.
+#[tokio::test]
+async fn a_catalog_page_holds_at_most_4_mib_of_descriptors() {
+    let (store, reg) = registry();
+    for n in 0..40 {
+        stored_at(&store, &reg, &format!("s{n:02}"), 128 * 1024).await;
+    }
+    let a = crate::tenant::ProjectId::new("proj-a").unwrap();
+    let first = reg.list_page(&a, None, 1000).await.unwrap();
+    let shape = |page: &crate::registry::CatalogPage| {
+        (page.streams.len(), page.next_after.clone(), page.exhausted)
+    };
+    assert_eq!(shape(&first), (32, Some("s31".to_string()), false));
+    let rest = reg.list_page(&a, Some("s31"), 1000).await.unwrap();
+    assert_eq!(rest.streams.first().map(|d| d.name.as_str()), Some("s32"));
+    assert_eq!(shape(&rest), (8, Some("s39".to_string()), true));
+}
+
+/// C4 (c): a descriptor over 128 KiB fails its page closed, the project's
+/// catalog and the cell's reconciliation alike; one of exactly 128 KiB is
+/// served.
+#[tokio::test]
+async fn a_descriptor_over_128_kib_fails_its_catalog_page_closed() {
+    let (store, reg) = registry();
+    stored_at(&store, &reg, "at", 128 * 1024).await;
+    let a = crate::tenant::ProjectId::new("proj-a").unwrap();
+    assert_eq!(reg.list_page(&a, None, 10).await.unwrap().streams.len(), 1);
+    stored_at(&store, &reg, "over", 128 * 1024 + 1).await;
+    let listed = reg.list_page(&a, None, 10).await.map(|p| p.streams.len());
+    let reconciled = reg
+        .reconciliation_page(None, 10)
+        .await
+        .map(|p| p.streams.len());
+    assert!(
+        listed.is_err() && reconciled.is_err(),
+        "pages over a descriptor of 131,073 bytes: catalog {listed:?}, reconciliation {reconciled:?}"
+    );
+}
+
 fn identities() -> impl Strategy<Value = crate::tenant::TenantStreamRef> {
     (
         "[A-Za-z0-9_-]{1,24}",

@@ -424,14 +424,15 @@ async fn empty_pulls_are_held_to_their_projects_read_quota_by_what_they_read() {
     engine_shutdown(&cell.state).await;
 }
 
-/// C8. A catalog page materializes up to 16 MiB of descriptors
-/// (`MAX_PAGE_BYTES`, read with up to 8,064 store GETs) and reserves
-/// nothing, so it is served while its project's held pages fill its
-/// memory line, where a read is refused: 64 concurrent listings of one
-/// project can materialize up to 1 GiB. Here 64 descriptors of about
-/// 66 KB, each from a creation document at the 64 KiB bound, make one
-/// page of about 4.2 MB. Pass: the catalog page is held to the line as a
-/// read is (both answered alike).
+/// C8. A catalog page materializes up to 4 MiB of descriptors
+/// (`MAX_PAGE_BYTES`, read with up to 8,064 store GETs, and up to 8 more
+/// of at most 128 KiB prefetched) and reserves nothing, so it is served
+/// while its project's held pages fill its memory line, where a read is
+/// refused: 64 concurrent listings of one project can materialize up to
+/// 320 MiB. Here 64 descriptors of about 66 KB, each from a creation
+/// document at the 64 KiB bound, fill a first page of 63 (about 4.2 MB).
+/// Pass: the catalog page is held to the line as a read is (both answered
+/// alike).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "red until the owner decides capacity review C8: product_list reserves its page (a frozen scope)"]
 async fn a_catalog_page_is_held_to_its_projects_memory_line_as_a_read_is() {

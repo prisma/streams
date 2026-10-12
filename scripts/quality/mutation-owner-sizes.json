@@ -122,6 +122,7 @@
     "record_pages": 21,
     "record_scan_tests": 0,
     "registry_cache": 45,
+    "registry_catalog": 55,
     "registry_replaced": 28,
     "retained": 4,
     "retirement_tests": 0,

@@ -91,8 +91,8 @@ impl Registry {
         }
         let limit = limit.min(1000);
         let max_scan = limit.saturating_mul(8) + 64;
-        const MAX_DESCRIPTOR_BYTES: usize = 4 * 1024 * 1024;
-        const MAX_PAGE_BYTES: usize = 16 * 1024 * 1024;
+        const MAX_DESCRIPTOR_BYTES: usize = 128 * 1024;
+        const MAX_PAGE_BYTES: usize = 4 * 1024 * 1024;
         let prefix = ObjPath::from(root.trim_end_matches('/'));
         let listing = match offset {
             Some(o) => self.store.list_with_offset(Some(&prefix), o),
