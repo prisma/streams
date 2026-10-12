@@ -1,0 +1,33 @@
+# The Layer B rig's image (deploy-q5 triage B7 and D6;
+# bench/k2cost/run-shared.sh builds it from a staged copy of a release
+# directory, so this file never sees the repository). The release
+# directory sits under /app exactly as it was cut (deploy/, cells/,
+# release.json, the x86_64-musl streams-slate inside deploy/), and bun runs
+# the cell's Composer entry as Compute does: the real entry, env builder,
+# wrapper and feed poller, on linux/amd64 at 1 vCPU and 1 GiB (the docker
+# run flags).
+#
+# Bun's default x64 build needs AVX, which Rosetta's amd64 emulation on an
+# Apple-silicon host does not have: a bun-linux-x64 runtime there prints
+# "CPU lacks AVX support, strange crashes may occur" and hangs (seen
+# 2026-10-12). On such a host run-shared.sh passes BUN_BASELINE_SHA256,
+# and the image swaps in Bun's baseline build of the same version,
+# checked against that sha256 before it is installed. An x86_64 host needs
+# neither.
+FROM --platform=linux/amd64 oven/bun:1.3.13-debian
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+ARG BUN_BASELINE_SHA256=""
+RUN if [ -n "$BUN_BASELINE_SHA256" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends curl unzip \
+      && curl -fsSL -o /tmp/bun.zip https://github.com/oven-sh/bun/releases/download/bun-v1.3.13/bun-linux-x64-baseline.zip \
+      && echo "$BUN_BASELINE_SHA256  /tmp/bun.zip" | sha256sum -c - \
+      && unzip -q /tmp/bun.zip -d /tmp \
+      && install -m 0755 /tmp/bun-linux-x64-baseline/bun "$(command -v bun)" \
+      && rm -rf /tmp/bun.zip /tmp/bun-linux-x64-baseline /var/lib/apt/lists/*; \
+    fi
+WORKDIR /app
+COPY . /app
+ENV PORT=8080
+CMD ["bun", "deploy/composer/streams/entry.ts"]

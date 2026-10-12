@@ -1,0 +1,220 @@
+"""run-shared.sh's offline half (--dry-run) on a fake release directory:
+what it refuses, what it stages, the cell's scratch.env, the seven secret names
+it hands the container through a file, and the docker invocation; and
+scrape.py loop's --operator scrape against a fake cell. The live half
+needs the cell's Composer entry (deploy-q5 triage B2) and docker images.
+
+    python3 -m unittest discover -s bench/k2cost -p 'test_*.py'
+"""
+
+from __future__ import annotations
+
+import hashlib
+import http.server
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import types
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
+SCRIPT = os.path.join(HERE, "run-shared.sh")
+ARM = os.uname().machine in ("arm64", "aarch64")
+BASELINE = "0f" * 32
+SECRET_NAMES = ["STREAMS_OPERATOR_TOKEN", "STREAMS_USAGE_STREAM_KEY", "STREAMS_CURSOR_KEY", "STREAMS_DATA_S3_ACCESS_KEY_ID",
+                "STREAMS_DATA_S3_SECRET_ACCESS_KEY", "STREAMS_FEEDS_S3_ACCESS_KEY_ID", "STREAMS_FEEDS_S3_SECRET_ACCESS_KEY"]
+
+
+def elf(machine: int, tail: bytes) -> bytes:
+    head = bytearray(b"\x7fELF" + b"\x02\x01\x01" + bytes(9) + b"\x02\x00")
+    head += bytes([machine, 0])
+    return bytes(head) + tail
+
+
+class Rig(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="run-shared-")
+        self.rel = os.path.join(self.tmp, "release")
+        streams = os.path.join(self.rel, "deploy", "composer", "streams")
+        os.makedirs(streams)
+        os.makedirs(os.path.join(self.rel, "deploy", "profiles"))
+        for p in ("compute-1g.env", "shared-cell.env"):
+            shutil.copy(os.path.join(REPO, "deploy", "profiles", p), os.path.join(self.rel, "deploy", "profiles", p))
+        with open(os.path.join(streams, "entry.ts"), "w") as f:
+            f.write("// the cell's entry (triage B2)\n")
+        self.bin = elf(0x3E, b"release binary")
+        with open(os.path.join(streams, "streams-slate"), "wb") as f:
+            f.write(self.bin)
+        self.sha = hashlib.sha256(self.bin).hexdigest()
+        with open(os.path.join(self.rel, "release.json"), "w") as f:
+            json.dump({"tag": "rc-test", "server_sha256": self.sha}, f)
+        self.home = os.path.join(self.tmp, "k2home")
+        self.s3lite = os.path.join(self.tmp, "s3lite")
+        with open(self.s3lite, "w") as f:
+            f.write("#!/bin/sh\n")
+        os.chmod(self.s3lite, 0o755)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def rig(self, *args: str, baseline: bool = True) -> subprocess.CompletedProcess:
+        argv = ["/bin/bash", SCRIPT, "--release", self.rel, "--s3lite", self.s3lite, *args]
+        if baseline:
+            argv += ["--bun-baseline-sha256", BASELINE]
+        env = {**os.environ, "K2_HOME": self.home}
+        return subprocess.run(argv, capture_output=True, text=True, env=env, cwd=REPO, timeout=60)
+
+    def staged(self) -> str:
+        runs = os.listdir(os.path.join(self.home, "results"))
+        self.assertEqual(len(runs), 1)
+        return os.path.join(self.home, "results", runs[0], "rig-context")
+
+    def test_a_dry_run_stages_the_release_the_cell_env_and_the_container_invocation(self):
+        r = self.rig("--dry-run")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        ctx = self.staged()
+        files = sorted(os.path.relpath(os.path.join(d, f), ctx) for d, _, fs in os.walk(ctx) for f in fs)
+        self.assertEqual(files, ["cells/scratch.env", "deploy/composer/streams/entry.ts", "deploy/composer/streams/streams-slate",
+                                 "deploy/profiles/compute-1g.env", "deploy/profiles/shared-cell.env", "release.json"])
+        with open(os.path.join(ctx, "release.json")) as f:
+            self.assertEqual(json.load(f), {"tag": "rc-test", "server_sha256": self.sha})
+        with open(os.path.join(ctx, "cells", "scratch.env")) as f:
+            env = f.read()
+        self.assertRegex(env, re.compile(
+            r"\ACELL_STAGE=scratch\nCELL_ID=cell_rig\nPROJECT_ID=proj_rig_deploy\nACCOUNT_ID=acct_rig_sink\n"
+            r"STREAMS_AUTH_ISSUER=https://auth.prisma.io\nPATH_PREFIX=rig\nREGION=local\n"
+            r"SLATE_S3_ENDPOINT=http://host.docker.internal:9591\nSLATE_S3_BUCKET=rig-data-\d{8}t\d{6}z\nSLATE_S3_REGION=us-east-1\n"
+            r"FEEDS_S3_ENDPOINT=http://host.docker.internal:9591\nFEEDS_S3_BUCKET=rig-feeds-\d{8}t\d{6}z\nFEEDS_S3_REGION=us-east-1\n"
+            r"FEEDS_S3_KEY=cells/cell_rig/feeds-bundle.json\nCPU_LOG_SECS=60\n\Z"))
+        out = r.stdout
+        self.assertIn(f"rehearsal: false, binary sha256 {self.sha}", out)
+        names = re.search(r"^DRY_RUN container env names: (.*)$", out, re.M).group(1).split()
+        self.assertEqual(names, SECRET_NAMES)
+        run = re.search(r"^DRY_RUN (docker run .*)$", out, re.M).group(1)
+        for want in ("--platform linux/amd64 --cpus 1 --memory 1g --memory-swap 1g", "-p 127.0.0.1:9592:8080",
+                     "--add-host=host.docker.internal:host-gateway", "--env-file ", "-e PORT=8080 -e CELL_STAGE=scratch"):
+            self.assertIn(want, run)
+        self.assertNotRegex(run, r"STREAMS_[A-Z_]+=")
+        build = re.search(r"^DRY_RUN (docker build .*)$", out, re.M).group(1)
+        self.assertIn("--platform linux/amd64 -f " + os.path.join(REPO, "bench", "docker", "Dockerfile.rig"), build)
+        self.assertIn(f"--build-arg BUN_BASELINE_SHA256={BASELINE} {ctx}", build)
+        self.assertIn("--listen 127.0.0.1:9591 --latency-ms 20", out)
+        with open(re.search(r"^DRY_RUN checkout: (.*)$", out, re.M).group(1)) as f:
+            co = json.load(f)
+        git = lambda *a: subprocess.run(["git", "-C", REPO, *a], capture_output=True, text=True).stdout.strip()  # noqa: E731
+        self.assertEqual(co, {"head": git("rev-parse", "HEAD"),
+                              "trees": {p: git("rev-parse", f"HEAD:{p}") for p in ("bench/k2cost", "deploy/cell-admin", "bench/docker")},
+                              "dirty": [l for l in git("status", "--porcelain", "--untracked-files=all", "--", "bench/k2cost",
+                                                       "deploy/cell-admin", "bench/docker").splitlines() if l]})
+        self.assertEqual(os.listdir(os.path.join(self.home, "secrets")), [], "the secrets directory outlived the run")
+
+    def test_the_rig_runs_as_triage_b2s_scratch_stage_over_the_releases_own_scratch_cell(self):
+        # A release cut with the scratch cell's values (the real buckets): the
+        # staged copy gets the rig's, the release keeps its own.
+        os.makedirs(os.path.join(self.rel, "cells"))
+        real = "CELL_STAGE=scratch\nCELL_ID=cell_scratch_real\n"
+        with open(os.path.join(self.rel, "cells", "scratch.env"), "w") as f:
+            f.write(real)
+        r = self.rig("--dry-run")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(self.staged(), "cells", "scratch.env")) as f:
+            self.assertEqual(f.read().splitlines()[:2], ["CELL_STAGE=scratch", "CELL_ID=cell_rig"])
+        with open(os.path.join(self.rel, "cells", "scratch.env")) as f:
+            self.assertEqual(f.read(), real)
+        self.assertIn("DRY_RUN cells/scratch.env:", r.stdout)
+
+    def test_a_rehearsal_stages_its_own_binary_under_a_rewritten_release_json(self):
+        other = os.path.join(self.tmp, "layout5-streams-slate")
+        data = elf(0x3E, b"a layout-5 build")
+        with open(other, "wb") as f:
+            f.write(data)
+        r = self.rig("--dry-run", "--binary", other)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        sha = hashlib.sha256(data).hexdigest()
+        self.assertIn(f"rehearsal: true, binary sha256 {sha}", r.stdout)
+        ctx = self.staged()
+        with open(os.path.join(ctx, "deploy", "composer", "streams", "streams-slate"), "rb") as f:
+            self.assertEqual(f.read(), data)
+        with open(os.path.join(ctx, "release.json")) as f:
+            self.assertEqual(json.load(f), {"tag": "rc-test", "server_sha256": sha, "rehearsal": True})
+        with open(os.path.join(self.rel, "release.json")) as f:
+            self.assertEqual(json.load(f)["server_sha256"], self.sha)
+
+    def test_it_refuses_what_cannot_be_the_release_or_cannot_run(self):
+        def refused(want: str, *args: str, baseline: bool = True):
+            r = self.rig(*args, baseline=baseline)
+            self.assertEqual((r.returncode, want in r.stderr), (2, True), r.stderr)
+            self.assertFalse(os.path.isdir(os.path.join(self.home, "results")), "a refused run staged something")
+        streams = os.path.join(self.rel, "deploy", "composer", "streams")
+        with open(os.path.join(streams, "streams-slate"), "wb") as f:
+            f.write(elf(0x3E, b"not the release"))
+        refused("certification runs the release's binary only", "--dry-run")
+        with open(os.path.join(streams, "streams-slate"), "wb") as f:
+            f.write(elf(0xB7, b"aarch64"))
+        refused("is not an x86_64 ELF (e_machine 0xb7)", "--dry-run")
+        with open(os.path.join(streams, "streams-slate"), "wb") as f:
+            f.write(self.bin)
+        refused("must be 64 lowercase hex digits", "--dry-run", "--bun-baseline-sha256", "XYZ", baseline=False)
+        if ARM:
+            refused("without AVX, which bun's x64 build needs", "--dry-run", baseline=False)
+        refused("needs the solo LiveFeed canary (CANARY_SHAPE=solo, triage B9)", "--canary")
+        os.remove(os.path.join(streams, "entry.ts"))
+        refused("has no deploy/composer/streams/entry.ts", "--dry-run")
+        r = subprocess.run(["/bin/bash", SCRIPT], capture_output=True, text=True, cwd=REPO)
+        self.assertEqual((r.returncode, "--release DIR is required" in r.stderr), (2, True))
+
+
+class Operator(unittest.TestCase):
+    """scrape.py loop --operator adds /operator/data.json to each scrape."""
+
+    def test_the_operator_dashboard_data_is_scraped_with_the_bearer(self):
+        seen = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append((self.path, self.headers.get("authorization")))
+                body = json.dumps({"path": self.path}).encode()
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        d = tempfile.mkdtemp(prefix="scrape-")
+        try:
+            auth = os.path.join(d, "debug.hdr")
+            with open(auth, "w") as f:
+                f.write("authorization: Bearer op\n")
+            sys.path.insert(0, HERE)
+            import scrape
+            url = f"http://127.0.0.1:{srv.server_address[1]}"
+            for operator in (False, True):
+                args = types.SimpleNamespace(run=d, servers=f"streams-1={url}", auth_file=auth, interval=10.0, absorb_age_secs=60.0,
+                                             s3lite=url, operator=operator)
+                loop = scrape.Loop(args)
+                loop.scrape_server("streams-1", url)
+                loop.out.close()
+            with open(os.path.join(d, "scrape.jsonl")) as f:
+                recs = [json.loads(line) for line in f]
+            self.assertEqual([r["src"] for r in recs], ["store", "load", "usage", "store", "load", "usage", "operator"])
+            self.assertEqual(recs[-1]["body"], {"path": "/operator/data.json"})
+            self.assertIn(("/operator/data.json", "Bearer op"), seen)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+            shutil.rmtree(d)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -96,6 +96,9 @@ LOAD_TIME_SCALE = 1
 # The single-cell profile pins (triage B9's fence) and the harness trees.
 PROFILE_PINS = ("INITIAL_SHARDS=1", "KEEP_AWAKE=1", "STREAMS_RELEASE_POSTURE=1", "PROJECT_SHARE_K=8")
 HARNESS_TREES = ("bench/k2cost", "deploy/composer", "deploy/app-server")
+# What runs from the rig's checkout (run-shared.sh's CHECKOUT_TREES): the
+# harness leg requires these to be the server commit's trees, clean.
+CHECKOUT_TREES = ("bench/k2cost", "deploy/cell-admin", "bench/docker")
 # The legs rc-certify.sh's verify_arm requires (db518611), and those known red.
 REQUIRED_LEGS = {"layer-b": ("H9", "H9b", "H11t")}
 # H11t times a name the target used in the last few seconds against a name
@@ -421,15 +424,27 @@ def quota_posture(run: dict) -> dict:
     return out
 
 
-def tree_oids(repo: str, commit: str | None) -> dict:
+def tree_oids(repo: str, commit: str | None, paths=HARNESS_TREES) -> dict:
     out = {}
-    for path in HARNESS_TREES:
+    for path in paths:
         oid = None
         if commit:
             res = subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", f"{commit}:{path}"], capture_output=True, text=True)
             oid = res.stdout.strip() or None
         out[path] = oid
     return out
+
+
+def leg_harness(r: Run, bars: dict, repo: str) -> bool:
+    """The harness that ran (run-shared.sh's checkout.json in rig.json) is
+    the server commit's: each tree it runs from equals `git rev-parse
+    <commit>:<tree>`, and nothing under them was uncommitted."""
+    co = r.rig.get("checkout") or {}
+    want, ran = tree_oids(repo, r.rig.get("commit"), CHECKOUT_TREES), co.get("trees") or {}
+    ok = bar(bars, "harness: the checkout's trees are the server commit's", {"ran": ran, "commit": want}, "equal",
+             bool(co) and all(want[p] is not None and ran.get(p) == want[p] for p in CHECKOUT_TREES))
+    ok &= bar(bars, "harness: the checkout is clean under those trees", co.get("dirty"), [], co.get("dirty") == [])
+    return ok
 
 
 def profile_fence(rig: dict) -> dict:
@@ -474,6 +489,7 @@ def layer_b(run_dir: str, repo: str) -> dict:
     }
     legs["memory"], legs["Q0"] = leg_memory(r, bars)
     legs["identity"] = ok_id
+    legs["harness"] = leg_harness(r, bars, repo)
     legs["release-binary"] = bar(bars, "release binary: the release directory's, not a rehearsal's --binary",
                                  not r.rig.get("rehearsal", True), True, r.rig.get("rehearsal") is False)
     leg_words = {k: "PASS" if v else "FAIL" for k, v in legs.items()}

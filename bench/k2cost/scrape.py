@@ -7,8 +7,9 @@ Subcommands (run-local.sh drives all of them):
             source to <run>/scrape.jsonl: /v1/debug/store (the cumulative
             `totals`, the ?window= ring, gauges; the slow-op list dropped),
             /v1/debug/load and /v1/debug/usage (aggregates only; the
-            per-stream list is summed) from every server, and s3lite's
-            /_s3lite/stats2 (+ /_s3lite/stats). Boot changes (boot_id),
+            per-stream list is summed) from every server, with --operator
+            also /operator/data.json, and s3lite's /_s3lite/stats2
+            (+ /_s3lite/stats). Boot changes (boot_id),
             counter resets (totals.since_ms or a decrease) and s3lite resets
             become `event` lines. It answers quiescence requests (the rig's
             `load_end` mark, and a `quiesce_request` mark with an id for a
@@ -266,6 +267,12 @@ class Loop:
         else:
             self.emit("usage", None, server=name, ok=False, status=st, error=err)
             self.backlog_ok[name] = False
+        if self.args.operator:
+            st, body, err = get_json(f"{url}/operator/data.json", self.auth)
+            if body is not None and err is None:
+                self.emit("operator", body, server=name)
+            else:
+                self.emit("operator", None, server=name, ok=False, status=st, error=err)
 
     def scrape_s3(self) -> None:
         base = self.args.s3lite.rstrip("/")
@@ -722,6 +729,8 @@ def main() -> int:
                    help="consecutive windows whose heavy-PUT counts must agree (stationary floor)")
     p.add_argument("--absorb-age-secs", type=float, default=60.0,
                    help="the posture's ABSORB_AGE_SECS: absorption is stuck past two of them")
+    p.add_argument("--operator", action="store_true",
+                   help="also /operator/data.json (the cell dashboard's data) every interval, as src operator")
     p = sub.add_parser("snapshot")
     common(p)
     p.add_argument("--pids", default="", help="name=pid[,name=pid]: processes whose CPU time to record")

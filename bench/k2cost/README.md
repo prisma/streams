@@ -13,13 +13,14 @@ ratchet here is 1,000 lines per file; the s3lite census it reads (C2) is
 |---|---|
 | `k2gen.ts` (+ `common.ts`, `produce.ts`, `consume.ts`, `churn.ts`, `corpus.ts`) | Bun load generator: `setup`, `produce`, `walk`, `tail`, `group`, `churn`, `subs`, `corpus-stats` (`bun bench/k2cost/k2gen.ts help`) |
 | `run-local.sh <point-file>` | one point in the release posture, from boot to `summary.json` |
-| `scrape.py` | the instruments: `loop`, `snapshot`, `usage`, `posture`, `envfile` |
+| `scrape.py` | the instruments: `loop` (with `--operator`, also `/operator/data.json`), `snapshot`, `usage`, `posture`, `envfile` |
 | `price.py [run-dir] [--baseline run-dir]` | Tigris pricing, the §4.3 allocation, K2 revenue, per-GiB costs and margins, W(r), calibration, validity; with `k2cells.py` (cell pricing and allocation), `k2store.py` (stored bytes, k, the a/b/c fit, U) and `k2valid.py` (§8 checks) |
 | `points/*.env` | one tiny smoke point and one full-scale point per design run (L0, L1, L2, L3, L5, L6, L7) |
 | `oracle.ts` | the shared-cell leak oracle: a `--payload oracle` record names its project and carries a MAC under that project's harness key, which the server never sees. Every read path (pages, long-polls, SSE, pulls, churn's read-back, the audit) counts each record it is delivered as `oracle_ok`, `oracle_foreign` (another project's record: a leak), `oracle_bad_mac` (corruption) or `oracle_unmarked`. Only a generator that names an owner writes it (`tenants.ts`) |
 | `tenants.ts` (+ `tenant-plan.ts`, `tenants/*.json`) | the shared-cell harness's multi-project driver: a tenants manifest of classes, counts, quotas and phases, every project on k2gen's own modes under its own token (below) |
 | `hostile.ts` | the hostile legs `tenants.ts` runs: phase modes `h9`, `h9b`, `cost` and run-level legs `h11t`, `probes` (below) |
 | `shared_verdict.py` (+ `test_shared_verdict.py`) | the Q5 arms' bars and the arm manifest the single-cell RC gate reads (below) |
+| `run-shared.sh` (+ `../docker/Dockerfile.rig`, `test_run_shared.py`) | the Layer B rig: one shared cell from a release directory in a linux/amd64 container at 1 vCPU / 1 GiB, s3lite at 20 ms, a tenants manifest, the verdict (below) |
 | `tenants-admit.ts` | the manifest's projects onto a cell-admin cell (its own CLI's `init` and `admit`, each with its class's quota set), the token map (12 h tokens, re-minted every 8 h, optionally uploaded), and the bundle's publication |
 | `fake-cell.ts`, `*.test.ts` | the harness's tests, against a product-surface fake: `bun test ./bench/k2cost` |
 
@@ -530,4 +531,35 @@ rehearsal). Known-red legs (H11t as built, Q0) fail like any
 other; `known_red` only says why. The owner question D4's bars (SC0-1s
 projection, day-90 open, idle RSS, restart window) are constants here for
 the field arms, which take their evidence from the field adapters.
+
+### The Layer B rig (`run-shared.sh`)
+
+```bash
+bench/k2cost/run-shared.sh --release ~/.streams-releases/<tag> [--manifest M] [--time-scale F] \
+    [--bun-baseline-sha256 HEX]          # an arm64 host: Rosetta has no AVX for bun's x64 build
+bench/k2cost/run-shared.sh --release DIR --binary PATH ...   # the layout-5 rehearsal: any x86_64 binary
+bench/k2cost/run-shared.sh --release DIR --dry-run ...       # stage and print, start nothing
+```
+
+It stages the release directory (`deploy/`, `cells/`, `release.json`, the
+release's own x86_64-musl `streams-slate`) with its own `cells/scratch.env`, builds
+`bench/docker/Dockerfile.rig` over it and runs `bun
+deploy/composer/streams/entry.ts` in a `--platform linux/amd64 --cpus 1
+--memory 1g` container, with `CELL_STAGE=scratch` (triage B2's stages are
+scratch, cert and production, each its cells file's name) and the cell's seven
+platform secret names from an env file. s3lite runs on the host at 20 ms
+(the cell reaches it as `host.docker.internal`), `tenants-admit.ts` admits
+the manifest and publishes the bundle to s3lite's feeds bucket, and
+`scrape.py loop --operator` samples the cell every 10 s. Then: 15 min idle
+(the Q0 baseline), the tenants run, usage, the audit, 15 min idle (the Q0
+bar), and `shared_verdict.py layer-b`, whose exit code is the rig's.
+Certification takes only the release's binary (its sha256 is
+`release.json`'s); a `--binary` rehearsal is recorded as one and can never
+certify. The harness that runs is the checkout's: `checkout.json` (in
+`rig.json`) records its trees and uncommitted paths, and the verdict's
+`harness` leg requires the server commit's trees, clean. Results under
+`$K2_HOME/results/layer-b-<stamp>/`; the secrets
+directory is removed at exit. It needs the cell's Composer entry (triage
+B2) in the release directory, and `--canary` the solo LiveFeed canary
+(triage B9); both refuse until they exist.
 

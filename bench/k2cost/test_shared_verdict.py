@@ -56,7 +56,8 @@ class World:
             "arm": "layer-b", "rehearsal": False, "commit": head(), "region": "local",
             "binary": {"path": "/r/streams-slate", "sha256": SHA}, "wrapper_sha256": SHA, "debug_load_sha256": SHA,
             "profiles": {n: {"path": os.path.join(prof, n), "sha256": n[:2] * 32} for n in ("compute-1g.env", "shared-cell.env")},
-            "cell_env": {"path": "/r/cells/rig.env", "sha256": "ce" * 32},
+            "cell_env": {"path": "/r/cells/scratch.env", "sha256": "ce" * 32},
+            "checkout": {"head": head(), "trees": V.tree_oids(REPO, head(), V.CHECKOUT_TREES), "dirty": []},
             "started_unix": T0 // 1000, "finished_unix": T0 // 1000 + 4 * 3600,
         }
         self.marks = {"idle_start": T0, "load_start": T0 + 15 * MIN, "load_end": T0 + 85 * MIN, "q0_start": T0 + 100 * MIN}
@@ -143,7 +144,7 @@ class World:
 
 
 LEGS = ("load", "H9", "H9b", "H11t", "leaks", "probes", "compliant-refusals", "hostile-typed", "victim-p99", "billing", "memory", "Q0",
-        "identity", "release-binary")
+        "identity", "harness", "release-binary")
 
 
 class LayerB(unittest.TestCase):
@@ -225,6 +226,9 @@ class LayerB(unittest.TestCase):
             "a wrapper line naming another binary": (lambda w: w.rig.update(wrapper_sha256="cd" * 32), "identity"),
             "a rehearsal's --binary": (lambda w: w.rig.update(rehearsal=True), "release-binary"),
             "an edited manifest": (lambda w: w.run.update(manifest_sha256="00" * 32), "load"),
+            "a harness tree other than the commit's": (lambda w: w.rig["checkout"]["trees"].update({"bench/k2cost": "0" * 40}), "harness"),
+            "an uncommitted harness file": (lambda w: w.rig["checkout"].update(dirty=[" M bench/k2cost/tenants.ts"]), "harness"),
+            "no checkout record": (lambda w: w.rig.pop("checkout"), "harness"),
             "a run at time scale 0.4": (lambda w: w.run.update(time_scale=0.4), "load"),
             "a run without the manifest's sha256": (lambda w: w.run.pop("manifest_sha256"), "load"),
         }
