@@ -9,26 +9,25 @@
 // then, once K4 names the edge's client-IP header, the address's
 // exchanges and failures, and after the form the credential's own
 // exchanges), all before any secret work; the credential's form; the
-// body; the secret against
-// the stored hash (a match under an older pepper is noted for the
-// re-hash sweep, rehash.ts; only a customer credential with a secret has
-// a hash: an
-// operator's or the canary's catalog-read credential answers as an
-// unknown id); the credential active, not omitted, not expired; its
-// project active and not suspended; the state copy fresh; the signing key
-// still the cell's. The token is cell-admin's customerClaims at the
-// credential's current grant_version, its scopes narrowed to those asked
-// for, signed with the issuer's key. The cell checks every claim again
-// (src/auth.rs, verify_customer), so the exchange can at most mint what
-// the credential grants.
+// body; the secret against the stored hash (only a customer credential
+// with a secret has one: an operator's or the canary's catalog-read
+// credential answers as an unknown id; a match under an older pepper is
+// noted for the re-hash sweep, rehash.ts); the credential active, not
+// omitted, not expired; its project active and not suspended; the state
+// copy fresh; the signing key still the cell's. The token is cell-admin's
+// customerClaims at the credential's current grant_version, its scopes
+// narrowed to those asked for, signed with the issuer's key. The cell
+// checks every claim again (src/auth.rs, verify_customer), so the
+// exchange can at most mint what the credential grants. Every exchange is
+// counted for the audit (audit.ts) under its outcome.
 import { verifySecret } from "../cell-admin/secrets";
 import type { CellState, CredentialRecord } from "../cell-admin/state";
 import { customerClaims, signJwt } from "../cell-admin/tokens";
+import { type Audit, type ExchangeOutcome, UNKNOWN_CREDENTIAL } from "./audit";
 import { stateMismatch } from "./boot";
 import type { StateCache } from "./cache";
 import { type IssuerConfig, TOKEN_TTL_MIN_SECS } from "./config";
 import { clientIp, type RateLimits, TRUSTED_CLIENT_IP_HEADER } from "./limits";
-import { type Audit, type ExchangeOutcome, UNKNOWN_CREDENTIAL } from "./audit";
 import type { Rehasher } from "./rehash";
 import { json, refuse } from "./respond";
 
