@@ -356,7 +356,7 @@ const envelope = (status, code, retryable, headers = {}) =>
 function issuer(...answers) {
   const requests = [];
   const fetch = async (url, init) => {
-    const call = { url: String(url), method: init.method, headers: { ...init.headers }, body: init.body };
+    const call = { url: String(url), method: init.method, headers: { ...init.headers }, body: init.body, signal: init.signal };
     requests.push(call);
     const answer = answers[requests.length - 1];
     if (answer instanceof Error) throw answer;
@@ -498,6 +498,37 @@ clocked("whitespace around the credential is trimmed, as fetch trims a header va
   const { fetch, requests } = issuer();
   await prismaStreamsCredential(` ${CREDENTIAL}\n`, { issuerUrl: ISSUER, fetch }).exchange();
   assert.equal(requests[0].headers.authorization, `StreamsCredential ${CREDENTIAL}`);
+});
+
+clocked("each exchange attempt is bounded at 10 s, and an attempt that times out is replayed as a transport failure", async () => {
+  const native = AbortSignal.timeout;
+  const bounds = [], deadlines = [];
+  AbortSignal.timeout = ms => {
+    bounds.push(ms);
+    const deadline = new AbortController();
+    deadlines.push(deadline);
+    return deadline.signal;
+  };
+  try {
+    // The first attempt hangs (an issuer that accepted the connection and
+    // never answers) until its deadline aborts it.
+    const { fetch, requests } = issuer(call => new Promise((_resolve, reject) => {
+      if (!call.signal) reject(new TypeError("an attempt without a deadline would hang here"));
+      call.signal?.addEventListener("abort", () => reject(call.signal.reason), { once: true });
+    }));
+    const provider = prismaStreamsCredential(CREDENTIAL, { issuerUrl: ISSUER, fetch });
+    const pending = fastTimers(() => provider.exchange());
+    await drain();
+    deadlines[0]?.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+    const { value, delays } = await pending;
+    assert.equal(value.accessToken, "jwt-1");
+    assert.equal(requests.length, 2);
+    assert.deepEqual(bounds, [10_000, 10_000], "every attempt has its own 10 s deadline");
+    assert.deepEqual(requests.map(r => r.signal), deadlines.map(d => d.signal));
+    assert.deepEqual(delays, [1000]);
+  } finally {
+    AbortSignal.timeout = native;
+  }
 });
 
 clocked("retry: { transport: false } sends the exchange once and rejects with StreamsTransportError", async () => {
