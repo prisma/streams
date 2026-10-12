@@ -204,15 +204,19 @@ export class PlacementRefused extends AdminError {
 /// Where a project may be placed: not a reserved id, not the cell's
 /// ACCOUNT_ID as workspace, an id never used before (`denylist` is the
 /// denylist as read before this placement burns the id), and within the
-/// cell's and the workspace's caps. The workspace's cap is the cell's
+/// cell's and the workspace's caps. Every project not offboarded counts
+/// toward the cell's max_projects. The workspace's cap is the cell's
 /// unless `opts.workspaceCap` names the workspace's own (the issuer's
-/// allow-list entry, or its default).
+/// allow-list entry, or its default), and a project being offboarded
+/// counts toward it unless `opts.offboardingCounts` is false (the
+/// issuer's rule under the owner's question I9 (a): its credentials are
+/// revoked and only its drain remains).
 export function checkPlacement(
   state: CellState,
   project: string,
   workspace: string,
   denylist: Set<string>,
-  opts: { workspaceCap?: number } = {},
+  opts: { workspaceCap?: number; offboardingCounts?: boolean } = {},
 ): void {
   checkId("--project", project);
   checkId("--workspace", workspace);
@@ -237,7 +241,8 @@ export function checkPlacement(
     throw new PlacementRefused("cell_full", `cell ${cell.cell_id} already holds its ${cell.max_projects} projects`);
   }
   const cap = opts.workspaceCap ?? cell.workspace_cap;
-  const mine = placed.filter((p) => p.workspace_id === workspace).length;
+  const counted = opts.offboardingCounts ?? true;
+  const mine = placed.filter((p) => p.workspace_id === workspace && (counted || p.phase === "active")).length;
   if (mine >= cap) {
     throw new PlacementRefused(
       "workspace_full",

@@ -4,8 +4,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { CUSTOMER_SCOPES } from "../cell-admin/rules";
 import { hashSecret, parsePeppers } from "../cell-admin/secrets";
-import { cleanup, customerOnly, denylistText, readBundle, storeTexts } from "../cell-admin/test-rig";
-import { FREE_TIER_REQUESTS_PER_SEC, PROJECTS_PER_WORKSPACE_DEFAULT } from "./projects";
+import { cleanup, customerOnly, denylistText, readBundle, run, storeTexts } from "../cell-admin/test-rig";
+import { FREE_TIER_REQUESTS_PER_SEC, OFFBOARDING_COUNTS_TOWARD_WORKSPACE_CAP, PROJECTS_PER_WORKSPACE_DEFAULT } from "./projects";
 import { csrfToken, readSession } from "./session";
 import { admin, CELL, CELL_ORIGIN, cellState, customerSecret, type IssuerCell, issuerCell, managed, managementAudits } from "./rig";
 
@@ -145,6 +145,31 @@ describe("creating a project", () => {
       ["done", undefined],
       ["refused", "project_limit: workspace ws_a already has 2 project(s) on cell cell_sc1 (cap 2)"],
     ]);
+  });
+
+  test("counts a project being deleted toward the cell's max_projects but not toward its workspace's cap", async () => {
+    const cell = await allowedCell();
+    await admin(cell, "allow", "--workspace", "ws_b");
+    const m = await managed(cell);
+    const a = m.signIn("ws_a");
+    expect(OFFBOARDING_COUNTS_TOWARD_WORKSPACE_CAP).toBe(false);
+    const first = (await (await m.send("POST", PROJECTS, a, { displayName: "One" })).json()).project.id;
+    await admin(cell, "offboard", "--project", first);
+    await m.cache.refresh();
+    const second = await answer(await m.send("POST", PROJECTS, a, { displayName: "Two" }));
+    expect(second[0]).toBe(201);
+    const listed = await answer(await m.get(PROJECTS, a));
+    expect(listed[1].projects.map((p: any) => [p.id, p.status])).toEqual([[first, "deleting"], [second[1].project.id, "active"]]);
+    // The owner's admit keeps its rule: every project not offboarded counts.
+    const r = await run("admit", "--state", cell.state, "--project", "proj_x", "--workspace", "ws_a");
+    expect(r.err).toBe("cell-admin admit: workspace ws_a already has 2 project(s) on cell cell_sc1 (cap 1)");
+    // The cell's max_projects still counts it: the drain is still to run.
+    await m.cache.mutate((s) => {
+      s.cell.max_projects = 2;
+    });
+    expect(await answer(await m.send("POST", "/v1/workspaces/ws_b/streams/projects", m.signIn("ws_b"), { displayName: "B" })))
+      .toEqual([409, refusal("beta_at_capacity", "the Streams beta is at capacity; try again later")]);
+    expect(managementAudits(cell).at(-1)?.reason).toBe("beta_at_capacity: cell cell_sc1 already holds its 2 projects");
   });
 
   test("refuses 409 beta_at_capacity while the gate is closed or n_max customer projects are active", async () => {

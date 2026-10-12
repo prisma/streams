@@ -12,9 +12,11 @@
 //   4. the admission gate: open, and fewer than its n_max customer
 //      projects active (the static u = 0.5 rule; 409 beta_at_capacity);
 //   5. checkPlacement, one call: a reserved workspace (403
-//      workspace_not_allowed), the cell's max_projects (409
-//      beta_at_capacity), the workspace's cap, the allow-list entry's
-//      max_projects or PROJECTS_PER_WORKSPACE_DEFAULT (409 project_limit).
+//      workspace_not_allowed), the cell's max_projects, counting every
+//      project not offboarded (409 beta_at_capacity), the workspace's
+//      cap, the allow-list entry's max_projects or
+//      PROJECTS_PER_WORKSPACE_DEFAULT, counting its active projects only
+//      (409 project_limit).
 // Then: a fresh `sp_<32 hex>` id is burned on the denylist, and one
 // compare-and-swap from the issuer's copy places the project (the gate
 // and the placement checked again on the state it lands on) with its
@@ -51,6 +53,12 @@ export const PROJECTS_PER_WORKSPACE_DEFAULT = 1;
 /// 10 requests/s unless its workspace's allow-list entry names a rate;
 /// every other bounded axis gets its ceiling.
 export const FREE_TIER_REQUESTS_PER_SEC = 10;
+/// Owner question I9, answer (a) (the build default): a project being
+/// deleted (offboarding: its credentials revoked, its drain to run) no
+/// longer counts toward its workspace's cap, so its user may create the
+/// next one at once; it still counts toward the cell's max_projects.
+/// `true` is answer (b), cell-admin's own rule.
+export const OFFBOARDING_COUNTS_TOWARD_WORKSPACE_CAP = false;
 const FIRST_CREDENTIAL_NAME = "default";
 const AT_CAPACITY = "the Streams beta is at capacity; try again later";
 
@@ -139,7 +147,7 @@ export class Projects {
     const place = (s: CellState) => {
       const gate = gateRefusal(s);
       if (gate !== null) throw new GateClosed(gate);
-      checkPlacement(s, id, w, denylist, { workspaceCap: cap });
+      checkPlacement(s, id, w, denylist, { workspaceCap: cap, offboardingCounts: OFFBOARDING_COUNTS_TOWARD_WORKSPACE_CAP });
     };
     try {
       place(state);
