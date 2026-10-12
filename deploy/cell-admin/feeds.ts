@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { validateDocument } from "../../platform-demo/src/validate.mjs";
 import { AdminError } from "./errors";
-import type { CellState } from "./state";
+import type { CellState, CredentialRecord, ProjectRecord } from "./state";
 
 const SCHEMAS = join(import.meta.dir, "..", "..", "contracts", "streams-platform", "v1");
 
@@ -32,32 +32,39 @@ export interface Bundle {
 const sortedEntries = <T>(rec: Record<string, T>) =>
   Object.entries(rec).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 
+/// A project's entry in the policy feed: every field the cell reads, and
+/// nothing else (no timestamp, no display name).
+export const policyEntry = (state: CellState, id: string, p: ProjectRecord) => ({
+  project_id: id,
+  workspace_id: p.workspace_id,
+  cell_id: state.cell.cell_id,
+  project_policy_version: p.project_policy_version,
+  ownership_version: p.ownership_version,
+  status: p.status,
+  quotas: { ...p.quotas },
+});
+
+/// A credential's entry in the grants feed (never its secret's hash).
+export const grantEntry = (id: string, c: CredentialRecord) => ({
+  credential_id: id,
+  project_id: c.project_id,
+  grant_version: c.grant_version,
+  status: c.status,
+  scopes: c.scopes,
+  ...(c.stream_prefixes ? { stream_prefixes: [...c.stream_prefixes] } : {}),
+  expires_at: c.expires_at,
+});
+
 /// The full snapshots the state implies: every project not yet offboarded,
 /// every credential not omitted, every key.
 export function bundleOf(state: CellState): Bundle {
   const v = state.feed_version;
   const projects = sortedEntries(state.projects)
     .filter(([, p]) => p.phase !== "offboarded")
-    .map(([id, p]) => ({
-      project_id: id,
-      workspace_id: p.workspace_id,
-      cell_id: state.cell.cell_id,
-      project_policy_version: p.project_policy_version,
-      ownership_version: p.ownership_version,
-      status: p.status,
-      quotas: { ...p.quotas },
-    }));
+    .map(([id, p]) => policyEntry(state, id, p));
   const credentials = sortedEntries(state.credentials)
     .filter(([, c]) => !c.omitted)
-    .map(([id, c]) => ({
-      credential_id: id,
-      project_id: c.project_id,
-      grant_version: c.grant_version,
-      status: c.status,
-      scopes: c.scopes,
-      ...(c.stream_prefixes ? { stream_prefixes: [...c.stream_prefixes] } : {}),
-      expires_at: c.expires_at,
-    }));
+    .map(([id, c]) => grantEntry(id, c));
   const bundle: Bundle = {
     keys: { feed_version: v, keys: state.keys.map((k) => ({ ...k })) },
     policies: { feed_version: v, projects },

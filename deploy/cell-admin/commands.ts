@@ -14,6 +14,7 @@ import {
   readProfiles,
 } from "./profile";
 import { BundlePublisher, burnId, loadChecked, mutate } from "./publish";
+import { bumpFeed } from "./rules";
 import { type CellState, journal, STATE_FORMAT, writeDurable } from "./state";
 import { Conflict } from "./store";
 import { openStore, publishNote } from "./stores";
@@ -259,7 +260,7 @@ export async function admit(f: Flags, io: Io): Promise<void> {
         expires_at: null,
         omitted: false,
       };
-      state.feed_version += 1;
+      bumpFeed(state);
       journal(state, "admit", `${project} workspace=${workspace} credential=${credential}`);
       return credential;
     });
@@ -296,7 +297,7 @@ export async function bundle(f: Flags, io: Io): Promise<void> {
   const store = await openStore(f);
   await store.exclusive(async () => {
     const { state } = await mutate(store, (state) => {
-      state.feed_version += 1;
+      bumpFeed(state);
       journal(state, "bundle", "rewritten");
     });
     io.out(`bundle: ${store.bundlePath} (feed_version ${state.feed_version})`);

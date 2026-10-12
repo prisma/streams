@@ -69,6 +69,7 @@ pinned to the customer audience `prisma-streams-data`.
 | `offboard --project P --cell-url URL --key-file K` | Second run: checks the cell serves the revocation, deletes every stream, re-walks the catalog until a walk at least `--settle-secs` (default 60) after that check lists nothing, then omits the project. Publish the bundle. Exit 3 means "publish, wait, run again"; the walk is bounded by `--max-walks` (default 10) |
 | `list [--json]` | Shows the cell, its ceilings, and each project's phase, quotas and credentials. Holds no secrets |
 | `bundle` | Rewrites the bundle at a newer `feed_version`, for example after a crash between the state and the bundle |
+| `suspend --project P` / `resume --project P` | Publishes the project `suspended` (the cell answers its requests `403 project_not_active`; the issuer mints it no token) or `active` again, at a newer `project_policy_version`. Only an active (not offboarding) project |
 
 `admit` refuses, and publishes nothing, when:
 - a quota is above its ceiling, or is 0 (a binary without the cell ceiling reads 0 as "no limit");
@@ -78,6 +79,11 @@ pinned to the customer audience `prisma-streams-data`.
 - the workspace already has its cap of projects on the cell;
 - the cell already holds `--max-projects`;
 - the profile (the shipped files, or `--profile`) gives other ceilings than at `init`, or is not the profile `init` recorded: `init` records a digest of the layered profile (its `KEY=VALUE` lines sorted by key), and `admit` compares its own copy of the profile with it, never re-reading the files `init` read, so the issuer can run the same check with its bundled copy.
+
+Every change to a field the cell reads (a project's status or quotas; a
+credential's status, scopes, prefixes or expiry) bumps that entry's
+version and the bundle's `feed_version`: the cell refuses a snapshot that
+changes an entry at a version it already holds.
 
 ## Publishing
 

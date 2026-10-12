@@ -11,6 +11,7 @@ import { parseFlags } from "./args";
 import { admit, bundle, init, type Io, list, token } from "./commands";
 import { AdminError } from "./errors";
 import { offboard } from "./offboard";
+import { resume, suspend } from "./owner";
 
 const USAGE = `usage: cell-admin <command> --state DIR|s3://BUCKET/cells/CELL [--s3-credentials FILE] [flags]
   init      --cell-id C --deployment-project P --account A --key-file K
@@ -20,7 +21,9 @@ const USAGE = `usage: cell-admin <command> --state DIR|s3://BUCKET/cells/CELL [-
   token     --credential C --key-file K --out FILE [--ttl SECS] [--sub NAME]
   offboard  --project P [--cell-url URL --key-file K] [--max-walks N] [--settle-secs S]
   list      [--json]
-  bundle`;
+  bundle
+  suspend   --project P
+  resume    --project P`;
 
 const COMMANDS = {
   init: {
@@ -55,6 +58,8 @@ const COMMANDS = {
   },
   list: { run: list, spec: { single: ["state", "s3-credentials"], bool: ["json"], required: ["state"] } },
   bundle: { run: bundle, spec: { single: ["state", "s3-credentials"], required: ["state"] } },
+  suspend: { run: suspend, spec: { single: ["state", "s3-credentials", "project"], required: ["state", "project"] } },
+  resume: { run: resume, spec: { single: ["state", "s3-credentials", "project"], required: ["state", "project"] } },
 } as const;
 
 /// Run one command; never throws. Messages go to `io`, the code is returned.

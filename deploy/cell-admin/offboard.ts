@@ -26,6 +26,7 @@ import { call, cellBase, describeReply, walkAndDelete } from "./cell-client";
 import type { Io } from "./commands";
 import { AdminError, notYet } from "./errors";
 import { loadChecked, mutate } from "./publish";
+import { bumpFeed, setCredentialField } from "./rules";
 import { type CellState, journal } from "./state";
 import { openStore, publishNote } from "./stores";
 import { cellSigningKey, customerClaims, type SigningKey, signJwt } from "./tokens";
@@ -40,10 +41,9 @@ const credentialsOf = (state: CellState, project: string) =>
 /// Returns what it did, for the operator.
 function revoke(state: CellState, project: string): string {
   let revoked = 0;
-  for (const [, c] of credentialsOf(state, project)) {
+  for (const [id, c] of credentialsOf(state, project)) {
     if (c.role === "customer" && c.status === "active") {
-      c.status = "revoked";
-      c.grant_version += 1;
+      setCredentialField(state, id, { status: "revoked" });
       revoked += 1;
     }
   }
@@ -60,7 +60,7 @@ function revoke(state: CellState, project: string): string {
     omitted: false,
   };
   state.projects[project].phase = "offboarding";
-  state.feed_version += 1;
+  bumpFeed(state);
   journal(state, "offboard", `${project} revoked=${revoked} operator=${id}`);
   return `offboard ${project}: revoked ${revoked} customer credential(s); operator credential ${id} added`;
 }
@@ -126,7 +126,7 @@ function omit(state: CellState, project: string, deleted: number): string {
   const p = state.projects[project];
   p.phase = "offboarded";
   p.offboarded_at = new Date().toISOString();
-  state.feed_version += 1;
+  bumpFeed(state);
   journal(state, "offboard", `${project} catalog empty, ${deleted} deleted, omitted`);
   return `offboard ${project}: catalog empty (${deleted} deleted in this run); omitted from the feeds`;
 }
