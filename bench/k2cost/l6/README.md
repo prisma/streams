@@ -31,4 +31,11 @@ a74d39168416b228f8cc66b81d2d4e2beaa146c2632c87a8cadd9eac7aeff3f6  predict.py
 8d8108bbf43e4c2f58353f7b4c490b129ae36db156e150999547b5222e10ba9e  token-guard.sh
 ```
 
-Results, commands and caveats: `$L6/M1/NOTES.md` and `$L6/SPIKE-LOG.md`.
+## M2
+
+`m2-controls.sh` (sha256 `f4c7b15c45dc88831f35194b9c22689dd97ce54244c29da01d34aab5c6080db2`): the ten negative controls of M2. Each
+breaks one mechanism of the committed tree with a one-line substitution,
+runs the test that must catch it (dev profile, `L6_SPILL=1`), and restores
+the file. Output of the run on `0fe7fb6e`: `$L6/M2/controls.log`.
+
+Results, commands and caveats: `$L6/M1/NOTES.md`, `$L6/M2/NOTES.md` and `$L6/SPIKE-LOG.md`.
