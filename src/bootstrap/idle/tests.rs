@@ -1,7 +1,7 @@
 //! When the idle loop releases, as a pure function of its readings.
 #![cfg(test)]
 
-use super::{IdlePolicy, QUIET, REFILL_FLOOR, RERELEASE_AFTER, Reading};
+use super::{COLLECT_EVERY, IdlePolicy, QUIET, REFILL_FLOOR, RERELEASE_AFTER, Reading};
 use crate::runtime::{Clock, ManualClock};
 use std::time::Duration;
 
@@ -121,4 +121,62 @@ fn a_quiet_period_releases_again_only_once_refilled_past_the_floor_after_a_minut
         !policy.release_due(&refilled(next, 64 * REFILL_FLOOR)),
         "a minute from the last release, not the first"
     );
+}
+
+#[test]
+fn each_release_requests_collect_rounds_at_0_30_and_60_seconds() {
+    let mut readings = Readings::new();
+    let mut policy = policy(&mut readings);
+    let quiet = readings.at(QUIET - TWO, 0);
+    assert!(!policy.collect_due(quiet.now), "nothing released yet");
+    let mut rounds_at = |policy: &mut IdlePolicy, at: Duration, due: bool| {
+        let reading = readings.at(at, 0);
+        if at == QUIET {
+            assert!(policy.release_due(&reading));
+        }
+        assert_eq!(policy.collect_due(reading.now), due, "at {at:?}");
+    };
+    rounds_at(&mut policy, QUIET, true);
+    rounds_at(&mut policy, QUIET + TWO, false);
+    rounds_at(&mut policy, QUIET + COLLECT_EVERY - TWO, false);
+    rounds_at(&mut policy, QUIET + COLLECT_EVERY, true);
+    rounds_at(&mut policy, QUIET + COLLECT_EVERY, false);
+    rounds_at(&mut policy, QUIET + 2 * COLLECT_EVERY - TWO, false);
+    rounds_at(&mut policy, QUIET + 2 * COLLECT_EVERY, true);
+    rounds_at(&mut policy, QUIET + 3 * COLLECT_EVERY, false);
+    rounds_at(&mut policy, QUIET + 10 * COLLECT_EVERY, false);
+
+    let again = QUIET + 11 * COLLECT_EVERY;
+    assert!(!policy.release_due(&readings.at(again, 1)), "an arrival");
+    let next = readings.at(again + QUIET, 1);
+    assert!(policy.release_due(&next));
+    assert!(
+        policy.collect_due(next.now),
+        "a new release starts new rounds"
+    );
+}
+
+/// A release's collect rounds end with its quiet period: once requests
+/// arrive again, no later round holds the workers that serve them.
+#[test]
+fn a_request_after_a_release_ends_its_collect_rounds() {
+    let mut readings = Readings::new();
+    let mut policy = policy(&mut readings);
+    let released = readings.at(QUIET, 0);
+    assert!(policy.release_due(&released));
+    assert!(policy.collect_due(released.now), "round 0 at the release");
+    let traffic = [
+        (QUIET + TWO, 1),
+        (QUIET + COLLECT_EVERY, 5),
+        (QUIET + 2 * COLLECT_EVERY, 9),
+    ];
+    for (at, arrivals) in traffic {
+        let reading = readings.at(at, arrivals);
+        assert!(!policy.release_due(&reading), "{arrivals} arrivals");
+        assert!(
+            !policy.collect_due(reading.now),
+            "a collect round was requested {:?} into resumed traffic",
+            at - QUIET
+        );
+    }
 }

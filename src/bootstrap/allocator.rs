@@ -5,6 +5,12 @@
 //! 2 MiB pages, so memory freed after a load returns to RSS within minutes
 //! (Q0: an idle instance climbed from 119-122 to 154-162 MiB within 90 s of
 //! releasing its caches, against 79-81 MiB with huge pages off).
+//!
+//! After the idle release, every long-lived runtime thread collects its
+//! empty allocator pages once per requested round.
+
+use std::cell::Cell;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// What the kernel reports after the process asked it to stop backing this
 /// process's memory with transparent huge pages.
@@ -47,6 +53,101 @@ pub fn disable_transparent_huge_pages() -> ThpPosture {
 #[cfg(not(target_os = "linux"))]
 pub fn disable_transparent_huge_pages() -> ThpPosture {
     ThpPosture::NotLinux
+}
+
+/// Collect rounds requested since boot. A thread collects once per round it
+/// has not yet collected, the next time it parks or ticks.
+static COLLECT_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    /// The last round this thread collected for.
+    static SEEN: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Asks every long-lived runtime thread to return its empty allocator pages
+/// to the OS: each worker of both runtimes the next time it parks, and the
+/// thread that runs the served future within a second. Requested after the
+/// idle release, never under load: after a release most pages are empty
+/// but held by the thread-local heap of the thread that last used them,
+/// and only that thread can return them (Q0 PROFILE §4b-4d: 25-50 MiB of
+/// Linux RSS).
+pub(crate) fn request_collect() {
+    COLLECT_EPOCH.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Runs `mi_collect(true)` on this thread when a round was requested since
+/// it last did. Between rounds it costs one relaxed load and one TLS read,
+/// so it can run on every park.
+pub(crate) fn collect_if_requested() {
+    if SEEN.with(|seen| collect_due(COLLECT_EPOCH.load(Ordering::Relaxed), seen)) {
+        // SAFETY: mi_collect is thread-safe and takes no pointers; it frees
+        // only pages that hold no live block.
+        unsafe { libmimalloc_sys::mi_collect(true) };
+    }
+}
+
+/// Whether a thread that last collected for round `seen` collects for
+/// `epoch`, recording it when it does.
+fn collect_due(epoch: u64, seen: &Cell<u64>) -> bool {
+    if seen.get() >= epoch {
+        return false;
+    }
+    seen.set(epoch);
+    true
+}
+
+/// The latest round requested.
+#[cfg(test)]
+pub(crate) fn current_round() -> u64 {
+    COLLECT_EPOCH.load(Ordering::Relaxed)
+}
+
+/// The last round this thread collected for.
+#[cfg(test)]
+pub(crate) fn seen_round() -> u64 {
+    SEEN.with(Cell::get)
+}
+
+/// Waits on 10 ms sleeps, bounded at 3 s, until the thread polling it has
+/// collected for `round`. Whether it did.
+#[cfg(test)]
+pub(crate) async fn collected_here(round: u64) -> bool {
+    for _ in 0..300 {
+        if seen_round() >= round {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    false
+}
+
+#[cfg(test)]
+mod collect_tests {
+    use super::{collect_due, current_round, request_collect, seen_round};
+    use std::cell::Cell;
+
+    #[test]
+    fn a_thread_collects_once_per_requested_round() {
+        let seen = Cell::new(0);
+        assert!(!collect_due(0, &seen), "no round requested yet");
+        assert!(collect_due(1, &seen));
+        assert!(!collect_due(1, &seen), "round 1 is done");
+        assert_eq!(seen.get(), 1);
+        assert!(collect_due(3, &seen), "missed rounds collect once");
+        assert!(!collect_due(3, &seen));
+        assert!(!collect_due(2, &seen), "never for an older round");
+        assert_eq!(seen.get(), 3);
+    }
+
+    #[test]
+    fn a_request_starts_a_round_this_thread_collects_once() {
+        let before = current_round();
+        request_collect();
+        let round = current_round();
+        assert!(round > before, "a request starts a new round");
+        super::collect_if_requested();
+        assert!(seen_round() >= round);
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]

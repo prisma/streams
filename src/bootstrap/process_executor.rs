@@ -19,6 +19,7 @@ impl StorageExecutor {
                 .worker_threads(threads)
                 .thread_name("slatedb-rt")
                 .enable_all()
+                .on_thread_park(super::allocator::collect_if_requested)
                 .build()
                 .expect("build slatedb runtime"),
         }
@@ -56,6 +57,23 @@ pub(crate) fn slatedb_runtime() -> &'static tokio::runtime::Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A storage worker that parks after a requested round collects for it.
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "slatedb_rt_workers_collect_after_their_next_park; the probe must run on a storage worker, whose park hook is the subject; no supervisor owns the storage runtime"
+    )]
+    fn slatedb_rt_workers_collect_after_their_next_park() {
+        let executor = StorageExecutor::new(2);
+        crate::bootstrap::allocator::request_collect();
+        let round = crate::bootstrap::allocator::current_round();
+        let probe = crate::bootstrap::allocator::collected_here(round);
+        let collected = executor
+            .runtime
+            .block_on(async { tokio::spawn(probe).await.expect("the probe ran") });
+        assert!(collected, "a storage worker never collected");
+    }
 
     #[test]
     fn preexisting_process_executor_cannot_silently_ignore_new_sizing() {

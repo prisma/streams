@@ -373,6 +373,20 @@
       "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-12 in the public-beta round (\"On the public beta calls, I accept all recommended\"; Q0 DECISION.md O1: refresh bootstrap::run's six rows to the values the gate prints after the idle-release commit); values entered from the gate's output for the owner to confirm"
     },
     {
+      "path": "src/bootstrap/process_executor.rs",
+      "owner": "crate::StorageExecutor::new",
+      "scope": "function",
+      "lint": "clippy::expect_used",
+      "metrics": {
+        "expect_site::42e5c50d54fbc944": 1,
+        "expect_site:path::265ac39514431a1f": 1,
+        "scope_lines": 12,
+        "syntax_facts": 20
+      },
+      "rationale": "Q0 (2026-10-12): the storage runtime's workers collect their empty allocator pages once per requested round when they park (`.on_thread_park(super::allocator::collect_if_requested)`), because the slatedb-rt threads build every cached block and only the thread that holds a page can return it after the idle release; the builder chain keeps its single expect.",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-12 in the public-beta round (\"On the public beta calls, I accept all recommended\"; Q0 DECISION.md O2: a growth row for StorageExecutor::new for the slatedb-rt park hook); values entered from the gate's output for the owner to confirm"
+    },
+    {
       "path": "src/dst/fault_store.rs",
       "owner": "crate::FaultState::gate",
       "scope": "function",

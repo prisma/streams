@@ -18,6 +18,10 @@ use std::time::{Duration, Instant};
 /// returns, and an unbounded runtime drop joins it for ever.
 const TEARDOWN_BOUND: Duration = Duration::from_secs(5);
 
+/// How often the thread that runs the served future checks for a requested
+/// allocator collect. No park hook reaches that thread.
+const COLLECT_TICK: Duration = Duration::from_secs(1);
+
 /// Serves `served` on a new multi-thread runtime with `workers` worker threads, then stops
 /// the runtime within [`TEARDOWN_BOUND`], also when `served` panicked. A panic
 /// resumes only after that teardown. A thread still running at the bound is
@@ -26,9 +30,11 @@ pub(crate) fn serve<T>(workers: usize, served: impl Future<Output = T>) -> std::
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(workers)
         .enable_all()
+        .on_thread_park(super::allocator::collect_if_requested)
         .build()?;
-    let outcome =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runtime.block_on(served)));
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        runtime.block_on(collecting(served))
+    }));
     let teardown = Instant::now();
     runtime.shutdown_timeout(TEARDOWN_BOUND);
     if teardown.elapsed() >= TEARDOWN_BOUND {
@@ -41,6 +47,20 @@ pub(crate) fn serve<T>(workers: usize, served: impl Future<Output = T>) -> std::
     match outcome {
         Ok(output) => Ok(output),
         Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+/// Runs `served` to completion on this thread and, between its polls, a
+/// requested allocator collect for this thread once a second: the thread
+/// that runs the bootstrap and the accept loop holds allocator pages no
+/// worker's park hook can return.
+async fn collecting<T>(served: impl Future<Output = T>) -> T {
+    let mut served = std::pin::pin!(served);
+    loop {
+        tokio::select! {
+            output = &mut served => return output,
+            () = tokio::time::sleep(COLLECT_TICK) => super::allocator::collect_if_requested(),
+        }
     }
 }
 
@@ -208,6 +228,40 @@ mod tests {
             transcript.contains("1 passed"),
             "the helper test did not run:\n{transcript}"
         );
+    }
+
+    /// The served future runs on the thread that called `serve`, which no
+    /// park hook reaches; it collects within a tick of a requested round.
+    #[test]
+    fn the_served_futures_thread_collects_when_a_round_is_requested() {
+        let collected = serve(1, async {
+            crate::bootstrap::allocator::request_collect();
+            crate::bootstrap::allocator::collected_here(crate::bootstrap::allocator::current_round())
+                .await
+        });
+        assert!(collected.unwrap(), "the serving thread never collected");
+    }
+
+    /// Every worker that parks after a requested round collects for it.
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "every_worker_collects_after_its_next_park; the probes must be ordinary tasks on the served runtime's workers, whose park hook is the subject; a supervised task would add nothing the test observes"
+    )]
+    fn every_worker_collects_after_its_next_park() {
+        let collected = serve(2, async {
+            crate::bootstrap::allocator::request_collect();
+            let round = crate::bootstrap::allocator::current_round();
+            let probes: Vec<_> = (0..4)
+                .map(|_| tokio::spawn(crate::bootstrap::allocator::collected_here(round)))
+                .collect();
+            let mut all = true;
+            for probe in probes {
+                all &= probe.await.expect("the probe ran");
+            }
+            all
+        });
+        assert!(collected.unwrap(), "a worker never collected");
     }
 
     /// With nothing stuck, teardown takes a small fraction of the bound.

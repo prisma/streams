@@ -617,6 +617,14 @@
       "syntax": "std :: sync :: atomic :: AtomicBool"
     },
     {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::COLLECT_EPOCH",
+      "path": "src/bootstrap/allocator.rs",
+      "reason": "Process allocator owner: the allocator is process-wide, so the collect round its threads compare against is one AtomicU64 for the process; it holds a counter, no runtime or tenant state, and a per-runtime copy could not reach the other runtime's threads.",
+      "syntax": "AtomicU64"
+    },
+    {
       "category": "effect",
       "count": 1,
       "owner": "crate::spawn_sentinels",
@@ -2249,6 +2257,38 @@
       "syntax": "tokio::spawn"
     },
     {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::collecting",
+      "path": "src/bootstrap/service_runtime.rs",
+      "reason": "The served future pinned in place so the collect tick can poll it again; compiler checks expansion.",
+      "syntax": "std::pin::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::collecting",
+      "path": "src/bootstrap/service_runtime.rs",
+      "reason": "Expression selection between the served future and the collect tick on the thread that runs it; compiler checks expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tests::every_worker_collects_after_its_next_park",
+      "path": "src/bootstrap/service_runtime.rs",
+      "reason": "Park-hook regression spawns probes onto the served runtime's workers, whose park hook is the subject; each is joined before the served future returns.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tests::slatedb_rt_workers_collect_after_their_next_park",
+      "path": "src/bootstrap/process_executor.rs",
+      "reason": "Park-hook regression spawns one probe onto a test-owned storage runtime's workers, whose park hook is the subject; it is joined before the test returns.",
+      "syntax": "tokio::spawn"
+    },
+    {
       "category": "effect",
       "count": 1,
       "owner": "crate::r06a_actual_receiver_refuses_declared_wire_overflow_before_reading_body",
@@ -2990,6 +3030,14 @@
       "owner": "crate::macro(thread_local)",
       "path": "src/tasks/refusal.rs",
       "reason": "Per-thread set-aside slot for one supervised spawn call: it is Some only while tokio::spawn runs on this thread, so a future the closing runtime drops inline is handed back to the caller instead of re-entering the registration lock; it holds nothing between calls.",
+      "syntax": "thread_local"
+    },
+    {
+      "category": "global-macro",
+      "count": 1,
+      "owner": "crate::macro(thread_local)",
+      "path": "src/bootstrap/allocator.rs",
+      "reason": "Per-thread last collect round: mimalloc's free pages belong to the thread-local heap of the thread that used them, so each thread records the round it last collected for; it holds one u64.",
       "syntax": "thread_local"
     },
     {

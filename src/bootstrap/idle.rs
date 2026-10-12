@@ -20,6 +20,11 @@ const QUIET: Duration = Duration::from_secs(120);
 const REFILL_FLOOR: u64 = 1 << 20;
 /// The least time between two releases in one quiet period.
 const RERELEASE_AFTER: Duration = Duration::from_secs(60);
+/// After a release, allocator collect rounds at +0, +30 and +60 s: the first
+/// returns most of the freed pages, the later ones what trailing frees left
+/// (Q0 PROFILE §4d: 1-7 MiB more).
+const COLLECT_ROUNDS: u32 = 3;
+const COLLECT_EVERY: Duration = Duration::from_secs(30);
 
 /// One tick's reading of the instance.
 #[derive(Clone, Copy, Debug)]
@@ -42,6 +47,8 @@ struct IdlePolicy {
     quiet_since: MonotonicNow,
     /// The last release in the current quiet period.
     released_at: Option<MonotonicNow>,
+    /// The last release, and the collect rounds requested since.
+    collecting: Option<(MonotonicNow, u32)>,
 }
 
 impl IdlePolicy {
@@ -50,6 +57,7 @@ impl IdlePolicy {
             arrivals: first.arrivals,
             quiet_since: first.now,
             released_at: None,
+            collecting: None,
         }
     }
 
@@ -63,6 +71,7 @@ impl IdlePolicy {
             self.arrivals = reading.arrivals;
             self.quiet_since = reading.now;
             self.released_at = None;
+            self.collecting = None;
             return false;
         }
         if reading.active > 0
@@ -76,6 +85,22 @@ impl IdlePolicy {
         });
         if due {
             self.released_at = Some(reading.now);
+            self.collecting = Some((reading.now, 0));
+        }
+        due
+    }
+
+    /// Whether an allocator collect round is requested at `now`: rounds at
+    /// `COLLECT_EVERY` steps from the last release, `COLLECT_ROUNDS` of them.
+    /// An arrival ends them (`release_due`), so no round holds the workers
+    /// that serve resumed traffic.
+    fn collect_due(&mut self, now: MonotonicNow) -> bool {
+        let Some((released, rounds)) = self.collecting else {
+            return false;
+        };
+        let due = rounds < COLLECT_ROUNDS && now.since(released) >= COLLECT_EVERY * rounds;
+        if due {
+            self.collecting = Some((released, rounds + 1));
         }
         due
     }
@@ -107,8 +132,12 @@ async fn run(
             _ = cancel.cancelled() => return TaskResult::Done,
             _ = runtime.clock.sleep(TICK) => {}
         }
-        if policy.release_due(&read(&admission, &shards, &runtime)) {
+        let reading = read(&admission, &shards, &runtime);
+        if policy.release_due(&reading) {
             release(&runtime);
+        }
+        if policy.collect_due(reading.now) {
+            super::allocator::request_collect();
         }
     }
 }

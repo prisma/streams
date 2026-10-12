@@ -137,7 +137,7 @@ OWNERS = (
     owner('shard', 'src/shard.rs', 'shard::'),
     owner('shard_billing_ops', 'src/shard/billing_ops.rs', 'shard:: dst_tests::billing_walk_custody::'),
     owner('bootstrap', 'src/bootstrap.rs', 'bootstrap::'),
-    owner('bootstrap_allocator', 'src/bootstrap/allocator.rs', 'bootstrap::allocator::'),
+    owner('bootstrap_allocator', 'src/bootstrap/allocator.rs', 'bootstrap::allocator:: bootstrap::service_runtime:: bootstrap::process_executor::'),
     owner('bootstrap_idle', 'src/bootstrap/idle.rs', 'bootstrap::idle:: dst_tests::idle_release::'),
     owner('bootstrap_rss', 'src/bootstrap/rss.rs', 'bootstrap::'),
     owner('bootstrap_s3_store', 'src/bootstrap/s3_store.rs', 'bootstrap::'),
