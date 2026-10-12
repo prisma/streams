@@ -61,7 +61,8 @@ not carried over).
   the four attempts it shares with the `429`/`503` replay;
   `retry: { transport: false }` turns that off. A producer append is sent
   again with the same producer id, epoch and sequence, which the server
-  deduplicates, before the producer's later operations on its routing key.
+  deduplicates (a replay it refuses rejects with `AppendOutcomeUnknownError`,
+  above), before the producer's later operations on its routing key.
   A batch settlement is sent again with the same decisions; a settlement
   the SDK replays (after a transport failure or a retryable `429` or `503`)
   may report decisions its first attempt applied as `stale`; none is

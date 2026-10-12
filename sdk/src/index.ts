@@ -49,7 +49,8 @@ export interface StreamsClientOptions {
    * `transport` (default `true`): a request whose `fetch` fails is sent
    * again after 1, 2 and 4 s, within the four attempts it shares with the
    * 429/503 replay; a producer append is sent again with the same
-   * sequence, which the server deduplicates, and a batch settlement with
+   * sequence, which the server deduplicates (a replay it refuses rejects
+   * with `AppendOutcomeUnknownError`), and a batch settlement with
    * the same decisions, which it applies once. Plain appends, stream
    * deletion and a subscription's reads (its loop reconnects) are never
    * replayed this way. Set it to `false` when a `fetch` failure means

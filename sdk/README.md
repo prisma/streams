@@ -169,11 +169,14 @@ A request whose `fetch` fails is sent again up to three times, after 1, 2
 and 4 s (abort-aware), within the same four attempts as the 429/503 replay,
 and rejects with `StreamsTransportError` once they are spent. A producer
 append is sent again with the same producer id, epoch and sequence, so the
-server deduplicates a replay of an append that landed (`duplicate: true`),
-and the producer's later operations on that routing key wait for it. A
+server deduplicates a replay of an append that landed (`duplicate: true`; a
+replay it refuses before that check rejects with `AppendOutcomeUnknownError`,
+see "Producer state ownership"), and the producer's later operations on
+that routing key wait for it. A
 batch settlement is sent again with the same decisions, which the server
 applies once (see "Consumer cleanup and cancellation"). Plain appends and
-stream deletion are sent once and reject at once; a subscription's request
+stream deletion are not sent again after a transport failure and reject at
+once; a subscription's request
 is not replayed either, because the subscription reconnects itself. `retry: { transport: false }` turns the
 replay off, for callers whose `fetch` failures are configuration (a wrong
 URL, a blocked origin), not a restart. Consumer (`for await`,
