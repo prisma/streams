@@ -760,7 +760,9 @@ async function req(
     } catch (cause) {
       signal?.throwIfAborted();
       const failure = new StreamsTransportError(cause);
-      // The same four attempts as the 401 refresh and the 429/503 replay.
+      // The four attempts the 429/503 replay counts too. A 401's single
+      // token refresh is not bounded by them, so a request makes at most
+      // five attempts: the fifth only after a 401 at the fourth.
       if (!ctx.transportRetry || !replayTransport || attempt >= 3) throw classify(failure);
       await sleep(TRANSPORT_BACKOFF_MS[attempt], signal);
       signal?.throwIfAborted();

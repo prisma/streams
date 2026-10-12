@@ -168,6 +168,27 @@ test("a transport failure, a 503, a transport failure and a 503 are four request
   assert.deepEqual(delays, [1000, 0, 4000]);
 });
 
+// The 401 refresh is not bounded by the attempt count: a 401 at the fourth
+// attempt still refreshes the token once, so a request makes at most five.
+for (const [label, fifth, outcome] of [
+  ["a 200 succeeds", undefined, "resolved"],
+  ["a transport failure rejects", thrown, "StreamsTransportError"],
+]) {
+  test(`three transport failures and a 401, then ${label}: five requests, the last with the refreshed token`, async () => {
+    let provided = 0;
+    const f = fixture({
+      answers: [thrown(), thrown(), thrown(), answer(401), ...(fifth ? [fifth()] : [])],
+      options: { tokenProvider: () => `t${++provided}` },
+    });
+    const { value: error, delays } = await fastTimers(() => f.stream.metadata().then(() => "resolved", e => e));
+    assert.equal(outcome === "resolved" ? error : error.name, outcome);
+    assert.equal(f.calls.length, 5);
+    assert.deepEqual(f.calls.map(c => c.headers.authorization),
+      ["Bearer t1", "Bearer t1", "Bearer t1", "Bearer t1", "Bearer t2"]);
+    assert.deepEqual(delays, [1000, 2000, 4000]);
+  });
+}
+
 // ---- which requests replay ------------------------------------------------
 
 const consumer = f => f.stream.consumer("workers");
