@@ -144,6 +144,16 @@ describe("the S3 store", () => {
     expect([...fakeS3().objects.keys()]).toEqual([]);
   });
 
+  test("refuses to run with a key that cannot write the bucket, naming the refusal", async () => {
+    useStore("s3");
+    const root = scratchDir();
+    const state = freshState(root);
+    fakeS3().denyWrites = true;
+    const r = await init(state, keyFile(root));
+    expect([r.code, r.err.replace(/:\d+ /, ":<port> ")]).toEqual([1, "cell-admin init: http://127.0.0.1:<port> " +
+      "bucket ctl-1 refused a probe write (If-None-Match: * on a new key answered 403)"]);
+  });
+
   test("two writers on one state lose no update", async () => {
     useStore("s3");
     const c = await initCell(["--workspace-cap", "1"]);

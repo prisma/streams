@@ -137,8 +137,15 @@ class S3Object {
     return tag;
   }
 
-  putRaw(text: string, headers: Record<string, string>): Promise<Response> {
+  private putRaw(text: string, headers: Record<string, string>): Promise<Response> {
     return this.send("PUT", { "content-type": "application/json", ...headers }, text);
+  }
+
+  /// A PUT's status alone, its body drained.
+  async putStatus(text: string, headers: Record<string, string>): Promise<number> {
+    const res = await this.putRaw(text, headers);
+    await res.arrayBuffer().catch(() => undefined);
+    return res.status;
   }
 
   async delete(): Promise<void> {
@@ -168,18 +175,21 @@ async function selfTest(target: S3Target, cellId: string): Promise<void> {
     target,
     `cells/${cellId}/.cas-probe-${randomBytes(8).toString("hex")}`,
   );
+  const where = `${target.endpoint} bucket ${target.bucket}`;
   const refuse = (what: string, status: number) =>
     new AdminError(
-      `${target.endpoint} bucket ${target.bucket} does not honour conditional writes (${what} answered ` +
-        `${status}, not 412): cell-admin refuses to run without them`,
+      `${where} does not honour conditional writes (${what} answered ${status}, not 412): ` +
+        "cell-admin refuses to run without them",
     );
-  const created = await probe.putRaw("{}", { "if-none-match": "*" });
-  if (!created.ok) throw refuse("a first If-None-Match: * PUT", created.status);
+  const created = await probe.putStatus("{}", { "if-none-match": "*" });
+  if (created < 200 || created > 299) {
+    throw new AdminError(`${where} refused a probe write (If-None-Match: * on a new key answered ${created})`);
+  }
   try {
-    const again = await probe.putRaw("{}", { "if-none-match": "*" });
-    if (again.status !== 412) throw refuse("If-None-Match: * over an existing object", again.status);
-    const wrong = await probe.putRaw("{}", { "if-match": '"cas-probe-wrong"' });
-    if (wrong.status !== 412) throw refuse('If-Match: "cas-probe-wrong"', wrong.status);
+    const again = await probe.putStatus("{}", { "if-none-match": "*" });
+    if (again !== 412) throw refuse("If-None-Match: * over an existing object", again);
+    const wrong = await probe.putStatus("{}", { "if-match": '"cas-probe-wrong"' });
+    if (wrong !== 412) throw refuse('If-Match: "cas-probe-wrong"', wrong);
   } finally {
     await probe.delete();
   }

@@ -39,6 +39,7 @@ export function cleanup(): void {
   s3?.stop();
   s3 = undefined;
   s3States.clear();
+  buckets = 0;
   kind = "dir";
 }
 
