@@ -465,6 +465,41 @@ clocked("an answer without accessToken, expiresIn or projectId rejects as invali
   assert.equal(provider.last, undefined);
 });
 
+// fetch rejects a header value with a control character in a TypeError
+// whose message holds the value: the whole credential.
+clocked("a credential that is not prisma_streams_<id>.<secret> in printable characters is refused before any request, without echoing it", async () => {
+  for (const credential of [
+    "prisma_streams_cred1.s3cr3t-value\nmore",
+    "prisma_streams_cred1.s3cr3t value",
+    "prisma_streams_cred1.s3cr3té",
+    "s3cr3t-value",
+    "prisma_streams_cred1",
+  ]) {
+    const { fetch, requests } = issuer();
+    const thrown = (() => {
+      try {
+        prismaStreamsCredential(credential, { issuerUrl: ISSUER, fetch });
+      } catch (error) {
+        return error;
+      }
+    })();
+    const refused = await rejection(StreamsClient.connect({ credential, issuerUrl: ISSUER, fetch }));
+    for (const error of [thrown, refused]) {
+      assert.ok(error instanceof CredentialExchangeError, JSON.stringify(credential));
+      assert.deepEqual([error.status, error.code, error.retryable], [0, "invalid_credential_format", false]);
+      const shown = JSON.stringify({ ...error, message: error.message, stack: error.stack, cause: String(error.cause) });
+      assert.ok(!shown.includes("s3cr3t"), "the error does not carry the credential");
+    }
+    assert.equal(requests.length, 0);
+  }
+});
+
+clocked("whitespace around the credential is trimmed, as fetch trims a header value", async () => {
+  const { fetch, requests } = issuer();
+  await prismaStreamsCredential(` ${CREDENTIAL}\n`, { issuerUrl: ISSUER, fetch }).exchange();
+  assert.equal(requests[0].headers.authorization, `StreamsCredential ${CREDENTIAL}`);
+});
+
 clocked("retry: { transport: false } sends the exchange once and rejects with StreamsTransportError", async () => {
   const failure = new TypeError("fetch failed");
   const { fetch, requests } = issuer(failure);

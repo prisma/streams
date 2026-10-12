@@ -104,8 +104,12 @@ within four attempts. Any other refusal rejects at once with
 `invalid_credential`, `403` `credential_not_active` or
 `project_not_active`, `429` `rate_limited` and `503` `issuer_unavailable`
 (both `retryable`), or `exchange_failed` when the answer names no code. A
-success without a token is `invalid_exchange_response`. Neither the
-credential nor a token is logged or put in an error.
+success without a token is `invalid_exchange_response`. A credential that
+is not `prisma_streams_<id>.<secret>` in printable characters without
+spaces (a line break pasted into it, say) is refused before any request
+with `CredentialExchangeError` `invalid_credential_format` (`status` 0, not
+`retryable`); whitespace around it is trimmed. Neither the credential nor
+a token is logged or put in an error.
 
 Authentication (the token) belongs to the client; encryption (the
 `encryptionKey`) belongs to the stream handle.

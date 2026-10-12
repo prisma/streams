@@ -435,7 +435,9 @@ export class ProducerSequenceReusedError extends StreamsError {
  * `invalid_credential`, `403` `credential_not_active` or
  * `project_not_active`, `429` `rate_limited`, `503` `issuer_unavailable`
  * (the last two `retryable`); `exchange_failed` when the answer names no
- * code, `invalid_exchange_response` for a `2xx` without a token.
+ * code, `invalid_exchange_response` for a `2xx` without a token, and
+ * `invalid_credential_format` (`status` 0) for a credential that is not
+ * `prisma_streams_<id>.<secret>`, refused before any request.
  */
 export class CredentialExchangeError extends StreamsError {
   constructor(status: number, code: string, message: string, retryable: boolean) {
@@ -887,18 +889,38 @@ function exchangeFrom(status: number, body: unknown): CredentialExchange {
   };
 }
 
+/** A credential as it is sent: `prisma_streams_<id>.<secret>`, in printable
+ * ASCII without spaces. */
+const CREDENTIAL_FORMAT = /^prisma_streams_[A-Za-z0-9_]+\.[\x21-\x7e]+$/;
+
+/** The credential without the whitespace around it (fetch trims a header
+ * value's ends too), or a refusal that does not echo it: fetch rejects a
+ * header value with a control character in an error that quotes it. */
+function presentedCredential(credential: string): string {
+  const presented = credential.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
+  if (!CREDENTIAL_FORMAT.test(presented)) {
+    throw new CredentialExchangeError(0, "invalid_credential_format",
+      "the credential is not of the form prisma_streams_<id>.<secret> in printable characters " +
+        "without spaces or line breaks; copy it again where it was created", false);
+  }
+  return presented;
+}
+
 /**
  * A Prisma Streams credential (`prisma_streams_<id>.<secret>`, shown once
- * when it is created) as a source of access tokens. Each exchange is sent
- * through the client's request loop: a `429` or `503` is replayed on its
- * `Retry-After` and a transport failure after 1, 2 and 4 s, within four
- * attempts; any other refusal rejects at once as `CredentialExchangeError`.
- * Neither the credential nor a token is logged or put in an error.
+ * when it is created) as a source of access tokens. A credential of
+ * another form is refused at once (`invalid_credential_format`), before
+ * any request. Each exchange is sent through the client's request loop: a
+ * `429` or `503` is replayed on its `Retry-After` and a transport failure
+ * after 1, 2 and 4 s, within four attempts; any other refusal rejects at
+ * once as `CredentialExchangeError`. Neither the credential nor a token is
+ * logged or put in an error.
  */
 export function prismaStreamsCredential(
   credential: string,
   options: { issuerUrl: string; fetch?: typeof fetch; retry?: StreamsClientOptions["retry"] },
 ): CredentialProvider {
+  const presented = presentedCredential(credential);
   const ctx: Ctx = {
     base: options.issuerUrl.replace(/\/$/, ""),
     fetch: options.fetch ?? fetch.bind(globalThis),
@@ -910,7 +932,7 @@ export function prismaStreamsCredential(
     // No token in this context: req() keeps this header and never
     // refreshes on a 401.
     const res = await req(ctx, "POST", "/v1/token/streams", {
-      authorization: `StreamsCredential ${credential}`,
+      authorization: `StreamsCredential ${presented}`,
       accept: "application/json",
     });
     const body: unknown = await res.json().catch(() => undefined);
