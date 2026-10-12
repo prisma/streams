@@ -10,8 +10,14 @@ use super::settings::{Deadline, Trigger};
 /// fourth is everything larger): < 32 KiB, < 256 KiB, < 1 MiB, ≥ 1 MiB.
 const CHUNK_BOUNDS: [u64; 3] = [32 << 10, 256 << 10, 1 << 20];
 /// Upper bounds (ms, inclusive) of the duration histograms; the last bucket
-/// is everything slower.
-const MS_BOUNDS: [u64; 7] = [10, 50, 100, 250, 500, 1000, 2000];
+/// is everything slower. M5: fine enough to place a p99 against P7's 0.4 s
+/// and 0.6 s bars (M3/M4 had 10, 50, 100, 250, 500, 1000, 2000).
+const MS_BOUNDS: [u64; 22] = [
+    5, 10, 25, 50, 75, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 1000, 1500, 2000,
+    4000, 8000,
+];
+/// Buckets of a duration histogram: one per bound plus the overflow.
+const MS_BUCKETS: usize = 23;
 
 pub(crate) struct Histogram<const N: usize> {
     buckets: [AtomicU64; N],
@@ -127,10 +133,10 @@ pub(crate) struct SpillStats {
     pub(crate) seed_failures: AtomicU64,
     /// M4: the read path's counters.
     pub(crate) reads: ReadStats,
-    pub(crate) seal_ms: Histogram<8>,
-    pub(crate) put_ms: Histogram<8>,
-    pub(crate) commit_ms: Histogram<8>,
-    pub(crate) flush_ms: Histogram<8>,
+    pub(crate) seal_ms: Histogram<MS_BUCKETS>,
+    pub(crate) put_ms: Histogram<MS_BUCKETS>,
+    pub(crate) commit_ms: Histogram<MS_BUCKETS>,
+    pub(crate) flush_ms: Histogram<MS_BUCKETS>,
 }
 
 impl SpillStats {
@@ -276,7 +282,7 @@ pub(crate) struct ReadStats {
     /// (`absorption_race` adopted it and the read re-served the gap from the
     /// sealed range): readers that raced a seal's advance and trims.
     pub(crate) race_adoptions: AtomicU64,
-    pub(crate) read_ms: Histogram<8>,
+    pub(crate) read_ms: Histogram<MS_BUCKETS>,
 }
 
 impl ReadStats {

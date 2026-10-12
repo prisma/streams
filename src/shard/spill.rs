@@ -133,6 +133,11 @@ pub(crate) struct SealReport {
     pub(crate) commit_ms: u64,
     pub(crate) flush_ms: u64,
     pub(crate) total_ms: u64,
+    /// M5: step 1 (the awaited WAL flush and the catch-up), and the start
+    /// of step 1 to the end of step 7b (the census's seal duration, which
+    /// leaves out the wait for an earlier seal's advances to settle).
+    pub(crate) wal_ms: u64,
+    pub(crate) steps_ms: u64,
 }
 
 /// The counters' values at the last forced memtable flush: the memtable
@@ -442,6 +447,34 @@ impl ShardEngine {
                         );
                     }
                     state.after_seal(result.is_ok());
+                    // M5: one line per seal, so the census has every seal's
+                    // durations, sizes and leak (the histograms only bucket).
+                    if let Ok(r) = &result {
+                        tracing::info!(
+                            shard = %engine.prefix,
+                            trigger = trigger.name(),
+                            mem_estimate = m.mem_estimate,
+                            unabsorbed = m.pages,
+                            wal_objects = m.wal_objects,
+                            object_bytes = r.object_bytes,
+                            streams = r.streams,
+                            chunks = r.chunks,
+                            pages = r.pages,
+                            page_bytes = r.page_bytes,
+                            groups = r.groups,
+                            ring_fallbacks = r.ring_fallbacks,
+                            l0_bytes = r.l0_bytes,
+                            imm_flushes = r.imm_flushes,
+                            leak_bytes = r.leak_bytes,
+                            wal_ms = r.wal_ms,
+                            put_ms = r.put_ms,
+                            commit_ms = r.commit_ms,
+                            flush_ms = r.flush_ms,
+                            steps_ms = r.steps_ms,
+                            total_ms = r.total_ms,
+                            "L6SEAL"
+                        );
+                    }
                     if let Err(e) = result
                         && !engine.is_closed()
                     {
@@ -568,7 +601,19 @@ impl ShardEngine {
     /// A deadline: flush the memtable, seal or no seal (degraded mode).
     pub(crate) async fn spill_deadline_flush(&self, sp: &SpillState, kind: Deadline) {
         sp.stats.deadline(kind);
-        let (attributed, _, err) = self.spill_forced_flush(sp).await;
+        let m = self.spill_measure(sp);
+        let (attributed, l0, err) = self.spill_forced_flush(sp).await;
+        tracing::info!(
+            shard = %self.prefix,
+            ?kind,
+            mem_estimate = m.mem_estimate,
+            unabsorbed = m.pages,
+            wal_objects = m.wal_objects,
+            seal_running = sp.running.load(Ordering::Acquire),
+            attributed,
+            l0_bytes = l0,
+            "L6DEADLINE"
+        );
         sp.stats
             .deadline_flush_attributed
             .fetch_add(attributed, Ordering::Relaxed);
@@ -613,7 +658,9 @@ impl ShardEngine {
             eprintln!("L6TRACE {} step 1", self.prefix);
         }
         // (1)
+        let t_steps = Instant::now();
         self.spill_flush_and_catch_up(sp).await?;
+        let wal_ms = ms(t_steps.elapsed());
         #[cfg(test)]
         if std::env::var("DST_L6_TRACE").is_ok() {
             eprintln!("L6TRACE {} step 2", self.prefix);
@@ -621,7 +668,10 @@ impl ShardEngine {
         sp.check_abort(SealStep::AfterWalFlush)?;
         // (2)
         let snapshot_at = Instant::now();
-        let mut report = SealReport::default();
+        let mut report = SealReport {
+            wal_ms,
+            ..SealReport::default()
+        };
         let windows = self.spill_snapshot(sp, &mut report).await?;
         if windows.is_empty() {
             sp.stats.seals_empty.fetch_add(1, Ordering::Relaxed);
@@ -652,6 +702,7 @@ impl ShardEngine {
         report.imm_flushes = attributed;
         report.l0_bytes = l0;
         report.flush_ms = ms(t_flush.elapsed());
+        report.steps_ms = ms(t_steps.elapsed());
         sp.stats.flush_ms(report.flush_ms);
         sp.stats
             .spill_flush_attributed
