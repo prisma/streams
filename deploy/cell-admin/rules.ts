@@ -10,6 +10,7 @@
 import { randomBytes } from "node:crypto";
 import { AdminError } from "./errors";
 import { grantEntry, policyEntry } from "./feeds";
+import { PREFIX_MAX_COUNT, prefixRefusal } from "./prefixes";
 import {
   BOUNDED_FIELDS,
   type BoundedField,
@@ -263,11 +264,14 @@ export function scopesOf(raw: string | undefined): string {
   return [...new Set(words)].join(" ");
 }
 
-/// A credential's stream prefixes: none, or 1 to 64 non-empty ones.
+/// A credential's stream prefixes from `--prefix`: none, or 1 to 64 that
+/// the cell's grants parser takes (prefixes.ts).
 export function prefixesOf(prefixes: readonly string[]): string[] | undefined {
   if (prefixes.length === 0) return undefined;
-  if (prefixes.length > 64 || prefixes.some((p) => p === "")) {
-    throw new AdminError("--prefix: 1 to 64 non-empty prefixes", 2);
+  if (prefixes.length > PREFIX_MAX_COUNT) throw new AdminError(`--prefix: 1 to ${PREFIX_MAX_COUNT} prefixes`, 2);
+  for (const p of prefixes) {
+    const why = prefixRefusal(p);
+    if (why !== null) throw new AdminError(`--prefix ${JSON.stringify(p)} ${why}`, 2);
   }
   return [...prefixes];
 }

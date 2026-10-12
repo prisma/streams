@@ -11,6 +11,7 @@ import keys from "../../contracts/streams-platform/v1/keys.schema.json";
 import projectPolicies from "../../contracts/streams-platform/v1/project-policies.schema.json";
 import { validateDocument } from "../../platform-demo/src/validate.mjs";
 import { AdminError } from "./errors";
+import { prefixesRefusal } from "./prefixes";
 import type { CellState, CredentialRecord, ProjectRecord } from "./state";
 
 const SCHEMAS: Record<string, unknown> = {
@@ -67,15 +68,23 @@ export const grantEntry = (id: string, c: CredentialRecord) => ({
 });
 
 /// The full snapshots the state implies: every project not yet offboarded,
-/// every credential not omitted, every key.
+/// every credential not omitted, every key. Refused when a credential's
+/// stream prefixes are ones the cell's grants parser refuses: the schema
+/// takes any non-empty string, the cell does not, and one such entry fails
+/// its whole grants snapshot (prefixes.ts).
 export function bundleOf(state: CellState): Bundle {
   const v = state.feed_version;
   const projects = sortedEntries(state.projects)
     .filter(([, p]) => p.phase !== "offboarded")
     .map(([id, p]) => policyEntry(state, id, p));
-  const credentials = sortedEntries(state.credentials)
-    .filter(([, c]) => !c.omitted)
-    .map(([id, c]) => grantEntry(id, c));
+  const live = sortedEntries(state.credentials).filter(([, c]) => !c.omitted);
+  for (const [id, c] of live) {
+    const why = prefixesRefusal(c.stream_prefixes);
+    if (why !== null) {
+      throw new AdminError(`credential ${id}'s stream_prefixes: ${why}: the cell would refuse the whole grants snapshot`);
+    }
+  }
+  const credentials = live.map(([id, c]) => grantEntry(id, c));
   const bundle: Bundle = {
     keys: { feed_version: v, keys: state.keys.map((k) => ({ ...k })) },
     policies: { feed_version: v, projects },

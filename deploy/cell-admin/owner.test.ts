@@ -49,7 +49,7 @@ describe("the version-bump invariant", () => {
       ["a quota", (s) => setProjectField(s, "proj_a", { quotas: { ...s.projects.proj_a.quotas, max_streams: 7 } })],
       ["a credential's status", (s) => setCredentialField(s, cred, { status: "revoked" })],
       ["its scopes", (s) => setCredentialField(s, cred, { scopes: "streams.catalog.read" })],
-      ["its prefixes", (s) => setCredentialField(s, cred, { stream_prefixes: ["a/"] })],
+      ["its prefixes", (s) => setCredentialField(s, cred, { stream_prefixes: ["a"] })],
       ["its expiry", (s) => setCredentialField(s, cred, { expires_at: 1_900_000_000 })],
       ["a secret, rotated", (s) => setCredentialField(s, cred, { secret_hash: "h", hv: 1 }, { bump: true })],
     ];
@@ -208,7 +208,7 @@ for (const kind of STORES) {
       const pepper = pepperFile(c.root);
       const out = join(c.root, "ci.secret");
       const r = await run("credential", "--state", c.state, "--project", "proj_a", "--scopes",
-        "streams.records.read streams.records.append", "--prefix", "orders/", "--name", "ci",
+        "streams.records.read streams.records.append", "--prefix", "orders", "--name", "ci",
         "--pepper-file", pepper.path, "--out", out);
       expect([r.code, r.err]).toEqual([0, ""]);
       const presented = readFileSync(out, "utf8").trim();
@@ -222,7 +222,7 @@ for (const kind of STORES) {
       });
       expect((readBundle(c.state).grants.credentials as any[]).find((g) => g.credential_id === id)).toEqual({
         credential_id: id, project_id: "proj_a", grant_version: 1, status: "active",
-        scopes: "streams.records.read streams.records.append", stream_prefixes: ["orders/"], expires_at: null,
+        scopes: "streams.records.read streams.records.append", stream_prefixes: ["orders"], expires_at: null,
       });
       expect(r.out).not.toContain(secret);
       for (const text of storeTexts(c.state)) expect(text).not.toContain(secret);
@@ -342,7 +342,7 @@ for (const kind of STORES) {
       await run("suspend", "--state", c.state, "--project", "proj_a");
       const pepper = pepperFile(c.root, 0o600, 4);
       await run("credential", "--state", c.state, "--project", "proj_a", "--pepper-file", pepper.path,
-        "--out", join(c.root, "a.secret"), "--prefix", "x/");
+        "--out", join(c.root, "a.secret"), "--prefix", "x");
       await run("offboard", "--state", c.state, "--project", "proj_b");
       const out = join(c.root, "export.json");
       const r = await run("export", "--state", c.state, "--out", out);

@@ -37,7 +37,7 @@ describe("a project's credentials", () => {
     const before = cellState(cell).feed_version;
     const expiresAt = new Date(m.clock.t + 30 * 86_400_000).toISOString().replace(/\.\d{3}Z$/, ".000Z");
     const res = await m.send("POST", path, a, {
-      displayName: "ci", scopes: ["streams.records.read", "streams.catalog.read"], streamPrefixes: ["orders/"], expiresAt,
+      displayName: "ci", scopes: ["streams.records.read", "streams.catalog.read"], streamPrefixes: ["orders"], expiresAt,
     });
     const [status, body] = await answer(res);
     expect(status).toBe(201);
@@ -48,26 +48,26 @@ describe("a project's credentials", () => {
     const by = { userId: "usr_ws_a", email: "owner@ws_a.example.com" };
     expect(body.credential).toEqual({
       id: cid, projectId: id, displayName: "ci", scopes: ["streams.records.read", "streams.catalog.read"],
-      streamPrefixes: ["orders/"], grantVersion: 1, status: "active", valueHint: raw.slice(-6),
+      streamPrefixes: ["orders"], grantVersion: 1, status: "active", valueHint: raw.slice(-6),
       createdAt: state.credentials[cid].created_at, expiresAt, createdBy: by,
     });
     const pepper = parsePeppers(readFileSync(cell.pepper, "utf8"), "pepper")[0];
     const expSecs = Date.parse(expiresAt) / 1000;
     expect(state.credentials[cid]).toMatchObject({
       project_id: id, role: "customer", grant_version: 1, status: "active", scopes: "streams.records.read streams.catalog.read",
-      stream_prefixes: ["orders/"], expires_at: expSecs, secret_hash: hashSecret(pepper, raw), hv: 1, display_name: "ci",
+      stream_prefixes: ["orders"], expires_at: expSecs, secret_hash: hashSecret(pepper, raw), hv: 1, display_name: "ci",
       created_by: { user_id: "usr_ws_a", email: "owner@ws_a.example.com" },
     });
     expect(state.feed_version).toBe(before + 1);
     const grants = customerOnly(readBundle(cell.state)).grants.credentials as any[];
     expect(grants.find((g) => g.credential_id === cid)).toEqual({
       credential_id: cid, project_id: id, grant_version: 1, status: "active",
-      scopes: "streams.records.read streams.catalog.read", stream_prefixes: ["orders/"], expires_at: expSecs,
+      scopes: "streams.records.read streams.catalog.read", stream_prefixes: ["orders"], expires_at: expSecs,
     });
     expect(storeTexts(cell.state).join("\n")).not.toContain(raw);
     const token = (await (await exchange(m, body.secret)).json()).accessToken;
     expect(decodeJwt(token).claims).toMatchObject({
-      credential_id: cid, scope: "streams.records.read streams.catalog.read", stream_prefixes: ["orders/"],
+      credential_id: cid, scope: "streams.records.read streams.catalog.read", stream_prefixes: ["orders"],
     });
     expect(await answer(await m.get(path, a))).toEqual([200, { credentials: [first, body.credential] }]);
     expect(managementAudits(cell).at(-1)).toMatchObject({
@@ -91,6 +91,20 @@ describe("a project's credentials", () => {
       [{ streamPrefixes: [] }, "streamPrefixes is null or 1 to 64 non-empty strings"],
       [{ streamPrefixes: [""] }, "streamPrefixes is null or 1 to 64 non-empty strings"],
       [{ streamPrefixes: Array(65).fill("p") }, "streamPrefixes is null or 1 to 64 non-empty strings"],
+      // The cell's prefix grammar (src/tenant.rs, CanonicalPrefix::normalize):
+      // one prefix it refuses would fail the cell's whole grants snapshot.
+      [{ streamPrefixes: ["orders/"] }, 'streamPrefixes: "orders/" has an empty component (a leading, trailing or double slash)'],
+      [{ streamPrefixes: ["ok", "/a"] }, 'streamPrefixes: "/a" has an empty component (a leading, trailing or double slash)'],
+      [{ streamPrefixes: ["a//b"] }, 'streamPrefixes: "a//b" has an empty component (a leading, trailing or double slash)'],
+      [{ streamPrefixes: ["a b"] }, 'streamPrefixes: "a b" holds a control character or a space'],
+      [{ streamPrefixes: ["a\tb"] }, 'streamPrefixes: "a\\tb" holds a control character or a space'],
+      [{ streamPrefixes: ["a\u0085"] }, 'streamPrefixes: "a\u0085" holds a control character or a space'],
+      [{ streamPrefixes: [".."] }, 'streamPrefixes: ".." has a "." or ".." component'],
+      [{ streamPrefixes: ["a/./b"] }, 'streamPrefixes: "a/./b" has a "." or ".." component'],
+      [{ streamPrefixes: ["__ds/x"] }, 'streamPrefixes: "__ds/x" is in the reserved __ds namespace'],
+      [{ streamPrefixes: ["a".repeat(257)] }, `streamPrefixes: "${"a".repeat(257)}" is 257 bytes, more than 256`],
+      [{ streamPrefixes: ["é".repeat(129)] }, `streamPrefixes: "${"é".repeat(129)}" is 258 bytes, more than 256`],
+      [{ streamPrefixes: ["a\ud800"] }, 'streamPrefixes: "a\\ud800" is not well-formed Unicode'],
       [{ expiresAt: "tomorrow" }, "expiresAt is null or a date-time in the future"],
       [{ expiresAt: new Date(m.clock.t - 1000).toISOString() }, "expiresAt is null or a date-time in the future"],
       [{ expiresAt: 1_900_000_000 }, "expiresAt is null or a date-time in the future"],

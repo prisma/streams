@@ -43,6 +43,7 @@ import {
   newCredentialId,
   setCredentialField,
 } from "../cell-admin/rules";
+import { prefixesRefusal } from "../cell-admin/prefixes";
 import { newSecret, presentedSecret, secretFields } from "../cell-admin/secrets";
 import { type CellState, journal } from "../cell-admin/state";
 import { audited, type Call, commit, displayNameOf, type ManagementDeps, readObject, Refusal, refused } from "./calls";
@@ -83,6 +84,10 @@ function askOf(body: Record<string, unknown>, nowMs: number): Ask | string {
     if (!Array.isArray(p) || p.length < 1 || p.length > 64 || p.some((x) => typeof x !== "string" || x === "")) {
       return "streamPrefixes is null or 1 to 64 non-empty strings";
     }
+    // The cell's prefix grammar: one prefix it refuses would fail the
+    // cell's whole grants snapshot, every tenant's.
+    const why = prefixesRefusal(p as string[]);
+    if (why !== null) return `streamPrefixes: ${why}`;
     ask.stream_prefixes = [...(p as string[])];
   }
   if (expiresAt !== undefined && expiresAt !== null) {

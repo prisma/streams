@@ -143,6 +143,41 @@ for (const kind of STORES) {
     });
 
     describe("admit", () => {
+      test("refuses a stream prefix the cell's grants parser refuses, and no writer publishes one", async () => {
+        const c = await initCell();
+        const refused: [string, string][] = [
+          ["orders/", "has an empty component (a leading, trailing or double slash)"],
+          ["__ds/x", "is in the reserved __ds namespace"],
+          ["a b", "holds a control character or a space"],
+          ["..", 'has a "." or ".." component'],
+        ];
+        for (const [prefix, why] of refused) {
+          const r = await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w", "--prefix", prefix);
+          expect([r.code, r.err.split("\n")[0]]).toEqual([2, `cell-admin admit: --prefix ${JSON.stringify(prefix)} ${why}`]);
+        }
+        expect(Object.keys(readState(c.state).projects)).toEqual(["sp_canary_cell_sc1"]);
+        // Nothing burned: a directory state has no denylist file yet.
+        const burned = (() => {
+          try {
+            return denylistText(c.state);
+          } catch {
+            return "";
+          }
+        })();
+        expect(burned).not.toContain("proj_a");
+        // Another writer's slip: a state holding such a prefix is refused
+        // before it is committed again or published.
+        const slipped = readState(c.state);
+        const [canaryCred] = Object.keys(slipped.credentials);
+        slipped.credentials[canaryCred].stream_prefixes = ["a/"];
+        writeStateText(c.state, `${JSON.stringify(slipped, null, 2)}\n`);
+        const published = readBundleText(c.state);
+        const r = await run("bundle", "--state", c.state);
+        expect([r.code, r.err]).toEqual([1, `cell-admin bundle: credential ${canaryCred}'s stream_prefixes: "a/" has an ` +
+          "empty component (a leading, trailing or double slash): the cell would refuse the whole grants snapshot"]);
+        expect(readBundleText(c.state)).toBe(published);
+      });
+
       test("publishes the project at its ceilings, explicit quotas below them, and a fresh credential", async () => {
         const c = await initCell();
         const r = await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "wksp_a",
@@ -289,7 +324,7 @@ for (const kind of STORES) {
     describe("token", () => {
       test("mints a 24 h token the cell's keys verify, at the credential's versions, into a 0600 file only", async () => {
         const c = await initCell();
-        await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "wksp_a", "--prefix", "orders/");
+        await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "wksp_a", "--prefix", "orders");
         const cred = customerCredential(c.state, "proj_a");
         const out = join(c.root, "token.jwt");
         const r = await run("token", "--state", c.state, "--credential", cred, "--key-file", c.key, "--out", out,
@@ -302,7 +337,7 @@ for (const kind of STORES) {
         expect(claims).toMatchObject({
           aud: "prisma-streams-data", iss: "https://auth.prisma.io", credential_id: cred, project_id: "proj_a",
           workspace_id: "wksp_a", cell_id: "cell_sc1", ownership_version: 1, grant_version: 1,
-          stream_prefixes: ["orders/"],
+          stream_prefixes: ["orders"],
         });
         expect(claims.exp - claims.iat).toBe(86400);
         expect(decodeJwt(token).header.kid).toBe((readBundle(c.state).keys.keys[0] as any).kid);
