@@ -36,6 +36,10 @@ import {
 
 afterEach(cleanup);
 
+/// The quotas a project is admitted with when none is given: each bounded
+/// axis at its ceiling, append records/s 0 (no project limit, as the
+/// server reads it), and the stored bytes at the profile's
+/// PROJECT_STORED_BYTES_DEFAULT (10 GiB), which has no ceiling.
 const CEILINGS = {
   requests_per_sec: 176,
   append_bytes_per_sec: 257500,
@@ -45,6 +49,7 @@ const CEILINGS = {
   max_live_subscriptions: 150,
   max_streams: 8192,
   queued_append_bytes: 67108864,
+  max_stored_bytes: 10737418240,
 };
 
 /// Nothing cell-admin writes to its store may hold private key material
@@ -220,11 +225,24 @@ for (const kind of STORES) {
         expect(denylistText(c.state)).toBe("proj_a\n");
       });
 
+      test("publishes a stored-bytes quota above the cell default: that axis has no ceiling", async () => {
+        const c = await initCell();
+        const r = await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "wksp_a",
+          "--quota", "max_stored_bytes=21474836480");
+        expect([r.code, r.err]).toEqual([0, ""]);
+        expect(r.out).toContain(" queued_append_bytes=67108864 max_stored_bytes=21474836480\n");
+        const b = customerOnly(readBundle(c.state));
+        expect((b.policies.projects as any[]).map((p) => p.quotas)).toEqual([{ ...CEILINGS, max_stored_bytes: 21474836480 }]);
+        expect(validateDocument(b.policies, schema("project-policies.schema.json"))).toEqual([]);
+      });
+
       const refusals: [string, string[], string][] = [
         ["a quota above its ceiling", ["--quota", "max_inflight_requests=65"],
           "--quota max_inflight_requests=65 exceeds the cell's ceiling 64 (bound / k, k = 8)"],
         ["a 0 quota", ["--quota", "requests_per_sec=0"],
           "--quota requests_per_sec=0: 0 means no limit; omit the field to take the ceiling"],
+        ["a 0 stored-bytes quota", ["--quota", "max_stored_bytes=0"],
+          "--quota max_stored_bytes=0: omit the field to take the cell default"],
         ["an unknown quota", ["--quota", "max_stream=5"], "--quota max_stream: not a quota field"],
         ["the system project", ["--project", "system"], "project system is reserved on cell cell_sc1"],
         ["the deployment's PROJECT_ID", ["--project", "proj_deploy"], "project proj_deploy is reserved on cell cell_sc1"],

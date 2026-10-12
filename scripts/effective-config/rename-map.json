@@ -74,6 +74,12 @@
       "old_semantics": "no cell ceiling: every project took its feed quotas unchanged, a 0 quota meant no project limit, and only the system project was reserved",
       "commit": null,
       "edge_record": 130
+    },
+    {
+      "new": "cli.project_stored_bytes_default",
+      "old_semantics": "no stored-bytes quota: the policy feed had no max_stored_bytes (a feed carrying one was refused whole), and a project could own any number of stored bytes",
+      "commit": null,
+      "edge_record": "NEW-stored-cap-1"
     }
   ],
   "removed": [

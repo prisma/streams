@@ -1,6 +1,6 @@
 # Prisma Streams — Shared-Cell Multitenancy Implementation Plan
 
-**Status:** FROZEN CONTRACT (Stage 0, committed 2026-08-15; revision 8, 2026-10-11 — see Revision log)
+**Status:** FROZEN CONTRACT (Stage 0, committed 2026-08-15; revision 9, 2026-10-13 — see Revision log)
 **Author:** Søren Bramer Schmidt (implementation plan, delivered 2026-08-15)
 **Target:** Many projects in each Prisma Streams cell
 **Migration posture:** Clean layout switch; no mixed-layout operation
@@ -77,6 +77,16 @@
   amendment, not a deletion: Stage 8's item and §20's criterion stay as
   written for shared-cell GA, and each carries a note; nothing else in
   the contract changes.
+- r9 (2026-10-13, the stored-bytes quota; decided by the owner on
+  2026-10-12 in the public-beta calls X3 and S1, and ratified at landing
+  under his X2, edge change #NEW-stored-cap-1): §17.3 — the policy
+  feed's `quotas` carries `max_stored_bytes`, the stored bytes a project
+  may own (`contracts/streams-platform/v1/project-policies.schema.json`
+  stays v1: the field is additive and optional). A 0 or absent value
+  takes the cell's `PROJECT_STORED_BYTES_DEFAULT` at any k (default 0, no
+  limit; the shared-cell profile sets 10 GiB). Unknown quota keys still
+  refuse the whole feed, so a binary before r9 refuses one carrying the
+  field: deploy the binary first, then bundles that carry it.
 
 ---
 
@@ -1355,6 +1365,19 @@ declared quotas are live:
   BEFORE the committer sees it and released when the append DECIDES.
 * `max_live_subscriptions` — SSE subscriptions AND capability watch
   waits draw from the same pool.
+
+*Stored bytes (r9; edge change #NEW-stored-cap-1).* `max_stored_bytes`
+bounds the stored bytes a project may own: its live segments' stored page
+bytes after compression, page headers included (the unit of a stream's
+usage `ownedStoredBytesNow`, edge change #125). It has no shared bound,
+so it is not divided by k: a 0 or absent value takes the cell's
+`PROJECT_STORED_BYTES_DEFAULT` at any k (default 0, no limit; the
+shared-cell profile sets 10 GiB, the owner's answer S1 of 2026-10-12),
+and a value the feed sets stands, above the default too.
+`CellCeiling::effective` resolves it when a policy snapshot is published.
+The check, at append admission against the stored figure the usage
+rollup publishes, is the stored-cap lane's item B4; until it lands the
+quota is carried and resolved, and nothing is refused on it.
 
 *Store work* (shared-cells A10 cost, public-beta phase B step 14(b);
 edge change #143, ratified at landing under X2 (2026-10-12)). A verified

@@ -28,6 +28,9 @@ afterEach(cleanup);
 const answer = async (res: Response): Promise<[number, any]> => [res.status, await res.json()];
 const refusal = (code: string, message: string) => ({ error: { code, message } });
 const PROJECTS = "/v1/workspaces/ws_a/streams/projects";
+/// The shared-cell profile's PROJECT_STORED_BYTES_DEFAULT, 10 GiB: every
+/// project the issuer places carries it explicitly.
+const STORED_DEFAULT = 10737418240;
 
 async function allowedCell(...allowArgs: string[]): Promise<IssuerCell> {
   const cell = await issuerCell();
@@ -52,7 +55,10 @@ describe("creating a project", () => {
     const raw = /^prisma_streams_strcred_[0-9a-f]{32}\.([A-Za-z0-9_-]{43})$/.exec(body.secret)![1];
     expect(body.secret.startsWith(`prisma_streams_${cid}.`)).toBe(true);
     const by = { userId: "usr_ws_a", email: "owner@ws_a.example.com" };
-    const quotas = { ...state.cell.ceilings, requests_per_sec: FREE_TIER_REQUESTS_PER_SEC, append_records_per_sec: 0 };
+    const quotas = {
+      ...state.cell.ceilings, requests_per_sec: FREE_TIER_REQUESTS_PER_SEC, append_records_per_sec: 0,
+      max_stored_bytes: STORED_DEFAULT,
+    };
     expect(body.project).toEqual({
       id, workspaceId: "ws_a", displayName: "Orders", status: "active", createdAt: state.projects[id].admitted_at,
       createdBy: by, cellId: CELL, endpoint: CELL_ORIGIN, quotas,
@@ -192,8 +198,9 @@ describe("creating a project", () => {
     const a = await answer(await m.send("POST", PROJECTS, m.signIn("ws_a"), { displayName: "A" }));
     const b = await answer(await m.send("POST", "/v1/workspaces/ws_b/streams/projects", m.signIn("ws_b"), { displayName: "B" }));
     expect(FREE_TIER_REQUESTS_PER_SEC).toBe(10);
-    expect([a[0], a[1].project.quotas]).toEqual([201, { ...ceilings, requests_per_sec: 10, append_records_per_sec: 0 }]);
-    expect([b[0], b[1].project.quotas]).toEqual([201, { ...ceilings, requests_per_sec: 50, append_records_per_sec: 0 }]);
+    const rest = { append_records_per_sec: 0, max_stored_bytes: STORED_DEFAULT };
+    expect([a[0], a[1].project.quotas]).toEqual([201, { ...ceilings, requests_per_sec: 10, ...rest }]);
+    expect([b[0], b[1].project.quotas]).toEqual([201, { ...ceilings, requests_per_sec: 50, ...rest }]);
   });
 
   test("holds a workspace to one project unless the allow-list names more, 409 project_limit", async () => {

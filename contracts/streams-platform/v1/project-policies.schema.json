@@ -38,7 +38,12 @@
               "max_inflight_requests": { "type": "integer", "minimum": 0 },
               "max_live_subscriptions": { "type": "integer", "minimum": 0 },
               "max_streams": { "type": "integer", "minimum": 0 },
-              "queued_append_bytes": { "type": "integer", "minimum": 0 }
+              "queued_append_bytes": { "type": "integer", "minimum": 0 },
+              "max_stored_bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Stored bytes the project may own: its live segments' stored page bytes after compression, page headers included (the unit of a stream's usage ownedStoredBytesNow). 0 or absent: the cell's PROJECT_STORED_BYTES_DEFAULT, whose default 0 is no limit (MULTITENANCY §17.3, r9)."
+              }
             }
           }
         }

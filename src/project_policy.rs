@@ -60,6 +60,13 @@ pub(crate) struct ProjectQuotas {
     /// when the append is decided). 0 = not configured.
     #[serde(default)]
     pub queued_append_bytes: u64,
+    /// The stored bytes the project may own: its live segments' stored
+    /// page bytes after compression, page headers included (edge change
+    /// #125's unit, the gauge behind a stream's `ownedStoredBytesNow`). 0
+    /// means "not configured", and the cell gives such a project its
+    /// `PROJECT_STORED_BYTES_DEFAULT` (`auth::ceiling`), at any k.
+    #[serde(default)]
+    pub max_stored_bytes: u64,
 }
 
 #[derive(Clone, Debug)]

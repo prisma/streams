@@ -803,6 +803,48 @@ mod tests {
         }
     }
 
+    /// The platform contract's golden policy vectors parse here exactly as
+    /// its schema judges them (comments stripped): the valid snapshot, which
+    /// sets a project's stored-bytes quota, parses, and the one with a
+    /// negative quota is refused whole.
+    #[test]
+    fn golden_policy_vectors_parse_as_the_schema_judges_them() {
+        let golden = |json: &str| {
+            let mut doc: serde_json::Value = serde_json::from_str(json).unwrap();
+            doc.as_object_mut().unwrap().remove("_comment");
+            parse_policies(&doc.to_string())
+        };
+        let valid = golden(include_str!(
+            "../contracts/streams-platform/v1/golden/project-policies.valid.json"
+        ))
+        .unwrap();
+        let pid = ProjectId::new("proj-golden").unwrap();
+        assert_eq!(valid.projects[&pid].status, ProjectStatus::Active);
+        let hostile = golden(include_str!(
+            "../contracts/streams-platform/v1/golden/project-policies.hostile-negative-stored.json"
+        ))
+        .map(|s| s.projects.len());
+        assert!(hostile.is_err(), "a negative quota parsed as {hostile:?}");
+    }
+
+    /// A policy carries the project's stored-bytes quota; one without it
+    /// parses at 0, "not configured", which the cell's ceiling resolves.
+    #[test]
+    fn a_policy_feed_carries_max_stored_bytes() {
+        let stored = |quotas: &str| {
+            let doc = r#"{"feed_version": 1, "projects": [{"project_id": "proj_456",
+                "workspace_id": "ws_789", "cell_id": "fra-cell-07",
+                "project_policy_version": 1, "ownership_version": 1,
+                "status": "active", "quotas": QUOTAS}]}"#;
+            let s = parse_policies(&doc.replace("QUOTAS", quotas)).unwrap();
+            s.projects[&ProjectId::new("proj_456").unwrap()]
+                .quotas
+                .max_stored_bytes
+        };
+        assert_eq!(stored(r#"{"max_stored_bytes": 1073741824}"#), 1 << 30);
+        assert_eq!(stored("{}"), 0);
+    }
+
     #[test]
     fn policies_parse_strictly() {
         let ok = serde_json::json!({

@@ -14,6 +14,7 @@ import { PREFIX_MAX_COUNT, prefixRefusal } from "./prefixes";
 import {
   BOUNDED_FIELDS,
   type BoundedField,
+  type CellSizing,
   cellSizing,
   profileDigest,
   QUOTA_FIELDS,
@@ -136,7 +137,8 @@ export function setCredentialField(
 /// layered profile (this tool's deploy/profiles, read by readProfiles;
 /// the issuer's copy of the same files, compiled into its bundle), never
 /// the paths `init` read, which do not exist where the issuer runs.
-export function checkSizing(state: CellState, env: Map<string, string>): void {
+/// Answers the sizing the profile gives, for `admittedQuotas`.
+export function checkSizing(state: CellState, env: Map<string, string>): CellSizing {
   const now = cellSizing(env);
   const changes = [
     ...(now.share_k !== state.cell.share_k ? [`k ${state.cell.share_k} -> ${now.share_k}`] : []),
@@ -156,23 +158,28 @@ export function checkSizing(state: CellState, env: Map<string, string>): void {
         `${digest.slice(0, 12)}): a cell's profile is fixed for its life`,
     );
   }
+  return now;
 }
 
 /// The project's quotas: every bounded axis at most its ceiling and a
 /// missing one AT the ceiling; 0 is refused because a binary without the
-/// cell ceiling reads it as "no limit". The unbounded axis (append
-/// records/s) keeps the value given, 0 (no project limit) when absent, as
-/// the server does.
-export function admittedQuotas(state: CellState, given: readonly string[]): Quotas {
+/// cell ceiling reads it as "no limit". Append records/s, without a bound,
+/// keeps the value given, 0 (no project limit) when absent, as the server
+/// does. Stored bytes, without a bound either, take any value given and
+/// `storedDefault` (the profile's PROJECT_STORED_BYTES_DEFAULT, from
+/// checkSizing or cellSizing) when absent, written explicitly as the
+/// ceilings are.
+export function admittedQuotas(state: CellState, given: readonly string[], storedDefault: number): Quotas {
   const quotas = Object.fromEntries(QUOTA_FIELDS.map((q) => [q, 0])) as Quotas;
   const set = quotaValues(state, given);
   for (const q of QUOTA_FIELDS) if (set[q] !== undefined) quotas[q] = set[q];
   for (const q of BOUNDED_FIELDS) if (set[q] === undefined) quotas[q] = state.cell.ceilings[q];
+  if (set.max_stored_bytes === undefined) quotas.max_stored_bytes = storedDefault;
   return quotas;
 }
 
 /// The `field=value` quota settings given, each a known field, given once,
-/// at least 1 and at most its ceiling.
+/// at least 1 and at most its ceiling (stored bytes have none).
 export function quotaValues(state: CellState, given: readonly string[]): Partial<Quotas> {
   const quotas: Partial<Quotas> = {};
   const seen = new Set<string>();
@@ -188,7 +195,11 @@ export function quotaValues(state: CellState, given: readonly string[]): Partial
     const value = Number(raw);
     if (!Number.isSafeInteger(value)) throw new AdminError(`--quota ${field}=${raw} is out of range`, 2);
     if (value < 1) {
-      throw new AdminError(`--quota ${field}=${raw}: 0 means no limit; omit the field to take the ceiling`);
+      throw new AdminError(
+        field === "max_stored_bytes"
+          ? `--quota ${field}=${raw}: omit the field to take the cell default`
+          : `--quota ${field}=${raw}: 0 means no limit; omit the field to take the ceiling`,
+      );
     }
     const ceiling = state.cell.ceilings[field as BoundedField];
     if (ceiling !== undefined && value > ceiling) {
@@ -399,12 +410,13 @@ function addCredentialRecord(
 export const placedProjects = (state: CellState) =>
   Object.entries(state.projects).filter(([id, p]) => p.phase !== "offboarded" && !isCanary(id));
 
-/// Place the cell's canary; `init` calls it on a new state.
-export function placeCanary(state: CellState): void {
+/// Place the cell's canary; `init` calls it on a new state, with the
+/// stored bytes its profile gives a project (`CellSizing.stored_default`).
+export function placeCanary(state: CellState, storedDefault: number): void {
   admitProject(state, {
     project: canaryProjectId(state.cell.cell_id),
     workspace: CANARY_WORKSPACE,
-    quotas: admittedQuotas(state, ["requests_per_sec=5", "max_streams=1"]),
+    quotas: admittedQuotas(state, ["requests_per_sec=5", "max_streams=1"], storedDefault),
     scopes: "streams.catalog.read",
     display_name: "canary",
     credential: { id: newCredentialId(state), display_name: "catalog-read", hidden: true },

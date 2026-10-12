@@ -13,6 +13,11 @@
 //! `k = 1` is a dedicated cell: its one project may take every bound,
 //! so no ceiling applies and 0 keeps meaning "no project limit".
 //!
+//! The stored-bytes quota (`max_stored_bytes`) has no shared bound: a 0
+//! (or absent) feed value takes the cell's `PROJECT_STORED_BYTES_DEFAULT`
+//! at any k, and a value the feed sets stands, above the default too.
+//! The setting's own default, 0, leaves such a project without a limit.
+//!
 //! No customer project may take an identity the cell reserves: the system
 //! project, the deployment's `PROJECT_ID` (the raw surface's tenant, open
 //! to fleet credentials) and, on a cell shared more than one way, its
@@ -69,6 +74,8 @@ pub(crate) struct SharedBounds {
 pub(crate) struct CellCeiling {
     share_k: u64,
     bounds: SharedBounds,
+    /// The `max_stored_bytes` a 0 or absent feed value takes (0: none).
+    stored_default: u64,
     deployment_project: Option<ProjectId>,
     deployment_account: Option<String>,
     /// Policies the last published snapshot dropped as reserved.
@@ -88,6 +95,7 @@ impl CellCeiling {
         Self {
             share_k,
             bounds,
+            stored_default: 0,
             deployment_project: None,
             deployment_account: None,
             reserved_dropped: AtomicU64::new(0),
@@ -97,7 +105,8 @@ impl CellCeiling {
     /// The cell `config` describes: shared `PROJECT_SHARE_K` ways over its
     /// measured envelope and the instance bounds it enforces, with
     /// `subscriptions` the effective SSE cap (the descriptor limit may
-    /// clamp the configured one), reserving `deployment`'s identities.
+    /// clamp the configured one), giving an unset stored-bytes quota
+    /// `PROJECT_STORED_BYTES_DEFAULT`, reserving `deployment`'s identities.
     pub(crate) fn of_config(
         config: &ServerConfig,
         subscriptions: u64,
@@ -113,7 +122,16 @@ impl CellCeiling {
             streams: REGISTRY_CACHE_MAX as u64,
             queued_append_bytes: config.admission.unabsorbed_bytes_instance,
         };
-        Self::shared(cli.project_share_k, bounds).reserving(deployment)
+        Self::shared(cli.project_share_k, bounds)
+            .with_stored_default(cli.project_stored_bytes_default)
+            .reserving(deployment)
+    }
+
+    /// The same cell, giving a project whose feed sets no stored-bytes
+    /// quota (0 or absent) `stored_default` bytes, at any k.
+    pub(crate) fn with_stored_default(mut self, stored_default: u64) -> Self {
+        self.stored_default = stored_default;
+        self
     }
 
     /// The same cell, also reserving its deployment's `PROJECT_ID` and,
@@ -140,7 +158,8 @@ impl CellCeiling {
     }
 
     /// A project's effective quotas on this cell. Append records have no
-    /// shared bound of their own.
+    /// shared bound of their own; stored bytes have none either, and a 0
+    /// takes the cell's default.
     pub(crate) fn effective(&self, feed: &ProjectQuotas) -> ProjectQuotas {
         let b = &self.bounds;
         ProjectQuotas {
@@ -152,6 +171,11 @@ impl CellCeiling {
             max_live_subscriptions: self.cap(feed.max_live_subscriptions, b.subscriptions),
             max_streams: self.cap(feed.max_streams, b.streams),
             queued_append_bytes: self.cap(feed.queued_append_bytes, b.queued_append_bytes),
+            max_stored_bytes: if feed.max_stored_bytes > 0 {
+                feed.max_stored_bytes
+            } else {
+                self.stored_default
+            },
         }
     }
 
@@ -221,6 +245,7 @@ mod tests {
             max_live_subscriptions: each,
             max_streams: each,
             queued_append_bytes: each,
+            ..ProjectQuotas::default()
         }
     }
 
@@ -290,6 +315,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A 0 or absent stored-bytes quota takes the cell's
+    /// `PROJECT_STORED_BYTES_DEFAULT` at any k, a dedicated cell's included,
+    /// and a value the feed sets stands, above the default too: the axis
+    /// has no shared bound. A default of 0 keeps a 0 at 0, no limit.
+    #[test]
+    fn a_cell_gives_an_absent_stored_quota_its_default() {
+        const GIB: u64 = 1 << 30;
+        let stored = |cell: &CellCeiling, feed: u64| {
+            let quotas = ProjectQuotas {
+                max_stored_bytes: feed,
+                ..ProjectQuotas::default()
+            };
+            cell.effective(&quotas).max_stored_bytes
+        };
+        for k in [8, 1] {
+            let cell = CellCeiling::shared(k, BOUNDS).with_stored_default(10 * GIB);
+            let got = [0, GIB, 20 * GIB].map(|feed| stored(&cell, feed));
+            assert_eq!(got, [10 * GIB, GIB, 20 * GIB], "k = {k}");
+            let unset = CellCeiling::shared(k, BOUNDS);
+            assert_eq!(stored(&unset, 0), 0, "k = {k} without a default");
+        }
+        assert_eq!(stored(&CellCeiling::dedicated(), 0), 0);
     }
 
     fn policy(project: &str, workspace: &str) -> (ProjectId, ProjectPolicy) {
@@ -371,6 +420,7 @@ mod tests {
         cli.cell_envelope_requests_per_sec = 1_411;
         cli.cell_envelope_append_bytes_per_sec = 2_060_000;
         cli.cell_envelope_read_bytes_per_sec = 30_000_000;
+        cli.project_stored_bytes_default = 10 << 30;
         let shared = ServerConfig::load(
             cli,
             &MapEnvironment::from([("MAX_UNABSORBED_BYTES_PER_INSTANCE", "536870912")]),
@@ -381,6 +431,7 @@ mod tests {
             fields(&cell.effective(&quotas(0))),
             [176, 257_500, 0, 3_750_000, 64, 150, 8_192, 64 << 20]
         );
+        assert_eq!(cell.effective(&quotas(0)).max_stored_bytes, 10 << 30);
         let (_, dropped) = cell.apply(PolicySnapshot {
             projects: [policy("proj-deploy", "ws"), policy("proj-a", "acct-deploy")].into(),
             fetched_at_unix: 0,
@@ -393,5 +444,6 @@ mod tests {
         );
         let dedicated = CellCeiling::of_config(&plain, 1_200, &deployment());
         assert_eq!(fields(&dedicated.effective(&quotas(0))), [0; 8]);
+        assert_eq!(dedicated.effective(&quotas(0)).max_stored_bytes, 0);
     }
 }

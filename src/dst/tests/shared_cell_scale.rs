@@ -541,6 +541,7 @@ fn roomy() -> ProjectQuotas {
         max_live_subscriptions: 16,
         max_streams: 64,
         queued_append_bytes: 1_000_000,
+        max_stored_bytes: 1 << 30,
     }
 }
 

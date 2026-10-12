@@ -79,7 +79,7 @@ export async function init(f: Flags, io: Io): Promise<void> {
     credentials: {},
     journal: [],
   };
-  placeCanary(state);
+  placeCanary(state, sizing.stored_default);
   await store.exclusive(async () => {
     // A bundle without a state: the state was lost, not never made. A new
     // state starts at feed_version 1, below the generation the cell holds,
@@ -121,10 +121,10 @@ export async function admit(f: Flags, io: Io): Promise<void> {
   const workspace = f.must("workspace");
   await store.exclusive(async () => {
     const { state: first } = await loadChecked(store);
-    checkSizing(first, readProfiles(profilesOf(f)));
+    const sizing = checkSizing(first, readProfiles(profilesOf(f)));
     const { ids: denylist } = await store.readDenylist();
     checkPlacement(first, project, workspace, denylist);
-    const quotas = admittedQuotas(first, f.all("quota"));
+    const quotas = admittedQuotas(first, f.all("quota"), sizing.stored_default);
     const scopes = scopesOf(f.get("scopes"));
     const stream_prefixes = prefixesOf(f.all("prefix"));
     await burnId(store, project);

@@ -54,6 +54,15 @@ shard's unabsorbed-bytes line (`MAX_UNABSORBED_BYTES_PER_SHARD`, stated in
 the profile at the binary's 256 MiB), past which every append to the cell
 is refused; the profile's comment states the real tolerance.
 
+The stored bytes a project may own, `max_stored_bytes`, have no ceiling:
+the profile's `PROJECT_STORED_BYTES_DEFAULT` (10 GiB, the owner's answer
+S1 of 2026-10-12) is what `admit` and the issuer give a project that is
+given none, written explicitly, and the server gives the same default to a
+0 or absent value. `init`, and `admit`, which re-reads the profiles,
+refuse a profile without a positive `PROJECT_STORED_BYTES_DEFAULT`. The
+profile is fixed for a cell's life (its digest), so the default is too;
+`quota` changes one project's value.
+
 ## The signing key
 
 One key per cell, RSA (2048 bits or more) or Ed25519, made offline and
@@ -133,14 +142,14 @@ A compromised key, in this order:
 | Command | What it does |
 |---|---|
 | `init --cell-id C --deployment-project P --account A (--key-file K \| --public-key FILE)` | Creates the state and the first bundle, refused while either exists (a bundle without a state is a lost state: recover it, or use a new cell id). It reads the profiles (by default the two above; `--profile` repeats, later wins), checks they describe a single-server shared cell, and fixes the cell's ceilings at bound ÷ k. Also: `--workspace-cap N` (default 1), `--max-projects N` (default 1,000), `--denylist FILE` (default `DIR/denylist.txt`; point several cells at one file) and `--issuer URL` |
-| `admit --project P --workspace W` | Places a project and creates its customer credential. Each bounded quota defaults to the cell's ceiling; `--quota field=value` sets a lower one. Also `--scopes "..."` (default: every scope), `--prefix p` (repeatable; a prefix the cell's grants parser takes: at most 256 UTF-8 bytes, no control character or space, no empty, `.` or `..` component, not under `__ds`, so `orders`, never `orders/`) and `--profile F` (repeatable; default the two shipped profiles), the profile it checks against the one `init` recorded |
+| `admit --project P --workspace W` | Places a project and creates its customer credential. Each bounded quota defaults to the cell's ceiling; `--quota field=value` sets a lower one. `max_stored_bytes` defaults to the profile's `PROJECT_STORED_BYTES_DEFAULT`, and `--quota max_stored_bytes=N` sets any positive N, larger included. Also `--scopes "..."` (default: every scope), `--prefix p` (repeatable; a prefix the cell's grants parser takes: at most 256 UTF-8 bytes, no control character or space, no empty, `.` or `..` component, not under `__ds`, so `orders`, never `orders/`) and `--profile F` (repeatable; default the two shipped profiles), the profile it checks against the one `init` recorded |
 | `token --credential C --key-file K --out FILE [--ttl SECS]` | Mints a customer token, valid at most 24 h (default 1 h; the first minute is backdated for clock skew). The token goes to FILE with mode 0600 and is never printed. Hand the file over; never paste the token |
 | `offboard --project P` | First run: revokes the project's customer credentials and adds an operator credential. Publish the bundle. On a cell with the interim issuer, its offboarding job makes the second run on its own (`deploy/issuer/offboarding.ts`: every 15 s, failed attempts retried after 1, 2, 4, ... minutes, at most an hour) |
 | `offboard --project P --cell-url URL --key-file K` | Second run: checks the cell serves the revocation, deletes every stream (listing pages of twice the project's `requests_per_sec`, each deleted before the next is listed, and waiting out a `Retry-After` of up to 120 s: the operator's token draws on the project's own buckets), re-walks the catalog until a walk at least `--settle-secs` (default 60) after that check lists nothing, then omits the project. Publish the bundle. Exit 3 means "publish, wait, run again"; the walk is bounded by `--max-walks` (default 10) |
 | `list [--json]` | Shows the cell, its ceilings, and each project's phase, quotas and credentials. Holds no secrets |
 | `bundle` | Rewrites the bundle at a newer `feed_version`, for example after a crash between the state and the bundle |
 | `suspend --project P` / `resume --project P` | Publishes the project `suspended` (the cell answers its requests `403 project_not_active`; the issuer mints it no token) or `active` again, at a newer `project_policy_version`. Only an active (not offboarding) project |
-| `quota --project P --quota field=value...` | Sets some of an active project's quotas, each at most its ceiling as in `admit`, keeping the others, at a newer `project_policy_version` |
+| `quota --project P --quota field=value...` | Sets some of an active project's quotas, each at most its ceiling as in `admit` (`max_stored_bytes` has none), keeping the others, at a newer `project_policy_version` |
 | `credential --project P --pepper-file F --out FILE` | Adds a customer credential with a secret (at most 10 live per project): the secret, `prisma_streams_<credential id>.<32 random bytes, base64url>`, goes once to a new file of mode 0600 (written beside it before the change commits, so a directory it cannot write refuses first, and moved into place once the commit lands, even when the bundle then fails to publish); the state keeps only HMAC-SHA-256 of it under the newest pepper (`v<N>:<base64>[,v<N-1>:<base64>]`, read from a mode-0600 file), the pepper's version and the secret's last 6 characters, exactly as the issuer stores the credentials it makes. Also `--scopes`, `--prefix` and `--name`; `--hidden` only for the canary's credentials (the watch's) |
 | `allow --workspace W [--max-projects N] [--requests-per-sec R] [--note TEXT]` | Puts a Prisma workspace on the beta's allow-list (`allowlist.json` beside a directory state; `beta/allowlist.json` in the control bucket, shared by its cells), or replaces its limits: `--max-projects` over the cell's workspace cap (`init --workspace-cap`), `--requests-per-sec` (at most the ceiling) over the free-tier rate. The issuer creates projects only for listed workspaces |
 | `disallow --workspace W` | Takes a workspace off the allow-list: it creates no new project, and its projects keep running until you suspend them (the owner's question I8, answer (a)) |
@@ -152,7 +161,8 @@ A compromised key, in this order:
 
 `init` also places the issuer's canary: the reserved project
 `sp_canary_<cell id>` in the workspace `streams-issuer-canary`, at 5
-requests/s and 1 stream (every other quota at the ceiling), with one
+requests/s and 1 stream (every other quota at the ceiling, and the stored
+bytes at the profile's default), with one
 hidden credential holding only `streams.catalog.read` and no secret. The
 issuer and `cell-admin canary` mint tokens for it to prove the cell
 serves a key or a generation; the watch's own credential is added with
@@ -161,7 +171,7 @@ no customer project takes its id prefix or its workspace, and `offboard`,
 `suspend`, `resume` and `quota` refuse it (only `init` places it, once).
 
 `admit` refuses, and publishes nothing, when:
-- a quota is above its ceiling, or is 0 (a binary without the cell ceiling reads 0 as "no limit");
+- a quota is above its ceiling, or is 0 (a binary without the cell ceiling reads 0 as "no limit"; for `max_stored_bytes`, omit the field to take the cell default);
 - the project is `system`, the cell's `PROJECT_ID` or a canary id (`sp_canary_...`);
 - the workspace is the cell's `ACCOUNT_ID` or the canary's;
 - the project id was ever used on this cell or appears in the denylist (ids are single-use; a move is offboarding plus a new id);

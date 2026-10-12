@@ -450,6 +450,11 @@ pub struct CliArgs {
     /// (0 = no shared bound).
     #[arg(long, env = "CELL_ENVELOPE_READ_BYTES_PER_SEC", default_value_t = 0)]
     pub(crate) cell_envelope_read_bytes_per_sec: u64,
+    /// The `max_stored_bytes` a project gets whose policy sets 0 or none,
+    /// at any PROJECT_SHARE_K (it is a default, not a shared bound ÷ k);
+    /// a value the policy sets stands. Default 0: no stored-bytes limit.
+    #[arg(long, env = "PROJECT_STORED_BYTES_DEFAULT", default_value_t = 0)]
+    pub(crate) project_stored_bytes_default: u64,
 
     /// Measured per-instance ingress-concurrency capacity through the
     /// platform front door. Two-layer model confirmed by the platform team
@@ -571,6 +576,7 @@ impl CliArgs {
             cell_envelope_requests_per_sec: 0,
             cell_envelope_append_bytes_per_sec: 0,
             cell_envelope_read_bytes_per_sec: 0,
+            project_stored_bytes_default: 0,
             scale_edge_slots: 140,
             shared_cache_bytes: 128 * 1024 * 1024,
             scale_in_secs: 60,

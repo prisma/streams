@@ -4,7 +4,9 @@
 // ceilings `admit` enforces. The ceiling rule mirrors the server's
 // (src/auth/ceiling.rs, `CellCeiling::ceiling`): on a bounded axis the
 // ceiling is max(1, floor(bound / k)); an axis with no shared bound has
-// none.
+// none. The stored-bytes quota has no bound and no ceiling: the profile's
+// PROJECT_STORED_BYTES_DEFAULT is what `admit` gives a project that sets
+// none, as the server gives it to a 0 (`CellCeiling::effective`).
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { AdminError } from "./errors";
@@ -25,12 +27,14 @@ export const QUOTA_FIELDS = [
   "max_live_subscriptions",
   "max_streams",
   "queued_append_bytes",
+  "max_stored_bytes",
 ] as const;
 export type QuotaField = (typeof QUOTA_FIELDS)[number];
 export type Quotas = Record<QuotaField, number>;
 
-/// The axes with a shared bound, and so a ceiling. The other one
-/// (append records/s) keeps its feed value on the server too.
+/// The axes with a shared bound, and so a ceiling. Of the other two,
+/// append records/s keeps its feed value on the server too, and stored
+/// bytes take the cell's default when the feed sets none.
 export const BOUNDED_FIELDS = [
   "requests_per_sec",
   "append_bytes_per_sec",
@@ -43,11 +47,13 @@ export const BOUNDED_FIELDS = [
 export type BoundedField = (typeof BOUNDED_FIELDS)[number];
 export type Ceilings = Record<BoundedField, number>;
 
-/// What a cell is sized by: k and the bound behind each ceiling.
+/// What a cell is sized by: k and the bound behind each ceiling, and the
+/// stored bytes a project is admitted with when it is given none.
 export interface CellSizing {
   share_k: number;
   bounds: Ceilings;
   ceilings: Ceilings;
+  stored_default: number;
 }
 
 /// Read KEY=VALUE files in order; a later file's value wins.
@@ -192,5 +198,5 @@ export function cellSizing(env: Map<string, string>): CellSizing {
   const ceilings = Object.fromEntries(
     BOUNDED_FIELDS.map((f) => [f, ceilingOf(bounds[f], k)]),
   ) as Ceilings;
-  return { share_k: k, bounds, ceilings };
+  return { share_k: k, bounds, ceilings, stored_default: positive(env, "PROJECT_STORED_BYTES_DEFAULT") };
 }

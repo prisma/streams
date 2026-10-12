@@ -119,7 +119,7 @@ describe("admitProject", () => {
     const s = readState(c.state);
     const id = newCredentialId(s);
     admitProject(s, {
-      project: "sp_0123", workspace: "wksp_9", quotas: admittedQuotas(s, ["requests_per_sec=10"]),
+      project: "sp_0123", workspace: "wksp_9", quotas: admittedQuotas(s, ["requests_per_sec=10"], 10737418240),
       scopes: "streams.catalog.read streams.records.read", display_name: "Orders",
       created_by: { user_id: "u1", email: "u1@example.com" },
       credential: { id, secret_hash: "aGFzaA", hv: 1, hint: "x1y2z3", display_name: "ci" },
@@ -421,11 +421,14 @@ for (const kind of STORES) {
       await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w", "--quota", "max_streams=50");
       const before = policyOf(c.state, "proj_a").quotas;
       const r = await run("quota", "--state", c.state, "--project", "proj_a", "--quota", "requests_per_sec=10",
-        "--quota", "append_records_per_sec=500");
+        "--quota", "append_records_per_sec=500", "--quota", "max_stored_bytes=21474836480");
       expect([r.code, r.err]).toEqual([0, ""]);
+      expect(before.max_stored_bytes).toBe(10737418240);
       expect(policyOf(c.state, "proj_a")).toMatchObject({
         project_policy_version: 2,
-        quotas: { ...before, requests_per_sec: 10, append_records_per_sec: 500, max_streams: 50 },
+        quotas: {
+          ...before, requests_per_sec: 10, append_records_per_sec: 500, max_streams: 50, max_stored_bytes: 21474836480,
+        },
       });
       const refused: [string[], string][] = [
         [["--quota", "requests_per_sec=177"],

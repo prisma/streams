@@ -857,6 +857,7 @@ mod validate_boundary_tests {
         assert_eq!(cli.workload_token_file, None);
         assert_eq!(cli.fleet_internal_token, None);
         assert_eq!(cli.project_share_k, 8);
+        assert_eq!(cli.project_stored_bytes_default, 10 << 30);
     }
 
     #[test]

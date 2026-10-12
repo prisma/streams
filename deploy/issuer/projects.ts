@@ -162,8 +162,9 @@ export class Projects {
       });
     }
     const state = this.deps.cache.state;
+    let storedDefault: number;
     try {
-      checkSizing(state, BUNDLED_PROFILE);
+      storedDefault = checkSizing(state, BUNDLED_PROFILE).stored_default;
     } catch (e) {
       if (!(e instanceof AdminError)) throw e;
       this.deps.log(`refusing to place projects: ${e.message}`);
@@ -192,7 +193,7 @@ export class Projects {
     } catch (e) {
       return refused(this.deps, c, placementRefusal(e, w, cap));
     }
-    return this.place(c, { id, name, cap, place });
+    return this.place(c, { id, name, cap, place, storedDefault });
   }
 
   /// Delete a project (design §10): offboarding's first phase in one
@@ -229,7 +230,7 @@ export class Projects {
   /// Burn the id, then place the project in one compare-and-swap.
   private async place(
     c: Call,
-    a: { id: string; name: string; cap: number; place: (s: CellState) => void },
+    a: { id: string; name: string; cap: number; place: (s: CellState) => void; storedDefault: number },
   ): Promise<Response> {
     const w = c.session.workspace_id;
     const by = { user_id: c.session.user_id, email: c.session.email };
@@ -254,7 +255,7 @@ export class Projects {
       admitProject(s, {
         project: a.id,
         workspace: w,
-        quotas: admittedQuotas(s, [`requests_per_sec=${rps}`]),
+        quotas: admittedQuotas(s, [`requests_per_sec=${rps}`], a.storedDefault),
         scopes: CUSTOMER_SCOPES.join(" "),
         display_name: a.name,
         created_by: by,

@@ -690,6 +690,11 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
         "CELL_ENVELOPE_READ_BYTES_PER_SEC",
         "0",
     ),
+    (
+        "project-stored-bytes-default",
+        "PROJECT_STORED_BYTES_DEFAULT",
+        "0",
+    ),
     ("scale-edge-slots", "SCALE_EDGE_SLOTS", "140"),
     ("shared-cache-bytes", "SHARED_CACHE_BYTES", "134217728"),
     ("scale-in-secs", "SCALE_IN_SECS", "60"),

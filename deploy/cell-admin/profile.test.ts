@@ -59,6 +59,7 @@ describe("the shared-cell profile", () => {
         max_streams: 8192,
         queued_append_bytes: 67108864,
       },
+      stored_default: 10737418240,
     });
     const env = readProfiles(DEFAULT_PROFILES);
     expect(
@@ -113,6 +114,8 @@ describe("the shared-cell profile", () => {
     ["CELL_ENVELOPE_REQUESTS_PER_SEC", undefined, "profile does not set CELL_ENVELOPE_REQUESTS_PER_SEC"],
     ["MAX_UNABSORBED_BYTES_PER_INSTANCE", undefined, "profile does not set MAX_UNABSORBED_BYTES_PER_INSTANCE"],
     ["ADMIT_MAX_INFLIGHT", "5e2", "ADMIT_MAX_INFLIGHT=5e2 is not a positive integer"],
+    ["PROJECT_STORED_BYTES_DEFAULT", undefined, "profile does not set PROJECT_STORED_BYTES_DEFAULT"],
+    ["PROJECT_STORED_BYTES_DEFAULT", "0", "profile PROJECT_STORED_BYTES_DEFAULT=0 is not a positive integer"],
   ];
   test.each(breaks)("refuses %s=%s", (name, value, message) => {
     const env = readProfiles(DEFAULT_PROFILES);
