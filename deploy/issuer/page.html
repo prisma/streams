@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prisma Streams (beta)</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f7f7f8; --card: #ffffff; --fg: #18181b; --muted: #63636b; --line: #e2e2e6;
+  --accent: #4f46e5; --accent-fg: #ffffff; --danger: #b42318; --ok: #157f3c; --warn: #9a6700;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 15px; line-height: 1.5;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #111114; --card: #1b1b20; --fg: #ececf1; --muted: #a0a0ab; --line: #2e2e36; --accent: #8b85ff; --accent-fg: #111114; --danger: #ff8a7a; --ok: #6fd69a; --warn: #f0c060; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); }
+header, main, footer, #banner, #secret { max-width: 860px; margin: 0 auto; padding: 0 16px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; padding-top: 24px; padding-bottom: 8px; }
+h1 { font-size: 22px; margin: 0; }
+h2 { font-size: 18px; margin: 0 0 8px; }
+h3 { font-size: 15px; margin: 16px 0 4px; }
+.tag { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 1px 6px; vertical-align: middle; }
+.muted { color: var(--muted); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 16px 20px; margin: 16px 0; }
+.secret-card { border-color: var(--warn); }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.spread { justify-content: space-between; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 16px; margin: 8px 0; }
+dt { color: var(--muted); }
+dd { margin: 0; overflow-wrap: anywhere; }
+code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+code.secret { display: inline-block; padding: 6px 8px; border: 1px dashed var(--warn); border-radius: 4px; overflow-wrap: anywhere; max-width: 100%; }
+pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 12px; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); font-size: 13px; }
+td.actions { white-space: nowrap; text-align: right; }
+.badge { font-size: 12px; font-weight: 600; border-radius: 999px; padding: 2px 10px; border: 1px solid var(--line); }
+.badge.active { color: var(--ok); border-color: var(--ok); }
+.badge.suspended, .badge.deleting { color: var(--warn); border-color: var(--warn); }
+button, .button { font: inherit; font-size: 14px; border: 1px solid var(--line); background: var(--card); color: var(--fg); border-radius: 6px; padding: 6px 12px; cursor: pointer; text-decoration: none; display: inline-block; }
+button:disabled { opacity: .5; cursor: default; }
+.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.danger { color: var(--danger); border-color: var(--danger); }
+input { font: inherit; font-size: 14px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--fg); min-width: 220px; }
+.notice { border-radius: 6px; padding: 10px 14px; margin: 16px 0 0; border: 1px solid var(--danger); color: var(--danger); }
+.notice.info { border-color: var(--line); color: var(--fg); }
+details { margin: 12px 0; }
+summary { cursor: pointer; font-weight: 600; }
+.danger-zone summary { color: var(--danger); }
+footer { padding-top: 8px; padding-bottom: 32px; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Prisma Streams <span class="tag">beta</span></h1>
+  <div id="who"></div>
+</header>
+<div id="banner"></div>
+<div id="secret"></div>
+<main id="main"><p class="muted">Loading…</p></main>
+<footer class="muted">
+  <p>Who may manage: anyone who signs in with Prisma to a workspace on the beta's allow-list can create, rotate, revoke and delete that workspace's Streams project and credentials. There is no role check during the beta; every change is recorded with who made it.</p>
+</footer>
+<script>
+(() => {
+  "use strict";
+
+  // What a refused sign-in means (signin.ts sends /?signin=<code>).
+  const SIGNIN_REFUSALS = {
+    denied: "You declined the sign-in. Sign in again and allow access to continue.",
+    expired: "That sign-in had expired or was already used. Sign in again.",
+    failed: "Prisma could not complete the sign-in. Try again in a moment.",
+    not_oauth: "That sign-in did not come from a Prisma user. Sign in with your Prisma account.",
+    no_user: "Prisma did not name a user for that sign-in. Sign in with your Prisma account.",
+    no_workspace: "Prisma did not name a workspace for that sign-in. Sign in again and choose a workspace.",
+    invalid_workspace: "Prisma Streams cannot take that workspace's id. Sign in again and choose another workspace.",
+    workspace_not_allowed: "The workspace you chose is not on the Prisma Streams beta's allow-list. Sign in again and choose a workspace that is.",
+    unavailable: "Prisma Streams cannot check the beta's allow-list right now. Try again shortly.",
+  };
+  const POLL_MS = 5000;
+
+  const main = document.getElementById("main");
+  const who = document.getElementById("who");
+  const banner = document.getElementById("banner");
+  const secretBox = document.getElementById("secret");
+  const enc = encodeURIComponent;
+  /// Credentials changed by this page whose change the cell may not serve yet.
+  const pending = new Set();
+  let session = null;
+
+  /// An element: props set as attributes, `text` as its text, `on*` as
+  /// listeners; children appended. Never HTML from a string.
+  function el(tag, props, ...children) {
+    const node = document.createElement(tag);
+    for (const [k, v] of Object.entries(props || {})) {
+      if (v === undefined || v === null || v === false) continue;
+      if (k === "text") node.textContent = v;
+      else if (k === "class") node.className = v;
+      else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+      else node.setAttribute(k, v === true ? "" : String(v));
+    }
+    for (const c of children.flat()) if (c !== null && c !== undefined && c !== false) node.append(c);
+    return node;
+  }
+
+  function notice(message, kind) {
+    banner.replaceChildren(...(message ? [el("p", { class: "notice " + (kind || "error"), role: "status", text: message })] : []));
+  }
+
+  const date = (iso) => (iso ? new Date(iso).toLocaleString() : "—");
+  const projectsPath = () => "/v1/workspaces/" + enc(session.workspaceId) + "/streams/projects";
+  const credentialsPath = (p) => "/v1/projects/" + enc(p.id) + "/streams/credentials";
+
+  /// One call to the issuer: {status, data, code, message}. A change
+  /// sends JSON and the session's CSRF value.
+  async function api(method, path, body) {
+    const headers = { accept: "application/json" };
+    if (method !== "GET") {
+      headers["content-type"] = "application/json";
+      headers["x-csrf-token"] = session ? session.csrfToken : "";
+    }
+    let res;
+    try {
+      res = await fetch(path, {
+        method,
+        headers,
+        credentials: "same-origin",
+        body: method === "GET" ? undefined : JSON.stringify(body || {}),
+      });
+    } catch {
+      return { status: 0, data: null, code: "network", message: "Prisma Streams could not be reached. Check your connection and retry." };
+    }
+    let data = null;
+    try {
+      data = await res.json();
+    } catch {
+      data = null;
+    }
+    const error = data && data.error;
+    return { status: res.status, data, code: error ? error.code : null, message: error ? error.message : null };
+  }
+
+  /// What the page does with a refused call it has no better answer for.
+  function handleError(r) {
+    if (r.status === 401) return renderSignedOut("Your session has ended. Sign in again.");
+    if (r.status === 403 && r.code === "workspace_not_allowed") return renderNotAllowed();
+    if (r.status === 409 && r.code === "beta_at_capacity") return renderAtCapacity();
+    if (r.status === 403 && r.code === "csrf_failed") {
+      notice("Your session changed in another tab. Reloading it; try again.");
+      return start();
+    }
+    notice(r.message || "Something went wrong (" + r.status + "). Try again.");
+  }
+
+  const signInLink = (label) => el("a", { class: "button primary", href: "/auth/login", text: label || "Sign in with Prisma" });
+
+  function renderSignedOut(message) {
+    session = null;
+    who.replaceChildren();
+    notice(message);
+    main.replaceChildren(el("section", { class: "card" },
+      el("h2", { text: "Sign in" }),
+      el("p", { text: "The Prisma Streams beta is open to the Prisma workspaces on its allow-list. Sign in with your Prisma account: " +
+        "Prisma asks you to choose a workspace and to let Prisma Streams see who you are and which workspace you chose." }),
+      el("p", {}, signInLink())));
+  }
+
+  function renderWho() {
+    who.replaceChildren(
+      el("span", { class: "muted", text: session.email + " · workspace " + session.workspaceId + " " }),
+      el("a", { href: "/auth/login", text: "Sign in to another workspace" }));
+  }
+
+  function renderNotAllowed() {
+    main.replaceChildren(el("section", { class: "card" },
+      el("h2", { text: "Not on the allow-list" }),
+      el("p", { text: "Workspace " + session.workspaceId + " is not on the Prisma Streams beta's allow-list. " +
+        "Sign in to a workspace that is, or ask the Prisma Streams team to add this one." }),
+      el("p", {}, signInLink("Sign in to another workspace"))));
+  }
+
+  function renderAtCapacity() {
+    main.replaceChildren(el("section", { class: "card" },
+      el("h2", { text: "The beta is at capacity" }),
+      el("p", { text: "The Prisma Streams beta is at capacity and takes no new projects right now. Try again later." }),
+      el("p", {}, el("button", { text: "Back", onclick: () => load() }))));
+  }
+
+  function renderUnavailable(r) {
+    main.replaceChildren(el("section", { class: "card" },
+      el("h2", { text: "Unavailable" }),
+      el("p", { text: r.message || "Prisma Streams is unavailable right now." }),
+      el("p", {}, el("button", { text: "Retry", onclick: () => (session ? load() : start()) }))));
+  }
+
+  /// The secret of a credential just made or rotated, shown this once.
+  function showSecret(secret, name, note) {
+    const copy = el("button", { text: "Copy" });
+    copy.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(secret);
+        copy.textContent = "Copied";
+      } catch {
+        copy.textContent = "Select it and copy";
+      }
+    });
+    secretBox.replaceChildren(el("section", { class: "card secret-card", role: "alert" },
+      el("h2", { text: "Copy the secret of " + name + " now" }),
+      el("p", { text: "Prisma Streams shows it this once and keeps no copy. Treat it like a password, for example in your app's " +
+        "PRISMA_STREAMS_CREDENTIAL environment variable. " + (note || "") }),
+      el("div", { class: "row" }, el("code", { class: "secret", text: secret }), copy),
+      el("p", {}, el("button", { class: "primary", text: "I have copied it", onclick: () => secretBox.replaceChildren() }))));
+    secretBox.scrollIntoView({ behavior: "smooth" });
+  }
+
+  function createForm() {
+    const input = el("input", { type: "text", maxlength: "64", required: true, placeholder: "Project name", "aria-label": "Project name" });
+    const button = el("button", { type: "submit", class: "primary", text: "Create project" });
+    return el("form", {
+      class: "row",
+      onsubmit: async (e) => {
+        e.preventDefault();
+        button.disabled = true;
+        const r = await api("POST", projectsPath(), { displayName: input.value });
+        button.disabled = false;
+        if (r.status !== 201) return handleError(r);
+        notice(null);
+        await load();
+        showSecret(r.data.secret, r.data.project.displayName + "'s first credential",
+          "The project is being placed on its cell; it answers within about a minute.");
+      },
+    }, input, button);
+  }
+
+  function renderCreate() {
+    main.replaceChildren(el("section", { class: "card" },
+      el("h2", { text: "Create a Streams project" }),
+      el("p", { text: "A project holds your streams. It gets an endpoint and a first credential whose secret your app exchanges for access." }),
+      createForm()));
+  }
+
+  function snippet() {
+    const code = [
+      "npm install @prisma/streams@beta",
+      "",
+      "import { StreamsClient } from '@prisma/streams';",
+      "",
+      "const client = await StreamsClient.connect({",
+      "  credential: process.env.PRISMA_STREAMS_CREDENTIAL,",
+      "  issuerUrl: '" + location.origin + "',",
+      "});",
+    ].join("\n");
+    return el("details", {},
+      el("summary", { text: "Use it from your app" }),
+      el("p", { text: "Put a credential's secret in PRISMA_STREAMS_CREDENTIAL. The client exchanges it here for an access token " +
+        "and sends your requests to the project's endpoint." }),
+      el("pre", {}, el("code", { text: code })));
+  }
+
+  const later = (ms) => new Promise((done) => setTimeout(done, ms));
+
+  /// Show whether the cell serves project `p` yet, asking every 5 s until
+  /// it does, while `line` is on the page (it is put there after this call).
+  async function watchReady(p, line) {
+    await later(0);
+    while (line.isConnected) {
+      const r = await api("GET", projectsPath() + "/" + enc(p.id));
+      if (r.status !== 200) return;
+      if (r.data.ready) {
+        line.textContent = "Serving at its cell.";
+        return;
+      }
+      line.textContent = "Being placed on its cell; usually under a minute…";
+      await later(POLL_MS);
+    }
+  }
+
+  /// Show whether the cell serves credential `c`'s last change yet.
+  async function watchServed(p, c, cell) {
+    await later(0);
+    while (cell.isConnected && pending.has(c.id)) {
+      const r = await api("GET", credentialsPath(p) + "/" + enc(c.id));
+      if (r.status !== 200) return;
+      if (r.data.served) {
+        pending.delete(c.id);
+        cell.textContent = r.data.status;
+        return;
+      }
+      cell.textContent = r.data.status + " (reaching the cell…)";
+      await later(POLL_MS);
+    }
+  }
+
+  function credentialRow(p, c, list) {
+    const status = el("td", { text: c.status });
+    const actions = el("td", { class: "actions" });
+    if (c.status === "active" && p.status === "active") {
+      actions.append(
+        el("button", {
+          text: "Rotate",
+          onclick: async () => {
+            if (!confirm("Rotate " + c.displayName + "? Its current secret stops working at once.")) return;
+            const r = await api("POST", credentialsPath(p) + "/" + enc(c.id) + "/rotate", {});
+            if (r.status !== 200) return handleError(r);
+            pending.add(c.id);
+            showSecret(r.data.secret, c.displayName,
+              "Tokens made with the old secret stop working once the cell has the change, within about a minute.");
+            refreshCredentials(p, list);
+          },
+        }),
+        " ",
+        el("button", {
+          class: "danger",
+          text: "Revoke",
+          onclick: async () => {
+            if (!confirm("Revoke " + c.displayName + " for good? Apps using it stop working within about a minute.")) return;
+            const r = await api("POST", credentialsPath(p) + "/" + enc(c.id) + "/revoke", {});
+            if (r.status !== 200) return handleError(r);
+            pending.add(c.id);
+            refreshCredentials(p, list);
+          },
+        }));
+    }
+    if (pending.has(c.id)) watchServed(p, c, status);
+    return el("tr", {},
+      el("td", { text: c.displayName }),
+      el("td", {}, el("code", { text: c.valueHint ? "…" + c.valueHint : "—" })),
+      el("td", { text: c.scopes.length + " scope(s)", title: c.scopes.join(" ") }),
+      status,
+      el("td", { text: date(c.createdAt) }),
+      actions);
+  }
+
+  function newCredentialForm(p, list) {
+    const input = el("input", { type: "text", maxlength: "64", placeholder: "Credential name (optional)", "aria-label": "Credential name" });
+    const button = el("button", { type: "submit", text: "Create credential" });
+    return el("form", {
+      class: "row",
+      onsubmit: async (e) => {
+        e.preventDefault();
+        button.disabled = true;
+        const name = input.value.trim();
+        const r = await api("POST", credentialsPath(p), name ? { displayName: name } : {});
+        button.disabled = false;
+        if (r.status !== 201) return handleError(r);
+        input.value = "";
+        pending.add(r.data.credential.id);
+        showSecret(r.data.secret, r.data.credential.displayName);
+        refreshCredentials(p, list);
+      },
+    }, input, button);
+  }
+
+  async function refreshCredentials(p, list) {
+    const r = await api("GET", credentialsPath(p));
+    if (r.status !== 200) return handleError(r);
+    const rows = r.data.credentials.map((c) => credentialRow(p, c, list));
+    list.replaceChildren(
+      rows.length
+        ? el("table", {},
+          el("thead", {}, el("tr", {}, ...["Name", "Secret", "Scopes", "Status", "Created", ""].map((h) => el("th", { text: h })))),
+          el("tbody", {}, ...rows))
+        : el("p", { class: "muted", text: "No credentials." }),
+      p.status === "active" ? newCredentialForm(p, list) : null);
+  }
+
+  function credentialsSection(p) {
+    const list = el("div", {}, el("p", { class: "muted", text: "Loading…" }));
+    refreshCredentials(p, list);
+    return el("div", {},
+      el("h3", { text: "Credentials" }),
+      el("p", { class: "muted", text: "A credential's secret is shown once, when it is made or rotated. Rotating stops the old secret at once; " +
+        "to rotate without downtime, create a second credential, move your apps to it, then revoke the first." }),
+      list);
+  }
+
+  function deleteSection(p) {
+    if (p.status === "deleting") return el("p", { class: "muted", text: "This project is being deleted; it disappears once its data is erased." });
+    if (p.status !== "active") return el("p", { class: "muted", text: "This project is suspended by the Prisma Streams team." });
+    const input = el("input", { type: "text", placeholder: p.displayName, "aria-label": "Type the project's name to confirm" });
+    const button = el("button", { type: "submit", class: "danger", text: "Delete project", disabled: true });
+    input.addEventListener("input", () => {
+      button.disabled = input.value !== p.displayName;
+    });
+    return el("details", { class: "danger-zone" },
+      el("summary", { text: "Delete this project" }),
+      el("p", { text: "Deleting revokes every credential at once and erases the project's streams for good; it cannot be undone. " +
+        "Type the project's name, " + p.displayName + ", to confirm." }),
+      el("form", {
+        class: "row",
+        onsubmit: async (e) => {
+          e.preventDefault();
+          if (input.value !== p.displayName) return;
+          button.disabled = true;
+          const r = await api("DELETE", projectsPath() + "/" + enc(p.id), {});
+          if (r.status !== 202) {
+            button.disabled = false;
+            return handleError(r);
+          }
+          notice("Project " + p.displayName + " is being deleted.", "info");
+          load();
+        },
+      }, input, button));
+  }
+
+  function projectCard(p) {
+    const ready = el("p", { class: "muted" });
+    const quotas = p.quotas || {};
+    const card = el("section", { class: "card" },
+      el("div", { class: "row spread" }, el("h2", { text: p.displayName }), el("span", { class: "badge " + p.status, text: p.status })),
+      el("dl", {},
+        el("dt", { text: "Project" }), el("dd", {}, el("code", { text: p.id })),
+        el("dt", { text: "Endpoint" }), el("dd", {}, el("code", { text: p.endpoint })),
+        el("dt", { text: "Cell" }), el("dd", {}, el("code", { text: p.cellId })),
+        el("dt", { text: "Requests a second" }), el("dd", { text: quotas.requests_per_sec === undefined ? "—" : String(quotas.requests_per_sec) }),
+        el("dt", { text: "Created" }), el("dd", { text: date(p.createdAt) + (p.createdBy ? " by " + p.createdBy.email : "") })),
+      ready,
+      p.status === "active" ? snippet() : null,
+      p.status === "deleting" ? null : credentialsSection(p),
+      deleteSection(p));
+    if (p.status === "active") watchReady(p, ready);
+    return card;
+  }
+
+  async function load() {
+    const r = await api("GET", projectsPath());
+    if (r.status !== 200) return r.status === 503 || r.status === 0 ? renderUnavailable(r) : handleError(r);
+    const projects = r.data.projects;
+    if (projects.length === 0) return renderCreate();
+    main.replaceChildren(...projects.map(projectCard),
+      el("details", {}, el("summary", { text: "Create another project" }), createForm()));
+  }
+
+  async function start() {
+    const code = new URLSearchParams(location.search).get("signin");
+    if (location.search) history.replaceState(null, "", "/");
+    const refusal = code ? SIGNIN_REFUSALS[code] || "That sign-in did not complete. Sign in again." : null;
+    const r = await api("GET", "/auth/session");
+    if (r.status === 401) return renderSignedOut(refusal);
+    if (r.status !== 200) return renderUnavailable(r);
+    session = r.data;
+    renderWho();
+    notice(refusal);
+    load();
+  }
+
+  start();
+})();
+</script>
+</body>
+</html>

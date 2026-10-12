@@ -7,6 +7,8 @@
 //   GET  /v1/admin/metrics   its counters, behind the metrics bearer (ops.ts)
 //   GET  /auth/login         "Sign in with Prisma" starts (signin.ts)
 //   GET  /auth/callback      and finishes with a session (signin.ts)
+//   GET  /auth/session       who the page is signed in as (signin.ts)
+//   GET  /                   the page (page.ts)
 //   /v1/workspaces/{w}/streams/projects...
 //                            the management API, for a signed-in browser
 //                            (management.ts)
@@ -19,6 +21,7 @@ import { Exchange } from "./exchange";
 import { RateLimits } from "./limits";
 import { Management } from "./management";
 import { Ops } from "./ops";
+import { servePage } from "./page";
 import { Rehasher } from "./rehash";
 import { refuse } from "./respond";
 import { SignIn } from "./signin";
@@ -84,6 +87,10 @@ export class Issuer {
         return only("GET") ?? this.signIn.start(req);
       case "/auth/callback":
         return only("GET") ?? this.signIn.finish(req);
+      case "/auth/session":
+        return only("GET") ?? this.signIn.session(req);
+      case "/":
+        return only("GET") ?? servePage();
       default:
         return (await this.management.handle(req, pathname)) ?? refuse(404, "not_found", `no route ${pathname}`);
     }

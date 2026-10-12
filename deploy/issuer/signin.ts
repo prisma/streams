@@ -1,6 +1,6 @@
 // Signing in to the issuer (public-beta issuer triage B4.1-B4.3, B4.6;
-// design §3): the two routes a browser takes, and what the issuer checks
-// between them.
+// design §3): the two routes a browser takes to sign in, what the issuer
+// checks between them, and the route that tells the page who signed in.
 //
 //   GET /auth/login     30 a minute for the instance (`oauth_start`; per
 //                       address too once K4 names the edge's header), else
@@ -15,11 +15,16 @@
 //                       not_oauth, no_user, no_workspace,
 //                       invalid_workspace, workspace_not_allowed,
 //                       unavailable.
+//   GET /auth/session   for the page (page.ts): who is signed in, and the
+//                       session's CSRF value its changes send; 401
+//                       without a session; from the session's budget of
+//                       60 calls a minute. No CORS header lets another
+//                       origin read it.
 //
-// Both answers carry no body, are never cached and send no Referer on;
-// the callback always clears the sign-in's state cookie. Signing in to
-// another workspace is another sign-in: an OAuth grant names one
-// workspace, and its session replaces the browser's.
+// The first two answer with no body, are never cached and send no
+// Referer on; the callback always clears the sign-in's state cookie.
+// Signing in to another workspace is another sign-in: an OAuth grant
+// names one workspace, and its session replaces the browser's.
 //
 // Owner question I4, answer (a) (the build default): whoever signs in to
 // an allow-listed workspace manages its Streams projects; there is no role
@@ -30,7 +35,8 @@ import type { IssuerConfig } from "./config";
 import { rateLimited } from "./exchange";
 import { clientIp, type RateLimits, TRUSTED_CLIENT_IP_HEADER } from "./limits";
 import { PrismaSignIn, SIGNIN_COOKIE, SignInRefused } from "./oauth";
-import { clearedCookie, newSession, sessionCookie } from "./session";
+import { json, refuse } from "./respond";
+import { clearedCookie, csrfToken, newSession, readSession, sessionCookie } from "./session";
 
 export interface SignInDeps {
   limits: RateLimits;
@@ -90,5 +96,18 @@ export class SignIn {
     const session = newSession({ user_id: userId, email, workspace_id: workspaceId }, this.deps.now());
     this.deps.log(`signed in user ${userId} to workspace ${workspaceId}`);
     return redirect("/", [sessionCookie(this.cfg.sessionKey, session), clearedCookie(SIGNIN_COOKIE)]);
+  }
+
+  /// GET /auth/session.
+  session(req: Request): Response {
+    const s = readSession(this.cfg.sessionKey, req, this.deps.now());
+    if (s === null) return refuse(401, "unauthorized", "sign in with Prisma to manage Streams projects");
+    const wait = this.deps.limits.take("management_session", s.sid);
+    if (wait > 0) return rateLimited(wait, "too many management calls in this session");
+    return json(
+      200,
+      { userId: s.user_id, email: s.email, workspaceId: s.workspace_id, csrfToken: csrfToken(this.cfg.sessionKey, s.sid) },
+      { "x-content-type-options": "nosniff" },
+    );
   }
 }
