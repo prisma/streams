@@ -1,83 +1,52 @@
-// The management API (public-beta issuer triage B3; design §3.2, §4,
-// §5): a workspace's Streams projects, for a browser signed in to that
-// workspace (session.ts). Every call is checked, in order:
+// The management API (public-beta issuer triage B3; design §3.2, §3.3,
+// §4, §5): a workspace's Streams projects, for a browser signed in to
+// that workspace (session.ts). Every call is checked, in order:
 //
 //   1. the route (else the server's 404) and its method (405 with Allow);
 //   2. a session cookie the issuer's key made, issued < 8 h ago (401);
 //   3. the session's budget, 60 calls a minute (429 with Retry-After);
-//   4. the issuer's copy of the state revalidated within 300 s (503);
-//   5. the workspace in the path is the session's (403 forbidden);
-//   6. the session's workspace on the beta's allow-list, read from the
+//   4. for a change (any method but GET): `Content-Type:
+//      application/json` and `X-CSRF-Token` equal to the session's CSRF
+//      value (403 csrf_failed);
+//   5. the issuer's copy of the state revalidated within 300 s (503);
+//   6. the workspace in the path is the session's (403 forbidden);
+//   7. the session's workspace on the beta's allow-list, read from the
 //      control bucket at most every 5 s and refused while there is none
 //      (403 workspace_not_allowed; 503 while it cannot be read): taking
 //      a workspace off the list stops its management within 5 s (owner
 //      question I8 (a): its projects keep running until the owner
 //      suspends them).
+// A refusal of a change from step 4 on is audited (calls.ts).
 //
-//   GET /v1/workspaces/{w}/streams/projects   the workspace's projects
+//   GET  /v1/workspaces/{w}/streams/projects   the workspace's projects
+//   POST /v1/workspaces/{w}/streams/projects   create one (projects.ts)
 //
 // No answer carries a CORS header (respond.ts): the page that calls these
 // routes is the issuer's own. Every answer carries X-Request-Id.
 import { randomBytes } from "node:crypto";
-import { isCanary } from "../cell-admin/rules";
-import type { CellState, ProjectRecord } from "../cell-admin/state";
-import type { Allowlist, StateStore } from "../cell-admin/store";
-import type { StateCache } from "./cache";
+import type { AllowEntry, Allowlist } from "../cell-admin/store";
+import { type Asker, type Call, type ManagementDeps, refused } from "./calls";
 import type { IssuerConfig } from "./config";
-import { rateLimited, unavailable } from "./exchange";
-import type { RateLimits } from "./limits";
-import { json, refuse } from "./respond";
-import { readSession, type Session } from "./session";
+import { rateLimited, UNAVAILABLE_RETRY_SECS } from "./exchange";
+import { Projects } from "./projects";
+import { refuse } from "./respond";
+import { csrfMatches, readSession } from "./session";
 
 /// How long a read of the allow-list is taken as current.
 export const ALLOWLIST_MAX_AGE_MS = 5_000;
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
+const JSON_TYPE = /^application\/json\s*(;|$)/i;
 
-export interface ManagementDeps {
-  cache: StateCache;
-  store: StateStore;
-  limits: RateLimits;
-  now: () => number;
-  log: (line: string) => void;
+interface Method {
+  /// The audit's name for what it does.
+  action: string;
+  handle: (c: Call) => Promise<Response> | Response;
 }
-
-interface Call {
-  req: Request;
-  session: Session;
-  /// The path's ids, decoded.
-  ids: string[];
-}
-
-type Handler = (call: Call) => Promise<Response> | Response;
 
 interface Route {
   path: RegExp;
-  methods: Partial<Record<string, Handler>>;
-}
-
-/// A project as the API shows it. `status` is `deleting` while it is
-/// being offboarded.
-export function projectView(cfg: IssuerConfig, state: CellState, id: string, p: ProjectRecord) {
-  return {
-    id,
-    workspaceId: p.workspace_id,
-    displayName: p.display_name ?? id,
-    status: p.phase === "active" ? p.status : "deleting",
-    createdAt: p.admitted_at,
-    ...(p.created_by ? { createdBy: { userId: p.created_by.user_id, email: p.created_by.email } } : {}),
-    cellId: state.cell.cell_id,
-    endpoint: cfg.cellOrigin,
-    quotas: { ...p.quotas },
-  };
-}
-
-/// The customer projects of `workspace` a user sees: not the canary, not
-/// offboarded; oldest first.
-export function workspaceProjects(state: CellState, workspace: string): [string, ProjectRecord][] {
-  return Object.entries(state.projects)
-    .filter(([id, p]) => p.workspace_id === workspace && p.phase !== "offboarded" && !isCanary(id))
-    .sort(([a, p], [b, q]) => (p.admitted_at < q.admitted_at ? -1 : p.admitted_at > q.admitted_at ? 1 : a < b ? -1 : 1));
+  methods: Partial<Record<string, Method>>;
 }
 
 export class Management {
@@ -88,8 +57,15 @@ export class Management {
     private readonly cfg: IssuerConfig,
     private readonly deps: ManagementDeps,
   ) {
+    const projects = new Projects(cfg, deps);
     this.routes = [
-      { path: /^\/v1\/workspaces\/([^/]+)\/streams\/projects$/, methods: { GET: (c) => this.listProjects(c) } },
+      {
+        path: /^\/v1\/workspaces\/([^/]+)\/streams\/projects$/,
+        methods: {
+          GET: { action: "project.list", handle: (c) => projects.list(c) },
+          POST: { action: "project.create", handle: (c) => projects.create(c) },
+        },
+      },
     ];
   }
 
@@ -100,40 +76,54 @@ export class Management {
       if (!m) continue;
       const ids = decodeIds(m.slice(1));
       if (ids === null) return null;
-      const res = await this.checked(req, route, ids);
-      res.headers.set("x-request-id", randomBytes(8).toString("hex"));
+      const requestId = randomBytes(8).toString("hex");
+      const res = await this.checked(req, route, ids, requestId);
+      res.headers.set("x-request-id", requestId);
       return res;
     }
     return null;
   }
 
-  private async checked(req: Request, route: Route, ids: string[]): Promise<Response> {
-    const handler = route.methods[req.method];
-    if (handler === undefined) {
-      const allow = Object.keys(route.methods).join(", ");
-      return refuse(405, "method_not_allowed", `${allow} only`, { allow });
+  private async checked(req: Request, route: Route, ids: string[], requestId: string): Promise<Response> {
+    const method = route.methods[req.method];
+    if (method === undefined) {
+      const allowed = Object.keys(route.methods);
+      return refuse(405, "method_not_allowed", `${allowed.join(" or ")} only`, { allow: allowed.join(", ") });
     }
     const session = readSession(this.cfg.sessionKey, req, this.deps.now());
     if (session === null) return refuse(401, "unauthorized", "sign in with Prisma to manage Streams projects");
     const wait = this.deps.limits.take("management_session", session.sid);
     if (wait > 0) return rateLimited(wait, "too many management calls in this session");
+    const asker: Asker = { session, requestId, action: method.action, change: req.method !== "GET" };
+    const no = (status: number, code: string, message: string, headers?: Record<string, string>) =>
+      refused(this.deps, asker, { status, code, message, headers });
+    if (asker.change) {
+      if (!JSON_TYPE.test(req.headers.get("content-type") ?? "")) {
+        return no(403, "csrf_failed", "send Content-Type: application/json");
+      }
+      if (!csrfMatches(this.cfg.sessionKey, session.sid, req.headers.get("x-csrf-token"))) {
+        return no(403, "csrf_failed", "send X-CSRF-Token with this session's value");
+      }
+    }
+    const unavailable = (message: string) =>
+      no(503, "issuer_unavailable", message, { "retry-after": String(UNAVAILABLE_RETRY_SECS) });
     if (!this.deps.cache.fresh()) return unavailable("the issuer cannot see the cell's current state; retry shortly");
     const [workspace] = ids;
     if (workspace !== session.workspace_id) {
-      return refuse(403, "forbidden",
+      return no(403, "forbidden",
         `this session is signed in to workspace ${session.workspace_id}, not ${workspace}: sign in to ${workspace}`);
     }
-    const allowed = await this.allowed(workspace);
-    if (allowed === null) return unavailable("the issuer cannot read the beta's allow-list; retry shortly");
-    if (!allowed) {
-      return refuse(403, "workspace_not_allowed", `workspace ${workspace} is not on the Streams beta's allow-list`);
+    const entry = await this.entryOf(workspace);
+    if (entry === null) return unavailable("the issuer cannot read the beta's allow-list; retry shortly");
+    if (entry === undefined) {
+      return no(403, "workspace_not_allowed", `workspace ${workspace} is not on the Streams beta's allow-list`);
     }
-    return handler({ req, session, ids });
+    return method.handle({ ...asker, req, ids, entry });
   }
 
-  /// Whether the allow-list holds `workspace` (not while there is none),
-  /// or null when it cannot be read.
-  private async allowed(workspace: string): Promise<boolean | null> {
+  /// The allow-list's entry for `workspace`: undefined when it has none
+  /// (or there is no allow-list), null when the list cannot be read.
+  private async entryOf(workspace: string): Promise<AllowEntry | undefined | null> {
     const now = this.deps.now();
     if (this.allowlist === null || now - this.allowlist.at > ALLOWLIST_MAX_AGE_MS) {
       try {
@@ -144,13 +134,7 @@ export class Management {
         return null;
       }
     }
-    return this.allowlist.doc?.entries.some((e) => e.workspace_id === workspace) ?? false;
-  }
-
-  private listProjects(c: Call): Response {
-    const state = this.deps.cache.state;
-    const projects = workspaceProjects(state, c.session.workspace_id).map(([id, p]) => projectView(this.cfg, state, id, p));
-    return json(200, { projects });
+    return this.allowlist.doc?.entries.find((e) => e.workspace_id === workspace);
   }
 }
 

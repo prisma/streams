@@ -52,14 +52,23 @@ export interface CellSizing {
 
 /// Read KEY=VALUE files in order; a later file's value wins.
 export function readProfiles(paths: readonly string[]): Map<string, string> {
+  return parseProfiles(
+    paths.map((path) => {
+      try {
+        return { path, text: readFileSync(path, "utf8") };
+      } catch {
+        throw new AdminError(`cannot read profile ${path}`);
+      }
+    }),
+  );
+}
+
+/// Layer KEY=VALUE texts in order, a later one's value winning: files
+/// `readProfiles` read, or copies compiled into a bundle (the issuer's),
+/// each named by `path` in a refusal.
+export function parseProfiles(files: readonly { path: string; text: string }[]): Map<string, string> {
   const env = new Map<string, string>();
-  for (const path of paths) {
-    let text: string;
-    try {
-      text = readFileSync(path, "utf8");
-    } catch {
-      throw new AdminError(`cannot read profile ${path}`);
-    }
+  for (const { path, text } of files) {
     for (const [i, raw] of text.split("\n").entries()) {
       const line = raw.trim();
       if (line === "" || line.startsWith("#")) continue;

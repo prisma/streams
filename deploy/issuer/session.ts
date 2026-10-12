@@ -7,8 +7,10 @@
 // `__Host-streams-session=<payload>.<mac>`, HttpOnly, Secure,
 // SameSite=Lax, 8 hours. Nothing is stored server-side: the issuer reads
 // who is calling from the cookie alone, so rotating the key signs every
-// user out. Each MAC names its purpose, so a value made for one use is
-// never valid for another (the sign-in's state cookie, B4, takes its own).
+// user out. A state-changing call also sends the session's CSRF value in
+// X-CSRF-Token: a page of another origin can neither read it nor set the
+// header. Each MAC names its purpose, so a value made for one use is never
+// valid for another (the sign-in's state cookie, B4, takes its own).
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 /// The `__Host-` prefix: the browser takes it only Secure, from this
@@ -45,6 +47,17 @@ export function sessionCookie(key: Buffer, s: Session): string {
   const payload = Buffer.from(JSON.stringify(s)).toString("base64url");
   const tag = mac(key, "session", payload).toString("base64url");
   return `${SESSION_COOKIE}=${payload}.${tag}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_TTL_SECS}`;
+}
+
+/// What a state-changing call must send in X-CSRF-Token: the key's MAC
+/// of the session id. The issuer's page reads it from the sign-in (B4).
+export const csrfToken = (key: Buffer, sid: string) => mac(key, "csrf", sid).toString("base64url");
+
+/// Whether `presented` is `sid`'s CSRF value, compared in constant time.
+export function csrfMatches(key: Buffer, sid: string, presented: string | null): boolean {
+  const want = Buffer.from(csrfToken(key, sid));
+  const got = Buffer.from(presented ?? "");
+  return got.length === want.length && timingSafeEqual(got, want);
 }
 
 /// The first value of cookie `name` in the request, or null.

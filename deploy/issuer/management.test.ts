@@ -151,7 +151,7 @@ describe("the management API's sessions", () => {
     const m = await managed(cell);
     const res = await m.call("PUT", "/v1/workspaces/ws_a/streams/projects", m.signIn("ws_a"));
     expect([res.headers.get("allow"), ...(await answer(res))]).toEqual([
-      "GET", 405, refusal("method_not_allowed", "GET only"),
+      "GET, POST", 405, refusal("method_not_allowed", "GET or POST only"),
     ]);
     for (const path of ["/v1/workspaces/ws_a/streams", "/v1/workspaces/ws%2Fa/streams/projects", "/v1/workspaces//streams/projects"]) {
       expect((await m.get(path, m.signIn("ws_a"))).status).toBe(404);

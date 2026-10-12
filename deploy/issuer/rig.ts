@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { presentedSecret } from "../cell-admin/secrets";
 import type { CellState } from "../cell-admin/state";
 import {
+  auditTexts,
   credentialsOf,
   fakeS3,
   freshState,
@@ -23,7 +24,7 @@ import { boot } from "./boot";
 import { StateCache } from "./cache";
 import { type Env, readConfig } from "./config";
 import { Issuer } from "./server";
-import { newSession, type Session, sessionCookie } from "./session";
+import { csrfToken, newSession, readSession, type Session, sessionCookie } from "./session";
 
 export interface IssuerCell {
   root: string;
@@ -100,6 +101,17 @@ export async function customerSecret(
 
 export const cellState = (cell: IssuerCell): CellState => readState(cell.state);
 
+/// The management audit objects the control bucket holds, oldest first.
+export const managementAudits = (cell: IssuerCell) =>
+  auditTexts(cell.state).map((t) => JSON.parse(t)).filter((d) => d.kind === "management");
+
+/// Run cell-admin on `cell`'s state, or throw with its error.
+export async function admin(cell: IssuerCell, command: string, ...args: string[]): Promise<string> {
+  const r = await run(command, "--state", cell.state, ...args);
+  if (r.code !== 0) throw new Error(`${command}: ${r.err}`);
+  return r.out;
+}
+
 /// A presented secret for `id` that is not its secret.
 export const wrongSecret = (id: string) => presentedSecret(id, randomBytes(32).toString("base64url"));
 
@@ -126,14 +138,27 @@ export async function managed(cell: IssuerCell, env: Env = cell.env) {
   /// The Cookie header of a new session signed in to `workspace`.
   const signIn = (workspace: string, patch: Partial<Session> = {}) =>
     sessionCookie(cfg.sessionKey, session(workspace, patch)).split(";")[0];
-  const call = (method: string, path: string, cookie?: string, init: { body?: string; headers?: Record<string, string> } = {}) =>
-    issuer.fetch(
+  // Every call takes 1 ms of the clock, so audit objects (keyed by the
+  // millisecond) sort in the order of the calls that wrote them.
+  const call = (method: string, path: string, cookie?: string, init: { body?: string; headers?: Record<string, string> } = {}) => {
+    clock.t += 1;
+    return issuer.fetch(
       new Request(`https://issuer.example.com${path}`, {
         method,
         headers: { ...(cookie === undefined ? {} : { cookie }), ...init.headers },
         body: init.body,
       }),
     );
+  };
   const get = (path: string, cookie?: string) => call("GET", path, cookie);
-  return { cfg, cache, clock, issuer, store: b.store, session, signIn, call, get };
+  /// A change as the issuer's page asks for it: JSON, with the CSRF value
+  /// of the cookie's session.
+  const send = (method: string, path: string, cookie: string, body?: unknown) => {
+    const sid = readSession(cfg.sessionKey, new Request(`https://issuer.example.com${path}`, { headers: { cookie } }), clock.t)?.sid;
+    return call(method, path, cookie, {
+      body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
+      headers: { "content-type": "application/json", "x-csrf-token": csrfToken(cfg.sessionKey, sid ?? "") },
+    });
+  };
+  return { cfg, cache, clock, issuer, store: b.store, session, signIn, call, get, send };
 }

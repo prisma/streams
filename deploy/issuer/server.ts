@@ -48,6 +48,7 @@ export class Issuer {
       cache: deps.cache,
       store: deps.store,
       limits: this.limits,
+      audit: this.audit,
       now,
       log: deps.log ?? console.log,
     });

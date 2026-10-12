@@ -18,7 +18,6 @@ import {
   QUOTA_FIELDS,
   type QuotaField,
   type Quotas,
-  readProfiles,
 } from "./profile";
 import type { Actor, CellState, CredentialRecord, ProjectRecord } from "./state";
 
@@ -120,12 +119,11 @@ export function setCredentialField(
 
 /// A cell's profile is fixed when it is initialised: refuse to admit
 /// against ceilings the profile no longer gives, or against a profile that
-/// is not the one `init` recorded. `bundledProfiles` is the caller's own
-/// copy of the profile files (this tool's deploy/profiles, the issuer's
-/// bundled copy of the same files), never the paths `init` read, which do
-/// not exist where the issuer runs.
-export function checkSizing(state: CellState, bundledProfiles: readonly string[]): void {
-  const env = readProfiles(bundledProfiles);
+/// is not the one `init` recorded. `env` is the caller's own copy of the
+/// layered profile (this tool's deploy/profiles, read by readProfiles;
+/// the issuer's copy of the same files, compiled into its bundle), never
+/// the paths `init` read, which do not exist where the issuer runs.
+export function checkSizing(state: CellState, env: Map<string, string>): void {
   const now = cellSizing(env);
   const changes = [
     ...(now.share_k !== state.cell.share_k ? [`k ${state.cell.share_k} -> ${now.share_k}`] : []),
@@ -190,34 +188,60 @@ export function quotaValues(state: CellState, given: readonly string[]): Partial
   return quotas;
 }
 
+/// Why a placement is refused, for a caller that answers each its own way
+/// (the issuer's management API); the message is the CLI's.
+export type PlacementRefusal = "reserved_project" | "reserved_workspace" | "id_used" | "cell_full" | "workspace_full";
+
+export class PlacementRefused extends AdminError {
+  constructor(
+    readonly refusal: PlacementRefusal,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 /// Where a project may be placed: not a reserved id, not the cell's
 /// ACCOUNT_ID as workspace, an id never used before (`denylist` is the
 /// denylist as read before this placement burns the id), and within the
-/// cell's and the workspace's caps.
-export function checkPlacement(state: CellState, project: string, workspace: string, denylist: Set<string>): void {
+/// cell's and the workspace's caps. The workspace's cap is the cell's
+/// unless `opts.workspaceCap` names the workspace's own (the issuer's
+/// allow-list entry, or its default).
+export function checkPlacement(
+  state: CellState,
+  project: string,
+  workspace: string,
+  denylist: Set<string>,
+  opts: { workspaceCap?: number } = {},
+): void {
   checkId("--project", project);
   checkId("--workspace", workspace);
   const cell = state.cell;
   if (project === SYSTEM_PROJECT || project === cell.deployment_project_id || isCanary(project)) {
-    throw new AdminError(`project ${project} is reserved on cell ${cell.cell_id}`);
+    throw new PlacementRefused("reserved_project", `project ${project} is reserved on cell ${cell.cell_id}`);
   }
   if (workspace === cell.account_id) {
-    throw new AdminError(`workspace ${workspace} is the cell's ACCOUNT_ID, the unowned-event sink`);
+    throw new PlacementRefused(
+      "reserved_workspace",
+      `workspace ${workspace} is the cell's ACCOUNT_ID, the unowned-event sink`,
+    );
   }
   if (workspace === CANARY_WORKSPACE) {
-    throw new AdminError(`workspace ${workspace} is the issuer's canary workspace`);
+    throw new PlacementRefused("reserved_workspace", `workspace ${workspace} is the issuer's canary workspace`);
   }
   if (state.projects[project] || denylist.has(project)) {
-    throw new AdminError(`project id ${project} was used before: an id is never placed twice`);
+    throw new PlacementRefused("id_used", `project id ${project} was used before: an id is never placed twice`);
   }
   const placed = placedProjects(state).map(([, p]) => p);
   if (placed.length >= cell.max_projects) {
-    throw new AdminError(`cell ${cell.cell_id} already holds its ${cell.max_projects} projects`);
+    throw new PlacementRefused("cell_full", `cell ${cell.cell_id} already holds its ${cell.max_projects} projects`);
   }
+  const cap = opts.workspaceCap ?? cell.workspace_cap;
   const mine = placed.filter((p) => p.workspace_id === workspace).length;
-  if (mine >= cell.workspace_cap) {
-    throw new AdminError(
-      `workspace ${workspace} already has ${mine} project(s) on cell ${cell.cell_id} (cap ${cell.workspace_cap})`,
+  if (mine >= cap) {
+    throw new PlacementRefused(
+      "workspace_full",
+      `workspace ${workspace} already has ${mine} project(s) on cell ${cell.cell_id} (cap ${cap})`,
     );
   }
 }

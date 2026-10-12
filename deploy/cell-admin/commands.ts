@@ -107,7 +107,7 @@ export async function admit(f: Flags, io: Io): Promise<void> {
   const workspace = f.must("workspace");
   await store.exclusive(async () => {
     const { state: first } = await loadChecked(store);
-    checkSizing(first, profilesOf(f));
+    checkSizing(first, readProfiles(profilesOf(f)));
     const { ids: denylist } = await store.readDenylist();
     checkPlacement(first, project, workspace, denylist);
     const quotas = admittedQuotas(first, f.all("quota"));
