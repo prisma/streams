@@ -26,6 +26,7 @@
 //                                                  cell serves it (probe.ts)
 //   GET  /v1/projects/{p}/streams/credentials      its credentials
 //   POST /v1/projects/{p}/streams/credentials      create one (credentials.ts)
+//   POST /v1/projects/{p}/streams/credentials/{c}/rotate   a new secret
 //
 // No answer carries a CORS header (respond.ts): the page that calls these
 // routes is the issuer's own. Every answer carries X-Request-Id.
@@ -91,6 +92,11 @@ export class Management {
           GET: { action: "credential.list", handle: (c) => credentials.list(c) },
           POST: { action: "credential.create", handle: (c) => credentials.create(c) },
         },
+      },
+      {
+        path: /^\/v1\/projects\/([^/]+)\/streams\/credentials\/([^/]+)\/rotate$/,
+        scope: "project",
+        methods: { POST: { action: "credential.rotate", handle: (c) => credentials.rotate(c) } },
       },
     ];
   }

@@ -2,6 +2,7 @@
 // triage B3.4). Run with `bun test ./deploy/issuer`.
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { FakeCell } from "../cell-admin/fake-cell";
 import { CUSTOMER_SCOPES } from "../cell-admin/rules";
 import { hashSecret, parsePeppers } from "../cell-admin/secrets";
 import { cleanup, customerOnly, decodeJwt, readBundle, storeTexts } from "../cell-admin/test-rig";
@@ -138,5 +139,83 @@ describe("a project's credentials", () => {
     // The listing still answers: every credential revoked.
     const listed = (await (await m.get(path, a)).json()).credentials;
     expect(listed.map((c: any) => [c.status, c.grantVersion])).toEqual([["revoked", 2]]);
+  });
+});
+
+describe("rotating a credential", () => {
+  test("gives it a new secret at grant_version + 1: the old secret exchanges no more and the cell refuses tokens minted under it", async () => {
+    const { cell, m, a, id, first, path } = await withProject();
+    const fake = new FakeCell();
+    try {
+      fake.publish(readBundle(cell.state));
+      const created = await (await m.send("POST", path, a, { displayName: "svc" })).json();
+      fake.publish(readBundle(cell.state));
+      const oldToken = (await (await exchange(m, created.secret)).json()).accessToken;
+      const before = cellState(cell);
+      const res = await m.send("POST", `${path}/${created.credential.id}/rotate`, a);
+      const [status, body] = await answer(res);
+      expect(status).toBe(200);
+      expect(Object.keys(body)).toEqual(["credential", "secret"]);
+      const raw = new RegExp(`^prisma_streams_${created.credential.id}\\.([A-Za-z0-9_-]{43})$`).exec(body.secret)![1];
+      expect(body.credential).toEqual({ ...created.credential, grantVersion: 2, valueHint: raw.slice(-6) });
+      const after = cellState(cell);
+      const pepper = parsePeppers(readFileSync(cell.pepper, "utf8"), "pepper")[0];
+      expect(after.credentials[created.credential.id]).toMatchObject({
+        grant_version: 2, status: "active", secret_hash: hashSecret(pepper, raw), hint: raw.slice(-6),
+      });
+      expect(after.feed_version).toBe(before.feed_version + 1);
+      expect(after.credentials[first.id].grant_version).toBe(1);
+      // The old secret is refused at once; the new one mints at version 2.
+      expect((await exchange(m, created.secret)).status).toBe(401);
+      const fresh = await (await exchange(m, body.secret)).json();
+      expect(decodeJwt(fresh.accessToken).claims.grant_version).toBe(2);
+      // Once the cell holds the bundle, a token minted before is refused.
+      fake.publish(readBundle(cell.state));
+      const call = (token: string) => fetch(`${fake.url}/v1/streams?limit=1`, { headers: { authorization: `Bearer ${token}` } });
+      expect([(await call(oldToken)).status, fake.requests.at(-1)?.status]).toEqual([401, 401]);
+      expect((await (await call(oldToken)).json()).error.code).toBe("grant_version_mismatch");
+      expect((await call(fresh.accessToken)).status).toBe(200);
+      expect(managementAudits(cell).at(-1)).toMatchObject({
+        action: "credential.rotate", outcome: "done", project_id: id, credential_ids: [created.credential.id],
+        before: { feed_version: before.feed_version, grant_version: 1 }, after: { feed_version: after.feed_version, grant_version: 2 },
+        request_id: res.headers.get("x-request-id"),
+      });
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("refuses a revoked or expired credential 409, one that is not the project's 404, and a body 400", async () => {
+    const { cell, m, a, id, first, path } = await withProject();
+    const other = await customerSecret(cell, "sp_other");
+    await m.cache.refresh();
+    const canary = Object.entries(cellState(cell).credentials).find(([, c]) => c.hidden)![0];
+    for (const cid of [other.id, canary, `strcred_${"0".repeat(32)}`]) {
+      expect(await answer(await m.send("POST", `${path}/${cid}/rotate`, a))).toEqual([
+        404, refusal("not_found", `project ${id} has no credential ${cid}`),
+      ]);
+    }
+    expect(await answer(await m.send("POST", `${path}/${first.id}/rotate`, a, { scopes: [] }))).toEqual([
+      400, refusal("invalid_request", 'unknown member "scopes": the body takes nothing'),
+    ]);
+    const soon = await (await m.send("POST", path, a, { expiresAt: new Date(m.clock.t + 60_000).toISOString() })).json();
+    m.clock.t += 60_000;
+    expect(await answer(await m.send("POST", `${path}/${soon.credential.id}/rotate`, a, {}))).toEqual([
+      409, refusal("credential_not_active", `credential ${soon.credential.id} has expired`),
+    ]);
+    await admin(cell, "offboard", "--project", id);
+    await m.cache.refresh();
+    expect(await answer(await m.send("POST", `${path}/${first.id}/rotate`, a))).toEqual([
+      409, refusal("credential_not_active", `credential ${first.id} is revoked`),
+    ]);
+  });
+
+  test("counts toward the project's 20 creates or rotations a day", async () => {
+    const { m, a, id, first, path } = await withProject();
+    for (let i = 0; i < 20; i++) expect((await m.send("POST", `${path}/${first.id}/rotate`, a)).status).toBe(200);
+    const res = await m.send("POST", `${path}/${first.id}/rotate`, a);
+    expect([res.status, (await res.json()).error.message]).toEqual([
+      429, `project ${id} may create or rotate 20 credentials a day; retry after 4320 s`,
+    ]);
   });
 });

@@ -7,6 +7,8 @@
 //        credentials (never the canary's or an operator's), revoked ones
 //        included, oldest first, in the contract's Credential shape
 //   POST /v1/projects/{p}/streams/credentials   create one
+//   POST /v1/projects/{p}/streams/credentials/{c}/rotate
+//        a new secret, at grant_version + 1
 //
 // A create takes {displayName?, scopes?, streamPrefixes?, expiresAt?}
 // (every scope, no prefix and no expiry by default) and checks, in order,
@@ -17,7 +19,21 @@
 // grant_version 1 with a new 32-byte secret, of which the state keeps
 // only the HMAC under the newest pepper; the bundle is published. 201
 // {credential, secret}: the secret is in this answer and nowhere else.
-import { addCredential, CUSTOMER_SCOPES, MAX_LIVE_CREDENTIALS, newCredentialId } from "../cell-admin/rules";
+//
+// A rotation takes no body and checks the credential (the project's
+// customer credential a user sees, else 404 not_found; active and not
+// expired, else 409 credential_not_active), then the same daily budget.
+// One compare-and-swap replaces the secret's hash and bumps the
+// grant_version; the bundle is published. 200 {credential, secret}. A
+// rotation has no overlap: zero-downtime replacement is "create a second
+// credential, move, revoke the first".
+import {
+  addCredential,
+  CUSTOMER_SCOPES,
+  MAX_LIVE_CREDENTIALS,
+  newCredentialId,
+  setCredentialField,
+} from "../cell-admin/rules";
 import { newSecret, presentedSecret, secretFields } from "../cell-admin/secrets";
 import { type CellState, journal } from "../cell-admin/state";
 import { audited, type Call, commit, displayNameOf, type ManagementDeps, readObject, Refusal, refused } from "./calls";
@@ -75,6 +91,21 @@ export function projectCredentials(state: CellState, project: string) {
       const [x, y] = [c.created_at ?? "", d.created_at ?? ""];
       return x < y ? -1 : x > y ? 1 : a < b ? -1 : 1;
     });
+}
+
+/// Why credential `id` of `project` cannot be rotated on `state` (as of
+/// `nowSecs`), or null: it must be the project's customer credential a
+/// user sees, active and not expired.
+function rotateRefusal(state: CellState, project: string, id: string, nowSecs: number): Refusal | null {
+  const c = state.credentials[id];
+  if (!c || c.project_id !== project || c.role !== "customer" || c.omitted || c.hidden) {
+    return new Refusal(404, "not_found", `project ${project} has no credential ${id}`);
+  }
+  if (c.status !== "active") return new Refusal(409, "credential_not_active", `credential ${id} is revoked`);
+  if (c.expires_at !== null && c.expires_at <= nowSecs) {
+    return new Refusal(409, "credential_not_active", `credential ${id} has expired`);
+  }
+  return null;
 }
 
 /// Why `project` takes no new credential on `state`, or null.
@@ -153,5 +184,38 @@ export class Credentials {
       after: { feed_version: state.feed_version, grant_version: 1 },
     });
     return json(201, { credential: credentialView(id, state.credentials[id]), secret: presentedSecret(id, secret) });
+  }
+
+  /// A new secret for an active credential, at grant_version + 1: the old
+  /// secret exchanges no more at once, and tokens minted under it die
+  /// where the cell holds the new grant (exact grant_version).
+  async rotate(c: Call): Promise<Response> {
+    const [project, id] = c.ids;
+    const body = await readObject(c.req, [], true);
+    if (typeof body === "string") return refused(this.deps, c, { status: 400, code: "invalid_request", message: body });
+    const nowSecs = () => Math.floor(this.deps.now() / 1000);
+    const early = rotateRefusal(this.deps.cache.state, project, id, nowSecs());
+    if (early !== null) return refused(this.deps, c, early);
+    const limited = await this.budget(c, project);
+    if (limited !== null) return limited;
+    const secret = newSecret();
+    const was = this.deps.cache.state;
+    const before = { feed_version: was.feed_version, grant_version: was.credentials[id].grant_version };
+    const done = await commit(this.deps, c, (s) => {
+      const refusal = rotateRefusal(s, project, id, nowSecs());
+      if (refusal !== null) throw refusal;
+      setCredentialField(s, id, secretFields(this.cfg.peppers, secret), { bump: true });
+      journal(s, "credential.rotate", `${project} credential=${id} grant=v${s.credentials[id].grant_version} user=${c.session.user_id}`);
+    });
+    if (done instanceof Response) return done;
+    const cred = done.state.credentials[id];
+    await audited(this.deps, c, {
+      outcome: "done",
+      project_id: project,
+      credential_ids: [id],
+      before,
+      after: { feed_version: done.state.feed_version, grant_version: cred.grant_version },
+    });
+    return json(200, { credential: credentialView(id, cred), secret: presentedSecret(id, secret) });
   }
 }
