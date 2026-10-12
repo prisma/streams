@@ -936,10 +936,16 @@ idle and bills every hour it is up. Never set `KEEP_AWAKE_UNTIL_MS` on it
 (that ends the guard); `cell-admin` refuses a profile without the one or
 with the other.
 
-**Key custody.** One signing key per cell (RSA of 2,048 bits or more, or
-Ed25519), made offline, kept in one mode-0600 file on the operator's
-machine and in its backup, never on the cell, in the bucket or in a
-deploy environment. Only `cell-admin` reads it (`--key-file`), only the
+**Key custody.** For a cell whose interim issuer signs, the owner's
+answer I2 (2026-10-12) supersedes this paragraph: the Ed25519 key lives in
+the issuer's encrypted project environment (`STREAMS_ISSUER_SIGNING_KEY`,
+set from its file through Composer's `envSecret`), the control bucket's
+writer keys are root-of-trust secrets, there is no backup, and the
+rotation and compromise drills are in `deploy/cell-admin/README.md`. For
+a cell without the issuer: one signing key per cell (RSA of 2,048 bits or
+more, or Ed25519), made offline, kept in one mode-0600 file on the
+operator's machine and in its backup, never on the cell, in the bucket or
+in a deploy environment. Only `cell-admin` reads it (`--key-file`), only the
 public half is published, pinned to `prisma-streams-data`; tokens are
 minted per credential for at most 24 h and handed over as mode-0600 files.
 The audience pin makes separate custody enforceable (a customer key cannot

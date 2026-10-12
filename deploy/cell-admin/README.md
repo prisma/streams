@@ -64,6 +64,60 @@ It refuses a key file that group or others can read, and it never copies,
 prints or logs the key. Only the public half goes into the keys feed,
 pinned to the customer audience `prisma-streams-data`.
 
+### Rotating the issuer's key, and a compromised key
+
+The rotation drill, for a cell whose interim issuer signs: before the
+allow-list opens, then yearly or on any doubt. In this order (`S` is the
+cell's `--state`, with its `--s3-credentials`; `deploy/issuer/drills.test.ts`
+runs these steps against a fake cell):
+
+1. Make the new key offline, and its public half:
+   `openssl genpkey -algorithm ed25519 -out new.pem && chmod 600 new.pem`,
+   `openssl pkey -in new.pem -pubout -out new.pub`.
+2. `keys add --state S --public-key new.pub`: the overlap generation,
+   the old and the new kid. Publish it. The running issuer keeps minting
+   under the old key, and every token stays valid.
+3. `canary --state S --key-file new.pem --cell-url URL`: a token under the
+   new key answers 200, so the cell serves the new kid (exit 3 until it
+   does; run it again).
+4. Set the issuer's `STREAMS_ISSUER_SIGNING_KEY` from `new.pem` through
+   Composer's `envSecret` path (the value is read from the file, never
+   pasted on a command line, into a chat or a ticket) and redeploy it (a
+   changed value needs a redeploy). It refuses to boot with a key the
+   cell's keys feed does not hold, so step 2 comes first. Shred `new.pem`.
+5. After the longest token lifetime plus 10 minutes (70 minutes at the
+   issuer's default `STREAMS_ISSUER_TOKEN_TTL_SECS`, 3,600 s):
+   `keys retire --state S --kid <the old kid>`. Publish it. The old kid is
+   retired at the cell for good; a token under it answers 401.
+
+A compromised key, in this order:
+
+0. Scope it first. Under the owner's answer I2 (2026-10-12) the key lives
+   in the issuer's encrypted project environment, beside the control
+   bucket's writer key pair, `STREAMS_ISSUER_SESSION_KEY` and
+   `STREAMS_ISSUER_METRICS_TOKEN`, so the likeliest leak is that whole
+   environment. Whoever holds the writer key can publish a kid of their
+   own again (the cell takes any new kid; the writer key is as powerful as
+   the signing key), and the session key forges sessions that create and
+   delete projects. Unless you know only the signing key leaked: first
+   rotate the control bucket's writer keys (`/v1/buckets/{id}/keys`: a new
+   pair to the issuer's environment and to your `--s3-credentials` file,
+   the old pair revoked), then do the steps below, and in the same
+   redeploy rotate `STREAMS_ISSUER_SESSION_KEY` (every browser signs in
+   again) and `STREAMS_ISSUER_METRICS_TOKEN` (and the watch's copy).
+   Afterwards check the keys feed and the state for kids, credentials or
+   projects you did not make (`list`, `list --json`).
+1. Make the new key as above.
+2. `keys add --state S --public-key new.pub --retire-others`: one
+   generation with the new kid alone. Publish it. Within one revalidation
+   (5 s) the running issuer stops minting (503 `issuer_unavailable`,
+   `/healthz` 503 `key_not_in_state`), and once the cell holds the
+   generation (about 45 s) every outstanding token answers 401.
+3. Set `STREAMS_ISSUER_SIGNING_KEY` from the new key's file as in the
+   rotation's step 4 and redeploy the issuer; shred `new.pem`. SDK clients
+   refresh after the 401 and get tokens under the new key. The outage is
+   the longer of the propagation and the redeploy.
+
 ## Commands
 
 | Command | What it does |
