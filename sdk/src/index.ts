@@ -369,25 +369,26 @@ export class StreamsTransportError extends StreamsError {
 
 /**
  * A plain append (`append`, `appendBytes`, `appendMany`: no producer
- * identity) whose answer leaves its outcome unknown: a transport failure,
- * a 408, or a 5xx other than 503. The record may or may not have been
- * written; the SDK sent it once and does not replay it. `status` is the
- * HTTP status (0 for a transport failure); `cause` is the server's
- * answer as a `StreamsError`, or the value `fetch` threw. A retry the
- * server deduplicates needs a producer.
+ * identity) whose last attempt ended in an answer that leaves its outcome
+ * unknown: a transport failure, a 408, or a 5xx other than 503. The record
+ * may or may not have been written, and the SDK does not send it again.
+ * (An earlier attempt the SDK made was a refusal that writes nothing: a
+ * 401 before its token refresh, or a retryable 429 or 503.) `status` is the
+ * HTTP status (0 for a transport failure); `cause` is the server's answer
+ * as a `StreamsError`, or the value `fetch` threw. A retry the server
+ * deduplicates needs a producer.
  */
 export class AppendOutcomeUnknownError extends StreamsError {
   constructor(status: number, cause: unknown) {
     const answer = status === 0 || !(cause instanceof StreamsError)
-      ? "transport failure"
+      ? "a transport failure"
       : `HTTP ${status} ${cause.code}`;
     super(
       status,
       "outcome_unknown",
-      "the append was sent once and its outcome is unknown: the SDK cannot " +
-        `tell whether it was written (${answer}); it was not and will not be ` +
-        "replayed; retry only if a second copy is acceptable, or append " +
-        "through a producer",
+      `the append's last attempt ended in ${answer}, so the SDK cannot tell ` +
+        "whether it was written; it will not send it again; retry only if a " +
+        "second copy is acceptable, or append through a producer",
       false,
     );
     this.name = "AppendOutcomeUnknownError";

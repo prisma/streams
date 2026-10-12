@@ -37,12 +37,16 @@ async function rejection(call) {
   assert.fail("the request resolved");
 }
 
+const unknownMessage = what =>
+  `the append's last attempt ended in ${what}, so the SDK cannot tell whether it was written; ` +
+  "it will not send it again; retry only if a second copy is acceptable, or append through a producer";
+
 const unknownRows = [
   {
     label: "a transport failure",
     answer: thrown(new TypeError("fetch failed")),
     status: 0,
-    what: "transport failure",
+    what: "a transport failure",
   },
   {
     label: "a 408 append_failed",
@@ -88,9 +92,7 @@ for (const op of plainAppends) {
       assert.equal(error.status, row.status);
       assert.equal(error.code, "outcome_unknown");
       assert.equal(error.retryable, false);
-      assert.equal(error.message,
-        `the append was sent once and its outcome is unknown: the SDK cannot tell whether it was written (${row.what}); ` +
-        "it was not and will not be replayed; retry only if a second copy is acceptable, or append through a producer");
+      assert.equal(error.message, unknownMessage(row.what));
       if (row.cause) {
         assert.ok(error.cause instanceof StreamsError, "the cause is the server's answer");
         assert.equal(error.cause.status, row.status);
@@ -133,6 +135,21 @@ for (const op of plainAppends) {
 }
 
 // Pins: answers that prove nothing was written, or that S-1 leaves alone.
+
+test("append: a retryable 503 and then a transport failure are two requests and the unknown outcome of the last", async () => {
+  const failure = new TypeError("fetch failed");
+  const { s, calls } = stream([
+    answer(503, '{"error":{"code":"temporarily_unavailable","message":"retry shortly","retryable":true}}',
+      { ...JSON_HEADERS, "retry-after": "0" }),
+    thrown(failure),
+  ]);
+  const error = await rejection(s.append({ n: 1 }));
+  assert.equal(calls.length, 2, "the refusal was replayed; the transport failure was not");
+  assert.ok(error instanceof sdk.AppendOutcomeUnknownError);
+  assert.equal(error.status, 0);
+  assert.equal(error.cause, failure);
+  assert.equal(error.message, unknownMessage("a transport failure"));
+});
 
 for (const op of plainAppends) {
   test(`${op.name}: a retryable 503 temporarily_unavailable is replayed and the replay succeeds`, async () => {
