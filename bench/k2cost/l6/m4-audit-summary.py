@@ -75,15 +75,14 @@ def cells_between(d, a, b):
 
 
 def spill_at(d, t_ms):
-    """The l6_spill body of the last store scrape at or before t_ms."""
-    best = None
+    """The l6_spill body of the first store scrape at or after t_ms (an idle
+    phase follows each audit, so nothing reads between the two), or of the
+    run's end snapshot when no scrape follows."""
     for line in jl(f"{d}/scrape.jsonl"):
-        if line.get("src") != "store" or line.get("t", 0) > t_ms:
-            continue
-        best = line
-    if best is None:
-        return {}
-    return best.get("body", {}).get("l6_spill", {})
+        if line.get("src") == "store" and line.get("t", 0) >= t_ms:
+            return line.get("body", {}).get("l6_spill", {})
+    end = load(f"{d}/store-end.json")
+    return next(iter(end.get("servers", {}).values()), {}).get("store", {}).get("l6_spill", {})
 
 
 def shard_view(spill):
