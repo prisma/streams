@@ -10,7 +10,9 @@
 // exchanges and failures, and after the form the credential's own
 // exchanges), all before any secret work; the credential's form; the
 // body; the secret against
-// the stored hash (only a customer credential with a secret has one: an
+// the stored hash (a match under an older pepper is noted for the
+// re-hash sweep, rehash.ts; only a customer credential with a secret has
+// a hash: an
 // operator's or the canary's catalog-read credential answers as an
 // unknown id); the credential active, not omitted, not expired; its
 // project active and not suspended; the state copy fresh; the signing key
@@ -26,6 +28,7 @@ import { stateMismatch } from "./boot";
 import type { StateCache } from "./cache";
 import { type IssuerConfig, TOKEN_TTL_MIN_SECS } from "./config";
 import { clientIp, type RateLimits, TRUSTED_CLIENT_IP_HEADER } from "./limits";
+import type { Rehasher } from "./rehash";
 import { json, refuse } from "./respond";
 
 /// The presented credential: a cell-admin credential id (`strcred_` and
@@ -110,6 +113,7 @@ function projectInactive(state: CellState, cred: CredentialRecord): string | nul
 export interface ExchangeDeps {
   cache: StateCache;
   limits: RateLimits;
+  rehasher: Rehasher;
   now?: () => number;
   /// The edge's trusted client-IP header (K4); null until it is known.
   ipHeader?: string | null;
@@ -118,6 +122,7 @@ export interface ExchangeDeps {
 export class Exchange {
   private readonly cache: StateCache;
   private readonly limits: RateLimits;
+  private readonly rehasher: Rehasher;
   private readonly now: () => number;
   private readonly ipHeader: string | null;
 
@@ -127,6 +132,7 @@ export class Exchange {
   ) {
     this.cache = deps.cache;
     this.limits = deps.limits;
+    this.rehasher = deps.rehasher;
     this.now = deps.now ?? Date.now;
     this.ipHeader = deps.ipHeader === undefined ? TRUSTED_CLIENT_IP_HEADER : deps.ipHeader;
   }
@@ -164,6 +170,7 @@ export class Exchange {
     // The HMAC runs for an unknown id too: the answer's timing tells nothing.
     const pepper = verifySecret(this.cfg.peppers, cred, secret);
     if (pepper === null || cred === undefined) return this.failed(ip, "unknown credential or wrong secret");
+    this.rehasher.note(id, cred, pepper, secret);
     const nowSecs = Math.floor(this.now() / 1000);
     const notActive = inactive(cred, id, nowSecs);
     if (notActive !== null) return refuse(403, "credential_not_active", notActive);

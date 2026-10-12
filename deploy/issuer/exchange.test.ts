@@ -35,7 +35,7 @@ async function issuerFor(cell: IssuerCell, env: Env = cell.env) {
   const cfg = readConfig(env);
   const b = await boot(cfg);
   const cache = new StateCache(b.store, b, { now, log: () => {} });
-  return { cfg, cache, clock, issuer: new Issuer(cfg, { cache, now }) };
+  return { cfg, cache, clock, issuer: new Issuer(cfg, { store: b.store, cache, now }) };
 }
 
 function post(issuer: Issuer, auth?: string, body?: unknown, method = "POST"): Promise<Response> {

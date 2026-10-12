@@ -67,7 +67,7 @@ async function issuerFor(cell: IssuerCell, ipHeader?: string | null) {
   const cfg = readConfig(cell.env);
   const b = await boot(cfg);
   const cache = new StateCache(b.store, b, { now, log: () => {} });
-  return { clock, cache, issuer: new Issuer(cfg, { cache, now, ...(ipHeader !== undefined ? { ipHeader } : {}) }) };
+  return { clock, cache, issuer: new Issuer(cfg, { store: b.store, cache, now, ...(ipHeader !== undefined ? { ipHeader } : {}) }) };
 }
 
 const exchange = (issuer: Issuer, secret: string | undefined, headers: Record<string, string> = {}) =>
