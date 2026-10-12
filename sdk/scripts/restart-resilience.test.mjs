@@ -214,6 +214,9 @@ const replayed = [
     run: async f => (await f.stream.watch("w", [1])).wait({ cursor: "c0" }) },
 ];
 
+// A watch wait's URL carries a capability each attempt mints for itself.
+const withoutCap = url => { const u = new URL(url); u.searchParams.delete("cap"); return String(u); };
+
 for (const op of replayed) {
   test(`${op.name} replays a transport failure: the same request twice, then success`, async () => {
     const f = fixture({ match: op.match ?? route(op.method, op.path), answers: [thrown()] });
@@ -221,7 +224,7 @@ for (const op of replayed) {
     assert.equal(f.matched.length, 2);
     const [first, second] = f.matched;
     assert.equal(second.method, first.method);
-    assert.equal(second.url, first.url);
+    assert.equal(withoutCap(second.url), withoutCap(first.url));
     assert.equal(second.body, first.body);
     assert.deepEqual(delays, [1000]);
   });
@@ -372,6 +375,26 @@ test("watch.subscribe() reconnects past the request's budget at the same cursor"
   assert.ok(f.matched.every(c => new URL(c.url).searchParams.get("cap")?.startsWith("proj.")));
   assert.deepEqual(delays, [1000, 2000, 4000, 1000]);
   await iterator.return();
+});
+
+test("a watch wait's replay carries a capability minted for it, not one that expired while the dropped wait hung", async () => {
+  const real = Date.now;
+  let now = real();
+  Date.now = () => now;
+  try {
+    // The connection dies silently; fetch gives up on the headers 300 s later.
+    const f = fixture({ match: waits, answers: [() => { now += 300_000; throw new TypeError("headers timeout"); }] });
+    const watch = await f.stream.watch("w", [1]);
+    const { value } = await fastTimers(() => watch.wait({ cursor: "c0" }));
+    assert.equal(value.cursor, "c1");
+    assert.equal(f.matched.length, 2);
+    const expiry = call => Number(new URL(call.url).searchParams.get("cap").split(".")[1]);
+    const seconds = Math.floor(now / 1000);
+    assert.ok(expiry(f.matched[0]) < seconds, "the first wait's capability expired while it hung");
+    assert.equal(expiry(f.matched[1]), seconds + 240, "the replay's capability is minted at its own attempt");
+  } finally {
+    Date.now = real;
+  }
 });
 
 test("watch.subscribe() ends at a permanent refusal after one wait", async () => {

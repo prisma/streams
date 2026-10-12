@@ -719,7 +719,10 @@ async function reconnectAfter(backoffMs: number, signal?: AbortSignal): Promise<
   return Math.min(backoffMs * 2, 5000);
 }
 
-/** `replayTransport` is false where a replay could repeat an effect the
+/** `path` is a function where each attempt needs its own (a watch wait's
+ * capability, which expires).
+ *
+ * `replayTransport` is false where a replay could repeat an effect the
  * server does not deduplicate (plain appends, stream deletion), and where
  * the caller handles a transport failure itself (producer appends,
  * settlement, a subscription's reads).
@@ -731,7 +734,7 @@ async function reconnectAfter(backoffMs: number, signal?: AbortSignal): Promise<
 async function req(
   ctx: Ctx,
   method: string,
-  path: string,
+  path: string | (() => Promise<string>),
   headers: Record<string, string>,
   body?: BodyInit,
   signal?: AbortSignal,
@@ -747,11 +750,12 @@ async function req(
     signal?.throwIfAborted();
     rejectedGeneration = undefined;
     if (auth.header) h["authorization"] = auth.header;
+    const target = typeof path === "string" ? path : await path();
     // The signal reaches fetch itself, so an abort ends the in-flight
     // long poll instead of leaving it running until its timeout.
     let res: Response;
     try {
-      res = await ctx.fetch(`${ctx.base}${path}`, {
+      res = await ctx.fetch(`${ctx.base}${target}`, {
         method,
         headers: h,
         body,
@@ -2129,10 +2133,14 @@ export class Watch {
     timeoutMs?: number;
     signal?: AbortSignal;
   }): Promise<WatchEvent> {
+    // Each attempt mints its own capability: a replay after a parked wait
+    // the network dropped silently (fetch gives up on the headers minutes
+    // later) or a sleep would otherwise carry one that expired meanwhile,
+    // and the server refuses that 403 for good.
     const res = await req(
       this.ctx,
       "GET",
-      await this.path(options),
+      () => this.path(options),
       {},
       undefined,
       options?.signal,
