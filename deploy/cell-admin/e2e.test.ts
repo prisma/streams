@@ -192,6 +192,12 @@ maybe("the S3 store's preconditions hold on s3lite, and concurrent writers lose 
   expect(published?.version).toBe(4);
   expect((published?.bundle.policies.projects as { project_id: string }[]).map((p) => p.project_id))
     .toEqual(["proj_a", "proj_b", "proj_c", "sp_canary_cell_e2e"]);
-  expect(Object.keys((await store.load()).state.projects).sort())
+  const loaded = await store.load();
+  expect(Object.keys(loaded.state.projects).sort())
     .toEqual(["proj_a", "proj_b", "proj_c", "sp_canary_cell_e2e"]);
+  // The issuer's revalidation: s3lite answers the conditional read 304
+  // while the state is unchanged, and the new state once it changed.
+  expect(await store.loadChanged(loaded.etag)).toBeNull();
+  expect((await run("suspend", ...at, "--project", "proj_a")).code).toBe(0);
+  expect((await store.loadChanged(loaded.etag))?.state.projects.proj_a.status).toBe("suspended");
 }, 60_000);
