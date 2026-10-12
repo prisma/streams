@@ -241,7 +241,7 @@ pub(crate) fn parse_grants(json: &str) -> anyhow::Result<GrantSnapshot> {
         };
         anyhow::ensure!(
             credentials
-                .insert(Arc::from(g.credential_id.as_str()), cred)
+                .insert(cred.credential_id.clone(), cred)
                 .is_none(),
             "duplicate credential {:?}",
             g.credential_id
