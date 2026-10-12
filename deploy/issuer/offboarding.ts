@@ -26,8 +26,9 @@
 // bookkeeping is never published. Another writer may finish the same
 // project meanwhile (the owner's cell-admin, a second issuer during a
 // deploy): the omit's compare-and-swap re-checks the phase. One attempt
-// runs at a time, and none while the issuer cannot mint (its copy of the
-// state stale, or its key not the cell's): its tokens would be refused.
+// runs at a time, and none starts while the issuer cannot mint (its copy
+// of the state stale, or its key not the cell's; checked before each
+// attempt): its tokens would be refused.
 import { AdminError } from "../cell-admin/errors";
 import { drainProject, type Minter, omitDrained } from "../cell-admin/offboard";
 import type { CellState } from "../cell-admin/state";
@@ -95,12 +96,21 @@ export class Offboarding {
       signJwt(cfg.signingKey, customerClaims(state, credential, ttlSecs, "issuer-offboard", Math.floor(deps.now() / 1000)));
   }
 
-  /// Make one attempt at every project whose attempt is due, in turn;
-  /// nothing while the issuer cannot mint.
-  async runDue(): Promise<void> {
+  /// Whether the issuer can mint now: its copy fresh, its key the cell's.
+  private canMint(): boolean {
     const { cache } = this.deps;
-    if (!cache.fresh() || stateMismatch(this.cfg, cache.state) !== null) return;
-    for (const id of due(cache.state, this.deps.now())) await this.attempt(id);
+    return cache.fresh() && stateMismatch(this.cfg, cache.state) === null;
+  }
+
+  /// Make one attempt at every project whose attempt is due, in turn;
+  /// none while the issuer cannot mint, checked before each attempt: a
+  /// round of long drains can outlast the copy's freshness, or a key a
+  /// compromise drill retires meanwhile.
+  async runDue(): Promise<void> {
+    for (const id of due(this.deps.cache.state, this.deps.now())) {
+      if (!this.canMint()) return;
+      await this.attempt(id);
+    }
   }
 
   /// One attempt at `id`'s drain, from the state as the copy holds it.

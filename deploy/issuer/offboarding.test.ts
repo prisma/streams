@@ -2,10 +2,12 @@
 // §10), against the fake cell (deploy/cell-admin/fake-cell.ts). Run with
 // `bun test ./deploy/issuer`.
 import { afterEach, describe, expect, test } from "bun:test";
+import { generateKeyPairSync } from "node:crypto";
 import { FakeCell } from "../cell-admin/fake-cell";
 import { OPERATOR_SCOPES } from "../cell-admin/offboard";
 import { setProjectField } from "../cell-admin/rules";
-import { cleanup, denylistText, readBundle, readBundleText } from "../cell-admin/test-rig";
+import { cleanup, denylistText, fakeS3, readBundle, readBundleText } from "../cell-admin/test-rig";
+import { publicKeyRecord } from "../cell-admin/tokens";
 import { admin, cellState, customerSecret, envWith, issuerCell, managed, managementAudits } from "./rig";
 
 const fakes: FakeCell[] = [];
@@ -160,6 +162,38 @@ describe("the offboarding job", () => {
     expect(managementAudits(cell).filter((e) => e.action === "project.offboard")).toEqual([]);
   });
 
+  test("checks it can mint before each attempt, not once a round: a key retired during one attempt stops the next", async () => {
+    const { cell, fake, m, id } = await deleted();
+    // A second project being deleted, due in the same round after the first.
+    await customerSecret(cell, "sp_z");
+    await admin(cell, "offboard", "--project", "sp_z");
+    await m.cache.refresh();
+    fake.publish(readBundle(cell.state));
+    fake.streams.set("sp_z", new Set(["z1"]));
+    expect([id, "sp_z"].sort()).toEqual([id, "sp_z"]);
+    // During the first project's first walk the owner's compromise drill
+    // (keys add --retire-others) lands in the store: the issuer's key is
+    // no longer the cell's.
+    const { publicKey } = generateKeyPairSync("ed25519");
+    const next = publicKeyRecord(publicKey.export({ type: "spki", format: "pem" }).toString());
+    const [bucket, ...rest] = `${cell.state.slice("s3://".length)}/cell-state.json`.split("/");
+    fake.afterWalk = (walks) => {
+      if (walks !== 1) return;
+      const s = JSON.parse(fakeS3().text(bucket, rest.join("/"))!);
+      s.retired_kids.push(...s.keys.map((k: { kid: string }) => k.kid));
+      s.keys = [next];
+      s.feed_version += 1;
+      fakeS3().put(bucket, rest.join("/"), JSON.stringify(s));
+    };
+    await m.issuer.offboarding.runDue();
+    // The first attempt finished, and its commit brought the new keys in.
+    expect([cellState(cell).projects[id].phase, m.cache.state.keys.map((k) => k.kid)]).toEqual(["offboarded", [next.kid]]);
+    // The second made no request under the retired key, and no attempt.
+    expect(fake.tokens.filter((t) => t.project_id === "sp_z")).toEqual([]);
+    expect(cellState(cell).projects.sp_z).toMatchObject({ phase: "offboarding" });
+    expect(cellState(cell).projects.sp_z.offboard_attempts).toBeUndefined();
+  });
+
   test("fails a suspended project's attempts without asking the cell: its operator token would be refused", async () => {
     const { cell, fake, m, a, id } = await deleted();
     // Neither writer offboards a suspended project (the issuer's delete and
@@ -191,7 +225,8 @@ describe("the offboarding job", () => {
     fake.publish(readBundle(cell.state));
     const stop = m.issuer.offboarding.start(10);
     try {
-      for (let i = 0; i < 200 && cellState(cell).projects[id].phase !== "offboarded"; i++) {
+      // Up to 10 s of wall time: a loaded 4-vCPU CI runner is slow.
+      for (let i = 0; i < 1000 && cellState(cell).projects[id].phase !== "offboarded"; i++) {
         await new Promise((r) => setTimeout(r, 10));
       }
     } finally {
