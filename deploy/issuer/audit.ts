@@ -79,6 +79,16 @@ export interface AuditOptions {
 }
 
 export class Audit {
+  /// Exchanges by outcome since boot, for the metrics route.
+  readonly totals: Record<ExchangeOutcome, number> = {
+    issued: 0,
+    invalid_request: 0,
+    invalid_credential: 0,
+    credential_not_active: 0,
+    project_not_active: 0,
+    rate_limited: 0,
+    issuer_unavailable: 0,
+  };
   private readonly now: () => number;
   private readonly log: (line: string) => void;
   private minute: number;
@@ -109,6 +119,7 @@ export class Audit {
   /// state does not hold the id), with the jti of a minted token.
   exchange(outcome: ExchangeOutcome, credential: string, projectId?: string, jti?: string): void {
     this.tick();
+    this.totals[outcome] += 1;
     const m = entry<Counts>(this.minuteCounts, credential, projectId, () => ({ outcomes: {} }));
     m.outcomes[outcome] = (m.outcomes[outcome] ?? 0) + 1;
     const h = entry<HourCounts>(this.hourCounts, credential, projectId, () => ({ outcomes: {}, jtis: [], jtis_dropped: 0 }));

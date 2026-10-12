@@ -39,6 +39,9 @@ export class StateCache {
   /// The published bundle's feed_version as last seen; null before the
   /// first look.
   private published: number | null = null;
+  /// Since boot, for the metrics route.
+  revalidationFailures = 0;
+  republishes = 0;
 
   constructor(
     private readonly store: StateStore,
@@ -84,6 +87,7 @@ export class StateCache {
       }
       this.checkedAt = this.now();
     } catch (e) {
+      this.revalidationFailures += 1;
       this.log(`state revalidation failed (copy ${Math.round(this.ageMs() / 1000)} s old): ${(e as Error).message}`);
       return;
     }
@@ -103,6 +107,7 @@ export class StateCache {
     const outcome = await new BundlePublisher(this.store).publish(state);
     this.published = state.feed_version;
     if (outcome === "published") {
+      this.republishes += 1;
       this.log(
         `republished the bundle at feed_version ${state.feed_version} (it was at ${behind}): ` +
           "the state's writer had not published it",

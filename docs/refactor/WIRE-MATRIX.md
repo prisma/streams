@@ -292,3 +292,9 @@ Handler: `Exchange.handle` (`deploy/issuer/exchange.ts`).
 - **Success**: 200 `{"accessToken","tokenType":"Bearer","expiresIn","projectId","cellId","endpoint"}`; `expiresIn` = `exp` − now (the lifetime less the 60 s `iat` backdate); `endpoint` = `STREAMS_CELL_ORIGIN`; claims per `customer-token-claims.schema.json` (`sub` `cred:<credential id>`, `scope` the granted scopes asked for).
 - **Errors**: 401 `invalid_credential` (malformed header; unknown id, wrong secret, a secretless or non-customer credential) with `WWW-Authenticate: StreamsCredential realm="streams"`; 400 `invalid_request` (body; no granted scope asked for); 403 `credential_not_active` / `project_not_active`; 429 `rate_limited` with `Retry-After` (whole seconds, at least 1); 503 `issuer_unavailable` with `Retry-After: 5`.
 - **Writes**: none (the in-memory copy of the cell's state).
+
+### 5.2 `GET /healthz` — whether the issuer can mint
+Handler: `Ops.health` (`deploy/issuer/ops.ts`); unauthenticated; edge change #NEW-issuer-2. 200 `{"status":"ok"}`; 503 `{"status":"unavailable","reason":"state_stale"|"key_not_in_state"}` exactly when the exchange answers 503 `issuer_unavailable`. Another method: 405 with `Allow: GET`.
+
+### 5.3 `GET /v1/admin/metrics` — the issuer's counters
+Handler: `Ops.metrics` (`deploy/issuer/ops.ts`); `Authorization: Bearer <STREAMS_ISSUER_METRICS_TOKEN>`, else 401 `unauthorized` with `WWW-Authenticate: Bearer realm="streams-issuer"`. 200 flat JSON: `cell_id`, `kid`, `uptime_secs`, `healthy`, `cache_age_secs`, `cache_fresh`, `state_feed_version`, `published_feed_version`, `gate_open`, `gate_n_max`, `exchanges` (by outcome), `rate_limit_refusals` (by bucket), `revalidation_failures`, `republishes`, `rehash_pending`, `live_credentials_by_pepper`. Another method: 405 with `Allow: GET`.

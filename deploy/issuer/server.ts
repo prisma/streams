@@ -3,12 +3,15 @@
 // asked with another method 405.
 //
 //   POST /v1/token/streams   the exchange (exchange.ts)
+//   GET  /healthz            whether it can mint (ops.ts)
+//   GET  /v1/admin/metrics   its counters, behind the metrics bearer (ops.ts)
 import type { StateStore } from "../cell-admin/store";
 import { Audit } from "./audit";
 import type { StateCache } from "./cache";
 import type { IssuerConfig } from "./config";
 import { Exchange } from "./exchange";
 import { RateLimits } from "./limits";
+import { Ops } from "./ops";
 import { Rehasher } from "./rehash";
 import { refuse } from "./respond";
 
@@ -26,20 +29,31 @@ export class Issuer {
   readonly audit: Audit;
   readonly rehasher: Rehasher;
   private readonly exchange: Exchange;
+  private readonly ops: Ops;
 
   constructor(cfg: IssuerConfig, deps: IssuerDeps) {
-    this.limits = new RateLimits(deps.now);
-    this.audit = new Audit(deps.store, cfg.cellId, { now: deps.now, log: deps.log });
+    const now = deps.now ?? Date.now;
+    this.limits = new RateLimits(now);
+    this.audit = new Audit(deps.store, cfg.cellId, { now, log: deps.log });
     this.rehasher = new Rehasher(deps.store, deps.cache, cfg.peppers, this.audit, deps.log);
-    this.exchange = new Exchange(cfg, { ...deps, limits: this.limits, rehasher: this.rehasher, audit: this.audit });
+    const shared = { cache: deps.cache, limits: this.limits, audit: this.audit, rehasher: this.rehasher, now };
+    this.exchange = new Exchange(cfg, { ...shared, ...(deps.ipHeader !== undefined ? { ipHeader: deps.ipHeader } : {}) });
+    this.ops = new Ops(cfg, shared);
   }
 
   async fetch(req: Request): Promise<Response> {
     const { pathname } = new URL(req.url);
-    if (pathname === "/v1/token/streams") {
-      if (req.method !== "POST") return refuse(405, "method_not_allowed", "POST only", { allow: "POST" });
-      return this.exchange.handle(req);
+    const only = (method: string) =>
+      req.method === method ? null : refuse(405, "method_not_allowed", `${method} only`, { allow: method });
+    switch (pathname) {
+      case "/v1/token/streams":
+        return only("POST") ?? this.exchange.handle(req);
+      case "/healthz":
+        return only("GET") ?? this.ops.health();
+      case "/v1/admin/metrics":
+        return only("GET") ?? this.ops.metrics(req);
+      default:
+        return refuse(404, "not_found", `no route ${pathname}`);
     }
-    return refuse(404, "not_found", `no route ${pathname}`);
   }
 }
