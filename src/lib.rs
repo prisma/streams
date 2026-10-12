@@ -11,6 +11,7 @@
 //! The facade is the whole supported surface:
 //!
 //! ```text
+//! let thp = disable_transparent_huge_pages();        // first: no huge pages
 //! let cli = CliArgs::parse();                        // clap
 //! let parsed = ServerConfig::load(cli, &ProcessEnvironment);
 //! let config = parsed.validate()?;                   // ValidatedServerConfig
@@ -72,10 +73,11 @@ mod touch;
 mod touch_keys;
 mod usage;
 
-/// The deliberate library facade: the CLI surface, the environment
-/// source, the owned configuration graph (parsed and validated as two
-/// distinct types), and the one runtime entry point. Nothing else is
-/// public API.
+/// The deliberate library facade: the process's huge-page posture, the
+/// CLI surface, the environment source, the owned configuration graph
+/// (parsed and validated as two distinct types), and the one runtime entry
+/// point. Nothing else is public API.
+pub use bootstrap::{ThpPosture, disable_transparent_huge_pages};
 pub use config::validation::{ConfigError, ValidatedServerConfig};
 pub use config::{CliArgs, Environment, ProcessEnvironment, ServerConfig};
 

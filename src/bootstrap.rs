@@ -3,8 +3,11 @@
 //! owned [`crate::config::ServerConfig`]). The binary calls exactly one
 //! entry point: [`run`].
 
+mod allocator;
 mod rss;
 mod s3_store;
+
+pub use allocator::{ThpPosture, disable_transparent_huge_pages};
 
 use std::sync::Arc;
 use std::time::Duration;

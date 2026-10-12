@@ -24,6 +24,7 @@
     "billing_telemetry_loop": 2,
     "billing_walk": 15,
     "bootstrap": 79,
+    "bootstrap_allocator": 3,
     "bootstrap_rss": 16,
     "bootstrap_s3_store": 21,
     "bootstrap_service_runtime": 2,

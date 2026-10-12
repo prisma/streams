@@ -10,12 +10,15 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> anyhow::Result<()> {
+    // First, before the allocator maps the arenas the service runs on.
+    let thp = streams_slate::disable_transparent_huge_pages();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "info,slatedb=warn".into()),
         )
         .init();
+    tracing::info!(?thp, "transparent huge pages for this process");
 
     // WP-01 PR 3.1: the process environment is parsed ONCE, here at the
     // composition root, into an owned ServerConfig. Nothing reads the
