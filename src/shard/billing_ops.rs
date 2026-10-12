@@ -292,6 +292,8 @@ impl Drop for BillingReply {
     fn drop(&mut self) {
         if let Some(resp) = self.resp.take() {
             BILLING_OPS_REFUSED.fetch_add(1, Ordering::Relaxed);
+            #[cfg(test)]
+            super::test_support::count_billing_op_refused(self.hash);
             let waiting = resp.send(Err(AppendErr::Moved)).is_ok();
             tracing::warn!(
                 segment = %crate::crypto::hex(&self.hash[..4]),

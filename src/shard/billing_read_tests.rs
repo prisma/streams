@@ -690,7 +690,12 @@ async fn a_close_of_a_segment_without_a_billing_row_writes_nothing() {
 /// answered. One that a retiring committer drops unapplied answers its
 /// submitter a retryable refusal, is counted once and leaves the row as it
 /// was (`refused_once`); one the committer applies answers Ok once its group
-/// is durable, which the row then shows, and counts nothing.
+/// is durable, which the row then shows, and counts nothing. The counts are
+/// read for `SEGMENT`, which only this test refuses on
+/// (`test_support::billing_ops_refused_on`): the process counter
+/// `BILLING_OPS_REFUSED` also takes every concurrent test's dropped op (the
+/// walk's and the debt pass's refusal DSTs drop one each), so a drop is
+/// checked only to move it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_billing_op_is_refused_once_when_a_retiring_committer_drops_it_and_answered_once_applied()
 {
@@ -698,7 +703,7 @@ async fn a_billing_op_is_refused_once_when_a_retiring_committer_drops_it_and_ans
         refused_once(retained).await;
     }
     let rig = CloseRig::start("billing-op-applied", Some(&open_row())).await;
-    let refused = billing_ops::BILLING_OPS_REFUSED.load(Ordering::SeqCst);
+    let refused = test_support::billing_ops_refused_on(&SEGMENT);
     rig.engine
         .submit_billing_close(SEGMENT, CLOSED)
         .await
@@ -723,7 +728,7 @@ async fn a_billing_op_is_refused_once_when_a_retiring_committer_drops_it_and_ans
         "Ok follows the flag's durable group"
     );
     assert_eq!(
-        billing_ops::BILLING_OPS_REFUSED.load(Ordering::SeqCst),
+        test_support::billing_ops_refused_on(&SEGMENT),
         refused,
         "an applied op is not refused"
     );
@@ -749,12 +754,15 @@ async fn refused_once(retained: bool) {
     };
     let retired = async {
         rig.queued(1).await;
-        let refused = billing_ops::BILLING_OPS_REFUSED.load(Ordering::SeqCst);
+        let refused = (
+            test_support::billing_ops_refused_on(&SEGMENT),
+            billing_ops::BILLING_OPS_REFUSED.load(Ordering::SeqCst),
+        );
         rig.engine.begin_close();
         drop(parked);
         refused
     };
-    let (answer, refused) = tokio::time::timeout(
+    let (answer, (on_segment, in_process)) = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         futures_util::future::join(submitted, retired),
     )
@@ -765,9 +773,13 @@ async fn refused_once(retained: bool) {
         "the committer answered a billing op it dropped (retained: {retained}): {answer:?}"
     );
     assert_eq!(
-        billing_ops::BILLING_OPS_REFUSED.load(Ordering::SeqCst) - refused,
+        test_support::billing_ops_refused_on(&SEGMENT) - on_segment,
         1,
         "the drop is counted once (retained: {retained})"
+    );
+    assert!(
+        billing_ops::BILLING_OPS_REFUSED.load(Ordering::SeqCst) > in_process,
+        "the process counter counts the drop (retained: {retained})"
     );
     assert_eq!(
         rig.durable().await,

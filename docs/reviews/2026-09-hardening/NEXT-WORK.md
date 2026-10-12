@@ -231,11 +231,11 @@ alongside and finish before admission opens.
    edge. Who: the owner approves and accepts (field runs and memory,
    performance and deployment acceptance are his holds); engineering runs
    them.
-10. **The release candidate** (the lead's call on question 7). Fix the
-    flaky `billing_read_tests` first (it reads the process-global
-    `BILLING_OPS_REFUSED` counter and fails about 1 run in 4 beside other
-    billing tests, and one flake at the RC SHA forces a new one; under half
-    a day); bump the versions (`Cargo.toml` and `sdk/package.json` still
+10. **The release candidate** (the lead's call on question 7). The flaky
+    `billing_read_tests` is fixed: it read the process-global
+    `BILLING_OPS_REFUSED` counter, which the walk's and the debt pass's
+    refusal DSTs also bump (4 of 70 parallel runs failed), and now reads
+    the refusals on its own segment (0 of 100). Bump the versions (`Cargo.toml` and `sdk/package.json` still
     say 0.2.0-rc.4); re-record the formal receipts once after the last
     receipt-input commit; tag; build x86_64-musl; run
     `scripts/release-gate.sh` on an idle host and the provider-contract

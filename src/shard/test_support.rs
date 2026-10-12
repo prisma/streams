@@ -1,4 +1,5 @@
-//! Test-only codec and fault-injection helpers for the shard engine.
+//! Test-only codec, fault-injection and counting helpers for the shard
+//! engine.
 #![cfg(test)]
 use super::*;
 
@@ -43,4 +44,33 @@ pub(crate) fn inject_dirty_scan_faults(prefix: &str, n: u32) {
         .lock()
         .unwrap()
         .insert(prefix.to_string(), n);
+}
+
+/// Test-only: the billing ops each segment's replies refused unapplied
+/// (`BillingReply`'s drop), the same count `BILLING_OPS_REFUSED` keeps for
+/// the whole process, where every concurrent test whose retiring engine
+/// drops a billing op adds to it. Keyed by segment, so a test that owns its
+/// segment reads an exact count no concurrent test can change.
+fn billing_ops_refused() -> &'static Mutex<HashMap<[u8; 16], u64>> {
+    static M: std::sync::OnceLock<Mutex<HashMap<[u8; 16], u64>>> = std::sync::OnceLock::new();
+    M.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// One billing op on `segment` refused unapplied.
+pub(super) fn count_billing_op_refused(segment: [u8; 16]) {
+    *billing_ops_refused()
+        .lock()
+        .unwrap()
+        .entry(segment)
+        .or_default() += 1;
+}
+
+/// The billing ops on `segment` refused unapplied so far.
+pub(super) fn billing_ops_refused_on(segment: &[u8; 16]) -> u64 {
+    billing_ops_refused()
+        .lock()
+        .unwrap()
+        .get(segment)
+        .copied()
+        .unwrap_or_default()
 }
