@@ -2687,13 +2687,28 @@ pub(crate) fn render_product_read_failure(
             true,
             None,
         ),
-        E::Storage(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            "read failed",
+        // L6 spike M4: a 404 for a sealed chunk whose index row is live is
+        // retryable (DESIGN §3.2 item 6).
+        E::Storage(message) if crate::shard::spill::read::is_retryable(&message) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "temporarily_unavailable",
+            "read service unavailable; retry",
             true,
             None,
         ),
+        E::Storage(message) => {
+            // L6 spike M4: the cause, which the product surface hides.
+            tracing::warn!("product read failed: {message}");
+            #[cfg(test)]
+            eprintln!("L6 product read failed: {message}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "read failed",
+                true,
+                None,
+            )
+        }
     };
     let mut response = perr(status, code, message, None, retry);
     if let Some(owner) = owner

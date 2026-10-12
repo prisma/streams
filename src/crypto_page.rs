@@ -45,6 +45,7 @@ mod open;
 mod seal;
 
 pub(crate) use header::CheckedPage;
+pub(crate) use header::page_extent;
 pub(crate) use open::{OpenedPage, PageDecoder};
 
 /// Version byte of a page whose body is stored raw.

@@ -615,18 +615,31 @@ async fn a_fork_reads_its_parent_history_up_to_a_boundary_inside_a_page() {
     wait_all_absorbed(&engine, &[hash]).await;
     // The one request is one history page holding records 0 to 9.
     let handle = engine.stream_handle(hash).await.unwrap();
-    let route = crate::crypto::RouteHash(handle.state.lock().unwrap().durable.route);
-    let (inc, part) = (
-        crate::crypto::SegmentHash(hash),
-        engine.history_partition().await.unwrap(),
-    );
-    let stored = part
-        .get(crate::crypto_page::history_page_key(route, inc, 9))
-        .await
-        .unwrap()
-        .expect("the request's page in history");
-    let page = crate::crypto_page::CheckedPage::admit(stored, 9).unwrap();
-    assert_eq!((page.first(), page.count()), (0, 10));
+    if engine.l6_spill {
+        // L6 spike M4: on the spill arm the page is in a sealed chunk,
+        // whose index row (keyed by its last offset) holds exactly it.
+        let row = engine
+            .db
+            .get(crate::spill::index::index_key(&hash, 9))
+            .await
+            .unwrap()
+            .expect("the request's page in a sealed chunk");
+        let row = crate::spill::index::IndexRow::decode(&row).unwrap();
+        assert_eq!((row.first, row.last, row.page_count), (0, 9, 1));
+    } else {
+        let route = crate::crypto::RouteHash(handle.state.lock().unwrap().durable.route);
+        let (inc, part) = (
+            crate::crypto::SegmentHash(hash),
+            engine.history_partition().await.unwrap(),
+        );
+        let stored = part
+            .get(crate::crypto_page::history_page_key(route, inc, 9))
+            .await
+            .unwrap()
+            .expect("the request's page in history");
+        let page = crate::crypto_page::CheckedPage::admit(stored, 9).unwrap();
+        assert_eq!((page.first(), page.count()), (0, 10));
+    }
     let fork = [
         ("content-type", "application/json"),
         ("stream-forked-from", "pgparent"),

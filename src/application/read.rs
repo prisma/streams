@@ -257,6 +257,7 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
         .await?;
         if let Some((raced, raced_v2)) = raced_boundary {
             if raced > boundary {
+                engine.spill_note_race_adoption();
                 // Adopt the stored LAYOUT FLAG with the stored boundary:
                 // in the first absorption's flush-to-dispatch window the
                 // in-memory snapshot still says v1 while the row that
@@ -728,6 +729,10 @@ async fn decode_history_range(
     // Keyed ranges resolve their postings runs through the
     // plan.engine's decoded slice cache (spec §7).
     let upto = range.upto.min(range.from.saturating_add(SCAN_WINDOW));
+    // L6 spike M4: on the spill arm the range is in segment objects.
+    if plan.engine.l6_spill {
+        return decode_spilled_range(plan, &range, upto, subkeys, out, budget).await;
+    }
     let part = plan
         .engine
         .history_partition()
@@ -773,6 +778,48 @@ async fn decode_history_range(
     }
 
     Ok(decoded_all && completed && upto == range.upto)
+}
+
+/// L6 spike M4: `decode_history_range` on the spill arm. An unkeyed range
+/// is read from the stream's sealed chunks at the plan's visibility
+/// (`spill::read_range`), and so is a default-lane one (`Some("")`: the
+/// product surface reads every unkeyed stream with it), filtered from the
+/// pages' clear headers as the tail scan filters. A keyed one (a routing
+/// key) fails loudly and is counted: keyed reads of sealed data are out of
+/// the spike's scope, and a run that hits one is void.
+async fn decode_spilled_range(
+    plan: &ReadPlan<'_>,
+    range: &HistoryRange,
+    upto: u64,
+    subkeys: &mut ReadKeys<'_>,
+    out: &mut ReadPage,
+    budget: &mut PageBudget,
+) -> Result<bool, String> {
+    match plan.selector {
+        Some(rk) if !rk.is_empty() => return Err(crate::spill::keyed_unsupported(plan.engine)),
+        Some(_) => crate::spill::note_lane_read(plan.engine),
+        None => {}
+    }
+    let read = crate::spill::read_range(
+        plan.engine,
+        range.identity,
+        range.from,
+        upto,
+        plan.visibility,
+        budget.remaining().min(MAX_SCAN_BATCH_BYTES),
+        plan.selector,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let decoded_all = decode_frames_into(&read.frames, subkeys, out, budget)?;
+    if decoded_all
+        && let Some(sl) = read
+            .last
+            .or_else(|| read.completed.then(|| upto.saturating_sub(1)))
+    {
+        out.last = Some(out.last.map_or(sl, |o| o.max(sl)));
+    }
+    Ok(decoded_all && read.completed && upto == range.upto)
 }
 
 /// A tail page is accepted only after ruling out a concurrent trim it saw.

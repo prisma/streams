@@ -52,6 +52,13 @@ pub(crate) fn read_failure_response(error: ReadFailure) -> Response {
             "deliver_unsupported_fork",
             "deliver=applied is not supported on forked streams",
         ),
+        // L6 spike M4: a 404 for a sealed chunk whose index row is live is
+        // retryable (DESIGN §3.2 item 6).
+        E::Storage(message) if crate::shard::spill::read::is_retryable(&message) => err_resp(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "temporarily_unavailable",
+            &message,
+        ),
         E::Storage(message) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &message),
         E::Remote(error) => err_resp(
             StatusCode::SERVICE_UNAVAILABLE,

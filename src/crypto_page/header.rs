@@ -110,6 +110,43 @@ fn parse(raw: &[u8]) -> Result<ClearPage<'_>, PageCorruption> {
     })
 }
 
+/// L6 spike M4: the stored length and the last offset of the page that
+/// starts `raw`, which may run on into the pages after it (a segment chunk's
+/// pages read from a byte anchor, without the chunk's directory). Only the
+/// clear header is walked here; the caller admits `raw[..len]` under the
+/// returned last offset (`CheckedPage::admit`), which checks it whole, and
+/// decryption authenticates every header field.
+pub(crate) fn page_extent(raw: &[u8]) -> Result<(usize, u64), PageCorruption> {
+    let mut input = raw;
+    let [ver] = field::<1>(&mut input)?;
+    if !matches!(ver, PAGE_VER | PAGE_VER_Z) {
+        return Err(PageCorruption::Version);
+    }
+    let first = u64::from_be_bytes(field(&mut input)?);
+    let count = get_varint(&mut input)
+        .and_then(|count| usize::try_from(count).ok())
+        .filter(|count| (1..=PAGE_MAX_RECORDS).contains(count))
+        .ok_or(PageCorruption::Count)?;
+    let _ts_ms = field::<8>(&mut input)?;
+    let _key_version = field::<4>(&mut input)?;
+    let rk_len = u16::from_be_bytes(field(&mut input)?);
+    let (_, rest) = input
+        .split_at_checked(usize::from(rk_len))
+        .ok_or(PageCorruption::Truncated)?;
+    input = rest;
+    let _nonce = field::<NONCE_LEN>(&mut input)?;
+    let ct_len = usize::try_from(u32::from_be_bytes(field(&mut input)?))
+        .map_err(|_| PageCorruption::Truncated)?;
+    let len = raw
+        .len()
+        .checked_sub(input.len())
+        .and_then(|head| head.checked_add(ct_len))
+        .filter(|len| *len <= raw.len())
+        .ok_or(PageCorruption::Truncated)?;
+    let last = last_offset(first, count).ok_or(PageCorruption::OffsetOverflow)?;
+    Ok((len, last))
+}
+
 /// The last offset a row key names under `prefix`, the canonical page-key
 /// prefix of the selected segment: its namespace and its keyspace's page tag
 /// (`'p'` in the shard log, `'g'` in history). The key must be exactly that

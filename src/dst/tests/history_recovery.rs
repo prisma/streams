@@ -641,11 +641,26 @@ async fn sparse_records_rediscovered_after_restart_are_absorbed() {
     );
     // And the durable tail must agree it fully absorbed (the v2 gather
     // lane is keyless, so the empty KeyCache above is no obstacle).
+    // L6 spike M4: the dirty scan reads the mark at the DB's default
+    // visibility, while the handle's durable fields move at durable
+    // dispatch, after the WAL flush; on the spill arm the seal's advance is
+    // applied before its forced WAL flush (step 7a), which widens that
+    // window. So the durable tail is awaited (2 s), not sampled once; the
+    // base arm's check is the same with a wait that is never needed.
     let h = engine_b.stream_handle(hash).await.expect("handle");
-    {
-        let st = h.state.lock().unwrap();
-        assert!(st.durable.absorbed > 0 && st.durable.absorbed == st.durable.next);
+    let mut caught_up = false;
+    for _ in 0..100 {
+        let (absorbed, next) = {
+            let st = h.state.lock().unwrap();
+            (st.durable.absorbed, st.durable.next)
+        };
+        if absorbed > 0 && absorbed == next {
+            caught_up = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
+    assert!(caught_up, "the durable tail never agreed the record absorbed");
     engine_b.begin_close();
 }
 

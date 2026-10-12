@@ -121,6 +121,12 @@ pub(crate) struct SpillStats {
     /// L0 bytes SlateDB reported (`l0_flush_bytes`) around the seals' flushes.
     pub(crate) spill_l0_bytes: AtomicU64,
     pub(crate) chunk_sizes: Histogram<4>,
+    /// M4: DST fixtures that put an absorber's cadence on this sealer.
+    pub(crate) absorber_cadences: AtomicU64,
+    /// M4: failed attempts of the sealer's startup dirty-index seed.
+    pub(crate) seed_failures: AtomicU64,
+    /// M4: the read path's counters.
+    pub(crate) reads: ReadStats,
     pub(crate) seal_ms: Histogram<8>,
     pub(crate) put_ms: Histogram<8>,
     pub(crate) commit_ms: Histogram<8>,
@@ -221,9 +227,91 @@ impl SpillStats {
             "put_ms": self.put_ms.json(&MS_BOUNDS, "ms"),
             "commit_ms": self.commit_ms.json(&MS_BOUNDS, "ms"),
             "flush_ms": self.flush_ms.json(&MS_BOUNDS, "ms"),
+            "absorber_cadences": g(&self.absorber_cadences),
+            "seed_failures": g(&self.seed_failures),
+            "reads": self.reads.json(),
         })
     }
 }
+
+/// L6 spike M4: what `spill::read_range` did on one shard DB.
+#[derive(Default)]
+pub(crate) struct ReadStats {
+    /// Calls (unkeyed history ranges below the absorbed boundary).
+    pub(crate) calls: AtomicU64,
+    /// Calls that served their whole window.
+    pub(crate) completed: AtomicU64,
+    /// Index rows read, and the chunks a read planned from them.
+    pub(crate) rows: AtomicU64,
+    /// Ranged GETs issued (retries included), and their body bytes.
+    pub(crate) gets: AtomicU64,
+    pub(crate) get_bytes: AtomicU64,
+    /// GETs of a whole chunk (CRC verified) and of part of one (from or to
+    /// a byte anchor; each page admitted and later authenticated).
+    pub(crate) whole_chunks: AtomicU64,
+    pub(crate) partial_chunks: AtomicU64,
+    /// Pages admitted, and the page bytes served after clipping.
+    pub(crate) pages: AtomicU64,
+    /// Calls that stopped at their byte budget.
+    pub(crate) budget_partials: AtomicU64,
+    /// Calls that found no index row for an offset below the boundary they
+    /// were given: an honest partial (DESIGN §3.2 item 6).
+    pub(crate) missing_row_partials: AtomicU64,
+    /// GETs answered 404 while their index row was live: a retryable error.
+    pub(crate) not_found_retryable: AtomicU64,
+    /// Transient GET errors retried (at most 3 attempts per GET).
+    pub(crate) get_retries: AtomicU64,
+    /// GETs that still failed after their retries.
+    pub(crate) get_errors: AtomicU64,
+    /// The most GETs one read had in flight at once (cap 8).
+    pub(crate) in_flight_max: AtomicU64,
+    /// Keyed history reads refused (unsupported in the spike; a run that
+    /// counts one is void).
+    pub(crate) keyed_unsupported: AtomicU64,
+    /// Default-lane reads (`Some("")`, every product-surface read of an
+    /// unkeyed stream), and the pages of other lanes they skipped.
+    pub(crate) lane_reads: AtomicU64,
+    pub(crate) lane_skipped_pages: AtomicU64,
+    /// Merged reads whose tail scan met a hole a newer boundary explained
+    /// (`absorption_race` adopted it and the read re-served the gap from the
+    /// sealed range): readers that raced a seal's advance and trims.
+    pub(crate) race_adoptions: AtomicU64,
+    pub(crate) read_ms: Histogram<8>,
+}
+
+impl ReadStats {
+    pub(crate) fn read_ms(&self, ms: u64) {
+        self.read_ms.record(&MS_BOUNDS, ms);
+    }
+
+    pub(crate) fn json(&self) -> serde_json::Value {
+        let g = SpillStats::get;
+        serde_json::json!({
+            "calls": g(&self.calls),
+            "completed": g(&self.completed),
+            "rows": g(&self.rows),
+            "gets": g(&self.gets),
+            "get_bytes": g(&self.get_bytes),
+            "whole_chunks": g(&self.whole_chunks),
+            "partial_chunks": g(&self.partial_chunks),
+            "pages": g(&self.pages),
+            "budget_partials": g(&self.budget_partials),
+            "missing_row_partials": g(&self.missing_row_partials),
+            "not_found_retryable": g(&self.not_found_retryable),
+            "get_retries": g(&self.get_retries),
+            "get_errors": g(&self.get_errors),
+            "in_flight_max": g(&self.in_flight_max),
+            "keyed_unsupported": g(&self.keyed_unsupported),
+            "lane_reads": g(&self.lane_reads),
+            "lane_skipped_pages": g(&self.lane_skipped_pages),
+            "race_adoptions": g(&self.race_adoptions),
+            "read_ms": self.read_ms.json(&MS_BOUNDS, "ms"),
+        })
+    }
+}
+
+/// L6 spike M4: keyed history reads refused in this process (all shards).
+pub(crate) static KEYED_UNSUPPORTED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 fn registry() -> &'static Mutex<BTreeMap<String, Arc<SpillStats>>> {
     // mt-lint: allow(name-keyed-map): keyed by shard DB path (L6 spike
@@ -250,5 +338,8 @@ pub(crate) fn snapshot_json() -> serde_json::Value {
     let reg = registry().lock().unwrap();
     let shards: serde_json::Map<String, serde_json::Value> =
         reg.iter().map(|(p, s)| (p.clone(), s.json())).collect();
-    serde_json::json!({ "shards": shards })
+    serde_json::json!({
+        "shards": shards,
+        "keyed_history_reads_unsupported": KEYED_UNSUPPORTED_TOTAL.load(Ordering::Relaxed),
+    })
 }

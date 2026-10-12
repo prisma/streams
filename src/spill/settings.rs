@@ -48,6 +48,11 @@ pub(crate) struct SpillSettings {
     /// Whether the engine's spill task seals and flushes by itself. Tests
     /// that drive `spill_once` directly turn it off.
     pub(crate) auto: bool,
+    /// A failed seal blocks new seals this long, doubling per failure up to
+    /// `backoff_max` (0.5 s to 16 s; a DST fixture's cadence uses its tick
+    /// to 1 s).
+    pub(crate) backoff_min: Duration,
+    pub(crate) backoff_max: Duration,
 }
 
 impl Default for SpillSettings {
@@ -84,6 +89,8 @@ fn from_env() -> &'static SpillSettings {
             max_streams_per_group: usize::try_from(num("L6_SPILL_MAX_STREAMS", 1024))
                 .unwrap_or(1024),
             auto: true,
+            backoff_min: Duration::from_millis(500),
+            backoff_max: Duration::from_secs(16),
         }
     })
 }

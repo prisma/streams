@@ -763,6 +763,12 @@ impl Absorber {
         cfg: AbsorberConfig,
         rx: mpsc::Receiver<AbsorbSignal>,
     ) {
+        // L6 spike M4: a spill-arm engine gets the sealer at this cadence
+        // (fixtures; production's opener starts no absorber on that arm).
+        if shard.spill_adopt_absorber_cadence(cfg.threshold_bytes, cfg.threshold_age, cfg.tick) {
+            drop(rx);
+            return;
+        }
         let absorber = Self::new(shard.clone(), cfg);
         shard.spawn_required("absorber", absorber.run(rx));
     }

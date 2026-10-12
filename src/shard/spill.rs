@@ -48,6 +48,9 @@ use crate::spill::object::{self, ChunkInput, ObjectError, ObjectId};
 use crate::spill::settings::{Deadline, SpillSettings, Trigger, TriggerMode};
 use crate::spill::stats::SpillStats;
 
+pub(crate) mod read;
+#[cfg(test)]
+mod read_tests;
 #[cfg(test)]
 mod tests;
 
@@ -146,6 +149,9 @@ struct Baseline {
 /// The sealer's state on one engine (spill arm).
 pub(crate) struct SpillState {
     pub(crate) settings: SpillSettings,
+    /// M4: the triggers a DST fixture's absorber cadence put in place of
+    /// `settings` (`ShardEngine::spill_adopt_absorber_cadence`).
+    cadence: Mutex<Option<SpillSettings>>,
     serial: tokio::sync::Mutex<()>,
     /// Forced memtable flushes run one at a time, so each one's delta of
     /// `immutable_memtable_flushes` is its own (review A1).
@@ -174,12 +180,23 @@ pub(crate) struct SpillState {
     pub(crate) fail_puts: AtomicBool,
     #[cfg(test)]
     pub(crate) put_delay: Mutex<Duration>,
+    /// Tests (M4): scan index rows at this level whatever the read's
+    /// visibility (the negative control reads at Remote).
+    #[cfg(test)]
+    pub(crate) index_durability_override: Mutex<Option<slatedb::config::DurabilityLevel>>,
+    /// Tests (M4): park every sealed-range GET until released.
+    #[cfg(test)]
+    pub(crate) get_hold: Mutex<Option<Arc<read::GetHold>>>,
+    /// Tests (M4): park a seal after its PUT, before its commit (step 5).
+    #[cfg(test)]
+    pub(crate) before_commit: Mutex<Option<Arc<read::GetHold>>>,
 }
 
 impl SpillState {
     pub(crate) fn new(settings: SpillSettings, db_path: &str) -> Arc<Self> {
         Arc::new(Self {
             settings,
+            cadence: Mutex::new(None),
             serial: tokio::sync::Mutex::new(()),
             flush_lock: tokio::sync::Mutex::new(()),
             running: AtomicBool::new(false),
@@ -206,7 +223,19 @@ impl SpillState {
             fail_puts: AtomicBool::new(false),
             #[cfg(test)]
             put_delay: Mutex::new(Duration::ZERO),
+            #[cfg(test)]
+            index_durability_override: Mutex::new(None),
+            #[cfg(test)]
+            get_hold: Mutex::new(None),
+            #[cfg(test)]
+            before_commit: Mutex::new(None),
         })
+    }
+
+    /// The triggers in force: a fixture's absorber cadence, or `settings`.
+    #[expect(clippy::unwrap_used, reason = "L6 spike: throwaway sealer")]
+    pub(crate) fn current(&self) -> SpillSettings {
+        self.cadence.lock().unwrap().unwrap_or(self.settings)
     }
 
     fn counter(&self, metric: &str) -> u64 {
@@ -255,10 +284,11 @@ impl SpillState {
     #[expect(clippy::unwrap_used, reason = "L6 spike: throwaway sealer")]
     fn after_seal(&self, ok: bool) {
         let mut retry = self.retry_after.lock().unwrap();
+        let s = self.current();
         *retry = if ok {
             None
         } else {
-            let wait = retry.map_or(Duration::from_millis(500), |(_, w)| (w * 2).min(Duration::from_secs(16)));
+            let wait = retry.map_or(s.backoff_min, |(_, w)| (w * 2).min(s.backoff_max));
             Some((Instant::now() + wait, wait))
         };
     }
@@ -327,47 +357,86 @@ impl ShardEngine {
     /// spill arm).
     pub(super) async fn spill_loop(self: Arc<Self>, sp: Arc<SpillState>) {
         let mut closed = self.close_tx.subscribe();
-        if let Err(e) = self.spill_seed_dirty().await {
-            tracing::warn!(shard = %self.prefix, "L6 spill: dirty seed failed: {e}");
-        }
+        // M4: the seed retries until it succeeds (the absorber's startup
+        // dirty scan does), and a stream it finds unabsorbed starts the
+        // age clock: after a restart nothing else would (no durable group
+        // notes it), and a quiet shard would never seal it.
+        let mut seeded = false;
+        let mut seed_wait = Duration::from_millis(50);
+        let mut seed_at = Instant::now();
         self.spill_reset_baseline(&sp);
-        let mut tick = tokio::time::interval(sp.settings.tick);
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
+            if !seeded && Instant::now() >= seed_at {
+                match self.spill_seed_dirty().await {
+                    Ok(unabsorbed) => {
+                        seeded = true;
+                        if unabsorbed {
+                            sp.note_unabsorbed();
+                        }
+                    }
+                    Err(e) => {
+                        sp.stats.seed_failures.fetch_add(1, Ordering::Relaxed);
+                        tracing::warn!(shard = %self.prefix, "L6 spill: dirty seed failed: {e}");
+                        seed_at = Instant::now() + seed_wait;
+                        seed_wait = (seed_wait * 2).min(Duration::from_secs(5));
+                    }
+                }
+            }
+            let settings = sp.current();
             tokio::select! {
                 _ = closed.changed() => {
                     if *closed.borrow() {
                         return;
                     }
                 }
-                _ = tick.tick() => {}
+                () = tokio::time::sleep(settings.tick) => {}
                 () = sp.wake.notified() => {}
             }
             if self.is_closed() {
                 return;
             }
-            if !sp.settings.auto {
+            let settings = sp.current();
+            if !settings.auto {
                 continue;
             }
             let m = self.spill_measure(&sp);
             sp.stats.mem_estimate_last.store(m.mem_estimate, Ordering::Relaxed);
             sp.stats.wal_objects_last.store(m.wal_objects, Ordering::Relaxed);
-            if let Some(kind) = m.deadline(&sp.settings) {
+            if let Some(kind) = m.deadline(&settings) {
                 if sp.running.load(Ordering::Acquire) {
                     sp.stats.deadline_preempted_seal.fetch_add(1, Ordering::Relaxed);
                 }
                 self.spill_deadline_flush(&sp, kind).await;
                 continue;
             }
+            #[cfg(test)]
+            if std::env::var("DST_L6_TRACE").is_ok_and(|v| v == "ticks") {
+                eprintln!(
+                    "L6TRACE {} {:?} running={} backoff={} m={m:?}",
+                    self.prefix,
+                    std::time::SystemTime::now(),
+                    sp.running.load(Ordering::Acquire),
+                    sp.backing_off()
+                );
+            }
             if sp.running.load(Ordering::Acquire) || sp.backing_off() {
                 continue;
             }
-            if let Some(trigger) = m.trigger(&sp.settings) {
+            if let Some(trigger) = m.trigger(&settings) {
                 sp.running.store(true, Ordering::Release);
                 let engine = self.clone();
                 let state = sp.clone();
                 tokio::spawn(async move {
                     let result = engine.spill_once(trigger).await;
+                    #[cfg(test)]
+                    if std::env::var("DST_L6_TRACE").is_ok() {
+                        eprintln!(
+                            "L6TRACE {} {:?} seal {trigger:?} -> {:?}",
+                            engine.prefix,
+                            std::time::SystemTime::now(),
+                            result.as_ref().map(|r| (r.pages, r.total_ms))
+                        );
+                    }
                     state.after_seal(result.is_ok());
                     if let Err(e) = result
                         && !engine.is_closed()
@@ -382,19 +451,22 @@ impl ShardEngine {
     }
 
     /// Make every stream the durable dirty index names resident, so seals
-    /// see it (idle eviction keeps a handle with unabsorbed pages).
-    async fn spill_seed_dirty(&self) -> anyhow::Result<()> {
+    /// see it (idle eviction keeps a handle with unabsorbed pages). Returns
+    /// whether any had unabsorbed pages.
+    async fn spill_seed_dirty(&self) -> anyhow::Result<bool> {
         let mut after = None;
+        let mut unabsorbed = false;
         loop {
             let (page, more) = self.scan_dirty_streams_page(after, 1024).await?;
             for (hash, absorbed, next) in &page {
                 if absorbed < next {
                     self.stream_handle(*hash).await?;
+                    unabsorbed = true;
                 }
             }
             after = page.last().map(|e| e.0);
             if !more || after.is_none() {
-                return Ok(());
+                return Ok(unabsorbed);
             }
         }
     }
@@ -435,7 +507,7 @@ impl ShardEngine {
             let refused = share.refused.load(Ordering::Relaxed);
             pages > 0
                 && (refused > sp.ring_refused_at_seal.load(Ordering::Relaxed)
-                    || pages * 100 >= share.share_bytes() * sp.settings.ring_pct)
+                    || pages * 100 >= share.share_bytes().saturating_mul(sp.current().ring_pct))
         });
         Measure {
             mem_estimate,
@@ -689,6 +761,15 @@ impl ShardEngine {
             .chunks
             .fetch_add(inputs.len() as u64, Ordering::Relaxed);
         sp.check_abort(SealStep::AfterPut)?;
+        #[cfg(test)]
+        {
+            let hold = sp.before_commit.lock().unwrap().clone();
+            if let Some(hold) = hold {
+                hold.entered.fetch_add(1, Ordering::AcqRel);
+                let mut released = hold.release.subscribe();
+                let _ = released.wait_for(|r| *r).await;
+            }
+        }
         // (5) Descriptors, grouped by rank, at most `max_streams_per_group`
         // streams a group.
         let mut by_rank: Vec<Vec<(Arc<StreamHandle>, Arc<ChunkDescriptor>, u64)>> = Vec::new();
@@ -923,6 +1004,87 @@ impl ShardEngine {
 
     pub(super) fn spill_stats(&self) -> Option<&SpillStats> {
         self.spill.as_ref().map(|sp| &*sp.stats)
+    }
+
+    /// M4: a merged read adopted a newer boundary after its tail scan met
+    /// the hole a seal's trims left (spill arm only).
+    pub(crate) fn spill_note_race_adoption(&self) {
+        if let Some(s) = self.spill_stats() {
+            s.reads.race_adoptions.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// M4 (the DST fixture honours `L6_SPILL=1`): a fixture that starts an
+    /// absorber on a spill-arm engine gets the sealer at the absorber's
+    /// cadence instead: seal when the shard's unabsorbed page bytes reach
+    /// `threshold_bytes` or its oldest unabsorbed page is `threshold_age`
+    /// old, evaluated every `tick` and after each durable group, with no
+    /// WAL-object trigger (an absorber has none) and a backoff of one tick
+    /// to 1 s. A cold absorber (thresholds never reached) is a sealer that
+    /// never seals. The deadlines and the ring trigger stay. Returns false
+    /// on the base arm, where the caller starts the absorber.
+    pub(crate) fn spill_adopt_absorber_cadence(
+        &self,
+        threshold_bytes: u64,
+        threshold_age: Duration,
+        tick: Duration,
+    ) -> bool {
+        let Some(sp) = &self.spill else {
+            return false;
+        };
+        let base = sp.settings;
+        let tick = tick.max(Duration::from_millis(1));
+        let cadence = SpillSettings {
+            mode: crate::spill::settings::TriggerMode::Pages,
+            memtable_bytes: threshold_bytes.max(1),
+            wal_objects_seal: u64::MAX,
+            age_seal: threshold_age,
+            age_deadline: base.age_deadline.max(threshold_age),
+            tick,
+            backoff_min: tick,
+            backoff_max: Duration::from_secs(1).max(tick),
+            auto: true,
+            ..base
+        };
+        #[expect(clippy::unwrap_used, reason = "L6 spike: throwaway sealer")]
+        {
+            *sp.cadence.lock().unwrap() = Some(cadence);
+        }
+        sp.stats.absorber_cadences.fetch_add(1, Ordering::Relaxed);
+        sp.wake();
+        true
+    }
+
+    /// The task a test fixture's `Absorber::start` returns on the spill arm:
+    /// it holds the absorber cadence until aborted (the sealer then stops,
+    /// as an aborted absorber stops absorbing) or the engine closes.
+    pub(crate) fn spill_cadence_task(self: &Arc<Self>) -> Option<impl std::future::Future<Output = ()> + Send + 'static> {
+        let sp = self.spill.clone()?;
+        let mut closed = self.close_tx.subscribe();
+        Some(async move {
+            let _lease = CadenceLease(sp);
+            while !*closed.borrow() {
+                if closed.changed().await.is_err() {
+                    return;
+                }
+            }
+        })
+    }
+}
+
+/// Dropped with an aborted fixture absorber: the sealer stops sealing.
+struct CadenceLease(Arc<SpillState>);
+
+impl Drop for CadenceLease {
+    #[expect(clippy::unwrap_used, reason = "L6 spike: throwaway sealer")]
+    fn drop(&mut self) {
+        let sp = &self.0;
+        let stopped = SpillSettings {
+            auto: false,
+            ..sp.current()
+        };
+        *sp.cadence.lock().unwrap() = Some(stopped);
+        sp.wake();
     }
 }
 

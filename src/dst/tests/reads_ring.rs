@@ -319,6 +319,10 @@ async fn a_duplicate_absorbed_op_does_not_advance_the_trim() {
     let cov = store.coverage();
     let key = skey();
     let hash = [31u8; 16];
+    if crate::spill::enabled() {
+        // L6 spike M4: HIS-013 re-targeted under its own name (rBc §7).
+        return duplicate_advance_stages_nothing_and_trims_with_zero_lag(store, cov, key, hash).await;
+    }
     let engine = open_engine(store.clone(), "dst-duptrim").await;
 
     let mut log = OpLog::default();
@@ -391,6 +395,134 @@ async fn a_duplicate_absorbed_op_does_not_advance_the_trim() {
         8,
         "records above the previous boundary must survive a duplicate op"
     );
+}
+
+/// HIS-013 on the spill arm (L6 spike M4; rBc §7, DESIGN §4 "HIS-013 is
+/// re-targeted"). Design B trims with zero lag: a seal's commit stages its
+/// index rows and the tombstones of exactly the pages it sealed in one
+/// group, so `trimmed` reaches the new boundary at once, and a stale
+/// reader is carried by revalidation (the zero-stale DST in
+/// `shard::spill::read_tests`), not by a lag. What the base arm's test
+/// pins becomes: a duplicate advance stages nothing (no index row, no
+/// tombstone, no boundary or trim move), the trim reaches every sealed
+/// boundary, the trimmed pages are gone from the shard log, and the
+/// sealed range reads back exactly from the segment objects.
+#[expect(clippy::too_many_lines, reason = "L6 spike: one scenario, in order")]
+async fn duplicate_advance_stages_nothing_and_trims_with_zero_lag(
+    store: Arc<FaultStore>,
+    cov: Arc<crate::dst::Coverage>,
+    key: crate::crypto::StreamKey,
+    hash: [u8; 16],
+) {
+    use crate::spill::settings::{SpillSettings, Trigger};
+    let engine = open_engine_cfg(
+        store.clone(),
+        "dst-duptrim",
+        crate::shard::ShardConfig {
+            spill_settings: SpillSettings {
+                auto: false,
+                ..SpillSettings::default()
+            },
+            ..Default::default()
+        },
+    )
+    .await;
+    let stats = engine.spill.clone().expect("spill arm").stats.clone();
+    let mut log = OpLog::default();
+    let mut w = Workload::new(cov.clone());
+    let published = |engine: &Arc<crate::shard::ShardEngine>| {
+        let engine = engine.clone();
+        async move {
+            let h = engine.stream_handle(hash).await.expect("handle");
+            let st = h.state.lock().unwrap();
+            (st.durable.absorbed, st.durable.trimmed, st.durable.next)
+        }
+    };
+    let index_rows = |engine: &Arc<crate::shard::ShardEngine>| {
+        let engine = engine.clone();
+        async move {
+            let prefix = crate::spill::index::index_prefix(&hash);
+            let mut end = prefix.to_vec();
+            end.extend_from_slice(&[0xFF; 9]);
+            let mut it = engine.db.scan(prefix.to_vec()..end).await.expect("index scan");
+            let mut rows = Vec::new();
+            while let Some(kv) = it.next().await.expect("index row") {
+                let row = crate::spill::index::IndexRow::decode(&kv.value).expect("row");
+                rows.push((row.first, row.last));
+            }
+            rows
+        }
+    };
+    let shard_log_pages = |engine: &Arc<crate::shard::ShardEngine>, from: u64, to: u64| {
+        let engine = engine.clone();
+        async move {
+            let mut it = engine
+                .db
+                .scan(crate::crypto_page::shard_page_key(&hash, from)..crate::crypto_page::shard_page_key(&hash, to))
+                .await
+                .expect("page scan");
+            let mut n = 0;
+            while it.next().await.expect("page").is_some() {
+                n += 1;
+            }
+            n
+        }
+    };
+
+    // Offsets [0, 10), sealed: the boundary and the trim both reach 10.
+    w.run(&engine, hash, &key, &["d"], 10, false, &mut log).await;
+    engine.spill_once(Trigger::Manual).await.expect("seal 1");
+    assert_eq!(published(&engine).await, (10, 10, 10), "seal 1: (absorbed, trimmed, next)");
+    // Offsets [10, 18), sealed: zero lag again (the base arm's lag left
+    // `trimmed` at 10 here).
+    w.run(&engine, hash, &key, &["d"], 8, false, &mut log).await;
+    engine.spill_once(Trigger::Manual).await.expect("seal 2");
+    assert_eq!(
+        published(&engine).await,
+        (18, 18, 18),
+        "seal 2: the trim reaches the new boundary with no lag"
+    );
+    assert_eq!(index_rows(&engine).await, vec![(0, 9), (10, 17)], "one index row per sealed chunk");
+    assert_eq!(shard_log_pages(&engine, 0, 18).await, 0, "every sealed page is tombstoned");
+    let staged = (
+        stats.index_rows.load(Ordering::Relaxed),
+        stats.page_tombstones.load(Ordering::Relaxed),
+    );
+
+    // The duplicate: re-submit the boundary the committer already holds,
+    // exactly as an advance that raced dispatch does.
+    absorb_through(&engine, hash, 18, 0).await;
+    // Sentinel append: the committer queue is FIFO, so this ack proves the
+    // duplicate op was processed and its state published.
+    w.run(&engine, hash, &key, &["d"], 1, false, &mut log).await;
+    assert_eq!(log.total_acked(), 19, "sentinel append must ack");
+    assert_eq!(
+        published(&engine).await,
+        (18, 18, 19),
+        "a duplicate must move neither the boundary nor the trim"
+    );
+    assert_eq!(
+        (
+            stats.index_rows.load(Ordering::Relaxed),
+            stats.page_tombstones.load(Ordering::Relaxed),
+        ),
+        staged,
+        "a duplicate advance staged an index row or a tombstone"
+    );
+    assert_eq!(index_rows(&engine).await, vec![(0, 9), (10, 17)], "no index row from the duplicate");
+    assert_eq!(shard_log_pages(&engine, 18, 19).await, 1, "the sentinel's page is in the shard log");
+
+    // The sealed range reads back exactly, from the segment objects.
+    let calls = stats.reads.calls.load(Ordering::Relaxed);
+    let observed = drain_observed(&engine, hash, &key, &cov).await;
+    if let Err(e) = log.audit(&observed) {
+        panic!("HIS-013 (spill arm): sealed reads broke the canon: {e}");
+    }
+    assert!(
+        stats.reads.calls.load(Ordering::Relaxed) > calls,
+        "the drain must have read the sealed range from the segment objects"
+    );
+    engine.begin_close();
 }
 
 // ---- #271 hub registry identity + lifecycle (Søren review F2) ------

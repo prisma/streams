@@ -127,7 +127,12 @@ pub(super) fn log_uniform(rng: &mut StdRng, lo: usize, hi: usize) -> usize {
 
 /// One append of `records` to `hash`, acked once durable: its last offset.
 pub(super) async fn append(engine: &Arc<ShardEngine>, hash: [u8; 16], records: Vec<Bytes>) -> u64 {
-    let subkey = derive_subkey(&StreamKey([7; 32]), &hash, "", 0);
+    append_lane(engine, hash, "", records).await
+}
+
+/// `append` under routing key `rk` (M4's lane test).
+pub(super) async fn append_lane(engine: &Arc<ShardEngine>, hash: [u8; 16], rk: &str, records: Vec<Bytes>) -> u64 {
+    let subkey = derive_subkey(&StreamKey([7; 32]), &hash, rk, 0);
     let (tx, rx) = tokio::sync::oneshot::channel();
     let req = crate::shard::AppendReq {
         enqueued_at: Instant::now(),
@@ -135,8 +140,8 @@ pub(super) async fn append(engine: &Arc<ShardEngine>, hash: [u8; 16], records: V
         route: hash,
         entries: records,
         usage: crate::usage::counters(&hash),
-        routing_key: String::new(),
-        key_hash: crate::crypto::stream_hash(""),
+        routing_key: rk.to_string(),
+        key_hash: crate::crypto::stream_hash(rk),
         producer_lineage: Vec::new(),
         key_version: 0,
         subkey,

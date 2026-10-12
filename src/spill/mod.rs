@@ -34,6 +34,32 @@ mod object_tests;
 #[cfg(test)]
 pub(crate) mod test_pages;
 
+pub(crate) use crate::shard::spill::read::read_range;
+
+/// L6 spike M4: a keyed history read on the spill arm, refused loudly and
+/// counted (per shard DB and process-wide); the error a read returns.
+pub(crate) fn keyed_unsupported(engine: &crate::shard::ShardEngine) -> String {
+    use std::sync::atomic::Ordering;
+    stats::KEYED_UNSUPPORTED_TOTAL.fetch_add(1, Ordering::Relaxed);
+    if let Some(sp) = &engine.spill {
+        sp.stats.reads.keyed_unsupported.fetch_add(1, Ordering::Relaxed);
+    }
+    tracing::error!(shard = %engine.prefix, "l6 spike: keyed history read unsupported");
+    #[cfg(test)]
+    eprintln!("L6 keyed history read refused on shard {}", engine.prefix);
+    "l6 spike: keyed history read unsupported".to_string()
+}
+
+/// L6 spike M4: a default-lane read of sealed data (`Some("")`), counted.
+pub(crate) fn note_lane_read(engine: &crate::shard::ShardEngine) {
+    if let Some(sp) = &engine.spill {
+        sp.stats
+            .reads
+            .lane_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Whether this process runs the spill arm (`L6_SPILL=1`), read once.
 pub(crate) fn enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();

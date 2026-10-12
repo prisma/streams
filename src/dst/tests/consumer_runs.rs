@@ -89,7 +89,7 @@ fn shape(messages: &[Delivered]) -> Vec<(&str, i64, i64)> {
 async fn dead_letters(addr: SocketAddr, stream: &str) -> Vec<String> {
     let path = format!("/v1/streams/{stream}/records");
     let (st, _, b) = preq(addr, "GET", &path, &KEY, b"").await;
-    assert_eq!(st, 200);
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
     let copies: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
     copies
         .iter()
