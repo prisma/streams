@@ -70,7 +70,8 @@ describe("the offboarding job", () => {
       credential_id: operator, project_id: id, sub: "issuer-offboard", scope: OPERATOR_SCOPES, grant_version: 1,
     });
     expect(fake.tokens[1]).toMatchObject({ credential_id: made.credential.id, grant_version: 2 });
-    expect(fake.requests.filter((r) => r.path.startsWith("/v1/streams?limit=1000")).map((r) => r.status)).toEqual(
+    // Pages of twice the project's rate (10 a second, the free tier).
+    expect(fake.requests.filter((r) => r.path.startsWith("/v1/streams?limit=20")).map((r) => r.status)).toEqual(
       [200, 200, 200, 200],
     );
     expect([...fake.streams.get(id)!]).toEqual([]);

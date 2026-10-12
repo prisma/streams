@@ -25,7 +25,7 @@
 // unreadable without keys the server never stored.
 import { randomBytes } from "node:crypto";
 import type { Flags } from "./args";
-import { call, cellBase, describeReply, walkAndDelete } from "./cell-client";
+import { call, cellBase, describeReply, WALK_PAGE_MAX, type Waits, walkAndDelete } from "./cell-client";
 import type { Io } from "./commands";
 import { AdminError, notYet } from "./errors";
 import { loadChecked, mutate } from "./publish";
@@ -37,6 +37,17 @@ import { cellSigningKey, customerClaims, signJwt } from "./tokens";
 export const OPERATOR_SCOPES = "streams.catalog.read streams.lifecycle.manage streams.metadata.read";
 const OPERATOR_TOKEN_TTL_SECS = 1800;
 const PROBE_TOKEN_TTL_SECS = 300;
+/// The longest Retry-After a drain waits out (cell-client's default is
+/// 5 s): an unattended drain can afford the project's whole debt.
+export const DRAIN_MAX_RETRY_AFTER_SECS = 120;
+
+/// A drain's catalog page: twice the project's request rate, at most
+/// WALK_PAGE_MAX. The operator's token draws on the project's own
+/// buckets, and under phase B's store bucket (P1 (b′)) a listing of N
+/// streams weighs N + 10 against it: a page of 1,000 at 10 requests a
+/// second would leave ~100 s of debt, longer than any one request waits.
+export const drainPageLimit = (requestsPerSec: number) =>
+  Math.max(1, Math.min(WALK_PAGE_MAX, 2 * requestsPerSec));
 
 const credentialsOf = (state: CellState, project: string) =>
   Object.entries(state.credentials).filter(([, c]) => c.project_id === project && !c.omitted);
@@ -84,12 +95,13 @@ async function proveRevocation(
   project: string,
   mint: Minter,
   base: string,
+  waits: Waits,
 ): Promise<() => string> {
   const creds = credentialsOf(state, project);
   const operator = creds.find(([, c]) => c.role === "operator" && c.status === "active");
   if (!operator) throw new AdminError(`project ${project} is offboarding but has no operator credential`);
   const opToken = () => mint(state, operator[0], OPERATOR_TOKEN_TTL_SECS);
-  const seen = await call(base, "GET", "/v1/streams?limit=1", opToken());
+  const seen = await call(base, "GET", "/v1/streams?limit=1", opToken(), waits);
   if (seen.status !== 200) {
     throw notYet(
       `the cell does not serve the offboarding bundle yet (operator credential answered ` +
@@ -98,7 +110,7 @@ async function proveRevocation(
   }
   for (const [id, c] of creds) {
     if (c.role !== "customer") continue;
-    const probe = await call(base, "GET", "/v1/streams?limit=1", mint(state, id, PROBE_TOKEN_TTL_SECS));
+    const probe = await call(base, "GET", "/v1/streams?limit=1", mint(state, id, PROBE_TOKEN_TTL_SECS), waits);
     if (probe.status !== 403 || probe.code !== "credential_not_active") {
       throw notYet(
         `revoked credential ${id} answered ${describeReply(probe)}, not 403 ` +
@@ -118,14 +130,21 @@ export interface Drain {
   maxWalks: number;
   settleMs: number;
   log: (line: string) => void;
+  /// How the drain sleeps out a Retry-After (a test's clock).
+  sleep?: (ms: number) => Promise<void>;
 }
 
-async function drain(opToken: () => string, project: string, d: Drain): Promise<number> {
+async function drain(
+  opToken: () => string,
+  project: string,
+  d: Drain,
+  walking: Waits & { pageLimit: number },
+): Promise<number> {
   const proven = Date.now();
   let deleted = 0;
   for (let walk = 1; walk <= d.maxWalks; walk++) {
     const settled = Date.now() - proven >= d.settleMs;
-    const w = await walkAndDelete(d.base, opToken(), d.log);
+    const w = await walkAndDelete(d.base, opToken(), d.log, walking);
     deleted += w.deleted;
     d.log(`walk ${walk}: listed ${w.listed}, deleted ${w.deleted}`);
     if (w.listed === 0 && settled) return deleted;
@@ -143,9 +162,10 @@ async function drain(opToken: () => string, project: string, d: Drain): Promise<
 /// while the cell does not serve the revocation or the catalog does not
 /// empty within `maxWalks` walks.
 export async function drainProject(state: CellState, project: string, d: Drain): Promise<number> {
-  const opToken = await proveRevocation(state, project, d.mint, d.base);
+  const waits: Waits = { maxRetryAfterSecs: DRAIN_MAX_RETRY_AFTER_SECS, ...(d.sleep ? { sleep: d.sleep } : {}) };
+  const opToken = await proveRevocation(state, project, d.mint, d.base, waits);
   d.log(`the cell serves the revocation of ${project}; walking its catalog`);
-  return drain(opToken, project, d);
+  return drain(opToken, project, d, { ...waits, pageLimit: drainPageLimit(state.projects[project].quotas.requests_per_sec) });
 }
 
 /// Returns what it did, for the operator.

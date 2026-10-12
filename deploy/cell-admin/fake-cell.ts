@@ -18,6 +18,13 @@ export class FakeCell {
   tokens: any[] = [];
   afterWalk?: (walks: number) => void;
   rateLimitNext = 0;
+  /// Phase B's store bucket (P1 (b′)), per project, when set: a listing
+  /// of N streams weighs N + 10 and a delete 11, debited after it is
+  /// served; both are refused 429 project_rate_limit while the level is
+  /// below 0, with Retry-After from the debt. The level refills at
+  /// `perSec` on the clock `now` and holds at most one second of it.
+  storeOps?: { perSec: number; now: () => number };
+  private levels = new Map<string, { level: number; at: number }>();
   private walks = 0;
   private server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => this.answer(req) });
 
@@ -75,6 +82,17 @@ export class FakeCell {
     return r;
   }
 
+  /// The project's store bucket refilled to now, or undefined when off.
+  private storeLevel(project: string): { level: number; at: number } | undefined {
+    if (!this.storeOps) return undefined;
+    const { perSec, now } = this.storeOps;
+    const b = this.levels.get(project) ?? { level: perSec, at: now() };
+    b.level = Math.min(perSec, b.level + ((now() - b.at) / 1000) * perSec);
+    b.at = now();
+    this.levels.set(project, b);
+    return b;
+  }
+
   private route(req: Request, url: URL): Response {
     const who = this.authorize(req);
     if (who instanceof Response) return who;
@@ -82,11 +100,23 @@ export class FakeCell {
       this.rateLimitNext -= 1;
       return this.reply(429, "project_rate_limit", undefined, { "retry-after": "0" });
     }
-    const mine = this.streams.get(who.project) ?? new Set<string>();
-    this.streams.set(who.project, mine);
+    const store = this.storeLevel(who.project);
+    if (store && store.level < 0) {
+      const wait = Math.max(1, Math.ceil(-store.level / this.storeOps!.perSec));
+      return this.reply(429, "project_rate_limit", undefined, { "retry-after": String(wait) });
+    }
+    const { response, weight } = this.serve(req, url, who.project);
+    if (store) store.level -= weight;
+    return response;
+  }
+
+  /// The product route, and its store weight under P1 (b′).
+  private serve(req: Request, url: URL, project: string): { response: Response; weight: number } {
+    const mine = this.streams.get(project) ?? new Set<string>();
+    this.streams.set(project, mine);
     if (req.method === "GET" && url.pathname === "/v1/streams") {
-      // Offboarding's probes ask for one item, its walks for 1,000: a walk
-      // ends at the first full-size request answered without a cursor.
+      // Offboarding's probes ask for one item, its walks for more: a walk
+      // ends at the first walk request answered without a cursor.
       const limit = Number(url.searchParams.get("limit") ?? "100");
       const after = url.searchParams.get("cursor") ?? "";
       const names = [...mine].sort().filter((n) => n > after);
@@ -94,16 +124,16 @@ export class FakeCell {
       const more = names.length > page.length;
       const body = { streams: page.map((name) => ({ name, contentType: "application/json", sealed: false })) };
       const answer = this.reply(200, undefined, more ? { ...body, cursor: page[page.length - 1] } : body);
-      if (!more && limit === 1000) {
+      if (!more && limit > 1) {
         this.walks += 1;
         this.afterWalk?.(this.walks);
       }
-      return answer;
+      return { response: answer, weight: page.length + 10 };
     }
     if (req.method === "DELETE" && url.pathname.startsWith("/v1/streams/")) {
       const name = url.pathname.slice("/v1/streams/".length).split("/").map(decodeURIComponent).join("/");
-      return mine.delete(name) ? new Response(null, { status: 204 }) : this.reply(404, "not_found");
+      return { response: mine.delete(name) ? new Response(null, { status: 204 }) : this.reply(404, "not_found"), weight: 11 };
     }
-    return this.reply(404, "unknown_route");
+    return { response: this.reply(404, "unknown_route"), weight: 0 };
   }
 }
