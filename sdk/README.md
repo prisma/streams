@@ -331,8 +331,9 @@ and length") in the Prisma Streams repository, a document that layout adds.
 
 ## Runtimes
 
-CI runs this package's end-to-end smoke on **Node 18, Node 22, Bun and
-Deno** — those are gated, not asserted. The code uses only `fetch`,
+CI runs this package's end-to-end smoke on **Node 18, Node 22, Node 24,
+Bun and Deno** — those are gated, not asserted. Node 18 is the `engines`
+floor and Node 24 the current LTS. The code uses only `fetch`,
 WebCrypto and web streams, so browsers should work too, but no browser is
 currently in the gate; treat browser support as expected rather than
 verified.

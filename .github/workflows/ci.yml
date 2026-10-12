@@ -243,7 +243,9 @@ jobs:
   # Job: the SDK ships as an npm package, so CI validates the PACKAGE,
   # not the source tree: build, pack, install the tarball into a clean
   # project, and run the end-to-end smoke through the package specifier
-  # on the oldest supported runtime (engines: >=18) and on current Node.
+  # on Node 22, the current Node LTS (24), the oldest supported runtime
+  # (engines: >=18), Bun and Deno: the runtimes sdk/README.md names
+  # (scripts/quality/test_sdk_runtimes.py holds the two lists equal).
   sdk-package:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -273,7 +275,7 @@ jobs:
           node -e "require('node:assert').ok(require('node:fs').existsSync('node_modules/@prisma/streams/dist/index.js'))"
       - name: Build server
         run: cargo build --release --bin s3lite --bin streams-slate
-      - name: Smoke through the package (current Node)
+      - name: Smoke through the package (Node 22)
         run: |
           ./target/release/s3lite --listen 127.0.0.1:9500 --latency-ms 2 &
           sleep 1
@@ -283,6 +285,18 @@ jobs:
           sleep 2
           cd /tmp/consumer
           STREAMS_SDK=@prisma/streams node "$GITHUB_WORKSPACE"/sdk/smoke.mjs http://127.0.0.1:8090
+      # The current Node LTS (owner question X1 (c), 2026-10-12).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Smoke through the package (Node 24, the current LTS)
+        run: |
+          ./target/release/streams-slate --listen 127.0.0.1:8094 \
+            --s3-endpoint http://127.0.0.1:9500 --bucket sdk24-$RANDOM \
+            --max-unflushed-bytes 67108864 &
+          sleep 2
+          cd /tmp/consumer
+          STREAMS_SDK=@prisma/streams node "$GITHUB_WORKSPACE"/sdk/smoke.mjs http://127.0.0.1:8094
       - uses: actions/setup-node@v4
         with:
           node-version: 18
