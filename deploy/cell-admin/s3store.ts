@@ -3,6 +3,7 @@
 //
 //   control bucket   cells/<cell_id>/cell-state.json   the state
 //                    denylist.txt                       ids never placed again, across cells
+//                    beta/allowlist.json                the workspaces that may create projects
 //   feeds bucket     cells/<cell_id>/feeds-bundle.json  what the cell's wrapper polls
 //
 // Every write is conditional: `If-None-Match: *` creates, `If-Match: <etag>`
@@ -23,7 +24,15 @@ import { readFileSync } from "node:fs";
 import { S3Client } from "bun";
 import { AdminError } from "./errors";
 import { BUNDLE_FILE, type CellState, parseDenylist, parseState, STATE_FILE, stateText } from "./state";
-import { Conflict, type PublishedBundle, parsePublished, type StateStore } from "./store";
+import {
+  type Allowlist,
+  allowlistText,
+  Conflict,
+  type PublishedBundle,
+  parseAllowlist,
+  parsePublished,
+  type StateStore,
+} from "./store";
 import { checkCustody } from "./tokens";
 
 /// The owner's question D3 (a): the bundle lives in its own `feeds`
@@ -182,6 +191,7 @@ export class S3Store implements StateStore {
   private readonly state: S3Object;
   private readonly bundle: S3Object;
   private readonly denylist: S3Object;
+  private readonly allowlist: S3Object;
 
   private readonly control: S3Client;
 
@@ -194,6 +204,7 @@ export class S3Store implements StateStore {
     this.state = new S3Object(this.control, targets.control, `cells/${cellId}/${STATE_FILE}`);
     this.bundle = new S3Object(feeds, targets.feeds, `cells/${cellId}/${BUNDLE_FILE}`);
     this.denylist = new S3Object(this.control, targets.control, "denylist.txt");
+    this.allowlist = new S3Object(this.control, targets.control, "beta/allowlist.json");
     [this.statePath, this.bundlePath] = [this.state.where, this.bundle.where];
   }
 
@@ -248,6 +259,15 @@ export class S3Store implements StateStore {
   async readDenylist(): Promise<{ ids: Set<string>; etag: string | null }> {
     const got = await this.denylist.get();
     return { ids: parseDenylist(got?.text ?? ""), etag: got?.etag ?? null };
+  }
+
+  async readAllowlist(): Promise<{ doc: Allowlist; etag: string } | null> {
+    const got = await this.allowlist.get();
+    return got === null ? null : { doc: parseAllowlist(got.text, this.allowlist.where), etag: got.etag };
+  }
+
+  writeAllowlist(doc: Allowlist, etag: string | null): Promise<string> {
+    return this.allowlist.put(allowlistText(doc), etag);
   }
 
   /// In the control bucket, created with If-None-Match: *.

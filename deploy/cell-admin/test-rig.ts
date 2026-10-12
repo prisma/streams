@@ -106,6 +106,14 @@ export function denylistText(where: string): string {
   return readFileSync(readState(where).cell.denylist, "utf8");
 }
 
+/// The beta allow-list the store holds, parsed, or undefined.
+export function allowlistOf(where: string): any {
+  const s = s3Of(where);
+  const text = s ? fakeS3().text(s.control, "beta/allowlist.json")
+    : existsSync(join(where, "allowlist.json")) ? readFileSync(join(where, "allowlist.json"), "utf8") : undefined;
+  return text === undefined ? undefined : JSON.parse(text);
+}
+
 /// The audit objects the store holds, oldest key first.
 export function auditTexts(where: string): string[] {
   const s = s3Of(where);

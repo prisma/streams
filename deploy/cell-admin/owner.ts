@@ -1,12 +1,14 @@
 // The owner's controls over a shared cell beside the interim issuer
-// (public-beta issuer triage B1.8): suspend, resume and quota. Each is one
-// change through `mutate`, so it lands safely beside the issuer's writes.
+// (public-beta issuer triage B1.8): suspend, resume and quota, each one
+// change through `mutate`; allow and disallow, each one compare-and-swap
+// of the allow-list. Both land safely beside the issuer's writes.
 import type { Flags } from "./args";
 import type { Io } from "./commands";
-import { AdminError } from "./errors";
-import { mutate } from "./publish";
-import { projectOf, quotaValues, setProjectField } from "./rules";
-import { journal } from "./state";
+import { AdminError, notYet } from "./errors";
+import { CAS_ATTEMPTS, loadChecked, mutate } from "./publish";
+import { CANARY_WORKSPACE, checkId, placedProjects, projectOf, quotaValues, setProjectField } from "./rules";
+import { type CellState, journal } from "./state";
+import { type AllowEntry, type Allowlist, Conflict, type StateStore } from "./store";
 import { openStore, publishNote } from "./stores";
 
 /// Suspend (the cell answers the project's requests 403
@@ -55,4 +57,85 @@ export async function quota(f: Flags, io: Io): Promise<void> {
       `${Object.entries(p.quotas).map(([q, v]) => `${q}=${v}`).join(" ")}`);
     io.out(`bundle: ${store.bundlePath} (feed_version ${state.feed_version}); ${publishNote(store)}`);
   });
+}
+
+/// Apply `change` to the allow-list (an empty one when there is none) and
+/// write it by compare-and-swap, re-reading on a lost one.
+async function updateAllowlist(store: StateStore, change: (doc: Allowlist) => void): Promise<Allowlist> {
+  for (let attempt = 1; ; attempt++) {
+    const got = await store.readAllowlist();
+    const doc: Allowlist = got ? structuredClone(got.doc) : { version: 0, entries: [] };
+    change(doc);
+    doc.version += 1;
+    doc.entries.sort((a, b) => (a.workspace_id < b.workspace_id ? -1 : a.workspace_id > b.workspace_id ? 1 : 0));
+    try {
+      await store.writeAllowlist(doc, got?.etag ?? null);
+      return doc;
+    } catch (e) {
+      if (!(e instanceof Conflict)) throw e;
+      if (attempt >= CAS_ATTEMPTS) throw notYet(`the allow-list changed under ${CAS_ATTEMPTS} attempts: run again`);
+    }
+  }
+}
+
+/// A workspace that may hold projects: a valid id, not one the cell
+/// reserves.
+function checkWorkspace(state: CellState, workspace: string): void {
+  checkId("--workspace", workspace);
+  if (workspace === state.cell.account_id) {
+    throw new AdminError(`workspace ${workspace} is the cell's ACCOUNT_ID, the unowned-event sink`);
+  }
+  if (workspace === CANARY_WORKSPACE) throw new AdminError(`workspace ${workspace} is the issuer's canary workspace`);
+}
+
+/// Put a workspace on the allow-list, or replace its limits (keeping when
+/// it was first added): `--max-projects` over the default workspace cap,
+/// `--requests-per-sec` (at most the cell's ceiling) over the free-tier
+/// rate.
+export async function allow(f: Flags, io: Io): Promise<void> {
+  const store = await openStore(f);
+  const workspace = f.must("workspace");
+  const { state } = await loadChecked(store);
+  checkWorkspace(state, workspace);
+  const max_projects = f.has("max-projects") ? f.count("max-projects", 1) : undefined;
+  const rps = f.has("requests-per-sec") ? f.count("requests-per-sec", 1) : undefined;
+  const ceiling = state.cell.ceilings.requests_per_sec;
+  if (rps !== undefined && rps > ceiling) {
+    throw new AdminError(`--requests-per-sec ${rps} exceeds the cell's ceiling ${ceiling}`);
+  }
+  const doc = await store.exclusive(() => updateAllowlist(store, (d) => {
+    const was = d.entries.find((e) => e.workspace_id === workspace);
+    const entry: AllowEntry = {
+      workspace_id: workspace,
+      ...(max_projects !== undefined ? { max_projects } : {}),
+      ...(rps !== undefined ? { requests_per_sec: rps } : {}),
+      note: f.get("note") ?? "",
+      added_at: was?.added_at ?? new Date().toISOString(),
+    };
+    d.entries = [...d.entries.filter((e) => e.workspace_id !== workspace), entry];
+  }));
+  io.out(`allow-list v${doc.version}: ${workspace} may create projects (${doc.entries.length} workspace(s))`);
+}
+
+/// Take a workspace off the allow-list. Under the owner's question I8's
+/// recommended answer (a), it creates no new project and its projects keep
+/// running until the owner suspends them.
+export async function disallow(f: Flags, io: Io): Promise<void> {
+  const store = await openStore(f);
+  const workspace = f.must("workspace");
+  const { state } = await loadChecked(store);
+  const doc = await store.exclusive(() => updateAllowlist(store, (d) => {
+    if (!d.entries.some((e) => e.workspace_id === workspace)) {
+      throw new AdminError(`workspace ${workspace} is not on the allow-list`);
+    }
+    d.entries = d.entries.filter((e) => e.workspace_id !== workspace);
+  }));
+  const running = placedProjects(state)
+    .filter(([, p]) => p.workspace_id === workspace)
+    .map(([id]) => id);
+  io.out(`allow-list v${doc.version}: ${workspace} removed`);
+  io.out(
+    `${workspace} creates no new project; its ${running.length} project(s) keep running` +
+      `${running.length ? `: ${running.join(", ")}` : ""} (suspend them with cell-admin suspend)`,
+  );
 }

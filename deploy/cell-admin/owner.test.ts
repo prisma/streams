@@ -9,6 +9,7 @@ import { createHmac, generateKeyPairSync, randomBytes } from "node:crypto";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  allowlistOf,
   cleanup,
   customerCredential,
   customerOnly,
@@ -250,6 +251,43 @@ for (const kind of STORES) {
       expect([watch.code, watch.err]).toEqual([0, ""]);
       const hidden = Object.values(readState(c.state).credentials).filter((cr) => cr.hidden);
       expect(hidden.map((cr) => [cr.display_name, cr.secret_hash === undefined])).toEqual([["catalog-read", true], ["watch", false]]);
+    });
+
+    test("allow and disallow keep the beta allow-list, and a disallowed workspace's projects keep running (I8 (a))", async () => {
+      const c = await initCell();
+      let r = await run("allow", "--state", c.state, "--workspace", "wksp_b", "--note", "design partner");
+      expect([r.code, r.err]).toEqual([0, ""]);
+      r = await run("allow", "--state", c.state, "--workspace", "wksp_a", "--max-projects", "3",
+        "--requests-per-sec", "50", "--note", "pilot");
+      expect([r.code, r.err]).toEqual([0, ""]);
+      const first = allowlistOf(c.state);
+      expect(first.version).toBe(2);
+      expect(first.entries.map((e: any) => [e.workspace_id, e.max_projects, e.requests_per_sec, e.note])).toEqual([
+        ["wksp_a", 3, 50, "pilot"], ["wksp_b", undefined, undefined, "design partner"]]);
+      // Allowing again replaces the entry's limits and keeps when it was added.
+      r = await run("allow", "--state", c.state, "--workspace", "wksp_a", "--note", "pilot, default limits");
+      const again = allowlistOf(c.state).entries[0];
+      expect([r.code, again.max_projects, again.note, again.added_at]).toEqual(
+        [0, undefined, "pilot, default limits", first.entries[0].added_at]);
+      const refused: [string[], string][] = [
+        [["--workspace", "wksp_c", "--requests-per-sec", "177"],
+          "--requests-per-sec 177 exceeds the cell's ceiling 176"],
+        [["--workspace", "acct_sink"], "workspace acct_sink is the cell's ACCOUNT_ID, the unowned-event sink"],
+        [["--workspace", "streams-issuer-canary"], "workspace streams-issuer-canary is the issuer's canary workspace"],
+        [["--workspace", "w/x"], '--workspace "w/x" is not a valid id'],
+      ];
+      for (const [flags, message] of refused) {
+        expect((await run("allow", "--state", c.state, ...flags)).err.split("\n")[0]).toContain(message);
+      }
+      await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "wksp_a");
+      r = await run("disallow", "--state", c.state, "--workspace", "wksp_a");
+      expect([r.code, allowlistOf(c.state).entries.map((e: any) => e.workspace_id), allowlistOf(c.state).version])
+        .toEqual([0, ["wksp_b"], 4]);
+      expect(r.out).toContain("wksp_a creates no new project; its 1 project(s) keep running: proj_a (suspend them " +
+        "with cell-admin suspend)");
+      expect(policyOf(c.state, "proj_a").status).toBe("active");
+      expect((await run("disallow", "--state", c.state, "--workspace", "wksp_a")).err)
+        .toBe("cell-admin disallow: workspace wksp_a is not on the allow-list");
     });
 
     test("quota sets a project's quotas at most their ceilings at a newer policy version, keeping the rest", async () => {

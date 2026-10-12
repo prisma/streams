@@ -23,6 +23,38 @@ import {
 /// A compare-and-swap lost: the document is no longer the one read.
 export class Conflict extends Error {}
 
+/// The beta's allow-list (`beta/allowlist.json` in the control bucket):
+/// the workspaces that may create projects, each with optional limits
+/// over the defaults. Shared by every cell of the control bucket.
+export interface AllowEntry {
+  workspace_id: string;
+  max_projects?: number;
+  requests_per_sec?: number;
+  note: string;
+  added_at: string;
+}
+
+export interface Allowlist {
+  version: number;
+  entries: AllowEntry[];
+}
+
+/// The allow-list's text as an allow-list, or a refusal naming `where`.
+export function parseAllowlist(text: string, where: string): Allowlist {
+  let doc: Allowlist;
+  try {
+    doc = JSON.parse(text) as Allowlist;
+  } catch {
+    throw new AdminError(`${where} is not JSON`);
+  }
+  if (!Number.isSafeInteger(doc?.version) || !Array.isArray(doc?.entries)) {
+    throw new AdminError(`${where} is not an allow-list ({version, entries})`);
+  }
+  return doc;
+}
+
+export const allowlistText = (doc: Allowlist) => `${JSON.stringify(doc, null, 2)}\n`;
+
 /// The bundle a cell's wrapper polls, as last published.
 export interface PublishedBundle {
   version: number;
@@ -52,6 +84,10 @@ export interface StateStore {
   readDenylist(): Promise<{ ids: Set<string>; etag: string | null }>;
   /// Append `id` to the denylist if it still has `etag`, durably.
   appendDenylist(id: string, etag: string | null): Promise<string>;
+  /// The allow-list and its ETag, or null when there is none.
+  readAllowlist(): Promise<{ doc: Allowlist; etag: string } | null>;
+  /// Replace the allow-list if it still has `etag`, or create it when null.
+  writeAllowlist(doc: Allowlist, etag: string | null): Promise<string>;
   /// Write a new audit object at `key` (auditKey()); never replaces one.
   putAudit(key: string, json: unknown): Promise<void>;
 }
@@ -169,6 +205,17 @@ export class DirStore implements StateStore {
       closeSync(fd);
     }
     return etagOf(readFileSync(path, "utf8"));
+  }
+
+  /// `allowlist.json` beside the state.
+  async readAllowlist(): Promise<{ doc: Allowlist; etag: string } | null> {
+    const path = join(this.dir, "allowlist.json");
+    const text = readText(path);
+    return text === null ? null : { doc: parseAllowlist(text, path), etag: etagOf(text) };
+  }
+
+  async writeAllowlist(doc: Allowlist, etag: string | null): Promise<string> {
+    return this.swap(join(this.dir, "allowlist.json"), allowlistText(doc), etag);
   }
 
   /// Under the state directory, created exclusively and fsync'd.
