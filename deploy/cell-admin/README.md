@@ -9,6 +9,7 @@ makes is a new feed bundle that the operator publishes to the cell.
 
 ```bash
 bun deploy/cell-admin/cell-admin.ts <command> --state DIR [flags]
+bun deploy/cell-admin/cell-admin.ts <command> --state s3://BUCKET/cells/CELL --s3-credentials FILE [flags]
 ```
 
 Exit codes: 0 done, 1 refused or failed, 2 usage, 3 not yet (publish the
@@ -98,6 +99,39 @@ failed poll too: it replaces nothing, and left in place it deletes the feed
 files after the same 120 s, so the cell stops serving about 7 minutes after
 a bad publish. Publish only what `cell-admin` wrote, and republish a good
 bundle at once if a bad one went up.
+
+## The state in buckets
+
+`--state s3://<control bucket>/cells/<cell id>` keeps the cell where the
+interim token issuer keeps it too, and both write it safely at once:
+
+| Bucket | Object | What |
+|---|---|---|
+| control | `cells/<cell id>/cell-state.json` | the state |
+| control | `denylist.txt` | ids never placed again, shared by the bucket's cells |
+| feeds | `cells/<cell id>/feeds-bundle.json` | the bundle: the object the cell's wrapper polls (its `FEEDS_S3_KEY`), so a change needs no upload |
+
+The bundle has its own bucket (the owner's question D3, answer (a)): the
+cell reads it with a read-only key and holds no key to the control
+bucket. The bucket keys come from `--s3-credentials FILE`, a file only
+its owner can read (mode 0600), never from the command line:
+`{"endpoint", "bucket", "region", "accessKeyId", "secretAccessKey",
+"feeds": {the same five}}`. A writer key to either bucket can publish any
+bundle: keep them like the signing key.
+
+Every write is conditional: a state, bundle or denylist is created with
+`If-None-Match: *` and replaced with `If-Match` on the ETag read. A
+writer that loses re-reads and applies its change again, at most five
+times (then exit 3: run again). The bundle only moves forward: a bundle
+the bucket already holds at the same or a newer `feed_version` is kept.
+Before anything, `cell-admin` checks that each bucket answers both
+preconditions with 412 where it must, and refuses to run otherwise: a
+store that ignored them would make every write last-writer-wins.
+
+Every change also refuses a bundle that would change a published entry
+without its version (a key's material under its kid, a project's policy
+at its `project_policy_version`, a credential at its `grant_version`): the
+cell drops such a snapshot and goes dark once its feeds age past 300 s.
 
 ## Offboarding
 

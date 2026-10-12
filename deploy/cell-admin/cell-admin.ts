@@ -12,7 +12,7 @@ import { admit, bundle, init, type Io, list, token } from "./commands";
 import { AdminError } from "./errors";
 import { offboard } from "./offboard";
 
-const USAGE = `usage: cell-admin <command> --state DIR [flags]
+const USAGE = `usage: cell-admin <command> --state DIR|s3://BUCKET/cells/CELL [--s3-credentials FILE] [flags]
   init      --cell-id C --deployment-project P --account A --key-file K
             [--profile F]... [--issuer URL] [--workspace-cap N] [--max-projects N] [--denylist FILE]
   admit     --project P --workspace W [--quota field=value]... [--scopes "s ..."] [--prefix p]...
@@ -26,7 +26,7 @@ const COMMANDS = {
   init: {
     run: init,
     spec: {
-      single: ["state", "cell-id", "deployment-project", "account", "key-file", "issuer", "workspace-cap", "max-projects", "denylist"],
+      single: ["state", "s3-credentials", "cell-id", "deployment-project", "account", "key-file", "issuer", "workspace-cap", "max-projects", "denylist"],
       multi: ["profile"],
       required: ["state", "cell-id", "deployment-project", "account", "key-file"],
     },
@@ -34,7 +34,7 @@ const COMMANDS = {
   admit: {
     run: admit,
     spec: {
-      single: ["state", "project", "workspace", "scopes"],
+      single: ["state", "s3-credentials", "project", "workspace", "scopes"],
       multi: ["quota", "prefix", "profile"],
       required: ["state", "project", "workspace"],
     },
@@ -42,19 +42,19 @@ const COMMANDS = {
   token: {
     run: token,
     spec: {
-      single: ["state", "credential", "key-file", "out", "ttl", "sub"],
+      single: ["state", "s3-credentials", "credential", "key-file", "out", "ttl", "sub"],
       required: ["state", "credential", "key-file", "out"],
     },
   },
   offboard: {
     run: offboard,
     spec: {
-      single: ["state", "project", "cell-url", "key-file", "max-walks", "settle-secs"],
+      single: ["state", "s3-credentials", "project", "cell-url", "key-file", "max-walks", "settle-secs"],
       required: ["state", "project"],
     },
   },
-  list: { run: list, spec: { single: ["state"], bool: ["json"], required: ["state"] } },
-  bundle: { run: bundle, spec: { single: ["state"], required: ["state"] } },
+  list: { run: list, spec: { single: ["state", "s3-credentials"], bool: ["json"], required: ["state"] } },
+  bundle: { run: bundle, spec: { single: ["state", "s3-credentials"], required: ["state"] } },
 } as const;
 
 /// Run one command; never throws. Messages go to `io`, the code is returned.

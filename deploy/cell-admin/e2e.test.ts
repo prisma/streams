@@ -5,6 +5,10 @@
 //   cargo build --locked --bin streams-slate --bin s3lite
 //   CELL_ADMIN_E2E_BIN_DIR=target/debug bun test ./deploy/cell-admin/e2e.test.ts
 //
+// The second test runs the S3 store (s3store.ts) against s3lite itself,
+// which fake-s3.ts imitates for the unit suite: its precondition
+// self-test passes, and concurrent writers lose no update.
+//
 // It proves what the fake cell of offboard.test.ts assumes: the bundle
 // boots an enforce cell with BILLING_MODE=required, minted tokens verify,
 // a published revocation answers 403 credential_not_active, offboarding
@@ -16,7 +20,8 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_PROFILES } from "./commands";
 import { readProfiles } from "./profile";
-import { cleanup, customerCredential, initCell, readBundle, run, scratchDir } from "./test-rig";
+import { S3Store } from "./s3store";
+import { cleanup, customerCredential, initCell, keyFile, readBundle, run, scratchDir } from "./test-rig";
 
 const BIN_DIR = process.env.CELL_ADMIN_E2E_BIN_DIR;
 const maybe = BIN_DIR ? test : test.skip;
@@ -163,3 +168,29 @@ maybe("a shared cell admits, serves and offboards projects on the real binary", 
   expect((await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "wksp_z")).err)
     .toBe("cell-admin admit: project id proj_a was used before: an id is never placed twice");
 }, 240_000);
+
+maybe("the S3 store's preconditions hold on s3lite, and concurrent writers lose no update", async () => {
+  const port = freePort();
+  const bin = resolve(BIN_DIR ?? "");
+  children.push(Bun.spawn([join(bin, "s3lite"), "--listen", `127.0.0.1:${port}`, "--latency-ms", "2"],
+    { stdout: "ignore", stderr: "ignore" }));
+  const endpoint = `http://127.0.0.1:${port}`;
+  await until("s3lite to listen", 30, async () => ((await fetch(`${endpoint}/ctl/`)).status < 500 ? true : undefined));
+  const root = scratchDir();
+  const target = (bucket: string) => ({ endpoint, bucket, region: "auto", accessKeyId: "e2e", secretAccessKey: "e2e" });
+  const creds = join(root, "s3.json");
+  writeFileSync(creds, JSON.stringify({ ...target("ctl"), feeds: target("feeds") }), { mode: 0o600 });
+  const at = ["--state", "s3://ctl/cells/cell_e2e", "--s3-credentials", creds];
+  const init = await run("init", ...at, "--cell-id", "cell_e2e", "--deployment-project", "proj_deploy",
+    "--account", "acct_sink", "--key-file", keyFile(root));
+  expect([init.code, init.err]).toEqual([0, ""]);
+  const admitted = await Promise.all(["a", "b", "c"].map((x) =>
+    run("admit", ...at, "--project", `proj_${x}`, "--workspace", `w_${x}`)));
+  expect(admitted.map((r) => [r.code, r.err])).toEqual([[0, ""], [0, ""], [0, ""]]);
+  const store = await S3Store.open("s3://ctl/cells/cell_e2e", { control: target("ctl"), feeds: target("feeds") });
+  const published = await store.readBundle();
+  expect(published?.version).toBe(4);
+  expect((published?.bundle.policies.projects as { project_id: string }[]).map((p) => p.project_id))
+    .toEqual(["proj_a", "proj_b", "proj_c"]);
+  expect(Object.keys((await store.load()).state.projects).sort()).toEqual(["proj_a", "proj_b", "proj_c"]);
+}, 60_000);

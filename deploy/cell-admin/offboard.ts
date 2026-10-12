@@ -27,7 +27,7 @@ import type { Io } from "./commands";
 import { AdminError, notYet } from "./errors";
 import { loadChecked, mutate } from "./publish";
 import { type CellState, journal } from "./state";
-import { openStore } from "./store";
+import { openStore, publishNote } from "./stores";
 import { cellSigningKey, customerClaims, type SigningKey, signJwt } from "./tokens";
 
 export const OPERATOR_SCOPES = "streams.catalog.read streams.lifecycle.manage streams.metadata.read";
@@ -147,7 +147,7 @@ function stillIn(state: CellState, project: string, phase: "active" | "offboardi
 }
 
 export async function offboard(f: Flags, io: Io): Promise<void> {
-  const store = openStore(f);
+  const store = await openStore(f);
   const project = f.must("project");
   await store.exclusive(async () => {
     const { state } = await loadChecked(store);
@@ -157,7 +157,8 @@ export async function offboard(f: Flags, io: Io): Promise<void> {
         return revoke(s, project);
       });
       io.out(done.result);
-      io.out(`publish the bundle (feed_version ${done.state.feed_version}), then run offboard again with --cell-url`);
+      io.out(`bundle: ${store.bundlePath} (feed_version ${done.state.feed_version}); ${publishNote(store)}`);
+      io.out("once the cell serves it, run offboard again with --cell-url");
       return;
     }
     if (!f.has("cell-url")) {
@@ -173,6 +174,7 @@ export async function offboard(f: Flags, io: Io): Promise<void> {
       return omit(s, project, deleted);
     });
     io.out(done.result);
-    io.out(`publish the bundle (feed_version ${done.state.feed_version}); ${project} stays on the denylist`);
+    io.out(`bundle: ${store.bundlePath} (feed_version ${done.state.feed_version}); ${publishNote(store)}`);
+    io.out(`${project} stays on the denylist`);
   });
 }

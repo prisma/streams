@@ -15,7 +15,8 @@ import {
 } from "./profile";
 import { BundlePublisher, burnId, loadChecked, mutate } from "./publish";
 import { type CellState, journal, STATE_FORMAT, writeDurable } from "./state";
-import { Conflict, openStore } from "./store";
+import { Conflict } from "./store";
+import { openStore, publishNote } from "./stores";
 import { cellSigningKey, customerClaims, loadSigningKey, signJwt } from "./tokens";
 
 export interface Io {
@@ -51,7 +52,7 @@ function checkId(what: string, id: string): void {
 }
 
 export async function init(f: Flags, io: Io): Promise<void> {
-  const store = openStore(f, { create: true });
+  const store = await openStore(f, { create: true });
   const cell = f.must("cell-id");
   const deployment = f.must("deployment-project");
   const account = f.must("account");
@@ -66,7 +67,7 @@ export async function init(f: Flags, io: Io): Promise<void> {
   const sizing = cellSizing(env);
   const sk = loadSigningKey(f.must("key-file"));
   const [workspace_cap, max_projects] = [f.count("workspace-cap", 1), f.count("max-projects", 1000)];
-  const denylist = resolve(f.get("denylist") ?? store.defaultDenylist);
+  const denylist = store.denylistAt(f.get("denylist"));
   const state: CellState = {
     format: STATE_FORMAT,
     cell: {
@@ -222,7 +223,7 @@ function prefixesOf(f: Flags): string[] | undefined {
 }
 
 export async function admit(f: Flags, io: Io): Promise<void> {
-  const store = openStore(f);
+  const store = await openStore(f);
   const project = f.must("project");
   const workspace = f.must("workspace");
   await store.exclusive(async () => {
@@ -264,12 +265,12 @@ export async function admit(f: Flags, io: Io): Promise<void> {
     });
     io.out(`admitted ${project} (workspace ${workspace}) with credential ${credential}`);
     io.out(`quotas: ${QUOTA_FIELDS.map((q) => `${q}=${quotas[q]}`).join(" ")}`);
-    io.out(`bundle: ${store.bundlePath} (feed_version ${state.feed_version}); publish it to the cell`);
+    io.out(`bundle: ${store.bundlePath} (feed_version ${state.feed_version}); ${publishNote(store)}`);
   });
 }
 
 export async function token(f: Flags, io: Io): Promise<void> {
-  const store = openStore(f);
+  const store = await openStore(f);
   const credential = f.must("credential");
   const out = resolve(f.must("out"));
   await store.exclusive(async () => {
@@ -292,7 +293,7 @@ export async function token(f: Flags, io: Io): Promise<void> {
 }
 
 export async function bundle(f: Flags, io: Io): Promise<void> {
-  const store = openStore(f);
+  const store = await openStore(f);
   await store.exclusive(async () => {
     const { state } = await mutate(store, (state) => {
       state.feed_version += 1;
@@ -303,7 +304,7 @@ export async function bundle(f: Flags, io: Io): Promise<void> {
 }
 
 export async function list(f: Flags, io: Io): Promise<void> {
-  const store = openStore(f);
+  const store = await openStore(f);
   const { state } = await loadChecked(store);
   const published = await store.readBundle();
   if (f.has("json")) {

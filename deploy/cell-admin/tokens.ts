@@ -35,22 +35,24 @@ export interface SigningKey {
   record: KeyRecord;
 }
 
-function checkCustody(path: string): void {
+/// Refuse a secret-bearing file (the signing key, the bucket keys, the
+/// pepper) that is not a regular file of this user's that only it can
+/// read. `what` names it ("key file"), `holds` what group or others could
+/// read ("the cell's signing key"). The file's content is never quoted.
+export function checkCustody(path: string, what = "key file", holds = "the cell's signing key"): void {
   let st: ReturnType<typeof statSync>;
   try {
     st = statSync(path);
   } catch {
-    throw new AdminError(`key file ${path} cannot be read`);
+    throw new AdminError(`${what} ${path} cannot be read`);
   }
-  if (!st.isFile()) throw new AdminError(`key file ${path} is not a regular file`);
+  if (!st.isFile()) throw new AdminError(`${what} ${path} is not a regular file`);
   if ((st.mode & 0o077) !== 0) {
     const mode = (st.mode & 0o777).toString(8).padStart(4, "0");
-    throw new AdminError(
-      `key file ${path} has mode ${mode}: group or others can read the cell's signing key; chmod 600 it`,
-    );
+    throw new AdminError(`${what} ${path} has mode ${mode}: group or others can read ${holds}; chmod 600 it`);
   }
   if (typeof process.getuid === "function" && st.uid !== process.getuid()) {
-    throw new AdminError(`key file ${path} is not owned by the user running cell-admin`);
+    throw new AdminError(`${what} ${path} is not owned by the user running cell-admin`);
   }
 }
 

@@ -7,7 +7,6 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { Flags } from "./args";
 import { AdminError } from "./errors";
 import type { Bundle } from "./feeds";
 import {
@@ -35,8 +34,9 @@ export interface StateStore {
   /// Where the state and the bundle live, for messages.
   readonly statePath: string;
   readonly bundlePath: string;
-  /// Where `init` puts the denylist when no `--denylist` names one.
-  readonly defaultDenylist: string;
+  /// Where `init` records the denylist: `--denylist`'s file, or the
+  /// store's own place for it.
+  denylistAt(flag: string | undefined): string;
   /// Run `fn` as the store's only writer where the store needs that (a
   /// directory's lock); compare-and-swap covers every other store.
   exclusive<T>(fn: () => Promise<T>): Promise<T>;
@@ -79,7 +79,7 @@ function readText(path: string): string | null {
 export class DirStore implements StateStore {
   readonly statePath: string;
   readonly bundlePath: string;
-  readonly defaultDenylist: string;
+  private readonly defaultDenylist: string;
   private denylist?: string;
 
   constructor(
@@ -89,6 +89,10 @@ export class DirStore implements StateStore {
     this.statePath = join(dir, STATE_FILE);
     this.bundlePath = join(dir, BUNDLE_FILE);
     this.defaultDenylist = join(dir, "denylist.txt");
+  }
+
+  denylistAt(flag: string | undefined): string {
+    return resolve(flag ?? this.defaultDenylist);
   }
 
   async exclusive<T>(fn: () => Promise<T>): Promise<T> {
@@ -157,9 +161,4 @@ export class DirStore implements StateStore {
     }
     return etagOf(readFileSync(path, "utf8"));
   }
-}
-
-/// The store `--state` names. `create` is for `init` only.
-export function openStore(f: Flags, opts: { create?: boolean } = {}): StateStore {
-  return new DirStore(resolve(f.must("state")), opts.create ?? false);
 }
