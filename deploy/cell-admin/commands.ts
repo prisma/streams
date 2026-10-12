@@ -1,10 +1,8 @@
 // init, admit, token, list and bundle. offboard lives in offboard.ts.
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Flags } from "./args";
 import { AdminError } from "./errors";
-import { bundleText } from "./feeds";
 import {
   BOUNDED_FIELDS,
   type BoundedField,
@@ -15,19 +13,9 @@ import {
   type Quotas,
   readProfiles,
 } from "./profile";
-import {
-  BUNDLE_FILE,
-  type CellState,
-  createStateDir,
-  denyForever,
-  journal,
-  loadState,
-  readDenylist,
-  STATE_FORMAT,
-  saveState,
-  withLock,
-  writeDurable,
-} from "./state";
+import { BundlePublisher, burnId, loadChecked, mutate } from "./publish";
+import { type CellState, journal, STATE_FORMAT, writeDurable } from "./state";
+import { Conflict, openStore } from "./store";
 import { cellSigningKey, customerClaims, loadSigningKey, signJwt } from "./tokens";
 
 export interface Io {
@@ -63,7 +51,7 @@ function checkId(what: string, id: string): void {
 }
 
 export async function init(f: Flags, io: Io): Promise<void> {
-  const dir = resolve(f.must("state"));
+  const store = openStore(f, { create: true });
   const cell = f.must("cell-id");
   const deployment = f.must("deployment-project");
   const account = f.must("account");
@@ -78,8 +66,7 @@ export async function init(f: Flags, io: Io): Promise<void> {
   const sizing = cellSizing(env);
   const sk = loadSigningKey(f.must("key-file"));
   const [workspace_cap, max_projects] = [f.count("workspace-cap", 1), f.count("max-projects", 1000)];
-  const denylist = resolve(f.get("denylist") ?? join(dir, "denylist.txt"));
-  createStateDir(dir);
+  const denylist = resolve(f.get("denylist") ?? store.defaultDenylist);
   const state: CellState = {
     format: STATE_FORMAT,
     cell: {
@@ -101,14 +88,20 @@ export async function init(f: Flags, io: Io): Promise<void> {
     credentials: {},
     journal: [],
   };
-  await withLock(dir, async () => {
+  await store.exclusive(async () => {
     journal(state, "init", `k=${sizing.share_k} kid=${sk.record.kid}`);
-    saveState(dir, state, bundleText(state));
+    try {
+      await store.save(state, null);
+    } catch (e) {
+      if (e instanceof Conflict) throw new AdminError(`${store.statePath} exists: a cell is initialised once`);
+      throw e;
+    }
+    await new BundlePublisher(store).publish(state);
   });
   io.out(`cell ${cell}: k=${sizing.share_k}, key ${sk.record.kid} (${sk.record.alg}, aud prisma-streams-data)`);
   io.out(`ceilings: ${BOUNDED_FIELDS.map((q) => `${q}=${sizing.ceilings[q]}`).join(" ")}`);
   io.out(`denylist: ${denylist}`);
-  io.out(`bundle: ${join(dir, BUNDLE_FILE)} (feed_version 1)`);
+  io.out(`bundle: ${store.bundlePath} (feed_version 1)`);
 }
 
 /// The profile files a command reads: `--profile` (repeatable, later
@@ -179,7 +172,11 @@ export function admittedQuotas(state: CellState, given: readonly string[]): Quot
   return quotas;
 }
 
-function checkPlacement(state: CellState, project: string, workspace: string): void {
+/// Where a project may be placed: not a reserved id, not the cell's
+/// ACCOUNT_ID as workspace, an id never used before (`denylist` is the
+/// denylist as read before this placement burns the id), and within the
+/// cell's and the workspace's caps.
+export function checkPlacement(state: CellState, project: string, workspace: string, denylist: Set<string>): void {
   checkId("--project", project);
   checkId("--workspace", workspace);
   const cell = state.cell;
@@ -189,7 +186,7 @@ function checkPlacement(state: CellState, project: string, workspace: string): v
   if (workspace === cell.account_id) {
     throw new AdminError(`workspace ${workspace} is the cell's ACCOUNT_ID, the unowned-event sink`);
   }
-  if (state.projects[project] || readDenylist(cell.denylist).has(project)) {
+  if (state.projects[project] || denylist.has(project)) {
     throw new AdminError(`project id ${project} was used before: an id is never placed twice`);
   }
   const placed = Object.values(state.projects).filter((p) => p.phase !== "offboarded");
@@ -225,54 +222,58 @@ function prefixesOf(f: Flags): string[] | undefined {
 }
 
 export async function admit(f: Flags, io: Io): Promise<void> {
-  const dir = resolve(f.must("state"));
+  const store = openStore(f);
   const project = f.must("project");
   const workspace = f.must("workspace");
-  await withLock(dir, async () => {
-    const state = loadState(dir);
-    checkSizing(state, profilesOf(f));
-    checkPlacement(state, project, workspace);
-    const quotas = admittedQuotas(state, f.all("quota"));
+  await store.exclusive(async () => {
+    const { state: first } = await loadChecked(store);
+    checkSizing(first, profilesOf(f));
+    const { ids: denylist } = await store.readDenylist();
+    checkPlacement(first, project, workspace, denylist);
+    const quotas = admittedQuotas(first, f.all("quota"));
     const scopes = scopesOf(f);
     const stream_prefixes = prefixesOf(f);
-    let credential = "";
-    do credential = `strcred_${randomBytes(16).toString("hex")}`;
-    while (state.credentials[credential]);
-    denyForever(state.cell.denylist, project);
-    state.projects[project] = {
-      workspace_id: workspace,
-      phase: "active",
-      status: "active",
-      project_policy_version: 1,
-      ownership_version: 1,
-      quotas,
-      admitted_at: new Date().toISOString(),
-    };
-    state.credentials[credential] = {
-      project_id: project,
-      role: "customer",
-      grant_version: 1,
-      status: "active",
-      scopes,
-      ...(stream_prefixes ? { stream_prefixes } : {}),
-      expires_at: null,
-      omitted: false,
-    };
-    state.feed_version += 1;
-    journal(state, "admit", `${project} workspace=${workspace} credential=${credential}`);
-    saveState(dir, state, bundleText(state));
+    await burnId(store, project);
+    const { result: credential, state } = await mutate(store, (state) => {
+      checkPlacement(state, project, workspace, denylist);
+      let credential = "";
+      do credential = `strcred_${randomBytes(16).toString("hex")}`;
+      while (state.credentials[credential]);
+      state.projects[project] = {
+        workspace_id: workspace,
+        phase: "active",
+        status: "active",
+        project_policy_version: 1,
+        ownership_version: 1,
+        quotas,
+        admitted_at: new Date().toISOString(),
+      };
+      state.credentials[credential] = {
+        project_id: project,
+        role: "customer",
+        grant_version: 1,
+        status: "active",
+        scopes,
+        ...(stream_prefixes ? { stream_prefixes } : {}),
+        expires_at: null,
+        omitted: false,
+      };
+      state.feed_version += 1;
+      journal(state, "admit", `${project} workspace=${workspace} credential=${credential}`);
+      return credential;
+    });
     io.out(`admitted ${project} (workspace ${workspace}) with credential ${credential}`);
     io.out(`quotas: ${QUOTA_FIELDS.map((q) => `${q}=${quotas[q]}`).join(" ")}`);
-    io.out(`bundle: ${join(dir, BUNDLE_FILE)} (feed_version ${state.feed_version}); publish it to the cell`);
+    io.out(`bundle: ${store.bundlePath} (feed_version ${state.feed_version}); publish it to the cell`);
   });
 }
 
 export async function token(f: Flags, io: Io): Promise<void> {
-  const dir = resolve(f.must("state"));
+  const store = openStore(f);
   const credential = f.must("credential");
   const out = resolve(f.must("out"));
-  await withLock(dir, async () => {
-    const state = loadState(dir);
+  await store.exclusive(async () => {
+    const { state } = await loadChecked(store);
     const cred = state.credentials[credential];
     if (!cred || cred.role !== "customer") {
       throw new AdminError(`credential ${credential} is not a customer credential of this cell`);
@@ -291,19 +292,20 @@ export async function token(f: Flags, io: Io): Promise<void> {
 }
 
 export async function bundle(f: Flags, io: Io): Promise<void> {
-  const dir = resolve(f.must("state"));
-  await withLock(dir, async () => {
-    const state = loadState(dir);
-    state.feed_version += 1;
-    journal(state, "bundle", "rewritten");
-    saveState(dir, state, bundleText(state));
-    io.out(`bundle: ${join(dir, BUNDLE_FILE)} (feed_version ${state.feed_version})`);
+  const store = openStore(f);
+  await store.exclusive(async () => {
+    const { state } = await mutate(store, (state) => {
+      state.feed_version += 1;
+      journal(state, "bundle", "rewritten");
+    });
+    io.out(`bundle: ${store.bundlePath} (feed_version ${state.feed_version})`);
   });
 }
 
-export function list(f: Flags, io: Io): void {
-  const dir = resolve(f.must("state"));
-  const state = loadState(dir);
+export async function list(f: Flags, io: Io): Promise<void> {
+  const store = openStore(f);
+  const { state } = await loadChecked(store);
+  const published = await store.readBundle();
   if (f.has("json")) {
     const { journal: _journal, ...view } = state;
     io.out(JSON.stringify({ ...view, keys: state.keys.map((k) => ({ kid: k.kid, alg: k.alg, aud: k.aud })) }));
@@ -324,6 +326,6 @@ export function list(f: Flags, io: Io): void {
     io.out(`  quotas: ${QUOTA_FIELDS.map((q) => `${q}=${p.quotas[q]}`).join(" ")}`);
     io.out(`  credentials: ${creds.join("; ") || "none"}`);
   }
-  if (!existsSync(join(dir, BUNDLE_FILE))) io.out("bundle: missing; run cell-admin bundle");
+  if (!published) io.out("bundle: missing; run cell-admin bundle");
 }
 

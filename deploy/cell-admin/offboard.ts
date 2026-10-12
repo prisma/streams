@@ -21,13 +21,13 @@
 // Deleted streams' bytes stay until reclamation (E11); their content is
 // unreadable without keys the server never stored.
 import { randomBytes } from "node:crypto";
-import { resolve } from "node:path";
 import type { Flags } from "./args";
 import { call, cellBase, describeReply, walkAndDelete } from "./cell-client";
-import { AdminError, notYet } from "./errors";
-import { bundleText } from "./feeds";
 import type { Io } from "./commands";
-import { type CellState, journal, loadState, saveState, withLock } from "./state";
+import { AdminError, notYet } from "./errors";
+import { loadChecked, mutate } from "./publish";
+import { type CellState, journal } from "./state";
+import { openStore } from "./store";
 import { cellSigningKey, customerClaims, type SigningKey, signJwt } from "./tokens";
 
 export const OPERATOR_SCOPES = "streams.catalog.read streams.lifecycle.manage streams.metadata.read";
@@ -37,7 +37,8 @@ const PROBE_TOKEN_TTL_SECS = 300;
 const credentialsOf = (state: CellState, project: string) =>
   Object.entries(state.credentials).filter(([, c]) => c.project_id === project && !c.omitted);
 
-function revoke(state: CellState, project: string, io: Io): void {
+/// Returns what it did, for the operator.
+function revoke(state: CellState, project: string): string {
   let revoked = 0;
   for (const [, c] of credentialsOf(state, project)) {
     if (c.role === "customer" && c.status === "active") {
@@ -61,7 +62,7 @@ function revoke(state: CellState, project: string, io: Io): void {
   state.projects[project].phase = "offboarding";
   state.feed_version += 1;
   journal(state, "offboard", `${project} revoked=${revoked} operator=${id}`);
-  io.out(`offboard ${project}: revoked ${revoked} customer credential(s); operator credential ${id} added`);
+  return `offboard ${project}: revoked ${revoked} customer credential(s); operator credential ${id} added`;
 }
 
 const mint = (state: CellState, sk: SigningKey, credential: string, ttl: number) =>
@@ -119,28 +120,44 @@ async function drain(base: string, opToken: () => string, f: Flags, project: str
   throw notYet(`the catalog of ${project} was not empty after ${maxWalks} walks; run again`);
 }
 
-function omit(state: CellState, project: string, deleted: number, io: Io): void {
+/// Returns what it did, for the operator.
+function omit(state: CellState, project: string, deleted: number): string {
   for (const [, c] of credentialsOf(state, project)) c.omitted = true;
   const p = state.projects[project];
   p.phase = "offboarded";
   p.offboarded_at = new Date().toISOString();
   state.feed_version += 1;
   journal(state, "offboard", `${project} catalog empty, ${deleted} deleted, omitted`);
-  io.out(`offboard ${project}: catalog empty (${deleted} deleted in this run); omitted from the feeds`);
+  return `offboard ${project}: catalog empty (${deleted} deleted in this run); omitted from the feeds`;
+}
+
+/// The project's phase, refused when it is not on the cell or already gone.
+function phaseOf(state: CellState, project: string): "active" | "offboarding" {
+  const p = state.projects[project];
+  if (!p) throw new AdminError(`project ${project} is not on this cell`);
+  if (p.phase === "offboarded") throw new AdminError(`project ${project} is already offboarded`);
+  return p.phase;
+}
+
+/// Refused unless the project is still in `phase`: another writer moved it.
+function stillIn(state: CellState, project: string, phase: "active" | "offboarding"): void {
+  if (phaseOf(state, project) !== phase) {
+    throw notYet(`project ${project} changed phase while this run worked: run again`);
+  }
 }
 
 export async function offboard(f: Flags, io: Io): Promise<void> {
-  const dir = resolve(f.must("state"));
+  const store = openStore(f);
   const project = f.must("project");
-  await withLock(dir, async () => {
-    const state = loadState(dir);
-    const p = state.projects[project];
-    if (!p) throw new AdminError(`project ${project} is not on this cell`);
-    if (p.phase === "offboarded") throw new AdminError(`project ${project} is already offboarded`);
-    if (p.phase === "active") {
-      revoke(state, project, io);
-      saveState(dir, state, bundleText(state));
-      io.out(`publish the bundle (feed_version ${state.feed_version}), then run offboard again with --cell-url`);
+  await store.exclusive(async () => {
+    const { state } = await loadChecked(store);
+    if (phaseOf(state, project) === "active") {
+      const done = await mutate(store, (s) => {
+        stillIn(s, project, "active");
+        return revoke(s, project);
+      });
+      io.out(done.result);
+      io.out(`publish the bundle (feed_version ${done.state.feed_version}), then run offboard again with --cell-url`);
       return;
     }
     if (!f.has("cell-url")) {
@@ -151,8 +168,11 @@ export async function offboard(f: Flags, io: Io): Promise<void> {
     const opToken = await proveRevocation(state, project, sk, base);
     io.out(`the cell serves the revocation of ${project}; walking its catalog`);
     const deleted = await drain(base, opToken, f, project, io);
-    omit(state, project, deleted, io);
-    saveState(dir, state, bundleText(state));
-    io.out(`publish the bundle (feed_version ${state.feed_version}); ${project} stays on the denylist`);
+    const done = await mutate(store, (s) => {
+      stillIn(s, project, "offboarding");
+      return omit(s, project, deleted);
+    });
+    io.out(done.result);
+    io.out(`publish the bundle (feed_version ${done.state.feed_version}); ${project} stays on the denylist`);
   });
 }

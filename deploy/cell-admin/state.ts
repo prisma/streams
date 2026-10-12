@@ -1,24 +1,13 @@
 // cell-admin's durable, monotonic state for one cell (review finding M3:
 // a tool that loses or rolls back its state can republish a revoked
-// credential). One JSON file per cell, rewritten atomically (temporary
-// file, fsync, rename, directory fsync) under an exclusive lock. Versions
+// credential). One JSON document per cell, kept by a StateStore (store.ts)
+// and replaced only by compare-and-swap. Versions
 // only move forward: every write bumps `feed_version`, a changed project
 // bumps its `project_policy_version`, a changed credential its
 // `grant_version`. Nothing is ever deleted from the state: an offboarded
 // project stays as a tombstone and its credentials as omitted, so no id
 // is ever reused (finding M4). The state holds no private key and no token.
-import {
-  appendFileSync,
-  closeSync,
-  existsSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeSync,
-} from "node:fs";
+import { closeSync, fsyncSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { AdminError } from "./errors";
 import type { Ceilings, Quotas } from "./profile";
@@ -167,72 +156,28 @@ export async function withLock<T>(dir: string, fn: () => Promise<T>): Promise<T>
   }
 }
 
-function bundleVersion(dir: string): number | undefined {
-  const path = join(dir, BUNDLE_FILE);
-  if (!existsSync(path)) return undefined;
-  const v = JSON.parse(readFileSync(path, "utf8"))?.keys?.feed_version;
-  if (!Number.isSafeInteger(v)) throw new AdminError(`${path} carries no keys.feed_version`);
-  return v;
-}
-
-/// Load a cell's state. A bundle newer than the state means the state was
-/// restored from a stale copy: writing from it would reuse versions the
-/// cell has already seen with other contents, so refuse.
-export function loadState(dir: string): CellState {
-  const path = join(dir, STATE_FILE);
-  if (!existsSync(path)) throw new AdminError(`${path} does not exist: run cell-admin init first`);
-  const state = JSON.parse(readFileSync(path, "utf8")) as CellState;
+/// A state document's text as a v2 state, or a refusal naming `where`.
+export function parseState(text: string, where: string): CellState {
+  const state = JSON.parse(text) as CellState;
   if ((state.format as string) === STATE_FORMAT_V1) {
-    throw new AdminError(`${path} is a ${STATE_FORMAT_V1} state, which this cell-admin does not read: re-initialise the cell`);
+    throw new AdminError(`${where} is a ${STATE_FORMAT_V1} state, which this cell-admin does not read: re-initialise the cell`);
   }
   if (state.format !== STATE_FORMAT) {
-    throw new AdminError(`${path} is not a ${STATE_FORMAT} state`);
-  }
-  const published = bundleVersion(dir);
-  if (published !== undefined && published > state.feed_version) {
-    throw new AdminError(
-      `${path} is at feed_version ${state.feed_version} but its bundle is at ${published}: ` +
-        "the state was restored from a stale copy; recover the newest state before any change",
-    );
+    throw new AdminError(`${where} is not a ${STATE_FORMAT} state`);
   }
   return state;
 }
 
-/// The state is written first, then the bundle it implies: a crash
-/// between the two leaves a bundle behind the state, which the next write
-/// replaces at a newer version.
-export function saveState(dir: string, state: CellState, bundleText: string): void {
-  writeDurable(join(dir, STATE_FILE), `${JSON.stringify(state, null, 2)}\n`);
-  writeDurable(join(dir, BUNDLE_FILE), bundleText);
-}
+export const stateText = (state: CellState) => `${JSON.stringify(state, null, 2)}\n`;
 
-export function createStateDir(dir: string): void {
-  if (existsSync(join(dir, STATE_FILE))) {
-    throw new AdminError(`${join(dir, STATE_FILE)} exists: a cell is initialised once`);
-  }
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-}
-
-/// The denylist's ids (one per line, `#` comments).
-export function readDenylist(path: string): Set<string> {
-  if (!existsSync(path)) return new Set();
+/// A denylist's ids (one per line, `#` comments).
+export function parseDenylist(text: string): Set<string> {
   return new Set(
-    readFileSync(path, "utf8")
+    text
       .split("\n")
       .map((l) => l.trim())
       .filter((l) => l !== "" && !l.startsWith("#")),
   );
-}
-
-/// Burn an id for good, durably, before anything publishes it.
-export function denyForever(path: string, id: string): void {
-  appendFileSync(path, `${id}\n`, { mode: 0o600 });
-  const fd = openSync(path, "r");
-  try {
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
 }
 
 export function journal(state: CellState, command: string, detail: string): void {
