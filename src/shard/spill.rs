@@ -741,11 +741,8 @@ impl ShardEngine {
             })
             .await
             .map_err(|e| SealError::Store(e.to_string()))?;
-        let Some(target) = target else {
-            return Ok(());
-        };
         let until = Instant::now() + Duration::from_secs(1);
-        loop {
+        while let Some(target) = target {
             let behind = self
                 .in_flight
                 .lock()
@@ -754,17 +751,29 @@ impl ShardEngine {
                 .first()
                 .is_some_and(|g| g.seq <= target);
             if !behind {
-                return Ok(());
+                break;
             }
             if self.is_closed() {
                 return Err(SealError::Closed);
             }
             if Instant::now() >= until {
                 sp.stats.catch_up_timeouts.fetch_add(1, Ordering::Relaxed);
-                return Ok(());
+                break;
             }
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
+        // M5: a dispatch takes its groups out of `pending` first and only then
+        // publishes their durable frontiers, group by group, under the
+        // dispatch gate (`dispatch_durable`). An empty queue therefore does
+        // not mean the frontiers are published: a seal woken by the first
+        // group of a multi-group dispatch (one pump flush at the 1 s tier
+        // covers about a second of groups) read them mid-dispatch and left up
+        // to the whole flush out of its snapshot (M5: 123 of 182 seals of
+        // b64rand at 1 s, up to 699 KB each; 7 of 268 at 100 ms). Taking the
+        // gate waits for any such dispatch to finish, as the pump's barrier
+        // does.
+        drop(self.dispatch_gate.lock().await);
+        Ok(())
     }
 
     /// Step 7a: one awaited WAL flush, so SlateDB's durable seq covers the
