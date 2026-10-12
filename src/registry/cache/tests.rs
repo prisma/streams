@@ -9,11 +9,11 @@ use futures_util::future::BoxFuture;
 use object_store::path::Path as ObjPath;
 use object_store::{ObjectStore, ObjectStoreExt};
 
-use super::{DescriptorCache, Fetched, within};
+use super::{DescriptorCache, Fetched, REGISTRY_CACHE_MAX_BYTES, within};
 use crate::registry::tests::{desc, ts};
 use crate::registry::{
     CachedDesc, Mutation, MutationResult, PersistedDescriptor, Registry, SealIntent, SealState,
-    StreamDesc,
+    StreamDesc, WatchDefinition,
 };
 
 const EPOCH: &str = "00000000000000000000000000000001";
@@ -342,7 +342,7 @@ async fn fill_publishes_only_against_the_generation_it_read() {
 /// generation moved and keeps its answer to itself; the next read fetches.
 #[tokio::test]
 async fn a_cap_purge_never_erases_the_invalidation_a_read_in_flight_must_see() {
-    let cache = DescriptorCache::bounded(Duration::from_secs(5), 2);
+    let cache = DescriptorCache::bounded(Duration::from_secs(5), 2, REGISTRY_CACHE_MAX_BYTES);
     let raced = ts("raced");
     let old = StreamDesc::try_from(desc("raced", EPOCH, false)).unwrap();
     let mut newer = desc("raced", EPOCH, false);
@@ -416,7 +416,7 @@ fn filled(name: &str) -> CachedDesc {
 /// and a re-fill of a held key evicts nothing even at the cap.
 #[tokio::test]
 async fn the_cap_purges_only_for_a_new_key_at_the_cap() {
-    let cache = DescriptorCache::bounded(Duration::from_secs(5), 3);
+    let cache = DescriptorCache::bounded(Duration::from_secs(5), 3, REGISTRY_CACHE_MAX_BYTES);
     cache.insert(ts("a"), filled("a"));
     cache.insert(ts("b"), filled("b"));
     cache.invalidate(&ts("b"));
@@ -433,7 +433,7 @@ async fn the_cap_purges_only_for_a_new_key_at_the_cap() {
 /// recently touched slot fall out.
 #[tokio::test]
 async fn the_cap_evicts_stale_slots_first_then_the_least_recently_touched() {
-    let cache = DescriptorCache::bounded(Duration::from_secs(5), 2);
+    let cache = DescriptorCache::bounded(Duration::from_secs(5), 2, REGISTRY_CACHE_MAX_BYTES);
     cache.insert(ts("old"), filled("old"));
     cache.expire_for_tests(&ts("old"));
     cache.insert(ts("young"), filled("young"));
@@ -455,6 +455,192 @@ async fn the_cap_evicts_stale_slots_first_then_the_least_recently_touched() {
         "the recently touched slot survived"
     );
     assert!(held(&cache, &ts("newer")).await);
+}
+
+/// A fill charged exactly `bytes` (a multiple of 8) against the byte cap:
+/// the slot, and one watch named `w` whose one field pointer's heap block
+/// makes up the rest.
+fn fat(name: &str, bytes: usize) -> CachedDesc {
+    let with = |pointer: usize| {
+        let mut persisted = desc(name, EPOCH, false);
+        persisted.watch_definitions = vec![WatchDefinition {
+            name: "w".into(),
+            fields: vec![format!("/{}", "x".repeat(pointer - 1))],
+        }];
+        CachedDesc {
+            desc: Some(StreamDesc::try_from(persisted).unwrap()),
+            at: Instant::now(),
+            etag: None,
+        }
+    };
+    let rest = super::slot_bytes(Some(&with(8))) - 8;
+    let filled = with(bytes - rest);
+    assert_eq!(super::slot_bytes(Some(&filled)), bytes);
+    filled
+}
+
+/// The names among `names` whose slot holds a descriptor or an absence,
+/// read by a peek, which claims and touches nothing.
+fn holding(cache: &DescriptorCache, names: &[&'static str]) -> Vec<&'static str> {
+    let names = names.iter().copied();
+    names.filter(|n| cache.peek(&ts(n)).is_some()).collect()
+}
+
+/// The cache holds at most its byte budget, whatever its count cap. Every
+/// slot is charged its own and its key's size (`SLOT_BYTES`), a slot with
+/// no descriptor (emptied, claimed or holding an absence) nothing more, a
+/// descriptor the heap of its variable parts as allocated
+/// (`a_slot_is_charged_for_what_it_allocates`). A budget filled exactly
+/// evicts nothing. A put that would
+/// pass it purges every slot untouched for a TTL, then the least recently
+/// touched one at a time until the new slot fits; a slot a read fills is
+/// held to it too, without evicting itself, and an invalidation gives a
+/// descriptor's bytes back. A slot larger than the budget is held alone.
+#[tokio::test]
+async fn the_cache_holds_its_byte_budget() {
+    const FAT: usize = 4_096;
+    const EMPTY: usize = super::SLOT_BYTES;
+    let all = ["a", "b", "c", "d", "e", "f"];
+    let size = |cache: &DescriptorCache| (cache.len(), cache.bytes());
+    let cache = DescriptorCache::bounded(Duration::from_secs(5), 1_024, 3 * FAT);
+    for name in ["a", "b", "c"] {
+        cache.insert(ts(name), fat(name, FAT));
+    }
+    assert_eq!(size(&cache), (3, 3 * FAT), "a budget filled exactly");
+    cache.insert(ts("d"), fat("d", FAT));
+    assert_eq!(size(&cache), (3, 3 * FAT), "a fourth descriptor");
+    assert_eq!(holding(&cache, &all), ["b", "c", "d"]);
+
+    cache.invalidate(&ts("b"));
+    let absent = cache
+        .fill(&ts("e"), async |_| {
+            Ok::<_, std::convert::Infallible>(Some(Fetched {
+                desc: None,
+                etag: None,
+            }))
+        })
+        .await
+        .unwrap();
+    assert!(absent.is_none());
+    assert_eq!(size(&cache), (4, 2 * FAT + 2 * EMPTY), "emptied and absent");
+
+    // A read captures the emptied slot and fills it past the budget: the
+    // least recently touched other slot goes.
+    let read = cache
+        .fill(&ts("b"), async |_| {
+            Ok::<_, std::convert::Infallible>(Some(Fetched {
+                desc: fat("b", FAT).desc,
+                etag: None,
+            }))
+        })
+        .await
+        .unwrap();
+    assert!(read.is_some());
+    assert_eq!(size(&cache), (3, 2 * FAT + EMPTY), "a read's fill");
+    assert_eq!(holding(&cache, &all), ["b", "d", "e"]);
+
+    // Every stale slot purges, though one would have made room.
+    cache.expire_for_tests(&ts("d"));
+    cache.expire_for_tests(&ts("e"));
+    cache.insert(ts("f"), fat("f", FAT));
+    assert_eq!(
+        size(&cache),
+        (2, 2 * FAT),
+        "past the budget with stale slots"
+    );
+    assert_eq!(holding(&cache, &all), ["b", "f"]);
+
+    let cache = DescriptorCache::bounded(Duration::from_secs(5), 1_024, 2 * FAT);
+    cache.insert(
+        ts("a"),
+        CachedDesc {
+            desc: None,
+            at: Instant::now(),
+            etag: None,
+        },
+    );
+    cache.insert(
+        ts("b"),
+        CachedDesc {
+            desc: None,
+            at: Instant::now(),
+            etag: None,
+        },
+    );
+    cache.insert(ts("c"), fat("c", FAT));
+    assert_eq!(size(&cache), (3, FAT + 2 * EMPTY));
+    cache.insert(ts("d"), fat("d", FAT));
+    assert_eq!(size(&cache), (2, 2 * FAT), "both small slots made room");
+    assert_eq!(holding(&cache, &all), ["c", "d"]);
+    cache.insert(ts("e"), fat("e", 3 * FAT));
+    assert_eq!(size(&cache), (1, 3 * FAT), "a slot over the budget");
+}
+
+/// A slot is charged for what it allocates, not for how long its strings
+/// are: the slot itself and its key whatever it holds, and for a
+/// descriptor each watch definition's inline 48 bytes, its name's heap
+/// block and its field vector, and each field pointer's heap block, every
+/// block at least 8 bytes. 64 watches of 16 one-byte pointers, a create
+/// document of about 5.6 KiB, are charged 64 × (48 + 8 + 16 × 24 + 16 × 8)
+/// = 36,352 bytes beyond the same descriptor without watches.
+#[test]
+fn a_slot_is_charged_for_what_it_allocates() {
+    let slot = std::mem::size_of::<super::Slot>();
+    let key = std::mem::size_of::<crate::tenant::TenantStreamRef>();
+    let entry = |watches: Vec<WatchDefinition>| {
+        let mut persisted = desc("s", EPOCH, false);
+        persisted.watch_definitions = watches;
+        CachedDesc {
+            desc: Some(StreamDesc::try_from(persisted).unwrap()),
+            at: Instant::now(),
+            etag: None,
+        }
+    };
+    let pointers = || vec!["/".to_string(); 16];
+    let watch = |w: usize| WatchDefinition {
+        name: char::from(b'a' + u8::try_from(w % 26).unwrap()).to_string(),
+        fields: pointers(),
+    };
+    let plain = super::slot_bytes(Some(&entry(Vec::new())));
+    let watched = super::slot_bytes(Some(&entry((0..64).map(watch).collect())));
+    let empty = super::slot_bytes(None);
+    assert_eq!(
+        (empty, watched - plain),
+        (slot + key, 36_352),
+        "an empty slot, and 64 watches of 16 one-byte pointers"
+    );
+    // Fork children and a segment map that split once: each name's block
+    // and the vector's buffer; each segment's inline size in the map's
+    // buffer, its shard prefix's block and its lineage vectors' blocks.
+    let mut persisted = desc("s", EPOCH, false);
+    persisted.fork_children = vec!["f1".into(), "fork-22".into()];
+    let mut map = crate::segmap::SegmentMap::initial("prefix-0", 1);
+    map.split(0, 1 << 40, 0, [1; 16], [2; 16], 2).unwrap();
+    let block = |n: usize| n.next_multiple_of(8);
+    let segment = std::mem::size_of::<crate::segmap::SegmentDesc>();
+    let lineage: usize = map
+        .segments
+        .iter()
+        .map(|s| {
+            let ids = s.predecessors.capacity() + s.successors.capacity();
+            assert!(ids > 0, "a split segment has lineage");
+            block(s.shard_prefix.capacity())
+                + block(4 * s.predecessors.capacity())
+                + block(4 * s.successors.capacity())
+        })
+        .sum();
+    let segments = block(segment * map.segments.capacity()) + lineage;
+    persisted.segments = Some(map);
+    let grown = CachedDesc {
+        desc: Some(StreamDesc::try_from(persisted).unwrap()),
+        at: Instant::now(),
+        etag: None,
+    };
+    assert_eq!(
+        super::slot_bytes(Some(&grown)) - plain,
+        48 + 8 + 8 + segments,
+        "two fork children and a split's three segments"
+    );
 }
 
 /// A cold miss with no write in flight publishes: the claim it made is
@@ -482,7 +668,7 @@ async fn a_cold_miss_with_no_write_in_flight_publishes() {
 /// still renews it, and a cold claim still publishes.
 #[tokio::test]
 async fn a_read_in_flight_keeps_its_slot_through_a_cap_purge() {
-    let cache = DescriptorCache::bounded(Duration::from_secs(5), 2);
+    let cache = DescriptorCache::bounded(Duration::from_secs(5), 2, REGISTRY_CACHE_MAX_BYTES);
     cache.insert(ts("expired"), filled("expired"));
     cache.expire_for_tests(&ts("expired"));
     cache.insert(ts("filler"), filled("filler"));

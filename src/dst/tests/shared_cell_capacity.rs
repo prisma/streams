@@ -308,7 +308,10 @@ async fn expired_watched_streams_leave_no_touch_journal_after_the_walk() {
 /// C4. A creation document holds at most 64 KiB, and so a descriptor at
 /// most about 64 KiB of watch definitions. It could be 256 KiB (64 watches
 /// x 16 field pointers of any length), creates are charged to no byte
-/// quota, and the descriptor cache counts entries (65,536), not bytes, and
+/// quota, and the descriptor cache counted entries (65,536), not bytes (its
+/// estimate of what it holds, counting what each descriptor allocates, is
+/// held to 64 MiB now, C4 (b), pinned by
+/// `registry::cache::tests::the_cache_holds_its_byte_budget`), and
 /// deep-clones a descriptor under its one lock on every lookup: under the
 /// shared cell's append ceiling (257,500 B/s at k = 8) project 0 created
 /// 16 descriptors of about 245 KB in well under a second. Pass: 16 creates

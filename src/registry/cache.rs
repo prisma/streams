@@ -35,6 +35,27 @@ use super::{CachedDesc, Registry, StreamDesc, decode_desc, desc_path};
 /// touched falls out.
 pub(crate) const REGISTRY_CACHE_MAX: usize = 65_536;
 
+/// The cache's estimate of what it holds (`slot_bytes`), at most: a bound
+/// on the estimate, which counts every part of a descriptor that a client
+/// or the scaler grows as it is allocated, until the shared-cell capacity
+/// run (SC2) measures the bytes really held. Under the count cap alone,
+/// descriptors with the most a creation document allocates (64 watches of
+/// 16 one-byte pointers, about 37 KB decoded) held about 2.3 GiB, one
+/// project's 8,192 streams about 290 MiB; at 64 MiB about 1,800 fit.
+/// 65,536 ordinary slots are about 53 MiB of estimate, so on a cell of
+/// ordinary descriptors the count cap binds first.
+const REGISTRY_CACHE_MAX_BYTES: usize = 64 << 20;
+
+/// What every slot is charged before its descriptor's variable parts: the
+/// slot itself, inline (an emptied, claimed or absent slot is as large as
+/// a filled one), and its key. A descriptor's fixed strings (its name,
+/// project, epoch, fingerprint, content type, signing key and ETag, about
+/// 250 bytes for an ordinary one) are not counted: their length is bounded
+/// by validation, and leaving them out keeps the count cap binding first
+/// on a cell of ordinary descriptors (which then hold about 68 MiB).
+const SLOT_BYTES: usize =
+    std::mem::size_of::<Slot>() + std::mem::size_of::<crate::tenant::TenantStreamRef>();
+
 pub(super) struct DescriptorCache {
     slots: Mutex<Slots>,
 }
@@ -44,6 +65,11 @@ struct Slots {
     ttl: Duration,
     /// Slots held at most; a new key beyond it runs the purge in `put`.
     cap: usize,
+    /// Bytes held at most (the sum of the slots' `bytes`); a put that
+    /// would pass it runs the purge in `put`.
+    byte_cap: usize,
+    /// The sum of every held slot's `bytes`.
+    bytes: usize,
     /// The generation handed out last. Every fill, every invalidation and
     /// every read's claim takes the next one, so no two slot states (of
     /// any stream, at any time) share a generation.
@@ -61,7 +87,65 @@ struct Slot {
     /// invalidation or an abandoned claim), so a read in flight always
     /// finds the slot it left, or the write that moved it.
     touched: Instant,
+    /// What the slot is charged against the byte cap: `slot_bytes` of its
+    /// entry, estimated when the slot was filled, emptied or claimed.
+    bytes: usize,
     entry: Option<CachedDesc>,
+}
+
+/// The estimated bytes a slot holding `entry` holds: `SLOT_BYTES`, and
+/// for a descriptor the heap of its variable parts (`descriptor_heap`).
+fn slot_bytes(entry: Option<&CachedDesc>) -> usize {
+    let desc = entry.and_then(|e| e.desc.as_ref());
+    SLOT_BYTES + desc.map_or(0, descriptor_heap)
+}
+
+/// The heap block an allocation of `len` bytes takes: mimalloc's blocks
+/// are multiples of 8 bytes, the smallest 8; an empty string or vector
+/// allocates nothing.
+fn block(len: usize) -> usize {
+    len.next_multiple_of(8)
+}
+
+/// The heap of `strings` as a vector holds it: the vector's buffer and
+/// each string's block, by capacity.
+fn strings_heap(strings: &[String], capacity: usize) -> usize {
+    let each: usize = strings.iter().map(|s| block(s.capacity())).sum();
+    block(capacity * std::mem::size_of::<String>()) + each
+}
+
+/// The heap a decoded descriptor's variable parts hold, as allocated, not
+/// as long: its watch definitions (the vector's buffer, each name, each
+/// field vector and pointer), which a creation document bounds at 64 of 16
+/// pointers; its fork children's names; and its segment map (the vector's
+/// buffer, each segment's shard prefix and lineage), which nothing bounds
+/// (#NEW-phase-b-5's residual). One-byte strings are charged their 8-byte
+/// blocks and 24-byte headers, so a descriptor of the shortest pointers
+/// is charged for what it holds, not for the bytes its document spelled.
+pub(super) fn descriptor_heap(desc: &StreamDesc) -> usize {
+    let watch = std::mem::size_of::<crate::registry::WatchDefinition>();
+    let watches = &desc.watch_definitions;
+    let definitions: usize = watches
+        .iter()
+        .map(|w| block(w.name.capacity()) + strings_heap(&w.fields, w.fields.capacity()))
+        .sum();
+    let forks = &desc.fork_children;
+    let segment = std::mem::size_of::<crate::segmap::SegmentDesc>();
+    let segments = desc.segments.as_ref().map_or(0, |map| {
+        let lineage: usize = map
+            .segments
+            .iter()
+            .map(|s| {
+                let ids = |v: &Vec<u32>| block(v.capacity() * std::mem::size_of::<u32>());
+                block(s.shard_prefix.capacity()) + ids(&s.predecessors) + ids(&s.successors)
+            })
+            .sum();
+        block(map.segments.capacity() * segment) + lineage
+    });
+    block(watches.capacity() * watch)
+        + definitions
+        + strings_heap(forks, forks.capacity())
+        + segments
 }
 
 /// What a read found in the cache.
@@ -101,47 +185,97 @@ impl Slots {
         self.by_ref.get(sref).map(|slot| slot.generation)
     }
 
-    /// Bounded: at the cap, slots untouched for a TTL purge first, then
-    /// the least recently touched falls out. Either way the slot takes a
-    /// fresh generation, which is returned.
+    /// Bounded: when the slot would take the cache past its count cap (a
+    /// new key) or its byte cap (a new key, or a held one that grows),
+    /// slots untouched for a TTL purge first, then the least recently
+    /// touched fall out until it fits. Either way the slot takes a fresh
+    /// generation, which is returned.
     fn put(&mut self, sref: crate::tenant::TenantStreamRef, entry: Option<CachedDesc>) -> u64 {
-        if self.by_ref.len() >= self.cap && !self.by_ref.contains_key(&sref) {
-            let (ttl, now) = (self.ttl, Instant::now());
-            self.by_ref.retain(|_, slot| within(slot.touched, now, ttl));
-            if self.by_ref.len() >= self.cap
-                && let Some(oldest) = self
-                    .by_ref
-                    .iter()
-                    .min_by_key(|(_, slot)| slot.touched)
-                    .map(|(n, _)| n.clone())
-            {
-                self.by_ref.remove(&oldest);
-            }
+        let bytes = slot_bytes(entry.as_ref());
+        // The slot's own bytes are replaced, never a reason to evict it.
+        if let Some(held) = self.by_ref.remove(&sref) {
+            self.bytes -= held.bytes;
         }
+        self.make_room(bytes);
         let generation = self.stamp();
+        self.bytes += bytes;
         self.by_ref.insert(
             sref,
             Slot {
                 generation,
                 touched: Instant::now(),
+                bytes,
                 entry,
             },
         );
         generation
     }
+
+    /// Whether one more slot of `bytes` would pass the count cap or the
+    /// byte cap.
+    fn over(&self, bytes: usize) -> bool {
+        self.by_ref.len() >= self.cap || self.bytes + bytes > self.byte_cap
+    }
+
+    /// Room for one more slot of `bytes`: past either cap, every slot
+    /// untouched for a TTL purges, then the least recently touched fall
+    /// out until the slot fits (or the cache is empty: a slot larger than
+    /// the byte cap is held alone). The slots are ordered by age once, so a
+    /// put that evicts many slots (one large descriptor in place of many
+    /// small ones) sorts them once under the lock rather than rescanning
+    /// every slot for each; a slot touched at the same instant as the last
+    /// one that had to go goes with it.
+    fn make_room(&mut self, bytes: usize) {
+        if !self.over(bytes) {
+            return;
+        }
+        let (ttl, now) = (self.ttl, Instant::now());
+        self.evict(|slot| !within(slot.touched, now, ttl));
+        let mut ages: Vec<(Instant, usize)> = self
+            .by_ref
+            .values()
+            .map(|slot| (slot.touched, slot.bytes))
+            .collect();
+        ages.sort_unstable_by_key(|&(touched, _)| touched);
+        let (mut count, mut held, mut cutoff) = (self.by_ref.len(), self.bytes, None);
+        for (touched, slot_bytes) in ages {
+            if count < self.cap && held + bytes <= self.byte_cap {
+                break;
+            }
+            (count, held, cutoff) = (count - 1, held - slot_bytes, Some(touched));
+        }
+        if let Some(cutoff) = cutoff {
+            self.evict(|slot| slot.touched <= cutoff);
+        }
+    }
+
+    /// Removes every slot `goes` names, giving back its bytes.
+    fn evict(&mut self, goes: impl Fn(&Slot) -> bool) {
+        let mut freed = 0;
+        self.by_ref.retain(|_, slot| {
+            let gone = goes(slot);
+            if gone {
+                freed += slot.bytes;
+            }
+            !gone
+        });
+        self.bytes -= freed;
+    }
 }
 
 impl DescriptorCache {
     pub(super) fn new(ttl: Duration) -> Self {
-        Self::bounded(ttl, REGISTRY_CACHE_MAX)
+        Self::bounded(ttl, REGISTRY_CACHE_MAX, REGISTRY_CACHE_MAX_BYTES)
     }
 
-    fn bounded(ttl: Duration, cap: usize) -> Self {
+    fn bounded(ttl: Duration, cap: usize, byte_cap: usize) -> Self {
         Self {
             slots: Mutex::new(Slots {
                 by_ref: HashMap::new(),
                 ttl,
                 cap,
+                byte_cap,
+                bytes: 0,
                 last_generation: 0,
             }),
         }
@@ -159,6 +293,12 @@ impl DescriptorCache {
     /// Slots held, emptied ones included: the cardinality figure.
     fn len(&self) -> usize {
         self.slots().by_ref.len()
+    }
+
+    /// The estimated bytes held, the figure the byte cap bounds.
+    #[cfg(test)]
+    fn bytes(&self) -> usize {
+        self.slots().bytes
     }
 
     /// A writer's fill (what `create` wrote) published under a fresh
