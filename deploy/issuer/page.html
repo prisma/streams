@@ -77,7 +77,7 @@ footer { padding-top: 8px; padding-bottom: 32px; font-size: 13px; }
     no_user: "Prisma did not name a user for that sign-in. Sign in with your Prisma account.",
     no_workspace: "Prisma did not name a workspace for that sign-in. Sign in again and choose a workspace.",
     invalid_workspace: "Prisma Streams cannot take that workspace's id. Sign in again and choose another workspace.",
-    workspace_not_allowed: "The workspace you chose is not on the Prisma Streams beta's allow-list. Sign in again and choose a workspace that is.",
+    workspace_not_allowed: "The workspace you chose is not on the Prisma Streams beta's allow-list. Sign in again and choose a workspace that is. Its Streams projects, if it has any, keep running; to revoke a credential or delete a project, ask the Prisma Streams team.",
     unavailable: "Prisma Streams cannot check the beta's allow-list right now. Try again shortly.",
   };
   const POLL_MS = 5000;
@@ -179,6 +179,8 @@ footer { padding-top: 8px; padding-bottom: 32px; font-size: 13px; }
       el("h2", { text: "Not on the allow-list" }),
       el("p", { text: "Workspace " + session.workspaceId + " is not on the Prisma Streams beta's allow-list. " +
         "Sign in to a workspace that is, or ask the Prisma Streams team to add this one." }),
+      el("p", { text: "If this workspace has Streams projects, they keep running and their credentials keep working, " +
+        "but they cannot be managed here: to revoke a credential or delete a project, ask the Prisma Streams team." }),
       el("p", {}, signInLink("Sign in to another workspace"))));
   }
 

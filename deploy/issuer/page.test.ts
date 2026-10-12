@@ -59,6 +59,9 @@ describe("the issuer's page", () => {
       expect(script).toMatch(new RegExp(`\\n\\s+${code}: "[^"]+",\\n`));
     }
     expect(script).toContain("is not on the Prisma Streams beta's allow-list");
+    // Off the list (I8 (a)), its projects run on, but nothing here manages them.
+    expect(script).toContain("If this workspace has Streams projects, they keep running and their credentials keep working");
+    expect(script).toContain("to revoke a credential or delete a project, ask the Prisma Streams team.");
     expect(script).toContain("The Prisma Streams beta is at capacity");
     expect(html).toContain("There is no role check during the beta");
     // The SDK snippet: the credential in the environment, this issuer's origin.
