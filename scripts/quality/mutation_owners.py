@@ -148,6 +148,7 @@ OWNERS = (
     owner('product_cursor', 'src/product_cursor.rs', 'product_cursor::'),
     owner('product_cursor_regressions', 'src/product_cursor/regressions.rs', 'product_cursor::', 'harness-lib'),
     owner('quota_registry', 'src/quota.rs', 'quota::'),
+    owner('quota_append_charge', 'src/quota/append_charge.rs', 'quota::'),
     owner('quota_pin', 'src/quota/pin.rs', 'quota::'),
     owner('quota_parked', 'src/quota/parked.rs', 'quota::parked:: dst_tests::parked_waits::a_projects_'),
     owner('quota_pressure', 'src/quota/pressure.rs', 'quota::'),

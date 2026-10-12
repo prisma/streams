@@ -1,7 +1,8 @@
 //! The product append body contract (external review §5): the committer
 //! wire body, the record count the core will find in it and its permanent
 //! capacity verdict are decided here, before the project's append-volume
-//! debit and any lifecycle write.
+//! debit and any lifecycle write, as is the handler's refusal of a sealed
+//! or sealing collection.
 
 use super::perr;
 use crate::registry::StreamDesc;
@@ -155,4 +156,29 @@ pub(super) fn capacity_refused(refusal: &CapacityRefusal) -> Response {
         Some(details),
         false,
     )
+}
+
+/// Appends refuse a collection that is sealed OR sealing — only the
+/// seal operation's own final record may write during Sealing, and it
+/// goes through submit_product_append with seal_after set (audit P0).
+pub(super) fn refuse_if_sealed(desc: &StreamDesc, is_seal_final: bool) -> Option<Response> {
+    if desc.sealed {
+        return Some(perr(
+            StatusCode::CONFLICT,
+            "sealed",
+            "collection is sealed",
+            None,
+            false,
+        ));
+    }
+    if desc.sealing.is_some() && !is_seal_final {
+        return Some(perr(
+            StatusCode::CONFLICT,
+            "sealed",
+            "collection is being sealed",
+            None,
+            false,
+        ));
+    }
+    None
 }

@@ -1770,31 +1770,6 @@ fn parse_routing_key(raw: &[u8]) -> Result<&str, &'static str> {
     }
 }
 
-/// Appends refuse a collection that is sealed OR sealing — only the
-/// seal operation's own final record may write during Sealing, and it
-/// goes through submit_product_append with seal_after set (audit P0).
-fn refuse_if_sealed(desc: &StreamDesc, is_seal_final: bool) -> Option<Response> {
-    if desc.sealed {
-        return Some(perr(
-            StatusCode::CONFLICT,
-            "sealed",
-            "collection is sealed",
-            None,
-            false,
-        ));
-    }
-    if desc.sealing.is_some() && !is_seal_final {
-        return Some(perr(
-            StatusCode::CONFLICT,
-            "sealed",
-            "collection is being sealed",
-            None,
-            false,
-        ));
-    }
-    None
-}
-
 #[expect(
     clippy::too_many_arguments,
     reason = "product_append; the product handler takes every extractor and authorization part the entry resolved; a request struct would exist only for this signature"
@@ -3660,7 +3635,9 @@ pub(crate) async fn product_list(
 mod answers;
 use answers::{json_ok_no_store, watch_observation_response};
 mod append_body;
-use append_body::{AppendBody, capacity_refused, names_a_producer, parse_append_body};
+use append_body::{
+    AppendBody, capacity_refused, names_a_producer, parse_append_body, refuse_if_sealed,
+};
 mod append_error;
 use append_error::render_product_append_error;
 mod consumer_pull;
