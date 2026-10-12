@@ -145,8 +145,13 @@ export function writeDurable(path: string, text: string): void {
   } finally {
     closeSync(fd);
   }
-  renameSync(tmp, path);
-  syncDir(dirname(path));
+  renameDurable(tmp, path);
+}
+
+/// Rename `from` to `to` and make the rename durable.
+export function renameDurable(from: string, to: string): void {
+  renameSync(from, to);
+  syncDir(dirname(to));
 }
 
 /// Run `fn` holding the state directory's exclusive lock.

@@ -14,6 +14,7 @@ import {
   cleanup,
   customerCredential,
   customerOnly,
+  fakeS3,
   initCell,
   keyFile,
   pepperFile,
@@ -240,6 +241,41 @@ for (const kind of STORES) {
       for (const text of storeTexts(c.state)) expect(text).not.toContain(secret);
       expect((await run("credential", "--state", c.state, "--project", "proj_a", "--pepper-file", pepper.path,
         "--out", out)).err).toBe(`cell-admin credential: --out ${out} exists: a secret is written once, to a new file`);
+    });
+
+    test("credential keeps a committed credential's secret when its bundle fails to publish, and refuses a missing --out directory first", async () => {
+      const c = await initCell();
+      await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w");
+      const pepper = pepperFile(c.root);
+      const before = readState(c.state);
+      const nowhere = join(c.root, "no-such-dir", "ci.secret");
+      let r = await run("credential", "--state", c.state, "--project", "proj_a", "--pepper-file", pepper.path,
+        "--out", nowhere);
+      expect([r.code, r.err.startsWith(`cell-admin credential: cannot write the secret beside ${nowhere}:`)]).toEqual([1, true]);
+      expect(readState(c.state)).toEqual(before);
+      if (kind !== "s3") return;
+      // The feeds bucket refuses the bundle: the state's commit has landed.
+      fakeS3().failPut = (key) => key.endsWith("/feeds-bundle.json");
+      const out = join(c.root, "ci.secret");
+      r = await run("credential", "--state", c.state, "--project", "proj_a", "--pepper-file", pepper.path, "--out", out);
+      const state = readState(c.state);
+      const [id] = Object.keys(state.credentials).filter((k) => !before.credentials[k]);
+      expect(state.credentials[id]).toMatchObject({ project_id: "proj_a", status: "active", grant_version: 1 });
+      expect(readFileSync(out, "utf8")).toStartWith(`prisma_streams_${id}.`);
+      expect(statSync(out).mode & 0o777).toBe(0o600);
+      expect([r.code, r.err]).toEqual([1, `cell-admin credential: the change is committed at feed_version ` +
+        `${state.feed_version}, but its bundle is not published (PUT s3://feeds-1/cells/cell_sc1/feeds-bundle.json ` +
+        "answered 500 InternalError): run cell-admin bundle, not this command again"]);
+      expect(r.out).toContain(`its secret is in ${out} (mode 0600) and nowhere else`);
+      // Any other change says the same, and `bundle` publishes it once the bucket takes writes.
+      r = await run("suspend", "--state", c.state, "--project", "proj_a");
+      expect(r.err).toBe(`cell-admin suspend: the change is committed at feed_version ${state.feed_version + 1}, but ` +
+        "its bundle is not published (PUT s3://feeds-1/cells/cell_sc1/feeds-bundle.json answered 500 InternalError): " +
+        "run cell-admin bundle, not this command again");
+      fakeS3().failPut = undefined;
+      expect((await run("bundle", "--state", c.state)).code).toBe(0);
+      expect(policyOf(c.state, "proj_a").status).toBe("suspended");
+      expect((readBundle(c.state).grants.credentials as any[]).map((g) => g.credential_id)).toContain(id);
     });
 
     test("credential refuses an open pepper file, an 11th live credential, and hidden ones outside the canary", async () => {

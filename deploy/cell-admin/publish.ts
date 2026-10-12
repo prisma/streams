@@ -130,6 +130,13 @@ async function startFrom(
   return { state: structuredClone(copy.state), etag: copy.etag, published };
 }
 
+/// What a writer is told when its change is committed but its bundle is
+/// not published: the change is made, so running the command again would
+/// make it twice; publishing the committed state's bundle is what is left.
+export const unpublishedMessage = (state: CellState, e: Error) =>
+  `the change is committed at feed_version ${state.feed_version}, but its bundle is not published (${e.message}): ` +
+  "run cell-admin bundle, not this command again";
+
 /// Apply `change` to the current state and commit it, re-reading and
 /// re-applying on a lost compare-and-swap; then publish. `change` may run
 /// more than once and must only change the state it is given (and refuse
@@ -137,9 +144,11 @@ async function startFrom(
 /// attempt starts from it instead of reading the state again; a copy that
 /// is no longer current loses its compare-and-swap and the change is
 /// re-applied to the stored state. Returns its result, the committed state
-/// and its ETag. A publish that fails once the state is committed throws,
-/// unless `unpublished` is given: it is told why, and the change returns
-/// `published: false` (the issuer's revalidation republishes the bundle).
+/// and its ETag. A publish that fails once the state is committed throws
+/// unpublishedMessage's AdminError (exit 1: the change is made, never
+/// "run again"), unless `unpublished` is given: it is told why, and the
+/// change returns `published: false` (the issuer's revalidation
+/// republishes the bundle; cell-admin's credential keeps the secret).
 export async function mutate<T>(
   store: StateStore,
   change: (state: CellState) => T | Promise<T>,
@@ -162,7 +171,7 @@ export async function mutate<T>(
     try {
       await new BundlePublisher(store).publish(state);
     } catch (e) {
-      if (unpublished === undefined) throw e;
+      if (unpublished === undefined) throw new AdminError(unpublishedMessage(state, e as Error));
       unpublished(e as Error);
       return { result, state, etag: saved, published: false };
     }

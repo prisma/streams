@@ -13,7 +13,11 @@ bun deploy/cell-admin/cell-admin.ts <command> --state s3://BUCKET/cells/CELL --s
 ```
 
 Exit codes: 0 done, 1 refused or failed, 2 usage, 3 not yet (publish the
-bundle or wait, then run the same command again).
+bundle or wait, then run the same command again). A change whose state is
+committed but whose bundle failed to publish exits 1 with "the change is
+committed at feed_version N, but its bundle is not published (...): run
+cell-admin bundle, not this command again": running it again would make
+the change twice.
 
 ## The cell
 
@@ -131,7 +135,7 @@ A compromised key, in this order:
 | `bundle` | Rewrites the bundle at a newer `feed_version`, for example after a crash between the state and the bundle |
 | `suspend --project P` / `resume --project P` | Publishes the project `suspended` (the cell answers its requests `403 project_not_active`; the issuer mints it no token) or `active` again, at a newer `project_policy_version`. Only an active (not offboarding) project |
 | `quota --project P --quota field=value...` | Sets some of an active project's quotas, each at most its ceiling as in `admit`, keeping the others, at a newer `project_policy_version` |
-| `credential --project P --pepper-file F --out FILE` | Adds a customer credential with a secret (at most 10 live per project): the secret, `prisma_streams_<credential id>.<32 random bytes, base64url>`, goes once to a new file of mode 0600; the state keeps only HMAC-SHA-256 of it under the newest pepper (`v<N>:<base64>[,v<N-1>:<base64>]`, read from a mode-0600 file), the pepper's version and the secret's last 6 characters, exactly as the issuer stores the credentials it makes. Also `--scopes`, `--prefix` and `--name`; `--hidden` only for the canary's credentials (the watch's) |
+| `credential --project P --pepper-file F --out FILE` | Adds a customer credential with a secret (at most 10 live per project): the secret, `prisma_streams_<credential id>.<32 random bytes, base64url>`, goes once to a new file of mode 0600 (written beside it before the change commits, so a directory it cannot write refuses first, and moved into place once the commit lands, even when the bundle then fails to publish); the state keeps only HMAC-SHA-256 of it under the newest pepper (`v<N>:<base64>[,v<N-1>:<base64>]`, read from a mode-0600 file), the pepper's version and the secret's last 6 characters, exactly as the issuer stores the credentials it makes. Also `--scopes`, `--prefix` and `--name`; `--hidden` only for the canary's credentials (the watch's) |
 | `allow --workspace W [--max-projects N] [--requests-per-sec R] [--note TEXT]` | Puts a Prisma workspace on the beta's allow-list (`allowlist.json` beside a directory state; `beta/allowlist.json` in the control bucket, shared by its cells), or replaces its limits: `--max-projects` over the cell's workspace cap (`init --workspace-cap`), `--requests-per-sec` (at most the ceiling) over the free-tier rate. The issuer creates projects only for listed workspaces |
 | `disallow --workspace W` | Takes a workspace off the allow-list: it creates no new project, and its projects keep running until you suspend them (the owner's question I8, answer (a)) |
 | `gate --open \| --close \| --n-max N` | Opens or closes self-serve admission, or sets how many customer projects the issuer places (default open, 50: the static u = 0.5 rule). It publishes nothing |

@@ -6,30 +6,44 @@
 // mints a token for the canary's catalog-read credential to prove the cell
 // serves a key (the rotation drill's check, design §7.3). `export` writes
 // what the platform's Stage 1 imports when it replaces the interim issuer.
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, rmSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import type { Flags } from "./args";
 import { call, cellBase, describeReply } from "./cell-client";
 import type { Io } from "./commands";
 import { AdminError, notYet } from "./errors";
-import { loadChecked, mutate } from "./publish";
+import { loadChecked, mutate, unpublishedMessage } from "./publish";
 import {
   addCredential,
   canaryProbeCredential,
   isCanary,
-  newCredentialId,
   placedProjects,
   prefixesOf,
+  randomCredentialId,
   scopesOf,
 } from "./rules";
 import { newSecret, presentedSecret, readPepperFile, secretFields } from "./secrets";
-import { journal, writeDurable } from "./state";
+import { type CellState, journal, renameDurable, writeDurable } from "./state";
 import { openStore, publishNote } from "./stores";
 import { cellSigningKey, customerClaims, signJwt } from "./tokens";
 
 /// A canary token lives 5 minutes (design §5.1).
 const CANARY_TOKEN_TTL_SECS = 300;
 const CANARY_POLL_MS = 2_000;
+
+/// The secret written durably beside `out` before the change commits, so
+/// a missing or unwritable directory refuses before anything is committed,
+/// and moved to `out` once the commit has landed, published or not: a
+/// committed credential's secret is never lost.
+function stageSecret(out: string, text: string): { keep: () => void; drop: () => void } {
+  const staged = join(dirname(out), `.${basename(out)}.staged-${process.pid}`);
+  try {
+    writeDurable(staged, text);
+  } catch (e) {
+    throw new AdminError(`cannot write the secret beside ${out}: ${(e as Error).message}`);
+  }
+  return { keep: () => renameDurable(staged, out), drop: () => rmSync(staged, { force: true }) };
+}
 
 export async function credential(f: Flags, io: Io): Promise<void> {
   const store = await openStore(f);
@@ -47,21 +61,37 @@ export async function credential(f: Flags, io: Io): Promise<void> {
   const stream_prefixes = prefixesOf(f.all("prefix"));
   const secret = newSecret();
   const fields = secretFields(peppers, secret);
+  // The id is chosen before the commit: the secret file names it.
+  const id = randomCredentialId();
+  const staged = stageSecret(out, `${presentedSecret(id, secret)}\n`);
   await store.exclusive(async () => {
-    const { result: id, state } = await mutate(store, (s) => {
-      const id = newCredentialId(s);
-      const display_name = f.get("name");
-      addCredential(s, project, {
-        scopes,
-        stream_prefixes,
-        credential: { id, ...fields, ...(display_name ? { display_name } : {}), ...(hidden ? { hidden } : {}) },
-      });
-      journal(s, "credential", `${project} credential=${id}${hidden ? " hidden" : ""}`);
-      return id;
-    });
-    writeDurable(out, `${presentedSecret(id, secret)}\n`);
+    let why: Error | undefined;
+    let state: CellState;
+    try {
+      ({ state } = await mutate(
+        store,
+        (s) => {
+          const display_name = f.get("name");
+          addCredential(s, project, {
+            scopes,
+            stream_prefixes,
+            credential: { id, ...fields, ...(display_name ? { display_name } : {}), ...(hidden ? { hidden } : {}) },
+          });
+          journal(s, "credential", `${project} credential=${id}${hidden ? " hidden" : ""}`);
+        },
+        undefined,
+        (e) => {
+          why = e;
+        },
+      ));
+    } catch (e) {
+      staged.drop();
+      throw e;
+    }
+    staged.keep();
     io.out(`credential ${id} for ${project} (${scopes}), hint ${fields.hint}`);
     io.out(`its secret is in ${out} (mode 0600) and nowhere else: hand the file over, never paste it`);
+    if (why !== undefined) throw new AdminError(unpublishedMessage(state, why));
     io.out(`bundle: ${store.bundlePath} (feed_version ${state.feed_version}); ${publishNote(store)}`);
   });
 }

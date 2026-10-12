@@ -288,10 +288,13 @@ export function prefixesOf(prefixes: readonly string[]): string[] | undefined {
   return [...prefixes];
 }
 
+/// A fresh credential id: `strcred_` and 32 random hex characters.
+export const randomCredentialId = () => `strcred_${randomBytes(16).toString("hex")}`;
+
 /// A credential id no record of this cell carries.
 export function newCredentialId(state: CellState): string {
   let id = "";
-  do id = `strcred_${randomBytes(16).toString("hex")}`;
+  do id = randomCredentialId();
   while (state.credentials[id]);
   return id;
 }
