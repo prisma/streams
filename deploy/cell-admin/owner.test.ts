@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { bundleOf } from "./feeds";
 import { unversionedChanges } from "./publish";
 import { admitProject, admittedQuotas, newCredentialId, setCredentialField, setProjectField } from "./rules";
-import { generateKeyPairSync } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { createHmac, generateKeyPairSync, randomBytes } from "node:crypto";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   cleanup,
@@ -14,14 +14,17 @@ import {
   customerOnly,
   initCell,
   keyFile,
+  pepperFile,
   publicKeyFile,
   readBundle,
   readState,
   run,
   STORES,
+  storeTexts,
   useStore,
   verifiedClaims,
 } from "./test-rig";
+import { parsePeppers, secretFields } from "./secrets";
 import { loadSigningKeyFromPem, publicKeyRecord } from "./tokens";
 
 afterEach(cleanup);
@@ -83,6 +86,22 @@ describe("keys from PEM text", () => {
       message = (e as Error).message;
     }
     expect(message).toBe("STREAMS_ISSUER_SIGNING_KEY does not hold a PEM private key");
+  });
+});
+
+describe("secrets", () => {
+  test("peppers are versioned newest first, and a secret is hashed under the newest", () => {
+    const [k2, k1] = [randomBytes(32), randomBytes(48)];
+    const peppers = parsePeppers(`v2:${k2.toString("base64")},v1:${k1.toString("base64url")}`, "STREAMS_ISSUER_PEPPER");
+    expect(peppers.map((p) => [p.version, p.key.length])).toEqual([[2, 32], [1, 48]]);
+    expect(secretFields(peppers, "s3cret-abcdef")).toEqual({
+      secret_hash: createHmac("sha256", k2).update("s3cret-abcdef").digest("base64url"), hv: 2, hint: "abcdef",
+    });
+    expect(() => parsePeppers(`v1:${k1.toString("base64")},v2:${k2.toString("base64")}`, "P"))
+      .toThrow("P: versions must fall from the newest, first, to the oldest");
+    expect(() => parsePeppers(`v1:${k1.toString("base64")},2:${k2.toString("base64")}`, "P"))
+      .toThrow("P: entry 2 is not v<N>:<base64>");
+    expect(() => parsePeppers("", "P")).toThrow("P: entry 1 is not v<N>:<base64>");
   });
 });
 
@@ -174,6 +193,63 @@ for (const kind of STORES) {
       expect([r.code, r.err]).toEqual([0, ""]);
       const keys = readBundle(c.state).keys.keys as any[];
       expect([keys.length, keys[0].alg, readState(c.state).retired_kids.length]).toEqual([1, "EdDSA", 1]);
+    });
+
+    test("credential writes a new credential's secret once to a 0600 file, and the state only its peppered hash", async () => {
+      const c = await initCell();
+      await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w");
+      const pepper = pepperFile(c.root);
+      const out = join(c.root, "ci.secret");
+      const r = await run("credential", "--state", c.state, "--project", "proj_a", "--scopes",
+        "streams.records.read streams.records.append", "--prefix", "orders/", "--name", "ci",
+        "--pepper-file", pepper.path, "--out", out);
+      expect([r.code, r.err]).toEqual([0, ""]);
+      const presented = readFileSync(out, "utf8").trim();
+      expect(statSync(out).mode & 0o777).toBe(0o600);
+      const m = /^prisma_streams_(strcred_[0-9a-f]{32})\.([A-Za-z0-9_-]{43})$/.exec(presented);
+      expect(m).not.toBeNull();
+      const [, id, secret] = m!;
+      expect(readState(c.state).credentials[id]).toMatchObject({
+        project_id: "proj_a", role: "customer", grant_version: 1, status: "active", display_name: "ci",
+        secret_hash: createHmac("sha256", pepper.key).update(secret).digest("base64url"), hv: 1, hint: secret.slice(-6),
+      });
+      expect((readBundle(c.state).grants.credentials as any[]).find((g) => g.credential_id === id)).toEqual({
+        credential_id: id, project_id: "proj_a", grant_version: 1, status: "active",
+        scopes: "streams.records.read streams.records.append", stream_prefixes: ["orders/"], expires_at: null,
+      });
+      expect(r.out).not.toContain(secret);
+      for (const text of storeTexts(c.state)) expect(text).not.toContain(secret);
+      expect((await run("credential", "--state", c.state, "--project", "proj_a", "--pepper-file", pepper.path,
+        "--out", out)).err).toBe(`cell-admin credential: --out ${out} exists: a secret is written once, to a new file`);
+    });
+
+    test("credential refuses an open pepper file, an 11th live credential, and hidden ones outside the canary", async () => {
+      const c = await initCell();
+      await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w");
+      const make = (out: string, ...flags: string[]) =>
+        run("credential", "--state", c.state, "--pepper-file", pepper.path, "--out", join(c.root, out), ...flags);
+      const open = pepperFile(c.root, 0o644, 2);
+      expect((await run("credential", "--state", c.state, "--project", "proj_a", "--pepper-file", open.path,
+        "--out", join(c.root, "x"))).err).toBe(`cell-admin credential: pepper file ${open.path} has mode 0644: ` +
+          "group or others can read the pepper; chmod 600 it");
+      const short = join(c.root, "short");
+      writeFileSync(short, "v3:c2hvcnQ=\n", { mode: 0o600 });
+      expect((await run("credential", "--state", c.state, "--project", "proj_a", "--pepper-file", short,
+        "--out", join(c.root, "x"))).err).toBe(`cell-admin credential: pepper file ${short}: pepper v3 is shorter than 32 bytes`);
+      const pepper = pepperFile(c.root);
+      for (let i = 2; i <= 10; i++) expect((await make(`s${i}`, "--project", "proj_a")).code).toBe(0);
+      expect((await make("s11", "--project", "proj_a")).err)
+        .toBe("cell-admin credential: project proj_a has its 10 live credentials: revoke one first");
+      expect(existsSync(join(c.root, "s11"))).toBe(false);
+      expect((await make("h", "--project", "proj_a", "--hidden")).err)
+        .toBe("cell-admin credential: --hidden is for the canary's credentials only");
+      expect((await make("w", "--project", "sp_canary_cell_sc1")).err)
+        .toBe("cell-admin credential: the canary's credentials are hidden: pass --hidden");
+      const watch = await make("watch", "--project", "sp_canary_cell_sc1", "--hidden", "--name", "watch",
+        "--scopes", "streams.create streams.records.append streams.records.read");
+      expect([watch.code, watch.err]).toEqual([0, ""]);
+      const hidden = Object.values(readState(c.state).credentials).filter((cr) => cr.hidden);
+      expect(hidden.map((cr) => [cr.display_name, cr.secret_hash === undefined])).toEqual([["catalog-read", true], ["watch", false]]);
     });
 
     test("quota sets a project's quotas at most their ceilings at a newer policy version, keeping the rest", async () => {

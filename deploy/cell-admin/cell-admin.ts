@@ -10,6 +10,7 @@
 import { parseFlags } from "./args";
 import { admit, bundle, init, type Io, list, token } from "./commands";
 import { AdminError } from "./errors";
+import { credential } from "./credentials";
 import { keysAdd, keysRetire } from "./keys";
 import { offboard } from "./offboard";
 import { quota, resume, suspend } from "./owner";
@@ -26,6 +27,7 @@ const USAGE = `usage: cell-admin <command> --state DIR|s3://BUCKET/cells/CELL [-
   suspend   --project P
   resume    --project P
   quota     --project P --quota field=value...
+  credential --project P --pepper-file F --out FILE [--scopes "s ..."] [--prefix p]... [--name N] [--hidden]
   keys add  --public-key FILE [--retire-others]
   keys retire --kid K`;
 
@@ -67,6 +69,15 @@ const COMMANDS = {
   bundle: { run: bundle, spec: { single: ["state", "s3-credentials"], required: ["state"] } },
   suspend: { run: suspend, spec: { single: ["state", "s3-credentials", "project"], required: ["state", "project"] } },
   resume: { run: resume, spec: { single: ["state", "s3-credentials", "project"], required: ["state", "project"] } },
+  credential: {
+    run: credential,
+    spec: {
+      single: ["state", "s3-credentials", "project", "pepper-file", "out", "scopes", "name"],
+      multi: ["prefix"],
+      bool: ["hidden"],
+      required: ["state", "project", "pepper-file", "out"],
+    },
+  },
   "keys add": {
     run: keysAdd,
     spec: { single: ["state", "s3-credentials", "public-key"], bool: ["retire-others"], required: ["state", "public-key"] },

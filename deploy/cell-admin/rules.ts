@@ -295,6 +295,28 @@ export function admitProject(
   addCredentialRecord(state, a.project, a.scopes, a.stream_prefixes, a.credential, now);
 }
 
+/// Live customer credentials a project may hold (design §6.1).
+export const MAX_LIVE_CREDENTIALS = 10;
+
+/// Add a customer credential to an active project: the CLI's `credential`
+/// and the issuer's credential create. Refused at MAX_LIVE_CREDENTIALS
+/// live (active, not omitted) ones.
+export function addCredential(
+  state: CellState,
+  project: string,
+  a: { scopes: string; stream_prefixes?: string[]; credential: NewCredential },
+): void {
+  const p = projectOf(state, project);
+  if (p.phase !== "active") throw new AdminError(`project ${project} is ${p.phase}: it takes no new credential`);
+  const live = Object.values(state.credentials).filter(
+    (c) => c.project_id === project && c.role === "customer" && c.status === "active" && !c.omitted,
+  ).length;
+  if (live >= MAX_LIVE_CREDENTIALS) {
+    throw new AdminError(`project ${project} has its ${MAX_LIVE_CREDENTIALS} live credentials: revoke one first`);
+  }
+  addCredentialRecord(state, project, a.scopes, a.stream_prefixes, a.credential, new Date().toISOString());
+}
+
 /// A new active customer credential of `project`, published at
 /// grant_version 1.
 function addCredentialRecord(

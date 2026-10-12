@@ -5,7 +5,7 @@
 // The suite runs once per store (`useStore` in a beforeEach); every
 // helper below takes the `--state` value and reads whichever store it
 // names.
-import { createPublicKey, generateKeyPairSync, verify } from "node:crypto";
+import { createPublicKey, generateKeyPairSync, randomBytes, verify } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -163,6 +163,15 @@ export function publicKeyFile(privatePath: string, name = "cell.pub"): string {
   const path = join(dirname(privatePath), name);
   writeFileSync(path, pub, { mode: 0o644 });
   return path;
+}
+
+/// A pepper file (`v<N>:<base64>`, newest first) of mode `mode`; returns
+/// its path and its newest key.
+export function pepperFile(dir: string, mode = 0o600, version = 1): { path: string; key: Buffer } {
+  const key = randomBytes(32);
+  const path = join(dir, `pepper-v${version}`);
+  writeFileSync(path, `v${version}:${key.toString("base64")}\n`, { mode });
+  return { path, key };
 }
 
 export interface Run {
