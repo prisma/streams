@@ -41,9 +41,10 @@ export class FakeCell {
     });
   }
 
-  /// verify_customer's order: signature, project placed, ownership,
-  /// credential known, its project, its status, its grant_version; then
-  /// the catalog's scope.
+  /// verify_customer's order: signature, project placed, ownership, the
+  /// project's status (before any credential, so a suspended project's
+  /// every token is refused, an operator's too), credential known, its
+  /// project, its status, its grant_version; then the catalog's scope.
   private authorize(req: Request): { project: string } | Response {
     const bearer = req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
     const claims = this.live && verifiedClaims(this.live, bearer);
@@ -53,6 +54,7 @@ export class FakeCell {
     const policy = (this.live.policies.projects as any[]).find((p) => p.project_id === claims.project_id);
     if (!policy) return this.reply(421, "wrong_cell");
     if (claims.ownership_version !== policy.ownership_version) return this.reply(401, "ownership_version_mismatch");
+    if (policy.status !== "active") return this.reply(403, "project_not_active");
     const cred = (this.live.grants.credentials as any[]).find((c) => c.credential_id === claims.credential_id);
     if (!cred) return this.reply(401, "credential_unknown");
     if (cred.project_id !== claims.project_id) return this.reply(401, "credential_project_mismatch");

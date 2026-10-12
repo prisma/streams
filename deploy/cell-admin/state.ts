@@ -74,6 +74,11 @@ export interface ProjectRecord {
   quotas: Quotas;
   admitted_at: string;
   offboarded_at?: string;
+  /// The issuer's offboarding job (deploy/issuer/offboarding.ts): its
+  /// failed attempts at this project's drain, and when it tries again.
+  /// Never published.
+  offboard_attempts?: number;
+  next_attempt_at?: string;
   display_name?: string;
   created_by?: Actor;
 }

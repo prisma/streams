@@ -12,6 +12,8 @@
 //   /v1/workspaces/{w}/streams/projects...
 //                            the management API, for a signed-in browser
 //                            (management.ts)
+// Beside the routes, it holds the jobs main.ts starts: the audit's tick,
+// the re-hash sweep (rehash.ts) and the offboarding job (offboarding.ts).
 import type { StateStore } from "../cell-admin/store";
 import { AllowlistReader } from "./allowlist";
 import { Audit } from "./audit";
@@ -20,6 +22,7 @@ import type { IssuerConfig } from "./config";
 import { Exchange } from "./exchange";
 import { RateLimits } from "./limits";
 import { Management } from "./management";
+import { Offboarding } from "./offboarding";
 import { Ops } from "./ops";
 import { servePage } from "./page";
 import { Rehasher } from "./rehash";
@@ -33,12 +36,15 @@ export interface IssuerDeps {
   log?: (line: string) => void;
   /// The edge's trusted client-IP header (limits.ts, K4).
   ipHeader?: string | null;
+  /// The offboarding drain's settle time, shortened by tests (60 s).
+  offboardSettleMs?: number;
 }
 
 export class Issuer {
   readonly limits: RateLimits;
   readonly audit: Audit;
   readonly rehasher: Rehasher;
+  readonly offboarding: Offboarding;
   private readonly exchange: Exchange;
   private readonly ops: Ops;
   private readonly management: Management;
@@ -50,6 +56,13 @@ export class Issuer {
     this.limits = new RateLimits(now);
     this.audit = new Audit(deps.store, cfg.cellId, { now, log: deps.log });
     this.rehasher = new Rehasher(deps.cache, cfg.peppers, this.audit, deps.log);
+    this.offboarding = new Offboarding(cfg, {
+      cache: deps.cache,
+      audit: this.audit,
+      now,
+      log,
+      ...(deps.offboardSettleMs !== undefined ? { settleMs: deps.offboardSettleMs } : {}),
+    });
     const shared = { cache: deps.cache, limits: this.limits, audit: this.audit, rehasher: this.rehasher, now };
     this.exchange = new Exchange(cfg, { ...shared, ...(deps.ipHeader !== undefined ? { ipHeader: deps.ipHeader } : {}) });
     this.ops = new Ops(cfg, shared);

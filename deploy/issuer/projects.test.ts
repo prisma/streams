@@ -400,8 +400,8 @@ describe("deleting a project", () => {
       before: { feed_version: before.feed_version }, after: { feed_version: after.feed_version },
       request_id: res.headers.get("x-request-id"),
     });
-    // The drain (the owner's cell-admin offboard today; the issuer's job
-    // later) omits it: the project is gone from the API.
+    // A drain omits it (here the owner's cell-admin offboard; the issuer's
+    // own job in offboarding.test.ts): the project is gone from the API.
     const fake = new FakeCell();
     try {
       fake.publish(readBundle(cell.state));

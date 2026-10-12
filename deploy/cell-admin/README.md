@@ -71,7 +71,7 @@ pinned to the customer audience `prisma-streams-data`.
 | `init --cell-id C --deployment-project P --account A (--key-file K \| --public-key FILE)` | Creates the state and the first bundle. It reads the profiles (by default the two above; `--profile` repeats, later wins), checks they describe a single-server shared cell, and fixes the cell's ceilings at bound ÷ k. Also: `--workspace-cap N` (default 1), `--max-projects N` (default 1,000), `--denylist FILE` (default `DIR/denylist.txt`; point several cells at one file) and `--issuer URL` |
 | `admit --project P --workspace W` | Places a project and creates its customer credential. Each bounded quota defaults to the cell's ceiling; `--quota field=value` sets a lower one. Also `--scopes "..."` (default: every scope), `--prefix p` (repeatable) and `--profile F` (repeatable; default the two shipped profiles), the profile it checks against the one `init` recorded |
 | `token --credential C --key-file K --out FILE [--ttl SECS]` | Mints a customer token, valid at most 24 h (default 1 h; the first minute is backdated for clock skew). The token goes to FILE with mode 0600 and is never printed. Hand the file over; never paste the token |
-| `offboard --project P` | First run: revokes the project's customer credentials and adds an operator credential. Publish the bundle |
+| `offboard --project P` | First run: revokes the project's customer credentials and adds an operator credential. Publish the bundle. On a cell with the interim issuer, its offboarding job makes the second run on its own (`deploy/issuer/offboarding.ts`: every 15 s, failed attempts retried after 1, 2, 4, ... minutes, at most an hour) |
 | `offboard --project P --cell-url URL --key-file K` | Second run: checks the cell serves the revocation, deletes every stream, re-walks the catalog until a walk at least `--settle-secs` (default 60) after that check lists nothing, then omits the project. Publish the bundle. Exit 3 means "publish, wait, run again"; the walk is bounded by `--max-walks` (default 10) |
 | `list [--json]` | Shows the cell, its ceilings, and each project's phase, quotas and credentials. Holds no secrets |
 | `bundle` | Rewrites the bundle at a newer `feed_version`, for example after a crash between the state and the bundle |
@@ -181,6 +181,17 @@ What the catalog does not list, offboarding cannot see:
 - a stream still being created when the walk runs (the settle time covers
   requests that passed authorization before the revocation);
 - expired streams and tombstones, which hold no readable data.
+
+### Offboarding a suspended project
+
+`offboard` refuses a suspended project before it changes anything, as the
+issuer's delete does: the cell checks a project's status before any
+credential, so it would refuse the drain's operator token for a
+suspended project, and `resume` refuses a project being offboarded, so its
+offboarding could never finish. Resume it, then offboard it. Resuming
+gives the project's credentials back until the offboarding's revocation
+reaches the cell (about 45 s); how the owner offboards a suspended
+(abusive) project without that window is an open owner question.
 
 ## Watch
 

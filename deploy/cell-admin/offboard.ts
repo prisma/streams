@@ -14,6 +14,9 @@
 //    passed authorization before the revocation has finished. Only then
 //    is the project omitted from the policy feed and its credentials from
 //    the grants feed. Its id stays on the denylist: it is never placed again.
+//    On a cell with the interim issuer, the issuer's offboarding job
+//    (deploy/issuer/offboarding.ts) makes this second run on its own, with
+//    drainProject and omitDrained.
 //
 // Product streams have no forks (forks exist only on the raw surface,
 // which a customer project cannot reach), so the walk deletes in catalog
@@ -29,7 +32,7 @@ import { loadChecked, mutate } from "./publish";
 import { bumpFeed, setCredentialField } from "./rules";
 import { type CellState, journal } from "./state";
 import { openStore, publishNote } from "./stores";
-import { cellSigningKey, customerClaims, type SigningKey, signJwt } from "./tokens";
+import { cellSigningKey, customerClaims, signJwt } from "./tokens";
 
 export const OPERATOR_SCOPES = "streams.catalog.read streams.lifecycle.manage streams.metadata.read";
 const OPERATOR_TOKEN_TTL_SECS = 1800;
@@ -68,8 +71,10 @@ export function revoke(state: CellState, project: string): { revoked: string[]; 
   return { revoked, operator: id };
 }
 
-const mint = (state: CellState, sk: SigningKey, credential: string, ttl: number) =>
-  signJwt(sk, customerClaims(state, credential, ttl, "cell-admin-offboard"));
+/// Signs a token of `state`'s credential `credential` at its current
+/// versions, valid `ttlSecs`: cell-admin under --key-file, the issuer
+/// under its own key.
+export type Minter = (state: CellState, credential: string, ttlSecs: number) => string;
 
 /// The cell serves the offboarding snapshot: the operator reads the
 /// catalog and every revoked credential is refused as revoked. Returns a
@@ -77,13 +82,13 @@ const mint = (state: CellState, sk: SigningKey, credential: string, ttl: number)
 async function proveRevocation(
   state: CellState,
   project: string,
-  sk: SigningKey,
+  mint: Minter,
   base: string,
 ): Promise<() => string> {
   const creds = credentialsOf(state, project);
   const operator = creds.find(([, c]) => c.role === "operator" && c.status === "active");
   if (!operator) throw new AdminError(`project ${project} is offboarding but has no operator credential`);
-  const opToken = () => mint(state, sk, operator[0], OPERATOR_TOKEN_TTL_SECS);
+  const opToken = () => mint(state, operator[0], OPERATOR_TOKEN_TTL_SECS);
   const seen = await call(base, "GET", "/v1/streams?limit=1", opToken());
   if (seen.status !== 200) {
     throw notYet(
@@ -93,7 +98,7 @@ async function proveRevocation(
   }
   for (const [id, c] of creds) {
     if (c.role !== "customer") continue;
-    const probe = await call(base, "GET", "/v1/streams?limit=1", mint(state, sk, id, PROBE_TOKEN_TTL_SECS));
+    const probe = await call(base, "GET", "/v1/streams?limit=1", mint(state, id, PROBE_TOKEN_TTL_SECS));
     if (probe.status !== 403 || probe.code !== "credential_not_active") {
       throw notYet(
         `revoked credential ${id} answered ${describeReply(probe)}, not 403 ` +
@@ -104,23 +109,43 @@ async function proveRevocation(
   return opToken;
 }
 
-async function drain(base: string, opToken: () => string, f: Flags, project: string, io: Io): Promise<number> {
-  const maxWalks = f.count("max-walks", 10);
-  const settleMs = Number(f.get("settle-secs") ?? "60") * 1000;
-  if (!Number.isFinite(settleMs) || settleMs < 0) throw new AdminError("--settle-secs must be >= 0", 2);
+/// How offboarding's second phase reaches the cell and how long it walks.
+export interface Drain {
+  /// The cell's origin.
+  base: string;
+  mint: Minter;
+  /// Walks at most, and how long after the proof an empty walk must start.
+  maxWalks: number;
+  settleMs: number;
+  log: (line: string) => void;
+}
+
+async function drain(opToken: () => string, project: string, d: Drain): Promise<number> {
   const proven = Date.now();
   let deleted = 0;
-  for (let walk = 1; walk <= maxWalks; walk++) {
-    const settled = Date.now() - proven >= settleMs;
-    const w = await walkAndDelete(base, opToken(), io.out);
+  for (let walk = 1; walk <= d.maxWalks; walk++) {
+    const settled = Date.now() - proven >= d.settleMs;
+    const w = await walkAndDelete(d.base, opToken(), d.log);
     deleted += w.deleted;
-    io.out(`walk ${walk}: listed ${w.listed}, deleted ${w.deleted}`);
+    d.log(`walk ${walk}: listed ${w.listed}, deleted ${w.deleted}`);
     if (w.listed === 0 && settled) return deleted;
     if (w.listed === 0) {
-      await new Promise((r) => setTimeout(r, Math.max(0, settleMs - (Date.now() - proven))));
+      await new Promise((r) => setTimeout(r, Math.max(0, d.settleMs - (Date.now() - proven))));
     }
   }
-  throw notYet(`the catalog of ${project} was not empty after ${maxWalks} walks; run again`);
+  throw notYet(`the catalog of ${project} was not empty after ${d.maxWalks} walks; run again`);
+}
+
+/// Offboarding's second phase up to the omit, on a state that holds the
+/// project offboarding: prove the cell serves the revocation, then walk
+/// and delete until an empty walk starts `settleMs` after the proof.
+/// Returns how many streams it deleted; refuses with exit 3 (run again)
+/// while the cell does not serve the revocation or the catalog does not
+/// empty within `maxWalks` walks.
+export async function drainProject(state: CellState, project: string, d: Drain): Promise<number> {
+  const opToken = await proveRevocation(state, project, d.mint, d.base);
+  d.log(`the cell serves the revocation of ${project}; walking its catalog`);
+  return drain(opToken, project, d);
 }
 
 /// Returns what it did, for the operator.
@@ -149,6 +174,27 @@ function stillIn(state: CellState, project: string, phase: "active" | "offboardi
   }
 }
 
+/// Refused for a suspended project: the cell checks a project's status
+/// before any credential (src/auth.rs, verify_customer), so it would refuse
+/// the drain's operator token too, and `resume` refuses a project being
+/// offboarded: the offboarding could never finish. The issuer's delete
+/// refuses it the same way (deploy/issuer/projects.ts).
+function refuseSuspended(state: CellState, project: string): void {
+  if (state.projects[project].status !== "suspended") return;
+  throw new AdminError(
+    `project ${project} is suspended: the cell refuses the drain's operator token for a suspended project, so its ` +
+      'offboarding could never finish; resume it first (README, "Offboarding a suspended project")',
+  );
+}
+
+/// Offboarding's last step, on the state its commit lands on: omit the
+/// drained project and its credentials from the feeds, refused unless it
+/// is still offboarding. Returns what it did, for the operator.
+export function omitDrained(state: CellState, project: string, deleted: number): string {
+  stillIn(state, project, "offboarding");
+  return omit(state, project, deleted);
+}
+
 export async function offboard(f: Flags, io: Io): Promise<void> {
   const store = await openStore(f);
   const project = f.must("project");
@@ -157,6 +203,7 @@ export async function offboard(f: Flags, io: Io): Promise<void> {
     if (phaseOf(state, project) === "active") {
       const done = await mutate(store, (s) => {
         stillIn(s, project, "active");
+        refuseSuspended(s, project);
         return revoke(s, project);
       });
       const { revoked, operator } = done.result;
@@ -170,13 +217,12 @@ export async function offboard(f: Flags, io: Io): Promise<void> {
     }
     const base = cellBase(f.must("cell-url"));
     const sk = cellSigningKey(state, f.must("key-file"));
-    const opToken = await proveRevocation(state, project, sk, base);
-    io.out(`the cell serves the revocation of ${project}; walking its catalog`);
-    const deleted = await drain(base, opToken, f, project, io);
-    const done = await mutate(store, (s) => {
-      stillIn(s, project, "offboarding");
-      return omit(s, project, deleted);
-    });
+    const mint: Minter = (s, credential, ttl) => signJwt(sk, customerClaims(s, credential, ttl, "cell-admin-offboard"));
+    const maxWalks = f.count("max-walks", 10);
+    const settleMs = Number(f.get("settle-secs") ?? "60") * 1000;
+    if (!Number.isFinite(settleMs) || settleMs < 0) throw new AdminError("--settle-secs must be >= 0", 2);
+    const deleted = await drainProject(state, project, { base, mint, maxWalks, settleMs, log: io.out });
+    const done = await mutate(store, (s) => omitDrained(s, project, deleted));
     io.out(done.result);
     io.out(`bundle: ${store.bundlePath} (feed_version ${done.state.feed_version}); ${publishNote(store)}`);
     io.out(`${project} stays on the denylist`);

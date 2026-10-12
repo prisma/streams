@@ -196,10 +196,10 @@ export class Projects {
   /// Delete a project (design §10): offboarding's first phase in one
   /// compare-and-swap, then published. Its customer credentials are
   /// revoked, so the exchange refuses them at once and the cell once it
-  /// holds the bundle; the project shows `deleting` until the drain (the
-  /// owner's `cell-admin offboard`, the issuer's job of B5) has walked
-  /// its catalog and omitted it. The page asks for the project's name
-  /// before it calls; the call takes no body.
+  /// holds the bundle; the project shows `deleting` until the issuer's
+  /// offboarding job (offboarding.ts) has walked its catalog and omitted
+  /// it. The page asks for the project's name before it calls; the call
+  /// takes no body.
   async delete(c: Call): Promise<Response> {
     const [w, id] = c.ids;
     const body = await readObject(c.req, [], true);

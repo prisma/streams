@@ -1,6 +1,7 @@
 // cell-admin offboard against a fake cell (review findings M4 and R6, the
 // F-reuse leg of PLAN step 9). Run with `bun test ./deploy/cell-admin`.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { validateDocument } from "../../platform-demo/src/validate.mjs";
 import { schema } from "./feeds";
@@ -73,6 +74,30 @@ for (const kind of STORES) {
         const t = await run("token", "--state", c.state, "--credential", cred, "--key-file", c.key, "--out",
           join(c.root, "t.jwt"));
         expect(t.err).toBe(`cell-admin token: credential ${cred} is not active (project proj_a)`);
+      });
+
+      test("refuses a suspended project before changing anything: the cell refuses its drain's operator token", async () => {
+        const c = await twoProjects();
+        expect((await run("suspend", "--state", c.state, "--project", "proj_a")).code).toBe(0);
+        const [state, bundle] = [readState(c.state), readBundleText(c.state)];
+        const r = await run("offboard", "--state", c.state, "--project", "proj_a");
+        expect([r.code, r.err]).toEqual([1, "cell-admin offboard: project proj_a is suspended: the cell refuses the " +
+          "drain's operator token for a suspended project, so its offboarding could never finish; resume it first " +
+          "(README, \"Offboarding a suspended project\")"]);
+        expect([readState(c.state), readBundleText(c.state)]).toEqual([state, bundle]);
+        // Why: the cell checks the project's status before the credential,
+        // so every token of a suspended project is refused, an operator's too.
+        fake = new FakeCell();
+        fake.publish(readBundle(c.state));
+        const out = join(c.root, "t.jwt");
+        expect((await run("token", "--state", c.state, "--credential", customerCredential(c.state, "proj_a"),
+          "--key-file", c.key, "--out", out)).code).toBe(0);
+        const res = await fetch(`${fake.url}/v1/streams?limit=1`, { headers: { authorization: `Bearer ${readFileSync(out, "utf8")}` } });
+        expect([res.status, (await res.json()).error.code]).toEqual([403, "project_not_active"]);
+        // Resumed, it offboards as any other.
+        expect((await run("resume", "--state", c.state, "--project", "proj_a")).code).toBe(0);
+        expect((await run("offboard", "--state", c.state, "--project", "proj_a")).code).toBe(0);
+        expect(readState(c.state).projects.proj_a.phase).toBe("offboarding");
       });
 
       test("the second run waits (exit 3) until the cell serves the revocation, and changes nothing", async () => {

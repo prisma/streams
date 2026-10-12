@@ -10,9 +10,11 @@
 // secrets among them once parsed (hygiene, not a control). It refuses to
 // start (exit 1, a message that quotes ids only) on any input or boot
 // refusal (boot.ts). Then it serves server.ts's routes on PORT,
-// revalidates the cell's state every 5 s, ticks the audit every 10 s and
-// sweeps re-hashes daily; SIGTERM or SIGINT stops the timers, writes the
-// open audit period and exits 0.
+// revalidates the cell's state every 5 s, ticks the audit every 10 s,
+// sweeps re-hashes daily and drains deleted projects (offboarding.ts,
+// looking every 15 s); SIGTERM or SIGINT stops the timers, writes the
+// open audit period and exits 0 (a drain cut short resumes at the next
+// boot).
 import { AdminError } from "../cell-admin/errors";
 import { boot } from "./boot";
 import { StateCache } from "./cache";
@@ -57,7 +59,7 @@ async function start(): Promise<void> {
   await keepAwake(cfg);
   const cache = new StateCache(booted.store, booted);
   const issuer = new Issuer(cfg, { store: booted.store, cache });
-  const stops = [cache.start(), issuer.audit.start(), issuer.rehasher.start()];
+  const stops = [cache.start(), issuer.audit.start(), issuer.rehasher.start(), issuer.offboarding.start()];
   const server = Bun.serve({
     port: cfg.port,
     hostname: "0.0.0.0",

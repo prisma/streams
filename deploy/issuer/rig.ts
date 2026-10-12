@@ -133,7 +133,9 @@ export async function managed(cell: IssuerCell, env: Env = cell.env) {
   const cfg = readConfig(env);
   const b = await boot(cfg);
   const cache = new StateCache(b.store, b, { now, log: () => {} });
-  const issuer = new Issuer(cfg, { store: b.store, cache, now, log: () => {} });
+  /// What the issuer logged, oldest first.
+  const logs: string[] = [];
+  const issuer = new Issuer(cfg, { store: b.store, cache, now, log: (l) => logs.push(l), offboardSettleMs: 0 });
   const session = (workspace: string, patch: Partial<Session> = {}): Session => ({
     ...newSession({ user_id: `usr_${workspace}`, email: `owner@${workspace}.example.com`, workspace_id: workspace }, clock.t),
     ...patch,
@@ -163,5 +165,5 @@ export async function managed(cell: IssuerCell, env: Env = cell.env) {
       headers: { "content-type": "application/json", "x-csrf-token": csrfToken(cfg.sessionKey, sid ?? "") },
     });
   };
-  return { cfg, cache, clock, issuer, store: b.store, session, signIn, call, get, send };
+  return { cfg, cache, clock, issuer, logs, store: b.store, session, signIn, call, get, send };
 }
