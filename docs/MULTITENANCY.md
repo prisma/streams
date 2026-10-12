@@ -1360,17 +1360,37 @@ bound the debt by one request's work instead of the rate). While the
 store budget is in debt, the project's creates (recreates and forks
 included), deletes and seals answer `429 project_rate_limit` with the
 whole seconds until it is not; every other request only pays into it,
-and the request bucket still charges every request exactly 1. A fresh
-create weighs 11 (a 404 and a PUT): at 20 requests a second a project
-creates two streams back to back and then one every 0.55 s. The catalog
-(`GET /v1/streams`) pays and is refused alike (phase B item B6, in edge
-change #NEW-phase-b-3): a listing of N streams weighs N + 10 (its LIST
-and a GET a descriptor), so at 20 a second a full budget that lists 100
-streams is left 90 in debt, and the project's next listing, create,
-delete or seal is refused for 4.5 s (`Retry-After: 5`); its appends and
-reads are not. Owner question Q1: built as (b′), a budget at the
-request rate; (b) would publish its own `store_ops_per_sec`, (a) would
-debit the request bucket and refuse every route.
+and the request bucket still charges every request exactly 1. A
+PUT or COPY is weighed by how it ended, once it answers, as a GET is.
+A refused route is admitted while the budget is not in debt, so from a
+full budget a sequential client gets floor(rate / weight) + 1 back to
+back, and concurrent requests all pass the gate before any is debited
+(up to one second's `requests_per_sec` at once, leaving about 10 s of
+debt for creates). A project's registry spend is thus bounded by the
+budget's rate for the refused routes, plus the descriptor GETs that the
+other routes pay but are never refused for (a few a request at most,
+within its request rate), plus one burst. A fresh create weighs 11 (a 404 and a PUT): at the
+beta's free tier of 10 requests a second a project creates one stream
+and then one every 1.1 s, at 20 two back to back and then one every
+0.55 s, at the k = 8 ceiling of 176 seventeen and then sixteen a
+second. The catalog (`GET /v1/streams`) pays and is refused alike (phase
+B item B6, in edge change #NEW-phase-b-3): a listing weighs the
+descriptors it scans plus 10 (its LIST and a GET a descriptor, at least
+N + 10 for N streams listed), so at 10 a second a full budget that lists
+100 streams is left about 100 in debt and the project's next listing,
+create, delete or seal is refused for about 10 s (`Retry-After: 10`; at
+20, 90 in debt for 4.5 s); its appends and reads are not. The SDK waits
+at most about 15 s (three retries, `Retry-After` capped at 5 s), so a
+longer debt reaches its callers as `429`. Owner question Q1 was decided
+on 2026-10-12 (P1): (b′), a budget at the request rate, now; (b), its
+own published `store_ops_per_sec`, when a partner needs a store rate
+separate from the request rate. A listing also reserves what its page
+may hold, its descriptors counted decoded (its page, at most 4 MiB, and
+the descriptors it fetches ahead, about 5.3 MiB in all), in the
+project's read bytes and the instance's read memory, as a page read does
+(capacity review C8, phase B item B6; edge change #NEW-phase-b-6,
+awaiting ratification); while it reads, that reservation counts in the
+project's write latch like any held page.
 
 ### 17.4 Fairness
 

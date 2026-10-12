@@ -713,7 +713,7 @@ async fn a_capability_naming_an_unserved_project_reads_no_descriptor() {
     engine_shutdown(&cell.state).await;
 }
 
-/// A10 (phase B step 14(b), owner question Q1 at its default (b')): a
+/// A10 (phase B step 14(b), owner question Q1, decided (b') on 2026-10-12): a
 /// request pays for the registry store work its own task makes (a GET or
 /// a 404 1, a PUT, LIST or COPY 10) from its project's store budget, its
 /// request rate a second with one second's burst, once it is served.
@@ -788,7 +788,7 @@ async fn a_create_pays_for_its_registry_writes() {
     engine_shutdown(&cell.state).await;
 }
 
-/// A10 on the catalog (phase B item B6, owner question Q1 at (b')): a
+/// A10 on the catalog (phase B item B6, owner question Q1, decided (b')): a
 /// listing pays for its LIST (10) and every descriptor it reads (1) from
 /// its project's store budget, and is refused `429 project_rate_limit`
 /// while that budget is in debt; an append is not. Project 0 creates 120

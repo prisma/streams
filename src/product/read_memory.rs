@@ -19,15 +19,19 @@
 //!
 //! A request that writes the registry (a create, recreate or fork, a
 //! delete, a seal) is refused while its project's store budget is in debt
-//! (public-beta phase B step 14(b), owner question Q1 at its recommended
-//! (b')): 429 `project_rate_limit` with the seconds until it is not, as
+//! (public-beta phase B step 14(b), owner question Q1, decided (b') on
+//! 2026-10-12): 429 `project_rate_limit` with the seconds until it is not, as
 //! the request-rate bucket answers. Every other route only pays into the
 //! budget (`quota::parked`).
 //!
 //! The catalog (`GET /v1/streams`, its own route) is admitted here too
 //! (public-beta phase B item B6): `admit_catalog` binds its project's share
 //! after project admission, so a listing pays for the descriptors it reads
-//! and is refused while the store budget is in debt.
+//! and is refused while the store budget is in debt, and
+//! `catalog_page_reserved` reserves what its page may hold, its
+//! descriptors counted decoded (`Registry::catalog_page_bytes`, about
+//! 5.3 MiB), as a page read does. Its
+//! answer is names only, so the reservation is released once it answers.
 
 use axum::http::{HeaderValue, Method, StatusCode};
 use axum::response::Response;
@@ -42,6 +46,8 @@ use crate::admission::read_memory::{ReadHold, ReadRefusal};
 use crate::application::consumer::PULL_COVERAGE_BYTES;
 use crate::auth::RequestPrincipal;
 use crate::quota::QuotaGuard;
+use crate::registry::{CatalogPage, Registry};
+use crate::tenant::ProjectId;
 
 /// The memory backstops for one admitted request on the product surface
 /// before its body (`path` is the route's whole wildcard path, subresource
@@ -65,7 +71,8 @@ pub(crate) async fn refusal(
     {
         return Some(refusal);
     }
-    reserve(state, principal, page_bytes(method, path, query)?).await
+    let bytes = page_bytes(method, path, query)?;
+    reserve(state, project_of(principal), bytes).await
 }
 
 impl AppState {
@@ -85,6 +92,41 @@ impl AppState {
             None => Ok(guard),
         }
     }
+
+    /// `project`'s catalog page, read once what it may hold is reserved in
+    /// the project's read bytes and the instance's read memory, as a page
+    /// read reserves; the hold is the request's until it answers. `Err` is
+    /// the refusal to answer: 429 `project_memory_pressure` or 503
+    /// `read_memory_busy` after the reservation's wait, or 500 `internal`
+    /// when the page fails.
+    pub(crate) async fn catalog_page_reserved(
+        &self,
+        project: &ProjectId,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<CatalogPage, Box<Response>> {
+        let bytes = Registry::catalog_page_bytes(limit);
+        if let Some(refusal) = reserve(self, Some(project), bytes).await {
+            return Err(Box::new(refusal));
+        }
+        self.registry
+            .list_page(project, after, limit)
+            .await
+            .map_err(|e| {
+                Box::new(perr(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    &e.to_string(),
+                    None,
+                    true,
+                ))
+            })
+    }
+}
+
+/// The verified principal's project, if any.
+fn project_of(principal: Option<&RequestPrincipal>) -> Option<&ProjectId> {
+    principal.map(|p| &p.project_id)
 }
 
 /// Whether the request names an operation that writes the registry: a
@@ -118,28 +160,24 @@ fn store_budget_refusal(
 /// Reserve `bytes` for the request's page in its project's read bytes and
 /// the instance's read memory: the refusal to answer, or `None` once the
 /// hold is bound to the request.
-async fn reserve(
-    state: &AppState,
-    principal: Option<&RequestPrincipal>,
-    bytes: u64,
-) -> Option<Response> {
-    let project = principal.and_then(|p| state.quotas.read_bytes(&p.project_id));
+async fn reserve(state: &AppState, project: Option<&ProjectId>, bytes: u64) -> Option<Response> {
+    let held = project.and_then(|p| state.quotas.read_bytes(p));
     let line = state.admission.project_memory_pressure_bytes();
-    match ReadHold::reserve(&state.admission, project, line, bytes).await {
+    match ReadHold::reserve(&state.admission, held, line, bytes).await {
         Ok(hold) => {
             crate::admission::park::bind_read(hold);
             None
         }
-        Err(ReadRefusal::Project) => Some(memory_pressure(principal)),
+        Err(ReadRefusal::Project) => Some(memory_pressure(project)),
         Err(ReadRefusal::Instance) => Some(read_memory_busy()),
     }
 }
 
 /// 429 `project_memory_pressure`, retryable, tagged with the project.
-fn memory_pressure(principal: Option<&RequestPrincipal>) -> Response {
+fn memory_pressure(project: Option<&ProjectId>) -> Response {
     let refusal = quota_refusal_response(&crate::quota::QuotaRefusal::MemoryPressure);
-    match principal {
-        Some(p) => crate::audit::tag_project(refusal, &p.project_id),
+    match project {
+        Some(project) => crate::audit::tag_project(refusal, project),
         None => refusal,
     }
 }
@@ -168,7 +206,7 @@ pub(crate) async fn body(
     .await
     .map_err(|refusal| Box::new(body_refusal(refusal, principal)))?;
     if let Some(coverage) = pull_coverage(method, path)
-        && let Some(refusal) = reserve(state, principal, coverage).await
+        && let Some(refusal) = reserve(state, project_of(principal), coverage).await
     {
         return Err(Box::new(refusal));
     }
@@ -187,7 +225,7 @@ fn body_refusal(refusal: BodyRefusal, principal: Option<&RequestPrincipal>) -> R
             None,
             false,
         ),
-        BodyRefusal::MemoryPressure => memory_pressure(principal),
+        BodyRefusal::MemoryPressure => memory_pressure(project_of(principal)),
     }
 }
 

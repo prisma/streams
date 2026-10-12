@@ -5,6 +5,46 @@
 //! object key names.
 use super::*;
 
+/// A stored descriptor a page reads is at most this long; a longer one
+/// fails its page closed.
+const MAX_DESCRIPTOR_BYTES: usize = 128 * 1024;
+/// A page holds at most this many bytes of descriptors, each counted as
+/// `held_bytes` estimates it decoded.
+const MAX_PAGE_BYTES: usize = 4 * 1024 * 1024;
+/// The descriptors a page fetches ahead of the one it consumes.
+const PREFETCH: usize = 8;
+/// What decoding adds to a stored descriptor a customer can make, at most:
+/// the decoded descriptor's own size, and for the most watch definitions a
+/// creation document allows (64 of 16 pointers) each definition's inline
+/// size, its field vector's buffer and the rounding of its name's and its
+/// pointers' heap blocks (at most 7 bytes each), whose text is already
+/// stored. 36,000 bytes today. A segment map decodes to less than it
+/// stores, and fork children are made only through the raw surface (an
+/// operator's), so neither is in this bound.
+const MAX_DECODED_EXTRA: usize = std::mem::size_of::<StreamDesc>()
+    + 64 * (std::mem::size_of::<WatchDefinition>() + 7 + 16 * (std::mem::size_of::<String>() + 7));
+
+/// What a page holds for a descriptor it read as `stored` bytes, as
+/// estimated: the stored bytes (no string decodes longer than it is
+/// stored), the decoded descriptor's own size, and the heap its variable
+/// parts allocate (`cache::descriptor_heap`) less the watch definitions'
+/// text, which the stored bytes already count. A fork child's or a
+/// segment's text is counted twice, so such pages come out shorter, never
+/// longer. A descriptor gone between the listing and its read holds
+/// nothing.
+fn held_bytes(desc: Option<&StreamDesc>, stored: usize) -> usize {
+    let Some(desc) = desc else {
+        return stored;
+    };
+    let text: usize = desc
+        .watch_definitions
+        .iter()
+        .map(|w| w.name.len() + w.fields.iter().map(String::len).sum::<usize>())
+        .sum();
+    let decoded = std::mem::size_of::<StreamDesc>() + super::cache::descriptor_heap(desc);
+    stored + decoded.saturating_sub(text)
+}
+
 /// The last listing entry a page consumed: its object key and the identity
 /// that key names. Each entry point continues from the half it owns.
 type Consumed = (ObjPath, crate::tenant::TenantStreamRef);
@@ -34,6 +74,19 @@ fn sref_of_key(cell: &str, key: &ObjPath) -> Option<crate::tenant::TenantStreamR
 }
 
 impl Registry {
+    /// The most bytes a project page of `limit` streams holds at once, its
+    /// descriptors decoded: its page, at most 4 MiB, and the descriptors
+    /// fetched ahead of it, each at most 128 KiB stored and what decoding
+    /// adds (`MAX_DECODED_EXTRA`); about 5.3 MiB in all. The catalog reserves
+    /// this much read memory before it reads the page (public-beta phase B
+    /// item B6).
+    pub(crate) fn catalog_page_bytes(limit: usize) -> u64 {
+        let descriptor = MAX_DESCRIPTOR_BYTES + MAX_DECODED_EXTRA;
+        let page = limit.saturating_mul(descriptor).min(MAX_PAGE_BYTES);
+        let ahead = PREFETCH.saturating_mul(descriptor);
+        u64::try_from(page.saturating_add(ahead)).unwrap_or(u64::MAX)
+    }
+
     /// §10.3: one project's ACTIVE descriptors, continued by stream name.
     pub(super) async fn project_page(
         &self,
@@ -91,8 +144,6 @@ impl Registry {
         }
         let limit = limit.min(1000);
         let max_scan = limit.saturating_mul(8) + 64;
-        const MAX_DESCRIPTOR_BYTES: usize = 128 * 1024;
-        const MAX_PAGE_BYTES: usize = 4 * 1024 * 1024;
         let prefix = ObjPath::from(root.trim_end_matches('/'));
         let listing = match offset {
             Some(o) => self.store.list_with_offset(Some(&prefix), o),
@@ -127,9 +178,6 @@ impl Registry {
                         }
                         Err(error) => return Err(error),
                     };
-                    if raw.len() > MAX_DESCRIPTOR_BYTES {
-                        return Err(catalog_error("descriptor exceeds catalog byte budget"));
-                    }
                     let desc = decode_desc(&raw, Some(&sref)).map_err(|error| {
                         catalog_error(&format!(
                             "catalog: undecodable descriptor at {}: {error}",
@@ -138,7 +186,7 @@ impl Registry {
                     })?;
                     Ok(((meta.location, sref), Some(desc), raw.len()))
                 })
-                .buffered(8);
+                .buffered(PREFETCH);
             let (mut out, mut last, mut scanned, mut bytes) = (Vec::new(), None, 0usize, 0usize);
             let now = crate::shard::now_ms();
             let mut exhausted = false;
@@ -147,6 +195,7 @@ impl Registry {
                     exhausted = scanned < max_scan;
                     break;
                 };
+                let size = held_bytes(desc.as_ref(), size);
                 if bytes.saturating_add(size) > MAX_PAGE_BYTES {
                     break;
                 }

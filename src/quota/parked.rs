@@ -11,7 +11,7 @@
 //! keeps the request slot its admission charged.
 //!
 //! The share also carries the project's store budget (public-beta phase B
-//! step 14(b), owner question Q1 at its recommended (b')): the registry
+//! step 14(b), owner question Q1, decided (b') on 2026-10-12): the registry
 //! store work a served request's own task made (`store_timing` weighs it:
 //! a GET or a 404 1, a PUT, LIST or COPY 10) is debited from a second
 //! bucket of the project's after the request is served, at the request

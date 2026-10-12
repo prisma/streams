@@ -3689,21 +3689,13 @@ pub(crate) async fn product_list(
             }
         },
     };
+    // C8: the page reserves what it may hold, as a read reserves its page.
     let page = match state
-        .registry
-        .list_page(&list_project, after.as_deref(), limit)
+        .catalog_page_reserved(&list_project, after.as_deref(), limit)
         .await
     {
         Ok(p) => p,
-        Err(e) => {
-            return perr(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &e.to_string(),
-                None,
-                true,
-            );
-        }
+        Err(e) => return *e,
     };
     let items: Vec<serde_json::Value> = page
         .streams

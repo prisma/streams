@@ -103,14 +103,17 @@ async fn stored_at(store: &Arc<dyn ObjectStore>, reg: &Registry, name: &str, len
     store.put(&path, raw.into()).await.unwrap();
 }
 
-/// C4 (c): a catalog page materializes at most 4 MiB of descriptors.
-/// Forty descriptors of exactly 128 KiB list as a page of 32 (4 MiB to
-/// the byte) continued after the 32nd, then a final page of 8.
+/// C4 (c): a catalog page holds at most 4 MiB of descriptors, each counted
+/// at its stored bytes plus its decoded size (`held_bytes`). Forty
+/// descriptors with no variable parts, stored at 128 KiB less a decoded
+/// descriptor's size (so each counts exactly 128 KiB), list as a page of
+/// 32 (4 MiB to the byte) continued after the 32nd, then a final page of 8.
 #[tokio::test]
 async fn a_catalog_page_holds_at_most_4_mib_of_descriptors() {
     let (store, reg) = registry();
+    let stored = 128 * 1024 - std::mem::size_of::<crate::registry::StreamDesc>();
     for n in 0..40 {
-        stored_at(&store, &reg, &format!("s{n:02}"), 128 * 1024).await;
+        stored_at(&store, &reg, &format!("s{n:02}"), stored).await;
     }
     let a = crate::tenant::ProjectId::new("proj-a").unwrap();
     let first = reg.list_page(&a, None, 1000).await.unwrap();
@@ -121,6 +124,71 @@ async fn a_catalog_page_holds_at_most_4_mib_of_descriptors() {
     let rest = reg.list_page(&a, Some("s31"), 1000).await.unwrap();
     assert_eq!(rest.streams.first().map(|d| d.name.as_str()), Some("s32"));
     assert_eq!(shape(&rest), (8, Some("s39".to_string()), true));
+}
+
+/// C8 (phase B item B6, the review of 2026-10-12): a page holds its
+/// descriptors decoded, and a watch definition's pointers decode to far
+/// more than they store (`"/",` is 4 bytes stored, a 24-byte header and an
+/// 8-byte block decoded). A page counts each descriptor at its stored bytes
+/// plus the decoded descriptor's own size plus what decoding its watch
+/// definitions adds beyond their text, and stops at 4 MiB of that: 120
+/// descriptors of 64 watches of 16 one-byte pointers (about 6 KB stored,
+/// about 42 KB decoded each) list as a page of as many as fit, not 120.
+#[tokio::test]
+async fn a_catalog_page_counts_its_descriptors_as_decoded() {
+    let (store, reg) = registry();
+    let watches: Vec<crate::registry::WatchDefinition> = (0..64)
+        .map(|w| crate::registry::WatchDefinition {
+            name: format!("{w:02}"),
+            fields: vec!["/".to_string(); 16],
+        })
+        .collect();
+    for n in 0..120 {
+        let mut d = filed("proj-a", &format!("s{n:03}"), false);
+        d.watch_definitions.clone_from(&watches);
+        assert!(reg.create(d).await.unwrap().0);
+    }
+    let path = desc_path("test-cell", &filed("proj-a", "s000", false).sref());
+    let stored = usize::try_from(store.head(&path).await.unwrap().size).unwrap();
+    // 3,072 of watch vector, 64 x (8 name + 384 field vector + 16 x 8
+    // pointers) of heap, less the 64 x (2 + 16) bytes of text it stores.
+    let extra = 3_072 + 64 * (8 + 384 + 16 * 8) - 64 * (2 + 16);
+    let held = stored + std::mem::size_of::<crate::registry::StreamDesc>() + extra;
+    let a = crate::tenant::ProjectId::new("proj-a").unwrap();
+    let page = reg.list_page(&a, None, 1000).await.unwrap();
+    let fit = 4 * 1024 * 1024 / held;
+    assert_eq!(
+        (page.streams.len(), page.exhausted),
+        (fit, false),
+        "a page of descriptors of {stored} bytes stored, {held} decoded"
+    );
+}
+
+/// C8 (phase B item B6): what the catalog reserves before it reads a page
+/// of `limit` streams, its descriptors decoded: the page (at most 4 MiB)
+/// and the 8 descriptors it fetches ahead, each counted at most 128 KiB
+/// stored plus what decoding adds (`MAX_DECODED_EXTRA`: a decoded
+/// descriptor's size and 35,264 bytes for 64 watches of 16 pointers).
+#[test]
+fn a_catalog_page_reserves_its_page_and_what_it_fetches_ahead() {
+    let extra = super::MAX_DECODED_EXTRA;
+    let inline = std::mem::size_of::<crate::registry::StreamDesc>();
+    assert_eq!(extra, inline + 35_264, "what decoding adds, at most");
+    let each = u64::try_from(128 * 1024 + extra).unwrap();
+    let (page, ahead) = (4 * 1024 * 1024, 8 * each);
+    let reserved = [1, 10, 25, 26, 100, 1000, usize::MAX].map(Registry::catalog_page_bytes);
+    assert_eq!(
+        reserved,
+        [
+            each + ahead,
+            10 * each + ahead,
+            25 * each + ahead,
+            page + ahead,
+            page + ahead,
+            page + ahead,
+            page + ahead,
+        ]
+    );
 }
 
 /// C4 (c): a descriptor over 128 KiB fails its page closed, the project's

@@ -92,10 +92,9 @@
   {
     "name": "a_catalog_page_is_held_to_its_projects_memory_line_as_a_read_is",
     "attributes": [
-      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
-      "#[ignore = \"red until the owner decides capacity review C8: product_list reserves its page (a frozen scope)\"]"
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "bf0909352a2aa91f2fa184a5477b2bc28175a421c62da914c766de0578324eb4",
+    "function_sha256": "3ec3ba78e08c629c56edbff6eb72f6fb3774038130b74965bbe5c27274a88945",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_capacity.rs",
@@ -992,6 +991,17 @@
     "scenarios": [
       "HIS-008"
     ]
+  },
+  {
+    "name": "a_listing_holds_its_reservation_until_it_has_answered",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "3b32835886ba6ab66755e794a07c3c78bc02324f66d9ff0210f2f69fc05b9db7",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_capacity.rs",
+    "scenarios": []
   },
   {
     "name": "a_listing_pays_for_the_descriptors_it_reads",
