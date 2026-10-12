@@ -5,20 +5,28 @@
 //! (`~/.streams-k2/analysis/public-beta/l6/SPIKE-PLAN.md`). M2 builds the
 //! pure building blocks: the segment object (`object`), its CRC-32C
 //! (`crc32c`) and the index and refcount rows (`index`). The ring's
-//! process-wide budget lives with the ring (`shard::tail_ring`).
+//! process-wide budget lives with the ring (`shard::tail_ring`). M3 adds the
+//! sealer's settings and triggers (`settings`), the memtable trigger in
+//! SlateDB's units (`estimate`) and its counters (`stats`); the sealer
+//! itself needs the engine's internals and lives in `shard::spill`.
 //!
 //! `L6_SPILL=1` is the spike's one switch (SPIKE-PLAN §2.1): it exists only
 //! so both arms come from one build; production B would have one path.
-#![allow(dead_code, reason = "L6 spike M2: the sealer that calls these lands in M3")]
+#![allow(dead_code, reason = "L6 spike: building blocks M4 (reads) and M8 (refcounts) use")]
 
 pub(crate) mod crc32c;
+pub(crate) mod estimate;
 pub(crate) mod index;
 pub(crate) mod object;
+pub(crate) mod settings;
+pub(crate) mod stats;
 
 #[cfg(test)]
 mod bench_tests;
 #[cfg(test)]
 mod crc32c_tests;
+#[cfg(test)]
+mod estimate_tests;
 #[cfg(test)]
 mod index_tests;
 #[cfg(test)]

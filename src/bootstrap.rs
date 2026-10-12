@@ -546,7 +546,15 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
                         Some(on_close),
                         maintenance,
                     );
-                    Absorber::start_owned(engine.clone(), absorber_config, absorb_rx);
+                    // L6 spike M3: on the spill arm the sealer replaces the
+                    // absorber for every stream (no system-stream reader
+                    // reads by routing key: M3/NOTES.md), and history2 is
+                    // never opened by it.
+                    if engine.l6_spill {
+                        drop((absorber_config, absorb_rx));
+                    } else {
+                        Absorber::start_owned(engine.clone(), absorber_config, absorb_rx);
+                    }
                     Ok(engine)
                 })
             },

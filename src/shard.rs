@@ -33,6 +33,8 @@ mod history_partition;
 mod lane_rows;
 mod lifecycle;
 mod maintenance_row;
+// L6 spike M3: the sealer (design B's seal path, "spill" in code).
+pub(crate) mod spill;
 mod tail_ring;
 mod transaction;
 use commit_plan::{
@@ -932,6 +934,8 @@ pub(crate) struct ShardConfig {
     pub l6_spill: bool,
     /// L6 spike: the process-wide ring budget every engine shares.
     pub shared_ring: Option<Arc<RingBudget>>,
+    /// L6 spike M3: the sealer's triggers and deadlines (spill arm).
+    pub spill_settings: crate::spill::settings::SpillSettings,
     /// Evict resident stream handles idle at least this long (and
     /// referenced by nothing but the map). Zero disables. The durable
     /// dirty-stream index keeps unabsorbed evictees discoverable, so
@@ -995,6 +999,7 @@ impl Default for ShardConfig {
             tail_ring_bytes: 0,
             l6_spill: crate::spill::enabled(),
             shared_ring: None,
+            spill_settings: crate::spill::settings::SpillSettings::default(),
             history: crate::config::HistoryConfig::default(),
             compactor_options: crate::config::EngineConfig::default().compactor_options(),
         }
@@ -1140,6 +1145,8 @@ pub(crate) struct ShardEngine {
     ring_share: Option<tail_ring::RingShare>,
     /// L6 spike: the spill arm is on for this engine.
     pub(crate) l6_spill: bool,
+    /// L6 spike M3: the sealer (spill arm).
+    pub(crate) spill: Option<Arc<spill::SpillState>>,
     ring_budget: std::sync::atomic::AtomicI64,
     ring_fifo: Mutex<std::collections::VecDeque<Arc<StreamHandle>>>,
     pub ring_published: AtomicU64,
@@ -1287,6 +1294,9 @@ impl ShardEngine {
             .flatten()
             .filter(|b| b.settings().process_bytes > 0 && b.settings().shard_cap_bytes > 0)
             .map(|b| b.register());
+        let spill = cfg.l6_spill.then(|| {
+            spill::SpillState::new(cfg.spill_settings, &crate::sharddir::shard_db_path(&prefix))
+        });
         let engine = Arc::new(ShardEngine {
             prefix,
             writer_epoch: db.manifest().writer_epoch(),
@@ -1332,6 +1342,7 @@ impl ShardEngine {
             ring_enabled: cfg.tail_ring_bytes > 0 || ring_share.is_some(),
             ring_share,
             l6_spill: cfg.l6_spill,
+            spill,
             ring_budget: std::sync::atomic::AtomicI64::new(cfg.tail_ring_bytes as i64),
             ring_fifo: Mutex::new(std::collections::VecDeque::new()),
             ring_published: AtomicU64::new(0),
@@ -1623,7 +1634,9 @@ impl ShardEngine {
                     return;
                 }
                 let appended = ticker.stats_appended.load(Ordering::Relaxed);
-                if appended != last_appended {
+                // L6 spike M3: on the spill arm the sealer and its
+                // deadlines own the memtable flush.
+                if !ticker.l6_spill && appended != last_appended {
                     last_appended = appended;
                     // L6 spike M1: count the ticker's forced flushes and
                     // attribute SlateDB's freezes to them by delta.
@@ -1670,6 +1683,11 @@ impl ShardEngine {
                 }
             }
         });
+        // L6 spike M3: the sealer's triggers and deadlines.
+        if let Some(sp) = engine.spill.clone() {
+            let sealer = engine.clone();
+            engine.spawn_required("spill", async move { sealer.spill_loop(sp).await });
+        }
         engine
     }
 
@@ -2755,8 +2773,17 @@ impl ShardEngine {
             for (resp, out) in group.effects.queue_acks {
                 let _ = resp.send(out);
             }
-            for s in group.effects.signals {
-                let _ = self.absorb_tx.try_send(s);
+            if let Some(sp) = &self.spill {
+                // L6 spike M3: no absorber on the spill arm; unabsorbed
+                // pages age, and the sealer re-evaluates its triggers.
+                if !group.effects.signals.is_empty() {
+                    sp.note_unabsorbed();
+                }
+                sp.wake();
+            } else {
+                for s in group.effects.signals {
+                    let _ = self.absorb_tx.try_send(s);
+                }
             }
             // H2: feed touch journals only after the data is durable and
             // reader-visible, so an invalidation always finds fresh data.

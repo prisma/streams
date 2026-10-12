@@ -245,6 +245,8 @@ impl CommitTransaction<'_> {
         // The first advancing boundary seals the history layout. Duplicates
         // never raise the one-pass-lag trim target or retire bytes again.
         let prev_absorbed = local.fields.absorbed;
+        // L6 spike M3: the sealer's chunk for this advance (spill arm).
+        let chunk = self.engine.spill_take_descriptor(hash, bytes.from, upto);
         #[cfg(test)]
         if std::env::var("DST_DRAIN_TRACE").is_ok() {
             eprintln!(
@@ -273,9 +275,14 @@ impl CommitTransaction<'_> {
             );
         }
         if lane_ok && upto > prev_absorbed {
-            let moved = self.advance_boundary(local, hash, upto, bytes);
+            let moved = self.advance_boundary(local, hash, upto, bytes, chunk.as_deref());
             if moved && v2 {
                 local.fields.history_v2 = true;
+            }
+        } else if let Some(chunk) = &chunk {
+            chunk.set_outcome(crate::shard::spill::OUTCOME_STALE);
+            if let Some(stats) = self.engine.spill_stats() {
+                stats.advances_stale.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -291,9 +298,25 @@ impl CommitTransaction<'_> {
         hash: [u8; 16],
         upto: u64,
         bytes: CopiedBytes,
+        chunk: Option<&crate::shard::spill::ChunkDescriptor>,
     ) -> bool {
+        use crate::shard::spill::{OUTCOME_DETACHED, OUTCOME_DIVERGED, OUTCOME_EXACT};
         let prev_absorbed = local.fields.absorbed;
-        match retire_absorbed(&mut local.fields, upto, &bytes) {
+        let retirement = retire_absorbed(&mut local.fields, upto, &bytes);
+        if let Some(stats) = self.engine.spill_stats() {
+            let (counter, outcome) = match retirement {
+                AbsorbRetirement::Exact => (&stats.advances_exact, OUTCOME_EXACT),
+                AbsorbRetirement::Detached => (&stats.advances_detached, OUTCOME_DETACHED),
+                AbsorbRetirement::Diverged => (&stats.advances_diverged, OUTCOME_DIVERGED),
+            };
+            counter.fetch_add(1, Ordering::Relaxed);
+            if let Some(chunk) = chunk {
+                chunk.set_outcome(outcome);
+            } else if retirement == AbsorbRetirement::Exact {
+                stats.side_table_missing.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        match retirement {
             AbsorbRetirement::Exact => {}
             AbsorbRetirement::Detached => {
                 tracing::warn!(
@@ -322,13 +345,17 @@ impl CommitTransaction<'_> {
             self.group_has_absorbed = true;
         }
         local.frames.retired_bytes += bytes.len;
-        let allowed = self.trim_budget.min(self.cfg.max_trim_per_op);
-        let trim_to = trim_target(&local.fields, allowed);
-        for off in local.fields.trimmed..trim_to {
-            self.batch.delete(shard_page_key(&hash, off));
+        if let Some(chunk) = chunk {
+            self.stage_sealed_chunk(local, hash, prev_absorbed, chunk);
+        } else {
+            let allowed = self.trim_budget.min(self.cfg.max_trim_per_op);
+            let trim_to = trim_target(&local.fields, allowed);
+            for off in local.fields.trimmed..trim_to {
+                self.batch.delete(shard_page_key(&hash, off));
+            }
+            self.trim_budget -= trim_to.saturating_sub(local.fields.trimmed);
+            local.fields.trimmed = local.fields.trimmed.max(trim_to);
         }
-        self.trim_budget -= trim_to.saturating_sub(local.fields.trimmed);
-        local.fields.trimmed = local.fields.trimmed.max(trim_to);
         // Only a retired advance can still land: the group holds its
         // receipt until durable dispatch or refusal. Every other advance
         // settled when its copy dropped above.
@@ -336,6 +363,38 @@ impl CommitTransaction<'_> {
             self.effects.receipts.push(receipt);
         }
         true
+    }
+    /// L6 spike M3 (design B §1.2 step 8): an Exact advance of a sealed chunk
+    /// stages the chunk's index row and one tombstone per sealed page in the
+    /// same group, and leaves no trim lag: `trim_safe_to` and `trimmed` both
+    /// reach the new boundary (rBc §7; the one-advance lag at
+    /// `commit_plan::retire_absorbed` is overridden here). A stream whose
+    /// trims were behind its old boundary keeps that debt for `TrimTick`.
+    fn stage_sealed_chunk(
+        &mut self,
+        local: &mut StreamOverlay,
+        hash: [u8; 16],
+        prev_absorbed: u64,
+        chunk: &crate::shard::spill::ChunkDescriptor,
+    ) {
+        self.batch.put(&chunk.index_key, &chunk.index_value);
+        for last in &chunk.page_lasts {
+            self.batch.delete(shard_page_key(&hash, *last));
+        }
+        if let Some(stats) = self.engine.spill_stats() {
+            stats.index_rows.fetch_add(1, Ordering::Relaxed);
+            stats
+                .page_tombstones
+                .fetch_add(chunk.page_lasts.len() as u64, Ordering::Relaxed);
+        }
+        let f = &mut local.fields;
+        if f.trimmed >= prev_absorbed {
+            f.trim_safe_to = f.absorbed;
+            f.trimmed = f.absorbed;
+        } else {
+            f.trim_safe_to = f.absorbed;
+        }
+        self.extra_writes = true;
     }
     /// Trims delete shard-log pages by key: one blind tombstone per offset
     /// in `[trimmed, trim_to)`, so exactly the pages whose LAST offset is

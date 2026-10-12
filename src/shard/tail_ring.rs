@@ -81,6 +81,7 @@ impl RingBudget {
             refused_bytes: AtomicU64::new(0),
             refused_gap: AtomicU64::new(0),
             gap_resets: AtomicU64::new(0),
+            evicted_unabsorbed: AtomicU64::new(0),
         }
     }
 }
@@ -105,6 +106,9 @@ pub(crate) struct RingShare {
     pub(crate) refused_gap: AtomicU64,
     /// Rings dropped whole at a gap because they held only absorbed pages.
     pub(crate) gap_resets: AtomicU64,
+    /// L6 M3: batches that left the ring with a page at or above their
+    /// stream's absorbed boundary (measured at the eviction; 0 by design).
+    pub(crate) evicted_unabsorbed: AtomicU64,
 }
 
 impl RingShare {
@@ -114,6 +118,11 @@ impl RingShare {
 
     pub(crate) fn peak(&self) -> u64 {
         self.peak.load(Ordering::Relaxed)
+    }
+
+    /// This engine's share of the process budget now.
+    pub(crate) fn share_bytes(&self) -> u64 {
+        self.budget.share()
     }
 
     fn admit(&self, bytes: u64) {
@@ -147,6 +156,7 @@ impl RingShare {
             "refused_bytes": self.refused_bytes.load(Ordering::Relaxed),
             "refused_gap": self.refused_gap.load(Ordering::Relaxed),
             "gap_resets": self.gap_resets.load(Ordering::Relaxed),
+            "evicted_unabsorbed": self.evicted_unabsorbed.load(Ordering::Relaxed),
             "process_resident_bytes": self.budget.resident(),
             "process_peak_bytes": self.budget.peak(),
             "process_shards": self.budget.shards(),
@@ -250,6 +260,8 @@ impl ShardEngine {
                     return;
                 }
                 let (dropped, batches) = (ring.bytes as u64, ring.batches.len() as u64);
+                let above = ring.batches.iter().filter(|b| b.next > absorbed).count() as u64;
+                share.evicted_unabsorbed.fetch_add(above, Ordering::Relaxed);
                 ring.batches.clear();
                 ring.bytes = 0;
                 drop(ring);
@@ -305,6 +317,9 @@ impl ShardEngine {
             match ring.batches.front() {
                 Some(b) if b.next <= absorbed => {
                     let b = ring.batches.pop_front().unwrap();
+                    if b.next > absorbed {
+                        share.evicted_unabsorbed.fetch_add(1, Ordering::Relaxed);
+                    }
                     ring.bytes -= b.bytes;
                     drop(ring);
                     fifo.remove(i);
@@ -332,6 +347,14 @@ impl ShardEngine {
         self.ring_share
             .as_ref()
             .map_or(0, |s| s.refused.load(Ordering::Relaxed))
+    }
+
+    /// L6 spike M3: batches the spill arm's ring let go of with a page at or
+    /// above their stream's absorbed boundary (0 by design).
+    pub(crate) fn l6_ring_evicted_unabsorbed(&self) -> u64 {
+        self.ring_share
+            .as_ref()
+            .map_or(0, |s| s.evicted_unabsorbed.load(Ordering::Relaxed))
     }
 
     /// L6 spike: the share's counters for `/v1/debug/store`.

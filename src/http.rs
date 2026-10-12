@@ -987,6 +987,8 @@ async fn debug_store(
     let mut snap = crate::store_timing::snapshot(window, swap, &state.runtime.store_io, &opens);
     // L6 spike M1: SlateDB's metrics per shard DB.
     snap["l6_slatedb"] = crate::l6_metrics::snapshot_json();
+    // L6 spike M3: the sealer's counters per shard DB.
+    snap["l6_spill"] = crate::spill::stats::snapshot_json();
     axum::Json(snap).into_response()
 }
 
