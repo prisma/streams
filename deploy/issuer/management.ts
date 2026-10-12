@@ -1,6 +1,6 @@
 // The management API (public-beta issuer triage B3; design §3.2, §3.3,
-// §4, §5): a workspace's Streams projects, for a browser signed in to
-// that workspace (session.ts). Every call is checked, in order:
+// §4, §5, §6.1): a workspace's Streams projects and their credentials,
+// for a browser signed in to that workspace (session.ts). Every call is checked, in order:
 //
 //   1. the route (else the server's 404) and its method (405 with Allow);
 //   2. a session cookie the issuer's key made, issued < 8 h ago (401);
@@ -9,7 +9,9 @@
 //      application/json` and `X-CSRF-Token` equal to the session's CSRF
 //      value (403 csrf_failed);
 //   5. the issuer's copy of the state revalidated within 300 s (503);
-//   6. the workspace in the path is the session's (403 forbidden);
+//   6. the workspace in the path is the session's (403 forbidden), or
+//      the project in the path is one of its projects, not the canary,
+//      not offboarded (404 not_found);
 //   7. the session's workspace on the beta's allow-list, read from the
 //      control bucket at most every 5 s and refused while there is none
 //      (403 workspace_not_allowed; 503 while it cannot be read): taking
@@ -22,6 +24,8 @@
 //   POST /v1/workspaces/{w}/streams/projects       create one (projects.ts)
 //   GET  /v1/workspaces/{w}/streams/projects/{p}   one, and whether the
 //                                                  cell serves it (probe.ts)
+//   GET  /v1/projects/{p}/streams/credentials      its credentials
+//   POST /v1/projects/{p}/streams/credentials      create one (credentials.ts)
 //
 // No answer carries a CORS header (respond.ts): the page that calls these
 // routes is the issuer's own. Every answer carries X-Request-Id.
@@ -29,10 +33,12 @@ import { randomBytes } from "node:crypto";
 import type { AllowEntry, Allowlist } from "../cell-admin/store";
 import { type Asker, type Call, type ManagementDeps, refused } from "./calls";
 import type { IssuerConfig } from "./config";
+import { Credentials } from "./credentials";
 import { rateLimited, UNAVAILABLE_RETRY_SECS } from "./exchange";
 import { Projects } from "./projects";
 import { refuse } from "./respond";
 import { csrfMatches, readSession } from "./session";
+import { ownProject } from "./views";
 
 /// How long a read of the allow-list is taken as current.
 export const ALLOWLIST_MAX_AGE_MS = 5_000;
@@ -48,6 +54,9 @@ interface Method {
 
 interface Route {
   path: RegExp;
+  /// What the path's first id names: a workspace, which must be the
+  /// session's, or a project, which must be the session's workspace's.
+  scope: "workspace" | "project";
   methods: Partial<Record<string, Method>>;
 }
 
@@ -60,9 +69,11 @@ export class Management {
     private readonly deps: ManagementDeps,
   ) {
     const projects = new Projects(cfg, deps);
+    const credentials = new Credentials(cfg, deps);
     this.routes = [
       {
         path: /^\/v1\/workspaces\/([^/]+)\/streams\/projects$/,
+        scope: "workspace",
         methods: {
           GET: { action: "project.list", handle: (c) => projects.list(c) },
           POST: { action: "project.create", handle: (c) => projects.create(c) },
@@ -70,7 +81,16 @@ export class Management {
       },
       {
         path: /^\/v1\/workspaces\/([^/]+)\/streams\/projects\/([^/]+)$/,
+        scope: "workspace",
         methods: { GET: { action: "project.get", handle: (c) => projects.get(c) } },
+      },
+      {
+        path: /^\/v1\/projects\/([^/]+)\/streams\/credentials$/,
+        scope: "project",
+        methods: {
+          GET: { action: "credential.list", handle: (c) => credentials.list(c) },
+          POST: { action: "credential.create", handle: (c) => credentials.create(c) },
+        },
       },
     ];
   }
@@ -114,10 +134,12 @@ export class Management {
     const unavailable = (message: string) =>
       no(503, "issuer_unavailable", message, { "retry-after": String(UNAVAILABLE_RETRY_SECS) });
     if (!this.deps.cache.fresh()) return unavailable("the issuer cannot see the cell's current state; retry shortly");
-    const [workspace] = ids;
-    if (workspace !== session.workspace_id) {
-      return no(403, "forbidden",
-        `this session is signed in to workspace ${session.workspace_id}, not ${workspace}: sign in to ${workspace}`);
+    const workspace = session.workspace_id;
+    if (route.scope === "workspace" && ids[0] !== workspace) {
+      return no(403, "forbidden", `this session is signed in to workspace ${workspace}, not ${ids[0]}: sign in to ${ids[0]}`);
+    }
+    if (route.scope === "project" && ownProject(this.deps.cache.state, workspace, ids[0]) === undefined) {
+      return no(404, "not_found", `workspace ${workspace} has no Streams project ${ids[0]}`);
     }
     const entry = await this.entryOf(workspace);
     if (entry === null) return unavailable("the issuer cannot read the beta's allow-list; retry shortly");

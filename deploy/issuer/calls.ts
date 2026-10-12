@@ -1,12 +1,16 @@
 // What every management handler is given, and how it answers
-// (management.ts routes the calls; projects.ts handles them). A change
-// the issuer makes, and every refusal of a change once the caller is
-// signed in, is one audit object (audit.ts). A read is never audited, and
-// neither is a refusal before the session or of its call budget: an
-// unauthenticated caller must not be able to make the issuer write.
+// (management.ts routes the calls; projects.ts and credentials.ts handle
+// them). A change the issuer makes, and every refusal of a change once
+// the caller is signed in, is one audit object (audit.ts). A read is
+// never audited, and neither is a refusal before the session or of its
+// call budget: an unauthenticated caller must not be able to make the
+// issuer write.
+import { AdminError } from "../cell-admin/errors";
+import type { CellState } from "../cell-admin/state";
 import type { AllowEntry, StateStore } from "../cell-admin/store";
 import type { Audit, AuditEvent } from "./audit";
 import type { StateCache } from "./cache";
+import { UNAVAILABLE_RETRY_SECS } from "./exchange";
 import type { RateLimits } from "./limits";
 import { refuse } from "./respond";
 import type { Session } from "./session";
@@ -66,6 +70,44 @@ export async function refused(
     await audited(deps, asker, { outcome: "refused", reason: `${r.code}: ${r.detail ?? r.message}` });
   }
   return refuse(r.status, r.code, r.message, r.headers);
+}
+
+/// A refusal a change throws from inside its compare-and-swap (the state
+/// it lands on refuses it), answered by `commit`.
+export class Refusal extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string,
+    readonly detail?: string,
+  ) {
+    super(message);
+  }
+}
+
+/// Make `change` on the issuer's copy of the state (StateCache.mutate:
+/// one compare-and-swap, re-applied on a lost one, then the bundle
+/// published). A Refusal it throws is answered as one; five lost
+/// compare-and-swaps answer 503 issuer_unavailable.
+export async function commit<T>(
+  deps: ManagementDeps,
+  asker: Asker,
+  change: (state: CellState) => T,
+): Promise<{ result: T; state: CellState } | Response> {
+  try {
+    return await deps.cache.mutate(change);
+  } catch (e) {
+    if (e instanceof Refusal) {
+      return refused(deps, asker, { status: e.status, code: e.code, message: e.message, detail: e.detail });
+    }
+    if (e instanceof AdminError && e.code === 3) {
+      return refused(deps, asker, {
+        status: 503, code: "issuer_unavailable", message: "the cell's state is busy; retry shortly", detail: e.message,
+        headers: { "retry-after": String(UNAVAILABLE_RETRY_SECS) },
+      });
+    }
+    throw e;
+  }
 }
 
 const MAX_BODY_BYTES = 4096;

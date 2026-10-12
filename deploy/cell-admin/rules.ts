@@ -281,9 +281,11 @@ export function newCredentialId(state: CellState): string {
 }
 
 /// A new customer credential's identity and, for one with a secret, the
-/// secret's hash (secrets.ts); the CLI's `admit` makes one without.
+/// secret's hash (secrets.ts); the CLI's `admit` makes one without. It
+/// expires at `expires_at` (epoch seconds) when given, else never.
 export interface NewCredential {
   id: string;
+  expires_at?: number | null;
   secret_hash?: string;
   hv?: number;
   hint?: string;

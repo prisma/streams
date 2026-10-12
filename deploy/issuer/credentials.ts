@@ -1,0 +1,157 @@
+// A project's credentials (public-beta issuer triage B3.4; design §6.1),
+// on the contract's paths (contracts/streams-platform/v1/
+// management.openapi.yaml), so the platform's Stage 1 can replace the
+// issuer without its users changing code:
+//
+//   GET  /v1/projects/{p}/streams/credentials   the project's customer
+//        credentials (never the canary's or an operator's), revoked ones
+//        included, oldest first, in the contract's Credential shape
+//   POST /v1/projects/{p}/streams/credentials   create one
+//
+// A create takes {displayName?, scopes?, streamPrefixes?, expiresAt?}
+// (every scope, no prefix and no expiry by default) and checks, in order,
+// each refusal audited: the body (400 invalid_request); the project's 20
+// creates or rotations a day (429 rate_limited); the project not being
+// deleted (409 project_not_active); its 10 live credentials (409
+// credential_limit). One compare-and-swap adds the credential at
+// grant_version 1 with a new 32-byte secret, of which the state keeps
+// only the HMAC under the newest pepper; the bundle is published. 201
+// {credential, secret}: the secret is in this answer and nowhere else.
+import { addCredential, CUSTOMER_SCOPES, MAX_LIVE_CREDENTIALS, newCredentialId } from "../cell-admin/rules";
+import { newSecret, presentedSecret, secretFields } from "../cell-admin/secrets";
+import { type CellState, journal } from "../cell-admin/state";
+import { audited, type Call, commit, displayNameOf, type ManagementDeps, readObject, Refusal, refused } from "./calls";
+import type { IssuerConfig } from "./config";
+import { LIMITS } from "./limits";
+import { json } from "./respond";
+import { credentialView } from "./views";
+
+const DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+interface Ask {
+  display_name?: string;
+  scopes: string;
+  stream_prefixes?: string[];
+  expires_at: number | null;
+}
+
+/// What a create's body asks for, or why it is refused.
+function askOf(body: Record<string, unknown>, nowMs: number): Ask | string {
+  const { displayName, scopes, streamPrefixes, expiresAt } = body;
+  const ask: Ask = { scopes: CUSTOMER_SCOPES.join(" "), expires_at: null };
+  if (displayName !== undefined) {
+    const name = displayNameOf(displayName);
+    if (name === null) return "displayName is 1 to 64 characters, without control characters";
+    ask.display_name = name;
+  }
+  if (scopes !== undefined) {
+    if (!Array.isArray(scopes) || scopes.length === 0 || scopes.some((s) => typeof s !== "string")) {
+      return "scopes is a non-empty array of Streams scopes";
+    }
+    const unknown = scopes.find((s) => !(CUSTOMER_SCOPES as readonly string[]).includes(s));
+    if (unknown !== undefined) return `scopes: ${JSON.stringify(unknown)} is not a Streams scope`;
+    ask.scopes = [...new Set(scopes as string[])].join(" ");
+  }
+  if (streamPrefixes !== undefined && streamPrefixes !== null) {
+    const p = streamPrefixes as unknown[];
+    if (!Array.isArray(p) || p.length < 1 || p.length > 64 || p.some((x) => typeof x !== "string" || x === "")) {
+      return "streamPrefixes is null or 1 to 64 non-empty strings";
+    }
+    ask.stream_prefixes = [...(p as string[])];
+  }
+  if (expiresAt !== undefined && expiresAt !== null) {
+    const ms = typeof expiresAt === "string" && DATE_TIME.test(expiresAt) ? Date.parse(expiresAt) : Number.NaN;
+    if (!Number.isFinite(ms) || ms <= nowMs) return "expiresAt is null or a date-time in the future";
+    ask.expires_at = Math.floor(ms / 1000);
+  }
+  return ask;
+}
+
+/// The customer credentials of `project` a user sees, oldest first.
+export function projectCredentials(state: CellState, project: string) {
+  return Object.entries(state.credentials)
+    .filter(([, c]) => c.project_id === project && c.role === "customer" && !c.omitted && !c.hidden)
+    .sort(([a, c], [b, d]) => {
+      const [x, y] = [c.created_at ?? "", d.created_at ?? ""];
+      return x < y ? -1 : x > y ? 1 : a < b ? -1 : 1;
+    });
+}
+
+/// Why `project` takes no new credential on `state`, or null.
+function createRefusal(state: CellState, project: string): Refusal | null {
+  if (state.projects[project]?.phase !== "active") {
+    return new Refusal(409, "project_not_active", `project ${project} is being deleted`);
+  }
+  const live = projectCredentials(state, project).filter(([, c]) => c.status === "active").length;
+  if (live >= MAX_LIVE_CREDENTIALS) {
+    return new Refusal(409, "credential_limit",
+      `project ${project} has its ${MAX_LIVE_CREDENTIALS} live credentials: revoke one first`);
+  }
+  return null;
+}
+
+export class Credentials {
+  constructor(
+    private readonly cfg: IssuerConfig,
+    private readonly deps: ManagementDeps,
+  ) {}
+
+  list(c: Call): Response {
+    const credentials = projectCredentials(this.deps.cache.state, c.ids[0]).map(([id, cred]) => credentialView(id, cred));
+    return json(200, { credentials });
+  }
+
+  /// The project's budget of creates and rotations: a 429, or null.
+  async budget(c: Call, project: string): Promise<Response | null> {
+    const wait = this.deps.limits.take("credential_change_project", project);
+    if (wait === 0) return null;
+    const burst = LIMITS.credential_change_project.burst;
+    return refused(this.deps, c, {
+      status: 429, code: "rate_limited",
+      message: `project ${project} may create or rotate ${burst} credentials a day; retry after ${wait} s`,
+      headers: { "retry-after": String(wait) },
+    });
+  }
+
+  async create(c: Call): Promise<Response> {
+    const [project] = c.ids;
+    const body = await readObject(c.req, ["displayName", "scopes", "streamPrefixes", "expiresAt"]);
+    const ask = typeof body === "string" ? body : askOf(body, this.deps.now());
+    if (typeof ask === "string") return refused(this.deps, c, { status: 400, code: "invalid_request", message: ask });
+    const limited = await this.budget(c, project);
+    if (limited !== null) return limited;
+    const early = createRefusal(this.deps.cache.state, project);
+    if (early !== null) return refused(this.deps, c, early);
+    const secret = newSecret();
+    const by = { user_id: c.session.user_id, email: c.session.email };
+    const before = this.deps.cache.state.feed_version;
+    const done = await commit(this.deps, c, (s) => {
+      const refusal = createRefusal(s, project);
+      if (refusal !== null) throw refusal;
+      const id = newCredentialId(s);
+      addCredential(s, project, {
+        scopes: ask.scopes,
+        stream_prefixes: ask.stream_prefixes,
+        credential: {
+          id,
+          ...secretFields(this.cfg.peppers, secret),
+          ...(ask.display_name !== undefined ? { display_name: ask.display_name } : {}),
+          created_by: by,
+          expires_at: ask.expires_at,
+        },
+      });
+      journal(s, "credential.create", `${project} credential=${id} user=${by.user_id}`);
+      return id;
+    });
+    if (done instanceof Response) return done;
+    const { result: id, state } = done;
+    await audited(this.deps, c, {
+      outcome: "done",
+      project_id: project,
+      credential_ids: [id],
+      before: { feed_version: before },
+      after: { feed_version: state.feed_version, grant_version: 1 },
+    });
+    return json(201, { credential: credentialView(id, state.credentials[id]), secret: presentedSecret(id, secret) });
+  }
+}
