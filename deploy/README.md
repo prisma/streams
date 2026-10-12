@@ -12,7 +12,7 @@ only in scratch directories, and one was deleted by a cleanup mid-campaign
 | `app-lb/` | `pilot` (`LB_BINARY_S3_KEY`), `MODE=lb` | rendezvous-hash router; the only client entry point |
 | `app-gen/` | `awsbench` (`AWSBENCH_S3_KEY`) | in-region load generator for soaks and benchmarks |
 
-Four more directories:
+Five more directories:
 - `profiles/` holds the environment files deploy scripts pass as `--env`
   lines: `compute-1g.env` for every server on the 1 GiB class, and
   `shared-cell.env` on top of it for a single-server shared cell.
@@ -39,6 +39,25 @@ Four more directories:
   by `package.json` and `bun.lock` (`bun install --frozen-lockfile`),
   started with `bun --no-install` (`main.ts`'s header).
   Tests: `bun test ./deploy/issuer`.
+- `composer-issuer/` is the issuer's Composer app (`app.ts`, module
+  `streams-issuer`, so a Compute project of its own; the `issuer` service
+  in `issuer/service.ts`, no Composer port). It binds each of the
+  issuer's inputs under its own name: the secrets and the two bucket key
+  pairs as `envSecret`, the rest as `envParam`, never a `generatedParam`.
+  Its entry (`issuer/entry.ts`) hands the issuer the service's input and
+  `PORT`, and carries the keep-awake guard. A release stages the app in a
+  directory of its own: this directory's `package.json`, `bun.lock`,
+  `prisma.config.ts`, `app.ts` and `issuer/service.ts`, `bun install
+  --frozen-lockfile` there, and `bun build
+  deploy/composer-issuer/issuer/entry.ts --target=bun --format=esm
+  --outfile <release>/issuer/entry.js` from the repository (with this
+  directory's packages installed); `prisma deploy app.ts` (or `prisma dev
+  app.ts`, with the mock identity provider's origin in
+  `STREAMS_ISSUER_OAUTH_AUTHORITY`) runs there, the settings in its
+  environment and the secrets set on the platform. Tests:
+  `deploy/issuer/composer.test.ts`; the bundled entry's are opt-in: `bun
+  install --frozen-lockfile` in `deploy/composer-issuer`, then
+  `ISSUER_COMPOSER_E2E=1 bun test ./deploy/issuer/composer.test.ts`.
 - `composer/` is the shared cell's Composer app (`app.ts`, the
   `streamscell` service in `streams/service.ts`, no Composer port). Its
   entry (`streams/entry.ts`, bundled into `entry.js` when a release is

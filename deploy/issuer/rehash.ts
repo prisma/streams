@@ -7,7 +7,7 @@
 // the hot path would contend with every other writer. The notes live in
 // memory only, so the sweep writes them soon and before the issuer
 // stops: REHASH_DELAY_MS after the oldest note (looked at every
-// REHASH_TICK_MS), and once more when the process stops (main.ts, on
+// REHASH_TICK_MS), and once more when the process stops (run.ts, on
 // SIGTERM), so an issuer redeployed more often than daily still writes
 // them. A sweep is one compare-and-swap per batch, each credential only if
 // its record still holds the hash that was verified (a rotation in

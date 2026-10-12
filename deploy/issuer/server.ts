@@ -12,7 +12,7 @@
 //   /v1/workspaces/{w}/streams/projects...
 //                            the management API, for a signed-in browser
 //                            (management.ts)
-// Beside the routes, it holds the jobs main.ts starts: the audit's tick,
+// Beside the routes, it holds the jobs run.ts starts: the audit's tick,
 // the re-hash sweep (rehash.ts) and the offboarding job (offboarding.ts).
 import type { StateStore } from "../cell-admin/store";
 import { AllowlistReader } from "./allowlist";

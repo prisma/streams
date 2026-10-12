@@ -119,6 +119,54 @@ export async function admin(cell: IssuerCell, command: string, ...args: string[]
 /// A presented secret for `id` that is not its secret.
 export const wrongSecret = (id: string) => presentedSecret(id, randomBytes(32).toString("base64url"));
 
+/// Issuer processes launch() started; stopLaunched() kills those left.
+const launched: ReturnType<typeof Bun.spawn>[] = [];
+export function stopLaunched(): void {
+  for (const c of launched.splice(0)) c.kill();
+}
+
+export type Launched =
+  | { child: ReturnType<typeof Bun.spawn>; origin: string; out: string[]; reader: ReadableStreamDefaultReader<Uint8Array> }
+  | { child: ReturnType<typeof Bun.spawn>; code: number; err: string; out: string[] };
+
+/// Start the bundled entry `file` with `env` (and nothing else) on a free
+/// port, from the bundle's own directory; resolves with its origin once it
+/// listens, or with its exit code and stderr.
+export async function launch(file: string, env: Record<string, string>, flags: string[] = []): Promise<Launched> {
+  const child = Bun.spawn([process.execPath, ...flags, file], {
+    env: { ...env, PORT: "0" },
+    cwd: join(file, ".."),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  launched.push(child);
+  const out: string[] = [];
+  const reader = (child.stdout as ReadableStream<Uint8Array>).getReader();
+  const decoder = new TextDecoder();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    out.push(decoder.decode(value));
+    const port = /listening on :(\d+)/.exec(out.join(""))?.[1];
+    if (port) return { child, origin: `http://127.0.0.1:${port}`, out, reader };
+  }
+  return { child, code: await child.exited, err: await new Response(child.stderr as ReadableStream).text(), out };
+}
+
+/// What a launched issuer writes to stdout after it listens, until it exits.
+export async function restOf(started: Extract<Launched, { origin: string }>): Promise<string> {
+  let rest = "";
+  for (;;) {
+    const { done, value } = await started.reader.read();
+    if (done) return rest;
+    rest += new TextDecoder().decode(value);
+  }
+}
+
+export async function exchange(origin: string, secret: string): Promise<Response> {
+  return fetch(`${origin}/v1/token/streams`, { method: "POST", headers: { authorization: `StreamsCredential ${secret}` } });
+}
+
 export const envWith = (cell: IssuerCell, patch: Record<string, string | undefined>): Env => ({ ...cell.env, ...patch });
 
 export { fakeS3 };

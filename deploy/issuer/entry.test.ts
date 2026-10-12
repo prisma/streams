@@ -5,11 +5,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { cleanup, pepperFile, readBundle, scratchDir, verifiedClaims } from "../cell-admin/test-rig";
-import { CELL, cellState, customerSecret, type IssuerCell, issuerCell } from "./rig";
+import { CELL, cellState, customerSecret, exchange, issuerCell, launch, restOf, stopLaunched } from "./rig";
 
-const children: ReturnType<typeof Bun.spawn>[] = [];
 afterEach(() => {
-  for (const c of children.splice(0)) c.kill();
+  stopLaunched();
   cleanup();
 });
 
@@ -26,37 +25,6 @@ async function bundle(): Promise<string> {
   });
   expect([built.success, built.outputs.length]).toEqual([true, 1]);
   return join(dir, "issuer.js");
-}
-
-type Launched =
-  | { child: ReturnType<typeof Bun.spawn>; origin: string; out: string[]; reader: ReadableStreamDefaultReader<Uint8Array> }
-  | { child: ReturnType<typeof Bun.spawn>; code: number; err: string; out: string[] };
-
-/// Start the bundle with `env` (and nothing else) on a free port; resolves
-/// with its origin once it listens, or with its exit code and stderr.
-async function launch(file: string, env: Record<string, string>, flags: string[] = []): Promise<Launched> {
-  const child = Bun.spawn([process.execPath, ...flags, file], {
-    env: { ...env, PORT: "0" },
-    cwd: join(file, ".."),
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  children.push(child);
-  const out: string[] = [];
-  const reader = (child.stdout as ReadableStream<Uint8Array>).getReader();
-  const decoder = new TextDecoder();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    out.push(decoder.decode(value));
-    const port = /listening on :(\d+)/.exec(out.join(""))?.[1];
-    if (port) return { child, origin: `http://127.0.0.1:${port}`, out, reader };
-  }
-  return { child, code: await child.exited, err: await new Response(child.stderr as ReadableStream).text(), out };
-}
-
-async function exchange(origin: string, secret: string): Promise<Response> {
-  return fetch(`${origin}/v1/token/streams`, { method: "POST", headers: { authorization: `StreamsCredential ${secret}` } });
 }
 
 describe("the bundled entry", () => {
@@ -82,12 +50,7 @@ describe("the bundled entry", () => {
     expect((await fetch(`${started.origin}/healthz`)).status).toBe(200);
     started.child.kill("SIGTERM");
     expect(await started.child.exited).toBe(0);
-    let rest = "";
-    for (;;) {
-      const { done, value } = await started.reader.read();
-      if (done) break;
-      rest += new TextDecoder().decode(value);
-    }
+    const rest = await restOf(started);
     // The open minute's counts are written at the stop.
     expect(rest).toContain(`"kind":"exchanges"`);
     expect(rest).toContain(`"credential_id":"${a.id}"`);
@@ -147,15 +110,22 @@ describe("the issuer's sources", () => {
       [...readFileSync(join(dir, f), "utf8").matchAll(/.*process\.env.*/g)].map((m) => `${f}: ${m[0].trim()}`),
     );
     expect(uses).toEqual([
-      "main.ts: cfg = readConfig(Object.fromEntries(INPUTS.map((name) => [name, process.env[name]])));",
-      "main.ts: for (const name of SECRET_INPUTS) delete process.env[name];",
+      "main.ts: await runIssuer(process.env, async () => {",
+      "run.ts: for (const name of SECRET_INPUTS) delete process.env[name];",
+    ]);
+    // What the entry hands over is read by INPUTS' names and nothing else.
+    const run = readFileSync(join(dir, "run.ts"), "utf8");
+    expect(run.match(/.*\benv\b[.[].*/g)).toEqual([
+      "    cfg = readConfig(Object.fromEntries(INPUTS.map((name) => [name, env[name]])));",
+      "  for (const name of SECRET_INPUTS) delete process.env[name];",
     ]);
   });
 
   test("hold Compute's keep-awake guard for the process's life unless KEEP_AWAKE=0 (I10: awake by default)", () => {
-    const main = readFileSync(join(import.meta.dir, "main.ts"), "utf8");
-    expect(main).toContain("if (!cfg.keepAwake) return;");
-    expect(main).toContain("guard = new KeepAwakeGuard();");
+    const run = readFileSync(join(import.meta.dir, "run.ts"), "utf8");
+    expect(run).toContain("if (!cfg.keepAwake) return;");
+    expect(run).toContain("guard = await hold();");
+    expect(readFileSync(join(import.meta.dir, "main.ts"), "utf8")).toContain("return new KeepAwakeGuard();");
     expect(readFileSync(join(import.meta.dir, "config.ts"), "utf8")).toContain('export const KEEP_AWAKE_DEFAULT = "1";');
   });
 });

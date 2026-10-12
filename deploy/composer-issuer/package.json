@@ -1,0 +1,12 @@
+{
+  "name": "streams-issuer-app",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@prisma/composer": "0.29.1",
+    "@prisma/composer-prisma-cloud": "0.29.1",
+    "@prisma/compute": "0.1.0-beta.0",
+    "arktype": "2.2.8",
+    "prisma": "8.0.0-rc.22"
+  }
+}
