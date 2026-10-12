@@ -7,7 +7,8 @@
 //   feeds bucket     cells/<cell_id>/feeds-bundle.json  what the cell's wrapper polls
 //
 // Every write is conditional: `If-None-Match: *` creates, `If-Match: <etag>`
-// replaces, and a 412 is a Conflict the writer resolves by re-reading.
+// replaces, and a 412 (or a 409 racing write) is a Conflict the writer
+// resolves by re-reading.
 // Bun's S3 client has no conditional PUT, so each request is presigned
 // (60 s) and sent with `fetch`, the precondition as a plain header, as the
 // cell's wrapper already reads the bundle (deploy/app-server/feeds.ts).
@@ -132,10 +133,17 @@ class S3Object {
   }
 
   /// Create (`etag` null) or replace the object only if it still has
-  /// `etag`; a refused precondition is a Conflict. Returns the new ETag.
+  /// `etag`; a lost compare-and-swap is a Conflict, which the writer
+  /// resolves by re-reading: a refused precondition (412, or 404 under
+  /// If-Match), or a 409, which AWS answers (ConditionalRequestConflict,
+  /// OperationAborted) to a conditional write that races another operation,
+  /// to be retried. Returns the new ETag.
   async put(text: string, etag: string | null): Promise<string> {
     const res = await this.putRaw(text, etag === null ? { "if-none-match": "*" } : { "if-match": etag });
-    if (res.status === 412 || (res.status === 404 && etag !== null)) throw new Conflict(`${this.where} changed`);
+    if (res.status === 412 || res.status === 409 || (res.status === 404 && etag !== null)) {
+      await res.arrayBuffer().catch(() => undefined);
+      throw new Conflict(`${this.where} changed`);
+    }
     if (!res.ok) throw new AdminError(`PUT ${this.where} answered ${res.status} ${await codeOf(res)}`.trimEnd());
     const tag = res.headers.get("etag");
     if (!tag) throw new AdminError(`PUT ${this.where} answered without an ETag`);

@@ -261,6 +261,28 @@ describe("the S3 store", () => {
     expect(fakeS3().requests.filter((q) => q.status === 412 && q.key.endsWith("cell-state.json"))).toHaveLength(1);
   });
 
+  test("a conditional write answered 409 ConditionalRequestConflict is re-read and applied again", async () => {
+    useStore("s3");
+    const c = await initCell();
+    const [bucket] = c.state.slice("s3://".length).split("/");
+    // AWS answers a conditional write that races another operation 409,
+    // to be retried: the state's write, the bundle's and the denylist's.
+    const conflicted = new Set<string>();
+    fakeS3().conflictOnce = (key) => {
+      const hit = /\/(cell-state\.json|feeds-bundle\.json|denylist\.txt)$/.test(key) && !conflicted.has(key);
+      if (hit) conflicted.add(key);
+      return hit;
+    };
+    const r = await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w");
+    expect([r.code, r.err]).toEqual([0, ""]);
+    expect([...conflicted].sort()).toEqual([`${bucket}/cells/cell_sc1/cell-state.json`, `${bucket}/denylist.txt`,
+      "feeds-1/cells/cell_sc1/feeds-bundle.json"]);
+    expect(fakeS3().requests.filter((q) => q.status === 409).map((q) => q.method)).toEqual(["PUT", "PUT", "PUT"]);
+    expect(readState(c.state).projects.proj_a.phase).toBe("active");
+    expect(readBundle(c.state).keys.feed_version).toBe(readState(c.state).feed_version);
+    expect(denylistText(c.state).trim()).toBe("proj_a");
+  });
+
   test("reads the bucket keys only from a file only its owner can read, naming the feeds bucket (D3 (a))", async () => {
     useStore("s3");
     const root = scratchDir();

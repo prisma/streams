@@ -22,6 +22,10 @@ export class FakeS3 {
   requests: { method: string; key: string; status: number }[] = [];
   /// Runs before a PUT of `key` is decided, e.g. to land a racing write.
   beforePut?: (key: string) => void;
+  /// A PUT of a `key` it returns true for answers 409
+  /// ConditionalRequestConflict without writing, as AWS answers a
+  /// conditional write that races another operation (retry it).
+  conflictOnce?: (key: string) => boolean;
   /// A PUT of a `key` it returns true for answers 500, as an outage would.
   failPut?: (key: string) => boolean;
   private n = 0;
@@ -76,6 +80,7 @@ export class FakeS3 {
     const body = await req.text();
     if (this.denyWrites) return this.error(403, "AccessDenied");
     if (this.failPut?.(key)) return this.error(500, "InternalError");
+    if (this.conflictOnce?.(key)) return this.error(409, "ConditionalRequestConflict");
     this.beforePut?.(key);
     const current = this.objects.get(key);
     const ifNoneMatch = req.headers.get("if-none-match");
