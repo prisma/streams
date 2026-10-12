@@ -250,11 +250,22 @@ describe("the sign-in's inputs", () => {
     expect([local.issuerOrigin, local.authOrigin, local.apiOrigin]).toEqual([
       "http://localhost:8080", "http://localhost:9600", "http://localhost:9600",
     ]);
+    for (const authority of ["https://127.0.0.1:9600", "http://[::1]:9600"]) {
+      expect(readConfig(envWith(cell, { STREAMS_ISSUER_OAUTH_AUTHORITY: authority })).authOrigin).toBe(authority);
+    }
     const refusals: [Record<string, string | undefined>, string][] = [
       [{ STREAMS_ISSUER_ORIGIN: undefined }, "STREAMS_ISSUER_ORIGIN is required"],
       [{ STREAMS_ISSUER_ORIGIN: "http://issuer.example.com" }, "STREAMS_ISSUER_ORIGIN must be an https origin"],
       [{ STREAMS_ISSUER_ORIGIN: `${ISSUER_ORIGIN}/beta` }, "STREAMS_ISSUER_ORIGIN must be an origin, without a path"],
       [{ STREAMS_ISSUER_OAUTH_AUTHORITY: "auth.prisma.io" }, "STREAMS_ISSUER_OAUTH_AUTHORITY is not a URL"],
+      // Only the mock identity provider is named this way: one origin can
+      // never be Prisma's (its /authorize and /v1/me live on two), and any
+      // other server named here would choose who signs in.
+      ...["https://auth.prisma.io", "https://idp.example.com", "https://localhost.example.com"].map((authority) => [
+        { STREAMS_ISSUER_OAUTH_AUTHORITY: authority },
+        "STREAMS_ISSUER_OAUTH_AUTHORITY names the mock identity provider, on this machine only (localhost, " +
+          "127.0.0.1 or [::1]); leave it unset to sign in with Prisma",
+      ] as [Record<string, string>, string]),
     ];
     for (const [patch, message] of refusals) {
       expect(() => readConfig(envWith(cell, patch))).toThrow(new AdminError(message));

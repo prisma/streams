@@ -18,14 +18,19 @@ export const TOKEN_TTL_DEFAULT_SECS = 3600;
 export const TOKEN_TTL_MIN_SECS = 300;
 /// Where "Sign in with Prisma" authorizes and where its /v1/me is: the
 /// Management API SDK's defaults (@prisma/management-api-sdk 1.82.0).
-/// STREAMS_ISSUER_OAUTH_AUTHORITY names one origin for both instead (the
-/// mock identity provider, mock-idp.ts, for prisma dev and the tests).
+/// STREAMS_ISSUER_OAUTH_AUTHORITY names one origin for both instead: the
+/// mock identity provider (mock-idp.ts) for prisma dev and the tests, on
+/// this machine only. One origin can never be Prisma's (its /authorize and
+/// /token are on auth.prisma.io, /v1/me on api.prisma.io), and whatever a
+/// named server's /v1/me answers becomes the signed-in workspace: a deploy
+/// that named any other server would hand it the cell's authorization root.
 export const PRISMA_AUTH_ORIGIN = "https://auth.prisma.io";
 export const PRISMA_API_ORIGIN = "https://api.prisma.io";
 /// Owner question I10 (the build default: awake): the issuer holds
 /// Compute's keep-awake guard unless KEEP_AWAKE=0.
 export const KEEP_AWAKE_DEFAULT = "1";
 
+const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 const SESSION_KEY_BYTES = 32;
 const METRICS_TOKEN_MIN_CHARS = 32;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -134,7 +139,7 @@ function originOf(name: string, raw: string): string {
   } catch {
     throw new AdminError(`${name} is not a URL`);
   }
-  const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  const local = LOCAL_HOSTS.includes(url.hostname);
   if (url.protocol !== "https:" && !(url.protocol === "http:" && local)) {
     throw new AdminError(`${name} must be an https origin`);
   }
@@ -142,6 +147,19 @@ function originOf(name: string, raw: string): string {
     throw new AdminError(`${name} must be an origin, without a path`);
   }
   return url.origin;
+}
+
+/// The mock identity provider's origin, which must be this machine's.
+function mockAuthority(raw: string): string {
+  const name = "STREAMS_ISSUER_OAUTH_AUTHORITY";
+  const origin = originOf(name, raw);
+  if (!LOCAL_HOSTS.includes(new URL(origin).hostname)) {
+    throw new AdminError(
+      `${name} names the mock identity provider, on this machine only (localhost, 127.0.0.1 or [::1]); ` +
+        "leave it unset to sign in with Prisma",
+    );
+  }
+  return origin;
 }
 
 function sessionKey(env: Env): Buffer {
@@ -172,7 +190,7 @@ export function readConfig(env: Env): IssuerConfig {
   const control = target(env, "STREAMS_CONTROL_S3");
   const oauthClientSecret = optional(env, "STREAMS_ISSUER_OAUTH_CLIENT_SECRET");
   const authority = optional(env, "STREAMS_ISSUER_OAUTH_AUTHORITY");
-  const mock = authority === undefined ? undefined : originOf("STREAMS_ISSUER_OAUTH_AUTHORITY", authority);
+  const mock = authority === undefined ? undefined : mockAuthority(authority);
   return {
     cellId,
     issuerId: required(env, "STREAMS_ISSUER_ID"),
