@@ -9,6 +9,8 @@
 //   POST /v1/projects/{p}/streams/credentials   create one
 //   POST /v1/projects/{p}/streams/credentials/{c}/rotate
 //        a new secret, at grant_version + 1
+//   POST /v1/projects/{p}/streams/credentials/{c}/revoke
+//        revoked for good, at grant_version + 1
 //
 // A create takes {displayName?, scopes?, streamPrefixes?, expiresAt?}
 // (every scope, no prefix and no expiry by default) and checks, in order,
@@ -27,6 +29,11 @@
 // grant_version; the bundle is published. 200 {credential, secret}. A
 // rotation has no overlap: zero-downtime replacement is "create a second
 // credential, move, revoke the first".
+//
+// A revocation takes no body and checks the credential (404 not_found as
+// above; already revoked, 409 credential_not_active); it takes no daily
+// budget. One compare-and-swap sets it revoked, which bumps its
+// grant_version; the bundle is published. 200 {credential}.
 import {
   addCredential,
   CUSTOMER_SCOPES,
@@ -106,6 +113,17 @@ function rotateRefusal(state: CellState, project: string, id: string, nowSecs: n
     return new Refusal(409, "credential_not_active", `credential ${id} has expired`);
   }
   return null;
+}
+
+/// Why credential `id` of `project` cannot be revoked on `state`, or
+/// null: it must be the project's customer credential a user sees, not
+/// yet revoked. An expired one may be.
+function revokeRefusal(state: CellState, project: string, id: string): Refusal | null {
+  const c = state.credentials[id];
+  if (!c || c.project_id !== project || c.role !== "customer" || c.omitted || c.hidden) {
+    return new Refusal(404, "not_found", `project ${project} has no credential ${id}`);
+  }
+  return c.status === "active" ? null : new Refusal(409, "credential_not_active", `credential ${id} is already revoked`);
 }
 
 /// Why `project` takes no new credential on `state`, or null.
@@ -217,5 +235,34 @@ export class Credentials {
       after: { feed_version: done.state.feed_version, grant_version: cred.grant_version },
     });
     return json(200, { credential: credentialView(id, cred), secret: presentedSecret(id, secret) });
+  }
+
+  /// Revoke a credential for good: status revoked at grant_version + 1.
+  /// Its secret exchanges no more at once; the cell refuses its tokens
+  /// once it holds the new grant.
+  async revoke(c: Call): Promise<Response> {
+    const [project, id] = c.ids;
+    const body = await readObject(c.req, [], true);
+    if (typeof body === "string") return refused(this.deps, c, { status: 400, code: "invalid_request", message: body });
+    const early = revokeRefusal(this.deps.cache.state, project, id);
+    if (early !== null) return refused(this.deps, c, early);
+    const was = this.deps.cache.state;
+    const before = { feed_version: was.feed_version, grant_version: was.credentials[id].grant_version };
+    const done = await commit(this.deps, c, (s) => {
+      const refusal = revokeRefusal(s, project, id);
+      if (refusal !== null) throw refusal;
+      setCredentialField(s, id, { status: "revoked" });
+      journal(s, "credential.revoke", `${project} credential=${id} grant=v${s.credentials[id].grant_version} user=${c.session.user_id}`);
+    });
+    if (done instanceof Response) return done;
+    const cred = done.state.credentials[id];
+    await audited(this.deps, c, {
+      outcome: "done",
+      project_id: project,
+      credential_ids: [id],
+      before,
+      after: { feed_version: done.state.feed_version, grant_version: cred.grant_version },
+    });
+    return json(200, { credential: credentialView(id, cred) });
   }
 }

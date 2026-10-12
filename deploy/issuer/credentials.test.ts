@@ -219,3 +219,63 @@ describe("rotating a credential", () => {
     ]);
   });
 });
+
+describe("revoking a credential", () => {
+  test("revokes it for good at grant_version + 1: its secret exchanges no more, and the cell refuses its tokens once the grant lands", async () => {
+    const { cell, m, a, id, first, path } = await withProject();
+    const fake = new FakeCell();
+    try {
+      const created = await (await m.send("POST", path, a, { displayName: "svc" })).json();
+      fake.publish(readBundle(cell.state));
+      const token = (await (await exchange(m, created.secret)).json()).accessToken;
+      const before = cellState(cell);
+      const res = await m.send("POST", `${path}/${created.credential.id}/revoke`, a);
+      expect(await answer(res)).toEqual([200, { credential: { ...created.credential, status: "revoked", grantVersion: 2 } }]);
+      const after = cellState(cell);
+      expect(after.credentials[created.credential.id]).toMatchObject({ status: "revoked", grant_version: 2 });
+      expect(after.feed_version).toBe(before.feed_version + 1);
+      const grant = (readBundle(cell.state).grants.credentials as any[]).find((g) => g.credential_id === created.credential.id);
+      expect([grant.status, grant.grant_version]).toEqual(["revoked", 2]);
+      expect(await answer(await exchange(m, created.secret))).toEqual([
+        403, refusal("credential_not_active", `credential ${created.credential.id} is revoked`),
+      ]);
+      const call = () => fetch(`${fake.url}/v1/streams?limit=1`, { headers: { authorization: `Bearer ${token}` } });
+      expect((await call()).status).toBe(200);
+      fake.publish(readBundle(cell.state));
+      expect(await answer(await call())).toEqual([
+        403, { error: { code: "credential_not_active", message: "credential_not_active", retryable: false } },
+      ]);
+      // The project's other credential is untouched; the listing shows both.
+      expect((await exchange(m, (await (await m.send("POST", `${path}/${first.id}/rotate`, a)).json()).secret)).status).toBe(200);
+      expect((await (await m.get(path, a)).json()).credentials.map((c: any) => [c.id, c.status])).toEqual([
+        [first.id, "active"], [created.credential.id, "revoked"],
+      ]);
+      expect(managementAudits(cell).find((r) => r.action === "credential.revoke")).toMatchObject({
+        outcome: "done", project_id: id, credential_ids: [created.credential.id],
+        before: { feed_version: before.feed_version, grant_version: 1 }, after: { feed_version: after.feed_version, grant_version: 2 },
+        request_id: res.headers.get("x-request-id"),
+      });
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("frees a live slot, and refuses a revoked one 409, one that is not the project's 404, and a body 400", async () => {
+    const { cell, m, a, id, first, path } = await withProject();
+    for (let i = 2; i <= 10; i++) expect((await m.send("POST", path, a, {})).status).toBe(201);
+    expect((await m.send("POST", path, a, {})).status).toBe(409);
+    expect((await m.send("POST", `${path}/${first.id}/revoke`, a)).status).toBe(200);
+    expect((await m.send("POST", path, a, {})).status).toBe(201);
+    expect(await answer(await m.send("POST", `${path}/${first.id}/revoke`, a))).toEqual([
+      409, refusal("credential_not_active", `credential ${first.id} is already revoked`),
+    ]);
+    const other = await customerSecret(cell, "sp_other");
+    await m.cache.refresh();
+    expect(await answer(await m.send("POST", `${path}/${other.id}/revoke`, a))).toEqual([
+      404, refusal("not_found", `project ${id} has no credential ${other.id}`),
+    ]);
+    expect(await answer(await m.send("POST", `${path}/${first.id}/revoke`, a, { reason: "leak" }))).toEqual([
+      400, refusal("invalid_request", 'unknown member "reason": the body takes nothing'),
+    ]);
+  });
+});

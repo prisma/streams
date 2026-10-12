@@ -27,6 +27,7 @@
 //   GET  /v1/projects/{p}/streams/credentials      its credentials
 //   POST /v1/projects/{p}/streams/credentials      create one (credentials.ts)
 //   POST /v1/projects/{p}/streams/credentials/{c}/rotate   a new secret
+//   POST /v1/projects/{p}/streams/credentials/{c}/revoke   revoke it
 //
 // No answer carries a CORS header (respond.ts): the page that calls these
 // routes is the issuer's own. Every answer carries X-Request-Id.
@@ -97,6 +98,11 @@ export class Management {
         path: /^\/v1\/projects\/([^/]+)\/streams\/credentials\/([^/]+)\/rotate$/,
         scope: "project",
         methods: { POST: { action: "credential.rotate", handle: (c) => credentials.rotate(c) } },
+      },
+      {
+        path: /^\/v1\/projects\/([^/]+)\/streams\/credentials\/([^/]+)\/revoke$/,
+        scope: "project",
+        methods: { POST: { action: "credential.revoke", handle: (c) => credentials.revoke(c) } },
       },
     ];
   }
