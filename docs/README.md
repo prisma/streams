@@ -50,7 +50,7 @@ Do not read these whole. Find the heading first, then read only that range
 - [PROVIDER-CONTRACT.md](PROVIDER-CONTRACT.md): the object-store provider suite behind ASM-OBJSTORE-CAS.
 - [OBSERVABILITY-BILLING.md](OBSERVABILITY-BILLING.md): the normative billing, usage and telemetry design.
 - [read-experiments/final-disposition.md](read-experiments/final-disposition.md): reads have one permanent production path, with no runtime switches.
-- [CONFORMANCE.md](../CONFORMANCE.md): the pinned Durable Streams suite. [sdk/README.md](../sdk/README.md): the TypeScript SDK.
+- [CONFORMANCE.md](../CONFORMANCE.md): the pinned Durable Streams suite. [sdk/README.md](../sdk/README.md): the TypeScript SDK; [sdk/CHANGELOG.md](../sdk/CHANGELOG.md): its release notes, packed with it.
 
 **Wire contract, edge changes and decisions**
 - [refactor/WIRE-MATRIX.md](refactor/WIRE-MATRIX.md): the per-route wire contract, first characterized at 685ea035. Update it with every client-visible change. Its `file:line` references are from 685ea035 and have drifted, so find code by symbol.

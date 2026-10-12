@@ -3,6 +3,24 @@
   "version": "0.2.0-rc.4",
   "description": "Prisma Streams product SDK — encrypted, append-only collections with routing keys, consumers, and watches",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/prisma/streams.git",
+    "directory": "sdk"
+  },
+  "homepage": "https://github.com/prisma/streams/tree/HEAD/sdk#readme",
+  "bugs": {
+    "url": "https://github.com/prisma/streams/issues"
+  },
+  "keywords": [
+    "prisma",
+    "streams",
+    "durable-streams",
+    "event-streaming",
+    "append-only",
+    "encryption",
+    "consumer-groups"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -16,10 +34,17 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
   },
   "sideEffects": false,
   "scripts": {
