@@ -167,8 +167,9 @@ class LayerB(unittest.TestCase):
         self.assertEqual(m["profile"]["pins_missing"], [])
         self.assertEqual(m["profile"]["sha256"], {"compute-1g.env": "co" * 32, "shared-cell.env": "sh" * 32})
         self.assertEqual(m["cell_env_sha256"], "ce" * 32)
-        self.assertEqual(m["harness_trees"]["deploy/composer"], None)
-        self.assertRegex(m["harness_trees"]["bench/k2cost"], r"^[0-9a-f]{40}$")
+        tree = lambda path: subprocess.run(["git", "-C", REPO, "rev-parse", f"HEAD:{path}"],  # noqa: E731
+                                           capture_output=True, text=True).stdout.strip()
+        self.assertEqual(m["harness_trees"], {p: tree(p) for p in ("bench/k2cost", "deploy/composer", "deploy/app-server")})
         self.assertEqual(m["known_red"], {})
         self.assertEqual(m["load"], {"manifest": "layer-b", "manifest_sha256": shipped_layer_b(), "time_scale": 1, "quota_posture": {
             "ceilings": {"compliant": ["app"], "hostile": ["h9", "h9b"], "victim": ["victim"]}, "q-hostile": {"hostile": ["h1"]}}})
