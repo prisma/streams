@@ -5,6 +5,7 @@
 // (src/auth/ceiling.rs, `CellCeiling::ceiling`): on a bounded axis the
 // ceiling is max(1, floor(bound / k)); an axis with no shared bound has
 // none.
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { AdminError } from "./errors";
 
@@ -70,6 +71,17 @@ export function readProfiles(paths: readonly string[]): Map<string, string> {
     }
   }
   return env;
+}
+
+/// The layered profile's identity: sha256 (hex) over its KEY=VALUE lines
+/// sorted by key, one per line. Comments, order and the files' paths do
+/// not enter it, so the issuer's bundled copy of the profile and the files
+/// `init` read have one digest when they say the same.
+export function profileDigest(env: Map<string, string>): string {
+  const lines = [...env.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([k, v]) => `${k}=${v}\n`);
+  return createHash("sha256").update(lines.join("")).digest("hex");
 }
 
 function positive(env: Map<string, string>, name: string): number {

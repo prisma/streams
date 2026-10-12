@@ -16,6 +16,7 @@ const USAGE = `usage: cell-admin <command> --state DIR [flags]
   init      --cell-id C --deployment-project P --account A --key-file K
             [--profile F]... [--issuer URL] [--workspace-cap N] [--max-projects N] [--denylist FILE]
   admit     --project P --workspace W [--quota field=value]... [--scopes "s ..."] [--prefix p]...
+            [--profile F]...
   token     --credential C --key-file K --out FILE [--ttl SECS] [--sub NAME]
   offboard  --project P [--cell-url URL --key-file K] [--max-walks N] [--settle-secs S]
   list      [--json]
@@ -34,7 +35,7 @@ const COMMANDS = {
     run: admit,
     spec: {
       single: ["state", "project", "workspace", "scopes"],
-      multi: ["quota", "prefix"],
+      multi: ["quota", "prefix", "profile"],
       required: ["state", "project", "workspace"],
     },
   },

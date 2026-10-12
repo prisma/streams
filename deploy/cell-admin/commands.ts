@@ -9,6 +9,7 @@ import {
   BOUNDED_FIELDS,
   type BoundedField,
   cellSizing,
+  profileDigest,
   QUOTA_FIELDS,
   type QuotaField,
   type Quotas,
@@ -72,8 +73,9 @@ export async function init(f: Flags, io: Io): Promise<void> {
   if (deployment === "proj_local" || deployment === SYSTEM_PROJECT || account === "acct_local") {
     throw new AdminError("a shared cell needs a real PROJECT_ID and ACCOUNT_ID, not a placeholder");
   }
-  const profiles = (f.all("profile").length > 0 ? f.all("profile") : DEFAULT_PROFILES).map((p) => resolve(p));
-  const sizing = cellSizing(readProfiles(profiles));
+  const profiles = profilesOf(f);
+  const env = readProfiles(profiles);
+  const sizing = cellSizing(env);
   const sk = loadSigningKey(f.must("key-file"));
   const [workspace_cap, max_projects] = [f.count("workspace-cap", 1), f.count("max-projects", 1000)];
   const denylist = resolve(f.get("denylist") ?? join(dir, "denylist.txt"));
@@ -88,6 +90,7 @@ export async function init(f: Flags, io: Io): Promise<void> {
       share_k: sizing.share_k,
       ceilings: sizing.ceilings,
       profiles,
+      profile_digest: profileDigest(env),
       workspace_cap,
       max_projects,
       denylist,
@@ -108,10 +111,20 @@ export async function init(f: Flags, io: Io): Promise<void> {
   io.out(`bundle: ${join(dir, BUNDLE_FILE)} (feed_version 1)`);
 }
 
-/// A cell's ceilings are fixed when it is initialised: refuse to admit
-/// against ceilings the profiles no longer give.
-function checkSizing(state: CellState): void {
-  const now = cellSizing(readProfiles(state.cell.profiles));
+/// The profile files a command reads: `--profile` (repeatable, later
+/// wins), or the two this tool ships with.
+const profilesOf = (f: Flags) =>
+  (f.all("profile").length > 0 ? f.all("profile") : DEFAULT_PROFILES).map((p) => resolve(p));
+
+/// A cell's profile is fixed when it is initialised: refuse to admit
+/// against ceilings the profile no longer gives, or against a profile that
+/// is not the one `init` recorded. `bundledProfiles` is the caller's own
+/// copy of the profile files (this tool's deploy/profiles, the issuer's
+/// bundled copy of the same files), never the paths `init` read, which do
+/// not exist where the issuer runs.
+export function checkSizing(state: CellState, bundledProfiles: readonly string[]): void {
+  const env = readProfiles(bundledProfiles);
+  const now = cellSizing(env);
   const changes = [
     ...(now.share_k !== state.cell.share_k ? [`k ${state.cell.share_k} -> ${now.share_k}`] : []),
     ...BOUNDED_FIELDS.filter((q) => now.ceilings[q] !== state.cell.ceilings[q]).map(
@@ -121,6 +134,13 @@ function checkSizing(state: CellState): void {
   if (changes.length > 0) {
     throw new AdminError(
       `the profiles changed since init (${changes.join(", ")}): a cell's ceilings are fixed for its life`,
+    );
+  }
+  const digest = profileDigest(env);
+  if (digest !== state.cell.profile_digest) {
+    throw new AdminError(
+      `the layered profile differs from the one init recorded (digest ${state.cell.profile_digest.slice(0, 12)} -> ` +
+        `${digest.slice(0, 12)}): a cell's profile is fixed for its life`,
     );
   }
 }
@@ -210,7 +230,7 @@ export async function admit(f: Flags, io: Io): Promise<void> {
   const workspace = f.must("workspace");
   await withLock(dir, async () => {
     const state = loadState(dir);
-    checkSizing(state);
+    checkSizing(state, profilesOf(f));
     checkPlacement(state, project, workspace);
     const quotas = admittedQuotas(state, f.all("quota"));
     const scopes = scopesOf(f);

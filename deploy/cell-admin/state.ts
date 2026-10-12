@@ -39,8 +39,11 @@ export interface CellConfig {
   issuer: string;
   share_k: number;
   ceilings: Ceilings;
-  /// The profile files the ceilings came from, re-read before every change.
+  /// The profile files `init` read, a record only: nothing re-reads them.
   profiles: string[];
+  /// profileDigest of the layered profile at `init`: every admission
+  /// compares the caller's shipped copy of the profile with it.
+  profile_digest: string;
   workspace_cap: number;
   max_projects: number;
   /// One project id per line; shared by every cell that should never

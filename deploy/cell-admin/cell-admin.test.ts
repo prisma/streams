@@ -2,7 +2,7 @@
 // the tool side of H1, H5, M3, M4 and L2). Run with
 // `bun test ./deploy/cell-admin`.
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { validateDocument } from "../../platform-demo/src/validate.mjs";
 import { schema } from "./feeds";
@@ -179,12 +179,41 @@ describe("admit", () => {
     const root = scratchDir();
     const prof = join(root, "shared.env");
     writeFileSync(prof, readFileSync(join(import.meta.dir, "..", "profiles", "shared-cell.env")));
-    const c = await initCell(["--profile", join(import.meta.dir, "..", "profiles", "compute-1g.env"), "--profile", prof]);
+    const profiles = ["--profile", join(import.meta.dir, "..", "profiles", "compute-1g.env"), "--profile", prof];
+    const c = await initCell(profiles);
     writeFileSync(prof, `${readFileSync(prof, "utf8")}SSE_MAX_CONNECTIONS=800\n`);
-    expect((await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w")).err).toBe(
+    expect((await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w", ...profiles)).err).toBe(
       "cell-admin admit: the profiles changed since init (max_live_subscriptions 150 -> 100): " +
         "a cell's ceilings are fixed for its life",
     );
+  });
+
+  test("checks the shipped profile against the digest init recorded, not the files init read", async () => {
+    // The issuer admits on Compute, where the paths init read do not exist:
+    // it compares its bundled copy of the profile with the cell's record.
+    const root = scratchDir();
+    const copies = ["compute-1g.env", "shared-cell.env"].map((name) => {
+      const path = join(root, name);
+      writeFileSync(path, readFileSync(join(import.meta.dir, "..", "profiles", name)));
+      return path;
+    });
+    const c = await initCell(copies.flatMap((p) => ["--profile", p]));
+    for (const p of copies) rmSync(p);
+    expect((await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w")).code).toBe(0);
+    expect(readState(c.state).cell.profile_digest).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("refuses to admit once the layered profile changed, even where no ceiling moved", async () => {
+    const root = scratchDir();
+    const prof = join(root, "shared.env");
+    writeFileSync(prof, `${readFileSync(join(import.meta.dir, "..", "profiles", "shared-cell.env"), "utf8")}SEGMENT_TARGET_BYTES=1\n`);
+    const c = await initCell();
+    const r = await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w",
+      "--profile", join(import.meta.dir, "..", "profiles", "compute-1g.env"), "--profile", prof);
+    expect([r.code, r.err.replace(/[0-9a-f]{12}/g, "<d>")]).toEqual([1,
+      "cell-admin admit: the layered profile differs from the one init recorded (digest <d> -> <d>): " +
+        "a cell's profile is fixed for its life"]);
+    expect(readState(c.state).projects).toEqual({});
   });
 });
 

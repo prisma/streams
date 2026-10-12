@@ -62,7 +62,7 @@ pinned to the customer audience `prisma-streams-data`.
 | Command | What it does |
 |---|---|
 | `init --cell-id C --deployment-project P --account A --key-file K` | Creates the state and the first bundle. It reads the profiles (by default the two above; `--profile` repeats, later wins), checks they describe a single-server shared cell, and fixes the cell's ceilings at bound ÷ k. Also: `--workspace-cap N` (default 1), `--max-projects N` (default 1,000), `--denylist FILE` (default `DIR/denylist.txt`; point several cells at one file) and `--issuer URL` |
-| `admit --project P --workspace W` | Places a project and creates its customer credential. Each bounded quota defaults to the cell's ceiling; `--quota field=value` sets a lower one. Also `--scopes "..."` (default: every scope) and `--prefix p` (repeatable) |
+| `admit --project P --workspace W` | Places a project and creates its customer credential. Each bounded quota defaults to the cell's ceiling; `--quota field=value` sets a lower one. Also `--scopes "..."` (default: every scope), `--prefix p` (repeatable) and `--profile F` (repeatable; default the two shipped profiles), the profile it checks against the one `init` recorded |
 | `token --credential C --key-file K --out FILE [--ttl SECS]` | Mints a customer token, valid at most 24 h (default 1 h; the first minute is backdated for clock skew). The token goes to FILE with mode 0600 and is never printed. Hand the file over; never paste the token |
 | `offboard --project P` | First run: revokes the project's customer credentials and adds an operator credential. Publish the bundle |
 | `offboard --project P --cell-url URL --key-file K` | Second run: checks the cell serves the revocation, deletes every stream, re-walks the catalog until a walk at least `--settle-secs` (default 60) after that check lists nothing, then omits the project. Publish the bundle. Exit 3 means "publish, wait, run again"; the walk is bounded by `--max-walks` (default 10) |
@@ -76,7 +76,7 @@ pinned to the customer audience `prisma-streams-data`.
 - the project id was ever used on this cell or appears in the denylist (ids are single-use; a move is offboarding plus a new id);
 - the workspace already has its cap of projects on the cell;
 - the cell already holds `--max-projects`;
-- the profiles' ceilings changed since `init`.
+- the profile (the shipped files, or `--profile`) gives other ceilings than at `init`, or is not the profile `init` recorded: `init` records a digest of the layered profile (its `KEY=VALUE` lines sorted by key), and `admit` compares its own copy of the profile with it, never re-reading the files `init` read, so the issuer can run the same check with its bundled copy.
 
 ## Publishing
 
