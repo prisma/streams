@@ -222,6 +222,7 @@ export async function admit(f: Flags, io: Io): Promise<void> {
     state.projects[project] = {
       workspace_id: workspace,
       phase: "active",
+      status: "active",
       project_policy_version: 1,
       ownership_version: 1,
       quotas,
@@ -234,6 +235,7 @@ export async function admit(f: Flags, io: Io): Promise<void> {
       status: "active",
       scopes,
       ...(stream_prefixes ? { stream_prefixes } : {}),
+      expires_at: null,
       omitted: false,
     };
     state.feed_version += 1;

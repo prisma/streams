@@ -254,6 +254,29 @@ describe("durable, monotonic state", () => {
     expect(r.err).toContain("is at feed_version 1 but its bundle is at 2: the state was restored from a stale copy");
   });
 
+  test("refuses a streams-cell-admin/v1 state: no reader for it exists, the cell is re-initialised", async () => {
+    const c = await initCell();
+    const path = join(c.state, "cell-state.json");
+    writeFileSync(path, JSON.stringify({ ...readState(c.state), format: "streams-cell-admin/v1" }));
+    const r = await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w");
+    expect([r.code, r.err]).toEqual([1, `cell-admin admit: ${path} is a streams-cell-admin/v1 state, ` +
+      "which this cell-admin does not read: re-initialise the cell"]);
+  });
+
+  test("the bundle publishes each project's status and each credential's expiry from the state", async () => {
+    const c = await initCell();
+    await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w");
+    const cred = customerCredential(c.state, "proj_a");
+    const s = readState(c.state) as any;
+    Object.assign(s.projects.proj_a, { status: "suspended", project_policy_version: 2 });
+    Object.assign(s.credentials[cred], { expires_at: 1_900_000_000, grant_version: 2 });
+    writeFileSync(join(c.state, "cell-state.json"), JSON.stringify(s));
+    expect((await run("bundle", "--state", c.state)).code).toBe(0);
+    const b = readBundle(c.state);
+    expect((b.policies.projects as any[]).map((p) => [p.status, p.project_policy_version])).toEqual([["suspended", 2]]);
+    expect((b.grants.credentials as any[]).map((g) => [g.expires_at, g.grant_version])).toEqual([[1_900_000_000, 2]]);
+  });
+
   test("refuses while another run holds the cell", async () => {
     const c = await initCell();
     writeFileSync(join(c.state, ".lock"), "4242\n");

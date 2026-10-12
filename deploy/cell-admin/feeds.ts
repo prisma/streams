@@ -44,7 +44,7 @@ export function bundleOf(state: CellState): Bundle {
       cell_id: state.cell.cell_id,
       project_policy_version: p.project_policy_version,
       ownership_version: p.ownership_version,
-      status: "active",
+      status: p.status,
       quotas: { ...p.quotas },
     }));
   const credentials = sortedEntries(state.credentials)
@@ -56,7 +56,7 @@ export function bundleOf(state: CellState): Bundle {
       status: c.status,
       scopes: c.scopes,
       ...(c.stream_prefixes ? { stream_prefixes: [...c.stream_prefixes] } : {}),
-      expires_at: null,
+      expires_at: c.expires_at,
     }));
   const bundle: Bundle = {
     keys: { feed_version: v, keys: state.keys.map((k) => ({ ...k })) },

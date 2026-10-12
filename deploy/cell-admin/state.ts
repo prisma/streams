@@ -23,7 +23,10 @@ import { dirname, join } from "node:path";
 import { AdminError } from "./errors";
 import type { Ceilings, Quotas } from "./profile";
 
-export const STATE_FORMAT = "streams-cell-admin/v1";
+export const STATE_FORMAT = "streams-cell-admin/v2";
+/// The format before the issuer's fields. No production cell holds one
+/// and no reader for it is kept: a v1 cell is initialised again.
+const STATE_FORMAT_V1 = "streams-cell-admin/v1";
 export const STATE_FILE = "cell-state.json";
 export const BUNDLE_FILE = "feeds-bundle.json";
 
@@ -54,14 +57,25 @@ export interface KeyRecord {
 
 export type Phase = "active" | "offboarding" | "offboarded";
 
+/// Who made a record through the issuer's management API.
+export interface Actor {
+  user_id: string;
+  email: string;
+}
+
 export interface ProjectRecord {
   workspace_id: string;
   phase: Phase;
+  /// Published as the policy entry's status; `suspended` makes the cell
+  /// answer the project's requests 403 project_not_active.
+  status: "active" | "suspended";
   project_policy_version: number;
   ownership_version: number;
   quotas: Quotas;
   admitted_at: string;
   offboarded_at?: string;
+  display_name?: string;
+  created_by?: Actor;
 }
 
 export interface CredentialRecord {
@@ -73,8 +87,21 @@ export interface CredentialRecord {
   status: "active" | "revoked";
   scopes: string;
   stream_prefixes?: string[];
+  /// Published as the grant entry's expires_at: epoch seconds, or null.
+  expires_at: number | null;
   /// Omitted from the feed for good (its project was offboarded).
   omitted: boolean;
+  /// A credential with a secret: HMAC-SHA-256 of the secret under the
+  /// pepper of version `hv` (base64url), and the secret's last characters
+  /// for recognition. Never the secret.
+  secret_hash?: string;
+  hv?: number;
+  hint?: string;
+  display_name?: string;
+  created_by?: Actor;
+  created_at?: string;
+  /// Hidden from every listing (the canary's credentials).
+  hidden?: boolean;
 }
 
 export interface CellState {
@@ -152,6 +179,9 @@ export function loadState(dir: string): CellState {
   const path = join(dir, STATE_FILE);
   if (!existsSync(path)) throw new AdminError(`${path} does not exist: run cell-admin init first`);
   const state = JSON.parse(readFileSync(path, "utf8")) as CellState;
+  if ((state.format as string) === STATE_FORMAT_V1) {
+    throw new AdminError(`${path} is a ${STATE_FORMAT_V1} state, which this cell-admin does not read: re-initialise the cell`);
+  }
   if (state.format !== STATE_FORMAT) {
     throw new AdminError(`${path} is not a ${STATE_FORMAT} state`);
   }

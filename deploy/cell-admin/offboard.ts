@@ -55,6 +55,7 @@ function revoke(state: CellState, project: string, io: Io): void {
     grant_version: 1,
     status: "active",
     scopes: OPERATOR_SCOPES,
+    expires_at: null,
     omitted: false,
   };
   state.projects[project].phase = "offboarding";
