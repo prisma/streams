@@ -4,19 +4,24 @@
 // is only ever in hand while an exchange presents it. The exchange then
 // computes the hash under the newest pepper and notes it here: never the
 // secret, and no write, since a compare-and-swap of the whole state on
-// the hot path would contend with every other writer. The sweep writes
-// the noted hashes in one compare-and-swap per batch, daily (and from the
-// management API's calls, B3), each only if the record still holds the
-// hash that was verified (a rotation in between wins). Once every
-// credential reports the newest pepper (the metrics route), the owner
-// drops the older one.
+// the hot path would contend with every other writer. The notes live in
+// memory only, so the sweep writes them soon and before the issuer
+// stops: REHASH_DELAY_MS after the oldest note (looked at every
+// REHASH_TICK_MS), and once more when the process stops (main.ts, on
+// SIGTERM), so an issuer redeployed more often than daily still writes
+// them. A sweep is one compare-and-swap per batch, each credential only if
+// its record still holds the hash that was verified (a rotation in
+// between wins). Once every credential reports the newest pepper (the
+// metrics route), the owner drops the older one.
 import { setCredentialField } from "../cell-admin/rules";
 import { type Pepper, secretFields } from "../cell-admin/secrets";
 import { type CellState, type CredentialRecord, journal } from "../cell-admin/state";
 import type { Audit } from "./audit";
 import type { StateCache } from "./cache";
 
-export const REHASH_SWEEP_MS = 24 * 3600 * 1000;
+/// A note is written at most this long after it is taken (plus a tick).
+export const REHASH_DELAY_MS = 10 * 60_000;
+export const REHASH_TICK_MS = 60_000;
 /// Credentials one compare-and-swap re-hashes.
 export const REHASH_BATCH = 100;
 
@@ -29,12 +34,15 @@ interface Noted {
 export class Rehasher {
   private readonly noted = new Map<string, Noted>();
   private running = false;
+  /// When the oldest note not yet written was taken.
+  private since: number | null = null;
 
   constructor(
     private readonly cache: StateCache,
     private readonly peppers: readonly Pepper[],
     private readonly audit: Audit,
     private readonly log: (line: string) => void = console.log,
+    private readonly now: () => number = Date.now,
   ) {}
 
   /// Credentials noted and not yet written.
@@ -49,12 +57,14 @@ export class Rehasher {
     if (matched.version === newest.version || cred.secret_hash === undefined) return;
     const { secret_hash, hv } = secretFields(this.peppers, secret);
     this.noted.set(id, { from: { secret_hash: cred.secret_hash, hv: matched.version }, to: { secret_hash, hv } });
+    this.since ??= this.now();
   }
 
   /// Write what is noted, one compare-and-swap per batch; returns how many
   /// credentials were re-hashed.
   async sweep(): Promise<number> {
     let done = 0;
+    this.since = null;
     while (this.noted.size > 0) {
       const batch = [...this.noted.entries()].slice(0, REHASH_BATCH);
       for (const [id] of batch) this.noted.delete(id);
@@ -65,6 +75,7 @@ export class Rehasher {
         changed = await this.cache.mutate((state) => apply(state, batch));
       } catch (e) {
         for (const [id, n] of batch) if (!this.noted.has(id)) this.noted.set(id, n);
+        this.since ??= this.now();
         throw e;
       }
       done += changed.result.length;
@@ -82,18 +93,23 @@ export class Rehasher {
     return done;
   }
 
-  /// Sweep every `everyMs` until the returned function is called.
-  start(everyMs = REHASH_SWEEP_MS): () => void {
-    const timer = setInterval(() => {
-      if (this.running || this.noted.size === 0) return;
-      this.running = true;
-      this.sweep()
-        .then((n) => this.log(`re-hashed ${n} credential(s) under pepper v${this.peppers[0].version}`))
-        .catch((e) => this.log(`re-hashing under pepper v${this.peppers[0].version} failed: ${(e as Error).message}`))
-        .finally(() => {
-          this.running = false;
-        });
-    }, everyMs);
+  /// Sweep when the oldest note is `delayMs` old; one sweep at a time.
+  async tick(delayMs = REHASH_DELAY_MS): Promise<void> {
+    if (this.running || this.since === null || this.now() - this.since < delayMs) return;
+    this.running = true;
+    try {
+      const n = await this.sweep();
+      this.log(`re-hashed ${n} credential(s) under pepper v${this.peppers[0].version}`);
+    } catch (e) {
+      this.log(`re-hashing under pepper v${this.peppers[0].version} failed: ${(e as Error).message}`);
+    } finally {
+      this.running = false;
+    }
+  }
+
+  /// Tick every `tickMs` until the returned function is called.
+  start(tickMs = REHASH_TICK_MS, delayMs = REHASH_DELAY_MS): () => void {
+    const timer = setInterval(() => void this.tick(delayMs), tickMs);
     return () => clearInterval(timer);
   }
 }

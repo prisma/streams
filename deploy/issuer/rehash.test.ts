@@ -7,6 +7,7 @@ import { cleanup, pepperFile, readBundleText, writeStateText } from "../cell-adm
 import { boot } from "./boot";
 import { StateCache } from "./cache";
 import { readConfig } from "./config";
+import { REHASH_DELAY_MS } from "./rehash";
 import { CELL, cellState, customerSecret, envWith, fakeS3, type IssuerCell, issuerCell } from "./rig";
 import { Issuer } from "./server";
 
@@ -16,14 +17,14 @@ const statePuts = () =>
   fakeS3().requests.filter((q) => q.method === "PUT" && q.key.endsWith(`/cells/${CELL}/cell-state.json`)).length;
 
 /// An issuer whose newest pepper is a new v2, the credentials' v1 after it.
-async function rotated(cell: IssuerCell) {
+async function rotated(cell: IssuerCell, now: () => number = Date.now) {
   const v2 = pepperFile(cell.root, 0o600, 2);
   const peppers = `v2:${v2.key.toString("base64")},${readFileSync(cell.pepper, "utf8").trim()}`;
   const cfg = readConfig(envWith(cell, { STREAMS_ISSUER_PEPPER: peppers }));
   const b = await boot(cfg);
-  const cache = new StateCache(b.store, b, { log: () => {} });
+  const cache = new StateCache(b.store, b, { log: () => {}, now });
   const log: string[] = [];
-  return { v2, cache, issuer: new Issuer(cfg, { store: b.store, cache, log: (l) => log.push(l) }), log };
+  return { v2, cache, issuer: new Issuer(cfg, { store: b.store, cache, now, log: (l) => log.push(l) }), log };
 }
 
 const exchange = (issuer: Issuer, secret: string) =>
@@ -96,12 +97,32 @@ describe("the re-hash sweep", () => {
     expect(cellState(cell).credentials[a.id].hv).toBe(2);
   });
 
+  test("writes what it noted 10 minutes after the first note, not a day after boot", async () => {
+    const cell = await issuerCell();
+    const a = await customerSecret(cell, "sp_a");
+    const b = await customerSecret(cell, "sp_b");
+    const clock = { t: Date.now() };
+    const { issuer } = await rotated(cell, () => clock.t);
+    expect((await exchange(issuer, a.secret)).status).toBe(200);
+    clock.t += 5 * 60_000;
+    expect((await exchange(issuer, b.secret)).status).toBe(200);
+    const puts = statePuts();
+    clock.t += REHASH_DELAY_MS - 5 * 60_000 - 1;
+    await issuer.rehasher.tick();
+    expect([statePuts(), issuer.rehasher.pending]).toEqual([puts, 2]);
+    clock.t += 1;
+    await issuer.rehasher.tick();
+    expect([statePuts(), issuer.rehasher.pending]).toEqual([puts + 1, 0]);
+    expect([cellState(cell).credentials[a.id].hv, cellState(cell).credentials[b.id].hv]).toEqual([2, 2]);
+    expect(REHASH_DELAY_MS).toBe(10 * 60_000);
+  });
+
   test("sweeps on its interval once started", async () => {
     const cell = await issuerCell();
     const a = await customerSecret(cell, "sp_a");
     const { issuer, log } = await rotated(cell);
     expect((await exchange(issuer, a.secret)).status).toBe(200);
-    const stop = issuer.rehasher.start(20);
+    const stop = issuer.rehasher.start(20, 0);
     try {
       const deadline = Date.now() + 2_000;
       while (log.length === 0 && Date.now() < deadline) await Bun.sleep(10);

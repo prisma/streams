@@ -55,7 +55,7 @@ export class Issuer {
     const log = deps.log ?? console.log;
     this.limits = new RateLimits(now);
     this.audit = new Audit(deps.store, cfg.cellId, { now, log: deps.log });
-    this.rehasher = new Rehasher(deps.cache, cfg.peppers, this.audit, deps.log);
+    this.rehasher = new Rehasher(deps.cache, cfg.peppers, this.audit, log, now);
     this.offboarding = new Offboarding(cfg, {
       cache: deps.cache,
       audit: this.audit,

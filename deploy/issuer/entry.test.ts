@@ -4,8 +4,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { cleanup, readBundle, scratchDir, verifiedClaims } from "../cell-admin/test-rig";
-import { CELL, customerSecret, type IssuerCell, issuerCell } from "./rig";
+import { cleanup, pepperFile, readBundle, scratchDir, verifiedClaims } from "../cell-admin/test-rig";
+import { CELL, cellState, customerSecret, type IssuerCell, issuerCell } from "./rig";
 
 const children: ReturnType<typeof Bun.spawn>[] = [];
 afterEach(() => {
@@ -91,6 +91,20 @@ describe("the bundled entry", () => {
     // The open minute's counts are written at the stop.
     expect(rest).toContain(`"kind":"exchanges"`);
     expect(rest).toContain(`"credential_id":"${a.id}"`);
+  });
+
+  test("writes the re-hashes it noted when it stops, so a redeploy loses none", async () => {
+    const cell = await issuerCell();
+    const a = await customerSecret(cell, "sp_a");
+    const v2 = pepperFile(cell.root, 0o600, 2);
+    const peppers = `v2:${v2.key.toString("base64")},${readFileSync(cell.pepper, "utf8").trim()}`;
+    const started = await launch(await bundle(), { ...cell.env, STREAMS_ISSUER_PEPPER: peppers });
+    if (!("origin" in started)) throw new Error(`the issuer did not start: ${started.err}`);
+    expect((await exchange(started.origin, a.secret)).status).toBe(200);
+    expect(cellState(cell).credentials[a.id].hv).toBe(1);
+    started.child.kill("SIGTERM");
+    expect(await started.child.exited).toBe(0);
+    expect(cellState(cell).credentials[a.id].hv).toBe(2);
   });
 
   test("refuses to boot with exit 1 and a message that quotes ids only", async () => {

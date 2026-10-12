@@ -11,10 +11,11 @@
 // start (exit 1, a message that quotes ids only) on any input or boot
 // refusal (boot.ts). Then it serves server.ts's routes on PORT,
 // revalidates the cell's state every 5 s, ticks the audit every 10 s,
-// sweeps re-hashes daily and drains deleted projects (offboarding.ts,
-// looking every 15 s); SIGTERM or SIGINT stops the timers, writes the
-// open audit period and exits 0 (a drain cut short resumes at the next
-// boot).
+// writes noted re-hashes 10 minutes after the first (rehash.ts) and
+// drains deleted projects (offboarding.ts, looking every 15 s); SIGTERM or
+// SIGINT stops the timers, writes the noted re-hashes (at most
+// STOP_SWEEP_MS) and the open audit period, and exits 0 (a drain cut short
+// resumes at the next boot).
 import { AdminError } from "../cell-admin/errors";
 import { boot } from "./boot";
 import { StateCache } from "./cache";
@@ -25,6 +26,9 @@ import { Issuer } from "./server";
 /// A request body larger than this is cut off by the server before any
 /// route reads it; the exchange takes at most 4 KiB.
 const MAX_REQUEST_BODY_BYTES = 64 * 1024;
+/// How long the stop waits for the re-hash sweep: the notes live only in
+/// memory, but the stop must not outlast the platform's grace.
+const STOP_SWEEP_MS = 5_000;
 
 function fail(message: string): never {
   console.error(`streams-issuer: ${message}`);
@@ -82,6 +86,11 @@ async function start(): Promise<void> {
     if (stopping) return;
     stopping = true;
     for (const s of stops) s();
+    const swept = issuer.rehasher.sweep().then(
+      (n) => n > 0 && console.log(`streams-issuer: re-hashed ${n} credential(s) at the stop`),
+      (e) => console.error(`streams-issuer: re-hashing at the stop failed: ${(e as Error).message}`),
+    );
+    await Promise.race([swept, new Promise((r) => setTimeout(r, STOP_SWEEP_MS))]);
     await issuer.audit.flush();
     server.stop();
     process.exit(0);
