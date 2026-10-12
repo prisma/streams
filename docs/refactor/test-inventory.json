@@ -3161,7 +3161,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "d3b581986b3fd22e10a2f0b59015592799eb4610e99f81298971913b24657c03",
+    "function_sha256": "318c2c2109da53a9a8ae98f28eddf32f49adf678f964a892618783af2056f6a2",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/idle_release.rs",

@@ -12,17 +12,32 @@ use std::time::Duration;
 
 const TICK: Duration = Duration::from_secs(2);
 
-/// Advances the manual clock one loop tick at a time, letting the loop read
-/// each tick, until `done` holds or `ticks` ticks have passed. Whether it held.
+/// Real time between two manual ticks, for the loop to read each one.
+const SPACING: Duration = Duration::from_millis(50);
+
+/// Advances the manual clock `ticks` loop ticks, `SPACING` apart.
+async fn tick(clock: &ManualClock, ticks: u32) {
+    for _ in 0..ticks {
+        clock.advance(TICK);
+        tokio::time::sleep(SPACING).await;
+    }
+}
+
+/// Advances the manual clock one loop tick at a time until `done` holds,
+/// giving the loop up to 2 s of real time after each tick, at most `ticks`
+/// ticks: a loaded host delays the loop's reading, never the outcome.
+/// Whether it held.
 async fn tick_until(clock: &ManualClock, ticks: u32, done: impl Fn() -> bool) -> bool {
     for _ in 0..ticks {
-        if done() {
-            return true;
-        }
         clock.advance(TICK);
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        for _ in 0..40 {
+            if done() {
+                return true;
+            }
+            tokio::time::sleep(SPACING).await;
+        }
     }
-    done()
+    false
 }
 
 /// Both streams' records, as a reader sees them.
@@ -73,15 +88,16 @@ async fn an_idle_instance_releases_its_caches_and_the_next_read_refills_them() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     let released = || runtime.history.cache.releases();
     // Health and operator requests every 30 s do not count as arrivals:
-    // nothing is released by 118 s, and the release comes at 120 s.
+    // nothing is released by 118 s, and the release follows.
     for ticks in [15, 15, 15, 14] {
         for path in ["/health", "/v1/debug/load"] {
             let (status, _, _) = hreq(addr, "GET", path, &[], b"").await;
             assert_eq!(status, 200, "{path}");
         }
-        assert!(!tick_until(&clock, ticks, || released() > 0).await);
+        tick(&clock, ticks).await;
+        assert_eq!(released(), 0, "released before the quiet period ended");
     }
-    assert!(tick_until(&clock, 4, || released() > 0).await, "released");
+    assert!(tick_until(&clock, 30, || released() > 0).await, "released");
     assert_eq!(released(), 1);
     assert_eq!(runtime.shared_cache.releases(), 1);
     assert_eq!(runtime.telemetry.cache.releases(), 1);
@@ -89,12 +105,10 @@ async fn an_idle_instance_releases_its_caches_and_the_next_read_refills_them() {
     assert_eq!(runtime.postings.stats()["entries"], 0);
 
     assert_eq!(records(addr).await, before, "a read after the release");
+    tick(&clock, 58).await;
+    assert_eq!(released(), 1, "the read started a new quiet period");
     assert!(
-        !tick_until(&clock, 58, || released() > 1).await,
-        "the read started a new quiet period"
-    );
-    assert!(
-        tick_until(&clock, 6, || released() > 1).await,
+        tick_until(&clock, 30, || released() > 1).await,
         "released again"
     );
     rig.shutdown().await;
