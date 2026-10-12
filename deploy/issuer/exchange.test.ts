@@ -202,6 +202,30 @@ describe("the exchange", () => {
     expect(await answer(await pending)).toEqual([403, refusal("credential_not_active", `credential ${id} is revoked`)]);
   });
 
+  test("exchanges a credential another writer made after the copy's last revalidation, reading the state once more", async () => {
+    const cell = await issuerCell();
+    const { issuer, clock } = await issuerFor(cell);
+    const stateReads = () => fakeS3().requests.filter((q) => q.method === "GET" && q.key.endsWith("/cell-state.json")).length;
+    // cell-admin (another writer) adds the credential; the copy has not
+    // revalidated since, as for up to 5 s after any other writer's change.
+    const { id, secret } = await customerSecret(cell, "sp_a");
+    clock.t += 1_001;
+    let reads = stateReads();
+    expect((await post(issuer, secret)).status).toBe(200);
+    expect(stateReads()).toBe(reads + 1);
+    // A second one made elsewhere a second later: looked up once more too.
+    const second = await customerSecret(cell, "sp_a");
+    clock.t += 1_001;
+    expect((await post(issuer, second.secret)).status).toBe(200);
+    // At most one such read a second, whatever strangers send.
+    reads = stateReads();
+    for (let i = 0; i < 5; i++) expect((await post(issuer, wrongSecret(id))).status).toBe(401);
+    expect(stateReads()).toBe(reads);
+    clock.t += 1_001;
+    expect((await post(issuer, wrongSecret(id))).status).toBe(401);
+    expect(stateReads()).toBe(reads + 1);
+  });
+
   test("refuses a credential past its expiry, and a project being deleted", async () => {
     const cell = await issuerCell();
     const { id, secret } = await customerSecret(cell, "sp_a");

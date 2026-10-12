@@ -21,6 +21,8 @@ import type { StateStore } from "../cell-admin/store";
 
 export const REFRESH_MS = 5_000;
 export const MAX_AGE_MS = 300_000;
+/// A second look at the stored state (recheck) runs at most this often.
+export const RECHECK_GAP_MS = 1_000;
 
 export interface CacheOptions {
   now?: () => number;
@@ -35,7 +37,10 @@ export class StateCache {
   private readonly now: () => number;
   private readonly log: (line: string) => void;
   private readonly refreshMs: number;
-  private running = false;
+  /// The revalidation in flight, which every caller shares.
+  private inflight: Promise<void> | null = null;
+  /// When the last revalidation started, whether it succeeded or not.
+  private triedAt: number;
   /// The published bundle's feed_version as last seen; null before the
   /// first look.
   private published: number | null = null;
@@ -54,6 +59,7 @@ export class StateCache {
     this.current = first.state;
     this.etag = first.etag;
     this.checkedAt = this.now();
+    this.triedAt = this.checkedAt;
   }
 
   /// The state as last read. Never changed in place: a writer clones it.
@@ -77,8 +83,29 @@ export class StateCache {
 
   /// One revalidation, then the repair of a bundle behind the state; a
   /// failure of either keeps what the cache holds and is tried again at
-  /// the next refresh.
-  async refresh(): Promise<void> {
+  /// the next refresh. Callers while one runs share it.
+  refresh(): Promise<void> {
+    this.inflight ??= this.revalidate().finally(() => {
+      this.inflight = null;
+    });
+    return this.inflight;
+  }
+
+  /// A second look for the exchange, when a credential its copy does not
+  /// know, or whose secret does not match, may be one another writer made
+  /// or rotated since the last revalidation (up to REFRESH_MS ago):
+  /// revalidate unless one started within RECHECK_GAP_MS, so strangers'
+  /// guesses cost at most one read of the state a second. Whether the
+  /// copy changed.
+  async recheck(): Promise<boolean> {
+    if (this.inflight === null && this.now() - this.triedAt < RECHECK_GAP_MS) return false;
+    const before = this.current;
+    await this.refresh();
+    return this.current !== before;
+  }
+
+  private async revalidate(): Promise<void> {
+    this.triedAt = this.now();
     try {
       const changed = await this.store.loadChanged(this.etag);
       if (changed !== null) {
@@ -151,11 +178,7 @@ export class StateCache {
   /// function is called.
   start(): () => void {
     const timer = setInterval(() => {
-      if (this.running) return;
-      this.running = true;
-      this.refresh().finally(() => {
-        this.running = false;
-      });
+      if (this.inflight === null) void this.refresh();
     }, this.refreshMs);
     return () => clearInterval(timer);
   }

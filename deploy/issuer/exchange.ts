@@ -218,12 +218,21 @@ export class Exchange {
     // The copy is read once the body is in: a client that trickles its
     // body must not have its checks run against a copy older than the one
     // fresh() measures (a revocation that landed meanwhile).
-    const state = this.cache.state;
-    const cred = state.credentials[id];
+    let state = this.cache.state;
+    let cred = state.credentials[id];
     if (cred !== undefined) Object.assign(seen, { credential: id, projectId: cred.project_id });
     if (typeof ask === "string") return result("invalid_request", refuse(400, "invalid_request", ask));
     // The HMAC runs for an unknown id too: the answer's timing tells nothing.
-    const pepper = verifySecret(this.cfg.peppers, cred, secret);
+    let pepper = verifySecret(this.cfg.peppers, cred, secret);
+    if ((pepper === null || cred === undefined) && (await this.cache.recheck())) {
+      // Another writer may have made or rotated it since the copy's last
+      // revalidation: one more look at the stored state (at most one a
+      // second), so a valid secret is not refused for the copy's age.
+      state = this.cache.state;
+      cred = state.credentials[id];
+      if (cred !== undefined) Object.assign(seen, { credential: id, projectId: cred.project_id });
+      pepper = verifySecret(this.cfg.peppers, cred, secret);
+    }
     if (pepper === null || cred === undefined) return this.wrongSecret(ip, id);
     const limited = this.mint(id);
     if (limited !== null) return result("rate_limited", limited);
