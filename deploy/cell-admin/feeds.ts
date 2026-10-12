@@ -3,16 +3,27 @@
 // feed_version, in the shape deploy/app-server materializes from
 // FEEDS_S3_KEY into the three STREAMS_AUTH_*_FILE files. Every part is
 // validated against contracts/streams-platform/v1 before it is written.
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+// The schemas are compiled in, not read at run time: the interim issuer
+// runs this library as one bundled file, where the repository is absent.
+import credentialGrants from "../../contracts/streams-platform/v1/credential-grants.schema.json";
+import customerTokenClaims from "../../contracts/streams-platform/v1/customer-token-claims.schema.json";
+import keys from "../../contracts/streams-platform/v1/keys.schema.json";
+import projectPolicies from "../../contracts/streams-platform/v1/project-policies.schema.json";
 import { validateDocument } from "../../platform-demo/src/validate.mjs";
 import { AdminError } from "./errors";
 import type { CellState, CredentialRecord, ProjectRecord } from "./state";
 
-const SCHEMAS = join(import.meta.dir, "..", "..", "contracts", "streams-platform", "v1");
+const SCHEMAS: Record<string, unknown> = {
+  "credential-grants.schema.json": credentialGrants,
+  "customer-token-claims.schema.json": customerTokenClaims,
+  "keys.schema.json": keys,
+  "project-policies.schema.json": projectPolicies,
+};
 
 export function schema(name: string): unknown {
-  return JSON.parse(readFileSync(join(SCHEMAS, name), "utf8"));
+  const s = SCHEMAS[name];
+  if (s === undefined) throw new Error(`no contract schema ${name} is compiled into cell-admin`);
+  return s;
 }
 
 /// Throw unless `doc` satisfies the named contract schema.
