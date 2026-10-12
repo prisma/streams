@@ -12,7 +12,7 @@ only in scratch directories, and one was deleted by a cleanup mid-campaign
 | `app-lb/` | `pilot` (`LB_BINARY_S3_KEY`), `MODE=lb` | rendezvous-hash router; the only client entry point |
 | `app-gen/` | `awsbench` (`AWSBENCH_S3_KEY`) | in-region load generator for soaks and benchmarks |
 
-Two more directories:
+Three more directories:
 - `profiles/` holds the environment files deploy scripts pass as `--env`
   lines: `compute-1g.env` for every server on the 1 GiB class, and
   `shared-cell.env` on top of it for a single-server shared cell.
@@ -22,6 +22,13 @@ Two more directories:
   local directory or in buckets (`--state s3://...`), which the interim
   token issuer shares. Its guide is [cell-admin/README.md](cell-admin/README.md).
   Tests: `bun test ./deploy/cell-admin`.
+- `issuer/` is the public beta's interim token issuer (`main.ts`, a Bun
+  service of its own, not a wrapper): it exchanges a customer
+  credential's secret for a cell token at `POST /v1/token/streams`, from
+  the state cell-admin keeps in the control bucket, and answers
+  `GET /healthz` and `GET /v1/admin/metrics` for the watch. Its inputs are
+  `config.ts`'s `INPUTS`, read from its environment and nothing else.
+  Tests: `bun test ./deploy/issuer`.
 
 All verify the download is an **x86_64 ELF** before exec. That check is
 not politeness: an aarch64 binary deploys "successfully" and crash-loops
