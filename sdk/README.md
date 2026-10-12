@@ -105,6 +105,18 @@ failures propagate unchanged. Concurrent 401 responses for the same cached
 credential share one refresh, and late responses cannot invalidate its
 successor.
 
+A `tokenProvider` may return `{ token, expiresAt }` (epoch milliseconds or
+a `Date`) instead of a string. Such a token is refreshed at the first
+request made after 80% of its lifetime, or two minutes before it expires
+when that is earlier (a 3600 s token at 2880 s, a 600 s token at 480 s);
+requests made while the refresh runs wait for it and share it, and the
+client starts no timer. If the refresh fails while the cached token is
+still valid, the request is sent with that token and the failure is not
+surfaced; the next request tries again, and once the token has expired
+the provider's error rejects the request. A token the server refuses with
+`401` is never sent again. A provider that returns a string is refreshed
+only after a `401`, as before.
+
 ## Consumer batches and per-key order
 
 A pull (`consumer.pull({ max })`, or each batch of `for await (const message

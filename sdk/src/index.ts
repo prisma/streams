@@ -32,11 +32,12 @@ export interface StreamsClientOptions {
    * credential per project, tokens expire). Called lazily on the
    * first authenticated request and again after a `401` — never on
    * `wrong_cell`, which by contract is `421`/`503` precisely so a
-   * valid credential is not refreshed at the wrong cell. Takes
-   * precedence over the static `token` when both are set... don't set
-   * both.
+   * valid credential is not refreshed at the wrong cell. A token
+   * returned with its expiry (`TokenWithExpiry`) is also refreshed
+   * before it expires. Takes precedence over the static `token` when
+   * both are set... don't set both.
    */
-  tokenProvider?: () => string | Promise<string>;
+  tokenProvider?: () => string | TokenWithExpiry | Promise<string | TokenWithExpiry>;
   /**
    * The stream's project id. Required for minting watch-observation
    * capabilities (the capability is bound to
@@ -54,6 +55,22 @@ export interface StreamsClientOptions {
    * restart; consumer, subscription and watch loops still reconnect.
    */
   retry?: { transport?: boolean };
+}
+
+/**
+ * A bearer token and when it expires (epoch milliseconds or a `Date`), as
+ * a `tokenProvider` may return it. The client refreshes it at the first
+ * request made after 80% of its lifetime, or two minutes before it
+ * expires when that is earlier (a 3600 s token at 2880 s, a 600 s token
+ * at 480 s), through the provider and shared by concurrent requests; it
+ * starts no timer. If that refresh fails while the token is still valid,
+ * the request is sent with it and the failure is not surfaced; the next
+ * request tries again. Once the token has expired, the failure rejects
+ * the request.
+ */
+export interface TokenWithExpiry {
+  token: string;
+  expiresAt: number | Date;
 }
 
 export interface StreamHandleOptions {
@@ -401,17 +418,47 @@ export class ProducerSequenceReusedError extends StreamsError {
 // ---------------------------------------------------------------------
 // HTTP plumbing
 
+/** A cached provider token. `refreshAt` and `expiresAt` (epoch ms) are
+ * set only for a `TokenWithExpiry`. */
+interface CachedToken {
+  value: string;
+  expiresAt?: number;
+  refreshAt?: number;
+}
+
+/** The tokenProvider cache; single-flight so a burst of requests after
+ * expiry fetches ONE token, not one per request. */
+interface TokenCache {
+  generation: number;
+  token?: CachedToken;
+  inflight?: Promise<string>;
+  /** The token a proactive refresh is replacing: sent while it is valid
+   * if the refresh fails, dropped at a 401. */
+  fallback?: { value: string; expiresAt: number };
+}
+
 interface Ctx {
   base: string;
   token?: string;
-  tokenProvider?: () => string | Promise<string>;
-  /** tokenProvider cache; single-flight so a burst of requests after
-   * expiry fetches ONE token, not one per request. */
-  tokens?: { generation: number; value?: string; inflight?: Promise<string> };
+  tokenProvider?: () => string | TokenWithExpiry | Promise<string | TokenWithExpiry>;
+  tokens?: TokenCache;
   project?: string;
   fetch: typeof fetch;
   /** StreamsClientOptions.retry.transport. */
   transportRetry: boolean;
+}
+
+/** A token is refreshed once less than this margin of its lifetime is
+ * left: 20% of it, at least two minutes. */
+const REFRESH_MARGIN_MIN_MS = 120_000;
+const REFRESH_MARGIN_FRACTION = 0.2;
+
+function cachedToken(t: string | TokenWithExpiry): CachedToken {
+  if (typeof t === "string") return { value: t };
+  const expiresAt = t.expiresAt instanceof Date ? t.expiresAt.getTime() : t.expiresAt;
+  if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt)) return { value: t.token };
+  const margin = Math.max(REFRESH_MARGIN_MIN_MS, REFRESH_MARGIN_FRACTION * (expiresAt - Date.now()));
+  return { value: t.token, expiresAt, refreshAt: expiresAt - margin };
 }
 
 async function authHeader(
@@ -424,29 +471,47 @@ async function authHeader(
     // sent. Concurrent and late 401s join or reuse its successor.
     if (rejectedGeneration === cache.generation) {
       cache.generation++;
-      cache.value = undefined;
+      cache.token = undefined;
+      cache.inflight = undefined;
+      cache.fallback = undefined;
+    } else if (cache.token?.refreshAt !== undefined && Date.now() >= cache.token.refreshAt) {
+      // A proactive refresh, like a 401's, except that the token it
+      // replaces stays usable until it expires.
+      cache.generation++;
+      cache.fallback = { value: cache.token.value, expiresAt: cache.token.expiresAt! };
+      cache.token = undefined;
       cache.inflight = undefined;
     }
     const generation = cache.generation;
-    if (cache.value !== undefined) {
-      return { header: `Bearer ${cache.value}`, generation };
+    if (cache.token !== undefined) {
+      return { header: `Bearer ${cache.token.value}`, generation };
     }
+    const fallback = cache.fallback;
     // Defer invocation so synchronous provider throws also reach every
     // waiter on the same promise and leave the cache recoverable.
     cache.inflight ??= Promise.resolve().then(() => ctx.tokenProvider!()).then(
       (t) => {
+        const token = cachedToken(t);
         if (cache.generation === generation) {
-          cache.value = t;
+          cache.token = token;
           cache.inflight = undefined;
+          cache.fallback = undefined;
         }
-        return t;
+        return token.value;
       },
       (e) => {
         if (cache.generation === generation) cache.inflight = undefined;
         throw e;
       },
     );
-    return { header: `Bearer ${await cache.inflight}`, generation };
+    try {
+      return { header: `Bearer ${await cache.inflight}`, generation };
+    } catch (e) {
+      if (fallback !== undefined && Date.now() < fallback.expiresAt) {
+        return { header: `Bearer ${fallback.value}`, generation };
+      }
+      throw e;
+    }
   }
   return { header: ctx.token ? `Bearer ${ctx.token}` : undefined };
 }
