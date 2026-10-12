@@ -788,6 +788,64 @@ async fn a_create_pays_for_its_registry_writes() {
     engine_shutdown(&cell.state).await;
 }
 
+/// A10 on the catalog (phase B item B6, owner question Q1 at (b')): a
+/// listing pays for its LIST (10) and every descriptor it reads (1) from
+/// its project's store budget, and is refused `429 project_rate_limit`
+/// while that budget is in debt; an append is not. Project 0 creates 120
+/// streams with no rate, is republished at 20 requests a second and waits
+/// a second, so its budget is full at 20: one listing of the 120 leaves it
+/// exactly 110 in debt, which takes five and a half seconds to clear.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_listing_pays_for_the_descriptors_it_reads() {
+    const STREAMS: usize = 120;
+    let io = Arc::new(StoreResources::new(&crate::config::StorageConfig::default()));
+    let mut cell = open_cell(CellSpec {
+        store: Arc::new(TimingStore::new(mem(), io)),
+        ..CellSpec::open(1)
+    })
+    .await;
+    for n in 0..STREAMS {
+        let path = format!("/v1/streams/s{n:03}");
+        assert_eq!(cell.call(0, "PUT", &path, CREATE).await.0, 201);
+    }
+    let rated = cell.policy_mut(0);
+    rated.quotas.requests_per_sec = 20;
+    rated.project_policy_version = 2;
+    let quotas = rated.quotas.clone();
+    cell.publish();
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let list = "/v1/streams?limit=120";
+    let listing = cell.json(0, "GET", list).await;
+    let listed = listing["streams"].as_array().map_or(0, Vec::len);
+    let id = ProjectId::new(&project(0)).unwrap();
+    let share = cell.state.quotas.park_share(&id, &quotas).unwrap();
+    let level = share.store_ops_level();
+    assert_eq!(
+        (listed, level),
+        (STREAMS, -110.0),
+        "a listing of {STREAMS} at 20 a second"
+    );
+    let append = cell
+        .call(0, "POST", "/v1/streams/s000/records", br#"{"n":1}"#)
+        .await;
+    assert_eq!(append.0, 200, "an append beside the listing's debt");
+    let (status, headers, body) = cell.call(0, "GET", list, b"").await;
+    let retry = headers
+        .get("retry-after")
+        .and_then(|s| s.parse::<u64>().ok());
+    let spent = Some("project_rate_limit".to_string());
+    assert_eq!(
+        (status, error_code(&body)),
+        (429, spent),
+        "the second listing"
+    );
+    assert!(
+        retry >= Some(5),
+        "Retry-After {retry:?} for a debt of 110 at 20 a second"
+    );
+    engine_shutdown(&cell.state).await;
+}
+
 /// The registry store work project `i`'s requests made after trace event
 /// `after`, as 14(b) weighs it: a GET or HEAD the provider bills (a body
 /// or a 404) 1, a PUT, LIST or COPY 10, anything else nothing, over the

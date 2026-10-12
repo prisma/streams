@@ -17,9 +17,9 @@
 //! bucket of the project's after the request is served, at the request
 //! rate it was admitted under, one second's burst, debt allowed. Requests
 //! that write the registry are refused while it is in debt
-//! (`store_ops_available`); every other route only pays into it. The
-//! catalog joins the refused routes once it binds its share (phase B item
-//! B6); until then it neither pays nor is refused.
+//! (`store_ops_available`), and so is the catalog, which binds its share
+//! at its own admission (phase B item B6); every other route only pays
+//! into it.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;

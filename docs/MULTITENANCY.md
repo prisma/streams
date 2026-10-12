@@ -1363,11 +1363,14 @@ whole seconds until it is not; every other request only pays into it,
 and the request bucket still charges every request exactly 1. A fresh
 create weighs 11 (a 404 and a PUT): at 20 requests a second a project
 creates two streams back to back and then one every 0.55 s. The catalog
-joins the refused routes once it binds its share (phase B item B6),
-where a listing of N streams weighs N + 10. Owner question Q1: built as
-(b′), a budget at the request rate; (b) would publish its own
-`store_ops_per_sec`, (a) would debit the request bucket and refuse every
-route.
+(`GET /v1/streams`) pays and is refused alike (phase B item B6, in edge
+change #NEW-phase-b-3): a listing of N streams weighs N + 10 (its LIST
+and a GET a descriptor), so at 20 a second a full budget that lists 100
+streams is left 90 in debt, and the project's next listing, create,
+delete or seal is refused for 4.5 s (`Retry-After: 5`); its appends and
+reads are not. Owner question Q1: built as (b′), a budget at the
+request rate; (b) would publish its own `store_ops_per_sec`, (a) would
+debit the request bucket and refuse every route.
 
 ### 17.4 Fairness
 

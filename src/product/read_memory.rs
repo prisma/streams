@@ -23,18 +23,25 @@
 //! (b')): 429 `project_rate_limit` with the seconds until it is not, as
 //! the request-rate bucket answers. Every other route only pays into the
 //! budget (`quota::parked`).
+//!
+//! The catalog (`GET /v1/streams`, its own route) is admitted here too
+//! (public-beta phase B item B6): `admit_catalog` binds its project's share
+//! after project admission, so a listing pays for the descriptors it reads
+//! and is refused while the store budget is in debt.
 
 use axum::http::{HeaderValue, Method, StatusCode};
 use axum::response::Response;
 
 use super::{
     AppState, ProductOperation, ProductRoute, READ_MAX_BYTES_CAP, SCAN_DEFAULT_BYTES,
-    classify_route, parse_query, perr, project_memory_gate, quota_refusal_response, strip_verb,
+    classify_route, parse_query, perr, project_admission, project_memory_gate,
+    quota_refusal_response, strip_verb,
 };
 use crate::admission::body::BodyRefusal;
 use crate::admission::read_memory::{ReadHold, ReadRefusal};
 use crate::application::consumer::PULL_COVERAGE_BYTES;
 use crate::auth::RequestPrincipal;
+use crate::quota::QuotaGuard;
 
 /// The memory backstops for one admitted request on the product surface
 /// before its body (`path` is the route's whole wildcard path, subresource
@@ -59,6 +66,25 @@ pub(crate) async fn refusal(
         return Some(refusal);
     }
     reserve(state, principal, page_bytes(method, path, query)?).await
+}
+
+impl AppState {
+    /// The catalog's admission: project admission, as `product_entry`
+    /// admits, then the request's project share, so the listing pays for
+    /// the store work it makes, then the store budget, which refuses it
+    /// while in debt (14(b)'s bind for the catalog). The guard holds the
+    /// project's request slot; `Err` is the refusal to answer.
+    pub(crate) fn admit_catalog(
+        &self,
+        principal: Option<&RequestPrincipal>,
+    ) -> Result<Option<QuotaGuard>, Box<Response>> {
+        let guard = project_admission(self, principal).map_err(Box::new)?;
+        crate::admission::park::bind_principal(&self.quotas, principal);
+        match store_budget_refusal(self, principal) {
+            Some(refusal) => Err(Box::new(refusal)),
+            None => Ok(guard),
+        }
+    }
 }
 
 /// Whether the request names an operation that writes the registry: a

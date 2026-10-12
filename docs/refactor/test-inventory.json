@@ -994,6 +994,17 @@
     ]
   },
   {
+    "name": "a_listing_pays_for_the_descriptors_it_reads",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0e9c450cb85a840ccc62c3b17757146b1727eada67d13d03c2deb5558f277fb4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_hostile.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_lost_applied_suffix_rewinds_to_the_durable_frontier",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

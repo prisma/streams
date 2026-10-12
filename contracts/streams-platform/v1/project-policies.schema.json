@@ -30,7 +30,7 @@
               "requests_per_sec": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Requests a second, one token each. Also the rate of the project's store budget (one second's burst): a served request pays for the registry store work it made, a billed GET or HEAD 1 and a PUT, a listing or a COPY 10, and the project's creates, deletes and seals are refused while that budget is in debt (MULTITENANCY §17.3)."
+                "description": "Requests a second, one token each. Also the rate of the project's store budget (one second's burst): a served request pays for the registry store work it made, a billed GET or HEAD 1 and a PUT, a listing or a COPY 10, and the project's creates, deletes, seals and catalog listings are refused while that budget is in debt (MULTITENANCY §17.3)."
               },
               "append_bytes_per_sec": { "type": "integer", "minimum": 0 },
               "append_records_per_sec": { "type": "integer", "minimum": 0 },

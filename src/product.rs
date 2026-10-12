@@ -3646,12 +3646,12 @@ pub(crate) async fn product_list(
         }
         None
     };
-    // SR-3: the catalog is a customer route like any other — it holds
-    // the project's admission slot for the handler's duration instead
-    // of offering a quota-free side door.
-    let _admission = match project_admission(&state, principal.as_ref()) {
+    // SR-3 and 14(b): the catalog is a customer route like any other —
+    // it holds the project's admission slot for the handler's duration
+    // and pays for the descriptors it reads, never a quota-free side door.
+    let _admission = match state.admit_catalog(principal.as_ref()) {
         Ok(g) => g,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let q = match strict_query(&query, &["limit", "cursor", "prefix"]) {
         Ok(q) => q,
