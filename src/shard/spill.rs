@@ -525,12 +525,7 @@ impl ShardEngine {
                 .store(share.refused.load(Ordering::Relaxed), Ordering::Relaxed);
         }
         // (1)
-        self.db
-            .flush_with_options(FlushOptions {
-                flush_type: FlushType::Wal,
-            })
-            .await
-            .map_err(|e| SealError::Store(e.to_string()))?;
+        self.spill_flush_and_catch_up(sp).await?;
         sp.check_abort(SealStep::AfterWalFlush)?;
         // (2)
         let snapshot_at = Instant::now();
@@ -574,6 +569,47 @@ impl ShardEngine {
         self.spill_note_leftover(sp, snapshot_at);
         report.total_ms = ms(t0.elapsed());
         Ok(report)
+    }
+
+    /// Step 1: one awaited WAL flush, then a wait (at most 1 s) until durable
+    /// dispatch has published every group the flush covered, so each
+    /// stream's durable frontier meets its applied one when step 2 reads it
+    /// (dB §1.2 step 4: "so that the applied and durable frontiers meet").
+    /// Without the wait the snapshot misses whatever the acker has not
+    /// dispatched yet, and those pages' values reach this seal's L0 (leak).
+    #[expect(clippy::unwrap_used, reason = "L6 spike: throwaway sealer")]
+    async fn spill_flush_and_catch_up(&self, sp: &SpillState) -> Result<(), SealError> {
+        let target = self.in_flight.lock().unwrap().pending().last().map(|g| g.seq);
+        self.db
+            .flush_with_options(FlushOptions {
+                flush_type: FlushType::Wal,
+            })
+            .await
+            .map_err(|e| SealError::Store(e.to_string()))?;
+        let Some(target) = target else {
+            return Ok(());
+        };
+        let until = Instant::now() + Duration::from_secs(1);
+        loop {
+            let behind = self
+                .in_flight
+                .lock()
+                .unwrap()
+                .pending()
+                .first()
+                .is_some_and(|g| g.seq <= target);
+            if !behind {
+                return Ok(());
+            }
+            if self.is_closed() {
+                return Err(SealError::Closed);
+            }
+            if Instant::now() >= until {
+                sp.stats.catch_up_timeouts.fetch_add(1, Ordering::Relaxed);
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
     }
 
     /// Step 7a: one awaited WAL flush, so SlateDB's durable seq covers the

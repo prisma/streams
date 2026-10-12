@@ -86,6 +86,11 @@ pub(crate) struct SpillStats {
     pub(crate) advances_stale: AtomicU64,
     /// An Exact advance with no descriptor in the side table.
     pub(crate) side_table_missing: AtomicU64,
+    /// Step 1 gave up waiting for durable dispatch to catch up (1 s).
+    pub(crate) catch_up_timeouts: AtomicU64,
+    /// The ring let go of a batch with a page at or above its stream's
+    /// absorbed boundary (mirrors the ring share's counter; 0 by design).
+    pub(crate) ring_evicted_unabsorbed: AtomicU64,
     /// Streams whose window the ring did not cover (per-stream seek).
     pub(crate) ring_fallbacks: AtomicU64,
     pub(crate) ring_fallback_bytes: AtomicU64,
@@ -189,6 +194,8 @@ impl SpillStats {
                 "stale": g(&self.advances_stale),
                 "side_table_missing": g(&self.side_table_missing),
             },
+            "catch_up_timeouts": g(&self.catch_up_timeouts),
+            "ring_evicted_unabsorbed": g(&self.ring_evicted_unabsorbed),
             "ring_fallbacks": g(&self.ring_fallbacks),
             "ring_fallback_bytes": g(&self.ring_fallback_bytes),
             "spill_flushes": g(&self.spill_flushes),

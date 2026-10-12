@@ -262,6 +262,9 @@ impl ShardEngine {
                 let (dropped, batches) = (ring.bytes as u64, ring.batches.len() as u64);
                 let above = ring.batches.iter().filter(|b| b.next > absorbed).count() as u64;
                 share.evicted_unabsorbed.fetch_add(above, Ordering::Relaxed);
+                if let Some(stats) = self.spill_stats() {
+                    stats.ring_evicted_unabsorbed.fetch_add(above, Ordering::Relaxed);
+                }
                 ring.batches.clear();
                 ring.bytes = 0;
                 drop(ring);
@@ -319,6 +322,9 @@ impl ShardEngine {
                     let b = ring.batches.pop_front().unwrap();
                     if b.next > absorbed {
                         share.evicted_unabsorbed.fetch_add(1, Ordering::Relaxed);
+                        if let Some(stats) = self.spill_stats() {
+                            stats.ring_evicted_unabsorbed.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                     ring.bytes -= b.bytes;
                     drop(ring);
