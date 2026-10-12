@@ -17,7 +17,7 @@ async function fixture(settle = () => new Response('{"acked":1}')) {
       decisions.push(JSON.parse(init.body));
       return settle(decisions.at(-1));
     }
-    if (String(url).endsWith(":pull")) return new Response(JSON.stringify({ backlog: 2, messages: [1, 2].map(n => ({
+    if (String(url).endsWith(":pull")) return new Response(JSON.stringify({ backlog: 2, messages: [1, 2, 3].map(n => ({
       id: String(n), routingKey: "a", attempts: 1, leaseToken: `lease-${n}`, value: n,
     })) }));
     return new Response('{"version":"v1"}');
@@ -118,33 +118,53 @@ test("iterator return cancels an in-flight parked pull", async () => {
 });
 
 test("batch settlement is idempotent and failed decisions are never reported acked", async () => {
-  // The server applies a decision once per lease and counts a decision for
-  // a lease it already settled as stale (its generation moved on); the
-  // first settle's answer is lost after the server applied it.
-  const applied = new Map();
+  // The server as the committer's settle (settle.rs): a decision applies to
+  // a lease whose generation it names, else it counts stale. An ack removes
+  // the lease, so its replay counts stale; a retry or an extend keeps the
+  // lease and its generation and rewrites its deadline from the time it is
+  // applied, so its replay is applied again (only a pull that delivers the
+  // message again changes the generation). The first settle's answer is
+  // lost after the server applied it.
+  const leases = new Map(["lease-1", "lease-2", "lease-3"].map(token => [token, []]));
+  const acked = [];
   let requests = 0;
   const f = await fixture(body => {
     const result = { acked: 0, retried: 0, extended: 0, dlq: 0, stale: 0, backlog: 0 };
+    requests++;
     for (const { leaseToken } of body.acks) {
-      if (applied.has(leaseToken)) { result.stale++; continue; }
-      applied.set(leaseToken, 1);
+      if (!leases.delete(leaseToken)) { result.stale++; continue; }
+      acked.push(leaseToken);
       result.acked++;
     }
-    if (++requests === 1) throw new Error("settle answer lost after the server applied it");
+    for (const [decisions, counted] of [[body.retries, "retried"], [body.extends, "extended"]]) {
+      for (const { leaseToken } of decisions) {
+        if (!leases.has(leaseToken)) { result.stale++; continue; }
+        leases.get(leaseToken).push(`deadline set by request ${requests}`);
+        result[counted]++;
+      }
+    }
+    if (requests === 1) throw new Error("settle answer lost after the server applied it");
     return new Response(JSON.stringify(result));
   });
   const batch = await f.consumer.pull();
   batch.messages[0].ack();
-  batch.messages[1].ack();
+  batch.messages[1].retry({ delayMs: 5 });
+  batch.messages[2].extend({ visibilityMs: 100 });
   const { value: results, delays } = await fastTimers(() => Promise.all([batch.settle(), batch.settle()]));
   assert.equal(results[0], results[1], "both calls share one settlement");
-  assert.deepEqual(results[0], { acked: 0, retried: 0, extended: 0, dlq: 0, stale: 2, backlog: 0 },
-    "the replay reports what its lost first attempt applied as stale");
-  assert.deepEqual(f.decisions, [
-    { acks: [{ leaseToken: "lease-1" }, { leaseToken: "lease-2" }], retries: [], extends: [] },
-    { acks: [{ leaseToken: "lease-1" }, { leaseToken: "lease-2" }], retries: [], extends: [] },
-  ], "the settlement and its one replay, with the same decisions");
-  assert.deepEqual([...applied], [["lease-1", 1], ["lease-2", 1]], "each record is settled exactly once");
+  assert.deepEqual(results[0], { acked: 0, retried: 1, extended: 1, dlq: 0, stale: 1, backlog: 0 },
+    "the replay counts the ack its lost first attempt applied stale and applies the retry and the extend again");
+  const decisions = {
+    acks: [{ leaseToken: "lease-1" }],
+    retries: [{ leaseToken: "lease-2", delayMs: 5 }],
+    extends: [{ leaseToken: "lease-3", visibilityMs: 100 }],
+  };
+  assert.deepEqual(f.decisions, [decisions, decisions], "the settlement and its one replay, with the same decisions");
+  assert.deepEqual(acked, ["lease-1"], "the record is acknowledged once");
+  assert.deepEqual([...leases], [
+    ["lease-2", ["deadline set by request 1", "deadline set by request 2"]],
+    ["lease-3", ["deadline set by request 1", "deadline set by request 2"]],
+  ], "the retried and the extended lease stay held, their deadlines set again by the replay");
   assert.deepEqual(delays, [1000]);
 
   // A settlement whose every attempt fails rejects for every caller.

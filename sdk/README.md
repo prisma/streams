@@ -173,8 +173,9 @@ server deduplicates a replay of an append that landed (`duplicate: true`; a
 replay it refuses before that check rejects with `AppendOutcomeUnknownError`,
 see "Producer state ownership"), and the producer's later operations on
 that routing key wait for it. A
-batch settlement is sent again with the same decisions, which the server
-applies once (see "Consumer cleanup and cancellation"). Plain appends and
+batch settlement is sent again with the same decisions: an ack is applied
+once, a retry or an extend may be applied again (see "Consumer cleanup and
+cancellation"). Plain appends and
 stream deletion are not sent again after a transport failure and reject at
 once; a subscription's request
 is not replayed either, because the subscription reconnects itself. `retry: { transport: false }` turns the
@@ -268,9 +269,14 @@ again with the same decisions after 1, 2 and 4 s, as other requests are, so
 on a dead network a cleanup's settlement takes about 7 s before it rejects.
 A transport failure can occur after the server applied a settlement, so an
 error is not proof of non-application. A settle the SDK replays (after a
-transport failure, or a retryable 429 or 503) may report decisions the first
-attempt applied as `stale`; a replay never applies a decision twice (the
-server checks each lease's generation).
+transport failure, or a retryable 429 or 503) reports an ack the first
+attempt applied as `stale` and never acknowledges a record twice (the server
+checks each lease's generation). A retry or an extend the first attempt
+applied keeps its lease, so the replay applies it again: it counts as
+`retried` or `extended`, and the retry's delay or the extension's
+visibility runs again from the replay, so it ends later by the time between
+the two attempts, unless the message was delivered again in between (then
+it counts as `stale`).
 
 Use `consumer.messages({ signal })` to cancel a parked pull, or call the
 iterator's `return()`; both abort the pull immediately. Cleanup still submits

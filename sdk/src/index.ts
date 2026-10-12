@@ -51,7 +51,8 @@ export interface StreamsClientOptions {
    * 429/503 replay; a producer append is sent again with the same
    * sequence, which the server deduplicates (a replay it refuses rejects
    * with `AppendOutcomeUnknownError`), and a batch settlement with
-   * the same decisions, which it applies once. Plain appends, stream
+   * the same decisions (an ack the lost attempt applied counts `stale`; a
+   * retry or an extend it applied is applied again). Plain appends, stream
    * deletion and a subscription's reads (its loop reconnects) are never
    * replayed this way. Set it to `false` when a `fetch` failure means
    * configuration (a wrong URL, a blocked origin) rather than a restart;
@@ -226,8 +227,11 @@ export interface PullBatch<T> {
   backlog: number;
   /** Apply the recorded ack/retry/extend decisions in one request, sent
    * again with the same decisions after a transport failure or a retryable
-   * 429/503 (a replay may report decisions its first attempt applied as
-   * `stale`). Every call shares that one settlement. */
+   * 429/503. A replay reports an ack its first attempt applied as `stale`,
+   * and applies a retry or an extend that attempt applied again (counted
+   * `retried`/`extended`, its delay or visibility counted from the replay)
+   * unless the message was delivered again in between (then `stale`).
+   * Every call shares that one settlement. */
   settle(): Promise<SettleResult>;
 }
 
@@ -1815,9 +1819,12 @@ export class Consumer<T> {
       if (acks.length + retries.length + extends_.length === 0) {
         return { acked: 0, retried: 0, extended: 0, dlq: 0, stale: 0, backlog: body.backlog };
       }
-      // A transport failure is replayed with the same decisions: the server
-      // checks each lease's generation, so a replay of a settlement it
-      // applied counts those decisions `stale` and applies none twice. A
+      // A transport failure is replayed with the same decisions. The server
+      // applies a decision only to a lease of the generation it names: an
+      // ack the lost attempt applied removed its lease, so the replay counts
+      // it `stale`; a retry or an extend kept its lease and generation, so
+      // the replay applies it again and sets its deadline from the replay's
+      // time, unless a pull delivered the message again in between. A
       // failure after the attempts is this batch's settlement failure;
       // leases it did not settle expire and are delivered again.
       const res2 = await req(

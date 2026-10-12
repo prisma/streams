@@ -65,8 +65,10 @@ not carried over).
   above), before the producer's later operations on its routing key.
   A batch settlement is sent again with the same decisions; a settlement
   the SDK replays (after a transport failure or a retryable `429` or `503`)
-  may report decisions its first attempt applied as `stale`; none is
-  applied twice. Plain appends, stream deletion and a subscription's reads
+  reports an ack its first attempt applied as `stale` (no record is
+  acknowledged twice), and applies a retry or an extend that attempt
+  applied again, its delay or visibility counted from the replay. Plain
+  appends, stream deletion and a subscription's reads
   are not replayed after a transport failure.
 - The consumer iterator (`for await`, `messages()`) and
   `watch.subscribe()` reconnect after a transport failure or a retryable
