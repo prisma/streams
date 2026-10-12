@@ -17,6 +17,8 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+pub(crate) mod block_cache;
+pub(crate) use block_cache::BlockCache;
 pub(crate) mod telemetry;
 pub(crate) use telemetry::TelemetryResources;
 
@@ -156,6 +158,12 @@ pub(crate) struct RuntimeCaps {
     pub history: Arc<crate::history::HistoryResources>,
     pub postings: Arc<crate::postings_cache::PostingsCache>,
     pub telemetry: Arc<TelemetryResources>,
+    /// §1.1: one block cache for every shard database of this runtime, not
+    /// one per database (SlateDB's default is 512 MB per database: a
+    /// 16-shard 1 GB instance dies by cache fill, the run 6/8 zombie
+    /// generator). The idle release empties it with the history and
+    /// telemetry caches.
+    pub shared_cache: Arc<BlockCache>,
     /// What the fork-debt reconciler last published (ops gauges).
     pub fork_debt: Arc<crate::application::creation::ForkDebtStatus>,
     pub clock: Arc<dyn Clock>,
@@ -193,6 +201,7 @@ impl RuntimeCaps {
         self.telemetry = Arc::new(TelemetryResources::new(
             config.billing.telemetry_cache_bytes,
         ));
+        self.shared_cache = Arc::new(BlockCache::with_capacity(config.cli.shared_cache_bytes));
         self
     }
 
@@ -248,6 +257,8 @@ impl RuntimeCaps {
             telemetry: Arc::new(TelemetryResources::new(
                 crate::config::BillingConfig::default().telemetry_cache_bytes,
             )),
+            // Sized by `with_config`; no unconfigured runtime opens a shard.
+            shared_cache: Arc::new(BlockCache::with_capacity(0)),
             scaler: Arc::new(crate::scaler3::Scaler::new(
                 &crate::config::ScaleConfig::default(),
                 &crate::config::AdmissionConfig::default(),

@@ -82,6 +82,14 @@
     },
     {
       "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::run",
+      "path": "src/bootstrap/idle.rs",
+      "reason": "Idle-release loop: expression selection between supervised cancellation and the runtime clock's tick; compiler checks expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
       "count": 2,
       "owner": "crate::run",
       "path": "src/fleet/heartbeat.rs",
@@ -327,6 +335,14 @@
       "path": "src/dst/dst_tests.rs",
       "reason": "Shared-cell capacity DSTs (the capacity review of 2026-10-07): what one project inside its quotas can hold of what a shared cell's projects share besides read memory, one bound per test; the compiler and the DST suite exercise the module.",
       "syntax": "path = \"tests/shared_cell_capacity.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::idle_release",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Idle-release DST (Q0): an instance quiet for 120 s of the runtime clock releases its block caches and postings slices, health and operator requests do not hold it back, and the next read returns the same records and starts a new quiet period; the compiler and the DST suite exercise the module.",
+      "syntax": "path = \"tests/idle_release.rs\""
     },
     {
       "category": "by-path-module",

@@ -153,6 +153,9 @@ struct Inner {
     maintenance: GlobalLatch,
     /// Successful /v1/stream/* requests, the fleet load vector (§4.2).
     fleet_ops: AtomicU64,
+    /// Every request that arrived on a /v1/stream* path, served or not: the
+    /// idle release's evidence that a client is still using the instance.
+    data_plane_arrivals: AtomicU64,
     record_ceiling: std::sync::atomic::AtomicUsize,
     /// The instance's read memory: page reads in flight and the bodies
     /// that still hold their pages (shared cells H3).
@@ -259,6 +262,7 @@ impl AdmissionController {
                 sse_connections: AtomicU64::new(0),
                 maintenance: GlobalLatch::new(),
                 fleet_ops: AtomicU64::new(0),
+                data_plane_arrivals: AtomicU64::new(0),
                 record_ceiling: std::sync::atomic::AtomicUsize::new(knobs.record_ceiling_bytes),
                 read_memory: read_memory::ReadMemory::new(knobs.rss_shed_mb),
             }),
@@ -267,9 +271,15 @@ impl AdmissionController {
 
     // ---- global in-flight -------------------------------------------
 
-    /// Count a request in (and record the peak). Held for the whole
-    /// request; dropped on every exit path.
-    pub(crate) fn enter(&self) -> InflightTicket {
+    /// Count a request in (and record the peak), and a `data_plane` one
+    /// (a /v1/stream* path) as an arrival. Held for the whole request;
+    /// dropped on every exit path.
+    pub(crate) fn enter(&self, data_plane: bool) -> InflightTicket {
+        if data_plane {
+            self.inner
+                .data_plane_arrivals
+                .fetch_add(1, Ordering::Relaxed);
+        }
         let current = self.inner.inflight.fetch_add(1, Ordering::Relaxed) + 1;
         self.inner
             .inflight_peak
@@ -284,7 +294,7 @@ impl AdmissionController {
     }
 
     /// Requests in flight that are not parked in a wait.
-    fn active(&self) -> i64 {
+    pub(crate) fn active(&self) -> i64 {
         let parked = self.inner.parked.load(Ordering::Relaxed);
         self.inner.inflight.load(Ordering::Relaxed) - parked
     }
@@ -532,6 +542,11 @@ impl AdmissionController {
         self.inner.fleet_ops.load(Ordering::Relaxed)
     }
 
+    /// Requests that have arrived on a /v1/stream* path since boot.
+    pub(crate) fn data_plane_arrivals(&self) -> u64 {
+        self.inner.data_plane_arrivals.load(Ordering::Relaxed)
+    }
+
     /// The per-record payload ceiling (0 = unlimited).
     pub(crate) fn record_ceiling(&self) -> usize {
         self.inner.record_ceiling.load(Ordering::Relaxed)
@@ -605,9 +620,11 @@ mod tests {
     #[test]
     fn inflight_tickets_are_raii_and_record_the_peak() {
         let c = ctl(10, 0, 0, 0);
-        let a = c.enter();
-        let b = c.enter();
+        let a = c.enter(true);
+        let b = c.enter(false);
         assert_eq!((a.current(), b.current()), (1, 2));
+        assert_eq!(c.data_plane_arrivals(), 1, "only the stream path arrived");
+        assert_eq!(c.active(), 2);
         assert_eq!(c.snapshot().inflight, 2);
         drop(a);
         assert_eq!(c.snapshot().inflight, 1);
@@ -644,7 +661,7 @@ mod tests {
     #[test]
     fn parked_requests_leave_the_write_gate_survival_and_the_active_count() {
         let c = ctl(2, 0, 0, 0);
-        let tickets: Vec<_> = (0..9).map(|_| c.enter()).collect();
+        let tickets: Vec<_> = (0..9).map(|_| c.enter(false)).collect();
         assert_eq!(c.admit_write_inflight(), Err(WriteRefusal::Overloaded));
         assert!(c.survival_refused(9, true), "9 active over 4 x 2");
         let parked: Vec<_> = (0..7).map(|_| c.park().expect("unlimited pool")).collect();
@@ -674,7 +691,7 @@ mod tests {
     #[test]
     fn parked_waits_take_the_live_pool_after_subscriptions() {
         let c = ctl(0, 0, 0, 3);
-        let _ticket = c.enter();
+        let _ticket = c.enter(false);
         let sub = c.subscribe().expect("1 of 3");
         let a = c.park().expect("1 subscription + 1 parked of 3");
         let _b = c.park().expect("1 + 2 of 3");

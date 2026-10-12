@@ -3157,6 +3157,17 @@
     "scenarios": []
   },
   {
+    "name": "an_idle_instance_releases_its_caches_and_the_next_read_refills_them",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d3b581986b3fd22e10a2f0b59015592799eb4610e99f81298971913b24657c03",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/idle_release.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_idle_pull_walks_twice_more_while_it_waits_and_wakes_no_other_pull",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

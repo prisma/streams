@@ -556,7 +556,7 @@ impl UsageRollup {
         store: Arc<dyn object_store::ObjectStore>,
         prefix: &str,
         cfg: &crate::config::ServerConfig,
-        cache: Arc<slatedb::db_cache::foyer::FoyerCache>,
+        cache: Arc<dyn slatedb::db_cache::DbCache>,
     ) -> anyhow::Result<Self> {
         let path = if prefix.is_empty() {
             ROLLUP_PATH.to_string()

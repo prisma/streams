@@ -203,7 +203,7 @@ async fn collect_compacted(admin: &slatedb::admin::Admin) {
 async fn stale_view_read_across_compaction_gc(selector: Option<&str>) {
     use crate::application::read::read_merged;
     use futures_util::TryStreamExt;
-    use slatedb::db_cache::foyer::{FoyerCache, FoyerCacheOptions};
+    use slatedb::db_cache::foyer::FoyerCacheOptions;
     let store = mem();
     let (prefix, hash, key) = ("tla-019-pin", [0x19u8; 16], skey());
     let mut history = crate::history::HistoryResources::new(&Default::default(), usize::MAX);
@@ -211,7 +211,7 @@ async fn stale_view_read_across_compaction_gc(selector: Option<&str>) {
         max_capacity: 1,
         shards: 1,
     };
-    history.cache = std::sync::Arc::new(FoyerCache::new_with_opts(one_block));
+    history.cache = std::sync::Arc::new(crate::runtime::BlockCache::new(one_block));
     let cfg = crate::shard::ShardConfig {
         shared_history: Some(std::sync::Arc::new(history)),
         compactor_options: slatedb::config::CompactorOptions {

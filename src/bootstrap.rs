@@ -4,6 +4,7 @@
 //! entry point: [`run`].
 
 mod allocator;
+pub(crate) mod idle;
 mod rss;
 mod s3_store;
 
@@ -427,16 +428,7 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
         let data_store = data_store.clone();
         let touch = touch.clone();
         let settings = shard_settings(&config.cli, &config.engine);
-        // §1.1: one block cache for the whole process, not one per DB
-        // (SlateDB default: 512 MB PER DB — a 16-shard 1 GB instance dies
-        // by cache fill; the run 6/8 zombie generator).
-        let shared_cache: Arc<slatedb::db_cache::foyer::FoyerCache> =
-            Arc::new(slatedb::db_cache::foyer::FoyerCache::new_with_opts(
-                slatedb::db_cache::foyer::FoyerCacheOptions {
-                    max_capacity: config.cli.shared_cache_bytes,
-                    ..Default::default()
-                },
-            ));
+        let shared_cache = runtime_caps.shared_cache.clone();
         // Startup invariant (OOM disposition 2): the per-gather packing
         // cap must fit the process budget after the build multiplier,
         // or the envelope claim quietly breaks via reservation
@@ -767,6 +759,7 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
         &tasks,
         std::time::Duration::from_secs(config.cli.fork_debt_sweep_secs.max(1)),
     );
+    idle::start(&state, &tasks);
     {
         // RSS sampler for the shed check (500 ms; /proc read per request
         // would be silly). Unconditional: this used to live inside the

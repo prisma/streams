@@ -420,6 +420,6 @@ async fn a_served_requests_registry_work_is_weighed_for_its_project() {
         assert_eq!(share.store_ops_level(), 1_000.0, "paid once served");
         axum::response::Response::default()
     };
-    drop(ctl.enter().serve(served).await);
+    drop(ctl.enter(true).serve(served).await);
     assert_eq!(share.store_ops_level(), 1_000.0 - 43.0);
 }

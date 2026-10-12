@@ -256,11 +256,11 @@
       "scope": "function",
       "lint": "clippy::cast_possible_truncation",
       "metrics": {
-        "scope_lines": 543,
-        "syntax_facts": 935
+        "scope_lines": 538,
+        "syntax_facts": 932
       },
-      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-08 (README \"Shared cells Q2\" (a): update bootstrap::run's six rows to the values the gate prints for the cell-ceiling wiring); values entered from the gate's output for the owner to confirm"
+      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04). Q0 (2026-10-12): the shared block cache is built by RuntimeCaps::with_config, so run takes runtime_caps.shared_cache instead of building a FoyerCache, and starts the idle-release loop with idle::start(&state, &tasks).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-12 in the public-beta round (\"On the public beta calls, I accept all recommended\"; Q0 DECISION.md O1: refresh bootstrap::run's six rows to the values the gate prints after the idle-release commit); values entered from the gate's output for the owner to confirm"
     },
     {
       "path": "src/bootstrap.rs",
@@ -268,11 +268,11 @@
       "scope": "function",
       "lint": "clippy::excessive_nesting",
       "metrics": {
-        "scope_lines": 543,
-        "syntax_facts": 935
+        "scope_lines": 538,
+        "syntax_facts": 932
       },
-      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-08 (README \"Shared cells Q2\" (a): update bootstrap::run's six rows to the values the gate prints for the cell-ceiling wiring); values entered from the gate's output for the owner to confirm"
+      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04). Q0 (2026-10-12): the shared block cache is built by RuntimeCaps::with_config, so run takes runtime_caps.shared_cache instead of building a FoyerCache, and starts the idle-release loop with idle::start(&state, &tasks).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-12 in the public-beta round (\"On the public beta calls, I accept all recommended\"; Q0 DECISION.md O1: refresh bootstrap::run's six rows to the values the gate prints after the idle-release commit); values entered from the gate's output for the owner to confirm"
     },
     {
       "path": "src/bootstrap.rs",
@@ -282,6 +282,7 @@
       "metrics": {
         "expect_site:ordinary-call::49bb86608378bc96": 1,
         "expect_site:ordinary-call::60495e231cd908aa": 1,
+        "expect_site:ordinary-call::7d144311caf25d2f": 1,
         "expect_site:ordinary-call::83e435826e2785b7": 1,
         "expect_site:ordinary-call::8ed7e69339e4cead": 1,
         "expect_site:ordinary-call::a1906119ac7861cf": 1,
@@ -291,8 +292,9 @@
         "expect_site:ordinary-call::df1c7776146ec70e": 1,
         "expect_site:ordinary-call::e89b9f384b70eea7": 1,
         "expect_site:ordinary-call::f76cc236251b4053": 1,
-        "expect_site:path::125ff86eabf35b16": 14,
-        "expect_site:path::2a13749f1b017f52": 67,
+        "expect_site:path::125ff86eabf35b16": 15,
+        "expect_site:path::1b882b0f7de42568": 19,
+        "expect_site:path::2a13749f1b017f52": 66,
         "expect_site:path::59dec1ffb8d66c72": 3,
         "expect_site:path::6533c4474d7f0b82": 5,
         "expect_site:path::67ae81d256763716": 1,
@@ -301,12 +303,13 @@
         "expect_site:path::ae13c50420034e4c": 1,
         "expect_site:path::c584b7c1e88292a2": 7,
         "expect_site:path::e89fd618ed08040b": 3,
-        "expect_site:path::ed8ca5365d0895fe": 14,
-        "scope_lines": 543,
-        "syntax_facts": 935
+        "expect_site:path::ed8ca5365d0895fe": 15,
+        "expect_site:path::f3093433f60668c1": 1,
+        "scope_lines": 538,
+        "syntax_facts": 932
       },
-      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-08 (README \"Shared cells Q2\" (a): update bootstrap::run's six rows to the values the gate prints for the cell-ceiling wiring); values entered from the gate's output for the owner to confirm"
+      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04). Q0 (2026-10-12): the shared block cache is built by RuntimeCaps::with_config, so run takes runtime_caps.shared_cache instead of building a FoyerCache, and starts the idle-release loop with idle::start(&state, &tasks).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-12 in the public-beta round (\"On the public beta calls, I accept all recommended\"; Q0 DECISION.md O1: refresh bootstrap::run's six rows to the values the gate prints after the idle-release commit); values entered from the gate's output for the owner to confirm"
     },
     {
       "path": "src/bootstrap.rs",
@@ -314,11 +317,11 @@
       "scope": "function",
       "lint": "clippy::let_underscore_must_use",
       "metrics": {
-        "scope_lines": 543,
-        "syntax_facts": 935
+        "scope_lines": 538,
+        "syntax_facts": 932
       },
-      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-08 (README \"Shared cells Q2\" (a): update bootstrap::run's six rows to the values the gate prints for the cell-ceiling wiring); values entered from the gate's output for the owner to confirm"
+      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04). Q0 (2026-10-12): the shared block cache is built by RuntimeCaps::with_config, so run takes runtime_caps.shared_cache instead of building a FoyerCache, and starts the idle-release loop with idle::start(&state, &tasks).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-12 in the public-beta round (\"On the public beta calls, I accept all recommended\"; Q0 DECISION.md O1: refresh bootstrap::run's six rows to the values the gate prints after the idle-release commit); values entered from the gate's output for the owner to confirm"
     },
     {
       "path": "src/bootstrap.rs",
@@ -326,11 +329,11 @@
       "scope": "function",
       "lint": "clippy::too_many_lines",
       "metrics": {
-        "scope_lines": 543,
-        "syntax_facts": 935
+        "scope_lines": 538,
+        "syntax_facts": 932
       },
-      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-08 (README \"Shared cells Q2\" (a): update bootstrap::run's six rows to the values the gate prints for the cell-ceiling wiring); values entered from the gate's output for the owner to confirm"
+      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04). Q0 (2026-10-12): the shared block cache is built by RuntimeCaps::with_config, so run takes runtime_caps.shared_cache instead of building a FoyerCache, and starts the idle-release loop with idle::start(&state, &tasks).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-12 in the public-beta round (\"On the public beta calls, I accept all recommended\"; Q0 DECISION.md O1: refresh bootstrap::run's six rows to the values the gate prints after the idle-release commit); values entered from the gate's output for the owner to confirm"
     },
     {
       "path": "src/bootstrap.rs",
@@ -338,10 +341,11 @@
       "scope": "function",
       "lint": "clippy::unwrap_used",
       "metrics": {
-        "scope_lines": 543,
-        "syntax_facts": 935,
+        "scope_lines": 538,
+        "syntax_facts": 932,
         "unwrap_site:ordinary-call::49bb86608378bc96": 1,
         "unwrap_site:ordinary-call::60495e231cd908aa": 1,
+        "unwrap_site:ordinary-call::7d144311caf25d2f": 1,
         "unwrap_site:ordinary-call::83e435826e2785b7": 1,
         "unwrap_site:ordinary-call::8ed7e69339e4cead": 1,
         "unwrap_site:ordinary-call::a1906119ac7861cf": 1,
@@ -351,8 +355,9 @@
         "unwrap_site:ordinary-call::df1c7776146ec70e": 1,
         "unwrap_site:ordinary-call::e89b9f384b70eea7": 1,
         "unwrap_site:ordinary-call::f76cc236251b4053": 1,
-        "unwrap_site:path::125ff86eabf35b16": 14,
-        "unwrap_site:path::2a13749f1b017f52": 67,
+        "unwrap_site:path::125ff86eabf35b16": 15,
+        "unwrap_site:path::1b882b0f7de42568": 19,
+        "unwrap_site:path::2a13749f1b017f52": 66,
         "unwrap_site:path::59dec1ffb8d66c72": 3,
         "unwrap_site:path::6533c4474d7f0b82": 5,
         "unwrap_site:path::67ae81d256763716": 1,
@@ -361,10 +366,11 @@
         "unwrap_site:path::ae13c50420034e4c": 1,
         "unwrap_site:path::c584b7c1e88292a2": 7,
         "unwrap_site:path::e89fd618ed08040b": 3,
-        "unwrap_site:path::ed8ca5365d0895fe": 14
+        "unwrap_site:path::ed8ca5365d0895fe": 15,
+        "unwrap_site:path::f3093433f60668c1": 1
       },
-      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-08 (README \"Shared cells Q2\" (a): update bootstrap::run's six rows to the values the gate prints for the cell-ceiling wiring); values entered from the gate's output for the owner to confirm"
+      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04). Q0 (2026-10-12): the shared block cache is built by RuntimeCaps::with_config, so run takes runtime_caps.shared_cache instead of building a FoyerCache, and starts the idle-release loop with idle::start(&state, &tasks).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-12 in the public-beta round (\"On the public beta calls, I accept all recommended\"; Q0 DECISION.md O1: refresh bootstrap::run's six rows to the values the gate prints after the idle-release commit); values entered from the gate's output for the owner to confirm"
     },
     {
       "path": "src/dst/fault_store.rs",

@@ -359,3 +359,6 @@ mod read_peer_compatibility;
 
 #[path = "tests/shared_cell_capacity.rs"]
 mod shared_cell_capacity;
+
+#[path = "tests/idle_release.rs"]
+mod idle_release;

@@ -640,7 +640,8 @@ async fn track_inflight(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let ticket = state.admission.enter();
+    let path_is_stream = req.uri().path().starts_with("/v1/stream");
+    let ticket = state.admission.enter(path_is_stream);
     let cur = ticket.current();
     // Round-13 (review): the ORDINARY inflight admission gate moved
     // POST-auth into append_core — running it here answered 429 with
@@ -652,7 +653,6 @@ async fn track_inflight(
     // ordinary cap): no tarpit, a generic instant refusal, because a
     // process at 4x its admission cap is defending its sockets, not
     // answering capacity questions.
-    let path_is_stream = req.uri().path().starts_with("/v1/stream");
     if state.admission.survival_refused(cur, path_is_stream) {
         return (
             StatusCode::SERVICE_UNAVAILABLE,

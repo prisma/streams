@@ -1,6 +1,6 @@
 //! One runtime's shared telemetry cache and billing progress signals.
 
-use slatedb::db_cache::foyer::{FoyerCache, FoyerCacheOptions};
+use super::BlockCache;
 use std::sync::{
     Arc,
     atomic::{AtomicI64, AtomicU64, Ordering},
@@ -8,7 +8,7 @@ use std::sync::{
 
 pub(crate) struct TelemetryResources {
     /// The spool and rollup both pass this same handle to SlateDB.
-    pub cache: Arc<FoyerCache>,
+    pub cache: Arc<BlockCache>,
     capacity_bytes: u64,
     last_drain_ok_ms: AtomicI64,
     last_rollup_apply_ms: AtomicI64,
@@ -25,10 +25,7 @@ pub(crate) struct TelemetryProgress {
 impl TelemetryResources {
     pub(crate) fn new(capacity_bytes: usize) -> Self {
         Self {
-            cache: Arc::new(FoyerCache::new_with_opts(FoyerCacheOptions {
-                max_capacity: capacity_bytes as u64,
-                ..Default::default()
-            })),
+            cache: Arc::new(BlockCache::with_capacity(capacity_bytes as u64)),
             capacity_bytes: capacity_bytes as u64,
             last_drain_ok_ms: AtomicI64::new(0),
             last_rollup_apply_ms: AtomicI64::new(0),

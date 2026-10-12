@@ -1,0 +1,156 @@
+//! The supervised idle release: once the instance has been quiet, it lets go
+//! of its SlateDB block caches and its postings slices, so the memory a load
+//! left behind returns to the OS instead of holding the instance near its shed
+//! line (Q0). The next read refills what it needs.
+use super::AppState;
+use crate::admission::AdmissionController;
+use crate::runtime::{MonotonicNow, RuntimeCaps};
+use crate::shard_directory::ShardDirectory;
+use crate::tasks::{Cancellation, Policy, TaskResult, TaskSupervisor};
+use std::time::Duration;
+
+/// How often the loop reads the instance.
+const TICK: Duration = Duration::from_secs(2);
+/// Quiet needed before a release: no data-plane request arrived. It is two to
+/// four times any client long-poll or heartbeat cadence, and a measured drain
+/// settles about 90 s after its backlog is absorbed (Q0 PROFILE §4).
+const QUIET: Duration = Duration::from_secs(120);
+/// Bytes written into the released caches (trailing compactions, the server's
+/// own telemetry flushes) that earn another release while still quiet.
+const REFILL_FLOOR: u64 = 1 << 20;
+/// The least time between two releases in one quiet period.
+const RERELEASE_AFTER: Duration = Duration::from_secs(60);
+
+/// One tick's reading of the instance.
+#[derive(Clone, Copy, Debug)]
+struct Reading {
+    now: MonotonicNow,
+    /// Data-plane requests (`/v1/stream*`) that have arrived since boot.
+    arrivals: u64,
+    /// Requests in flight that are not parked in a wait.
+    active: i64,
+    /// Bytes the absorber still owes the history partitions.
+    unabsorbed: u64,
+    /// Bytes inserted into the caches since they were last released.
+    refilled: u64,
+}
+
+/// When to release, as a pure function of successive readings.
+#[derive(Debug)]
+struct IdlePolicy {
+    arrivals: u64,
+    quiet_since: MonotonicNow,
+    /// The last release in the current quiet period.
+    released_at: Option<MonotonicNow>,
+}
+
+impl IdlePolicy {
+    fn new(first: &Reading) -> Self {
+        Self {
+            arrivals: first.arrivals,
+            quiet_since: first.now,
+            released_at: None,
+        }
+    }
+
+    /// Whether the caches are released at `reading`. An arrival starts a new
+    /// quiet period. A release needs `QUIET` of it with no request active and
+    /// nothing left to absorb, so a drain holds it back until it ends. One
+    /// release per quiet period, and another only once `REFILL_FLOOR` bytes
+    /// were written back and `RERELEASE_AFTER` has passed.
+    fn release_due(&mut self, reading: &Reading) -> bool {
+        if reading.arrivals != self.arrivals {
+            self.arrivals = reading.arrivals;
+            self.quiet_since = reading.now;
+            self.released_at = None;
+            return false;
+        }
+        if reading.active > 0
+            || reading.unabsorbed > 0
+            || reading.now.since(self.quiet_since) < QUIET
+        {
+            return false;
+        }
+        let due = self.released_at.is_none_or(|at| {
+            reading.refilled >= REFILL_FLOOR && reading.now.since(at) >= RERELEASE_AFTER
+        });
+        if due {
+            self.released_at = Some(reading.now);
+        }
+        due
+    }
+}
+
+/// Starts the `idle-release` loop under `tasks`, over the instance's
+/// admission, shards and runtime. Losing it costs memory hygiene, not
+/// service; a refused spawn (only while stopping) is logged.
+pub(crate) fn start(state: &AppState, tasks: &TaskSupervisor) {
+    let admission = state.admission.clone();
+    let shards = state.shards.clone();
+    let runtime = state.runtime.clone();
+    if let Err(rejected) = tasks.spawn("idle-release", Policy::Noncritical, move |cancel| {
+        run(admission, shards, runtime, cancel)
+    }) {
+        tracing::warn!("idle-release not spawned: {rejected:?}");
+    }
+}
+
+async fn run(
+    admission: AdmissionController,
+    shards: ShardDirectory,
+    runtime: RuntimeCaps,
+    cancel: Cancellation,
+) -> TaskResult {
+    let mut policy = IdlePolicy::new(&read(&admission, &shards, &runtime));
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => return TaskResult::Done,
+            _ = runtime.clock.sleep(TICK) => {}
+        }
+        if policy.release_due(&read(&admission, &shards, &runtime)) {
+            release(&runtime);
+        }
+    }
+}
+
+fn read(
+    admission: &AdmissionController,
+    shards: &ShardDirectory,
+    runtime: &RuntimeCaps,
+) -> Reading {
+    Reading {
+        now: runtime.clock.monotonic(),
+        arrivals: admission.data_plane_arrivals(),
+        active: admission.active(),
+        unabsorbed: crate::backpressure::snapshot(shards).unabsorbed_bytes_instance,
+        refilled: [
+            &runtime.shared_cache,
+            &runtime.history.cache,
+            &runtime.telemetry.cache,
+        ]
+        .map(|cache| cache.inserted_bytes())
+        .iter()
+        .sum(),
+    }
+}
+
+/// Releases the three block caches and every postings slice. Unused slices
+/// after a quiet period are the sweep's tested zero-horizon case: a swept
+/// segment's warm absence proof is poisoned, so its next read reloads.
+fn release(runtime: &RuntimeCaps) {
+    let shared = runtime.shared_cache.release();
+    let history = runtime.history.cache.release();
+    let telemetry = runtime.telemetry.cache.release();
+    let postings = runtime.postings.sweep_idle(Duration::ZERO);
+    tracing::info!(
+        release = runtime.shared_cache.releases(),
+        shared_bytes = shared,
+        history_bytes = history,
+        telemetry_bytes = telemetry,
+        postings_slices = postings,
+        "idle: released the block caches and the postings slices"
+    );
+}
+
+#[cfg(test)]
+mod tests;

@@ -69,7 +69,7 @@ impl ReadSpool {
         prefix: &str,
         instance: &str,
         cfg: &crate::config::ServerConfig,
-        cache: Arc<slatedb::db_cache::foyer::FoyerCache>,
+        cache: Arc<dyn slatedb::db_cache::DbCache>,
     ) -> anyhow::Result<Self> {
         let inst = if instance.is_empty() {
             "solo"

@@ -184,7 +184,7 @@ pub(crate) fn worst_frame_transient_for(body_limit: usize) -> usize {
 /// configuration for a different runtime.
 pub(crate) struct HistoryResources {
     pub budget: AbsorbBudget,
-    pub cache: Arc<slatedb::db_cache::foyer::FoyerCache>,
+    pub cache: Arc<crate::runtime::BlockCache>,
     pub paused: std::sync::atomic::AtomicBool,
     pub packing_bytes: usize,
     pub worst_frame_transient: usize,
@@ -214,11 +214,8 @@ impl HistoryResources {
             .min(u32::MAX as usize);
         Self {
             budget: AbsorbBudget::new(capacity, cfg.absorb_global_gathers),
-            cache: Arc::new(slatedb::db_cache::foyer::FoyerCache::new_with_opts(
-                slatedb::db_cache::foyer::FoyerCacheOptions {
-                    max_capacity: cfg.cache_bytes as u64,
-                    ..Default::default()
-                },
+            cache: Arc::new(crate::runtime::BlockCache::with_capacity(
+                cfg.cache_bytes as u64,
             )),
             paused: std::sync::atomic::AtomicBool::new(cfg.absorb_pause_initial),
             packing_bytes: packing_bytes.min(capacity / ABSORB_BUILD_MULTIPLIER),
