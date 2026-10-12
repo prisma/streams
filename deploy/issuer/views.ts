@@ -49,3 +49,10 @@ export function workspaceProjects(state: CellState, workspace: string): [string,
     .filter(([id, p]) => p.workspace_id === workspace && p.phase !== "offboarded" && !isCanary(id))
     .sort(([a, p], [b, q]) => (p.admitted_at < q.admitted_at ? -1 : p.admitted_at > q.admitted_at ? 1 : a < b ? -1 : 1));
 }
+
+/// `workspace`'s project `id` as a user sees it: not the canary, not
+/// offboarded; else undefined.
+export function ownProject(state: CellState, workspace: string, id: string): ProjectRecord | undefined {
+  const p = state.projects[id];
+  return p && p.workspace_id === workspace && p.phase !== "offboarded" && !isCanary(id) ? p : undefined;
+}

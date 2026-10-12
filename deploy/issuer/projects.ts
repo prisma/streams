@@ -1,6 +1,7 @@
-// A workspace's projects (public-beta issuer triage B3.2; design §4,
-// §4.1, §5): the listing, and self-serve creation, the unattended admit →
-// publish path.
+// A workspace's projects (public-beta issuer triage B3.2, B3.3; design
+// §4, §4.1, §5): the listing, one project with whether the cell serves it
+// yet (probe.ts), and self-serve creation, the unattended admit → publish
+// path.
 //
 // POST /v1/workspaces/{w}/streams/projects {"displayName"} checks, after
 // management.ts's checks (the allow-list among them), in order, each
@@ -44,7 +45,8 @@ import { UNAVAILABLE_RETRY_SECS } from "./exchange";
 import { LIMITS } from "./limits";
 import { BUNDLED_PROFILE } from "./profiles";
 import { json } from "./respond";
-import { credentialView, projectView, workspaceProjects } from "./views";
+import { Prober } from "./probe";
+import { credentialView, ownProject, projectView, workspaceProjects } from "./views";
 
 /// Owner question I6, answer (a) (the build default): a workspace holds
 /// one project unless its allow-list entry names more.
@@ -82,15 +84,32 @@ function freshProjectId(state: CellState, denylist: Set<string>): string {
 }
 
 export class Projects {
+  private readonly prober: Prober;
+
   constructor(
     private readonly cfg: IssuerConfig,
     private readonly deps: ManagementDeps,
-  ) {}
+  ) {
+    this.prober = new Prober(cfg, deps);
+  }
 
   list(c: Call): Response {
     const state = this.deps.cache.state;
     const projects = workspaceProjects(state, c.session.workspace_id).map(([id, p]) => projectView(this.cfg, state, id, p));
     return json(200, { projects });
+  }
+
+  /// One project, with whether the cell serves it yet (`ready`, probe.ts):
+  /// the page polls it after a create.
+  async get(c: Call): Promise<Response> {
+    const state = this.deps.cache.state;
+    const [w, id] = c.ids;
+    const p = ownProject(state, w, id);
+    if (p === undefined) {
+      return refused(this.deps, c, { status: 404, code: "not_found", message: `workspace ${w} has no Streams project ${id}` });
+    }
+    const ready = p.phase === "active" && (await this.prober.projectReady(state, id));
+    return json(200, { ...projectView(this.cfg, state, id, p), ready });
   }
 
   /// A refusal of a placement: the gate, or checkPlacement's.

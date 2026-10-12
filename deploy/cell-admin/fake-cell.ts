@@ -14,6 +14,8 @@ export class FakeCell {
   streams = new Map<string, Set<string>>();
   pageSize = 2;
   requests: { method: string; path: string; status: number }[] = [];
+  /// The claims of every token whose signature verified, in order.
+  tokens: any[] = [];
   afterWalk?: (walks: number) => void;
   rateLimitNext = 0;
   private walks = 0;
@@ -45,6 +47,7 @@ export class FakeCell {
     const bearer = req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
     const claims = this.live && verifiedClaims(this.live, bearer);
     if (!this.live || !claims) return this.reply(401, "bad_signature");
+    this.tokens.push(claims);
     if (claims.exp + 30 <= Date.now() / 1000) return this.reply(401, "expired");
     const policy = (this.live.policies.projects as any[]).find((p) => p.project_id === claims.project_id);
     if (!policy) return this.reply(421, "wrong_cell");

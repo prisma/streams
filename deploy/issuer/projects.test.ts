@@ -2,12 +2,24 @@
 // `bun test ./deploy/issuer`.
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { FakeCell } from "../cell-admin/fake-cell";
 import { CUSTOMER_SCOPES } from "../cell-admin/rules";
 import { hashSecret, parsePeppers } from "../cell-admin/secrets";
 import { cleanup, customerOnly, denylistText, readBundle, run, storeTexts } from "../cell-admin/test-rig";
 import { FREE_TIER_REQUESTS_PER_SEC, OFFBOARDING_COUNTS_TOWARD_WORKSPACE_CAP, PROJECTS_PER_WORKSPACE_DEFAULT } from "./projects";
 import { csrfToken, readSession } from "./session";
-import { admin, CELL, CELL_ORIGIN, cellState, customerSecret, type IssuerCell, issuerCell, managed, managementAudits } from "./rig";
+import {
+  admin,
+  CELL,
+  CELL_ORIGIN,
+  cellState,
+  customerSecret,
+  envWith,
+  type IssuerCell,
+  issuerCell,
+  managed,
+  managementAudits,
+} from "./rig";
 
 afterEach(cleanup);
 
@@ -251,3 +263,79 @@ function csrfFor(m: Awaited<ReturnType<typeof managed>>, cookie: string): string
   const s = readSession(m.cfg.sessionKey, new Request("https://issuer.example.com/", { headers: { cookie } }), m.clock.t);
   return csrfToken(m.cfg.sessionKey, s!.sid);
 }
+
+describe("a project's readiness", () => {
+  /// A cell whose fake serves the bundle as it was before the project.
+  async function created() {
+    const cell = await allowedCell();
+    const fake = new FakeCell();
+    fakes.push(fake);
+    fake.publish(readBundle(cell.state));
+    const m = await managed(cell, envWith(cell, { STREAMS_CELL_ORIGIN: fake.url }));
+    const a = m.signIn("ws_a");
+    const body = await (await m.send("POST", PROJECTS, a, { displayName: "Orders" })).json();
+    return { cell, fake, m, a, id: body.project.id as string, cid: body.credential.id as string };
+  }
+  const fakes: FakeCell[] = [];
+  afterEach(() => {
+    for (const f of fakes.splice(0)) f.stop();
+  });
+
+  test("is ready once a catalog-read token of its own first credential answers 200 at the cell, probed at most every 5 s", async () => {
+    const { cell, fake, m, a, id, cid } = await created();
+    const project = `${PROJECTS}/${id}`;
+    const got = async () => answer(await m.get(project, a));
+    const [status, body] = await got();
+    expect(status).toBe(200);
+    expect(body).toEqual({ ...(await (await m.get(PROJECTS, a)).json()).projects[0], ready: false });
+    expect(fake.requests.map((r) => [r.path, r.status])).toEqual([["/v1/streams?limit=1", 421]]);
+    // Within 5 s of a probe, no other.
+    fake.publish(readBundle(cell.state));
+    expect((await got())[1].ready).toBe(false);
+    expect(fake.requests).toHaveLength(1);
+    m.clock.t += 5_000;
+    expect((await got())[1].ready).toBe(true);
+    expect(fake.requests.map((r) => [r.path, r.status])).toEqual([["/v1/streams?limit=1", 421], ["/v1/streams?limit=1", 200]]);
+    // The probe's token: the project's first credential at its current
+    // grant_version, narrowed to streams.catalog.read, for 300 s.
+    expect(fake.tokens.at(-1)).toMatchObject({
+      credential_id: cid, project_id: id, grant_version: 1, scope: "streams.catalog.read", exp: Math.floor(m.clock.t / 1000) - 60 + 300,
+    });
+    // Ready stays ready without another probe.
+    m.clock.t += 60_000;
+    expect((await got())[1].ready).toBe(true);
+    expect(fake.requests).toHaveLength(2);
+  });
+
+  test("is not ready while the cell holds the new grants but not yet the new policies", async () => {
+    const { cell, fake, m, a, id } = await created();
+    const before = structuredClone(fake.live!);
+    const after = readBundle(cell.state);
+    fake.publish({ keys: after.keys, policies: before.policies, grants: after.grants });
+    expect((await (await m.get(`${PROJECTS}/${id}`, a)).json()).ready).toBe(false);
+    expect(fake.requests.map((r) => r.status)).toEqual([421]);
+  });
+
+  test("answers 404 for a project that is not the workspace's, the canary, or none, without probing", async () => {
+    const { cell, fake, m, a, id } = await created();
+    await customerSecret(cell, "sp_other");
+    await m.cache.refresh();
+    const missing = (p: string): [number, any] => [404, refusal("not_found", `workspace ws_a has no Streams project ${p}`)];
+    for (const p of ["sp_other", "sp_canary_cell_sc1", `sp_${"0".repeat(32)}`]) {
+      expect(await answer(await m.get(`${PROJECTS}/${p}`, a))).toEqual(missing(p));
+    }
+    expect(await answer(await m.get(`/v1/workspaces/ws_sp_other/streams/projects/${id}`, a))).toEqual([
+      403, refusal("forbidden", "this session is signed in to workspace ws_a, not ws_sp_other: sign in to ws_sp_other"),
+    ]);
+    expect(fake.requests).toEqual([]);
+  });
+
+  test("is not ready, and not probed, while the project is being deleted", async () => {
+    const { cell, fake, m, a, id } = await created();
+    await admin(cell, "offboard", "--project", id);
+    await m.cache.refresh();
+    const body = await (await m.get(`${PROJECTS}/${id}`, a)).json();
+    expect([body.status, body.ready]).toEqual(["deleting", false]);
+    expect(fake.requests).toEqual([]);
+  });
+});

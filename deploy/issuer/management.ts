@@ -18,8 +18,10 @@
 //      suspends them).
 // A refusal of a change from step 4 on is audited (calls.ts).
 //
-//   GET  /v1/workspaces/{w}/streams/projects   the workspace's projects
-//   POST /v1/workspaces/{w}/streams/projects   create one (projects.ts)
+//   GET  /v1/workspaces/{w}/streams/projects       the workspace's projects
+//   POST /v1/workspaces/{w}/streams/projects       create one (projects.ts)
+//   GET  /v1/workspaces/{w}/streams/projects/{p}   one, and whether the
+//                                                  cell serves it (probe.ts)
 //
 // No answer carries a CORS header (respond.ts): the page that calls these
 // routes is the issuer's own. Every answer carries X-Request-Id.
@@ -65,6 +67,10 @@ export class Management {
           GET: { action: "project.list", handle: (c) => projects.list(c) },
           POST: { action: "project.create", handle: (c) => projects.create(c) },
         },
+      },
+      {
+        path: /^\/v1\/workspaces\/([^/]+)\/streams\/projects\/([^/]+)$/,
+        methods: { GET: { action: "project.get", handle: (c) => projects.get(c) } },
       },
     ];
   }
