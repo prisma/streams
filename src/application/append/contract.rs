@@ -121,6 +121,10 @@ enum AppendConflict {
     /// Not a conflict: the permanent capacity refusal's limit, which the
     /// renderers report (external review §5).
     Capacity(crate::usage::CapacityRefusal),
+    /// Not a conflict: a group the committer stranded (`AppendErr::Moved`)
+    /// may have been written, and nothing the command carried lets the
+    /// committer recognise its retry (edge change #NEW-small-1).
+    OutcomeUnknown,
 }
 
 #[derive(Debug)]
@@ -217,6 +221,28 @@ impl AppendFailure {
         self.retry_after = Some(seconds);
         self
     }
+    /// The append may or may not have been written, and a retry may store it
+    /// again: a stranded group of a command that carried no producer identity
+    /// and no close. The raw surface answers it as every moved shard
+    /// (`shard_moving`, its code); the product surface says so
+    /// (`outcome_unknown`, not retryable).
+    pub(crate) fn outcome_unknown(&self) -> bool {
+        matches!(
+            self.conflict.as_deref(),
+            Some(AppendConflict::OutcomeUnknown)
+        )
+    }
+    /// The failure as the answer to the command that met it: `recognised`
+    /// when the committer answers that command's exact retry from the
+    /// original commit (`AppendCommand::retry_is_recognised`). Such a
+    /// command's stranded group is the moved shard it met: its retry tells
+    /// the outcome.
+    pub(crate) fn answering(mut self, recognised: bool) -> Self {
+        if recognised && self.outcome_unknown() {
+            self.conflict = None;
+        }
+        self
+    }
     pub(crate) fn from_resolve(error: crate::shard_directory::ResolveError) -> Self {
         use crate::shard_directory::ResolveError;
         match error {
@@ -296,12 +322,18 @@ impl AppendFailure {
             ),
             AppendErr::BadBody(message) => Self::new(Invalid, AppendCode::InvalidBody, message),
             AppendErr::Internal(message) => Self::new(Internal, AppendCode::Internal, message),
-            AppendErr::Moved => Self::new(
-                Unavailable,
-                AppendCode::ShardMoving,
-                "shard fenced by a new owner; retry",
-            )
-            .retry(1),
+            AppendErr::Moved => {
+                // The engine may have written the group (a retired handoff, a
+                // write the retirement overtook) or never reached it (a queue
+                // drained at the close): both answer as unknown.
+                let mut e = Self::new(
+                    Unavailable,
+                    AppendCode::ShardMoving,
+                    "shard fenced by a new owner; retry",
+                );
+                e.conflict = Some(Box::new(AppendConflict::OutcomeUnknown));
+                e.retry(1)
+            }
         }
     }
     pub(crate) fn definitively_rejected(&self) -> bool {
@@ -390,6 +422,14 @@ pub(crate) struct AppendCommand {
     pub(crate) key_version: u32,
     pub(crate) close_identity: Option<String>,
     pub(crate) body_charge: Option<crate::quota::BufferedBodyGuard>,
+}
+impl AppendCommand {
+    /// Whether the committer recognises this command's exact retry and
+    /// answers it from the original commit: a producer identity (the
+    /// duplicate of its sequence) or a close (its operation identity).
+    pub(crate) fn retry_is_recognised(&self) -> bool {
+        self.producer.is_some() || self.close
+    }
 }
 pub(crate) fn parse_producer(
     id: Option<String>,
@@ -500,6 +540,77 @@ mod boundary_tests {
             crate::crypto::hex(&batch),
             "924ec299968304dc50ac28558c3e5e8c"
         );
+    }
+    /// A plain command: no producer identity, no close.
+    fn plain_command() -> AppendCommand {
+        AppendCommand {
+            sref: crate::tenant::ProjectId::new("p").unwrap().stream_ref("s"),
+            expected_epoch: None,
+            key: StreamKey([7; 32]),
+            body: Bytes::from_static(b"[1]"),
+            producer: None,
+            content_type: None,
+            routing_key: String::new(),
+            close: false,
+            seal_auth: None,
+            request_hash: None,
+            sequence: None,
+            ts_hint_ms: None,
+            key_version: 0,
+            close_identity: None,
+            body_charge: None,
+        }
+    }
+    /// The committer recognises the exact retry of a command that carries a
+    /// producer identity or a close, and of no other.
+    #[test]
+    fn a_retry_is_recognised_by_its_producer_identity_or_its_close() {
+        let producer = crate::shard::ProducerReq {
+            id: "p".into(),
+            epoch: 1,
+            seq: 0,
+            request_hash: None,
+        };
+        let recognised =
+            [(false, false), (true, false), (false, true), (true, true)].map(|(keyed, close)| {
+                let mut command = plain_command();
+                command.producer = keyed.then(|| producer.clone());
+                command.close = close;
+                command.retry_is_recognised()
+            });
+        assert_eq!(recognised, [false, true, true, true]);
+    }
+    /// A group the committer stranded may have been written: its outcome is
+    /// unknown unless the command's retry is recognised. Its code and wait
+    /// stay the moved shard's, and no other failure is unknown or changed by
+    /// the command: not an engine closed under the request (nothing written,
+    /// #136), not a refusal.
+    #[test]
+    fn only_a_stranded_group_of_an_unrecognised_retry_has_an_unknown_outcome() {
+        let stranded = || AppendFailure::from_commit(0, false, AppendErr::Moved);
+        let raw = stranded();
+        assert_eq!(
+            (raw.class, raw.code, raw.retry_after, raw.outcome_unknown()),
+            (
+                FailureClass::Unavailable,
+                AppendCode::ShardMoving,
+                Some(1),
+                true
+            )
+        );
+        assert!(stranded().answering(false).outcome_unknown());
+        assert!(!stranded().answering(true).outcome_unknown());
+        let closed = AppendErr::Closed { next_offset: 1 };
+        let closed = AppendFailure::from_commit(4, false, closed).answering(true);
+        assert_eq!(closed.closed_at(), Some((4, 1, false)));
+        for known in [
+            AppendFailure::from_commit(0, false, AppendErr::ProducerEpochSeq),
+            AppendFailure::from_commit(0, false, AppendErr::Internal("x".into())),
+            AppendFailure::new(FailureClass::Unavailable, AppendCode::ShardMoving, "x").retry(1),
+        ] {
+            assert!(!known.outcome_unknown(), "{known}");
+            assert!(!known.answering(false).outcome_unknown());
+        }
     }
     #[test]
     fn producer_parser_rejects_partial_reserved_and_noncanonical_numbers() {

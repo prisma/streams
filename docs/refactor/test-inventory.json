@@ -2371,6 +2371,28 @@
     "scenarios": []
   },
   {
+    "name": "a_stranded_keyed_product_append_keeps_the_retryable_answer_and_its_retry_is_a_duplicate",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7a205066f272097db2199ca9dfab6928a31dd7d4b713b76bfc91951709b2a335",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/retiring_written_group.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_stranded_plain_product_append_is_answered_outcome_unknown_and_held_once_by_the_successor",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "13cd202514e264da3b26dccd5531159b7fe345bd2a0b57f0ea91dec3f3e69fba",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/retiring_written_group.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_stranded_producer_append_is_moved_then_held_once_by_the_successor_and_its_retry_is_a_duplicate",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

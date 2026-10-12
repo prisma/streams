@@ -150,12 +150,15 @@ impl AppendService {
         self.execute_prepared(prepared, command).await
     }
     /// Every refresh of the bounded topology retry, the closure check and
-    /// the re-preparation, answers an unreadable registry retryably.
+    /// the re-preparation, answers an unreadable registry retryably. A
+    /// stranded group's failure carries whether the committer recognises
+    /// the command's exact retry (`AppendFailure::answering`).
     pub(crate) async fn execute_prepared(
         &self,
         prepared: AuthorizedAppend,
         mut command: AppendCommand,
     ) -> AppendResult {
+        let recognised = command.retry_is_recognised();
         if prepared.descriptor.sref() != command.sref || prepared.key.0 != command.key.0 {
             return fail(
                 FailureClass::Internal,
@@ -178,7 +181,7 @@ impl AppendService {
             let result = execute_once(self, prepared, &mut command).await;
             let closed = result.as_ref().err();
             let Some(attempted) = closed.and_then(|e| e.engine_closed_segment()) else {
-                return result;
+                return result.map_err(|e| e.answering(recognised));
             };
             if final_route || self.closure_is_current(&command, attempted).await? {
                 return result;

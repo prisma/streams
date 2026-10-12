@@ -700,6 +700,19 @@ fn append_code_rows() -> Vec<(crate::application::append::AppendFailure, serde_j
                 "code": "content_type_mismatch", "message": "content type mismatch",
                 "retryable": false}}),
         ),
+        // A group the committer stranded, of a plain append (#NEW-small-1).
+        (
+            commit(AppendErr::Moved).answering(false),
+            json!({"status": 503, "retryAfter": "1", "error": {
+                "code": "outcome_unknown", "retryable": false,
+                "message": "the shard moved while this append was in flight; it may or may not have been written; retry only if a second copy is acceptable, or append through a producer"}}),
+        ),
+        // The same group of a producer append or a seal's final record.
+        (
+            commit(AppendErr::Moved).answering(true),
+            json!({"status": 503, "retryAfter": "1", "error": {
+                "code": "temporarily_unavailable", "message": "retry shortly", "retryable": true}}),
+        ),
     ]
 }
 

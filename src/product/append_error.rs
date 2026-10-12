@@ -54,6 +54,12 @@ pub(super) fn render_product_append_error(error: AppendFailure) -> Response {
             None,
             true,
         ),
+        C::ShardMoving if error.outcome_unknown() => (
+            "outcome_unknown",
+            "the shard moved while this append was in flight; it may or may not have been written; retry only if a second copy is acceptable, or append through a producer",
+            None,
+            false,
+        ),
         C::ContentTypeMismatch => (
             "content_type_mismatch",
             "content type mismatch",

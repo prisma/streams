@@ -4,8 +4,11 @@
 //! The owner's ratified model: a retiring engine stops publishing live
 //! state, but retirement does not prove its accepted storage write
 //! disappeared. When durable success cannot be established the client gets
-//! the retryable shard-moving/unknown outcome, never a plain success and
-//! never a definitive rejection; owed-final obligations are retained; the
+//! the shard-moving/unknown outcome, never a plain success and never a
+//! definitive rejection: retryable where the retry is recognised (a producer
+//! identity, a close), and on the product surface `outcome_unknown`, not
+//! retryable, for a plain append, whose retry would store a second copy
+//! (edge change #NEW-small-1); owed-final obligations are retained; the
 //! successor recovers canonical state; retries preserve producer and
 //! idempotency identity. R17-B (`shard::retirement_tests`) pins the engine
 //! half; these scenarios pin what a client and a successor runtime see.
@@ -17,8 +20,9 @@
 //! client was answered, so the retiring close makes the group durable and
 //! the successor, a second runtime over the same store, replays it.
 //!
-//! Three writes are stranded that way: a producer-keyed raw append, a raw
-//! append-and-close, and a product `:seal` with a final record.
+//! Five writes are stranded that way: a producer-keyed raw append, a raw
+//! append-and-close, a product `:seal` with a final record, and a plain and
+//! a producer-keyed product append.
 
 use super::fixture_http::{
     HttpRig, HttpRigOptions, cold_absorber, engine_shutdown, http_rig_build,
@@ -256,7 +260,8 @@ fn assert_shard_moving(reply: &Reply) {
     );
 }
 
-/// The same outcome as the product surface renders it today: the raw
+/// The same outcome as the product surface renders it for a write whose
+/// retry is recognised (a producer identity, a seal's final): the raw
 /// `shard_moving` becomes 503 `temporarily_unavailable`, retryable, one
 /// second to retry, and nothing claims the collection sealed.
 fn assert_temporarily_unavailable(reply: &Reply) {
@@ -556,6 +561,111 @@ async fn a_stranded_product_seal_final_stays_owed_and_its_exact_retry_seals_on_t
         ),
         (1, 2, Some("true")),
         "the completed seal stored no second final: {recs:?}"
+    );
+    engine_shutdown(&next.state).await;
+}
+
+/// A plain product append (no producer identity) stranded by its engine's
+/// retirement may have been written, and nothing would recognise its retry
+/// as the same append: it is answered 503 `outcome_unknown`, not retryable,
+/// with `Retry-After: 1` and no cursor (edge change #NEW-small-1), and the
+/// successor runtime holds the record exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stranded_plain_product_append_is_answered_outcome_unknown_and_held_once_by_the_successor()
+ {
+    let store = FaultStore::new(mem(), 2029, FaultProfile::clean());
+    let name = "f2-plain";
+    let path = format!("/v1/streams/{name}/records");
+    let rig = product_collection(&store, name).await;
+    let addr = rig.addr;
+    let append = preq(addr, "POST", &path, &KEY, br#"{"stranded":1}"#);
+    let retired = strand(&store, rig, append).await;
+    let (status, headers, body) = &retired.reply;
+    assert_eq!(
+        (
+            *status,
+            header(headers, "retry-after"),
+            serde_json::from_slice::<serde_json::Value>(body).unwrap()
+        ),
+        (
+            503,
+            Some("1"),
+            serde_json::json!({"error": {
+                "code": "outcome_unknown",
+                "message": "the shard moved while this append was in flight; it may or may not have been written; retry only if a second copy is acceptable, or append through a producer",
+                "retryable": false,
+            }})
+        ),
+        "a stranded plain append is answered unknown, never retryable: {headers:?}"
+    );
+    assert_eq!(
+        (
+            header(headers, "content-type"),
+            header(headers, "cache-control")
+        ),
+        (Some("application/json"), Some("no-store")),
+    );
+
+    let next = successor(&store, &retired).await;
+    let (_, recs) = product_records(next.addr, name).await;
+    assert_eq!(
+        (copies(&recs, "stranded"), recs.len()),
+        (1, 2),
+        "the successor recovers the stranded record exactly once: {recs:?}"
+    );
+    engine_shutdown(&next.state).await;
+}
+
+/// A producer-keyed product append stranded the same way keeps the moved
+/// shard's retryable answer, 503 `temporarily_unavailable`: the successor
+/// holds the record once, and the exact retry of the same producer tuple is
+/// answered from the original commit as a duplicate, storing nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stranded_keyed_product_append_keeps_the_retryable_answer_and_its_retry_is_a_duplicate() {
+    let store = FaultStore::new(mem(), 2030, FaultProfile::clean());
+    let name = "f2-keyed";
+    let path = format!("/v1/streams/{name}/records");
+    let keyed = [
+        KEY[0],
+        ("producer-id", "writer"),
+        ("producer-epoch", "1"),
+        ("producer-seq", "0"),
+    ];
+    let body = br#"{"stranded":1}"#;
+    let rig = product_collection(&store, name).await;
+    let addr = rig.addr;
+    let retired = strand(&store, rig, preq(addr, "POST", &path, &keyed, body)).await;
+    assert_temporarily_unavailable(&retired.reply);
+
+    let next = successor(&store, &retired).await;
+    let (_, recs) = product_records(next.addr, name).await;
+    assert_eq!(
+        (copies(&recs, "stranded"), recs.len()),
+        (1, 2),
+        "the successor recovers the stranded record exactly once: {recs:?}"
+    );
+    let (status, _, answer) = preq(next.addr, "POST", &path, &keyed, body).await;
+    let answer: serde_json::Value = serde_json::from_slice(&answer).unwrap();
+    assert_eq!(
+        (
+            status,
+            &answer["count"],
+            &answer["duplicate"],
+            &answer["sealed"]
+        ),
+        (
+            200,
+            &serde_json::json!(0),
+            &serde_json::json!(true),
+            &serde_json::json!(false)
+        ),
+        "the exact retry is the original commit's duplicate, not a second copy: {answer}"
+    );
+    let (_, recs) = product_records(next.addr, name).await;
+    assert_eq!(
+        (copies(&recs, "stranded"), recs.len()),
+        (1, 2),
+        "the duplicate stored nothing: {recs:?}"
     );
     engine_shutdown(&next.state).await;
 }
