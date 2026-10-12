@@ -282,9 +282,16 @@ OWNERS = (
     # DSTs alone. `product::` also selects the consumer_product and
     # reads_product DSTs; `billing` is the whole billing surface, as for the
     # read accumulator and spool rows.
-    owner('product', 'src/product.rs',
-          'product:: dst_tests::product_lifecycle:: dst_tests::product_descriptor_reads:: '
-          'dst_tests::security_operations:: dst_tests::security_routes::'),
+    # src/product/append_error.rs is the append's error table, moved out of
+    # src/product.rs (no line headroom) and kept in this owner under the same
+    # filters: the move changes no mutant's owner or tests, and product::tests
+    # pins every row of the table.
+    MutationOwner(
+        'product',
+        ('src/product.rs', 'src/product/append_error.rs'),
+        ('product::', 'dst_tests::product_lifecycle::', 'dst_tests::product_descriptor_reads::',
+         'dst_tests::security_operations::', 'dst_tests::security_routes::'),
+    ),
     owner('product_usage', 'src/product/usage.rs',
           'dst_tests::security_usage:: dst_tests::billing_usage:: dst_tests::billing_attribution:: '
           'dst_tests::product_descriptor_reads::'),

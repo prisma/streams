@@ -2978,6 +2978,22 @@
     },
     {
       "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::render_product_append_error",
+      "path": "src/product/append_error.rs",
+      "reason": "The product append's error table, moved unchanged out of src/product.rs (where an adoption allowance held the same two uses): the producer_gap and stale_producer_epoch details objects are rendered with serde_json's literal macro; their wire shape is the product error contract pinned row by row by product::tests::every_append_failure_renders_its_product_row and WIRE-MATRIX §2.7/§2.8.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::append_class_rows",
+      "path": "src/product/tests.rs",
+      "reason": "The expected append_failed answer of the product append's error-table pin is written with serde_json's literal macro, the same document the renderer sends; it builds expected values only, not service state.",
+      "syntax": "json"
+    },
+    {
+      "category": "macro-dsl",
       "count": 1,
       "owner": "crate::macro(proptest::proptest)",
       "path": "src/product/tests.rs",

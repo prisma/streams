@@ -618,6 +618,160 @@ async fn a_core_capacity_refusal_renders_the_stable_413() {
     );
 }
 
+/// A rendered append refusal as a client and the audit journal see it: the
+/// status and error body, and `retry-after`, `streams-replay-to` and the
+/// denial tag when the response carries them.
+async fn append_refusal(response: Response) -> serde_json::Value {
+    let mut seen = serde_json::Map::new();
+    seen.insert("status".into(), response.status().as_u16().into());
+    for (key, name) in [
+        ("retryAfter", "retry-after"),
+        ("replayTo", "streams-replay-to"),
+    ] {
+        if let Some(value) = response.headers().get(name).and_then(|v| v.to_str().ok()) {
+            seen.insert(key.into(), value.into());
+        }
+    }
+    if let Some(tag) = response.extensions().get::<crate::audit::DenialTag>() {
+        seen.insert("tag".into(), tag.code.into());
+    }
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX);
+    let body: serde_json::Value = serde_json::from_slice(&body.await.unwrap()).unwrap();
+    seen.insert("error".into(), body["error"].clone());
+    seen.into()
+}
+
+/// The error table's rows that the failure's code decides.
+fn append_code_rows() -> Vec<(crate::application::append::AppendFailure, serde_json::Value)> {
+    use crate::application::append::{AppendCode as C, AppendFailure, FailureClass as F};
+    use crate::shard::AppendErr;
+    let commit = |error| AppendFailure::from_commit(0, false, error);
+    let mut not_owner = AppendFailure::new(F::Conflict, C::NotOwner, "x");
+    not_owner.owner = Some("http://10.0.0.2:8080".into());
+    let backlog = AppendFailure::new(F::Unavailable, C::MaintenanceBackpressure, "x").retry(5);
+    vec![
+        (
+            not_owner,
+            json!({"status": 409, "replayTo": "http://10.0.0.2:8080", "error": {
+                "code": "not_stream_owner", "retryable": true,
+                "message": "another instance owns the target segment; retry through the router"}}),
+        ),
+        (
+            commit(AppendErr::ProducerGap {
+                expected: 3,
+                received: 5,
+            }),
+            json!({"status": 409, "error": {
+                "code": "producer_gap", "message": "producer sequence gap",
+                "details": {"expected": 3, "received": 5}, "retryable": false}}),
+        ),
+        (
+            commit(AppendErr::ProducerStale { current_epoch: 4 }),
+            json!({"status": 403, "error": {
+                "code": "stale_producer_epoch", "message": "producer epoch is stale",
+                "details": {"currentEpoch": 4}, "retryable": false}}),
+        ),
+        (
+            commit(AppendErr::ProducerSeqReused),
+            json!({"status": 409, "error": {
+                "code": "producer_sequence_reused", "retryable": false,
+                "message": "same producer sequence with a different request"}}),
+        ),
+        (
+            commit(AppendErr::ProducerEpochSeq),
+            json!({"status": 400, "error": {
+                "code": "producer_epoch_must_start_at_zero", "retryable": false,
+                "message": "a new producer epoch must start at sequence 0"}}),
+        ),
+        (
+            commit(AppendErr::Closed { next_offset: 7 }),
+            json!({"status": 409, "error": {
+                "code": "sealed", "message": "collection is sealed", "retryable": false}}),
+        ),
+        (
+            backlog,
+            json!({"status": 503, "retryAfter": "5", "error": {
+                "code": "maintenance_backpressure", "retryable": true,
+                "message": "maintenance backlog exceeds its bound; retry after it drains"}}),
+        ),
+        (
+            commit(AppendErr::CtMismatch),
+            json!({"status": 409, "error": {
+                "code": "content_type_mismatch", "message": "content type mismatch",
+                "retryable": false}}),
+        ),
+    ]
+}
+
+/// The error table's rows that the failure's class decides.
+fn append_class_rows() -> Vec<(crate::application::append::AppendFailure, serde_json::Value)> {
+    use crate::application::append::{AppendCode as C, AppendFailure, FailureClass as F};
+    let failed = |status| {
+        json!({"status": status, "error": {
+            "code": "append_failed", "message": "append failed", "retryable": false}})
+    };
+    vec![
+        (
+            AppendFailure::new(F::Missing, C::NotFound, "x"),
+            json!({"status": 404, "error": {
+                "code": "not_found", "message": "stream not found", "retryable": false}}),
+        ),
+        (
+            AppendFailure::new(F::Denied, C::WrongKey, "x"),
+            json!({"status": 403, "tag": "stale_or_wrong_credentials", "error": {
+                "code": "stale_or_wrong_credentials", "message": "forbidden", "retryable": false}}),
+        ),
+        (
+            AppendFailure::new(F::Conflict, C::TargetIncarnationChanged, "x"),
+            json!({"status": 409, "error": {
+                "code": "conflict", "message": "producer or configuration conflict",
+                "retryable": false}}),
+        ),
+        (
+            AppendFailure::new(F::Invalid, C::BodyTooLarge, "x"),
+            json!({"status": 413, "error": {
+                "code": "body_too_large", "message": "request body exceeds the limit",
+                "retryable": false}}),
+        ),
+        (
+            AppendFailure::new(F::Invalid, C::InvalidBody, "x"),
+            failed(400),
+        ),
+        (
+            AppendFailure::new(F::Capacity, C::Overloaded, "x").retry(1),
+            json!({"status": 429, "retryAfter": "1", "error": {
+                "code": "rate_limited", "message": "admission or rate limit", "retryable": true}}),
+        ),
+        // An engine closed under the request (edge change #136): nothing written.
+        (
+            AppendFailure::new(F::Unavailable, C::ShardMoving, "x").retry(1),
+            json!({"status": 503, "retryAfter": "1", "error": {
+                "code": "temporarily_unavailable", "message": "retry shortly", "retryable": true}}),
+        ),
+        (
+            AppendFailure::new(F::Timeout, C::AppendTimeout, "x"),
+            failed(408),
+        ),
+        (
+            AppendFailure::new(F::Internal, C::Internal, "x"),
+            failed(500),
+        ),
+    ]
+}
+
+/// Every row of the product append's error table (`render_product_append_error`,
+/// WIRE-MATRIX §2.7): each typed failure the shared append path returns, with
+/// the exact status, body, `retry-after`, replay target and denial tag a
+/// client and the audit journal receive.
+#[tokio::test]
+async fn every_append_failure_renders_its_product_row() {
+    for (failure, want) in append_code_rows().into_iter().chain(append_class_rows()) {
+        let label = failure.to_string();
+        let got = append_refusal(render_product_append_error(failure)).await;
+        assert_eq!(got, want, "{label}");
+    }
+}
+
 /// Generated JSON values: every scalar kind, strings that need escaping and
 /// nested arrays and objects.
 fn json_value() -> impl proptest::strategy::Strategy<Value = serde_json::Value> {

@@ -2956,13 +2956,6 @@
     },
     {
       "category": "macro-dsl",
-      "count": 2,
-      "owner": "crate::render_product_append_error",
-      "path": "src/product.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
       "count": 1,
       "owner": "crate::watch_def_json",
       "path": "src/product.rs",

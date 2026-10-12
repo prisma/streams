@@ -19,7 +19,7 @@ use bytes::Bytes;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::http::AppState;
+use crate::http::{AppState, append_failure_status};
 use crate::registry::{StreamDesc, WatchDefinition};
 use internal::DescriptorReadAnswer;
 
@@ -2100,92 +2100,6 @@ fn render_product_append(
         .into_response()
 }
 
-fn render_product_append_error(error: crate::application::append::AppendFailure) -> Response {
-    use crate::application::append::{AppendCode as C, FailureClass as F};
-    if let Some(refusal) = error.capacity_refusal() {
-        return capacity_refused(refusal);
-    }
-    let status = crate::http::append_failure_status(&error);
-    let (code, message, details, retryable) = match error.code {
-        C::NotOwner => (
-            "not_stream_owner",
-            "another instance owns the target segment; retry through the router",
-            None,
-            true,
-        ),
-        C::ProducerGap => (
-            "producer_gap",
-            "producer sequence gap",
-            Some(json!({"expected":error.expected(),"received":error.received()})),
-            false,
-        ),
-        C::ProducerStale => (
-            "stale_producer_epoch",
-            "producer epoch is stale",
-            Some(json!({"currentEpoch":error.producer_epoch()})),
-            false,
-        ),
-        C::ProducerSequenceReused => (
-            "producer_sequence_reused",
-            "same producer sequence with a different request",
-            None,
-            false,
-        ),
-        C::ProducerEpochSeq => (
-            "producer_epoch_must_start_at_zero",
-            "a new producer epoch must start at sequence 0",
-            None,
-            false,
-        ),
-        C::StreamClosed => ("sealed", "collection is sealed", None, false),
-        C::MaintenanceBackpressure => (
-            "maintenance_backpressure",
-            "maintenance backlog exceeds its bound; retry after it drains",
-            None,
-            true,
-        ),
-        C::ContentTypeMismatch => (
-            "content_type_mismatch",
-            "content type mismatch",
-            None,
-            false,
-        ),
-        _ => match error.class {
-            F::Missing => ("not_found", "stream not found", None, false),
-            F::Denied => ("stale_or_wrong_credentials", "forbidden", None, false),
-            F::Conflict => (
-                "conflict",
-                "producer or configuration conflict",
-                None,
-                false,
-            ),
-            F::Invalid if status == StatusCode::PAYLOAD_TOO_LARGE => (
-                "body_too_large",
-                "request body exceeds the limit",
-                None,
-                false,
-            ),
-            F::Capacity => ("rate_limited", "admission or rate limit", None, true),
-            F::Unavailable => ("temporarily_unavailable", "retry shortly", None, true),
-            _ => ("append_failed", "append failed", None, false),
-        },
-    };
-    let mut r = perr(status, code, message, details, retryable);
-    if let Some(retry) = error.retry_after {
-        r.headers_mut()
-            .insert("retry-after", axum::http::HeaderValue::from(retry));
-    }
-    if let Some(owner) = error.owner
-        && let Ok(owner) = axum::http::HeaderValue::from_str(&owner)
-    {
-        r.headers_mut().insert("streams-replay-to", owner);
-    }
-    if code == "stale_or_wrong_credentials" {
-        r = crate::audit::tag(r, "stale_or_wrong_credentials");
-    }
-    r
-}
-
 // ---- Stage 6: read, subscribe, scan ---------------------------------
 
 const SCAN_TTL_MS: i64 = 6 * 3600 * 1000;
@@ -3747,6 +3661,8 @@ mod answers;
 use answers::{json_ok_no_store, watch_observation_response};
 mod append_body;
 use append_body::{AppendBody, capacity_refused, names_a_producer, parse_append_body};
+mod append_error;
+use append_error::render_product_append_error;
 mod consumer_pull;
 use consumer_pull::product_consumer_pull;
 mod internal;
