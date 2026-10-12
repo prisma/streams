@@ -1,4 +1,5 @@
-// The interim issuer's inputs (public-beta issuer triage B2.2). The entry
+// The interim issuer's inputs (public-beta issuer triage B2.2, and B4's
+// STREAMS_ISSUER_ORIGIN and STREAMS_ISSUER_OAUTH_AUTHORITY). The entry
 // reads exactly the names below from its environment and nothing else: no
 // COMPOSER_*, no SLATE_*, no BIN_*. In one Compute project every service
 // sees every variable (deploy/README.md: "Compute env vars are
@@ -15,6 +16,12 @@ import { loadSigningKeyFromPem, MAX_TOKEN_LIFETIME_SECS, type SigningKey } from 
 export const TOKEN_TTL_DEFAULT_SECS = 3600;
 /// The shortest token a request may ask for.
 export const TOKEN_TTL_MIN_SECS = 300;
+/// Where "Sign in with Prisma" authorizes and where its /v1/me is: the
+/// Management API SDK's defaults (@prisma/management-api-sdk 1.82.0).
+/// STREAMS_ISSUER_OAUTH_AUTHORITY names one origin for both instead (the
+/// mock identity provider, mock-idp.ts, for prisma dev and the tests).
+export const PRISMA_AUTH_ORIGIN = "https://auth.prisma.io";
+export const PRISMA_API_ORIGIN = "https://api.prisma.io";
 /// Owner question I10 (the build default: awake): the issuer holds
 /// Compute's keep-awake guard unless KEEP_AWAKE=0.
 export const KEEP_AWAKE_DEFAULT = "1";
@@ -40,11 +47,13 @@ export const INPUTS = [
   "STREAMS_CELL_ID",
   "STREAMS_ISSUER_ID",
   "STREAMS_CELL_ORIGIN",
+  "STREAMS_ISSUER_ORIGIN",
   "STREAMS_ISSUER_SIGNING_KEY",
   "STREAMS_ISSUER_PEPPER",
   "STREAMS_ISSUER_SESSION_KEY",
   "STREAMS_ISSUER_OAUTH_CLIENT_ID",
   "STREAMS_ISSUER_OAUTH_CLIENT_SECRET",
+  "STREAMS_ISSUER_OAUTH_AUTHORITY",
   "STREAMS_ISSUER_METRICS_TOKEN",
   "STREAMS_ISSUER_TOKEN_TTL_SECS",
   ...s3Names("STREAMS_CONTROL_S3"),
@@ -70,12 +79,19 @@ export interface IssuerConfig {
   issuerId: string;
   /// Where customers send their tokens: the exchange's `endpoint`.
   cellOrigin: string;
+  /// Where the issuer is served; the sign-in's redirect_uri is
+  /// `<issuerOrigin>/auth/callback`, as the OAuth client registers it.
+  issuerOrigin: string;
   signingKey: SigningKey;
   /// Newest first; credentials are hashed under the first.
   peppers: Pepper[];
   sessionKey: Buffer;
   oauthClientId: string;
   oauthClientSecret?: string;
+  /// The authorization server (/authorize, /token) and the Management
+  /// API (/v1/me) the sign-in calls.
+  authOrigin: string;
+  apiOrigin: string;
   metricsToken: string;
   tokenTtlSecs: number;
   control: S3Target;
@@ -104,10 +120,14 @@ function wholeNumber(env: Env, name: string, dflt: number, min: number, max: num
   return n;
 }
 
-/// The cell's origin: https, or http to this machine (development only),
-/// with no path. Tokens are only ever sent to it.
+/// An origin: https, or http to this machine (development only), with no
+/// path. The cell's (tokens are only ever sent to it), the issuer's own
+/// (the sign-in's callback) and the authorization server's.
 function origin(env: Env, name: string): string {
-  const raw = required(env, name);
+  return originOf(name, required(env, name));
+}
+
+function originOf(name: string, raw: string): string {
   let url: URL;
   try {
     url = new URL(raw);
@@ -151,15 +171,20 @@ export function readConfig(env: Env): IssuerConfig {
   if (keepAwake !== "0" && keepAwake !== "1") throw new AdminError("KEEP_AWAKE is 0 or 1");
   const control = target(env, "STREAMS_CONTROL_S3");
   const oauthClientSecret = optional(env, "STREAMS_ISSUER_OAUTH_CLIENT_SECRET");
+  const authority = optional(env, "STREAMS_ISSUER_OAUTH_AUTHORITY");
+  const mock = authority === undefined ? undefined : originOf("STREAMS_ISSUER_OAUTH_AUTHORITY", authority);
   return {
     cellId,
     issuerId: required(env, "STREAMS_ISSUER_ID"),
     cellOrigin: origin(env, "STREAMS_CELL_ORIGIN"),
+    issuerOrigin: origin(env, "STREAMS_ISSUER_ORIGIN"),
     signingKey: loadSigningKeyFromPem(required(env, "STREAMS_ISSUER_SIGNING_KEY"), "STREAMS_ISSUER_SIGNING_KEY"),
     peppers: parsePeppers(required(env, "STREAMS_ISSUER_PEPPER"), "STREAMS_ISSUER_PEPPER"),
     sessionKey: sessionKey(env),
     oauthClientId: required(env, "STREAMS_ISSUER_OAUTH_CLIENT_ID"),
     ...(oauthClientSecret !== undefined ? { oauthClientSecret } : {}),
+    authOrigin: mock ?? PRISMA_AUTH_ORIGIN,
+    apiOrigin: mock ?? PRISMA_API_ORIGIN,
     metricsToken,
     tokenTtlSecs: wholeNumber(env, "STREAMS_ISSUER_TOKEN_TTL_SECS", TOKEN_TTL_DEFAULT_SECS, TOKEN_TTL_MIN_SECS,
       MAX_TOKEN_LIFETIME_SECS),

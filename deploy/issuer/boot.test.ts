@@ -24,7 +24,7 @@ describe("the issuer's inputs", () => {
   test("every required input is named when it is missing or empty", async () => {
     const cell = await issuerCell();
     const required = [
-      "STREAMS_CELL_ID", "STREAMS_ISSUER_ID", "STREAMS_CELL_ORIGIN", "STREAMS_ISSUER_SIGNING_KEY",
+      "STREAMS_CELL_ID", "STREAMS_ISSUER_ID", "STREAMS_CELL_ORIGIN", "STREAMS_ISSUER_ORIGIN", "STREAMS_ISSUER_SIGNING_KEY",
       "STREAMS_ISSUER_PEPPER", "STREAMS_ISSUER_SESSION_KEY", "STREAMS_ISSUER_OAUTH_CLIENT_ID",
       "STREAMS_ISSUER_METRICS_TOKEN", "STREAMS_CONTROL_S3_ENDPOINT", "STREAMS_CONTROL_S3_BUCKET",
       "STREAMS_CONTROL_S3_REGION", "STREAMS_CONTROL_S3_ACCESS_KEY_ID", "STREAMS_CONTROL_S3_SECRET_ACCESS_KEY",
@@ -37,7 +37,7 @@ describe("the issuer's inputs", () => {
     }
     // Every name the entry may read is one of INPUTS, and nothing else.
     expect([...INPUTS].sort()).toEqual([...required, "STREAMS_ISSUER_OAUTH_CLIENT_SECRET",
-      "STREAMS_ISSUER_TOKEN_TTL_SECS", "PORT", "KEEP_AWAKE"].sort());
+      "STREAMS_ISSUER_OAUTH_AUTHORITY", "STREAMS_ISSUER_TOKEN_TTL_SECS", "PORT", "KEEP_AWAKE"].sort());
   });
 
   test("the defaults: a 60-minute token (I5), awake (I10), port 8080", async () => {

@@ -39,6 +39,8 @@ export interface IssuerCell {
 export const CELL = "cell_sc1";
 export const ISSUER = "https://auth.prisma.io";
 export const CELL_ORIGIN = "https://cell-sc1.example.com";
+/// Where the issuer itself is served: the sign-in's callback is here.
+export const ISSUER_ORIGIN = "https://issuer.example.com";
 
 /// The issuer's environment for the s3:// state `state` and key `key`.
 function envFor(state: string, key: string, pepper: string): Record<string, string> {
@@ -54,6 +56,7 @@ function envFor(state: string, key: string, pepper: string): Record<string, stri
     STREAMS_CELL_ID: CELL,
     STREAMS_ISSUER_ID: ISSUER,
     STREAMS_CELL_ORIGIN: CELL_ORIGIN,
+    STREAMS_ISSUER_ORIGIN: ISSUER_ORIGIN,
     STREAMS_ISSUER_SIGNING_KEY: readFileSync(key, "utf8"),
     STREAMS_ISSUER_PEPPER: readFileSync(pepper, "utf8"),
     STREAMS_ISSUER_SESSION_KEY: randomBytes(32).toString("base64"),
@@ -143,7 +146,7 @@ export async function managed(cell: IssuerCell, env: Env = cell.env) {
   const call = (method: string, path: string, cookie?: string, init: { body?: string; headers?: Record<string, string> } = {}) => {
     clock.t += 1;
     return issuer.fetch(
-      new Request(`https://issuer.example.com${path}`, {
+      new Request(`${ISSUER_ORIGIN}${path}`, {
         method,
         headers: { ...(cookie === undefined ? {} : { cookie }), ...init.headers },
         body: init.body,
@@ -154,7 +157,7 @@ export async function managed(cell: IssuerCell, env: Env = cell.env) {
   /// A change as the issuer's page asks for it: JSON, with the CSRF value
   /// of the cookie's session.
   const send = (method: string, path: string, cookie: string, body?: unknown) => {
-    const sid = readSession(cfg.sessionKey, new Request(`https://issuer.example.com${path}`, { headers: { cookie } }), clock.t)?.sid;
+    const sid = readSession(cfg.sessionKey, new Request(`${ISSUER_ORIGIN}${path}`, { headers: { cookie } }), clock.t)?.sid;
     return call(method, path, cookie, {
       body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
       headers: { "content-type": "application/json", "x-csrf-token": csrfToken(cfg.sessionKey, sid ?? "") },

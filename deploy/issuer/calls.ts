@@ -8,6 +8,7 @@
 import { AdminError } from "../cell-admin/errors";
 import type { CellState } from "../cell-admin/state";
 import type { AllowEntry, StateStore } from "../cell-admin/store";
+import type { AllowlistReader } from "./allowlist";
 import type { Audit, AuditEvent } from "./audit";
 import type { StateCache } from "./cache";
 import { UNAVAILABLE_RETRY_SECS } from "./exchange";
@@ -20,6 +21,7 @@ export interface ManagementDeps {
   store: StateStore;
   limits: RateLimits;
   audit: Audit;
+  allowlist: AllowlistReader;
   now: () => number;
   log: (line: string) => void;
 }

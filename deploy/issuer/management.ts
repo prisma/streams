@@ -13,9 +13,10 @@
 //   6. the workspace in the path is the session's (403 forbidden), or
 //      the project in the path is one of its projects, not the canary,
 //      not offboarded (404 not_found);
-//   7. the session's workspace on the beta's allow-list, read from the
-//      control bucket at most every 5 s and refused while there is none
-//      (403 workspace_not_allowed; 503 while it cannot be read): taking
+//   7. the session's workspace on the beta's allow-list (allowlist.ts),
+//      read from the control bucket at most every 5 s and refused while
+//      there is none (403 workspace_not_allowed; 503 while it cannot be
+//      read): taking
 //      a workspace off the list stops its management within 5 s (owner
 //      question I8 (a): its projects keep running until the owner
 //      suspends them).
@@ -36,7 +37,6 @@
 // No answer carries a CORS header (respond.ts): the page that calls these
 // routes is the issuer's own. Every answer carries X-Request-Id.
 import { randomBytes } from "node:crypto";
-import type { AllowEntry, Allowlist } from "../cell-admin/store";
 import { type Asker, type Call, type ManagementDeps, refused } from "./calls";
 import type { IssuerConfig } from "./config";
 import { Credentials } from "./credentials";
@@ -45,9 +45,6 @@ import { Projects } from "./projects";
 import { refuse } from "./respond";
 import { csrfMatches, readSession } from "./session";
 import { ownProject } from "./views";
-
-/// How long a read of the allow-list is taken as current.
-export const ALLOWLIST_MAX_AGE_MS = 5_000;
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const JSON_TYPE = /^application\/json\s*(;|$)/i;
@@ -68,7 +65,6 @@ interface Route {
 
 export class Management {
   private readonly routes: Route[];
-  private allowlist: { at: number; doc: Allowlist | null } | null = null;
 
   constructor(
     private readonly cfg: IssuerConfig,
@@ -165,28 +161,12 @@ export class Management {
     if (route.scope === "project" && ownProject(this.deps.cache.state, workspace, ids[0]) === undefined) {
       return no(404, "not_found", `workspace ${workspace} has no Streams project ${ids[0]}`);
     }
-    const entry = await this.entryOf(workspace);
+    const entry = await this.deps.allowlist.entryOf(workspace);
     if (entry === null) return unavailable("the issuer cannot read the beta's allow-list; retry shortly");
     if (entry === undefined) {
       return no(403, "workspace_not_allowed", `workspace ${workspace} is not on the Streams beta's allow-list`);
     }
     return method.handle({ ...asker, req, ids, entry });
-  }
-
-  /// The allow-list's entry for `workspace`: undefined when it has none
-  /// (or there is no allow-list), null when the list cannot be read.
-  private async entryOf(workspace: string): Promise<AllowEntry | undefined | null> {
-    const now = this.deps.now();
-    if (this.allowlist === null || now - this.allowlist.at > ALLOWLIST_MAX_AGE_MS) {
-      try {
-        this.allowlist = { at: now, doc: (await this.deps.store.readAllowlist())?.doc ?? null };
-      } catch (e) {
-        this.deps.log(`reading the allow-list failed: ${(e as Error).message}`);
-        this.allowlist = null;
-        return null;
-      }
-    }
-    return this.allowlist.doc?.entries.find((e) => e.workspace_id === workspace);
   }
 }
 

@@ -1,6 +1,6 @@
 // The management API's browser sessions (public-beta issuer triage B4.3;
-// design §3.3). The cookie is built here because every management route
-// (B3) takes one; signing in, which makes it, is B4's.
+// design §3.3): every management route (B3) takes one, and signing in
+// (signin.ts) makes one.
 //
 // A session is `{sid, user_id, email, workspace_id, iat}` in one cookie,
 // base64url JSON and its HMAC-SHA-256 under STREAMS_ISSUER_SESSION_KEY:
@@ -10,7 +10,7 @@
 // user out. A state-changing call also sends the session's CSRF value in
 // X-CSRF-Token: a page of another origin can neither read it nor set the
 // header. Each MAC names its purpose, so a value made for one use is never
-// valid for another (the sign-in's state cookie, B4, takes its own).
+// valid for another (the sign-in's state cookie, oauth.ts, takes its own).
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 /// The `__Host-` prefix: the browser takes it only Secure, from this
@@ -21,8 +21,9 @@ export const SESSION_TTL_SECS = 8 * 3600;
 const ISSUE_SKEW_SECS = 60;
 
 const SID = /^[0-9a-f]{32}$/;
-/// The feed's id grammar (src/tenant.rs); B4 refuses any other workspace.
-const WORKSPACE = /^[A-Za-z0-9_-]{1,128}$/;
+/// The feed's id grammar (src/tenant.rs): the sign-in refuses any other
+/// workspace (oauth.ts).
+export const WORKSPACE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 export interface Session {
   /// 128 random bits; the CSRF value derives from it.
@@ -37,6 +38,33 @@ export interface Session {
 const mac = (key: Buffer, purpose: string, text: string) =>
   createHmac("sha256", key).update(`${purpose}\n${text}`).digest();
 
+/// `value` sealed for `purpose`: its base64url JSON, a dot, and the key's
+/// MAC of both, so a cookie carries it and only the issuer makes one.
+export function seal(key: Buffer, purpose: string, value: unknown): string {
+  const payload = Buffer.from(JSON.stringify(value)).toString("base64url");
+  return `${payload}.${mac(key, purpose, payload).toString("base64url")}`;
+}
+
+/// What `sealed` holds when the key sealed it for `purpose`, else
+/// undefined. The tag is compared as text in constant time: base64url
+/// decoding skips stray characters, and a cookie has one spelling.
+export function unseal(key: Buffer, purpose: string, sealed: string | null): unknown {
+  const dot = sealed?.indexOf(".") ?? -1;
+  if (sealed === null || dot <= 0) return undefined;
+  const [payload, tag] = [sealed.slice(0, dot), sealed.slice(dot + 1)];
+  const want = Buffer.from(mac(key, purpose, payload).toString("base64url"));
+  const got = Buffer.from(tag);
+  if (got.length !== want.length || !timingSafeEqual(got, want)) return undefined;
+  try {
+    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+/// The Set-Cookie value that makes a browser drop cookie `name`.
+export const clearedCookie = (name: string) => `${name}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
+
 /// A new session for a user signed in to `workspace_id`.
 export function newSession(who: Omit<Session, "sid" | "iat">, nowMs: number): Session {
   return { sid: randomBytes(16).toString("hex"), ...who, iat: Math.floor(nowMs / 1000) };
@@ -44,9 +72,7 @@ export function newSession(who: Omit<Session, "sid" | "iat">, nowMs: number): Se
 
 /// The Set-Cookie value that carries `s`.
 export function sessionCookie(key: Buffer, s: Session): string {
-  const payload = Buffer.from(JSON.stringify(s)).toString("base64url");
-  const tag = mac(key, "session", payload).toString("base64url");
-  return `${SESSION_COOKIE}=${payload}.${tag}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_TTL_SECS}`;
+  return `${SESSION_COOKIE}=${seal(key, "session", s)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_TTL_SECS}`;
 }
 
 /// What a state-changing call must send in X-CSRF-Token: the key's MAC
@@ -61,7 +87,7 @@ export function csrfMatches(key: Buffer, sid: string, presented: string | null):
 }
 
 /// The first value of cookie `name` in the request, or null.
-function cookieValue(req: Request, name: string): string | null {
+export function cookieValue(req: Request, name: string): string | null {
   for (const part of (req.headers.get("cookie") ?? "").split(";")) {
     const eq = part.indexOf("=");
     if (eq > 0 && part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
@@ -76,7 +102,7 @@ function wellFormed(v: unknown): v is Session {
     typeof s.sid === "string" && SID.test(s.sid) &&
     typeof s.user_id === "string" && s.user_id !== "" &&
     typeof s.email === "string" &&
-    typeof s.workspace_id === "string" && WORKSPACE.test(s.workspace_id) &&
+    typeof s.workspace_id === "string" && WORKSPACE_ID.test(s.workspace_id) &&
     Number.isSafeInteger(s.iat)
   );
 }
@@ -84,21 +110,7 @@ function wellFormed(v: unknown): v is Session {
 /// The request's session: its cookie present, made under `key`, every
 /// field in form and issued less than 8 hours ago; else null.
 export function readSession(key: Buffer, req: Request, nowMs: number): Session | null {
-  const value = cookieValue(req, SESSION_COOKIE);
-  const dot = value?.indexOf(".") ?? -1;
-  if (value === null || dot <= 0) return null;
-  const [payload, tag] = [value.slice(0, dot), value.slice(dot + 1)];
-  // The tag's text, not its decoding: base64url decoding skips stray
-  // characters, and a cookie has one spelling.
-  const want = Buffer.from(mac(key, "session", payload).toString("base64url"));
-  const got = Buffer.from(tag);
-  if (got.length !== want.length || !timingSafeEqual(got, want)) return null;
-  let s: unknown;
-  try {
-    s = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-  } catch {
-    return null;
-  }
+  const s = unseal(key, "session", cookieValue(req, SESSION_COOKIE));
   if (!wellFormed(s)) return null;
   const nowSecs = Math.floor(nowMs / 1000);
   if (s.iat > nowSecs + ISSUE_SKEW_SECS || nowSecs >= s.iat + SESSION_TTL_SECS) return null;

@@ -5,10 +5,13 @@
 //   POST /v1/token/streams   the exchange (exchange.ts)
 //   GET  /healthz            whether it can mint (ops.ts)
 //   GET  /v1/admin/metrics   its counters, behind the metrics bearer (ops.ts)
+//   GET  /auth/login         "Sign in with Prisma" starts (signin.ts)
+//   GET  /auth/callback      and finishes with a session (signin.ts)
 //   /v1/workspaces/{w}/streams/projects...
 //                            the management API, for a signed-in browser
 //                            (management.ts)
 import type { StateStore } from "../cell-admin/store";
+import { AllowlistReader } from "./allowlist";
 import { Audit } from "./audit";
 import type { StateCache } from "./cache";
 import type { IssuerConfig } from "./config";
@@ -18,6 +21,7 @@ import { Management } from "./management";
 import { Ops } from "./ops";
 import { Rehasher } from "./rehash";
 import { refuse } from "./respond";
+import { SignIn } from "./signin";
 
 export interface IssuerDeps {
   store: StateStore;
@@ -35,22 +39,33 @@ export class Issuer {
   private readonly exchange: Exchange;
   private readonly ops: Ops;
   private readonly management: Management;
+  private readonly signIn: SignIn;
 
   constructor(cfg: IssuerConfig, deps: IssuerDeps) {
     const now = deps.now ?? Date.now;
+    const log = deps.log ?? console.log;
     this.limits = new RateLimits(now);
     this.audit = new Audit(deps.store, cfg.cellId, { now, log: deps.log });
     this.rehasher = new Rehasher(deps.cache, cfg.peppers, this.audit, deps.log);
     const shared = { cache: deps.cache, limits: this.limits, audit: this.audit, rehasher: this.rehasher, now };
     this.exchange = new Exchange(cfg, { ...shared, ...(deps.ipHeader !== undefined ? { ipHeader: deps.ipHeader } : {}) });
     this.ops = new Ops(cfg, shared);
+    const allowlist = new AllowlistReader(deps.store, now, log);
     this.management = new Management(cfg, {
       cache: deps.cache,
       store: deps.store,
       limits: this.limits,
       audit: this.audit,
+      allowlist,
       now,
-      log: deps.log ?? console.log,
+      log,
+    });
+    this.signIn = new SignIn(cfg, {
+      limits: this.limits,
+      allowlist,
+      now,
+      log,
+      ...(deps.ipHeader !== undefined ? { ipHeader: deps.ipHeader } : {}),
     });
   }
 
@@ -65,6 +80,10 @@ export class Issuer {
         return only("GET") ?? this.ops.health();
       case "/v1/admin/metrics":
         return only("GET") ?? this.ops.metrics(req);
+      case "/auth/login":
+        return only("GET") ?? this.signIn.start(req);
+      case "/auth/callback":
+        return only("GET") ?? this.signIn.finish(req);
       default:
         return (await this.management.handle(req, pathname)) ?? refuse(404, "not_found", `no route ${pathname}`);
     }
