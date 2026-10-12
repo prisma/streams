@@ -4,6 +4,7 @@
 //
 //   POST /v1/token/streams   the exchange (exchange.ts)
 import type { StateStore } from "../cell-admin/store";
+import { Audit } from "./audit";
 import type { StateCache } from "./cache";
 import type { IssuerConfig } from "./config";
 import { Exchange } from "./exchange";
@@ -22,13 +23,15 @@ export interface IssuerDeps {
 
 export class Issuer {
   readonly limits: RateLimits;
+  readonly audit: Audit;
   readonly rehasher: Rehasher;
   private readonly exchange: Exchange;
 
   constructor(cfg: IssuerConfig, deps: IssuerDeps) {
     this.limits = new RateLimits(deps.now);
-    this.rehasher = new Rehasher(deps.store, deps.cache, cfg.peppers, deps.log);
-    this.exchange = new Exchange(cfg, { ...deps, limits: this.limits, rehasher: this.rehasher });
+    this.audit = new Audit(deps.store, cfg.cellId, { now: deps.now, log: deps.log });
+    this.rehasher = new Rehasher(deps.store, deps.cache, cfg.peppers, this.audit, deps.log);
+    this.exchange = new Exchange(cfg, { ...deps, limits: this.limits, rehasher: this.rehasher, audit: this.audit });
   }
 
   async fetch(req: Request): Promise<Response> {

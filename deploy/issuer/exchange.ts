@@ -28,6 +28,7 @@ import { stateMismatch } from "./boot";
 import type { StateCache } from "./cache";
 import { type IssuerConfig, TOKEN_TTL_MIN_SECS } from "./config";
 import { clientIp, type RateLimits, TRUSTED_CLIENT_IP_HEADER } from "./limits";
+import { type Audit, type ExchangeOutcome, UNKNOWN_CREDENTIAL } from "./audit";
 import type { Rehasher } from "./rehash";
 import { json, refuse } from "./respond";
 
@@ -114,15 +115,31 @@ export interface ExchangeDeps {
   cache: StateCache;
   limits: RateLimits;
   rehasher: Rehasher;
+  audit: Audit;
   now?: () => number;
   /// The edge's trusted client-IP header (K4); null until it is known.
   ipHeader?: string | null;
 }
 
+interface Result {
+  outcome: ExchangeOutcome;
+  response: Response;
+}
+
+/// What the audit counts an exchange under, learnt as it proceeds.
+interface Seen {
+  credential: string;
+  projectId?: string;
+  jti?: string;
+}
+
+const result = (outcome: ExchangeOutcome, response: Response): Result => ({ outcome, response });
+
 export class Exchange {
   private readonly cache: StateCache;
   private readonly limits: RateLimits;
   private readonly rehasher: Rehasher;
+  private readonly audit: Audit;
   private readonly now: () => number;
   private readonly ipHeader: string | null;
 
@@ -133,6 +150,7 @@ export class Exchange {
     this.cache = deps.cache;
     this.limits = deps.limits;
     this.rehasher = deps.rehasher;
+    this.audit = deps.audit;
     this.now = deps.now ?? Date.now;
     this.ipHeader = deps.ipHeader === undefined ? TRUSTED_CLIENT_IP_HEADER : deps.ipHeader;
   }
@@ -149,48 +167,64 @@ export class Exchange {
   }
 
   /// A refused credential, counted against its address's failure budget.
-  private failed(ip: string | null, message: string): Response {
+  private failed(ip: string | null, message: string): Result {
     if (ip !== null) this.limits.charge("exchange_failed_ip", ip);
-    return unauthorized(message);
+    return result("invalid_credential", unauthorized(message));
   }
 
+  /// Answer one exchange and count it for the audit.
   async handle(req: Request): Promise<Response> {
+    const seen: Seen = { credential: UNKNOWN_CREDENTIAL };
+    const { outcome, response } = await this.attempt(req, seen);
+    this.audit.exchange(outcome, seen.credential, seen.projectId, seen.jti);
+    return response;
+  }
+
+  private async attempt(req: Request, seen: Seen): Promise<Result> {
     const ip = clientIp(req, this.ipHeader);
     const limited = this.admit(ip);
-    if (limited !== null) return limited;
+    if (limited !== null) return result("rate_limited", limited);
     const presented = PRESENTED.exec(req.headers.get("authorization") ?? "");
     if (!presented) return this.failed(ip, "send Authorization: StreamsCredential prisma_streams_<credential id>.<secret>");
     const [, id, secret] = presented;
-    const wait = this.limits.take("exchange_credential", id);
-    if (wait > 0) return rateLimited(wait, `too many exchanges for credential ${id}`);
-    const ask = await readAsk(req, this.cfg.tokenTtlSecs);
-    if (typeof ask === "string") return refuse(400, "invalid_request", ask);
     const state = this.cache.state;
     const cred = state.credentials[id];
+    if (cred !== undefined) Object.assign(seen, { credential: id, projectId: cred.project_id });
+    const wait = this.limits.take("exchange_credential", id);
+    if (wait > 0) return result("rate_limited", rateLimited(wait, `too many exchanges for credential ${id}`));
+    const ask = await readAsk(req, this.cfg.tokenTtlSecs);
+    if (typeof ask === "string") return result("invalid_request", refuse(400, "invalid_request", ask));
     // The HMAC runs for an unknown id too: the answer's timing tells nothing.
     const pepper = verifySecret(this.cfg.peppers, cred, secret);
     if (pepper === null || cred === undefined) return this.failed(ip, "unknown credential or wrong secret");
     this.rehasher.note(id, cred, pepper, secret);
     const nowSecs = Math.floor(this.now() / 1000);
     const notActive = inactive(cred, id, nowSecs);
-    if (notActive !== null) return refuse(403, "credential_not_active", notActive);
+    if (notActive !== null) return result("credential_not_active", refuse(403, "credential_not_active", notActive));
     const projectNot = projectInactive(state, cred);
-    if (projectNot !== null) return refuse(403, "project_not_active", projectNot);
-    if (!this.cache.fresh()) return unavailable("the issuer cannot see the cell's current state; retry shortly");
-    if (stateMismatch(this.cfg, state) !== null) return unavailable("the issuer's signing key is not the cell's; retry shortly");
+    if (projectNot !== null) return result("project_not_active", refuse(403, "project_not_active", projectNot));
+    if (!this.cache.fresh()) {
+      return result("issuer_unavailable", unavailable("the issuer cannot see the cell's current state; retry shortly"));
+    }
+    if (stateMismatch(this.cfg, state) !== null) {
+      return result("issuer_unavailable", unavailable("the issuer's signing key is not the cell's; retry shortly"));
+    }
     const scope = narrowed(cred.scopes, ask.scopes);
-    if (scope === null) return refuse(400, "invalid_request", "the credential grants none of requestedScopes");
+    if (scope === null) {
+      return result("invalid_request", refuse(400, "invalid_request", "the credential grants none of requestedScopes"));
+    }
     const claims: Record<string, unknown> = {
       ...customerClaims(state, id, ask.ttlSecs ?? this.cfg.tokenTtlSecs, `cred:${id}`, nowSecs),
       scope,
     };
-    return json(200, {
+    seen.jti = String(claims.jti);
+    return result("issued", json(200, {
       accessToken: signJwt(this.cfg.signingKey, claims),
       tokenType: "Bearer",
       expiresIn: Number(claims.exp) - nowSecs,
       projectId: cred.project_id,
       cellId: state.cell.cell_id,
       endpoint: this.cfg.cellOrigin,
-    });
+    }));
   }
 }

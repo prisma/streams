@@ -15,6 +15,7 @@ import { setCredentialField } from "../cell-admin/rules";
 import { type Pepper, secretFields } from "../cell-admin/secrets";
 import { type CellState, type CredentialRecord, journal } from "../cell-admin/state";
 import type { StateStore } from "../cell-admin/store";
+import type { Audit } from "./audit";
 import type { StateCache } from "./cache";
 
 export const REHASH_SWEEP_MS = 24 * 3600 * 1000;
@@ -35,6 +36,7 @@ export class Rehasher {
     private readonly store: StateStore,
     private readonly cache: StateCache,
     private readonly peppers: readonly Pepper[],
+    private readonly audit: Audit,
     private readonly log: (line: string) => void = console.log,
   ) {}
 
@@ -61,11 +63,23 @@ export class Rehasher {
       for (const [id] of batch) this.noted.delete(id);
       // Nothing to write when the copy shows every one rotated since.
       if (!batch.some(([id, n]) => holds(this.cache.state, id, n))) continue;
+      let changed: { result: string[]; state: CellState };
       try {
-        done += (await mutate(this.store, (state) => apply(state, batch))).result;
+        changed = await mutate(this.store, (state) => apply(state, batch));
       } catch (e) {
         for (const [id, n] of batch) if (!this.noted.has(id)) this.noted.set(id, n);
         throw e;
+      }
+      done += changed.result.length;
+      if (changed.result.length > 0) {
+        await this.audit.record({
+          actor: "issuer:rehash",
+          action: "credential.rehash",
+          outcome: "done",
+          reason: `re-hashed under pepper v${this.peppers[0].version}`,
+          credential_ids: changed.result,
+          after: { feed_version: changed.state.feed_version },
+        });
       }
     }
     return done;
@@ -94,14 +108,15 @@ function holds(state: CellState, id: string, n: Noted): boolean {
 }
 
 /// Re-hash each noted credential whose record still holds the hash that
-/// was verified. The hash is not a published field: no version moves.
-function apply(state: CellState, batch: [string, Noted][]): number {
-  let applied = 0;
+/// was verified; returns their ids. The hash is not a published field: no
+/// version moves.
+function apply(state: CellState, batch: [string, Noted][]): string[] {
+  const applied: string[] = [];
   for (const [id, n] of batch) {
     if (!holds(state, id, n)) continue;
     setCredentialField(state, id, n.to);
-    applied += 1;
+    applied.push(id);
   }
-  if (applied > 0) journal(state, "rehash", `${applied} credential(s) to pepper v${batch[0][1].to.hv}`);
+  if (applied.length > 0) journal(state, "rehash", `${applied.length} credential(s) to pepper v${batch[0][1].to.hv}`);
   return applied;
 }
