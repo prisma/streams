@@ -1761,11 +1761,11 @@ export class Consumer<T> {
 // signature chain. Changing either side alone silently stops matching,
 // so the smoke test derives a key here and asserts the server agrees.
 
-let subtleCache: SubtleCrypto | undefined;
-async function subtle(): Promise<SubtleCrypto> {
-  if (subtleCache) return subtleCache;
+let cryptoCache: Crypto | undefined;
+async function webCrypto(): Promise<Crypto> {
+  if (cryptoCache) return cryptoCache;
   const c = (globalThis as { crypto?: Crypto }).crypto;
-  if (c?.subtle) return (subtleCache = c.subtle);
+  if (c?.subtle) return (cryptoCache = c);
   // Node 18 — the engines floor — ships WebCrypto only at
   // node:crypto.webcrypto; the GLOBAL landed in Node 19. This branch
   // is dead code wherever globalThis.crypto exists (browsers, Bun,
@@ -1778,13 +1778,30 @@ async function subtle(): Promise<SubtleCrypto> {
     const nc = (await import(/* @vite-ignore */ spec)) as {
       webcrypto?: Crypto;
     };
-    if (nc.webcrypto?.subtle) return (subtleCache = nc.webcrypto.subtle);
+    if (nc.webcrypto?.subtle) return (cryptoCache = nc.webcrypto);
   } catch {
     // no node:crypto either — fall through to the error
   }
   throw new Error(
-    "WebCrypto is required to derive watch URLs (Node 18+, or a browser over HTTPS)",
+    "WebCrypto is required to derive watch URLs and generate keys (Node 18+, or a browser over HTTPS)",
   );
+}
+
+async function subtle(): Promise<SubtleCrypto> {
+  return (await webCrypto()).subtle;
+}
+
+/**
+ * A new stream encryption key: 32 random bytes from WebCrypto, as 43
+ * characters of unpadded base64url. Create it once per stream and keep it
+ * in your secret store: the service never stores it, and a stream whose
+ * key is lost cannot be read by anyone.
+ */
+export async function generateEncryptionKey(): Promise<string> {
+  const bytes = (await webCrypto()).getRandomValues(new Uint8Array(32));
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 const TE = new TextEncoder();

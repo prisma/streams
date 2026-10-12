@@ -485,3 +485,30 @@ clocked("connect rejects with the exchange's refusal, and its retry option reach
   assert.ok(lost instanceof StreamsTransportError);
   assert.equal(q.issued.length, 1);
 });
+
+// ---- generateEncryptionKey ------------------------------------------------
+
+const { generateEncryptionKey } = sdk;
+
+test("generateEncryptionKey answers 32 random bytes as 43 characters of unpadded base64url", async () => {
+  const keys = [await generateEncryptionKey(), await generateEncryptionKey()];
+  for (const key of keys) {
+    assert.match(key, /^[A-Za-z0-9_-]{43}$/);
+    assert.equal(Buffer.from(key, "base64url").length, 32);
+  }
+  assert.notEqual(keys[0], keys[1]);
+});
+
+test("generateEncryptionKey encodes the bytes WebCrypto fills, URL-safe and without padding", async () => {
+  // Node 18 has no global crypto; the SDK then uses node:crypto's webcrypto.
+  const webcrypto = globalThis.crypto ?? (await import("node:crypto")).webcrypto;
+  const bytes = Uint8Array.from({ length: 32 }, (_, i) => 0xf8 + (i % 8));
+  const expected = Buffer.from(bytes).toString("base64url");
+  assert.match(expected, /[-_]/, "the bytes exercise both URL-safe characters");
+  webcrypto.getRandomValues = (array) => { array.set(bytes); return array; };
+  try {
+    assert.equal(await generateEncryptionKey(), expected);
+  } finally {
+    delete webcrypto.getRandomValues;
+  }
+});

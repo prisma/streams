@@ -73,6 +73,14 @@ within four attempts. Any other refusal rejects at once with
 success without a token is `invalid_exchange_response`. Neither the
 credential nor a token is logged or put in an error.
 
+## Encryption keys
+
+A stream's records are encrypted under a key you hold. Create one per
+stream with `await generateEncryptionKey()` (32 random bytes from
+WebCrypto, as 43 characters of unpadded base64url) and keep it in your
+secret store. The service never stores it: if you lose it, the stream's
+data cannot be read by anyone.
+
 ## Watches
 
 A watch turns "did anything change for customer c1?" into one long poll.

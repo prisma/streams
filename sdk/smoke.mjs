@@ -171,6 +171,21 @@ check("watch value cardinality checked", cardinality);
   check("base64url keys derive watch keys", derived === watch.key, String(derived));
 }
 
+// A generated key (32 random bytes, unpadded base64url) is a key the
+// server accepts: create, append and read back under it.
+{
+  let roundTrip = null;
+  try {
+    const generated = await mod.generateEncryptionKey();
+    const keyed = await client.createStream("smoke/generated-key", { encryptionKey: generated, format: { kind: "json" } });
+    await keyed.append({ n: 1 });
+    roundTrip = (await keyed.read()).records;
+  } catch (e) {
+    roundTrip = `threw: ${e.message}`;
+  }
+  check("generated key round-trips", JSON.stringify(roundTrip) === '[{"n":1}]', JSON.stringify(roundTrip));
+}
+
 // Seal with a final record; subscribe termination; catalog.
 await orders.seal({ final: { customerId: "c1", done: true }, routingKey: "c1" });
 const meta = await orders.metadata();
