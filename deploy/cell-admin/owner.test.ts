@@ -11,6 +11,7 @@ import { join } from "node:path";
 import {
   cleanup,
   customerCredential,
+  customerOnly,
   initCell,
   keyFile,
   publicKeyFile,
@@ -101,7 +102,7 @@ describe("admitProject", () => {
       display_name: "Orders", created_by: { user_id: "u1", email: "u1@example.com" } });
     expect(s.credentials[id]).toMatchObject({ project_id: "sp_0123", role: "customer", grant_version: 1,
       status: "active", secret_hash: "aGFzaA", hv: 1, hint: "x1y2z3", expires_at: null, omitted: false });
-    const b = bundleOf(s);
+    const b = customerOnly(bundleOf(s));
     expect((b.policies.projects as any[]).map((p) => [p.project_id, p.quotas.requests_per_sec])).toEqual([["sp_0123", 10]]);
     expect(b.grants.credentials).toEqual([{ credential_id: id, project_id: "sp_0123", grant_version: 1,
       status: "active", scopes: "streams.catalog.read streams.records.read", expires_at: null }]);

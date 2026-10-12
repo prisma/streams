@@ -191,6 +191,7 @@ maybe("the S3 store's preconditions hold on s3lite, and concurrent writers lose 
   const published = await store.readBundle();
   expect(published?.version).toBe(4);
   expect((published?.bundle.policies.projects as { project_id: string }[]).map((p) => p.project_id))
-    .toEqual(["proj_a", "proj_b", "proj_c"]);
-  expect(Object.keys((await store.load()).state.projects).sort()).toEqual(["proj_a", "proj_b", "proj_c"]);
+    .toEqual(["proj_a", "proj_b", "proj_c", "sp_canary_cell_e2e"]);
+  expect(Object.keys((await store.load()).state.projects).sort())
+    .toEqual(["proj_a", "proj_b", "proj_c", "sp_canary_cell_e2e"]);
 }, 60_000);

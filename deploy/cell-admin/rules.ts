@@ -44,6 +44,17 @@ export const CUSTOMER_SCOPES = [
   "streams.usage.read",
 ] as const;
 
+/// The issuer's canary (B1.9; alerting correction 4): one reserved project
+/// per cell, `sp_canary_<cell id>` in its own workspace (never ACCOUNT_ID,
+/// which placement refuses), at 5 requests/s and 1 stream, hidden from
+/// every listing. Its catalog-read credential (no secret) lets the issuer
+/// and `cell-admin canary` prove the cell serves a key or a generation;
+/// the watch's credential is added later with `credential --hidden`.
+export const CANARY_WORKSPACE = "streams-issuer-canary";
+const CANARY_PREFIX = "sp_canary_";
+export const canaryProjectId = (cellId: string) => `${CANARY_PREFIX}${cellId}`;
+export const isCanary = (projectId: string) => projectId.startsWith(CANARY_PREFIX);
+
 export function checkId(what: string, id: string): void {
   if (!ID.test(id)) throw new AdminError(`${what} ${JSON.stringify(id)} is not a valid id (${ID.source})`, 2);
 }
@@ -187,16 +198,19 @@ export function checkPlacement(state: CellState, project: string, workspace: str
   checkId("--project", project);
   checkId("--workspace", workspace);
   const cell = state.cell;
-  if (project === SYSTEM_PROJECT || project === cell.deployment_project_id) {
+  if (project === SYSTEM_PROJECT || project === cell.deployment_project_id || isCanary(project)) {
     throw new AdminError(`project ${project} is reserved on cell ${cell.cell_id}`);
   }
   if (workspace === cell.account_id) {
     throw new AdminError(`workspace ${workspace} is the cell's ACCOUNT_ID, the unowned-event sink`);
   }
+  if (workspace === CANARY_WORKSPACE) {
+    throw new AdminError(`workspace ${workspace} is the issuer's canary workspace`);
+  }
   if (state.projects[project] || denylist.has(project)) {
     throw new AdminError(`project id ${project} was used before: an id is never placed twice`);
   }
-  const placed = Object.values(state.projects).filter((p) => p.phase !== "offboarded");
+  const placed = placedProjects(state).map(([, p]) => p);
   if (placed.length >= cell.max_projects) {
     throw new AdminError(`cell ${cell.cell_id} already holds its ${cell.max_projects} projects`);
   }
@@ -306,4 +320,21 @@ function addCredentialRecord(
     created_at: now,
   };
   bumpFeed(state);
+}
+
+/// The customer projects on the cell (not offboarded, not the canary):
+/// what the caps count and what a listing shows.
+export const placedProjects = (state: CellState) =>
+  Object.entries(state.projects).filter(([id, p]) => p.phase !== "offboarded" && !isCanary(id));
+
+/// Place the cell's canary; `init` calls it on a new state.
+export function placeCanary(state: CellState): void {
+  admitProject(state, {
+    project: canaryProjectId(state.cell.cell_id),
+    workspace: CANARY_WORKSPACE,
+    quotas: admittedQuotas(state, ["requests_per_sec=5", "max_streams=1"]),
+    scopes: "streams.catalog.read",
+    display_name: "canary",
+    credential: { id: newCredentialId(state), display_name: "catalog-read", hidden: true },
+  });
 }

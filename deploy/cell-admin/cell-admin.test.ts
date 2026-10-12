@@ -10,6 +10,7 @@ import {
   auditTexts,
   cleanup,
   customerCredential,
+  customerOnly,
   decodeJwt,
   denylistText,
   fakeS3,
@@ -66,7 +67,18 @@ for (const kind of STORES) {
         expect(b.keys.keys).toHaveLength(1);
         expect((b.keys.keys[0] as any).aud).toBe("prisma-streams-data");
         expect((b.keys.keys[0] as any).kid).toMatch(/^streams-rs256-[0-9a-f]{16}$/);
-        expect([b.policies.projects, b.grants.credentials]).toEqual([[], []]);
+        // The issuer's canary (B1.9): a reserved project, one hidden catalog-read
+        // credential without a secret, at the smallest quotas that serve a probe.
+        expect(b.policies.projects).toEqual([{
+          project_id: "sp_canary_cell_sc1", workspace_id: "streams-issuer-canary", cell_id: "cell_sc1",
+          project_policy_version: 1, ownership_version: 1, status: "active",
+          quotas: { ...CEILINGS, requests_per_sec: 5, max_streams: 1 },
+        }]);
+        const [[id, canary]] = Object.entries(readState(c.state).credentials);
+        expect(b.grants.credentials).toEqual([{ credential_id: id, project_id: "sp_canary_cell_sc1", grant_version: 1,
+          status: "active", scopes: "streams.catalog.read", expires_at: null }]);
+        expect([canary.role, canary.hidden, canary.display_name, canary.secret_hash]).toEqual(
+          ["customer", true, "catalog-read", undefined]);
         expect(validateDocument(b.keys, schema("keys.schema.json"))).toEqual([]);
         expect(readState(c.state).cell.ceilings).toEqual({
           requests_per_sec: 176,
@@ -136,7 +148,7 @@ for (const kind of STORES) {
         const r = await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "wksp_a",
           "--quota", "max_streams=100", "--quota", "queued_append_bytes=1048576");
         expect(r.code).toBe(0);
-        const b = readBundle(c.state);
+        const b = customerOnly(readBundle(c.state));
         expect(b.policies).toEqual({
           feed_version: 2,
           projects: [{
@@ -181,7 +193,20 @@ for (const kind of STORES) {
         expect(r.code).not.toBe(0);
         expect(r.err.split("\n")[0]).toContain(message);
         expect(readBundleText(c.state)).toBe(before);
-        expect(readState(c.state).projects).toEqual({});
+        expect(Object.keys(readState(c.state).projects)).toEqual(["sp_canary_cell_sc1"]);
+      });
+
+      test("the canary is reserved and hidden: no customer takes its id or workspace, no cap counts it", async () => {
+        const c = await initCell(["--max-projects", "1"]);
+        expect((await run("admit", "--state", c.state, "--project", "sp_canary_x", "--workspace", "w")).err)
+          .toBe("cell-admin admit: project sp_canary_x is reserved on cell cell_sc1");
+        expect((await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "streams-issuer-canary")).err)
+          .toBe("cell-admin admit: workspace streams-issuer-canary is the issuer's canary workspace");
+        expect((await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w")).code).toBe(0);
+        const r = await run("list", "--state", c.state);
+        expect(r.out).toContain("projects: 1 placed of 1, 0 offboarded; workspace cap 1");
+        expect(r.out).not.toContain("sp_canary");
+        expect(r.out).not.toContain(Object.keys(readState(c.state).credentials)[0]);
       });
 
       test("caps projects per workspace and per cell", async () => {
@@ -257,7 +282,7 @@ for (const kind of STORES) {
         expect([r.code, r.err.replace(/[0-9a-f]{12}/g, "<d>")]).toEqual([1,
           "cell-admin admit: the layered profile differs from the one init recorded (digest <d> -> <d>): " +
             "a cell's profile is fixed for its life"]);
-        expect(readState(c.state).projects).toEqual({});
+        expect(Object.keys(readState(c.state).projects)).toEqual(["sp_canary_cell_sc1"]);
       });
     });
 
@@ -345,7 +370,7 @@ for (const kind of STORES) {
         Object.assign(s.credentials[cred], { expires_at: 1_900_000_000, grant_version: 2 });
         writeStateText(c.state, JSON.stringify(s));
         expect((await run("bundle", "--state", c.state)).code).toBe(0);
-        const b = readBundle(c.state);
+        const b = customerOnly(readBundle(c.state));
         expect((b.policies.projects as any[]).map((p) => [p.status, p.project_policy_version])).toEqual([["suspended", 2]]);
         expect((b.grants.credentials as any[]).map((g) => [g.expires_at, g.grant_version])).toEqual([[1_900_000_000, 2]]);
       });

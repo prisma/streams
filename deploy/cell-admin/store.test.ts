@@ -10,6 +10,7 @@ import {
   cleanup,
   credentialsOf,
   customerCredential,
+  customerOnly,
   denylistText,
   fakeS3,
   freshState,
@@ -149,9 +150,9 @@ describe("the S3 store", () => {
     const admitted = await Promise.all(["a", "b", "c", "d"].map((x) =>
       run("admit", "--state", c.state, "--project", `proj_${x}`, "--workspace", `w_${x}`)));
     expect(admitted.map((r) => [r.code, r.err])).toEqual([[0, ""], [0, ""], [0, ""], [0, ""]]);
-    expect(Object.keys(readState(c.state).projects).sort()).toEqual(["proj_a", "proj_b", "proj_c", "proj_d"]);
+    expect(Object.keys(readState(c.state).projects).sort()).toEqual(["proj_a", "proj_b", "proj_c", "proj_d", "sp_canary_cell_sc1"]);
     const b = readBundle(c.state);
-    expect([b.keys.feed_version, (b.policies.projects as any[]).length]).toEqual([5, 4]);
+    expect([b.keys.feed_version, (customerOnly(b).policies.projects as any[]).length]).toEqual([5, 4]);
     expect(denylistText(c.state).split("\n").filter(Boolean).sort()).toEqual(["proj_a", "proj_b", "proj_c", "proj_d"]);
   });
 

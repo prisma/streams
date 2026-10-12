@@ -10,10 +10,14 @@ import {
   admitProject,
   admittedQuotas,
   bumpFeed,
+  canaryProjectId,
   checkId,
   checkPlacement,
   checkSizing,
+  isCanary,
   newCredentialId,
+  placeCanary,
+  placedProjects,
   prefixesOf,
   SYSTEM_PROJECT,
   scopesOf,
@@ -36,6 +40,7 @@ export async function init(f: Flags, io: Io): Promise<void> {
   const deployment = f.must("deployment-project");
   const account = f.must("account");
   checkId("--cell-id", cell);
+  if (cell.length > 118) throw new AdminError("--cell-id: at most 118 characters (its canary is sp_canary_<cell id>)", 2);
   checkId("--deployment-project", deployment);
   checkId("--account", account);
   if (deployment === "proj_local" || deployment === SYSTEM_PROJECT || account === "acct_local") {
@@ -67,13 +72,15 @@ export async function init(f: Flags, io: Io): Promise<void> {
     },
     keys: [key],
     retired_kids: [],
-    feed_version: 1,
+    // Placing the canary publishes the first generation, 1.
+    feed_version: 0,
     projects: {},
     credentials: {},
     journal: [],
   };
+  placeCanary(state);
   await store.exclusive(async () => {
-    journal(state, "init", `k=${sizing.share_k} kid=${key.kid}`);
+    journal(state, "init", `k=${sizing.share_k} kid=${key.kid} canary=${canaryProjectId(cell)}`);
     try {
       await store.save(state, null);
     } catch (e) {
@@ -163,15 +170,15 @@ export async function list(f: Flags, io: Io): Promise<void> {
     return;
   }
   const c = state.cell;
-  const projects = Object.entries(state.projects);
-  const placed = projects.filter(([, p]) => p.phase !== "offboarded").length;
+  const projects = Object.entries(state.projects).filter(([id]) => !isCanary(id));
+  const placed = placedProjects(state).length;
   io.out(`cell ${c.cell_id}: k=${c.share_k}, feed_version ${state.feed_version}, keys ${state.keys.map((k) => k.kid).join(",")}`);
   io.out(`reserved: PROJECT_ID ${c.deployment_project_id}, ACCOUNT_ID ${c.account_id}, ${SYSTEM_PROJECT}`);
   io.out(`ceilings: ${BOUNDED_FIELDS.map((q) => `${q}=${c.ceilings[q]}`).join(" ")}`);
   io.out(`projects: ${placed} placed of ${c.max_projects}, ${projects.length - placed} offboarded; workspace cap ${c.workspace_cap}`);
   for (const [id, p] of projects.sort(([a], [b]) => (a < b ? -1 : 1))) {
     const creds = Object.entries(state.credentials)
-      .filter(([, cr]) => cr.project_id === id)
+      .filter(([, cr]) => cr.project_id === id && !cr.hidden)
       .map(([cid, cr]) => `${cid} ${cr.role} ${cr.omitted ? "omitted" : cr.status} v${cr.grant_version}`);
     io.out(`${id} workspace=${p.workspace_id} ${p.phase} policy=v${p.project_policy_version}`);
     io.out(`  quotas: ${QUOTA_FIELDS.map((q) => `${q}=${p.quotas[q]}`).join(" ")}`);

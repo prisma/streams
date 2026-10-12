@@ -184,6 +184,17 @@ export async function run(...argv: string[]): Promise<Run> {
 }
 
 export const readState = (where: string): CellState => JSON.parse(readStateText(where));
+
+/// A bundle without the issuer's canary (every cell `init` makes carries
+/// it), for tests about customer projects.
+export function customerOnly(b: Bundle): Bundle {
+  const mine = (e: unknown) => !String((e as { project_id: string }).project_id).startsWith("sp_canary_");
+  return {
+    keys: b.keys,
+    policies: { ...b.policies, projects: b.policies.projects.filter(mine) },
+    grants: { ...b.grants, credentials: b.grants.credentials.filter(mine) },
+  };
+}
 export const readBundle = (where: string): Bundle => JSON.parse(readBundleText(where));
 
 export interface Cell {

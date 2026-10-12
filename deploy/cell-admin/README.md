@@ -80,10 +80,19 @@ pinned to the customer audience `prisma-streams-data`.
 | `keys add --public-key FILE [--retire-others]` | Publishes a new key's public half beside the cell's keys: the rotation drill's overlap generation. With `--retire-others`, alone: the compromise drill, after which every token under another kid answers 401 |
 | `keys retire --kid K` | Omits a kid, which retires it at the cell for good (refused for the cell's last key). The state remembers retired kids, and `keys add` refuses one: the cell refuses a keys snapshot in which a retired kid returns |
 
+`init` also places the issuer's canary: the reserved project
+`sp_canary_<cell id>` in the workspace `streams-issuer-canary`, at 5
+requests/s and 1 stream (every other quota at the ceiling), with one
+hidden credential holding only `streams.catalog.read` and no secret. The
+issuer and `cell-admin canary` mint tokens for it to prove the cell
+serves a key or a generation; the watch's own credential is added with
+`credential --hidden`. It is hidden from `list` and counts toward no cap,
+and no customer project takes its id prefix or its workspace.
+
 `admit` refuses, and publishes nothing, when:
 - a quota is above its ceiling, or is 0 (a binary without the cell ceiling reads 0 as "no limit");
-- the project is `system` or the cell's `PROJECT_ID`;
-- the workspace is the cell's `ACCOUNT_ID`;
+- the project is `system`, the cell's `PROJECT_ID` or a canary id (`sp_canary_...`);
+- the workspace is the cell's `ACCOUNT_ID` or the canary's;
 - the project id was ever used on this cell or appears in the denylist (ids are single-use; a move is offboarding plus a new id);
 - the workspace already has its cap of projects on the cell;
 - the cell already holds `--max-projects`;
