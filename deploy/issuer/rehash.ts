@@ -10,11 +10,9 @@
 // hash that was verified (a rotation in between wins). Once every
 // credential reports the newest pepper (the metrics route), the owner
 // drops the older one.
-import { mutate } from "../cell-admin/publish";
 import { setCredentialField } from "../cell-admin/rules";
 import { type Pepper, secretFields } from "../cell-admin/secrets";
 import { type CellState, type CredentialRecord, journal } from "../cell-admin/state";
-import type { StateStore } from "../cell-admin/store";
 import type { Audit } from "./audit";
 import type { StateCache } from "./cache";
 
@@ -33,7 +31,6 @@ export class Rehasher {
   private running = false;
 
   constructor(
-    private readonly store: StateStore,
     private readonly cache: StateCache,
     private readonly peppers: readonly Pepper[],
     private readonly audit: Audit,
@@ -65,7 +62,7 @@ export class Rehasher {
       if (!batch.some(([id, n]) => holds(this.cache.state, id, n))) continue;
       let changed: { result: string[]; state: CellState };
       try {
-        changed = await mutate(this.store, (state) => apply(state, batch));
+        changed = await this.cache.mutate((state) => apply(state, batch));
       } catch (e) {
         for (const [id, n] of batch) if (!this.noted.has(id)) this.noted.set(id, n);
         throw e;

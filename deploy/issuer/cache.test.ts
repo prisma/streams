@@ -2,7 +2,7 @@
 // Run with `bun test ./deploy/issuer`.
 import { afterEach, describe, expect, test } from "bun:test";
 import { bundleOf, bundleText } from "../cell-admin/feeds";
-import { cleanup, readBundle, readBundleText, readState } from "../cell-admin/test-rig";
+import { cleanup, readBundle, readBundleText, readState, readStateText, writeStateText } from "../cell-admin/test-rig";
 import { boot } from "./boot";
 import { MAX_AGE_MS, StateCache } from "./cache";
 import { readConfig } from "./config";
@@ -124,5 +124,41 @@ describe("the bundle repair", () => {
     await cache.refresh();
     expect(stateReads().at(-1)?.status).toBe(304);
     expect(readBundle(cell.state).keys.feed_version).toBe(3);
+  });
+});
+
+describe("the issuer's own changes", () => {
+  test("take effect in the copy at once, cost no state read, and the next revalidation is a 304", async () => {
+    const cell = await issuerCell();
+    const b = await boot(readConfig(cell.env));
+    const cache = new StateCache(b.store, b, { log: () => {} });
+    const reads = stateReads().length;
+    await cache.mutate((s) => {
+      s.journal.push({ at: "t", command: "mine", detail: "" });
+    });
+    expect([stateReads().length, cache.state.journal.at(-1)?.command]).toEqual([reads, "mine"]);
+    expect(readState(cell.state).journal.at(-1)?.command).toBe("mine");
+    await cache.refresh();
+    expect(stateReads().at(-1)?.status).toBe(304);
+  });
+
+  test("a stored state behind the copy is not taken: the revalidation fails and the copy ages", async () => {
+    const cell = await issuerCell();
+    const b = await boot(readConfig(cell.env));
+    let t = 1_000_000;
+    const log: string[] = [];
+    const cache = new StateCache(b.store, b, { now: () => t, log: (l) => log.push(l) });
+    const old = readStateText(cell.state);
+    await customerSecret(cell, "sp_a");
+    await cache.refresh();
+    expect(cache.state.feed_version).toBe(3);
+    writeStateText(cell.state, old);
+    t += 1_000;
+    await cache.refresh();
+    expect([cache.state.feed_version, cache.ageMs(), cache.revalidationFailures]).toEqual([3, 1_000, 1]);
+    expect(log.at(-1)).toBe(
+      "state revalidation failed (copy 1 s old): the stored state is at feed_version 1, behind this copy's 3: " +
+        "was it restored from a stale copy?",
+    );
   });
 });

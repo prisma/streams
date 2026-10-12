@@ -116,28 +116,48 @@ export class BundlePublisher {
   }
 }
 
+/// The state to change first: `copy` (a copy of the state read earlier,
+/// with its ETag, which the attempt clones) unless the published bundle
+/// is newer than it, then the stored state as loadChecked reads it. A
+/// copy older than the bundle is not a stale restore, only an old copy:
+/// another writer committed and published since it was read.
+async function startFrom(
+  store: StateStore,
+  copy: { state: CellState; etag: string },
+): Promise<{ state: CellState; etag: string; published: PublishedBundle | null }> {
+  const published = await store.readBundle();
+  if (published && published.version > copy.state.feed_version) return loadChecked(store);
+  return { state: structuredClone(copy.state), etag: copy.etag, published };
+}
+
 /// Apply `change` to the current state and commit it, re-reading and
 /// re-applying on a lost compare-and-swap; then publish. `change` may run
 /// more than once and must only change the state it is given (and refuse
-/// by throwing). Returns its result and the committed state.
+/// by throwing). With `copy` (the issuer's in-memory state), the first
+/// attempt starts from it instead of reading the state again; a copy that
+/// is no longer current loses its compare-and-swap and the change is
+/// re-applied to the stored state. Returns its result, the committed state
+/// and its ETag.
 export async function mutate<T>(
   store: StateStore,
   change: (state: CellState) => T | Promise<T>,
-): Promise<{ result: T; state: CellState }> {
+  copy?: { state: CellState; etag: string },
+): Promise<{ result: T; state: CellState; etag: string }> {
   for (let attempt = 1; ; attempt++) {
-    const { state, etag, published } = await loadChecked(store);
+    const { state, etag, published } = attempt === 1 && copy ? await startFrom(store, copy) : await loadChecked(store);
     const result = await change(state);
     guard(published, state);
     await spillJournal(store, state);
+    let saved: string;
     try {
-      await store.save(state, etag);
+      saved = await store.save(state, etag);
     } catch (e) {
       if (!(e instanceof Conflict)) throw e;
       if (attempt >= CAS_ATTEMPTS) throw notYet(`${store.statePath} changed under ${CAS_ATTEMPTS} attempts: run again`);
       continue;
     }
     await new BundlePublisher(store).publish(state);
-    return { result, state };
+    return { result, state, etag: saved };
   }
 }
 

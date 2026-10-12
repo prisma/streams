@@ -15,7 +15,7 @@
 // bundle as last seen, the cache reads the bundle and republishes it
 // through BundlePublisher, which publishes only forward: bundleOf is
 // deterministic, so two writers republishing the same state agree.
-import { BundlePublisher } from "../cell-admin/publish";
+import { BundlePublisher, mutate } from "../cell-admin/publish";
 import type { CellState } from "../cell-admin/state";
 import type { StateStore } from "../cell-admin/store";
 
@@ -82,6 +82,16 @@ export class StateCache {
     try {
       const changed = await this.store.loadChanged(this.etag);
       if (changed !== null) {
+        // Versions only move forward: an older stored state was restored
+        // from a stale copy (or this read raced the issuer's own newer
+        // commit). Keep the copy and let it age: past 300 s the issuer
+        // stops minting until the owner recovers the newest state.
+        if (changed.state.feed_version < this.current.feed_version) {
+          throw new Error(
+            `the stored state is at feed_version ${changed.state.feed_version}, behind this copy's ` +
+              `${this.current.feed_version}: was it restored from a stale copy?`,
+          );
+        }
         this.current = changed.state;
         this.etag = changed.etag;
       }
@@ -113,6 +123,23 @@ export class StateCache {
           "the state's writer had not published it",
       );
     }
+  }
+
+  /// Change the state, through cell-admin's mutate, from this copy: the
+  /// first compare-and-swap costs no state read; a copy no longer current
+  /// loses it, and the change is reloaded, re-checked and re-applied, at
+  /// most CAS_ATTEMPTS times in all, then refused with exit-3's AdminError
+  /// (the management API's 503). The committed state takes effect in this
+  /// copy at once.
+  async mutate<T>(change: (state: CellState) => T | Promise<T>): Promise<{ result: T; state: CellState }> {
+    const done = await mutate(this.store, change, { state: this.current, etag: this.etag });
+    if (done.state.feed_version >= this.current.feed_version) {
+      this.current = done.state;
+      this.etag = done.etag;
+      this.checkedAt = this.now();
+    }
+    this.published = Math.max(this.published ?? 0, done.state.feed_version);
+    return { result: done.result, state: done.state };
   }
 
   /// Revalidate every refreshMs, one at a time, until the returned

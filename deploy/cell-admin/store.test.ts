@@ -96,6 +96,59 @@ describe("mutate", () => {
   });
 });
 
+describe("mutate from a copy (the issuer's)", () => {
+  const s3Store = async (state: string) => S3Store.open(state, readS3Credentials(credentialsOf(state)!));
+  const stateGets = () => fakeS3().requests.filter((q) => q.method === "GET" && q.key.endsWith("/cell-state.json")).length;
+
+  test("commits from a current copy without reading the state, and returns the new ETag", async () => {
+    useStore("s3");
+    const c = await initCell();
+    const store = await s3Store(c.state);
+    const copy = await store.load();
+    const gets = stateGets();
+    const done = await mutate(store, (s) => {
+      s.journal.push({ at: "t", command: "mine", detail: "" });
+    }, copy);
+    expect(stateGets()).toBe(gets);
+    expect(readState(c.state).journal.at(-1)?.command).toBe("mine");
+    expect((await store.load()).etag).toBe(done.etag);
+    // The copy itself is not changed: the attempt works on a clone.
+    expect(copy.state.journal.at(-1)?.command).toBe("init");
+  });
+
+  test("a copy another writer moved past loses its compare-and-swap, and the change is applied to the winner's state", async () => {
+    useStore("s3");
+    const c = await initCell();
+    const store = await s3Store(c.state);
+    const copy = await store.load();
+    const other = readState(c.state);
+    other.journal.push({ at: "t", command: "other", detail: "won" });
+    writeStateText(c.state, JSON.stringify(other));
+    let calls = 0;
+    await mutate(store, (s) => {
+      calls += 1;
+      s.journal.push({ at: "t", command: "mine", detail: "" });
+    }, copy);
+    expect([calls, readState(c.state).journal.map((j) => j.command)]).toEqual([2, ["init", "other", "mine"]]);
+  });
+
+  test("a copy older than the published bundle starts from the stored state, not as a stale restore", async () => {
+    useStore("s3");
+    const c = await initCell();
+    const store = await s3Store(c.state);
+    const copy = await store.load();
+    expect((await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w")).code).toBe(0);
+    let calls = 0;
+    const done = await mutate(store, (s) => {
+      calls += 1;
+      s.journal.push({ at: "t", command: "mine", detail: "" });
+    }, copy);
+    expect([calls, done.state.projects.proj_a?.workspace_id, readState(c.state).journal.at(-1)?.command]).toEqual([
+      1, "w", "mine",
+    ]);
+  });
+});
+
 describe("the bundle publisher", () => {
   test("publishes only forward: a published bundle as new as the state is kept", async () => {
     const c = await initCell();

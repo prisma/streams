@@ -35,7 +35,7 @@ export class Issuer {
     const now = deps.now ?? Date.now;
     this.limits = new RateLimits(now);
     this.audit = new Audit(deps.store, cfg.cellId, { now, log: deps.log });
-    this.rehasher = new Rehasher(deps.store, deps.cache, cfg.peppers, this.audit, deps.log);
+    this.rehasher = new Rehasher(deps.cache, cfg.peppers, this.audit, deps.log);
     const shared = { cache: deps.cache, limits: this.limits, audit: this.audit, rehasher: this.rehasher, now };
     this.exchange = new Exchange(cfg, { ...shared, ...(deps.ipHeader !== undefined ? { ipHeader: deps.ipHeader } : {}) });
     this.ops = new Ops(cfg, shared);
