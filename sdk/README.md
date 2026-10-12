@@ -81,10 +81,14 @@ explicitly marks the error permanent. Subscriptions use the same failure
 classification and retain durable-cursor recovery for applied reads.
 
 Fetch failures are exposed as `StreamsTransportError` with the original
-failure in `cause`. Subscriptions reconnect after these transport failures;
-credential-provider failures propagate unchanged. Concurrent 401 responses
-for the same cached credential share one refresh, and late responses cannot
-invalidate its successor.
+failure in `cause`, except for plain appends (`append`, `appendBytes`,
+`appendMany`): a transport failure, a 408 or a 5xx other than 503 rejects
+with `AppendOutcomeUnknownError` (`retryable: false`), because the record
+may or may not have been written and the SDK does not replay it; use a
+producer for a retry the server deduplicates. Subscriptions reconnect after
+transport failures; credential-provider failures propagate unchanged.
+Concurrent 401 responses for the same cached credential share one refresh,
+and late responses cannot invalidate its successor.
 
 ## Consumer batches and per-key order
 

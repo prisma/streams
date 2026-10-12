@@ -328,6 +328,34 @@ export class StreamsTransportError extends StreamsError {
   }
 }
 
+/**
+ * A plain append (`append`, `appendBytes`, `appendMany`: no producer
+ * identity) whose answer leaves its outcome unknown: a transport failure,
+ * a 408, or a 5xx other than 503. The record may or may not have been
+ * written; the SDK sent it once and does not replay it. `status` is the
+ * HTTP status (0 for a transport failure); `cause` is the server's
+ * answer as a `StreamsError`, or the value `fetch` threw. A retry the
+ * server deduplicates needs a producer.
+ */
+export class AppendOutcomeUnknownError extends StreamsError {
+  constructor(status: number, cause: unknown) {
+    const answer = status === 0 || !(cause instanceof StreamsError)
+      ? "transport failure"
+      : `HTTP ${status} ${cause.code}`;
+    super(
+      status,
+      "outcome_unknown",
+      "the append was sent once and its outcome is unknown: the SDK cannot " +
+        `tell whether it was written (${answer}); it was not and will not be ` +
+        "replayed; retry only if a second copy is acceptable, or append " +
+        "through a producer",
+      false,
+    );
+    this.name = "AppendOutcomeUnknownError";
+    this.cause = cause;
+  }
+}
+
 export class ProducerFencedError extends StreamsError {
   currentEpoch: number;
   constructor(currentEpoch: number, status: number, message: string) {
@@ -527,6 +555,22 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/** A plain append's failure: an answer that cannot tell whether the
+ * record was written becomes `AppendOutcomeUnknownError`; a definite
+ * refusal (429, 503, other 4xx, wrong cell) or an abort passes through. */
+function plainAppendFailure(e: unknown): unknown {
+  if (e instanceof StreamsTransportError) {
+    return new AppendOutcomeUnknownError(0, e.cause);
+  }
+  if (
+    e instanceof StreamsError && !(e instanceof WrongCellError) &&
+    (e.status === 408 || (e.status >= 500 && e.status !== 503))
+  ) {
+    return new AppendOutcomeUnknownError(e.status, e);
+  }
+  return e;
+}
+
 function retryableRequestError(error: unknown): boolean {
   return error instanceof StreamsTransportError ||
     (error instanceof StreamsError && error.retryable &&
@@ -709,7 +753,7 @@ export class Stream<T = unknown> {
       this.path("/records:batch"),
       h,
       JSON.stringify(values),
-    );
+    ).catch((e: unknown) => { throw plainAppendFailure(e); });
     return (await res.json()) as AppendResult;
   }
 
@@ -725,7 +769,8 @@ export class Stream<T = unknown> {
       ...(producerHeaders ?? {}),
     };
     if (routingKey) h["prisma-routing-key"] = routingKey;
-    const res = await req(this.ctx, "POST", this.path("/records"), h, body);
+    const res = await req(this.ctx, "POST", this.path("/records"), h, body)
+      .catch((e: unknown) => { throw producerHeaders ? e : plainAppendFailure(e); });
     return (await res.json()) as AppendResult;
   }
 

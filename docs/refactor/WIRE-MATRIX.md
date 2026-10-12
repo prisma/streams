@@ -268,6 +268,9 @@ One gate for the whole prefix (`src/http/debug.rs::gated`, a layer on the nested
 - Unmetered: metadata/list/watches/usage/create/delete, all `/v1/internal/*` (by `params.internal`/design — the public coordinator meters once), all `_`-reserved system streams, operator/debug/health.
 - Project-level (§17.x quota, not billing): admission slot every product request; read-byte post-hoc debit; queued-append-bytes charge; subscription slots for SSE/watch waits; write memory gate.
 
+**SDK client policy (`@prisma/streams`, `sdk/src/index.ts`; no server answer depends on it):**
+- Plain appends (§2.7 and §2.8 without the producer triple: `append`, `appendBytes`, `appendMany`) are sent once and never replayed on an answer that leaves their outcome unknown: a transport failure, a `408` (`AppendTimeout`, "outcome unknown") or a `5xx` other than `503` rejects with `AppendOutcomeUnknownError` (`code: "outcome_unknown"`, `retryable: false`, the HTTP status or 0, the server's answer or the transport failure as `cause`) (edge change #NEW-sdk-0, awaiting ratification). A `429` or `503` marked or defaulted `retryable` is replayed for a plain append as for every request (at most four attempts, `Retry-After` capped at 5 s). A producer append keeps the request loop's policy; the server deduplicates its replay.
+
 **Oddities worth refactor attention:**
 - `track_inflight`'s survival-shed prefix test `starts_with("/v1/stream")` matches `/v1/streams` too (both surfaces shed at 4× inflight cap, pre-auth, 503 `overloaded`).
 - Raw `?sig=` and `?cursor=` remain in `ReadParams` from the deleted touch surface (`/v1/stream/{name}/touch/key/...` routes are GONE — livebench's touch leg now exercises plain creates/reads; see `src/bin/livebench.rs:113`); `?sig=` has no reader.
