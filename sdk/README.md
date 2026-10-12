@@ -85,10 +85,25 @@ failure in `cause`, except for plain appends (`append`, `appendBytes`,
 `appendMany`): a transport failure, a 408 or a 5xx other than 503 rejects
 with `AppendOutcomeUnknownError` (`retryable: false`), because the record
 may or may not have been written and the SDK does not replay it; use a
-producer for a retry the server deduplicates. Subscriptions reconnect after
-transport failures; credential-provider failures propagate unchanged.
-Concurrent 401 responses for the same cached credential share one refresh,
-and late responses cannot invalidate its successor.
+producer for a retry the server deduplicates.
+
+A request whose `fetch` fails is sent again up to three times, after 1, 2
+and 4 s (abort-aware), within the same four attempts as the 429/503 replay,
+and rejects with `StreamsTransportError` once they are spent. Plain appends,
+stream deletion, producer appends and batch settlement are sent once and
+reject at once; a subscription's request is not replayed either, because
+the subscription reconnects itself. `retry: { transport: false }` turns the
+replay off, for callers whose `fetch` failures are configuration (a wrong
+URL, a blocked origin), not a restart. Consumer (`for await`,
+`messages()`), subscription and watch loops reconnect after a transport
+failure or a retryable 429/503 until aborted, whatever `retry` says:
+consumer and watch loops after 1 s, doubling to at most 5 s and back to
+1 s after a success, subscriptions after 1 s. They surface any other error,
+and a consumer loop also surfaces a failed settlement. Aborting a watch
+subscription ends it, as it ends a subscription. Credential-provider
+failures propagate unchanged. Concurrent 401 responses for the same cached
+credential share one refresh, and late responses cannot invalidate its
+successor.
 
 ## Consumer batches and per-key order
 
@@ -117,6 +132,9 @@ cannot change after settlement starts. Failed or uncertain settlement is
 surfaced to the caller; leases without a successful acknowledgement remain
 subject to server expiry/redelivery. A transport failure can occur after the
 server applied a settlement, so an error is not proof of non-application.
+A settle the SDK replays (after a retryable 429 or 503) may report
+decisions the first attempt applied as `stale`; a replay never applies a
+decision twice (the server checks each lease's generation).
 
 Use `consumer.messages({ signal })` to cancel a parked pull, or call the
 iterator's `return()`; both abort the pull immediately. Cleanup still submits

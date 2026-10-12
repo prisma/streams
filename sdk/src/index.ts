@@ -44,6 +44,16 @@ export interface StreamsClientOptions {
    */
   project?: string;
   fetch?: typeof fetch;
+  /**
+   * `transport` (default `true`): a request whose `fetch` fails is sent
+   * again after 1, 2 and 4 s, within the four attempts it shares with the
+   * 429/503 replay. Plain appends, stream deletion, producer appends,
+   * batch settlement and a subscription's reads (its loop reconnects) are
+   * never replayed this way. Set it to `false` when a `fetch` failure
+   * means configuration (a wrong URL, a blocked origin) rather than a
+   * restart; consumer, subscription and watch loops still reconnect.
+   */
+  retry?: { transport?: boolean };
 }
 
 export interface StreamHandleOptions {
@@ -400,6 +410,8 @@ interface Ctx {
   tokens?: { generation: number; value?: string; inflight?: Promise<string> };
   project?: string;
   fetch: typeof fetch;
+  /** StreamsClientOptions.retry.transport. */
+  transportRetry: boolean;
 }
 
 async function authHeader(
@@ -577,6 +589,20 @@ function retryableRequestError(error: unknown): boolean {
       (error.status === 429 || error.status === 503));
 }
 
+/** The wait before a transport failure's replay, by the attempt that failed. */
+const TRANSPORT_BACKOFF_MS = [1000, 2000, 4000];
+
+/** A loop's reconnection: sleep `backoffMs` (abort-aware) and return the
+ * next wait, doubled to at most 5 s; a successful request restarts at 1 s. */
+async function reconnectAfter(backoffMs: number, signal?: AbortSignal): Promise<number> {
+  await sleep(backoffMs, signal);
+  return Math.min(backoffMs * 2, 5000);
+}
+
+/** `replayTransport` is false where a replay could repeat an effect the
+ * server does not deduplicate (plain appends, stream deletion), and where
+ * the caller handles a transport failure itself (producer appends,
+ * settlement, a subscription's reads). */
 async function req(
   ctx: Ctx,
   method: string,
@@ -584,6 +610,7 @@ async function req(
   headers: Record<string, string>,
   body?: BodyInit,
   signal?: AbortSignal,
+  replayTransport = true,
 ): Promise<Response> {
   const h: Record<string, string> = { ...headers };
   let rejectedGeneration: number | undefined;
@@ -606,7 +633,12 @@ async function req(
       });
     } catch (cause) {
       signal?.throwIfAborted();
-      throw new StreamsTransportError(cause);
+      const failure = new StreamsTransportError(cause);
+      // The same four attempts as the 401 refresh and the 429/503 replay.
+      if (!ctx.transportRetry || !replayTransport || attempt >= 3) throw failure;
+      await sleep(TRANSPORT_BACKOFF_MS[attempt], signal);
+      signal?.throwIfAborted();
+      continue;
     }
     if (res.ok) return res;
     // Consume/classify failure before applying generic retry. In
@@ -647,6 +679,7 @@ export class StreamsClient {
       token: options.token,
       tokenProvider: options.tokenProvider,
       fetch: options.fetch ?? fetch.bind(globalThis),
+      transportRetry: options.retry?.transport ?? true,
     };
   }
 
@@ -753,6 +786,8 @@ export class Stream<T = unknown> {
       this.path("/records:batch"),
       h,
       JSON.stringify(values),
+      undefined,
+      false,
     ).catch((e: unknown) => { throw plainAppendFailure(e); });
     return (await res.json()) as AppendResult;
   }
@@ -769,8 +804,9 @@ export class Stream<T = unknown> {
       ...(producerHeaders ?? {}),
     };
     if (routingKey) h["prisma-routing-key"] = routingKey;
-    const res = await req(this.ctx, "POST", this.path("/records"), h, body)
-      .catch((e: unknown) => { throw producerHeaders ? e : plainAppendFailure(e); });
+    const res = await req(
+      this.ctx, "POST", this.path("/records"), h, body, undefined, producerHeaders !== undefined,
+    ).catch((e: unknown) => { throw producerHeaders ? e : plainAppendFailure(e); });
     return (await res.json()) as AppendResult;
   }
 
@@ -807,12 +843,16 @@ export class Stream<T = unknown> {
       ...ph,
     };
     if (routingKey) h["prisma-routing-key"] = routingKey;
+    // A transport failure reaches the caller, whose retry of the same
+    // sequence the server deduplicates.
     const res = await req(
       this.ctx,
       "POST",
       this.path(batch ? "/records:batch" : "/records"),
       h,
       payload,
+      undefined,
+      false,
     );
     return (await res.json()) as AppendResult;
   }
@@ -876,7 +916,9 @@ export class Stream<T = unknown> {
       let res: Response;
       try {
         // The signal reaches fetch, so aborting ends the in-flight
-        // 25-second long poll instead of leaving it running to term.
+        // 25-second long poll instead of leaving it running to term. A
+        // transport failure is not replayed at this cursor: the loop below
+        // reconnects, from the durable cursor for applied reads.
         res = await req(
           this.ctx,
           "GET",
@@ -884,6 +926,7 @@ export class Stream<T = unknown> {
           this.kh(),
           undefined,
           options?.signal,
+          false,
         );
       } catch (e) {
         if (options?.signal?.aborted) return;
@@ -1086,7 +1129,9 @@ export class Stream<T = unknown> {
   }
 
   async delete(): Promise<void> {
-    const res = await req(this.ctx, "DELETE", this.path(), this.kh());
+    // Not replayed after a transport failure: a delete that succeeded
+    // would be answered 404 on the replay.
+    const res = await req(this.ctx, "DELETE", this.path(), this.kh(), undefined, undefined, false);
   }
 }
 
@@ -1316,12 +1361,16 @@ export class Consumer<T> {
       if (acks.length + retries.length + extends_.length === 0) {
         return { acked: 0, retried: 0, extended: 0, dlq: 0, stale: 0, backlog: body.backlog };
       }
+      // A transport failure is this batch's settlement failure; leases
+      // it did not settle expire and are delivered again.
       const res2 = await req(
         this.ctx,
         "POST",
         `${this.base()}:settle`,
         { ...this.stream._kh(), "content-type": "application/json" },
         JSON.stringify({ acks, retries, extends: extends_ }),
+        undefined,
+        false,
       );
       return (await res2.json()) as SettleResult;
     };
@@ -1348,14 +1397,20 @@ export class Consumer<T> {
     };
     const consumer = this;
     const generator = (async function* () {
+      let backoff = 1000;
       while (!controller.signal.aborted) {
         let batch: PullBatch<T>;
         try {
           batch = await consumer.pull({ waitMs: 20000, signal: controller.signal });
         } catch (error) {
           if (controller.signal.aborted && error === controller.signal.reason) return;
-          throw error;
+          // A restart or a busy cell (a transport failure, or a 429/503
+          // after the request's own replays): pull again.
+          if (!retryableRequestError(error)) throw error;
+          backoff = await reconnectAfter(backoff, controller.signal);
+          continue;
         }
+        backoff = 1000;
         let processingFailed = false;
         let processingError: unknown;
         try {
@@ -1726,13 +1781,25 @@ export class Watch {
     signal?: AbortSignal;
   }): AsyncIterable<WatchEvent> {
     let cursor = options?.from ?? "now";
+    let backoff = 1000;
     for (;;) {
       if (options?.signal?.aborted) return;
-      const ev = await this.wait({
-        cursor,
-        timeoutMs: 25000,
-        signal: options?.signal,
-      });
+      let ev: WatchEvent;
+      try {
+        // Each wait mints a fresh capability, so a reconnection after a
+        // long outage is not refused for an expired one.
+        ev = await this.wait({
+          cursor,
+          timeoutMs: 25000,
+          signal: options?.signal,
+        });
+      } catch (error) {
+        if (options?.signal?.aborted) return;
+        if (!retryableRequestError(error)) throw error;
+        backoff = await reconnectAfter(backoff, options?.signal);
+        continue;
+      }
+      backoff = 1000;
       cursor = ev.cursor;
       if (ev.invalidated) yield ev;
     }
