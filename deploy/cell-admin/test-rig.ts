@@ -86,6 +86,13 @@ export function writeStateText(where: string, text: string): void {
   else fakeS3().put(s.control, `cells/${s.cell}/cell-state.json`, text);
 }
 
+/// Delete the state alone, its bundle left where it is (a lost state).
+export function deleteState(where: string): void {
+  const s = s3Of(where);
+  if (!s) rmSync(join(where, "cell-state.json"));
+  else fakeS3().objects.delete(`${s.control}/cells/${s.cell}/cell-state.json`);
+}
+
 export function stateExists(where: string): boolean {
   const s = s3Of(where);
   return s ? fakeS3().text(s.control, `cells/${s.cell}/cell-state.json`) !== undefined

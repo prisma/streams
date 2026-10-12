@@ -81,6 +81,20 @@ export async function init(f: Flags, io: Io): Promise<void> {
   };
   placeCanary(state);
   await store.exclusive(async () => {
+    // A bundle without a state: the state was lost, not never made. A new
+    // state starts at feed_version 1, below the generation the cell holds,
+    // so nothing it wrote would ever publish, and every later command
+    // would refuse it as a stale restore.
+    const published = await store.readBundle();
+    if (published) {
+      const stateToo = await store.load().then(() => true, () => false);
+      throw new AdminError(
+        stateToo
+          ? `${store.statePath} exists: a cell is initialised once`
+          : `${store.bundlePath} exists at feed_version ${published.version}: this cell has published, and a new ` +
+              "state would start below what it serves; recover the newest state, or initialise a new cell id",
+      );
+    }
     journal(state, "init", `k=${sizing.share_k} kid=${key.kid} canary=${canaryProjectId(cell)}`);
     try {
       await store.save(state, null);

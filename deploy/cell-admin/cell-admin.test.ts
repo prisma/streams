@@ -12,6 +12,7 @@ import {
   customerCredential,
   customerOnly,
   decodeJwt,
+  deleteState,
   denylistText,
   fakeS3,
   freshState,
@@ -139,6 +140,22 @@ for (const kind of STORES) {
         r = await run("init", "--state", c.state, "--cell-id", "cell_sc1", "--deployment-project", "proj_d",
           "--account", "acct_s", "--key-file", c.key);
         expect(r.err).toBe(`cell-admin init: ${statePathOf(c.state)} exists: a cell is initialised once`);
+      });
+
+      test("refuses a cell whose bundle exists though its state does not, publishing nothing", async () => {
+        const c = await initCell();
+        await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w");
+        const published = readBundleText(c.state);
+        deleteState(c.state);
+        const r = await run("init", "--state", c.state, "--cell-id", "cell_sc1", "--deployment-project", "proj_deploy",
+          "--account", "acct_sink", "--key-file", c.key);
+        const bundlePath = statePathOf(c.state).replace("cell-state.json", "feeds-bundle.json")
+          .replace(/^s3:\/\/ctl-(\d+)\//, "s3://feeds-$1/");
+        expect([r.code, r.err]).toEqual([1, `cell-admin init: ${bundlePath} exists at feed_version 2: this cell has ` +
+          "published, and a new state would start below what it serves; recover the newest state, or initialise a new " +
+          "cell id"]);
+        expect(stateExists(c.state)).toBe(false);
+        expect(readBundleText(c.state)).toBe(published);
       });
     });
 
