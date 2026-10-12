@@ -665,9 +665,10 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-/** A plain append's failure: an answer that cannot tell whether the
- * record was written becomes `AppendOutcomeUnknownError`; a definite
- * refusal (429, 503, other 4xx, wrong cell) or an abort passes through. */
+/** A plain append request's own failure (`req()`'s `classify`): an answer
+ * that cannot tell whether the record was written becomes
+ * `AppendOutcomeUnknownError`; a definite refusal (429, 503, other 4xx,
+ * wrong cell) passes through. */
 function plainAppendFailure(e: unknown): unknown {
   if (e instanceof StreamsTransportError) {
     return new AppendOutcomeUnknownError(0, e.cause);
@@ -700,7 +701,12 @@ async function reconnectAfter(backoffMs: number, signal?: AbortSignal): Promise<
 /** `replayTransport` is false where a replay could repeat an effect the
  * server does not deduplicate (plain appends, stream deletion), and where
  * the caller handles a transport failure itself (producer appends,
- * settlement, a subscription's reads). */
+ * settlement, a subscription's reads).
+ *
+ * `classify` maps the failure that ends this request (its transport
+ * failure, or the answer it gives up on) to the error it rejects with. A
+ * token provider's rejection and an abort's reason are not this request's
+ * answer and pass through unchanged. */
 async function req(
   ctx: Ctx,
   method: string,
@@ -709,6 +715,7 @@ async function req(
   body?: BodyInit,
   signal?: AbortSignal,
   replayTransport = true,
+  classify: (failure: StreamsError) => unknown = (failure) => failure,
 ): Promise<Response> {
   const h: Record<string, string> = { ...headers };
   let rejectedGeneration: number | undefined;
@@ -733,7 +740,7 @@ async function req(
       signal?.throwIfAborted();
       const failure = new StreamsTransportError(cause);
       // The same four attempts as the 401 refresh and the 429/503 replay.
-      if (!ctx.transportRetry || !replayTransport || attempt >= 3) throw failure;
+      if (!ctx.transportRetry || !replayTransport || attempt >= 3) throw classify(failure);
       await sleep(TRANSPORT_BACKOFF_MS[attempt], signal);
       signal?.throwIfAborted();
       continue;
@@ -742,7 +749,7 @@ async function req(
     // Consume/classify failure before applying generic retry. In
     // particular a 503 routing response is permanent at this endpoint.
     const error = await (ctx.errors ?? errorFrom)(res);
-    if (error instanceof WrongCellError) throw error;
+    if (error instanceof WrongCellError) throw classify(error);
     // 401 = the token itself is bad or expired: refresh ONCE through
     // the provider and replay. `wrong_cell` is 421/503 by contract
     // (never 401), so a misdirected request never burns a refresh.
@@ -760,7 +767,7 @@ async function req(
       signal?.throwIfAborted();
       continue;
     }
-    throw error;
+    throw classify(error);
   }
 }
 
@@ -1103,7 +1110,8 @@ export class Stream<T = unknown> {
       JSON.stringify(values),
       undefined,
       false,
-    ).catch((e: unknown) => { throw plainAppendFailure(e); });
+      plainAppendFailure,
+    );
     return (await res.json()) as AppendResult;
   }
 
@@ -1121,7 +1129,8 @@ export class Stream<T = unknown> {
     if (routingKey) h["prisma-routing-key"] = routingKey;
     const res = await req(
       this.ctx, "POST", this.path("/records"), h, body, undefined, producerHeaders !== undefined,
-    ).catch((e: unknown) => { throw producerHeaders ? e : plainAppendFailure(e); });
+      producerHeaders ? undefined : plainAppendFailure,
+    );
     return (await res.json()) as AppendResult;
   }
 

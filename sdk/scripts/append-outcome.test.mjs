@@ -105,6 +105,33 @@ for (const op of plainAppends) {
   }
 }
 
+// A token provider's rejection is not an answer to the append: the append
+// was not sent with that token (or, after a 401, the cell had refused it),
+// so the provider's error reaches the caller unchanged.
+for (const op of plainAppends) {
+  for (const [label, failure] of [
+    ["a StreamsTransportError", new StreamsTransportError(new TypeError("issuer unreachable"))],
+    ["a StreamsError 500", new StreamsError(500, "exchange_failed", "HTTP 500")],
+    ["a StreamsError 408", new StreamsError(408, "exchange_failed", "HTTP 408")],
+  ]) {
+    test(`${op.name}: a token provider that rejects with ${label} rejects with that value and sends nothing`, async () => {
+      const { s, calls } = stream([], { tokenProvider: () => Promise.reject(failure) });
+      assert.equal(await rejection(op.run(s)), failure);
+      assert.equal(calls.length, 0);
+    });
+  }
+
+  test(`${op.name}: a 401 whose token refresh rejects gives the provider's error after one request`, async () => {
+    const failure = new StreamsError(502, "exchange_failed", "HTTP 502");
+    let provided = 0;
+    const tokenProvider = () => ++provided === 1 ? "t1" : Promise.reject(failure);
+    const { s, calls } = stream([answer(401, "")], { tokenProvider });
+    assert.equal(await rejection(op.run(s)), failure);
+    assert.equal(calls.length, 1);
+    assert.equal(provided, 2);
+  });
+}
+
 // Pins: answers that prove nothing was written, or that S-1 leaves alone.
 
 for (const op of plainAppends) {
