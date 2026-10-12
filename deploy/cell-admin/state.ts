@@ -7,8 +7,8 @@
 // `grant_version`. Nothing is ever deleted from the state: an offboarded
 // project stays as a tombstone and its credentials as omitted, so no id
 // is ever reused (finding M4). The state holds no private key and no token.
-import { closeSync, fsyncSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { closeSync, fchmodSync, fsyncSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { AdminError } from "./errors";
 import type { Ceilings, Quotas } from "./profile";
 
@@ -135,11 +135,13 @@ function syncDir(dir: string): void {
   }
 }
 
-/// Replace `path` atomically and durably with `text`.
-export function writeDurable(path: string, text: string): void {
+/// Replace `path` atomically and durably with `text`, with mode `mode`
+/// whatever the umask (0600 unless the caller holds no secret).
+export function writeDurable(path: string, text: string, mode = 0o600): void {
   const tmp = `${path}.tmp-${process.pid}`;
-  const fd = openSync(tmp, "w", 0o600);
+  const fd = openSync(tmp, "w", mode);
   try {
+    fchmodSync(fd, mode);
     writeSync(fd, text);
     fsyncSync(fd);
   } finally {
@@ -152,6 +154,25 @@ export function writeDurable(path: string, text: string): void {
 export function renameDurable(from: string, to: string): void {
   renameSync(from, to);
   syncDir(dirname(to));
+}
+
+/// `text` written durably beside `out` before a change commits, so a
+/// missing or unwritable directory refuses before anything is committed;
+/// `keep` moves it to `out` once the commit has landed, and `drop` removes
+/// whatever is still staged (nothing after `keep`).
+export function stageFile(
+  out: string,
+  text: string,
+  what: string,
+  mode = 0o600,
+): { keep: () => void; drop: () => void } {
+  const staged = join(dirname(out), `.${basename(out)}.staged-${process.pid}`);
+  try {
+    writeDurable(staged, text, mode);
+  } catch (e) {
+    throw new AdminError(`cannot write ${what} beside ${out}: ${(e as Error).message}`);
+  }
+  return { keep: () => renameDurable(staged, out), drop: () => rmSync(staged, { force: true }) };
 }
 
 /// Run `fn` holding the state directory's exclusive lock.

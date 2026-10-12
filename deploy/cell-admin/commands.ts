@@ -3,6 +3,7 @@
 // rules.ts.
 import { join, resolve } from "node:path";
 import type { Flags } from "./args";
+import { CELL_ENV_KEYS, stageCellEnv } from "./cell-env";
 import { AdminError } from "./errors";
 import { BOUNDED_FIELDS, cellSizing, profileDigest, QUOTA_FIELDS, readProfiles } from "./profile";
 import { BundlePublisher, burnId, loadChecked, mutate } from "./publish";
@@ -23,7 +24,7 @@ import {
   scopesOf,
 } from "./rules";
 import { type CellState, GATE_DEFAULT, journal, STATE_FORMAT, writeDurable } from "./state";
-import { Conflict } from "./store";
+import { Conflict, type StateStore } from "./store";
 import { openStore, publishNote } from "./stores";
 import { cellSigningKey, customerClaims, loadSigningKey, readPublicKey, signJwt } from "./tokens";
 
@@ -80,34 +81,50 @@ export async function init(f: Flags, io: Io): Promise<void> {
     journal: [],
   };
   placeCanary(state, sizing.stored_default);
-  await store.exclusive(async () => {
-    // A bundle without a state: the state was lost, not never made. A new
-    // state starts at feed_version 1, below the generation the cell holds,
-    // so nothing it wrote would ever publish, and every later command
-    // would refuse it as a stale restore.
-    const published = await store.readBundle();
-    if (published) {
-      const stateToo = await store.load().then(() => true, () => false);
-      throw new AdminError(
-        stateToo
-          ? `${store.statePath} exists: a cell is initialised once`
-          : `${store.bundlePath} exists at feed_version ${published.version}: this cell has published, and a new ` +
-              "state would start below what it serves; recover the newest state, or initialise a new cell id",
-      );
-    }
-    journal(state, "init", `k=${sizing.share_k} kid=${key.kid} canary=${canaryProjectId(cell)}`);
-    try {
-      await store.save(state, null);
-    } catch (e) {
-      if (e instanceof Conflict) throw new AdminError(`${store.statePath} exists: a cell is initialised once`);
-      throw e;
-    }
-    await new BundlePublisher(store).publish(state);
-  });
+  // The cells file is written once the state is saved, so it never names a
+  // cell that does not exist, and staged first, so a file or a directory it
+  // cannot write refuses before the cell exists.
+  const cellEnv = f.has("cell-env") ? resolve(f.must("cell-env")) : undefined;
+  const staged = cellEnv === undefined ? undefined : stageCellEnv(cellEnv, state.cell);
+  try {
+    await store.exclusive(async () => {
+      await createCell(store, state, `k=${sizing.share_k} kid=${key.kid} canary=${canaryProjectId(cell)}`);
+      staged?.keep();
+      await new BundlePublisher(store).publish(state);
+    });
+  } finally {
+    staged?.drop();
+  }
   io.out(`cell ${cell}: k=${sizing.share_k}, key ${key.kid} (${key.alg}, aud prisma-streams-data)`);
   io.out(`ceilings: ${BOUNDED_FIELDS.map((q) => `${q}=${sizing.ceilings[q]}`).join(" ")}`);
   io.out(`denylist: ${denylist}`);
   io.out(`bundle: ${store.bundlePath} (feed_version 1)`);
+  if (cellEnv !== undefined) io.out(`cells file: ${cellEnv} (${CELL_ENV_KEYS.join(", ")})`);
+}
+
+/// Save a new cell's state, refused when the store holds one, or a bundle.
+async function createCell(store: StateStore, state: CellState, detail: string): Promise<void> {
+  // A bundle without a state: the state was lost, not never made. A new
+  // state starts at feed_version 1, below the generation the cell holds,
+  // so nothing it wrote would ever publish, and every later command
+  // would refuse it as a stale restore.
+  const published = await store.readBundle();
+  if (published) {
+    const stateToo = await store.load().then(() => true, () => false);
+    throw new AdminError(
+      stateToo
+        ? `${store.statePath} exists: a cell is initialised once`
+        : `${store.bundlePath} exists at feed_version ${published.version}: this cell has published, and a new ` +
+            "state would start below what it serves; recover the newest state, or initialise a new cell id",
+    );
+  }
+  journal(state, "init", detail);
+  try {
+    await store.save(state, null);
+  } catch (e) {
+    if (e instanceof Conflict) throw new AdminError(`${store.statePath} exists: a cell is initialised once`);
+    throw e;
+  }
 }
 
 /// The profile files a command reads: `--profile` (repeatable, later

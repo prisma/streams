@@ -24,11 +24,17 @@ the change twice.
 Deploy the server with `deploy/profiles/compute-1g.env`, then
 `deploy/profiles/shared-cell.env` (later wins), and these per-cell values:
 `CELL_ID`, `PROJECT_ID` (reserved, never placed), `ACCOUNT_ID` (the sink
-for unowned meter events), `USAGE_STREAM_KEY`, `AUTH_TOKEN` (the
+for unowned meter events), `STREAMS_AUTH_ISSUER` (the `iss` every customer
+token must carry, refused otherwise: `init --issuer`, default
+`https://auth.prisma.io`, and the interim issuer's `STREAMS_ISSUER_ID`,
+which it checks at boot), `USAGE_STREAM_KEY`, `AUTH_TOKEN` (the
 deployment bearer, an operator credential), `SLATE_S3_*`, `PATH_PREFIX`,
 `FEEDS_S3_KEY` (the bundle) and `FEEDS_S3_*` (the bundle's bucket: the
 wrapper reads it by these names only, never `BIN_S3_*`; see
-`deploy/README.md`). The profile's header lists what it sets
+`deploy/README.md`). `init --cell-env FILE` writes the first four into the
+stage's cells file (`cells/<stage>.env`, which the Composer entry
+`deploy/composer/streams/entry.ts` reads), so they have one source: the
+cell's state. The profile's header lists what it sets
 and what must stay absent. In particular, no `FLEET_PREFIX`, no
 `FLEET_INTERNAL_TOKEN`, and no key for `prisma-streams-internal` in the
 keys feed, so nothing can open the cell's internal surface.
@@ -145,7 +151,7 @@ A compromised key, in this order:
 
 | Command | What it does |
 |---|---|
-| `init --cell-id C --deployment-project P --account A (--key-file K \| --public-key FILE)` | Creates the state and the first bundle, refused while either exists (a bundle without a state is a lost state: recover it, or use a new cell id). It reads the profiles (by default the two above; `--profile` repeats, later wins), checks they describe a single-server shared cell, and fixes the cell's ceilings at bound ÷ k. Also: `--workspace-cap N` (default 1), `--max-projects N` (default 1,000), `--denylist FILE` (default `DIR/denylist.txt`; point several cells at one file) and `--issuer URL` |
+| `init --cell-id C --deployment-project P --account A (--key-file K \| --public-key FILE)` | Creates the state and the first bundle, refused while either exists (a bundle without a state is a lost state: recover it, or use a new cell id). It reads the profiles (by default the two above; `--profile` repeats, later wins), checks they describe a single-server shared cell, and fixes the cell's ceilings at bound ÷ k. Also: `--workspace-cap N` (default 1), `--max-projects N` (default 1,000), `--denylist FILE` (default `DIR/denylist.txt`; point several cells at one file), `--issuer URL` and `--cell-env FILE`: sets `CELL_ID`, `PROJECT_ID`, `ACCOUNT_ID` and `STREAMS_AUTH_ISSUER` in that cells file by key, once the state is saved, keeping every other line (the provisioning script writes the rest); a missing file is made, mode 0644 (it holds no secret). It refuses, before the cell exists, a file with a line that is not space-free `KEY=VALUE` or a key set twice, and an issuer that is not space-free |
 | `admit --project P --workspace W` | Places a project and creates its customer credential. Each bounded quota defaults to the cell's ceiling; `--quota field=value` sets a lower one. `max_stored_bytes` defaults to the profile's `PROJECT_STORED_BYTES_DEFAULT`, and `--quota max_stored_bytes=N` sets any positive N, larger included. Also `--scopes "..."` (default: every scope), `--prefix p` (repeatable; a prefix the cell's grants parser takes: at most 256 UTF-8 bytes, no control character or space, no empty, `.` or `..` component, not under `__ds`, so `orders`, never `orders/`) and `--profile F` (repeatable; default the two shipped profiles), the profile it checks against the one `init` recorded |
 | `token --credential C --key-file K --out FILE [--ttl SECS]` | Mints a customer token, valid at most 24 h (default 1 h; the first minute is backdated for clock skew). The token goes to FILE with mode 0600 and is never printed. Hand the file over; never paste the token |
 | `offboard --project P` | First run: revokes the project's customer credentials and adds an operator credential. Publish the bundle. On a cell with the interim issuer, its offboarding job makes the second run on its own (`deploy/issuer/offboarding.ts`: every 15 s, failed attempts retried after 1, 2, 4, ... minutes, at most an hour) |

@@ -2,9 +2,10 @@
 // the tool side of H1, H5, M3, M4 and L2). Run with
 // `bun test ./deploy/cell-admin`.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { validateDocument } from "../../platform-demo/src/validate.mjs";
+import { CHILD_NAMES } from "../composer/streams/env";
 import { schema } from "./feeds";
 import {
   auditTexts,
@@ -161,6 +162,93 @@ for (const kind of STORES) {
           "cell id"]);
         expect(stateExists(c.state)).toBe(false);
         expect(readBundleText(c.state)).toBe(published);
+      });
+
+      // deploy-q5 triage B4: the cell's identity and issuer have one source.
+      describe("--cell-env", () => {
+        const initInto = (c: { root: string; state: string; key: string }, ...flags: string[]) =>
+          run("init", "--state", c.state, "--cell-id", "cell_sc1", "--deployment-project", "proj_deploy",
+            "--account", "acct_sink", "--key-file", c.key, ...flags);
+        const fresh = () => {
+          const root = scratchDir();
+          return { root, state: freshState(root), key: keyFile(root) };
+        };
+        const staged = (dir: string) => readdirSync(dir).filter((n) => n.includes(".staged-"));
+
+        test("sets the four values by key in the stage's cells file and keeps every other line as it was", async () => {
+          const c = fresh();
+          const cells = join(c.root, "scratch.env");
+          writeFileSync(cells, "# the scratch cell\nCELL_STAGE=scratch\nCELL_ID=cell_old\n\n  REGION=fra\n" +
+            "ACCOUNT_ID=acct_old\nRUST_LOG=info", { mode: 0o640 });
+          const r = await initInto(c, "--issuer", "https://issuer.example/streams", "--cell-env", cells);
+          expect([r.code, r.err, r.out.split("\n").at(-1)]).toEqual([0, "",
+            `cells file: ${cells} (CELL_ID, PROJECT_ID, ACCOUNT_ID, STREAMS_AUTH_ISSUER)`]);
+          expect(readFileSync(cells, "utf8")).toBe("# the scratch cell\nCELL_STAGE=scratch\nCELL_ID=cell_sc1\n\n" +
+            "  REGION=fra\nACCOUNT_ID=acct_sink\nRUST_LOG=info\nPROJECT_ID=proj_deploy\n" +
+            "STREAMS_AUTH_ISSUER=https://issuer.example/streams\n");
+          expect(readState(c.state).cell).toMatchObject({ cell_id: "cell_sc1", deployment_project_id: "proj_deploy",
+            account_id: "acct_sink", issuer: "https://issuer.example/streams" });
+          expect(statSync(cells).mode & 0o777).toBe(0o640);
+          expect(staged(c.root)).toEqual([]);
+          // The Composer entry takes exactly these four from the cells file.
+          for (const key of ["CELL_ID", "PROJECT_ID", "ACCOUNT_ID", "STREAMS_AUTH_ISSUER"]) {
+            expect(CHILD_NAMES[key]).toEqual({ from: "cells", required: true });
+          }
+        });
+
+        test("makes a missing cells file, readable by all (it holds no secret), with the default issuer", async () => {
+          const c = fresh();
+          const cells = join(c.root, "cert.env");
+          expect((await initInto(c, "--cell-env", cells)).code).toBe(0);
+          expect(readFileSync(cells, "utf8")).toBe(
+            "CELL_ID=cell_sc1\nPROJECT_ID=proj_deploy\nACCOUNT_ID=acct_sink\nSTREAMS_AUTH_ISSUER=https://auth.prisma.io\n");
+          expect(statSync(cells).mode & 0o777).toBe(0o644);
+        });
+
+        test("refuses a cells file it cannot set by key, or a value it cannot write, before the cell exists", async () => {
+          const c = fresh();
+          const cells = join(c.root, "scratch.env");
+          const refused = async (text: string, ...flags: string[]) => {
+            writeFileSync(cells, text);
+            const r = await initInto(c, "--cell-env", cells, ...flags);
+            expect(stateExists(c.state)).toBe(false);
+            expect(readFileSync(cells, "utf8")).toBe(text);
+            expect(staged(c.root)).toEqual([]);
+            return [r.code, r.err.split("\n")[0]];
+          };
+          expect(await refused("CELL_STAGE=scratch\nRUST_LOG=info warn\n")).toEqual(
+            [1, `cell-admin init: ${cells}:2: not a space-free KEY=VALUE line`]);
+          expect(await refused("CELL_STAGE=scratch\nCELL_STAGE\n")).toEqual(
+            [1, `cell-admin init: ${cells}:2: not a space-free KEY=VALUE line`]);
+          expect(await refused("CELL_ID=a\nREGION=fra\nCELL_ID=b\n")).toEqual(
+            [1, `cell-admin init: ${cells} sets CELL_ID twice`]);
+          expect(await refused("CELL_STAGE=scratch\n", "--issuer", "https://issuer.example/a b")).toEqual(
+            [2, `cell-admin init: STREAMS_AUTH_ISSUER "https://issuer.example/a b" cannot go in ${cells}: ` +
+              "a cells file's values are space-free"]);
+          const nowhere = join(c.root, "no-such-dir", "scratch.env");
+          const r = await initInto(c, "--cell-env", nowhere);
+          expect([r.code, r.err.split(":").slice(0, 2).join(":")]).toEqual(
+            [1, `cell-admin init: cannot write the cells file beside ${nowhere}`]);
+          expect(stateExists(c.state)).toBe(false);
+        });
+
+        test("leaves the cells file as it was when init is refused", async () => {
+          const c = await initCell();
+          const cells = join(c.root, "scratch.env");
+          writeFileSync(cells, "CELL_STAGE=scratch\n");
+          const again = () => run("init", "--state", c.state, "--cell-id", "cell_sc1", "--deployment-project",
+            "proj_other", "--account", "acct_other", "--key-file", c.key, "--cell-env", cells);
+          let r = await again();
+          expect([r.code, r.err]).toEqual([1, `cell-admin init: ${statePathOf(c.state)} exists: a cell is initialised once`]);
+          expect(readFileSync(cells, "utf8")).toBe("CELL_STAGE=scratch\n");
+          expect(staged(c.root)).toEqual([]);
+          // A lost state: refused under the store's lock, after the file was staged.
+          deleteState(c.state);
+          r = await again();
+          expect([r.code, r.err.includes("exists at feed_version 1: this cell has published")]).toEqual([1, true]);
+          expect(readFileSync(cells, "utf8")).toBe("CELL_STAGE=scratch\n");
+          expect(staged(c.root)).toEqual([]);
+        });
       });
     });
 
