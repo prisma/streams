@@ -6,15 +6,20 @@ import { bundleOf } from "./feeds";
 import { unversionedChanges } from "./publish";
 import { admitProject, admittedQuotas, newCredentialId, setCredentialField, setProjectField } from "./rules";
 import { generateKeyPairSync } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   cleanup,
   customerCredential,
   initCell,
+  keyFile,
+  publicKeyFile,
   readBundle,
   readState,
   run,
   STORES,
   useStore,
+  verifiedClaims,
 } from "./test-rig";
 import { loadSigningKeyFromPem, publicKeyRecord } from "./tokens";
 
@@ -128,6 +133,46 @@ for (const kind of STORES) {
       await run("offboard", "--state", c.state, "--project", "proj_a");
       expect((await run("suspend", "--state", c.state, "--project", "proj_a")).err)
         .toBe("cell-admin suspend: project proj_a is offboarding: only an active project is suspended or resumed");
+    });
+
+    test("keys add publishes an overlap generation, and keys retire omits a kid for good", async () => {
+      const c = await initCell();
+      await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w");
+      const kids = () => (readBundle(c.state).keys.keys as any[]).map((k) => k.kid);
+      const [old] = kids();
+      const next = keyFile(c.root, "ed25519", 0o600, "next.pem");
+      let r = await run("keys", "add", "--state", c.state, "--public-key", publicKeyFile(next, "next.pub"));
+      expect([r.code, r.err]).toEqual([0, ""]);
+      const [, added] = kids();
+      expect([kids().length, readBundle(c.state).keys.feed_version]).toEqual([2, 3]);
+      // The drill's check: a token under the new kid verifies against the published keys.
+      const out = join(c.root, "t.jwt");
+      expect((await run("token", "--state", c.state, "--credential", customerCredential(c.state, "proj_a"),
+        "--key-file", next, "--out", out)).code).toBe(0);
+      expect(verifiedClaims(readBundle(c.state), readFileSync(out, "utf8"))?.project_id).toBe("proj_a");
+      expect((await run("keys", "add", "--state", c.state, "--public-key", publicKeyFile(next, "again.pub"))).err)
+        .toBe(`cell-admin keys add: key ${added} is already a key of cell cell_sc1`);
+      r = await run("keys", "retire", "--state", c.state, "--kid", old);
+      expect([r.code, kids()]).toEqual([0, [added]]);
+      expect((await run("keys", "retire", "--state", c.state, "--kid", added)).err)
+        .toBe(`cell-admin keys retire: key ${added} is the cell's last key: add its successor first (keys add)`);
+      expect((await run("keys", "retire", "--state", c.state, "--kid", "streams-eddsa-0000")).err)
+        .toBe("cell-admin keys retire: key streams-eddsa-0000 is not a key of cell cell_sc1");
+      expect((await run("keys", "add", "--state", c.state, "--public-key", publicKeyFile(c.key, "old.pub"))).err)
+        .toBe(`cell-admin keys add: key ${old} was retired: a retired kid never returns to a cell; make a new key`);
+      expect((await run("token", "--state", c.state, "--credential", customerCredential(c.state, "proj_a"),
+        "--key-file", c.key, "--out", out)).err).toBe(`cell-admin token: key file ${c.key} is not a key of cell cell_sc1`);
+      expect((await run("keys", "rotate", "--state", c.state)).code).toBe(2);
+    });
+
+    test("keys add --retire-others publishes the new key alone (the compromise drill)", async () => {
+      const c = await initCell();
+      const next = keyFile(c.root, "ed25519", 0o600, "next.pem");
+      const r = await run("keys", "add", "--state", c.state, "--public-key", publicKeyFile(next, "next.pub"),
+        "--retire-others");
+      expect([r.code, r.err]).toEqual([0, ""]);
+      const keys = readBundle(c.state).keys.keys as any[];
+      expect([keys.length, keys[0].alg, readState(c.state).retired_kids.length]).toEqual([1, "EdDSA", 1]);
     });
 
     test("quota sets a project's quotas at most their ceilings at a newer policy version, keeping the rest", async () => {

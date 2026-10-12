@@ -100,6 +100,9 @@ export interface CellState {
   format: typeof STATE_FORMAT;
   cell: CellConfig;
   keys: KeyRecord[];
+  /// Kids once published and then omitted: retired at the cell for good,
+  /// so never published again.
+  retired_kids: string[];
   feed_version: number;
   projects: Record<string, ProjectRecord>;
   credentials: Record<string, CredentialRecord>;

@@ -10,6 +10,7 @@
 import { parseFlags } from "./args";
 import { admit, bundle, init, type Io, list, token } from "./commands";
 import { AdminError } from "./errors";
+import { keysAdd, keysRetire } from "./keys";
 import { offboard } from "./offboard";
 import { quota, resume, suspend } from "./owner";
 
@@ -24,7 +25,9 @@ const USAGE = `usage: cell-admin <command> --state DIR|s3://BUCKET/cells/CELL [-
   bundle
   suspend   --project P
   resume    --project P
-  quota     --project P --quota field=value...`;
+  quota     --project P --quota field=value...
+  keys add  --public-key FILE [--retire-others]
+  keys retire --kid K`;
 
 const COMMANDS = {
   init: {
@@ -64,6 +67,11 @@ const COMMANDS = {
   bundle: { run: bundle, spec: { single: ["state", "s3-credentials"], required: ["state"] } },
   suspend: { run: suspend, spec: { single: ["state", "s3-credentials", "project"], required: ["state", "project"] } },
   resume: { run: resume, spec: { single: ["state", "s3-credentials", "project"], required: ["state", "project"] } },
+  "keys add": {
+    run: keysAdd,
+    spec: { single: ["state", "s3-credentials", "public-key"], bool: ["retire-others"], required: ["state", "public-key"] },
+  },
+  "keys retire": { run: keysRetire, spec: { single: ["state", "s3-credentials", "kid"], required: ["state", "kid"] } },
   quota: {
     run: quota,
     spec: { single: ["state", "s3-credentials", "project"], multi: ["quota"], required: ["state", "project"] },
@@ -72,7 +80,8 @@ const COMMANDS = {
 
 /// Run one command; never throws. Messages go to `io`, the code is returned.
 export async function main(argv: readonly string[], io: Io & { err: (line: string) => void }): Promise<number> {
-  const [name, ...rest] = argv;
+  // `keys` takes a subcommand: `keys add`, `keys retire`.
+  const [name, ...rest] = argv[0] === "keys" ? [`keys ${argv[1]}`, ...argv.slice(2)] : argv;
   const command = COMMANDS[name as keyof typeof COMMANDS];
   if (!command) {
     io.err(USAGE);

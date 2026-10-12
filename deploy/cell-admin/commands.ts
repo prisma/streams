@@ -66,6 +66,7 @@ export async function init(f: Flags, io: Io): Promise<void> {
       denylist,
     },
     keys: [key],
+    retired_kids: [],
     feed_version: 1,
     projects: {},
     credentials: {},

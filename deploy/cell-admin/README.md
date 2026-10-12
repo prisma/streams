@@ -77,6 +77,8 @@ pinned to the customer audience `prisma-streams-data`.
 | `bundle` | Rewrites the bundle at a newer `feed_version`, for example after a crash between the state and the bundle |
 | `suspend --project P` / `resume --project P` | Publishes the project `suspended` (the cell answers its requests `403 project_not_active`; the issuer mints it no token) or `active` again, at a newer `project_policy_version`. Only an active (not offboarding) project |
 | `quota --project P --quota field=value...` | Sets some of an active project's quotas, each at most its ceiling as in `admit`, keeping the others, at a newer `project_policy_version` |
+| `keys add --public-key FILE [--retire-others]` | Publishes a new key's public half beside the cell's keys: the rotation drill's overlap generation. With `--retire-others`, alone: the compromise drill, after which every token under another kid answers 401 |
+| `keys retire --kid K` | Omits a kid, which retires it at the cell for good (refused for the cell's last key). The state remembers retired kids, and `keys add` refuses one: the cell refuses a keys snapshot in which a retired kid returns |
 
 `admit` refuses, and publishes nothing, when:
 - a quota is above its ceiling, or is 0 (a binary without the cell ceiling reads 0 as "no limit");
