@@ -300,27 +300,27 @@
         {
           "file": "sdk/scripts/producer-ordering.test.mjs",
           "name": "append, epoch bump, batch append and final seal share one scope order",
-          "sha256": "42ec461b5ccfabe5b6b71bfba8a031aa841e09810b8138024d60bf5f96c5c1a3"
+          "sha256": "4ddbdfcc328cc678493e0454492b629da0603a582042bd567f1519bec139ae44"
         },
         {
           "file": "sdk/scripts/producer-ordering.test.mjs",
           "name": "fetch failure propagates and does not poison subsequent producer operations",
-          "sha256": "42ec461b5ccfabe5b6b71bfba8a031aa841e09810b8138024d60bf5f96c5c1a3"
+          "sha256": "4ddbdfcc328cc678493e0454492b629da0603a582042bd567f1519bec139ae44"
         },
         {
           "file": "sdk/scripts/producer-ordering.test.mjs",
           "name": "state-save failure propagates and a same-payload retry preserves sequence",
-          "sha256": "42ec461b5ccfabe5b6b71bfba8a031aa841e09810b8138024d60bf5f96c5c1a3"
+          "sha256": "4ddbdfcc328cc678493e0454492b629da0603a582042bd567f1519bec139ae44"
         },
         {
           "file": "sdk/scripts/producer-ordering.test.mjs",
           "name": "automatic reclaim completes within the queue before a later epoch bump",
-          "sha256": "42ec461b5ccfabe5b6b71bfba8a031aa841e09810b8138024d60bf5f96c5c1a3"
+          "sha256": "4ddbdfcc328cc678493e0454492b629da0603a582042bd567f1519bec139ae44"
         },
         {
           "file": "sdk/scripts/producer-ordering.test.mjs",
           "name": "one million sparse producer scopes release every fulfilled and rejected chain",
-          "sha256": "42ec461b5ccfabe5b6b71bfba8a031aa841e09810b8138024d60bf5f96c5c1a3"
+          "sha256": "4ddbdfcc328cc678493e0454492b629da0603a582042bd567f1519bec139ae44"
         }
       ]
     },

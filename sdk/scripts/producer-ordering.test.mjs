@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   AppendOutcomeUnknownError, ProducerFencedError, StreamsClient, StreamsError, StreamsTransportError,
+  WrongCellError,
 } from "../dist/index.js";
 
 function deferred() {
@@ -86,14 +87,16 @@ test("a fetch failure is replayed at the same sequence before later operations a
   assert.deepEqual(f.state(), { epoch: 1, nextSeq: 1 });
 });
 
-// One producer id's server, refusing in the product's order: a sealed
+// One producer id's server, refusing in the product's order: a cell that
+// no longer serves the project (421, before the product handler), a sealed
 // collection (refuse_if_sealed) and a quota before the core, then
 // decide_producer's stale epoch (403) before its duplicate check.
 function producerServer() {
-  const server = { epoch: -1, seq: -1, sealed: false, quota: false, stored: [] };
+  const server = { epoch: -1, seq: -1, wrongCell: false, sealed: false, quota: false, stored: [] };
   const refuse = (status, code, details, headers = {}) => new Response(
     JSON.stringify({ error: { code, message: code, retryable: status === 429, details } }), { status, headers });
   server.answer = (epoch, seq, body) => {
+    if (server.wrongCell) return new Response("", { status: 421 });
     if (server.sealed) return refuse(409, "sealed");
     if (server.quota) return refuse(429, "rate_limited", undefined, { "retry-after": "0" });
     if (epoch < server.epoch) return refuse(403, "stale_producer_epoch", { currentEpoch: server.epoch });
@@ -117,6 +120,8 @@ for (const row of [
     status: 409, code: "sealed", attempts: 2, delays: [1000] },
   { label: "a quota refuses every replay", autoClaim: true, between: server => { server.quota = true; },
     status: 429, code: "rate_limited", attempts: 4, delays: [1000, 0, 0] },
+  { label: "the cell no longer serves the project", autoClaim: true, between: server => { server.wrongCell = true; },
+    status: 421, code: "wrong_cell", attempts: 2, delays: [1000] },
 ]) {
   test(`a replay refused after a lost answer (${row.label}) is an unknown outcome, stored once`, async () => {
     // The first append commits and its answer is lost; the replay meets a
@@ -152,6 +157,7 @@ for (const row of [
       assert.ok(error.cause instanceof ProducerFencedError);
       assert.equal(error.cause.currentEpoch, 1);
     }
+    if (row.code === "wrong_cell") assert.ok(error.cause instanceof WrongCellError, "the cause is the wrong-cell refusal");
     assert.deepEqual(state, { epoch: 0, nextSeq: 0 }, "no epoch claimed, no sequence consumed");
     assert.deepEqual(delays, row.delays);
   });
