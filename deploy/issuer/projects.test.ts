@@ -251,6 +251,56 @@ describe("creating a project", () => {
     ]);
   });
 
+  test("places one of two creates made at once for a workspace with room for one, refusing the other on the state it lands on", async () => {
+    const cell = await allowedCell();
+    const m = await managed(cell);
+    const a = m.signIn("ws_a");
+    // Both pass the checks on the issuer's copy before either commits; the
+    // compare-and-swap's re-check of the placement refuses the loser.
+    const sent = await Promise.all([
+      m.send("POST", PROJECTS, a, { displayName: "One" }),
+      m.send("POST", PROJECTS, a, { displayName: "Two" }),
+    ]);
+    const answers = (await Promise.all(sent.map(answer))).sort(([x], [y]) => x - y);
+    expect(answers.map(([status]) => status)).toEqual([201, 409]);
+    expect(answers[1][1]).toEqual(refusal("project_limit", "workspace ws_a already has 1 Streams project(s), its limit"));
+    const placed = Object.entries(cellState(cell).projects).filter(([, p]) => p.workspace_id === "ws_a");
+    expect(placed.map(([id]) => id)).toEqual([answers[0][1].project.id]);
+    expect(customerOnly(readBundle(cell.state)).policies.projects.length).toBe(1);
+    expect(managementAudits(cell).map((r) => [r.outcome, r.reason]).sort()).toEqual([
+      ["done", undefined],
+      ["refused", "project_limit: workspace ws_a already has 1 project(s) on cell cell_sc1 (cap 1)"],
+    ]);
+  });
+
+  test("refuses a create whose gate the owner closed after the issuer's checks, on the state its compare-and-swap lands on", async () => {
+    const cell = await allowedCell();
+    const m = await managed(cell);
+    const before = cellState(cell);
+    // `cell-admin gate --close` lands just before the issuer's first write
+    // of the state: its copy still shows the gate open.
+    const fake = fakeS3();
+    const key = cell.state.slice("s3://".length) + "/cell-state.json";
+    let closed = false;
+    fake.beforePut = (k) => {
+      if (k !== key || closed) return;
+      closed = true;
+      const [bucket, ...rest] = key.split("/");
+      const state = JSON.parse(fake.text(bucket, rest.join("/"))!);
+      state.cell.gate.open = false;
+      fake.put(bucket, rest.join("/"), `${JSON.stringify(state, null, 2)}\n`);
+    };
+    expect(await answer(await m.send("POST", PROJECTS, m.signIn("ws_a"), { displayName: "A" }))).toEqual([
+      409, refusal("beta_at_capacity", "the Streams beta is at capacity; try again later"),
+    ]);
+    const after = cellState(cell);
+    expect([closed, after.cell.gate.open, after.feed_version]).toEqual([true, false, before.feed_version]);
+    expect(Object.keys(after.projects)).toEqual(Object.keys(before.projects));
+    expect(managementAudits(cell).map((r) => [r.outcome, r.reason])).toEqual([
+      ["refused", "beta_at_capacity: the admission gate is closed"],
+    ]);
+  });
+
   test("refuses 409 beta_at_capacity while its compiled profile is not the one the cell was initialised with", async () => {
     const cell = await issuerCell();
     // As a cell initialised with another profile than the one compiled in.
