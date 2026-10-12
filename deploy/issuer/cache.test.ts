@@ -1,7 +1,8 @@
 // The issuer's copy of the state (public-beta issuer triage B2.4).
 // Run with `bun test ./deploy/issuer`.
 import { afterEach, describe, expect, test } from "bun:test";
-import { cleanup } from "../cell-admin/test-rig";
+import { bundleOf, bundleText } from "../cell-admin/feeds";
+import { cleanup, readBundle, readBundleText, readState } from "../cell-admin/test-rig";
 import { boot } from "./boot";
 import { MAX_AGE_MS, StateCache } from "./cache";
 import { readConfig } from "./config";
@@ -67,5 +68,61 @@ describe("the state cache", () => {
     const reads = stateReads().length;
     await Bun.sleep(100);
     expect(stateReads().length).toBe(reads);
+  });
+});
+
+describe("the bundle repair", () => {
+  const bundleKey = `cells/${CELL}/feeds-bundle.json`;
+  const bundlePuts = () => fakeS3().requests.filter((q) => q.method === "PUT" && q.key.endsWith(bundleKey));
+
+  /// A cell whose last writer committed the state and stopped before it
+  /// published: the bundle is the one before that commit.
+  async function stoppedWriter() {
+    const cell = await issuerCell();
+    const b = await boot(readConfig(cell.env));
+    const log: string[] = [];
+    const cache = new StateCache(b.store, b, { log: (l) => log.push(l) });
+    await cache.refresh();
+    const before = readBundleText(cell.state);
+    const { id } = await customerSecret(cell, "sp_a");
+    fakeS3().put(cell.env.STREAMS_FEEDS_S3_BUCKET, bundleKey, before);
+    return { cell, cache, log, id };
+  }
+
+  test("republishes the bundle a state is ahead of, as after a writer that stopped between its commit and its publish", async () => {
+    const { cell, cache, log, id } = await stoppedWriter();
+    expect(readBundle(cell.state).keys.feed_version).toBe(1);
+    await cache.refresh();
+    const state = readState(cell.state);
+    expect(readBundleText(cell.state)).toBe(bundleText(bundleOf(state)));
+    expect((readBundle(cell.state).grants.credentials as { credential_id: string }[]).map((c) => c.credential_id))
+      .toContain(id);
+    expect([cache.publishedVersion, state.feed_version]).toEqual([3, 3]);
+    expect(log.at(-1)).toBe("republished the bundle at feed_version 3 (it was at 1): the state's writer had not published it");
+  });
+
+  test("leaves a bundle as new as the state alone, and reads it only when the state moved past it", async () => {
+    const cell = await issuerCell();
+    const b = await boot(readConfig(cell.env));
+    const cache = new StateCache(b.store, b, { log: () => {} });
+    await cache.refresh();
+    await customerSecret(cell, "sp_a");
+    const bundleReads = () => fakeS3().requests.filter((q) => q.method === "GET" && q.key.endsWith(bundleKey)).length;
+    const [puts, reads] = [bundlePuts().length, bundleReads()];
+    await cache.refresh(); // the state moved: one look at the bundle, which is current
+    await cache.refresh(); // 304: no look
+    expect([bundlePuts().length, bundleReads(), cache.publishedVersion]).toEqual([puts, reads + 1, 3]);
+  });
+
+  test("tries a republish that failed again at the next revalidation, though the state is unchanged", async () => {
+    const { cell, cache, log } = await stoppedWriter();
+    fakeS3().denyWrites = true;
+    await cache.refresh();
+    expect(readBundle(cell.state).keys.feed_version).toBe(1);
+    expect(log.at(-1)).toMatch(/^republishing the bundle at feed_version 3 failed: PUT s3:\/\/.*feeds-bundle.json answered 403 AccessDenied$/);
+    fakeS3().denyWrites = false;
+    await cache.refresh();
+    expect(stateReads().at(-1)?.status).toBe(304);
+    expect(readBundle(cell.state).keys.feed_version).toBe(3);
   });
 });

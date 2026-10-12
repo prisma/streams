@@ -7,6 +7,15 @@
 // cell refuses its own feeds (src/auth.rs, 300 s), so an issuer that
 // cannot see a revocation stops minting no later than the cell stops
 // serving.
+//
+// Every writer commits the state, then publishes its bundle; one that
+// stops in between (a crashed cell-admin, an issuer redeployed mid-write)
+// leaves a change the cell does not serve, a revocation included, until
+// the next change (skeptic S5c). So whenever the state is ahead of the
+// bundle as last seen, the cache reads the bundle and republishes it
+// through BundlePublisher, which publishes only forward: bundleOf is
+// deterministic, so two writers republishing the same state agree.
+import { BundlePublisher } from "../cell-admin/publish";
 import type { CellState } from "../cell-admin/state";
 import type { StateStore } from "../cell-admin/store";
 
@@ -27,6 +36,9 @@ export class StateCache {
   private readonly log: (line: string) => void;
   private readonly refreshMs: number;
   private running = false;
+  /// The published bundle's feed_version as last seen; null before the
+  /// first look.
+  private published: number | null = null;
 
   constructor(
     private readonly store: StateStore,
@@ -55,7 +67,14 @@ export class StateCache {
     return this.ageMs() <= MAX_AGE_MS;
   }
 
-  /// One revalidation; a failure keeps the copy and lets it age.
+  /// The published bundle's feed_version as last seen, or null.
+  get publishedVersion(): number | null {
+    return this.published;
+  }
+
+  /// One revalidation, then the repair of a bundle behind the state; a
+  /// failure of either keeps what the cache holds and is tried again at
+  /// the next refresh.
   async refresh(): Promise<void> {
     try {
       const changed = await this.store.loadChanged(this.etag);
@@ -66,6 +85,28 @@ export class StateCache {
       this.checkedAt = this.now();
     } catch (e) {
       this.log(`state revalidation failed (copy ${Math.round(this.ageMs() / 1000)} s old): ${(e as Error).message}`);
+      return;
+    }
+    try {
+      await this.repair();
+    } catch (e) {
+      this.log(`republishing the bundle at feed_version ${this.current.feed_version} failed: ${(e as Error).message}`);
+    }
+  }
+
+  private async repair(): Promise<void> {
+    const state = this.current;
+    if (this.published !== null && this.published >= state.feed_version) return;
+    this.published = (await this.store.readBundle())?.version ?? 0;
+    if (this.published >= state.feed_version) return;
+    const behind = this.published;
+    const outcome = await new BundlePublisher(this.store).publish(state);
+    this.published = state.feed_version;
+    if (outcome === "published") {
+      this.log(
+        `republished the bundle at feed_version ${state.feed_version} (it was at ${behind}): ` +
+          "the state's writer had not published it",
+      );
     }
   }
 
