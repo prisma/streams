@@ -23,6 +23,10 @@
 #                     Byte and request counts stay comparable; RSS, CPU and
 #                     latency do not. Used once, for the M1 identity pair, when
 #                     a sibling session ran q0 rigs back to back for hours.
+#   MIN_FREE_GIB=<n>  refuse below this much free disk (default 40, the plan's
+#                     line). M4's short points (a few MB of results, s3lite in
+#                     memory) ran at 15 when sibling sessions held the volume
+#                     at 16-27 GiB free; the value is recorded in runs.jsonl.
 #   GUARD=0|1         run tools/token-guard.sh beside the rig (default 1): it
 #                     re-mints the rig's token only if the rig's own refresh
 #                     loop died, and logs to <log>.guard.
@@ -46,6 +50,7 @@ WAIT=0
 QUIET=0
 OVERLAP=0
 GUARD=1
+MIN_FREE_GIB=40
 ENV=()
 for kv in "$@"; do
   case "$kv" in
@@ -54,6 +59,7 @@ for kv in "$@"; do
     WAIT=*) WAIT=${kv#WAIT=} ;;
     QUIET=*) QUIET=${kv#QUIET=} ;;
     GUARD=*) GUARD=${kv#GUARD=} ;;
+    MIN_FREE_GIB=*) MIN_FREE_GIB=${kv#MIN_FREE_GIB=} ;;
     OVERLAP=*) OVERLAP=${kv#OVERLAP=} ;;
     [A-Z_]*=*) ENV+=("$kv") ;;
     *) echo "spike-run: not KEY=VALUE: $kv" >&2; exit 2 ;;
@@ -96,7 +102,7 @@ if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
   exit 3
 fi
 free_g=$(df -g "$HOME" | awk 'NR==2 {print $4}')
-[ "$free_g" -ge 40 ] || { echo "spike-run: only ${free_g} GiB free (< 40)" >&2; exit 3; }
+[ "$free_g" -ge "$MIN_FREE_GIB" ] || { echo "spike-run: only ${free_g} GiB free (< $MIN_FREE_GIB)" >&2; exit 3; }
 target_g=$(du -sg "$W/target" 2>/dev/null | awk '{print $1}')
 [ "${target_g:-0}" -le 45 ] || { echo "spike-run: $W/target is ${target_g} GB (> 45): run cargo clean --release" >&2; exit 3; }
 
@@ -165,6 +171,7 @@ rec = {
     "env": """${ENV[*]+"${ENV[*]}"}""".split(),
     "disk_after": """$DU""",
     "token_guard": {"on": "$GUARD" == "1", "interventions": int("${GUARD_INTERVENED:-0}" or 0)},
+    "min_free_gib": $MIN_FREE_GIB,
 }
 with open(sys.argv[1], "a") as f:
     f.write(json.dumps(rec, separators=(",", ":")) + "\n")
