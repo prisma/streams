@@ -137,12 +137,15 @@ async function startFrom(
 /// attempt starts from it instead of reading the state again; a copy that
 /// is no longer current loses its compare-and-swap and the change is
 /// re-applied to the stored state. Returns its result, the committed state
-/// and its ETag.
+/// and its ETag. A publish that fails once the state is committed throws,
+/// unless `unpublished` is given: it is told why, and the change returns
+/// `published: false` (the issuer's revalidation republishes the bundle).
 export async function mutate<T>(
   store: StateStore,
   change: (state: CellState) => T | Promise<T>,
   copy?: { state: CellState; etag: string },
-): Promise<{ result: T; state: CellState; etag: string }> {
+  unpublished?: (e: Error) => void,
+): Promise<{ result: T; state: CellState; etag: string; published: boolean }> {
   for (let attempt = 1; ; attempt++) {
     const { state, etag, published } = attempt === 1 && copy ? await startFrom(store, copy) : await loadChecked(store);
     const result = await change(state);
@@ -156,8 +159,14 @@ export async function mutate<T>(
       if (attempt >= CAS_ATTEMPTS) throw notYet(`${store.statePath} changed under ${CAS_ATTEMPTS} attempts: run again`);
       continue;
     }
-    await new BundlePublisher(store).publish(state);
-    return { result, state, etag: saved };
+    try {
+      await new BundlePublisher(store).publish(state);
+    } catch (e) {
+      if (unpublished === undefined) throw e;
+      unpublished(e as Error);
+      return { result, state, etag: saved, published: false };
+    }
+    return { result, state, etag: saved, published: true };
   }
 }
 

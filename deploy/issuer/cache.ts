@@ -130,15 +130,20 @@ export class StateCache {
   /// loses it, and the change is reloaded, re-checked and re-applied, at
   /// most CAS_ATTEMPTS times in all, then refused with exit-3's AdminError
   /// (the management API's 503). The committed state takes effect in this
-  /// copy at once.
+  /// copy at once. Once it is committed the change is made: a failure to
+  /// publish its bundle is logged, not thrown, and the next revalidation
+  /// republishes the bundle (repair), so a caller never answers a made
+  /// change as failed (a create's secret would be lost with the answer).
   async mutate<T>(change: (state: CellState) => T | Promise<T>): Promise<{ result: T; state: CellState }> {
-    const done = await mutate(this.store, change, { state: this.current, etag: this.etag });
+    const done = await mutate(this.store, change, { state: this.current, etag: this.etag }, (e) =>
+      this.log(`a committed change's bundle was not published (the next revalidation republishes it): ${e.message}`),
+    );
     if (done.state.feed_version >= this.current.feed_version) {
       this.current = done.state;
       this.etag = done.etag;
       this.checkedAt = this.now();
     }
-    this.published = Math.max(this.published ?? 0, done.state.feed_version);
+    if (done.published) this.published = Math.max(this.published ?? 0, done.state.feed_version);
     return { result: done.result, state: done.state };
   }
 

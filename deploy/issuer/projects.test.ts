@@ -16,6 +16,7 @@ import {
   cellState,
   customerSecret,
   envWith,
+  fakeS3,
   type IssuerCell,
   issuerCell,
   managed,
@@ -90,6 +91,27 @@ describe("creating a project", () => {
       before: { feed_version: before }, after: { feed_version: before + 1, project_policy_version: 1, grant_version: 1 },
       request_id: res.headers.get("x-request-id"),
     }]);
+  });
+
+  test("answers a create whose state landed but whose bundle failed to publish as made, and the next revalidation publishes it", async () => {
+    const cell = await allowedCell();
+    const m = await managed(cell);
+    const published = readBundle(cell.state).keys.feed_version;
+    let failed = 0;
+    fakeS3().failPut = (key) => key.endsWith("/feeds-bundle.json") && failed++ === 0;
+    const res = await m.send("POST", PROJECTS, m.signIn("ws_a"), { displayName: "Orders" });
+    const [status, body] = await answer(res);
+    expect([status, failed]).toEqual([201, 1]);
+    expect(cellState(cell).projects[body.project.id].phase).toBe("active");
+    expect(readBundle(cell.state).keys.feed_version).toBe(published);
+    // The secret works at once, and the next revalidation publishes.
+    const minted = await m.issuer.fetch(new Request("https://issuer.example.com/v1/token/streams", {
+      method: "POST", headers: { authorization: `StreamsCredential ${body.secret}` },
+    }));
+    expect(minted.status).toBe(200);
+    await m.cache.refresh();
+    expect(readBundle(cell.state).keys.feed_version).toBe(published + 1);
+    expect((customerOnly(readBundle(cell.state)).policies.projects as any[]).map((p) => p.project_id)).toEqual([body.project.id]);
   });
 
   test("refuses a change without JSON or without the session's CSRF value 403 csrf_failed, and audits it", async () => {
