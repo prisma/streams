@@ -177,9 +177,11 @@ pub(super) const SHARE_K: usize = 8;
 
 /// How a cell is built: its size, each project's quotas, the scenario's
 /// command line over the hermetic fixture, its shard configuration and
-/// prefixes, its maintenance admission bounds, and the shared bounds its
+/// prefixes, its maintenance admission bounds, the shared bounds its
 /// projects' ceilings divide (none by default: the rig's admission sets
-/// no inflight or SSE bound unless `bounds` gives one).
+/// no inflight or SSE bound unless `bounds` gives one), and the store it
+/// runs over (a fresh memory store by default; a scenario that counts
+/// store operations hands in its tracing store).
 pub(super) struct CellSpec {
     pub(super) projects: usize,
     pub(super) quotas: fn(usize) -> ProjectQuotas,
@@ -188,6 +190,7 @@ pub(super) struct CellSpec {
     pub(super) prefixes: Vec<String>,
     pub(super) admission: Option<crate::config::AdmissionConfig>,
     pub(super) bounds: SharedBounds,
+    pub(super) store: Arc<dyn object_store::ObjectStore>,
 }
 
 impl CellSpec {
@@ -201,6 +204,7 @@ impl CellSpec {
             prefixes: vec!["00".to_string()],
             admission: None,
             bounds: SharedBounds::default(),
+            store: mem(),
         }
     }
 }
@@ -257,7 +261,7 @@ pub(super) async fn open_cell(spec: CellSpec) -> Cell {
         .map(|i| (Arc::from(credential(i).as_str()), grant(i, 1)))
         .collect();
     let rig = http_rig_build(
-        mem(),
+        spec.store,
         RigRuntime::first(),
         HttpRigOptions {
             auth_service: Some(svc.clone()),

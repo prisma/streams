@@ -6,6 +6,7 @@ use crate::auth::RequestPrincipal;
 use crate::registry::{Registry, StreamDesc, WatchDefinition};
 use crate::runtime::Clock;
 use crate::tenant::{ProjectId, TenantStreamRef};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -61,6 +62,39 @@ pub(crate) enum Observation {
     },
 }
 
+/// A token bucket's refill rate and its cap.
+#[derive(Clone, Copy)]
+struct Rate {
+    per_sec: f64,
+    burst: f64,
+}
+
+/// What the unverified capabilities claiming one project may spend on
+/// store lookups (shared-cells M2, phase B step 15), for a project a
+/// fresh policy feed places on this cell: a flood naming one project
+/// spends only that project's lookups and the cell's.
+const PROJECT_LOOKUPS: Rate = Rate {
+    per_sec: 20.0,
+    burst: 40.0,
+};
+/// What every unverified capability on this cell together may spend on
+/// store lookups, whatever project it claims.
+const CELL_LOOKUPS: Rate = Rate {
+    per_sec: 100.0,
+    burst: 200.0,
+};
+/// A project's lookup budget untouched this long is full again; adding
+/// another project's drops it, so the map holds only recent claims.
+const IDLE_LOOKUP_BUDGET: Duration = Duration::from_secs(60);
+
+/// The answer to a carrier whose store lookup the budgets refuse: owner
+/// question Q3 of phase B (step 15). Today's uniform, untagged 403
+/// `watch_unauthorized`, which the SDK does not retry; the recommended
+/// retryable 429 with `Retry-After: 1` is an untagged variant of its own
+/// that `product.rs` renders. Never tagged with the claimed project: an
+/// unverified claim is not an identity.
+const LOOKUP_REFUSED: WatchFailure = WatchFailure::Unauthorized(None);
+
 /// A per-runtime pre-verification lookup budget. Its refill uses elapsed time,
 /// so clock corrections cannot bypass the cap or poison a later runtime.
 struct LookupBudget {
@@ -68,14 +102,85 @@ struct LookupBudget {
     at: crate::runtime::MonotonicNow,
 }
 impl LookupBudget {
-    fn take(&mut self, now: crate::runtime::MonotonicNow) -> bool {
-        self.tokens = (self.tokens + now.since(self.at).as_secs_f64() * 500.0).min(1000.0);
+    fn full(rate: Rate, at: crate::runtime::MonotonicNow) -> Self {
+        Self {
+            tokens: rate.burst,
+            at,
+        }
+    }
+
+    /// Refill to `now`; whether a whole token is there to spend.
+    fn refill(&mut self, rate: Rate, now: crate::runtime::MonotonicNow) -> bool {
+        self.tokens =
+            (self.tokens + now.since(self.at).as_secs_f64() * rate.per_sec).min(rate.burst);
         self.at = now;
-        if self.tokens < 1.0 {
+        self.tokens >= 1.0
+    }
+}
+
+/// The cell's lookup budget and each claimed project's.
+struct Budgets {
+    cell: LookupBudget,
+    projects: HashMap<ProjectId, LookupBudget>,
+}
+
+impl Budgets {
+    /// One lookup from `project`'s budget and one from the cell's: both or
+    /// neither.
+    fn take(&mut self, project: Option<&ProjectId>, now: crate::runtime::MonotonicNow) -> bool {
+        if !self.cell.refill(CELL_LOOKUPS, now) {
             return false;
         }
-        self.tokens -= 1.0;
+        if let Some(project) = project {
+            let own = self.project(project, now);
+            if !own.refill(PROJECT_LOOKUPS, now) {
+                return false;
+            }
+            own.tokens -= 1.0;
+        }
+        self.cell.tokens -= 1.0;
         true
+    }
+
+    /// `project`'s budget, added full; adding one first drops every budget
+    /// untouched for `IDLE_LOOKUP_BUDGET`.
+    fn project(
+        &mut self,
+        project: &ProjectId,
+        now: crate::runtime::MonotonicNow,
+    ) -> &mut LookupBudget {
+        if !self.projects.contains_key(project) {
+            self.projects
+                .retain(|_, budget| now.since(budget.at) < IDLE_LOOKUP_BUDGET);
+        }
+        self.projects
+            .entry(project.clone())
+            .or_insert_with(|| LookupBudget::full(PROJECT_LOOKUPS, now))
+    }
+}
+
+/// The per-runtime budgets of store lookups made for capabilities that
+/// have not verified: only such a lookup spends them, never a check
+/// against a descriptor the cell holds.
+struct LookupBudgets(Mutex<Budgets>);
+
+impl LookupBudgets {
+    fn new(at: crate::runtime::MonotonicNow) -> Self {
+        Self(Mutex::new(Budgets {
+            cell: LookupBudget::full(CELL_LOOKUPS, at),
+            projects: HashMap::new(),
+        }))
+    }
+
+    /// Spend one lookup of the claimed `project`'s budget (a project a
+    /// fresh policy feed places on this cell; `None` outside enforce or
+    /// under a stale feed, where only the cell's applies) and one of the
+    /// cell's. A poisoned budget may hold a half-counted window, and
+    /// recovering it could admit a lookup it should refuse, so it refuses.
+    fn take(&self, project: Option<&ProjectId>, now: crate::runtime::MonotonicNow) -> bool {
+        self.0
+            .lock()
+            .is_ok_and(|mut budgets| budgets.take(project, now))
     }
 }
 
@@ -87,7 +192,7 @@ pub(crate) struct WatchService {
     touch: Arc<crate::touch::TouchRegistry>,
     shards: crate::shard_directory::ShardDirectory,
     clock: Arc<dyn Clock>,
-    lookup: Mutex<LookupBudget>,
+    lookup: LookupBudgets,
 }
 
 impl WatchService {
@@ -104,10 +209,7 @@ impl WatchService {
         shards: crate::shard_directory::ShardDirectory,
         clock: Arc<dyn Clock>,
     ) -> Self {
-        let lookup = Mutex::new(LookupBudget {
-            tokens: 1000.0,
-            at: clock.monotonic(),
-        });
+        let lookup = LookupBudgets::new(clock.monotonic());
         Self {
             registry,
             auth,
@@ -180,10 +282,6 @@ impl WatchService {
         clippy::too_many_arguments,
         reason = "WatchService::authenticate; authentication takes the capability's signed fields separately as the wire presents them; a bundle struct would exist for this single call site"
     )]
-    #[expect(
-        clippy::unwrap_used,
-        reason = "WatchService::authenticate; a poisoned lookup limiter may hold a half-counted window; recovering it could admit a lookup the limiter should have refused"
-    )]
     pub(crate) async fn authenticate<'a>(
         &self,
         stream: &TenantStreamRef,
@@ -192,33 +290,10 @@ impl WatchService {
         credentials: WatchCredentials,
         access: WatchAccess<'a>,
     ) -> Result<VerifiedObservation<'a>, WatchFailure> {
-        let capability_project = match &credentials.capability {
-            Some(capability) => {
-                let project = crate::crypto::watch_capability_project(capability)
-                    .ok_or(WatchFailure::Unauthorized(None))?;
-                if !self.lookup.lock().unwrap().take(self.clock.monotonic()) {
-                    return Err(WatchFailure::Unauthorized(None));
-                }
-                Some(project)
-            }
-            None => None,
-        };
-        let lookup = capability_project
-            .as_ref()
-            .map(|project| {
-                // mt-lint: allow(stream-ref-construction): explicit capability project is a lookup hint only; signature/key verification below must grant observation authority.
-                project.stream_ref(stream.name().as_str())
-            })
-            .unwrap_or_else(|| stream.clone());
-        let descriptor = self
-            .registry
-            .get(&lookup)
-            .await
-            .ok()
-            .flatten()
-            .filter(|descriptor| self.alive(descriptor))
-            .ok_or(WatchFailure::Unauthorized(None))?;
         let key_hex = key_hex.trim_end_matches('/').to_ascii_lowercase();
+        let descriptor = self
+            .carrier_descriptor(stream, &credentials, (&watch, &key_hex))
+            .await?;
         let key = self.observation_proof(&descriptor, &credentials, (&watch, &key_hex), &access)?;
         if key_hex.len() != 16 || u64::from_str_radix(&key_hex, 16).is_err() {
             return Err(WatchFailure::InvalidKey);
@@ -230,6 +305,82 @@ impl WatchService {
             key,
             access,
         })
+    }
+
+    /// The live descriptor a request's credentials are proved against.
+    /// Without a capability it is the stream's own. A capability names its
+    /// project, an unverified claim (shared-cells M2, phase B step 15):
+    /// under enforce, a project a fresh policy feed does not place on this
+    /// cell is refused before any read. Otherwise the capability must
+    /// verify first, against the descriptor the cell holds or, when the
+    /// cell holds nothing it can trust as current, against one budgeted
+    /// store fetch that fills nothing. Only a carrier that verified reads
+    /// through the cache, and the descriptor that read returns is the one
+    /// the proof and the wait use, so a stale held entry never admits a
+    /// capability the stream's current incarnation refuses.
+    async fn carrier_descriptor(
+        &self,
+        stream: &TenantStreamRef,
+        credentials: &WatchCredentials,
+        (watch, key_hex): (&str, &str),
+    ) -> Result<StreamDesc, WatchFailure> {
+        let Some(capability) = credentials.capability.as_deref() else {
+            return self.live_descriptor(stream).await;
+        };
+        let project = crate::crypto::watch_capability_project(capability)
+            .ok_or(WatchFailure::Unauthorized(None))?;
+        let now = self.clock.now().ms() / 1000;
+        let served = match (self.auth.mode == crate::auth::AuthMode::Enforce)
+            .then(|| self.auth.status_and_quotas(&project, now))
+        {
+            Some(Ok(None)) => return Err(WatchFailure::Unauthorized(None)),
+            Some(Ok(Some(_))) => Some(&project),
+            // A stale feed cannot place the claim, so only the cell's budget
+            // applies; a carrier that verifies is then failed closed by the
+            // wait with its project's retryable `policy_stale`, as before.
+            Some(Err(_)) | None => None,
+        };
+        // mt-lint: allow(stream-ref-construction): explicit capability project is a lookup hint only; signature/key verification below must grant observation authority.
+        let claimed = project.stream_ref(stream.name().as_str());
+        let verifies = |descriptor: &StreamDesc| {
+            self.capability_verifies(descriptor, capability, watch, key_hex)
+        };
+        let verified = match self.registry.held_descriptor(&claimed) {
+            Some((Some(held), _)) if verifies(&held) => true,
+            // A fresh entry is current: what it refuses, a fresh absence
+            // included, is refused for free.
+            Some((_, true)) => false,
+            // An expired entry may be stale in a fleet (a stream recreated
+            // elsewhere has a new verifier), and no entry proves nothing:
+            // the store decides, under budget, and fills nothing.
+            _ => {
+                if !self.lookup.take(served, self.clock.monotonic()) {
+                    return Err(LOOKUP_REFUSED);
+                }
+                self.registry
+                    .fetch_unpublished(&claimed)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|fetched| verifies(&fetched))
+            }
+        };
+        if !verified {
+            return Err(WatchFailure::Unauthorized(None));
+        }
+        self.live_descriptor(&claimed).await
+    }
+
+    /// The stream's descriptor read through the registry's cache, while the
+    /// stream is alive; anything else is the uniform refusal.
+    async fn live_descriptor(&self, stream: &TenantStreamRef) -> Result<StreamDesc, WatchFailure> {
+        self.registry
+            .get(stream)
+            .await
+            .ok()
+            .flatten()
+            .filter(|descriptor| self.alive(descriptor))
+            .ok_or(WatchFailure::Unauthorized(None))
     }
 
     /// The stream key a request presented, once it proved it may observe
@@ -533,28 +684,61 @@ mod tests {
     #[test]
     fn lookup_budget_is_runtime_local_and_refills_only_with_elapsed_time() {
         let clock = crate::runtime::ManualClock::at(0);
-        let mut first = LookupBudget {
-            tokens: 1000.0,
-            at: clock.monotonic(),
-        };
-        let mut second = LookupBudget {
-            tokens: 1000.0,
-            at: clock.monotonic(),
-        };
-        for _ in 0..1000 {
-            assert!(first.take(clock.monotonic()));
+        let first = LookupBudgets::new(clock.monotonic());
+        let second = LookupBudgets::new(clock.monotonic());
+        for _ in 0..200 {
+            assert!(first.take(None, clock.monotonic()));
         }
-        assert!(!first.take(clock.monotonic()));
-        assert!(second.take(clock.monotonic()));
+        assert!(!first.take(None, clock.monotonic()));
+        assert!(second.take(None, clock.monotonic()));
         for jump in [86_400_000, -172_800_000] {
             clock.jump_wall(jump);
-            assert!(!first.take(clock.monotonic()));
+            assert!(!first.take(None, clock.monotonic()));
         }
         clock.advance_monotonic(Duration::from_millis(100));
-        for _ in 0..50 {
-            assert!(first.take(clock.monotonic()));
+        for _ in 0..10 {
+            assert!(first.take(None, clock.monotonic()));
         }
-        assert!(!first.take(clock.monotonic()));
+        assert!(!first.take(None, clock.monotonic()));
+    }
+
+    /// A claimed project spends its own budget (20 a second, 40 at most)
+    /// and the cell's (100 a second, 200 at most), both or neither: a
+    /// lookup its project refuses costs the cell nothing, one the cell
+    /// refuses costs its project nothing, and a project's budget untouched
+    /// for a minute is dropped when another project's is added.
+    #[test]
+    fn a_claimed_project_spends_its_own_lookups_and_the_cells() {
+        let clock = crate::runtime::ManualClock::at(0);
+        let budgets = LookupBudgets::new(clock.monotonic());
+        let project = |i: usize| ProjectId::new(&format!("prj-{i}")).unwrap();
+        let spend = |i: usize| {
+            std::iter::repeat_with(|| budgets.take(Some(&project(i)), clock.monotonic()))
+                .take_while(|taken| *taken)
+                .count()
+        };
+        let held = || {
+            let budgets = budgets.0.lock().unwrap();
+            let mut projects: Vec<String> =
+                budgets.projects.keys().map(ToString::to_string).collect();
+            projects.sort();
+            (budgets.cell.tokens, projects)
+        };
+        assert_eq!((spend(0), spend(0)), (40, 0), "one project's burst");
+        assert_eq!(held().0, 160.0, "the project's refusals cost the cell");
+        let shares: Vec<usize> = (1..5).map(spend).collect();
+        assert_eq!(shares, [40; 4], "the other projects keep theirs");
+        assert_eq!(spend(5), 0, "the cell's burst is spent");
+        assert_eq!(held().1.len(), 5, "the cell's refusal added a project");
+        clock.advance_monotonic(Duration::from_secs(1));
+        assert_eq!(spend(0), 20, "a project refills at 20 a second");
+        clock.advance_monotonic(Duration::from_secs(59));
+        assert_eq!(spend(6), 40);
+        assert_eq!(
+            held().1,
+            ["prj-0", "prj-6"],
+            "budgets untouched for a minute are dropped"
+        );
     }
 
     /// The SDK keys a watch value with JavaScript's `String(v)` of the number

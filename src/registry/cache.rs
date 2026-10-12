@@ -204,6 +204,19 @@ impl DescriptorCache {
         }
     }
 
+    /// What `sref`'s slot holds, fresh or expired, and whether it is still
+    /// within its TTL; `None` for no slot or an emptied one. A peek claims
+    /// nothing and leaves the slot's `touched` as it was, so it neither
+    /// fills the cache nor moves a slot in the cap's eviction order.
+    fn peek(&self, sref: &crate::tenant::TenantStreamRef) -> Option<(Option<StreamDesc>, bool)> {
+        let slots = self.slots();
+        let entry = slots.by_ref.get(sref)?.entry.as_ref()?;
+        Some((
+            entry.desc.clone(),
+            within(entry.at, Instant::now(), slots.ttl),
+        ))
+    }
+
     /// Publish a read's answer only if the slot is exactly as the read
     /// found it. A moved generation means a write landed after the store
     /// served this read; the answer must not outlive that write.
@@ -270,6 +283,32 @@ impl Registry {
 
     pub(crate) fn cache_len(&self) -> usize {
         self.cache.len()
+    }
+
+    /// The descriptor (or the absence) the cache holds for `sref`, fresh
+    /// or expired, with whether it is still fresh; `None` when it holds
+    /// nothing. For a caller that has not yet proved anything about the
+    /// stream: it neither claims, touches nor fills a slot. On one server a
+    /// held entry is current, since every descriptor write empties its slot
+    /// here; in a fleet an expired one may be stale.
+    pub(crate) fn held_descriptor(
+        &self,
+        sref: &crate::tenant::TenantStreamRef,
+    ) -> Option<(Option<StreamDesc>, bool)> {
+        self.cache.peek(sref)
+    }
+
+    /// One unconditional GET of `sref`'s descriptor that claims no slot and
+    /// publishes nothing: its answer is the caller's alone, so an unproven
+    /// caller's reads never fill the cache. `None` is the stream's absence.
+    pub(crate) async fn fetch_unpublished(
+        &self,
+        sref: &crate::tenant::TenantStreamRef,
+    ) -> Result<Option<StreamDesc>, object_store::Error> {
+        let fetched = self
+            .fetch_descriptor(&desc_path(&self.cell, sref), sref, None)
+            .await?;
+        Ok(fetched.and_then(|fetched| fetched.desc))
     }
 
     /// Test-only: plant a descriptor in the cache as if this instance

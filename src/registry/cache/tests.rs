@@ -583,3 +583,48 @@ fn the_ttl_window_ends_exactly_at_the_ttl() {
     assert!(!within(at, at + ttl, ttl));
     assert!(!within(at, at + ttl + Duration::from_nanos(1), ttl));
 }
+
+/// A peek reports what the cache holds, fresh or expired, an absence
+/// included, and claims nothing: a create's fill is held fresh and then
+/// expired, a read's absence likewise, and an unknown stream or an
+/// emptied slot holds nothing, with no slot added for the peek.
+#[tokio::test]
+async fn a_peek_reports_what_the_cache_holds_and_claims_nothing() {
+    let (reg, _) = rig();
+    reg.create(desc("p", EPOCH, false)).await.unwrap();
+    let held = |name: &str| {
+        reg.held_descriptor(&ts(name))
+            .map(|(desc, fresh)| (desc.map(|d| d.stream_epoch.clone()), fresh))
+    };
+    let epoch = Some(EPOCH.to_string());
+    assert_eq!(held("p"), Some((epoch.clone(), true)));
+    reg.expire_for_tests(&ts("p"));
+    assert_eq!(held("p"), Some((epoch, false)));
+    assert_eq!(held("unknown"), None);
+    assert_eq!(reg.cache_len(), 1, "a peek claimed a slot");
+    assert!(reg.get(&ts("absent")).await.unwrap().is_none());
+    assert_eq!(held("absent"), Some((None, true)));
+    reg.expire_for_tests(&ts("absent"));
+    assert_eq!(held("absent"), Some((None, false)));
+    reg.invalidate(&ts("p"));
+    assert_eq!(held("p"), None, "an emptied slot holds nothing");
+}
+
+/// A fetch for a caller that proved nothing answers what the store holds
+/// and publishes nothing: the slot a write emptied stays empty, and a
+/// stream the cache never held gets no slot.
+#[tokio::test]
+async fn an_unpublished_fetch_answers_and_fills_nothing() {
+    let (reg, _) = rig();
+    reg.create(desc("f", EPOCH, false)).await.unwrap();
+    reg.invalidate(&ts("f"));
+    let fetched = reg.fetch_unpublished(&ts("f")).await.unwrap();
+    assert_eq!(
+        fetched.map(|d| d.stream_epoch.clone()),
+        Some(EPOCH.to_string())
+    );
+    assert!(reg.fetch_unpublished(&ts("never")).await.unwrap().is_none());
+    assert!(reg.held_descriptor(&ts("f")).is_none(), "the fetch filled");
+    assert!(reg.held_descriptor(&ts("never")).is_none());
+    assert_eq!(reg.cache_len(), 1, "the fetch claimed a slot");
+}

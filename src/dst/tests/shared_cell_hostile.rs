@@ -16,7 +16,10 @@ use super::fixture_cell::{
 use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_runtime::RigRuntime;
+use super::fixture_storage::mem;
 use crate::auth::ceiling::SharedBounds;
+use crate::dst::StoreOp;
+use crate::dst::trace_store::TraceStore;
 use crate::project_policy::{CredentialStatus, ProjectQuotas};
 use crate::tenant::ProjectId;
 use std::collections::HashMap;
@@ -585,12 +588,13 @@ async fn an_anonymous_denial_flood_never_drops_the_victims_denial() {
 
 /// A11 (M2): an anonymous flood of capability lookups naming the victim's
 /// project (garbage signatures, distinct names) spends no budget the
-/// victim needs. The lookup budget refills on real time (500 a second,
-/// 1,000 at most), so the flood runs in rounds of 256 concurrent
-/// lookups, each followed by one 100 ms victim watch; every victim
-/// watch, before and through 40 rounds, must answer.
+/// victim needs. A capability checked against the descriptor the cell
+/// holds costs no lookup; only a store fetch spends the claimed project's
+/// budget (20 a second, 40 at most) and the cell's (100 a second, 200 at
+/// most), both refilled on real time. The flood runs in rounds of 256
+/// concurrent lookups, each followed by one 100 ms victim watch; every
+/// victim watch, before and through 40 rounds, must answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "red until shared-cells phase B step 15: unverified capability lookups are not charged to a shared budget"]
 async fn a_capability_flood_never_starves_the_victims_watch() {
     let cell = open_cell(CellSpec::open(2)).await;
     let watched = br#"{"format":{"kind":"json"},"watches":[{"name":"by-customer","fields":["/customerId"]}]}"#;
@@ -607,18 +611,17 @@ async fn a_capability_flood_never_starves_the_victims_watch() {
             st, 200,
             "the victim's capability watch after {round} rounds: {shown}"
         );
-        garbage_round(&cell, &khex, round).await;
+        garbage_round(&cell, &project(1), &khex, round).await;
     }
     engine_shutdown(&cell.state).await;
 }
 
 /// 256 concurrent anonymous lookups with garbage capabilities that name
-/// project 1, each on a distinct name.
-async fn garbage_round(cell: &Cell, khex: &str, round: usize) {
-    let victim = project(1);
+/// `claimed`, each on a distinct name; every one is refused.
+async fn garbage_round(cell: &Cell, claimed: &str, khex: &str, round: usize) {
     let lookups = (0..256).map(|j| {
         let path = format!(
-            "/v1/streams/n{round}-{j}/watches/by-customer/keys/{khex}?timeoutMs=1&cap={victim}.1.x"
+            "/v1/streams/n{round}-{j}/watches/by-customer/keys/{khex}?timeoutMs=1&cap={claimed}.1.x"
         );
         async move { preq(cell.addr, "GET", &path, &[], b"").await.0 }
     });
@@ -627,6 +630,52 @@ async fn garbage_round(cell: &Cell, khex: &str, round: usize) {
         answers.iter().all(|st| *st == 403),
         "garbage capabilities: {answers:?}"
     );
+}
+
+/// A watch key for the legs whose capabilities never verify.
+const GARBAGE_KEY: &str = "00000000000000c4";
+
+/// A11 (M2): unverified capability lookups never claim, touch or fill the
+/// shared descriptor cache. A round of 256 garbage capabilities naming a
+/// served project on distinct names leaves the cache holding exactly the
+/// slots it held, so a flood neither evicts tenants' entries nor makes
+/// its own names resident.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unverified_capability_lookups_never_fill_the_descriptor_cache() {
+    let cell = open_cell(CellSpec::open(2)).await;
+    assert_eq!(cell.call(1, "PUT", "/v1/streams/w", CREATE).await.0, 201);
+    let slots = cell.state.registry.cache_len();
+    garbage_round(&cell, &project(1), GARBAGE_KEY, 0).await;
+    assert_eq!(
+        cell.state.registry.cache_len(),
+        slots,
+        "descriptor cache slots after 256 unverified lookups"
+    );
+    engine_shutdown(&cell.state).await;
+}
+
+/// A11 (M2): under enforce, a capability naming a project the cell does
+/// not serve is refused before any descriptor read, so a flood of
+/// invented project ids costs the store nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_capability_naming_an_unserved_project_reads_no_descriptor() {
+    let trace = TraceStore::verbatim(mem());
+    let cell = open_cell(CellSpec {
+        store: trace.clone(),
+        ..CellSpec::open(2)
+    })
+    .await;
+    let unserved = project(2);
+    let hex: String = unserved.bytes().map(|b| format!("{b:02x}")).collect();
+    let root = format!("registry/v4/projects/{hex}/");
+    garbage_round(&cell, &unserved, GARBAGE_KEY, 0).await;
+    let reads = trace
+        .events()
+        .into_iter()
+        .filter(|event| event.op == StoreOp::Get && event.path.starts_with(&root))
+        .count();
+    assert_eq!(reads, 0, "descriptor GETs under {root}");
+    engine_shutdown(&cell.state).await;
 }
 
 /// A valid two-minute observation capability for project `i`'s `w`.

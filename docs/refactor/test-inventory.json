@@ -70,10 +70,20 @@
   {
     "name": "a_capability_flood_never_starves_the_victims_watch",
     "attributes": [
-      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
-      "#[ignore = \"red until shared-cells phase B step 15: unverified capability lookups are not charged to a shared budget\"]"
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "eea3f6d53a87119ac856809913db19a323a43fcfefa1a3b1739f797c69520fea",
+    "function_sha256": "433c784c1559a32f518b352e98d249f63f64bb23315a6f0088f244cec8354de6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_hostile.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_capability_naming_an_unserved_project_reads_no_descriptor",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "874a3fb9229bdb36f4df427ca27e314102c670a5a129a6a5e19208617648ab2c",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_hostile.rs",
@@ -8732,6 +8742,17 @@
     "scenarios": [
       "HIS-007"
     ]
+  },
+  {
+    "name": "unverified_capability_lookups_never_fill_the_descriptor_cache",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e7ce7a545d06870b2373682fe0273d460397912ae25ffc082b33ac9f37b3b3e6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_hostile.rs",
+    "scenarios": []
   },
   {
     "name": "usage_pipeline_end_to_end_exactly_once",

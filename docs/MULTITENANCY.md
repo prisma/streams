@@ -1210,6 +1210,19 @@ observes beside a verified principal, never in place of a capability
 that failed (a garbage capability plus a learned key used to observe
 with no token, past revocation). Off and shadow modes are unchanged.
 
+*Anonymous lookups (shared-cells M2, phase B step 15).* A capability
+names its project before anything verifies it, so the claim spends
+nothing another tenant needs. Under enforce, a claim naming a project
+a fresh feed does not place on this cell is refused before any read.
+Otherwise the capability is checked against the descriptor the cell
+already holds, without claiming, touching or filling a cache slot;
+only when nothing current is held does one store lookup run, which
+publishes nothing and spends the claimed project's budget (20 a
+second) and the server's (100 a second). Only a carrier that verified
+reads through the descriptor cache, and its proof and wait use what
+that read returns. A stale feed spends the server's budget only, and
+the verified carrier then fails closed as above.
+
 ---
 
 ## 16. Internal RPC targets
