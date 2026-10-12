@@ -105,6 +105,17 @@ export interface StreamMetadata {
   watches?: WatchDefinition[];
 }
 
+/** A project's metered usage for one UTC month (`GET
+ * /v1/projects/{project}/usage`): the ingest, read and storage counters,
+ * corrections and effective totals the server reports beside these. */
+export interface ProjectUsage {
+  accountId: string;
+  projectId: string;
+  /** `YYYY-MM`. */
+  month: string;
+  [counter: string]: unknown;
+}
+
 export interface AppendResult {
   cursor: string;
   count: number;
@@ -1000,6 +1011,34 @@ export class StreamsClient {
       if (!body.cursor) return;
       cursor = body.cursor;
     }
+  }
+
+  /**
+   * The project's metered usage, for the current month or `month`
+   * (`YYYY-MM`). Needs the client's `project` and a credential with the
+   * `streams.usage.read` scope and no stream-prefix restriction (a
+   * restricted one is refused `403` `prefix_denied`). The figures trail
+   * writes by about 10 s and reads by about 20 s.
+   */
+  async usage(options?: { month?: string }): Promise<ProjectUsage> {
+    if (!this.ctx.project) {
+      throw new StreamsError(
+        400,
+        "project_required",
+        "project usage is read per project; set StreamsClientOptions.project",
+        false,
+      );
+    }
+    const query = options?.month !== undefined
+      ? `?${new URLSearchParams({ month: options.month })}`
+      : "";
+    const res = await req(
+      this.ctx,
+      "GET",
+      `/v1/projects/${encodeURIComponent(this.ctx.project)}/usage${query}`,
+      {},
+    );
+    return (await res.json()) as ProjectUsage;
   }
 }
 

@@ -81,6 +81,17 @@ WebCrypto, as 43 characters of unpadded base64url) and keep it in your
 secret store. The service never stores it: if you lose it, the stream's
 data cannot be read by anyone.
 
+## Usage
+
+`await client.usage()` reads the project's metered usage for the current
+UTC month, `client.usage({ month: "2026-09" })` for another (`YYYY-MM`; a
+malformed month is `400` `invalid_month`). It needs the client's `project`
+(`connect` sets it) and a credential with the `streams.usage.read` scope,
+which a credential has by default, and no stream-prefix restriction: a
+prefix-restricted credential is refused `403` `prefix_denied`, since the
+totals cover every stream of the project. The figures trail an
+acknowledged write by about 10 s and a read by about 20 s.
+
 ## Watches
 
 A watch turns "did anything change for customer c1?" into one long poll.

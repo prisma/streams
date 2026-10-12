@@ -512,3 +512,57 @@ test("generateEncryptionKey encodes the bytes WebCrypto fills, URL-safe and with
     delete webcrypto.getRandomValues;
   }
 });
+
+// ---- client.usage ---------------------------------------------------------
+
+const PROJECT_USAGE = { accountId: "acct-1", projectId: "proj 1", month: "2026-10", ingestPayloadBytes: 10, effective: { storageByteSeconds: "0" } };
+
+function usageClient(answers, options = {}) {
+  const sent = [];
+  const client = new StreamsClient({ url: "https://cell.example", token: "tok", project: "proj 1", ...options, fetch: async (url, init) => {
+    sent.push({ url: String(url), method: init.method, headers: { ...init.headers } });
+    const answer = answers[sent.length - 1];
+    return answer ? answer() : json(PROJECT_USAGE);
+  } });
+  return { client, sent };
+}
+
+test("usage reads the project's usage, for a month when one is given, without the stream key", async () => {
+  const { client, sent } = usageClient([]);
+  assert.deepEqual(await client.usage(), PROJECT_USAGE);
+  assert.deepEqual(await client.usage({ month: "2026-09" }), PROJECT_USAGE);
+  assert.deepEqual(sent.map(s => [s.method, s.url]), [
+    ["GET", "https://cell.example/v1/projects/proj%201/usage"],
+    ["GET", "https://cell.example/v1/projects/proj%201/usage?month=2026-09"],
+  ]);
+  assert.deepEqual(sent[0].headers, { authorization: "Bearer tok" });
+});
+
+test("usage needs the client's project and sends nothing without it", async () => {
+  const { client, sent } = usageClient([], { project: undefined });
+  const error = await rejection(client.usage());
+  assert.ok(error instanceof StreamsError);
+  assert.deepEqual([error.status, error.code, sent.length], [400, "project_required", 0]);
+});
+
+test("a prefix-restricted credential's 403 prefix_denied and a 400 invalid_month surface as the server's StreamsError", async () => {
+  const { client, sent } = usageClient([
+    () => envelope(403, "prefix_denied", false),
+    () => envelope(400, "invalid_month", false),
+  ]);
+  const denied = await rejection(client.usage());
+  assert.ok(denied instanceof StreamsError);
+  assert.deepEqual([denied.status, denied.code, denied.retryable], [403, "prefix_denied", false]);
+  const month = await rejection(client.usage({ month: "2026-13" }));
+  assert.deepEqual([month.status, month.code], [400, "invalid_month"]);
+  assert.equal(sent.length, 2);
+});
+
+clocked("a connected client reads its credential's project's usage", async () => {
+  const p = platform({});
+  const client = await StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: ISSUER, fetch: p.fetch });
+  await client.usage({ month: "2026-10" });
+  assert.deepEqual(p.served.map(c => [c.url, c.headers.authorization]), [
+    ["https://cell.example/v1/projects/proj-1/usage?month=2026-10", "Bearer jwt-1"],
+  ]);
+});
