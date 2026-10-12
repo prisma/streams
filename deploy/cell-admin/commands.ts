@@ -1,6 +1,6 @@
-// init, admit, token, list and bundle. offboard lives in offboard.ts, the
-// owner's controls in owner.ts, and the rules every writer follows in
-// rules.ts.
+// init, admit, check-sizing, token, list and bundle. offboard lives in
+// offboard.ts, the owner's controls in owner.ts, and the rules every
+// writer follows in rules.ts.
 import { join, resolve } from "node:path";
 import type { Flags } from "./args";
 import { CELL_ENV_KEYS, stageCellEnv } from "./cell-env";
@@ -156,6 +156,21 @@ export async function admit(f: Flags, io: Io): Promise<void> {
     io.out(`quotas: ${QUOTA_FIELDS.map((q) => `${q}=${quotas[q]}`).join(" ")}`);
     io.out(`bundle: ${store.bundlePath} (feed_version ${state.feed_version}); ${publishNote(store)}`);
   });
+}
+
+/// `check-sizing`: whether `--profile` (a release's copies, given in full)
+/// keep the cell's sizing, by `admit`'s own check (checkSizing): k, the
+/// ceilings and the layered profile's digest `init` fixed. Exit 0, or 1
+/// with admit's refusal. It changes neither the state nor the bundle.
+export async function sizingCheck(f: Flags, io: Io): Promise<void> {
+  const store = await openStore(f);
+  const { state } = await loadChecked(store);
+  checkSizing(state, readProfiles(profilesOf(f)));
+  const c = state.cell;
+  io.out(
+    `cell ${c.cell_id}: the profiles give its fixed sizing (k=${c.share_k}, the ceilings init fixed, ` +
+      `profile digest ${c.profile_digest.slice(0, 12)})`,
+  );
 }
 
 export async function token(f: Flags, io: Io): Promise<void> {

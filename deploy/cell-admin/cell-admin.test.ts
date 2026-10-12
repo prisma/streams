@@ -444,6 +444,62 @@ for (const kind of STORES) {
       });
     });
 
+    // deploy-q5 triage B4 (D9): a release's profiles against the cell's
+    // fixed sizing, before the release deploys.
+    describe("check-sizing", () => {
+      const shipped = (name: string) => readFileSync(join(import.meta.dir, "..", "profiles", name), "utf8");
+      /// A release's copy of the two profiles, the second with `extra` appended.
+      const release = (extra = "") => {
+        const root = scratchDir();
+        return ["compute-1g.env", "shared-cell.env"].flatMap((name, i) => {
+          const path = join(root, name);
+          writeFileSync(path, `${shipped(name)}${i === 1 ? extra : ""}`);
+          return ["--profile", path];
+        });
+      };
+      /// What check-sizing must leave as it was: the state, the bundle, and
+      /// a directory store's listing.
+      const unchanged = (state: string) => [readStateText(state), readBundleText(state),
+        ...(state.startsWith("s3://") ? [] : readdirSync(state).sort())];
+
+      test("accepts a release's profiles that give the cell's sizing, reads the state and writes nothing", async () => {
+        const c = await initCell();
+        const before = unchanged(c.state);
+        const r = await run("check-sizing", "--state", c.state, ...release("# a comment the digest ignores\n"));
+        const digest = readState(c.state).cell.profile_digest.slice(0, 12);
+        expect([r.code, r.out, r.err]).toEqual([0,
+          `cell cell_sc1: the profiles give its fixed sizing (k=8, the ceilings init fixed, profile digest ${digest})`, ""]);
+        expect(unchanged(c.state)).toEqual(before);
+      });
+
+      test("refuses, exit 1 and with admit's message, profiles that move a ceiling or change the layered profile", async () => {
+        const c = await initCell();
+        const before = unchanged(c.state);
+        let r = await run("check-sizing", "--state", c.state, ...release("SSE_MAX_CONNECTIONS=800\n"));
+        expect([r.code, r.out, r.err]).toEqual([1, "",
+          "cell-admin check-sizing: the profiles changed since init (max_live_subscriptions 150 -> 100): " +
+            "a cell's ceilings are fixed for its life"]);
+        r = await run("check-sizing", "--state", c.state, ...release("SEGMENT_TARGET_BYTES=1\n"));
+        expect([r.code, r.err.replace(/[0-9a-f]{12}/g, "<d>")]).toEqual([1,
+          "cell-admin check-sizing: the layered profile differs from the one init recorded (digest <d> -> <d>): " +
+            "a cell's profile is fixed for its life"]);
+        r = await run("check-sizing", "--state", c.state, ...release("KEEP_AWAKE=0\n"));
+        expect([r.code, r.err]).toEqual([1,
+          "cell-admin check-sizing: profile KEEP_AWAKE=0: a shared cell needs KEEP_AWAKE=1"]);
+        expect(unchanged(c.state)).toEqual(before);
+      });
+
+      test("needs the release's --profile files, never the tool's own copies, and a cell", async () => {
+        const c = await initCell();
+        let r = await run("check-sizing", "--state", c.state);
+        expect([r.code, r.err.split("\n")[0]]).toEqual([2, "cell-admin check-sizing: --profile is required"]);
+        deleteState(c.state);
+        r = await run("check-sizing", "--state", c.state, ...release());
+        expect([r.code, r.err]).toEqual([1,
+          `cell-admin check-sizing: ${statePathOf(c.state)} does not exist: run cell-admin init first`]);
+      });
+    });
+
     describe("token", () => {
       test("mints a 24 h token the cell's keys verify, at the credential's versions, into a 0600 file only", async () => {
         const c = await initCell();

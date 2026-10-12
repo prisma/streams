@@ -8,7 +8,7 @@
 // Exit codes: 0 done, 1 refused or failed, 2 usage, 3 not yet (publish the
 // bundle or wait, then run the same command again).
 import { parseFlags } from "./args";
-import { admit, bundle, init, type Io, list, token } from "./commands";
+import { admit, bundle, init, type Io, list, sizingCheck, token } from "./commands";
 import { AdminError } from "./errors";
 import { canary, credential, exportCell } from "./credentials";
 import { keysAdd, keysRetire } from "./keys";
@@ -21,6 +21,7 @@ const USAGE = `usage: cell-admin <command> --state DIR|s3://BUCKET/cells/CELL [-
             [--cell-env FILE]
   admit     --project P --workspace W [--quota field=value]... [--scopes "s ..."] [--prefix p]...
             [--profile F]...
+  check-sizing --profile F [--profile F]...
   token     --credential C --key-file K --out FILE [--ttl SECS] [--sub NAME]
   offboard  --project P [--cell-url URL --key-file K] [--max-walks N] [--settle-secs S]
   list      [--json]
@@ -56,6 +57,10 @@ const COMMANDS = {
       multi: ["quota", "prefix", "profile"],
       required: ["state", "project", "workspace"],
     },
+  },
+  "check-sizing": {
+    run: sizingCheck,
+    spec: { single: ["state", "s3-credentials"], multi: ["profile"], required: ["state", "profile"] },
   },
   token: {
     run: token,
