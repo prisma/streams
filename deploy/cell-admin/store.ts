@@ -74,6 +74,9 @@ export interface StateStore {
   exclusive<T>(fn: () => Promise<T>): Promise<T>;
   /// The state and its ETag; refuses a missing state or another format.
   load(): Promise<{ state: CellState; etag: string }>;
+  /// As load, unless the state still has `etag` (null): the issuer's
+  /// revalidation, a conditional GET that a bucket answers 304.
+  loadChanged(etag: string): Promise<{ state: CellState; etag: string } | null>;
   /// Replace the state if it still has `etag`, or create it when `etag`
   /// is null (refused with a Conflict when one exists). Returns its ETag.
   save(state: CellState, etag: string | null): Promise<string>;
@@ -149,8 +152,17 @@ export class DirStore implements StateStore {
   }
 
   async load(): Promise<{ state: CellState; etag: string }> {
+    return (await this.loadUnless(null))!;
+  }
+
+  async loadChanged(etag: string): Promise<{ state: CellState; etag: string } | null> {
+    return this.loadUnless(etag);
+  }
+
+  private async loadUnless(etag: string | null): Promise<{ state: CellState; etag: string } | null> {
     const text = readText(this.statePath);
     if (text === null) throw new AdminError(`${this.statePath} does not exist: run cell-admin init first`);
+    if (etag !== null && etagOf(text) === etag) return null;
     const state = parseState(text, this.statePath);
     this.denylist = state.cell.denylist;
     return { state, etag: etagOf(text) };

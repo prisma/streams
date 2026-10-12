@@ -117,8 +117,13 @@ class S3Object {
     }
   }
 
-  async get(): Promise<{ text: string; etag: string } | null> {
-    const res = await this.send("GET", {});
+  /// The object, or null when there is none; with `ifNoneMatch`,
+  /// "unchanged" while it still has that ETag (a conditional GET).
+  async get(): Promise<{ text: string; etag: string } | null>;
+  async get(ifNoneMatch: string | undefined): Promise<{ text: string; etag: string } | null | "unchanged">;
+  async get(ifNoneMatch?: string): Promise<{ text: string; etag: string } | null | "unchanged"> {
+    const res = await this.send("GET", ifNoneMatch === undefined ? {} : { "if-none-match": ifNoneMatch });
+    if (res.status === 304 && ifNoneMatch !== undefined) return "unchanged";
     if (res.status === 404) return null;
     if (!res.ok) throw new AdminError(`GET ${this.where} answered ${res.status} ${await codeOf(res)}`.trimEnd());
     const etag = res.headers.get("etag");
@@ -241,7 +246,16 @@ export class S3Store implements StateStore {
   }
 
   async load(): Promise<{ state: CellState; etag: string }> {
-    const got = await this.state.get();
+    return (await this.loadUnless(undefined))!;
+  }
+
+  loadChanged(etag: string): Promise<{ state: CellState; etag: string } | null> {
+    return this.loadUnless(etag);
+  }
+
+  private async loadUnless(etag: string | undefined): Promise<{ state: CellState; etag: string } | null> {
+    const got = await this.state.get(etag);
+    if (got === "unchanged") return null;
     if (got === null) throw new AdminError(`${this.statePath} does not exist: run cell-admin init first`);
     const state = parseState(got.text, this.statePath);
     if (state.cell.cell_id !== this.cellId) {

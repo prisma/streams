@@ -17,6 +17,8 @@ export class FakeS3 {
   honourPreconditions = true;
   /// true: answer every write 403, as a bucket under a read-only key.
   denyWrites = false;
+  /// true: answer every read 500, as a store in an outage.
+  failReads = false;
   requests: { method: string; key: string; status: number }[] = [];
   /// Runs before a PUT of `key` is decided, e.g. to land a racing write.
   beforePut?: (key: string) => void;
@@ -59,6 +61,7 @@ export class FakeS3 {
   private async decide(req: Request, key: string): Promise<Response> {
     const obj = this.objects.get(key);
     if (req.method === "GET") {
+      if (this.failReads) return this.error(500, "InternalError");
       if (!obj) return this.error(404, "NoSuchKey");
       if (req.headers.get("if-none-match") === obj.etag) return new Response(null, { status: 304 });
       return new Response(obj.body, { headers: { etag: obj.etag } });

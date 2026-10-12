@@ -5,7 +5,8 @@ import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { BundlePublisher, burnId, mutate, unversionedChanges } from "./publish";
 import { stateText } from "./state";
-import { Conflict, DirStore } from "./store";
+import { readS3Credentials, S3Store } from "./s3store";
+import { Conflict, DirStore, type StateStore } from "./store";
 import {
   cleanup,
   credentialsOf,
@@ -19,6 +20,7 @@ import {
   readBundle,
   readState,
   run,
+  STORES,
   scratchDir,
   stateExists,
   useStore,
@@ -38,6 +40,28 @@ describe("the directory store", () => {
     expect((await store.load()).etag).toBe(next);
     expect(readState(c.state).feed_version).toBe(2);
   });
+});
+
+describe("loadChanged", () => {
+  for (const kind of STORES) {
+    test(`answers null for the state as read, and the state another writer committed (${kind})`, async () => {
+      useStore(kind);
+      const c = await initCell();
+      const store: StateStore =
+        kind === "dir" ? new DirStore(c.state) : await S3Store.open(c.state, readS3Credentials(credentialsOf(c.state)!));
+      // The status of the store's last read of the state (a bucket's).
+      const lastRead = () =>
+        kind === "dir" ? "file" : fakeS3().requests.filter((q) => q.method === "GET" && q.key.endsWith("/cell-state.json")).at(-1)?.status;
+      const { etag } = await store.load();
+      expect([await store.loadChanged(etag), lastRead()]).toEqual([null, kind === "dir" ? "file" : 304]);
+      expect((await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w")).code).toBe(0);
+      const changed = await store.loadChanged(etag);
+      expect([changed?.state.projects.proj_a?.workspace_id, changed?.state.feed_version, lastRead()]).toEqual(
+        ["w", 2, kind === "dir" ? "file" : 200],
+      );
+      expect([await store.loadChanged(changed!.etag), lastRead()]).toEqual([null, kind === "dir" ? "file" : 304]);
+    });
+  }
 });
 
 describe("mutate", () => {
