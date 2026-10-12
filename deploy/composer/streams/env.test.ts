@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseProfiles } from "../../cell-admin/profile";
-import { buildChildEnv, CHILD_NAMES, type ChildEnvInput, PASS_THROUGH } from "./env";
+import { buildChildEnv, CHILD_NAMES, type ChildEnvInput, PASS_THROUGH, STAGES } from "./env";
 
 const DEPLOY = join(import.meta.dir, "..", "..");
 const read = (path: string) => readFileSync(join(DEPLOY, path), "utf8");
@@ -315,5 +315,26 @@ describe("refusals", () => {
       { refused: "input", message: "PORT http is not a TCP port" },
       { refused: "input", message: "PORT 65536 is not a TCP port" },
     ]);
+  });
+});
+
+describe("the app's bindings", () => {
+  test("bind exactly the platform names the child environment reads, CELL_STAGE as the stage and CELL_DEPLOY_NONCE as the deploy's nonce", () => {
+    const app = read("composer/app.ts");
+    const bound = [...app.matchAll(/^\s*(\w+): envSecret\("([A-Z0-9_]+)"\),$/gm)].map((m) => [m[1], m[2]]);
+    const platform = Object.values(CHILD_NAMES).flatMap((s) => (s.from === "platform" ? [s.name] : []));
+    expect(bound.map(([, name]) => name)).toEqual(platform);
+    expect([...app.matchAll(/^\s*(\w+): envParam\("([A-Z0-9_]+)"\),$/gm)].map((m) => [m[1], m[2]])).toEqual([
+      ["cellStage", "CELL_STAGE"],
+      ["deployNonce", "CELL_DEPLOY_NONCE"],
+    ]);
+    // Each bound field is a secretString() of the service's input schema,
+    // the stage is one of env.ts's three, and the nonce is a non-empty
+    // string no child-environment name carries.
+    const service = read("composer/streams/service.ts");
+    const fields = [...service.matchAll(/^\s*(\w+): secretString\(\),$/gm)].map((m) => m[1]);
+    expect(fields).toEqual(bound.map(([field]) => field));
+    expect(service).toContain(`cellStage: type.enumerated(${STAGES.map((s) => JSON.stringify(s)).join(", ")}),`);
+    expect([service.includes('deployNonce: "string > 0",'), "CELL_DEPLOY_NONCE" in CHILD_NAMES]).toEqual([true, false]);
   });
 });

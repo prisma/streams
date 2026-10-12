@@ -12,7 +12,7 @@ only in scratch directories, and one was deleted by a cleanup mid-campaign
 | `app-lb/` | `pilot` (`LB_BINARY_S3_KEY`), `MODE=lb` | rendezvous-hash router; the only client entry point |
 | `app-gen/` | `awsbench` (`AWSBENCH_S3_KEY`) | in-region load generator for soaks and benchmarks |
 
-Three more directories:
+Four more directories:
 - `profiles/` holds the environment files deploy scripts pass as `--env`
   lines: `compute-1g.env` for every server on the 1 GiB class, and
   `shared-cell.env` on top of it for a single-server shared cell.
@@ -39,6 +39,22 @@ Three more directories:
   by `package.json` and `bun.lock` (`bun install --frozen-lockfile`),
   started with `bun --no-install` (`main.ts`'s header).
   Tests: `bun test ./deploy/issuer`.
+- `composer/` is the shared cell's Composer app (`app.ts`, the
+  `streamscell` service in `streams/service.ts`, no Composer port). Its
+  entry (`streams/entry.ts`, bundled into `entry.js` when a release is
+  cut) verifies the release's own `streams-slate` against `release.json`,
+  builds the binary's whole environment with `streams/env.ts` from the two
+  profiles, the stage's `cells/<stage>.env`, the seven secrets by their
+  platform names, the binary's sha256 and `PATH`, `HOME`,
+  `SSL_CERT_FILE`, `SSL_CERT_DIR`, holds the keep-awake guard, keeps the
+  feed bundle current and supervises the binary with `supervise.ts` below;
+  any refusal answers `$PORT` with the generic 500 and logs the reason.
+  `prisma deploy` runs from a release directory's root, never from here
+  (public-beta deploy-q5 triage B2 and B5). Tests: `bun test
+  ./deploy/composer`; the end-to-end test is opt-in: `bun install
+  --frozen-lockfile` in `deploy/composer`, then
+  `CELL_ADMIN_E2E_BIN_DIR=target/release bun test ./deploy/composer`
+  (its good boot runs on an x86_64 Linux host only).
 
 All verify the download is an **x86_64 ELF** before exec. That check is
 not politeness: an aarch64 binary deploys "successfully" and crash-loops

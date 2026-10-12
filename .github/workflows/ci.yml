@@ -317,7 +317,9 @@ jobs:
         run: bun test sdk/scripts/credential-cancellation.test.mjs
       # The interim issuer's and the shared cell's Composer suites join by
       # the owner's answer X1 (a) of 2026-10-12 (./deploy/cell-watch joins
-      # the same line when it exists).
+      # the same line when it exists). ./deploy/composer runs without its
+      # node_modules; its end-to-end test is opt-in (CELL_ADMIN_E2E_BIN_DIR)
+      # and skips here.
       - name: Deploy wrapper, its feed poller, campaign staging, cell-admin, the interim issuer and the cell's Composer app (Bun)
         run: bun test ./deploy/supervise.test.ts ./deploy/feeds.test.ts ./deploy/stage-app.test.ts ./deploy/cell-admin ./deploy/issuer ./deploy/composer
       # cell-admin's end-to-end test boots the release streams-slate over
