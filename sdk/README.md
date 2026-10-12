@@ -22,7 +22,33 @@ for await (const rec of orders.subscribe({ routingKey: "c1" })) { /* … */ }
 A project credential (`prisma_streams_<id>.<secret>`, shown once when it
 is created) is exchanged at the token issuer for access tokens. Keep it in
 a server-side secret store and pass it whole; never ship it to a browser.
-`prismaStreamsCredential` turns it into a token source:
+
+```ts
+import { StreamsClient } from "@prisma/streams";
+
+const client = await StreamsClient.connect({
+  credential: process.env.PRISMA_STREAMS_CREDENTIAL!,
+  issuerUrl,
+});
+```
+
+`connect` exchanges the credential once. The client's base URL is the
+issuer's `endpoint` and its project is the credential's. An explicit `url`
+wins, and the client then never follows the issuer's `endpoint`; an issuer
+that names no endpoint needs one (`endpoint_required`). An issuer's
+`endpoint` must be `https:` or a loopback host (`localhost`, `*.localhost`,
+`127.0.0.1`, `[::1]`), because every request carries the stream key:
+anything else is refused before the first request (`insecure_endpoint`)
+unless you pass `allowInsecureEndpoint: true`. Tokens are exchanged again
+at 80% of their lifetime and after a `401`, as described under "Request
+failures and endpoint recovery". When an exchange names a different
+endpoint (and no `url` was given), the client moves there, starting with
+the request that triggered the exchange; an insecure endpoint is not
+followed.
+
+To build a client yourself, `prismaStreamsCredential` turns the credential
+into a token source (this sketch exchanges twice; `connect` seeds its
+token cache from the first exchange):
 
 ```ts
 import { StreamsClient, prismaStreamsCredential } from "@prisma/streams";
@@ -78,6 +104,11 @@ state in production. Appends, batches, final seals, epoch bumps and automatic
 reclaims share that instance's per-key queue. Independent routing keys can
 progress concurrently. A state store is not a cross-process lock; coordinate
 ownership externally before another instance takes over the same scope.
+
+A client made by `connect` keys producer state on the issuer URL, so a
+change of the service's hostname keeps every producer's sequence; a client
+made with `new StreamsClient({ url })` keys it on `url`, as before. A watch
+URL minted before a hostname change keeps the old host; mint a new one.
 
 A failed fetch or state save rejects the operation and leaves later queue
 operations usable. The server may already have committed the request. Retry

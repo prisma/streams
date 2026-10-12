@@ -351,3 +351,137 @@ clocked("retry: { transport: false } sends the exchange once and rejects with St
   assert.equal(error.cause, failure);
   assert.equal(requests.length, 1);
 });
+
+// ---- StreamsClient.connect ----------------------------------------------
+
+const { MemoryProducerStateStore } = sdk;
+const APPENDED = { cursor: "c", count: 1, duplicate: false, sealed: false };
+
+// The issuer answers its scripted exchanges in order (a field object is
+// merged into EXCHANGED; an Error is thrown as fetch throws); every other
+// host is the service, which refuses the tokens in `refused` with 401.
+function platform(...exchanges) {
+  const issued = [], served = [], refused = [];
+  const fetch = async (url, init) => {
+    const call = { url: String(url), method: init.method, headers: { ...init.headers } };
+    if (call.url.startsWith(`${ISSUER}/`)) {
+      issued.push(call);
+      const answer = exchanges[issued.length - 1] ?? exchanges.at(-1) ?? {};
+      if (answer instanceof Error) throw answer;
+      if (answer instanceof Response) return answer;
+      return json({ ...EXCHANGED, accessToken: `jwt-${issued.length}`, ...answer });
+    }
+    served.push(call);
+    if (refused.includes(call.headers.authorization)) return new Response("", { status: 401 });
+    return json(call.method === "POST" ? APPENDED : { name: "orders", contentType: "application/json", sealed: false });
+  };
+  return { fetch, issued, served, refused };
+}
+
+// A durable store that records every scope it is asked for.
+class ScopeLog extends MemoryProducerStateStore {
+  scopes = [];
+  async load(scope) { this.scopes.push(scope); return super.load(scope); }
+}
+
+clocked("connect exchanges once, serves the issuer's endpoint with its token, and keys producer state on the issuer URL and the credential's project", async () => {
+  const p = platform({ endpoint: "https://cell.example/" });
+  const client = await StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: `${ISSUER}/`, fetch: p.fetch });
+  assert.equal(p.issued.length, 1);
+  const orders = client.stream("orders", { encryptionKey: KEY });
+  await orders.metadata();
+  const state = new ScopeLog();
+  await orders.producer("checkout", { state }).append({ n: 1 });
+  assert.equal(p.issued.length, 1, "connect seeded the token cache: one exchange");
+  assert.deepEqual(p.served.map(c => [c.method, c.url, c.headers.authorization]), [
+    ["GET", "https://cell.example/v1/streams/orders", "Bearer jwt-1"],
+    ["POST", "https://cell.example/v1/streams/orders/records", "Bearer jwt-1"],
+  ]);
+  assert.deepEqual(state.scopes[0], { stream: "orders", producerId: "checkout", routingKey: "", project: "proj-1", endpoint: ISSUER });
+});
+
+clocked("an explicit url is the base whatever the issuer's endpoint, and an issuer without endpoint needs one", async () => {
+  const p = platform({ endpoint: null });
+  const client = await StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: ISSUER, url: "http://gateway.internal:8080/", fetch: p.fetch });
+  await client.stream("orders", { encryptionKey: KEY }).metadata();
+  const other = await StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: ISSUER, url: "https://gateway.example", fetch: platform({}).fetch });
+  assert.ok(other instanceof StreamsClient);
+  assert.deepEqual(p.served.map(c => c.url), ["http://gateway.internal:8080/v1/streams/orders"]);
+  const q = platform({ endpoint: null });
+  const error = await rejection(StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: ISSUER, fetch: q.fetch }));
+  assert.ok(error instanceof StreamsError);
+  assert.deepEqual([error.status, error.code, error.message], [400, "endpoint_required", "the issuer returned no endpoint; pass url"]);
+  assert.deepEqual([q.issued.length, q.served.length], [1, 0]);
+});
+
+clocked("an issuer endpoint that is neither https nor loopback is refused before any request carries the stream key", async () => {
+  for (const endpoint of ["http://cell.example", "ftp://cell.example", "not a url"]) {
+    const p = platform({ endpoint });
+    const error = await rejection(StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: ISSUER, fetch: p.fetch }));
+    assert.ok(error instanceof StreamsError, endpoint);
+    assert.deepEqual([error.status, error.code, p.served.length], [400, "insecure_endpoint", 0], endpoint);
+  }
+  for (const endpoint of ["http://localhost:8090", "http://app.localhost:8090", "http://127.0.0.1:8090", "http://[::1]:8090"]) {
+    const p = platform({ endpoint });
+    const client = await StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: ISSUER, fetch: p.fetch });
+    await client.stream("orders", { encryptionKey: KEY }).metadata();
+    assert.equal(p.served[0].url, `${endpoint}/v1/streams/orders`);
+  }
+  const p = platform({ endpoint: "http://cell.example" });
+  const client = await StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: ISSUER, fetch: p.fetch, allowInsecureEndpoint: true });
+  await client.stream("orders", { encryptionKey: KEY }).metadata();
+  assert.equal(p.served[0].url, "http://cell.example/v1/streams/orders");
+});
+
+clocked("a refresh that names a new endpoint sends the request that triggered it to the new host, and the producer's state is found there", async () => {
+  const p = platform(
+    { endpoint: "https://cell-a.example", expiresIn: 600 },
+    { endpoint: "https://cell-b.example", expiresIn: 600 },
+  );
+  const client = await StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: ISSUER, fetch: p.fetch });
+  const state = new MemoryProducerStateStore();
+  const producer = client.stream("orders", { encryptionKey: KEY }).producer("checkout", { state });
+  await producer.append({ n: 1 });
+  clock = T0 + 480 * SECOND;
+  await producer.append({ n: 2 });
+  await producer.append({ n: 3 });
+  assert.equal(p.issued.length, 2);
+  assert.deepEqual(p.served.map(c => [c.url, c.headers.authorization, c.headers["producer-seq"]]), [
+    ["https://cell-a.example/v1/streams/orders/records", "Bearer jwt-1", "0"],
+    ["https://cell-b.example/v1/streams/orders/records", "Bearer jwt-2", "1"],
+    ["https://cell-b.example/v1/streams/orders/records", "Bearer jwt-2", "2"],
+  ]);
+});
+
+clocked("an explicit url is never left for the issuer's endpoint, and an insecure endpoint on refresh is not followed", async () => {
+  const explicit = platform({ endpoint: "https://cell-a.example", expiresIn: 600 }, { endpoint: "https://cell-b.example", expiresIn: 600 });
+  const pinned = await StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: ISSUER, url: "https://gateway.example", fetch: explicit.fetch });
+  const insecure = platform({ endpoint: "https://cell-a.example", expiresIn: 600 }, { endpoint: "http://cell-b.example", expiresIn: 600 });
+  const guarded = await StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: ISSUER, fetch: insecure.fetch });
+  clock = T0 + 480 * SECOND;
+  await pinned.stream("orders", { encryptionKey: KEY }).metadata();
+  await guarded.stream("orders", { encryptionKey: KEY }).metadata();
+  assert.deepEqual([explicit.issued.length, insecure.issued.length], [2, 2]);
+  assert.deepEqual(explicit.served.map(c => [c.url, c.headers.authorization]), [["https://gateway.example/v1/streams/orders", "Bearer jwt-2"]]);
+  assert.deepEqual(insecure.served.map(c => [c.url, c.headers.authorization]), [["https://cell-a.example/v1/streams/orders", "Bearer jwt-2"]]);
+});
+
+clocked("a 401 from the service exchanges the credential again and replays", async () => {
+  const p = platform({});
+  p.refused.push("Bearer jwt-1");
+  const client = await StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: ISSUER, fetch: p.fetch });
+  await client.stream("orders", { encryptionKey: KEY }).metadata();
+  assert.equal(p.issued.length, 2);
+  assert.deepEqual(p.served.map(c => c.headers.authorization), ["Bearer jwt-1", "Bearer jwt-2"]);
+});
+
+clocked("connect rejects with the exchange's refusal, and its retry option reaches the exchange", async () => {
+  const p = platform(envelope(401, "invalid_credential", false));
+  const refused = await rejection(StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: ISSUER, fetch: p.fetch }));
+  assert.ok(refused instanceof CredentialExchangeError);
+  assert.deepEqual([refused.status, refused.code, p.issued.length, p.served.length], [401, "invalid_credential", 1, 0]);
+  const q = platform(new TypeError("fetch failed"));
+  const lost = await rejection(StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: ISSUER, fetch: q.fetch, retry: { transport: false } }));
+  assert.ok(lost instanceof StreamsTransportError);
+  assert.equal(q.issued.length, 1);
+});

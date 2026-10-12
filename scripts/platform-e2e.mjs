@@ -180,7 +180,7 @@ const tok1 = await j(await exchange(SECRET));
 check("exchange succeeds for the active credential", tok1.status === 200 && !!tok1.body.accessToken);
 
 await sleep(1500); // feeds refresh (1s cadence on A/B)
-const { StreamsClient } = await import("../sdk/dist/index.js");
+const { StreamsClient, CredentialExchangeError } = await import("../sdk/dist/index.js");
 const client = new StreamsClient({
   url: gwBase, project: "proj-e2e",
   tokenProvider: async () => (await (await exchange(CURRENT_SECRET)).json()).accessToken,
@@ -200,11 +200,46 @@ try {
   check("SDK append + read round-trip through gateway", false, String(e));
 }
 
+// StreamsClient.connect on the same credential: one exchange, the
+// credential's project, the explicit url (the emulator's endpoint is null).
+// The client above keeps the rotation and revocation legs.
+let connectExchanges = 0;
+const countingFetch = (url, init) => {
+  if (String(url) === `${emuBase}/v1/token/streams`) connectExchanges++;
+  return fetch(url, init);
+};
+try {
+  const connected = await StreamsClient.connect({ credential: SECRET, issuerUrl: emuBase, url: gwBase, fetch: countingFetch });
+  const connectedStream = await connected.createStream("e2e/connected", { encryptionKey: KEY_B64, format: { kind: "json" } });
+  await connectedStream.append({ src: "connect" });
+  const scopes = [];
+  await connectedStream.producer("e2e-connect", { state: { load: async (s) => { scopes.push(s); }, save: async () => {} } })
+    .append({ src: "connect-producer" });
+  const page = await connectedStream.read();
+  check("connect: create + append + read through gateway", page.records.length === 2 && page.records[0]?.src === "connect",
+    JSON.stringify(page.records));
+  check("connect exchanged once", connectExchanges === 1, `exchanges ${connectExchanges}`);
+  check("connect: project is proj-e2e, producer state keyed on the issuer",
+    scopes[0]?.project === "proj-e2e" && scopes[0]?.endpoint === emuBase, JSON.stringify(scopes[0] ?? null));
+} catch (e) {
+  check("connect: create + append + read through gateway", false, String(e));
+}
+
 const oldToken = tok1.body.accessToken;
 const rotated = await j(await sfetch(`${emuBase}/v1/projects/proj-e2e/streams/credentials/${CRED_ID}/rotate`, { method: "POST" }));
 check("rotation returns a new secret once", rotated.status === 200 && !!rotated.body.secret);
 const NEW_SECRET = rotated.body.secret;
 CURRENT_SECRET = NEW_SECRET;
+{
+  let refusal;
+  try {
+    await StreamsClient.connect({ credential: SECRET, issuerUrl: emuBase, url: gwBase });
+  } catch (e) {
+    refusal = e;
+  }
+  check("connect with the rotated-out secret rejects with CredentialExchangeError 401",
+    refusal instanceof CredentialExchangeError && refusal.status === 401, String(refusal));
+}
 await sleep(2000);
 const oldRead = await readRecords(gwBase, "e2e/orders", oldToken);
 check("old-grant token refused after rotation reaches the cell", oldRead.status === 401 || oldRead.status === 403, `status ${oldRead.status}`);

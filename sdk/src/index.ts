@@ -246,7 +246,8 @@ export interface ProducerScope {
    * state store shared across projects must not mix their epochs. */
   project: string;
   /** The service base URL — two deployments with the same stream name
-   * are different producers. */
+   * are different producers. For a client made by `connect`, the
+   * issuer URL, which stays the same when the service's URL changes. */
   endpoint: string;
 }
 
@@ -463,6 +464,10 @@ interface Ctx {
   transportRetry: boolean;
   /** How a refusal is read, when not the Streams service's `errorFrom`. */
   errors?: (res: Response) => Promise<StreamsError>;
+  /** The `endpoint` of producer scopes when it is not `base`: a client
+   * made by `connect` keys them on the issuer URL, so following a new
+   * endpoint keeps every producer's sequence. */
+  scopeEndpoint?: string;
 }
 
 /** A token is refreshed once less than this margin of its lifetime is
@@ -845,13 +850,58 @@ export function prismaStreamsCredential(
   return {
     exchange,
     async tokenProvider() {
-      const exchanged = await exchange();
-      return { token: exchanged.accessToken, expiresAt: Date.now() + exchanged.expiresIn * 1000 };
+      return exchangedToken(await exchange());
     },
     get last() {
       return last;
     },
   };
+}
+
+function exchangedToken(exchanged: CredentialExchange): TokenWithExpiry {
+  return { token: exchanged.accessToken, expiresAt: Date.now() + exchanged.expiresIn * 1000 };
+}
+
+export interface ConnectOptions {
+  /** The project credential, `prisma_streams_<id>.<secret>`. */
+  credential: string;
+  /** The token issuer's base URL. */
+  issuerUrl: string;
+  /** The service's base URL. When set it is used as given and the
+   * issuer's `endpoint` is never followed. */
+  url?: string;
+  fetch?: typeof fetch;
+  retry?: StreamsClientOptions["retry"];
+  /** Accept an issuer `endpoint` that is neither `https:` nor a loopback
+   * host. Every request carries the stream key. */
+  allowInsecureEndpoint?: boolean;
+}
+
+/** `https:`, or `http:` to a loopback host. */
+function secureEndpoint(endpoint: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  const host = url.hostname;
+  const loopback = host === "localhost" || host.endsWith(".localhost") ||
+    host === "127.0.0.1" || host === "[::1]";
+  return url.protocol === "https:" || (url.protocol === "http:" && loopback);
+}
+
+/** The issuer's endpoint as a base URL, or why it cannot be one. */
+function issuedEndpoint(endpoint: string | null, allowInsecure: boolean): string {
+  if (endpoint === null) {
+    throw new StreamsError(400, "endpoint_required", "the issuer returned no endpoint; pass url");
+  }
+  if (!allowInsecure && !secureEndpoint(endpoint)) {
+    throw new StreamsError(400, "insecure_endpoint",
+      "the issuer returned an endpoint that is neither https nor a loopback host; " +
+        "pass url, or allowInsecureEndpoint to accept it");
+  }
+  return endpoint.replace(/\/$/, "");
 }
 
 // ---------------------------------------------------------------------
@@ -869,6 +919,44 @@ export class StreamsClient {
       fetch: options.fetch ?? fetch.bind(globalThis),
       transportRetry: options.retry?.transport ?? true,
     };
+  }
+
+  /**
+   * A client for the project a credential belongs to, from one credential
+   * exchange: the base URL is `url` when given, else the issuer's
+   * `endpoint` (`https:` or a loopback host unless
+   * `allowInsecureEndpoint`); the project is the credential's. Tokens are
+   * exchanged again before they expire and after a `401`; when an
+   * exchange names a new endpoint and no `url` was given, the client
+   * moves there, starting with the request that triggered the exchange.
+   * Producer state is keyed on the issuer URL, so a move keeps every
+   * producer's sequence.
+   */
+  static async connect(options: ConnectOptions): Promise<StreamsClient> {
+    const allowInsecure = options.allowInsecureEndpoint ?? false;
+    const provider = prismaStreamsCredential(options.credential, {
+      issuerUrl: options.issuerUrl,
+      fetch: options.fetch,
+      retry: options.retry,
+    });
+    const first = await provider.exchange();
+    const follow = options.url === undefined;
+    const client: StreamsClient = new StreamsClient({
+      url: options.url ?? issuedEndpoint(first.endpoint, allowInsecure),
+      project: first.projectId,
+      fetch: options.fetch,
+      retry: options.retry,
+      tokenProvider: async () => {
+        const exchanged = await provider.exchange();
+        if (follow && exchanged.endpoint !== null && (allowInsecure || secureEndpoint(exchanged.endpoint))) {
+          client.ctx.base = exchanged.endpoint.replace(/\/$/, "");
+        }
+        return exchangedToken(exchanged);
+      },
+    });
+    client.ctx.scopeEndpoint = options.issuerUrl.replace(/\/$/, "");
+    client.ctx.tokens = { generation: 0, token: cachedToken(exchangedToken(first)) };
+    return client;
   }
 
   stream<T = unknown>(name: string, options: StreamHandleOptions): Stream<T> {
@@ -1407,7 +1495,7 @@ export class Producer<T> {
       producerId: this.id,
       routingKey,
       project: this.ctx.project ?? "",
-      endpoint: this.ctx.base,
+      endpoint: this.ctx.scopeEndpoint ?? this.ctx.base,
     };
   }
 
