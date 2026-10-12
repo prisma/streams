@@ -49,6 +49,7 @@ Common
 Producer (produce; walk/tail/group/subs run one in-process when given --rate/--mbps/--concurrency)
   --records N per request (1 = POST /records; >1 = POST /records:batch, JSON only)
   --record-bytes B (1024)  --payload corpus|b64rand|bytes  --zipf S (0 = uniform stream activity)
+  (--payload oracle, records that name their project, needs an owner: tenants.ts writes it)
   --pool N (cycle N pregenerated records)  --timeout-ms 60000  --drain-secs 60
 `;
 

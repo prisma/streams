@@ -13,6 +13,7 @@ import {
   type Resp, type StreamTally,
 } from "./common.ts";
 import { Producer, produceSpec, targetKey, type Ctx } from "./produce.ts";
+import { countOracle, countOracleEvent, type Owner } from "./oracle.ts";
 
 interface Target {
   name: string;
@@ -52,6 +53,8 @@ class Reader {
     private readonly http: Http,
     private readonly meter: Meter,
     private readonly recordBytes: number,
+    /** Check every delivered record against this project (oracle.ts). */
+    private readonly owner?: Owner,
   ) {}
   /** One GET of records (or a long-poll) from `cursor`, counted. */
   async page(t: Target, cursor: string, opt: { live?: boolean; waitMs?: number; maxBytes?: number; signal?: AbortSignal }): Promise<Page> {
@@ -74,7 +77,12 @@ class Reader {
     if (r.status === 200 && r.body.byteLength > 0) {
       const ct = r.headers?.get("content-type") ?? "";
       if (ct.startsWith("application/json")) {
-        const arr = parseJson<unknown[]>(r, this.meter, "read") ?? [];
+        const parsed = parseJson<unknown[]>(r, this.meter, "read");
+        const arr = parsed ?? [];
+        // A page that does not parse was delivered as no record of this
+        // project's: one corrupt delivery (unmarked), as an unparsable SSE
+        // event is, never nothing.
+        if (this.owner) countOracle(this.meter, this.owner, parsed ?? [null]);
         pg.records = arr.length;
         // read_payload: "[" + records joined by "," + "]"
         pg.bytes = arr.length ? r.body.byteLength - 2 - (arr.length - 1) : 0;
@@ -156,6 +164,7 @@ class Reader {
           if (kind === "data") {
             // JSON: data:[<record>]; binary: base64 of the record.
             const bytes = b64 ? b64Len(d) : Buffer.byteLength(d) - 2;
+            if (this.owner && !b64) countOracleEvent(this.meter, this.owner, d);
             this.deliver(t, 1, bytes);
           } else if (kind === "control") {
             try {
@@ -233,7 +242,7 @@ export async function walk(ctx: Ctx, signal: AbortSignal): Promise<Record<string
   const parallel = o.int("parallel", 4);
   const maxBytes = o.int("max-bytes", 0) || undefined;
   const expect = o.str("expect");
-  const rd = new Reader(http, meter, o.int("record-bytes", 1024));
+  const rd = new Reader(http, meter, o.int("record-bytes", 1024), ctx.owner);
   const ts = targets(ctx);
   const reader0 = new Map<string, Got>();
   const done: number[] = [];
@@ -378,7 +387,7 @@ export async function tail(ctx: Ctx, signal: AbortSignal): Promise<Record<string
   const waitMs = o.int("wait-ms", 25_000);
   const from = o.str("from", "now");
   if (from !== "now" && from !== "beginning") throw new Error("tail --from must be now|beginning");
-  const rd = new Reader(http, meter, o.int("record-bytes", 1024));
+  const rd = new Reader(http, meter, o.int("record-bytes", 1024), ctx.owner);
   const ts = targets(ctx);
   // Pin each subscription's start before the producer runs, so it sees
   // every record acked from here on.
@@ -405,7 +414,7 @@ export async function subs(ctx: Ctx, signal: AbortSignal): Promise<Record<string
   const via = o.str("via", "sse");
   const rate = o.num("connect-rate", 20);
   const waitMs = o.int("wait-ms", 25_000);
-  const rd = new Reader(http, meter, o.int("record-bytes", 1024));
+  const rd = new Reader(http, meter, o.int("record-bytes", 1024), ctx.owner);
   const ts = targets(ctx);
   const prod = startProducer(ctx, signal);
   const loops: Promise<void>[] = [];
@@ -487,6 +496,7 @@ export async function group(ctx: Ctx, signal: AbortSignal): Promise<Record<strin
       meter.add("pulls");
       const j = parseJson<{ messages: PullMsg[]; backlog: number }>(r, meter, "pull");
       if (!j) {
+        if (ctx.owner && !isBytes) countOracle(meter, ctx.owner, [null]); // a corrupt delivery, as a page
         await sleep(1000, signal);
         continue;
       }
@@ -496,6 +506,7 @@ export async function group(ctx: Ctx, signal: AbortSignal): Promise<Record<strin
         if (untilEmpty && j.backlog === 0 && !prod) return;
         continue;
       }
+      if (ctx.owner && !isBytes) countOracle(meter, ctx.owner, msgs.map((m) => m.value));
       let bytes = 0;
       for (const m of msgs) {
         bytes += isBytes && typeof m.value === "string" ? b64Len(m.value) : Buffer.byteLength(JSON.stringify(m.value));

@@ -34,7 +34,7 @@ import fieldlib as F
 
 BIN_HOME = os.path.expanduser("~/.streams-k2/bin")
 K2GEN_DEFAULT = os.path.abspath(os.path.join(F.HERE, ".."))
-K2GEN_SOURCES = ("k2gen.ts", "common.ts", "produce.ts", "consume.ts", "churn.ts", "corpus.ts")
+K2GEN_SOURCES = ("k2gen.ts", "common.ts", "produce.ts", "consume.ts", "churn.ts", "corpus.ts", "audit.ts", "oracle.ts")
 
 
 def sha256(data: bytes) -> str:

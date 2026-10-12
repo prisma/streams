@@ -10,6 +10,7 @@
 import { backoffMs, encName, parseJson, pool, sleep, stop, type Resp } from "./common.ts";
 import type { Ctx } from "./produce.ts";
 import { PayloadGen, payloadKind } from "./corpus.ts";
+import { countOracle } from "./oracle.ts";
 
 export async function churn(ctx: Ctx, signal: AbortSignal): Promise<Record<string, unknown>> {
   const { o, http, meter } = ctx;
@@ -29,7 +30,7 @@ export async function churn(ctx: Ctx, signal: AbortSignal): Promise<Record<strin
   // A batch carries up to --records records (JSON only) and 1 MiB.
   const perReq = isBytes ? 1 : Math.max(1, Math.min(o.int("records", 100), Math.floor((1 << 20) / recordBytes)));
   const recsPerLife = Math.max(1, Math.round((sizeKiB * 1024) / recordBytes));
-  const gen = new PayloadGen(payload, recordBytes, ctx.seed, 4);
+  const gen = new PayloadGen(payload, recordBytes, ctx.seed, 4, ctx.owner);
   const doc: Record<string, unknown> = { format: { kind: isBytes ? "bytes" : "json" } };
   if (ttl) doc.expiry = { idle: `${ttl}s` };
   const createBody = JSON.stringify(doc);
@@ -99,7 +100,9 @@ export async function churn(ctx: Ctx, signal: AbortSignal): Promise<Record<strin
           gotBytes += r.body.byteLength;
           got += Math.round(r.body.byteLength / recordBytes);
         } else {
-          const arr = parseJson<unknown[]>(r, meter, "read") ?? [];
+          const parsed = parseJson<unknown[]>(r, meter, "read");
+          const arr = parsed ?? [];
+          if (ctx.owner) countOracle(meter, ctx.owner, parsed ?? [null]); // unparsable: one corrupt delivery
           got += arr.length;
           gotBytes += arr.length ? r.body.byteLength - 2 - (arr.length - 1) : 0;
         }

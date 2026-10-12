@@ -20,13 +20,18 @@
 //     offset of the records read so far (key cursor payload: kind,
 //     epoch[16], key hash[16], segment u32 LE, offset u64 LE).
 // The replay checks itself against the ledger's per-stream acked records
-// and bytes before any read. JSON streams only, unkeyed, no --pool.
+// and bytes before any read. JSON streams only, unkeyed, no --pool. An
+// oracle ledger (tenants.ts) replays only under the owner that wrote it,
+// and every record read back is also checked against that owner
+// (oracle.ts), so a foreign record is counted as a leak, not only as an
+// unexpected record.
 // Reads are counted like walk's (delivered records and payload bytes,
 // read latency per page), so the rig's meter checks apply unchanged.
 
 import { readFileSync } from "node:fs";
 import { Rng, Zipf, backoffMs, encName, pool, sleep, streamName, type StreamTally } from "./common.ts";
 import { PayloadGen, payloadKind } from "./corpus.ts";
+import { countOracle, type Owner } from "./oracle.ts";
 import type { Ctx } from "./produce.ts";
 
 const MAX_PAGE = 8 << 20;
@@ -58,6 +63,7 @@ interface LedgerSpec {
   recordBytes: number;
   payload: string;
   zipf: number;
+  owner: string | null;
   perStream: Record<string, StreamTally>;
 }
 
@@ -81,16 +87,22 @@ export function ledgerSpec(file: string): LedgerSpec {
     recordBytes: num("record-bytes", 1024),
     payload,
     zipf: num("zipf", 0),
+    owner: ((j.producer ?? {}) as { payload_owner?: string | null }).payload_owner ?? null,
     perStream: (j.per_stream ?? {}) as Record<string, StreamTally>,
   };
 }
 
 /** Replays Producer.build for `sent` requests (produce.ts). */
-export function replay(s: LedgerSpec, plans: Map<string, StreamPlan>, seqBase: number): { failed: number; replayErrors: string[] } {
+export function replay(
+  s: LedgerSpec, plans: Map<string, StreamPlan>, seqBase: number, owner?: Owner,
+): { failed: number; replayErrors: string[] } {
+  if (s.owner !== (owner?.project ?? null)) {
+    throw new Error(`${s.file}: written by owner ${s.owner ?? "(none)"}, audited as ${owner?.project ?? "(none)"}`);
+  }
   const names = Array.from({ length: s.streams }, (_, i) => streamName(s.prefix, i));
   const zipf = new Zipf(s.streams, s.zipf);
   const rngStream = new Rng(s.seed, 2);
-  const gen = new PayloadGen(payloadKind(s.payload), s.recordBytes, s.seed, 3);
+  const gen = new PayloadGen(payloadKind(s.payload), s.recordBytes, s.seed, 3, owner);
   const got = new Map<string, { records: number; bytes: number }>();
   for (let i = 0; i < s.sent; i++) {
     const name = names[zipf.sample(rngStream)]!;
@@ -158,6 +170,15 @@ export function splitArray(body: Uint8Array): Uint8Array[] {
     }
   }
   return out;
+}
+
+/** A record's parsed value, or null when it is not JSON. */
+function parseRecord(rec: Uint8Array): unknown {
+  try {
+    return JSON.parse(new TextDecoder().decode(rec));
+  } catch {
+    return null;
+  }
 }
 
 /** The offset a key cursor names (null when the token is not one). */
@@ -257,6 +278,7 @@ async function auditStream(ctx: Ctx, name: string, plan: StreamPlan, maxBytes: n
       bytes += rec.byteLength;
       m.feed(digest(rec), c.read_records++);
     }
+    if (ctx.owner) countOracle(meter, ctx.owner, recs.map(parseRecord));
     c.read_bytes += bytes;
     if (recs.length) {
       meter.add("delivered_records", recs.length);
@@ -290,7 +312,7 @@ export async function audit(ctx: Ctx, signal: AbortSignal): Promise<Record<strin
   const t0 = performance.now();
   for (const f of files) {
     const s = ledgerSpec(f);
-    const r = replay(s, plans, sent);
+    const r = replay(s, plans, sent, ctx.owner);
     sent += s.sent;
     failed += r.failed;
     replayErrors.push(...r.replayErrors);

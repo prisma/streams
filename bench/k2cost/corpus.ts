@@ -8,18 +8,22 @@
 // b64rand : JSON with one base64 field of PRNG bytes (incompressible
 //           beyond base64's 4/3).
 // bytes   : a raw PRNG body, for {"format":{"kind":"bytes"}} streams.
+// oracle  : b64rand's shape with the owner's project and a MAC
+//           (oracle.ts); only a generator that names an owner
+//           (tenants.ts) can write it.
 //
-// Everything is a pure function of (seed, tag, call order): the same
-// flags produce byte-identical records. The vocabulary, user agents
-// and event names are fixed tables independent of the seed.
+// Everything is a pure function of (seed, tag, call order) and the
+// owner: the same flags produce byte-identical records. The vocabulary,
+// user agents and event names are fixed tables independent of the seed.
 
 import { Opts, Rng, Zipf, round3 } from "./common.ts";
+import { type Owner, oracleOverhead, oracleRecord } from "./oracle.ts";
 
-export type PayloadKind = "corpus" | "b64rand" | "bytes";
+export type PayloadKind = "corpus" | "b64rand" | "bytes" | "oracle";
 
 export function payloadKind(s: string): PayloadKind {
-  if (s === "corpus" || s === "b64rand" || s === "bytes") return s;
-  throw new Error(`--payload must be corpus|b64rand|bytes, got ${s}`);
+  if (s === "corpus" || s === "b64rand" || s === "bytes" || s === "oracle") return s;
+  throw new Error(`--payload must be corpus|b64rand|bytes|oracle, got ${s}`);
 }
 
 // ---------------------------------------------------------------- tables
@@ -231,19 +235,31 @@ export class PayloadGen {
   private r: Rng;
   private seq = 0;
   private clock = Date.UTC(2026, 8, 1);
-  constructor(readonly kind: PayloadKind, readonly recordBytes: number, seed: number, tag: number) {
+  constructor(
+    readonly kind: PayloadKind,
+    readonly recordBytes: number,
+    seed: number,
+    tag: number,
+    private readonly owner?: Owner,
+  ) {
     this.r = new Rng(seed, tag + 1000);
     if (kind === "corpus") this.corpus = new CorpusGen(seed, tag);
+    if (kind === "oracle" && !owner) throw new Error("--payload oracle needs an owning project (tenants.ts)");
   }
   get isJson(): boolean {
     return this.kind !== "bytes";
   }
-  /** One JSON record's text (corpus or b64rand). */
+  /** One JSON record's text (corpus, b64rand or oracle). */
   json(): string {
     if (this.corpus) return this.corpus.next(this.recordBytes);
     this.seq++;
     this.clock += 1 + Math.round(this.r.exp(50));
-    const head = `{"id":${this.seq},"ts":"${new Date(this.clock).toISOString()}","data":"`;
+    const ts = new Date(this.clock).toISOString();
+    if (this.owner && this.kind === "oracle") {
+      const chars = Math.max(4, this.recordBytes - oracleOverhead(this.owner, this.seq, ts));
+      return oracleRecord(this.owner, this.seq, ts, this.r.fill(new Uint8Array(Math.floor(chars / 4) * 3)));
+    }
+    const head = `{"id":${this.seq},"ts":"${ts}","data":"`;
     // 4 base64 chars per 3 random bytes, no padding: at most 3 B short.
     const chars = Math.max(4, this.recordBytes - head.length - 2);
     const raw = this.r.fill(new Uint8Array(Math.floor(chars / 4) * 3));

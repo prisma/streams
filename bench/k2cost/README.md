@@ -16,6 +16,8 @@ ratchet here is 1,000 lines per file; the s3lite census it reads (C2) is
 | `scrape.py` | the instruments: `loop`, `snapshot`, `usage`, `posture`, `envfile` |
 | `price.py [run-dir] [--baseline run-dir]` | Tigris pricing, the §4.3 allocation, K2 revenue, per-GiB costs and margins, W(r), calibration, validity; with `k2cells.py` (cell pricing and allocation), `k2store.py` (stored bytes, k, the a/b/c fit, U) and `k2valid.py` (§8 checks) |
 | `points/*.env` | one tiny smoke point and one full-scale point per design run (L0, L1, L2, L3, L5, L6, L7) |
+| `oracle.ts` | the shared-cell leak oracle: a `--payload oracle` record names its project and carries a MAC under that project's harness key, which the server never sees. Every read path (pages, long-polls, SSE, pulls, churn's read-back, the audit) counts each record it is delivered as `oracle_ok`, `oracle_foreign` (another project's record: a leak), `oracle_bad_mac` (corruption) or `oracle_unmarked`. Only a generator that names an owner writes it (`tenants.ts`) |
+| `fake-cell.ts`, `*.test.ts` | the harness's tests, against a product-surface fake: `bun test ./bench/k2cost` |
 
 ## Running a point
 

@@ -6,6 +6,7 @@ import {
   Http, Meter, Opts, Rng, Zipf, backoffMs, encName, parseJson, pool, sdkBackoffMs, sdkRetryable, sleep, stop, streamName, utf8,
 } from "./common.ts";
 import { PayloadGen, payloadKind, type PayloadKind } from "./corpus.ts";
+import type { Owner } from "./oracle.ts";
 
 export interface Ctx {
   http: Http;
@@ -15,6 +16,9 @@ export interface Ctx {
   streams: number;
   seed: number;
   duration: number;
+  /** The project whose oracle records this generator writes and checks
+   * (tenants.ts); k2gen runs without one. */
+  owner?: Owner;
 }
 
 export const CAP = 4096;
@@ -101,6 +105,7 @@ export function produceSpec(o: Opts, required: boolean): ProduceSpec | null {
   if (records < 1 || records > 10_000) throw new Error("--records must be 1..10000");
   if (payload === "bytes" && records !== 1) throw new Error("--payload bytes takes singles only (:batch is JSON only)");
   if (payload === "corpus" && recordBytes < 128) throw new Error("--payload corpus needs --record-bytes >= 128");
+  if (payload === "oracle" && recordBytes < 192) throw new Error("--payload oracle needs --record-bytes >= 192");
   return spec;
 }
 
@@ -159,7 +164,7 @@ export class Producer {
     this.names = Array.from({ length: ctx.streams }, (_, i) => streamName(ctx.prefix, i));
     this.zipf = new Zipf(ctx.streams, spec.zipf);
     this.rngStream = new Rng(ctx.seed, 2);
-    this.gen = new PayloadGen(spec.payload, spec.recordBytes, ctx.seed, 3);
+    this.gen = new PayloadGen(spec.payload, spec.recordBytes, ctx.seed, 3, ctx.owner);
     for (let i = 0; i < spec.pool; i++) this.poolRecs.push(this.gen.isJson ? this.gen.json() : this.gen.raw());
   }
   private record(): string | Uint8Array {
@@ -266,6 +271,7 @@ export class Producer {
         records_per_request: s.records,
         record_bytes: s.recordBytes,
         payload: s.payload,
+        payload_owner: this.ctx.owner?.project ?? null,
         zipf: s.zipf,
         routing_keys: s.routingKeys,
         pool: s.pool,
