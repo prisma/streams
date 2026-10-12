@@ -25,8 +25,16 @@ The workspace lock contained neither banned package nor `openssl-sys`.
 - `paste` 1.0.15, through pinned SlateDB → foyer-memory 0.22.3:
   [RUSTSEC-2024-0436](https://rustsec.org/advisories/RUSTSEC-2024-0436) reports
   discontinued maintenance and no safe upgrade. Retain this build-time macro
-  dependency while tracking upstream replacement. These two named advisory
-  exceptions do not exempt a new vulnerability advisory.
+  dependency while tracking upstream replacement.
+- `unsafe-libyaml` 0.2.11, through pinned SlateDB → figment 0.10.19 (SlateDB
+  enables its `yaml` feature unconditionally) → serde_yaml 0.9.34:
+  [RUSTSEC-2024-0449](https://rustsec.org/advisories/RUSTSEC-2024-0449) reports
+  an archived repository and no safe upgrade. Streams constructs SlateDB
+  `Settings` only through `Settings::default()`; SlateDB itself never calls its
+  `from_file`, `from_env` or `load` providers, so the YAML parser is linked but
+  unreached. Remove the exception when SlateDB drops or gates the provider.
+  These three named advisory exceptions do not exempt a new vulnerability
+  advisory.
 - `webpki-roots` and `webpki-root-certs`, each exactly 1.0.8, contain certificate
   data under CDLA-Permissive-2.0. `deny.toml` permits that license only for these
   exact packages; their notices remain required. There is no blanket allowance

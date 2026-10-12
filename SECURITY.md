@@ -51,6 +51,7 @@ SlateDB/foyer dependency update.
 |---|---|---|---|
 | RUSTSEC-2025-0141 | SlateDB 0.14.1 → foyer → bincode 1.3.3 | unmaintained status, not a reported vulnerability | upgrade SlateDB/foyer when it removes bincode 1.x |
 | RUSTSEC-2024-0436 | SlateDB 0.14.1 → foyer → paste | unmaintained build-time macro crate | same |
+| RUSTSEC-2024-0449 | SlateDB 0717cc1 → figment → serde_yaml → unsafe-libyaml | unmaintained; Streams never calls SlateDB's YAML/file/env settings loaders (only `Settings::default()`) | SlateDB drops or feature-gates figment's `yaml` provider |
 
 ## Surface posture
 
