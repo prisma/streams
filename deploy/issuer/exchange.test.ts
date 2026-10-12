@@ -183,6 +183,25 @@ describe("the exchange", () => {
     expect((await post(issuer, other)).status).toBe(200);
   });
 
+  test("checks a body that arrives slowly against the state as it is once the body is in, not as it was", async () => {
+    const cell = await issuerCell();
+    const { id, secret } = await customerSecret(cell, "sp_a");
+    const { issuer, cache } = await issuerFor(cell);
+    // The client sends its headers, then trickles the body.
+    let send!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({ start: (c) => void (send = c) });
+    const pending = issuer.fetch(new Request("https://issuer.example.com/v1/token/streams", {
+      method: "POST", headers: { authorization: `StreamsCredential ${secret}` }, body, duplex: "half",
+    } as RequestInit));
+    await new Promise((r) => setTimeout(r, 20));
+    // Meanwhile the owner revokes the credential, and the copy revalidates.
+    await run("offboard", "--state", cell.state, "--project", "sp_a");
+    await cache.refresh();
+    send.enqueue(new TextEncoder().encode("{}"));
+    send.close();
+    expect(await answer(await pending)).toEqual([403, refusal("credential_not_active", `credential ${id} is revoked`)]);
+  });
+
   test("refuses a credential past its expiry, and a project being deleted", async () => {
     const cell = await issuerCell();
     const { id, secret } = await customerSecret(cell, "sp_a");

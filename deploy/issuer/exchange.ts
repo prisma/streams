@@ -214,10 +214,13 @@ export class Exchange {
     const presented = PRESENTED.exec(req.headers.get("authorization") ?? "");
     if (!presented) return this.malformed(ip);
     const [, id, secret] = presented;
+    const ask = await readAsk(req, this.cfg.tokenTtlSecs);
+    // The copy is read once the body is in: a client that trickles its
+    // body must not have its checks run against a copy older than the one
+    // fresh() measures (a revocation that landed meanwhile).
     const state = this.cache.state;
     const cred = state.credentials[id];
     if (cred !== undefined) Object.assign(seen, { credential: id, projectId: cred.project_id });
-    const ask = await readAsk(req, this.cfg.tokenTtlSecs);
     if (typeof ask === "string") return result("invalid_request", refuse(400, "invalid_request", ask));
     // The HMAC runs for an unknown id too: the answer's timing tells nothing.
     const pepper = verifySecret(this.cfg.peppers, cred, secret);
