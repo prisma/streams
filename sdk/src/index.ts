@@ -308,7 +308,9 @@ export interface ProducerOptions {
    */
   state?: ProducerStateStore;
   /** Opt-in: claim a fresh epoch on 403 stale-epoch (can fence a live
-   * producer sharing this id). */
+   * producer sharing this id). Not for a fence that refuses the replay of
+   * an append whose answer was lost (`AppendOutcomeUnknownError`): that
+   * append may have been written, and claiming would store it again. */
   autoClaim?: boolean;
   /**
    * This session's guarantees end when the process does: state is kept
@@ -383,18 +385,32 @@ export class StreamsTransportError extends StreamsError {
  * HTTP status (0 for a transport failure); `cause` is the server's answer
  * as a `StreamsError`, or the value `fetch` threw. A retry the server
  * deduplicates needs a producer.
+ *
+ * Also a producer append (`Producer.append`, `Producer.appendMany`) whose
+ * replay after a transport failure the server refused before its duplicate
+ * check (another writer fenced the producer id, the collection was sealed,
+ * a quota still refused it after the attempts, or any other refusal): the
+ * attempt whose answer was lost may have been written. `status` is the
+ * refusal's and `cause` the refusal (a `ProducerFencedError` for a fence);
+ * the producer keeps its epoch and sequence, and `autoClaim` claims no new
+ * epoch for it.
  */
 export class AppendOutcomeUnknownError extends StreamsError {
-  constructor(status: number, cause: unknown) {
+  constructor(status: number, cause: unknown, replayRefused = false) {
     const answer = status === 0 || !(cause instanceof StreamsError)
       ? "a transport failure"
       : `HTTP ${status} ${cause.code}`;
     super(
       status,
       "outcome_unknown",
-      `the append's last attempt ended in ${answer}, so the SDK cannot tell ` +
-        "whether it was written; it will not send it again; retry only if a " +
-        "second copy is acceptable, or append through a producer",
+      replayRefused
+        ? "the producer append's outcome is unknown: an attempt's answer was " +
+          `lost and the server refused its replay (${answer}), so the SDK ` +
+          "cannot tell whether it was written; no new epoch was claimed for " +
+          "it; read the stream before sending it again"
+        : `the append's last attempt ended in ${answer}, so the SDK cannot ` +
+          "tell whether it was written; it will not send it again; retry only " +
+          "if a second copy is acceptable, or append through a producer",
       false,
     );
     this.name = "AppendOutcomeUnknownError";
@@ -715,6 +731,19 @@ function plainAppendFailure(e: unknown): unknown {
   return e;
 }
 
+/** A producer append request's own failure (`req()`'s `classify`): an
+ * error answer after an earlier attempt's transport failure (a replay the
+ * server refused before its duplicate check: another writer's fence, a
+ * seal, a quota) cannot say the lost attempt was not written, so it becomes
+ * `AppendOutcomeUnknownError`'s producer variant, which `Producer.sendNow`
+ * does not answer with a new epoch. A transport failure that outlasts the
+ * attempts, and an answer with no lost attempt before it, pass through. */
+function producerAppendFailure(failure: StreamsError, answerLost: boolean): unknown {
+  return answerLost && !(failure instanceof StreamsTransportError)
+    ? new AppendOutcomeUnknownError(failure.status, failure, true)
+    : failure;
+}
+
 /** A plain append's 2xx answer. The server wrote the record, so a body that
  * cannot be read (not JSON, or a connection lost mid-body) is neither a
  * retryable failure nor an unknown outcome: a second append would be a
@@ -759,7 +788,9 @@ async function reconnectAfter(backoffMs: number, signal?: AbortSignal): Promise<
  * the caller handles a transport failure itself (a subscription's reads).
  *
  * `classify` maps the failure that ends this request (its transport
- * failure, or the answer it gives up on) to the error it rejects with. A
+ * failure, or the answer it gives up on) to the error it rejects with;
+ * `answerLost` tells it that an earlier attempt failed in transport, so
+ * that attempt may have taken effect (a producer append's replay). A
  * token provider's rejection and an abort's reason are not this request's
  * answer and pass through unchanged. */
 async function req(
@@ -770,11 +801,12 @@ async function req(
   body?: BodyInit,
   signal?: AbortSignal,
   replayTransport = true,
-  classify: (failure: StreamsError) => unknown = (failure) => failure,
+  classify: (failure: StreamsError, answerLost: boolean) => unknown = (failure) => failure,
 ): Promise<Response> {
   const h: Record<string, string> = { ...headers };
   let rejectedGeneration: number | undefined;
   let refreshed = false;
+  let answerLost = false;
   for (let attempt = 0; ; attempt++) {
     signal?.throwIfAborted();
     const auth = await requestWait(authHeader(ctx, rejectedGeneration), signal);
@@ -798,7 +830,8 @@ async function req(
       // The four attempts the 429/503 replay counts too. A 401's single
       // token refresh is not bounded by them, so a request makes at most
       // five attempts: the fifth only after a 401 at the fourth.
-      if (!ctx.transportRetry || !replayTransport || attempt >= 3) throw classify(failure);
+      if (!ctx.transportRetry || !replayTransport || attempt >= 3) throw classify(failure, answerLost);
+      answerLost = true;
       await sleep(TRANSPORT_BACKOFF_MS[attempt], signal);
       signal?.throwIfAborted();
       continue;
@@ -807,7 +840,7 @@ async function req(
     // Consume/classify failure before applying generic retry. In
     // particular a 503 routing response is permanent at this endpoint.
     const error = await (ctx.errors ?? errorFrom)(res);
-    if (error instanceof WrongCellError) throw classify(error);
+    if (error instanceof WrongCellError) throw classify(error, answerLost);
     // 401 = the token itself is bad or expired: refresh ONCE through
     // the provider and replay. `wrong_cell` is 421/503 by contract
     // (never 401), so a misdirected request never burns a refresh.
@@ -825,7 +858,7 @@ async function req(
       signal?.throwIfAborted();
       continue;
     }
-    throw classify(error);
+    throw classify(error, answerLost);
   }
 }
 
@@ -1259,13 +1292,20 @@ export class Stream<T = unknown> {
     // A transport failure is replayed with the same producer id, epoch and
     // sequence, which the server deduplicates (an append that landed is
     // answered `duplicate: true`); the scope's queue holds later operations
-    // until it settles.
+    // until it settles. A replay the server refuses before that check (a
+    // fence by another writer, a seal, a quota) cannot say the lost attempt
+    // was not written: it rejects as `AppendOutcomeUnknownError`
+    // (`producerAppendFailure`), which Producer.sendNow does not answer
+    // with a new epoch.
     const res = await req(
       this.ctx,
       "POST",
       this.path(batch ? "/records:batch" : "/records"),
       h,
       payload,
+      undefined,
+      true,
+      producerAppendFailure,
     );
     return (await res.json()) as AppendResult;
   }

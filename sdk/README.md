@@ -143,6 +143,10 @@ In plain words:
   retry the server deduplicates. A plain append answered `2xx` whose
   answer cannot be read rejects with `unreadable_response`: it was
   written, so do not send it again.
+- A producer append whose replay the server refuses (another writer
+  fenced its producer id, the collection was sealed, a quota still refused
+  it) rejects with `AppendOutcomeUnknownError` too, the refusal as its
+  `cause`: the attempt whose answer was lost may have been written.
 - Consumer, subscription and watch loops reconnect after transport
   failures and retryable `429`/`503` answers until you abort them; any
   other error ends them, and so does a consumer loop's failed settlement.
@@ -216,7 +220,13 @@ URL minted before a hostname change keeps the old host; mint a new one.
 A producer append whose fetch fails is sent again with the same sequence
 after 1, 2 and 4 s, before any later operation of its routing key; the
 server answers a replay of an append that landed with `duplicate: true` and
-stores it once. A fetch failure that outlasts those attempts, or a failed
+stores it once. Some refusals come before that check: when another writer
+has fenced the producer id, the collection has been sealed, or a quota
+refuses every replay, the append rejects with `AppendOutcomeUnknownError`
+(the refusal as `cause`), the producer keeps its epoch and sequence, and
+`autoClaim` claims no new epoch for it, which would store the record a
+second time. Read the stream to learn whether it was written before sending
+it again. A fetch failure that outlasts those attempts, or a failed
 state save, rejects the operation and leaves later queue operations usable.
 The server may already have committed the request. Retry the same payload
 to resolve that uncertain outcome before sending different content or

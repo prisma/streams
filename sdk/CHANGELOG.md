@@ -23,10 +23,13 @@ not carried over).
   not send the append again after such an answer. Code that caught
   `StreamsTransportError` around a plain append no longer catches it
   there; append through a producer for a retry the server deduplicates.
-  A plain append answered `2xx` whose answer cannot be read rejects with
-  `StreamsError` `unreadable_response` (`retryable: false`): it was
-  written. A token provider's failure is never classified as an append's
-  unknown outcome.
+  A producer append whose replay after a transport failure the server
+  refuses (a fence by another writer of its producer id, a seal, a quota)
+  rejects with `AppendOutcomeUnknownError` as well, the refusal as
+  `cause`, and `autoClaim` claims no new epoch for it. A plain append
+  answered `2xx` whose answer cannot be read rejects with `StreamsError`
+  `unreadable_response` (`retryable: false`): it was written. A token
+  provider's failure is never classified as an append's unknown outcome.
 
 ### Added
 
