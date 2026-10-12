@@ -209,7 +209,18 @@ async fn tail_ring_serves_live_reads_and_survives_eviction() {
             engine.ring_published.load(Ordering::Relaxed) > 0,
             "seed {seed}: nothing was ever published to the ring"
         );
-        assert!(evicted > 0, "seed {seed}: budget never forced an eviction");
+        // L6 spike: on the spill arm nothing here is absorbed, so the budget
+        // refuses batches rather than evicting unabsorbed pages; either is
+        // the budget acting, which is what this anti-vacuity check asks.
+        let refused = engine.l6_ring_refused();
+        assert!(
+            evicted + refused > 0,
+            "seed {seed}: budget never forced an eviction (or, spilling, a refusal)"
+        );
+        if engine.l6_spill {
+            assert_eq!(evicted, 0, "seed {seed}: the spill arm evicted an unabsorbed page");
+            assert!(refused > 0, "seed {seed}: the spill arm's budget never acted");
+        }
 
         let _ds: Arc<dyn ObjectStore> = store.clone();
         let observed = drain_observed(&engine, hash, &key, &cov).await;

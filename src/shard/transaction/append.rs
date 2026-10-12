@@ -252,8 +252,14 @@ impl CommitTransaction<'_> {
             if self.engine.ring_enabled {
                 local.frames.ring.push_page(first, page.last, bytes.clone());
             }
-            self.batch
-                .put(crate::crypto_page::shard_page_key(&hash, page.last), bytes);
+            let key = crate::crypto_page::shard_page_key(&hash, page.last);
+            if self.engine.l6_spill {
+                // L6 spike (dB §1.1): the memtable keeps the ring's own
+                // allocation instead of a copy.
+                self.batch.put_bytes(Bytes::from(key), bytes);
+            } else {
+                self.batch.put(key, bytes);
+            }
             first = page.last.saturating_add(1);
         }
         stored

@@ -26,6 +26,8 @@ use billing_ops::BillingReply;
 mod commit_handoff;
 use commit_handoff::{Attachment, CommitHandoff};
 pub(crate) use tail_ring::RingScan;
+pub(crate) use tail_ring::{RingBudget, RingSettings};
+use tail_ring::l6_holds_unabsorbed;
 mod commit_plan;
 mod history_partition;
 mod lane_rows;
@@ -922,6 +924,14 @@ pub(crate) struct ShardConfig {
     /// truth for anything the ring no longer covers: restart, eviction,
     /// lagging consumers.
     pub tail_ring_bytes: usize,
+    /// L6 spike: the spill arm (`L6_SPILL=1`, read from the environment by
+    /// default so a whole test run can take the arm). With it the ring runs
+    /// under `shared_ring` (or, without one, a budget of `tail_ring_bytes`
+    /// for this engine alone) with no eviction at or above `absorbed`, and
+    /// pages enter the write batch through `put_bytes`.
+    pub l6_spill: bool,
+    /// L6 spike: the process-wide ring budget every engine shares.
+    pub shared_ring: Option<Arc<RingBudget>>,
     /// Evict resident stream handles idle at least this long (and
     /// referenced by nothing but the map). Zero disables. The durable
     /// dirty-stream index keeps unabsorbed evictees discoverable, so
@@ -983,6 +993,8 @@ impl Default for ShardConfig {
             wal_gather_skip_reqs: 32,
             wal_gather_skip_bytes: 1024 * 1024,
             tail_ring_bytes: 0,
+            l6_spill: crate::spill::enabled(),
+            shared_ring: None,
             history: crate::config::HistoryConfig::default(),
             compactor_options: crate::config::EngineConfig::default().compactor_options(),
         }
@@ -1124,6 +1136,10 @@ pub(crate) struct ShardEngine {
     /// mirrors publish order engine-wide: one entry per published batch,
     /// so popping its front always evicts the globally oldest batch.
     ring_enabled: bool,
+    /// L6 spike: this engine's share of the process ring budget (spill arm).
+    ring_share: Option<tail_ring::RingShare>,
+    /// L6 spike: the spill arm is on for this engine.
+    pub(crate) l6_spill: bool,
     ring_budget: std::sync::atomic::AtomicI64,
     ring_fifo: Mutex<std::collections::VecDeque<Arc<StreamHandle>>>,
     pub ring_published: AtomicU64,
@@ -1252,6 +1268,25 @@ impl ShardEngine {
         // resolved from the process configuration at engine construction).
         let history2_settings =
             crate::history::history2_settings(&cfg.history, &cfg.compactor_options);
+        // L6 spike: the spill arm's ring runs under the process budget, or
+        // under a budget of its own when the caller passes none (tests).
+        let ring_share = cfg
+            .l6_spill
+            .then(|| {
+                cfg.shared_ring.clone().or_else(|| {
+                    let bytes = cfg.tail_ring_bytes as u64;
+                    (bytes > 0).then(|| {
+                        RingBudget::new(RingSettings {
+                            process_bytes: bytes,
+                            shard_cap_bytes: bytes,
+                            shard_floor_bytes: bytes,
+                        })
+                    })
+                })
+            })
+            .flatten()
+            .filter(|b| b.settings().process_bytes > 0 && b.settings().shard_cap_bytes > 0)
+            .map(|b| b.register());
         let engine = Arc::new(ShardEngine {
             prefix,
             writer_epoch: db.manifest().writer_epoch(),
@@ -1294,7 +1329,9 @@ impl ShardEngine {
             ack_to_enqueue_count: AtomicU64::new(0),
             ack_armed_at_us: AtomicU64::new(0),
             epoch: std::time::Instant::now(),
-            ring_enabled: cfg.tail_ring_bytes > 0,
+            ring_enabled: cfg.tail_ring_bytes > 0 || ring_share.is_some(),
+            ring_share,
+            l6_spill: cfg.l6_spill,
             ring_budget: std::sync::atomic::AtomicI64::new(cfg.tail_ring_bytes as i64),
             ring_fifo: Mutex::new(std::collections::VecDeque::new()),
             ring_published: AtomicU64::new(0),
@@ -2264,15 +2301,18 @@ impl ShardEngine {
         let before = map.len();
         if !idle.is_zero() {
             let cutoff = (now_ms() as u64).saturating_sub(idle.as_millis() as u64);
+            let spill = self.l6_spill;
             map.retain(|_, h| {
                 std::sync::Arc::strong_count(h) > 1
                     || h.last_touch_ms.load(std::sync::atomic::Ordering::Relaxed) > cutoff
+                    || (spill && l6_holds_unabsorbed(h))
             });
         }
         if max_resident > 0 && map.len() > max_resident {
             let mut evictable: Vec<(u64, [u8; 16])> = map
                 .iter()
                 .filter(|(_, h)| std::sync::Arc::strong_count(h) == 1)
+                .filter(|(_, h)| !(self.l6_spill && l6_holds_unabsorbed(h)))
                 .map(|(k, h)| {
                     (
                         h.last_touch_ms.load(std::sync::atomic::Ordering::Relaxed),

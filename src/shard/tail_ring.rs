@@ -5,8 +5,168 @@
 //! page it inspects again and slices it to the window.
 use super::{FrameReadResult, RingBatch, ShardEngine, StreamHandle, TailRing, record};
 use crate::crypto_page::CheckedPage;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::collections::{HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+/// L6 spike (SPIKE-PLAN M2, review B5): the ring budget of a spill-arm
+/// process. Every engine's share is `max(floor, min(cap, process ÷
+/// shards))`, where `shards` counts the engines registered with the budget:
+/// at 64 MiB / 8 MiB a shard keeps 8 MiB up to 8 shards, then the process
+/// budget divides, and the floor is the minimum a shard keeps however many
+/// shards share the process (the process budget is then overcommitted, by
+/// design, and reported). A share is a CAP: one shard never takes the whole
+/// process budget, and another shard's load never evicts or refuses its
+/// pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RingSettings {
+    pub(crate) process_bytes: u64,
+    pub(crate) shard_cap_bytes: u64,
+    pub(crate) shard_floor_bytes: u64,
+}
+
+pub(crate) struct RingBudget {
+    settings: RingSettings,
+    shards: AtomicU64,
+    resident: AtomicU64,
+    peak: AtomicU64,
+}
+
+impl RingBudget {
+    pub(crate) fn new(settings: RingSettings) -> Arc<Self> {
+        Arc::new(Self {
+            settings,
+            shards: AtomicU64::new(0),
+            resident: AtomicU64::new(0),
+            peak: AtomicU64::new(0),
+        })
+    }
+
+    pub(crate) fn settings(&self) -> RingSettings {
+        self.settings
+    }
+
+    /// Each registered engine's share now.
+    pub(crate) fn share(&self) -> u64 {
+        let s = self.settings;
+        let shards = self.shards.load(Ordering::Relaxed).max(1);
+        s.shard_cap_bytes
+            .min(s.process_bytes / shards)
+            .max(s.shard_floor_bytes.min(s.shard_cap_bytes))
+    }
+
+    /// Ring bytes resident across every registered engine.
+    pub(crate) fn resident(&self) -> u64 {
+        self.resident.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn peak(&self) -> u64 {
+        self.peak.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn shards(&self) -> u64 {
+        self.shards.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn register(self: &Arc<Self>) -> RingShare {
+        self.shards.fetch_add(1, Ordering::Relaxed);
+        RingShare {
+            budget: self.clone(),
+            resident: AtomicU64::new(0),
+            peak: AtomicU64::new(0),
+            fifo: Mutex::new(VecDeque::new()),
+            evicted_absorbed: AtomicU64::new(0),
+            evicted_absorbed_bytes: AtomicU64::new(0),
+            refused: AtomicU64::new(0),
+            refused_bytes: AtomicU64::new(0),
+            refused_gap: AtomicU64::new(0),
+            gap_resets: AtomicU64::new(0),
+        }
+    }
+}
+
+/// One engine's part of a [`RingBudget`]. Its batches leave the ring only
+/// through `ring_evict_absorbed`, which takes batches whose every page is
+/// below the stream's absorbed boundary; past its share the ring refuses a
+/// batch instead (the seal then falls back to the per-stream seek).
+pub(crate) struct RingShare {
+    budget: Arc<RingBudget>,
+    resident: AtomicU64,
+    peak: AtomicU64,
+    /// One entry per resident batch, in publish order.
+    fifo: Mutex<VecDeque<Arc<StreamHandle>>>,
+    pub(crate) evicted_absorbed: AtomicU64,
+    pub(crate) evicted_absorbed_bytes: AtomicU64,
+    /// Batches refused because the share held only unabsorbed pages...
+    pub(crate) refused: AtomicU64,
+    pub(crate) refused_bytes: AtomicU64,
+    /// ...of which refused because an earlier batch of the same stream was
+    /// refused and the ring still holds its unabsorbed pages.
+    pub(crate) refused_gap: AtomicU64,
+    /// Rings dropped whole at a gap because they held only absorbed pages.
+    pub(crate) gap_resets: AtomicU64,
+}
+
+impl RingShare {
+    pub(crate) fn resident(&self) -> u64 {
+        self.resident.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn peak(&self) -> u64 {
+        self.peak.load(Ordering::Relaxed)
+    }
+
+    fn admit(&self, bytes: u64) {
+        let now = self.resident.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        self.peak.fetch_max(now, Ordering::Relaxed);
+        let total = self.budget.resident.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        self.budget.peak.fetch_max(total, Ordering::Relaxed);
+    }
+
+    fn release(&self, bytes: u64) {
+        self.resident.fetch_sub(bytes, Ordering::Relaxed);
+        self.budget.resident.fetch_sub(bytes, Ordering::Relaxed);
+    }
+
+    fn refuse(&self, bytes: u64, gap: bool) {
+        self.refused.fetch_add(1, Ordering::Relaxed);
+        self.refused_bytes.fetch_add(bytes, Ordering::Relaxed);
+        if gap {
+            self.refused_gap.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "share_bytes": self.budget.share(),
+            "resident_bytes": self.resident(),
+            "peak_bytes": self.peak(),
+            "evicted_absorbed": self.evicted_absorbed.load(Ordering::Relaxed),
+            "evicted_absorbed_bytes": self.evicted_absorbed_bytes.load(Ordering::Relaxed),
+            "refused": self.refused.load(Ordering::Relaxed),
+            "refused_bytes": self.refused_bytes.load(Ordering::Relaxed),
+            "refused_gap": self.refused_gap.load(Ordering::Relaxed),
+            "gap_resets": self.gap_resets.load(Ordering::Relaxed),
+            "process_resident_bytes": self.budget.resident(),
+            "process_peak_bytes": self.budget.peak(),
+            "process_shards": self.budget.shards(),
+            "settings": {
+                "process_bytes": self.budget.settings.process_bytes,
+                "shard_cap_bytes": self.budget.settings.shard_cap_bytes,
+                "shard_floor_bytes": self.budget.settings.shard_floor_bytes,
+            },
+        })
+    }
+}
+
+impl Drop for RingShare {
+    fn drop(&mut self) {
+        self.budget.shards.fetch_sub(1, Ordering::Relaxed);
+        self.budget
+            .resident
+            .fetch_sub(self.resident.load(Ordering::Relaxed), Ordering::Relaxed);
+    }
+}
 
 /// One durable scan window served from the ring: offsets `[from, to)` up to
 /// `max_bytes` of stored frames, the same window the canonical scan honours.
@@ -27,6 +187,10 @@ impl ShardEngine {
         reason = "ShardEngine::ring_publish; a poisoned ring or eviction FIFO may hold a half-published batch; recovering it could serve a batch that was never fully retained or evict the wrong stream"
     )]
     pub(super) fn ring_publish(&self, handle: &Arc<StreamHandle>, recs: &RingBatch) {
+        if let Some(share) = &self.ring_share {
+            self.ring_publish_spill(share, handle, recs);
+            return;
+        }
         let (first, bytes) = (recs.first, recs.bytes);
         {
             let mut ring = handle.ring.lock().unwrap();
@@ -65,7 +229,122 @@ impl ShardEngine {
         }
     }
 
+    /// L6 spike: publish under the engine's share of the process budget.
+    /// Admission never evicts a page at or above its stream's absorbed
+    /// boundary: past the share it evicts this engine's absorbed batches,
+    /// oldest first, and refuses the batch if that does not make room.
+    #[expect(clippy::unwrap_used, reason = "L6 spike: throwaway ring budget")]
+    fn ring_publish_spill(&self, share: &RingShare, handle: &Arc<StreamHandle>, recs: &RingBatch) {
+        let bytes = recs.bytes as u64;
+        let absorbed = handle.state.lock().unwrap().durable.absorbed;
+        {
+            let mut ring = handle.ring.lock().unwrap();
+            if let Some(ceil) = ring.ceil()
+                && ceil != recs.first
+            {
+                if ceil > absorbed {
+                    // An earlier batch was refused and the ring still holds
+                    // unabsorbed pages: keep them, refuse the batch.
+                    drop(ring);
+                    share.refuse(bytes, true);
+                    return;
+                }
+                let (dropped, batches) = (ring.bytes as u64, ring.batches.len() as u64);
+                ring.batches.clear();
+                ring.bytes = 0;
+                drop(ring);
+                share.release(dropped);
+                share.evicted_absorbed.fetch_add(batches, Ordering::Relaxed);
+                share.evicted_absorbed_bytes.fetch_add(dropped, Ordering::Relaxed);
+                share.gap_resets.fetch_add(1, Ordering::Relaxed);
+                self.ring_evicted.fetch_add(batches, Ordering::Relaxed);
+                share
+                    .fifo
+                    .lock()
+                    .unwrap()
+                    .retain(|h| !Arc::ptr_eq(h, handle));
+            }
+        }
+        let cap = share.budget.share();
+        if share.resident() + bytes > cap {
+            self.ring_evict_absorbed(share, cap.saturating_sub(bytes));
+        }
+        if share.resident() + bytes > cap {
+            share.refuse(bytes, false);
+            return;
+        }
+        {
+            let mut ring = handle.ring.lock().unwrap();
+            ring.batches.push_back(recs.clone());
+            ring.bytes += recs.bytes;
+        }
+        share.fifo.lock().unwrap().push_back(handle.clone());
+        share.admit(bytes);
+        self.ring_published.fetch_add(1, Ordering::Relaxed);
+        self.ring_peak_bytes.fetch_max(share.resident(), Ordering::Relaxed);
+    }
+
+    /// L6 spike: evict this engine's batches whose pages are all below
+    /// their stream's absorbed boundary, oldest first, until its resident
+    /// bytes are at most `target`. A stream whose oldest batch still holds
+    /// an unabsorbed page keeps every batch (its later batches are newer).
+    #[expect(clippy::unwrap_used, reason = "L6 spike: throwaway ring budget")]
+    fn ring_evict_absorbed(&self, share: &RingShare, target: u64) {
+        let mut fifo = share.fifo.lock().unwrap();
+        let mut blocked: HashSet<usize> = HashSet::new();
+        let mut i = 0;
+        while share.resident() > target && i < fifo.len() {
+            let h = fifo[i].clone();
+            let key = Arc::as_ptr(&h) as usize;
+            if blocked.contains(&key) {
+                i += 1;
+                continue;
+            }
+            let absorbed = h.state.lock().unwrap().durable.absorbed;
+            let mut ring = h.ring.lock().unwrap();
+            match ring.batches.front() {
+                Some(b) if b.next <= absorbed => {
+                    let b = ring.batches.pop_front().unwrap();
+                    ring.bytes -= b.bytes;
+                    drop(ring);
+                    fifo.remove(i);
+                    share.release(b.bytes as u64);
+                    share.evicted_absorbed.fetch_add(1, Ordering::Relaxed);
+                    share
+                        .evicted_absorbed_bytes
+                        .fetch_add(b.bytes as u64, Ordering::Relaxed);
+                    self.ring_evicted.fetch_add(1, Ordering::Relaxed);
+                }
+                Some(_) => {
+                    blocked.insert(key);
+                    i += 1;
+                }
+                None => {
+                    drop(ring);
+                    fifo.remove(i);
+                }
+            }
+        }
+    }
+
+    /// L6 spike: batches the spill arm's ring refused (0 off the arm).
+    pub(crate) fn l6_ring_refused(&self) -> u64 {
+        self.ring_share
+            .as_ref()
+            .map_or(0, |s| s.refused.load(Ordering::Relaxed))
+    }
+
+    /// L6 spike: the share's counters for `/v1/debug/store`.
+    pub(crate) fn l6_ring_json(&self) -> serde_json::Value {
+        self.ring_share
+            .as_ref()
+            .map_or(serde_json::Value::Null, RingShare::json)
+    }
+
     pub(crate) fn ring_resident_bytes(&self) -> u64 {
+        if let Some(share) = &self.ring_share {
+            return share.resident();
+        }
         u64::try_from(
             (self.ring_cfg_bytes as i64 - self.ring_budget.load(Ordering::Relaxed)).max(0),
         )
@@ -196,4 +475,13 @@ impl TailRing {
         }
         (expected == to).then_some((out, expected))
     }
+}
+
+/// L6 spike: whether idle eviction must keep `h` (spill arm): its stream
+/// has pages above its absorbed boundary, which the next seal takes from its
+/// ring. A state lock held elsewhere keeps it too (eviction never waits).
+pub(super) fn l6_holds_unabsorbed(h: &StreamHandle) -> bool {
+    h.state
+        .try_lock()
+        .map_or(true, |st| st.durable.absorbed < st.durable.next)
 }

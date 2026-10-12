@@ -40,6 +40,7 @@ mod history;
 mod http;
 // L6 spike M1: SlateDB metrics per shard DB (throwaway instrumentation).
 mod l6_metrics;
+mod spill;
 #[cfg(test)]
 mod loom_check;
 #[cfg(test)]

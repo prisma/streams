@@ -1451,6 +1451,7 @@ async fn debug_timings(State(state): State<Arc<AppState>>) -> Response {
                     "miss_above_ceil": eng.ring_miss_above_ceil.load(std::sync::atomic::Ordering::Relaxed),
                     "miss_empty": eng.ring_miss_empty.load(std::sync::atomic::Ordering::Relaxed),
                     "evicted": eng.ring_evicted.load(std::sync::atomic::Ordering::Relaxed),
+                    "l6": eng.l6_ring_json(),
                 },
             }),
         );

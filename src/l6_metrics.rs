@@ -43,6 +43,8 @@ const NAMED: [&str; 5] = [
 ];
 
 fn registry() -> &'static Mutex<BTreeMap<String, Arc<ShardDbMetrics>>> {
+    // mt-lint: allow(name-keyed-map): keyed by shard DB path (L6 spike
+    // instrumentation), never by a stream or tenant identity.
     static REGISTRY: OnceLock<Mutex<BTreeMap<String, Arc<ShardDbMetrics>>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
@@ -81,10 +83,10 @@ impl ShardDbMetrics {
     }
 
     /// A counter's current value (0 when not registered yet).
-    pub(crate) fn counter(&self, name: &str) -> u64 {
+    pub(crate) fn counter(&self, metric: &str) -> u64 {
         self.recorder
             .snapshot()
-            .by_name(name)
+            .by_name(metric)
             .iter()
             .map(|m| match m.value {
                 MetricValue::Counter(v) => v,

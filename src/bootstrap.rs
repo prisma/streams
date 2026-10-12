@@ -470,6 +470,12 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
         shard_config.shared_history = Some(runtime_caps.history.clone());
         shard_config.shared_usage = Some(runtime_caps.usage.clone());
         shard_config.shared_ops = Some(runtime_caps.ops.clone());
+        // L6 spike: one ring budget shared by every engine of the process.
+        if shard_config.l6_spill {
+            let ring = crate::shard::RingBudget::new(crate::spill::ring_settings_from_env());
+            tracing::info!(settings = ?ring.settings(), "L6 spill arm: process ring budget");
+            shard_config.shared_ring = Some(ring);
+        }
         Box::new(
             move |prefix: String, incarnation: crate::sharddir::EngineIncarnation| {
                 let shard_store = shard_store.clone();
