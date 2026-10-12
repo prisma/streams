@@ -5,16 +5,19 @@
 // the credential's project at its cell. Optional JSON body
 // `{"requestedScopes": [...], "ttlSecs": n}`; the SDK sends none.
 //
-// Checks, in order: the rate limits (limits.ts: the instance's exchanges,
-// then, once K4 names the edge's client-IP header, the address's
-// exchanges and failures, and after the form the credential's own
-// exchanges), all before any secret work; the credential's form; the
-// body; the secret against the stored hash (only a customer credential
-// with a secret has one: an operator's or the canary's catalog-read
-// credential answers as an unknown id; a match under an older pepper is
-// noted for the re-hash sweep, rehash.ts); the credential active, not
-// omitted, not expired; its project active and not suspended; the state
-// copy fresh; the signing key still the cell's. The token is cell-admin's
+// Checks, in order: once K4 names the edge's client-IP header, the
+// address's exchanges and failures (limits.ts); the credential's form (a
+// malformed request spends the instance's malformed budget, never the
+// honest one); the body; the secret against the stored hash (only a
+// customer credential with a secret has one: an operator's or the
+// canary's catalog-read credential answers as an unknown id; a wrong
+// secret spends the failures' budget of the id it named, never its
+// owner's; a match under an older pepper is noted for the re-hash sweep,
+// rehash.ts); then, for a secret that verified, the credential's own
+// exchanges and the instance's, so no stranger can spend either; the
+// credential active, not omitted, not expired; its project active and
+// not suspended; the state copy fresh; the signing key still the cell's.
+// The token is cell-admin's
 // customerClaims at the credential's current grant_version, its scopes
 // narrowed to those asked for, signed with the issuer's key. The cell
 // checks every claim again (src/auth.rs, verify_customer), so the
@@ -154,10 +157,9 @@ export class Exchange {
     this.ipHeader = deps.ipHeader === undefined ? TRUSTED_CLIENT_IP_HEADER : deps.ipHeader;
   }
 
-  /// The limits taken before the credential is even parsed: a 429, or null.
+  /// The address's limits, taken before the credential is even parsed
+  /// (only once K4 names the edge's header): a 429, or null.
   private admit(ip: string | null): Response | null {
-    const all = this.limits.take("exchange_global", "*");
-    if (all > 0) return rateLimited(all, "the issuer is at its exchange rate");
     if (ip === null) return null;
     const locked = this.limits.locked("exchange_failed_ip", ip);
     if (locked > 0) return rateLimited(locked, "too many failed exchanges from this address");
@@ -165,10 +167,36 @@ export class Exchange {
     return mine > 0 ? rateLimited(mine, "too many exchanges from this address") : null;
   }
 
+  /// The limits a verified secret takes, its credential's then the
+  /// instance's: a 429, or null.
+  private mint(id: string): Response | null {
+    const wait = this.limits.take("exchange_credential", id);
+    if (wait > 0) return rateLimited(wait, `too many exchanges for credential ${id}`);
+    const all = this.limits.take("exchange_global", "*");
+    return all > 0 ? rateLimited(all, "the issuer is at its exchange rate") : null;
+  }
+
   /// A refused credential, counted against its address's failure budget.
   private failed(ip: string | null, message: string): Result {
     if (ip !== null) this.limits.charge("exchange_failed_ip", ip);
     return result("invalid_credential", unauthorized(message));
+  }
+
+  /// A request without a credential's form: 401, or 429 once the
+  /// instance's malformed budget is spent.
+  private malformed(ip: string | null): Result {
+    const wait = this.limits.take("exchange_malformed", "*");
+    if (wait > 0) return result("rate_limited", rateLimited(wait, "too many malformed exchanges"));
+    return this.failed(ip, "send Authorization: StreamsCredential prisma_streams_<credential id>.<secret>");
+  }
+
+  /// A wrong secret (or an unknown id) for `id`: 401, or 429 once the
+  /// failures named for `id` are spent; the credential's own budget is
+  /// never touched.
+  private wrongSecret(ip: string | null, id: string): Result {
+    const wait = this.limits.take("exchange_credential_failed", id);
+    if (wait > 0) return result("rate_limited", rateLimited(wait, `too many failed exchanges for credential ${id}`));
+    return this.failed(ip, "unknown credential or wrong secret");
   }
 
   /// Answer one exchange and count it for the audit.
@@ -181,21 +209,21 @@ export class Exchange {
 
   private async attempt(req: Request, seen: Seen): Promise<Result> {
     const ip = clientIp(req, this.ipHeader);
-    const limited = this.admit(ip);
-    if (limited !== null) return result("rate_limited", limited);
+    const busy = this.admit(ip);
+    if (busy !== null) return result("rate_limited", busy);
     const presented = PRESENTED.exec(req.headers.get("authorization") ?? "");
-    if (!presented) return this.failed(ip, "send Authorization: StreamsCredential prisma_streams_<credential id>.<secret>");
+    if (!presented) return this.malformed(ip);
     const [, id, secret] = presented;
     const state = this.cache.state;
     const cred = state.credentials[id];
     if (cred !== undefined) Object.assign(seen, { credential: id, projectId: cred.project_id });
-    const wait = this.limits.take("exchange_credential", id);
-    if (wait > 0) return result("rate_limited", rateLimited(wait, `too many exchanges for credential ${id}`));
     const ask = await readAsk(req, this.cfg.tokenTtlSecs);
     if (typeof ask === "string") return result("invalid_request", refuse(400, "invalid_request", ask));
     // The HMAC runs for an unknown id too: the answer's timing tells nothing.
     const pepper = verifySecret(this.cfg.peppers, cred, secret);
-    if (pepper === null || cred === undefined) return this.failed(ip, "unknown credential or wrong secret");
+    if (pepper === null || cred === undefined) return this.wrongSecret(ip, id);
+    const limited = this.mint(id);
+    if (limited !== null) return result("rate_limited", limited);
     this.rehasher.note(id, cred, pepper, secret);
     const nowSecs = Math.floor(this.now() / 1000);
     const notActive = inactive(cred, id, nowSecs);

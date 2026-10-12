@@ -103,7 +103,8 @@ describe("GET /v1/admin/metrics", () => {
         rate_limited: 0, issuer_unavailable: 0,
       },
       rate_limit_refusals: {
-        exchange_global: 0, exchange_credential: 0, management_session: 0, oauth_start: 0,
+        exchange_global: 0, exchange_credential: 0, exchange_malformed: 0, exchange_credential_failed: 0,
+        management_session: 0, oauth_start: 0,
         project_create_workspace: 0, credential_change_project: 0, exchange_ip: 0, exchange_failed_ip: 0,
         oauth_start_ip: 0,
       },

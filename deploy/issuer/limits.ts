@@ -1,8 +1,12 @@
 // The issuer's rate limits (public-beta issuer triage B2.7; design §8):
 // token buckets in memory, per instance (two instances during a deploy
 // briefly allow twice as much, which is harmless), each taken before the
-// work it protects and before any secret work. A refusal is 429
-// rate_limited with Retry-After, and counted per bucket for the metrics.
+// work it protects. A refusal is 429 rate_limited with Retry-After, and
+// counted per bucket for the metrics. No bucket a stranger can spend
+// stands in front of a valid credential: the exchange's instance and
+// per-credential budgets are taken only once a secret has verified (the
+// HMAC costs microseconds), malformed requests and failed secrets each
+// spend their own (exchange.ts).
 //
 // The per-source-IP buckets are built but wired only once Compute names
 // the header its edge sets and strips (question K4): a header a client can
@@ -23,10 +27,15 @@ const MINUTE = 60;
 const DAY = 86_400;
 
 export const LIMITS = {
-  /// Exchanges of the whole instance.
+  /// Tokens the whole instance mints (secrets that verified).
   exchange_global: { perSec: 200, burst: 200 },
-  /// Exchanges of one credential: a fleet of 60 cold instances at once.
+  /// Tokens one credential gets: a fleet of 60 cold instances at once.
   exchange_credential: { perSec: 2, burst: 60 },
+  /// Exchanges without a credential's form, the whole instance.
+  exchange_malformed: { perSec: 100, burst: 100 },
+  /// Wrong secrets presented for one credential id: once spent, failures
+  /// for that id answer 429; a valid secret never takes from it.
+  exchange_credential_failed: { perSec: 20 / MINUTE, burst: 20 },
   /// Management calls of one browser session.
   management_session: { perSec: 60 / MINUTE, burst: 60 },
   /// Sign-ins started, the whole instance.

@@ -18,6 +18,8 @@ describe("the buckets", () => {
     const expected: Record<LimitName, [number, number]> = {
       exchange_global: [200, 1],
       exchange_credential: [60, 1],
+      exchange_malformed: [100, 1],
+      exchange_credential_failed: [20, 3],
       management_session: [60, 1],
       oauth_start: [30, 2],
       project_create_workspace: [5, 17_280],
@@ -88,31 +90,48 @@ async function statuses(n: number, f: () => Promise<Response>): Promise<Record<n
 }
 
 describe("the exchange's limits", () => {
-  test("a credential gets 60 exchanges at once, then 429 rate_limited with Retry-After, before its secret is checked", async () => {
+  test("a credential gets 60 exchanges at once, then 429 rate_limited with Retry-After; wrong secrets for its id never spend them", async () => {
     const cell = await issuerCell();
     const { id, secret } = await customerSecret(cell, "sp_a");
     const { secret: other } = await customerSecret(cell, "sp_b");
     const { issuer, clock } = await issuerFor(cell);
+    // A stranger who knows the id (every token names it) sends wrong
+    // secrets: 401, then 429 once the failures' own budget is spent.
+    expect(await statuses(25, () => exchange(issuer, wrongSecret(id)))).toEqual({ 401: 20, 429: 5 });
+    const failed = await exchange(issuer, wrongSecret(id));
+    expect([failed.status, (await failed.json()).error.message, failed.headers.get("retry-after")]).toEqual([
+      429, `too many failed exchanges for credential ${id}; retry after 3 s`, "3",
+    ]);
+    // The credential's owner still gets its whole budget.
     expect(await statuses(60, () => exchange(issuer, secret))).toEqual({ 200: 60 });
-    const res = await exchange(issuer, wrongSecret(id));
+    const res = await exchange(issuer, secret);
     expect([res.status, await res.json(), res.headers.get("retry-after")]).toEqual([
       429, { error: { code: "rate_limited", message: `too many exchanges for credential ${id}; retry after 1 s` } }, "1",
     ]);
     expect((await exchange(issuer, other)).status).toBe(200);
     clock.t += 1_000;
     expect(await statuses(3, () => exchange(issuer, secret))).toEqual({ 200: 2, 429: 1 });
-    expect(issuer.limits.refused.exchange_credential).toBe(2);
+    expect([issuer.limits.refused.exchange_credential, issuer.limits.refused.exchange_credential_failed]).toEqual([2, 6]);
   });
 
-  test("the instance takes 200 exchanges at once, malformed ones included, then refuses every credential", async () => {
+  test("malformed exchanges spend their own instance budget, never the one valid credentials mint from", async () => {
     const cell = await issuerCell();
     const { secret } = await customerSecret(cell, "sp_a");
     const { issuer } = await issuerFor(cell);
-    expect(await statuses(200, () => exchange(issuer, undefined))).toEqual({ 401: 200 });
-    const res = await exchange(issuer, secret);
-    expect([res.status, (await res.json()).error.message]).toEqual([
-      429, "the issuer is at its exchange rate; retry after 1 s",
-    ]);
+    expect(await statuses(200, () => exchange(issuer, undefined))).toEqual({ 401: 100, 429: 100 });
+    const res = await exchange(issuer, undefined);
+    expect([res.status, (await res.json()).error.message]).toEqual([429, "too many malformed exchanges; retry after 1 s"]);
+    expect((await exchange(issuer, secret)).status).toBe(200);
+  });
+
+  test("the instance mints 200 tokens at once, then refuses every credential", async () => {
+    const cell = await issuerCell();
+    const secrets = [];
+    for (let i = 0; i < 4; i++) secrets.push((await customerSecret(cell, "sp_a")).secret);
+    const { issuer } = await issuerFor(cell);
+    for (const secret of secrets) expect(await statuses(50, () => exchange(issuer, secret))).toEqual({ 200: 50 });
+    const res = await exchange(issuer, secrets[0]);
+    expect([res.status, (await res.json()).error.message]).toEqual([429, "the issuer is at its exchange rate; retry after 1 s"]);
   });
 
   test("per-address limits apply only once the edge's client-IP header is known (K4)", async () => {
