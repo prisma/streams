@@ -82,10 +82,10 @@
     },
     {
       "category": "macro-dsl",
-      "count": 1,
+      "count": 2,
       "owner": "crate::run",
       "path": "src/bootstrap/idle.rs",
-      "reason": "Idle-release loop: expression selection between supervised cancellation and the runtime clock's tick; compiler checks expansion.",
+      "reason": "Idle-release loop: expression selection between supervised cancellation and the runtime clock's tick, and between cancellation and the memtable flush a release awaits; compiler checks expansion.",
       "syntax": "tokio::select"
     },
     {

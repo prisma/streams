@@ -1660,6 +1660,17 @@
     "scenarios": []
   },
   {
+    "name": "a_read_during_the_release_flush_drops_that_release",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "3ed5f2292e72d229ebd93498f577db5547a59a4bdf197924f0454280bb3e391d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/idle_release.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_read_waits_for_the_instance_read_memory_and_is_refused_after_the_wait",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -3176,6 +3187,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/parked_waits.rs",
+    "scenarios": []
+  },
+  {
+    "name": "an_idle_release_flushes_what_the_shard_memtables_hold",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "30606bd29e4617ac72fdf09b048a17f8e8288d0330c726e8907b27ed095fcf45",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/idle_release.rs",
     "scenarios": []
   },
   {

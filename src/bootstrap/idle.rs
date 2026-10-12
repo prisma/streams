@@ -75,11 +75,7 @@ impl IdlePolicy {
     /// release per quiet period, and another only once `REFILL_FLOOR` bytes
     /// were written back and `RERELEASE_AFTER` has passed.
     fn release_due(&mut self, reading: &Reading) -> bool {
-        if reading.arrivals != self.arrivals {
-            self.arrivals = reading.arrivals;
-            self.quiet_since = reading.now;
-            self.released_at = None;
-            self.collecting = None;
+        if self.arrived(reading) {
             return false;
         }
         if reading.active > 0
@@ -98,9 +94,23 @@ impl IdlePolicy {
         due
     }
 
+    /// Starts a new quiet period when a data-plane request arrived since the
+    /// last reading, which ends the last release's collect rounds. Whether
+    /// one did.
+    fn arrived(&mut self, reading: &Reading) -> bool {
+        if reading.arrivals == self.arrivals {
+            return false;
+        }
+        self.arrivals = reading.arrivals;
+        self.quiet_since = reading.now;
+        self.released_at = None;
+        self.collecting = None;
+        true
+    }
+
     /// Whether an allocator collect round is requested at `now`: rounds at
     /// `COLLECT_EVERY` steps from the last release, `COLLECT_ROUNDS` of them.
-    /// An arrival ends them (`release_due`), so no round holds the workers
+    /// An arrival ends them (`arrived`), so no round holds the workers
     /// that serve resumed traffic.
     fn collect_due(&mut self, now: MonotonicNow) -> bool {
         let Some((released, rounds)) = self.collecting else {
@@ -142,7 +152,15 @@ async fn run(
         }
         let reading = read(&admission, &shards, &runtime);
         if policy.release_due(&reading) {
-            release(&runtime);
+            tokio::select! {
+                _ = cancel.cancelled() => return TaskResult::Done,
+                () = flush_memtables(&shards) => {}
+            }
+            // A request that arrived during the flush ends the quiet period,
+            // and with it this release and its collect rounds.
+            if !policy.arrived(&read(&admission, &shards, &runtime)) {
+                release(&runtime);
+            }
         }
         if policy.collect_due(reading.now) {
             super::allocator::request_collect();
@@ -168,6 +186,24 @@ fn read(
         .map(|cache| cache.inserted_bytes())
         .iter()
         .sum(),
+    }
+}
+
+/// Flushes every open shard's memtable to an L0 table. The engine's flush
+/// ticker flushes only after appends, so what the absorber writes once they
+/// stop (its maintenance deletes) would stay in memory at idle: about 20 MB
+/// over four shards in the Q0 rig's F3 posture. The flush runs before the
+/// caches are emptied, so the blocks it caches on write go with them. A
+/// shard whose flush fails keeps its memtable, as before.
+async fn flush_memtables(shards: &ShardDirectory) {
+    use slatedb::config::{FlushOptions, FlushType};
+    for engine in shards.engines() {
+        let flushed = engine.db.flush_with_options(FlushOptions {
+            flush_type: FlushType::MemTable,
+        });
+        if let Err(error) = flushed.await {
+            tracing::warn!(shard = %engine.prefix, "idle: memtable flush failed: {error}");
+        }
     }
 }
 
