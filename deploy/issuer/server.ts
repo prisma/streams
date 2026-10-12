@@ -6,18 +6,23 @@
 import type { StateCache } from "./cache";
 import type { IssuerConfig } from "./config";
 import { Exchange } from "./exchange";
+import { RateLimits } from "./limits";
 import { refuse } from "./respond";
 
 export interface IssuerDeps {
   cache: StateCache;
   now?: () => number;
+  /// The edge's trusted client-IP header (limits.ts, K4).
+  ipHeader?: string | null;
 }
 
 export class Issuer {
+  readonly limits: RateLimits;
   private readonly exchange: Exchange;
 
   constructor(cfg: IssuerConfig, deps: IssuerDeps) {
-    this.exchange = new Exchange(cfg, deps.cache, deps.now);
+    this.limits = new RateLimits(deps.now);
+    this.exchange = new Exchange(cfg, { ...deps, limits: this.limits });
   }
 
   async fetch(req: Request): Promise<Response> {

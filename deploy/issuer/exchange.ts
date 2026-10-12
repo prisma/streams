@@ -5,7 +5,11 @@
 // the credential's project at its cell. Optional JSON body
 // `{"requestedScopes": [...], "ttlSecs": n}`; the SDK sends none.
 //
-// Checks, in order: the credential's form; the body; the secret against
+// Checks, in order: the rate limits (limits.ts: the instance's exchanges,
+// then, once K4 names the edge's client-IP header, the address's
+// exchanges and failures, and after the form the credential's own
+// exchanges), all before any secret work; the credential's form; the
+// body; the secret against
 // the stored hash (only a customer credential with a secret has one: an
 // operator's or the canary's catalog-read credential answers as an
 // unknown id); the credential active, not omitted, not expired; its
@@ -21,6 +25,7 @@ import { customerClaims, signJwt } from "../cell-admin/tokens";
 import { stateMismatch } from "./boot";
 import type { StateCache } from "./cache";
 import { type IssuerConfig, TOKEN_TTL_MIN_SECS } from "./config";
+import { clientIp, type RateLimits, TRUSTED_CLIENT_IP_HEADER } from "./limits";
 import { json, refuse } from "./respond";
 
 /// The presented credential: a cell-admin credential id (`strcred_` and
@@ -40,6 +45,9 @@ const unauthorized = (message: string) =>
 
 export const unavailable = (message: string) =>
   refuse(503, "issuer_unavailable", message, { "retry-after": String(UNAVAILABLE_RETRY_SECS) });
+
+export const rateLimited = (seconds: number, message: string) =>
+  refuse(429, "rate_limited", `${message}; retry after ${seconds} s`, { "retry-after": String(seconds) });
 
 /// The request's body as what it asks for, or why it is refused.
 async function readAsk(req: Request, maxTtlSecs: number): Promise<Ask | string> {
@@ -99,24 +107,63 @@ function projectInactive(state: CellState, cred: CredentialRecord): string | nul
   return null;
 }
 
+export interface ExchangeDeps {
+  cache: StateCache;
+  limits: RateLimits;
+  now?: () => number;
+  /// The edge's trusted client-IP header (K4); null until it is known.
+  ipHeader?: string | null;
+}
+
 export class Exchange {
+  private readonly cache: StateCache;
+  private readonly limits: RateLimits;
+  private readonly now: () => number;
+  private readonly ipHeader: string | null;
+
   constructor(
     private readonly cfg: IssuerConfig,
-    private readonly cache: StateCache,
-    private readonly now: () => number = Date.now,
-  ) {}
+    deps: ExchangeDeps,
+  ) {
+    this.cache = deps.cache;
+    this.limits = deps.limits;
+    this.now = deps.now ?? Date.now;
+    this.ipHeader = deps.ipHeader === undefined ? TRUSTED_CLIENT_IP_HEADER : deps.ipHeader;
+  }
+
+  /// The limits taken before the credential is even parsed: a 429, or null.
+  private admit(ip: string | null): Response | null {
+    const all = this.limits.take("exchange_global", "*");
+    if (all > 0) return rateLimited(all, "the issuer is at its exchange rate");
+    if (ip === null) return null;
+    const locked = this.limits.locked("exchange_failed_ip", ip);
+    if (locked > 0) return rateLimited(locked, "too many failed exchanges from this address");
+    const mine = this.limits.take("exchange_ip", ip);
+    return mine > 0 ? rateLimited(mine, "too many exchanges from this address") : null;
+  }
+
+  /// A refused credential, counted against its address's failure budget.
+  private failed(ip: string | null, message: string): Response {
+    if (ip !== null) this.limits.charge("exchange_failed_ip", ip);
+    return unauthorized(message);
+  }
 
   async handle(req: Request): Promise<Response> {
+    const ip = clientIp(req, this.ipHeader);
+    const limited = this.admit(ip);
+    if (limited !== null) return limited;
     const presented = PRESENTED.exec(req.headers.get("authorization") ?? "");
-    if (!presented) return unauthorized("send Authorization: StreamsCredential prisma_streams_<credential id>.<secret>");
+    if (!presented) return this.failed(ip, "send Authorization: StreamsCredential prisma_streams_<credential id>.<secret>");
     const [, id, secret] = presented;
+    const wait = this.limits.take("exchange_credential", id);
+    if (wait > 0) return rateLimited(wait, `too many exchanges for credential ${id}`);
     const ask = await readAsk(req, this.cfg.tokenTtlSecs);
     if (typeof ask === "string") return refuse(400, "invalid_request", ask);
     const state = this.cache.state;
     const cred = state.credentials[id];
     // The HMAC runs for an unknown id too: the answer's timing tells nothing.
     const pepper = verifySecret(this.cfg.peppers, cred, secret);
-    if (pepper === null || cred === undefined) return unauthorized("unknown credential or wrong secret");
+    if (pepper === null || cred === undefined) return this.failed(ip, "unknown credential or wrong secret");
     const nowSecs = Math.floor(this.now() / 1000);
     const notActive = inactive(cred, id, nowSecs);
     if (notActive !== null) return refuse(403, "credential_not_active", notActive);
