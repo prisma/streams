@@ -139,6 +139,19 @@ test("retry: { transport: false } sends metadata once and rejects with StreamsTr
   assert.deepEqual(delays, []);
 });
 
+test("retry: { transport: false } sends a settle once and rejects with StreamsTransportError", async () => {
+  const f = fixture({ match: route("POST", "/v1/streams/orders/consumers/workers:settle"), answers: [thrown()],
+    options: { retry: { transport: false } } });
+  const batch = await (await f.stream.consumer("workers")).pull();
+  batch.messages[0].ack();
+  const { value: error, delays } = await fastTimers(() => rejection(batch.settle()));
+  assert.equal(f.matched.length, 1);
+  assert.ok(error instanceof StreamsTransportError);
+  assert.equal(error.code, "transport_error");
+  assert.equal(error.cause.message, `fetch failed #${failures}`);
+  assert.deepEqual(delays, []);
+});
+
 test("four transport failures are four requests, then the last as StreamsTransportError", async () => {
   const answers = [thrown(), thrown(), thrown(), thrown()];
   const f = fixture({ answers });
