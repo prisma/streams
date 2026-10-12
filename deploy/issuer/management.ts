@@ -27,6 +27,8 @@
 //   DELETE /v1/workspaces/{w}/streams/projects/{p} delete it
 //   GET  /v1/projects/{p}/streams/credentials      its credentials
 //   POST /v1/projects/{p}/streams/credentials      create one (credentials.ts)
+//   GET  /v1/projects/{p}/streams/credentials/{c}  one, and whether the
+//                                                  cell serves its last change
 //   POST /v1/projects/{p}/streams/credentials/{c}/rotate   a new secret
 //   POST /v1/projects/{p}/streams/credentials/{c}/revoke   revoke it
 //
@@ -97,6 +99,11 @@ export class Management {
           GET: { action: "credential.list", handle: (c) => credentials.list(c) },
           POST: { action: "credential.create", handle: (c) => credentials.create(c) },
         },
+      },
+      {
+        path: /^\/v1\/projects\/([^/]+)\/streams\/credentials\/([^/]+)$/,
+        scope: "project",
+        methods: { GET: { action: "credential.get", handle: (c) => credentials.get(c) } },
       },
       {
         path: /^\/v1\/projects\/([^/]+)\/streams\/credentials\/([^/]+)\/rotate$/,

@@ -42,7 +42,8 @@ export class FakeCell {
   }
 
   /// verify_customer's order: signature, project placed, ownership,
-  /// credential known, its project, its status, its grant_version.
+  /// credential known, its project, its status, its grant_version; then
+  /// the catalog's scope.
   private authorize(req: Request): { project: string } | Response {
     const bearer = req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
     const claims = this.live && verifiedClaims(this.live, bearer);
@@ -57,6 +58,11 @@ export class FakeCell {
     if (cred.project_id !== claims.project_id) return this.reply(401, "credential_project_mismatch");
     if (cred.status !== "active") return this.reply(403, "credential_not_active");
     if (cred.grant_version !== claims.grant_version) return this.reply(401, "grant_version_mismatch");
+    // The catalog needs catalog reads, in the token and in the grant.
+    const granted = (scopes: string) => scopes.split(" ").includes("streams.catalog.read");
+    if (new URL(req.url).pathname === "/v1/streams" && !(granted(claims.scope) && granted(cred.scopes))) {
+      return this.reply(403, "missing_scope");
+    }
     return { project: claims.project_id };
   }
 

@@ -11,6 +11,10 @@
 // The probe mints only what the credential already grants (the cell
 // intersects again). One probe per project at most every 5 s; once
 // ready, a project stays ready without another.
+//
+// The same probe acknowledges a credential's last change (B3.4, D2): a
+// token at its current grant_version tells whether the cell holds that
+// version yet.
 import { customerClaims, signJwt } from "../cell-admin/tokens";
 import type { CellState } from "../cell-admin/state";
 import type { IssuerConfig } from "./config";
@@ -42,7 +46,9 @@ function firstCredential(state: CellState, project: string): string | undefined 
 }
 
 export class Prober {
+  /// Projects ready, and `<credential>@<grant_version>` served.
   private readonly ready = new Set<string>();
+  /// When a project or a credential was last probed.
   private readonly probedAt = new Map<string, number>();
 
   constructor(
@@ -64,26 +70,62 @@ export class Prober {
       ...customerClaims(state, credential, PROBE_TOKEN_TTL_SECS, "issuer-readiness", Math.floor(now / 1000)),
       scope: PROBE_SCOPE,
     };
-    const status = await this.get(signJwt(this.cfg.signingKey, claims), project);
+    const { status } = await this.get(signJwt(this.cfg.signingKey, claims), project);
     if (status !== 200) return false;
     this.ready.add(project);
     this.probedAt.delete(project);
     return true;
   }
 
-  /// The cell's status for one catalog read under `token`, or 0 when it
-  /// cannot be reached.
-  private async get(token: string, project: string): Promise<number> {
+  /// Whether the cell serves credential `id` at its grant_version in
+  /// `state` (its last create, rotation or revocation), probing it when
+  /// the last probe is 5 s old. The token is minted at that version,
+  /// narrowed to catalog reads or else to one of the credential's own
+  /// scopes. The cell checks the grant before the scope, so a 200 or a
+  /// 403 missing_scope proves it holds the version, as does a 403
+  /// credential_not_active for a credential the state holds revoked;
+  /// 401 credential_unknown or grant_version_mismatch prove it does not.
+  async credentialServed(state: CellState, id: string): Promise<boolean> {
+    const c = state.credentials[id];
+    const key = `${id}@${c.grant_version}`;
+    if (this.ready.has(key)) return true;
+    const now = this.deps.now();
+    const last = this.probedAt.get(id);
+    if (last !== undefined && now - last < PROBE_EVERY_MS) return false;
+    this.probedAt.set(id, now);
+    const scopes = c.scopes.split(" ");
+    const claims = {
+      ...customerClaims(state, id, PROBE_TOKEN_TTL_SECS, "issuer-acknowledgement", Math.floor(now / 1000)),
+      scope: scopes.includes(PROBE_SCOPE) ? PROBE_SCOPE : scopes[0],
+    };
+    const { status, code } = await this.get(signJwt(this.cfg.signingKey, claims), id);
+    const served =
+      status === 200 ||
+      (status === 403 && (code === "missing_scope" || (c.status === "revoked" && code === "credential_not_active")));
+    if (!served) return false;
+    this.ready.add(key);
+    this.probedAt.delete(id);
+    return true;
+  }
+
+  /// The cell's answer to one catalog read under `token` (status 0 when
+  /// it cannot be reached), with the product envelope's error code.
+  private async get(token: string, what: string): Promise<{ status: number; code?: string }> {
     try {
       const res = await fetch(`${this.cfg.cellOrigin}/v1/streams?limit=1`, {
         headers: { authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
       });
-      await res.body?.cancel();
-      return res.status;
+      if (res.status === 200) {
+        await res.body?.cancel();
+        return { status: 200 };
+      }
+      const body = (await res.json().catch(() => undefined)) as { error?: { code?: unknown } } | undefined;
+      const code = body?.error?.code;
+      return { status: res.status, ...(typeof code === "string" ? { code } : {}) };
     } catch (e) {
-      this.deps.log(`probing ${project} at the cell failed: ${(e as Error).message}`);
-      return 0;
+      this.deps.log(`probing ${what} at the cell failed: ${(e as Error).message}`);
+      return { status: 0 };
     }
   }
 }

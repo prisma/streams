@@ -279,3 +279,62 @@ describe("revoking a credential", () => {
     ]);
   });
 });
+
+describe("acknowledging a credential's last change", () => {
+  test("says whether the cell serves a credential's create, rotation and revocation, probing at most every 5 s", async () => {
+    const { cell, path } = await withProject();
+    const fake = new FakeCell();
+    try {
+      fake.publish(readBundle(cell.state));
+      // The same cell, with an issuer whose cell origin is the fake's.
+      const n = await managed(cell, { ...cell.env, STREAMS_CELL_ORIGIN: fake.url });
+      const b = n.signIn("ws_a");
+      const served = async (cid: string) => (await (await n.get(`${path}/${cid}`, b)).json()).served;
+      const cid: string = (await (await n.send("POST", path, b, { displayName: "svc" })).json()).credential.id;
+      const one = await answer(await n.get(`${path}/${cid}`, b));
+      expect(one).toEqual([200, { ...(await (await n.get(path, b)).json()).credentials[1], served: false }]);
+      expect(fake.requests.map((r) => r.status)).toEqual([401]); // credential_unknown
+      fake.publish(readBundle(cell.state));
+      expect(await served(cid)).toBe(false); // within 5 s of the last probe
+      n.clock.t += 5_000;
+      expect(await served(cid)).toBe(true);
+      expect(fake.tokens.at(-1)).toMatchObject({ credential_id: cid, grant_version: 1, scope: "streams.catalog.read" });
+      expect(await served(cid)).toBe(true); // proven: no probe
+      expect(fake.requests).toHaveLength(2);
+      // A rotation: not served until the cell holds the new grant.
+      expect((await n.send("POST", `${path}/${cid}/rotate`, b)).status).toBe(200);
+      n.clock.t += 5_000;
+      expect(await served(cid)).toBe(false);
+      expect(fake.requests.at(-1)?.status).toBe(401); // grant_version_mismatch
+      fake.publish(readBundle(cell.state));
+      n.clock.t += 5_000;
+      expect(await served(cid)).toBe(true);
+      // A revocation: served once the cell refuses it as revoked.
+      expect((await n.send("POST", `${path}/${cid}/revoke`, b)).status).toBe(200);
+      n.clock.t += 5_000;
+      expect(await served(cid)).toBe(false);
+      fake.publish(readBundle(cell.state));
+      n.clock.t += 5_000;
+      expect(await served(cid)).toBe(true);
+      expect([fake.requests.at(-1)?.status, fake.tokens.at(-1)?.grant_version]).toEqual([403, 3]);
+      // A credential without catalog reads is probed under one of its own
+      // scopes: the cell's missing_scope refusal comes after the grant.
+      const narrow: string = (await (await n.send("POST", path, b, { scopes: ["streams.records.read"] })).json()).credential.id;
+      fake.publish(readBundle(cell.state));
+      n.clock.t += 5_000;
+      expect(await served(narrow)).toBe(true);
+      expect([fake.requests.at(-1)?.status, fake.tokens.at(-1)?.scope]).toEqual([403, "streams.records.read"]);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("answers 404 for a credential that is not the project's", async () => {
+    const { cell, m, a, id, path } = await withProject();
+    const other = await customerSecret(cell, "sp_other");
+    await m.cache.refresh();
+    expect(await answer(await m.get(`${path}/${other.id}`, a))).toEqual([
+      404, refusal("not_found", `project ${id} has no credential ${other.id}`),
+    ]);
+  });
+});

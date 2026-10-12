@@ -7,6 +7,8 @@
 //        credentials (never the canary's or an operator's), revoked ones
 //        included, oldest first, in the contract's Credential shape
 //   POST /v1/projects/{p}/streams/credentials   create one
+//   GET  /v1/projects/{p}/streams/credentials/{c}
+//        one, and whether the cell serves its last change (probe.ts)
 //   POST /v1/projects/{p}/streams/credentials/{c}/rotate
 //        a new secret, at grant_version + 1
 //   POST /v1/projects/{p}/streams/credentials/{c}/revoke
@@ -46,6 +48,7 @@ import { type CellState, journal } from "../cell-admin/state";
 import { audited, type Call, commit, displayNameOf, type ManagementDeps, readObject, Refusal, refused } from "./calls";
 import type { IssuerConfig } from "./config";
 import { LIMITS } from "./limits";
+import { Prober } from "./probe";
 import { json } from "./respond";
 import { credentialView } from "./views";
 
@@ -140,14 +143,31 @@ function createRefusal(state: CellState, project: string): Refusal | null {
 }
 
 export class Credentials {
+  private readonly prober: Prober;
+
   constructor(
     private readonly cfg: IssuerConfig,
     private readonly deps: ManagementDeps,
-  ) {}
+  ) {
+    this.prober = new Prober(cfg, deps);
+  }
 
   list(c: Call): Response {
     const credentials = projectCredentials(this.deps.cache.state, c.ids[0]).map(([id, cred]) => credentialView(id, cred));
     return json(200, { credentials });
+  }
+
+  /// One credential, with whether the cell serves its last change
+  /// (`served`, probe.ts): the page polls it after a rotation or a
+  /// revocation.
+  async get(c: Call): Promise<Response> {
+    const [project, id] = c.ids;
+    const state = this.deps.cache.state;
+    const cred = state.credentials[id];
+    if (!cred || cred.project_id !== project || cred.role !== "customer" || cred.omitted || cred.hidden) {
+      return refused(this.deps, c, { status: 404, code: "not_found", message: `project ${project} has no credential ${id}` });
+    }
+    return json(200, { ...credentialView(id, cred), served: await this.prober.credentialServed(state, id) });
   }
 
   /// The project's budget of creates and rotations: a 429, or null.
