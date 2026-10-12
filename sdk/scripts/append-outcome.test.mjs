@@ -233,8 +233,8 @@ for (const [label, run] of [
   ["a producer appendMany", s => s.producer("p", { ephemeral: true }).appendMany([{ n: 1 }])],
   ["seal", s => s.seal()],
 ]) {
-  // With the transport replay off (seal replays one by default), the
-  // failure is the request's own, not an append's unknown outcome.
+  // With the transport replay off (each of these replays one by default),
+  // the failure is the request's own, not an append's unknown outcome.
   test(`${label}: a transport failure stays StreamsTransportError`, async () => {
     const failure = new TypeError("fetch failed");
     const { s, calls } = stream([thrown(failure)], { retry: { transport: false } });

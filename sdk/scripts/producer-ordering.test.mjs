@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { StreamsClient } from "../dist/index.js";
+import { StreamsClient, StreamsTransportError } from "../dist/index.js";
 
 function deferred() {
   let resolve;
@@ -8,6 +8,7 @@ function deferred() {
   return { promise, resolve };
 }
 
+// `send` may throw (a transport failure) or answer; by default the append lands.
 function fixture(send, save = async () => {}) {
   let state = { epoch: 0, nextSeq: 0 };
   const store = {
@@ -16,11 +17,23 @@ function fixture(send, save = async () => {}) {
   };
   const calls = [];
   const s = new StreamsClient({ url: "https://cell.example", fetch: async (url, init) => {
-    calls.push({ url: String(url), headers: init.headers, body: init.body });
-    await send(calls.length, calls.at(-1));
-    return new Response(JSON.stringify({ cursor: "c", count: 1, duplicate: false, sealed: false }));
+    calls.push({ url: String(url), headers: { ...init.headers }, body: init.body });
+    return await send(calls.length, calls.at(-1)) ??
+      new Response(JSON.stringify({ cursor: "c", count: 1, duplicate: false, sealed: false }));
   } }).stream("orders", { encryptionKey: "A".repeat(43) });
   return { s, p: s.producer("p", { state: store }), calls, state: () => state };
+}
+
+// Every backoff runs at once; the delays the SDK asked for are recorded.
+async function fastTimers(run) {
+  const native = globalThis.setTimeout;
+  const delays = [];
+  globalThis.setTimeout = (callback, delay, ...args) => { delays.push(delay); return native(callback, 0, ...args); };
+  try {
+    return { value: await run(), delays };
+  } finally {
+    globalThis.setTimeout = native;
+  }
 }
 
 test("append, epoch bump, batch append and final seal share one scope order", async () => {
@@ -42,13 +55,45 @@ test("append, epoch bump, batch append and final seal share one scope order", as
   assert.ok(f.calls[2].url.endsWith(":seal"));
 });
 
+test("a fetch failure is replayed at the same sequence before later operations and lands once", async () => {
+  // The server commits each (epoch, sequence) once and answers a repeat as
+  // a duplicate (count 0); the first append's answer is lost after it committed.
+  const committed = [];
+  const f = fixture(async (n, call) => {
+    const at = `${call.headers["producer-epoch"]}/${call.headers["producer-seq"]}`;
+    const duplicate = committed.includes(at);
+    if (!duplicate) committed.push(at);
+    if (n === 1) throw new Error("connection lost after the server committed the append");
+    return new Response(JSON.stringify({ cursor: "c", count: duplicate ? 0 : 1, duplicate, sealed: false }));
+  });
+  const { value: results, delays } = await fastTimers(() => Promise.all([
+    f.p.append({ n: 1 }),
+    f.p.append({ n: 2 }),
+    f.p.bumpEpoch(),
+    f.p.appendMany([{ n: 3 }, { n: 4 }]),
+  ]));
+  assert.deepEqual(delays, [1000]);
+  assert.deepEqual(f.calls.map(c => [c.headers["producer-id"], c.headers["producer-epoch"], c.headers["producer-seq"], c.body]), [
+    ["p", "0", "0", '{"n":1}'],
+    ["p", "0", "0", '{"n":1}'],
+    ["p", "0", "1", '{"n":2}'],
+    ["p", "1", "0", '[{"n":3},{"n":4}]'],
+  ], "the replay is the same append, sent before the next operation of the scope");
+  assert.deepEqual(committed, ["0/0", "0/1", "1/0"], "each sequence lands once");
+  assert.deepEqual([results[0].duplicate, results[1].duplicate, results[3].duplicate], [true, false, false]);
+  assert.deepEqual(f.state(), { epoch: 1, nextSeq: 1 });
+});
+
 test("fetch failure propagates and does not poison subsequent producer operations", async () => {
   const failure = new Error("connection lost: append outcome unknown");
-  const f = fixture(async n => { if (n === 1) throw failure; });
-  await assert.rejects(f.p.append({ n: 1 }), e => e === failure || e.cause === failure);
+  const f = fixture(async n => { if (n <= 4) throw failure; });
+  const { delays } = await fastTimers(() =>
+    assert.rejects(f.p.append({ n: 1 }),
+      e => e instanceof StreamsTransportError && e.code === "transport_error" && e.cause === failure));
+  assert.deepEqual(delays, [1000, 2000, 4000], "the failure outlasts the request's three replays");
   await f.p.append({ n: 1 });
   await f.p.bumpEpoch();
-  assert.deepEqual(f.calls.map(c => c.headers["producer-seq"]), ["0", "0"]);
+  assert.deepEqual(f.calls.map(c => c.headers["producer-seq"]), ["0", "0", "0", "0", "0"]);
   assert.deepEqual(f.state(), { epoch: 1, nextSeq: 0 });
 });
 

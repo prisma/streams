@@ -56,9 +56,11 @@ not carried over).
   credential is refused `prefix_denied`).
 - A request whose `fetch` fails is sent again after 1, 2 and 4 s, within
   the four attempts it shares with the `429`/`503` replay;
-  `retry: { transport: false }` turns that off. Plain appends, stream
-  deletion, producer appends, batch settlement and a subscription's reads
-  are not replayed after a transport failure. A settlement the SDK
+  `retry: { transport: false }` turns that off. A producer append is sent
+  again with the same producer id, epoch and sequence, which the server
+  deduplicates, before the producer's later operations on its routing key.
+  Plain appends, stream deletion, batch settlement and a subscription's
+  reads are not replayed after a transport failure. A settlement the SDK
   replays after a retryable `429` or `503` may report decisions its first
   attempt applied as `stale`; none is applied twice.
 - The consumer iterator (`for await`, `messages()`) and

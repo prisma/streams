@@ -212,6 +212,8 @@ const replayed = [
     run: async f => (await consumer(f)).pull({ max: 1 }) },
   { name: "watch wait", match: waits,
     run: async f => (await f.stream.watch("w", [1])).wait({ cursor: "c0" }) },
+  { name: "a producer append", method: "POST", path: "/v1/streams/orders/records",
+    run: f => f.stream.producer("p", { ephemeral: true }).append({ n: 1 }) },
 ];
 
 // A watch wait's URL carries a capability each attempt mints for itself.
@@ -226,6 +228,7 @@ for (const op of replayed) {
     assert.equal(second.method, first.method);
     assert.equal(withoutCap(second.url), withoutCap(first.url));
     assert.equal(second.body, first.body);
+    assert.deepEqual(second.headers, first.headers);
     assert.deepEqual(delays, [1000]);
   });
 }
@@ -239,8 +242,6 @@ const sentOnce = [
     error: "AppendOutcomeUnknownError" },
   { name: "stream delete", method: "DELETE", path: "/v1/streams/orders", run: f => f.stream.delete(),
     error: "StreamsTransportError" },
-  { name: "a producer append", path: "/v1/streams/orders/records",
-    run: f => f.stream.producer("p", { ephemeral: true }).append({ n: 1 }), error: "StreamsTransportError" },
   { name: "settle", path: "/v1/streams/orders/consumers/workers:settle",
     run: async f => {
       const batch = await (await consumer(f)).pull();

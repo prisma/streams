@@ -48,11 +48,13 @@ export interface StreamsClientOptions {
   /**
    * `transport` (default `true`): a request whose `fetch` fails is sent
    * again after 1, 2 and 4 s, within the four attempts it shares with the
-   * 429/503 replay. Plain appends, stream deletion, producer appends,
-   * batch settlement and a subscription's reads (its loop reconnects) are
-   * never replayed this way. Set it to `false` when a `fetch` failure
-   * means configuration (a wrong URL, a blocked origin) rather than a
-   * restart; consumer, subscription and watch loops still reconnect.
+   * 429/503 replay; a producer append is sent again with the same
+   * sequence, which the server deduplicates. Plain appends, stream
+   * deletion, batch settlement and a subscription's reads (its loop
+   * reconnects) are never replayed this way. Set it to `false` when a
+   * `fetch` failure means configuration (a wrong URL, a blocked origin)
+   * rather than a restart; consumer, subscription and watch loops still
+   * reconnect.
    */
   retry?: { transport?: boolean };
 }
@@ -751,8 +753,8 @@ async function reconnectAfter(backoffMs: number, signal?: AbortSignal): Promise<
  *
  * `replayTransport` is false where a replay could repeat an effect the
  * server does not deduplicate (plain appends, stream deletion), and where
- * the caller handles a transport failure itself (producer appends,
- * settlement, a subscription's reads).
+ * the caller handles a transport failure itself (settlement, a
+ * subscription's reads).
  *
  * `classify` maps the failure that ends this request (its transport
  * failure, or the answer it gives up on) to the error it rejects with. A
@@ -1252,16 +1254,16 @@ export class Stream<T = unknown> {
       ...ph,
     };
     if (routingKey) h["prisma-routing-key"] = routingKey;
-    // A transport failure reaches the caller, whose retry of the same
-    // sequence the server deduplicates.
+    // A transport failure is replayed with the same producer id, epoch and
+    // sequence, which the server deduplicates (an append that landed is
+    // answered `duplicate: true`); the scope's queue holds later operations
+    // until it settles.
     const res = await req(
       this.ctx,
       "POST",
       this.path(batch ? "/records:batch" : "/records"),
       h,
       payload,
-      undefined,
-      false,
     );
     return (await res.json()) as AppendResult;
   }

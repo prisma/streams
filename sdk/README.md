@@ -163,10 +163,13 @@ producer for a retry the server deduplicates.
 
 A request whose `fetch` fails is sent again up to three times, after 1, 2
 and 4 s (abort-aware), within the same four attempts as the 429/503 replay,
-and rejects with `StreamsTransportError` once they are spent. Plain appends,
-stream deletion, producer appends and batch settlement are sent once and
-reject at once; a subscription's request is not replayed either, because
-the subscription reconnects itself. `retry: { transport: false }` turns the
+and rejects with `StreamsTransportError` once they are spent. A producer
+append is sent again with the same producer id, epoch and sequence, so the
+server deduplicates a replay of an append that landed (`duplicate: true`),
+and the producer's later operations on that routing key wait for it. Plain
+appends, stream deletion and batch settlement are sent once and reject at
+once; a subscription's request is not replayed either, because the
+subscription reconnects itself. `retry: { transport: false }` turns the
 replay off, for callers whose `fetch` failures are configuration (a wrong
 URL, a blocked origin), not a restart. Consumer (`for await`,
 `messages()`), subscription and watch loops reconnect after a transport
@@ -209,10 +212,14 @@ change of the service's hostname keeps every producer's sequence; a client
 made with `new StreamsClient({ url })` keys it on `url`, as before. A watch
 URL minted before a hostname change keeps the old host; mint a new one.
 
-A failed fetch or state save rejects the operation and leaves later queue
-operations usable. The server may already have committed the request. Retry
-the same payload to resolve that uncertain outcome before sending different
-content or intentionally changing the epoch. A rejected state save may itself
+A producer append whose fetch fails is sent again with the same sequence
+after 1, 2 and 4 s, before any later operation of its routing key; the
+server answers a replay of an append that landed with `duplicate: true` and
+stores it once. A fetch failure that outlasts those attempts, or a failed
+state save, rejects the operation and leaves later queue operations usable.
+The server may already have committed the request. Retry the same payload
+to resolve that uncertain outcome before sending different content or
+intentionally changing the epoch. A rejected state save may itself
 have persisted, depending on the store's contract; recover the store's outcome
 before continuing. `bumpEpoch()` intentionally starts a fresh sequence and
 cannot determine whether an earlier uncertain append committed.
