@@ -1,7 +1,7 @@
 //! When the idle loop releases, as a pure function of its readings.
 #![cfg(test)]
 
-use super::{COLLECT_EVERY, IdlePolicy, QUIET, REFILL_FLOOR, RERELEASE_AFTER, Reading};
+use super::{COLLECT_EVERY, DRAINED, IdlePolicy, QUIET, REFILL_FLOOR, RERELEASE_AFTER, Reading};
 use crate::runtime::{Clock, ManualClock};
 use std::time::Duration;
 
@@ -53,17 +53,36 @@ fn nothing_is_released_before_the_quiet_period_and_a_release_comes_at_it() {
 }
 
 #[test]
-fn unabsorbed_bytes_hold_the_release_until_the_first_tick_they_are_gone() {
+fn unabsorbed_bytes_hold_the_release_until_the_first_tick_the_drain_has_ended() {
     let mut readings = Readings::new();
     let mut policy = policy(&mut readings);
-    for (at, unabsorbed) in [(QUIET, 1), (QUIET + TWO, 5 << 20)] {
+    for (at, unabsorbed) in [(QUIET, 5 << 20), (QUIET + TWO, DRAINED)] {
         let reading = Reading {
             unabsorbed,
             ..readings.at(at, 0)
         };
         assert!(!policy.release_due(&reading), "{unabsorbed} bytes owed");
     }
-    assert!(policy.release_due(&readings.at(QUIET + 2 * TWO, 0)));
+    let drained = Reading {
+        unabsorbed: DRAINED - 1,
+        ..readings.at(QUIET + 2 * TWO, 0)
+    };
+    assert!(policy.release_due(&drained));
+}
+
+/// The F3 posture (ABSORB_AGE_SECS=60) keeps the server's own telemetry
+/// appends unabsorbed for up to a minute at idle: 760-3,066 bytes owed at
+/// almost every tick in the Q0 rig run of 2026-10-12. They do not hold the
+/// release once the quiet period has passed.
+#[test]
+fn a_few_kilobytes_of_the_servers_own_appends_do_not_hold_the_release() {
+    let mut readings = Readings::new();
+    let mut policy = policy(&mut readings);
+    let reading = Reading {
+        unabsorbed: 3_066,
+        ..readings.at(QUIET, 0)
+    };
+    assert!(policy.release_due(&reading));
 }
 
 #[test]

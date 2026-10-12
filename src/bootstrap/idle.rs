@@ -18,6 +18,13 @@ const QUIET: Duration = Duration::from_secs(120);
 /// Bytes written into the released caches (trailing compactions, the server's
 /// own telemetry flushes) that earn another release while still quiet.
 const REFILL_FLOOR: u64 = 1 << 20;
+/// Bytes still owed to the history partitions below which the drain has
+/// ended. Under `ABSORB_AGE_SECS=60` the server's own telemetry appends stay
+/// owed for up to a minute at idle (760-3,066 bytes at almost every tick in
+/// the Q0 rig's F3 posture), which would hold the release until a tick lands
+/// in the instant after an absorb pass. A backlog this small costs the
+/// absorber a handful of reads after a release.
+const DRAINED: u64 = 1 << 20;
 /// The least time between two releases in one quiet period.
 const RERELEASE_AFTER: Duration = Duration::from_secs(60);
 /// After a release, allocator collect rounds at +0, +30 and +60 s: the first
@@ -63,7 +70,8 @@ impl IdlePolicy {
 
     /// Whether the caches are released at `reading`. An arrival starts a new
     /// quiet period. A release needs `QUIET` of it with no request active and
-    /// nothing left to absorb, so a drain holds it back until it ends. One
+    /// the absorb backlog drained (below `DRAINED`), so a drain holds it back
+    /// until it ends. One
     /// release per quiet period, and another only once `REFILL_FLOOR` bytes
     /// were written back and `RERELEASE_AFTER` has passed.
     fn release_due(&mut self, reading: &Reading) -> bool {
@@ -75,7 +83,7 @@ impl IdlePolicy {
             return false;
         }
         if reading.active > 0
-            || reading.unabsorbed > 0
+            || reading.unabsorbed >= DRAINED
             || reading.now.since(self.quiet_since) < QUIET
         {
             return false;
