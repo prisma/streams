@@ -1,0 +1,73 @@
+{
+  "_doc": "A lifecycle.py plan for the layout-5 rehearsal in the scratch project (owner question D1). Copy it outside the repository, fill in the ids and paths, then `lifecycle.py check <leg> --plan` before a run. Commands are argv lists (no shell); {stage} {release} {url} {out} {home} {ledger} {ledgers} {seed} {duration} {windows} are filled per step; load.produce must write its window lines to {windows} (k2gen --out), which the d10-cell and rollback verdicts read. Files named *_file and under env_files hold secrets: mode 0600, never pasted.",
+  "stage": "scratch",
+  "out": "~/.streams-k2/lifecycle/runs",
+  "app": "streams-beta-scratch",
+  "release": "~/.streams-releases/l5-rehearsal-b",
+  "platform_token_file": "~/.streams-k2/lifecycle/platform-token.txt",
+  "env_files": {
+    "PRISMA_SERVICE_TOKEN": "~/.streams-k2/lifecycle/platform-token.txt",
+    "PRISMA_WORKSPACE_ID": "~/.streams-k2/lifecycle/workspace-id.txt"
+  },
+  "cell": {
+    "url": "https://<the scratch cell's service domain>",
+    "service_id": "<the streams-cell service id, from the deploy report>",
+    "headers_file": "~/.streams-k2/lifecycle/headers-steady.txt"
+  },
+  "commands": {
+    "_doc": "deploy/composer/deploy-release.sh and deploy/composer/cell-check are the deploy path's tools, at the paths and with the arguments triage B5 specifies; neither exists in this tree yet. A same-release Composer deploy is a no-op (triage D18), so `restart` must make a new version of the same release: B5 as specified has no such mode, and --restart is a PLACEHOLDER for the one it needs (for example a deploy-nonce envParam that forces a new deployment). Check every flag against B5 once it lands.",
+    "deploy": ["deploy/composer/deploy-release.sh", "{stage}", "{release}", "--state", "{home}/.streams-k2/lifecycle/cell-state", "--bearer-file", "{home}/.streams-k2/lifecycle/operator-bearer.txt"],
+    "restart": ["deploy/composer/deploy-release.sh", "{stage}", "{release}", "--state", "{home}/.streams-k2/lifecycle/cell-state", "--bearer-file", "{home}/.streams-k2/lifecycle/operator-bearer.txt", "--restart"],
+    "cell_check": ["deploy/composer/cell-check", "{stage}", "{release}", "--bearer-file", "{home}/.streams-k2/lifecycle/operator-bearer.txt", "--canary-token-file", "{home}/.streams-k2/lifecycle/canary-token.txt"]
+  },
+  "load": {
+    "setup": ["bun", "bench/k2cost/k2gen.ts", "setup", "--base", "{url}", "--headers-file", "{home}/.streams-k2/lifecycle/headers-steady.txt", "--streams", "8", "--prefix", "lc/s"],
+    "produce": ["bun", "bench/k2cost/k2gen.ts", "produce", "--base", "{url}", "--headers-file", "{home}/.streams-k2/lifecycle/headers-steady.txt", "--streams", "8", "--prefix", "lc/s", "--rate", "5", "--seed", "{seed}", "--duration", "{duration}", "--ledger", "{ledger}", "--out", "{windows}", "--window", "5"],
+    "audit": ["bun", "bench/k2cost/k2gen.ts", "audit", "--base", "{url}", "--headers-file", "{home}/.streams-k2/lifecycle/headers-steady.txt", "--streams", "8", "--prefix", "lc/s", "--expect", "{ledgers}", "--ledger", "{ledger}"]
+  },
+  "probe": {
+    "_doc": "Leg 1. The probe deploys into its own stage of the scratch app; give service_id once known, or project_id to find the service named *sigtermprobe*.",
+    "project_id": "<the scratch project id>",
+    "stage": "sigterm-probe",
+    "read_window_s": 600
+  },
+  "d10": {"warmup_s": 60, "tail_s": 60},
+  "restart": {"count": 3, "spacing_s": 300, "probe_path": "/v1/streams/lc/s00000", "append_stream": "lc/restart-probe", "probe_every_s": 0.25},
+  "rollback": {
+    "older": "~/.streams-releases/l5-rehearsal-a",
+    "newer": "~/.streams-releases/l5-rehearsal-b",
+    "sequence": ["older", "newer", "older", "newer"],
+    "layout_key": "layout_version",
+    "refusal_pattern": "(?i)layout",
+    "warmup_s": 60,
+    "tail_s": 60
+  },
+  "oom": {
+    "_doc": "Scratch only, NON-SHIPPING: deploy sets ADMIT_RSS_SHED_MB=2000 and ABSORB_GLOBAL_GATHERS=4 for this stage (CHAOS-5's recipe); restore redeploys the shipping release.",
+    "scratch": true,
+    "deploy": ["deploy/composer/deploy-release.sh", "{stage}", "{home}/.streams-releases/l5-oom-scratch", "--state", "{home}/.streams-k2/lifecycle/cell-state"],
+    "restore": ["deploy/composer/deploy-release.sh", "{stage}", "{release}", "--state", "{home}/.streams-k2/lifecycle/cell-state"],
+    "load": ["bun", "bench/k2cost/k2gen.ts", "produce", "--base", "{url}", "--headers-file", "{home}/.streams-k2/lifecycle/headers-steady.txt", "--streams", "8", "--prefix", "lc/s", "--payload", "b64rand", "--records", "64", "--mbps", "40", "--seed", "{seed}", "--duration", "{duration}", "--ledger", "{ledger}"],
+    "timeout_s": 1800,
+    "stable_s": 600
+  },
+  "feeds": {
+    "_doc": "Each publish command edits the bundle with cell-admin and uploads it to the cell's FEEDS_S3_KEY; admit_headers_file is the admitted-then-revoked project's token, steady_headers_file a project that stays admitted.",
+    "quiet_s": 120,
+    "admit_headers_file": "~/.streams-k2/lifecycle/headers-feeds-probe.txt",
+    "steady_headers_file": "~/.streams-k2/lifecycle/headers-steady.txt",
+    "publish_admit": ["{home}/.streams-k2/lifecycle/publish.sh", "admit"],
+    "publish_revoke": ["{home}/.streams-k2/lifecycle/publish.sh", "revoke"],
+    "publish_malformed": ["{home}/.streams-k2/lifecycle/publish.sh", "malformed"],
+    "publish_good": ["{home}/.streams-k2/lifecycle/publish.sh", "good"]
+  },
+  "boot_failures": {
+    "_doc": "Each case's deploy is any command that deploys that broken cell (a release without one secret, a release dir holding an aarch64 binary); expect_log is a regex the refusal's log line matches; restore redeploys the good release. deploy-release.sh's preflight refuses a missing secret (triage B5), so --without-secret is a PLACEHOLDER for the way past it B5 must provide.",
+    "cases": [
+      {"name": "missing-secret", "deploy": ["deploy/composer/deploy-release.sh", "{stage}", "{release}", "--state", "{home}/.streams-k2/lifecycle/cell-state", "--without-secret", "STREAMS_CURSOR_KEY"], "expect_log": "STREAMS_CURSOR_KEY"},
+      {"name": "wrong-arch", "deploy": ["deploy/composer/deploy-release.sh", "{stage}", "{home}/.streams-releases/l5-wrong-arch", "--state", "{home}/.streams-k2/lifecycle/cell-state"], "expect_log": "(?i)e_machine|x86_64|arch"}
+    ],
+    "restore": ["deploy/composer/deploy-release.sh", "{stage}", "{release}", "--state", "{home}/.streams-k2/lifecycle/cell-state"]
+  },
+  "keep_awake": {"hours": 72, "interval_s": 60, "notices_file": "~/.streams-k2/lifecycle/compute-notices.txt"}
+}

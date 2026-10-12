@@ -81,7 +81,7 @@ Do not read these whole. Find the heading first, then read only that range
 **Testing**
 - [DST.md](DST.md): the simulation model, invariants and fault model, and how to run it. [src/dst/tests/README.md](../src/dst/tests/README.md) maps each contract to its DST module.
 - [dst/DST-EXPANSION-SPEC.md](dst/DST-EXPANSION-SPEC.md) is the normative DST spec. [dst/SCENARIO-CATALOG.md](dst/SCENARIO-CATALOG.md) is a gate input (see below).
-- Harness READMEs: [bench/soak](../bench/soak/README.md), [bench/costab](../bench/costab/README.md) with [COST-METHODOLOGY.md](COST-METHODOLOGY.md), [bench/livefeed-perf](../bench/livefeed-perf/README.md), [bench/sse-probes](../bench/sse-probes/README.md), [bench/docker/harness](../bench/docker/harness/README.md).
+- Harness READMEs: [bench/soak](../bench/soak/README.md), [bench/costab](../bench/costab/README.md) with [COST-METHODOLOGY.md](COST-METHODOLOGY.md), [bench/livefeed-perf](../bench/livefeed-perf/README.md), [bench/sse-probes](../bench/sse-probes/README.md), [bench/docker/harness](../bench/docker/harness/README.md), [bench/lifecycle](../bench/lifecycle/README.md) (the Compute lifecycle checklist and its SIGTERM probe).
 
 ## Gate inputs: edit only through their tools
 
