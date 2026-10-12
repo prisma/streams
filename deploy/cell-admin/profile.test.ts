@@ -62,8 +62,22 @@ describe("the shared-cell profile", () => {
     });
     const env = readProfiles(DEFAULT_PROFILES);
     expect(
-      ["SSE_FEED_PROJECT_BYTES", "PROJECT_MEMORY_PRESSURE_BYTES", "MAX_REQUEST_BODY_BYTES"].map((n) => env.get(n)),
-    ).toEqual(["8388608", "33554432", "8388608"]);
+      [
+        "SSE_FEED_PROJECT_BYTES",
+        "PROJECT_MEMORY_PRESSURE_BYTES",
+        "MAX_REQUEST_BODY_BYTES",
+        "MAX_UNABSORBED_BYTES_PER_SHARD",
+      ].map((n) => env.get(n)),
+    ).toEqual(["8388608", "33554432", "8388608", "268435456"]);
+  });
+
+  test("its shard line is the binary's default, and k projects at their memory lines just reach it", () => {
+    const env = readProfiles(DEFAULT_PROFILES);
+    expect(src("src/config/model.rs")).toContain("unabsorbed_bytes_shard: 256 * 1024 * 1024,");
+    const [k, line, shard] = ["PROJECT_SHARE_K", "PROJECT_MEMORY_PRESSURE_BYTES", "MAX_UNABSORBED_BYTES_PER_SHARD"].map(
+      (n) => Number(env.get(n)),
+    );
+    expect([k * line, shard]).toEqual([256 * 1024 * 1024, 256 * 1024 * 1024]);
   });
 
   test("it keeps the cell awake for good: KEEP_AWAKE=1, with no KEEP_AWAKE_UNTIL_MS to bound it", () => {
@@ -93,6 +107,9 @@ describe("the shared-cell profile", () => {
     ["PROJECT_SHARE_K", undefined, "profile does not set PROJECT_SHARE_K"],
     ["SSE_FEED_PROJECT_BYTES", "33554432", "needs SSE_FEED_TOTAL_BYTES / k = 8388608"],
     ["PROJECT_MEMORY_PRESSURE_BYTES", "43690667", "3 projects at their lines would fill the instance read memory (131072000)"],
+    ["PROJECT_MEMORY_PRESSURE_BYTES", "33554433", "8 projects at their memory lines (268435464) would pass the shard line MAX_UNABSORBED_BYTES_PER_SHARD=268435456"],
+    ["MAX_UNABSORBED_BYTES_PER_SHARD", "268435455", "8 projects at their memory lines (268435456) would pass the shard line MAX_UNABSORBED_BYTES_PER_SHARD=268435455"],
+    ["MAX_UNABSORBED_BYTES_PER_SHARD", undefined, "profile does not set MAX_UNABSORBED_BYTES_PER_SHARD"],
     ["CELL_ENVELOPE_REQUESTS_PER_SEC", undefined, "profile does not set CELL_ENVELOPE_REQUESTS_PER_SEC"],
     ["MAX_UNABSORBED_BYTES_PER_INSTANCE", undefined, "profile does not set MAX_UNABSORBED_BYTES_PER_INSTANCE"],
     ["ADMIT_MAX_INFLIGHT", "5e2", "ADMIT_MAX_INFLIGHT=5e2 is not a positive integer"],

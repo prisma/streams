@@ -140,7 +140,11 @@ const READ_MEMORY_FILLERS = 4;
 /// The profile's LiveFeed share must be the cell's divided by k: one
 /// project at its share leaves the rest to the other k - 1. Its memory
 /// line may be larger than the read memory divided by k, but it must take
-/// at least READ_MEMORY_FILLERS projects at their lines to fill it.
+/// at least READ_MEMORY_FILLERS projects at their lines to fill it, and k
+/// projects at their lines must stay within the one shard's unabsorbed-
+/// bytes line, where every append to the shard is refused (phase B step
+/// 12 on one shard). That is necessary, not the k-tolerance itself: a
+/// project's queued bytes can take it past its line (shared-cell.env).
 function checkShares(env: Map<string, string>, k: number): void {
   const feedTotal = positive(env, "SSE_FEED_TOTAL_BYTES");
   const feedProject = positive(env, "SSE_FEED_PROJECT_BYTES");
@@ -158,6 +162,13 @@ function checkShares(env: Map<string, string>, k: number): void {
     throw new AdminError(
       `profile PROJECT_MEMORY_PRESSURE_BYTES=${line}: ${READ_MEMORY_FILLERS - 1} projects at their lines ` +
         `would fill the instance read memory (${readMemory}); the owner accepted ${READ_MEMORY_FILLERS}`,
+    );
+  }
+  const shard = positive(env, "MAX_UNABSORBED_BYTES_PER_SHARD");
+  if (k * line > shard) {
+    throw new AdminError(
+      `profile PROJECT_MEMORY_PRESSURE_BYTES=${line}: ${k} projects at their memory lines (${k * line}) ` +
+        `would pass the shard line MAX_UNABSORBED_BYTES_PER_SHARD=${shard}`,
     );
   }
 }

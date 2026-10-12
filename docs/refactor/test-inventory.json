@@ -5604,7 +5604,7 @@
     "name": "names_ground_onto_the_victims_shard_never_shed_the_victim",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
-      "#[ignore = \"red until shared-cells phase B step 12: per-(project, shard) backlog attribution\"]"
+      "#[ignore = \"red until multi-shard cells (phase B step 12; one-shard cells are bounded by the memory line, pinned in cell-admin's profile test)\"]"
     ],
     "function_sha256": "41d374c82e53c81291912b0171cca66a1f637a077a31e24e4b2b2d8bbe376f54",
     "mechanisms": [],

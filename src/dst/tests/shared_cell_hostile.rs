@@ -491,7 +491,7 @@ async fn a_capability_carrier_with_only_a_key_is_refused() {
 /// victim's append is still admitted; the shed lands on the
 /// contributors.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "red until shared-cells phase B step 12: per-(project, shard) backlog attribution"]
+#[ignore = "red until multi-shard cells (phase B step 12; one-shard cells are bounded by the memory line, pinned in cell-admin's profile test)"]
 async fn names_ground_onto_the_victims_shard_never_shed_the_victim() {
     let mut admission = crate::config::ServerConfig::load(
         crate::config::CliArgs::deterministic(),
