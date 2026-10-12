@@ -18,6 +18,7 @@ ratchet here is 1,000 lines per file; the s3lite census it reads (C2) is
 | `points/*.env` | one tiny smoke point and one full-scale point per design run (L0, L1, L2, L3, L5, L6, L7) |
 | `oracle.ts` | the shared-cell leak oracle: a `--payload oracle` record names its project and carries a MAC under that project's harness key, which the server never sees. Every read path (pages, long-polls, SSE, pulls, churn's read-back, the audit) counts each record it is delivered as `oracle_ok`, `oracle_foreign` (another project's record: a leak), `oracle_bad_mac` (corruption) or `oracle_unmarked`. Only a generator that names an owner writes it (`tenants.ts`) |
 | `tenants.ts` (+ `tenant-plan.ts`, `tenants/*.json`) | the shared-cell harness's multi-project driver: a tenants manifest of classes, counts, quotas and phases, every project on k2gen's own modes under its own token (below) |
+| `tenants-admit.ts` | the manifest's projects onto a cell-admin cell (its own CLI's `init` and `admit`, each with its class's quota set), the token map (12 h tokens, re-minted every 8 h, optionally uploaded), and the bundle's publication |
 | `fake-cell.ts`, `*.test.ts` | the harness's tests, against a product-surface fake: `bun test ./bench/k2cost` |
 
 ## Running a point
@@ -447,6 +448,22 @@ bun bench/k2cost/tenants.ts audit --manifest M --base URL --token-map F --out DI
 |---|---|
 | `tenants/layer-b.json` | Layer B on the single-server shape, 1,000 projects: S0 ×8, S1 ×8, S2 ×12, S3s ×4 (100 SSE subscribers each), N0 ×8, the victim, H1-H8 at Q-hostile and again at the cell's k ceilings, 200 warm idle (about 1 MiB each) and cold idle (3 empty streams, or none). Setup 0-600 s, the compliant classes 600-4,200 s, the hostile ones from 1,800 s; the victim's periods `solo` 900-1,800 s and `noisy` 2,100-4,200 s. Writers stop 60 s before the readers of their window |
 | `tenants/layer-b-tiny.json` | one project per class (three warm, three cold), about 4 min: for building the harness |
+
+Admission and tokens (operator side, where the cell's signing key is):
+
+```bash
+bun bench/k2cost/tenants-admit.ts admit  --manifest M --state DIR --key-file K \
+    --cell-id C --deployment-project P --account A       # init once, then admit what is missing
+bun bench/k2cost/tenants-admit.ts tokens --manifest M --state DIR --key-file K --out MAP --every 28800 \
+    [--upload s3://BUCKET/KEY --s3-endpoint URL --s3-creds FILE]
+bun bench/k2cost/tenants-admit.ts publish --state DIR --upload s3://BUCKET/KEY --s3-endpoint URL --s3-creds FILE
+```
+
+`admit` runs cell-admin's own CLI (`init`, then `admit` per project, with
+the class's quota set as `--quota` flags): 1,000 projects took 6.7 s here.
+`tokens` mints with `deploy/cell-admin/tokens.ts`, writes the map with mode
+0600, never prints a token, and with `--every` re-mints until stopped. S3
+credentials come only from a 0600 JSON file `{"accessKeyId", "secretAccessKey"}`.
 
 The token map is a JSON list `[{"project", "token"}]`, re-read every 10 min
 and soon after a 401. Outputs under `--out`:
