@@ -415,6 +415,21 @@ export class ProducerSequenceReusedError extends StreamsError {
   }
 }
 
+/**
+ * The issuer refused the credential exchange, or answered it with
+ * something that is not a token. `code` is the issuer's: `401`
+ * `invalid_credential`, `403` `credential_not_active` or
+ * `project_not_active`, `429` `rate_limited`, `503` `issuer_unavailable`
+ * (the last two `retryable`); `exchange_failed` when the answer names no
+ * code, `invalid_exchange_response` for a `2xx` without a token.
+ */
+export class CredentialExchangeError extends StreamsError {
+  constructor(status: number, code: string, message: string, retryable: boolean) {
+    super(status, code, message, retryable);
+    this.name = "CredentialExchangeError";
+  }
+}
+
 // ---------------------------------------------------------------------
 // HTTP plumbing
 
@@ -446,6 +461,8 @@ interface Ctx {
   fetch: typeof fetch;
   /** StreamsClientOptions.retry.transport. */
   transportRetry: boolean;
+  /** How a refusal is read, when not the Streams service's `errorFrom`. */
+  errors?: (res: Response) => Promise<StreamsError>;
 }
 
 /** A token is refreshed once less than this margin of its lifetime is
@@ -708,7 +725,7 @@ async function req(
     if (res.ok) return res;
     // Consume/classify failure before applying generic retry. In
     // particular a 503 routing response is permanent at this endpoint.
-    const error = await errorFrom(res);
+    const error = await (ctx.errors ?? errorFrom)(res);
     if (error instanceof WrongCellError) throw error;
     // 401 = the token itself is bad or expired: refresh ONCE through
     // the provider and replay. `wrong_cell` is 421/503 by contract
@@ -729,6 +746,112 @@ async function req(
     }
     throw error;
   }
+}
+
+// ---------------------------------------------------------------------
+// Credentials (MULTITENANCY §3.2: a project credential is exchanged at
+// the issuer for short-lived bearer tokens)
+
+/** The issuer's answer to a credential exchange. */
+export interface CredentialExchange {
+  accessToken: string;
+  /** The access token's lifetime in seconds. */
+  expiresIn: number;
+  projectId: string;
+  /** The service's base URL for the project, or `null` when the issuer
+   * names none. */
+  endpoint: string | null;
+}
+
+export interface CredentialProvider {
+  /** One exchange: `POST {issuerUrl}/v1/token/streams`. */
+  exchange(): Promise<CredentialExchange>;
+  /** An exchange as a `tokenProvider` answer: the token and its expiry. */
+  tokenProvider(): Promise<TokenWithExpiry>;
+  /** The last successful exchange. */
+  readonly last: CredentialExchange | undefined;
+}
+
+/** An issuer refusal: the issuer's `{error: {code, message}}`, or a plain
+ * `{error: "<text>"}` (code `exchange_failed`); retryable when `429` or
+ * `503`. */
+async function exchangeError(res: Response): Promise<StreamsError> {
+  let code = "exchange_failed";
+  let message = `HTTP ${res.status}`;
+  try {
+    const failure = ((await res.json()) as { error?: unknown }).error;
+    if (typeof failure === "string") {
+      message = failure;
+    } else if (typeof failure === "object" && failure !== null) {
+      const e = failure as { code?: unknown; message?: unknown };
+      if (typeof e.code === "string") code = e.code;
+      if (typeof e.message === "string") message = e.message;
+    }
+  } catch {
+    // not a JSON answer: keep the status
+  }
+  return new CredentialExchangeError(res.status, code, message, res.status === 429 || res.status === 503);
+}
+
+function exchangeFrom(status: number, body: unknown): CredentialExchange {
+  const b = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
+  const { accessToken, expiresIn, projectId, endpoint } = b;
+  if (
+    typeof accessToken !== "string" || accessToken === "" ||
+    typeof expiresIn !== "number" || !Number.isFinite(expiresIn) || expiresIn <= 0 ||
+    typeof projectId !== "string" || projectId === ""
+  ) {
+    throw new CredentialExchangeError(status, "invalid_exchange_response",
+      "the issuer's answer lacks an accessToken, an expiresIn or a projectId", false);
+  }
+  return {
+    accessToken,
+    expiresIn,
+    projectId,
+    endpoint: typeof endpoint === "string" && endpoint !== "" ? endpoint : null,
+  };
+}
+
+/**
+ * A Prisma Streams credential (`prisma_streams_<id>.<secret>`, shown once
+ * when it is created) as a source of access tokens. Each exchange is sent
+ * through the client's request loop: a `429` or `503` is replayed on its
+ * `Retry-After` and a transport failure after 1, 2 and 4 s, within four
+ * attempts; any other refusal rejects at once as `CredentialExchangeError`.
+ * Neither the credential nor a token is logged or put in an error.
+ */
+export function prismaStreamsCredential(
+  credential: string,
+  options: { issuerUrl: string; fetch?: typeof fetch; retry?: StreamsClientOptions["retry"] },
+): CredentialProvider {
+  const ctx: Ctx = {
+    base: options.issuerUrl.replace(/\/$/, ""),
+    fetch: options.fetch ?? fetch.bind(globalThis),
+    transportRetry: options.retry?.transport ?? true,
+    errors: exchangeError,
+  };
+  let last: CredentialExchange | undefined;
+  const exchange = async (): Promise<CredentialExchange> => {
+    // No token in this context: req() keeps this header and never
+    // refreshes on a 401.
+    const res = await req(ctx, "POST", "/v1/token/streams", {
+      authorization: `StreamsCredential ${credential}`,
+      accept: "application/json",
+    });
+    const body: unknown = await res.json().catch(() => undefined);
+    last = exchangeFrom(res.status, body);
+    return last;
+  };
+  return {
+    exchange,
+    async tokenProvider() {
+      const exchanged = await exchange();
+      return { token: exchanged.accessToken, expiresAt: Date.now() + exchanged.expiresIn * 1000 };
+    },
+    get last() {
+      return last;
+    },
+  };
 }
 
 // ---------------------------------------------------------------------

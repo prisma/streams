@@ -17,6 +17,36 @@ await orders.append({ customerId: "c1" }, { routingKey: "c1" });
 for await (const rec of orders.subscribe({ routingKey: "c1" })) { /* … */ }
 ```
 
+## Authenticating
+
+A project credential (`prisma_streams_<id>.<secret>`, shown once when it
+is created) is exchanged at the token issuer for access tokens. Keep it in
+a server-side secret store and pass it whole; never ship it to a browser.
+`prismaStreamsCredential` turns it into a token source:
+
+```ts
+import { StreamsClient, prismaStreamsCredential } from "@prisma/streams";
+
+const credential = prismaStreamsCredential(process.env.PRISMA_STREAMS_CREDENTIAL!, { issuerUrl });
+const first = await credential.exchange(); // { accessToken, expiresIn, projectId, endpoint }
+const client = new StreamsClient({
+  url: first.endpoint ?? url,
+  project: first.projectId,
+  tokenProvider: credential.tokenProvider, // { token, expiresAt }: refreshed before it expires
+});
+```
+
+Each exchange is `POST {issuerUrl}/v1/token/streams` with
+`Authorization: StreamsCredential <credential>`. A `429` or `503` is
+replayed on its `Retry-After` and a transport failure after 1, 2 and 4 s,
+within four attempts. Any other refusal rejects at once with
+`CredentialExchangeError`, whose `code` is the issuer's: `401`
+`invalid_credential`, `403` `credential_not_active` or
+`project_not_active`, `429` `rate_limited` and `503` `issuer_unavailable`
+(both `retryable`), or `exchange_failed` when the answer names no code. A
+success without a token is `invalid_exchange_response`. Neither the
+credential nor a token is logged or put in an error.
+
 ## Watches
 
 A watch turns "did anything change for customer c1?" into one long poll.
