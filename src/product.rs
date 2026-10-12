@@ -208,7 +208,7 @@ struct ExpiryDoc {
     at: Option<String>,
 }
 
-const MAX_CONFIG_BODY: usize = 256 * 1024;
+const MAX_CONFIG_BODY: usize = 64 * 1024;
 const MAX_WATCH_DEFS: usize = 64;
 const MAX_WATCH_FIELDS: usize = 16;
 
@@ -244,7 +244,7 @@ fn parse_create_doc(body: &Bytes) -> Result<ParsedCreate, Response> {
         return Err(perr(
             StatusCode::BAD_REQUEST,
             "invalid_config",
-            "configuration body exceeds 256 KiB",
+            "configuration body exceeds 64 KiB",
             None,
             false,
         ));

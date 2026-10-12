@@ -3,11 +3,11 @@
 //! share, besides read memory (`read_memory`). Each test pins one bound.
 //!
 //! Green: a write's buffered bodies share their project's memory line
-//! (C3), and a deleted or expired watched stream's touch journal ends with
-//! it (C9).
-//! Ignored, red until the owner decides them (`impl/fixes.md`): the bytes
-//! a descriptor may hold (C4), the coverage a pull reads charged to
-//! nobody (C7), and a catalog page reserving nothing (C8).
+//! (C3), a creation document holds at most 64 KiB (C4), and a deleted or
+//! expired watched stream's touch journal ends with it (C9).
+//! Ignored, red until the owner decides them (`impl/fixes.md`): the
+//! coverage a pull reads charged to nobody (C7), and a catalog page
+//! reserving nothing (C8).
 //!
 //! The hostile project is project 0, its neighbour project 1. A client
 //! that "never reads" sends its request over a socket with a 4 KiB receive
@@ -91,21 +91,40 @@ async fn answer(stream: &mut TcpStream) -> Option<(u16, Option<String>)> {
     Some((status, code))
 }
 
-/// A create body just under `MAX_CONFIG_BODY` (256 KiB): 64 watches of 16
-/// field pointers of about 240 bytes, all stored in the descriptor.
-fn fat_create() -> String {
-    let watches: Vec<String> = (0..64)
-        .map(|w| {
-            let fields: Vec<String> = (0..16)
-                .map(|f| format!("\"/{w}-{f}-{}\"", "p".repeat(228)))
-                .collect();
-            format!(r#"{{"name":"w{w}","fields":[{}]}}"#, fields.join(","))
-        })
-        .collect();
-    format!(
-        r#"{{"format":{{"kind":"json"}},"watches":[{}]}}"#,
-        watches.join(",")
-    )
+/// The largest creation document a create accepts (`MAX_CONFIG_BODY`).
+const CREATE_BOUND: usize = 64 * 1024;
+
+/// A create body of exactly `len` bytes (at least about 12 KiB): 64
+/// watches of 16 field pointers padded alike, the last pointer taking the
+/// remainder, all stored in the descriptor.
+fn fat_create(len: usize) -> String {
+    let doc = |pad: usize, rest: usize| {
+        let watches: Vec<String> = (0..64)
+            .map(|w| {
+                let fields: Vec<String> = (0..16)
+                    .map(|f| {
+                        let last = usize::from(w == 63 && f == 15);
+                        format!("\"/{w}-{f}-{}\"", "p".repeat(pad + last * rest))
+                    })
+                    .collect();
+                format!(r#"{{"name":"w{w}","fields":[{}]}}"#, fields.join(","))
+            })
+            .collect();
+        format!(
+            r#"{{"format":{{"kind":"json"}},"watches":[{}]}}"#,
+            watches.join(",")
+        )
+    };
+    let spare = len - doc(0, 0).len();
+    let body = doc(spare / 1024, spare % 1024);
+    assert_eq!(body.len(), len);
+    body
+}
+
+/// The error code of a product error body.
+fn error_code(body: &[u8]) -> Option<String> {
+    let value = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    value["error"]["code"].as_str().map(str::to_string)
 }
 
 /// Project `i`'s read bytes.
@@ -286,16 +305,17 @@ async fn expired_watched_streams_leave_no_touch_journal_after_the_walk() {
     engine_shutdown(&cell.state).await;
 }
 
-/// C4. A descriptor's bytes are bounded by nothing but the request rate:
-/// a create body (and so its stored descriptor: 64 watches x 16 field
-/// pointers of any length) may be 256 KiB, creates are charged to no byte
+/// C4. A creation document holds at most 64 KiB, and so a descriptor at
+/// most about 64 KiB of watch definitions. It could be 256 KiB (64 watches
+/// x 16 field pointers of any length), creates are charged to no byte
 /// quota, and the descriptor cache counts entries (65,536), not bytes, and
-/// deep-clones a descriptor under its one lock on every lookup. Under the
-/// shared cell's append ceiling (257,500 B/s at k = 8) project 0 creates
-/// 16 descriptors of about 245 KB in well under a second. Pass: the
-/// project is refused (by a byte quota or a descriptor bound) before 16.
+/// deep-clones a descriptor under its one lock on every lookup: under the
+/// shared cell's append ceiling (257,500 B/s at k = 8) project 0 created
+/// 16 descriptors of about 245 KB in well under a second. Pass: 16 creates
+/// of 64 KiB and one byte are each refused 400 `invalid_config` and store
+/// nothing; one of exactly 64 KiB is created and listed (its descriptor,
+/// about 66 KB, is within the catalog's per-descriptor guard).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "red until the owner decides capacity review C4: a byte bound on watch definitions and on the descriptor cache"]
 async fn descriptor_bytes_are_held_to_a_byte_bound() {
     const CREATES: usize = 16;
     let cell = open_cell(CellSpec {
@@ -307,22 +327,32 @@ async fn descriptor_bytes_are_held_to_a_byte_bound() {
         ..CellSpec::open(1)
     })
     .await;
-    let body = fat_create();
-    let started = Instant::now();
-    let mut created = 0;
+    let over = fat_create(CREATE_BOUND + 1);
+    let mut answers = Vec::new();
     for n in 0..CREATES {
         let path = format!("/v1/streams/fat-{n}");
-        if cell.call(0, "PUT", &path, body.as_bytes()).await.0 == 201 {
-            created += 1;
-        }
+        let (status, _, body) = cell.call(0, "PUT", &path, over.as_bytes()).await;
+        answers.push((status, error_code(&body)));
     }
-    let took = started.elapsed();
-    assert!(
-        created < CREATES,
-        "{created} descriptors of {} bytes each created in {took:?} under an append ceiling of \
-         257,500 B/s",
-        body.len()
+    assert_eq!(
+        answers,
+        vec![(400, Some("invalid_config".to_string())); CREATES],
+        "creates of {} bytes under an append ceiling of 257,500 B/s",
+        over.len()
     );
+    let at = fat_create(CREATE_BOUND);
+    let (status, _, body) = cell
+        .call(0, "PUT", "/v1/streams/fat-at", at.as_bytes())
+        .await;
+    assert_eq!(status, 201, "{}", String::from_utf8_lossy(&body));
+    let listing = cell.json(0, "GET", "/v1/streams").await;
+    let listed: Vec<&str> = listing["streams"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    assert_eq!(listed, ["fat-at"], "only the create at the bound stored");
     engine_shutdown(&cell.state).await;
 }
 
@@ -399,13 +429,14 @@ async fn empty_pulls_are_held_to_their_projects_read_quota_by_what_they_read() {
 /// nothing, so it is served while its project's held pages fill its
 /// memory line, where a read is refused: 64 concurrent listings of one
 /// project can materialize up to 1 GiB. Here 64 descriptors of about
-/// 245 KB make one page of about 15.6 MB. Pass: the catalog page is held
-/// to the line as a read is (both answered alike).
+/// 66 KB, each from a creation document at the 64 KiB bound, make one
+/// page of about 4.2 MB. Pass: the catalog page is held to the line as a
+/// read is (both answered alike).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "red until the owner decides capacity review C8: product_list reserves its page (a frozen scope)"]
 async fn a_catalog_page_is_held_to_its_projects_memory_line_as_a_read_is() {
     let cell = open_cell(CellSpec::open(1)).await;
-    let body = fat_create();
+    let body = fat_create(CREATE_BOUND);
     for n in 0..64 {
         let path = format!("/v1/streams/cat-{n}");
         assert_eq!(cell.call(0, "PUT", &path, body.as_bytes()).await.0, 201);

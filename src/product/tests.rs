@@ -701,3 +701,36 @@ proptest::proptest! {
         proptest::prop_assert_eq!(parsed.over_capacity, core);
     }
 }
+
+/// A creation document is parsed up to exactly 64 KiB (65,536 bytes,
+/// `MAX_CONFIG_BODY`); one byte more is refused `400 invalid_config`,
+/// "configuration body exceeds 64 KiB", before it is parsed.
+#[tokio::test]
+async fn a_creation_document_is_parsed_up_to_exactly_64_kib() {
+    let doc = |len: usize| {
+        let shell = r#"{"format":{"kind":"json"},"watches":[{"name":"w","fields":["/"]}]}"#;
+        let pointer = format!("\"/{}\"", "p".repeat(len - shell.len()));
+        Bytes::from(shell.replace("\"/\"", &pointer))
+    };
+    let at = doc(64 * 1024);
+    assert_eq!(at.len(), 65_536);
+    assert!(
+        parse_create_doc(&at).is_ok(),
+        "a document of exactly 64 KiB"
+    );
+    let over = doc(64 * 1024 + 1);
+    let Err(refused) = parse_create_doc(&over) else {
+        panic!("a document of 65,537 bytes was parsed");
+    };
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(refused.into_body(), usize::MAX).await;
+    let body: serde_json::Value = serde_json::from_slice(&body.unwrap()).unwrap();
+    let error = (&body["error"]["code"], &body["error"]["message"]);
+    assert_eq!(
+        error,
+        (
+            &json!("invalid_config"),
+            &json!("configuration body exceeds 64 KiB")
+        )
+    );
+}

@@ -95,7 +95,7 @@
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
       "#[ignore = \"red until the owner decides capacity review C8: product_list reserves its page (a frozen scope)\"]"
     ],
-    "function_sha256": "4bef071449b475a6ae6fe195d827d3e49b87ff494eb539d9c6464c1dcc329422",
+    "function_sha256": "bf0909352a2aa91f2fa184a5477b2bc28175a421c62da914c766de0578324eb4",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_capacity.rs",
@@ -3808,10 +3808,9 @@
   {
     "name": "descriptor_bytes_are_held_to_a_byte_bound",
     "attributes": [
-      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
-      "#[ignore = \"red until the owner decides capacity review C4: a byte bound on watch definitions and on the descriptor cache\"]"
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "da951cab73fc469a741737bf8340b8b480ce7508d7ceb1e223038293d016288d",
+    "function_sha256": "fbaf8449052f2bcd4a4a52b2648e461144342e0f9c68702e79513dc80c19fec0",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_capacity.rs",
