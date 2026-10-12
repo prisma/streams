@@ -3,12 +3,14 @@
 // republished bundle without a restart, and a cell that cannot reach the
 // bundle for 120 s of awake time stops serving stale feeds. Run with
 // `bun test ./deploy/feeds.test.ts`. The poller is driven by hand over a
-// scripted fetcher and a fake monotonic clock; the S3 fetcher runs against a
-// local fake store.
+// scripted fetcher and a fake monotonic clock; the S3 fetcher and the boot
+// download run against local fake stores, one for the bundle's bucket
+// (FEEDS_S3_*) and a decoy for every other bucket the wrapper knows.
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { downloadFile } from "./app-server/downloader";
 import { type FetchBundle, FeedPoller, POLL_MS, STALE_MS, s3BundleFetcher } from "./app-server/feeds";
 
 const dirs: string[] = [];
@@ -145,30 +147,121 @@ test("a bundle that does not parse, or lacks a feed, is a failed poll: it never 
   }
 });
 
-test("the S3 fetcher sends If-None-Match and reads a 304 as unchanged", async () => {
-  const seen: (string | null)[] = [];
-  const body = bundle(7);
+const KEY = "feeds/cell.json";
+
+/// A fake S3 endpoint serving `body` (ETag "v7", 304 on a match) at
+/// `/feeds-bucket/<KEY>` and 404 elsewhere. It records every request: its
+/// path, its If-None-Match, and the access key id and region it is signed
+/// with (from a presigned URL's X-Amz-Credential or a signed header).
+function fakeStore(body: string) {
+  const seen: { path: string; etag: string | null; credential: string | null }[] = [];
   const server = Bun.serve({
     port: 0,
     fetch(req) {
-      const tag = req.headers.get("if-none-match");
-      seen.push(tag);
-      if (!new URL(req.url).pathname.endsWith("/feeds/cell.json")) return new Response("", { status: 404 });
-      if (tag === '"v7"') return new Response(null, { status: 304 });
+      const url = new URL(req.url);
+      const signed = `${url.searchParams.get("X-Amz-Credential") ?? ""} ${req.headers.get("authorization") ?? ""}`;
+      const scope = signed.match(/(?:^|Credential=)([^/\s]+)\/\d{8}\/([^/]+)\/s3\/aws4_request/);
+      const etag = req.headers.get("if-none-match");
+      seen.push({ path: url.pathname, etag, credential: scope ? `${scope[1]}/${scope[2]}` : null });
+      if (url.pathname !== `/feeds-bucket/${KEY}`) return new Response("", { status: 404 });
+      if (etag === '"v7"') return new Response(null, { status: 304 });
       return new Response(body, { headers: { etag: '"v7"' } });
     },
   });
+  return { seen, endpoint: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
+}
+
+/// The bundle's bucket, by the only names the wrapper reads it with
+/// (FEEDS_S3_REGION unset: the region defaults to "auto").
+const feedsEnv = (endpoint: string): Record<string, string> => ({
+  FEEDS_S3_ENDPOINT: endpoint,
+  FEEDS_S3_BUCKET: "feeds-bucket",
+  FEEDS_S3_ACCESS_KEY_ID: "feeds-key-id",
+  FEEDS_S3_SECRET_ACCESS_KEY: "feeds-secret",
+});
+
+/// Every other bucket a wrapper's environment names (the binary's BIN_S3_*,
+/// the data bucket's SLATE_S3_*, the generator's S3_*), all on `endpoint`.
+function otherBuckets(endpoint: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const p of ["BIN_S3_", "SLATE_S3_", "S3_"]) {
+    env[`${p}ENDPOINT`] = endpoint;
+    env[`${p}BUCKET`] = "artifacts";
+    env[`${p}REGION`] = "eu-central-1";
+    env[`${p}ACCESS_KEY_ID`] = "other-key-id";
+    env[`${p}SECRET_ACCESS_KEY`] = "other-secret";
+  }
+  return env;
+}
+
+test("the S3 fetcher reads the bundle with FEEDS_S3_* only, sends If-None-Match and reads a 304 as unchanged", async () => {
+  const body = bundle(7);
+  const feeds = fakeStore(body);
+  const decoy = fakeStore(body);
   try {
-    const fetch = s3BundleFetcher("feeds/cell.json", {
-      BIN_S3_ENDPOINT: `http://127.0.0.1:${server.port}`,
-      BIN_S3_BUCKET: "artifacts",
-      BIN_S3_ACCESS_KEY_ID: "test",
-      BIN_S3_SECRET_ACCESS_KEY: "test",
-    });
+    const fetch = s3BundleFetcher(KEY, { ...otherBuckets(decoy.endpoint), ...feedsEnv(feeds.endpoint) });
     expect(await fetch(null)).toEqual({ status: "changed", etag: '"v7"', body });
     expect(await fetch('"v7"')).toEqual({ status: "unchanged" });
-    expect(seen).toEqual([null, '"v7"']);
+    const asked = { path: `/feeds-bucket/${KEY}`, credential: "feeds-key-id/auto" };
+    expect(feeds.seen).toEqual([{ ...asked, etag: null }, { ...asked, etag: '"v7"' }]);
+    expect(decoy.seen).toEqual([]);
   } finally {
-    server.stop(true);
+    feeds.stop();
+    decoy.stop();
+  }
+});
+
+test("the boot download reads the bundle with FEEDS_S3_* only", async () => {
+  const body = bundle(3);
+  const feeds = fakeStore(body);
+  const decoy = fakeStore(body);
+  const dest = join(feedDir(), "bundle.json");
+  try {
+    await downloadFile(KEY, dest, () => {}, { ...otherBuckets(decoy.endpoint), ...feedsEnv(feeds.endpoint) });
+    expect(readFileSync(dest, "utf8")).toBe(body);
+    expect(feeds.seen).toEqual([{ path: `/feeds-bucket/${KEY}`, etag: null, credential: "feeds-key-id/auto" }]);
+    expect(decoy.seen).toEqual([]);
+  } finally {
+    feeds.stop();
+    decoy.stop();
+  }
+});
+
+test("FEEDS_S3_REGION names the region the fetcher and the boot download sign for, never BIN_S3_REGION's", async () => {
+  const body = bundle(5);
+  const feeds = fakeStore(body);
+  const dest = join(feedDir(), "bundle.json");
+  try {
+    // The other buckets sit on the same store and name eu-central-1.
+    const env = { ...otherBuckets(feeds.endpoint), ...feedsEnv(feeds.endpoint), FEEDS_S3_REGION: "us-east-1" };
+    expect(await s3BundleFetcher(KEY, env)(null)).toEqual({ status: "changed", etag: '"v7"', body });
+    await downloadFile(KEY, dest, () => {}, env);
+    expect(readFileSync(dest, "utf8")).toBe(body);
+    const asked = { path: `/feeds-bucket/${KEY}`, etag: null, credential: "feeds-key-id/us-east-1" };
+    expect(feeds.seen).toEqual([asked, asked]);
+  } finally {
+    feeds.stop();
+  }
+});
+
+test("a BIN_S3_*-only environment is refused by the fetcher and the boot download before any request, naming each missing FEEDS_S3_* name", async () => {
+  const decoy = fakeStore(bundle(1));
+  const dest = join(feedDir(), "bundle.json");
+  const lines: string[] = [];
+  try {
+    const others = otherBuckets(decoy.endpoint);
+    const refused =
+      "feeds bucket refused: FEEDS_S3_ENDPOINT, FEEDS_S3_BUCKET, FEEDS_S3_ACCESS_KEY_ID, FEEDS_S3_SECRET_ACCESS_KEY unset";
+    expect(() => s3BundleFetcher(KEY, others)).toThrow(refused);
+    await expect(downloadFile(KEY, dest, (l) => lines.push(l), others)).rejects.toThrow(refused);
+    // One name missing is refused alone: no name falls back to its BIN_S3_* twin.
+    const noSecret = { ...others, ...feedsEnv(decoy.endpoint) };
+    delete noSecret.FEEDS_S3_SECRET_ACCESS_KEY;
+    expect(() => s3BundleFetcher(KEY, noSecret)).toThrow("feeds bucket refused: FEEDS_S3_SECRET_ACCESS_KEY unset");
+    expect(decoy.seen).toEqual([]);
+    expect(existsSync(dest)).toBe(false);
+    expect(lines).toEqual([]);
+  } finally {
+    decoy.stop();
   }
 });

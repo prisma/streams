@@ -25,8 +25,10 @@ Deploy the server with `deploy/profiles/compute-1g.env`, then
 `deploy/profiles/shared-cell.env` (later wins), and these per-cell values:
 `CELL_ID`, `PROJECT_ID` (reserved, never placed), `ACCOUNT_ID` (the sink
 for unowned meter events), `USAGE_STREAM_KEY`, `AUTH_TOKEN` (the
-deployment bearer, an operator credential), `SLATE_S3_*`, `PATH_PREFIX`
-and `FEEDS_S3_KEY` (the bundle). The profile's header lists what it sets
+deployment bearer, an operator credential), `SLATE_S3_*`, `PATH_PREFIX`,
+`FEEDS_S3_KEY` (the bundle) and `FEEDS_S3_*` (the bundle's bucket: the
+wrapper reads it by these names only, never `BIN_S3_*`; see
+`deploy/README.md`). The profile's header lists what it sets
 and what must stay absent. In particular, no `FLEET_PREFIX`, no
 `FLEET_INTERNAL_TOKEN`, and no key for `prisma-streams-internal` in the
 keys feed, so nothing can open the cell's internal surface.

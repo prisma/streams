@@ -185,6 +185,8 @@ deploy server \
   --env SERVER_BINARY_S3_KEY="bin/streams-$BIN_TAG-x64" \
   --env BIN_S3_ENDPOINT=$BINEP --env BIN_S3_BUCKET=$BINBKT --env BIN_S3_REGION=auto \
   --env BIN_S3_ACCESS_KEY_ID="$BINID" --env BIN_S3_SECRET_ACCESS_KEY="$BINSEC" \
+  --env FEEDS_S3_ENDPOINT=$BINEP --env FEEDS_S3_BUCKET=$BINBKT --env FEEDS_S3_REGION=auto \
+  --env FEEDS_S3_ACCESS_KEY_ID="$BINID" --env FEEDS_S3_SECRET_ACCESS_KEY="$BINSEC" \
   --env SLATE_S3_ENDPOINT="$(j endpoint)" --env SLATE_S3_BUCKET="$(j bucketName)" \
   --env SLATE_S3_REGION=auto \
   --env SLATE_S3_ACCESS_KEY_ID="$(j accessKeyId)" \

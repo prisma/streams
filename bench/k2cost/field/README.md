@@ -296,6 +296,7 @@ scale values, stated explicitly; the WAL posture; binary poll defaults (no
 `FLEET_PREFIX=k2f`, `INSTANCE_NAME=streams-<i>`, `FLEET_MIN`, `FLEET_MAX`,
 `INITIAL_SHARDS`, `FLEET_PEER_DOMAINS=prisma.build`); the release posture:
 `STREAMS_AUTH_MODE=enforce` with the cell's feeds (`FEEDS_S3_KEY`,
+read from the artifact bucket by the `FEEDS_S3_*` names only and
 materialized by app-server into `/tmp/feeds/{keys,policies,grants}.json`,
 refresh 60 s), `BILLING_MODE=required`, `USAGE_STREAM_KEY`, real-shaped
 `ACCOUNT_ID`/`PROJECT_ID`/`CELL_ID` (`acct_`/`proj_`/`cell_` + 24 chars,

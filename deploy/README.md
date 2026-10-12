@@ -114,7 +114,12 @@ deployment gate (D10).
 Distinct env names per role (`SERVER_BINARY_S3_KEY` vs `LB_BINARY_S3_KEY`,
 `BIN_S3_*` vs `SLATE_S3_*`) — Compute env vars are project-scoped and
 merged, and shared names have twice caused a service to run the wrong
-binary (RUNBOOK section 7.3).
+binary (RUNBOOK section 7.3). Likewise one name per bucket: app-server
+reads the auth-feed bundle (`FEEDS_S3_KEY`) with
+`FEEDS_S3_{ENDPOINT,BUCKET,REGION,ACCESS_KEY_ID,SECRET_ACCESS_KEY}` only
+(region default `auto`), never with the binary's `BIN_S3_*`; with one of
+the other four unset it serves its download-failure diagnostic instead of
+starting the binary.
 
 ## Deploy footguns
 

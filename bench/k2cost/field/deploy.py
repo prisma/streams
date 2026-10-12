@@ -241,6 +241,13 @@ def bin_s3_env() -> dict:
             "BIN_S3_SECRET_ACCESS_KEY": F.field_file("binsec.txt")}
 
 
+def feeds_s3_env() -> dict:
+    """The bundle's bucket for app-server, which reads it by FEEDS_S3_* only:
+    ensure_feeds uploads the bundle to the artifact bucket, so the five names
+    carry bin_s3_env's values."""
+    return {"FEEDS_S3_" + k.removeprefix("BIN_S3_"): v for k, v in bin_s3_env().items()}
+
+
 def server_env(run, cell, cfg, st, sec, bins, feeds_key, i) -> dict:
     k = F.bucket_keys(run, cell)
     topo = topology(cfg)
@@ -250,7 +257,7 @@ def server_env(run, cell, cfg, st, sec, bins, feeds_key, i) -> dict:
     env.update(SCALE)
     env.update(WAL_POSTURES[cfg.get("WAL_POSTURE", "P-100")])
     env.update({
-        "SERVER_BINARY_S3_KEY": bins["streams"], **bin_s3_env(), "RESOLV_OVERRIDE": RESOLV,
+        "SERVER_BINARY_S3_KEY": bins["streams"], **bin_s3_env(), **feeds_s3_env(), "RESOLV_OVERRIDE": RESOLV,
         "SLATE_S3_ENDPOINT": k["endpoint"], "SLATE_S3_BUCKET": k["bucketName"], "SLATE_S3_REGION": "auto",
         "SLATE_S3_ACCESS_KEY_ID": k["accessKeyId"], "SLATE_S3_SECRET_ACCESS_KEY": k["secretAccessKey"],
         "PATH_PREFIX": st["path_prefix"], "FLEET_PREFIX": st["fleet_prefix"], "INSTANCE_NAME": f"streams-{i}",

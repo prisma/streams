@@ -24,7 +24,7 @@
 // whose store is up.
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { artifactClient } from "./downloader";
+import { feedsClient } from "./downloader";
 
 /// How often the wrapper polls the bundle; also the longest a published
 /// change waits before the server's next refresh reads it.
@@ -127,13 +127,14 @@ export class FeedPoller {
   }
 }
 
-/// The bundle at `key` in the artifact bucket, fetched with If-None-Match
+/// The bundle at `key` in the feeds bucket (FEEDS_S3_*, feedsClient; a
+/// missing name refuses here, before any poll), fetched with If-None-Match
 /// through a presigned GET (the S3 client has no conditional read).
 export function s3BundleFetcher(
   key: string,
   env: Record<string, string | undefined> = process.env,
 ): FetchBundle {
-  const file = artifactClient(env).file(key);
+  const file = feedsClient(env).file(key);
   return async (etag) => {
     const url = file.presign({ method: "GET", expiresIn: 60 });
     const res = await fetch(url, {
