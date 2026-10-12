@@ -98,6 +98,7 @@ describe("GET /v1/admin/metrics", () => {
       published_feed_version: null,
       gate_open: true,
       gate_n_max: 50,
+      profile_ok: true,
       exchanges: {
         issued: 2, invalid_request: 0, invalid_credential: 1, credential_not_active: 0, project_not_active: 0,
         rate_limited: 0, issuer_unavailable: 0,
@@ -121,6 +122,13 @@ describe("GET /v1/admin/metrics", () => {
     expect([after.gate_open, after.cache_age_secs, after.published_feed_version, after.state_feed_version]).toEqual([
       false, 0, cellState(cell).feed_version, cellState(cell).feed_version,
     ]);
+    // A cell initialised from another profile than the one compiled in:
+    // every create answers 409 beta_at_capacity, and the metrics say why.
+    await cache.mutate((s) => {
+      s.cell.profile_digest = "0".repeat(64);
+    });
+    const [, other] = await answer(await get(issuer, "/v1/admin/metrics", bearer));
+    expect([other.profile_ok, other.healthy]).toEqual([false, true]);
   });
 
   test("counts the projects being offboarded and the most attempts any of their drains has failed", async () => {

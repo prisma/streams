@@ -8,14 +8,19 @@
 //   GET /v1/admin/metrics  behind `Authorization: Bearer
 //                          <STREAMS_ISSUER_METRICS_TOKEN>`: the counters,
 //                          the copy's age, the bundle's version, the
-//                          admission gate, the offboarding job's backlog.
+//                          admission gate, whether the compiled profile is
+//                          the cell's (profile_ok: false refuses every
+//                          create 409 beta_at_capacity while /healthz stays
+//                          200), the offboarding job's backlog.
 //                          Flat JSON, the keys below.
 import { createHash, timingSafeEqual } from "node:crypto";
+import { checkSizing } from "../cell-admin/rules";
 import type { Audit } from "./audit";
 import { stateMismatch } from "./boot";
 import type { StateCache } from "./cache";
 import type { IssuerConfig } from "./config";
 import type { RateLimits } from "./limits";
+import { BUNDLED_PROFILE } from "./profiles";
 import type { Rehasher } from "./rehash";
 import { json, refuse } from "./respond";
 
@@ -28,6 +33,17 @@ export interface OpsDeps {
 }
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
+
+/// Whether the profile compiled into the issuer is the one the cell was
+/// initialised with (checkSizing, which every create runs).
+function profileOk(state: Parameters<typeof checkSizing>[0]): boolean {
+  try {
+    checkSizing(state, BUNDLED_PROFILE);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export class Ops {
   private readonly bootedAt: number;
@@ -81,6 +97,7 @@ export class Ops {
       published_feed_version: cache.publishedVersion,
       gate_open: state.cell.gate.open,
       gate_n_max: state.cell.gate.n_max,
+      profile_ok: profileOk(state),
       exchanges: { ...audit.totals },
       rate_limit_refusals: { ...limits.refused },
       revalidation_failures: cache.revalidationFailures,
