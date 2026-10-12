@@ -69,4 +69,5 @@ export function bundleOf(state: CellState): Bundle {
   return bundle;
 }
 
-export const bundleText = (state: CellState) => `${JSON.stringify(bundleOf(state))}\n`;
+/// The text published for a bundle: one line of JSON.
+export const bundleText = (bundle: Bundle) => `${JSON.stringify(bundle)}\n`;

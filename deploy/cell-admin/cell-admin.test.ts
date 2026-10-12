@@ -306,6 +306,24 @@ describe("durable, monotonic state", () => {
     expect((b.grants.credentials as any[]).map((g) => [g.expires_at, g.grant_version])).toEqual([[1_900_000_000, 2]]);
   });
 
+  test("refuses to publish an entry whose content changed at a version the cell already holds", async () => {
+    // The cell drops a snapshot that changes an entry without its version
+    // and goes dark when its feeds age past 300 s (publication.rs).
+    const c = await initCell();
+    await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w");
+    const cred = customerCredential(c.state, "proj_a");
+    const before = readFileSync(join(c.state, "feeds-bundle.json"), "utf8");
+    const s = readState(c.state) as any;
+    s.projects.proj_a.quotas.max_streams = 5;
+    s.credentials[cred].scopes = "streams.catalog.read";
+    writeFileSync(join(c.state, "cell-state.json"), JSON.stringify(s));
+    const r = await run("bundle", "--state", c.state);
+    expect([r.code, r.err]).toEqual([1, "cell-admin bundle: the bundle at feed_version 3 changes what the cell " +
+      `holds without a new version: project proj_a at project_policy_version 1, credential ${cred} at ` +
+      "grant_version 1; a published field changes only with its entry's version"]);
+    expect(readFileSync(join(c.state, "feeds-bundle.json"), "utf8")).toBe(before);
+  });
+
   test("refuses while another run holds the cell", async () => {
     const c = await initCell();
     writeFileSync(join(c.state, ".lock"), "4242\n");

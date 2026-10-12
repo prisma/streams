@@ -2,9 +2,9 @@
 // commit by compare-and-swap, publish the bundle the new state implies.
 // The CLI and the issuer make every change through `mutate`.
 import { AdminError, notYet } from "./errors";
-import { bundleText } from "./feeds";
+import { type Bundle, bundleOf, bundleText } from "./feeds";
 import type { CellState } from "./state";
-import { Conflict, type StateStore } from "./store";
+import { Conflict, type PublishedBundle, type StateStore } from "./store";
 
 /// Compare-and-swap attempts before a writer gives up (exit 3: run again).
 export const CAS_ATTEMPTS = 5;
@@ -15,7 +15,9 @@ export const CAS_ATTEMPTS = 5;
 /// bundle is read before the state, and every writer commits the state
 /// before it publishes, so a writer that commits in between cannot make a
 /// current state look stale.
-export async function loadChecked(store: StateStore): Promise<{ state: CellState; etag: string }> {
+export async function loadChecked(
+  store: StateStore,
+): Promise<{ state: CellState; etag: string; published: PublishedBundle | null }> {
   const published = await store.readBundle();
   const loaded = await store.load();
   if (published && published.version > loaded.state.feed_version) {
@@ -24,7 +26,57 @@ export async function loadChecked(store: StateStore): Promise<{ state: CellState
         "the state was restored from a stale copy; recover the newest state before any change",
     );
   }
-  return loaded;
+  return { ...loaded, published };
+}
+
+/// JSON with every object's keys sorted, so two producers' entries compare
+/// by content alone.
+function canonical(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+  if (v !== null && typeof v === "object") {
+    const keys = Object.keys(v).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonical((v as Record<string, unknown>)[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v);
+}
+
+type Entry = Record<string, unknown>;
+
+/// The entries of `ours` that carry other content than `published` at the
+/// same version: a key under a kid the cell holds with other material, a
+/// policy at the same project_policy_version, a grant at the same
+/// grant_version. The cell refuses a snapshot that holds one
+/// (src/auth/publication.rs, "versions pin bytes") and goes dark once its
+/// feeds age past their 300 s freshness, so none may be published.
+export function unversionedChanges(published: Bundle, ours: Bundle): string[] {
+  const changed: string[] = [];
+  const check = (was: unknown[], now: unknown[], id: string, version: string | null, what: string) => {
+    const before = new Map((was as Entry[]).map((e) => [e[id], e]));
+    for (const e of now as Entry[]) {
+      const old = before.get(e[id]);
+      if (!old || (version !== null && old[version] !== e[version])) continue;
+      if (canonical(old) !== canonical(e)) {
+        changed.push(version === null ? `${what} ${e[id]}` : `${what} ${e[id]} at ${version} ${e[version]}`);
+      }
+    }
+  };
+  check(published.keys.keys, ours.keys.keys, "kid", null, "key");
+  check(published.policies.projects, ours.policies.projects, "project_id", "project_policy_version", "project");
+  check(published.grants.credentials, ours.grants.credentials, "credential_id", "grant_version", "credential");
+  return changed;
+}
+
+/// Refuse `state`'s bundle when it changes a published entry in place.
+function guard(published: PublishedBundle | null, state: CellState): Bundle {
+  const ours = bundleOf(state);
+  const changed = published ? unversionedChanges(published.bundle, ours) : [];
+  if (changed.length > 0) {
+    throw new AdminError(
+      `the bundle at feed_version ${state.feed_version} changes what the cell holds without a new version: ` +
+        `${changed.join(", ")}; a published field changes only with its entry's version`,
+    );
+  }
+  return ours;
 }
 
 /// Publishes the bundle a state implies, monotonically.
@@ -35,10 +87,10 @@ export class BundlePublisher {
   /// concurrent publish (a lost compare-and-swap) is re-read and the
   /// decision taken again.
   async publish(state: CellState): Promise<"published" | "current"> {
-    const text = bundleText(state);
     for (let attempt = 1; ; attempt++) {
       const published = await this.store.readBundle();
       if (published && published.version >= state.feed_version) return "current";
+      const text = bundleText(guard(published, state));
       try {
         await this.store.publishBundle(text, published?.etag ?? null);
         return "published";
@@ -61,8 +113,9 @@ export async function mutate<T>(
   change: (state: CellState) => T | Promise<T>,
 ): Promise<{ result: T; state: CellState }> {
   for (let attempt = 1; ; attempt++) {
-    const { state, etag } = await loadChecked(store);
+    const { state, etag, published } = await loadChecked(store);
     const result = await change(state);
+    guard(published, state);
     try {
       await store.save(state, etag);
     } catch (e) {
