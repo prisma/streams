@@ -1,20 +1,23 @@
-// init, admit, token, list and bundle. offboard lives in offboard.ts.
-import { randomBytes } from "node:crypto";
+// init, admit, token, list and bundle. offboard lives in offboard.ts, the
+// owner's controls in owner.ts, and the rules every writer follows in
+// rules.ts.
 import { join, resolve } from "node:path";
 import type { Flags } from "./args";
 import { AdminError } from "./errors";
-import {
-  BOUNDED_FIELDS,
-  type BoundedField,
-  cellSizing,
-  profileDigest,
-  QUOTA_FIELDS,
-  type QuotaField,
-  type Quotas,
-  readProfiles,
-} from "./profile";
+import { BOUNDED_FIELDS, cellSizing, profileDigest, QUOTA_FIELDS, readProfiles } from "./profile";
 import { BundlePublisher, burnId, loadChecked, mutate } from "./publish";
-import { bumpFeed } from "./rules";
+import {
+  admitProject,
+  admittedQuotas,
+  bumpFeed,
+  checkId,
+  checkPlacement,
+  checkSizing,
+  newCredentialId,
+  prefixesOf,
+  SYSTEM_PROJECT,
+  scopesOf,
+} from "./rules";
 import { type CellState, journal, STATE_FORMAT, writeDurable } from "./state";
 import { Conflict } from "./store";
 import { openStore, publishNote } from "./stores";
@@ -24,33 +27,8 @@ export interface Io {
   out: (line: string) => void;
 }
 
-/// The id grammar of the policy feed and the server (src/tenant.rs).
-const ID = /^[A-Za-z0-9_-]{1,128}$/;
-/// The reserved system project (src/tenant.rs, SYSTEM_PROJECT).
-export const SYSTEM_PROJECT = "system";
-/// Every scope the server defines (src/tenant.rs, Scope::as_str); a
-/// design partner's credential gets all of them unless --scopes narrows it.
-export const CUSTOMER_SCOPES = [
-  "streams.metadata.read",
-  "streams.records.read",
-  "streams.records.append",
-  "streams.create",
-  "streams.lifecycle.manage",
-  "streams.consumers.pull",
-  "streams.consumers.settle",
-  "streams.consumers.configure",
-  "streams.forks.create",
-  "streams.dlq.configure",
-  "streams.watches.manage",
-  "streams.catalog.read",
-  "streams.usage.read",
-] as const;
 const PROFILE_DIR = join(import.meta.dir, "..", "profiles");
 export const DEFAULT_PROFILES = [join(PROFILE_DIR, "compute-1g.env"), join(PROFILE_DIR, "shared-cell.env")];
-
-function checkId(what: string, id: string): void {
-  if (!ID.test(id)) throw new AdminError(`${what} ${JSON.stringify(id)} is not a valid id (${ID.source})`, 2);
-}
 
 export async function init(f: Flags, io: Io): Promise<void> {
   const store = await openStore(f, { create: true });
@@ -111,127 +89,6 @@ export async function init(f: Flags, io: Io): Promise<void> {
 const profilesOf = (f: Flags) =>
   (f.all("profile").length > 0 ? f.all("profile") : DEFAULT_PROFILES).map((p) => resolve(p));
 
-/// A cell's profile is fixed when it is initialised: refuse to admit
-/// against ceilings the profile no longer gives, or against a profile that
-/// is not the one `init` recorded. `bundledProfiles` is the caller's own
-/// copy of the profile files (this tool's deploy/profiles, the issuer's
-/// bundled copy of the same files), never the paths `init` read, which do
-/// not exist where the issuer runs.
-export function checkSizing(state: CellState, bundledProfiles: readonly string[]): void {
-  const env = readProfiles(bundledProfiles);
-  const now = cellSizing(env);
-  const changes = [
-    ...(now.share_k !== state.cell.share_k ? [`k ${state.cell.share_k} -> ${now.share_k}`] : []),
-    ...BOUNDED_FIELDS.filter((q) => now.ceilings[q] !== state.cell.ceilings[q]).map(
-      (q) => `${q} ${state.cell.ceilings[q]} -> ${now.ceilings[q]}`,
-    ),
-  ];
-  if (changes.length > 0) {
-    throw new AdminError(
-      `the profiles changed since init (${changes.join(", ")}): a cell's ceilings are fixed for its life`,
-    );
-  }
-  const digest = profileDigest(env);
-  if (digest !== state.cell.profile_digest) {
-    throw new AdminError(
-      `the layered profile differs from the one init recorded (digest ${state.cell.profile_digest.slice(0, 12)} -> ` +
-        `${digest.slice(0, 12)}): a cell's profile is fixed for its life`,
-    );
-  }
-}
-
-/// The project's quotas: every bounded axis at most its ceiling and a
-/// missing one AT the ceiling; 0 is refused because a binary without the
-/// cell ceiling reads it as "no limit". The unbounded axis (append
-/// records/s) keeps the value given, 0 (no project limit) when absent, as
-/// the server does.
-export function admittedQuotas(state: CellState, given: readonly string[]): Quotas {
-  const quotas = Object.fromEntries(QUOTA_FIELDS.map((q) => [q, 0])) as Quotas;
-  const set = quotaValues(state, given);
-  for (const q of QUOTA_FIELDS) if (set[q] !== undefined) quotas[q] = set[q];
-  for (const q of BOUNDED_FIELDS) if (set[q] === undefined) quotas[q] = state.cell.ceilings[q];
-  return quotas;
-}
-
-/// The `field=value` quota settings given, each a known field, given once,
-/// at least 1 and at most its ceiling.
-export function quotaValues(state: CellState, given: readonly string[]): Partial<Quotas> {
-  const quotas: Partial<Quotas> = {};
-  const seen = new Set<string>();
-  for (const item of given) {
-    const m = /^([a-z_]+)=([0-9]+)$/.exec(item);
-    if (!m) throw new AdminError(`--quota ${item} is not field=value`, 2);
-    const [, field, raw] = m;
-    if (!(QUOTA_FIELDS as readonly string[]).includes(field)) {
-      throw new AdminError(`--quota ${field}: not a quota field (${QUOTA_FIELDS.join(", ")})`, 2);
-    }
-    if (seen.has(field)) throw new AdminError(`--quota ${field} given twice`, 2);
-    seen.add(field);
-    const value = Number(raw);
-    if (!Number.isSafeInteger(value)) throw new AdminError(`--quota ${field}=${raw} is out of range`, 2);
-    if (value < 1) {
-      throw new AdminError(`--quota ${field}=${raw}: 0 means no limit; omit the field to take the ceiling`);
-    }
-    const ceiling = state.cell.ceilings[field as BoundedField];
-    if (ceiling !== undefined && value > ceiling) {
-      throw new AdminError(
-        `--quota ${field}=${value} exceeds the cell's ceiling ${ceiling} (bound / k, k = ${state.cell.share_k})`,
-      );
-    }
-    quotas[field as QuotaField] = value;
-  }
-  return quotas;
-}
-
-/// Where a project may be placed: not a reserved id, not the cell's
-/// ACCOUNT_ID as workspace, an id never used before (`denylist` is the
-/// denylist as read before this placement burns the id), and within the
-/// cell's and the workspace's caps.
-export function checkPlacement(state: CellState, project: string, workspace: string, denylist: Set<string>): void {
-  checkId("--project", project);
-  checkId("--workspace", workspace);
-  const cell = state.cell;
-  if (project === SYSTEM_PROJECT || project === cell.deployment_project_id) {
-    throw new AdminError(`project ${project} is reserved on cell ${cell.cell_id}`);
-  }
-  if (workspace === cell.account_id) {
-    throw new AdminError(`workspace ${workspace} is the cell's ACCOUNT_ID, the unowned-event sink`);
-  }
-  if (state.projects[project] || denylist.has(project)) {
-    throw new AdminError(`project id ${project} was used before: an id is never placed twice`);
-  }
-  const placed = Object.values(state.projects).filter((p) => p.phase !== "offboarded");
-  if (placed.length >= cell.max_projects) {
-    throw new AdminError(`cell ${cell.cell_id} already holds its ${cell.max_projects} projects`);
-  }
-  const mine = placed.filter((p) => p.workspace_id === workspace).length;
-  if (mine >= cell.workspace_cap) {
-    throw new AdminError(
-      `workspace ${workspace} already has ${mine} project(s) on cell ${cell.cell_id} (cap ${cell.workspace_cap})`,
-    );
-  }
-}
-
-function scopesOf(f: Flags): string {
-  const raw = f.get("scopes");
-  if (raw === undefined) return CUSTOMER_SCOPES.join(" ");
-  const words = raw.split(" ").filter((w) => w !== "");
-  const unknown = words.filter((w) => !(CUSTOMER_SCOPES as readonly string[]).includes(w));
-  if (words.length === 0 || unknown.length > 0) {
-    throw new AdminError(`--scopes: unknown or empty scope list (${unknown.join(" ")})`, 2);
-  }
-  return [...new Set(words)].join(" ");
-}
-
-function prefixesOf(f: Flags): string[] | undefined {
-  const prefixes = f.all("prefix");
-  if (prefixes.length === 0) return undefined;
-  if (prefixes.length > 64 || prefixes.some((p) => p === "")) {
-    throw new AdminError("--prefix: 1 to 64 non-empty prefixes", 2);
-  }
-  return prefixes;
-}
-
 export async function admit(f: Flags, io: Io): Promise<void> {
   const store = await openStore(f);
   const project = f.must("project");
@@ -242,34 +99,13 @@ export async function admit(f: Flags, io: Io): Promise<void> {
     const { ids: denylist } = await store.readDenylist();
     checkPlacement(first, project, workspace, denylist);
     const quotas = admittedQuotas(first, f.all("quota"));
-    const scopes = scopesOf(f);
-    const stream_prefixes = prefixesOf(f);
+    const scopes = scopesOf(f.get("scopes"));
+    const stream_prefixes = prefixesOf(f.all("prefix"));
     await burnId(store, project);
     const { result: credential, state } = await mutate(store, (state) => {
       checkPlacement(state, project, workspace, denylist);
-      let credential = "";
-      do credential = `strcred_${randomBytes(16).toString("hex")}`;
-      while (state.credentials[credential]);
-      state.projects[project] = {
-        workspace_id: workspace,
-        phase: "active",
-        status: "active",
-        project_policy_version: 1,
-        ownership_version: 1,
-        quotas,
-        admitted_at: new Date().toISOString(),
-      };
-      state.credentials[credential] = {
-        project_id: project,
-        role: "customer",
-        grant_version: 1,
-        status: "active",
-        scopes,
-        ...(stream_prefixes ? { stream_prefixes } : {}),
-        expires_at: null,
-        omitted: false,
-      };
-      bumpFeed(state);
+      const credential = newCredentialId(state);
+      admitProject(state, { project, workspace, quotas, scopes, stream_prefixes, credential: { id: credential } });
       journal(state, "admit", `${project} workspace=${workspace} credential=${credential}`);
       return credential;
     });

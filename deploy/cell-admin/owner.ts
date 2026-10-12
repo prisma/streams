@@ -2,10 +2,10 @@
 // (public-beta issuer triage B1.8): suspend, resume and quota. Each is one
 // change through `mutate`, so it lands safely beside the issuer's writes.
 import type { Flags } from "./args";
-import { type Io, quotaValues } from "./commands";
+import type { Io } from "./commands";
 import { AdminError } from "./errors";
 import { mutate } from "./publish";
-import { projectOf, setProjectField } from "./rules";
+import { projectOf, quotaValues, setProjectField } from "./rules";
 import { journal } from "./state";
 import { openStore, publishNote } from "./stores";
 

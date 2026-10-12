@@ -4,9 +4,10 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CUSTOMER_SCOPES, DEFAULT_PROFILES, SYSTEM_PROJECT } from "./commands";
+import { DEFAULT_PROFILES } from "./commands";
 import { schema } from "./feeds";
 import { cellSizing, QUOTA_FIELDS, readProfiles, STREAM_MAP_ENTRIES } from "./profile";
+import { CUSTOMER_SCOPES, SYSTEM_PROJECT } from "./rules";
 import { MAX_TOKEN_LIFETIME_SECS } from "./tokens";
 
 const ROOT = join(import.meta.dir, "..", "..");

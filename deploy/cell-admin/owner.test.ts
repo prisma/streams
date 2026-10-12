@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { bundleOf } from "./feeds";
 import { unversionedChanges } from "./publish";
-import { setCredentialField, setProjectField } from "./rules";
+import { admitProject, admittedQuotas, newCredentialId, setCredentialField, setProjectField } from "./rules";
 import { cleanup, customerCredential, initCell, readBundle, readState, run, STORES, useStore } from "./test-rig";
 
 afterEach(cleanup);
@@ -44,6 +44,31 @@ describe("the version-bump invariant", () => {
     setProjectField(s, "proj_a", { status: "suspended" });
     setCredentialField(s, cred, { status: "revoked" });
     expect(s.feed_version).toBe(readState(c.state).feed_version + 1);
+  });
+});
+
+describe("admitProject", () => {
+  test("places a project with a first credential whose secret's hash stays out of the bundle", async () => {
+    const c = await initCell();
+    const s = readState(c.state);
+    const id = newCredentialId(s);
+    admitProject(s, {
+      project: "sp_0123", workspace: "wksp_9", quotas: admittedQuotas(s, ["requests_per_sec=10"]),
+      scopes: "streams.catalog.read streams.records.read", display_name: "Orders",
+      created_by: { user_id: "u1", email: "u1@example.com" },
+      credential: { id, secret_hash: "aGFzaA", hv: 1, hint: "x1y2z3", display_name: "ci" },
+    });
+    expect(s.feed_version).toBe(2);
+    expect(s.projects.sp_0123).toMatchObject({ phase: "active", status: "active", project_policy_version: 1,
+      display_name: "Orders", created_by: { user_id: "u1", email: "u1@example.com" } });
+    expect(s.credentials[id]).toMatchObject({ project_id: "sp_0123", role: "customer", grant_version: 1,
+      status: "active", secret_hash: "aGFzaA", hv: 1, hint: "x1y2z3", expires_at: null, omitted: false });
+    const b = bundleOf(s);
+    expect((b.policies.projects as any[]).map((p) => [p.project_id, p.quotas.requests_per_sec])).toEqual([["sp_0123", 10]]);
+    expect(b.grants.credentials).toEqual([{ credential_id: id, project_id: "sp_0123", grant_version: 1,
+      status: "active", scopes: "streams.catalog.read streams.records.read", expires_at: null }]);
+    expect(() => admitProject(s, { project: "sp_0123", workspace: "w", quotas: s.projects.sp_0123.quotas,
+      scopes: "streams.catalog.read", credential: { id: newCredentialId(s) } })).toThrow("project sp_0123 is already on this cell");
   });
 });
 
