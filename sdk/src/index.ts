@@ -49,12 +49,12 @@ export interface StreamsClientOptions {
    * `transport` (default `true`): a request whose `fetch` fails is sent
    * again after 1, 2 and 4 s, within the four attempts it shares with the
    * 429/503 replay; a producer append is sent again with the same
-   * sequence, which the server deduplicates. Plain appends, stream
-   * deletion, batch settlement and a subscription's reads (its loop
-   * reconnects) are never replayed this way. Set it to `false` when a
-   * `fetch` failure means configuration (a wrong URL, a blocked origin)
-   * rather than a restart; consumer, subscription and watch loops still
-   * reconnect.
+   * sequence, which the server deduplicates, and a batch settlement with
+   * the same decisions, which it applies once. Plain appends, stream
+   * deletion and a subscription's reads (its loop reconnects) are never
+   * replayed this way. Set it to `false` when a `fetch` failure means
+   * configuration (a wrong URL, a blocked origin) rather than a restart;
+   * consumer, subscription and watch loops still reconnect.
    */
   retry?: { transport?: boolean };
 }
@@ -223,7 +223,10 @@ export interface ConsumerIterator<T> extends AsyncIterableIterator<ConsumerMessa
 export interface PullBatch<T> {
   messages: ConsumerMessage<T>[];
   backlog: number;
-  /** Apply the recorded ack/retry/extend decisions in one request. */
+  /** Apply the recorded ack/retry/extend decisions in one request, sent
+   * again with the same decisions after a transport failure or a retryable
+   * 429/503 (a replay may report decisions its first attempt applied as
+   * `stale`). Every call shares that one settlement. */
   settle(): Promise<SettleResult>;
 }
 
@@ -753,8 +756,7 @@ async function reconnectAfter(backoffMs: number, signal?: AbortSignal): Promise<
  *
  * `replayTransport` is false where a replay could repeat an effect the
  * server does not deduplicate (plain appends, stream deletion), and where
- * the caller handles a transport failure itself (settlement, a
- * subscription's reads).
+ * the caller handles a transport failure itself (a subscription's reads).
  *
  * `classify` maps the failure that ends this request (its transport
  * failure, or the answer it gives up on) to the error it rejects with. A
@@ -1772,16 +1774,17 @@ export class Consumer<T> {
       if (acks.length + retries.length + extends_.length === 0) {
         return { acked: 0, retried: 0, extended: 0, dlq: 0, stale: 0, backlog: body.backlog };
       }
-      // A transport failure is this batch's settlement failure; leases
-      // it did not settle expire and are delivered again.
+      // A transport failure is replayed with the same decisions: the server
+      // checks each lease's generation, so a replay of a settlement it
+      // applied counts those decisions `stale` and applies none twice. A
+      // failure after the attempts is this batch's settlement failure;
+      // leases it did not settle expire and are delivered again.
       const res2 = await req(
         this.ctx,
         "POST",
         `${this.base()}:settle`,
         { ...this.stream._kh(), "content-type": "application/json" },
         JSON.stringify({ acks, retries, extends: extends_ }),
-        undefined,
-        false,
       );
       return (await res2.json()) as SettleResult;
     };

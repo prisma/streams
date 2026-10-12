@@ -342,22 +342,22 @@
         {
           "file": "sdk/scripts/consumer-cleanup.test.mjs",
           "name": "ack then break submits only the yielded message's decision",
-          "sha256": "a74f08327e1dada8b2764b6152519ba59e35224bd24f1d63826b479299147d54"
+          "sha256": "a61a46f82c1bbc7154772efdfe1d9a0eb331f1a6a8a118564cd33478f9897405"
         },
         {
           "file": "sdk/scripts/consumer-cleanup.test.mjs",
           "name": "handler throw settles recorded decisions and retains the handler exception",
-          "sha256": "a74f08327e1dada8b2764b6152519ba59e35224bd24f1d63826b479299147d54"
+          "sha256": "a61a46f82c1bbc7154772efdfe1d9a0eb331f1a6a8a118564cd33478f9897405"
         },
         {
           "file": "sdk/scripts/consumer-cleanup.test.mjs",
           "name": "settlement failure surfaces on break and remains visible beside handler failure",
-          "sha256": "a74f08327e1dada8b2764b6152519ba59e35224bd24f1d63826b479299147d54"
+          "sha256": "a61a46f82c1bbc7154772efdfe1d9a0eb331f1a6a8a118564cd33478f9897405"
         },
         {
           "file": "sdk/scripts/consumer-cleanup.test.mjs",
           "name": "iterator return cancels an in-flight parked pull",
-          "sha256": "a74f08327e1dada8b2764b6152519ba59e35224bd24f1d63826b479299147d54"
+          "sha256": "a61a46f82c1bbc7154772efdfe1d9a0eb331f1a6a8a118564cd33478f9897405"
         }
       ]
     },

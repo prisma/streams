@@ -214,6 +214,12 @@ const replayed = [
     run: async f => (await f.stream.watch("w", [1])).wait({ cursor: "c0" }) },
   { name: "a producer append", method: "POST", path: "/v1/streams/orders/records",
     run: f => f.stream.producer("p", { ephemeral: true }).append({ n: 1 }) },
+  { name: "settle", method: "POST", path: "/v1/streams/orders/consumers/workers:settle",
+    run: async f => {
+      const batch = await (await consumer(f)).pull();
+      batch.messages[0].ack();
+      return batch.settle();
+    } },
 ];
 
 // A watch wait's URL carries a capability each attempt mints for itself.
@@ -241,13 +247,6 @@ const sentOnce = [
   { name: "appendMany", path: "/v1/streams/orders/records:batch", run: f => f.stream.appendMany([{ n: 1 }]),
     error: "AppendOutcomeUnknownError" },
   { name: "stream delete", method: "DELETE", path: "/v1/streams/orders", run: f => f.stream.delete(),
-    error: "StreamsTransportError" },
-  { name: "settle", path: "/v1/streams/orders/consumers/workers:settle",
-    run: async f => {
-      const batch = await (await consumer(f)).pull();
-      batch.messages[0].ack();
-      return batch.settle();
-    },
     error: "StreamsTransportError" },
 ];
 

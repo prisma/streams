@@ -59,10 +59,11 @@ not carried over).
   `retry: { transport: false }` turns that off. A producer append is sent
   again with the same producer id, epoch and sequence, which the server
   deduplicates, before the producer's later operations on its routing key.
-  Plain appends, stream deletion, batch settlement and a subscription's
-  reads are not replayed after a transport failure. A settlement the SDK
-  replays after a retryable `429` or `503` may report decisions its first
-  attempt applied as `stale`; none is applied twice.
+  A batch settlement is sent again with the same decisions; a settlement
+  the SDK replays (after a transport failure or a retryable `429` or `503`)
+  may report decisions its first attempt applied as `stale`; none is
+  applied twice. Plain appends, stream deletion and a subscription's reads
+  are not replayed after a transport failure.
 - The consumer iterator (`for await`, `messages()`) and
   `watch.subscribe()` reconnect after a transport failure or a retryable
   `429`/`503` (after 1 s, doubling to at most 5 s) instead of ending.

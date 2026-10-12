@@ -166,10 +166,11 @@ and 4 s (abort-aware), within the same four attempts as the 429/503 replay,
 and rejects with `StreamsTransportError` once they are spent. A producer
 append is sent again with the same producer id, epoch and sequence, so the
 server deduplicates a replay of an append that landed (`duplicate: true`),
-and the producer's later operations on that routing key wait for it. Plain
-appends, stream deletion and batch settlement are sent once and reject at
-once; a subscription's request is not replayed either, because the
-subscription reconnects itself. `retry: { transport: false }` turns the
+and the producer's later operations on that routing key wait for it. A
+batch settlement is sent again with the same decisions, which the server
+applies once (see "Consumer cleanup and cancellation"). Plain appends and
+stream deletion are sent once and reject at once; a subscription's request
+is not replayed either, because the subscription reconnects itself. `retry: { transport: false }` turns the
 replay off, for callers whose `fetch` failures are configuration (a wrong
 URL, a blocked origin), not a restart. Consumer (`for await`,
 `messages()`), subscription and watch loops reconnect after a transport
@@ -249,11 +250,14 @@ closes. Unseen and undecided messages are never acknowledged. Each batch's
 `settle()` submits once and retains its result, including failure; decisions
 cannot change after settlement starts. Failed or uncertain settlement is
 surfaced to the caller; leases without a successful acknowledgement remain
-subject to server expiry/redelivery. A transport failure can occur after the
-server applied a settlement, so an error is not proof of non-application.
-A settle the SDK replays (after a retryable 429 or 503) may report
-decisions the first attempt applied as `stale`; a replay never applies a
-decision twice (the server checks each lease's generation).
+subject to server expiry/redelivery. A settle whose `fetch` fails is sent
+again with the same decisions after 1, 2 and 4 s, as other requests are, so
+on a dead network a cleanup's settlement takes about 7 s before it rejects.
+A transport failure can occur after the server applied a settlement, so an
+error is not proof of non-application. A settle the SDK replays (after a
+transport failure, or a retryable 429 or 503) may report decisions the first
+attempt applied as `stale`; a replay never applies a decision twice (the
+server checks each lease's generation).
 
 Use `consumer.messages({ signal })` to cancel a parked pull, or call the
 iterator's `return()`; both abort the pull immediately. Cleanup still submits
