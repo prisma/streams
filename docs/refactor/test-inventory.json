@@ -2725,10 +2725,9 @@
   {
     "name": "an_anonymous_denial_flood_never_drops_the_victims_denial",
     "attributes": [
-      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
-      "#[ignore = \"red until shared-cells phase B step 14: unverified denials are counted, not queued per event\"]"
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "26cbe9f0d50c8cee2a7493648e8afec156229da04397f4fb3faf20e3bca46ba0",
+    "function_sha256": "794cc7e236caec92f32ba66dd35cfe4831b9ec5869d27bef60be74d0d5d65f14",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_hostile.rs",

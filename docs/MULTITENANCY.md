@@ -879,6 +879,24 @@ Only internal workload identity may construct or access these resources.
   verified principal. An unverified token's claims never reach the
   journal as identity; unauthenticated denials journal without a
   project.
+* **Unverified denials** *(shared-cells M6, phase B step 14(a); edge
+  change #NEW-phase-b-2, awaiting ratification)*. A denial with no
+  verified principal journals as its own event only while fewer than
+  64 have been seen since the last drain that appended its batch (or
+  found the queue empty). Past that allowance each is counted by code
+  and status, and every drain attempt queues one aggregate event per
+  (code, status) before its batch: no `project_id`, empty `route` and
+  `method`, the drain's time, and `count`, the number of denials it
+  stands for (the field is absent on every other event). A drain whose
+  `_audit_events` append fails requeues its batch and reopens no
+  allowance. An anonymous flood thus adds at most 64 single events per
+  successful drain plus one aggregate per (code, status) and drain
+  attempt: while appends succeed, verified denials keep at least 4,096
+  - 64 - k places of the queue (k pairs, typically one); while they
+  fail, the aggregates of one pair fill the 4,032 left in about 4,032
+  attempts (about 9 h at the default 8 s), not minutes. An aggregate
+  the full queue cannot take is lost as `count` denials in
+  `audit_events_dropped_total` and the next `audit_gap` marker.
 * **Delivery.** The journal is **at-least-once**: an ambiguous append
   (timeout/408 after commit, relay response lost) is retried, so the
   same event can land twice. Every event carries a unique

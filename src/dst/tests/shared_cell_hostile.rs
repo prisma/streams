@@ -556,15 +556,17 @@ async fn names_ground_onto_the_victims_shard_never_shed_the_victim() {
     engine_shutdown(&cell.state).await;
 }
 
-/// A11 (M6): an anonymous flood of unverifiable bearers fills the denial
-/// journal's queue; the victim's own denial afterwards (a probe of a
-/// neighbour's usage) is still journaled with its project.
+/// A11 (M6): an anonymous flood of unverifiable bearers, more than the
+/// denial journal's queue holds; the victim's own denial afterwards (a
+/// probe of a neighbour's usage) is still journaled with its project.
+/// The flood journals the drain's allowance of single events and one
+/// aggregate event counting the rest (phase B step 14(a)).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "red until shared-cells phase B step 14: unverified denials are counted, not queued per event"]
 async fn an_anonymous_denial_flood_never_drops_the_victims_denial() {
+    const FLOOD: usize = 4_200;
     let cell = open_cell(CellSpec::open(2)).await;
     let cell = &cell;
-    super::fixture_cell::for_each(4_200, |_| async move {
+    super::fixture_cell::for_each(FLOOD, |_| async move {
         let headers = [("authorization", "Bearer not-a-jwt")];
         let (st, _, _) = preq(cell.addr, "GET", "/v1/streams/x/records", &headers, b"").await;
         assert_eq!(st, 401);
@@ -582,6 +584,38 @@ async fn an_anonymous_denial_flood_never_drops_the_victims_denial() {
         1,
         "the victim's denial among {} journaled events",
         events.len()
+    );
+    let single = crate::audit::UNVERIFIED_EVENTS_PER_DRAIN;
+    let anonymous: Vec<_> = events
+        .iter()
+        .filter(|e| e["project_id"].is_null())
+        .collect();
+    let aggregates: Vec<_> = anonymous
+        .iter()
+        .filter(|e| e.get("count").is_some())
+        .map(|e| {
+            let field = |name: &str| e[name].as_str().map(str::to_owned);
+            let status = e["status"].as_u64();
+            (field("code"), status, e["count"].as_u64(), field("route"))
+        })
+        .collect();
+    let rest = Some(FLOOD as u64 - single);
+    let malformed = (
+        Some("malformed".into()),
+        Some(401),
+        rest,
+        Some(String::new()),
+    );
+    assert_eq!(aggregates, [malformed], "the flood's aggregate");
+    assert_eq!(
+        anonymous.len() as u64,
+        single + 1,
+        "the allowance's single events and the aggregate"
+    );
+    assert_eq!(
+        events.len() as u64,
+        single + 2,
+        "no gap marker, nothing else"
     );
     engine_shutdown(&cell.state).await;
 }

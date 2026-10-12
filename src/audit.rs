@@ -9,14 +9,22 @@
 //! drop counter, and a gap event once capacity returns. The journal
 //! records only facts: `project_id` is filled exclusively from a
 //! VERIFIED principal — an unverified token's claims never reach the
-//! journal as identity.
+//! journal as identity. Unverified denials past a small allowance
+//! between two drains are counted, not queued (shared-cells M6), so an
+//! anonymous flood cannot crowd verified denials out of the queue.
 
+use crate::http::AppState;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) const AUDIT_QUEUE_CAP: usize = 4096;
+
+/// Unverified denials (no verified principal) journaled as events of
+/// their own between two drains. Later ones are counted by code and
+/// status, and each drain journals one aggregate event per pair.
+pub(crate) const UNVERIFIED_EVENTS_PER_DRAIN: u64 = 64;
 
 /// Response extension attached where a refusal is CLASSIFIED (the
 /// auth/quota response builders), read once where the response leaves
@@ -94,6 +102,11 @@ pub(crate) struct AuditEvent {
     /// overflow can restore the magnitude to the pending counter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dropped: Option<u64>,
+    /// Aggregate events only: how many unverified denials of this code
+    /// and status, past the allowance of single events, the drain
+    /// journals as this one event. Absent on every other event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<u64>,
 }
 
 /// A denial journal belongs to one server runtime and its durable cell ledger.
@@ -103,6 +116,11 @@ pub(crate) struct AuditJournal {
     dropped: AtomicU64,
     gap: AtomicU64,
     queue: Mutex<VecDeque<AuditEvent>>,
+    /// Unverified denials since the last drain, the allowance's measure.
+    unverified_events: AtomicU64,
+    /// Unverified denials past the allowance, by (code, status), until
+    /// the next drain journals them.
+    unverified: Mutex<BTreeMap<(&'static str, u16), u64>>,
 }
 impl AuditJournal {
     pub(crate) fn new() -> Self {
@@ -111,11 +129,116 @@ impl AuditJournal {
     pub(crate) fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
+
+    /// The event a refusal leaving the product surface journals: none
+    /// for an untagged response, none for an unverified denial past the
+    /// drain's allowance (counted instead), and none when no drain will
+    /// ever run.
+    fn denial_event(
+        &self,
+        state: &AppState,
+        route: &str,
+        method: &axum::http::Method,
+        resp: &axum::response::Response,
+    ) -> Option<AuditEvent> {
+        let tag = resp.extensions().get::<DenialTag>()?;
+        // No usage key = no drain will EVER run: count the loss instead of
+        // pinning the queue at cap for the runtime lifetime. The boot path
+        // warns loudly that enforce without a usage key voids the journal.
+        if state.billing.usage_key().is_none() {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        let status = resp.status().as_u16();
+        if tag.project.is_none() && self.count_unverified(tag.code, status) {
+            return None;
+        }
+        Some(AuditEvent {
+            v: 1,
+            event_id: format!(
+                "deny/{}/{}",
+                state.runtime.identity.boot_id,
+                self.sequence.fetch_add(1, Ordering::Relaxed)
+            ),
+            event_time_ms: state.runtime.clock.now().ms(),
+            cell: state.deployment.cell_id().as_str().to_string(),
+            code: tag.code.to_string(),
+            project_id: tag.project.clone(),
+            route: bounded_route(route),
+            method: method.to_string(),
+            status,
+            dropped: None,
+            count: None,
+        })
+    }
+
+    /// Whether an unverified denial is counted rather than journaled as
+    /// its own event: the first `UNVERIFIED_EVENTS_PER_DRAIN` since the
+    /// last drain are not. A poisoned count map loses the denial
+    /// visibly (dropped and gap), as a full queue does.
+    fn count_unverified(&self, code: &'static str, status: u16) -> bool {
+        if self.unverified_events.fetch_add(1, Ordering::Relaxed) < UNVERIFIED_EVENTS_PER_DRAIN {
+            return false;
+        }
+        if let Ok(mut counts) = self.unverified.lock() {
+            *counts.entry((code, status)).or_default() += 1;
+        } else {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            self.gap.fetch_add(1, Ordering::Relaxed);
+        }
+        true
+    }
+
+    /// Queues the counted unverified denials as one aggregate event per
+    /// (code, status), in that order. An aggregate the full queue cannot
+    /// take is lost as the denials it stands for. A poisoned lock leaves
+    /// the counts for a later drain. The allowance stays spent until the
+    /// drain's batch is appended (`append_batch`).
+    fn queue_unverified(&self, aggregate: impl Fn(&'static str, u16, u64) -> AuditEvent) {
+        let Ok(mut queue) = self.queue.lock() else {
+            return;
+        };
+        let Ok(mut counts) = self.unverified.lock() else {
+            return;
+        };
+        for ((code, status), count) in std::mem::take(&mut *counts) {
+            let event = aggregate(code, status, count);
+            if queue.len() < AUDIT_QUEUE_CAP {
+                queue.push_back(event);
+            } else {
+                record_loss(&event, &self.dropped, &self.gap);
+            }
+        }
+    }
+
+    /// Appends a drain's `batch` through `append` (nothing for an empty
+    /// one), requeuing it if the append fails or is cancelled, and opens
+    /// the next allowance of single unverified events only once the queue
+    /// it was taken from is durably drained: the append succeeded, or there
+    /// was nothing to take. A drain whose append fails reopens nothing, so
+    /// while appends fail a flood adds only its aggregates to the queue.
+    async fn append_batch<F, Fut>(
+        &self,
+        batch: PendingAudit<'_>,
+        append: F,
+    ) -> Result<usize, String>
+    where
+        F: FnOnce(Vec<u8>) -> Fut,
+        Fut: std::future::Future<Output = Result<(), String>>,
+    {
+        let appended = if batch.events.is_empty() {
+            0
+        } else {
+            persist_audit_batch(batch, append).await?
+        };
+        self.unverified_events.store(0, Ordering::Relaxed);
+        Ok(appended)
+    }
 }
 
-/// Observe a product-surface response on its way out. Enforce-mode
-/// denials (a `DenialTag` extension) journal; everything else is a
-/// no-op. Never blocks and never alters the response.
+/// Observe a product-surface response on its way out; never blocks or
+/// alters it. Enforce-mode denials (a `DenialTag` extension) journal,
+/// unverified ones past the drain's allowance as a count.
 #[expect(
     clippy::unwrap_used,
     reason = "observe_denial; a poisoned audit queue may hold a half-pushed or half-drained event; recovering it could publish or drop an event twice"
@@ -130,31 +253,8 @@ pub(crate) fn observe_denial(
     if state.auth.mode != crate::auth::AuthMode::Enforce {
         return;
     }
-    let Some(t) = resp.extensions().get::<DenialTag>() else {
+    let Some(ev) = journal.denial_event(state, route, method, resp) else {
         return;
-    };
-    // No usage key = no drain will EVER run: count the loss instead of
-    // pinning the queue at cap for the runtime lifetime. The boot path
-    // warns loudly that enforce without a usage key voids the journal.
-    if state.billing.usage_key().is_none() {
-        journal.dropped.fetch_add(1, Ordering::Relaxed);
-        return;
-    }
-    let ev = AuditEvent {
-        v: 1,
-        event_id: format!(
-            "deny/{}/{}",
-            state.runtime.identity.boot_id,
-            journal.sequence.fetch_add(1, Ordering::Relaxed)
-        ),
-        event_time_ms: state.runtime.clock.now().ms(),
-        cell: state.deployment.cell_id().as_str().to_string(),
-        code: t.code.to_string(),
-        project_id: t.project.clone(),
-        route: bounded_route(route),
-        method: method.to_string(),
-        status: resp.status().as_u16(),
-        dropped: None,
     };
     let mut g = journal.queue.lock().unwrap();
     if g.len() >= AUDIT_QUEUE_CAP {
@@ -246,8 +346,10 @@ fn record_loss(event: &AuditEvent, dropped: &AtomicU64, gap: &AtomicU64) {
         // The represented events were counted at their first loss.
         gap.fetch_add(count, Ordering::Relaxed);
     } else {
-        dropped.fetch_add(1, Ordering::Relaxed);
-        gap.fetch_add(1, Ordering::Relaxed);
+        // An aggregate is lost as the unverified denials it stands for.
+        let denials = event.count.unwrap_or(1);
+        dropped.fetch_add(denials, Ordering::Relaxed);
+        gap.fetch_add(denials, Ordering::Relaxed);
     }
 }
 async fn persist_audit_batch<F, Fut>(
@@ -266,13 +368,28 @@ where
 
 /// Drain queued denials to `_audit_events`. Called from the telemetry
 /// task; requeues on failure (order preserved).
-pub(crate) async fn drain_audit_once(
-    state: &std::sync::Arc<crate::http::AppState>,
-) -> Result<usize, String> {
+pub(crate) async fn drain_audit_once(state: &std::sync::Arc<AppState>) -> Result<usize, String> {
     let Some(key) = state.billing.usage_key() else {
         return Ok(0);
     };
     let journal = &state.runtime.audit;
+    journal.queue_unverified(|code, status, count| AuditEvent {
+        v: 1,
+        event_id: format!(
+            "deny-count/{}/{}",
+            state.runtime.identity.boot_id,
+            journal.sequence.fetch_add(1, Ordering::Relaxed)
+        ),
+        event_time_ms: state.runtime.clock.now().ms(),
+        cell: state.deployment.cell_id().as_str().to_string(),
+        code: code.into(),
+        project_id: None,
+        route: String::new(),
+        method: String::new(),
+        status,
+        dropped: None,
+        count: Some(count),
+    });
     let batch = PendingAudit::take(
         &journal.queue,
         &journal.dropped,
@@ -293,15 +410,14 @@ pub(crate) async fn drain_audit_once(
             method: String::new(),
             status: 0,
             dropped: Some(gap),
+            count: None,
         },
     )?;
-    if batch.events.is_empty() {
-        return Ok(0);
-    }
-    persist_audit_batch(batch, |body| {
-        crate::billing::system_append(state, crate::billing::AUDIT_EVENTS_STREAM, &key, body)
-    })
-    .await
+    journal
+        .append_batch(batch, |body| {
+            crate::billing::system_append(state, crate::billing::AUDIT_EVENTS_STREAM, &key, body)
+        })
+        .await
 }
 
 #[cfg(test)]
@@ -319,6 +435,7 @@ mod cancellation_tests {
             method: "GET".into(),
             status: 403,
             dropped: None,
+            count: None,
         }
     }
     fn local_queue() -> Mutex<VecDeque<AuditEvent>> {

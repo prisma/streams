@@ -218,6 +218,11 @@ OWNERS = (
     owner('http_internal_routes', 'src/http/internal_routes.rs', 'security_workload:: dst_tests::seal_convergence:: dst_tests::seal_fence_receiver::'),
     # F1-a's relaying sender (82a14a8f); the owner approved the row on 2026-10-02.
     owner('lifecycle_fence_relay', 'src/application/lifecycle/fence_relay.rs', 'dst_tests::seal_fence_relay:: dst_tests::seal_convergence::'),
+    # The denial journal, the other anonymous surface (phase B step 14(a));
+    # the owner decided the row on 2026-10-12 (OWNER-DECISIONS-2 X1 (b)).
+    owner('audit', 'src/audit.rs',
+          'audit:: dst_tests::security_audit:: dst_tests::runtime_journals:: '
+          'dst_tests::shared_cell_hostile::an_anonymous_denial_flood'),
     owner('sse_source', 'src/sse/source.rs', 'sse:: livefeed_engine_retired'),
     owner('sse_source_tests', 'src/sse/source/tests.rs', 'sse::'),
     owner('sse_source_spans', 'src/sse/source/spans.rs', 'sse::'),
