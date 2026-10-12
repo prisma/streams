@@ -2,7 +2,13 @@
 // cell (owner decision 9 of 2026-10-11; public-beta issuer triage B2). It
 // runs on Compute as one self-contained ESM file that Composer builds from
 // this entry (B6), cell-admin's library and the contract schemas inlined;
-// the build also inlines @prisma/compute, whose keep-awake guard it holds.
+// the build also inlines @prisma/compute, whose keep-awake guard it holds,
+// at the version this directory's package.json pins exactly and bun.lock
+// resolves (B6 installs it with `bun install --frozen-lockfile` and bundles
+// without marking it external). The service runs the file with
+// `bun --no-install`: a build that left the guard out then refuses to boot
+// (exit 1, below) instead of Bun's auto-install fetching whatever npm
+// serves as the newest @prisma/compute.
 //
 //   bun deploy/issuer/main.ts     (its inputs in the environment, config.ts)
 //

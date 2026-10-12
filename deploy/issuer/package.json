@@ -1,0 +1,6 @@
+{
+  "name": "streams-issuer",
+  "private": true,
+  "main": "main.ts",
+  "dependencies": { "@prisma/compute": "0.1.0-beta.0" }
+}

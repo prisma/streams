@@ -34,8 +34,8 @@ type Launched =
 
 /// Start the bundle with `env` (and nothing else) on a free port; resolves
 /// with its origin once it listens, or with its exit code and stderr.
-async function launch(file: string, env: Record<string, string>): Promise<Launched> {
-  const child = Bun.spawn([process.execPath, file], {
+async function launch(file: string, env: Record<string, string>, flags: string[] = []): Promise<Launched> {
+  const child = Bun.spawn([process.execPath, ...flags, file], {
     env: { ...env, PORT: "0" },
     cwd: join(file, ".."),
     stdout: "pipe",
@@ -105,6 +105,23 @@ describe("the bundled entry", () => {
     started.child.kill("SIGTERM");
     expect(await started.child.exited).toBe(0);
     expect(cellState(cell).credentials[a.id].hv).toBe(2);
+  });
+
+  test("pins the keep-awake guard's package exactly, and refuses to boot rather than fetch it when a build leaves it out", async () => {
+    const pkg = JSON.parse(readFileSync(join(import.meta.dir, "package.json"), "utf8"));
+    const version = pkg.dependencies["@prisma/compute"];
+    expect(Object.keys(pkg.dependencies)).toEqual(["@prisma/compute"]);
+    expect(version).toMatch(/^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/);
+    const lock = readFileSync(join(import.meta.dir, "bun.lock"), "utf8");
+    expect(lock).toContain(`"@prisma/compute": "${version}",`);
+    expect(lock).toMatch(new RegExp(`"@prisma/compute": \\["@prisma/compute@${version.replaceAll(".", "\\.")}", "", \\{\\}, "sha512-`));
+    // A build that left the import out, run as the service runs it (bun
+    // --no-install): exit 1 at boot, and nothing fetched from npm.
+    const cell = await issuerCell();
+    const started = await launch(await bundle(), { ...cell.env, KEEP_AWAKE: "1" }, ["--no-install"]);
+    expect(["code" in started && started.code, "err" in started && started.err]).toEqual([
+      1, "streams-issuer: KEEP_AWAKE=1 needs @prisma/compute's KeepAwakeGuard in the build (set KEEP_AWAKE=0 to run without it)\n",
+    ]);
   });
 
   test("refuses to boot with exit 1 and a message that quotes ids only", async () => {
