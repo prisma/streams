@@ -179,11 +179,14 @@ fn release(runtime: &RuntimeCaps) {
     let history = runtime.history.cache.release();
     let telemetry = runtime.telemetry.cache.release();
     let postings = runtime.postings.sweep_idle(Duration::ZERO);
+    // The byte counts are what writes inserted into each released generation
+    // since the release before it (evicted entries included), not what it
+    // held: foyer does not expose its usage.
     tracing::info!(
         release = runtime.shared_cache.releases(),
-        shared_bytes = shared,
-        history_bytes = history,
-        telemetry_bytes = telemetry,
+        shared_inserted_bytes = shared,
+        history_inserted_bytes = history,
+        telemetry_inserted_bytes = telemetry,
         postings_slices = postings,
         "idle: released the block caches and the postings slices"
     );
