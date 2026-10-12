@@ -291,6 +291,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::watch_lookups",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Anonymous capability lookup DSTs (public-beta phase B step 15, shared-cells M2): what an unverified watch capability costs the store and which lookup budget it spends for each thing the descriptor cache holds for the stream it claims (a fresh entry decides for free, an expired one or nothing sends it to one budgeted fetch that fills nothing, a verified one is proved against the cache's own read), a stale feed and off-enforce modes spending the cell's budget alone, a spent budget answering a retryable 429; the compiler and the DST suite exercise the module.",
+      "syntax": "path = \"tests/watch_lookups.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::parked_waits",
       "path": "src/dst/dst_tests.rs",
       "reason": "Parked-wait DSTs (shared-cells PLAN step 5, M1 and the cost review's 2.3-2.4): waiting long-polls, consumer pulls and watch waits are parked within the live pool and their project's share, leave the write gate and the fleet heartbeat, and a waiting pull walks again only on a commit, a consumer-state change or a lease deadline; the compiler and the DST suite exercise the module.",

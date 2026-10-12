@@ -188,7 +188,8 @@
     "transaction_overlay": 15,
     "transaction_prepare": 12,
     "transaction_publish": 7,
-    "transaction_tests": 0
+    "transaction_tests": 0,
+    "watch": 95
   },
   "schema": 1,
   "tool": "cargo-mutants 27.1.0"

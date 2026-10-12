@@ -470,6 +470,13 @@ impl Registry {
         );
     }
 
+    /// Test-only: age `sref`'s slot past the TTL, as a quiet stream's
+    /// slot is, so a test reaches the expired-entry paths without sleeping.
+    #[cfg(test)]
+    pub(crate) fn expire_cache_for_tests(&self, sref: &crate::tenant::TenantStreamRef) {
+        self.cache.expire_for_tests(sref);
+    }
+
     pub(crate) async fn get(
         &self,
         sref: &crate::tenant::TenantStreamRef,

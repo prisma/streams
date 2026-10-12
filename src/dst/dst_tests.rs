@@ -282,6 +282,8 @@ mod topology_lifecycle;
 #[path = "tests/topology_scaling.rs"]
 mod topology_scaling;
 
+#[path = "tests/watch_lookups.rs"]
+mod watch_lookups;
 #[path = "tests/watch_observation.rs"]
 mod watch_observation;
 

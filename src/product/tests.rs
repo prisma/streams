@@ -515,6 +515,10 @@ fn watch_refusals() -> Vec<(crate::application::watch::WatchFailure, &'static st
             W::Quota(p(), Q::MemoryPressure),
             "429 project_memory_pressure true 1 - project_memory_pressure:proj-w",
         ),
+        (
+            W::LookupBusy,
+            "429 watch_lookup_busy true 1 - watch_lookup_busy:-",
+        ),
         (W::InvalidKey, "400 invalid_watch_key false - - -"),
         (W::Creating, "503 creating true - - -"),
         (W::NotFound, "404 not_found false - - -"),
@@ -547,8 +551,9 @@ fn watch_refusals() -> Vec<(crate::application::watch::WatchFailure, &'static st
 
 /// Every watch refusal keeps its status, body code, retry hint, replay
 /// header and journal tag: the capability refusal is journaled with the
-/// project it names (or none), an inactive project and every project quota
-/// refusal with their project, and nothing else is journaled. A storage
+/// project it names (or none), a spent lookup budget's retryable 429 with
+/// none, an inactive project and every project quota refusal with their
+/// project, and nothing else is journaled. A storage
 /// failure carries its message; a routing failure keeps the one resolve
 /// mapping, which has no `retryable` field.
 #[tokio::test]

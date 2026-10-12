@@ -1226,7 +1226,9 @@ capability skips the token gate, so under enforce the capability
 itself must verify. A stream key proves record access only: it
 observes beside a verified principal, never in place of a capability
 that failed (a garbage capability plus a learned key used to observe
-with no token, past revocation). Off and shadow modes are unchanged.
+with no token, past revocation). Off and shadow modes were unchanged by
+r7; since phase B step 15 (below) a capability that does not verify is
+refused there too, the key beside it notwithstanding.
 
 *Anonymous lookups (shared-cells M2, phase B step 15).* A capability
 names its project before anything verifies it, so the claim spends
@@ -1236,10 +1238,18 @@ Otherwise the capability is checked against the descriptor the cell
 already holds, without claiming, touching or filling a cache slot;
 only when nothing current is held does one store lookup run, which
 publishes nothing and spends the claimed project's budget (20 a
-second) and the server's (100 a second). Only a carrier that verified
-reads through the descriptor cache, and its proof and wait use what
-that read returns. A stale feed spends the server's budget only, and
-the verified carrier then fails closed as above.
+second, 40 at most) and the server's (100 a second, 200 at most). A
+spent budget answers a retryable `429 watch_lookup_busy` with
+`Retry-After: 1` that names no project (owner decision P2 of
+2026-10-12), so honest watchers reconnecting together after a restart
+wait and retry instead of failing for good. Only a carrier that
+verified reads through the descriptor cache, and its proof and wait
+use what that read returns. A stale feed spends the server's budget
+only, and the verified carrier then fails closed as above. Off and
+shadow modes take the same path with the server's budget only: there
+the claim is checked before the key, so a capability that does not
+verify is refused even beside the stream key, which alone still
+observes.
 
 ---
 

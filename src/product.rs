@@ -3891,6 +3891,14 @@ fn watch_failure_response(error: crate::application::watch::WatchFailure) -> Res
         WatchFailure::Quota(project, refusal) => {
             crate::audit::tag_project(quota_refusal_response(&refusal), &project)
         }
+        WatchFailure::LookupBusy => {
+            let (code, status) = ("watch_lookup_busy", StatusCode::TOO_MANY_REQUESTS);
+            let message = "this cell is busy looking up unverified watch capabilities; retry";
+            let mut busy = perr(status, code, message, None, true);
+            busy.headers_mut()
+                .insert("retry-after", axum::http::HeaderValue::from_static("1"));
+            crate::audit::tag(busy, code)
+        }
         WatchFailure::InvalidKey => perr(
             StatusCode::BAD_REQUEST,
             "invalid_watch_key",

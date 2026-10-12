@@ -626,9 +626,11 @@ async fn an_anonymous_denial_flood_never_drops_the_victims_denial() {
 /// victim needs. A capability checked against the descriptor the cell
 /// holds costs no lookup; only a store fetch spends the claimed project's
 /// budget (20 a second, 40 at most) and the cell's (100 a second, 200 at
-/// most), both refilled on real time. The flood runs in rounds of 256
-/// concurrent lookups, each followed by one 100 ms victim watch; every
-/// victim watch, before and through 40 rounds, must answer.
+/// most), both refilled on real time; a spent budget answers `429
+/// watch_lookup_busy`. The flood runs in rounds of 256 concurrent lookups,
+/// each followed by one 100 ms victim watch; every victim watch, before and
+/// through 40 rounds, must answer, and the first round fetches exactly the
+/// project's fresh budget.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_capability_flood_never_starves_the_victims_watch() {
     let cell = open_cell(CellSpec::open(2)).await;
@@ -646,24 +648,55 @@ async fn a_capability_flood_never_starves_the_victims_watch() {
             st, 200,
             "the victim's capability watch after {round} rounds: {shown}"
         );
-        garbage_round(&cell, &project(1), &khex, round).await;
+        let split = garbage_round(&cell, &project(1), &khex, round).await;
+        if round == 0 {
+            assert_project_budget(split);
+        }
     }
     engine_shutdown(&cell.state).await;
 }
 
 /// 256 concurrent anonymous lookups with garbage capabilities that name
-/// `claimed`, each on a distinct name; every one is refused.
-async fn garbage_round(cell: &Cell, claimed: &str, khex: &str, round: usize) {
+/// `claimed`, each on a distinct name; every one is refused, `403
+/// watch_unauthorized` once its store lookup verified nothing or `429
+/// watch_lookup_busy` (`Retry-After: 1`) once the budgets are spent. How
+/// many of each, and the seconds the round took.
+async fn garbage_round(
+    cell: &Cell,
+    claimed: &str,
+    khex: &str,
+    round: usize,
+) -> (usize, usize, std::time::Duration) {
+    let started = std::time::Instant::now();
     let lookups = (0..256).map(|j| {
         let path = format!(
             "/v1/streams/n{round}-{j}/watches/by-customer/keys/{khex}?timeoutMs=1&cap={claimed}.1.x"
         );
-        async move { preq(cell.addr, "GET", &path, &[], b"").await.0 }
+        async move {
+            let (status, headers, body) = preq(cell.addr, "GET", &path, &[], b"").await;
+            (
+                status,
+                error_code(&body),
+                headers.get("retry-after").cloned(),
+            )
+        }
     });
     let answers = futures_util::future::join_all(lookups).await;
+    let refused = (403, Some("watch_unauthorized".to_string()), None);
+    let busy = (429, Some("watch_lookup_busy".to_string()), Some("1".into()));
+    let forbidden = answers.iter().filter(|a| **a == refused).count();
+    let spent = answers.iter().filter(|a| **a == busy).count();
+    assert_eq!(forbidden + spent, 256, "garbage capabilities: {answers:?}");
+    (forbidden, spent, started.elapsed())
+}
+
+/// A served project's fresh budgets in one round: its burst of 40 lookups
+/// and what 20 a second refills meanwhile answer `403`, the rest `429`.
+fn assert_project_budget((fetched, spent, took): (usize, usize, std::time::Duration)) {
+    let refilled = usize::try_from((20 * took.as_millis()).div_ceil(1000)).unwrap();
     assert!(
-        answers.iter().all(|st| *st == 403),
-        "garbage capabilities: {answers:?}"
+        (40..=40 + refilled).contains(&fetched) && fetched + spent == 256,
+        "{fetched} fetched and {spent} refused busy in {took:?} by fresh budgets"
     );
 }
 
@@ -680,7 +713,7 @@ async fn unverified_capability_lookups_never_fill_the_descriptor_cache() {
     let cell = open_cell(CellSpec::open(2)).await;
     assert_eq!(cell.call(1, "PUT", "/v1/streams/w", CREATE).await.0, 201);
     let slots = cell.state.registry.cache_len();
-    garbage_round(&cell, &project(1), GARBAGE_KEY, 0).await;
+    assert_project_budget(garbage_round(&cell, &project(1), GARBAGE_KEY, 0).await);
     assert_eq!(
         cell.state.registry.cache_len(),
         slots,
@@ -703,7 +736,12 @@ async fn a_capability_naming_an_unserved_project_reads_no_descriptor() {
     let unserved = project(2);
     let hex: String = unserved.bytes().map(|b| format!("{b:02x}")).collect();
     let root = format!("registry/v4/projects/{hex}/");
-    garbage_round(&cell, &unserved, GARBAGE_KEY, 0).await;
+    let (refused, spent, _) = garbage_round(&cell, &unserved, GARBAGE_KEY, 0).await;
+    assert_eq!(
+        (refused, spent),
+        (256, 0),
+        "an unserved claim spends no budget"
+    );
     let reads = trace
         .events()
         .into_iter()

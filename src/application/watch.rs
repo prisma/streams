@@ -37,6 +37,10 @@ pub(crate) enum WatchFailure {
     PolicyStale(ProjectId),
     ProjectInactive(ProjectId),
     Quota(ProjectId, crate::quota::QuotaRefusal),
+    /// The store lookup an unverified capability needs is refused by the
+    /// cell's or its claimed project's lookup budget: a retryable answer
+    /// that names no project, since an unverified claim is not an identity.
+    LookupBusy,
     InvalidKey,
     Creating,
     NotFound,
@@ -87,13 +91,13 @@ const CELL_LOOKUPS: Rate = Rate {
 /// another project's drops it, so the map holds only recent claims.
 const IDLE_LOOKUP_BUDGET: Duration = Duration::from_secs(60);
 
-/// The answer to a carrier whose store lookup the budgets refuse: owner
-/// question Q3 of phase B (step 15). Today's uniform, untagged 403
-/// `watch_unauthorized`, which the SDK does not retry; the recommended
-/// retryable 429 with `Retry-After: 1` is an untagged variant of its own
-/// that `product.rs` renders. Never tagged with the claimed project: an
-/// unverified claim is not an identity.
-const LOOKUP_REFUSED: WatchFailure = WatchFailure::Unauthorized(None);
+/// The answer to a carrier whose store lookup the budgets refuse (phase B
+/// step 15; the owner decided Q3 on 2026-10-12, OWNER-DECISIONS-2 P2): a
+/// retryable 429 with `Retry-After: 1`, which the SDK replays, so honest
+/// watchers reconnecting together after a restart wait instead of failing
+/// for good. Never tagged with the claimed project: an unverified claim is
+/// not an identity.
+const LOOKUP_REFUSED: WatchFailure = WatchFailure::LookupBusy;
 
 /// A per-runtime pre-verification lookup budget. Its refill uses elapsed time,
 /// so clock corrections cannot bypass the cap or poison a later runtime.

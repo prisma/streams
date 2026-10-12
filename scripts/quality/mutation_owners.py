@@ -222,6 +222,11 @@ OWNERS = (
     owner('http_internal_routes', 'src/http/internal_routes.rs', 'security_workload:: dst_tests::seal_convergence:: dst_tests::seal_fence_receiver::'),
     # F1-a's relaying sender (82a14a8f); the owner approved the row on 2026-10-02.
     owner('lifecycle_fence_relay', 'src/application/lifecycle/fence_relay.rs', 'dst_tests::seal_fence_relay:: dst_tests::seal_convergence::'),
+    # The anonymous capability surface (public-beta phase B step 15); the
+    # owner decided the row on 2026-10-12 (OWNER-DECISIONS-2 X1 (b)).
+    owner('watch', 'src/application/watch.rs',
+          'application::watch:: dst_tests::watch_lookups:: dst_tests::watch_observation:: '
+          'dst_tests::watch_admission:: dst_tests::shared_cell_hostile::'),
     # The denial journal, the other anonymous surface (phase B step 14(a));
     # the owner decided the row on 2026-10-12 (OWNER-DECISIONS-2 X1 (b)).
     owner('audit', 'src/audit.rs',

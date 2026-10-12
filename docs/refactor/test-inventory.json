@@ -72,7 +72,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "433c784c1559a32f518b352e98d249f63f64bb23315a6f0088f244cec8354de6",
+    "function_sha256": "5f8b413f1efbe1ceb2673fa891b7ac5fc9c4366bf348b145eab287a70f621947",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_hostile.rs",
@@ -83,7 +83,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "874a3fb9229bdb36f4df427ca27e314102c670a5a129a6a5e19208617648ab2c",
+    "function_sha256": "e5de5a269baa71e27176aa9e88995ddaf7f1510dafbe10666f7e58a598bb4416",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_hostile.rs",
@@ -144,6 +144,17 @@
       "CRT-006",
       "FRK-013"
     ]
+  },
+  {
+    "name": "a_claim_under_a_stale_feed_spends_only_the_cells_lookups",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6c0834719031607d6c30c81f04e5990e19c503328be1900b585b3a2092a4a03e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/watch_lookups.rs",
+    "scenarios": []
   },
   {
     "name": "a_close_that_reaches_the_rollup_after_february_closed_reverses_february",
@@ -840,6 +851,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/lifecycle_incarnation.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_fresh_entry_refuses_a_capability_without_a_lookup",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "19913a77914ca74ec9a827a1094547c40911bc2cf458ddd30956c404ff506ada",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/watch_lookups.rs",
     "scenarios": []
   },
   {
@@ -2913,6 +2935,17 @@
     "scenarios": [
       "SEL-024"
     ]
+  },
+  {
+    "name": "an_expired_entry_is_checked_against_the_store_under_budget",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ad74bb420ccf179d676117eb90b3f9b384a0b2e0ace9defc439c58e9b4e45321",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/watch_lookups.rs",
+    "scenarios": []
   },
   {
     "name": "an_expired_lease_reaches_a_waiting_pull_at_its_deadline",
@@ -5656,6 +5689,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fault_substrate.rs",
+    "scenarios": []
+  },
+  {
+    "name": "off_enforce_a_key_beside_a_capability_that_does_not_verify_is_refused",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "74ae9be18ea19234146d524a487c9e55843a0099cf5a6ca1a3d253686a09df2a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/watch_lookups.rs",
     "scenarios": []
   },
   {
@@ -8778,7 +8822,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "e7ce7a545d06870b2373682fe0273d460397912ae25ffc082b33ac9f37b3b3e6",
+    "function_sha256": "e496920ec5f2d16452899604f60c135163f4a3ba71cd2744f7edc746718e7a1d",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_hostile.rs",
