@@ -117,6 +117,9 @@ pub(crate) struct OpsService {
     sequence: AtomicU64,
     // mt-lint: allow(name-keyed-map): alert kind, not stream identity
     alerts: Mutex<std::collections::HashMap<String, AlertState>>,
+    /// The last telemetry tick's snapshot, served by `/operator/data.json`
+    /// without re-collecting (a collection drains the peak gauges).
+    last: arc_swap::ArcSwapOption<OpsSnapshot>,
 }
 impl OpsService {
     pub(crate) fn new() -> Self {
@@ -124,6 +127,12 @@ impl OpsService {
     }
     pub(crate) fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
+    }
+    pub(crate) fn remember(&self, snap: std::sync::Arc<OpsSnapshot>) {
+        self.last.store(Some(snap));
+    }
+    pub(crate) fn last_snapshot(&self) -> Option<std::sync::Arc<OpsSnapshot>> {
+        self.last.load_full()
     }
     /// Never fails the transition: bounded overflow becomes durable gap debt.
     #[expect(
@@ -599,9 +608,12 @@ pub(crate) async fn emit_metrics_once(
     let Some(key) = state.billing.usage_key() else {
         return Ok(());
     };
-    let snap = collect_snapshot(state);
+    // Cached for /operator/data.json before the append, so the operator
+    // surface keeps it while the cell's own telemetry appends are shed.
+    let snap = std::sync::Arc::new(collect_snapshot(state));
+    state.runtime.ops.remember(std::sync::Arc::clone(&snap));
     evaluate_alerts(state, &snap).await;
-    let body = serde_json::to_vec(&[snap]).map_err(|e| e.to_string())?;
+    let body = serde_json::to_vec(&[snap.as_ref()]).map_err(|e| e.to_string())?;
     metrics_ledger_append(state, &key, body).await
 }
 

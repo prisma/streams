@@ -606,15 +606,19 @@ Deploy-time footguns (region-code mismatches, version-less service shells,
 rps/ackMs/live/cpu + desired), `/v1/debug/*` per instance. OTel export is
 spec'd in [OPERATIONS.md §5](./OPERATIONS.md).
 
-**Operator dashboard**: every server serves `/operator` — UNSECURED by
-explicit product decision (on-call must see the cell without credentials),
-so its payload is restricted to operational metadata: never stream names,
-tenant identifiers, tokens, keys, or signed URLs. Panels: this-instance
+**Operator dashboard**: every server serves `/operator` behind the
+deployment bearer (SR-5: no unauthenticated metadata on the customer
+listener; the bearer is the interim operator credential), and its payload
+is restricted to operational metadata: never stream names, tenant
+identifiers, tokens, keys, or signed URLs. Panels: this-instance
 load/RSS, admission (instance cap, per-stream cap, shed counters, RSS shed
 threshold), fleet heartbeat table (freshness judged against the serving
 instance's clock, not the browser's), and the per-op object-store latency
 table with the O14a sentinels. `/operator/data.json` is the same payload as
-JSON; `/operator/runbook` serves this document (compiled into the binary).
+JSON, plus `ops` (the last telemetry tick's `_ops_metrics` snapshot, cached:
+reading it drains no peak) and `feeds` (the auth feeds' ages, as on
+`/health`); `/operator/runbook` serves this document (compiled into the
+binary).
 
 **Memory envelope** (AWS-readyness.md §2): the platform kernel kills the
 process at ~750 MB RSS on the pilot instance class, and the crash loop that
@@ -990,17 +994,18 @@ sum down beside the cell's state directory, and refuse the next partner
 that would pass a half. `cell-admin` checks this itself once phase B
 declares load.
 
-**What to alert on** (scrape with the deployment bearer):
+**What to alert on** (scrape `/operator/data.json` with the deployment
+bearer; a `where` below is a key of it unless it names another source):
 
 | signal | where | alert when |
 |---|---|---|
-| read memory | `/operator/data.json` `local.read_memory_bytes` / `local.read_memory_capacity_bytes` | above 80 % for 5 min: neighbours' reads are waiting, then `503 read_memory_busy` |
+| read memory | `local.read_memory_bytes` / `local.read_memory_capacity_bytes` | above 80 % for 5 min: neighbours' reads are waiting, then `503 read_memory_busy` |
 | RSS at idle | `local.rss_mb` vs `local.rss_shed_mb` | above the shed line with no load (NEXT-WORK 14.7, "Shared cells Q0"): every tenant's writes are shed |
-| instance and shard sheds | `local.admit_shed`; `/v1/debug/load` `admit_shed_rss` and `maintenance_backpressure` (`appends_shed`, `cause`) | any growth: look at the largest writers (per-project attribution is phase B) |
-| history flush wait | `_ops_metrics` gauge `history_flush_wait_ms_max` (the peak since the previous snapshot; a gather's flush that waits raises it every 5 s) | above 30,000: a gather has waited 30 s at the history L0 cap because compaction frees no slot (one long sorted-run merge on the only compaction slot, or failing compactions), and with one gather permit (`ABSORB_GLOBAL_GATHERS=1`) no shard absorbs meanwhile. Check `history_l0_ssts_max` (64 is the cap) and `history_compacted_runs_max`; detail `GET /v1/debug/absorb` |
-| parked waits | `local.parked` | near `SSE_MAX_CONNECTIONS` (1,200): waits stop parking |
-| reserved policies | `/v1/debug/auth` `feeds.policies.reservedDropped` | above 0: a feed names the system project, `PROJECT_ID` or `ACCOUNT_ID` |
-| unowned usage | `unowned_meter_events_total` | not flat: usage billed to the cell's `ACCOUNT_ID` sink |
+| instance and shard sheds | `local.admit_shed` (`local.admit_shed_rss`, `local.admit_shed_inflight`, `local.admit_shed_survival`); `local.maintenance_backpressure` (`appends_shed`, `cause`) | any growth: look at the largest writers (per-project attribution is phase B) |
+| history flush wait | `ops.gauges.history_flush_wait_ms_max` (the last snapshot's peak since the one before; a gather's flush that waits raises it every 5 s) | above 30,000: a gather has waited 30 s at the history L0 cap because compaction frees no slot (one long sorted-run merge on the only compaction slot, or failing compactions), and with one gather permit (`ABSORB_GLOBAL_GATHERS=1`) no shard absorbs meanwhile. Check `ops.gauges.history_l0_ssts_max` (64 is the cap) and `ops.gauges.history_compacted_runs_max`; detail `GET /v1/debug/absorb` |
+| parked waits | `local.parked` + `local.sse_connections` (one live pool) | near `local.sse_max_connections` (`SSE_MAX_CONNECTIONS`, 1,200): waits stop parking |
+| reserved policies | `feeds.policies.reservedDropped` | above 0: a feed names the system project, `PROJECT_ID` or `ACCOUNT_ID` |
+| unowned usage | `ops.counters.unowned_meter_events_total` | not flat: usage billed to the cell's `ACCOUNT_ID` sink |
 | feed delivery | wrapper log `feeds poll failed` / `feeds deleted`; `503 policy_stale` | any `feeds deleted`; polls failing for over a minute |
 | stored growth | `/operator/billing.json` `rollup.stored.writtenBytes` (each increase of the cell's projects' stored bytes that a drain round saw; a delete never lowers it) | grows by more than 50 GiB in 24 h (G, about 0.6 MB/s sustained; the owner's answer S3 of 2026-10-12, confirmed again when the production workspace exists). Until physical reclamation exists a delete frees quota but not the bucket's bytes, so this is the bucket's growth as far as the drain saw it: a drain round emits each segment as it then stands, so bytes stored and deleted between two rounds of a shard (8 s apart by default) never reach it, and a tenant that deletes what it writes within a round grows the bucket without growing this figure. `/operator/data.json` `local.store.totals.bytes_put` (every byte the process put since `totals.since_ms`, WAL and compaction included) bounds the bucket's growth from above. `rollup.stored.largest` lists the ten projects that wrote the most |
 | daily spend estimate | `/operator/data.json` `local.store.totals`; `/operator/billing.json` `rollup.stored` | above $10 a day, the cell's budget (S3, as G). The estimate: the last 24 h's billed requests (`ok` plus `not_found`) of Class A (`put`, `mpu`, `copy`, `list`) and of Class B (`get`, `head`), each times its price; plus `writtenBytes` in GiB × 1.2 × $0.015 ÷ 30 (`totalBytes` once physical reclamation exists); plus the kept-awake server's flat cost a day. The prices are inputs until the platform gives Prisma Buckets' own; the totals restart with the process (`totals.since_ms`), so a restart starts a new baseline. The authoritative budget alarm is the platform's, on the workspace's bill |

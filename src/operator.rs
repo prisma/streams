@@ -1,11 +1,11 @@
-//! Cell-wide operator dashboard, served UNSECURED at /operator (explicit
-//! product decision: on-call must see the cell without credentials).
+//! Cell-wide operator dashboard at /operator, behind the deployment bearer
+//! (SR-5, `operator_gate`): no unauthenticated metadata on this listener.
 //!
-//! The surface is bearer-gated (SR-5); the payload REMAINS restricted to
-//! operational metadata: instance load vectors, shard-prefix bit strings,
-//! admission/shed counters, per-op store latency, and the runbook. It must
-//! never include stream names, customer identifiers, tokens, keys, or
-//! signed URLs.
+//! The payload REMAINS restricted to operational metadata: instance load
+//! vectors, shard-prefix bit strings, admission/shed counters, per-op store
+//! latency, the last ops snapshot, auth-feed ages and counts, and the
+//! runbook. It must never include stream names, customer identifiers,
+//! tokens, keys, or signed URLs.
 //!
 //! Every section degrades independently: a failed object-store read renders
 //! as `null` in /operator/data.json and "unavailable" in the page, never an
@@ -112,6 +112,14 @@ pub(crate) async fn data(
         "admit_max_inflight_per_stream": adm.per_stream_cap,
         "rss_mb": crate::fleet::rss_bytes() as f64 / 1048576.0,
         "rss_shed_mb": adm.rss_shed_mb,
+        "admit_shed_rss": adm.shed.rss,
+        "admit_shed_inflight": adm.shed.inflight,
+        "admit_shed_survival": adm.shed.survival,
+        "maintenance_backpressure": state.admission.maintenance_stats_json(),
+        "absorb_reserved_bytes_now": state.runtime.history.budget.reserved_bytes(),
+        "sse_connections": adm.sse_connections,
+        "sse_max_connections": adm.sse_effective_max,
+        "usage_overflow_admits": state.runtime.usage.overflow_stats().0,
         // per-op-class store latency, sentinels, steal — non-destructive read
         "store": crate::store_timing::snapshot(60, false, &state.runtime.store_io, &shard_opens),
     });
@@ -119,6 +127,10 @@ pub(crate) async fn data(
     axum::Json(json!({
         "ts_ms": now_ms,
         "local": local,
+        // The last telemetry tick's snapshot (null before the first one),
+        // cached: re-collecting here would drain the peak gauges.
+        "ops": state.runtime.ops.last_snapshot().as_deref(),
+        "feeds": state.auth.feed_json(now_ms / 1000),
         "fleet": {
             "heartbeats": heartbeats,
             "desired": desired,

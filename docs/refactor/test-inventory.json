@@ -7121,6 +7121,17 @@
     "scenarios": []
   },
   {
+    "name": "r10_operator_data_serves_the_cached_ops_snapshot_without_recollecting",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9e0b12e33086183a75943fe30942055af7982d44cf6faaa81341c7b91fc852a5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/runtime_journals.rs",
+    "scenarios": []
+  },
+  {
     "name": "r10_runtime_body_limits_apply_to_each_collector_and_preflight",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

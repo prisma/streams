@@ -1,6 +1,6 @@
 //! Runtime-local denial/ops journals, alerts and HTTP body ceilings.
 use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig_build};
-use super::fixture_requests::{PRISMA_KEY, preq};
+use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
 use std::sync::Arc;
@@ -212,4 +212,53 @@ async fn r10_runtime_body_limits_apply_to_each_collector_and_preflight() {
     for rig in rigs {
         engine_shutdown(&rig.state).await;
     }
+}
+
+/// S2: the operator surface serves the ops snapshot the last telemetry
+/// tick collected, cached and not re-collected per request (re-collecting
+/// would swap the snapshot's drained peaks to 0 under the ledger), beside
+/// the feed ages, the shed breakdown, the maintenance latch and the
+/// overflow admits the cell watch alerts on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn r10_operator_data_serves_the_cached_ops_snapshot_without_recollecting() {
+    let auth = Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    let rig = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            auth: Some("operator-bearer".into()),
+            auth_service: Some(auth),
+            ..Default::default()
+        },
+    )
+    .await;
+    crate::ops::emit_metrics_once(&rig.state).await.unwrap();
+    let bearer = [("authorization", "Bearer operator-bearer")];
+    let mut bodies = Vec::new();
+    for _ in 0..2 {
+        let (status, _, body) = hreq(rig.addr, "GET", "/operator/data.json", &bearer, b"").await;
+        assert_eq!(status, 200);
+        bodies.push(serde_json::from_slice::<serde_json::Value>(&body).unwrap());
+    }
+    let body = &bodies[0];
+    assert!(body["ops"].is_object(), "operator ops: {}", body["ops"]);
+    assert_eq!(
+        bodies[0]["ops"], bodies[1]["ops"],
+        "re-collected per request"
+    );
+    assert!(body["ops"]["gauges"]["history_flush_wait_ms_max"].is_u64());
+    assert!(body["feeds"]["policies"]["reservedDropped"].is_u64());
+    let local = &body["local"];
+    assert!(local["admit_shed_rss"].is_u64());
+    assert!(local["maintenance_backpressure"]["appends_shed"].is_u64());
+    assert!(local["sse_max_connections"].is_u64());
+    assert!(local["usage_overflow_admits"].is_u64());
+    engine_shutdown(&rig.state).await;
 }
