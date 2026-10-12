@@ -7,7 +7,7 @@ import { OPERATOR_SCOPES } from "../cell-admin/offboard";
 import { CUSTOMER_SCOPES } from "../cell-admin/rules";
 import { hashSecret, parsePeppers } from "../cell-admin/secrets";
 import { cleanup, customerOnly, denylistText, readBundle, run, storeTexts } from "../cell-admin/test-rig";
-import { FREE_TIER_REQUESTS_PER_SEC, PROJECTS_PER_WORKSPACE_DEFAULT } from "./projects";
+import { FREE_TIER_REQUESTS_PER_SEC } from "./projects";
 import { csrfToken, readSession } from "./session";
 import {
   admin,
@@ -164,7 +164,8 @@ describe("creating a project", () => {
     const cell = await allowedCell();
     const m = await managed(cell);
     const a = m.signIn("ws_a");
-    expect(PROJECTS_PER_WORKSPACE_DEFAULT).toBe(1);
+    // The cell's workspace cap, 1 unless init's --workspace-cap says otherwise (I6 (a)).
+    expect(cellState(cell).cell.workspace_cap).toBe(1);
     expect((await m.send("POST", PROJECTS, a, { displayName: "One" })).status).toBe(201);
     const limit = refusal("project_limit", "workspace ws_a already has 1 Streams project(s), its limit");
     expect(await answer(await m.send("POST", PROJECTS, a, { displayName: "Two" }))).toEqual([409, limit]);
@@ -180,6 +181,22 @@ describe("creating a project", () => {
       ["done", undefined],
       ["refused", "project_limit: workspace ws_a already has 2 project(s) on cell cell_sc1 (cap 2)"],
     ]);
+  });
+
+  test("holds a workspace without its own limit to the cap the cell was initialised with", async () => {
+    const cell = await issuerCell(["--workspace-cap", "2"]);
+    await admin(cell, "allow", "--workspace", "ws_a");
+    const m = await managed(cell);
+    const a = m.signIn("ws_a");
+    expect((await m.send("POST", PROJECTS, a, { displayName: "One" })).status).toBe(201);
+    expect((await m.send("POST", PROJECTS, a, { displayName: "Two" })).status).toBe(201);
+    expect(await answer(await m.send("POST", PROJECTS, a, { displayName: "Three" }))).toEqual([
+      409, refusal("project_limit", "workspace ws_a already has 2 Streams project(s), its limit"),
+    ]);
+    // The allow-list entry's own limit still wins over the cell's.
+    await admin(cell, "allow", "--workspace", "ws_a", "--max-projects", "3");
+    m.clock.t += 5_001; // the allow-list is re-read
+    expect((await m.send("POST", PROJECTS, a, { displayName: "Three" })).status).toBe(201);
   });
 
   test("counts a project being deleted toward the cell's max_projects but not toward its workspace's cap", async () => {

@@ -89,7 +89,7 @@ function checkWorkspace(state: CellState, workspace: string): void {
 }
 
 /// Put a workspace on the allow-list, or replace its limits (keeping when
-/// it was first added): `--max-projects` over the default workspace cap,
+/// it was first added): `--max-projects` over the cell's workspace cap,
 /// `--requests-per-sec` (at most the cell's ceiling) over the free-tier
 /// rate.
 export async function allow(f: Flags, io: Io): Promise<void> {

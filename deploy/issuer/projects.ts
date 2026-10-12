@@ -15,8 +15,8 @@
 //   5. checkPlacement, one call: a reserved workspace (403
 //      workspace_not_allowed), the cell's max_projects, counting every
 //      project not offboarded (409 beta_at_capacity), the workspace's
-//      cap, the allow-list entry's max_projects or
-//      PROJECTS_PER_WORKSPACE_DEFAULT, counting its active projects only
+//      cap, the allow-list entry's max_projects or the cell's
+//      workspace_cap (init's --workspace-cap), counting its active projects only
 //      (the owner's answer I9 (a), cell-admin's rule too; 409
 //      project_limit).
 // Then: a fresh `sp_<32 hex>` id is burned on the denylist, and one
@@ -59,9 +59,6 @@ import { json } from "./respond";
 import { Prober } from "./probe";
 import { credentialView, ownProject, projectView, workspaceProjects } from "./views";
 
-/// Owner question I6, answer (a) (the build default): a workspace holds
-/// one project unless its allow-list entry names more.
-export const PROJECTS_PER_WORKSPACE_DEFAULT = 1;
 /// Owner question I7, answer (a) (the build default): a new project gets
 /// 10 requests/s unless its workspace's allow-list entry names a rate;
 /// every other bounded axis gets its ceiling.
@@ -172,7 +169,10 @@ export class Projects {
       this.deps.log(`refusing to place projects: ${e.message}`);
       return refused(this.deps, c, { status: 409, code: "beta_at_capacity", message: AT_CAPACITY, detail: e.message });
     }
-    const cap = c.entry.max_projects ?? PROJECTS_PER_WORKSPACE_DEFAULT;
+    // The owner's answer I6 (a): one project per workspace, the cell's
+    // workspace cap (`cell-admin init --workspace-cap`, default 1), unless
+    // the workspace's allow-list entry names its own.
+    const cap = c.entry.max_projects ?? state.cell.workspace_cap;
     const { ids: denylist } = await this.deps.store.readDenylist();
     const id = freshProjectId(state, denylist);
     const place = (s: CellState) => {

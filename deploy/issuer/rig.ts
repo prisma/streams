@@ -68,8 +68,9 @@ function envFor(state: string, key: string, pepper: string): Record<string, stri
   };
 }
 
-/// A cell on the fake S3, initialised by cell-admin with an Ed25519 key.
-export async function issuerCell(): Promise<IssuerCell> {
+/// A cell on the fake S3, initialised by cell-admin with an Ed25519 key
+/// and `initArgs` (e.g. `--workspace-cap`).
+export async function issuerCell(initArgs: string[] = []): Promise<IssuerCell> {
   useStore("s3");
   const root = scratchDir();
   const key = keyFile(root, "ed25519", 0o600, "issuer.pem");
@@ -77,7 +78,7 @@ export async function issuerCell(): Promise<IssuerCell> {
   const state = freshState(root, CELL);
   const r = await run(
     "init", "--state", state, "--cell-id", CELL, "--deployment-project", "proj_deploy", "--account", "acct_sink",
-    "--key-file", key,
+    "--key-file", key, ...initArgs,
   );
   if (r.code !== 0) throw new Error(`init failed: ${r.err}`);
   return { root, state, key, pepper, env: envFor(state, key, pepper) };
