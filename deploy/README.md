@@ -16,9 +16,11 @@ Two more directories:
 - `profiles/` holds the environment files deploy scripts pass as `--env`
   lines: `compute-1g.env` for every server on the 1 GiB class, and
   `shared-cell.env` on top of it for a single-server shared cell.
-- `cell-admin/` is the shared-cell operator tool: it admits, lists and
-  offboards projects, mints design partners' tokens and writes the cell's
-  feed bundle. Its guide is [cell-admin/README.md](cell-admin/README.md).
+- `cell-admin/` is the shared-cell operator tool: it admits, lists,
+  suspends and offboards projects, mints design partners' tokens, changes
+  the cell's keys and writes the cell's feed bundle, from a state in a
+  local directory or in buckets (`--state s3://...`), which the interim
+  token issuer shares. Its guide is [cell-admin/README.md](cell-admin/README.md).
   Tests: `bun test ./deploy/cell-admin`.
 
 All verify the download is an **x86_64 ELF** before exec. That check is

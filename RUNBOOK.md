@@ -945,8 +945,11 @@ minted per credential for at most 24 h and handed over as mode-0600 files.
 The audience pin makes separate custody enforceable (a customer key cannot
 sign for `prisma-streams-internal`); it does not create it: whoever holds
 the file can mint any partner's token. Rehearse a rotation on a scratch
-cell before the first rotation of a live one (`cell-admin rotate` is not
-built yet). A lost key means re-minting every credential under a new key.
+cell before the first rotation of a live one: `cell-admin keys add
+--public-key` (the overlap generation), `canary --key-file` with the new
+key, then `keys retire --kid` the old one after the longest token lifetime
+(`--retire-others` on `keys add` is the compromise path). A lost key means
+re-minting every credential under a new key.
 
 **Keys feed and binary change together.** Every key in the keys feed names
 its audience (`aud`, contract r7). A binary from before r7 refuses a feed
