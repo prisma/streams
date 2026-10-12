@@ -335,6 +335,39 @@ for (const kind of STORES) {
       expect((await canary(stranger)).err).toBe(`cell-admin canary: key file ${stranger} is not a key of cell cell_sc1`);
     });
 
+    test("export writes the Stage 1 import set of the cell's active customer projects to a 0600 file", async () => {
+      const c = await initCell();
+      await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "wksp_a", "--quota", "max_streams=10");
+      await run("admit", "--state", c.state, "--project", "proj_b", "--workspace", "wksp_b");
+      await run("suspend", "--state", c.state, "--project", "proj_a");
+      const pepper = pepperFile(c.root, 0o600, 4);
+      await run("credential", "--state", c.state, "--project", "proj_a", "--pepper-file", pepper.path,
+        "--out", join(c.root, "a.secret"), "--prefix", "x/");
+      await run("offboard", "--state", c.state, "--project", "proj_b");
+      const out = join(c.root, "export.json");
+      const r = await run("export", "--state", c.state, "--out", out);
+      expect([r.code, r.err]).toEqual([0, ""]);
+      expect(statSync(out).mode & 0o777).toBe(0o600);
+      const s = readState(c.state);
+      const [first, second] = Object.entries(s.credentials).filter(([, cr]) => cr.project_id === "proj_a");
+      const exported = JSON.parse(readFileSync(out, "utf8"));
+      expect(exported).toEqual({
+        format: "streams-cell-admin-export/v1", cell_id: "cell_sc1", feed_version: s.feed_version,
+        projects: [{
+          project_id: "proj_a", workspace_id: "wksp_a", status: "suspended", project_policy_version: 2,
+          ownership_version: 1, quotas: s.projects.proj_a.quotas,
+          credentials: [[first[0], first[1]], [second[0], second[1]]]
+            .sort(([a], [b]) => ((a as string) < (b as string) ? -1 : 1))
+            .map(([id, cr]: any) => ({
+              credential_id: id, grant_version: 1, status: "active", scopes: cr.scopes,
+              ...(cr.stream_prefixes ? { stream_prefixes: cr.stream_prefixes } : {}), expires_at: null,
+              ...(cr.secret_hash ? { secret_hash: cr.secret_hash, hv: 4 } : {}),
+            })),
+        }],
+      });
+      expect(exported.projects[0].quotas.max_streams).toBe(10);
+    });
+
     test("quota sets a project's quotas at most their ceilings at a newer policy version, keeping the rest", async () => {
       const c = await initCell();
       await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w", "--quota", "max_streams=50");
