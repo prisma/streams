@@ -7,7 +7,7 @@ import { OPERATOR_SCOPES } from "../cell-admin/offboard";
 import { CUSTOMER_SCOPES } from "../cell-admin/rules";
 import { hashSecret, parsePeppers } from "../cell-admin/secrets";
 import { cleanup, customerOnly, denylistText, readBundle, run, storeTexts } from "../cell-admin/test-rig";
-import { FREE_TIER_REQUESTS_PER_SEC, OFFBOARDING_COUNTS_TOWARD_WORKSPACE_CAP, PROJECTS_PER_WORKSPACE_DEFAULT } from "./projects";
+import { FREE_TIER_REQUESTS_PER_SEC, PROJECTS_PER_WORKSPACE_DEFAULT } from "./projects";
 import { csrfToken, readSession } from "./session";
 import {
   admin,
@@ -187,7 +187,6 @@ describe("creating a project", () => {
     await admin(cell, "allow", "--workspace", "ws_b");
     const m = await managed(cell);
     const a = m.signIn("ws_a");
-    expect(OFFBOARDING_COUNTS_TOWARD_WORKSPACE_CAP).toBe(false);
     const first = (await (await m.send("POST", PROJECTS, a, { displayName: "One" })).json()).project.id;
     await admin(cell, "offboard", "--project", first);
     await m.cache.refresh();
@@ -195,9 +194,15 @@ describe("creating a project", () => {
     expect(second[0]).toBe(201);
     const listed = await answer(await m.get(PROJECTS, a));
     expect(listed[1].projects.map((p: any) => [p.id, p.status])).toEqual([[first, "deleting"], [second[1].project.id, "active"]]);
-    // The owner's admit keeps its rule: every project not offboarded counts.
-    const r = await run("admit", "--state", cell.state, "--project", "proj_x", "--workspace", "ws_a");
-    expect(r.err).toBe("cell-admin admit: workspace ws_a already has 2 project(s) on cell cell_sc1 (cap 1)");
+    // The owner's admit counts the same way (I9 (a), one rule on a cell):
+    // the active project fills ws_a's cap, the one being deleted does not.
+    let r = await run("admit", "--state", cell.state, "--project", "proj_x", "--workspace", "ws_a");
+    expect(r.err).toBe("cell-admin admit: workspace ws_a already has 1 project(s) on cell cell_sc1 (cap 1)");
+    await m.cache.refresh();
+    expect((await m.send("DELETE", `${PROJECTS}/${second[1].project.id}`, a)).status).toBe(202);
+    r = await run("admit", "--state", cell.state, "--project", "proj_x", "--workspace", "ws_a");
+    expect([r.code, r.err]).toEqual([0, ""]);
+    await m.cache.refresh();
     // The cell's max_projects still counts it: the drain is still to run.
     await m.cache.mutate((s) => {
       s.cell.max_projects = 2;

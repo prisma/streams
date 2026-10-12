@@ -154,7 +154,7 @@ and no customer project takes its id prefix or its workspace.
 - the project is `system`, the cell's `PROJECT_ID` or a canary id (`sp_canary_...`);
 - the workspace is the cell's `ACCOUNT_ID` or the canary's;
 - the project id was ever used on this cell or appears in the denylist (ids are single-use; a move is offboarding plus a new id);
-- the workspace already has its cap of projects on the cell;
+- the workspace already has its cap of active projects on the cell (a project being offboarded counts toward `--max-projects` until its drain ends, but not toward its workspace's cap: the owner's answer I9 (a), the issuer's rule too);
 - the cell already holds `--max-projects`;
 - the profile (the shipped files, or `--profile`) gives other ceilings than at `init`, or is not the profile `init` recorded: `init` records a digest of the layered profile (its `KEY=VALUE` lines sorted by key), and `admit` compares its own copy of the profile with it, never re-reading the files `init` read, so the issuer can run the same check with its bundled copy.
 

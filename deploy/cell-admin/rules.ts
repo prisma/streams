@@ -205,18 +205,19 @@ export class PlacementRefused extends AdminError {
 /// ACCOUNT_ID as workspace, an id never used before (`denylist` is the
 /// denylist as read before this placement burns the id), and within the
 /// cell's and the workspace's caps. Every project not offboarded counts
-/// toward the cell's max_projects. The workspace's cap is the cell's
-/// unless `opts.workspaceCap` names the workspace's own (the issuer's
-/// allow-list entry, or its default), and a project being offboarded
-/// counts toward it unless `opts.offboardingCounts` is false (the
-/// issuer's rule under the owner's question I9 (a): its credentials are
-/// revoked and only its drain remains).
+/// toward the cell's max_projects: a project being offboarded still holds
+/// its streams until its drain ends. Only active projects count toward
+/// the workspace's cap (the owner's answer I9 (a), 2026-10-12, for every
+/// writer): a project being offboarded has its credentials revoked, so its
+/// workspace may place the next one at once. The workspace's cap is the
+/// cell's unless `opts.workspaceCap` names the workspace's own (the
+/// issuer's allow-list entry).
 export function checkPlacement(
   state: CellState,
   project: string,
   workspace: string,
   denylist: Set<string>,
-  opts: { workspaceCap?: number; offboardingCounts?: boolean } = {},
+  opts: { workspaceCap?: number } = {},
 ): void {
   checkId("--project", project);
   checkId("--workspace", workspace);
@@ -241,8 +242,7 @@ export function checkPlacement(
     throw new PlacementRefused("cell_full", `cell ${cell.cell_id} already holds its ${cell.max_projects} projects`);
   }
   const cap = opts.workspaceCap ?? cell.workspace_cap;
-  const counted = opts.offboardingCounts ?? true;
-  const mine = placed.filter((p) => p.workspace_id === workspace && (counted || p.phase === "active")).length;
+  const mine = placed.filter((p) => p.workspace_id === workspace && p.phase === "active").length;
   if (mine >= cap) {
     throw new PlacementRefused(
       "workspace_full",
