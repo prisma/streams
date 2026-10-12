@@ -173,7 +173,14 @@ export class Projects {
     // workspace cap (`cell-admin init --workspace-cap`, default 1), unless
     // the workspace's allow-list entry names its own.
     const cap = c.entry.max_projects ?? state.cell.workspace_cap;
-    const { ids: denylist } = await this.deps.store.readDenylist();
+    let denylist: Set<string>;
+    try {
+      ({ ids: denylist } = await this.deps.store.readDenylist());
+    } catch (e) {
+      const refusal = refusalOf(e);
+      if (refusal === null) throw e;
+      return refused(this.deps, c, refusal);
+    }
     const id = freshProjectId(state, denylist);
     const place = (s: CellState) => {
       const gate = gateRefusal(s);

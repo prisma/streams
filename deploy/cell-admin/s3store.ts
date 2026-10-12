@@ -23,7 +23,7 @@
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { S3Client } from "bun";
-import { AdminError } from "./errors";
+import { AdminError, StoreUnavailable } from "./errors";
 import { BUNDLE_FILE, type CellState, parseDenylist, parseState, STATE_FILE, stateText } from "./state";
 import {
   type Allowlist,
@@ -94,6 +94,13 @@ async function codeOf(res: Response): Promise<string> {
   return /<Code>([^<]+)<\/Code>/.exec(text)?.[1] ?? "";
 }
 
+/// The refusal for a failed answer: a store failure (5xx) the caller may
+/// retry, or another refusal.
+async function failure(res: Response, what: string): Promise<AdminError> {
+  const message = `${what} answered ${res.status} ${await codeOf(res)}`.trimEnd();
+  return res.status >= 500 ? new StoreUnavailable(message) : new AdminError(message);
+}
+
 /// One object, read and written through presigned URLs.
 class S3Object {
   readonly where: string;
@@ -114,7 +121,7 @@ class S3Object {
       });
     } catch (e) {
       const why = (e as Error).name === "TimeoutError" ? "timed out" : "unreachable";
-      throw new AdminError(`${method} ${this.where}: the store is ${why}`);
+      throw new StoreUnavailable(`${method} ${this.where}: the store is ${why}`);
     }
   }
 
@@ -126,7 +133,7 @@ class S3Object {
     const res = await this.send("GET", ifNoneMatch === undefined ? {} : { "if-none-match": ifNoneMatch });
     if (res.status === 304 && ifNoneMatch !== undefined) return "unchanged";
     if (res.status === 404) return null;
-    if (!res.ok) throw new AdminError(`GET ${this.where} answered ${res.status} ${await codeOf(res)}`.trimEnd());
+    if (!res.ok) throw await failure(res, `GET ${this.where}`);
     const etag = res.headers.get("etag");
     if (!etag) throw new AdminError(`GET ${this.where} answered without an ETag`);
     return { text: await res.text(), etag };
@@ -144,7 +151,7 @@ class S3Object {
       await res.arrayBuffer().catch(() => undefined);
       throw new Conflict(`${this.where} changed`);
     }
-    if (!res.ok) throw new AdminError(`PUT ${this.where} answered ${res.status} ${await codeOf(res)}`.trimEnd());
+    if (!res.ok) throw await failure(res, `PUT ${this.where}`);
     const tag = res.headers.get("etag");
     if (!tag) throw new AdminError(`PUT ${this.where} answered without an ETag`);
     return tag;
@@ -163,9 +170,7 @@ class S3Object {
 
   async delete(): Promise<void> {
     const res = await this.send("DELETE", {});
-    if (!res.ok && res.status !== 404) {
-      throw new AdminError(`DELETE ${this.where} answered ${res.status} ${await codeOf(res)}`.trimEnd());
-    }
+    if (!res.ok && res.status !== 404) throw await failure(res, `DELETE ${this.where}`);
   }
 }
 

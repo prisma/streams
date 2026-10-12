@@ -6,7 +6,7 @@ import { FakeCell } from "../cell-admin/fake-cell";
 import { OPERATOR_SCOPES } from "../cell-admin/offboard";
 import { CUSTOMER_SCOPES } from "../cell-admin/rules";
 import { hashSecret, parsePeppers } from "../cell-admin/secrets";
-import { cleanup, customerOnly, denylistText, readBundle, run, storeTexts } from "../cell-admin/test-rig";
+import { cleanup, customerOnly, denylistText, readBundle, run, storeTexts, writeStateText } from "../cell-admin/test-rig";
 import { FREE_TIER_REQUESTS_PER_SEC } from "./projects";
 import { csrfToken, readSession } from "./session";
 import {
@@ -112,6 +112,42 @@ describe("creating a project", () => {
     await m.cache.refresh();
     expect(readBundle(cell.state).keys.feed_version).toBe(published + 1);
     expect((customerOnly(readBundle(cell.state)).policies.projects as any[]).map((p) => p.project_id)).toEqual([body.project.id]);
+  });
+
+  test("answers a store it cannot reach 503 issuer_unavailable, audited, and any other failure 500 with its request id", async () => {
+    const cell = await allowedCell();
+    const m = await managed(cell);
+    const a = m.signIn("ws_a");
+    expect((await m.get(PROJECTS, a)).status).toBe(200); // the allow-list is read and kept 5 s
+    const unavailable = (detail: string) => [503, refusal("issuer_unavailable", "the issuer cannot reach the cell's state; retry shortly"), "5", detail];
+    const outcome = async (res: Response) => {
+      const [status, body] = await answer(res);
+      const id = res.headers.get("x-request-id");
+      const audit = managementAudits(cell).at(-1);
+      expect([audit?.request_id, audit?.outcome]).toEqual([id, "refused"]);
+      return [status, body, res.headers.get("retry-after"), audit?.reason];
+    };
+    // The denylist cannot be read.
+    fakeS3().failReads = true;
+    expect(await outcome(await m.send("POST", PROJECTS, a, { displayName: "A" }))).toEqual(unavailable(
+      "issuer_unavailable: GET s3://ctl-1/denylist.txt answered 500 InternalError"));
+    fakeS3().failReads = false;
+    // The state's write fails (as a timed-out or refused PUT would).
+    fakeS3().failPut = (key) => key.endsWith("/cell-state.json");
+    expect(await outcome(await m.send("POST", PROJECTS, a, { displayName: "A" }))).toEqual(unavailable(
+      "issuer_unavailable: PUT s3://ctl-1/cells/cell_sc1/cell-state.json answered 500 InternalError"));
+    fakeS3().failPut = undefined;
+    expect(Object.values(cellState(cell).projects).filter((p) => p.workspace_id === "ws_a")).toEqual([]);
+    // A failure that is no store's (a state another writer broke): 500, with its request id.
+    const broken = cellState(cell);
+    broken.credentials[Object.keys(broken.credentials)[0]].stream_prefixes = ["a/"];
+    writeStateText(cell.state, JSON.stringify(broken));
+    await m.cache.refresh();
+    const res = await m.send("POST", PROJECTS, a, { displayName: "A" });
+    expect([res.status, (await res.json()).error.code, res.headers.get("x-request-id")]).toEqual([
+      500, "internal", expect.stringMatching(/^[0-9a-f]{16}$/),
+    ]);
+    expect(m.logs.at(-1)).toContain(`POST ${PROJECTS} (request ${res.headers.get("x-request-id")}) failed: `);
   });
 
   test("refuses a change without JSON or without the session's CSRF value 403 csrf_failed, and audits it", async () => {

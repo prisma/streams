@@ -123,7 +123,15 @@ export class Management {
       const ids = decodeIds(m.slice(1));
       if (ids === null) return null;
       const requestId = randomBytes(8).toString("hex");
-      const res = await this.checked(req, route, ids, requestId);
+      let res: Response;
+      try {
+        res = await this.checked(req, route, ids, requestId);
+      } catch (e) {
+        // Not a refusal any check makes: logged under the request id the
+        // answer carries, so the two can be matched.
+        this.deps.log(`${req.method} ${pathname} (request ${requestId}) failed: ${(e as Error).message}`);
+        res = refuse(500, "internal", "the issuer failed to answer; retry");
+      }
       res.headers.set("x-request-id", requestId);
       return res;
     }

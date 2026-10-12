@@ -5,7 +5,7 @@
 // never audited, and neither is a refusal before the session or of its
 // call budget: an unauthenticated caller must not be able to make the
 // issuer write.
-import { AdminError } from "../cell-admin/errors";
+import { AdminError, StoreUnavailable } from "../cell-admin/errors";
 import type { CellState } from "../cell-admin/state";
 import type { AllowEntry, StateStore } from "../cell-admin/store";
 import type { AllowlistReader } from "./allowlist";
@@ -88,15 +88,20 @@ export class Refusal extends Error {
   }
 }
 
-/// The refusal for what a compare-and-swap path threw: a Refusal as
-/// itself, five lost compare-and-swaps (cell-admin's exit 3) as 503
-/// issuer_unavailable; null for anything else.
+/// The refusal for what a store or compare-and-swap path threw: a Refusal
+/// as itself; five lost compare-and-swaps (cell-admin's exit 3), and a
+/// store that timed out, could not be reached or failed (StoreUnavailable),
+/// as 503 issuer_unavailable with Retry-After; null for anything else. A
+/// store failure during a change's write may hide a write that landed (its
+/// answer lost): the change may have been made.
 export function refusalOf(e: unknown): Refusal | null {
   if (e instanceof Refusal) return e;
+  const retry = { "retry-after": String(UNAVAILABLE_RETRY_SECS) };
+  if (e instanceof StoreUnavailable) {
+    return new Refusal(503, "issuer_unavailable", "the issuer cannot reach the cell's state; retry shortly", e.message, retry);
+  }
   if (e instanceof AdminError && e.code === 3) {
-    return new Refusal(503, "issuer_unavailable", "the cell's state is busy; retry shortly", e.message, {
-      "retry-after": String(UNAVAILABLE_RETRY_SECS),
-    });
+    return new Refusal(503, "issuer_unavailable", "the cell's state is busy; retry shortly", e.message, retry);
   }
   return null;
 }
