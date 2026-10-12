@@ -6,7 +6,7 @@ import type { Flags } from "./args";
 import type { Io } from "./commands";
 import { AdminError, notYet } from "./errors";
 import { CAS_ATTEMPTS, loadChecked, mutate } from "./publish";
-import { CANARY_WORKSPACE, checkId, placedProjects, projectOf, quotaValues, setProjectField } from "./rules";
+import { CANARY_WORKSPACE, checkId, placedProjects, projectOf, quotaValues, refuseCanary, setProjectField } from "./rules";
 import { type CellState, journal } from "./state";
 import { type AllowEntry, type Allowlist, Conflict, type StateStore } from "./store";
 import { openStore, publishNote } from "./stores";
@@ -16,6 +16,7 @@ import { openStore, publishNote } from "./stores";
 async function setStatus(f: Flags, io: Io, status: "active" | "suspended"): Promise<void> {
   const store = await openStore(f);
   const project = f.must("project");
+  refuseCanary(project);
   const command = status === "suspended" ? "suspend" : "resume";
   await store.exclusive(async () => {
     const { state } = await mutate(store, (s) => {
@@ -42,6 +43,7 @@ export async function quota(f: Flags, io: Io): Promise<void> {
   const store = await openStore(f);
   const project = f.must("project");
   if (f.all("quota").length === 0) throw new AdminError("--quota field=value is required", 2);
+  refuseCanary(project);
   await store.exclusive(async () => {
     const { state } = await mutate(store, (s) => {
       const p = projectOf(s, project);

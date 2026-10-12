@@ -55,6 +55,18 @@ const CANARY_PREFIX = "sp_canary_";
 export const canaryProjectId = (cellId: string) => `${CANARY_PREFIX}${cellId}`;
 export const isCanary = (projectId: string) => projectId.startsWith(CANARY_PREFIX);
 
+/// Refused for the canary: `init` places it once, and its catalog-read
+/// credential is what the issuer's probes, `cell-admin canary` and the
+/// watch mint for, for the cell's life; offboarding, suspending or
+/// re-quota-ing it would break them for good.
+export function refuseCanary(project: string): void {
+  if (!isCanary(project)) return;
+  throw new AdminError(
+    `project ${project} is the issuer's canary: no owner command changes it ` +
+      "(its catalog-read credential proves the cell serves a key for the cell's life)",
+  );
+}
+
 export function checkId(what: string, id: string): void {
   if (!ID.test(id)) throw new AdminError(`${what} ${JSON.stringify(id)} is not a valid id (${ID.source})`, 2);
 }

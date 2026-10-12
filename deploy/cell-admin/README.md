@@ -147,7 +147,8 @@ hidden credential holding only `streams.catalog.read` and no secret. The
 issuer and `cell-admin canary` mint tokens for it to prove the cell
 serves a key or a generation; the watch's own credential is added with
 `credential --hidden`. It is hidden from `list` and counts toward no cap,
-and no customer project takes its id prefix or its workspace.
+no customer project takes its id prefix or its workspace, and `offboard`,
+`suspend`, `resume` and `quota` refuse it (only `init` places it, once).
 
 `admit` refuses, and publishes nothing, when:
 - a quota is above its ceiling, or is 0 (a binary without the cell ceiling reads 0 as "no limit");

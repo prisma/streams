@@ -162,6 +162,18 @@ for (const kind of STORES) {
         .toBe("cell-admin suspend: project proj_a is offboarding: only an active project is suspended or resumed");
     });
 
+    test("refuses to offboard, suspend, resume or set the quotas of the issuer's canary", async () => {
+      const c = await initCell();
+      const canary = "sp_canary_cell_sc1";
+      const [state, bundle] = [readState(c.state), readBundle(c.state)];
+      for (const [command, ...flags] of [["offboard"], ["suspend"], ["resume"], ["quota", "--quota", "max_streams=1"]]) {
+        const r = await run(command, "--state", c.state, "--project", canary, ...flags);
+        expect([r.code, r.err]).toEqual([1, `cell-admin ${command}: project ${canary} is the issuer's canary: no owner ` +
+          "command changes it (its catalog-read credential proves the cell serves a key for the cell's life)"]);
+      }
+      expect([readState(c.state), readBundle(c.state)]).toEqual([state, bundle]);
+    });
+
     test("keys add publishes an overlap generation, and keys retire omits a kid for good", async () => {
       const c = await initCell();
       await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w");

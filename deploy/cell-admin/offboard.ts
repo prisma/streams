@@ -29,7 +29,7 @@ import { call, cellBase, describeReply, walkAndDelete } from "./cell-client";
 import type { Io } from "./commands";
 import { AdminError, notYet } from "./errors";
 import { loadChecked, mutate } from "./publish";
-import { bumpFeed, setCredentialField } from "./rules";
+import { bumpFeed, refuseCanary, setCredentialField } from "./rules";
 import { type CellState, journal } from "./state";
 import { openStore, publishNote } from "./stores";
 import { cellSigningKey, customerClaims, signJwt } from "./tokens";
@@ -198,6 +198,7 @@ export function omitDrained(state: CellState, project: string, deleted: number):
 export async function offboard(f: Flags, io: Io): Promise<void> {
   const store = await openStore(f);
   const project = f.must("project");
+  refuseCanary(project);
   await store.exclusive(async () => {
     const { state } = await loadChecked(store);
     if (phaseOf(state, project) === "active") {
