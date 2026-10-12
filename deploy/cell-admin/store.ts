@@ -4,9 +4,9 @@
 // that read an older copy gets a Conflict, re-reads and re-applies its
 // change. A local directory (DirStore) also holds its `.lock` for the
 // whole command, as cell-admin always did.
-import { createHash } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { AdminError } from "./errors";
 import type { Bundle } from "./feeds";
 import {
@@ -52,6 +52,15 @@ export interface StateStore {
   readDenylist(): Promise<{ ids: Set<string>; etag: string | null }>;
   /// Append `id` to the denylist if it still has `etag`, durably.
   appendDenylist(id: string, etag: string | null): Promise<string>;
+  /// Write a new audit object at `key` (auditKey()); never replaces one.
+  putAudit(key: string, json: unknown): Promise<void>;
+}
+
+/// `audit/YYYY/MM/DD/<epoch-ms>-<rand>.json`: one object per record, so
+/// writers never contend and a lifecycle rule can age the prefix.
+export function auditKey(now = new Date()): string {
+  const day = now.toISOString().slice(0, 10).replaceAll("-", "/");
+  return `audit/${day}/${now.getTime()}-${randomBytes(6).toString("hex")}.json`;
 }
 
 const etagOf = (text: string) => `"${createHash("sha256").update(text).digest("hex")}"`;
@@ -160,5 +169,18 @@ export class DirStore implements StateStore {
       closeSync(fd);
     }
     return etagOf(readFileSync(path, "utf8"));
+  }
+
+  /// Under the state directory, created exclusively and fsync'd.
+  async putAudit(key: string, json: unknown): Promise<void> {
+    const path = join(this.dir, key);
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    const fd = openSync(path, "wx", 0o600);
+    try {
+      writeSync(fd, `${JSON.stringify(json)}\n`);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
   }
 }

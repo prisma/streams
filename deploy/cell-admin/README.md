@@ -83,7 +83,10 @@ pinned to the customer audience `prisma-streams-data`.
 
 The state directory holds `cell-state.json` (the source of truth),
 `feeds-bundle.json` (what to publish) and the denylist. Back the directory
-up after every change. Versions only move forward: a state restored from
+up after every change. The state's journal keeps its newest 100 entries;
+older ones are written, before the state that drops them, to one object
+under `audit/YYYY/MM/DD/` (in the state directory, or in the control
+bucket for an s3 state). Versions only move forward: a state restored from
 an older copy is refused, because republishing from it could revive a
 revoked credential at a version the cell already saw. Publishing means
 uploading the bundle to `FEEDS_S3_KEY`, nothing more: the cell's wrapper

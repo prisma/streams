@@ -183,15 +183,17 @@ export class S3Store implements StateStore {
   private readonly bundle: S3Object;
   private readonly denylist: S3Object;
 
+  private readonly control: S3Client;
+
   private constructor(
-    targets: { control: S3Target; feeds: S3Target },
+    private readonly targets: { control: S3Target; feeds: S3Target },
     private readonly cellId: string,
   ) {
-    const control = clientOf(targets.control);
+    this.control = clientOf(targets.control);
     const feeds = clientOf(targets.feeds);
-    this.state = new S3Object(control, targets.control, `cells/${cellId}/${STATE_FILE}`);
+    this.state = new S3Object(this.control, targets.control, `cells/${cellId}/${STATE_FILE}`);
     this.bundle = new S3Object(feeds, targets.feeds, `cells/${cellId}/${BUNDLE_FILE}`);
-    this.denylist = new S3Object(control, targets.control, "denylist.txt");
+    this.denylist = new S3Object(this.control, targets.control, "denylist.txt");
     [this.statePath, this.bundlePath] = [this.state.where, this.bundle.where];
   }
 
@@ -246,6 +248,11 @@ export class S3Store implements StateStore {
   async readDenylist(): Promise<{ ids: Set<string>; etag: string | null }> {
     const got = await this.denylist.get();
     return { ids: parseDenylist(got?.text ?? ""), etag: got?.etag ?? null };
+  }
+
+  /// In the control bucket, created with If-None-Match: *.
+  async putAudit(key: string, json: unknown): Promise<void> {
+    await new S3Object(this.control, this.targets.control, key).put(`${JSON.stringify(json)}\n`, null);
   }
 
   async appendDenylist(id: string, etag: string | null): Promise<string> {

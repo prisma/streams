@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { validateDocument } from "../../platform-demo/src/validate.mjs";
 import { schema } from "./feeds";
 import {
+  auditTexts,
   cleanup,
   customerCredential,
   decodeJwt,
@@ -325,6 +326,18 @@ for (const kind of STORES) {
         const b = readBundle(c.state);
         expect((b.policies.projects as any[]).map((p) => [p.status, p.project_policy_version])).toEqual([["suspended", 2]]);
         expect((b.grants.credentials as any[]).map((g) => [g.expires_at, g.grant_version])).toEqual([[1_900_000_000, 2]]);
+      });
+
+      test("keeps the newest 100 journal entries in the state and writes older ones to the audit prefix", async () => {
+        const c = await initCell();
+        const s = readState(c.state);
+        s.journal = Array.from({ length: 100 }, (_, i) => ({ at: "2026-10-12T00:00:00.000Z", command: "x", detail: `j${i}` }));
+        writeStateText(c.state, JSON.stringify(s));
+        expect((await run("bundle", "--state", c.state)).code).toBe(0);
+        const journal = readState(c.state).journal;
+        expect([journal.length, journal[0].detail, journal[99].command]).toEqual([100, "j1", "bundle"]);
+        const audit = auditTexts(c.state).map((t) => JSON.parse(t));
+        expect(audit).toEqual([{ kind: "journal", cell_id: "cell_sc1", entries: [s.journal[0]] }]);
       });
 
       test("refuses to publish an entry whose content changed at a version the cell already holds", async () => {

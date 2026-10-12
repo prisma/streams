@@ -4,10 +4,22 @@
 import { AdminError, notYet } from "./errors";
 import { type Bundle, bundleOf, bundleText } from "./feeds";
 import type { CellState } from "./state";
-import { Conflict, type PublishedBundle, type StateStore } from "./store";
+import { auditKey, Conflict, type PublishedBundle, type StateStore } from "./store";
 
 /// Compare-and-swap attempts before a writer gives up (exit 3: run again).
 export const CAS_ATTEMPTS = 5;
+/// The journal entries a state keeps; older ones go to the audit prefix.
+export const JOURNAL_MAX = 100;
+
+/// Move the journal's oldest entries past JOURNAL_MAX into one audit
+/// object, before the state that drops them is committed: a lost
+/// compare-and-swap writes them again (a duplicate), never loses them.
+async function spillJournal(store: StateStore, state: CellState): Promise<void> {
+  const over = state.journal.length - JOURNAL_MAX;
+  if (over <= 0) return;
+  const entries = state.journal.splice(0, over);
+  await store.putAudit(auditKey(), { kind: "journal", cell_id: state.cell.cell_id, entries });
+}
 
 /// The state, refused when the published bundle is newer than it: the
 /// state was restored from a stale copy, and writing from it would reuse
@@ -116,6 +128,7 @@ export async function mutate<T>(
     const { state, etag, published } = await loadChecked(store);
     const result = await change(state);
     guard(published, state);
+    await spillJournal(store, state);
     try {
       await store.save(state, etag);
     } catch (e) {

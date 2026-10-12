@@ -106,6 +106,24 @@ export function denylistText(where: string): string {
   return readFileSync(readState(where).cell.denylist, "utf8");
 }
 
+/// The audit objects the store holds, oldest key first.
+export function auditTexts(where: string): string[] {
+  const s = s3Of(where);
+  if (s) {
+    return [...fakeS3().objects.entries()]
+      .filter(([k]) => k.startsWith(`${s.control}/audit/`))
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([, o]) => o.body);
+  }
+  const root = join(where, "audit");
+  if (!existsSync(root)) return [];
+  return (readdirSync(root, { recursive: true }) as string[])
+    .map((rel) => join(root, rel))
+    .filter((path) => statSync(path).isFile())
+    .sort()
+    .map((path) => readFileSync(path, "utf8"));
+}
+
 /// Every document the store holds for the cell (a directory's files, the
 /// buckets' objects), to check none carries a secret.
 export function storeTexts(where: string): string[] {
