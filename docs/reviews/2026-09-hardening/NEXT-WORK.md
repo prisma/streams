@@ -2186,11 +2186,11 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
   for a whole-budget re-take, a growth row bounding the page at the waited
   tail, or a recorded residual, each with a red leg; (3) the scaler's
   segment map can take a customer's descriptor past the catalog's 128 KiB
-  guard and fail the cell-wide reconciliation page (#NEW-phase-b-5): a split
+  guard and fail the cell-wide reconciliation page (#144): a split
   decline past about 192 segments, or a reconciliation guard of its own;
-  (4) the denial journal's allowance of 64 single events (#NEW-phase-b-2)
+  (4) the denial journal's allowance of 64 single events (#142)
   or the triage's literal with R10 re-pinned; (5) at ratification of
-  #NEW-phase-b-1, the off-and-shadow refusal of a key beside a capability
+  #141, the off-and-shadow refusal of a key beside a capability
   that does not verify, and the served-project signal.
 
 ### 14.5 Multi-server cells and routing (later, on the new Compute generation)

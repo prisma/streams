@@ -880,7 +880,7 @@ Only internal workload identity may construct or access these resources.
   journal as identity; unauthenticated denials journal without a
   project.
 * **Unverified denials** *(shared-cells M6, phase B step 14(a); edge
-  change #NEW-phase-b-2, awaiting ratification)*. A denial with no
+  change #142, awaiting ratification)*. A denial with no
   verified principal journals as its own event only while fewer than
   64 have been seen since the last drain that appended its batch (or
   found the queue empty). Past that allowance each is counted by code
@@ -1357,7 +1357,7 @@ declared quotas are live:
   waits draw from the same pool.
 
 *Store work* (shared-cells A10 cost, public-beta phase B step 14(b);
-edge change #NEW-phase-b-3, awaiting ratification). A verified request
+edge change #143, awaiting ratification). A verified request
 also pays for the registry store work its own task makes, once it is
 served (or its handler is dropped): a GET or HEAD the provider bills (a
 body or a 404) weighs 1, a PUT, a listing (once, however many provider
@@ -1384,7 +1384,7 @@ beta's free tier of 10 requests a second a project creates one stream
 and then one every 1.1 s, at 20 two back to back and then one every
 0.55 s, at the k = 8 ceiling of 176 seventeen and then sixteen a
 second. The catalog (`GET /v1/streams`) pays and is refused alike (phase
-B item B6, in edge change #NEW-phase-b-3): a listing weighs the
+B item B6, in edge change #143): a listing weighs the
 descriptors it scans plus 10 (its LIST and a GET a descriptor, at least
 N + 10 for N streams listed), so at 10 a second a full budget that lists
 100 streams is left about 100 in debt and the project's next listing,
@@ -1398,7 +1398,7 @@ separate from the request rate. A listing also reserves what its page
 may hold, its descriptors counted decoded (its page, at most 4 MiB, and
 the descriptors it fetches ahead, about 5.3 MiB in all), in the
 project's read bytes and the instance's read memory, as a page read does
-(capacity review C8, phase B item B6; edge change #NEW-phase-b-6,
+(capacity review C8, phase B item B6; edge change #145,
 awaiting ratification); while it reads, that reservation counts in the
 project's write latch like any held page.
 

@@ -119,7 +119,7 @@ fn strings_heap(strings: &[String], capacity: usize) -> usize {
 /// field vector and pointer), which a creation document bounds at 64 of 16
 /// pointers; its fork children's names; and its segment map (the vector's
 /// buffer, each segment's shard prefix and lineage), which nothing bounds
-/// (#NEW-phase-b-5's residual). One-byte strings are charged their 8-byte
+/// (#144's residual). One-byte strings are charged their 8-byte
 /// blocks and 24-byte headers, so a descriptor of the shortest pointers
 /// is charged for what it holds, not for the bytes its document spelled.
 pub(super) fn descriptor_heap(desc: &StreamDesc) -> usize {

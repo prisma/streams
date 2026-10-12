@@ -229,7 +229,7 @@ fn assert_cell_budget((fetched, spent, took): (usize, usize, std::time::Duration
 /// Off enforce (single-tenant, the deployment's own project) a capability
 /// that does not verify is refused even beside the matching stream key:
 /// the claim is checked before the key is (phase B step 15), where before
-/// the key alone observed (#NEW-phase-b-1). The key alone still observes,
+/// the key alone observed (#141). The key alone still observes,
 /// and garbage claims spend only the cell's budget.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn off_enforce_a_key_beside_a_capability_that_does_not_verify_is_refused() {
