@@ -453,6 +453,10 @@ async fn a_trim_tick_drains_what_an_advances_budget_left() {
     }
     let b04 = stored_bytes(&engine, &h, 0, 4).await;
     let b48 = stored_bytes(&engine, &h, 4, 8).await;
+    // While the stream owes trims, the engine's 5 s flush ticker queues a
+    // TrimTick at the engine's own budget; holding the commit gate parks it
+    // in the committer, so only this test's budgeted ticks move `trimmed`.
+    let _ticker_parked = engine.test_hold_commit().await;
     engine.commit_group(vec![advance(h, 0, 4, b04)], &cfg).await;
     engine.commit_group(vec![advance(h, 4, 8, b48)], &cfg).await;
     let tail = applied(&engine, h).await;

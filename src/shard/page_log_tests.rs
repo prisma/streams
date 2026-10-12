@@ -755,6 +755,10 @@ async fn a_trim_never_deletes_a_page_holding_an_unabsorbed_record() {
         bytes: CopiedBytes::new(from, len),
         v2: true,
     };
+    // While the stream owes trims, the engine's 5 s flush ticker queues a
+    // TrimTick at the engine's own budget; holding the commit gate parks it
+    // in the committer, so only this test's budgeted ticks move `trimmed`.
+    let ticker_parked = engine.test_hold_commit().await;
     // Absorbed to 12, inside the second page; the trim point then reaches
     // 12 as well, but records 12..=19 of that page are not absorbed.
     engine
@@ -789,6 +793,7 @@ async fn a_trim_never_deletes_a_page_holding_an_unabsorbed_record() {
     );
     let tail = applied(&handle);
     assert_eq!((tail.absorbed, tail.unabsorbed_bytes), (15, second - 1));
+    drop(ticker_parked);
     engine.begin_close();
 }
 
