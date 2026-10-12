@@ -128,7 +128,8 @@ export const T0 = 1_800_000_000_000;
 
 /// An issuer booted on `cell` with a clock the test moves, and the
 /// management API's calls made as a browser signed in to a workspace.
-export async function managed(cell: IssuerCell, env: Env = cell.env) {
+/// `ipHeader` names the edge's client-IP header (K4) when a test needs it.
+export async function managed(cell: IssuerCell, env: Env = cell.env, opts: { ipHeader?: string | null } = {}) {
   const clock = { t: T0 };
   const now = () => clock.t;
   const cfg = readConfig(env);
@@ -136,7 +137,10 @@ export async function managed(cell: IssuerCell, env: Env = cell.env) {
   const cache = new StateCache(b.store, b, { now, log: () => {} });
   /// What the issuer logged, oldest first.
   const logs: string[] = [];
-  const issuer = new Issuer(cfg, { store: b.store, cache, now, log: (l) => logs.push(l), offboardSettleMs: 0 });
+  const issuer = new Issuer(cfg, {
+    store: b.store, cache, now, log: (l) => logs.push(l), offboardSettleMs: 0,
+    ...(opts.ipHeader !== undefined ? { ipHeader: opts.ipHeader } : {}),
+  });
   const session = (workspace: string, patch: Partial<Session> = {}): Session => ({
     ...newSession({ user_id: `usr_${workspace}`, email: `owner@${workspace}.example.com`, workspace_id: workspace }, clock.t),
     ...patch,

@@ -26,7 +26,7 @@ describe("the buckets", () => {
       credential_change_project: [20, 4_320],
       exchange_ip: [50, 1],
       exchange_failed_ip: [20, 3],
-      oauth_start_ip: [30, 2],
+      oauth_start_ip: [5, 12],
     };
     expect(Object.keys(expected).sort()).toEqual(Object.keys(LIMITS).sort());
     for (const [name, [burst, wait]] of Object.entries(expected) as [LimitName, [number, number]][]) {

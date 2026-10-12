@@ -45,9 +45,11 @@ export const LIMITS = {
   /// Credentials one project creates or rotates.
   credential_change_project: { perSec: 20 / DAY, burst: 20 },
   /// Per source IP (K4): exchanges, failed exchanges, sign-ins started.
+  /// An address's sign-ins are taken before the instance's and are a
+  /// sixth of them, so one address cannot spend the instance's budget.
   exchange_ip: { perSec: 10, burst: 50 },
   exchange_failed_ip: { perSec: 20 / MINUTE, burst: 20, lockoutMs: 600_000 },
-  oauth_start_ip: { perSec: 30 / MINUTE, burst: 30 },
+  oauth_start_ip: { perSec: 5 / MINUTE, burst: 5 },
 } as const satisfies Record<string, Limit>;
 
 export type LimitName = keyof typeof LIMITS;

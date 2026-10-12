@@ -2,9 +2,10 @@
 // design §3): the two routes a browser takes to sign in, what the issuer
 // checks between them, and the route that tells the page who signed in.
 //
-//   GET /auth/login     30 a minute for the instance (`oauth_start`; per
-//                       address too once K4 names the edge's header), else
-//                       429 rate_limited; then 303 to the authorization
+//   GET /auth/login     5 a minute per address once K4 names the edge's
+//                       header (`oauth_start_ip`, taken first), and 30 a
+//                       minute for the instance (`oauth_start`), else 429
+//                       rate_limited; then 303 to the authorization
 //                       server with the sign-in's state cookie (oauth.ts).
 //   GET /auth/callback  the manager the sign-in proves (oauth.ts
 //                       verifyManager), that manager's workspace on the
@@ -65,13 +66,16 @@ export class SignIn {
     this.ipHeader = deps.ipHeader === undefined ? TRUSTED_CLIENT_IP_HEADER : deps.ipHeader;
   }
 
-  /// GET /auth/login.
+  /// GET /auth/login. The address's budget is taken first (once K4 names
+  /// the edge's header), so a refused address spends nothing of the
+  /// instance's. Until then 30 anonymous starts a minute refuse every
+  /// other browser's sign-in for the rest of that minute.
   start(req: Request): Response {
-    const all = this.deps.limits.take("oauth_start", "*");
-    if (all > 0) return rateLimited(all, "too many sign-ins are starting");
     const ip = clientIp(req, this.ipHeader);
     const mine = ip === null ? 0 : this.deps.limits.take("oauth_start_ip", ip);
     if (mine > 0) return rateLimited(mine, "too many sign-ins from this address");
+    const all = this.deps.limits.take("oauth_start", "*");
+    if (all > 0) return rateLimited(all, "too many sign-ins are starting");
     const { location, cookie } = this.prisma.begin();
     return redirect(location, [cookie]);
   }

@@ -27,10 +27,16 @@ async function allow(cell: IssuerCell, workspace: string): Promise<void> {
 }
 
 /// An issuer signing in through a mock identity provider of its own.
-async function withIdp(cell: IssuerCell, idpOpts: ConstructorParameters<typeof MockIdp>[0] = {}, env: Record<string, string> = {}) {
+async function withIdp(
+  cell: IssuerCell,
+  idpOpts: ConstructorParameters<typeof MockIdp>[0] = {},
+  env: Record<string, string> = {},
+  ipHeader?: string,
+) {
   const idp = new MockIdp({ clientId: CLIENT, ...idpOpts });
   idps.push(idp);
-  const m = await managed(cell, envWith(cell, { STREAMS_ISSUER_OAUTH_AUTHORITY: idp.url, ...env }));
+  const m = await managed(cell, envWith(cell, { STREAMS_ISSUER_OAUTH_AUTHORITY: idp.url, ...env }),
+    ipHeader === undefined ? {} : { ipHeader });
   return { idp, m };
 }
 
@@ -196,6 +202,27 @@ describe("signing in with Prisma", () => {
     refusedWith(await signIn(bad.m), "failed");
     const none = await withIdp(cell, { clientSecret: "s3cret:x" });
     refusedWith(await signIn(none.m), "failed");
+  });
+
+  test("once the edge's client-IP header is known, holds one address to 5 sign-ins a minute without spending the instance's 30", async () => {
+    const cell = await issuerCell();
+    const { m } = await withIdp(cell, {}, {}, "x-client-ip");
+    const from = (ip: string) => m.call("GET", "/auth/login", undefined, { headers: { "x-client-ip": ip } });
+    const seen: Record<number, number> = {};
+    for (let i = 0; i < 40; i++) {
+      const s = (await from("203.0.113.7")).status;
+      seen[s] = (seen[s] ?? 0) + 1;
+    }
+    expect(seen).toEqual({ 303: 5, 429: 35 });
+    const res = await from("203.0.113.7");
+    expect([res.status, res.headers.get("retry-after"), (await res.json()).error.message]).toEqual([
+      429, "12", "too many sign-ins from this address; retry after 12 s",
+    ]);
+    // The refused address spent nothing of the instance's budget: 25 more
+    // addresses start at once, as do the 30 a minute allows.
+    for (let i = 0; i < 25; i++) expect((await from(`198.51.100.${i}`)).status).toBe(303);
+    expect((await from("198.51.100.200")).status).toBe(429);
+    expect([m.issuer.limits.refused.oauth_start_ip, m.issuer.limits.refused.oauth_start]).toEqual([36, 1]);
   });
 
   test("starts 30 sign-ins a minute, then answers 429 rate_limited with Retry-After", async () => {
