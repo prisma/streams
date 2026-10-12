@@ -423,6 +423,10 @@ impl ShardEngine {
                 continue;
             }
             if let Some(trigger) = m.trigger(&settings) {
+                #[cfg(test)]
+                if std::env::var("DST_L6_TRACE").is_ok() {
+                    eprintln!("L6TRACE {} seal start {trigger:?}", self.prefix);
+                }
                 sp.running.store(true, Ordering::Release);
                 let engine = self.clone();
                 let state = sp.clone();
@@ -525,6 +529,10 @@ impl ShardEngine {
     /// Returns (attributed, l0 bytes, error).
     async fn spill_forced_flush(&self, sp: &SpillState) -> (u64, u64, Option<String>) {
         let _one_at_a_time = sp.flush_lock.lock().await;
+        #[cfg(test)]
+        if std::env::var("DST_L6_TRACE").is_ok() {
+            eprintln!("L6TRACE {} forced flush: lock held, l0 {}", self.prefix, self.db.manifest().l0().len());
+        }
         let measure = self.spill_measure(sp);
         sp.stats
             .mem_estimate_at_flush_max
@@ -541,6 +549,10 @@ impl ShardEngine {
                 flush_type: FlushType::MemTable,
             })
             .await;
+        #[cfg(test)]
+        if std::env::var("DST_L6_TRACE").is_ok() {
+            eprintln!("L6TRACE {} forced flush: done {:?}", self.prefix, flushed.as_ref().err());
+        }
         let delta = sp
             .counter(db_stats::IMMUTABLE_MEMTABLE_FLUSHES)
             .saturating_sub(before);
@@ -596,8 +608,16 @@ impl ShardEngine {
             sp.ring_refused_at_seal
                 .store(share.refused.load(Ordering::Relaxed), Ordering::Relaxed);
         }
+        #[cfg(test)]
+        if std::env::var("DST_L6_TRACE").is_ok() {
+            eprintln!("L6TRACE {} step 1", self.prefix);
+        }
         // (1)
         self.spill_flush_and_catch_up(sp).await?;
+        #[cfg(test)]
+        if std::env::var("DST_L6_TRACE").is_ok() {
+            eprintln!("L6TRACE {} step 2", self.prefix);
+        }
         sp.check_abort(SealStep::AfterWalFlush)?;
         // (2)
         let snapshot_at = Instant::now();
@@ -610,7 +630,15 @@ impl ShardEngine {
         }
         // (7a) The commit is applied; make it durable before the freeze.
         let t_flush = Instant::now();
+        #[cfg(test)]
+        if std::env::var("DST_L6_TRACE").is_ok() {
+            eprintln!("L6TRACE {} step 7a", self.prefix);
+        }
         self.spill_make_durable().await?;
+        #[cfg(test)]
+        if std::env::var("DST_L6_TRACE").is_ok() {
+            eprintln!("L6TRACE {} step 7b", self.prefix);
+        }
         #[cfg(test)]
         if *sp.abort_at.lock().unwrap() == Some(SealStep::AfterDurable) {
             self.spill_wait_settled(sp).await?;
@@ -635,6 +663,10 @@ impl ShardEngine {
         if let Some(e) = err {
             sp.stats.spill_flush_errors.fetch_add(1, Ordering::Relaxed);
             return Err(SealError::Store(e));
+        }
+        #[cfg(test)]
+        if std::env::var("DST_L6_TRACE").is_ok() {
+            eprintln!("L6TRACE {} final settle", self.prefix);
         }
         // The advances settle once durable; check they all landed.
         self.spill_wait_settled(sp).await?;
@@ -864,6 +896,14 @@ impl ShardEngine {
             if self.is_closed() {
                 return Err(SealError::Closed);
             }
+            #[cfg(test)]
+            if std::env::var("DST_L6_TRACE").is_ok() && rand::random::<u16>() < 256 {
+                let outcomes: Vec<_> = group
+                    .iter()
+                    .map(|(h, d, _)| (d.outcome(), h.state.lock().unwrap().applied.absorbed, d.upto, sp.submissions.settled(&d.hash)))
+                    .collect();
+                eprintln!("L6TRACE {} submit_group waiting: {outcomes:?}", self.prefix);
+            }
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         for (h, d, _) in group {
@@ -899,6 +939,10 @@ impl ShardEngine {
             }
             if self.is_closed() {
                 return Err(SealError::Closed);
+            }
+            #[cfg(test)]
+            if std::env::var("DST_L6_TRACE").is_ok() && rand::random::<u16>() < 256 {
+                eprintln!("L6TRACE {} wait_settled: {pending} unsettled", self.prefix);
             }
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
