@@ -1,11 +1,23 @@
 // The issuer's operator routes (public-beta issuer triage B2.9). Run
 // with `bun test ./deploy/issuer`.
 import { afterEach, describe, expect, test } from "bun:test";
-import { cleanup, keyFile, publicKeyFile, run } from "../cell-admin/test-rig";
+import { FakeCell } from "../cell-admin/fake-cell";
+import { cleanup, keyFile, publicKeyFile, readBundle, run } from "../cell-admin/test-rig";
 import { boot } from "./boot";
 import { StateCache } from "./cache";
 import { readConfig } from "./config";
-import { CELL, cellState, customerSecret, fakeS3, type IssuerCell, issuerCell, wrongSecret } from "./rig";
+import {
+  admin,
+  CELL,
+  cellState,
+  customerSecret,
+  envWith,
+  fakeS3,
+  type IssuerCell,
+  issuerCell,
+  managed,
+  wrongSecret,
+} from "./rig";
 import { Issuer } from "./server";
 
 afterEach(cleanup);
@@ -97,6 +109,8 @@ describe("GET /v1/admin/metrics", () => {
       },
       revalidation_failures: 0,
       republishes: 0,
+      offboarding_projects: 0,
+      offboarding_max_attempts: 0,
       rehash_pending: 0,
       live_credentials_by_pepper: { v1: 1 },
     }]);
@@ -106,5 +120,37 @@ describe("GET /v1/admin/metrics", () => {
     expect([after.gate_open, after.cache_age_secs, after.published_feed_version, after.state_feed_version]).toEqual([
       false, 0, cellState(cell).feed_version, cellState(cell).feed_version,
     ]);
+  });
+
+  test("counts the projects being offboarded and the most attempts any of their drains has failed", async () => {
+    const cell = await issuerCell();
+    for (const p of ["sp_a", "sp_b", "sp_c"]) await customerSecret(cell, p);
+    const fake = new FakeCell();
+    try {
+      const m = await managed(cell, envWith(cell, { STREAMS_CELL_ORIGIN: fake.url }));
+      const bearer = { authorization: `Bearer ${cell.env.STREAMS_ISSUER_METRICS_TOKEN}` };
+      const offboarding = async () => {
+        const [, got] = await answer(await m.call("GET", "/v1/admin/metrics", undefined, { headers: bearer }));
+        return [got.offboarding_projects, got.offboarding_max_attempts];
+      };
+      expect(await offboarding()).toEqual([0, 0]);
+      // The cell serves sp_a's revocation, never sp_c's or sp_b's.
+      await admin(cell, "offboard", "--project", "sp_a");
+      fake.publish(readBundle(cell.state));
+      await admin(cell, "offboard", "--project", "sp_c");
+      await m.cache.refresh();
+      expect(await offboarding()).toEqual([2, 0]);
+      await m.issuer.offboarding.runDue();
+      expect(cellState(cell).projects.sp_a.phase).toBe("offboarded");
+      expect(await offboarding()).toEqual([1, 1]);
+      await admin(cell, "offboard", "--project", "sp_b");
+      m.clock.t += 60_000;
+      await m.cache.refresh();
+      await m.issuer.offboarding.runDue();
+      expect([cellState(cell).projects.sp_b.offboard_attempts, cellState(cell).projects.sp_c.offboard_attempts]).toEqual([1, 2]);
+      expect(await offboarding()).toEqual([2, 2]);
+    } finally {
+      fake.stop();
+    }
   });
 });

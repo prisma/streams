@@ -8,7 +8,8 @@
 //   GET /v1/admin/metrics  behind `Authorization: Bearer
 //                          <STREAMS_ISSUER_METRICS_TOKEN>`: the counters,
 //                          the copy's age, the bundle's version, the
-//                          admission gate. Flat JSON, the keys below.
+//                          admission gate, the offboarding job's backlog.
+//                          Flat JSON, the keys below.
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Audit } from "./audit";
 import { stateMismatch } from "./boot";
@@ -66,6 +67,9 @@ export class Ops {
       if (c.hv === undefined || c.omitted || c.status !== "active") continue;
       byPepper[`v${c.hv}`] = (byPepper[`v${c.hv}`] ?? 0) + 1;
     }
+    // The offboarding job's backlog, from the state (offboarding.ts): a
+    // drain whose failed attempts reach 7 retries hourly.
+    const offboarding = Object.values(state.projects).filter((p) => p.phase === "offboarding");
     return json(200, {
       cell_id: this.cfg.cellId,
       kid: this.cfg.signingKey.record.kid,
@@ -81,6 +85,8 @@ export class Ops {
       rate_limit_refusals: { ...limits.refused },
       revalidation_failures: cache.revalidationFailures,
       republishes: cache.republishes,
+      offboarding_projects: offboarding.length,
+      offboarding_max_attempts: Math.max(0, ...offboarding.map((p) => p.offboard_attempts ?? 0)),
       rehash_pending: rehasher.pending,
       live_credentials_by_pepper: byPepper,
     });
