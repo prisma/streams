@@ -24,6 +24,7 @@
 //   POST /v1/workspaces/{w}/streams/projects       create one (projects.ts)
 //   GET  /v1/workspaces/{w}/streams/projects/{p}   one, and whether the
 //                                                  cell serves it (probe.ts)
+//   DELETE /v1/workspaces/{w}/streams/projects/{p} delete it
 //   GET  /v1/projects/{p}/streams/credentials      its credentials
 //   POST /v1/projects/{p}/streams/credentials      create one (credentials.ts)
 //   POST /v1/projects/{p}/streams/credentials/{c}/rotate   a new secret
@@ -84,7 +85,10 @@ export class Management {
       {
         path: /^\/v1\/workspaces\/([^/]+)\/streams\/projects\/([^/]+)$/,
         scope: "workspace",
-        methods: { GET: { action: "project.get", handle: (c) => projects.get(c) } },
+        methods: {
+          GET: { action: "project.get", handle: (c) => projects.get(c) },
+          DELETE: { action: "project.delete", handle: (c) => projects.delete(c) },
+        },
       },
       {
         path: /^\/v1\/projects\/([^/]+)\/streams\/credentials$/,

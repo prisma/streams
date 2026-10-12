@@ -38,13 +38,16 @@ const PROBE_TOKEN_TTL_SECS = 300;
 const credentialsOf = (state: CellState, project: string) =>
   Object.entries(state.credentials).filter(([, c]) => c.project_id === project && !c.omitted);
 
-/// Returns what it did, for the operator.
-function revoke(state: CellState, project: string): string {
-  let revoked = 0;
+/// Offboarding's first phase, on a loaded state: revoke the project's
+/// active customer credentials, add the operator's, mark it offboarding.
+/// The CLI's first run and the issuer's project delete both make it.
+/// Returns the credentials it revoked and the operator's id.
+export function revoke(state: CellState, project: string): { revoked: string[]; operator: string } {
+  const revoked: string[] = [];
   for (const [id, c] of credentialsOf(state, project)) {
     if (c.role === "customer" && c.status === "active") {
       setCredentialField(state, id, { status: "revoked" });
-      revoked += 1;
+      revoked.push(id);
     }
   }
   let id = "";
@@ -61,8 +64,8 @@ function revoke(state: CellState, project: string): string {
   };
   state.projects[project].phase = "offboarding";
   bumpFeed(state);
-  journal(state, "offboard", `${project} revoked=${revoked} operator=${id}`);
-  return `offboard ${project}: revoked ${revoked} customer credential(s); operator credential ${id} added`;
+  journal(state, "offboard", `${project} revoked=${revoked.length} operator=${id}`);
+  return { revoked, operator: id };
 }
 
 const mint = (state: CellState, sk: SigningKey, credential: string, ttl: number) =>
@@ -156,7 +159,8 @@ export async function offboard(f: Flags, io: Io): Promise<void> {
         stillIn(s, project, "active");
         return revoke(s, project);
       });
-      io.out(done.result);
+      const { revoked, operator } = done.result;
+      io.out(`offboard ${project}: revoked ${revoked.length} customer credential(s); operator credential ${operator} added`);
       io.out(`bundle: ${store.bundlePath} (feed_version ${done.state.feed_version}); ${publishNote(store)}`);
       io.out("once the cell serves it, run offboard again with --cell-url");
       return;

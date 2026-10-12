@@ -1,7 +1,7 @@
-// A workspace's projects (public-beta issuer triage B3.2, B3.3; design
-// §4, §4.1, §5): the listing, one project with whether the cell serves it
-// yet (probe.ts), and self-serve creation, the unattended admit → publish
-// path.
+// A workspace's projects (public-beta issuer triage B3.2, B3.3, B3.5;
+// design §4, §4.1, §5, §10): the listing, one project with whether the
+// cell serves it yet (probe.ts), self-serve creation (the unattended
+// admit → publish path), and deletion (offboarding's first phase).
 //
 // POST /v1/workspaces/{w}/streams/projects {"displayName"} checks, after
 // management.ts's checks (the allow-list among them), in order, each
@@ -26,6 +26,7 @@
 // secret}: the secret is in this answer and nowhere else.
 import { randomBytes } from "node:crypto";
 import { AdminError } from "../cell-admin/errors";
+import { revoke } from "../cell-admin/offboard";
 import { burnId } from "../cell-admin/publish";
 import {
   admitProject,
@@ -39,7 +40,7 @@ import {
 } from "../cell-admin/rules";
 import { newSecret, presentedSecret, secretFields } from "../cell-admin/secrets";
 import { type CellState, journal } from "../cell-admin/state";
-import { audited, type Call, displayNameOf, type ManagementDeps, readObject, refused } from "./calls";
+import { audited, type Call, commit, displayNameOf, type ManagementDeps, readObject, Refusal, refused } from "./calls";
 import type { IssuerConfig } from "./config";
 import { UNAVAILABLE_RETRY_SECS } from "./exchange";
 import { LIMITS } from "./limits";
@@ -73,6 +74,20 @@ function gateRefusal(state: CellState): string | null {
   if (!gate.open) return "the admission gate is closed";
   const active = placedProjects(state).filter(([, p]) => p.phase === "active").length;
   return active >= gate.n_max ? `${active} customer project(s) active, the gate's n_max ${gate.n_max}` : null;
+}
+
+/// Why `w`'s project `id` cannot be deleted on `state`, or null.
+function deleteRefusal(state: CellState, w: string, id: string): Refusal | null {
+  const p = ownProject(state, w, id);
+  if (p === undefined) return new Refusal(404, "not_found", `workspace ${w} has no Streams project ${id}`);
+  if (p.phase !== "active") return new Refusal(409, "project_not_active", `project ${id} is already being deleted`);
+  // The drain reads the catalog with the operator's token, which the cell
+  // refuses for a suspended project.
+  if (p.status !== "active") {
+    return new Refusal(409, "project_not_active",
+      `project ${id} is suspended: the Streams beta's operator resumes it before it can be deleted`);
+  }
+  return null;
 }
 
 /// A project id neither the state nor the denylist holds.
@@ -174,6 +189,37 @@ export class Projects {
       return this.placementRefused(c, e, cap);
     }
     return this.place(c, { id, name, cap, denylist, place });
+  }
+
+  /// Delete a project (design §10): offboarding's first phase in one
+  /// compare-and-swap, then published. Its customer credentials are
+  /// revoked, so the exchange refuses them at once and the cell once it
+  /// holds the bundle; the project shows `deleting` until the drain (the
+  /// owner's `cell-admin offboard`, the issuer's job of B5) has walked
+  /// its catalog and omitted it. The page asks for the project's name
+  /// before it calls; the call takes no body.
+  async delete(c: Call): Promise<Response> {
+    const [w, id] = c.ids;
+    const body = await readObject(c.req, [], true);
+    if (typeof body === "string") return refused(this.deps, c, { status: 400, code: "invalid_request", message: body });
+    const early = deleteRefusal(this.deps.cache.state, w, id);
+    if (early !== null) return refused(this.deps, c, early);
+    const before = this.deps.cache.state.feed_version;
+    const done = await commit(this.deps, c, (s) => {
+      const refusal = deleteRefusal(s, w, id);
+      if (refusal !== null) throw refusal;
+      return revoke(s, id);
+    });
+    if (done instanceof Response) return done;
+    const { result, state } = done;
+    await audited(this.deps, c, {
+      outcome: "done",
+      project_id: id,
+      credential_ids: [...result.revoked, result.operator].sort(),
+      before: { feed_version: before },
+      after: { feed_version: state.feed_version },
+    });
+    return json(202, { project: projectView(this.cfg, state, id, state.projects[id]) });
   }
 
   /// Burn the id, then place the project in one compare-and-swap.

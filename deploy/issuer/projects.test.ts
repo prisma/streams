@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { FakeCell } from "../cell-admin/fake-cell";
+import { OPERATOR_SCOPES } from "../cell-admin/offboard";
 import { CUSTOMER_SCOPES } from "../cell-admin/rules";
 import { hashSecret, parsePeppers } from "../cell-admin/secrets";
 import { cleanup, customerOnly, denylistText, readBundle, run, storeTexts } from "../cell-admin/test-rig";
@@ -337,5 +338,84 @@ describe("a project's readiness", () => {
     const body = await (await m.get(`${PROJECTS}/${id}`, a)).json();
     expect([body.status, body.ready]).toEqual(["deleting", false]);
     expect(fake.requests).toEqual([]);
+  });
+});
+
+describe("deleting a project", () => {
+  test("revokes every credential and adds an operator's, shows the project deleting, and drops it once the drain omits it", async () => {
+    const cell = await allowedCell();
+    const m = await managed(cell);
+    const a = m.signIn("ws_a");
+    const made = await (await m.send("POST", PROJECTS, a, { displayName: "Orders" })).json();
+    const id: string = made.project.id;
+    const creds = `/v1/projects/${id}/streams/credentials`;
+    const second = await (await m.send("POST", creds, a, {})).json();
+    const before = cellState(cell);
+    const res = await m.send("DELETE", `${PROJECTS}/${id}`, a);
+    expect(await answer(res)).toEqual([202, { project: { ...made.project, status: "deleting" } }]);
+    const after = cellState(cell);
+    expect(after.projects[id]).toMatchObject({ phase: "offboarding", status: "active", project_policy_version: 1 });
+    const operator = Object.entries(after.credentials).find(([, c]) => c.project_id === id && c.role === "operator")!;
+    expect(operator[0]).toMatch(/^strcred_op_[0-9a-f]{32}$/);
+    expect(operator[1]).toMatchObject({ status: "active", grant_version: 1, scopes: OPERATOR_SCOPES });
+    for (const cid of [made.credential.id, second.credential.id]) {
+      expect(after.credentials[cid]).toMatchObject({ status: "revoked", grant_version: 2 });
+    }
+    expect(after.feed_version).toBe(before.feed_version + 1);
+    const grants = (readBundle(cell.state).grants.credentials as any[]).filter((g) => g.project_id === id);
+    expect(grants.map((g) => [g.credential_id, g.status]).sort()).toEqual(
+      [[made.credential.id, "revoked"], [second.credential.id, "revoked"], [operator[0], "active"]].sort(),
+    );
+    const minted = await m.issuer.fetch(new Request("https://issuer.example.com/v1/token/streams", {
+      method: "POST", headers: { authorization: `StreamsCredential ${second.secret}` },
+    }));
+    expect(minted.status).toBe(403);
+    expect((await (await m.get(PROJECTS, a)).json()).projects.map((p: any) => p.status)).toEqual(["deleting"]);
+    expect((await (await m.get(creds, a)).json()).credentials.map((c: any) => c.status)).toEqual(["revoked", "revoked"]);
+    expect(managementAudits(cell).at(-1)).toMatchObject({
+      action: "project.delete", outcome: "done", project_id: id,
+      credential_ids: [made.credential.id, second.credential.id, operator[0]].sort(),
+      before: { feed_version: before.feed_version }, after: { feed_version: after.feed_version },
+      request_id: res.headers.get("x-request-id"),
+    });
+    // The drain (the owner's cell-admin offboard today; the issuer's job
+    // later) omits it: the project is gone from the API.
+    const fake = new FakeCell();
+    try {
+      fake.publish(readBundle(cell.state));
+      await admin(cell, "offboard", "--project", id, "--cell-url", fake.url, "--key-file", cell.key, "--settle-secs", "0");
+    } finally {
+      fake.stop();
+    }
+    await m.cache.refresh();
+    expect((await (await m.get(PROJECTS, a)).json()).projects).toEqual([]);
+    expect((await m.get(`${PROJECTS}/${id}`, a)).status).toBe(404);
+    expect(cellState(cell).projects[id].phase).toBe("offboarded");
+  });
+
+  test("refuses a project already being deleted or suspended 409, another workspace's 404, and a body 400", async () => {
+    const cell = await allowedCell();
+    const m = await managed(cell);
+    const a = m.signIn("ws_a");
+    const id: string = (await (await m.send("POST", PROJECTS, a, { displayName: "Orders" })).json()).project.id;
+    await customerSecret(cell, "sp_other");
+    await admin(cell, "suspend", "--project", id);
+    await m.cache.refresh();
+    expect(await answer(await m.send("DELETE", `${PROJECTS}/${id}`, a))).toEqual([
+      409, refusal("project_not_active", `project ${id} is suspended: the Streams beta's operator resumes it before it can be deleted`),
+    ]);
+    await admin(cell, "resume", "--project", id);
+    await m.cache.refresh();
+    expect(await answer(await m.send("DELETE", `${PROJECTS}/${id}`, a, { confirm: true }))).toEqual([
+      400, refusal("invalid_request", 'unknown member "confirm": the body takes nothing'),
+    ]);
+    expect((await m.send("DELETE", `${PROJECTS}/${id}`, a, {})).status).toBe(202);
+    expect(await answer(await m.send("DELETE", `${PROJECTS}/${id}`, a))).toEqual([
+      409, refusal("project_not_active", `project ${id} is already being deleted`),
+    ]);
+    expect(await answer(await m.send("DELETE", `${PROJECTS}/sp_other`, a))).toEqual([
+      404, refusal("not_found", "workspace ws_a has no Streams project sp_other"),
+    ]);
+    expect(cellState(cell).projects.sp_other.phase).toBe("active");
   });
 });
