@@ -90,8 +90,10 @@ Six more directories:
   PagerDuty Events v2 or a generic JSON webhook, on alert keys that carry
   the class (a NOTIFY rising to PAGE pages), and sends the heartbeat GET,
   which it withholds after three cycles in a row with a trigger
-  undelivered. Their tests run against local stand-ins (`fake-cell.ts`).
-  Tests: `bun test ./deploy/cell-watch`.
+  undelivered. `watch.ts` runs the cycle (poll, rules, delivery, heartbeat)
+  every 15 s with its state in memory only, and `serveOk` answers `ok` to
+  `GET /` on `$PORT` and nothing else. Their tests run against local
+  stand-ins (`fake-cell.ts`). Tests: `bun test ./deploy/cell-watch`.
 
 All verify the download is an **x86_64 ELF** before exec. That check is
 not politeness: an aarch64 binary deploys "successfully" and crash-loops

@@ -115,7 +115,8 @@ async function call(url: string, init: RequestInit, timeoutMs: number): Promise<
   }
 }
 
-const said = (o: Outcome): string => (typeof o === "number" ? `status ${o}` : o);
+/// An outcome as a log line names it.
+export const outcomeText = (o: Outcome): string => (typeof o === "number" ? `status ${o}` : o);
 
 /// The heartbeat: one GET of HEARTBEAT_URL.
 export function heartbeat(url: string, timeoutMs = SEND_TIMEOUT_MS): Promise<Outcome> {
@@ -163,7 +164,7 @@ export class Outbox {
     for (let d = this.queue[0]; d !== undefined; d = this.queue[0]) {
       const outcome = await this.send(d);
       if (outcome !== "ok") {
-        this.log(`cell-watch: delivery of ${d.key} (${d.event.kind}) failed: ${said(outcome)}; ${this.queue.length} queued`);
+        this.log(`cell-watch: delivery of ${d.key} (${d.event.kind}) failed: ${outcomeText(outcome)}; ${this.queue.length} queued`);
         break;
       }
       this.queue.shift();
