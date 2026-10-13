@@ -264,7 +264,8 @@ const bool = (v: Json): boolean | null => (typeof v === "boolean" ? v : null);
 const secs = (ms: number) => Math.floor(ms / SEC);
 const round = (x: number, places: number) => Math.round(x * 10 ** places) / 10 ** places;
 
-function sameOrigin(endpoint: string | null, origin: string): boolean {
+/// Whether the issuer's `endpoint` is the origin `origin` (a trailing slash aside).
+export function sameOrigin(endpoint: string | null, origin: string): boolean {
   if (endpoint === null) return false;
   try {
     return new URL(endpoint).href === new URL(origin).href;
