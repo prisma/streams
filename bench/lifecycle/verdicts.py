@@ -27,12 +27,13 @@ import re
 
 #: The binary's ordered stop bound, PROCESS_STOP_DEADLINE (src/tasks/exits.rs).
 STOP_BOUND_S = 30
-#: Owner question D4 (deploy-q5 Q4), recommended answer (a): the restart
-#: window, 10 s. Measured as the time raw clients are without service
-#: across a redeploy's switch (judge_restart): with create-before-delete
-#: deploys the first success after the new version's `listening` line is
-#: the old build's, so that reading would be about 0 s whatever the switch
-#: does; the new build's first answer after `listening` is reported beside it.
+#: Owner decision D4 (deploy-q5 Q4), (a), 2026-10-12: the restart window,
+#: 10 s (its measure confirmed by the owner on 2026-10-13). Measured as
+#: the time raw clients are without service across a redeploy's switch
+#: (judge_restart): with create-before-delete deploys the first success
+#: after the new version's `listening` line is the old build's, so that
+#: reading would be about 0 s whatever the switch does; the new build's
+#: first answer after `listening` is reported beside it.
 RESTART_WINDOW_BAR_S = 10
 #: Publish to effect for an admit or a revoke: the wrapper's 15 s poll plus
 #: the server's 30 s feed refresh (RUNBOOK "Shared cells", "Publishing").

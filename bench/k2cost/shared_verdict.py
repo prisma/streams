@@ -26,9 +26,10 @@ rehearsal run (rig.json rehearsal: true: run-shared.sh --binary, any
 binary) writes its manifest with verdict FAIL and leg "release-binary"
 FAIL: it can never certify.
 
-Bars with the owner's question D4 (deploy-q5 Q4) open, at its recommended
-answer (a); each is one constant: SC01S_PROJECTION_DAYS_MIN,
-DAY90_OPEN_SECS_MAX, IDLE_RSS_MB_MAX and the restart window, which is
+Bars of the owner's decision D4 (deploy-q5 Q4), (a), of 2026-10-12 (the
+restart window's measure confirmed on 2026-10-13); each is one constant:
+SC01S_PROJECTION_DAYS_MIN, DAY90_OPEN_SECS_MAX, IDLE_RSS_MB_MAX and the
+restart window, which is
 bench/lifecycle/verdicts.py's RESTART_WINDOW_BAR_S (one copy). The field
 arms that read them (envelope, sc0-1s, sc1, stream-count, battery) take
 their evidence from the field adapters (triage B8); until those exist this
@@ -82,7 +83,7 @@ Q0_WITHIN_SECS = 600             # ... within 10 minutes of the load's end
 # temporarily_unavailable is the product's generic "could not serve" answer
 # (store errors, unavailable appends, failed read resolves), not a boot-only
 # holdoff, so no code is excused; an allowance would be the owner's call.
-# Owner question D4 (deploy-q5 Q4), answer (a), the build default:
+# Owner decision D4 (deploy-q5 Q4), (a), 2026-10-12:
 SC01S_PROJECTION_DAYS_MIN = 30.0  # SC0-1s-awake: hours 24-72 RSS slope projects >= 30 days to the line
 SC01S_LINE_MB = 500.0
 DAY90_OPEN_SECS_MAX = 10.0        # shard open latency extrapolated to day 90

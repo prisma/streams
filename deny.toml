@@ -1,5 +1,5 @@
 # Every dependency, including development/build dependencies and target-specific
-# crates, is checked. Only the two named maintenance advisories below are
+# crates, is checked. Only the three named maintenance advisories below are
 # excepted; there are no workspace exclusions.
 [advisories]
 git-fetch-with-cli = true

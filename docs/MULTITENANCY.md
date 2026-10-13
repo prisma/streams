@@ -1357,8 +1357,8 @@ declared quotas are live:
   waits draw from the same pool.
 
 *Store work* (shared-cells A10 cost, public-beta phase B step 14(b);
-edge change #143, awaiting ratification). A verified request
-also pays for the registry store work its own task makes, once it is
+edge change #143, ratified at landing under X2 (2026-10-12)). A verified
+request also pays for the registry store work its own task makes, once it is
 served (or its handler is dropped): a GET or HEAD the provider bills (a
 body or a 404) weighs 1, a PUT, a listing (once, however many provider
 pages it reads) or a COPY 10 (the class-A price ratio), a 304, a refusal
@@ -1398,9 +1398,9 @@ separate from the request rate. A listing also reserves what its page
 may hold, its descriptors counted decoded (its page, at most 4 MiB, and
 the descriptors it fetches ahead, about 5.3 MiB in all), in the
 project's read bytes and the instance's read memory, as a page read does
-(capacity review C8, phase B item B6; edge change #145,
-awaiting ratification); while it reads, that reservation counts in the
-project's write latch like any held page.
+(capacity review C8, phase B item B6; edge change #145, ratified at
+landing under X2 (2026-10-12)); while it reads, that reservation
+counts in the project's write latch like any held page.
 
 ### 17.4 Fairness
 

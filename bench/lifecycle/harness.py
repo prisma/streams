@@ -25,7 +25,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 #: The compute CLI the field tools pin (bench/k2cost/field/fieldlib.py).
 COMPUTE_CLI = ["bunx", "--bun", "@prisma/compute-cli@0.39.0"]
-#: Owner question D1 (deploy-q5 Q1), recommended answer (a): Composer creates
+#: Owner decision D1 (deploy-q5 Q1), (a), 2026-10-12: Composer creates
 #: the scratch app `streams-beta-scratch` in the Personal workspace, in
 #: eu-central-1, destroyed after the rehearsal.
 SCRATCH_APP = "streams-beta-scratch"

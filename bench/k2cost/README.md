@@ -528,9 +528,10 @@ under a quota set),
 `identity` (the wrapper's `binary sha256` line, `/v1/debug/load`
 and the shipped file agree), `release-binary` (not a `--binary`
 rehearsal). Known-red legs (H11t as built, Q0) fail like any
-other; `known_red` only says why. The owner question D4's bars (SC0-1s
-projection, day-90 open, idle RSS, restart window) are constants here for
-the field arms, which take their evidence from the field adapters.
+other; `known_red` only says why. The bars of the owner's decision D4
+(a) of 2026-10-12 (SC0-1s projection, day-90 open, idle RSS, restart
+window) are constants here for the field arms, which take their evidence
+from the field adapters.
 
 ### The Layer B rig (`run-shared.sh`)
 

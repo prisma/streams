@@ -160,7 +160,7 @@ queued_append_bytes
 
 A quota value of `0` means that no project-level limit is configured at that layer; cell safety limits still apply.
 
-`requests_per_sec` also sets the rate of the project's store budget: each request pays, after it is served, for the registry store work it made (a billed GET or HEAD 1, a PUT, a listing or a COPY 10), and while that budget is in debt the project's creates, deletes, seals and catalog listings are refused `429 project_rate_limit` (MULTITENANCY §17.3; edge change #143, awaiting ratification). A catalog listing weighs the descriptors it scans plus 10 (at least N + 10 for N streams listed; tombstoned and expired descriptors it scans count too). Store work is weighed by how it ended: a 304, a refused precondition or a failure weighs nothing. Every request still takes exactly one token of the request rate.
+`requests_per_sec` also sets the rate of the project's store budget: each request pays, after it is served, for the registry store work it made (a billed GET or HEAD 1, a PUT, a listing or a COPY 10), and while that budget is in debt the project's creates, deletes, seals and catalog listings are refused `429 project_rate_limit` (MULTITENANCY §17.3; edge change #143, ratified at landing under X2 (2026-10-12)). A catalog listing weighs the descriptors it scans plus 10 (at least N + 10 for N streams listed; tombstoned and expired descriptors it scans count too). Store work is weighed by how it ended: a 304, a refused precondition or a failure weighs nothing. Every request still takes exactly one token of the request rate.
 
 ### 4.3 Version rules
 

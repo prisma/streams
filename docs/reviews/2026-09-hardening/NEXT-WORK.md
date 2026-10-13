@@ -32,8 +32,11 @@ Contents:
 
 The owner answered the public-beta decision list on 2026-10-11 (README,
 "Owner decisions", row "Public beta (decided 2026-10-11)", which quotes his
-eleven answers and states in full the two calls he left to the lead). The
-work list below is drawn from the read-only gap analysis of 50fab9d9 made
+eleven answers and states in full the two calls he left to the lead); his
+answers to the 45 calls of 2026-10-12 and to the sixteen of 2026-10-13 are
+the rows "Public-beta calls (decided 2026-10-12)" and "Public-beta calls,
+round 3 (decided 2026-10-13)". The work list below is drawn from the
+read-only gap analysis of 50fab9d9 made
 the same day (`~/.streams-k2/analysis/public-beta-gap.json` on the owner's
 machine): its blockers that remain under these answers, in the order to
 start them. Sizes are the sources' where the analysis cites one; no
@@ -134,20 +137,42 @@ alongside and finish before admission opens.
    beta is open (below).
 3. **The interim token issuer and an unattended admit-to-bundle path**
    (README "Shared cells Q9" left self-serve to the platform's Stage 1
-   issuer; the owner chose an interim one). A Streams-run issuer (PLAN
-   step 19: the account model, KMS custody of the signing key, exchange
-   rate limits), 7-13 engineer-days, plus a thin slice from a whitelisted
-   Console sign-up through `cell-admin admit` to a published feed bundle,
-   deployable with Prisma Composer together with Streams. Its keys reach
-   the cell through the keys feed under contract r7 (`aud` required, one
-   key material per audience); the server caps a token at 24 h. Suspension
-   and per-project quota, which DECISIONS 2.2 (item 8) puts before more
-   than a handful of partners, live with it or in `cell-admin`: today an
-   abusive tenant can only be offboarded. Who: engineering; key custody is
-   the owner's cryptographic acceptance; each client-visible surface gets
-   an edge record, "decided by the owner on 2026-10-11 (public-beta
-   decisions)" and ratified by answer (9) only where it covers the change
-   exactly, otherwise awaiting ratification.
+   issuer; the owner chose an interim one). Built in the landing stack,
+   the issuer triage's B1-B5 (edge records #149-#152, ratified at landing
+   under X2): `deploy/issuer`, a Bun service sharing `cell-admin`'s state
+   in the control bucket, with the credential exchange, its health and
+   metrics, the management API, "Sign in with Prisma" against a mock
+   identity provider, the page, the audit, the pepper re-hash and the
+   unattended offboarding job, and the signing key's rotation and
+   compromise drills; its key reaches the cell through the keys feed
+   under contract r7 (I2 of 2026-10-12 moved it into an encrypted project
+   env var). `cell-admin` gained suspend and resume (e6a7f408) and
+   per-project quota (1a1ea18a), so an abusive tenant can be suspended,
+   not only offboarded. Still to do before the allow-list opens:
+   - B6, the issuer's Composer service (answer (9)'s "deployable with
+     Prisma Composer together with Streams");
+   - B7's opt-in end-to-end test against the real binary, and with it
+     X1 (a)'s issuer e2e CI step beside `cell-admin`'s (X1 (a)'s
+     `./deploy/composer` and `./deploy/cell-watch` wait on their code);
+   - B8: the RUNBOOK section, the customer "Authenticating" reference
+     and the internal adversarial pass, which runs before any allow-list
+     entry;
+   - C1, Prisma Auth registering the real OAuth client;
+   - K4: the per-address limits (`deploy/issuer/limits.ts`) wait on the
+     edge's trusted client-IP header;
+   - the audit's 13-month retention: a lifecycle rule on `audit/`, else
+     a sweep, before 2027-11 (`deploy/issuer/audit.ts`);
+   - owner calls issuer #1 (offboarding a suspended project) and issuer
+     #2 (a workspace taken off the allow-list), decided on 2026-10-13 as
+     calls 15 ((iv), a canary witness) and 16 ((b), a reduced mode), to
+     be built ("Decided 2026-10-13, to be built", below);
+   - found by the stack review of 2026-10-13, open: `cell-admin
+     credential` drops its staged secret when a state save's outcome is
+     unknown (eea3f381, "Not covered"), and a drain's one operator token
+     (about 1,770 s usable) expires on a free-tier project of more than
+     about 1,400 streams (4d5cae9c, "Not covered").
+   Who: engineering; key custody stays the owner's cryptographic
+   acceptance (I2 of 2026-10-12).
 4. **The Q5 harness and a shared-cell deploy path** (README "Shared cells
    Q5"). Neither exists: `bench/` has no shared-cell tenants, runner or
    plans, and `bench/k2cost/field/deploy.py` builds fleet-mode cells only,
@@ -194,7 +219,9 @@ alongside and finish before admission opens.
    `src/application/consumer/pull_wait.rs`; about a day) register with
    them. C4, C8, Q1(D) and the settle handoff are unestimated; phase B
    taken whole is 16.5-30 days. Step 12 is moot on one shard; steps 16-18
-   follow the beta. Who: the owner first (C4 and C7 are open capacity
+   follow the beta. Q1(D) was dropped as a self-serve blocker on
+   2026-10-13 (call 4: D′ ratified for woken tail long-polls on plain
+   streams; 14.4). Who: the owner first (C4 and C7 are open capacity
    decisions; growth rows are his), then engineering.
 7. **A per-project stored-bytes cap.** Metered and not charged, nothing
    bounds what a project stores: a quota field, a policy-contract
@@ -353,12 +380,51 @@ alongside and finish before admission opens.
   the beta if the lifecycle validation shows Compute overlapping an old
   and a new process.
 
+### Decided 2026-10-13, to be built
+
+The owner's round-3 answers that need code (README, row "Public-beta
+calls, round 3 (decided 2026-10-13)": "accept all recommended."); each
+lands red first with its record, and the records it amends (#142, #144,
+#151, #152) keep their status until then; #148's refused-replay rule is
+ratified as built (call 7), and its record says so.
+
+- Call 2, #144: a split declined once segments + live + 2 > 192, with a
+  fleet-off DST and #144's line; sealed-segment pruning before
+  cross-server splits; `src/application/topology.rs` a mutation owner.
+- Call 3, fork long-polls: `execute_fork_read`'s row restated so a woken
+  fork long-poll takes `min(maxBytes, 8 MiB)` again (a fork `wait_tail`
+  variant, a red fork leg, a TLA-018 re-record).
+- Call 5, #142: the 64-event allowance deleted, one aggregate per (code,
+  status) per drain carrying the first denial's route and method; no R10
+  re-pin.
+- Call 7, #148: the SDK text-and-test commit for the three-branch
+  recovery (fence, seal, anything else; a `421` through the new
+  endpoint's client), before `publish-sdk`.
+- Call 8: one shared required-checks script for `promote-rc` and
+  `publish-sdk` over the push-event runs at the RC commit, every attempt
+  of every required job, and `ci-status.sh` the same selection.
+- Call 9, H11t: quiet versus never (KS p > 0.01 and identical answers,
+  8 pairs a second, its own window of at least 360 s, a vacuity guard),
+  the fresh gap a FACT.
+- Call 10, the restart window: an SDK probe (a read, a plain append, a
+  producer append; any SDK error fails) beside the 10 s bar.
+- Call 11, the 60 s deadline: the probe item dropped; a long-poll
+  refreshed across a split keeps its first wait's deadline (25 s at most
+  in all) on the SDK and raw surfaces, with a red DST, an edge record and
+  a TLA-018 re-record.
+- Call 13: the OPS-RELEASE section 7 rule (Layer B first from a clean RC
+  checkout) and CI running bench/k2cost's unit and Bun tests.
+- Call 14: CI's Composer good boot in the sdk-package job, the issuer's
+  four opt-in Composer tests in that step, Bun pinned at 1.4.3.
+- Call 15: offboarding a suspended project through a canary witness,
+  with the skeptic's five amendments (item 3).
+- Call 16: an off-list workspace's reduced mode, with #151, #152,
+  WIRE-MATRIX and the page amended (item 3).
+
 ### Open for the owner
 
 - The production target (item 8).
 - C4 and C7, the capacity decisions phase B needs (item 6).
-- Where suspension and per-project quota live: `cell-admin`, with the
-  operator still the feed producer, or the interim issuer (item 3).
 - The stream-count claim: certify tens of thousands of streams in a Q5
   arm, or declare a beta stream ceiling at what Layer B measures (item 9).
 - The alerting choice and the durability posture (items 17 and 18), and
@@ -2171,27 +2237,35 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
   runbook (key custody, the keys-feed cutover, u = 0.5 packing by hand, what
   to alert on); `cell-admin rotate`; then the harness and the certification
   (Q5). Before self-serve: C4 (watch definition bytes), C7 (empty pulls
-  charged to the read quota), C8 with Q2(b)'s row, Q1(D), the four mutation
-  owners Q3(d) defers, and phase B. The public beta is self-serve (the
+  charged to the read quota), C8 with Q2(b)'s row, Q1(D) (dropped as a
+  blocker on 2026-10-13: D′ in its place, below), the four mutation owners
+  Q3(d) defers, and phase B. The public beta is self-serve (the
   owner's answers of 2026-10-11), so these come before it, phase B narrowed
   to one shard (section "Public beta", item 6).
-- **Phase B lane, owner questions its review of 2026-10-12 opened** (none is
-  covered by the decisions of 2026-10-12; the lane's records state each):
-  (1) Q1(D) is not closed: the lane builds D′ in its place for woken tail
-  long-polls only (fresh reads keep Q1(A)'s whole budget; Q1(B) stays the
-  fallback), which awaits the owner's ratification; (2) a fork's woken
+- **Phase B lane, owner questions its review of 2026-10-12 opened**, none
+  covered by the decisions of 2026-10-12, each answered by the owner on
+  2026-10-13 (README, row "Public-beta calls, round 3 (decided
+  2026-10-13)"): (1) closed (call 4): D′ is ratified for woken tail
+  long-polls on plain streams, with its residual (a commit landing between
+  the take and the page's tail snapshot adds up to `TAIL_MAX_BYTES`, 1 MiB,
+  a waiter past the line), and Q1(D) is dropped as a self-serve blocker;
+  fresh reads keep Q1(A)'s whole budget, and Q1(B), or (D) re-costed on
+  layout 6, is the fallback if Layer B shows `read_memory_busy`, a
+  `429 project_memory_pressure` for a compliant tail follower or its
+  appends after a fan-out wake, or a `204` with records waiting (#113
+  amended); (2) decided (a), to be built (call 3): a fork's woken
   long-poll can still render a page larger than it took (the fork read
-  measures its end after awaits on the ancestors' descriptors), and closing
-  it touches the frozen `execute_fork_read` or `read_stitched`: a growth row
-  for a whole-budget re-take, a growth row bounding the page at the waited
-  tail, or a recorded residual, each with a red leg; (3) the scaler's
-  segment map can take a customer's descriptor past the catalog's 128 KiB
-  guard and fail the cell-wide reconciliation page (#144): a split
-  decline past about 192 segments, or a reconciliation guard of its own;
-  (4) the denial journal's allowance of 64 single events (#142)
-  or the triage's literal with R10 re-pinned; (5) at ratification of
-  #141, the off-and-shadow refusal of a key beside a capability
-  that does not verify, and the served-project signal.
+  measures its end after awaits on the ancestors' descriptors), so it
+  takes the whole `min(maxBytes, 8 MiB)` again under a restated
+  `execute_fork_read` row, with a red leg; (3) decided (a′), to be built
+  (call 2): the scaler's segment map can take a customer's descriptor past
+  the catalog's 128 KiB guard and fail the cell-wide reconciliation page
+  (#144), so a split is declined past 192 segments; (4) decided (b′), to be
+  built (call 5): the denial journal's allowance of 64 single events
+  (#142) is deleted, R10 not re-pinned; (5) closed (call 6): #141 is
+  ratified as built, the off-and-shadow refusal of a key beside a
+  capability that does not verify kept and the served-project signal
+  accepted like P4, its record corrected.
 
 ### 14.5 Multi-server cells and routing (later, on the new Compute generation)
 

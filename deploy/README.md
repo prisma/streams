@@ -23,11 +23,21 @@ Three more directories:
   token issuer shares. Its guide is [cell-admin/README.md](cell-admin/README.md).
   Tests: `bun test ./deploy/cell-admin`.
 - `issuer/` is the public beta's interim token issuer (`main.ts`, a Bun
-  service of its own, not a wrapper): it exchanges a customer
-  credential's secret for a cell token at `POST /v1/token/streams`, from
-  the state cell-admin keeps in the control bucket, and answers
-  `GET /healthz` and `GET /v1/admin/metrics` for the watch. Its inputs are
-  `config.ts`'s `INPUTS`, read from its environment and nothing else.
+  service of its own, not a wrapper), working from the state cell-admin
+  keeps in the control bucket: it exchanges a customer credential's
+  secret for a cell token at `POST /v1/token/streams`; serves the beta's
+  page at `GET /`; signs a browser in with Prisma at `/auth/login`,
+  `/auth/callback` and `/auth/session`; serves the management API, a
+  signed-in workspace's projects under `/v1/workspaces/{w}/streams/projects`
+  and their credentials under `/v1/projects/{p}/streams/credentials`; runs
+  the audit, the pepper re-hash and the offboarding job; and answers
+  `GET /healthz` and `GET /v1/admin/metrics` for the watch. `server.ts`
+  lists the routes and WIRE-MATRIX section 5 states each; tests and
+  `prisma dev` sign in against the mock identity provider, `mock-idp.ts`.
+  Its inputs are `config.ts`'s `INPUTS`, read from its environment and
+  nothing else. It runs as one bundled file with `@prisma/compute` pinned
+  by `package.json` and `bun.lock` (`bun install --frozen-lockfile`),
+  started with `bun --no-install` (`main.ts`'s header).
   Tests: `bun test ./deploy/issuer`.
 
 All verify the download is an **x86_64 ELF** before exec. That check is

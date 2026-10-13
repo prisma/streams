@@ -46,7 +46,7 @@ The workspace lock contained neither banned package nor `openssl-sys`.
   graphs on every run; it does not suppress duplicates.
 
 The owner for these adoption dispositions is the repository maintainer via this
-policy migration. Revisit the two maintenance exceptions whenever SlateDB/foyer
+policy migration. Revisit the three maintenance exceptions whenever SlateDB/foyer
 is updated; unknown advisories, Git sources and registries fail the gate. The
 source gate independently requires every Git lock entry to match the exact
 SlateDB revision, since cargo-deny's source allowlist alone pins only the
