@@ -1,0 +1,273 @@
+#!/usr/bin/env bun
+// cell-check: is the cell at --cell-url running this release, serving its
+// published feeds, and taking writes, reads and usage? (public-beta
+// deploy-q5 triage B5). deploy-release.sh runs it after every deploy; an
+// operator runs it any time.
+//
+//   deploy/composer/cell-check <stage> <release-dir> --cell-url URL
+//     --bearer-file F --canary-token-file T --state DIR|s3://...
+//     [--s3-credentials F] [--deadline-secs N]
+//
+// Every round checks, in order, and the check passes on the first round
+// that passes them all, within --deadline-secs (default 300: a new
+// version starts beside the old one and takes over its address, so early
+// rounds may meet the old one or a booting one):
+//   1. GET /health answers 200 with x-streams-git equal to release.json's
+//      commit;
+//   2. GET /v1/debug/load (the deployment bearer) reports binary_sha256
+//      equal to server_sha256 and git_commit equal to the commit;
+//   3. GET /v1/debug/auth reports feeds.policies.feedVersion and
+//      feeds.grants.feedVersion equal to the bundle cell-admin published
+//      for the cell (--state, which must be the cell its cells file names);
+//   4. the canary round trip on the cell's reserved canary project
+//      (sp_canary_<cell id>), with the token in --canary-token-file, which
+//      must be a token of that project on that cell: the stream
+//      `cell-check` deleted if a run left it, created, one record
+//      appended and read back, the project's ingest usage seen to grow,
+//      and the stream deleted. The token's credential needs the scopes
+//      streams.create, streams.records.append, streams.records.read,
+//      streams.usage.read and streams.lifecycle.manage; until the issuer
+//      exists, cell-admin mints it (`credential --hidden`, `token`).
+// A 429 or 503 is retried after its Retry-After until the deadline, unless
+// its product error says `retryable: false` (the canary project's
+// `429 stream_limit`, say): no retry passes that one, so the check fails at
+// once with it. The bearer and the token are read from files only their
+// owner can read and are never printed.
+//
+// Prints CELL_CHECK_PASS and exits 0, or CELL_CHECK_FAIL with the last
+// reason (or the refusal no retry passes) and exits 1; 2 is usage.
+import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { parseFlags } from "../cell-admin/args";
+import { cellBase } from "../cell-admin/cell-client";
+import { AdminError } from "../cell-admin/errors";
+import { parseProfiles } from "../cell-admin/profile";
+import { canaryProjectId } from "../cell-admin/rules";
+import { openStore } from "../cell-admin/stores";
+import { ownerOnlyFile } from "./platform";
+import { readRelease } from "./release";
+import { STAGES } from "./streams/env";
+
+const USAGE =
+  "usage: cell-check <stage> <release-dir> --cell-url URL --bearer-file F --canary-token-file T --state DIR|s3://... [--s3-credentials F] [--deadline-secs N]";
+const STREAM = "cell-check";
+const ROUND_PAUSE_MS = 3_000;
+const RETRY_AFTER_MAX_MS = 5_000;
+const REQUEST_TIMEOUT_MS = 30_000;
+
+/// What the cell must show for one release.
+interface Want {
+  commit: string;
+  sha: string;
+  policies: number;
+  grants: number;
+  project: string;
+}
+
+class NotYet extends Error {}
+/// A refusal no retry passes: the check fails at once.
+class Final extends Error {}
+
+interface Cell {
+  base: string;
+  bearer: string;
+  canary: string;
+  deadline: number;
+}
+
+/// Whether a refusal's body is the product's error marked not retryable.
+function notRetryable(text: string): boolean {
+  try {
+    return JSON.parse(text)?.error?.retryable === false;
+  } catch {
+    return false;
+  }
+}
+
+/// One request; a 429 or 503 waits out its Retry-After and goes again
+/// until the deadline, unless the product marks it not retryable (Final).
+/// Any other answer, or no answer, is returned.
+async function ask(cell: Cell, method: string, path: string, token: string | null, init: RequestInit = {}) {
+  for (;;) {
+    let res: Response;
+    try {
+      res = await fetch(`${cell.base}${path}`, {
+        ...init,
+        method,
+        headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(init.headers ?? {}) },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch (e) {
+      throw new NotYet(`${method} ${path}: ${(e as Error).message}`);
+    }
+    if (res.status !== 429 && res.status !== 503) return res;
+    const text = await res.text();
+    if (notRetryable(text)) {
+      throw new Final(`${method} ${path} answered ${res.status} ${text.slice(0, 160)}: the cell marks it not retryable, so no retry passes it`);
+    }
+    if (Date.now() >= cell.deadline) return new Response(text, { status: res.status, headers: res.headers });
+    const after = Number(res.headers.get("retry-after") ?? "1");
+    await Bun.sleep(Math.min(RETRY_AFTER_MAX_MS, Number.isFinite(after) && after > 0 ? after * 1000 : 1000));
+  }
+}
+
+async function expectStatus(res: Response, want: readonly number[], what: string): Promise<string> {
+  const text = await res.text();
+  if (!want.includes(res.status)) throw new NotYet(`${what} answered ${res.status} ${text.slice(0, 160)}`);
+  return text;
+}
+
+const json = (text: string, what: string) => {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new NotYet(`${what} is not JSON`);
+  }
+};
+
+/// Checks 1-3: the release's identity, and the published feeds.
+async function identity(cell: Cell, want: Want): Promise<void> {
+  const health = await ask(cell, "GET", "/health", null);
+  await expectStatus(health, [200], "GET /health");
+  const git = health.headers.get("x-streams-git");
+  if (git !== want.commit) throw new NotYet(`/health names commit ${git}, the release is ${want.commit}`);
+  const load = json(await expectStatus(await ask(cell, "GET", "/v1/debug/load", cell.bearer), [200], "GET /v1/debug/load"), "/v1/debug/load");
+  if (load.binary_sha256 !== want.sha || load.git_commit !== want.commit) {
+    throw new NotYet(`/v1/debug/load reports binary ${load.binary_sha256} at ${load.git_commit}, the release is ${want.sha} at ${want.commit}`);
+  }
+  const auth = json(await expectStatus(await ask(cell, "GET", "/v1/debug/auth", cell.bearer), [200], "GET /v1/debug/auth"), "/v1/debug/auth");
+  const served = [auth?.feeds?.policies?.feedVersion, auth?.feeds?.grants?.feedVersion];
+  if (served[0] !== want.policies || served[1] !== want.grants) {
+    throw new NotYet(
+      `the cell serves policies ${served[0]} and grants ${served[1]}, the published bundle is at ${want.policies} and ${want.grants}`,
+    );
+  }
+}
+
+async function ingested(cell: Cell, project: string): Promise<number> {
+  const path = `/v1/projects/${encodeURIComponent(project)}/usage`;
+  const usage = json(await expectStatus(await ask(cell, "GET", path, cell.canary), [200], `GET ${path}`), path);
+  if (typeof usage?.ingestPayloadBytes !== "number") throw new NotYet(`${path} carries no ingestPayloadBytes`);
+  return usage.ingestPayloadBytes;
+}
+
+/// Check 4: the canary's round trip on a stream of its own.
+async function canaryRoundTrip(cell: Cell, project: string): Promise<void> {
+  const key = randomBytes(32).toString("base64");
+  const headers = { "content-type": "application/json", "prisma-encryption-key": key };
+  const stream = `/v1/streams/${STREAM}`;
+  await expectStatus(await ask(cell, "DELETE", stream, cell.canary), [204, 404, 410], `DELETE ${stream}`);
+  await expectStatus(
+    await ask(cell, "PUT", stream, cell.canary, { headers, body: JSON.stringify({ format: { kind: "json" } }) }),
+    [200, 201],
+    `PUT ${stream}`,
+  );
+  const before = await ingested(cell, project);
+  const nonce = randomBytes(12).toString("hex");
+  await expectStatus(
+    await ask(cell, "POST", `${stream}/records`, cell.canary, { headers, body: JSON.stringify({ cell_check: nonce }) }),
+    [200],
+    `POST ${stream}/records`,
+  );
+  const page = json(
+    await expectStatus(await ask(cell, "GET", `${stream}/records?cursor=beginning`, cell.canary, { headers }), [200], `GET ${stream}/records`),
+    `${stream}/records`,
+  );
+  if (!Array.isArray(page) || !page.some((r) => r?.cell_check === nonce)) throw new NotYet(`${stream} did not read back the record it appended`);
+  for (;;) {
+    if ((await ingested(cell, project)) > before) break;
+    if (Date.now() >= cell.deadline) throw new NotYet(`the project's ingestPayloadBytes stayed at ${before} after the append`);
+    await Bun.sleep(1_000);
+  }
+  await expectStatus(await ask(cell, "DELETE", stream, cell.canary), [204], `DELETE ${stream}`);
+}
+
+/// The claims of a JWT, unverified: the cell verifies it.
+function claimsOf(token: string): Record<string, unknown> {
+  try {
+    return JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"));
+  } catch {
+    throw new AdminError("the canary token is not a JWT");
+  }
+}
+
+/// What the cell must show, from the release, its cells file and the
+/// cell's state.
+async function wanted(stage: string, dir: string, f: ReturnType<typeof parseFlags>, canary: string): Promise<Want> {
+  const release = readRelease(dir);
+  if (release.cells[stage] === undefined) throw new AdminError(`release ${release.tag} carries no cells file for ${stage}`);
+  const path = join(dir, "deploy", "cells", `${stage}.env`);
+  const cellId = parseProfiles([{ path, text: readFileSync(path, "utf8") }]).get("CELL_ID");
+  const store = await openStore(f);
+  const { state } = await store.load();
+  if (state.cell.cell_id !== cellId) throw new AdminError(`--state holds cell ${state.cell.cell_id}; ${path} names ${cellId}`);
+  const bundle = await store.readBundle();
+  if (!bundle) throw new AdminError(`cell ${cellId} has no published bundle (${store.bundlePath})`);
+  const project = canaryProjectId(state.cell.cell_id);
+  const claims = claimsOf(canary);
+  if (claims.project_id !== project || claims.cell_id !== state.cell.cell_id) {
+    throw new AdminError(`the canary token is for project ${claims.project_id} on ${claims.cell_id}, not ${project} on ${state.cell.cell_id}`);
+  }
+  return {
+    commit: release.commit,
+    sha: release.server_sha256,
+    policies: bundle.bundle.policies.feed_version,
+    grants: bundle.bundle.grants.feed_version,
+    project,
+  };
+}
+
+export async function main(argv: readonly string[], out: (line: string) => void): Promise<boolean> {
+  const [stage, dir, ...rest] = argv;
+  if (!(STAGES as readonly string[]).includes(stage ?? "") || !dir || dir.startsWith("--")) {
+    throw new AdminError("give the stage and the release directory first", 2);
+  }
+  const f = parseFlags(rest, {
+    single: ["cell-url", "bearer-file", "canary-token-file", "state", "s3-credentials", "deadline-secs"],
+    required: ["cell-url", "bearer-file", "canary-token-file", "state"],
+  });
+  const deadline = Date.now() + f.count("deadline-secs", 300) * 1000;
+  const cell: Cell = {
+    base: cellBase(f.must("cell-url")),
+    bearer: ownerOnlyFile(f.must("bearer-file"), "the bearer file"),
+    canary: ownerOnlyFile(f.must("canary-token-file"), "the canary token file"),
+    deadline,
+  };
+  const want = await wanted(stage, dir, f, cell.canary);
+  out(`cell-check: ${stage} at ${cell.base} must run ${want.sha} (${want.commit}) and serve feeds ${want.policies}/${want.grants}`);
+  let last = "";
+  for (;;) {
+    try {
+      await identity(cell, want);
+      await canaryRoundTrip(cell, want.project);
+      out(`CELL_CHECK_PASS ${stage}: identity, feeds and the canary round trip`);
+      return true;
+    } catch (e) {
+      if (e instanceof Final) {
+        out(`CELL_CHECK_FAIL ${stage}: ${e.message}`);
+        return false;
+      }
+      if (!(e instanceof NotYet)) throw e;
+      if (e.message !== last) out(`cell-check: not yet: ${e.message}`);
+      last = e.message;
+    }
+    if (Date.now() + ROUND_PAUSE_MS > deadline) {
+      out(`CELL_CHECK_FAIL ${stage}: ${last}`);
+      return false;
+    }
+    await Bun.sleep(ROUND_PAUSE_MS);
+  }
+}
+
+if (import.meta.main) {
+  try {
+    const passed = await main(process.argv.slice(2), (line) => console.log(line));
+    process.exit(passed ? 0 : 1);
+  } catch (e) {
+    const known = e instanceof AdminError;
+    console.error(`cell-check: ${known ? e.message : `unexpected failure: ${(e as Error).message}`}`);
+    if (known && e.code === 2) console.error(USAGE);
+    process.exit(known ? e.code : 1);
+  }
+}
