@@ -2375,6 +2375,31 @@ segment) are separate layers, as Pravega's containers and segments are.
 - The pilot router hashes the bare stream name, which no longer matches the
   layout-4 route hash: about 63-65% of first hops in a 4-server cell get `409`
   and are replayed. The SDK never follows `Streams-Replay-To`.
+- **Needs the owner: the cell counts its own metering as unowned usage,
+  so RUNBOOK row 17 (`r17_unowned_usage`) is open on every enforce cell.**
+  On an idle local shared cell with only the canary in the feed,
+  `ops.counters.unowned_meter_events_total` grew 0, 8, 17, 26 ... 107 over
+  195 s (target/debug, the alerting lane's B4), so the watch's row 17
+  NOTIFY opens within a minute and never resolves. Suspected cause, by
+  code reading and not yet pinned by a test: the rollup's own reads of
+  `_usage` and `_ops_metrics` (`billing::rollup_step` and
+  `ops_rollup_step`, each every 2 s or so when idle) go through
+  `billing::system_read`, which calls `http::read_inner` with
+  `ReadParams::internal` false, so `render_raw_read` meters each page
+  (`billing::meter_read`, whose `identity_of` counts a miss) under the
+  system project, which no policy feed names (a feed that names it is
+  dropped: row 7). The same path accrues those reads as read usage of the
+  deployment's `ACCOUNT_ID` in every auth mode, in off mode the single
+  tenant's own. Recommended: a DST that runs the rollup step on an
+  enforce rig and asserts that `UNOWNED_METER_EVENTS` and the deployment
+  account's read rows stay unchanged (red today), then `system_read` sets
+  `internal: true` (the in-process reads are not externally delivered
+  pages, the §4.2 rule `internal` already carries), not a looser row 17.
+  Cost: `src/billing.rs` has no headroom (2,002 of 2,002 lines), its edit
+  selects CI's `billing` mutation owner, it stales no formal receipt, and
+  it needs an edge record if the off-mode usage report counts as
+  client-visible. Until then the watch's two opt-in e2e tests set row 17
+  aside and hold it to at most one open, so the fix leaves them green.
 - Fixed (2026-10-08, T6): the two `sharddir` mutants (`492:28`, `653:26`)
   that differed only when the clock read exactly the holdoff deadline are
   gone: `OpenGate`'s two holdoff checks ask one

@@ -1067,7 +1067,7 @@ NOTIFY, while every other row pages from the first deploy;
 | 14 | `r14_read_memory` (level) | PAGE | `local.read_memory_bytes` / `local.read_memory_capacity_bytes` | above 80 % for 5 min: neighbours' reads are waiting, then `503 read_memory_busy` | cell-watch to `<on-call>` |
 | 15 | `r15_live_pool` (level) | NOTIFY / PAGE | (`local.sse_connections` + `local.parked`) / `local.sse_max_connections` (one live pool; `SSE_MAX_CONNECTIONS`, 1,200) | 90 % for 1 min: NOTIFY; full for 1 min: PAGE, waits stop parking | cell-watch to `<notify channel>` / `<on-call>` |
 | 16 | `r16_object_store` (level) | PAGE / NOTIFY | `local.store.ops["put:wal"]` and `local.store.ops["put:manifest"]` (the last 60 s) | `err` at 5 % of `n` or more on 2 readings in a row: PAGE; `put:wal` `p99_ms` above 2,000 for 5 min: NOTIFY. Diagnose with §5's `/v1/debug/store` | cell-watch to `<on-call>` / `<notify channel>` |
-| 17 | `r17_unowned_usage` | NOTIFY | `ops.counters.unowned_meter_events_total` | grew in the last 15 min: usage billed to the cell's `ACCOUNT_ID` sink | cell-watch to `<notify channel>` |
+| 17 | `r17_unowned_usage` | NOTIFY | `ops.counters.unowned_meter_events_total` | grew in the last 15 min: usage billed to the cell's `ACCOUNT_ID` sink. Known to be open on every enforce cell at this tip, idle or not: the cell's own metering grows the counter by about nine a telemetry tick (NEXT-WORK 14.7, a server defect), so until that fix the row carries no signal | cell-watch to `<notify channel>` |
 | 18 | `r18_billing_pipeline` | NOTIFY | `/operator/billing.json` `openAlerts`, `ready`, `drain.lastOkAgeSecs` | any open alert, `ready: false`, or no drain for 300 s (Billing pipeline runbooks, below) | cell-watch to `<notify channel>` |
 | 19 | `r19_canary` | PAGE | the canary: one small record appended to the canary project's stream every 60 s and read back durable, under its customer credential | 3 failures in a row; the alert names the step, who answered (as row 3) and the `error.code`. Only with `ISSUER_ORIGIN` | cell-watch to `<on-call>` |
 | 20 | `r20_snapshot_stale` | NOTIFY | `/operator/data.json` itself, beside `/health`; `ops`; `ops.ts_ms` against `ts_ms` | `/health` 200 while `/operator/data.json` has not been a 200 JSON document for 60 s: every row that reads it is blind. The alert carries `data_status`, the status it last answered: `data_status` 401 or 403 is a wrong or rotated `STREAMS_OPERATOR_TOKEN` (set the watch's secret to the cell's `AUTH_TOKEN` with set-secrets and redeploy the watch), 0 no answer in 5 s. Or `ops` still `null` 60 s after the boot id was first seen (no usage key, so the telemetry tick collects nothing), or `ops.ts_ms` over 60 s behind `ts_ms` (the telemetry loop stopped): the rows that read `ops` are blind | cell-watch to `<notify channel>` |
@@ -1107,8 +1107,10 @@ checks. Build both binaries (`cargo build --locked --bin streams-slate
 --bin s3lite`) and install `deploy/cell-watch` (`bun install
 --frozen-lockfile`), then run `CELL_WATCH_E2E_BIN_DIR=target/debug
 CELL_WATCH_DRILLS=1 bun test ./deploy/cell-watch/drills.e2e.test.ts`
-(about 25 minutes: each rule waits as long as it does on a cell). In
-order, each paged and, where the cell can be put right, resolved: a
+(about 25 minutes: each rule waits as long as it does on a cell). The
+drills set row 17 aside (open on every enforce cell at this tip, NEXT-WORK
+14.7) and allow it at most one open. In order, each paged and, where the
+cell can be put right, resolved: a
 policy naming `PROJECT_ID` in the bundle (row 7); the three feed files
 deleted, as the wrapper's `feeds deleted` does (row 6, once a feed is
 75 s old); `POST /v1/debug/history-stall?ms=35000` (row 13); `POST

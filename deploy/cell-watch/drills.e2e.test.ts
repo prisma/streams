@@ -44,8 +44,10 @@ afterAll(teardown);
 
 const ROUTING_KEY = `routing-key-${randomBytes(8).toString("hex")}`;
 const page = (rule: string) => `cell_sc1/${rule}/page`;
-/// Row 17 is open on an idle cell at this tip (B4's finding, for B2 and
-/// B6): it opens once and stays open, and no drill counts it.
+/// Row 17 is open on an idle cell at this tip (B4's finding; NEXT-WORK
+/// 14.7, a server defect): it opens once and stays open, no drill counts
+/// it, and the drills hold it to at most one open, so the server's fix,
+/// after which it never opens, leaves them green.
 const IDLE_OPEN = "cell_sc1/r17_unowned_usage/notify";
 
 type Seen = [PagerChange["action"], string, boolean];
@@ -171,8 +173,9 @@ maybe("the cell's drills each page the on-call: rows 7, 6, 13, 12, 3 with the up
   await shows(p, mark, 240, [["open", HEARTBEAT_KEY, true]]);
   const last = p.beats[p.beats.length - 1] ?? 0;
   expect([last < stopped, p.changes[p.changes.length - 1]!.at - last >= 180_000]).toEqual([true, true]);
-  // Row 17 opened once in all of it, and no event carried the operator bearer.
-  expect(p.since(0).filter(([, key]) => key === IDLE_OPEN)).toEqual([["open", IDLE_OPEN, false]]);
+  // Row 17 opened at most once in all of it (today once; never after
+  // NEXT-WORK 14.7's server fix), and no event carried the operator bearer.
+  expect([[], [["open", IDLE_OPEN, false]]]).toContainEqual(p.since(0).filter(([, key]) => key === IDLE_OPEN));
   expect([watch.log(), watch.out()].filter((t) => t.includes(operator) || t.includes(ROUTING_KEY))).toEqual([]);
 }, 45 * 60_000);
 

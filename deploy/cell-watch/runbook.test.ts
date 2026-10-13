@@ -85,6 +85,14 @@ describe("RUNBOOK.md's What to alert on", () => {
     expect(cells(2)[4]).toContain("a watch whose `STREAMS_OPERATOR_TOKEN` the cell refuses (401 or 403) does not start");
   });
 
+  test("row 17 says it is open on every enforce cell at this tip, and NEXT-WORK 14.7 records the server's defect", () => {
+    expect(cells(17)[4]).toContain("open on every enforce cell at this tip, idle or not");
+    expect(cells(17)[4]).toContain("NEXT-WORK 14.7");
+    const next = readFileSync(join(import.meta.dir, "..", "..", "docs", "reviews", "2026-09-hardening", "NEXT-WORK.md"), "utf8");
+    const defects = next.slice(next.indexOf("### 14.7 "), next.indexOf("### 14.8 "));
+    expect(defects).toContain("RUNBOOK row 17 (`r17_unowned_usage`) is open on every enforce cell");
+  });
+
   test("gives each row its class, a PAGE paged to the on-call and a NOTIFY to the channel", () => {
     for (const row of ROWS) {
       const cls = CLASS[row] ?? "";
@@ -130,6 +138,7 @@ describe("RUNBOOK.md's drills paragraph", () => {
       "`CELL_WATCH_E2E_BIN_DIR=target/debug CELL_WATCH_DRILLS=1 bun test ./deploy/cell-watch/drills.e2e.test.ts`",
       "`NOTIFY_ONLY=0`",
       "`pager.ts`",
+      "set row 17 aside (open on every enforce cell at this tip, NEXT-WORK 14.7) and allow it at most one open",
     ]) {
       expect([want, text.includes(want)]).toEqual([want, true]);
     }

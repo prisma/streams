@@ -34,7 +34,9 @@ afterAll(teardown);
 /// Row 17 is open on an idle cell at this tip: the cell's own activity
 /// grows ops.counters.unowned_meter_events_total by about nine each
 /// telemetry tick with no customer traffic and only the canary in the
-/// feed (measured on target/debug; reported with B4 for B2 and B6).
+/// feed (measured on target/debug; NEXT-WORK 14.7, a server defect). The
+/// test sets it aside and holds it to at most one trigger, so the server's
+/// fix, after which it never opens, leaves this test green.
 const IDLE_CELL_OPEN = "cell_sc1/r17_unowned_usage/notify";
 
 /// `[kind, alert key]` of each event the webhook got, but row 17's.
@@ -93,9 +95,10 @@ maybe("in prisma dev the watch polls a local shared cell, beats each cycle, answ
   const trigger = JSON.parse(sink.seen.find((s) => s.body.includes('"r04_restarts"'))!.body);
   expect([trigger.class, trigger.values]).toEqual(["NOTIFY", { boot_ids_30m: 2 }]);
   expect(new Set(sink.seen.map((s) => s.authorization))).toEqual(new Set([`Bearer ${SINK_BEARER}`]));
-  // Row 17 opened once and stayed open: the only other event.
-  expect(sink.seen.map((s) => JSON.parse(s.body)).filter((b) => b.dedupKey === IDLE_CELL_OPEN).map((b) => b.kind))
-    .toEqual(["trigger"]);
+  // Row 17, the only other event, opened at most once (today once, and it
+  // stays open; not at all once NEXT-WORK 14.7's server fix lands).
+  const idle = sink.seen.map((s) => JSON.parse(s.body)).filter((b) => b.dedupKey === IDLE_CELL_OPEN).map((b) => b.kind);
+  expect([[], ["trigger"]]).toContainEqual(idle);
   expect(monitor.seen.every((s) => s.method === "GET")).toBe(true);
 
   // The service's log (the emulator's): the boot line first; no secret anywhere.
