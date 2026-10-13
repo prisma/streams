@@ -77,6 +77,9 @@ export const RECORDS_PATH = `${STREAM_PATH}/records`;
 /// setting): while a watch appends, the stream keeps every record, about
 /// 1,440 of 64 bytes a day.
 export const STREAM_CONFIG = { format: { kind: "json" }, expiry: { idle: "1d" } } as const;
+/// What the watch's credential grants (`cell-admin credential --hidden
+/// --scopes`): its stream's create, append and read, and nothing else.
+export const CANARY_SCOPES = "streams.create streams.records.append streams.records.read";
 /// A token is renewed this long before it expires.
 export const RENEW_BEFORE_MS = 120_000;
 /// A read page: the smallest the cell takes, about 60 of the canary's records.

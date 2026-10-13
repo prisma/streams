@@ -158,6 +158,7 @@ maybe("in prisma dev the watch polls a local shared cell, beats each cycle, answ
     ALERT_SINK_KEY: SINK_BEARER,
     HEARTBEAT_URL: `${monitor.origin}${BEAT}`,
     STREAMS_ISSUER_METRICS_TOKEN: "none",
+    CANARY_CREDENTIAL: "none",
     STREAMS_CELL_ORIGIN: `http://127.0.0.1:${port}`,
     STREAMS_CELL_ID: "cell_sc1",
     ALERT_SINK_KIND: "webhook",

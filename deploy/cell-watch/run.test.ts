@@ -26,6 +26,7 @@ function rig() {
     ALERT_SINK_KEY: KEY,
     HEARTBEAT_URL: `${monitor.origin}${BEAT_PATH}`,
     STREAMS_ISSUER_METRICS_TOKEN: "none",
+    CANARY_CREDENTIAL: "none",
     STREAMS_CELL_ORIGIN: cell.origin,
     STREAMS_CELL_ID: "cell_sc1",
     ALERT_SINK_KIND: "webhook",

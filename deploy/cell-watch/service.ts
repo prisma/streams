@@ -33,6 +33,7 @@ export default compute({
     ALERT_SINK_KEY: secretString(),
     HEARTBEAT_URL: secretString(),
     STREAMS_ISSUER_METRICS_TOKEN: secretString(),
+    CANARY_CREDENTIAL: secretString(),
     STREAMS_CELL_ORIGIN: "string",
     STREAMS_CELL_ID: "string",
     ALERT_SINK_KIND: "string",

@@ -89,7 +89,8 @@ export interface Poll {
   /// Null when ISSUER_ORIGIN is unset or the cycle did not fetch it.
   issuerHealth: IssuerHealthPoll | null;
   issuerMetrics: Json | null;
-  /// Null until the canary runs (triage B7) and in cycles it does not.
+  /// Null without the canary (no CANARY_CREDENTIAL) and in the cycles
+  /// between its rounds (poll.ts: one every fourth).
   canary: CanaryResult | null;
 }
 

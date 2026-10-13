@@ -14,6 +14,8 @@
 //             HEARTBEAT_URL           the dead-man's GET
 //             STREAMS_ISSUER_METRICS_TOKEN  the issuer's /v1/admin/metrics
 //                                     bearer
+//             CANARY_CREDENTIAL       the canary project's hidden customer
+//                                     credential (rows 19 and 22, canary.ts)
 //   settings  STREAMS_CELL_ORIGIN     the cell's stable origin
 //             STREAMS_CELL_ID         the alert keys' prefix
 //             ALERT_SINK_KIND         events-v2 or webhook (sinks.ts)
@@ -26,9 +28,11 @@
 // schema, naming it (`prisma dev` too: "ALERT_SINK_KIND must be a string
 // (was missing)"). An optional input says it is absent with the value
 // `none`, so a row that does not run is a written choice, never a
-// forgotten variable: ISSUER_ORIGIN (no issuer GET, and then
-// STREAMS_ISSUER_METRICS_TOKEN is none too), EXPECTED_GIT (row 5 off) and,
-// for a webhook only, ALERT_SINK_KEY (no bearer). The rules' prices,
+// forgotten variable: ISSUER_ORIGIN (no issuer GET and no canary, and
+// then STREAMS_ISSUER_METRICS_TOKEN and CANARY_CREDENTIAL are none too:
+// before the issuer exists the canary has nothing to exchange its
+// credential at), EXPECTED_GIT (row 5 off) and, for a webhook only,
+// ALERT_SINK_KEY (no bearer). The rules' prices,
 // budget and G keep their defaults (rules.ts, the owner's S3 answer): no
 // input names them.
 import type { SinkConfig } from "./sinks";
@@ -41,6 +45,7 @@ export const SECRET_INPUTS = [
   "ALERT_SINK_KEY",
   "HEARTBEAT_URL",
   "STREAMS_ISSUER_METRICS_TOKEN",
+  "CANARY_CREDENTIAL",
 ] as const;
 
 export const PARAM_INPUTS = [
@@ -67,6 +72,9 @@ export class InputError extends Error {}
 const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const COMMIT = /^[0-9a-f]{7,40}$/;
+/// A credential as cell-admin's `credential` writes it and the issuer's
+/// exchange takes it: `prisma_streams_<credential id>.<secret>`.
+const CREDENTIAL = /^prisma_streams_strcred_[0-9a-f]{32}\.[A-Za-z0-9_-]{43}$/;
 const SINK_KINDS: readonly SinkConfig["kind"][] = ["events-v2", "webhook"];
 
 function given(inputs: Inputs, name: InputName): string {
@@ -121,16 +129,23 @@ function sink(inputs: Inputs): SinkConfig {
   return { kind: kind as SinkConfig["kind"], url: target, key: key ?? "" };
 }
 
-/// The issuer's origin and metrics bearer, both null when ISSUER_ORIGIN is none.
-function issuer(inputs: Inputs): { origin: string | null; token: string | null } {
+/// The issuer's origin, metrics bearer and the canary's credential, all
+/// null when ISSUER_ORIGIN is none.
+function issuer(inputs: Inputs): { origin: string | null; token: string | null; canary: string | null } {
   const raw = optional(inputs, "ISSUER_ORIGIN");
   const token = optional(inputs, "STREAMS_ISSUER_METRICS_TOKEN");
+  const canary = optional(inputs, "CANARY_CREDENTIAL");
   if (raw === null) {
     if (token !== null) throw new InputError("STREAMS_ISSUER_METRICS_TOKEN is set but ISSUER_ORIGIN is none");
-    return { origin: null, token: null };
+    if (canary !== null) throw new InputError("CANARY_CREDENTIAL is set but ISSUER_ORIGIN is none");
+    return { origin: null, token: null, canary: null };
   }
   if (token === null) throw new InputError("STREAMS_ISSUER_METRICS_TOKEN is required when ISSUER_ORIGIN is set");
-  return { origin: origin("ISSUER_ORIGIN", raw), token };
+  if (canary === null) throw new InputError("CANARY_CREDENTIAL is required when ISSUER_ORIGIN is set");
+  if (!CREDENTIAL.test(canary)) {
+    throw new InputError("CANARY_CREDENTIAL is not a credential (prisma_streams_<credential id>.<secret>)");
+  }
+  return { origin: origin("ISSUER_ORIGIN", raw), token, canary };
 }
 
 /// The watch's configuration from `inputs`, or a refusal naming the input.
@@ -157,7 +172,13 @@ export function readWatchConfig(inputs: Inputs): WatchConfig {
       notifyOnly: notifyOnly === "1",
       issuer: iss.origin !== null,
     }),
-    poll: { cellOrigin, operatorToken, issuerOrigin: iss.origin, issuerMetricsToken: iss.token, canary: null },
+    poll: {
+      cellOrigin,
+      operatorToken,
+      issuerOrigin: iss.origin,
+      issuerMetricsToken: iss.token,
+      canary: iss.canary === null ? null : { credential: iss.canary, cellId },
+    },
     sink: sinkConfig,
     heartbeatUrl,
   };

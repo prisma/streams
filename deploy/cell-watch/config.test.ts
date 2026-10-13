@@ -3,6 +3,8 @@
 // optional one absent, and a missing or malformed one refused by its name
 // alone, never its value. Run with `bun test ./deploy/cell-watch`.
 import { describe, expect, test } from "bun:test";
+import { randomCredentialId } from "../cell-admin/rules";
+import { newSecret, presentedSecret } from "../cell-admin/secrets";
 import { type InputName, INPUTS, InputError, type Inputs, PARAM_INPUTS, readWatchConfig, SECRET_INPUTS } from "./config";
 import { DEFAULT_PRICES, rulesConfig } from "./rules";
 
@@ -15,6 +17,7 @@ const FULL: Record<InputName, string> = {
   ALERT_SINK_KEY: `routing-key-${MARK}`,
   HEARTBEAT_URL: `https://beats.example.com/ping/${MARK}`,
   STREAMS_ISSUER_METRICS_TOKEN: `issuer-metrics-${MARK}`,
+  CANARY_CREDENTIAL: `prisma_streams_strcred_${"0123456789abcdef".repeat(2)}.${MARK.padEnd(43, "A")}`,
   STREAMS_CELL_ORIGIN: "https://cell.example.com",
   STREAMS_CELL_ID: "cell_sc1",
   ALERT_SINK_KIND: "events-v2",
@@ -23,12 +26,13 @@ const FULL: Record<InputName, string> = {
   ISSUER_ORIGIN: "https://issuer.example.com",
 };
 
-/// FULL with the issuer, the expected build and the sink key off.
+/// FULL with the issuer (and so the canary), the expected build and the sink key off.
 const BARE: Record<InputName, string> = {
   ...FULL,
   ALERT_SINK_KIND: "webhook",
   ALERT_SINK_KEY: "none",
   STREAMS_ISSUER_METRICS_TOKEN: "none",
+  CANARY_CREDENTIAL: "none",
   EXPECTED_GIT: "none",
   NOTIFY_ONLY: "0",
   ISSUER_ORIGIN: "none",
@@ -46,9 +50,10 @@ function refusal(inputs: Inputs): string | null {
 }
 
 describe("the cell watch's inputs", () => {
-  test("are the five secrets and the six settings the triage names, each once", () => {
+  test("are the six secrets and the six settings the triage names, each once", () => {
     expect([...SECRET_INPUTS]).toEqual([
       "STREAMS_OPERATOR_TOKEN", "ALERT_SINK_URL", "ALERT_SINK_KEY", "HEARTBEAT_URL", "STREAMS_ISSUER_METRICS_TOKEN",
+      "CANARY_CREDENTIAL",
     ]);
     expect([...PARAM_INPUTS]).toEqual([
       "STREAMS_CELL_ORIGIN", "STREAMS_CELL_ID", "ALERT_SINK_KIND", "EXPECTED_GIT", "NOTIFY_ONLY", "ISSUER_ORIGIN",
@@ -71,7 +76,7 @@ describe("the cell watch's inputs", () => {
         operatorToken: `operator-bearer-${MARK}`,
         issuerOrigin: "https://issuer.example.com",
         issuerMetricsToken: `issuer-metrics-${MARK}`,
-        canary: null,
+        canary: { credential: FULL.CANARY_CREDENTIAL, cellId: "cell_sc1" },
       },
       sink: { kind: "events-v2", url: `https://events.example.com/v2/enqueue?${MARK}`, key: `routing-key-${MARK}` },
       heartbeatUrl: `https://beats.example.com/ping/${MARK}`,
@@ -80,10 +85,10 @@ describe("the cell watch's inputs", () => {
     expect(readWatchConfig(FULL).rules.prices).toEqual(DEFAULT_PRICES);
   });
 
-  test("take none for an optional input: no issuer and no metrics token, no expected build, a webhook with no bearer", () => {
+  test("take none for an optional input: no issuer, no metrics token and no canary, no expected build, a webhook with no bearer", () => {
     const cfg = readWatchConfig(BARE);
     expect([cfg.rules.issuer, cfg.rules.expectedGit, cfg.rules.notifyOnly]).toEqual([false, "", false]);
-    expect([cfg.poll.issuerOrigin, cfg.poll.issuerMetricsToken]).toEqual([null, null]);
+    expect([cfg.poll.issuerOrigin, cfg.poll.issuerMetricsToken, cfg.poll.canary]).toEqual([null, null, null]);
     expect(cfg.sink).toEqual({ kind: "webhook", url: FULL.ALERT_SINK_URL, key: "" });
     // A webhook may still carry a bearer.
     expect(readWatchConfig({ ...BARE, ALERT_SINK_KEY: "webhook-bearer" }).sink.key).toBe("webhook-bearer");
@@ -131,6 +136,17 @@ describe("the cell watch's inputs", () => {
       [{ ALERT_SINK_KEY: "none" }, "ALERT_SINK_KEY is the events-v2 routing key; none is for a webhook only"],
       [{ STREAMS_ISSUER_METRICS_TOKEN: "none" }, "STREAMS_ISSUER_METRICS_TOKEN is required when ISSUER_ORIGIN is set"],
       [{ ISSUER_ORIGIN: "none" }, "STREAMS_ISSUER_METRICS_TOKEN is set but ISSUER_ORIGIN is none"],
+      [{ CANARY_CREDENTIAL: "none" }, "CANARY_CREDENTIAL is required when ISSUER_ORIGIN is set"],
+      [{ ISSUER_ORIGIN: "none", STREAMS_ISSUER_METRICS_TOKEN: "none" }, "CANARY_CREDENTIAL is set but ISSUER_ORIGIN is none"],
+      ...[
+        `canary-${MARK}`,
+        `prisma_streams_strcred_${"0".repeat(32)}.${MARK}`,
+        `prisma_streams_strcred_${"0".repeat(31)}.${MARK.padEnd(43, "A")}`,
+        `prisma_streams_strcred_${"0".repeat(32)}.${MARK.padEnd(43, "A")}\n`,
+        `StreamsCredential prisma_streams_strcred_${"0".repeat(32)}.${MARK.padEnd(43, "A")}`,
+      ].map((v): [Partial<Record<InputName, string>>, string] => [
+        { CANARY_CREDENTIAL: v }, "CANARY_CREDENTIAL is not a credential (prisma_streams_<credential id>.<secret>)",
+      ]),
     ];
     for (const [patch, message] of cases) {
       expect(refusal({ ...FULL, ...patch })).toBe(message);
@@ -138,6 +154,13 @@ describe("the cell watch's inputs", () => {
     }
     // A short commit is accepted (row 5 compares a prefix).
     expect(readWatchConfig({ ...FULL, EXPECTED_GIT: "0123abc" }).rules.expectedGit).toBe("0123abc");
+  });
+
+  test("take the canary's credential as cell-admin's credential command writes it", () => {
+    for (let i = 0; i < 20; i++) {
+      const credential = presentedSecret(randomCredentialId(), newSecret());
+      expect(readWatchConfig({ ...FULL, CANARY_CREDENTIAL: credential }).poll.canary).toEqual({ credential, cellId: "cell_sc1" });
+    }
   });
 
   test("read no name but their own", () => {

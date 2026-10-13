@@ -111,9 +111,11 @@ Six more directories:
   the watch's own Composer app (owner answer I1 (a)), deployed into a
   Compute project of its own so that it holds no secret of the cell's or
   the issuer's: `app.ts` mounts `module.ts`, which binds the one service
-  (`service.ts`) to the watch's eleven inputs by their platform names
-  (`config.ts`: five envSecrets, six envParams; an optional one is `none`
-  when absent); `entry.ts`, bundled into `entry.js` before any `prisma
+  (`service.ts`) to the watch's twelve inputs by their platform names
+  (`config.ts`: six envSecrets, the canary's credential among them, and
+  six envParams; an optional one is `none` when absent, and
+  `ISSUER_ORIGIN` none makes the metrics token and the canary's
+  credential none); `entry.ts`, bundled into `entry.js` before any `prisma
   dev` or `prisma deploy` (`service.ts` gives the command), hands them
   over, holds Compute's keep-awake guard and runs the watch (`run.ts`).
   Composer 0.29.1, the CLI and `@prisma/compute` are pinned exactly, and

@@ -2,10 +2,13 @@
 // cell's "What to alert on" table holds the alerting table's rows 1 to 28,
 // each with the rule RULES runs for it, its class and where it is paged;
 // §7.5 says who answers, beside the Compute escalation contact; §8 states
-// the operator surface's bearer gate. Run with `bun test ./deploy/cell-watch`.
+// the operator surface's bearer gate; the canary's paragraph makes the
+// watch's credential with the scopes it needs. Run with
+// `bun test ./deploy/cell-watch`.
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { CANARY_SCOPES } from "./canary";
 import { RULES } from "./rules";
 
 const LINES = readFileSync(join(import.meta.dir, "..", "..", "RUNBOOK.md"), "utf8").split("\n");
@@ -68,6 +71,22 @@ describe("RUNBOOK.md's What to alert on", () => {
       const by = row <= 2 ? "the paging tool" : "cell-watch";
       const to = cls.split(" / ").map((c) => TO[c]).join(" / ");
       expect([row, cells(row)[2], cells(row)[5]]).toEqual([row, cls, `${by} to ${to}`]);
+    }
+  });
+});
+
+describe("RUNBOOK.md's canary paragraph", () => {
+  test("makes the watch's hidden credential on the canary project with the scopes the canary needs, as its secret", () => {
+    const from = LINES.findIndex((l) => l.startsWith("**The canary (rows 19 and 22).**"));
+    const to = LINES.findIndex((l, i) => i > from && l.trim() === "");
+    const text = LINES.slice(from, to).join(" ").replace(/\s+/g, " ");
+    expect(from).toBeGreaterThan(LINES.findIndex((l) => l.startsWith("**What to alert on")));
+    for (const want of [
+      "`cell-admin credential --project sp_canary_<cell id> --hidden --name watch",
+      `--scopes "${CANARY_SCOPES}"`,
+      "secret `CANARY_CREDENTIAL`",
+    ]) {
+      expect([want, text.includes(want)]).toEqual([want, true]);
     }
   });
 });

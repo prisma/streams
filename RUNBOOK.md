@@ -1013,8 +1013,8 @@ app of its own, `deploy/README.md`), reads the cell every 15 s: `/health`
 on a fresh connection and `/operator/data.json` with the deployment bearer
 (a `where` below is a key of it unless it names another source), and
 `/operator/billing.json` every 60 s; with `ISSUER_ORIGIN` set, also the
-issuer's `/healthz` and, every 60 s, its `/v1/admin/metrics`. It never
-reads `/v1/debug/*`. Each row is one rule: it opens as the row says,
+issuer's `/healthz` and, every 60 s, its `/v1/admin/metrics` and the
+canary (rows 19 and 22, below the table). It never reads `/v1/debug/*`. Each row is one rule: it opens as the row says,
 resolves after four clean readings in a row, and is not raised again while
 open, except once when its NOTIFY rises to PAGE. An alert carries the cell
 id, the rule, the class, named numbers, fixed enums and a link into this
@@ -1049,16 +1049,34 @@ NOTIFY.
 | 16 | `r16_object_store` (level) | PAGE / NOTIFY | `local.store.ops["put:wal"]` and `local.store.ops["put:manifest"]` (the last 60 s) | `err` at 5 % of `n` or more on 2 readings in a row: PAGE; `put:wal` `p99_ms` above 2,000 for 5 min: NOTIFY. Diagnose with §5's `/v1/debug/store` | cell-watch to `<on-call>` / `<notify channel>` |
 | 17 | `r17_unowned_usage` | NOTIFY | `ops.counters.unowned_meter_events_total` | grew in the last 15 min: usage billed to the cell's `ACCOUNT_ID` sink | cell-watch to `<notify channel>` |
 | 18 | `r18_billing_pipeline` | NOTIFY | `/operator/billing.json` `openAlerts`, `ready`, `drain.lastOkAgeSecs` | any open alert, `ready: false`, or no drain for 300 s (Billing pipeline runbooks, below) | cell-watch to `<notify channel>` |
-| 19 | `r19_canary` | PAGE | the canary: one small record appended to the canary project's stream every 60 s and read back durable, under its customer credential | 3 failures in a row; the alert names the step, who answered (as row 3) and the `error.code`. Read once the watch runs the canary | cell-watch to `<on-call>` |
+| 19 | `r19_canary` | PAGE | the canary: one small record appended to the canary project's stream every 60 s and read back durable, under its customer credential | 3 failures in a row; the alert names the step, who answered (as row 3) and the `error.code`. Only with `ISSUER_ORIGIN` | cell-watch to `<on-call>` |
 | 20 | `r20_snapshot_stale` | NOTIFY | `ops`; `ops.ts_ms` against `ts_ms` | `ops` still `null` 60 s after the boot id was first seen (no usage key, so the telemetry tick collects nothing), or `ops.ts_ms` over 60 s behind `ts_ms` (the telemetry loop stopped): the rows that read `ops` are blind | cell-watch to `<notify channel>` |
 | 21 | `r21_issuer_down` | PAGE | the issuer's `/healthz` | not 200, or no answer, for 2 min: tokens live 60 min by default, so every customer loses access within the hour. Only with `ISSUER_ORIGIN` | cell-watch to `<on-call>` |
-| 22 | `r22_canary_exchange` | PAGE | the canary's exchange at the issuer (`POST /v1/token/streams`) | 3 failures in a row, or a 200 whose `endpoint` is not `STREAMS_CELL_ORIGIN` (every refreshing client would go there): the issuer's fault, against row 19's cell. Only with `ISSUER_ORIGIN`, once the watch runs the canary | cell-watch to `<on-call>` |
+| 22 | `r22_canary_exchange` | PAGE | the canary's exchange at the issuer (`POST /v1/token/streams`) | 3 failures in a row, or a 200 whose `endpoint` is not `STREAMS_CELL_ORIGIN` (every refreshing client would go there): the issuer's fault, against row 19's cell. Only with `ISSUER_ORIGIN` | cell-watch to `<on-call>` |
 | 23 | `r23_stored_growth` | NOTIFY | `/operator/billing.json` `rollup.stored.writtenBytes` (each increase of the cell's projects' stored bytes that a drain round saw; a delete never lowers it) | grew by more than 50 GiB over the trailing 24 h (G, about 0.6 MB/s sustained; the owner's answer S3 of 2026-10-12, confirmed again when the production workspace exists). Skipped while the billing report has no `rollup.stored`. Until physical reclamation exists a delete frees quota but not the bucket's bytes, so this is the bucket's growth as far as the drain saw it: a drain round emits each segment as it then stands, so bytes stored and deleted between two rounds of a shard (8 s apart by default) never reach it, and a tenant that deletes what it writes within a round grows the bucket without growing this figure. `/operator/data.json` `local.store.totals.bytes_put` (every byte the process put since `totals.since_ms`, WAL and compaction included) bounds the bucket's growth from above. `rollup.stored.largest` lists the ten projects that wrote the most | cell-watch to `<notify channel>` |
 | 24 | `r24_daily_spend` | NOTIFY | `/operator/billing.json` `rollup.stored.writtenBytes`; `local.store.totals` | the day's estimated spend above $10, the cell's budget (S3, as G): billed store requests (`ok` plus `not_found`) of Class A (`put`, `mpu`, `copy`, `list`) and of Class B (`get`, `head`), each at the store's price (scaled to a day once an hour is seen), plus `writtenBytes` × 1.2 at $0.015 per GiB-month (`totalBytes` once physical reclamation exists), plus the kept-awake server's $0.144. The prices are inputs until the platform gives Prisma Buckets' own; the totals restart with the process (`totals.since_ms`), so a restart starts a new baseline. The authoritative budget alarm is the platform's, on the workspace's bill. Skipped as row 23 | cell-watch to `<notify channel>` |
 | 25 | `r25_stale_rollup` | NOTIFY | `/operator/billing.json` `rollup.lastApplyAgeSecs`; `ops.counters.ingest_bytes_total` | above 600 while ingest grew in the last 10 min (the cell takes appends): the rollup consumer stalled, and the stored cap judges a stale figure (Billing pipeline runbooks). Skipped as row 23 | cell-watch to `<notify channel>` |
 | 26 | `r26_usage_overflow` | NOTIFY | `local.usage_overflow_admits` | above 0: overflow streams share one limiter and one counter set, so their usage is mis-attributed under metered billing | cell-watch to `<notify channel>` |
 | 27 | `r27_issuer_cache_age` | NOTIFY | the issuer's `/v1/admin/metrics` `cache_age_secs` (bearer `STREAMS_ISSUER_METRICS_TOKEN`) | above 150: the exchange refuses with `503 issuer_unavailable` at 300. Only with `ISSUER_ORIGIN` | cell-watch to `<notify channel>` |
 | 28 | `r28_admission_gate_closed` | NOTIFY | the issuer's `/v1/admin/metrics` `gate_open` | `false`: sign-ups are refused, as expected after `cell-admin gate --close`. Only with `ISSUER_ORIGIN` | cell-watch to `<notify channel>` |
+
+**The canary (rows 19 and 22).** The watch probes the cell as a
+customer does: it exchanges `CANARY_CREDENTIAL` at the issuer's
+`POST /v1/token/streams`, keeps the token until two minutes before it
+expires, and every 60 s appends one record to the stream
+`cell-watch-canary` of the canary project `cell-admin init` placed
+(`sp_canary_<cell id>`) and reads it back. With `ISSUER_ORIGIN` set the
+watch does not start without the credential; before the issuer exists
+both are `none` and the two rows do not run (a hand-minted token lives at
+most 24 h). Make the credential once per cell, on the operator's machine:
+`cell-admin credential --project sp_canary_<cell id> --hidden --name
+watch --scopes "streams.create streams.records.append
+streams.records.read" --pepper-file <the issuer's pepper file> --out
+<file>`, then set the file's one line, without its newline, as the
+watch project's secret `CANARY_CREDENTIAL` (set-secrets, never a shell
+or a log) and redeploy the watch. A row 19 page whose `error_code` is
+`kid_unknown` or another auth code while `/health` is green is what the
+canary exists for: start at "Keys feed and binary change together".
 
 A single-server shared cell publishes no `prisma-streams-internal` key and
 sets no `FLEET_INTERNAL_TOKEN`: its internal surface opens to nothing. A

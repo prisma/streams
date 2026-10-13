@@ -27,15 +27,13 @@ import { StateCache } from "../issuer/cache";
 import { readConfig } from "../issuer/config";
 import { admin, envWith, issuerCell, wrongSecret } from "../issuer/rig";
 import { Issuer } from "../issuer/server";
-import { Canary, canaryStreamKey, RECORDS_PATH } from "./canary";
+import { Canary, CANARY_SCOPES, canaryStreamKey, RECORDS_PATH } from "./canary";
 import { FakeIssuer } from "./fake-cell";
 import { TIMEOUT_MS } from "./poll";
 import { ERROR_CODES } from "./rules";
 
 const BIN_DIR = process.env.CELL_WATCH_E2E_BIN_DIR;
 const maybe = BIN_DIR ? test : test.skip;
-/// What the watch's credential needs: its stream's create, append and read.
-const SCOPES = "streams.create streams.records.append streams.records.read";
 
 const children: ReturnType<typeof Bun.spawn>[] = [];
 const stops: (() => void)[] = [];
@@ -76,7 +74,7 @@ maybe("the canary exchanges at the real issuer and appends and reads back on the
   const cell = await issuerCell();
   const secretFile = join(cell.root, "canary-watch.secret");
   await admin(cell, "credential", "--project", canaryProjectId("cell_sc1"), "--hidden", "--name", "watch",
-    "--scopes", SCOPES, "--pepper-file", cell.pepper, "--out", secretFile);
+    "--scopes", CANARY_SCOPES, "--pepper-file", cell.pepper, "--out", secretFile);
   const credential = readFileSync(secretFile, "utf8").trim();
   const feeds = join(scratchDir(), "feeds");
   mkdirSync(feeds);

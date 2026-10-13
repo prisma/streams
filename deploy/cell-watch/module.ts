@@ -26,6 +26,7 @@ export default module("cellwatch", ({ provision }) => {
       ALERT_SINK_KEY: envSecret("ALERT_SINK_KEY"),
       HEARTBEAT_URL: envSecret("HEARTBEAT_URL"),
       STREAMS_ISSUER_METRICS_TOKEN: envSecret("STREAMS_ISSUER_METRICS_TOKEN"),
+      CANARY_CREDENTIAL: envSecret("CANARY_CREDENTIAL"),
       STREAMS_CELL_ORIGIN: envParam("STREAMS_CELL_ORIGIN"),
       STREAMS_CELL_ID: envParam("STREAMS_CELL_ID"),
       ALERT_SINK_KIND: envParam("ALERT_SINK_KIND"),

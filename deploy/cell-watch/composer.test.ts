@@ -16,7 +16,8 @@ import { builtinModules } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { INPUTS, PARAM_INPUTS, SECRET_INPUTS } from "./config";
-import { FakeCell, FakeServer, OPERATOR_TOKEN } from "./fake-cell";
+import { EXCHANGE_PATH, RECORDS_PATH } from "./canary";
+import { CANARY_CREDENTIAL, CANARY_TOKEN, FakeCell, FakeIssuer, FakeServer, METRICS_TOKEN, OPERATOR_TOKEN } from "./fake-cell";
 
 const HERE = import.meta.dir;
 const read = (file: string) => readFileSync(join(HERE, file), "utf8");
@@ -203,6 +204,7 @@ function world() {
     ALERT_SINK_KEY: "none",
     HEARTBEAT_URL: `${monitor.origin}/beat/heartbeat-secret-e2e`,
     STREAMS_ISSUER_METRICS_TOKEN: "none",
+    CANARY_CREDENTIAL: "none",
     STREAMS_CELL_ORIGIN: cell.origin,
     STREAMS_CELL_ID: "cell_sc1",
     ALERT_SINK_KIND: "webhook",
@@ -236,6 +238,28 @@ describe("the cell watch's Composer entry, bundled", () => {
     const data = w.cell.seen.filter((s) => s.path === "/operator/data.json");
     expect(data.map((s) => s.authorization)).toEqual([`Bearer ${OPERATOR_TOKEN}`]);
     expect([w.sink.seen, started.err()]).toEqual([[], ""]);
+  });
+
+  maybe("runs the canary from its secret: the credential to the issuer's exchange, the token to the cell's stream", async () => {
+    const w = world();
+    const issuer = new FakeIssuer();
+    issuer.endpoint = w.cell.origin;
+    servers.push(issuer);
+    const inputs = {
+      ...w.inputs,
+      ISSUER_ORIGIN: issuer.origin,
+      STREAMS_ISSUER_METRICS_TOKEN: METRICS_TOKEN,
+      CANARY_CREDENTIAL,
+    };
+    const started = launch(await bundle(), platformEnv(inputs, freePort()));
+    await until("the first heartbeat", () => w.monitor.seen.length === 1);
+    expect(started.out()).toContain("issuer true,");
+    expect(issuer.seen.filter((s) => s.path === EXCHANGE_PATH).map((s) => [s.method, s.authorization])).toEqual([
+      ["POST", `StreamsCredential ${CANARY_CREDENTIAL}`],
+    ]);
+    const appends = w.cell.seen.filter((s) => s.path === RECORDS_PATH && s.method === "POST");
+    expect(appends.map((s) => s.authorization)).toEqual([`Bearer ${CANARY_TOKEN}`]);
+    expect([w.cell.stream?.records.length, w.sink.seen, started.err()]).toEqual([1, [], ""]);
   });
 
   maybe("refuses to boot with exit 1 when a secret's platform variable is unset, naming the variable and no value", async () => {
