@@ -86,7 +86,9 @@
   takes the cell's `PROJECT_STORED_BYTES_DEFAULT` at any k (default 0, no
   limit; the shared-cell profile sets 10 GiB). Unknown quota keys still
   refuse the whole feed, so a binary before r9 refuses one carrying the
-  field: deploy the binary first, then bundles that carry it.
+  field: deploy the binary first, then bundles that carry it. A project
+  at its quota is refused new appends `429 stored_bytes_limit` (edge
+  change #NEW-stored-cap-3).
 
 ---
 
@@ -1375,9 +1377,19 @@ so it is not divided by k: a 0 or absent value takes the cell's
 shared-cell profile sets 10 GiB, the owner's answer S1 of 2026-10-12),
 and a value the feed sets stands, above the default too.
 `CellCeiling::effective` resolves it when a policy snapshot is published.
-The check, at append admission against the stored figure the usage
-rollup publishes, is the stored-cap lane's item B4; until it lands the
-quota is carried and resolved, and nothing is refused on it.
+A product append whose project stores at least its quota is refused
+`429 stored_bytes_limit`, not retryable, with the quota and the figure in
+its details (edge change #NEW-stored-cap-3): the first check of the
+append's queued-bytes charge, so a refusal charges nothing. The figure is
+the one the usage rollup publishes into admission's table after each
+ledger page and at install (`quota::stored`); it trails the store by a
+drain round and a rollup step, so a project can store past its quota by
+what it writes in that lag plus one body, and an instance whose rollup has
+published no figure for a project refuses it nothing. Deleting streams or
+a larger quota clears it. Project usage states the figure
+(`ownedStoredBytesNow`). Deleted bytes stop counting once their segments'
+closes reach the rollup, before the bucket reclaims them (the owner's
+answer S2 (a) of 2026-10-12).
 
 *Store work* (shared-cells A10 cost, public-beta phase B step 14(b);
 edge change #143, ratified at landing under X2 (2026-10-12)). A verified

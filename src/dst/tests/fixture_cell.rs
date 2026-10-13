@@ -179,9 +179,10 @@ pub(super) const SHARE_K: usize = 8;
 /// command line over the hermetic fixture, its shard configuration and
 /// prefixes, its maintenance admission bounds, the shared bounds its
 /// projects' ceilings divide (none by default: the rig's admission sets
-/// no inflight or SSE bound unless `bounds` gives one), and the store it
+/// no inflight or SSE bound unless `bounds` gives one), the store it
 /// runs over (a fresh memory store by default; a scenario that counts
-/// store operations hands in its tracing store).
+/// store operations hands in its tracing store), and which incarnation of
+/// the server it is (0; a restart over the same store names the next).
 pub(super) struct CellSpec {
     pub(super) projects: usize,
     pub(super) quotas: fn(usize) -> ProjectQuotas,
@@ -191,6 +192,7 @@ pub(super) struct CellSpec {
     pub(super) admission: Option<crate::config::AdmissionConfig>,
     pub(super) bounds: SharedBounds,
     pub(super) store: Arc<dyn object_store::ObjectStore>,
+    pub(super) incarnation: u64,
 }
 
 impl CellSpec {
@@ -205,21 +207,24 @@ impl CellSpec {
             admission: None,
             bounds: SharedBounds::default(),
             store: mem(),
+            incarnation: 0,
         }
     }
 }
 
 /// Give the rig the spec's shared bounds and the cell its ceiling over
-/// them, reserving the rig deployment's identities, before the first
-/// policy snapshot: the instance inflight bound and the ceiling derive
-/// from the one value, as boot derives both from `ADMIT_MAX_INFLIGHT`.
+/// them, with the command line's stored-bytes default, reserving the rig
+/// deployment's identities, before the first policy snapshot: the
+/// instance inflight bound and the ceiling derive from the one value, as
+/// boot derives both from `ADMIT_MAX_INFLIGHT`.
 fn share_cell(svc: &crate::auth::AuthService, state: &crate::http::AppState, bounds: SharedBounds) {
     if bounds.inflight > 0 {
         state
             .admission
             .set_max_inflight(i64::try_from(bounds.inflight).unwrap());
     }
-    let ceiling = CellCeiling::shared(u64::try_from(SHARE_K).unwrap(), bounds);
+    let ceiling = CellCeiling::shared(u64::try_from(SHARE_K).unwrap(), bounds)
+        .with_stored_default(state.config.cli.project_stored_bytes_default);
     svc.install_cell_ceiling(ceiling.reserving(&state.deployment))
         .unwrap();
 }
@@ -262,7 +267,7 @@ pub(super) async fn open_cell(spec: CellSpec) -> Cell {
         .collect();
     let rig = http_rig_build(
         spec.store,
-        RigRuntime::first(),
+        RigRuntime::incarnation(spec.incarnation),
         HttpRigOptions {
             auth_service: Some(svc.clone()),
             cli: spec.cli,

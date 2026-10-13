@@ -2491,6 +2491,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::quota_stored_cap",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Stored-cap scenario (stored-cap B4): two projects of one shared cell under required billing append over real HTTP while the test steps the drain and the rollup; the 429 stored_bytes_limit, the neighbour's appends, a restart over the same store and a delete; compiled and executed with DST.",
+      "syntax": "path = \"tests/quota_stored_cap.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::reads_applied_history",
       "path": "src/dst/dst_tests.rs",
       "reason": "TLA-018-F3 continuation scenarios; a held shard WAL PUT, a fencing replacement instance and real HTTP product, raw and relay reads of the stale and durable cursors; compiled and executed with DST.",
@@ -2991,6 +2999,22 @@
       "path": "src/product/tests.rs",
       "reason": "The expected append_failed answer of the product append's error-table pin is written with serde_json's literal macro, the same document the renderer sends; it builds expected values only, not service state.",
       "syntax": "json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::quota_refusal_response",
+      "path": "src/product.rs",
+      "reason": "The stored-cap refusal's details object {dimension, limit, stored} is rendered with serde_json's literal macro; its wire shape is the product error contract pinned by product::tests (the watch refusal table and the details assertion), dst_tests::quota_stored_cap and WIRE-MATRIX §2.7/§2.8.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::cap_event",
+      "path": "src/quota/stored.rs",
+      "reason": "The stored cap's ops event fields {project, stored_bytes, max_stored_bytes} are rendered with serde_json's literal macro, as memory_gate's are; the fields and the one event per engage and release are pinned by quota::append_charge::tests and dst_tests::quota_stored_cap.",
+      "syntax": "serde_json::json"
     },
     {
       "category": "macro-dsl",

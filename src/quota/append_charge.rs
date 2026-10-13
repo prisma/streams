@@ -2,7 +2,9 @@
 //! (SR2-4): its body bytes against the project's committer-queue budget
 //! (`queued_append_bytes`), held by a guard until the append decides.
 //! The project's one entry (`ProjectAdmission::queued_bytes`) carries the
-//! count, which the memory-pressure estimate reads unweighted.
+//! count, which the memory-pressure estimate reads unweighted. A project
+//! at its stored cap is refused before anything is charged (stored-cap
+//! B4, `stored::StoredTable::admit`).
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -29,13 +31,15 @@ impl Drop for QueuedBytesGuard {
 impl QuotaRegistry {
     /// SR2-4: charge `bytes` to the project's committer-queue budget
     /// BEFORE the append is enqueued; the guard releases when the
-    /// append DECIDES. 0 = not configured.
+    /// append DECIDES. 0 = not configured. A project at its stored cap
+    /// (stored-cap B4) is refused first, and charged nothing.
     pub(crate) fn charge_queued(
         &self,
         project: &ProjectId,
         quotas: &ProjectQuotas,
         bytes: u64,
     ) -> Result<Option<QueuedBytesGuard>, QuotaRefusal> {
+        self.stored.admit(project, quotas, &self.ops)?;
         let Some(admission) = self.tracked(project) else {
             return Ok(None);
         };
@@ -51,3 +55,6 @@ impl QuotaRegistry {
         Ok(Some(QueuedBytesGuard { admission, bytes }))
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -148,13 +148,15 @@ OWNERS = (
     owner('product_cursor', 'src/product_cursor.rs', 'product_cursor::'),
     owner('product_cursor_regressions', 'src/product_cursor/regressions.rs', 'product_cursor::', 'harness-lib'),
     owner('quota_registry', 'src/quota.rs', 'quota::'),
-    owner('quota_append_charge', 'src/quota/append_charge.rs', 'quota::'),
+    owner('quota_append_charge', 'src/quota/append_charge.rs', 'quota:: dst_tests::quota_stored_cap::'),
     owner('quota_pin', 'src/quota/pin.rs', 'quota::'),
     owner('quota_parked', 'src/quota/parked.rs', 'quota::parked:: dst_tests::parked_waits::a_projects_'),
     owner('quota_pressure', 'src/quota/pressure.rs', 'quota::'),
     owner('quota_read_reservation', 'src/quota/read_reservation.rs', 'quota::read_reservation:: dst_tests::read_memory::a_project_at_its_memory_line'),
-    # The stored figures admission reads (stored-cap B3).
-    owner('quota_stored', 'src/quota/stored.rs', 'quota::stored'),
+    # The stored figures admission reads (stored-cap B3) and the cap it
+    # enforces through the append charge (B4).
+    owner('quota_stored', 'src/quota/stored.rs',
+          'quota::stored quota::append_charge dst_tests::quota_stored_cap::'),
     owner('registry_cache', 'src/registry/cache.rs', 'registry::'),
     # The catalog page's byte bounds (phase B item B5); the owner decided the
     # row on 2026-10-12 (OWNER-DECISIONS-2 X1 (b)).
@@ -346,7 +348,8 @@ OWNERS = (
     owner('rollup_readiness', 'src/rollup/readiness.rs',
           'rollup:: dst_tests::billing_readiness::'),
     # The rollup's stored index (stored-cap B3).
-    owner('rollup_stored_index', 'src/rollup/stored_index.rs', 'rollup::stored_index'),
+    owner('rollup_stored_index', 'src/rollup/stored_index.rs',
+          'rollup::stored_index dst_tests::quota_stored_cap::'),
     owner('registry_replaced', 'src/registry/replaced.rs',
           'dst_tests::billing_closure_debts:: dst_tests::billing_closure_owners:: '
           'dst_tests::billing_late_close:: dst_tests::fork_debt::'),

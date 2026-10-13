@@ -1456,6 +1456,17 @@
     "scenarios": []
   },
   {
+    "name": "a_project_at_its_stored_cap_is_refused_and_its_neighbour_is_not",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "955d635cfdb92fb114e545539c5369be4b084ef2cfc206a0550464b17624bce6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/quota_stored_cap.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_projects_pulls_reserve_their_coverage_inside_its_line_and_its_neighbour_reads",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

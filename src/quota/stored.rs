@@ -7,11 +7,19 @@
 //! Admission reads one entry with one lock-free load; the rollup updates
 //! an entry in place and copies the map only when a project appears for
 //! the first time. No lock, so nothing poisons.
+//!
+//! Stored-cap B4: an append is refused while its project's figure is at
+//! or over its `max_stored_bytes` quota (`StoredTable::admit`), and each
+//! entry latches whether the cap is engaged, so admission emits one event
+//! when it engages and one when it releases, never one per refusal.
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
+use super::QuotaRefusal;
+use crate::ops::{OpsEvent, OpsService};
+use crate::project_policy::ProjectQuotas;
 use crate::tenant::ProjectId;
 
 /// One project's figures as the rollup's stored index holds them: the
@@ -39,10 +47,13 @@ struct Inner {
 
 /// A project's figures. A reader may see one figure of a publication and
 /// the other of the one before it; each is a figure the index held.
+/// `engaged`: admission last refused the project at its cap (a
+/// publication leaves it as it was).
 #[derive(Default)]
 struct StoredEntry {
     bytes: AtomicU64,
     written: AtomicU64,
+    engaged: AtomicBool,
 }
 
 impl StoredEntry {
@@ -88,6 +99,60 @@ impl StoredTable {
     pub(crate) fn published_ms(&self) -> i64 {
         self.0.published_ms.load(Ordering::Relaxed)
     }
+
+    /// The bytes `project` stores now; 0 before the rollup published a
+    /// figure for it.
+    pub(crate) fn bytes(&self, project: &ProjectId) -> u64 {
+        let entries = self.0.entries.load();
+        let entry = entries.get(project);
+        entry.map_or(0, |entry| entry.bytes.load(Ordering::Relaxed))
+    }
+
+    /// Refuses an append of `project` while the bytes it stores are at or
+    /// over its `max_stored_bytes` quota (0: no limit). A project with no
+    /// published figure is admitted: the rollup has seen none of its bytes.
+    /// Emits `project_stored_cap_reached` (warn) when the cap engages and
+    /// `project_stored_cap_cleared` when an admitted append finds it
+    /// released, by a lower figure or a larger quota.
+    pub(crate) fn admit(
+        &self,
+        project: &ProjectId,
+        quotas: &ProjectQuotas,
+        ops: &OpsService,
+    ) -> Result<(), QuotaRefusal> {
+        let entries = self.0.entries.load();
+        let Some(entry) = entries.get(project) else {
+            return Ok(());
+        };
+        let limit = quotas.max_stored_bytes;
+        let stored = entry.bytes.load(Ordering::Relaxed);
+        if limit > 0 && stored >= limit {
+            if !entry.engaged.swap(true, Ordering::Relaxed) {
+                ops.emit(cap_event(CAP_REACHED, project, stored, limit).warn());
+            }
+            return Err(QuotaRefusal::StoredBytes { limit, stored });
+        }
+        if entry.engaged.load(Ordering::Relaxed) && entry.engaged.swap(false, Ordering::Relaxed) {
+            ops.emit(cap_event(CAP_CLEARED, project, stored, limit));
+        }
+        Ok(())
+    }
+}
+
+/// The ops event of a project's cap engaging (warn).
+const CAP_REACHED: &str = "project_stored_cap_reached";
+/// The ops event of a project's cap releasing (info).
+const CAP_CLEARED: &str = "project_stored_cap_cleared";
+
+/// The ops event of `project`'s cap engaging or releasing at `stored`
+/// bytes under a quota of `limit`.
+fn cap_event(kind: &str, project: &ProjectId, stored: u64, limit: u64) -> OpsEvent {
+    let id = format!("{kind}/{}/{stored}", project.as_str());
+    OpsEvent::new(kind, id).fields(serde_json::json!({
+        "project": project.as_str(),
+        "stored_bytes": stored,
+        "max_stored_bytes": limit,
+    }))
 }
 
 /// A copy of `entries` holding `figures`, whose projects it lacked; the

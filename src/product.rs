@@ -789,6 +789,13 @@ fn quota_refusal_response(refusal: &crate::quota::QuotaRefusal) -> Response {
             None,
             false,
         ),
+        crate::quota::QuotaRefusal::StoredBytes { limit, stored } => perr(
+            StatusCode::TOO_MANY_REQUESTS,
+            "stored_bytes_limit",
+            "the project stores its max_stored_bytes quota; delete streams or ask for a larger quota",
+            Some(json!({"dimension": "stored_bytes", "limit": limit, "stored": stored})),
+            false,
+        ),
         crate::quota::QuotaRefusal::QueuedBytes => perr(
             StatusCode::TOO_MANY_REQUESTS,
             "queued_bytes",
@@ -845,6 +852,7 @@ fn quota_refusal_response(refusal: &crate::quota::QuotaRefusal) -> Response {
             crate::quota::QuotaRefusal::StreamLimit => "project_stream_limit",
             crate::quota::QuotaRefusal::QueuedBytes => "project_queued_bytes",
             crate::quota::QuotaRefusal::MemoryPressure => "project_memory_pressure",
+            crate::quota::QuotaRefusal::StoredBytes { .. } => "project_stored_bytes",
         },
     )
 }

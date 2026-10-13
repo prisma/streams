@@ -296,7 +296,9 @@ pub(super) async fn product_usage(
 
 /// GET /v1/projects/{project}/usage[?month=YYYY-MM] (round-22 doc
 /// item D3): the project-level rollup answer — aggregate totals,
-/// correction sums, and effective values. Bearer-authenticated like
+/// correction sums, and effective values, plus the bytes the project
+/// stores now as admission's stored cap reads them (stored-cap B4;
+/// whatever the month). Bearer-authenticated like
 /// every product control-plane read. Under the one-project-per-cell
 /// deployment contract the {project} segment must match this cell's
 /// configured project.
@@ -382,6 +384,7 @@ pub(crate) async fn project_usage(
         "queueOperations": agg.queue_operations,
         "appendRequests": agg.append_requests,
         "storageByteSeconds": (byte_ms / 1000).to_string(),
+        "ownedStoredBytesNow": state.quotas.stored_table().bytes(authority),
         "correctionTotals": agg.corr,
         "effective": {
             "ingestPayloadBytes": crate::rollup::eff_u64(agg.ingest_bytes, agg.corr.ingest_payload_bytes_delta),

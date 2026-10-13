@@ -484,6 +484,14 @@ pub(crate) enum QuotaRefusal {
     /// Round-13: the project's estimated memory pressure crossed the
     /// per-project backstop — typed, project-audited, retryable.
     MemoryPressure,
+    /// Stored-cap B4: the project stores `stored` bytes, the figure the
+    /// usage rollup last published, at or over its `limit`
+    /// (`max_stored_bytes`); not retryable until it deletes or the quota
+    /// grows.
+    StoredBytes {
+        limit: u64,
+        stored: u64,
+    },
 }
 
 /// Releases the inflight slot on drop — hold it for the handler's

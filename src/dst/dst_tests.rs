@@ -171,6 +171,9 @@ mod quota_enforcement;
 #[path = "tests/quota_read_volume.rs"]
 mod quota_read_volume;
 
+#[path = "tests/quota_stored_cap.rs"]
+mod quota_stored_cap;
+
 #[path = "tests/reads_applied.rs"]
 mod reads_applied;
 

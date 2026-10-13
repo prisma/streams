@@ -516,6 +516,16 @@ fn watch_refusals() -> Vec<(crate::application::watch::WatchFailure, &'static st
             "429 project_memory_pressure true 1 - project_memory_pressure:proj-w",
         ),
         (
+            W::Quota(
+                p(),
+                Q::StoredBytes {
+                    limit: 1,
+                    stored: 2,
+                },
+            ),
+            "429 stored_bytes_limit false - - project_stored_bytes:proj-w",
+        ),
+        (
             W::LookupBusy,
             "429 watch_lookup_busy true 1 - watch_lookup_busy:-",
         ),
@@ -565,6 +575,35 @@ async fn every_watch_refusal_keeps_its_response() {
     let body = axum::body::to_bytes(watch_failure_response(failure).into_body(), usize::MAX);
     let body: serde_json::Value = serde_json::from_slice(&body.await.unwrap()).unwrap();
     assert_eq!(body["error"]["message"], "store down");
+}
+
+/// Stored-cap B4 (T5): a project at its stored cap is refused 429
+/// `stored_bytes_limit`, not retryable and with no `retry-after` (it clears
+/// when the project stores less or its quota grows, not at a time a client
+/// can wait for), its details the dimension, the quota and the figure it
+/// was refused at.
+#[tokio::test]
+async fn the_stored_cap_refusal_states_the_quota_and_the_figure() {
+    let refusal = crate::quota::QuotaRefusal::StoredBytes {
+        limit: 262_144,
+        stored: 262_624,
+    };
+    let response = quota_refusal_response(&refusal);
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(response.headers().get("retry-after"), None);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX);
+    let body: serde_json::Value = serde_json::from_slice(&body.await.unwrap()).unwrap();
+    let error = &body["error"];
+    assert_eq!(
+        (error["code"].as_str(), error["retryable"].as_bool()),
+        (Some("stored_bytes_limit"), Some(false))
+    );
+    let details = serde_json::Value::from_iter([
+        ("dimension", serde_json::Value::from("stored_bytes")),
+        ("limit", 262_144.into()),
+        ("stored", 262_624.into()),
+    ]);
+    assert_eq!(error["details"], details);
 }
 
 /// A transient append refusal keeps its wait on the product surface: the
