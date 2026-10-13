@@ -6,104 +6,30 @@
 // repository's own files, and the binaries are ELF headers that never run.
 // Run with `bun test ./deploy/composer`.
 import { afterAll, describe, expect, test } from "bun:test";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  chmodSync,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { checkRelease, keysContract, layoutVersion, type Release, stageRelease } from "./release";
+import { cleanupScratch, elf, fakeTree, git, REPO, scratchDir, stageInputs } from "./release-rig";
 
-const REPO = join(import.meta.dir, "..", "..");
-const scratch: string[] = [];
-afterAll(() => {
-  for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
-function scratchDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "release-"));
-  scratch.push(dir);
-  return dir;
-}
+afterAll(cleanupScratch);
 
 const sha256 = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
-/// An ELF header for `machine` that never runs.
-const elf = (machine: number, tag: string) =>
-  Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, ...new Array(9).fill(0), 2, 0, machine, 0]), Buffer.from(tag)]);
-
-/// The repository files a release takes, and the three it reads facts from.
-const TREE_FILES = [
-  "deploy/composer/package.json",
-  "deploy/composer/bun.lock",
-  "deploy/composer/prisma.config.ts",
-  "deploy/composer/app.ts",
-  "deploy/composer/streams/service.ts",
-  "deploy/composer/streams/entry.ts",
-  "deploy/composer/streams/env.ts",
-  "deploy/app-server/supervise.ts",
-  "deploy/app-server/feeds.ts",
-  "deploy/app-server/downloader.ts",
-  "deploy/cell-admin/profile.ts",
-  "deploy/cell-admin/errors.ts",
-  "deploy/profiles/compute-1g.env",
-  "deploy/profiles/shared-cell.env",
-  "src/registry.rs",
-  "contracts/streams-platform/v1/keys.schema.json",
-  "docs/MULTITENANCY.md",
-];
-
-function git(dir: string, ...args: string[]): string {
-  return execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args])
-    .toString()
-    .trim();
-}
-
-/// A git repository holding the repository's files at one commit.
-function fakeTree(): { tree: string; commit: string } {
-  const tree = scratchDir();
-  for (const p of TREE_FILES) {
-    mkdirSync(dirname(join(tree, p)), { recursive: true });
-    copyFileSync(join(REPO, p), join(tree, p));
-  }
-  git(tree, "init", "-q");
-  git(tree, "add", ".");
-  git(tree, "commit", "-qm", "release");
-  return { tree, commit: git(tree, "rev-parse", "HEAD") };
-}
 
 const CELLS_PRODUCTION = "CELL_STAGE=production\nCELL_ID=cell_p1\nREGION=eu-central-1\n";
 
-type Inputs = Parameters<typeof stageRelease>[0];
-
-/// Every input of a stage, in a fresh scratch root; `out` does not exist.
-function inputs(): Inputs {
+/// Every input of a stage of the production and cert cells files (and a
+/// file of the operator's that is not a cells file, never read).
+function inputs() {
   const { tree, commit } = fakeTree();
-  const root = scratchDir();
-  const cells = join(root, "cells");
-  mkdirSync(cells);
-  writeFileSync(join(cells, "production.env"), CELLS_PRODUCTION);
-  writeFileSync(join(cells, "cert.env"), "CELL_STAGE=cert\nCELL_ID=cell_c1\n");
-  writeFileSync(join(cells, "production.provision.json"), "{}"); // not a cells file: never read
-  writeFileSync(join(root, "streams-slate"), elf(0x3e, "server"));
-  writeFileSync(join(root, "s3lite"), elf(0x3e, "s3lite"));
-  writeFileSync(join(root, "entry.js"), "// the bundle\n");
-  mkdirSync(join(root, "node_modules", ".bin"), { recursive: true });
-  writeFileSync(join(root, "node_modules", ".bin", "prisma"), "#!/bin/sh\n");
-  return {
-    tree, commit, tag: "rc-1", buildUnix: 1_760_000_000, cells,
-    server: join(root, "streams-slate"), s3lite: join(root, "s3lite"), entryJs: join(root, "entry.js"),
-    nodeModules: join(root, "node_modules"), out: join(root, "releases", "rc-1"),
-  };
+  const i = stageInputs({
+    tree, commit, tag: "rc-1",
+    cells: { production: CELLS_PRODUCTION, cert: "CELL_STAGE=cert\nCELL_ID=cell_c1\n" },
+    server: elf(0x3e, "server"),
+  });
+  writeFileSync(join(i.cells, "production.provision.json"), "{}");
+  return i;
 }
 
 /// Every path under `dir`, node_modules' contents aside.

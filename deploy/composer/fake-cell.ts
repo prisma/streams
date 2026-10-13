@@ -4,6 +4,8 @@
 // the deployment bearer) and the product requests cell-check's canary
 // makes (create, append, read, project usage, delete), behind the canary
 // token. src/http.rs and docs/refactor/WIRE-MATRIX.md §2 are the shapes.
+// `POST /__deploy {commit, sha}` is the fake's own: a fake `prisma deploy`
+// calls it to put a new version in place.
 export interface Identity {
   commit: string;
   sha: string;
@@ -65,6 +67,11 @@ export class FakeStreamsCell {
   private async serve(req: Request): Promise<Response> {
     const url = new URL(req.url);
     this.requests.push(`${req.method} ${url.pathname}${url.search}`);
+    if (url.pathname === "/__deploy" && req.method === "POST") {
+      const next = await req.json();
+      this.identity = { ...this.identity, commit: next.commit, sha: next.sha };
+      return new Response(null, { status: 204 });
+    }
     const id = this.now();
     const bearer = req.headers.get("authorization")?.replace(/^Bearer /, "");
     if (url.pathname === "/health") {

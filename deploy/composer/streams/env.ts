@@ -75,6 +75,10 @@ const BINARY_SHA256 = "APP_BINARY_SHA256";
 const KEEP_AWAKE = "KEEP_AWAKE";
 const KEEP_AWAKE_UNTIL_MS = "KEEP_AWAKE_UNTIL_MS";
 export const STAGES = ["scratch", "cert", "production"] as const;
+/// The profiles, relative to the build dir (deploy/), in the order they
+/// layer, the later file's value winning: the entry builds the child
+/// environment from them and deploy-release.sh checks a release by them.
+export const PROFILES = ["profiles/compute-1g.env", "profiles/shared-cell.env"] as const;
 
 export interface ChildEnvInput {
   /// compute-1g.env then shared-cell.env, as the release carries them.

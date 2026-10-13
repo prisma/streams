@@ -49,14 +49,13 @@ import { KeepAwakeGuard } from "@prisma/compute";
 import { downloadFile } from "../../app-server/downloader.ts";
 import { FeedPoller, materialize, s3BundleFetcher } from "../../app-server/feeds.ts";
 import { policyFor, superviseBinary } from "../../app-server/supervise.ts";
-import { buildChildEnv, type ChildEnv } from "./env.ts";
+import { buildChildEnv, type ChildEnv, PROFILES } from "./env.ts";
 import service from "./service.ts";
 
 /// The build's dir, two levels up from this file.
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 /// The shipped binary, relative to ROOT.
 const BINARY = "composer/streams/streams-slate";
-const PROFILES = ["profiles/compute-1g.env", "profiles/shared-cell.env"];
 /// The port the platform routes to; supervise.ts binds and probes the same.
 const PORT = process.env.PORT ?? "8080";
 const ELF_X86_64 = 0x3e;
