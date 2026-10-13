@@ -11,7 +11,12 @@
 //      KEEP_AWAKE_UNTIL_MS; the entry's own env builder accepts the
 //      profiles and the cells file (so a refusal is met here, not as a
 //      crash-looping deploy);
-//   4. the stage's project is in the cells file's REGION;
+//   4. --project, and a named stage's --branch, are the project and Branch
+//      `prisma deploy` itself picks (Composer 0.29.1's own rule, D0 finding
+//      4: in --workspace, the project whose logicalId is the app's module
+//      name, else the oldest project of that name; the project's Branch
+//      named as the stage), so every check below is of the scope the
+//      deploy reaches; the project is in the cells file's REGION;
 //   5. every secret name the app binds is set in the stage's own scope,
 //      and a named stage's names are its Branch's overrides (D0 finding
 //      10: a branchless preview variable reaches every named stage);
@@ -35,8 +40,9 @@
 // With --issuer-release-dir (the interim issuer, Q6 (b)): its release
 // (cut-release's <tag>-issuer) must be cut from the cell's commit and pass
 // the same rules, its stages/<stage>.env must name the cell's CELL_ID,
-// and its project (--issuer-project, --issuer-branch) must be in the
-// region and hold its secrets, all before the cell deploys; the issuer
+// and its project (--issuer-project, --issuer-branch) must be the one
+// `prisma deploy` picks for its module, be in the region and hold its
+// secrets, all before the cell deploys; the issuer
 // deploys from its release root after the cell's deploy (and cell-check,
 // when run) passed, with its settings as the envParams `prisma deploy`
 // reads, and is logged as app "issuer".
@@ -51,6 +57,7 @@ import { cellBase } from "../cell-admin/cell-client";
 import { AdminError } from "../cell-admin/errors";
 import { parseProfiles } from "../cell-admin/profile";
 import {
+  appModuleName,
   describeScope,
   envSecretNames,
   inScope,
@@ -124,8 +131,64 @@ function cellsFile(run: Run): Map<string, string> {
   return cells;
 }
 
+/// An app as the platform checks see it: the scope the operator named,
+/// the app's module name (its project's name) and its envSecret names.
+interface Target {
+  scope: Scope;
+  app: string;
+  names: readonly string[];
+}
+
+const bareWorkspace = (id: string) => (id.startsWith("wksp_") ? id.slice(5) : id);
+
+/// The project `prisma deploy` puts `app` in, by Composer's own rule
+/// (@prisma/composer-prisma-cloud 0.29.1's resolveProject): among the
+/// workspace's projects, the one whose logicalId is the app's name, else
+/// the oldest one of that name; null when it would create one.
+async function adoptedProject(api: Platform, workspace: string, app: string): Promise<{ id: string; how: string } | null> {
+  const mine = (await api.list("/projects")).filter(
+    (p) => typeof p?.workspace?.id === "string" && bareWorkspace(p.workspace.id) === bareWorkspace(workspace),
+  );
+  const logical = mine.find((p) => p.logicalId != null && p.logicalId === app);
+  if (logical) return { id: logical.id, how: "its logicalId" };
+  const named = mine.filter((p) => p.name === app).sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))[0];
+  return named ? { id: named.id, how: "the oldest project of that name" } : null;
+}
+
+/// Step 4's first half: the named scope is the one the deploy reaches.
+async function refuseOtherScope(run: Run, api: Platform, { scope, app }: Target): Promise<void> {
+  const workspace = run.flags.must("workspace");
+  const adopted = await adoptedProject(api, workspace, app);
+  if (adopted === null) {
+    throw new AdminError(`workspace ${workspace} holds no project ${app}: prisma deploy would create one, not deploy to --project ${scope.project}`);
+  }
+  if (adopted.id !== scope.project) {
+    throw new AdminError(
+      `prisma deploy puts app ${app} of workspace ${workspace} in project ${adopted.id} (${adopted.how}), not in --project ${scope.project}`,
+    );
+  }
+  if (scope.class !== "preview") return;
+  // Composer's findBranchId: the first Branch the gitName filter answers.
+  const path = `/projects/${encodeURIComponent(scope.project)}/branches?gitName=${encodeURIComponent(run.stage)}`;
+  const branch = (await api.call("GET", path)).body?.data?.[0]?.id;
+  if (branch === undefined) {
+    throw new AdminError(
+      `project ${scope.project} has no Branch named ${run.stage}: prisma deploy --stage ${run.stage} would create one, ` +
+        `not deploy to --branch ${scope.branch}`,
+    );
+  }
+  if (branch !== scope.branch) {
+    throw new AdminError(
+      `prisma deploy --stage ${run.stage} deploys to Branch ${branch} of project ${scope.project} (its Branch named ` +
+        `${run.stage}), not to --branch ${scope.branch}`,
+    );
+  }
+}
+
 /// Steps 4 and 5, for the cell's scope or the issuer's.
-async function platformChecks(run: Run, api: Platform, scope: Scope, region: string, names: readonly string[]): Promise<void> {
+async function platformChecks(run: Run, api: Platform, target: Target, region: string): Promise<void> {
+  const { scope, names } = target;
+  await refuseOtherScope(run, api, target);
   const project = (await api.call("GET", `/projects/${encodeURIComponent(scope.project)}`)).body?.data;
   if (project?.defaultRegion !== region) {
     throw new AdminError(
@@ -359,7 +422,7 @@ async function issuerChecks(run: Run, api: Platform, region: string, cells: Map<
     throw new AdminError(`${path} names STREAMS_CELL_ID=${settings.get("STREAMS_CELL_ID")}; the cell is ${cells.get("CELL_ID")}`);
   }
   const scope = scopeOf(run.stage, run.flags.must("issuer-project"), run.flags.get("issuer-branch"));
-  await platformChecks(run, api, scope, region, envSecretNames(read("app.ts")));
+  await platformChecks(run, api, { scope, app: appModuleName(read("app.ts")), names: envSecretNames(read("app.ts")) }, region);
   return { dir, release, scope, settings };
 }
 
@@ -416,7 +479,8 @@ export async function main(argv: readonly string[], out: (line: string) => void)
   if (destroying) return destroyStage(run, api);
   const cells = cellsFile(run);
   const region = cells.get("REGION") as string;
-  await platformChecks(run, api, run.scope, region, envSecretNames(readFileSync(fileIn(dir, "composer/app.ts"), "utf8")));
+  const appTs = readFileSync(fileIn(dir, "composer/app.ts"), "utf8");
+  await platformChecks(run, api, { scope: run.scope, app: appModuleName(appTs), names: envSecretNames(appTs) }, region);
   const issuer = await issuerChecks(run, api, region, cells);
   const running = await runningRelease(run);
   if (running) refuseCrossing(run, running);

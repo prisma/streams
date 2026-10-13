@@ -219,6 +219,41 @@ describe("deploy-release.sh", () => {
       `project ${w2.project}'s production variables holds no STREAMS_FEEDS_S3_ACCESS_KEY_ID: set them with set-secrets first`);
   }, 30_000);
 
+  test("refuses a --project other than the one prisma deploy adopts: by logicalId, else the workspace's oldest of the app's name", async () => {
+    const w = await world();
+    const { dir } = release(w, "rc-1");
+    const holdsSecrets = (id: string) => {
+      for (const n of NAMES) w.api.addVariable({ projectId: id, branchId: null, class: "production", key: n }, `${n}-x`);
+      return id;
+    };
+    const renamed = holdsSecrets(w.api.addProject("streams-cell-old", "eu-central-1").id);
+    refusedBeforeDeploy(w, await deploy({ ...w, project: renamed }, "production", dir),
+      `prisma deploy puts app streams-cell of workspace wksp_1 in project ${w.project} (the oldest project of that name), ` +
+        `not in --project ${renamed}`);
+    holdsSecrets(w.api.addProject("streams-cell", "eu-central-1", { workspaceId: "wksp_2", createdAt: "2020-01-01T00:00:00.000Z" }).id);
+    const older = holdsSecrets(w.api.addProject("streams-cell", "eu-central-1", { createdAt: "2021-01-01T00:00:00.000Z" }).id);
+    refusedBeforeDeploy(w, await deploy(w, "production", dir),
+      `prisma deploy puts app streams-cell of workspace wksp_1 in project ${older} (the oldest project of that name), ` +
+        `not in --project ${w.project}`);
+    const logical = holdsSecrets(w.api.addProject("cell-renamed", "eu-central-1", { logicalId: "streams-cell" }).id);
+    refusedBeforeDeploy(w, await deploy({ ...w, project: older }, "production", dir),
+      `prisma deploy puts app streams-cell of workspace wksp_1 in project ${logical} (its logicalId), not in --project ${older}`);
+    const ok = await deploy({ ...w, project: logical }, "production", dir);
+    expect([ok.code, ok.err, prismaRuns(w).length]).toEqual([3, "", 1]);
+  }, 60_000);
+
+  test("refuses a --branch other than the Branch prisma deploy --stage adopts, the project's Branch named as the stage", async () => {
+    const w = await world();
+    const { dir } = release(w, "rc-1");
+    const other = w.api.addBranch(w.project, "cert-old").id;
+    for (const n of NAMES) w.api.addVariable({ projectId: w.project, branchId: other, class: "preview", key: n }, `${n}-c`);
+    refusedBeforeDeploy(w, await deploy(w, "cert", dir, ["--branch", other]),
+      `project ${w.project} has no Branch named cert: prisma deploy --stage cert would create one, not deploy to --branch ${other}`);
+    const cert = w.api.addBranch(w.project, "cert").id;
+    refusedBeforeDeploy(w, await deploy(w, "cert", dir, ["--branch", other]),
+      `prisma deploy --stage cert deploys to Branch ${cert} of project ${w.project} (its Branch named cert), not to --branch ${other}`);
+  }, 30_000);
+
   test("refuses KEEP_AWAKE_UNTIL_MS in production's cells file", async () => {
     const w = await world();
     const { dir } = release(w, "rc-1", { cells: { production: cellsText("production", "cell_sc1", "eu-central-1", ["KEEP_AWAKE_UNTIL_MS=1760000000000"]) } });

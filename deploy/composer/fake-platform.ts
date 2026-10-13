@@ -11,6 +11,12 @@ export interface Project {
   id: string;
   name: string;
   defaultRegion: string | null;
+  /// The workspace the project is in (answered as workspace.id).
+  workspaceId: string;
+  /// The id Composer gives a project it creates (its app's name); null on
+  /// one made otherwise (provision-cell.py, the Console).
+  logicalId: string | null;
+  createdAt: string;
 }
 export interface Branch {
   id: string;
@@ -74,8 +80,14 @@ export class FakePlatform {
     return `${prefix}_${this.seq}`;
   }
 
-  addProject(name: string, defaultRegion: string | null): Project {
-    const p = { id: this.id("proj"), name, defaultRegion };
+  /// A project in workspace wksp_1 unless `o` says otherwise, created
+  /// after every earlier one unless `o.createdAt` says otherwise.
+  addProject(name: string, defaultRegion: string | null, o: Partial<Pick<Project, "workspaceId" | "logicalId" | "createdAt">> = {}): Project {
+    const id = this.id("proj");
+    const p = {
+      id, name, defaultRegion, workspaceId: "wksp_1", logicalId: null,
+      createdAt: new Date(1_760_000_000_000 + this.seq * 1000).toISOString(), ...o,
+    };
     this.projects.push(p);
     return p;
   }
@@ -143,7 +155,9 @@ export class FakePlatform {
       case "GET projects":
         return this.page(this.projects.map((p) => this.project(p)), url);
       case "POST projects": {
-        const p = this.addProject(body.name, body.region ?? null);
+        const p = this.addProject(body.name, body.region ?? null, {
+          ...(body.workspaceId ? { workspaceId: body.workspaceId } : {}), logicalId: body.logicalId ?? null,
+        });
         return this.json(201, { data: this.project(p) });
       }
       case "GET projects/*": {
@@ -224,8 +238,8 @@ export class FakePlatform {
     }
   }
 
-  private project(p: Project) {
-    return { ...p, type: "project", workspace: { id: "wksp_1", name: "streams" } };
+  private project({ workspaceId, ...p }: Project) {
+    return { ...p, type: "project", workspace: { id: workspaceId, name: "streams" } };
   }
 
   private bucket(b: Bucket) {

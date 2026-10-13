@@ -121,6 +121,14 @@ export const inScope = (s: Scope, row: any) =>
   row?.class === s.class &&
   (s.class === "preview" ? row?.branchId === s.branch : row?.branchId === null || row?.branchId === undefined);
 
+/// The module name an app's app.ts gives Composer, which names the
+/// project `prisma deploy` deploys the app into (D0 finding 4).
+export function appModuleName(appTs: string): string {
+  const m = appTs.match(/^export default module\("([^"]+)",/m);
+  if (!m) throw new AdminError("the app's app.ts names no module");
+  return m[1];
+}
+
 /// The envSecret names an app's app.ts binds, in its order: the names the
 /// platform must hold before Composer deploys it.
 export function envSecretNames(appTs: string): string[] {
