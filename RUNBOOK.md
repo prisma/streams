@@ -1078,6 +1078,35 @@ or a log) and redeploy the watch. A row 19 page whose `error_code` is
 `kid_unknown` or another auth code while `/health` is green is what the
 canary exists for: start at "Keys feed and binary change together".
 
+**Drills (rows 1, 2, 3, 6, 7, 12, 13, 19 and 21).** Each drill makes
+its rule happen on a local cell and checks that it pages:
+`deploy/cell-watch/drills.e2e.test.ts` runs the watch in `prisma dev`
+with `NOTIFY_ONLY=0` against the real binary over s3lite, sending to
+`pager.ts`, a local stand-in for the paging tool with rows 1 and 2's
+checks. Build both binaries (`cargo build --locked --bin streams-slate
+--bin s3lite`) and install `deploy/cell-watch` (`bun install
+--frozen-lockfile`), then run `CELL_WATCH_E2E_BIN_DIR=target/debug
+CELL_WATCH_DRILLS=1 bun test ./deploy/cell-watch/drills.e2e.test.ts`
+(about 25 minutes: each rule waits as long as it does on a cell). In
+order, each paged and, where the cell can be put right, resolved: a
+policy naming `PROJECT_ID` in the bundle (row 7); the three feed files
+deleted, as the wrapper's `feeds deleted` does (row 6, once a feed is
+75 s old); `POST /v1/debug/history-stall?ms=35000` (row 13); `POST
+/v1/debug/absorb-pause?on=1` until the absorb-lag latch engages (row 12;
+the drill's cell sets `MAX_ABSORB_LAG_SECS=150`, so it engages in
+minutes, not 15); the cell stopped (row 3 after 2 min and the uptime
+check after 3 failures; its return notifies row 4); the watch killed
+(the heartbeat, 3 min after its last beat); then, on a cell with the
+issuer and the canary, the issuer stopped (row 21) and a keys feed
+carrying the issuer's key under another kid for
+`prisma-streams-internal` (row 19: the cell retires the kid the issuer
+signs with, so every customer token answers `401 kid_unknown` while
+`/health` is green). The other PAGE rules (row 4's crash loop, 9, 11,
+14, 15, 16 and 22) are held by `rules.ts`'s tests alone. On Compute the
+same drills, on the certification cell under the Q5 field approval and
+with the watch sending to the paging service, must each ring
+`<on-call>`'s phone (§7.5).
+
 A single-server shared cell publishes no `prisma-streams-internal` key and
 sets no `FLEET_INTERNAL_TOKEN`: its internal surface opens to nothing. A
 key for that audience in its keys feed is an incident.

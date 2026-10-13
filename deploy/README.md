@@ -126,7 +126,10 @@ Six more directories:
   `dev.e2e.test.ts`) are opt-in. `pager.ts` stands in for the paging tool
   locally: Events v2 incidents by dedup key, a page for `critical` and a
   notification otherwise, and rows 1 and 2's uptime check and heartbeat
-  monitor with RUNBOOK's numbers (`pager.test.ts`).
+  monitor with RUNBOOK's numbers (`pager.test.ts`). `drills.e2e.test.ts`
+  runs RUNBOOK's shared-cell drills through it, one per PAGE rule they
+  name (`CELL_WATCH_DRILLS=1` as well; about 25 minutes), on the cell and
+  `prisma dev` rig it shares with `dev.e2e.test.ts` (`e2e-rig.ts`).
 
 All verify the download is an **x86_64 ELF** before exec. That check is
 not politeness: an aarch64 binary deploys "successfully" and crash-loops

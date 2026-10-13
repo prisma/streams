@@ -3,8 +3,8 @@
 // each with the rule RULES runs for it, its class and where it is paged;
 // §7.5 says who answers, beside the Compute escalation contact; §8 states
 // the operator surface's bearer gate; the canary's paragraph makes the
-// watch's credential with the scopes it needs. Run with
-// `bun test ./deploy/cell-watch`.
+// watch's credential with the scopes it needs; the drills' paragraph runs
+// drills.e2e.test.ts (B8). Run with `bun test ./deploy/cell-watch`.
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -85,6 +85,47 @@ describe("RUNBOOK.md's canary paragraph", () => {
       "`cell-admin credential --project sp_canary_<cell id> --hidden --name watch",
       `--scopes "${CANARY_SCOPES}"`,
       "secret `CANARY_CREDENTIAL`",
+    ]) {
+      expect([want, text.includes(want)]).toEqual([want, true]);
+    }
+  });
+});
+
+/// The paragraph that starts with `marker`, its whitespace runs made single spaces.
+function paragraph(marker: string): string {
+  const from = LINES.findIndex((l) => l.startsWith(marker));
+  if (from < 0) return "";
+  const to = LINES.findIndex((l, i) => i > from && l.trim() === "");
+  return LINES.slice(from, to < 0 ? undefined : to).join(" ").replace(/\s+/g, " ");
+}
+
+describe("RUNBOOK.md's drills paragraph", () => {
+  const text = paragraph("**Drills (rows 1, 2, 3, 6, 7, 12, 13, 19 and 21).**");
+
+  test("follows the alert table and runs drills.e2e.test.ts on the built binaries", () => {
+    const at = LINES.findIndex((l) => l.startsWith("**Drills ("));
+    expect(at).toBeGreaterThan(LINES.findIndex((l) => l.startsWith("**The canary (rows 19 and 22).**")));
+    for (const want of [
+      "`cargo build --locked --bin streams-slate --bin s3lite`",
+      "`CELL_WATCH_E2E_BIN_DIR=target/debug CELL_WATCH_DRILLS=1 bun test ./deploy/cell-watch/drills.e2e.test.ts`",
+      "`NOTIFY_ONLY=0`",
+      "`pager.ts`",
+    ]) {
+      expect([want, text.includes(want)]).toEqual([want, true]);
+    }
+  });
+
+  test("names each drill's cause beside its row, and the PAGE rules without one", () => {
+    for (const want of [
+      "a policy naming `PROJECT_ID` in the bundle (row 7)",
+      "the three feed files deleted, as the wrapper's `feeds deleted` does (row 6",
+      "`POST /v1/debug/history-stall?ms=35000` (row 13)",
+      "`POST /v1/debug/absorb-pause?on=1` until the absorb-lag latch engages (row 12",
+      "the cell stopped (row 3 after 2 min and the uptime check after 3 failures",
+      "the watch killed (the heartbeat, 3 min after its last beat)",
+      "the issuer stopped (row 21)",
+      "`prisma-streams-internal` (row 19",
+      "The other PAGE rules (row 4's crash loop, 9, 11, 14, 15, 16 and 22)",
     ]) {
       expect([want, text.includes(want)]).toEqual([want, true]);
     }
