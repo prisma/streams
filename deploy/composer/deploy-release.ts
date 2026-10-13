@@ -32,6 +32,9 @@
 //   9. cell-check, within 5 minutes, when --cell-url names the cell;
 //  10. one line appended to deploy-log.jsonl beside the releases:
 //      {stage, project, branch, tag, server_sha256, at, result}.
+// With --destroy, after steps 1 and 2 (and never for production): the
+// release's destroy.ts, Composer's destroy of the named stage, from the
+// release root in the same narrow environment, logged as destroyed.
 import { appendFileSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { type Flags, parseFlags } from "../cell-admin/args";
@@ -55,13 +58,14 @@ import { buildChildEnv, PROFILES, STAGES } from "./streams/env";
 
 const USAGE = `usage: PRISMA_TOKEN_FILE=F deploy/composer/deploy-release.sh <stage> <release-dir>
   --project ID [--branch ID] --workspace ID --state DIR|s3://... [--s3-credentials F]
-  [--cell-url URL --bearer-file F --canary-token-file T] [--management-api URL]`;
+  [--cell-url URL --bearer-file F --canary-token-file T] [--management-api URL]
+or: ... <scratch|cert> <release-dir> --project ID --branch ID --workspace ID --destroy`;
 export const DEPLOY_LOG = "deploy-log.jsonl";
 const CELL_CHECK_DEADLINE_SECS = 300;
 const PROBE_TIMEOUT_MS = 15_000;
-/// What the stage's deploy did, as deploy-log.jsonl records it; the first
-/// three mean the release was deployed.
-type Result = "pass" | "fail" | "unchecked" | "deploy_failed";
+/// What a run did to the stage, as deploy-log.jsonl records it; the first
+/// three mean the release was deployed, "destroyed" that no cell is left.
+type Result = "pass" | "fail" | "unchecked" | "deploy_failed" | "destroyed" | "destroy_failed";
 const DEPLOYED: readonly Result[] = ["pass", "fail", "unchecked"];
 
 interface Run {
@@ -184,7 +188,8 @@ async function runningIdentity(run: Run): Promise<{ sha: string; commit: string 
   return { sha: load.binary_sha256, commit: load.git_commit };
 }
 
-/// The deploy log's last deployed release for the stage's scope.
+/// The release the deploy log last deployed to the stage's scope, unless
+/// a destroy came after it.
 function lastDeployed(run: Run): string | null {
   const log = join(dirname(run.dir), DEPLOY_LOG);
   if (!existsSync(log)) return null;
@@ -193,8 +198,10 @@ function lastDeployed(run: Run): string | null {
     .split("\n")
     .filter((l) => l.trim() !== "")
     .map((l) => JSON.parse(l))
-    .filter((e) => e.stage === run.stage && e.project === run.scope.project && (e.branch ?? null) === branch && DEPLOYED.includes(e.result));
-  return mine.length ? mine[mine.length - 1].tag : null;
+    .filter((e) => e.stage === run.stage && e.project === run.scope.project && (e.branch ?? null) === branch)
+    .filter((e) => DEPLOYED.includes(e.result) || e.result === "destroyed");
+  const last = mine[mine.length - 1];
+  return last && last.result !== "destroyed" ? last.tag : null;
 }
 
 /// Step 6: the running release, or null for "no cell yet".
@@ -216,7 +223,7 @@ async function runningRelease(run: Run): Promise<Release | null> {
   }
   const tag = lastDeployed(run);
   if (tag === null) {
-    run.out(`deploy-release: no cell yet: nothing answers for ${run.stage} and no deploy of it is logged`);
+    run.out(`deploy-release: no cell yet: nothing answers for ${run.stage} and the deploy log holds no live deploy of it`);
     return null;
   }
   run.out(`deploy-release: no cell answers; ${DEPLOY_LOG} last deployed release ${tag} to ${run.stage}`);
@@ -249,27 +256,42 @@ function refuseCrossing(run: Run, running: Release): void {
   }
 }
 
-/// Step 8: the release's own CLI, from the release root, in an
-/// environment of exactly these names.
-async function prismaDeploy(run: Run, api: Platform, region: string): Promise<boolean> {
-  const cli = join(run.dir, "node_modules", ".bin", "prisma");
-  if (!existsSync(cli)) throw new AdminError(`${cli} does not exist: the release carries its own pinned CLI`);
-  const args = ["deploy", "deploy/composer/app.ts", ...(run.stage === "production" ? [] : ["--stage", run.stage])];
-  run.out(`deploy-release: prisma ${args.join(" ")} (release ${run.release.tag}, ${describeScope(run.scope)}, ${region})`);
-  const child = Bun.spawn([cli, ...args], {
+/// Run `argv` from the release root in an environment of PATH, HOME, the
+/// workspace, the token and `extra`, and nothing else.
+async function fromRelease(run: Run, api: Platform, argv: string[], extra: Record<string, string>): Promise<boolean> {
+  const child = Bun.spawn(argv, {
     cwd: run.dir,
     env: {
       PATH: process.env.PATH ?? "/usr/bin:/bin",
       HOME: process.env.HOME ?? "/",
-      CELL_STAGE: run.stage,
-      PRISMA_REGION: region,
       PRISMA_WORKSPACE_ID: run.flags.must("workspace"),
       PRISMA_SERVICE_TOKEN: api.bearer,
+      ...extra,
     },
     stdout: "inherit",
     stderr: "inherit",
   });
   return (await child.exited) === 0;
+}
+
+/// Step 8: the release's own pinned CLI.
+async function prismaDeploy(run: Run, api: Platform, region: string): Promise<boolean> {
+  const cli = join(run.dir, "node_modules", ".bin", "prisma");
+  if (!existsSync(cli)) throw new AdminError(`${cli} does not exist: the release carries its own pinned CLI`);
+  const args = ["deploy", "deploy/composer/app.ts", ...(run.stage === "production" ? [] : ["--stage", run.stage])];
+  run.out(`deploy-release: prisma ${args.join(" ")} (release ${run.release.tag}, ${describeScope(run.scope)}, ${region})`);
+  return fromRelease(run, api, [cli, ...args], { CELL_STAGE: run.stage, PRISMA_REGION: region });
+}
+
+/// --destroy: Composer's destroy of a named stage (the release's
+/// destroy.ts, D0 finding 3). The buckets stay.
+async function destroyStage(run: Run, api: Platform): Promise<number> {
+  run.out(`deploy-release: destroying stage ${run.stage} (${describeScope(run.scope)}); its buckets stay for provision-cell.py --teardown`);
+  const destroyed = await fromRelease(run, api, [process.execPath, join(run.dir, "destroy.ts"), run.stage], {});
+  logDeploy(run, destroyed ? "destroyed" : "destroy_failed");
+  if (!destroyed) throw new AdminError(`the destroy of stage ${run.stage} failed`);
+  run.out(`deploy-release: stage ${run.stage} is destroyed`);
+  return 0;
 }
 
 /// Step 9.
@@ -299,7 +321,8 @@ function logDeploy(run: Run, result: Result): void {
   appendFileSync(join(dirname(run.dir), DEPLOY_LOG), `${JSON.stringify(entry)}\n`);
 }
 
-/// Exit 0 deployed and checked, 3 deployed with no --cell-url to check.
+/// Exit 0 deployed and checked (or destroyed), 3 deployed with no
+/// --cell-url to check.
 export async function main(argv: readonly string[], out: (line: string) => void): Promise<number> {
   const [stage, rawDir, ...rest] = argv;
   if (!(STAGES as readonly string[]).includes(stage ?? "") || !rawDir || rawDir.startsWith("--")) {
@@ -310,8 +333,16 @@ export async function main(argv: readonly string[], out: (line: string) => void)
       "project", "branch", "workspace", "state", "s3-credentials", "cell-url", "bearer-file", "canary-token-file",
       "management-api",
     ],
-    required: ["project", "workspace", "state"],
+    bool: ["destroy"],
+    required: ["project", "workspace"],
   });
+  const destroying = flags.has("destroy");
+  if (destroying && stage === "production") {
+    throw new AdminError(
+      "--destroy takes a named stage (scratch or cert, deployed with --stage); the default stage, production, is never destroyed",
+    );
+  }
+  if (!destroying) flags.must("state");
   if (flags.has("cell-url") && !(flags.has("bearer-file") && flags.has("canary-token-file"))) {
     throw new AdminError("--cell-url goes with --bearer-file and --canary-token-file (cell-check needs both)", 2);
   }
@@ -323,8 +354,9 @@ export async function main(argv: readonly string[], out: (line: string) => void)
   if (basename(dir) !== run.release.tag) {
     throw new AdminError(`${dir} holds release ${run.release.tag}: a release lives in the directory of its tag`);
   }
-  const region = cellsFile(run).get("REGION") as string;
   const api = Platform.open(flags.get("management-api") ?? MANAGEMENT_API);
+  if (destroying) return destroyStage(run, api);
+  const region = cellsFile(run).get("REGION") as string;
   await platformChecks(run, api, region, envSecretNames(readFileSync(fileIn(dir, "composer/app.ts"), "utf8")));
   const running = await runningRelease(run);
   if (running) refuseCrossing(run, running);

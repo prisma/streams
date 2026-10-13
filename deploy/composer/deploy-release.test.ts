@@ -48,6 +48,12 @@ ${cellUrl ? `await fetch(${JSON.stringify(`${cellUrl}/__deploy`)}, { method: "PO
 process.exit(${code});
 `;
 
+/// A fake destroy.ts, as the release carries it at its root: records how
+/// it was run.
+const destroyScript = (record: string) => `import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(record)}, JSON.stringify({ argv: ["destroy", ...process.argv.slice(2)], env: process.env, cwd: process.cwd() }) + "\\n");
+`;
+
 interface World {
   root: string;
   releases: string;
@@ -83,7 +89,9 @@ async function world(): Promise<World> {
   const files = { bearer: join(root, "bearer"), canary: join(root, "canary") };
   writeFileSync(files.bearer, "operator-bearer", { mode: 0o600 });
   writeFileSync(files.canary, canary, { mode: 0o600 });
-  return { root, releases, api, project, tokenFile, record: join(root, "prisma-runs"), state: c.state, cell, files, tree: fakeTree() };
+  const record = join(root, "prisma-runs");
+  const tree = fakeTree((t) => writeFileSync(join(t, "deploy/composer/destroy.ts"), destroyScript(record)));
+  return { root, releases, api, project, tokenFile, record, state: c.state, cell, files, tree };
 }
 
 /// A release <tag> in the world's releases directory, from its tree unless
@@ -138,7 +146,7 @@ describe("deploy-release.sh", () => {
     const { dir, release: r } = release(w, "rc-1");
     const run = await deploy(w, "production", dir);
     expect([run.code, run.err]).toEqual([3, ""]);
-    expect(run.out).toContain("deploy-release: no cell yet: nothing answers for production and no deploy of it is logged");
+    expect(run.out).toContain("deploy-release: no cell yet: nothing answers for production and the deploy log holds no live deploy of it");
     expect(run.out).toContain("deploy-release: cell cell_sc1: the profiles give its fixed sizing");
     const [p] = prismaRuns(w);
     expect([p.argv, realpathSync(p.cwd), Object.keys(p.env).sort()]).toEqual([
@@ -273,6 +281,37 @@ describe("deploy-release.sh", () => {
     expect([shared.code, shared.err.trim(), prismaRuns(w).length]).toEqual([
       1, `deploy-release: project ${w.project} holds branchless preview STREAMS_CURSOR_KEY, which every named stage sees: delete them`, 1,
     ]);
+  }, 30_000);
+
+  test("--destroy never takes the default stage: refused before it reads anything", async () => {
+    const w = await world();
+    const { dir } = release(w, "rc-1");
+    const r = await deploy(w, "production", dir, ["--destroy"]);
+    refusedBeforeDeploy(w, r,
+      "--destroy takes a named stage (scratch or cert, deployed with --stage); the default stage, production, is never destroyed");
+    expect(w.api.requests).toEqual([]);
+  }, 30_000);
+
+  test("--destroy of a named stage runs the release's destroy.ts in the narrow environment, and the stage has no cell after", async () => {
+    const w = await world();
+    const branch = w.api.addBranch(w.project, "cert").id;
+    for (const n of NAMES) w.api.addVariable({ projectId: w.project, branchId: branch, class: "preview", key: n }, `${n}-c`);
+    const { dir } = release(w, "rc-1");
+    expect((await deploy(w, "cert", dir, ["--branch", branch])).code).toBe(3);
+    const gone = await deploy(w, "cert", dir, ["--branch", branch, "--destroy"]);
+    expect([gone.code, gone.err]).toEqual([0, ""]);
+    expect(gone.out).toContain("deploy-release: stage cert is destroyed");
+    const d = prismaRuns(w)[1];
+    expect([d.argv, realpathSync(d.cwd), Object.keys(d.env).sort(), d.env.PRISMA_SERVICE_TOKEN]).toEqual([
+      ["destroy", "cert"], realpathSync(dir), ["HOME", "PATH", "PRISMA_SERVICE_TOKEN", "PRISMA_WORKSPACE_ID"], w.api.token,
+    ]);
+    expect(log(w).map((e) => [e.stage, e.tag, e.result])).toEqual([["cert", "rc-1", "unchecked"], ["cert", "rc-1", "destroyed"]]);
+    const { dir: next } = release(w, "rc-2");
+    const path = join(next, "deploy", "release.json");
+    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), layout_version: 6 }));
+    const fresh = await deploy(w, "cert", next, ["--branch", branch]);
+    expect([fresh.code, fresh.err]).toEqual([3, ""]);
+    expect(fresh.out).toContain("deploy-release: no cell yet: nothing answers for cert and the deploy log holds no live deploy of it");
   }, 30_000);
 
   test("a failed CLI run is logged and refused; --cell-url without cell-check's files is usage", async () => {

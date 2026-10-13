@@ -6,6 +6,7 @@
 // The release root is the Composer project root, the working directory of
 // `prisma deploy deploy/composer/app.ts`:
 //   package.json, bun.lock, prisma.config.ts  deploy/composer's, byte for byte
+//   destroy.ts                                deploy/composer's: --destroy's control script
 //   node_modules/                             `bun install --frozen-lockfile` at the cut
 //   bin/s3lite                                the commit's x86_64-musl s3lite (the rigs')
 //   deploy/                                   the cell service's build dir, shipped whole:
@@ -51,6 +52,7 @@ const REPO_FILES: readonly (readonly [string, string])[] = [
   ["package.json", "deploy/composer/package.json"],
   ["bun.lock", "deploy/composer/bun.lock"],
   ["prisma.config.ts", "deploy/composer/prisma.config.ts"],
+  ["destroy.ts", "deploy/composer/destroy.ts"],
   ...[
     "deploy/composer/app.ts",
     "deploy/composer/streams/service.ts",

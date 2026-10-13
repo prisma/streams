@@ -32,6 +32,7 @@ export const TREE_FILES = [
   "deploy/composer/package.json",
   "deploy/composer/bun.lock",
   "deploy/composer/prisma.config.ts",
+  "deploy/composer/destroy.ts",
   "deploy/composer/app.ts",
   "deploy/composer/streams/service.ts",
   "deploy/composer/streams/entry.ts",

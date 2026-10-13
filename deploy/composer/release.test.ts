@@ -81,6 +81,7 @@ describe("stageRelease", () => {
       "deploy/profiles/compute-1g.env",
       "deploy/profiles/shared-cell.env",
       "deploy/release.json",
+      "destroy.ts",
       "node_modules",
       "package.json",
       "prisma.config.ts",

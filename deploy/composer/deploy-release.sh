@@ -7,6 +7,8 @@
 #     --project ID [--branch ID] --workspace ID --state DIR|s3://...
 #     [--s3-credentials F] [--cell-url URL --bearer-file F
 #     --canary-token-file T] [--management-api URL]
+#   PRISMA_TOKEN_FILE=F deploy/composer/deploy-release.sh <scratch|cert>
+#     <release-dir> --project ID --branch ID --workspace ID --destroy
 #
 # <stage> is production (the app's default stage) or scratch or cert (named
 # stages: Branches of the project, --branch). <release-dir> is one
@@ -30,7 +32,11 @@
 # `cell-admin check-sizing` refuses. Then the release's own pinned `prisma
 # deploy`, from the release root, then cell-check within 5 minutes.
 #
-# Exit codes: 0 deployed and cell-check passed; 1 refused, or failed (the
+# --destroy (scratch or cert only, never production) runs the release's
+# destroy.ts instead: Composer's destroy of that named stage, whose
+# buckets stay for `provision-cell.py <stage> --teardown`.
+#
+# Exit codes: 0 deployed and cell-check passed (or destroyed); 1 refused, or failed (the
 # message says whether anything deployed); 2 usage; 3 deployed, cell-check
 # not run (no --cell-url: run it with the service's address). The work is
 # deploy-release.ts's; this name is the operator's command.
