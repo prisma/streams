@@ -35,7 +35,9 @@ import { S3Client } from "bun";
 import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { main as cellAdmin } from "../../deploy/cell-admin/cell-admin.ts";
-import { loadState, STATE_FILE, writeDurable } from "../../deploy/cell-admin/state.ts";
+import { loadChecked } from "../../deploy/cell-admin/publish.ts";
+import { type CellState, STATE_FILE, writeDurable } from "../../deploy/cell-admin/state.ts";
+import { DirStore } from "../../deploy/cell-admin/store.ts";
 import { cellSigningKey, customerClaims, signJwt } from "../../deploy/cell-admin/tokens.ts";
 import { Opts, installSignals, parseFlags, sleep, stop } from "./common.ts";
 import { expand, readManifest, type Plan } from "./tenant-plan.ts";
@@ -48,6 +50,12 @@ const SUB = "tenants-harness";
 type Say = (line: string) => void;
 
 // ---------------------------------------------------------------- admit
+
+/** The cell's state as cell-admin reads it: through its directory store,
+ *  refused when it is older than its published bundle (a stale restore). */
+async function readCell(dir: string): Promise<CellState> {
+  return (await loadChecked(new DirStore(resolve(dir)))).state;
+}
 
 /** cell-admin's CLI, in-process; its output goes to `say` prefixed. */
 async function cli(argv: string[], say: Say): Promise<number> {
@@ -75,7 +83,7 @@ export async function admit(plan: Plan, o: Opts, say: Say): Promise<{ admitted: 
     if ((await cli(argv, say)) !== 0) throw new Error("cell-admin init failed");
     say(`initialised cell ${ids[0]} in ${dir}`);
   }
-  const held = new Set(Object.keys(loadState(dir).projects));
+  const held = new Set(Object.keys((await readCell(dir)).projects));
   let admitted = 0;
   const failed: string[] = [];
   for (const p of plan.projects) {
@@ -120,8 +128,8 @@ export async function putVerified(up: Upload, data: string): Promise<void> {
 }
 
 /** One token per project of the manifest, from its customer credential. */
-export function mintMap(plan: Plan, stateDir: string, keyFile: string, ttl: number): Array<{ project: string; token: string }> {
-  const state = loadState(stateDir);
+export async function mintMap(plan: Plan, stateDir: string, keyFile: string, ttl: number): Promise<Array<{ project: string; token: string }>> {
+  const state = await readCell(stateDir);
   const sk = cellSigningKey(state, keyFile);
   const byProject = new Map<string, string>();
   for (const [id, c] of Object.entries(state.credentials)) {
@@ -142,7 +150,7 @@ export async function tokens(plan: Plan, o: Opts, say: Say, signal: AbortSignal)
   const up = uploadTarget(o);
   let rounds = 0;
   do {
-    const map = mintMap(plan, state, keyFile, ttl);
+    const map = await mintMap(plan, state, keyFile, ttl);
     const text = JSON.stringify(map);
     writeDurable(out, text);
     if (up) await putVerified(up, text);

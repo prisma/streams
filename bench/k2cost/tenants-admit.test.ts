@@ -7,6 +7,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { chmodSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { canaryProjectId } from "../../deploy/cell-admin/rules.ts";
 import { cleanup, keyFile, readBundle, readState, scratchDir, verifiedClaims } from "../../deploy/cell-admin/test-rig.ts";
 import { Opts } from "./common.ts";
 import { expand, type Manifest } from "./tenant-plan.ts";
@@ -68,7 +69,8 @@ test("admit places every project with its workspace and quota set through cell-a
   expect([first.code, first.out.at(-1)]).toEqual([0, "admit: 6 admitted, 0 already held, 0 failed of 6"]);
   const st = readState(w.state);
   const plan = expand(manifest, "");
-  expect(Object.keys(st.projects).sort()).toEqual(plan.projects.map((p) => p.id).sort());
+  // The manifest's projects, beside the canary cell-admin's init places.
+  expect(Object.keys(st.projects).sort()).toEqual([...plan.projects.map((p) => p.id), canaryProjectId("cell_t")].sort());
   for (const p of plan.projects) expect(st.projects[p.id]!.workspace_id).toBe(p.workspace);
   const flood = st.projects["proj_adm_flood_0000"]!.quotas;
   const app = st.projects["proj_adm_app_0000"]!.quotas;
