@@ -31,7 +31,15 @@
 //      PRISMA_SERVICE_TOKEN only;
 //   9. cell-check, within 5 minutes, when --cell-url names the cell;
 //  10. one line appended to deploy-log.jsonl beside the releases:
-//      {stage, project, branch, tag, server_sha256, at, result}.
+//      {app, stage, project, branch, tag, server_sha256, at, result}.
+// With --issuer-release-dir (the interim issuer, Q6 (b)): its release
+// (cut-release's <tag>-issuer) must be cut from the cell's commit and pass
+// the same rules, its stages/<stage>.env must name the cell's CELL_ID,
+// and its project (--issuer-project, --issuer-branch) must be in the
+// region and hold its secrets, all before the cell deploys; the issuer
+// deploys from its release root after the cell's deploy (and cell-check,
+// when run) passed, with its settings as the envParams `prisma deploy`
+// reads, and is logged as app "issuer".
 // With --destroy, after steps 1 and 2 (and never for production): the
 // release's destroy.ts, Composer's destroy of the named stage, from the
 // release root in the same narrow environment, logged as destroyed.
@@ -53,12 +61,13 @@ import {
   scopeOf,
   scopeQuery,
 } from "./platform";
-import { checkRelease, type Release, readRelease } from "./release";
+import { checkIssuerRelease, checkRelease, type IssuerRelease, issuerSettings, type Release, readRelease } from "./release";
 import { buildChildEnv, PROFILES, STAGES } from "./streams/env";
 
 const USAGE = `usage: PRISMA_TOKEN_FILE=F deploy/composer/deploy-release.sh <stage> <release-dir>
   --project ID [--branch ID] --workspace ID --state DIR|s3://... [--s3-credentials F]
   [--cell-url URL --bearer-file F --canary-token-file T] [--management-api URL]
+  [--issuer-release-dir DIR --issuer-project ID [--issuer-branch ID]]
 or: ... <scratch|cert> <release-dir> --project ID --branch ID --workspace ID --destroy`;
 export const DEPLOY_LOG = "deploy-log.jsonl";
 const CELL_CHECK_DEADLINE_SECS = 300;
@@ -115,9 +124,8 @@ function cellsFile(run: Run): Map<string, string> {
   return cells;
 }
 
-/// Steps 4 and 5.
-async function platformChecks(run: Run, api: Platform, region: string, names: readonly string[]): Promise<void> {
-  const { scope } = run;
+/// Steps 4 and 5, for the cell's scope or the issuer's.
+async function platformChecks(run: Run, api: Platform, scope: Scope, region: string, names: readonly string[]): Promise<void> {
   const project = (await api.call("GET", `/projects/${encodeURIComponent(scope.project)}`)).body?.data;
   if (project?.defaultRegion !== region) {
     throw new AdminError(
@@ -198,7 +206,7 @@ function lastDeployed(run: Run): string | null {
     .split("\n")
     .filter((l) => l.trim() !== "")
     .map((l) => JSON.parse(l))
-    .filter((e) => e.stage === run.stage && e.project === run.scope.project && (e.branch ?? null) === branch)
+    .filter((e) => (e.app ?? "cell") === "cell" && e.stage === run.stage && e.project === run.scope.project && (e.branch ?? null) === branch)
     .filter((e) => DEPLOYED.includes(e.result) || e.result === "destroyed");
   const last = mine[mine.length - 1];
   return last && last.result !== "destroyed" ? last.tag : null;
@@ -256,11 +264,11 @@ function refuseCrossing(run: Run, running: Release): void {
   }
 }
 
-/// Run `argv` from the release root in an environment of PATH, HOME, the
-/// workspace, the token and `extra`, and nothing else.
-async function fromRelease(run: Run, api: Platform, argv: string[], extra: Record<string, string>): Promise<boolean> {
+/// Run `argv` from a release root (`cwd`) in an environment of PATH, HOME,
+/// the workspace, the token and `extra`, and nothing else.
+async function fromRelease(run: Run, api: Platform, cwd: string, argv: string[], extra: Record<string, string>): Promise<boolean> {
   const child = Bun.spawn(argv, {
-    cwd: run.dir,
+    cwd,
     env: {
       PATH: process.env.PATH ?? "/usr/bin:/bin",
       HOME: process.env.HOME ?? "/",
@@ -280,14 +288,14 @@ async function prismaDeploy(run: Run, api: Platform, region: string): Promise<bo
   if (!existsSync(cli)) throw new AdminError(`${cli} does not exist: the release carries its own pinned CLI`);
   const args = ["deploy", "deploy/composer/app.ts", ...(run.stage === "production" ? [] : ["--stage", run.stage])];
   run.out(`deploy-release: prisma ${args.join(" ")} (release ${run.release.tag}, ${describeScope(run.scope)}, ${region})`);
-  return fromRelease(run, api, [cli, ...args], { CELL_STAGE: run.stage, PRISMA_REGION: region });
+  return fromRelease(run, api, run.dir, [cli, ...args], { CELL_STAGE: run.stage, PRISMA_REGION: region });
 }
 
 /// --destroy: Composer's destroy of a named stage (the release's
 /// destroy.ts, D0 finding 3). The buckets stay.
 async function destroyStage(run: Run, api: Platform): Promise<number> {
   run.out(`deploy-release: destroying stage ${run.stage} (${describeScope(run.scope)}); its buckets stay for provision-cell.py --teardown`);
-  const destroyed = await fromRelease(run, api, [process.execPath, join(run.dir, "destroy.ts"), run.stage], {});
+  const destroyed = await fromRelease(run, api, run.dir, [process.execPath, join(run.dir, "destroy.ts"), run.stage], {});
   logDeploy(run, destroyed ? "destroyed" : "destroy_failed");
   if (!destroyed) throw new AdminError(`the destroy of stage ${run.stage} failed`);
   run.out(`deploy-release: stage ${run.stage} is destroyed`);
@@ -307,18 +315,64 @@ async function cellCheck(run: Run): Promise<boolean> {
   return (await child.exited) === 0;
 }
 
-/// Step 10.
-function logDeploy(run: Run, result: Result): void {
+/// Step 10: one line per app a run deploys or destroys.
+function logDeploy(run: Run, result: Result, issuer?: IssuerRun): void {
+  const scope = issuer ? issuer.scope : run.scope;
   const entry = {
+    app: issuer ? "issuer" : "cell",
     stage: run.stage,
-    project: run.scope.project,
-    branch: run.scope.class === "preview" ? run.scope.branch : null,
+    project: scope.project,
+    branch: scope.class === "preview" ? scope.branch : null,
     tag: run.release.tag,
     server_sha256: run.release.server_sha256,
     at: new Date().toISOString(),
     result,
   };
   appendFileSync(join(dirname(run.dir), DEPLOY_LOG), `${JSON.stringify(entry)}\n`);
+}
+
+/// The interim issuer's release, deployed in the same run (Q6 (b)).
+interface IssuerRun {
+  dir: string;
+  release: IssuerRelease;
+  scope: Scope;
+  settings: Map<string, string>;
+}
+
+/// The issuer's preconditions, all met before the cell deploys: its
+/// release cut from the cell's commit, under the rules; its settings for
+/// the stage, naming the cell's CELL_ID; its project in the cell's region,
+/// holding its secrets.
+async function issuerChecks(run: Run, api: Platform, region: string, cells: Map<string, string>): Promise<IssuerRun | null> {
+  const raw = run.flags.get("issuer-release-dir");
+  if (raw === undefined) return null;
+  const dir = resolve(raw);
+  const release = checkIssuerRelease(dir);
+  if (release.commit !== run.release.commit) {
+    throw new AdminError(`the issuer's release ${dir} is cut from ${release.commit}, the cell's from ${run.release.commit}: both deploy from one commit`);
+  }
+  if (release.stages[run.stage] === undefined) throw new AdminError(`the issuer's release ${dir} carries no stages/${run.stage}.env`);
+  const path = join(dir, "stages", `${run.stage}.env`);
+  const read = (p: string) => readFileSync(join(dir, p), "utf8");
+  const settings = issuerSettings(path, readFileSync(path, "utf8"), read("app.ts"), read("issuer/service.ts"));
+  if (settings.get("STREAMS_CELL_ID") !== cells.get("CELL_ID")) {
+    throw new AdminError(`${path} names STREAMS_CELL_ID=${settings.get("STREAMS_CELL_ID")}; the cell is ${cells.get("CELL_ID")}`);
+  }
+  const scope = scopeOf(run.stage, run.flags.must("issuer-project"), run.flags.get("issuer-branch"));
+  await platformChecks(run, api, scope, region, envSecretNames(read("app.ts")));
+  return { dir, release, scope, settings };
+}
+
+/// The issuer's deploy: its release's own CLI, from its root, its settings
+/// as the envParams prisma deploy reads.
+async function issuerDeploy(run: Run, api: Platform, region: string, issuer: IssuerRun): Promise<void> {
+  const cli = join(issuer.dir, "node_modules", ".bin", "prisma");
+  if (!existsSync(cli)) throw new AdminError(`${cli} does not exist: the issuer's release carries its own pinned CLI`);
+  const args = ["deploy", "app.ts", ...(run.stage === "production" ? [] : ["--stage", run.stage])];
+  run.out(`deploy-release: prisma ${args.join(" ")} (the issuer of ${issuer.release.tag}, ${describeScope(issuer.scope)})`);
+  const ok = await fromRelease(run, api, issuer.dir, [cli, ...args], { PRISMA_REGION: region, ...Object.fromEntries(issuer.settings) });
+  logDeploy(run, ok ? "unchecked" : "deploy_failed", issuer);
+  if (!ok) throw new AdminError(`the issuer's prisma deploy failed (the cell's deploy of ${run.release.tag} stands)`);
 }
 
 /// Exit 0 deployed and checked (or destroyed), 3 deployed with no
@@ -331,7 +385,7 @@ export async function main(argv: readonly string[], out: (line: string) => void)
   const flags = parseFlags(rest, {
     single: [
       "project", "branch", "workspace", "state", "s3-credentials", "cell-url", "bearer-file", "canary-token-file",
-      "management-api",
+      "management-api", "issuer-release-dir", "issuer-project", "issuer-branch",
     ],
     bool: ["destroy"],
     required: ["project", "workspace"],
@@ -343,10 +397,14 @@ export async function main(argv: readonly string[], out: (line: string) => void)
     );
   }
   if (!destroying) flags.must("state");
+  if (flags.has("issuer-release-dir") && (destroying || !flags.has("issuer-project"))) {
+    throw new AdminError("--issuer-release-dir deploys the issuer with the cell: it needs --issuer-project and takes no --destroy", 2);
+  }
   if (flags.has("cell-url") && !(flags.has("bearer-file") && flags.has("canary-token-file"))) {
     throw new AdminError("--cell-url goes with --bearer-file and --canary-token-file (cell-check needs both)", 2);
   }
-  refuseSecretsInEnv(envSecretNames(readFileSync(join(import.meta.dir, "app.ts"), "utf8")), process.env);
+  const apps = flags.has("issuer-release-dir") ? ["app.ts", "../composer-issuer/app.ts"] : ["app.ts"];
+  refuseSecretsInEnv([...new Set(apps.flatMap((a) => envSecretNames(readFileSync(join(import.meta.dir, a), "utf8"))))], process.env);
   const dir = resolve(rawDir);
   const run: Run = {
     stage, dir, flags, out, release: checkRelease(dir), scope: scopeOf(stage, flags.must("project"), flags.get("branch")),
@@ -356,8 +414,10 @@ export async function main(argv: readonly string[], out: (line: string) => void)
   }
   const api = Platform.open(flags.get("management-api") ?? MANAGEMENT_API);
   if (destroying) return destroyStage(run, api);
-  const region = cellsFile(run).get("REGION") as string;
-  await platformChecks(run, api, region, envSecretNames(readFileSync(fileIn(dir, "composer/app.ts"), "utf8")));
+  const cells = cellsFile(run);
+  const region = cells.get("REGION") as string;
+  await platformChecks(run, api, run.scope, region, envSecretNames(readFileSync(fileIn(dir, "composer/app.ts"), "utf8")));
+  const issuer = await issuerChecks(run, api, region, cells);
   const running = await runningRelease(run);
   if (running) refuseCrossing(run, running);
   await checkSizing(run);
@@ -367,13 +427,20 @@ export async function main(argv: readonly string[], out: (line: string) => void)
   }
   if (!flags.has("cell-url")) {
     logDeploy(run, "unchecked");
+    if (issuer) await issuerDeploy(run, api, region, issuer);
     out(`deploy-release: deployed ${run.release.tag} to ${stage}; run cell-check with the service's address (--cell-url) now`);
     return 3;
   }
   const passed = await cellCheck(run);
   logDeploy(run, passed ? "pass" : "fail");
-  if (!passed) throw new AdminError(`release ${run.release.tag} is deployed to ${stage} but cell-check failed: roll back with the previous release`);
-  out(`deploy-release: ${run.release.tag} is deployed to ${stage} and passed cell-check`);
+  if (!passed) {
+    throw new AdminError(
+      `release ${run.release.tag} is deployed to ${stage} but cell-check failed${issuer ? " (the issuer is not deployed)" : ""}: ` +
+        "roll back with the previous release",
+    );
+  }
+  if (issuer) await issuerDeploy(run, api, region, issuer);
+  out(`deploy-release: ${run.release.tag} is deployed to ${stage} and passed cell-check${issuer ? ", and its issuer after it" : ""}`);
   return 0;
 }
 

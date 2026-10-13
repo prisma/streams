@@ -17,7 +17,7 @@ import { cleanup, initCell, readBundle } from "../cell-admin/test-rig";
 import { FakeStreamsCell } from "./fake-cell";
 import { FakePlatform } from "./fake-platform";
 import type { Release } from "./release";
-import { cellsText, cleanupScratch, fakeTree, scratchDir, stage } from "./release-rig";
+import { cellsText, cleanupScratch, fakeTree, issuerSettingsText, scratchDir, stage, stageIssuer } from "./release-rig";
 
 const SCRIPT = join(import.meta.dir, "deploy-release.sh");
 const NAMES = [
@@ -30,6 +30,17 @@ const NAMES = [
   "STREAMS_FEEDS_S3_SECRET_ACCESS_KEY",
 ];
 const CANARY = "sp_canary_cell_sc1";
+const ISSUER_NAMES = [
+  "STREAMS_ISSUER_SIGNING_KEY",
+  "STREAMS_ISSUER_PEPPER",
+  "STREAMS_ISSUER_SESSION_KEY",
+  "STREAMS_ISSUER_OAUTH_CLIENT_SECRET",
+  "STREAMS_ISSUER_METRICS_TOKEN",
+  "STREAMS_CONTROL_S3_ACCESS_KEY_ID",
+  "STREAMS_CONTROL_S3_SECRET_ACCESS_KEY",
+  "STREAMS_FEEDS_S3_ACCESS_KEY_ID",
+  "STREAMS_FEEDS_S3_SECRET_ACCESS_KEY",
+];
 
 const stops: { stop(): void }[] = [];
 afterAll(() => {
@@ -43,8 +54,8 @@ afterAll(() => {
 const prismaScript = (record: string, cellUrl: string | null, code = 0) => `#!/usr/bin/env bun
 import { appendFileSync, readFileSync } from "node:fs";
 appendFileSync(${JSON.stringify(record)}, JSON.stringify({ argv: process.argv.slice(2), env: process.env, cwd: process.cwd() }) + "\\n");
-const r = JSON.parse(readFileSync("deploy/release.json", "utf8"));
-${cellUrl ? `await fetch(${JSON.stringify(`${cellUrl}/__deploy`)}, { method: "POST", body: JSON.stringify({ commit: r.commit, sha: r.server_sha256 }) });` : ""}
+${cellUrl ? `const r = JSON.parse(readFileSync("deploy/release.json", "utf8"));
+await fetch(${JSON.stringify(`${cellUrl}/__deploy`)}, { method: "POST", body: JSON.stringify({ commit: r.commit, sha: r.server_sha256 }) });` : ""}
 process.exit(${code});
 `;
 
@@ -159,6 +170,7 @@ describe("deploy-release.sh", () => {
     ]);
     const [entry] = log(w);
     expect({ ...entry, at: typeof entry.at }).toEqual({
+      app: "cell",
       stage: "production", project: w.project, branch: null, tag: "rc-1", server_sha256: r.server_sha256, at: "string",
       result: "unchecked",
     });
@@ -313,6 +325,66 @@ describe("deploy-release.sh", () => {
     expect([fresh.code, fresh.err]).toEqual([3, ""]);
     expect(fresh.out).toContain("deploy-release: no cell yet: nothing answers for cert and the deploy log holds no live deploy of it");
   }, 30_000);
+
+  /// The issuer's project holding its nine secrets, and its release of
+  /// `tag` from `tree` with production's settings.
+  function issuer(w: World, tag: string, o: { tree?: World["tree"]; settings?: string } = {}) {
+    const project = w.api.projects.find((p) => p.name === "streams-issuer") ?? w.api.addProject("streams-issuer", "eu-central-1");
+    if (!w.api.variables.some((v) => v.projectId === project.id)) {
+      for (const n of ISSUER_NAMES) w.api.addVariable({ projectId: project.id, branchId: null, class: "production", key: n }, `${n}-i`);
+    }
+    const { dir } = stageIssuer({
+      ...(o.tree ?? w.tree), tag, releases: w.releases, settings: { production: o.settings ?? issuerSettingsText() },
+      prismaScript: prismaScript(w.record, null),
+    });
+    return { dir, project: project.id, args: ["--issuer-release-dir", dir, "--issuer-project", project.id] };
+  }
+
+  test("--issuer-release-dir deploys the issuer after the cell passed cell-check, from its own root, its settings as envParams", async () => {
+    const w = await world();
+    runs(w, release(w, "rc-1").release);
+    const { dir } = release(w, "rc-2");
+    const i = issuer(w, "rc-2");
+    const run = await deploy(w, "production", dir, [...withCell(w), ...i.args]);
+    expect([run.code, run.err]).toEqual([0, ""]);
+    expect(run.out).toContain("deploy-release: rc-2 is deployed to production and passed cell-check, and its issuer after it");
+    const [cell, iss] = prismaRuns(w);
+    expect(cell.argv).toEqual(["deploy", "deploy/composer/app.ts"]);
+    const settings = Object.fromEntries(issuerSettingsText().trim().split("\n").map((l) => l.split("=")));
+    expect([iss.argv, realpathSync(iss.cwd), iss.env]).toEqual([
+      ["deploy", "app.ts"], realpathSync(i.dir),
+      {
+        PATH: process.env.PATH, HOME: process.env.HOME, PRISMA_WORKSPACE_ID: "wksp_1", PRISMA_SERVICE_TOKEN: w.api.token,
+        PRISMA_REGION: "eu-central-1", ...settings,
+      },
+    ]);
+    expect(log(w).map((e) => [e.app, e.project, e.tag, e.result])).toEqual([
+      ["cell", w.project, "rc-2", "pass"], ["issuer", i.project, "rc-2", "unchecked"],
+    ]);
+  }, 60_000);
+
+  test("refuses, before the cell deploys: the issuer cut from another commit, settings naming another cell, an issuer secret unset or in the shell", async () => {
+    const w = await world();
+    const { dir } = release(w, "rc-1");
+    const other = issuer(w, "rc-1", { tree: fakeTree((t) => writeFileSync(join(t, "deploy/composer/streams/env.ts"), "// another commit\n")) });
+    refusedBeforeDeploy(w, await deploy(w, "production", dir, other.args),
+      `the issuer's release ${other.dir} is cut from ${JSON.parse(readFileSync(join(other.dir, "release.json"), "utf8")).commit}, ` +
+        `the cell's from ${w.tree.commit}: both deploy from one commit`);
+    const w2 = await world();
+    const { dir: dir2 } = release(w2, "rc-1");
+    const named = issuer(w2, "rc-1", { settings: issuerSettingsText("cell_other") });
+    refusedBeforeDeploy(w2, await deploy(w2, "production", dir2, named.args),
+      `${join(named.dir, "stages", "production.env")} names STREAMS_CELL_ID=cell_other; the cell is cell_sc1`);
+    const w3 = await world();
+    const { dir: dir3 } = release(w3, "rc-1");
+    const unset = issuer(w3, "rc-1");
+    w3.api.variables = w3.api.variables.filter((v) => !(v.projectId === unset.project && v.key === "STREAMS_ISSUER_PEPPER"));
+    refusedBeforeDeploy(w3, await deploy(w3, "production", dir3, unset.args),
+      `project ${unset.project}'s production variables holds no STREAMS_ISSUER_PEPPER: set them with set-secrets first`);
+    refusedBeforeDeploy(w3, await deploy(w3, "production", dir3, unset.args, { STREAMS_ISSUER_SIGNING_KEY: "pem" }),
+      "STREAMS_ISSUER_SIGNING_KEY is set in this shell's environment: a secret reaches the platform through set-secrets only " +
+        "(Composer's preflight would push it from here); unset it");
+  }, 60_000);
 
   test("a failed CLI run is logged and refused; --cell-url without cell-check's files is usage", async () => {
     const w = await world();

@@ -30,7 +30,10 @@
 //   bun deploy/composer/release.ts stage --tree DIR --commit SHA --tag TAG
 //     --build-unix N --cells DIR --server BIN --s3lite BIN --entry-js FILE
 //     --node-modules DIR --out DIR
-// is cut-release's staging step; it moves --node-modules into the release.
+//   bun deploy/composer/release.ts stage-issuer --tree DIR --commit SHA
+//     --tag TAG --cells DIR --entry-js FILE --node-modules DIR --out DIR
+// are cut-release's staging steps (the cell's, and the interim issuer's,
+// below); each moves --node-modules into its release.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -98,6 +101,13 @@ const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest(
 /// Refuse a release root that breaks the rules; its release.json otherwise.
 export function checkRelease(root: string): Release {
   const release = readRelease(root);
+  checkTree(root, RELEASE_JSON, release.files);
+  return release;
+}
+
+/// The rules over a release root whose manifest (at `manifest`, itself
+/// unlisted) lists `files`.
+function checkTree(root: string, manifest: string, files: Record<string, string>): void {
   const found = new Set<string>();
   const strays: string[] = [];
   const walk = (rel: string) => {
@@ -110,17 +120,16 @@ export function checkRelease(root: string): Release {
       else if (st.isSymbolicLink()) strays.push(`${path} (a symlink)`);
       else if (st.isDirectory()) walk(path);
       else if (!st.isFile()) strays.push(`${path} (not a regular file)`);
-      else if (path === RELEASE_JSON) continue;
-      else if (release.files[path] === undefined) strays.push(`${path} (not in release.json)`);
-      else if (sha256(readFileSync(join(root, path))) !== release.files[path]) strays.push(`${path} (changed since the cut)`);
+      else if (path === manifest) continue;
+      else if (files[path] === undefined) strays.push(`${path} (not in release.json)`);
+      else if (sha256(readFileSync(join(root, path))) !== files[path]) strays.push(`${path} (changed since the cut)`);
     }
   };
   walk("");
-  for (const path of Object.keys(release.files)) if (!found.has(path)) strays.push(`${path} (missing)`);
+  for (const path of Object.keys(files)) if (!found.has(path)) strays.push(`${path} (missing)`);
   if (strays.length) {
     throw new AdminError(`${root} is not the release it was cut as: ${strays.join(", ")}`);
   }
-  return release;
 }
 
 /// deploy/release.json of the release at `root`, unchecked.
@@ -290,18 +299,148 @@ export function keysContract(keysSchema: string, multitenancy: string): string {
   return rev;
 }
 
-function exactPin(pkg: { dependencies?: Record<string, string> }, name: string): string {
+function exactPin(pkg: { dependencies?: Record<string, string> }, name: string, where = "deploy/composer"): string {
   const v = pkg.dependencies?.[name];
   if (typeof v !== "string" || !/^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$/.test(v)) {
-    throw new AdminError(`deploy/composer/package.json pins ${name} at ${v}, not an exact version`);
+    throw new AdminError(`${where}/package.json pins ${name} at ${v}, not an exact version`);
   }
   return v;
+}
+
+/// The interim issuer's release directory (owner default Q6 (b); the
+/// issuer triage's B6): <releases>/<tag>-issuer, cut with the cell's from
+/// the same commit, the issuer app's Composer project root:
+///   package.json, bun.lock, prisma.config.ts, app.ts  deploy/composer-issuer's
+///   issuer/service.ts, issuer/entry.js                the service's build dir, which Composer ships
+///   stages/<stage>.env                                the stage's settings: the envParams
+///                                                     `prisma deploy` reads from its environment
+///   release.json                                      IssuerRelease
+///   node_modules/
+/// under the same rules as the cell's.
+export const ISSUER_RELEASE_JSON = "release.json";
+const ISSUER_FILES: readonly (readonly [string, string])[] = [
+  ["package.json", "deploy/composer-issuer/package.json"],
+  ["bun.lock", "deploy/composer-issuer/bun.lock"],
+  ["prisma.config.ts", "deploy/composer-issuer/prisma.config.ts"],
+  ["app.ts", "deploy/composer-issuer/app.ts"],
+  ["issuer/service.ts", "deploy/composer-issuer/issuer/service.ts"],
+];
+/// The prisma dev mock identity provider's setting: a deployed issuer has none.
+const DEV_ONLY_SETTING = "STREAMS_ISSUER_OAUTH_AUTHORITY";
+
+export interface IssuerRelease {
+  app: "issuer";
+  tag: string;
+  commit: string;
+  /// stage -> sha256 of stages/<stage>.env.
+  stages: Record<string, string>;
+  composer_version: string;
+  lockfile_sha256: string;
+  files: Record<string, string>;
+}
+
+export type IssuerStageInput = Omit<StageInput, "server" | "s3lite" | "buildUnix">;
+
+/// The envParam names an app's app.ts binds, in its order.
+export const envParamNames = (appTs: string) => [...appTs.matchAll(/^\s*\w+: envParam\("([A-Z0-9_]+)"\),$/gm)].map((m) => m[1]);
+
+/// A stage's issuer settings (<stage>.issuer.env): space-free KEY=VALUE,
+/// each key once, only the envParams the issuer's app binds, every one its
+/// service does not mark optional, and never the dev-only one.
+export function issuerSettings(path: string, text: string, appTs: string, serviceTs: string): Map<string, string> {
+  const env = parseProfiles([{ path, text }]);
+  const keys = text.split("\n").map((l) => l.trim()).filter((l) => l !== "" && !l.startsWith("#")).map((l) => l.slice(0, l.indexOf("=")));
+  const twice = keys.find((k, i) => keys.indexOf(k) !== i);
+  if (twice) throw new AdminError(`${path} sets ${twice} twice`);
+  const params = envParamNames(appTs);
+  const optional = new Set([...serviceTs.matchAll(/^\s*"([A-Z0-9_]+)\?":/gm)].map((m) => m[1]));
+  for (const key of env.keys()) {
+    if (!params.includes(key)) throw new AdminError(`${path} sets ${key}, which is not one of the issuer's settings`);
+  }
+  if (env.has(DEV_ONLY_SETTING)) throw new AdminError(`${path} sets ${DEV_ONLY_SETTING}, prisma dev's mock identity provider`);
+  const missing = params.filter((p) => !optional.has(p) && !env.has(p));
+  if (missing.length) throw new AdminError(`${path} does not set ${missing.join(", ")}`);
+  return env;
+}
+
+/// Stage the issuer's release at `out`, which must not exist; its stages
+/// are the cells directory's <stage>.issuer.env files.
+export function stageIssuerRelease(input: IssuerStageInput): IssuerRelease {
+  const { tree, commit, out } = input;
+  if (existsSync(out)) throw new AdminError(`${out} exists: a release directory is never overwritten`);
+  const files = new Map<string, Uint8Array>();
+  for (const [path, repoPath] of ISSUER_FILES) files.set(path, committedFile(tree, commit, repoPath));
+  files.set("issuer/entry.js", readFileSync(input.entryJs));
+  const [appTs, serviceTs] = ["app.ts", "issuer/service.ts"].map((p) => new TextDecoder().decode(files.get(p)));
+  const stages: Record<string, string> = {};
+  for (const stage of STAGES) {
+    const path = join(input.cells, `${stage}.issuer.env`);
+    if (!existsSync(path) && !isLink(path)) continue;
+    if (!lstatSync(path).isFile()) throw new AdminError(`${path} is not a regular file`);
+    const bytes = readFileSync(path);
+    issuerSettings(path, bytes.toString("utf8"), appTs, serviceTs);
+    files.set(`stages/${stage}.env`, bytes);
+    stages[stage] = sha256(bytes);
+  }
+  const pkg = JSON.parse(new TextDecoder().decode(files.get("package.json")));
+  const release: IssuerRelease = {
+    app: "issuer",
+    tag: input.tag,
+    commit,
+    stages,
+    composer_version: exactPin(pkg, "@prisma/composer", "deploy/composer-issuer"),
+    lockfile_sha256: sha256(files.get("bun.lock") as Uint8Array),
+    files: Object.fromEntries([...files].map(([p, b]) => [p, sha256(b)]).sort(([a], [b]) => (a < b ? -1 : 1))),
+  };
+  for (const [path, bytes] of files) {
+    mkdirSync(dirname(join(out, path)), { recursive: true });
+    writeFileSync(join(out, path), bytes, { mode: 0o644 });
+  }
+  writeFileSync(join(out, ISSUER_RELEASE_JSON), `${JSON.stringify(release, null, 2)}\n`, { mode: 0o644 });
+  renameSync(input.nodeModules, join(out, "node_modules"));
+  return checkIssuerRelease(out);
+}
+
+/// Refuse an issuer release root that breaks the rules; its release.json
+/// otherwise.
+export function checkIssuerRelease(root: string): IssuerRelease {
+  let release: IssuerRelease;
+  try {
+    release = JSON.parse(readFileSync(join(root, ISSUER_RELEASE_JSON), "utf8"));
+  } catch {
+    throw new AdminError(`${root} has no readable ${ISSUER_RELEASE_JSON}: not an issuer release directory`);
+  }
+  if (release?.app !== "issuer" || typeof release.files !== "object") {
+    throw new AdminError(`${join(root, ISSUER_RELEASE_JSON)} is not an issuer release.json cut-release wrote`);
+  }
+  checkTree(root, ISSUER_RELEASE_JSON, release.files);
+  return release;
+}
+
+function stageIssuerCli(argv: string[]): void {
+  const names = ["tree", "commit", "tag", "cells", "entry-js", "node-modules", "out"];
+  const f = parseFlags(argv, { single: names, required: names });
+  const r = stageIssuerRelease({
+    tree: f.must("tree"),
+    commit: f.must("commit"),
+    tag: f.must("tag"),
+    cells: f.must("cells"),
+    entryJs: f.must("entry-js"),
+    nodeModules: f.must("node-modules"),
+    out: f.must("out"),
+  });
+  console.log(`staged the issuer of ${r.tag} (${r.commit}): stages ${Object.keys(r.stages).join(", ") || "none"}, ` +
+    `${Object.keys(r.files).length} files`);
 }
 
 if (import.meta.main) {
   const [command, ...argv] = process.argv.slice(2);
   try {
-    if (command !== "stage") throw new AdminError("usage: release.ts stage --tree DIR ... (see the header)", 2);
+    if (command === "stage-issuer") {
+      stageIssuerCli(argv);
+      process.exit(0);
+    }
+    if (command !== "stage") throw new AdminError("usage: release.ts stage|stage-issuer --tree DIR ... (see the header)", 2);
     const f = parseFlags(argv, {
       single: ["tree", "commit", "tag", "build-unix", "cells", "server", "s3lite", "entry-js", "node-modules", "out"],
       required: ["tree", "commit", "tag", "build-unix", "cells", "server", "s3lite", "entry-js", "node-modules", "out"],

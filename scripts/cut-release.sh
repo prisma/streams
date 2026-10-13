@@ -1,37 +1,42 @@
 #!/bin/bash
 # Cut a shared cell's release (public-beta deploy-q5 triage B5): one commit,
 # built and staged once into $STREAMS_RELEASES/<tag>/ (default
-# ~/.streams-releases), never overwritten, and the only thing
-# deploy/composer/deploy-release.sh deploys. Its layout and its rules are
-# deploy/composer/release.ts's.
+# ~/.streams-releases), with the interim issuer's release from the same
+# commit beside it as <tag>-issuer/ (Q6 (b)), never overwritten, and the
+# only things deploy/composer/deploy-release.sh deploys. Their layouts and
+# rules are deploy/composer/release.ts's.
 #
 #   SOAK_HOME=~/.streams-soak scripts/cut-release.sh <commit> <tag> --cells DIR
 #
 # --cells DIR holds the operator's cells files, <stage>.env for each stage
 # the release may deploy to (scratch, cert, production; provision-cell.py
 # and `cell-admin init --cell-env` write them); each is copied into the
-# release as deploy/cells/<stage>.env, and nothing else of DIR is read.
+# release as deploy/cells/<stage>.env; each <stage>.issuer.env (the issuer's
+# settings for that stage) into the issuer's as stages/<stage>.env; nothing
+# else of DIR is read.
 # $SOAK_HOME holds the artifact bucket's files, as build-upload.sh reads
 # them (artifact-endpoint.txt, artifact-bucket.txt, binid.txt, binsec.txt).
 #
 # In order:
-#   1. refuses an existing release directory, results/<tag>/ or a cut of the
-#      same tag in progress, before anything else: a tag is cut once;
+#   1. refuses an existing release directory (the cell's or the issuer's),
+#      results/<tag>/ or a cut of the same tag in progress, before anything
+#      else: a tag is cut once;
 #   2. scripts/dev/ci-status.sh <commit> must print CI_GREEN (AGENTS.md §1:
 #      CI green is evidence, never memory);
 #   3. a clean detached worktree at <commit>, beside the release directory;
 #   4. the x86_64-musl streams-slate and s3lite, with STREAMS_GIT_COMMIT,
 #      BUILD_UNIX and SOURCE_DATE_EPOCH pinned (build-upload.sh's identity);
-#   5. deploy/composer's packages (`bun install --frozen-lockfile`) and the
-#      entry bundled into one file (D0 finding 2);
-#   6. the commit's own deploy/composer/release.ts stages the release:
+#   5. deploy/composer's and deploy/composer-issuer's packages (`bun install
+#      --frozen-lockfile`) and each app's entry bundled into one file (D0
+#      finding 2);
+#   6. the commit's own deploy/composer/release.ts stages both releases:
 #      every repository file byte-identical to the commit's, both binaries
-#      x86_64 ELFs, release.json, the rules;
+#      x86_64 ELFs, each release.json, the rules;
 #   7. the server uploaded to the artifact bucket as
 #      releases/<tag>/streams-slate, verified by ranged GETs, and
 #      $SOAK_HOME/results/<tag>/binaries.json in build-upload.sh's shape,
 #      which `rc-certify.sh --shape single-cell --artifact-run <tag>` reads;
-#   8. the staged directory moved to its place.
+#   8. the staged directories moved to their places.
 # A failure removes the worktree and the half-staged directory.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -43,12 +48,14 @@ COMMIT_ARG=$1 TAG=$2 CELLS=$4
 [[ "$TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || refuse "tag $TAG is not [A-Za-z0-9._-]"
 RELEASES=${STREAMS_RELEASES:-$HOME/.streams-releases}
 FINAL=$RELEASES/$TAG
+ISSUER_FINAL=$RELEASES/$TAG-issuer
 CUT=$RELEASES/.cut-$TAG
 S=${SOAK_HOME:?set SOAK_HOME, which holds the artifact bucket files and results/}
 RESULTS=$S/results/$TAG
 
 # 1.
 [ ! -e "$FINAL" ] || refuse "$FINAL exists: a release directory is never overwritten"
+[ ! -e "$ISSUER_FINAL" ] || refuse "$ISSUER_FINAL exists: a release directory is never overwritten"
 [ ! -e "$RESULTS" ] || refuse "$RESULTS exists: tag $TAG was cut before"
 [ ! -e "$CUT" ] || refuse "$CUT exists: another cut of $TAG is running, or one failed and left it (remove it)"
 [ -d "$CELLS" ] || refuse "--cells $CELLS is not a directory"
@@ -84,14 +91,21 @@ BINS=$TREE/target/x86_64-unknown-linux-musl/release
 
 # 5.
 (cd "$TREE/deploy/composer" && bun install --frozen-lockfile)
+(cd "$TREE/deploy/composer-issuer" && bun install --frozen-lockfile)
 ENTRY_JS=$CUT/entry.js
+ISSUER_JS=$CUT/issuer-entry.js
 (cd "$TREE" && bun build deploy/composer/streams/entry.ts --target=bun --format=esm --outfile "$ENTRY_JS")
+(cd "$TREE" && bun build deploy/composer-issuer/issuer/entry.ts --target=bun --format=esm --outfile "$ISSUER_JS")
 
 # 6.
 STAGED=$CUT/release
 (cd "$TREE" && bun deploy/composer/release.ts stage --tree "$TREE" --commit "$COMMIT" --tag "$TAG" \
   --build-unix "$BUILD_UNIX" --cells "$CELLS" --server "$BINS/streams-slate" --s3lite "$BINS/s3lite" \
   --entry-js "$ENTRY_JS" --node-modules "$TREE/deploy/composer/node_modules" --out "$STAGED")
+ISSUER_STAGED=$CUT/issuer
+(cd "$TREE" && bun deploy/composer/release.ts stage-issuer --tree "$TREE" --commit "$COMMIT" --tag "$TAG" \
+  --cells "$CELLS" --entry-js "$ISSUER_JS" --node-modules "$TREE/deploy/composer-issuer/node_modules" \
+  --out "$ISSUER_STAGED")
 
 # 7.
 python3 -E - "$STAGED/deploy/composer/streams/streams-slate" "releases/$TAG/streams-slate" "$S" "$RESULTS" \
@@ -118,6 +132,7 @@ print(f"uploaded and verified {key} ({len(data)} bytes); {results}/binaries.json
 PY
 
 # 8.
-[ ! -e "$FINAL" ] || refuse "$FINAL appeared during the cut"
+for d in "$FINAL" "$ISSUER_FINAL"; do [ ! -e "$d" ] || refuse "$d appeared during the cut"; done
 mv "$STAGED" "$FINAL"
-echo "cut-release: $TAG is $FINAL (commit $COMMIT); deploy it with deploy/composer/deploy-release.sh"
+mv "$ISSUER_STAGED" "$ISSUER_FINAL"
+echo "cut-release: $TAG is $FINAL and $ISSUER_FINAL (commit $COMMIT); deploy them with deploy/composer/deploy-release.sh"

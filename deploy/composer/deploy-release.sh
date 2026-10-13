@@ -7,6 +7,7 @@
 #     --project ID [--branch ID] --workspace ID --state DIR|s3://...
 #     [--s3-credentials F] [--cell-url URL --bearer-file F
 #     --canary-token-file T] [--management-api URL]
+#     [--issuer-release-dir DIR --issuer-project ID [--issuer-branch ID]]
 #   PRISMA_TOKEN_FILE=F deploy/composer/deploy-release.sh <scratch|cert>
 #     <release-dir> --project ID --branch ID --workspace ID --destroy
 #
@@ -31,6 +32,13 @@
 # last deployed there; neither is "no cell yet", accepted); and profiles
 # `cell-admin check-sizing` refuses. Then the release's own pinned `prisma
 # deploy`, from the release root, then cell-check within 5 minutes.
+#
+# --issuer-release-dir (the interim issuer's <tag>-issuer release, Q6 (b))
+# deploys the issuer's app in the same run, after the cell's deploy and
+# cell-check passed: its release cut from the cell's commit and under the
+# same rules, its stages/<stage>.env naming the cell's CELL_ID, its project
+# in the region holding its nine secrets, all checked before the cell
+# deploys; its settings are the envParams of its `prisma deploy`.
 #
 # --destroy (scratch or cert only, never production) runs the release's
 # destroy.ts instead: Composer's destroy of that named stage, whose

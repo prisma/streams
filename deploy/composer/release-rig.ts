@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { type Release, type StageInput, stageRelease } from "./release";
+import { type IssuerRelease, type Release, type StageInput, stageIssuerRelease, stageRelease } from "./release";
 
 export const REPO = join(import.meta.dir, "..", "..");
 
@@ -42,6 +42,11 @@ export const TREE_FILES = [
   "deploy/app-server/downloader.ts",
   "deploy/cell-admin/profile.ts",
   "deploy/cell-admin/errors.ts",
+  "deploy/composer-issuer/package.json",
+  "deploy/composer-issuer/bun.lock",
+  "deploy/composer-issuer/prisma.config.ts",
+  "deploy/composer-issuer/app.ts",
+  "deploy/composer-issuer/issuer/service.ts",
   "deploy/profiles/compute-1g.env",
   "deploy/profiles/shared-cell.env",
   "src/registry.rs",
@@ -124,4 +129,47 @@ export function stageInputs(o: {
 export function stage(o: Parameters<typeof stageInputs>[0]): { dir: string; release: Release } {
   const input = stageInputs(o);
   return { dir: input.out, release: stageRelease(input) };
+}
+
+/// A stage's issuer settings the issuer's release accepts.
+export function issuerSettingsText(cellId = "cell_sc1", extra: string[] = []): string {
+  return `${[
+    `STREAMS_CELL_ID=${cellId}`,
+    "STREAMS_ISSUER_ID=https://auth.prisma.io",
+    "STREAMS_CELL_ORIGIN=https://cell.example",
+    "STREAMS_ISSUER_ORIGIN=https://issuer.example",
+    "STREAMS_ISSUER_OAUTH_CLIENT_ID=client-1",
+    "STREAMS_CONTROL_S3_ENDPOINT=https://t3.storage.example",
+    "STREAMS_CONTROL_S3_BUCKET=phys-control",
+    "STREAMS_CONTROL_S3_REGION=auto",
+    "STREAMS_FEEDS_S3_ENDPOINT=https://t3.storage.example",
+    "STREAMS_FEEDS_S3_BUCKET=phys-feeds",
+    "STREAMS_FEEDS_S3_REGION=auto",
+    ...extra,
+  ].join("\n")}\n`;
+}
+
+/// An issuer release staged as cut-release stages one, at
+/// <releases>/<tag>-issuer, from `settings` (<stage>.issuer.env texts).
+export function stageIssuer(o: {
+  tree: string;
+  commit: string;
+  tag: string;
+  settings: Record<string, string>;
+  releases: string;
+  prismaScript?: string;
+}): { dir: string; release: IssuerRelease } {
+  const root = scratchDir();
+  const cells = join(root, "cells");
+  mkdirSync(cells);
+  for (const [stage, text] of Object.entries(o.settings)) writeFileSync(join(cells, `${stage}.issuer.env`), text);
+  writeFileSync(join(root, "entry.js"), "// the issuer's bundle\n");
+  mkdirSync(join(root, "node_modules", ".bin"), { recursive: true });
+  writeFileSync(join(root, "node_modules", ".bin", "prisma"), o.prismaScript ?? "#!/bin/sh\nexit 0\n");
+  chmodSync(join(root, "node_modules", ".bin", "prisma"), 0o755);
+  const out = join(o.releases, `${o.tag}-issuer`);
+  const release = stageIssuerRelease({
+    tree: o.tree, commit: o.commit, tag: o.tag, cells, entryJs: join(root, "entry.js"), nodeModules: join(root, "node_modules"), out,
+  });
+  return { dir: out, release };
 }

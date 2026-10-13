@@ -10,8 +10,8 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { checkRelease, keysContract, layoutVersion, type Release, stageRelease } from "./release";
-import { cleanupScratch, elf, fakeTree, git, REPO, scratchDir, stageInputs } from "./release-rig";
+import { checkIssuerRelease, checkRelease, issuerSettings, keysContract, layoutVersion, type Release, stageRelease } from "./release";
+import { cleanupScratch, elf, fakeTree, git, issuerSettingsText, REPO, scratchDir, stageInputs, stageIssuer } from "./release-rig";
 
 afterAll(cleanupScratch);
 
@@ -186,6 +186,45 @@ describe("checkRelease", () => {
   });
 });
 
+describe("the issuer's release", () => {
+  test("stages deploy/composer-issuer's files from the same commit, the bundle, and a stage's settings from <stage>.issuer.env", () => {
+    const { tree, commit } = fakeTree();
+    const releases = join(scratchDir(), "releases");
+    const settings = issuerSettingsText("cell_p1", ["STREAMS_ISSUER_TOKEN_TTL_SECS=1800"]);
+    const { dir, release } = stageIssuer({ tree, commit, tag: "rc-1", settings: { production: settings }, releases });
+    expect([dir, listing(dir)]).toEqual([join(releases, "rc-1-issuer"), [
+      "app.ts", "bun.lock", "issuer/", "issuer/entry.js", "issuer/service.ts", "node_modules", "package.json",
+      "prisma.config.ts", "release.json", "stages/", "stages/production.env",
+    ]]);
+    const pkg = JSON.parse(readFileSync(join(REPO, "deploy/composer-issuer/package.json"), "utf8"));
+    expect({ ...release, files: Object.keys(release.files) }).toEqual({
+      app: "issuer", tag: "rc-1", commit,
+      stages: { production: sha256(Buffer.from(settings)) },
+      composer_version: pkg.dependencies["@prisma/composer"],
+      lockfile_sha256: sha256(readFileSync(join(REPO, "deploy/composer-issuer/bun.lock"))),
+      files: ["app.ts", "bun.lock", "issuer/entry.js", "issuer/service.ts", "package.json", "prisma.config.ts", "stages/production.env"],
+    });
+    expect(readFileSync(join(dir, "app.ts"))).toEqual(readFileSync(join(REPO, "deploy/composer-issuer/app.ts")));
+    writeFileSync(join(dir, "issuer", ".env"), "STREAMS_ISSUER_PEPPER=x\n");
+    expect(refusal(() => checkIssuerRelease(dir))).toBe(`${dir} is not the release it was cut as: issuer/.env (a dotfile)`);
+  });
+
+  test("a stage's settings are the issuer app's envParams only, its required ones all, never prisma dev's identity provider", () => {
+    const read = (p: string) => readFileSync(join(REPO, p), "utf8");
+    const [app, service] = [read("deploy/composer-issuer/app.ts"), read("deploy/composer-issuer/issuer/service.ts")];
+    const check = (text: string) => refusal(() => issuerSettings("p.env", text, app, service));
+    expect(issuerSettings("p.env", issuerSettingsText(), app, service).get("STREAMS_CELL_ID")).toBe("cell_sc1");
+    expect(check(issuerSettingsText("cell_sc1", ["STREAMS_ISSUER_PEPPER=x"]))).toBe(
+      "p.env sets STREAMS_ISSUER_PEPPER, which is not one of the issuer's settings",
+    );
+    expect(check(issuerSettingsText("cell_sc1", ["STREAMS_ISSUER_OAUTH_AUTHORITY=http://127.0.0.1:9"]))).toBe(
+      "p.env sets STREAMS_ISSUER_OAUTH_AUTHORITY, prisma dev's mock identity provider",
+    );
+    expect(check(issuerSettingsText().replace(/^STREAMS_ISSUER_ORIGIN=.*\n/m, ""))).toBe("p.env does not set STREAMS_ISSUER_ORIGIN");
+    expect(check(issuerSettingsText("cell_sc1", ["STREAMS_CELL_ID=cell_x"]))).toBe("p.env sets STREAMS_CELL_ID twice");
+  });
+});
+
 describe("the release's facts", () => {
   test("LAYOUT_VERSION is read from its one declaration", () => {
     const rs = "pub(crate) const LAYOUT_VERSION: u32 = 6;\n";
@@ -228,7 +267,7 @@ describe("scripts/cut-release.sh", () => {
     return { code: run.status, err: run.stderr.toString(), ran };
   }
 
-  test("refuses an existing release directory, or results of the tag, before anything else", () => {
+  test("refuses an existing release directory, the cell's or the issuer's, or results of the tag, before anything else", () => {
     const root = scratchDir();
     const [releases, soak, cells] = ["releases", "soak", "cells"].map((d) => join(root, d));
     mkdirSync(join(releases, "rc-1"), { recursive: true });
@@ -246,6 +285,14 @@ describe("scripts/cut-release.sh", () => {
       err: `cut-release: refused: ${join(soak, "results", "rc-1")} exists: tag rc-1 was cut before\n`,
       ran: "",
     });
+    rmSync(join(soak, "results"), { recursive: true });
+    mkdirSync(join(releases, "rc-1-issuer"));
+    expect(cut(releases, soak, cells)).toEqual({
+      code: 1,
+      err: `cut-release: refused: ${join(releases, "rc-1-issuer")} exists: a release directory is never overwritten\n`,
+      ran: "",
+    });
+    rmSync(join(releases, "rc-1-issuer"), { recursive: true });
     expect([git(REPO, "worktree", "list"), readdirSync(releases)]).toEqual([worktrees, []]);
   });
 });
