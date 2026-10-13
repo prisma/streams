@@ -61,7 +61,11 @@ given none, written explicitly, and the server gives the same default to a
 0 or absent value. `init`, and `admit`, which re-reads the profiles,
 refuse a profile without a positive `PROJECT_STORED_BYTES_DEFAULT`. The
 profile is fixed for a cell's life (its digest), so the default is too;
-`quota` changes one project's value.
+`quota` changes one project's value. A project that stores its quota is
+refused appends `429 stored_bytes_limit` until it deletes or `quota`
+raises it; the RUNBOOK's `PROJECT_STORED_BYTES_DEFAULT` row says how fresh
+the figure is, and its "What to alert on" table watches the cell's stored
+growth and spend.
 
 ## The signing key
 
