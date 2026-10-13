@@ -1,0 +1,3 @@
+.alchemy/
+.prisma-composer/
+entry.js

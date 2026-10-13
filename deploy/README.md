@@ -93,7 +93,21 @@ Six more directories:
   undelivered. `watch.ts` runs the cycle (poll, rules, delivery, heartbeat)
   every 15 s with its state in memory only, and `serveOk` answers `ok` to
   `GET /` on `$PORT` and nothing else. Their tests run against local
-  stand-ins (`fake-cell.ts`). Tests: `bun test ./deploy/cell-watch`.
+  stand-ins (`fake-cell.ts`). The directory is also the watch's own
+  Composer app (owner answer I1 (a)), deployed into a Compute project of
+  its own so that it holds no secret of the cell's or the issuer's:
+  `app.ts` mounts `module.ts`, which binds the one service (`service.ts`)
+  to the watch's eleven inputs by their platform names (`config.ts`: five
+  envSecrets, six envParams; an optional one is `none` when absent);
+  `entry.ts`, bundled into `entry.js` before any `prisma dev` or `prisma
+  deploy` (`service.ts` gives the command), hands them over, holds
+  Compute's keep-awake guard and runs the watch (`run.ts`). Composer
+  0.29.1, the CLI and `@prisma/compute` are pinned exactly, and
+  `node_modules` comes from `bun install --frozen-lockfile` here. Tests:
+  `bun test ./deploy/cell-watch`; the bundled entry run out of the tree
+  (`CELL_WATCH_COMPOSER_E2E=1`, packages installed) and the app in
+  `prisma dev` against a local cell (`CELL_WATCH_E2E_BIN_DIR=target/debug`,
+  `dev.e2e.test.ts`) are opt-in.
 
 All verify the download is an **x86_64 ELF** before exec. That check is
 not politeness: an aarch64 binary deploys "successfully" and crash-loops
