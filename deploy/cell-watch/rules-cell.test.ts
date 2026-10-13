@@ -360,6 +360,34 @@ describe("row 20: the snapshot cache", () => {
   });
 });
 
+describe("row 20: the operator document unread", () => {
+  const refused = { data: null, dataStatus: 401 };
+
+  test("notifies when /health is 200 but /operator/data.json has not been a 200 JSON document for 60 s, with its last status", () => {
+    const w = new Watch();
+    w.polls(4, refused);
+    expect(row(w, 20)).toEqual([]);
+    w.poll(refused);
+    expect(fired(w, 20).map((e) => [e.class, e.values])).toEqual([["NOTIFY", { data_status: 401, data_unread_secs: 60 }]]);
+    // The bearer put right: readable again, it resolves after four clean polls.
+    w.polls(MIN_POLLS);
+    expect(row(w, 20)).toEqual([["trigger", "NOTIFY"], ["resolve", "NOTIFY"]]);
+  });
+
+  test("no answer is status 0; an unready /health stops the clock, so a cell that is down is row 3's", () => {
+    const w = new Watch();
+    w.polls(3, { data: null, dataStatus: null });
+    w.polls(8, { ...health({ status: 503, git: null, bootId: null }), data: null, dataStatus: null });
+    w.polls(4, { data: null, dataStatus: null });
+    expect(row(w, 20)).toEqual([]);
+    w.poll({ data: null, dataStatus: null });
+    expect(fired(w, 20).map((e) => e.values)).toEqual([{ data_status: 0, data_unread_secs: 60 }]);
+    // Open, it is not cleaned by polls that read nothing while the cell is down.
+    w.polls(MIN_POLLS, { ...health({ status: 503, git: null, bootId: null }), data: null, dataStatus: null });
+    expect(row(w, 20)).toEqual([["trigger", "NOTIFY"]]);
+  });
+});
+
 describe("row 20 across a restart", () => {
   test("the restart's unready polls, before the new boot id is seen, are not judged against the old boot", () => {
     const w = new Watch();

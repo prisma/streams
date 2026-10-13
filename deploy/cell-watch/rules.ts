@@ -9,7 +9,11 @@
 // Sources: `data` is /operator/data.json and `health` /health, both every
 // 15 s; `billing` (/operator/billing.json) and `issuerMetrics` are fetched
 // every 60 s and are null in the cycles between. A rule whose source a
-// poll lacks is not evaluated: it neither opens nor counts as clean.
+// poll lacks is not evaluated: it neither opens nor counts as clean. Row
+// 20 is the exception that keeps this from going quiet: it notifies when
+// /health answers 200 but `data` has been missing for 60 s (a wrong or
+// rotated STREAMS_OPERATOR_TOKEN answers 401, blinding every row that
+// reads it).
 //
 // Hysteresis: a rule opens as its row states, resolves after four
 // consecutive clean evaluations (one minute at 15 s, four at 60 s), and is
@@ -87,6 +91,9 @@ export interface Poll {
   at: number;
   health: HealthPoll;
   data: Json | null;
+  /// The status /operator/data.json answered, null when no answer came:
+  /// `data` is null whenever it is not a 200 with a JSON body.
+  dataStatus: number | null;
   billing: Json | null;
   /// Null when ISSUER_ORIGIN is unset or the cycle did not fetch it.
   issuerHealth: IssuerHealthPoll | null;
@@ -551,7 +558,16 @@ function canary(c: Ctx): Answer {
 
 function snapshotStale(c: Ctx): Answer {
   const data = c.poll.data;
-  if (data === null || typeof data !== "object") return "skip";
+  const readable = data !== null && typeof data === "object";
+  // /health is 200, so the server answers, but its operator document does
+  // not come back: the rows that read it are blind. A cell that is down is
+  // row 3's, so an unready /health stops the clock.
+  const unread = c.held("unread", !readable && c.poll.health.status === 200);
+  if (!readable) {
+    if (unread === null) return "skip";
+    if (unread < MIN) return "pending";
+    return fire("NOTIFY", { data_status: c.poll.dataStatus ?? 0, data_unread_secs: secs(unread) });
+  }
   const ops = get(data, "ops");
   if (ops === null || ops === undefined) {
     // Judged only on a poll whose /health answered 200, so the boot id is

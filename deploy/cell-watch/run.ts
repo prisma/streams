@@ -1,10 +1,15 @@
 // The cell watch's start (public-beta alerting triage B4), from its inputs
 // as the entry hands them over: read them (config.ts; an InputError is the
-// caller's refusal), take the keep-awake guard, answer `ok` on the
-// service's port, then run a cycle every 15 s for the process's life
-// (watch.ts). The boot line names the cell, the sink's kind and which
-// optional rows run, never a URL or a key.
-import { type Inputs, readWatchConfig } from "./config";
+// caller's refusal), check the deployment bearer with one GET of
+// /operator/data.json (a 401 or 403 is the same refusal: a watch whose
+// STREAMS_OPERATOR_TOKEN the cell does not take would run blind, so it
+// does not start and the dead-man, row 2, pages; a cell that does not
+// answer is row 3's and the watch starts), take the keep-awake guard,
+// answer `ok` on the service's port, then run a cycle every 15 s for the
+// process's life (watch.ts). The boot line names the cell, the sink's kind
+// and which optional rows run, never a URL or a key.
+import { InputError, type Inputs, readWatchConfig } from "./config";
+import { bearerRefusal } from "./poll";
 import { CellWatch, serveOk } from "./watch";
 
 export interface Running {
@@ -15,13 +20,17 @@ export interface Running {
 
 /// `keepAwake` takes Compute's keep-awake guard, held until the process
 /// ends, and says how it went (`held`, or `unavailable` off Compute).
-export function runWatch(
+export async function runWatch(
   inputs: Inputs,
   port: number,
   keepAwake: () => string,
   log: (line: string) => void = console.log,
-): Running {
+): Promise<Running> {
   const cfg = readWatchConfig(inputs);
+  const refused = await bearerRefusal(cfg.poll);
+  if (refused !== null) {
+    throw new InputError(`STREAMS_OPERATOR_TOKEN is refused by the cell (/operator/data.json answered ${refused})`);
+  }
   const awake = keepAwake();
   const server = serveOk(port);
   const bound = server.port ?? port;

@@ -11,7 +11,8 @@
 //
 // An input that cannot be read (a secret's platform variable unset or
 // empty, a document that does not parse or validate) or that the watch
-// refuses is a boot refusal: exit 1 with a line naming the input, never a
+// refuses (a STREAMS_OPERATOR_TOKEN the cell answers 401 or 403 among
+// them) is a boot refusal: exit 1 with a line naming the input, never a
 // value. The heartbeat then never comes, and the dead-man (row 2) pages.
 import { existsSync } from "node:fs";
 import { KeepAwakeGuard } from "@prisma/compute";
@@ -47,7 +48,7 @@ function inputs(): Inputs {
 }
 
 try {
-  runWatch(inputs(), service.port(), () => {
+  await runWatch(inputs(), service.port(), () => {
     held.push(new KeepAwakeGuard());
     return existsSync(KEEP_AWAKE_CONTROL) ? "held" : "unavailable";
   });

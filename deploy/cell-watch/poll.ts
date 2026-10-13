@@ -27,7 +27,10 @@
 // Each GET has a 5 s timeout that covers its body, and none follows a
 // redirect: a 3xx is an answer like any other, and a bearer goes to its
 // configured origin only. A document that is not a 200 with JSON is null
-// in the poll, which rules.ts reads as a source it lacks. /health's body
+// in the poll, which rules.ts reads as a source it lacks; the poll keeps
+// the status /operator/data.json answered (`dataStatus`, null for no
+// answer), so row 20 can say why the cell's document is missing (a 401 is
+// a wrong or rotated STREAMS_OPERATOR_TOKEN). /health's body
 // is kept to its first 256 characters, which rules.ts classifies into an
 // enum and never forwards. The canary's round runs beside the GETs, so a
 // cycle lasts as long as the slower; a round has at most six requests of
@@ -80,6 +83,16 @@ async function get(url: URL, init: RequestInit, timeoutMs: number): Promise<Got>
   }
 }
 
+/// The watch's start-up check of its deployment bearer (run.ts): one GET
+/// of /operator/data.json as a cycle makes it; the status when the cell
+/// refuses the bearer (401 or 403), else null: any other answer, a timeout
+/// or none (a cell that is down is row 3's, not a reason not to start).
+export async function bearerRefusal(cfg: PollConfig): Promise<number | null> {
+  const headers = { authorization: `Bearer ${cfg.operatorToken}` };
+  const got = await get(new URL(PATHS.data, cfg.cellOrigin), { headers }, cfg.timeoutMs ?? TIMEOUT_MS);
+  return got.status === 401 || got.status === 403 ? got.status : null;
+}
+
 function jsonOf(got: Got): Json | null {
   if (got.status !== 200) return null;
   try {
@@ -115,13 +128,13 @@ export class Poller {
     const at = this.now();
     const slow = this.cycles % SLOW_EVERY === 0;
     this.cycles += 1;
-    const [health, [data, billing], [issuerHealth, issuerMetrics], canary] = await Promise.all([
+    const [health, [data, dataStatus, billing], [issuerHealth, issuerMetrics], canary] = await Promise.all([
       this.health(),
       this.operator(slow),
       this.issuer(slow),
       slow && this.canary !== null ? this.canary.run() : null,
     ]);
-    return { at, health, data, billing, issuerHealth, issuerMetrics, canary };
+    return { at, health, data, dataStatus, billing, issuerHealth, issuerMetrics, canary };
   }
 
   private async health(): Promise<HealthPoll> {
@@ -142,11 +155,13 @@ export class Poller {
     return get(new URL(path, origin), { headers: { authorization: `Bearer ${token}` } }, this.timeoutMs);
   }
 
-  private async operator(slow: boolean): Promise<[Json | null, Json | null]> {
+  /// The data document and the status it answered (null: no answer), and
+  /// on a slow cycle the billing document.
+  private async operator(slow: boolean): Promise<[Json | null, number | null, Json | null]> {
     const { cellOrigin, operatorToken } = this.cfg;
-    const data = jsonOf(await this.bearer(cellOrigin, PATHS.data, operatorToken));
+    const got = await this.bearer(cellOrigin, PATHS.data, operatorToken);
     const billing = slow ? jsonOf(await this.bearer(cellOrigin, PATHS.billing, operatorToken)) : null;
-    return [data, billing];
+    return [jsonOf(got), got.status, billing];
   }
 
   private async issuer(slow: boolean): Promise<[IssuerHealthPoll | null, Json | null]> {

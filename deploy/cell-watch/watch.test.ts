@@ -104,6 +104,17 @@ describe("a cycle", () => {
     expect(JSON.parse(rig.sink.seen[0]?.body ?? "{}").payload.custom_details.values).toEqual({ reserved_dropped: 2 });
   });
 
+  test("notifies row 20 when the cell refuses the watch's bearer for 60 s while /health is 200, and still beats", async () => {
+    const rig = new Rig();
+    const cfg = rig.config();
+    const w = new CellWatch({ ...cfg, poll: { ...cfg.poll, operatorToken: "not-the-bearer" } }, { now: () => rig.at, log: () => {} });
+    const reports = await rig.cycles(w, 5);
+    expect(kinds(reports)).toEqual([[], [], [], [], ["trigger NOTIFY"]]);
+    expect(rig.sent()).toEqual([["trigger", "cell_sc1/r20_snapshot_stale/notify"]]);
+    expect(JSON.parse(rig.sink.seen[0]?.body ?? "{}").payload.custom_details.values).toEqual({ data_status: 401, data_unread_secs: 60 });
+    expect(rig.beats()).toBe(5);
+  });
+
   test("pages a rule that rises from NOTIFY to PAGE on a second key and resolves both", async () => {
     const rig = new Rig();
     const w = rig.watch();

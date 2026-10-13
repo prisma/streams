@@ -74,6 +74,17 @@ describe("RUNBOOK.md's What to alert on", () => {
     expect(text.includes("sends every PAGE as a NOTIFY")).toBe(false);
   });
 
+  test("row 20 covers the operator document unread with its status, and row 2 the watch that refuses a bearer at its start", () => {
+    for (const want of [
+      "`/health` 200 while `/operator/data.json` has not been a 200 JSON document for 60 s",
+      "`data_status` 401 or 403",
+      "`STREAMS_OPERATOR_TOKEN`",
+    ]) {
+      expect([want, (cells(20)[4] ?? "").includes(want)]).toEqual([want, true]);
+    }
+    expect(cells(2)[4]).toContain("a watch whose `STREAMS_OPERATOR_TOKEN` the cell refuses (401 or 403) does not start");
+  });
+
   test("gives each row its class, a PAGE paged to the on-call and a NOTIFY to the channel", () => {
     for (const row of ROWS) {
       const cls = CLASS[row] ?? "";

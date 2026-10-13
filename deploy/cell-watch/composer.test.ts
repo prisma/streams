@@ -235,8 +235,9 @@ describe("the cell watch's Composer entry, bundled", () => {
     );
     const ok = await fetch(`http://127.0.0.1:${port}/`);
     expect([ok.status, await ok.text()]).toEqual([200, "ok"]);
+    // The start's bearer check, then the first cycle's GET.
     const data = w.cell.seen.filter((s) => s.path === "/operator/data.json");
-    expect(data.map((s) => s.authorization)).toEqual([`Bearer ${OPERATOR_TOKEN}`]);
+    expect(data.map((s) => s.authorization)).toEqual([`Bearer ${OPERATOR_TOKEN}`, `Bearer ${OPERATOR_TOKEN}`]);
     expect([w.sink.seen, started.err()]).toEqual([[], ""]);
   });
 
@@ -279,5 +280,16 @@ describe("the cell watch's Composer entry, bundled", () => {
     expect([await started.child.exited, started.out()]).toEqual([1, ""]);
     expect(started.err()).toBe("cell-watch: refused: STREAMS_CELL_ORIGIN must be https (http only to this machine)\n");
     expect(w.cell.seen).toEqual([]);
+  });
+
+  maybe("refuses to boot with exit 1 when the cell refuses its bearer, naming STREAMS_OPERATOR_TOKEN and quoting no value", async () => {
+    const w = world();
+    const wrong = "not-the-bearer-zq7mark";
+    const started = launch(await bundle(), platformEnv({ ...w.inputs, STREAMS_OPERATOR_TOKEN: wrong }, freePort()));
+    expect([await started.child.exited, started.out()]).toEqual([1, ""]);
+    expect(started.err()).toBe(
+      "cell-watch: refused: STREAMS_OPERATOR_TOKEN is refused by the cell (/operator/data.json answered 401)\n",
+    );
+    expect([w.cell.seen.map((s) => s.path), w.monitor.seen]).toEqual([["/operator/data.json"], []]);
   });
 });

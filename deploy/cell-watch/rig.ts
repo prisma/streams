@@ -63,6 +63,7 @@ export function healthyPoll(at: number): Poll {
     at,
     health: { status: 200, timedOut: false, origin: true, git: GIT, bootId: BOOT, bodyPrefix: "ok" },
     data: DATA,
+    dataStatus: 200,
     billing: null,
     issuerHealth: null,
     issuerMetrics: null,

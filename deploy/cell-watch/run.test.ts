@@ -1,7 +1,8 @@
 // The cell watch's start (public-beta alerting triage B4) against a local
-// cell, sink and heartbeat monitor: the inputs read, the keep-awake guard
-// taken, `ok` on the port, the boot line, and the first cycle at once; an
-// input refused before any of it. Run with `bun test ./deploy/cell-watch`.
+// cell, sink and heartbeat monitor: the inputs read, the deployment bearer
+// checked, the keep-awake guard taken, `ok` on the port, the boot line, and
+// the first cycle at once; an input, or a bearer the cell refuses, refused
+// before any of it. Run with `bun test ./deploy/cell-watch`.
 import { afterEach, describe, expect, test } from "bun:test";
 import { InputError } from "./config";
 import { FakeCell, FakeServer, OPERATOR_TOKEN } from "./fake-cell";
@@ -37,6 +38,14 @@ function rig() {
   return { cell, sink, monitor, inputs };
 }
 
+/// A port nothing listens on.
+function freePort(): number {
+  const probe = Bun.serve({ port: 0, hostname: "0.0.0.0", fetch: () => new Response() });
+  const port = Number(probe.port);
+  probe.stop(true);
+  return port;
+}
+
 async function until(what: string, cond: () => boolean, ms = 5_000): Promise<void> {
   const end = Date.now() + ms;
   while (!cond()) {
@@ -50,7 +59,7 @@ describe("runWatch", () => {
     const r = rig();
     const log: string[] = [];
     const order: string[] = [];
-    const running: Running = runWatch(r.inputs, 0, () => {
+    const running: Running = await runWatch(r.inputs, 0, () => {
       order.push("guard");
       return "unavailable";
     }, (l) => log.push(l));
@@ -65,9 +74,9 @@ describe("runWatch", () => {
     expect([ok.status, await ok.text()]).toEqual([200, "ok"]);
     expect((await fetch(`http://127.0.0.1:${running.port}/operator/data.json`)).status).toBe(404);
     await until("the first heartbeat", () => r.monitor.seen.length === 1);
-    // The first cycle polled the cell with the operator bearer, then beat.
+    // The start checked the operator bearer, the first cycle polled with it, then beat.
     const bearer = r.cell.seen.filter((s) => s.path === "/operator/data.json").map((s) => s.authorization);
-    expect(bearer).toEqual([`Bearer ${OPERATOR_TOKEN}`]);
+    expect(bearer).toEqual([`Bearer ${OPERATOR_TOKEN}`, `Bearer ${OPERATOR_TOKEN}`]);
     expect(r.monitor.seen.map((s) => [s.method, s.path])).toEqual([["GET", BEAT_PATH]]);
     expect(r.sink.seen).toEqual([]);
     // No line names a URL or a secret.
@@ -82,7 +91,7 @@ describe("runWatch", () => {
     const r = rig();
     r.cell.health = { status: 200, headers: {}, body: "ok" };
     r.cell.setData({ ts_ms: 1, ops: null, feeds: { policies: { reservedDropped: 3 } } });
-    const running = runWatch(r.inputs, 0, () => "held", () => {});
+    const running = await runWatch(r.inputs, 0, () => "held", () => {});
     stops.push(running.stop);
     await until("the trigger", () => r.sink.seen.length === 1);
     const sent = r.sink.seen[0]!;
@@ -93,18 +102,51 @@ describe("runWatch", () => {
 
   test("refuses its inputs before it takes the guard or binds the port", async () => {
     const r = rig();
-    const probe = Bun.serve({ port: 0, hostname: "0.0.0.0", fetch: () => new Response() });
-    const port = Number(probe.port);
-    probe.stop(true);
+    const port = freePort();
     let guards = 0;
-    const refused = () => runWatch({ ...r.inputs, ALERT_SINK_KIND: "slack" }, port, () => {
+    const refused = runWatch({ ...r.inputs, ALERT_SINK_KIND: "slack" }, port, () => {
       guards += 1;
       return "held";
     });
-    expect(refused).toThrow(new InputError("ALERT_SINK_KIND is events-v2 or webhook"));
+    await expect(refused).rejects.toThrow(new InputError("ALERT_SINK_KIND is events-v2 or webhook"));
     expect(guards).toBe(0);
     await expect(fetch(`http://127.0.0.1:${port}/`)).rejects.toThrow();
     await Bun.sleep(100);
     expect([r.cell.seen, r.monitor.seen]).toEqual([[], []]);
+  });
+
+  test("refuses to start when the cell refuses its bearer (401 or 403), naming STREAMS_OPERATOR_TOKEN and no value", async () => {
+    const r = rig();
+    const port = freePort();
+    let guards = 0;
+    const guard = () => {
+      guards += 1;
+      return "held";
+    };
+    const wrong = `not-the-bearer-${KEY}`;
+    const refused = runWatch({ ...r.inputs, STREAMS_OPERATOR_TOKEN: wrong }, port, guard);
+    const want = new InputError("STREAMS_OPERATOR_TOKEN is refused by the cell (/operator/data.json answered 401)");
+    await expect(refused).rejects.toThrow(want);
+    r.cell.data = { status: 403, body: "" };
+    await expect(runWatch(r.inputs, port, guard)).rejects.toThrow(
+      new InputError("STREAMS_OPERATOR_TOKEN is refused by the cell (/operator/data.json answered 403)"),
+    );
+    expect(want.message.includes(wrong)).toBe(false);
+    expect(guards).toBe(0);
+    await expect(fetch(`http://127.0.0.1:${port}/`)).rejects.toThrow();
+    await Bun.sleep(100);
+    expect([r.cell.seen.map((s) => s.path), r.monitor.seen]).toEqual([["/operator/data.json", "/operator/data.json"], []]);
+  });
+
+  test("starts when the cell does not answer: a cell that is down is row 3's to page", async () => {
+    const r = rig();
+    const gone = new FakeServer({});
+    const origin = gone.origin;
+    gone.stop();
+    const running = await runWatch({ ...r.inputs, STREAMS_CELL_ORIGIN: origin }, 0, () => "held", () => {});
+    stops.push(running.stop);
+    await until("the first heartbeat", () => r.monitor.seen.length === 1);
+    const ok = await fetch(`http://127.0.0.1:${running.port}/`);
+    expect([ok.status, await ok.text()]).toEqual([200, "ok"]);
   });
 });

@@ -17,7 +17,7 @@ import {
   OPERATOR_TOKEN,
   type Seen,
 } from "./fake-cell";
-import { BODY_PREFIX_CHARS, PATHS, type PollConfig, Poller, SLOW_EVERY, TIMEOUT_MS } from "./poll";
+import { BODY_PREFIX_CHARS, bearerRefusal, PATHS, type PollConfig, Poller, SLOW_EVERY, TIMEOUT_MS } from "./poll";
 import { BILLING, BOOT, DATA, GIT } from "./rig";
 
 const running: { stop(): void; seen: Seen[] }[] = [];
@@ -63,6 +63,7 @@ describe("one cycle", () => {
       at: 1_234,
       health: { status: 200, timedOut: false, origin: true, git: GIT, bootId: BOOT, bodyPrefix: "ok" },
       data: DATA,
+      dataStatus: 200,
       billing: BILLING,
       issuerHealth: null,
       issuerMetrics: null,
@@ -128,23 +129,24 @@ describe("answers that are not a healthy 200", () => {
     c.data = { ...c.data, delayMs: 400 };
     const poll = await poller(c, { timeoutMs: 100 }).poll();
     expect(poll.health).toEqual({ ...NO_ANSWER, timedOut: true });
-    expect([poll.data, poll.billing]).toEqual([null, BILLING]);
+    expect([poll.data, poll.dataStatus, poll.billing]).toEqual([null, null, BILLING]);
   });
 
   test("a refused connection is no answer, not a timeout, and both documents are null", async () => {
     const poll = await poller({ origin: closedOrigin() }).poll();
-    expect([poll.health, poll.data, poll.billing]).toEqual([NO_ANSWER, null, null]);
+    expect([poll.health, poll.data, poll.dataStatus, poll.billing]).toEqual([NO_ANSWER, null, null, null]);
   });
 
-  test("a document that is not a 200 with JSON is null: a wrong bearer's 401, a 503, a body that is not JSON", async () => {
+  test("a document that is not a 200 with JSON is null: a wrong bearer's 401, a 503, a body that is not JSON; data's status is kept", async () => {
     const wrong = cell();
     const p = poller(wrong, { operatorToken: "not-the-bearer" });
-    expect([(await p.poll()).data, (await p.poll()).billing]).toEqual([null, null]);
+    const refused = await p.poll();
+    expect([refused.data, refused.dataStatus, refused.billing]).toEqual([null, 401, null]);
     const c = cell();
     c.data = { status: 200, body: "<html>edge</html>" };
     c.billing = { status: 503, body: JSON.stringify(BILLING) };
     const poll = await poller(c).poll();
-    expect([poll.data, poll.billing]).toEqual([null, null]);
+    expect([poll.data, poll.dataStatus, poll.billing]).toEqual([null, 200, null]);
   });
 
   test("a redirect is not followed: /health reads it as its status, a document as null, and the target sees nothing", async () => {
@@ -155,8 +157,36 @@ describe("answers that are not a healthy 200", () => {
     c.health = away;
     c.data = away;
     const poll = await poller(c).poll();
-    expect([poll.health.status, poll.health.origin, poll.data]).toEqual([302, false, null]);
+    expect([poll.health.status, poll.health.origin, poll.data, poll.dataStatus]).toEqual([302, false, null, 302]);
     expect(elsewhere.seen).toEqual([]);
+  });
+});
+
+describe("the start-up bearer probe", () => {
+  const cfg = (origin: string, operatorToken = OPERATOR_TOKEN, timeoutMs?: number): PollConfig => ({
+    cellOrigin: origin, operatorToken, issuerOrigin: null, issuerMetricsToken: null, canary: null, timeoutMs,
+  });
+
+  test("names the status when the cell refuses the deployment bearer (401 or 403), with one GET of /operator/data.json", async () => {
+    const c = cell();
+    expect(await bearerRefusal(cfg(c.origin, "not-the-bearer"))).toBe(401);
+    c.data = { status: 403, body: "" };
+    expect(await bearerRefusal(cfg(c.origin))).toBe(403);
+    expect(c.seen.map((s) => [s.path, s.authorization])).toEqual([
+      [PATHS.data, "Bearer not-the-bearer"], [PATHS.data, `Bearer ${OPERATOR_TOKEN}`],
+    ]);
+  });
+
+  test("is null for the bearer taken, any other answer, a timeout and no answer: a cell that is down does not stop the watch", async () => {
+    const c = cell();
+    expect(await bearerRefusal(cfg(c.origin))).toBeNull();
+    for (const status of [500, 503, 302]) {
+      c.data = { status, body: "" };
+      expect([status, await bearerRefusal(cfg(c.origin))]).toEqual([status, null]);
+    }
+    c.data = { ...c.data, status: 401, delayMs: 400 };
+    expect(await bearerRefusal(cfg(c.origin, OPERATOR_TOKEN, 100))).toBeNull();
+    expect(await bearerRefusal(cfg(closedOrigin()))).toBeNull();
   });
 });
 

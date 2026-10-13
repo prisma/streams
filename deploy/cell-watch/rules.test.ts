@@ -79,8 +79,9 @@ describe("hysteresis", () => {
     expect(w.poll({ data: null })).toEqual([]);
     expect(kinds(w.poll(dropped))).toEqual([["trigger", "PAGE"]]);
     expect(w.polls(RESOLVE_AFTER - 1)).toEqual([]);
-    expect(w.polls(20, { data: null })).toEqual([]);
-    expect(kinds(w.poll())).toEqual([["resolve", "PAGE"]]);
+    // Row 20 notifies the lasting gap itself (the document unread for 60 s).
+    expect(w.polls(20, { data: null }).map((e) => [e.rule, e.kind])).toEqual([[idOf(20), "trigger"]]);
+    expect(ofRow(w.poll(), 7).map((e) => [e.kind, e.class])).toEqual([["resolve", "PAGE"]]);
   });
 
   test("NOTIFY rises to PAGE once while open, never falls back, and resolves at the class it reached", () => {
@@ -239,6 +240,7 @@ function lacedPoll(at: number, i: number, bootId: string): Poll {
     at,
     health: { status: 200, timedOut: false, origin: true, git: "0000000", bootId, bodyPrefix: laced },
     data: lacedData(i),
+    dataStatus: 200,
     billing: billingWithStored(i * 2 ** 40, {
       openAlerts: [{ rule: laced, project: PROJECT, detail: OBJECT_PATH }],
       ready: false,
