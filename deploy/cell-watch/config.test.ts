@@ -71,6 +71,7 @@ describe("the cell watch's inputs", () => {
         operatorToken: `operator-bearer-${MARK}`,
         issuerOrigin: "https://issuer.example.com",
         issuerMetricsToken: `issuer-metrics-${MARK}`,
+        canary: null,
       },
       sink: { kind: "events-v2", url: `https://events.example.com/v2/enqueue?${MARK}`, key: `routing-key-${MARK}` },
       heartbeatUrl: `https://beats.example.com/ping/${MARK}`,

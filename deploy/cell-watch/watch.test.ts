@@ -5,7 +5,7 @@
 // alert key; a failed cycle sends no heartbeat; the loop's cadence and
 // stop; the `ok` port; the log lines. Run with `bun test ./deploy/cell-watch`.
 import { afterEach, describe, expect, test } from "bun:test";
-import { type Answer, FakeCell, FakeServer, OPERATOR_TOKEN } from "./fake-cell";
+import { type Answer, CANARY_CREDENTIAL, FakeCell, FakeIssuer, FakeServer, METRICS_TOKEN, OPERATOR_TOKEN } from "./fake-cell";
 import { CFG, DATA, patch, POLL_MS, T0 } from "./rig";
 import type { Json } from "./rules";
 import { CellWatch, type CycleReport, serveOk, type WatchConfig } from "./watch";
@@ -36,7 +36,7 @@ class Rig {
   config(cellOrigin = this.cell.origin): WatchConfig {
     return {
       rules: CFG,
-      poll: { cellOrigin, operatorToken: OPERATOR_TOKEN, issuerOrigin: null, issuerMetricsToken: null },
+      poll: { cellOrigin, operatorToken: OPERATOR_TOKEN, issuerOrigin: null, issuerMetricsToken: null, canary: null },
       sink: { kind: "events-v2", url: `${this.sink.origin}/v2/enqueue`, key: KEY },
       heartbeatUrl: `${this.monitor.origin}${BEAT_PATH}`,
     };
@@ -115,6 +115,47 @@ describe("a cycle", () => {
     expect(rig.sent()).toEqual([
       ["trigger", `${key}/notify`], ["trigger", `${key}/page`], ["resolve", `${key}/notify`], ["resolve", `${key}/page`],
     ]);
+  });
+});
+
+describe("the canary", () => {
+  test("pages row 19 after three failed rounds a minute apart, naming the step, and resolves after four that pass", async () => {
+    const rig = new Rig();
+    const issuer = new FakeIssuer();
+    issuer.endpoint = rig.cell.origin;
+    try {
+      const cfg = rig.config();
+      const w = new CellWatch({
+        ...cfg,
+        rules: { ...CFG, cellOrigin: rig.cell.origin, issuer: true },
+        poll: {
+          ...cfg.poll,
+          issuerOrigin: issuer.origin,
+          issuerMetricsToken: METRICS_TOKEN,
+          canary: { credential: CANARY_CREDENTIAL, cellId: "cell_sc1" },
+        },
+      }, { now: () => rig.at, log: (l) => rig.log.push(l) });
+      const reports = await rig.cycles(w, 4);
+      // The cell refuses the canary's token (the keys feed and the binary
+      // disagree): each round's append is a 401, the token dropped and
+      // exchanged again, so the issuer's row stays quiet.
+      rig.cell.canary.append = { status: 401, headers: { "prisma-streams-origin": "s" }, body: '{"error":{"code":"kid_unknown","message":"x"}}' };
+      reports.push(...(await rig.cycles(w, 12)));
+      delete rig.cell.canary.append;
+      reports.push(...(await rig.cycles(w, 16)));
+      const at = reports.flatMap((r, cycle) => r.events.map((e) => [cycle, e.kind, e.dedupKey]));
+      expect(at).toEqual([[12, "trigger", "cell_sc1/r19_canary"], [28, "resolve", "cell_sc1/r19_canary"]]);
+      expect(rig.sent()).toEqual([["trigger", "cell_sc1/r19_canary/page"], ["resolve", "cell_sc1/r19_canary/page"]]);
+      expect(JSON.parse(rig.sink.seen[0]?.body ?? "{}").payload.custom_details).toMatchObject({
+        values: { status: 401, consecutive_failures: 3 },
+        labels: { step: "append", origin: "server", error_code: "kid_unknown" },
+      });
+      // Exchanges: the first round's, and one after each 401 but the last.
+      expect(issuer.seen.filter((s) => s.method === "POST").length).toBe(4);
+      expect(rig.beats()).toBe(32);
+    } finally {
+      issuer.stop();
+    }
   });
 });
 

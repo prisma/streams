@@ -16,13 +16,24 @@
 //                                  fourth with the metrics bearer, when
 //                                  ISSUER_ORIGIN is set (and the token, for
 //                                  the metrics).
+//   both   the canary (canary.ts)  a round every fourth cycle (60 s), when
+//                                  the watch holds CANARY_CREDENTIAL (which
+//                                  needs ISSUER_ORIGIN): the exchange at
+//                                  the issuer when due, then the canary
+//                                  stream's requests at the cell; its
+//                                  result is the poll's `canary`, null in
+//                                  the cycles between and without one.
 //
 // Each GET has a 5 s timeout that covers its body, and none follows a
 // redirect: a 3xx is an answer like any other, and a bearer goes to its
 // configured origin only. A document that is not a 200 with JSON is null
 // in the poll, which rules.ts reads as a source it lacks. /health's body
 // is kept to its first 256 characters, which rules.ts classifies into an
-// enum and never forwards. The canary is triage B7's: `canary` stays null.
+// enum and never forwards. The canary's round runs beside the GETs, so a
+// cycle lasts as long as the slower; a round has at most six requests of
+// 5 s each, so a cycle whose cell and issuer answer nothing ends within
+// 30 s, and the next starts at once (watch.ts).
+import { Canary } from "./canary";
 import type { HealthPoll, IssuerHealthPoll, Json, Poll } from "./rules";
 
 /// One cycle every 15 s; billing and the issuer's metrics every fourth.
@@ -50,6 +61,9 @@ export interface PollConfig {
   issuerOrigin: string | null;
   /// STREAMS_ISSUER_METRICS_TOKEN, or null: no metrics GET.
   issuerMetricsToken: string | null;
+  /// CANARY_CREDENTIAL and STREAMS_CELL_ID, or null: no canary round. The
+  /// canary exchanges at issuerOrigin, so it needs one.
+  canary: { credential: string; cellId: string } | null;
   timeoutMs?: number;
 }
 
@@ -78,25 +92,36 @@ function jsonOf(got: Got): Json | null {
 export class Poller {
   private cycles = 0;
   private readonly timeoutMs: number;
+  private readonly canary: Canary | null;
 
   constructor(
     private readonly cfg: PollConfig,
     private readonly now: () => number = Date.now,
   ) {
     this.timeoutMs = cfg.timeoutMs ?? TIMEOUT_MS;
+    this.canary = this.canaryOf(cfg.canary);
   }
 
-  /// One cycle's GETs, the cell's two connections and the issuer's at once.
+  private canaryOf(c: PollConfig["canary"]): Canary | null {
+    if (c === null) return null;
+    const { cellOrigin, issuerOrigin } = this.cfg;
+    if (issuerOrigin === null) throw new Error("the canary exchanges at ISSUER_ORIGIN, which is none");
+    return new Canary({ ...c, cellOrigin, issuerOrigin, timeoutMs: this.timeoutMs }, this.now);
+  }
+
+  /// One cycle's GETs, the cell's two connections and the issuer's, and
+  /// on a slow cycle the canary's round, all at once.
   async poll(): Promise<Poll> {
     const at = this.now();
     const slow = this.cycles % SLOW_EVERY === 0;
     this.cycles += 1;
-    const [health, [data, billing], [issuerHealth, issuerMetrics]] = await Promise.all([
+    const [health, [data, billing], [issuerHealth, issuerMetrics], canary] = await Promise.all([
       this.health(),
       this.operator(slow),
       this.issuer(slow),
+      slow && this.canary !== null ? this.canary.run() : null,
     ]);
-    return { at, health, data, billing, issuerHealth, issuerMetrics, canary: null };
+    return { at, health, data, billing, issuerHealth, issuerMetrics, canary };
   }
 
   private async health(): Promise<HealthPoll> {

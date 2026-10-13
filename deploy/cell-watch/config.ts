@@ -157,7 +157,7 @@ export function readWatchConfig(inputs: Inputs): WatchConfig {
       notifyOnly: notifyOnly === "1",
       issuer: iss.origin !== null,
     }),
-    poll: { cellOrigin, operatorToken, issuerOrigin: iss.origin, issuerMetricsToken: iss.token },
+    poll: { cellOrigin, operatorToken, issuerOrigin: iss.origin, issuerMetricsToken: iss.token, canary: null },
     sink: sinkConfig,
     heartbeatUrl,
   };

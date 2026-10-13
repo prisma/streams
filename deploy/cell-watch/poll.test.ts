@@ -5,7 +5,18 @@
 // connection), timeouts, refusals, redirects, and the paths it may read.
 // Run with `bun test ./deploy/cell-watch`.
 import { afterEach, describe, expect, test } from "bun:test";
-import { type Answer, FakeCell, FakeIssuer, FakeServer, ISSUER_METRICS, METRICS_TOKEN, OPERATOR_TOKEN, type Seen } from "./fake-cell";
+import { EXCHANGE_PATH, RECORDS_PATH, STREAM_PATH } from "./canary";
+import {
+  type Answer,
+  CANARY_CREDENTIAL,
+  FakeCell,
+  FakeIssuer,
+  FakeServer,
+  ISSUER_METRICS,
+  METRICS_TOKEN,
+  OPERATOR_TOKEN,
+  type Seen,
+} from "./fake-cell";
 import { BODY_PREFIX_CHARS, PATHS, type PollConfig, Poller, SLOW_EVERY, TIMEOUT_MS } from "./poll";
 import { BILLING, BOOT, DATA, GIT } from "./rig";
 
@@ -31,7 +42,8 @@ function issuer(): FakeIssuer {
 }
 
 function poller(c: { origin: string }, more: Partial<PollConfig> = {}, now = () => 1_000): Poller {
-  return new Poller({ cellOrigin: c.origin, operatorToken: OPERATOR_TOKEN, issuerOrigin: null, issuerMetricsToken: null, ...more }, now);
+  const cfg: PollConfig = { cellOrigin: c.origin, operatorToken: OPERATOR_TOKEN, issuerOrigin: null, issuerMetricsToken: null, canary: null };
+  return new Poller({ ...cfg, ...more }, now);
 }
 
 /// A port nothing listens on: a server started and stopped.
@@ -190,6 +202,53 @@ describe("the issuer (ISSUER_ORIGIN set)", () => {
   });
 });
 
+describe("the canary (CANARY_CREDENTIAL held)", () => {
+  const OK = { ok: true, status: 200, errorCode: null, origin: true };
+
+  test("runs a round on the first cycle and every fourth after it, beside the cycle's GETs; null in between", async () => {
+    const c = cell();
+    const i = issuer();
+    i.endpoint = c.origin;
+    let clock = 1_000;
+    const p = poller(c, { issuerOrigin: i.origin, canary: { credential: CANARY_CREDENTIAL, cellId: "cell_sc1" } }, () => clock);
+    const rounds: unknown[] = [];
+    for (let n = 0; n < 9; n++) {
+      rounds.push((await p.poll()).canary);
+      clock += 15_000;
+    }
+    const first = { exchange: { ...OK, origin: false, endpoint: c.origin }, append: OK, read: OK };
+    const later = { exchange: null, append: OK, read: OK };
+    expect(rounds).toEqual([first, null, null, null, later, null, null, null, later]);
+    // The poller's clock stamps the records; the exchange went to the issuer.
+    expect(c.stream?.records.map((r) => (r as { at: number }).at)).toEqual([1_000, 61_000, 121_000]);
+    expect(i.seen.filter((s) => s.path === EXCHANGE_PATH).map((s) => s.method)).toEqual(["POST"]);
+  });
+
+  test("without a credential no round runs, though the issuer is polled", async () => {
+    const c = cell();
+    const i = issuer();
+    const p = poller(c, { issuerOrigin: i.origin });
+    for (let n = 0; n < 5; n++) expect((await p.poll()).canary).toBeNull();
+    expect([c.stream, i.seen.filter((s) => s.path === EXCHANGE_PATH)]).toEqual([null, []]);
+  });
+
+  test("a round takes the poller's timeout", async () => {
+    const c = cell();
+    const i = issuer();
+    i.exchange = { status: 200, body: "{}", delayMs: 400 };
+    const p = poller(c, { issuerOrigin: i.origin, canary: { credential: CANARY_CREDENTIAL, cellId: "cell_sc1" }, timeoutMs: 100 });
+    expect((await p.poll()).canary).toEqual({
+      exchange: { ok: false, status: null, errorCode: null, origin: false, endpoint: null }, append: null, read: null,
+    });
+  });
+
+  test("needs ISSUER_ORIGIN, at whose exchange it trades its credential", () => {
+    expect(() => poller(cell(), { canary: { credential: CANARY_CREDENTIAL, cellId: "cell_sc1" } })).toThrow(
+      new Error("the canary exchanges at ISSUER_ORIGIN, which is none"),
+    );
+  });
+});
+
 describe("what the watch may read", () => {
   test("its paths are /health, the two operator documents and the issuer's two, never /v1/debug/*", () => {
     expect(Object.values(PATHS).sort()).toEqual(
@@ -197,9 +256,13 @@ describe("what the watch may read", () => {
     );
   });
 
-  test("every request this suite's servers saw was a GET of one of those paths", () => {
+  test("every request this suite's servers saw was a GET of one of those paths, or one of the canary's", () => {
     expect(everySeen.length).toBeGreaterThan(50);
     const allowed: string[] = Object.values(PATHS);
-    expect(everySeen.filter((s) => s.method !== "GET" || !allowed.includes(s.path) || s.body !== "")).toEqual([]);
+    const canary = (s: Seen) =>
+      (s.method === "POST" && s.path === EXCHANGE_PATH) || (s.method === "PUT" && s.path === STREAM_PATH) ||
+      (["GET", "POST"].includes(s.method) && s.path === RECORDS_PATH);
+    expect(everySeen.filter((s) => !canary(s) && (s.method !== "GET" || !allowed.includes(s.path) || s.body !== ""))).toEqual([]);
+    expect(everySeen.filter(canary).length).toBeGreaterThan(5);
   });
 });
