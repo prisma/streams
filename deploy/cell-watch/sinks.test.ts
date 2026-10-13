@@ -1,6 +1,7 @@
 // The cell watch's sinks (public-beta alerting triage B3; D7, D8) against
 // local servers: the Events v2 and webhook bodies, the alert key per
-// class (a NOTIFY rising to PAGE pages), delivery in order with retries,
+// class (a NOTIFY rising to PAGE pages; a resolve closes both keys, so a
+// restarted watch closes what an earlier one opened), delivery in order with retries,
 // the bounded queue, the withheld heartbeat, the heartbeat GET and the
 // log lines. Run with `bun test ./deploy/cell-watch`.
 import { afterEach, describe, expect, test } from "bun:test";
@@ -100,20 +101,42 @@ describe("Events v2 (PagerDuty's shape)", () => {
     expect(bodies(server)[2]).toEqual({ routing_key: KEY, event_action: "resolve", dedup_key: "cell_sc1/r09_rss_write_shed/notify" });
   });
 
-  test("a resolve closes only the keys its rule was triggered on since it opened; one the outbox never saw open closes its own class's key", async () => {
+  test("a resolve closes both of its rule's keys, notify then page, whatever this outbox saw triggered", async () => {
     const { server } = sinkServer();
     const box = outbox(server);
     box.add([trigger("r04_restarts", "NOTIFY"), resolve("r04_restarts", "NOTIFY"), R03, resolve("r03_no_2xx_inside", "PAGE")]);
-    box.add([trigger("r04_restarts", "PAGE"), resolve("r04_restarts", "PAGE"), resolve("r11_durability_wedge", "PAGE")]);
+    box.add([resolve("r11_durability_wedge", "PAGE")]);
     await box.flush(initialState());
     expect(actions(server)).toEqual([
       ["trigger", "cell_sc1/r04_restarts/notify"],
       ["resolve", "cell_sc1/r04_restarts/notify"],
-      ["trigger", "cell_sc1/r03_no_2xx_inside/page"],
-      ["resolve", "cell_sc1/r03_no_2xx_inside/page"],
-      ["trigger", "cell_sc1/r04_restarts/page"],
       ["resolve", "cell_sc1/r04_restarts/page"],
+      ["trigger", "cell_sc1/r03_no_2xx_inside/page"],
+      ["resolve", "cell_sc1/r03_no_2xx_inside/notify"],
+      ["resolve", "cell_sc1/r03_no_2xx_inside/page"],
+      ["resolve", "cell_sc1/r11_durability_wedge/notify"],
       ["resolve", "cell_sc1/r11_durability_wedge/page"],
+    ]);
+  });
+
+  test("a restarted watch's resolve closes the key an earlier watch opened: a rise to PAGE, or a NOTIFY_ONLY deploy's NOTIFY", async () => {
+    const { server } = sinkServer();
+    // Watch A: row 12 rises to PAGE, and row 7 opens under NOTIFY_ONLY=1.
+    const before = outbox(server);
+    before.add([trigger("r12_backlog_latch", "NOTIFY"), trigger("r12_backlog_latch", "PAGE"), trigger("r07_reserved_policy_dropped", "NOTIFY")]);
+    await before.flush(initialState());
+    // Watch B, after a redeploy with NOTIFY_ONLY=0: each still holds, at PAGE, and then resolves.
+    const after = outbox(server);
+    after.add([trigger("r12_backlog_latch", "PAGE"), trigger("r07_reserved_policy_dropped", "PAGE")]);
+    after.add([resolve("r12_backlog_latch", "PAGE"), resolve("r07_reserved_policy_dropped", "PAGE")]);
+    await after.flush(initialState());
+    expect(actions(server).slice(3)).toEqual([
+      ["trigger", "cell_sc1/r12_backlog_latch/page"],
+      ["trigger", "cell_sc1/r07_reserved_policy_dropped/page"],
+      ["resolve", "cell_sc1/r12_backlog_latch/notify"],
+      ["resolve", "cell_sc1/r12_backlog_latch/page"],
+      ["resolve", "cell_sc1/r07_reserved_policy_dropped/notify"],
+      ["resolve", "cell_sc1/r07_reserved_policy_dropped/page"],
     ]);
   });
 
@@ -143,6 +166,17 @@ describe("the JSON webhook", () => {
         runbookAnchor: ANCHOR,
       },
       {
+        text: "[resolved NOTIFY] cell_sc1/r03_no_2xx_inside open_secs=300",
+        kind: "resolve",
+        dedupKey: "cell_sc1/r03_no_2xx_inside/notify",
+        class: "NOTIFY",
+        rule: "r03_no_2xx_inside",
+        values: { open_secs: 300 },
+        labels: {},
+        at: AT + 60_000,
+        runbookAnchor: ANCHOR,
+      },
+      {
         text: "[resolved PAGE] cell_sc1/r03_no_2xx_inside open_secs=300",
         kind: "resolve",
         dedupKey: "cell_sc1/r03_no_2xx_inside/page",
@@ -155,7 +189,7 @@ describe("the JSON webhook", () => {
       },
     ]);
     expect(server.seen.map((s) => [s.method, s.path, s.contentType, s.authorization])).toEqual(
-      Array(2).fill(["POST", "/hook", "application/json", `Bearer ${KEY}`]),
+      Array(3).fill(["POST", "/hook", "application/json", `Bearer ${KEY}`]),
     );
   });
 
@@ -238,13 +272,14 @@ describe("delivery", () => {
     await box.flush(initialState());
     box.add([resolve("r07_reserved_policy_dropped", "PAGE"), trigger("r11_durability_wedge", "PAGE")]);
     await box.flush(initialState());
-    expect(box.size).toBe(3);
+    expect(box.size).toBe(4);
     sink.set(ACCEPTED);
     await box.flush(initialState());
     expect(actions(sink.server)).toEqual([
       ["trigger", "cell_sc1/r07_reserved_policy_dropped/page"],
       ["trigger", "cell_sc1/r07_reserved_policy_dropped/page"],
       ["trigger", "cell_sc1/r07_reserved_policy_dropped/page"],
+      ["resolve", "cell_sc1/r07_reserved_policy_dropped/notify"],
       ["resolve", "cell_sc1/r07_reserved_policy_dropped/page"],
       ["trigger", "cell_sc1/r11_durability_wedge/page"],
     ]);
@@ -311,7 +346,7 @@ describe("the withheld heartbeat (D7)", () => {
     box.add([resolve("r03_no_2xx_inside", "PAGE")]);
     for (let i = 0; i < 5; i++) state = await box.flush(state);
     const idle = await outbox(sinkServer().server).flush(state);
-    expect([state.failedTriggers, idle.failedTriggers, heartbeatDue(state), box.size]).toEqual([0, 0, true, 1]);
+    expect([state.failedTriggers, idle.failedTriggers, heartbeatDue(state), box.size]).toEqual([0, 0, true, 2]);
   });
 
   test("a delivered trigger resets a count that a later trigger in the same flush starts again", async () => {

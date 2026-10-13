@@ -80,13 +80,16 @@ maybe("in prisma dev the watch polls a local shared cell, beats each cycle, answ
   await until("two heartbeats", 45, () => (monitor.seen.length >= 2 ? true : undefined));
   expect(sent(sink)).toEqual([]);
 
-  // A restart is a new boot id: NOTIFY, then the resolve after four clean cycles.
+  // A restart is a new boot id: NOTIFY, then the resolve after four clean
+  // cycles, which closes both of the rule's keys.
   await stopCell(first);
   const second = await startCell({ ...spec, log: join(c.root, "server-2.log") });
   expect(second.boot).not.toBe(first.boot);
   await until("the restart's trigger", 60, () => (sent(sink).length >= 1 ? true : undefined));
-  await until("its resolve", 120, () => (sent(sink).length >= 2 ? true : undefined));
-  expect(sent(sink)).toEqual([["trigger", "cell_sc1/r04_restarts/notify"], ["resolve", "cell_sc1/r04_restarts/notify"]]);
+  await until("its resolve", 120, () => (sent(sink).length >= 3 ? true : undefined));
+  expect(sent(sink)).toEqual([
+    ["trigger", "cell_sc1/r04_restarts/notify"], ["resolve", "cell_sc1/r04_restarts/notify"], ["resolve", "cell_sc1/r04_restarts/page"],
+  ]);
   const trigger = JSON.parse(sink.seen.find((s) => s.body.includes('"r04_restarts"'))!.body);
   expect([trigger.class, trigger.values]).toEqual(["NOTIFY", { boot_ids_30m: 2 }]);
   expect(new Set(sink.seen.map((s) => s.authorization))).toEqual(new Set([`Bearer ${SINK_BEARER}`]));

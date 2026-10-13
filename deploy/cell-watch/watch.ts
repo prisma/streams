@@ -6,7 +6,9 @@
 //
 // State lives in memory only. A restarted watch starts from rules.ts's
 // initial state and re-triggers whatever still holds, on the same alert
-// keys, which the pager folds into the alerts already open.
+// keys, which the pager folds into the alerts already open; a resolve
+// closes both of its rule's keys (sinks.ts), so it also closes a key only
+// the watch before the restart had opened.
 //
 // A cycle that throws (poll.ts answers every network failure as data, so
 // this is a bug or an unusable input) sends no heartbeat: a watch that

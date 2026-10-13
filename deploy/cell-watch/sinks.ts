@@ -11,8 +11,11 @@
 // Alert keys carry the class (`<cell>/<rule>/page`, `<cell>/<rule>/notify`):
 // a rule that opens at NOTIFY and rises to PAGE then opens a second alert,
 // which pages, where a trigger on the first key would only be folded into
-// the open low-urgency alert. A resolve closes every key its rule was
-// triggered on (the open keys are kept in memory, like the rules' state).
+// the open low-urgency alert. A resolve closes both of its rule's keys,
+// notify then page, whichever this watch triggered: an earlier watch, before
+// a restart, may have opened either (a rise to PAGE, or a NOTIFY_ONLY=1
+// deploy's NOTIFY), and a resolve of a key that is not open changes nothing
+// on the pager, so a restarted watch stays idempotent by dedup key.
 //
 // Delivery: the events of a cycle join the queue in order and the queue is
 // delivered at once, front first. A delivery that fails (no 2xx within 5 s;
@@ -123,10 +126,11 @@ export function heartbeat(url: string, timeoutMs = SEND_TIMEOUT_MS): Promise<Out
   return call(url, { method: "GET" }, timeoutMs);
 }
 
+/// The classes a resolve closes, in the order it closes them.
+const CLASSES: readonly Class[] = ["NOTIFY", "PAGE"];
+
 export class Outbox {
   private queue: Delivery[] = [];
-  /// The classes each rule's open alert was triggered at, by dedup key.
-  private readonly open = new Map<string, Set<Class>>();
 
   constructor(
     private readonly sink: SinkConfig,
@@ -141,14 +145,7 @@ export class Outbox {
   /// Queues the events in order, each as the deliveries its alert keys take.
   add(events: readonly WatchEvent[]): void {
     for (const e of events) {
-      if (e.kind === "trigger") {
-        const classes = this.open.get(e.dedupKey) ?? new Set<Class>();
-        this.open.set(e.dedupKey, classes.add(e.class));
-        this.queue.push({ event: e, key: alertKey(e.dedupKey, e.class), class: e.class });
-        continue;
-      }
-      const classes = this.open.get(e.dedupKey) ?? new Set([e.class]);
-      this.open.delete(e.dedupKey);
+      const classes = e.kind === "trigger" ? [e.class] : CLASSES;
       for (const cls of classes) this.queue.push({ event: e, key: alertKey(e.dedupKey, cls), class: cls });
     }
     const over = this.queue.length - OUTBOX_MAX;

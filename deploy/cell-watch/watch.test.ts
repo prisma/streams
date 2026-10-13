@@ -98,7 +98,9 @@ describe("a cycle", () => {
     const closed = await rig.cycles(w, 4);
     expect(kinds([...opened, ...closed])).toEqual([["trigger PAGE"], [], [], [], ["resolve PAGE"]]);
     expect([opened[0]?.events[0]?.at, closed[3]?.events[0]?.at]).toEqual([T0, T0 + 4 * POLL_MS]);
-    expect([rig.sent(), rig.beats()]).toEqual([[["trigger", R07], ["resolve", R07]], 5]);
+    // The resolve closes the rule's notify key too, which an earlier watch may have opened.
+    const notify = "cell_sc1/r07_reserved_policy_dropped/notify";
+    expect([rig.sent(), rig.beats()]).toEqual([[["trigger", R07], ["resolve", notify], ["resolve", R07]], 5]);
     expect(JSON.parse(rig.sink.seen[0]?.body ?? "{}").payload.custom_details.values).toEqual({ reserved_dropped: 2 });
   });
 
@@ -145,7 +147,9 @@ describe("the canary", () => {
       reports.push(...(await rig.cycles(w, 16)));
       const at = reports.flatMap((r, cycle) => r.events.map((e) => [cycle, e.kind, e.dedupKey]));
       expect(at).toEqual([[12, "trigger", "cell_sc1/r19_canary"], [28, "resolve", "cell_sc1/r19_canary"]]);
-      expect(rig.sent()).toEqual([["trigger", "cell_sc1/r19_canary/page"], ["resolve", "cell_sc1/r19_canary/page"]]);
+      expect(rig.sent()).toEqual([
+        ["trigger", "cell_sc1/r19_canary/page"], ["resolve", "cell_sc1/r19_canary/notify"], ["resolve", "cell_sc1/r19_canary/page"],
+      ]);
       expect(JSON.parse(rig.sink.seen[0]?.body ?? "{}").payload.custom_details).toMatchObject({
         values: { status: 401, consecutive_failures: 3 },
         labels: { step: "append", origin: "server", error_code: "kid_unknown" },
