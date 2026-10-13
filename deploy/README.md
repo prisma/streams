@@ -81,7 +81,12 @@ Six more directories:
   the next state and the trigger and resolve events, one rule per row of
   the design's table, and its tests against answers captured from a local
   cell (`fixtures/`). Payloads carry named numbers and fixed enums only.
-  Tests: `bun test ./deploy/cell-watch`.
+  `poll.ts` fills that poll each 15 s cycle with GETs of those five paths
+  and no other: `/health` on a fresh connection, the two operator
+  documents with the deployment bearer on one kept-alive connection
+  (billing every fourth cycle), the issuer's when `ISSUER_ORIGIN` is set;
+  5 s timeouts, no redirects followed. Its tests run against local stand-ins
+  (`fake-cell.ts`). Tests: `bun test ./deploy/cell-watch`.
 
 All verify the download is an **x86_64 ELF** before exec. That check is
 not politeness: an aarch64 binary deploys "successfully" and crash-loops
