@@ -16,113 +16,20 @@
 // says `keep_awake unavailable`.
 import { afterAll, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { DEFAULT_PROFILES } from "../cell-admin/commands";
-import { readProfiles } from "../cell-admin/profile";
-import { cleanup, initCell, readBundle, scratchDir } from "../cell-admin/test-rig";
+import { initCell, scratchDir } from "../cell-admin/test-rig";
+import { freePort, onTeardown, publish, startCell, startS3, startWatch, stopCell, teardown, until } from "./e2e-rig";
 import { FakeServer } from "./fake-cell";
 
 const BIN_DIR = process.env.CELL_WATCH_E2E_BIN_DIR;
+const SHELL = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" };
 const maybe = BIN_DIR ? test : test.skip;
-const HERE = import.meta.dir;
 const BEAT = "/beat/heartbeat-secret-dev-e2e";
 const SINK_BEARER = `webhook-bearer-${randomBytes(8).toString("hex")}`;
 const OPERATOR = randomBytes(24).toString("hex");
 
-const children: ReturnType<typeof Bun.spawn>[] = [];
-const servers: FakeServer[] = [];
-let emulators: string | undefined;
-
-afterAll(async () => {
-  for (const c of children.reverse()) {
-    c.kill("SIGINT");
-    await Promise.race([c.exited, Bun.sleep(10_000)]);
-    c.kill("SIGKILL");
-  }
-  // The compute daemon `prisma dev` started for this emulator directory.
-  const daemon = emulators && join(emulators, "compute.json");
-  if (daemon && existsSync(daemon)) {
-    try {
-      process.kill(JSON.parse(readFileSync(daemon, "utf8")).pid, "SIGTERM");
-    } catch {}
-  }
-  for (const s of servers) s.stop();
-  cleanup();
-});
-
-function freePort(): number {
-  const s = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
-  const port = Number(s.port);
-  s.stop(true);
-  return port;
-}
-
-async function until<T>(what: string, secs: number, probe: () => Promise<T | undefined> | T | undefined): Promise<T> {
-  for (let i = 0; i < secs * 4; i++) {
-    const v = await Promise.resolve(probe()).catch(() => undefined);
-    if (v !== undefined) return v;
-    await Bun.sleep(250);
-  }
-  throw new Error(`timed out waiting for ${what}`);
-}
-
-/// What deploy/app-server does with the bundle: three files, each replaced atomically.
-function publish(stateDir: string, feeds: string): void {
-  const b = readBundle(stateDir);
-  for (const [name, doc] of [["keys", b.keys], ["policies", b.policies], ["grants", b.grants]] as const) {
-    writeFileSync(join(feeds, `${name}.json.tmp`), JSON.stringify(doc));
-    renameSync(join(feeds, `${name}.json.tmp`), join(feeds, `${name}.json`));
-  }
-}
-
-/// The shared cell on `port`: started, and ready once /health answers 200.
-async function startCell(bin: string, port: number, s3: string, bucket: string, feeds: string, log: string) {
-  const env: Record<string, string> = {
-    PATH: process.env.PATH ?? "",
-    HOME: process.env.HOME ?? "",
-    ...Object.fromEntries(readProfiles(DEFAULT_PROFILES)),
-    STREAMS_AUTH_KEYS_FILE: join(feeds, "keys.json"),
-    STREAMS_AUTH_POLICY_FILE: join(feeds, "policies.json"),
-    STREAMS_AUTH_GRANTS_FILE: join(feeds, "grants.json"),
-    CELL_ID: "cell_sc1",
-    PROJECT_ID: "proj_deploy",
-    ACCOUNT_ID: "acct_sink",
-    USAGE_STREAM_KEY: randomBytes(32).toString("base64url"),
-    AUTH_TOKEN: OPERATOR,
-  };
-  const child = Bun.spawn([join(bin, "streams-slate"), "--listen", `127.0.0.1:${port}`, "--s3-endpoint", s3, "--bucket", bucket],
-    { env, stdout: Bun.file(log), stderr: Bun.file(log) });
-  children.push(child);
-  const health = await until("the cell to be ready", 90, async () => {
-    const res = await fetch(`http://127.0.0.1:${port}/health`);
-    return res.ok ? res : undefined;
-  });
-  return { child, git: health.headers.get("x-streams-git") ?? "", boot: health.headers.get("x-streams-boot-id") ?? "" };
-}
-
-/// `prisma dev app.ts` with the watch's inputs in its shell; the watch's URL.
-async function startWatch(inputs: Record<string, string>): Promise<{ url: string; out: () => string }> {
-  const built = await Bun.build({ entrypoints: [join(HERE, "entry.ts")], target: "bun", format: "esm", outdir: HERE, naming: "entry.js" });
-  if (!built.success) throw new Error(`bun build failed: ${built.logs.join("\n")}`);
-  emulators = scratchDir();
-  const dev = Bun.spawn([join(HERE, "node_modules", ".bin", "prisma"), "dev", "app.ts", "--fresh", "--no-interactive", "--no-color"], {
-    cwd: HERE,
-    env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", PRISMA_COMPOSER_EMULATORS_DIR: emulators, ...inputs },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  children.push(dev);
-  const out: string[] = [];
-  const pump = async (s: ReadableStream<Uint8Array>) => {
-    for await (const chunk of s) out.push(new TextDecoder().decode(chunk));
-  };
-  void pump(dev.stdout as ReadableStream<Uint8Array>);
-  void pump(dev.stderr as ReadableStream<Uint8Array>);
-  const url = await until(`prisma dev's endpoint line (output so far: ${out.join("").slice(-2000)})`, 120, () =>
-    /"kind":"endpoint","name":"cellwatch\.watch","url":"([^"]+)"/.exec(out.join(""))?.[1]);
-  return { url, out: () => out.join("") };
-}
+afterAll(teardown);
 
 /// Row 17 is open on an idle cell at this tip: the cell's own activity
 /// grows ops.counters.unowned_meter_events_total by about nine each
@@ -142,16 +49,16 @@ maybe("in prisma dev the watch polls a local shared cell, beats each cycle, answ
   const feeds = join(scratchDir(), "feeds");
   mkdirSync(feeds);
   publish(c.state, feeds);
-  const s3Port = freePort();
-  children.push(Bun.spawn([join(bin, "s3lite"), "--listen", `127.0.0.1:${s3Port}`, "--latency-ms", "2"], { stdout: "ignore", stderr: "ignore" }));
-  const port = freePort();
-  const bucket = `cell-watch-e2e-${Date.now()}`;
-  const s3 = `http://127.0.0.1:${s3Port}`;
-  const first = await startCell(bin, port, s3, bucket, feeds, join(c.root, "server-1.log"));
+  const spec = {
+    shell: SHELL, bin, port: freePort(), s3: startS3(bin), bucket: `cell-watch-e2e-${Date.now()}`, feeds, operator: OPERATOR,
+    log: join(c.root, "server-1.log"),
+  };
+  const first = await startCell(spec);
 
   const sink = new FakeServer({ "/hook": () => ({ status: 202, body: "" }) });
   const monitor = new FakeServer({ [BEAT]: () => ({ status: 200, body: "OK" }) });
-  servers.push(sink, monitor);
+  onTeardown(() => sink.stop());
+  onTeardown(() => monitor.stop());
   const inputs = {
     STREAMS_OPERATOR_TOKEN: OPERATOR,
     ALERT_SINK_URL: `${sink.origin}/hook`,
@@ -159,14 +66,14 @@ maybe("in prisma dev the watch polls a local shared cell, beats each cycle, answ
     HEARTBEAT_URL: `${monitor.origin}${BEAT}`,
     STREAMS_ISSUER_METRICS_TOKEN: "none",
     CANARY_CREDENTIAL: "none",
-    STREAMS_CELL_ORIGIN: `http://127.0.0.1:${port}`,
+    STREAMS_CELL_ORIGIN: first.origin,
     STREAMS_CELL_ID: "cell_sc1",
     ALERT_SINK_KIND: "webhook",
     EXPECTED_GIT: first.git,
     NOTIFY_ONLY: "0",
     ISSUER_ORIGIN: "none",
   };
-  const watch = await startWatch(inputs);
+  const watch = await startWatch(SHELL, inputs);
   const ok = await fetch(`${watch.url}/`);
   expect([ok.status, await ok.text(), (await fetch(`${watch.url}/x`)).status]).toEqual([200, "ok", 404]);
   // Two cycles of a healthy cell: two heartbeats, and no event but row 17's.
@@ -174,9 +81,8 @@ maybe("in prisma dev the watch polls a local shared cell, beats each cycle, answ
   expect(sent(sink)).toEqual([]);
 
   // A restart is a new boot id: NOTIFY, then the resolve after four clean cycles.
-  first.child.kill("SIGTERM");
-  await first.child.exited;
-  const second = await startCell(bin, port, s3, bucket, feeds, join(c.root, "server-2.log"));
+  await stopCell(first);
+  const second = await startCell({ ...spec, log: join(c.root, "server-2.log") });
   expect(second.boot).not.toBe(first.boot);
   await until("the restart's trigger", 60, () => (sent(sink).length >= 1 ? true : undefined));
   await until("its resolve", 120, () => (sent(sink).length >= 2 ? true : undefined));
@@ -190,7 +96,7 @@ maybe("in prisma dev the watch polls a local shared cell, beats each cycle, answ
   expect(monitor.seen.every((s) => s.method === "GET")).toBe(true);
 
   // The service's log (the emulator's): the boot line first; no secret anywhere.
-  const log = readFileSync(join(emulators ?? "", "compute", "logs", "streams-cell-watch", "cellwatch-watch.log"), "utf8");
+  const log = watch.log();
   expect(log.split("\n")[0]).toBe(
     "cell-watch: cell cell_sc1, sink webhook, notify_only false, issuer false, expected_git true, " +
       `keep_awake unavailable, listening on :${new URL(watch.url).port}`,
