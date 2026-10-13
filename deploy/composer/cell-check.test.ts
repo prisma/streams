@@ -90,6 +90,20 @@ describe("cell-check", () => {
     expect([run.out.includes(r.bearer), run.out.includes(r.canary)]).toEqual([false, false]);
   }, 30_000);
 
+  test("--not-boot-id passes only an instance with another boot id, waiting while the named one answers", async () => {
+    const r = await rig({ boot: "b7" });
+    const stuck = await check([...r.args, "--not-boot-id", "b7", "--deadline-secs", "4"]);
+    expect([stuck.code, stuck.err, stuck.out.trim().split("\n").at(-1)]).toEqual([
+      1, "", "CELL_CHECK_FAIL production: /health answers from boot b7, the instance --not-boot-id excludes: no new instance yet",
+    ]);
+    setTimeout(() => {
+      r.cell.identity = { ...r.cell.identity, boot: "b8" };
+    }, 1_000);
+    const moved = await check([...r.args, "--not-boot-id", "b7", "--deadline-secs", "30"]);
+    expect([moved.code, moved.err]).toEqual([0, ""]);
+    expect(moved.out).toContain("CELL_CHECK_PASS production");
+  }, 60_000);
+
   test("waits while the old version still answers, then passes the new one", async () => {
     const r = await rig();
     r.cell.previous = { identity: { ...r.cell.identity, commit: "0ld".padEnd(40, "0") }, until: Date.now() + 1_000 };

@@ -56,7 +56,9 @@ const prismaScript = (record: string, cellUrl: string | null, code = 0) => `#!/u
 import { appendFileSync, readFileSync } from "node:fs";
 appendFileSync(${JSON.stringify(record)}, JSON.stringify({ argv: process.argv.slice(2), env: process.env, cwd: process.cwd() }) + "\\n");
 ${cellUrl ? `const r = JSON.parse(readFileSync("deploy/release.json", "utf8"));
-await fetch(${JSON.stringify(`${cellUrl}/__deploy`)}, { method: "POST", body: JSON.stringify({ commit: r.commit, sha: r.server_sha256 }) });` : ""}
+await fetch(${JSON.stringify(`${cellUrl}/__deploy`)}, {
+  method: "POST", body: JSON.stringify({ commit: r.commit, sha: r.server_sha256, nonce: process.env.CELL_DEPLOY_NONCE }),
+});` : ""}
 process.exit(${code});
 `;
 
@@ -117,9 +119,10 @@ function release(w: World, tag: string, o: { cells?: Record<string, string>; tre
   });
 }
 
-/// The cell runs `r`.
+/// The cell runs `r`, deployed with its tag as the nonce.
 const runs = (w: World, r: Release) => {
   w.cell.identity = { ...w.cell.identity, commit: r.commit, sha: r.server_sha256 };
+  w.cell.nonce = r.tag;
 };
 
 const withCell = (w: World) => [
@@ -333,6 +336,39 @@ describe("deploy-release.sh", () => {
       ["rc-1.r1760000000", "rc-2", "rc-1"],
       [["rc-1", "rc-1.r1760000000"], ["rc-2", "rc-2"], ["rc-1", "rc-1"]],
     ]);
+  }, 60_000);
+
+  test("--restart redeploys the running release with a new nonce and passes only a new instance; a plain re-run then keeps it", async () => {
+    const w = await world();
+    const { dir, release: r1 } = release(w, "rc-1");
+    runs(w, r1);
+    const run = await deploy(w, "production", dir, [...withCell(w), "--restart"]);
+    expect([run.code, run.err]).toEqual([0, ""]);
+    const nonce = prismaRuns(w)[0].env.CELL_DEPLOY_NONCE;
+    expect([/^rc-1\.r[0-9]{10}$/.test(nonce), w.cell.identity.boot, w.cell.nonce]).toEqual([true, "b1", nonce]);
+    expect(run.out).toContain(`deploy-release: rc-1 is restarted on production (nonce ${nonce}): a new instance passed cell-check`);
+    expect(log(w).map((e) => [e.tag, e.nonce, e.result])).toEqual([["rc-1", nonce, "pass"]]);
+    const again = await deploy(w, "production", dir, withCell(w));
+    expect([again.code, again.err, prismaRuns(w)[1].env.CELL_DEPLOY_NONCE, w.cell.identity.boot, w.cell.boots]).toEqual([0, "", nonce, "b1", 1]);
+  }, 60_000);
+
+  test("--restart refuses a cell that runs another release or none, and goes only with --cell-url, never with the issuer or --destroy", async () => {
+    const w = await world();
+    const { release: r1 } = release(w, "rc-1");
+    const { dir: d2, release: r2 } = release(w, "rc-2");
+    runs(w, r1);
+    refusedBeforeDeploy(w, await deploy(w, "production", d2, [...withCell(w), "--restart"]),
+      `--restart restarts the release the cell runs: it runs rc-1 (${r1.server_sha256}), not rc-2 (${r2.server_sha256}); ` +
+        "deploy rc-2 without --restart");
+    w.cell.healthStatus = 503;
+    refusedBeforeDeploy(w, await deploy(w, "production", d2, [...withCell(w), "--restart"]),
+      `--restart restarts the cell that answers at ${w.cell.url}, and none answers`);
+    for (const extra of [["--restart"], [...withCell(w), "--restart", "--issuer-release-dir", d2, "--issuer-project", "p"]]) {
+      const usage = await deploy(w, "production", d2, extra);
+      expect([usage.code, usage.err.split("\n")[0], prismaRuns(w).length]).toEqual([
+        2, "deploy-release: --restart restarts the running cell: it needs --cell-url (with cell-check's files) and takes no --issuer-release-dir or --destroy", 0,
+      ]);
+    }
   }, 60_000);
 
   test("when no cell answers, checks against the release the deploy log last deployed to the stage", async () => {

@@ -6,14 +6,16 @@
 //
 //   deploy/composer/cell-check <stage> <release-dir> --cell-url URL
 //     --bearer-file F --canary-token-file T --state DIR|s3://...
-//     [--s3-credentials F] [--deadline-secs N]
+//     [--s3-credentials F] [--deadline-secs N] [--not-boot-id ID]
 //
 // Every round checks, in order, and the check passes on the first round
 // that passes them all, within --deadline-secs (default 300: a new
 // version starts beside the old one and takes over its address, so early
 // rounds may meet the old one or a booting one):
 //   1. GET /health answers 200 with x-streams-git equal to release.json's
-//      commit;
+//      commit and, with --not-boot-id (deploy-release.sh --restart names
+//      the instance it restarts), an x-streams-boot-id other than ID: a new
+//      instance of the same release;
 //   2. GET /v1/debug/load (the deployment bearer) reports binary_sha256
 //      equal to server_sha256 and git_commit equal to the commit;
 //   3. GET /v1/debug/auth reports feeds.policies.feedVersion and
@@ -50,7 +52,7 @@ import { readRelease } from "./release";
 import { STAGES } from "./streams/env";
 
 const USAGE =
-  "usage: cell-check <stage> <release-dir> --cell-url URL --bearer-file F --canary-token-file T --state DIR|s3://... [--s3-credentials F] [--deadline-secs N]";
+  "usage: cell-check <stage> <release-dir> --cell-url URL --bearer-file F --canary-token-file T --state DIR|s3://... [--s3-credentials F] [--deadline-secs N] [--not-boot-id ID]";
 const STREAM = "cell-check";
 const ROUND_PAUSE_MS = 3_000;
 const RETRY_AFTER_MAX_MS = 5_000;
@@ -63,6 +65,8 @@ interface Want {
   policies: number;
   grants: number;
   project: string;
+  /// --not-boot-id: the instance a restart replaces.
+  notBoot: string | null;
 }
 
 class NotYet extends Error {}
@@ -132,6 +136,10 @@ async function identity(cell: Cell, want: Want): Promise<void> {
   await expectStatus(health, [200], "GET /health");
   const git = health.headers.get("x-streams-git");
   if (git !== want.commit) throw new NotYet(`/health names commit ${git}, the release is ${want.commit}`);
+  const boot = health.headers.get("x-streams-boot-id");
+  if (want.notBoot !== null && (boot === null || boot === want.notBoot)) {
+    throw new NotYet(`/health answers from boot ${boot ?? "(none)"}, the instance --not-boot-id excludes: no new instance yet`);
+  }
   const load = json(await expectStatus(await ask(cell, "GET", "/v1/debug/load", cell.bearer), [200], "GET /v1/debug/load"), "/v1/debug/load");
   if (load.binary_sha256 !== want.sha || load.git_commit !== want.commit) {
     throw new NotYet(`/v1/debug/load reports binary ${load.binary_sha256} at ${load.git_commit}, the release is ${want.sha} at ${want.commit}`);
@@ -215,6 +223,7 @@ async function wanted(stage: string, dir: string, f: ReturnType<typeof parseFlag
     policies: bundle.bundle.policies.feed_version,
     grants: bundle.bundle.grants.feed_version,
     project,
+    notBoot: f.get("not-boot-id") ?? null,
   };
 }
 
@@ -224,7 +233,7 @@ export async function main(argv: readonly string[], out: (line: string) => void)
     throw new AdminError("give the stage and the release directory first", 2);
   }
   const f = parseFlags(rest, {
-    single: ["cell-url", "bearer-file", "canary-token-file", "state", "s3-credentials", "deadline-secs"],
+    single: ["cell-url", "bearer-file", "canary-token-file", "state", "s3-credentials", "deadline-secs", "not-boot-id"],
     required: ["cell-url", "bearer-file", "canary-token-file", "state"],
   });
   const deadline = Date.now() + f.count("deadline-secs", 300) * 1000;

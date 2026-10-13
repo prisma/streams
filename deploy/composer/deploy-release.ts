@@ -55,6 +55,13 @@
 // and the child environment's) and its app.ts (the secret names and the
 // module), never the checkout's, which a rollback to a release cut from
 // another commit would get wrong.
+// With --restart (lead decision deploy-q5 #6 (2)): the same steps for the
+// release the cell at --cell-url runs, refused when it runs another one
+// or none answers, with a new nonce, `<tag>.r<unix secs>`, so the deploy
+// is a new version of the same release; cell-check then also requires an
+// x-streams-boot-id other than the one the cell answered with before
+// (--not-boot-id), so a restart passes only on a new instance. A plain
+// deploy after it keeps that nonce (step 8).
 // With --destroy, after steps 1 and 2 (and never for production): the
 // release's destroy.ts, Composer's destroy of the named stage, from the
 // release root in the same narrow environment, logged as destroyed.
@@ -82,7 +89,7 @@ import { STAGES } from "./streams/env";
 
 const USAGE = `usage: PRISMA_TOKEN_FILE=F deploy/composer/deploy-release.sh <stage> <release-dir>
   --project ID [--branch ID] --workspace ID --state DIR|s3://... [--s3-credentials F]
-  [--cell-url URL --bearer-file F --canary-token-file T] [--management-api URL]
+  [--cell-url URL --bearer-file F --canary-token-file T [--restart]] [--management-api URL]
   [--issuer-release-dir DIR --issuer-project ID [--issuer-branch ID]]
 or: ... <scratch|cert> <release-dir> --project ID --branch ID --workspace ID --destroy`;
 const DEPLOY_LOG = "deploy-log.jsonl";
@@ -251,8 +258,9 @@ function releasesBeside(dir: string): Release[] {
     .filter((r) => existsSync(join(root, r.tag, "deploy", "release.json")));
 }
 
-/// The running cell's binary and commit, or null when no cell answers.
-async function runningIdentity(run: Run): Promise<{ sha: string; commit: string } | null> {
+/// The running cell's binary, commit and instance (its /health boot id),
+/// or null when no cell answers.
+async function runningIdentity(run: Run): Promise<{ sha: string; commit: string; boot: string | null } | null> {
   const url = run.flags.get("cell-url");
   if (url === undefined) return null;
   const base = cellBase(url);
@@ -275,7 +283,7 @@ async function runningIdentity(run: Run): Promise<{ sha: string; commit: string 
   if (typeof load?.binary_sha256 !== "string" || typeof load?.git_commit !== "string") {
     throw new AdminError(`the cell at ${base} answers /health but /v1/debug/load answered ${res.status} without its identity`);
   }
-  return { sha: load.binary_sha256, commit: load.git_commit };
+  return { sha: load.binary_sha256, commit: load.git_commit, boot: health.headers.get("x-streams-boot-id") };
 }
 
 /// The deploy log's last line that deployed a cell to the stage's scope
@@ -304,8 +312,16 @@ function deployNonce(dir: string, stage: string, scope: Scope, tag: string): str
   return last?.tag === tag && typeof last.nonce === "string" ? last.nonce : tag;
 }
 
+/// The running release; when the cell answered for it (not the deploy
+/// log), the instance's boot id (null when /health named none).
+interface Running {
+  release: Release;
+  answered: boolean;
+  boot: string | null;
+}
+
 /// Step 6: the running release, or null for "no cell yet".
-async function runningRelease(run: Run): Promise<Release | null> {
+async function runningRelease(run: Run): Promise<Running | null> {
   const live = await runningIdentity(run);
   if (live) {
     const found = releasesBeside(run.dir).filter((r) => r.server_sha256 === live.sha);
@@ -319,7 +335,7 @@ async function runningRelease(run: Run): Promise<Release | null> {
       throw new AdminError(`the cell runs binary ${live.sha} at ${live.commit}; release ${found[0].tag} cut it from ${found[0].commit}`);
     }
     run.out(`deploy-release: the running cell is release ${found[0].tag} (${live.sha})`);
-    return found[0];
+    return { release: found[0], answered: true, boot: live.boot };
   }
   const tag = lastDeployed(run);
   if (tag === null) {
@@ -327,7 +343,23 @@ async function runningRelease(run: Run): Promise<Release | null> {
     return null;
   }
   run.out(`deploy-release: no cell answers; ${DEPLOY_LOG} last deployed release ${tag} to ${run.stage}`);
-  return readRelease(join(dirname(run.dir), tag));
+  return { release: readRelease(join(dirname(run.dir), tag)), answered: false, boot: null };
+}
+
+/// --restart's refusals: it restarts the instance that answers, of this
+/// release; returns that instance's boot id.
+function restarted(run: Run, running: Running | null): string {
+  const url = run.flags.must("cell-url");
+  if (!running?.answered) throw new AdminError(`--restart restarts the cell that answers at ${url}, and none answers`);
+  if (running.boot === null) throw new AdminError(`the cell at ${url} names no x-streams-boot-id: a new instance cannot be told from it`);
+  const [was, is] = [running.release, run.release];
+  if (was.server_sha256 !== is.server_sha256) {
+    throw new AdminError(
+      `--restart restarts the release the cell runs: it runs ${was.tag} (${was.server_sha256}), not ${is.tag} (${is.server_sha256}); ` +
+        `deploy ${is.tag} without --restart`,
+    );
+  }
+  return running.boot;
 }
 
 /// Step 6's refusals.
@@ -397,12 +429,13 @@ async function destroyStage(run: Run, api: Platform): Promise<number> {
   return 0;
 }
 
-/// Step 9.
-async function cellCheck(run: Run): Promise<boolean> {
+/// Step 9; after --restart, only an instance other than `replaced` passes.
+async function cellCheck(run: Run, replaced: string | null): Promise<boolean> {
   const f = run.flags;
   const pass = ["cell-url", "bearer-file", "canary-token-file", "state", "s3-credentials"].flatMap((n) =>
     f.get(n) === undefined ? [] : [`--${n}`, f.get(n) as string],
   );
+  if (replaced !== null) pass.push("--not-boot-id", replaced);
   const child = Bun.spawn(
     [process.execPath, join(import.meta.dir, "cell-check"), run.stage, run.dir, ...pass, "--deadline-secs", String(CELL_CHECK_DEADLINE_SECS)],
     { stdout: "inherit", stderr: "inherit" },
@@ -487,7 +520,7 @@ export async function main(argv: readonly string[], out: (line: string) => void)
       "project", "branch", "workspace", "state", "s3-credentials", "cell-url", "bearer-file", "canary-token-file",
       "management-api", "issuer-release-dir", "issuer-project", "issuer-branch",
     ],
-    bool: ["destroy"],
+    bool: ["destroy", "restart"],
     required: ["project", "workspace"],
   });
   const destroying = flags.has("destroy");
@@ -503,6 +536,13 @@ export async function main(argv: readonly string[], out: (line: string) => void)
   if (flags.has("cell-url") && !(flags.has("bearer-file") && flags.has("canary-token-file"))) {
     throw new AdminError("--cell-url goes with --bearer-file and --canary-token-file (cell-check needs both)", 2);
   }
+  const restart = flags.has("restart");
+  if (restart && (!flags.has("cell-url") || destroying || flags.has("issuer-release-dir"))) {
+    throw new AdminError(
+      "--restart restarts the running cell: it needs --cell-url (with cell-check's files) and takes no --issuer-release-dir or --destroy",
+      2,
+    );
+  }
   const dir = resolve(rawDir);
   const release = checkRelease(dir);
   if (basename(dir) !== release.tag) {
@@ -513,7 +553,11 @@ export async function main(argv: readonly string[], out: (line: string) => void)
   const apps = [fileIn(dir, "composer/app.ts"), ...(cut ? [join(cut.dir, "app.ts")] : [])];
   refuseSecretsInEnv([...new Set(apps.flatMap((a) => envSecretNames(readFileSync(a, "utf8"))))], process.env);
   const scope = scopeOf(stage, flags.must("project"), flags.get("branch"));
-  const nonce = destroying ? null : deployNonce(dir, stage, scope, release.tag);
+  const nonce = destroying
+    ? null
+    : restart
+      ? `${release.tag}.r${Math.floor(Date.now() / 1000)}`
+      : deployNonce(dir, stage, scope, release.tag);
   const run: Run = { stage, dir, flags, out, release, rules: await rulesOf(dir), scope, nonce };
   const api = Platform.open(flags.get("management-api") ?? MANAGEMENT_API);
   if (destroying) return destroyStage(run, api);
@@ -523,7 +567,8 @@ export async function main(argv: readonly string[], out: (line: string) => void)
   await platformChecks(run, api, { scope: run.scope, app: appModuleName(appTs), names: envSecretNames(appTs) }, region);
   const issuer = await issuerChecks(run, api, region, cells, cut);
   const running = await runningRelease(run);
-  if (running) await refuseCrossing(run, running);
+  const replaced = restart ? restarted(run, running) : null;
+  if (running) await refuseCrossing(run, running.release);
   await checkSizing(run);
   if (!(await prismaDeploy(run, api, region))) {
     logDeploy(run, "deploy_failed");
@@ -535,8 +580,14 @@ export async function main(argv: readonly string[], out: (line: string) => void)
     out(`deploy-release: deployed ${run.release.tag} to ${stage}; run cell-check with the service's address (--cell-url) now`);
     return 3;
   }
-  const passed = await cellCheck(run);
+  const passed = await cellCheck(run, replaced);
   logDeploy(run, passed ? "pass" : "fail");
+  if (restart) {
+    const how = `${run.release.tag} ${passed ? "is" : "was"} restarted on ${stage} (nonce ${run.nonce})`;
+    if (!passed) throw new AdminError(`${how}, but no new instance passed cell-check (its last reason is above)`);
+    out(`deploy-release: ${how}: a new instance passed cell-check`);
+    return 0;
+  }
   if (!passed) {
     throw new AdminError(
       `release ${run.release.tag} is deployed to ${stage} but cell-check failed${issuer ? " (the issuer is not deployed)" : ""}: ` +

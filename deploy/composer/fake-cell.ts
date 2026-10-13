@@ -4,17 +4,25 @@
 // the deployment bearer) and the product requests cell-check's canary
 // makes (create, append, read, project usage, delete), behind the canary
 // token. src/http.rs and docs/refactor/WIRE-MATRIX.md §2 are the shapes.
-// `POST /__deploy {commit, sha}` is the fake's own: a fake `prisma deploy`
-// calls it to put a new version in place.
+// `POST /__deploy {commit, sha, nonce}` is the fake's own: a fake `prisma
+// deploy` calls it to put a new version, a new instance with a boot id of
+// its own, in place, unless commit, sha and nonce are the running ones (an
+// unchanged input: Composer's no-op, D0 finding 8).
 export interface Identity {
   commit: string;
   sha: string;
   policies: number;
   grants: number;
+  /// The instance's x-streams-boot-id ("b" when not given).
+  boot?: string;
 }
 
 export class FakeStreamsCell {
   identity: Identity;
+  /// The CELL_DEPLOY_NONCE the running version was deployed with.
+  nonce: string | null = null;
+  /// Instances /__deploy has started.
+  boots = 0;
   /// Served instead of `identity` until this instant (an old version
   /// still answering beside a new one).
   previous?: { identity: Identity; until: number };
@@ -69,7 +77,11 @@ export class FakeStreamsCell {
     this.requests.push(`${req.method} ${url.pathname}${url.search}`);
     if (url.pathname === "/__deploy" && req.method === "POST") {
       const next = await req.json();
-      this.identity = { ...this.identity, commit: next.commit, sha: next.sha };
+      const id = this.identity;
+      if (next.commit === id.commit && next.sha === id.sha && next.nonce === this.nonce) return new Response(null, { status: 204 });
+      this.boots += 1;
+      this.identity = { ...id, commit: next.commit, sha: next.sha, boot: `b${this.boots}` };
+      this.nonce = next.nonce;
       return new Response(null, { status: 204 });
     }
     const id = this.now();
@@ -77,12 +89,12 @@ export class FakeStreamsCell {
     if (url.pathname === "/health") {
       return new Response(this.healthStatus === 200 ? "ok" : "booting", {
         status: this.healthStatus,
-        headers: this.healthStatus === 200 ? { "x-streams-git": id.commit, "x-streams-build-unix": "1", "x-streams-boot-id": "b" } : {},
+        headers: this.healthStatus === 200 ? { "x-streams-git": id.commit, "x-streams-build-unix": "1", "x-streams-boot-id": id.boot ?? "b" } : {},
       });
     }
     if (url.pathname.startsWith("/v1/debug/")) {
       if (bearer !== this.bearer) return this.refuse(401, "unauthorized");
-      if (url.pathname === "/v1/debug/load") return this.json(200, { binary_sha256: id.sha, git_commit: id.commit, boot_id: "b" });
+      if (url.pathname === "/v1/debug/load") return this.json(200, { binary_sha256: id.sha, git_commit: id.commit, boot_id: id.boot ?? "b" });
       if (url.pathname === "/v1/debug/auth") {
         return this.json(200, { feeds: { policies: { feedVersion: id.policies }, grants: { feedVersion: id.grants } } });
       }

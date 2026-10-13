@@ -6,7 +6,7 @@
 #   PRISMA_TOKEN_FILE=F deploy/composer/deploy-release.sh <stage> <release-dir>
 #     --project ID [--branch ID] --workspace ID --state DIR|s3://...
 #     [--s3-credentials F] [--cell-url URL --bearer-file F
-#     --canary-token-file T] [--management-api URL]
+#     --canary-token-file T [--restart]] [--management-api URL]
 #     [--issuer-release-dir DIR --issuer-project ID [--issuer-branch ID]]
 #   PRISMA_TOKEN_FILE=F deploy/composer/deploy-release.sh <scratch|cert>
 #     <release-dir> --project ID --branch ID --workspace ID --destroy
@@ -45,6 +45,14 @@
 # same rules, its stages/<stage>.env naming the cell's CELL_ID, its project
 # in the region holding its nine secrets, all checked before the cell
 # deploys; its settings are the envParams of its `prisma deploy`.
+#
+# --restart restarts the release the cell at --cell-url runs (refused when
+# it runs another, or none answers): the same checks, a new nonce
+# `<tag>.r<unix secs>` so the deploy is a new version of the same release,
+# and a cell-check that passes only an instance whose x-streams-boot-id
+# differs from the one that answered before (lead decision deploy-q5 #6
+# (2)). It takes no --issuer-release-dir. A plain deploy after it keeps
+# the restart's nonce.
 #
 # --destroy (scratch or cert only, never production) runs the release's
 # destroy.ts instead: Composer's destroy of that named stage, whose
