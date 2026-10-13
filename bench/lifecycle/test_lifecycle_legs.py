@@ -190,9 +190,12 @@ class Legs(unittest.TestCase):
         self.assertEqual([n for n, _ in ctx.shell.calls], ["load-setup", "load", "restart", "d10-audit"])
         home = os.path.expanduser("~")
         self.assertEqual(ctx.shell.calls[2][1], [
+            "env", f"PRISMA_TOKEN_FILE={home}/.streams-k2/lifecycle/platform-token.txt",
             "deploy/composer/deploy-release.sh", "scratch", os.path.join(home, ".streams-releases/l5-rehearsal-b"),
-            "--state", f"{home}/.streams-k2/lifecycle/cell-state", "--bearer-file", f"{home}/.streams-k2/lifecycle/operator-bearer.txt",
-            "--restart"])
+            "--project", "<the scratch project id>", "--branch", "<the scratch Branch id>", "--workspace", "<the workspace id>",
+            "--state", f"{home}/.streams-k2/lifecycle/cell-state", "--cell-url", "https://<the scratch cell's service domain>",
+            "--bearer-file", f"{home}/.streams-k2/lifecycle/operator-bearer.txt",
+            "--canary-token-file", f"{home}/.streams-k2/lifecycle/canary-token.txt", "--restart"])
         audit_cmd = ctx.shell.calls[3][1]
         self.assertEqual(audit_cmd[audit_cmd.index("--expect") + 1], os.path.join(self.tmp, "d10-load.ledger.json"))
         self.assertEqual((ev["old_version"], ev["new_version"]), ("v1", "v2"))
@@ -411,6 +414,48 @@ class Legs(unittest.TestCase):
             "PASS boot-failures: missing-secret: the detail is in the log: entry refused: secret STREAMS_CURSOR_KEY unset",
             "PASS boot-failures: missing-secret: the good release serves again",
             "LEG_PASS boot-failures",
+        ])
+
+    def test_boot_failures_runs_a_cases_prepare_before_its_deploy_and_its_restore_before_the_good_release(self):
+        self.plan.doc["boot_failures"]["cases"] = self.plan.doc["boot_failures"]["cases"][:1]
+        home = os.path.expanduser("~")
+        token = ["env", f"PRISMA_TOKEN_FILE={home}/.streams-k2/lifecycle/platform-token.txt", "deploy/composer/set-secrets"]
+        scope = ["scratch", "--project", "<the scratch project id>", "--branch", "<the scratch Branch id>"]
+        cell = mock.Mock()
+        cell.raw.side_effect = lambda path: {"t": self.clock.now(), "status": 500, "body": json.dumps(V.GENERIC_500)}
+        cell.health.side_effect = lambda: {"t": self.clock.now(), "status": 200, "boot": None}
+
+        def run(hooks):
+            compute = FakeCompute(self.clock, ["v1"])
+            hooks = {"deploy-": lambda cmd, subs: (compute.add("v2", ["refused"], at=self.clock.now() + 1_000), (1, ""))[1],
+                     **hooks}
+            ctx = self.ctx(compute, hooks, cell)
+            try:
+                return ctx, L.boot_failures(ctx)
+            except L.LegError as e:
+                return ctx, e
+        ctx, ev = run({})
+        self.assertEqual([(n, c[:8]) for n, c in ctx.shell.calls], [
+            ("prepare-missing-secret", [*token, *scope]),
+            ("deploy-missing-secret", ctx.shell.calls[1][1][:8]),
+            ("case-restore-missing-secret", [*token, *scope]),
+            ("restore-missing-secret", ctx.shell.calls[3][1][:8]),
+        ])
+        self.assertEqual([ctx.shell.calls[0][1][8:], ctx.shell.calls[2][1][8:], ev["cases"][0]["restored"]], [
+            ["--blank", "STREAMS_CURSOR_KEY"], ["--from", f"{home}/.streams-k2/lifecycle/scratch-secrets"], True,
+        ])
+        ctx, ev = run({"case-restore-": lambda cmd, subs: (1, "set-secrets: refused")})
+        self.assertEqual(ev["cases"][0]["restored"], False)
+        ctx, err = run({"prepare-": lambda cmd, subs: (1, "set-secrets: refused")})
+        self.assertEqual([str(err)[:40], [n for n, _ in ctx.shell.calls]], [
+            "prepare-missing-secret exited 1: set-sec", ["prepare-missing-secret"],
+        ])
+
+        def lost(cmd, subs):
+            raise L.LegError("the platform went away")
+        ctx, err = run({"deploy-": lost})
+        self.assertEqual([str(err), [n for n, _ in ctx.shell.calls]], [
+            "the platform went away", ["prepare-missing-secret", "deploy-missing-secret", "case-restore-missing-secret"],
         ])
 
     def test_destructive_legs_refuse_the_production_stage_before_any_action(self):

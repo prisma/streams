@@ -499,36 +499,54 @@ def feeds(ctx: Ctx, ev: dict | None = None) -> dict:
 
 # ---------------------------------------------------------------- leg 7
 
+def broken_boot(ctx: Ctx, case: dict) -> dict:
+    """One case's deploy, the version it made, what the cell answered and its log."""
+    p = ctx.plan
+    known = ctx.versions()
+    r = ctx.run(f"deploy-{case['name']}", case["deploy"], must=False)
+    # deploy-release.sh exits non-zero for these cases (its cell-check
+    # fails, or, with no --cell-url, 3: deployed and unchecked), after the
+    # version exists: look for it whatever the exit code (briefly when the
+    # command failed, as a refusal before `prisma deploy` makes none).
+    v = ctx.compute.newest(p.get("cell.service_id"), known, timeout=300 if r["rc"] == 0 else 30)
+    s = ctx.logs(v, from_start=True) if v else None
+    got = [{"status": None, "body": ""}]
+
+    def answered(got=got):
+        got[0] = ctx.cell.raw(p.get("boot_failures.probe_path", "/health"))
+        return got[0]["status"] == 500
+    ctx.until(answered, p.get("boot_failures.wait_s", 300), 5)
+    if s:
+        s.wait_for(lambda ls, pat=case["expect_log"]: any(re.search(pat, t) for t in V.texts(ls)), 120)
+        s.close()
+    return {"name": case["name"], "deploy_rc": r["rc"], "version": v, "status": got[0]["status"],
+            "body": got[0]["body"], "lines": s.snapshot() if s else [], "expect_log": case["expect_log"]}
+
+
 def boot_failures(ctx: Ctx, ev: dict | None = None) -> dict:
-    """Each case deploys a cell that must fail its boot visibly, then the good release returns."""
+    """Each case deploys a cell that must fail its boot visibly, then the good release returns.
+
+    A case's optional `prepare` makes its break before the deploy (the
+    missing secret: `set-secrets scratch --blank NAME`) and must succeed;
+    its optional `restore` undoes it, even when the case fails, before the
+    leg's restore redeploys the good release (`set-secrets --from DIR`)."""
     ev = {} if ev is None else ev
     p = ctx.plan
     refuse_production(ctx, "boot-failures")
     ctx.compute.warm()
     cases = ev["cases"] = []
     for case in p.get("boot_failures.cases"):
-        known = ctx.versions()
-        r = ctx.run(f"deploy-{case['name']}", case["deploy"], must=False)
-        # deploy-release.sh exits non-zero for exactly these cases (its
-        # cell-check fails), after the version exists: look for it whatever
-        # the exit code (briefly when the command failed, as a refusal
-        # before `prisma deploy` makes none).
-        v = ctx.compute.newest(p.get("cell.service_id"), known, timeout=300 if r["rc"] == 0 else 30)
-        s = ctx.logs(v, from_start=True) if v else None
-        got = [{"status": None, "body": ""}]
-
-        def answered(got=got):
-            got[0] = ctx.cell.raw(p.get("boot_failures.probe_path", "/health"))
-            return got[0]["status"] == 500
-        ctx.until(answered, p.get("boot_failures.wait_s", 300), 5)
-        if s:
-            s.wait_for(lambda ls, pat=case["expect_log"]: any(re.search(pat, t) for t in V.texts(ls)), 120)
-            s.close()
+        if case.get("prepare"):
+            ctx.run(f"prepare-{case['name']}", case["prepare"])
+        undo = {"rc": 0}
+        try:
+            seen = broken_boot(ctx, case)
+        finally:
+            if case.get("restore"):
+                undo = ctx.run(f"case-restore-{case['name']}", case["restore"], must=False)
         rs = ctx.run(f"restore-{case['name']}", p.get("boot_failures.restore"), must=False)
         back = ctx.until(lambda: ctx.cell.health()["status"] == 200, 600, 5)
-        cases.append({"name": case["name"], "deploy_rc": r["rc"], "version": v, "status": got[0]["status"],
-                      "body": got[0]["body"], "lines": s.snapshot() if s else [], "expect_log": case["expect_log"],
-                      "restored": back and rs["rc"] == 0})
+        cases.append({**seen, "restored": back and rs["rc"] == 0 and undo["rc"] == 0})
     return ev
 
 
@@ -607,7 +625,7 @@ def check(plan: H.Plan, leg: str) -> list:
                                             "load.produce", "load.audit", "oom.deploy", "oom.restore", "oom.load",
                                             "probe.deploy", "boot_failures.restore", "feeds.publish_admit",
                                             "feeds.publish_revoke", "feeds.publish_malformed", "feeds.publish_good")]
-    commands += [c.get("deploy") for c in plan.get("boot_failures.cases", None) or []]
+    commands += [c.get(k) for c in plan.get("boot_failures.cases", None) or [] for k in ("prepare", "deploy", "restore")]
     for argv in filter(None, commands):
         try:
             H.fill(argv, DUMMY)

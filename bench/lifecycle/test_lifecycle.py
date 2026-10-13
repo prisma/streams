@@ -13,6 +13,7 @@ from __future__ import annotations
 import http.server
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -34,6 +35,15 @@ import verdicts as V  # noqa: E402
 
 E = "\x1b"
 T0 = V.iso_ms("2026-10-12T10:00:00Z")
+
+
+def tool_flags(path: str, also: list | None = None) -> tuple[set, set]:
+    """The flags a deploy tool's parseFlags call takes, and those it requires
+    (plus `also`, which it requires after parsing)."""
+    with open(os.path.join(H.ROOT, path), encoding="utf-8") as f:
+        call = re.search(r"parseFlags\(rest, \{(.*?)\}\);", f.read(), re.S).group(1)
+    lists = {k: set(re.findall(r'"([a-z0-9-]+)"', v)) for k, v in re.findall(r"(single|bool|required): \[(.*?)\]", call, re.S)}
+    return lists.get("single", set()) | lists.get("bool", set()), lists.get("required", set()) | set(also or [])
 
 
 def iso(ms: int, micros: bool = True) -> str:
@@ -591,15 +601,26 @@ else:
         for leg in L.LEGS:
             self.assertEqual(L.check(plan, leg), [], leg)
 
-    def test_the_example_plan_names_the_deploy_tools_where_triage_b5_puts_them(self):
+    def test_the_example_plan_runs_the_deploy_tools_with_flags_they_take_and_every_flag_they_require(self):
         plan = H.Plan.load(os.path.join(HERE, "plan.example.json"))
-        commands = [plan.get(k) for k in ("commands.deploy", "commands.restart", "oom.deploy", "oom.restore",
-                                          "boot_failures.restore")]
-        commands += [c["deploy"] for c in plan.get("boot_failures.cases")]
-        self.assertEqual({c[0] for c in commands}, {"deploy/composer/deploy-release.sh"})
-        self.assertEqual(plan.get("commands.cell_check")[0], "deploy/composer/cell-check")
-        self.assertTrue(all("--state" in c for c in commands), commands)
-        self.assertIn("PLACEHOLDER", plan.get("commands._doc"))
+        deploys = [plan.get(k) for k in ("commands.deploy", "commands.restart", "oom.deploy", "oom.restore",
+                                         "boot_failures.restore")]
+        deploys += [c["deploy"] for c in plan.get("boot_failures.cases")]
+        token = ["env", "PRISMA_TOKEN_FILE={home}/.streams-k2/lifecycle/platform-token.txt"]
+        self.assertEqual({tuple(c[:3]) for c in deploys}, {(*token, "deploy/composer/deploy-release.sh")})
+        secrets = [step for c in plan.get("boot_failures.cases") for step in (c.get("prepare"), c.get("restore")) if step]
+        self.assertEqual([c[:5] for c in secrets], [[*token, "deploy/composer/set-secrets", "scratch", "--project"]] * 2)
+        self.assertIn("--blank", secrets[0])
+        self.assertEqual(plan.get("commands.restart")[-1], "--restart")
+        tools = {"deploy/composer/deploy-release.sh": tool_flags("deploy/composer/deploy-release.ts", also=["state"]),
+                 "deploy/composer/set-secrets": tool_flags("deploy/composer/set-secrets"),
+                 "deploy/composer/cell-check": tool_flags("deploy/composer/cell-check")}
+        for argv in [*deploys, *secrets, [*token, *plan.get("commands.cell_check")]]:
+            accepted, required = tools[argv[2]]
+            given = {a[2:] for a in argv if a.startswith("--")}
+            self.assertEqual((given - accepted, required - given), (set(), set()), argv)
+        docs = json.dumps(plan.doc)
+        self.assertEqual([w for w in ("PLACEHOLDER", "--without-secret", "not in this tree", "neither exists") if w in docs], [])
 
     def test_check_refuses_evidence_in_the_repo_an_unknown_placeholder_and_oom_on_production(self):
         plan = H.Plan.load(os.path.join(HERE, "plan.example.json"))

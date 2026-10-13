@@ -15,10 +15,10 @@
     "headers_file": "~/.streams-k2/lifecycle/headers-steady.txt"
   },
   "commands": {
-    "_doc": "deploy/composer/deploy-release.sh and deploy/composer/cell-check are the deploy path's tools, at the paths and with the arguments triage B5 specifies; neither exists in this tree yet. A same-release Composer deploy is a no-op (triage D18), so `restart` must make a new version of the same release: B5 as specified has no such mode, and --restart is a PLACEHOLDER for the one it needs (for example a deploy-nonce envParam that forces a new deployment). Check every flag against B5 once it lands.",
-    "deploy": ["deploy/composer/deploy-release.sh", "{stage}", "{release}", "--state", "{home}/.streams-k2/lifecycle/cell-state", "--bearer-file", "{home}/.streams-k2/lifecycle/operator-bearer.txt"],
-    "restart": ["deploy/composer/deploy-release.sh", "{stage}", "{release}", "--state", "{home}/.streams-k2/lifecycle/cell-state", "--bearer-file", "{home}/.streams-k2/lifecycle/operator-bearer.txt", "--restart"],
-    "cell_check": ["deploy/composer/cell-check", "{stage}", "{release}", "--bearer-file", "{home}/.streams-k2/lifecycle/operator-bearer.txt", "--canary-token-file", "{home}/.streams-k2/lifecycle/canary-token.txt"]
+    "_doc": "The deploy path's tools (triage B5). deploy-release.sh deploys {release} to the scratch stage (a named stage: --branch is its Branch; --project and --branch must be the ones `prisma deploy` picks) and, with --cell-url, cell-checks it; --restart redeploys the release the cell runs with a new CELL_DEPLOY_NONCE and passes only a new instance (a same-release deploy is otherwise a no-op, D0 finding 8). cell-check judges the cell alone. Both deploy tools read the Management API token from the file PRISMA_TOKEN_FILE names, so `env` hands them that path (env_files would put the token itself in their environment). Fill in the <...> ids.",
+    "deploy": ["env", "PRISMA_TOKEN_FILE={home}/.streams-k2/lifecycle/platform-token.txt", "deploy/composer/deploy-release.sh", "{stage}", "{release}", "--project", "<the scratch project id>", "--branch", "<the scratch Branch id>", "--workspace", "<the workspace id>", "--state", "{home}/.streams-k2/lifecycle/cell-state", "--cell-url", "{url}", "--bearer-file", "{home}/.streams-k2/lifecycle/operator-bearer.txt", "--canary-token-file", "{home}/.streams-k2/lifecycle/canary-token.txt"],
+    "restart": ["env", "PRISMA_TOKEN_FILE={home}/.streams-k2/lifecycle/platform-token.txt", "deploy/composer/deploy-release.sh", "{stage}", "{release}", "--project", "<the scratch project id>", "--branch", "<the scratch Branch id>", "--workspace", "<the workspace id>", "--state", "{home}/.streams-k2/lifecycle/cell-state", "--cell-url", "{url}", "--bearer-file", "{home}/.streams-k2/lifecycle/operator-bearer.txt", "--canary-token-file", "{home}/.streams-k2/lifecycle/canary-token.txt", "--restart"],
+    "cell_check": ["deploy/composer/cell-check", "{stage}", "{release}", "--state", "{home}/.streams-k2/lifecycle/cell-state", "--cell-url", "{url}", "--bearer-file", "{home}/.streams-k2/lifecycle/operator-bearer.txt", "--canary-token-file", "{home}/.streams-k2/lifecycle/canary-token.txt"]
   },
   "load": {
     "setup": ["bun", "bench/k2cost/k2gen.ts", "setup", "--base", "{url}", "--headers-file", "{home}/.streams-k2/lifecycle/headers-steady.txt", "--streams", "8", "--prefix", "lc/s"],
@@ -43,10 +43,10 @@
     "tail_s": 60
   },
   "oom": {
-    "_doc": "Scratch only, NON-SHIPPING: deploy sets ADMIT_RSS_SHED_MB=2000 and ABSORB_GLOBAL_GATHERS=4 for this stage (CHAOS-5's recipe); restore redeploys the shipping release.",
+    "_doc": "Scratch only, NON-SHIPPING: deploy sets ADMIT_RSS_SHED_MB=2000 and ABSORB_GLOBAL_GATHERS=4 for this stage (CHAOS-5's recipe); restore redeploys the shipping release. Those are profile values, and deploy-release.sh's check-sizing refuses a release whose profiles differ from the sizing the cell was initialised with (triage D9): how the OOM release reaches the scratch cell is still open.",
     "scratch": true,
-    "deploy": ["deploy/composer/deploy-release.sh", "{stage}", "{home}/.streams-releases/l5-oom-scratch", "--state", "{home}/.streams-k2/lifecycle/cell-state"],
-    "restore": ["deploy/composer/deploy-release.sh", "{stage}", "{release}", "--state", "{home}/.streams-k2/lifecycle/cell-state"],
+    "deploy": ["env", "PRISMA_TOKEN_FILE={home}/.streams-k2/lifecycle/platform-token.txt", "deploy/composer/deploy-release.sh", "{stage}", "{home}/.streams-releases/l5-oom-scratch", "--project", "<the scratch project id>", "--branch", "<the scratch Branch id>", "--workspace", "<the workspace id>", "--state", "{home}/.streams-k2/lifecycle/cell-state"],
+    "restore": ["env", "PRISMA_TOKEN_FILE={home}/.streams-k2/lifecycle/platform-token.txt", "deploy/composer/deploy-release.sh", "{stage}", "{release}", "--project", "<the scratch project id>", "--branch", "<the scratch Branch id>", "--workspace", "<the workspace id>", "--state", "{home}/.streams-k2/lifecycle/cell-state"],
     "load": ["bun", "bench/k2cost/k2gen.ts", "produce", "--base", "{url}", "--headers-file", "{home}/.streams-k2/lifecycle/headers-steady.txt", "--streams", "8", "--prefix", "lc/s", "--payload", "b64rand", "--records", "64", "--mbps", "40", "--seed", "{seed}", "--duration", "{duration}", "--ledger", "{ledger}"],
     "timeout_s": 1800,
     "stable_s": 600
@@ -62,12 +62,16 @@
     "publish_good": ["{home}/.streams-k2/lifecycle/publish.sh", "good"]
   },
   "boot_failures": {
-    "_doc": "Each case's deploy is any command that deploys that broken cell (a release without one secret, a release dir holding an aarch64 binary); expect_log is a regex the refusal's log line matches; restore redeploys the good release. deploy-release.sh's preflight refuses a missing secret (triage B5), so --without-secret is a PLACEHOLDER for the way past it B5 must provide.",
+    "_doc": "Each case's deploy deploys a broken cell, without --cell-url (deploy-release.sh exits 3, deployed and unchecked); expect_log is a regex the refusal's log line matches; restore redeploys the good release. A case's prepare makes its break first and its restore undoes it before that redeploy. The missing secret: deploy-release.sh and Composer's preflight refuse a secret name the scope lacks, so prepare empties one with `set-secrets scratch --blank` (scratch only; the name stays set and the entry refuses the empty value), the deploy is the good release (the secret's change makes it a new version, D0 finding 8), and restore sets every secret again from the scratch secrets directory (lead decision deploy-q5 #6 (2)). The wrong-arch case's release dir holds an aarch64 binary.",
     "cases": [
-      {"name": "missing-secret", "deploy": ["deploy/composer/deploy-release.sh", "{stage}", "{release}", "--state", "{home}/.streams-k2/lifecycle/cell-state", "--without-secret", "STREAMS_CURSOR_KEY"], "expect_log": "STREAMS_CURSOR_KEY"},
-      {"name": "wrong-arch", "deploy": ["deploy/composer/deploy-release.sh", "{stage}", "{home}/.streams-releases/l5-wrong-arch", "--state", "{home}/.streams-k2/lifecycle/cell-state"], "expect_log": "(?i)e_machine|x86_64|arch"}
+      {"name": "missing-secret",
+       "prepare": ["env", "PRISMA_TOKEN_FILE={home}/.streams-k2/lifecycle/platform-token.txt", "deploy/composer/set-secrets", "scratch", "--project", "<the scratch project id>", "--branch", "<the scratch Branch id>", "--blank", "STREAMS_CURSOR_KEY"],
+       "deploy": ["env", "PRISMA_TOKEN_FILE={home}/.streams-k2/lifecycle/platform-token.txt", "deploy/composer/deploy-release.sh", "{stage}", "{release}", "--project", "<the scratch project id>", "--branch", "<the scratch Branch id>", "--workspace", "<the workspace id>", "--state", "{home}/.streams-k2/lifecycle/cell-state"],
+       "restore": ["env", "PRISMA_TOKEN_FILE={home}/.streams-k2/lifecycle/platform-token.txt", "deploy/composer/set-secrets", "scratch", "--project", "<the scratch project id>", "--branch", "<the scratch Branch id>", "--from", "{home}/.streams-k2/lifecycle/scratch-secrets"],
+       "expect_log": "STREAMS_CURSOR_KEY"},
+      {"name": "wrong-arch", "deploy": ["env", "PRISMA_TOKEN_FILE={home}/.streams-k2/lifecycle/platform-token.txt", "deploy/composer/deploy-release.sh", "{stage}", "{home}/.streams-releases/l5-wrong-arch", "--project", "<the scratch project id>", "--branch", "<the scratch Branch id>", "--workspace", "<the workspace id>", "--state", "{home}/.streams-k2/lifecycle/cell-state"], "expect_log": "(?i)e_machine|x86_64|arch"}
     ],
-    "restore": ["deploy/composer/deploy-release.sh", "{stage}", "{release}", "--state", "{home}/.streams-k2/lifecycle/cell-state"]
+    "restore": ["env", "PRISMA_TOKEN_FILE={home}/.streams-k2/lifecycle/platform-token.txt", "deploy/composer/deploy-release.sh", "{stage}", "{release}", "--project", "<the scratch project id>", "--branch", "<the scratch Branch id>", "--workspace", "<the workspace id>", "--state", "{home}/.streams-k2/lifecycle/cell-state", "--cell-url", "{url}", "--bearer-file", "{home}/.streams-k2/lifecycle/operator-bearer.txt", "--canary-token-file", "{home}/.streams-k2/lifecycle/canary-token.txt"]
   },
   "keep_awake": {"hours": 72, "interval_s": 60, "notices_file": "~/.streams-k2/lifecycle/compute-notices.txt"}
 }
