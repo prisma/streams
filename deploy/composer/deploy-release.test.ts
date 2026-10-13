@@ -189,7 +189,7 @@ describe("deploy-release.sh", () => {
     expect([w.cell.identity.sha, log(w).map((e) => [e.tag, e.result])]).toEqual([r2.server_sha256, [["rc-2", "pass"]]]);
   }, 60_000);
 
-  test("refuses a secret set in the deploy shell's environment, before it reads the release or asks the platform", async () => {
+  test("refuses a secret the release binds set in the deploy shell's environment, before it asks the platform", async () => {
     const w = await world();
     const { dir } = release(w, "rc-1");
     const r = await deploy(w, "production", dir, [], { STREAMS_CURSOR_KEY: "x", STREAMS_OPERATOR_TOKEN: "y" });
@@ -253,6 +253,33 @@ describe("deploy-release.sh", () => {
     refusedBeforeDeploy(w, await deploy(w, "cert", dir, ["--branch", other]),
       `prisma deploy --stage cert deploys to Branch ${cert} of project ${w.project} (its Branch named cert), not to --branch ${other}`);
   }, 30_000);
+
+  test("judges a release by its own env builder and app.ts, not the checkout's", async () => {
+    const w = await world();
+    const edit = (path: string, from: string, to: string) => (t: string) => {
+      const p = join(t, path);
+      const text = readFileSync(p, "utf8");
+      if (!text.includes(from)) throw new Error(`${path} holds no ${from}`);
+      writeFileSync(p, text.replace(from, to));
+    };
+    const knob = fakeTree(edit("deploy/composer/streams/env.ts", "  RUST_LOG: optional,\n", "  RUST_LOG: optional,\n  FUTURE_KNOB: optional,\n"));
+    const cells = { production: cellsText("production", "cell_sc1", "eu-central-1", ["FUTURE_KNOB=1"]) };
+    const admits = await deploy(w, "production", release(w, "rc-1", { tree: knob, cells }).dir);
+    expect([admits.code, admits.err, prismaRuns(w).length]).toEqual([3, "", 1]);
+    const strict = fakeTree(edit("deploy/composer/streams/env.ts", "  RUST_LOG: optional,\n", ""));
+    const verbose = { production: cellsText("production", "cell_sc1", "eu-central-1", ["RUST_LOG=info"]) };
+    const refused = await deploy(w, "production", release(w, "rc-2", { tree: strict, cells: verbose }).dir);
+    expect([refused.code, refused.err.trim().split(": ").slice(0, 2), prismaRuns(w).length]).toEqual([
+      1, ["deploy-release", "the cell's entry would refuse this release on production"], 1,
+    ]);
+    const secret = fakeTree(edit("deploy/composer/app.ts", "      cellStage:", '      futureKey: envSecret("STREAMS_FUTURE_KEY"),\n      cellStage:'));
+    const { dir } = release(w, "rc-3", { tree: secret });
+    const inShell = await deploy(w, "production", dir, [], { STREAMS_FUTURE_KEY: "x" });
+    expect([inShell.code, inShell.err.trim(), prismaRuns(w).length]).toEqual([
+      1, "deploy-release: STREAMS_FUTURE_KEY is set in this shell's environment: a secret reaches the platform through " +
+        "set-secrets only (Composer's preflight would push it from here); unset it", 1,
+    ]);
+  }, 60_000);
 
   test("refuses KEEP_AWAKE_UNTIL_MS in production's cells file", async () => {
     const w = await world();

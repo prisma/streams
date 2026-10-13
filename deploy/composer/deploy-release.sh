@@ -19,15 +19,17 @@
 # read the running cell's identity first and cell-check it after. The
 # Management API token is read from the file PRISMA_TOKEN_FILE names.
 #
-# Refused, in this order, before anything deploys: a secret the cell's app
-# binds set in this shell's environment (set-secrets is the only path,
-# D10); a release directory that is not exactly what was cut (a dotfile, a
-# stray, a changed byte); a stage the release carries no cells file for;
-# KEEP_AWAKE_UNTIL_MS in production's; a cells file or profile the entry
-# would refuse; a project outside the cells file's REGION; a secret name
-# missing from the stage's own scope; a release whose layout_version,
-# keys_contract or MAX_REQUEST_BODY_BYTES differs from the running cell's
-# release (the cell's /v1/debug/load sha256, found among the releases
+# Refused, in this order, before anything deploys: a release directory
+# that is not exactly what was cut (a dotfile, a stray, a changed byte); a
+# secret the release's app binds set in this shell's environment
+# (set-secrets is the only path, D10); a stage the release carries no
+# cells file for; KEEP_AWAKE_UNTIL_MS in production's; a cells file or
+# profile the release's own entry would refuse; a --project or --branch
+# other than the one `prisma deploy` picks for the app; a project outside
+# the cells file's REGION; a secret name missing from the stage's own
+# scope; a release whose layout_version, keys_contract or
+# MAX_REQUEST_BODY_BYTES (each under its own release's rules) differs
+# from the running cell's release (the cell's /v1/debug/load sha256, found among the releases
 # beside this one; or, when no cell answers, the release deploy-log.jsonl
 # last deployed there; neither is "no cell yet", accepted); and profiles
 # `cell-admin check-sizing` refuses. Then the release's own pinned `prisma

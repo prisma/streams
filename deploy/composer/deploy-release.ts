@@ -3,12 +3,13 @@
 // rollback is this command with the previous release directory). Its
 // header in deploy-release.sh is the operator's reference; the steps:
 //
-//   1. no secret the cell's app binds in this process's environment (D10:
-//      Composer's preflight would push one it finds there; set-secrets is
-//      the only path);
-//   2. the release is exactly what was cut (release.ts's rules);
+//   1. the release is exactly what was cut (release.ts's rules);
+//   2. no secret the release's app binds in this process's environment
+//      (D10: Composer's preflight would push one it finds there;
+//      set-secrets is the only path);
 //   3. the stage's cells file is in the release; production's carries no
-//      KEEP_AWAKE_UNTIL_MS; the entry's own env builder accepts the
+//      KEEP_AWAKE_UNTIL_MS; the release's own env builder (its
+//      deploy/composer/streams/env.ts, which its entry runs) accepts its
 //      profiles and the cells file (so a refusal is met here, not as a
 //      crash-looping deploy);
 //   4. --project, and a named stage's --branch, are the project and Branch
@@ -46,6 +47,10 @@
 // deploys from its release root after the cell's deploy (and cell-check,
 // when run) passed, with its settings as the envParams `prisma deploy`
 // reads, and is logged as app "issuer".
+// Each release is judged by its own rules: its env.ts (the profile list
+// and the child environment's) and its app.ts (the secret names and the
+// module), never the checkout's, which a rollback to a release cut from
+// another commit would get wrong.
 // With --destroy, after steps 1 and 2 (and never for production): the
 // release's destroy.ts, Composer's destroy of the named stage, from the
 // release root in the same narrow environment, logged as destroyed.
@@ -69,7 +74,7 @@ import {
   scopeQuery,
 } from "./platform";
 import { checkIssuerRelease, checkRelease, type IssuerRelease, issuerSettings, type Release, readRelease } from "./release";
-import { buildChildEnv, PROFILES, STAGES } from "./streams/env";
+import { STAGES } from "./streams/env";
 
 const USAGE = `usage: PRISMA_TOKEN_FILE=F deploy/composer/deploy-release.sh <stage> <release-dir>
   --project ID [--branch ID] --workspace ID --state DIR|s3://... [--s3-credentials F]
@@ -84,20 +89,28 @@ const PROBE_TIMEOUT_MS = 15_000;
 type Result = "pass" | "fail" | "unchecked" | "deploy_failed" | "destroyed" | "destroy_failed";
 const DEPLOYED: readonly Result[] = ["pass", "fail", "unchecked"];
 
+/// A release's own env.ts: its profile list and child-environment builder.
+type Rules = typeof import("./streams/env");
+
 interface Run {
   stage: string;
   dir: string;
   release: Release;
+  rules: Rules;
   scope: Scope;
   flags: Flags;
   out: (line: string) => void;
 }
 
 const fileIn = (dir: string, path: string) => join(dir, "deploy", path);
-const layered = (dir: string) =>
-  parseProfiles(PROFILES.map((p) => ({ path: fileIn(dir, p), text: readFileSync(fileIn(dir, p), "utf8") })));
+const profilesOf = (dir: string, rules: Rules) =>
+  rules.PROFILES.map((p) => ({ path: fileIn(dir, p), text: readFileSync(fileIn(dir, p), "utf8") }));
 
-/// Step 1.
+/// The rules a checked release carries (Bun loads its env.ts and the two
+/// cell-admin files that imports, all in release.json's list).
+const rulesOf = (dir: string): Promise<Rules> => import(fileIn(dir, "composer/streams/env.ts"));
+
+/// Step 2.
 function refuseSecretsInEnv(names: readonly string[], env: Readonly<Record<string, string | undefined>>): void {
   const set = names.filter((n) => env[n] !== undefined);
   if (set.length) {
@@ -119,8 +132,8 @@ function cellsFile(run: Run): Map<string, string> {
     throw new AdminError(`${path} sets KEEP_AWAKE_UNTIL_MS: a production cell is kept awake for good`);
   }
   const placeholder = Object.fromEntries(envSecretNames(readFileSync(fileIn(dir, "composer/app.ts"), "utf8")).map((n) => [n, "x"]));
-  const built = buildChildEnv({
-    profiles: PROFILES.map((p) => ({ path: fileIn(dir, p), text: readFileSync(fileIn(dir, p), "utf8") })),
+  const built = run.rules.buildChildEnv({
+    profiles: profilesOf(dir, run.rules),
     cellEnv: { path, text },
     stage,
     platformEnv: placeholder,
@@ -217,7 +230,7 @@ async function checkSizing(run: Run): Promise<void> {
   const state = ["--state", run.flags.must("state")];
   const creds = run.flags.get("s3-credentials");
   const argv = ["check-sizing", ...state, ...(creds ? ["--s3-credentials", creds] : [])];
-  const code = await cellAdmin([...argv, ...PROFILES.flatMap((p) => ["--profile", fileIn(run.dir, p)])], io);
+  const code = await cellAdmin([...argv, ...run.rules.PROFILES.flatMap((p) => ["--profile", fileIn(run.dir, p)])], io);
   if (code !== 0) throw new AdminError(`the cell refuses the release's profiles: ${lines.join("; ")}`);
   for (const l of lines) run.out(`deploy-release: ${l}`);
 }
@@ -302,7 +315,7 @@ async function runningRelease(run: Run): Promise<Release | null> {
 }
 
 /// Step 6's refusals.
-function refuseCrossing(run: Run, running: Release): void {
+async function refuseCrossing(run: Run, running: Release): Promise<void> {
   const { release } = run;
   const was = `the running cell's release ${running.tag}`;
   if (release.layout_version !== running.layout_version) {
@@ -317,8 +330,10 @@ function refuseCrossing(run: Run, running: Release): void {
         "the keys feed and the binary change together (RUNBOOK), never by a deploy alone",
     );
   }
-  const body = (dir: string) => layered(dir).get("MAX_REQUEST_BODY_BYTES") ?? "(unset)";
-  const [mine, theirs] = [body(run.dir), body(join(dirname(run.dir), running.tag))];
+  const body = (dir: string, rules: Rules) => parseProfiles(profilesOf(dir, rules)).get("MAX_REQUEST_BODY_BYTES") ?? "(unset)";
+  const runningDir = join(dirname(run.dir), running.tag);
+  checkRelease(runningDir);
+  const [mine, theirs] = [body(run.dir, run.rules), body(runningDir, await rulesOf(runningDir))];
   if (mine !== theirs) {
     throw new AdminError(
       `release ${release.tag} sets MAX_REQUEST_BODY_BYTES ${mine}, ${was} ${theirs}: the cell's namespaces stored ` +
@@ -402,15 +417,19 @@ interface IssuerRun {
   settings: Map<string, string>;
 }
 
+/// The issuer's release (--issuer-release-dir), checked under the rules.
+interface IssuerCut {
+  dir: string;
+  release: IssuerRelease;
+}
+
 /// The issuer's preconditions, all met before the cell deploys: its
-/// release cut from the cell's commit, under the rules; its settings for
-/// the stage, naming the cell's CELL_ID; its project in the cell's region,
-/// holding its secrets.
-async function issuerChecks(run: Run, api: Platform, region: string, cells: Map<string, string>): Promise<IssuerRun | null> {
-  const raw = run.flags.get("issuer-release-dir");
-  if (raw === undefined) return null;
-  const dir = resolve(raw);
-  const release = checkIssuerRelease(dir);
+/// release (checked under the rules) cut from the cell's commit; its
+/// settings for the stage, naming the cell's CELL_ID; its project the one
+/// prisma deploy picks, in the cell's region, holding its secrets.
+async function issuerChecks(run: Run, api: Platform, region: string, cells: Map<string, string>, cut: IssuerCut | null): Promise<IssuerRun | null> {
+  if (cut === null) return null;
+  const { dir, release } = cut;
   if (release.commit !== run.release.commit) {
     throw new AdminError(`the issuer's release ${dir} is cut from ${release.commit}, the cell's from ${run.release.commit}: both deploy from one commit`);
   }
@@ -466,24 +485,27 @@ export async function main(argv: readonly string[], out: (line: string) => void)
   if (flags.has("cell-url") && !(flags.has("bearer-file") && flags.has("canary-token-file"))) {
     throw new AdminError("--cell-url goes with --bearer-file and --canary-token-file (cell-check needs both)", 2);
   }
-  const apps = flags.has("issuer-release-dir") ? ["app.ts", "../composer-issuer/app.ts"] : ["app.ts"];
-  refuseSecretsInEnv([...new Set(apps.flatMap((a) => envSecretNames(readFileSync(join(import.meta.dir, a), "utf8"))))], process.env);
   const dir = resolve(rawDir);
-  const run: Run = {
-    stage, dir, flags, out, release: checkRelease(dir), scope: scopeOf(stage, flags.must("project"), flags.get("branch")),
-  };
-  if (basename(dir) !== run.release.tag) {
-    throw new AdminError(`${dir} holds release ${run.release.tag}: a release lives in the directory of its tag`);
+  const release = checkRelease(dir);
+  if (basename(dir) !== release.tag) {
+    throw new AdminError(`${dir} holds release ${release.tag}: a release lives in the directory of its tag`);
   }
+  const issuerDir = flags.get("issuer-release-dir");
+  const cut = issuerDir === undefined ? null : { dir: resolve(issuerDir), release: checkIssuerRelease(resolve(issuerDir)) };
+  const apps = [fileIn(dir, "composer/app.ts"), ...(cut ? [join(cut.dir, "app.ts")] : [])];
+  refuseSecretsInEnv([...new Set(apps.flatMap((a) => envSecretNames(readFileSync(a, "utf8"))))], process.env);
+  const run: Run = {
+    stage, dir, flags, out, release, rules: await rulesOf(dir), scope: scopeOf(stage, flags.must("project"), flags.get("branch")),
+  };
   const api = Platform.open(flags.get("management-api") ?? MANAGEMENT_API);
   if (destroying) return destroyStage(run, api);
   const cells = cellsFile(run);
   const region = cells.get("REGION") as string;
   const appTs = readFileSync(fileIn(dir, "composer/app.ts"), "utf8");
   await platformChecks(run, api, { scope: run.scope, app: appModuleName(appTs), names: envSecretNames(appTs) }, region);
-  const issuer = await issuerChecks(run, api, region, cells);
+  const issuer = await issuerChecks(run, api, region, cells, cut);
   const running = await runningRelease(run);
-  if (running) refuseCrossing(run, running);
+  if (running) await refuseCrossing(run, running);
   await checkSizing(run);
   if (!(await prismaDeploy(run, api, region))) {
     logDeploy(run, "deploy_failed");
