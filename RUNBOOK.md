@@ -610,6 +610,25 @@ sustained) go to Compute's escalation contact, `<compute contact>`. The
 names are placeholders until the paging service is set up and Platform
 names the contact.
 
+**Setting up the paging service** (once Platform/SRE names the tool and
+the people; none of it exists yet). (1) A service for the shared cells
+with an Events API v2 integration: the watch's `ALERT_SINK_KIND` is
+`events-v2`, `ALERT_SINK_URL` the tool's events endpoint and
+`ALERT_SINK_KEY` the integration's routing key. (2) Urgency by severity:
+`critical` (a PAGE) is high urgency, the phone; `warning` (a NOTIFY) is
+low urgency and goes to `<notify channel>` alone. (3) Its escalation
+policy: `<on-call>`, then `<secondary>` after 15 minutes unacknowledged,
+on a schedule for `<hours>`. (4) An uptime check of the cell's
+`GET /health` from 2 locations every 60 s with a 10 s timeout, alerting
+after 3 failures in a row (row 1). (5) A heartbeat monitor that alerts
+when no GET came for 3 minutes (row 2; the watch beats every 15 s), its
+URL the watch's `HEARTBEAT_URL`. Both checks alert into the service at
+high urgency. (6) The three secrets go into the watch's own project with
+set-secrets, never a shell or a log; redeploy the watch and replace this
+section's placeholders with the names. (7) Drill it (Shared cells,
+"Drills"): each drill's page rings `<on-call>`, and one left
+unacknowledged 15 minutes rings `<secondary>`.
+
 Deploy-time footguns (region-code mismatches, version-less service shells,
 `bun install` on fresh app dirs) are catalogued in
 [deploy/README.md](./deploy/README.md#deploy-footguns).

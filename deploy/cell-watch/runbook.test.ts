@@ -9,6 +9,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CANARY_SCOPES } from "./canary";
+import { HEARTBEAT_WINDOW_MS, UPTIME_EVERY_MS, UPTIME_FAILURES, UPTIME_TIMEOUT_MS } from "./pager";
 import { RULES } from "./rules";
 
 const LINES = readFileSync(join(import.meta.dir, "..", "..", "RUNBOOK.md"), "utf8").split("\n");
@@ -139,6 +140,23 @@ describe("RUNBOOK.md's §7.5 and §8", () => {
     expect(text.includes("**Who answers.**")).toBe(true);
     for (const name of ["`<on-call>`", "`<secondary>`", "`<notify channel>`", "`<compute contact>`"]) {
       expect([name, who.includes(name)]).toEqual([name, true]);
+    }
+  });
+
+  test("§7.5 sets the paging service up with the stand-in pager's numbers, the severities and the escalation", () => {
+    const text = section("### 7.5 ");
+    const setup = text.slice(Math.max(0, text.indexOf("**Setting up the paging service**")));
+    expect(text.includes("**Setting up the paging service**")).toBe(true);
+    for (const want of [
+      "`ALERT_SINK_KIND` is `events-v2`",
+      "`critical` (a PAGE) is high urgency, the phone; `warning` (a NOTIFY) is low urgency and goes to `<notify channel>` alone",
+      "`<on-call>`, then `<secondary>` after 15 minutes unacknowledged",
+      `every ${UPTIME_EVERY_MS / 1_000} s with a ${UPTIME_TIMEOUT_MS / 1_000} s timeout, alerting after ${UPTIME_FAILURES} failures in a row (row 1)`,
+      `no GET came for ${HEARTBEAT_WINDOW_MS / 60_000} minutes (row 2`,
+      "`HEARTBEAT_URL`",
+      "set-secrets",
+    ]) {
+      expect([want, setup.includes(want)]).toEqual([want, true]);
     }
   });
 
