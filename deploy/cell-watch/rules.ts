@@ -14,8 +14,10 @@
 // Hysteresis: a rule opens as its row states, resolves after four
 // consecutive clean evaluations (one minute at 15 s, four at 60 s), and is
 // never triggered again while open, except once to raise NOTIFY to PAGE.
-// NOTIFY_ONLY demotes every PAGE to NOTIFY. Counter baselines reset on the
-// watch's first poll and whenever the cell's boot id changes.
+// NOTIFY_ONLY demotes the level rules' PAGE to NOTIFY until they are
+// calibrated (triage B6): the binary rows page from the first deploy.
+// Counter baselines reset on the watch's first poll and whenever the
+// cell's boot id changes.
 //
 // Payload allowlist: the cell id, the rule id, named finite numbers, fixed
 // enums, the watch's timestamp and a RUNBOOK anchor, and nothing else: no
@@ -113,7 +115,7 @@ export interface RulesConfig {
   cellOrigin: string;
   /// EXPECTED_GIT; "" turns row 5 off.
   expectedGit: string;
-  /// NOTIFY_ONLY=1.
+  /// NOTIFY_ONLY=1: the level rules notify instead of paging (B6).
   notifyOnly: boolean;
   /// ISSUER_ORIGIN is set: rows 21, 22, 27 and 28 run.
   issuer: boolean;
@@ -779,7 +781,7 @@ function settle(cfg: RulesConfig, state: WatchState, r: Rule, answer: Answer, at
   }
   if (open !== undefined) state.clean[r.id] = 0;
   if (answer === "pending") return;
-  const cls: Class = cfg.notifyOnly ? "NOTIFY" : answer.class;
+  const cls: Class = cfg.notifyOnly && r.level ? "NOTIFY" : answer.class;
   if (open !== undefined && RANK[cls] <= RANK[open.class]) return;
   state.open[r.id] = { class: cls, since: open?.since ?? at };
   events.push(event(cfg, r, "trigger", cls, at, answer.values, answer.labels ?? {}));

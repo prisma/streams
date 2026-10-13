@@ -87,8 +87,8 @@ describe("runWatch", () => {
     await until("the trigger", () => r.sink.seen.length === 1);
     const sent = r.sink.seen[0]!;
     expect([sent.method, sent.authorization, sent.contentType]).toEqual(["POST", `Bearer ${KEY}`, "application/json"]);
-    // NOTIFY_ONLY=1: the PAGE row arrives as NOTIFY.
-    expect(JSON.parse(sent.body)).toMatchObject({ kind: "trigger", dedupKey: "cell_sc1/r07_reserved_policy_dropped/notify" });
+    // NOTIFY_ONLY=1 demotes the level rules only: binary row 7 pages.
+    expect(JSON.parse(sent.body)).toMatchObject({ kind: "trigger", class: "PAGE", dedupKey: "cell_sc1/r07_reserved_policy_dropped/page" });
   });
 
   test("refuses its inputs before it takes the guard or binds the port", async () => {

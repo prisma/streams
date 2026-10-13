@@ -1045,8 +1045,9 @@ charged. §7.5's "Who answers" names `<on-call>` and `<notify channel>`.
 Rows 1 and 2 are the paging tool's own checks, so they page while the
 watch is down. The level rules (marked) wait for calibration on the
 certification cell (no PAGE at idle or under the certified load); until
-then the watch runs with `NOTIFY_ONLY=1`, which sends every PAGE as a
-NOTIFY.
+then the watch runs with `NOTIFY_ONLY=1`, which sends their PAGE as a
+NOTIFY, while every other row pages from the first deploy;
+`NOTIFY_ONLY=0` turns PAGE on for them once that bar is met.
 
 | # | rule | class | where | alert when | paged by |
 |---|---|---|---|---|---|

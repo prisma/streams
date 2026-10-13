@@ -97,16 +97,27 @@ describe("hysteresis", () => {
     expect(resolved.map((e) => [e.kind, e.class, e.values])).toEqual([["resolve", "PAGE", { open_secs: 120 }]]);
   });
 
-  test("NOTIFY_ONLY demotes every PAGE to NOTIFY", () => {
+  test("NOTIFY_ONLY demotes the level rules' PAGE to NOTIFY; the binary rows page from the first deploy (B6)", () => {
     const w = new Watch({ ...CFG, notifyOnly: true });
-    const both = (n: number) => ({ data: patch(DATA, { "feeds.policies.reservedDropped": 1, "local.admit_shed_rss": n }) });
-    expect(w.poll(both(0)).map((e) => [e.rule, e.kind, e.class])).toEqual([[idOf(7), "trigger", "NOTIFY"]]);
-    const rising = [1, 2, 3, 4, 5, 6].flatMap((n) => w.poll(both(n)));
-    expect(rising.map((e) => [e.rule, e.kind, e.class])).toEqual([[idOf(9), "trigger", "NOTIFY"]]);
+    const all = (n: number) => ({
+      data: patch(DATA, {
+        "feeds.policies.reservedDropped": 1,
+        "local.admit_shed_rss": n,
+        "local.maintenance_backpressure.engaged": true,
+      }),
+    });
+    expect(w.poll(all(0)).map((e) => [e.rule, e.kind, e.class])).toEqual([
+      [idOf(7), "trigger", "PAGE"], [idOf(12), "trigger", "NOTIFY"],
+    ]);
+    const rising = [1, 2, 3, 4, 5, 6].flatMap((n) => w.poll(all(n)));
+    expect(rising.map((e) => [e.rule, e.kind, e.class])).toEqual([[idOf(9), "trigger", "NOTIFY"], [idOf(9), "trigger", "PAGE"]]);
     const settled = w.polls(RESOLVE_AFTER);
     expect(settled.map((e) => [e.rule, e.kind, e.class]).sort()).toEqual([
-      [idOf(7), "resolve", "NOTIFY"], [idOf(9), "resolve", "NOTIFY"],
+      [idOf(7), "resolve", "PAGE"], [idOf(9), "resolve", "PAGE"], [idOf(12), "resolve", "NOTIFY"],
     ]);
+    // Without it the level rule pages too.
+    const calibrated = new Watch(CFG);
+    expect(calibrated.poll(all(0)).map((e) => [e.rule, e.class])).toEqual([[idOf(7), "PAGE"], [idOf(12), "PAGE"]]);
   });
 
   test("step leaves the state it was given as it was", () => {

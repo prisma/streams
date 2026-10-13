@@ -20,7 +20,8 @@
 //             STREAMS_CELL_ID         the alert keys' prefix
 //             ALERT_SINK_KIND         events-v2 or webhook (sinks.ts)
 //             EXPECTED_GIT            the release's commit (row 5)
-//             NOTIFY_ONLY             1 demotes every PAGE (calibration, B6)
+//             NOTIFY_ONLY             1 demotes the level rules' PAGE
+//                                     (until calibrated, B6)
 //             ISSUER_ORIGIN           the issuer's origin (rows 21, 22, 27, 28)
 //
 // Every input is required: a deploy whose platform lacks a secret fails its

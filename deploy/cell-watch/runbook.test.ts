@@ -66,6 +66,14 @@ describe("RUNBOOK.md's What to alert on", () => {
     for (const r of RULES) expect([r.row, cells(r.row)[1]]).toEqual([r.row, `\`${r.id}\`${r.level ? " (level)" : ""}`]);
   });
 
+  test("says NOTIFY_ONLY=1 holds back the level rules' PAGE only, as rules.ts does (B6)", () => {
+    const text = paragraph("**What to alert on.**");
+    expect(text).toContain(
+      "`NOTIFY_ONLY=1`, which sends their PAGE as a NOTIFY, while every other row pages from the first deploy",
+    );
+    expect(text.includes("sends every PAGE as a NOTIFY")).toBe(false);
+  });
+
   test("gives each row its class, a PAGE paged to the on-call and a NOTIFY to the channel", () => {
     for (const row of ROWS) {
       const cls = CLASS[row] ?? "";
