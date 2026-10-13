@@ -123,7 +123,10 @@ Six more directories:
   `bun test ./deploy/cell-watch`; the bundled entry run out of the tree
   (`CELL_WATCH_COMPOSER_E2E=1`, packages installed) and the app in
   `prisma dev` against a local cell (`CELL_WATCH_E2E_BIN_DIR=target/debug`,
-  `dev.e2e.test.ts`) are opt-in.
+  `dev.e2e.test.ts`) are opt-in. `pager.ts` stands in for the paging tool
+  locally: Events v2 incidents by dedup key, a page for `critical` and a
+  notification otherwise, and rows 1 and 2's uptime check and heartbeat
+  monitor with RUNBOOK's numbers (`pager.test.ts`).
 
 All verify the download is an **x86_64 ELF** before exec. That check is
 not politeness: an aarch64 binary deploys "successfully" and crash-loops
