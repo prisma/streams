@@ -42,9 +42,10 @@ const orders = await client.createStream("orders", {
   format: { kind: "json" },
 });
 
-// A plain append that fails in transit, or with a 408 or a 5xx other than
-// 503, is not sent again: it rejects with AppendOutcomeUnknownError, and
-// the record may or may not have been written.
+// A plain append that fails in transit, or with a 408 or a 5xx (a 503 only
+// when the server does not mark it retryable), is not sent again: it rejects
+// with AppendOutcomeUnknownError, and the record may or may not have been
+// written.
 await orders.append({ id: "o-1", total: 42 }, { routingKey: "customer-7" });
 
 // Exactly once: a producer whose sequence state lives in your durable store
@@ -131,18 +132,24 @@ In plain words:
   the SDK's own, such as `transport_error`) and a `retryable` flag. An
   abort rejects with the signal's reason, and an error of your
   `tokenProvider` or producer state store propagates unchanged.
-- The SDK replays a `429` or a `503` the server marks retryable, on its
-  `Retry-After`, and a transport failure of a request the server answers
-  idempotently, after 1, 2 and 4 s: at most four attempts in all, and
-  one more after a `401` refreshes the token.
+- The SDK replays a `429` or a `503` the server does not mark
+  `retryable: false` (a plain append's `503` only when the server marks it
+  `retryable: true`), on its `Retry-After`, and a transport failure of a
+  request the server answers idempotently, after 1, 2 and 4 s: at most
+  four attempts in all, and one more after a `401` refreshes the token.
 - A plain append (`append`, `appendBytes`, `appendMany`) that meets a
   transport failure, a `408` or a `5xx` other than `503` is not sent
   again: it rejects with `AppendOutcomeUnknownError` (`retryable: false`),
-  because the record may or may not have been written. Retry it yourself
-  only if a second copy is acceptable, or append through a producer, whose
-  retry the server deduplicates. A plain append answered `2xx` whose
-  answer cannot be read rejects with `unreadable_response`: it was
-  written, so do not send it again.
+  because the record may or may not have been written. So does a `503`
+  whose JSON body does not itself say `"retryable": true`: the server's
+  `outcome_unknown` (a deploy or a restart moved the shard while the
+  append was in flight), or a `503` from in front of the server without
+  its body. Retry such an append yourself only if a second copy is
+  acceptable, or append through a producer, whose retry the server
+  deduplicates. A `503` the server marks retryable wrote nothing, and the
+  SDK replays it. A plain append answered `2xx` whose answer cannot be
+  read rejects with `unreadable_response`: it was written, so do not send
+  it again.
 - A producer append whose replay the server refuses (another writer
   fenced its producer id, the collection was sealed, a quota still refused
   it) rejects with `AppendOutcomeUnknownError` too, the refusal as its
@@ -155,15 +162,17 @@ In plain words:
 503 fallback form. Resolve the project's new endpoint and create a client
 for it; refreshing a valid credential cannot fix routing. Ordinary transient
 429/503 responses retry with bounded, abort-aware backoff unless the server
-explicitly marks the error permanent. Subscriptions use the same failure
+explicitly marks the error permanent; a plain append's 503 retries only when
+the server explicitly marks it retryable. Subscriptions use the same failure
 classification and retain durable-cursor recovery for applied reads.
 
 Fetch failures are exposed as `StreamsTransportError` with the original
 failure in `cause`, except for plain appends (`append`, `appendBytes`,
-`appendMany`): a transport failure, a 408 or a 5xx other than 503 rejects
-with `AppendOutcomeUnknownError` (`retryable: false`), because the record
-may or may not have been written and the SDK does not replay it; use a
-producer for a retry the server deduplicates.
+`appendMany`): a transport failure, a 408, a 5xx other than 503, or a 503
+whose body does not say `"retryable": true` rejects with
+`AppendOutcomeUnknownError` (`retryable: false`), because the record may or
+may not have been written and the SDK does not replay it; use a producer
+for a retry the server deduplicates.
 
 A request whose `fetch` fails is sent again up to three times, after 1, 2
 and 4 s (abort-aware), within the same four attempts as the 429/503 replay,

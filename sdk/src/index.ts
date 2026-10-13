@@ -383,12 +383,15 @@ export class StreamsTransportError extends StreamsError {
 /**
  * A plain append (`append`, `appendBytes`, `appendMany`: no producer
  * identity) whose last attempt ended in an answer that leaves its outcome
- * unknown: a transport failure, a 408, or a 5xx other than 503. The record
- * may or may not have been written, and the SDK does not send it again.
- * (An earlier attempt the SDK made was a refusal that writes nothing: a
- * 401 before its token refresh, or a retryable 429 or 503.) `status` is the
- * HTTP status (0 for a transport failure); `cause` is the server's answer
- * as a `StreamsError`, or the value `fetch` threw. A retry the server
+ * unknown: a transport failure, a 408, a 5xx other than 503, or a 503
+ * whose JSON body does not itself say `"retryable": true` (the server's
+ * `outcome_unknown`, an edge's 503 without the server's body, a body
+ * without the field). The record may or may not have been written, and the
+ * SDK does not send it again. (An earlier attempt the SDK made was a
+ * refusal that writes nothing: a 401 before its token refresh, a retryable
+ * 429, or a 503 the server marked retryable.) `status` is the HTTP status
+ * (0 for a transport failure); `cause` is the server's answer as a
+ * `StreamsError`, or the value `fetch` threw. A retry the server
  * deduplicates needs a producer.
  *
  * Also a producer append (`Producer.append`, `Producer.appendMany`) whose
@@ -636,6 +639,12 @@ function encName(name: string): string {
   return name.split("/").map(encodeURIComponent).join("/");
 }
 
+/** The refusals `errorFrom` read `"retryable": true` from: the server's own
+ * word that the request may be sent again. `errorFrom` also reads a `429` or
+ * `503` without that field as retryable; a plain append's `503` may not rely
+ * on that default (`plainAppendReplays`). */
+const statedRetryable = new WeakSet<StreamsError>();
+
 async function errorFrom(res: Response): Promise<StreamsError> {
   if (res.status === 421 || res.headers.get("prisma-error-code") === "wrong_cell") {
     const error = new WrongCellError(res.status,
@@ -650,6 +659,7 @@ async function errorFrom(res: Response): Promise<StreamsError> {
   let code = "http_error";
   let message = `HTTP ${res.status}`;
   let retryable = res.status === 429 || res.status === 503;
+  let stated = false;
   let details: unknown;
   try {
     const body = (await res.json()) as {
@@ -664,6 +674,7 @@ async function errorFrom(res: Response): Promise<StreamsError> {
       code = body.error.code ?? code;
       message = body.error.message ?? message;
       retryable = body.error.retryable ?? retryable;
+      stated = body.error.retryable === true;
       details = body.error.details;
     }
   } catch {
@@ -702,6 +713,7 @@ async function errorFrom(res: Response): Promise<StreamsError> {
   }
   const err = new StreamsError(res.status, code, message, retryable, details);
   if (consumerVersion !== undefined) err.consumerVersion = consumerVersion;
+  if (stated) statedRetryable.add(err);
   return err;
 }
 
@@ -719,17 +731,31 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/** Whether a plain append sends a refusal again (`req()`'s `replays`): a
+ * retryable `429`, as every request does, and a `503` only when its JSON body
+ * itself says `"retryable": true` and is not `outcome_unknown`, the server's
+ * word that nothing was written. Any other `503` (the server's
+ * `outcome_unknown`, an edge's answer without the server's body, a body
+ * without the field) may have followed a write. */
+function plainAppendReplays(error: StreamsError): boolean {
+  return error.status === 503
+    ? statedRetryable.has(error) && error.code !== "outcome_unknown"
+    : retryableRequestError(error);
+}
+
 /** A plain append request's own failure (`req()`'s `classify`): an answer
  * that cannot tell whether the record was written becomes
- * `AppendOutcomeUnknownError`; a definite refusal (429, 503, other 4xx,
- * wrong cell) passes through. */
+ * `AppendOutcomeUnknownError` (a `408`, or a `5xx` that `plainAppendReplays`
+ * would not send again); a definite refusal (a `429`, a `503` the server
+ * marked retryable whose attempts are spent, another `4xx`, wrong cell)
+ * passes through. */
 function plainAppendFailure(e: unknown): unknown {
   if (e instanceof StreamsTransportError) {
     return new AppendOutcomeUnknownError(0, e.cause);
   }
   if (
     e instanceof StreamsError && !(e instanceof WrongCellError) &&
-    (e.status === 408 || (e.status >= 500 && e.status !== 503))
+    (e.status === 408 || (e.status >= 500 && !plainAppendReplays(e)))
   ) {
     return new AppendOutcomeUnknownError(e.status, e);
   }
@@ -797,7 +823,12 @@ async function reconnectAfter(backoffMs: number, signal?: AbortSignal): Promise<
  * `answerLost` tells it that an earlier attempt failed in transport, so
  * that attempt may have taken effect (a producer append's replay). A
  * token provider's rejection and an abort's reason are not this request's
- * answer and pass through unchanged. */
+ * answer and pass through unchanged.
+ *
+ * `replays` decides which refusals are sent again on their `Retry-After`
+ * within the attempts: a retryable `429` or `503`, except where a `503`
+ * may have followed a write the server does not deduplicate (plain
+ * appends). */
 async function req(
   ctx: Ctx,
   method: string,
@@ -807,6 +838,7 @@ async function req(
   signal?: AbortSignal,
   replayTransport = true,
   classify: (failure: StreamsError, answerLost: boolean) => unknown = (failure) => failure,
+  replays: (error: StreamsError) => boolean = retryableRequestError,
 ): Promise<Response> {
   const h: Record<string, string> = { ...headers };
   let rejectedGeneration: number | undefined;
@@ -854,7 +886,7 @@ async function req(
       rejectedGeneration = auth.generation;
       continue;
     }
-    if (retryableRequestError(error) && attempt < 3) {
+    if (replays(error) && attempt < 3) {
       signal?.throwIfAborted();
       const ra = Number(res.headers.get("retry-after") ?? "1");
       // Abort-aware: a plain setTimeout here made cancellation wait out
@@ -1238,6 +1270,7 @@ export class Stream<T = unknown> {
       undefined,
       false,
       plainAppendFailure,
+      plainAppendReplays,
     );
     return appendedResult(res);
   }
@@ -1257,6 +1290,7 @@ export class Stream<T = unknown> {
     const res = await req(
       this.ctx, "POST", this.path("/records"), h, body, undefined, producerHeaders !== undefined,
       producerHeaders ? undefined : plainAppendFailure,
+      producerHeaders ? undefined : plainAppendReplays,
     );
     return producerHeaders ? (await res.json()) as AppendResult : appendedResult(res);
   }

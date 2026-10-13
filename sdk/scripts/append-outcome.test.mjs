@@ -18,7 +18,7 @@ const plainAppends = [
 function stream(answers, options = {}) {
   const calls = [];
   const s = new StreamsClient({ url: "https://cell.example", ...options, fetch: async (url, init) => {
-    calls.push({ url: String(url), method: init.method });
+    calls.push({ url: String(url), method: init.method, headers: { ...init.headers }, body: init.body });
     const answer = answers[calls.length - 1];
     return answer ? answer() : new Response(APPENDED, { headers: JSON_HEADERS });
   } }).stream("orders", { encryptionKey: "A".repeat(43) });
@@ -37,6 +37,9 @@ async function rejection(call) {
   assert.fail("the request resolved");
 }
 
+const STRANDED = "the shard moved while this append was in flight; it may or may not have been written; " +
+  "retry only if a second copy is acceptable, or append through a producer";
+
 const unknownMessage = what =>
   `the append's last attempt ended in ${what}, so the SDK cannot tell whether it was written; ` +
   "it will not send it again; retry only if a second copy is acceptable, or append through a producer";
@@ -53,28 +56,66 @@ const unknownRows = [
     answer: answer(408, '{"error":{"code":"append_failed","message":"append failed","retryable":false}}', JSON_HEADERS),
     status: 408,
     what: "HTTP 408 append_failed",
-    cause: { code: "append_failed", message: "append failed" },
+    cause: { code: "append_failed", message: "append failed", retryable: false },
   },
   {
     label: "a 500 with the product body",
     answer: answer(500, '{"error":{"code":"append_failed","message":"append failed","retryable":false}}', JSON_HEADERS),
     status: 500,
     what: "HTTP 500 append_failed",
-    cause: { code: "append_failed", message: "append failed" },
+    cause: { code: "append_failed", message: "append failed", retryable: false },
   },
   {
     label: "a 502 with an empty body",
     answer: answer(502, ""),
     status: 502,
     what: "HTTP 502 http_error",
-    cause: { code: "http_error", message: "HTTP 502" },
+    cause: { code: "http_error", message: "HTTP 502", retryable: false },
   },
   {
     label: "a 504 with a text body",
     answer: answer(504, "upstream request timeout", { "content-type": "text/plain" }),
     status: 504,
     what: "HTTP 504 http_error",
-    cause: { code: "http_error", message: "HTTP 504" },
+    cause: { code: "http_error", message: "HTTP 504", retryable: false },
+  },
+  // A 503 is replayed only on the server's own `"retryable": true`; any
+  // other 503 may follow a write. The server's answer for a group its
+  // retiring engine stranded (src/product/append_error.rs):
+  {
+    label: "a 503 outcome_unknown",
+    answer: answer(503, `{"error":{"code":"outcome_unknown","message":"${STRANDED}","retryable":false}}`,
+      { ...JSON_HEADERS, "cache-control": "no-store", "retry-after": "1" }),
+    status: 503,
+    what: "HTTP 503 outcome_unknown",
+    cause: { code: "outcome_unknown", message: STRANDED, retryable: false },
+  },
+  // The same code with the flag set: the code alone decides.
+  {
+    label: "a 503 outcome_unknown that says retryable",
+    answer: answer(503, `{"error":{"code":"outcome_unknown","message":"${STRANDED}","retryable":true}}`,
+      { ...JSON_HEADERS, "retry-after": "1" }),
+    status: 503,
+    what: "HTTP 503 outcome_unknown",
+    cause: { code: "outcome_unknown", message: STRANDED, retryable: true },
+  },
+  // An edge's 503 without the server's body: the instance may have taken
+  // the request before it went away. The cause keeps errorFrom's reading.
+  {
+    label: "a 503 with an empty body",
+    answer: answer(503, ""),
+    status: 503,
+    what: "HTTP 503 http_error",
+    cause: { code: "http_error", message: "HTTP 503", retryable: true },
+  },
+  // A JSON body without the field: the server's pre-auth survival refusal
+  // (src/http.rs track_inflight) until it carries `"retryable": true`.
+  {
+    label: "a 503 whose JSON body names no retryable",
+    answer: answer(503, '{"error":{"code":"overloaded","message":"retry"}}', { ...JSON_HEADERS, "retry-after": "1" }),
+    status: 503,
+    what: "HTTP 503 overloaded",
+    cause: { code: "overloaded", message: "retry", retryable: true },
   },
 ];
 
@@ -98,7 +139,7 @@ for (const op of plainAppends) {
         assert.equal(error.cause.status, row.status);
         assert.equal(error.cause.code, row.cause.code);
         assert.equal(error.cause.message, row.cause.message);
-        assert.equal(error.cause.retryable, false);
+        assert.equal(error.cause.retryable, row.cause.retryable);
       } else {
         assert.ok(error.cause instanceof TypeError, "the cause is the value fetch threw");
         assert.equal(error.cause.message, "fetch failed");
@@ -179,6 +220,21 @@ test("append: a retryable 503 and then a transport failure are two requests and 
   assert.equal(error.message, unknownMessage("a transport failure"));
 });
 
+test("append: a retryable 503 and then a 503 outcome_unknown are two requests and the unknown outcome of the last", async () => {
+  const { s, calls } = stream([
+    answer(503, '{"error":{"code":"temporarily_unavailable","message":"retry shortly","retryable":true}}',
+      { ...JSON_HEADERS, "retry-after": "0" }),
+    answer(503, `{"error":{"code":"outcome_unknown","message":"${STRANDED}","retryable":false}}`,
+      { ...JSON_HEADERS, "retry-after": "1" }),
+  ]);
+  const error = await rejection(s.append({ n: 1 }));
+  assert.equal(calls.length, 2, "the refusal was replayed; the unknown outcome was not");
+  assert.ok(error instanceof sdk.AppendOutcomeUnknownError);
+  assert.equal(error.status, 503);
+  assert.equal(error.cause.code, "outcome_unknown");
+  assert.equal(error.message, unknownMessage("HTTP 503 outcome_unknown"));
+});
+
 for (const op of plainAppends) {
   test(`${op.name}: a retryable 503 temporarily_unavailable is replayed and the replay succeeds`, async () => {
     const { s, calls } = stream([answer(503,
@@ -255,3 +311,38 @@ test("a producer append: a 408 stays the server's StreamsError", async () => {
   assert.equal(error.status, 408);
   assert.equal(error.code, "append_failed");
 });
+
+// Pins: the plain append's 503 rule is its own. Requests the server
+// deduplicates (a producer's triple, a final seal's operation id) and every
+// other request replay any 503 that does not say `"retryable": false`.
+const edge503 = answer(503, "", { "retry-after": "0" });
+const silent503 = answer(503, '{"error":{"code":"overloaded","message":"retry"}}', { ...JSON_HEADERS, "retry-after": "0" });
+
+for (const [label, path, run] of [
+  ["a producer append", "/records", s => s.producer("p", { ephemeral: true }).append({ n: 1 }, { routingKey: "k" })],
+  ["a producer appendMany", "/records:batch", s => s.producer("p", { ephemeral: true }).appendMany([{ n: 1 }], { routingKey: "k" })],
+  ["a seal with a final record", ":seal", s => s.seal({ final: { n: 1 }, routingKey: "k" })],
+  ["a producer's seal with a final record", ":seal",
+    s => s.seal({ final: { n: 1 }, routingKey: "k", producer: s.producer("p", { ephemeral: true }) })],
+]) {
+  for (const [what, reply] of [["an empty body", edge503], ["a JSON body that names no retryable", silent503]]) {
+    test(`${label}: a 503 with ${what} is sent again, the same request, and the replay succeeds`, async () => {
+      const { s, calls } = stream([reply]);
+      await run(s);
+      assert.equal(calls.length, 2);
+      const [first, second] = calls;
+      assert.ok(first.url.endsWith(`/v1/streams/orders${path}`));
+      assert.equal(second.url, first.url);
+      assert.equal(second.body, first.body);
+      assert.deepEqual(second.headers, first.headers);
+    });
+  }
+}
+
+for (const [what, reply] of [["an empty body", edge503], ["a JSON body that names no retryable", silent503]]) {
+  test(`metadata: a 503 with ${what} is sent again and the replay succeeds`, async () => {
+    const { s, calls } = stream([reply, () => new Response('{"name":"orders"}', { headers: JSON_HEADERS })]);
+    assert.deepEqual(await s.metadata(), { name: "orders" });
+    assert.equal(calls.length, 2);
+  });
+}

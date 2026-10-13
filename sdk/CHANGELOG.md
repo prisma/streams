@@ -19,7 +19,14 @@ not carried over).
   `retryable: false`, the server's answer or the transport failure as
   `cause`). That covers a transport failure, which was
   `StreamsTransportError` with `retryable: true`, and a `408` or a `5xx`
-  other than `503`, which were the server's `StreamsError`. The SDK does
+  other than `503`, which were the server's `StreamsError`. It also covers
+  a `503` whose JSON body does not itself say `"retryable": true`, which
+  the SDK used to send again up to three times: the server's
+  `outcome_unknown`, its answer of this version for a plain append that a
+  deploy or a restart caught in flight (it was `temporarily_unavailable`,
+  `retryable: true`, and a replay could store the record twice), and a
+  `503` from in front of the server without its body. A `503` the server
+  marks retryable wrote nothing, and the SDK still replays it. The SDK does
   not send the append again after such an answer. Code that caught
   `StreamsTransportError` around a plain append no longer catches it
   there; append through a producer for a retry the server deduplicates.
