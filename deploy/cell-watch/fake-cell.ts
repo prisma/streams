@@ -1,9 +1,11 @@
 // Local stand-ins for what the cell watch talks to, for its tests: a cell
 // answering /health and the two operator documents as the captured
 // fixtures do (rig.ts), and an issuer answering /healthz and
-// /v1/admin/metrics. Every server records each request it got: the path,
-// the client's port (one port is one connection), and the connection and
-// authorization headers, so a test sees which connection carried what.
+// /v1/admin/metrics; FakeServer alone stands in for a sink or a heartbeat
+// monitor. Every server records each request it got: the path, the
+// client's port (one port is one connection), the connection,
+// authorization and content-type headers and the body, so a test sees
+// which connection carried what.
 import { BILLING, BOOT, DATA, GIT } from "./rig";
 import type { Json } from "./rules";
 
@@ -17,6 +19,7 @@ export interface Seen {
   port: number;
   connection: string | null;
   authorization: string | null;
+  contentType: string | null;
   body: string;
 }
 
@@ -47,6 +50,7 @@ export class FakeServer {
           port: srv.requestIP(req)?.port ?? 0,
           connection: req.headers.get("connection"),
           authorization: req.headers.get("authorization"),
+          contentType: req.headers.get("content-type"),
           body: await req.text(),
         });
         const route = this.routes[path];

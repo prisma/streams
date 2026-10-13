@@ -85,8 +85,13 @@ Six more directories:
   and no other: `/health` on a fresh connection, the two operator
   documents with the deployment bearer on one kept-alive connection
   (billing every fourth cycle), the issuer's when `ISSUER_ORIGIN` is set;
-  5 s timeouts, no redirects followed. Its tests run against local stand-ins
-  (`fake-cell.ts`). Tests: `bun test ./deploy/cell-watch`.
+  5 s timeouts, no redirects followed. `sinks.ts` delivers the events, in
+  order and retried until delivered, to the one configured sink as
+  PagerDuty Events v2 or a generic JSON webhook, on alert keys that carry
+  the class (a NOTIFY rising to PAGE pages), and sends the heartbeat GET,
+  which it withholds after three cycles in a row with a trigger
+  undelivered. Their tests run against local stand-ins (`fake-cell.ts`).
+  Tests: `bun test ./deploy/cell-watch`.
 
 All verify the download is an **x86_64 ELF** before exec. That check is
 not politeness: an aarch64 binary deploys "successfully" and crash-loops
