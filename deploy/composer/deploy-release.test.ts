@@ -4,8 +4,9 @@
 // missing secret name, KEEP_AWAKE_UNTIL_MS in production's cells file,
 // each of the three crossings against the running cell's release, from
 // the cell's /v1/debug/load or the deploy log), and of the deploy itself:
-// "no cell yet" accepted, the release's own CLI in an environment of six
-// names, cell-check after, one log line per deploy. Offline: a fake
+// "no cell yet" accepted, the release's own CLI in an environment of seven
+// names (the deploy's nonce kept across re-runs), cell-check after, one
+// log line per deploy. Offline: a fake
 // Management API, a fake cell, releases staged by release.ts from a
 // scratch git tree, a cell-admin state in a directory, and a fake `prisma`
 // that records how it was run and puts the release in place on the fake
@@ -152,7 +153,7 @@ function refusedBeforeDeploy(w: World, r: { code: number; err: string }, message
 }
 
 describe("deploy-release.sh", () => {
-  test("no cell yet: deploys with the release's own CLI, from its root, in an environment of six names, and logs it unchecked", async () => {
+  test("no cell yet: deploys with the release's own CLI, from its root, in an environment of seven names, and logs it unchecked", async () => {
     const w = await world();
     const { dir, release: r } = release(w, "rc-1");
     const run = await deploy(w, "production", dir);
@@ -163,15 +164,15 @@ describe("deploy-release.sh", () => {
     expect([p.argv, realpathSync(p.cwd), Object.keys(p.env).sort()]).toEqual([
       ["deploy", "deploy/composer/app.ts"],
       realpathSync(dir),
-      ["CELL_STAGE", "HOME", "PATH", "PRISMA_REGION", "PRISMA_SERVICE_TOKEN", "PRISMA_WORKSPACE_ID"],
+      ["CELL_DEPLOY_NONCE", "CELL_STAGE", "HOME", "PATH", "PRISMA_REGION", "PRISMA_SERVICE_TOKEN", "PRISMA_WORKSPACE_ID"],
     ]);
-    expect([p.env.CELL_STAGE, p.env.PRISMA_REGION, p.env.PRISMA_WORKSPACE_ID, p.env.PRISMA_SERVICE_TOKEN]).toEqual([
-      "production", "eu-central-1", "wksp_1", w.api.token,
+    expect([p.env.CELL_STAGE, p.env.CELL_DEPLOY_NONCE, p.env.PRISMA_REGION, p.env.PRISMA_WORKSPACE_ID, p.env.PRISMA_SERVICE_TOKEN]).toEqual([
+      "production", "rc-1", "eu-central-1", "wksp_1", w.api.token,
     ]);
     const [entry] = log(w);
     expect({ ...entry, at: typeof entry.at }).toEqual({
       app: "cell",
-      stage: "production", project: w.project, branch: null, tag: "rc-1", server_sha256: r.server_sha256, at: "string",
+      stage: "production", project: w.project, branch: null, tag: "rc-1", nonce: "rc-1", server_sha256: r.server_sha256, at: "string",
       result: "unchecked",
     });
     expect(run.out.includes(w.api.token)).toBe(false);
@@ -313,6 +314,25 @@ describe("deploy-release.sh", () => {
       `release rc-4 sets MAX_REQUEST_BODY_BYTES 16777216, the running cell's release rc-1 ${was}: the cell's namespaces ` +
         "stored their body ceiling at creation and the binary refuses another");
     expect(w.cell.requests.filter((q) => q.startsWith("GET /v1/debug/load")).length).toBe(3);
+  }, 60_000);
+
+  test("a plain deploy of the stage's last release keeps the nonce the log records for it, so a re-run is the same input", async () => {
+    const w = await world();
+    const { dir: d1, release: r1 } = release(w, "rc-1");
+    const line = (stage: string, tag: string, nonce: string, result: string) =>
+      JSON.stringify({ app: "cell", stage, project: w.project, branch: null, tag, nonce, server_sha256: r1.server_sha256, at: "t", result });
+    writeFileSync(join(w.releases, "deploy-log.jsonl"), `${[
+      line("production", "rc-1", "rc-1.r1760000000", "pass"),
+      line("production", "rc-1", "rc-1.r1760000999", "deploy_failed"),
+    ].join("\n")}\n`);
+    expect((await deploy(w, "production", d1)).code).toBe(3);
+    const { dir: d2 } = release(w, "rc-2");
+    expect((await deploy(w, "production", d2)).code).toBe(3);
+    expect((await deploy(w, "production", d1)).code).toBe(3);
+    expect([prismaRuns(w).map((p) => p.env.CELL_DEPLOY_NONCE), log(w).slice(2).map((e) => [e.tag, e.nonce])]).toEqual([
+      ["rc-1.r1760000000", "rc-2", "rc-1"],
+      [["rc-1", "rc-1.r1760000000"], ["rc-2", "rc-2"], ["rc-1", "rc-1"]],
+    ]);
   }, 60_000);
 
   test("when no cell answers, checks against the release the deploy log last deployed to the stage", async () => {

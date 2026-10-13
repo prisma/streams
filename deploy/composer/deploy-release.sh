@@ -29,11 +29,15 @@
 # the cells file's REGION; a secret name missing from the stage's own
 # scope; a release whose layout_version, keys_contract or
 # MAX_REQUEST_BODY_BYTES (each under its own release's rules) differs
-# from the running cell's release (the cell's /v1/debug/load sha256, found among the releases
-# beside this one; or, when no cell answers, the release deploy-log.jsonl
-# last deployed there; neither is "no cell yet", accepted); and profiles
+# from the running cell's release (the cell's /v1/debug/load sha256,
+# found among the releases beside this one; or, when no cell answers, the
+# release deploy-log.jsonl last deployed there; neither is "no cell yet",
+# accepted); and profiles
 # `cell-admin check-sizing` refuses. Then the release's own pinned `prisma
-# deploy`, from the release root, then cell-check within 5 minutes.
+# deploy`, from the release root, then cell-check within 5 minutes. The
+# deploy's CELL_DEPLOY_NONCE is the release's tag, or the nonce
+# deploy-log.jsonl recorded for the stage's last live deploy when that was
+# this release, so running a deploy again is the same input (a no-op).
 #
 # --issuer-release-dir (the interim issuer's <tag>-issuer release, Q6 (b))
 # deploys the issuer's app in the same run, after the cell's deploy and

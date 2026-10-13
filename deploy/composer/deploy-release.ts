@@ -33,11 +33,15 @@
 //      cell's state (D9: a cell's ceilings are fixed for its life);
 //   8. `prisma deploy deploy/composer/app.ts [--stage <stage>]` with the
 //      release's own pinned CLI, from the release root, in an environment
-//      of PATH, HOME, CELL_STAGE, PRISMA_REGION, PRISMA_WORKSPACE_ID and
-//      PRISMA_SERVICE_TOKEN only;
+//      of PATH, HOME, CELL_STAGE, CELL_DEPLOY_NONCE, PRISMA_REGION,
+//      PRISMA_WORKSPACE_ID and PRISMA_SERVICE_TOKEN only. The nonce (the
+//      app's envParam, lead decision deploy-q5 #6 (2)) is the release's
+//      tag, or, when deploy-log.jsonl's last live deploy of the stage was
+//      this release, the nonce it recorded: a re-run is the same input,
+//      which Composer deploys as a no-op (D0 finding 8);
 //   9. cell-check, within 5 minutes, when --cell-url names the cell;
 //  10. one line appended to deploy-log.jsonl beside the releases:
-//      {app, stage, project, branch, tag, server_sha256, at, result}.
+//      {app, stage, project, branch, tag, nonce, server_sha256, at, result}.
 // With --issuer-release-dir (the interim issuer, Q6 (b)): its release
 // (cut-release's <tag>-issuer) must be cut from the cell's commit and pass
 // the same rules, its stages/<stage>.env must name the cell's CELL_ID,
@@ -98,6 +102,8 @@ interface Run {
   release: Release;
   rules: Rules;
   scope: Scope;
+  /// CELL_DEPLOY_NONCE for a deploy (step 8); null for --destroy.
+  nonce: string | null;
   flags: Flags;
   out: (line: string) => void;
 }
@@ -272,20 +278,30 @@ async function runningIdentity(run: Run): Promise<{ sha: string; commit: string 
   return { sha: load.binary_sha256, commit: load.git_commit };
 }
 
-/// The release the deploy log last deployed to the stage's scope, unless
-/// a destroy came after it.
-function lastDeployed(run: Run): string | null {
-  const log = join(dirname(run.dir), DEPLOY_LOG);
+/// The deploy log's last line that deployed a cell to the stage's scope
+/// (a failed deploy changed nothing), unless a destroy came after it.
+function lastLive(dir: string, stage: string, scope: Scope): { tag: string; nonce?: string } | null {
+  const log = join(dirname(dir), DEPLOY_LOG);
   if (!existsSync(log)) return null;
-  const branch = run.scope.class === "preview" ? run.scope.branch : null;
+  const branch = scope.class === "preview" ? scope.branch : null;
   const mine = readFileSync(log, "utf8")
     .split("\n")
     .filter((l) => l.trim() !== "")
     .map((l) => JSON.parse(l))
-    .filter((e) => (e.app ?? "cell") === "cell" && e.stage === run.stage && e.project === run.scope.project && (e.branch ?? null) === branch)
+    .filter((e) => (e.app ?? "cell") === "cell" && e.stage === stage && e.project === scope.project && (e.branch ?? null) === branch)
     .filter((e) => DEPLOYED.includes(e.result) || e.result === "destroyed");
   const last = mine[mine.length - 1];
-  return last && last.result !== "destroyed" ? last.tag : null;
+  return last && last.result !== "destroyed" ? last : null;
+}
+
+/// The release the deploy log last deployed to the stage's scope.
+const lastDeployed = (run: Run): string | null => lastLive(run.dir, run.stage, run.scope)?.tag ?? null;
+
+/// Step 8's nonce: the one the stage's last live deploy of this release
+/// recorded, else the tag.
+function deployNonce(dir: string, stage: string, scope: Scope, tag: string): string {
+  const last = lastLive(dir, stage, scope);
+  return last?.tag === tag && typeof last.nonce === "string" ? last.nonce : tag;
 }
 
 /// Step 6: the running release, or null for "no cell yet".
@@ -365,8 +381,9 @@ async function prismaDeploy(run: Run, api: Platform, region: string): Promise<bo
   const cli = join(run.dir, "node_modules", ".bin", "prisma");
   if (!existsSync(cli)) throw new AdminError(`${cli} does not exist: the release carries its own pinned CLI`);
   const args = ["deploy", "deploy/composer/app.ts", ...(run.stage === "production" ? [] : ["--stage", run.stage])];
-  run.out(`deploy-release: prisma ${args.join(" ")} (release ${run.release.tag}, ${describeScope(run.scope)}, ${region})`);
-  return fromRelease(run, api, run.dir, [cli, ...args], { CELL_STAGE: run.stage, PRISMA_REGION: region });
+  const nonce = run.nonce as string;
+  run.out(`deploy-release: prisma ${args.join(" ")} (release ${run.release.tag}, nonce ${nonce}, ${describeScope(run.scope)}, ${region})`);
+  return fromRelease(run, api, run.dir, [cli, ...args], { CELL_STAGE: run.stage, CELL_DEPLOY_NONCE: nonce, PRISMA_REGION: region });
 }
 
 /// --destroy: Composer's destroy of a named stage (the release's
@@ -402,6 +419,7 @@ function logDeploy(run: Run, result: Result, issuer?: IssuerRun): void {
     project: scope.project,
     branch: scope.class === "preview" ? scope.branch : null,
     tag: run.release.tag,
+    nonce: issuer ? null : run.nonce,
     server_sha256: run.release.server_sha256,
     at: new Date().toISOString(),
     result,
@@ -494,9 +512,9 @@ export async function main(argv: readonly string[], out: (line: string) => void)
   const cut = issuerDir === undefined ? null : { dir: resolve(issuerDir), release: checkIssuerRelease(resolve(issuerDir)) };
   const apps = [fileIn(dir, "composer/app.ts"), ...(cut ? [join(cut.dir, "app.ts")] : [])];
   refuseSecretsInEnv([...new Set(apps.flatMap((a) => envSecretNames(readFileSync(a, "utf8"))))], process.env);
-  const run: Run = {
-    stage, dir, flags, out, release, rules: await rulesOf(dir), scope: scopeOf(stage, flags.must("project"), flags.get("branch")),
-  };
+  const scope = scopeOf(stage, flags.must("project"), flags.get("branch"));
+  const nonce = destroying ? null : deployNonce(dir, stage, scope, release.tag);
+  const run: Run = { stage, dir, flags, out, release, rules: await rulesOf(dir), scope, nonce };
   const api = Platform.open(flags.get("management-api") ?? MANAGEMENT_API);
   if (destroying) return destroyStage(run, api);
   const cells = cellsFile(run);
