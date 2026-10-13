@@ -81,6 +81,9 @@ Six more directories:
   the next state and the trigger and resolve events, one rule per row of
   the design's table, and its tests against answers captured from a local
   cell (`fixtures/`). Payloads carry named numbers and fixed enums only.
+  RUNBOOK's shared-cell "What to alert on" table lists the same rows with
+  their rule, class and destination, and `runbook.test.ts` holds the two
+  together.
   `poll.ts` fills that poll each 15 s cycle with GETs of those five paths
   and no other: `/health` on a fresh connection, the two operator
   documents with the deployment bearer on one kept-alive connection

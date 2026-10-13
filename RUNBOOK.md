@@ -596,6 +596,20 @@ a restart.
 | parallel deploys fail with `EEXIST` | concurrent `bunx` invocations race on the shared package cache | fan out regions **sequentially**, or pre-warm with one call |
 | `--service` calls all fail after a scripted deploy | the script captured the **version** id (`cpv_…`) that `deploy` prints, not the **service** id (`cps_…`) | take service ids from `services list` only |
 
+**Who answers.** A PAGE (a shared cell's "What to alert on" rows, and the
+paging tool's uptime check and heartbeat monitor) reaches `<on-call>` and,
+unacknowledged after 15 minutes, `<secondary>`; a NOTIFY goes to
+`<notify channel>`, read the next business day. The tool is Prisma's
+existing on-call tool, else a standalone one with an uptime check, a
+heartbeat monitor and phone escalation (the owner's answer A1 of
+2026-10-12; a chat channel alone is not a page); the hours are `<hours>`,
+and waking hours under the published "beta, no SLA" notice are acceptable
+for the beta. What this section calls not fixable from here (the edge
+never publishing a service) and a platform fault (§8: steal above 3 %
+sustained) go to Compute's escalation contact, `<compute contact>`. The
+names are placeholders until the paging service is set up and Platform
+names the contact.
+
 Deploy-time footguns (region-code mismatches, version-less service shells,
 `bun install` on fresh app dirs) are catalogued in
 [deploy/README.md](./deploy/README.md#deploy-footguns).
@@ -994,22 +1008,57 @@ sum down beside the cell's state directory, and refuse the next partner
 that would pass a half. `cell-admin` checks this itself once phase B
 declares load.
 
-**What to alert on** (scrape `/operator/data.json` with the deployment
-bearer; a `where` below is a key of it unless it names another source):
+**What to alert on.** The cell's watch, `deploy/cell-watch` (a Composer
+app of its own, `deploy/README.md`), reads the cell every 15 s: `/health`
+on a fresh connection and `/operator/data.json` with the deployment bearer
+(a `where` below is a key of it unless it names another source), and
+`/operator/billing.json` every 60 s; with `ISSUER_ORIGIN` set, also the
+issuer's `/healthz` and, every 60 s, its `/v1/admin/metrics`. It never
+reads `/v1/debug/*`. Each row is one rule: it opens as the row says,
+resolves after four clean readings in a row, and is not raised again while
+open, except once when its NOTIFY rises to PAGE. An alert carries the cell
+id, the rule, the class, named numbers, fixed enums and a link into this
+runbook; never a body, a log line, a project or a token. **PAGE** is the
+phone: every tenant is hurt now or within minutes, or an isolation or
+security invariant broke. **NOTIFY** is chat or e-mail, read the next
+business day; billing rows notify, because the beta is metered, not
+charged. §7.5's "Who answers" names `<on-call>` and `<notify channel>`.
+Rows 1 and 2 are the paging tool's own checks, so they page while the
+watch is down. The level rules (marked) wait for calibration on the
+certification cell (no PAGE at idle or under the certified load); until
+then the watch runs with `NOTIFY_ONLY=1`, which sends every PAGE as a
+NOTIFY.
 
-| signal | where | alert when |
-|---|---|---|
-| read memory | `local.read_memory_bytes` / `local.read_memory_capacity_bytes` | above 80 % for 5 min: neighbours' reads are waiting, then `503 read_memory_busy` |
-| RSS at idle | `local.rss_mb` vs `local.rss_shed_mb` | above the shed line with no load (NEXT-WORK 14.7, "Shared cells Q0"): every tenant's writes are shed |
-| instance and shard sheds | `local.admit_shed` (`local.admit_shed_rss`, `local.admit_shed_inflight`, `local.admit_shed_survival`); `local.maintenance_backpressure` (`appends_shed`, `cause`) | any growth: look at the largest writers (per-project attribution is phase B) |
-| history flush wait | `ops.gauges.history_flush_wait_ms_max` (the last snapshot's peak since the one before; a gather's flush that waits raises it every 5 s) | above 30,000: a gather has waited 30 s at the history L0 cap because compaction frees no slot (one long sorted-run merge on the only compaction slot, or failing compactions), and with one gather permit (`ABSORB_GLOBAL_GATHERS=1`) no shard absorbs meanwhile. Check `ops.gauges.history_l0_ssts_max` (64 is the cap) and `ops.gauges.history_compacted_runs_max`; detail `GET /v1/debug/absorb` |
-| parked waits | `local.parked` + `local.sse_connections` (one live pool) | near `local.sse_max_connections` (`SSE_MAX_CONNECTIONS`, 1,200): waits stop parking |
-| reserved policies | `feeds.policies.reservedDropped` | above 0: a feed names the system project, `PROJECT_ID` or `ACCOUNT_ID` |
-| unowned usage | `ops.counters.unowned_meter_events_total` | not flat: usage billed to the cell's `ACCOUNT_ID` sink |
-| feed delivery | wrapper log `feeds poll failed` / `feeds deleted`; `503 policy_stale` | any `feeds deleted`; polls failing for over a minute |
-| stored growth | `/operator/billing.json` `rollup.stored.writtenBytes` (each increase of the cell's projects' stored bytes that a drain round saw; a delete never lowers it) | grows by more than 50 GiB in 24 h (G, about 0.6 MB/s sustained; the owner's answer S3 of 2026-10-12, confirmed again when the production workspace exists). Until physical reclamation exists a delete frees quota but not the bucket's bytes, so this is the bucket's growth as far as the drain saw it: a drain round emits each segment as it then stands, so bytes stored and deleted between two rounds of a shard (8 s apart by default) never reach it, and a tenant that deletes what it writes within a round grows the bucket without growing this figure. `/operator/data.json` `local.store.totals.bytes_put` (every byte the process put since `totals.since_ms`, WAL and compaction included) bounds the bucket's growth from above. `rollup.stored.largest` lists the ten projects that wrote the most |
-| daily spend estimate | `/operator/data.json` `local.store.totals`; `/operator/billing.json` `rollup.stored` | above $10 a day, the cell's budget (S3, as G). The estimate: the last 24 h's billed requests (`ok` plus `not_found`) of Class A (`put`, `mpu`, `copy`, `list`) and of Class B (`get`, `head`), each times its price; plus `writtenBytes` in GiB × 1.2 × $0.015 ÷ 30 (`totalBytes` once physical reclamation exists); plus the kept-awake server's flat cost a day. The prices are inputs until the platform gives Prisma Buckets' own; the totals restart with the process (`totals.since_ms`), so a restart starts a new baseline. The authoritative budget alarm is the platform's, on the workspace's bill |
-| stale stored cap | `/operator/billing.json` `rollup.lastApplyAgeSecs` | above 600 while the `_ops_metrics` counter `ingest_bytes_total` grows (the cell takes appends): the rollup has stopped, and the stored cap judges a stale figure ("Billing pipeline runbooks") |
+| # | rule | class | where | alert when | paged by |
+|---|---|---|---|---|---|
+| 1 | uptime check | PAGE | the paging tool's `GET /health` from 2 locations every 60 s, 10 s timeout | 3 failures in a row: no 2xx from outside (§7.5: a zombie, the edge, `binary_exited`) | the paging tool to `<on-call>` |
+| 2 | heartbeat | PAGE | the watch's heartbeat GET after each cycle | none for 3 min: the watch is down, or it withholds the beat after three cycles in a row that ended with a trigger undelivered (its alerts are not getting out) | the paging tool to `<on-call>` |
+| 3 | `r03_no_2xx_inside` | PAGE | `/health` | not 200, or no answer in 5 s, for 2 min. The alert names who answered: `server` (its origin header) with the 503's reason (`tasks`, `feeds_unpublished`, `shard_storage`, `billing_not_ready`, `other`), `wrapper` (500 `binary_exited`, §7.5) or `platform` (anything else: the edge, a zombie, no instance) | cell-watch to `<on-call>` |
+| 4 | `r04_restarts` | NOTIFY / PAGE | `/health` `x-streams-boot-id` (sent on a 200 only) | a new boot id: NOTIFY; 3 boot ids or more in 30 min, a crash loop: PAGE (a loop that never reaches 200 is row 3) | cell-watch to `<notify channel>` / `<on-call>` |
+| 5 | `r05_wrong_build` | NOTIFY | `/health` `x-streams-git` | does not start with `EXPECTED_GIT`, the release's commit, for 10 min: the cell is not running the release deployed. Off when `EXPECTED_GIT` is `none` | cell-watch to `<notify channel>` |
+| 6 | `r06_feed_delivery` | PAGE | `feeds.jwks.ageSecs`, `feeds.policies.ageSecs`, `feeds.grants.ageSecs`; `feeds.policies.stale`, `feeds.grants.stale` | an age above 75 s (about 30 is normal), some 3 min before the cell refuses every request at 300 s; or `stale: true`: the outage has begun (`503 policy_stale`). The wrapper's log says `feeds poll failed`, `feeds bundle refused` or `feeds deleted` (Publishing, above) | cell-watch to `<on-call>` |
+| 7 | `r07_reserved_policy_dropped` | PAGE | `feeds.policies.reservedDropped` | above 0: a feed names the system project, `PROJECT_ID` or `ACCOUNT_ID` | cell-watch to `<on-call>` |
+| 8 | `r08_rss_at_shed_line` (level) | PAGE / NOTIFY | `local.rss_mb` + `local.absorb_reserved_bytes_now` / 2^20 against `local.rss_shed_mb` (the shed's own sum) | at or above the line for 10 min: PAGE, every tenant's writes are shed (NEXT-WORK 14.7, "Shared cells Q0"); at 90 % of it for 30 min: NOTIFY | cell-watch to `<on-call>` / `<notify channel>` |
+| 9 | `r09_rss_write_shed` | PAGE / NOTIFY | `local.admit_shed_rss` | growth on 2 readings in a row: PAGE; on one: NOTIFY. Look at the largest writers | cell-watch to `<on-call>` / `<notify channel>` |
+| 10 | `r10_overload_sheds` (level) | PAGE / NOTIFY | `local.admit_shed_inflight` + `local.admit_shed_survival` | growth on 3 readings in a row (45 s: the u = 0.5 packing failed): PAGE; on one: NOTIFY | cell-watch to `<on-call>` / `<notify channel>` |
+| 11 | `r11_durability_wedge` | PAGE | `local.wedge_shed` | any growth | cell-watch to `<on-call>` |
+| 12 | `r12_backlog_latch` (level) | PAGE / NOTIFY | `local.maintenance_backpressure` | `engaged`, or `appends_shed` growth: PAGE; `absorb_lag_secs` above 450 (half the 900 s latch) or `unabsorbed_bytes` above 256 MiB (half the instance's 512 MiB): NOTIFY. `cause` and `instance_cause` say why | cell-watch to `<on-call>` / `<notify channel>` |
+| 13 | `r13_history_flush_wait` (level) | PAGE | `ops.gauges.history_flush_wait_ms_max` (the last snapshot's peak since the one before; a gather's flush that waits raises it every 5 s) | above 30,000: a gather has waited 30 s at the history L0 cap because compaction frees no slot (one long sorted-run merge on the only compaction slot, or failing compactions), and with one gather permit (`ABSORB_GLOBAL_GATHERS=1`) no shard absorbs meanwhile. The alert carries `history_l0_ssts_max` (64 is the cap) and `history_compacted_runs_max`; detail `GET /v1/debug/absorb` | cell-watch to `<on-call>` |
+| 14 | `r14_read_memory` (level) | PAGE | `local.read_memory_bytes` / `local.read_memory_capacity_bytes` | above 80 % for 5 min: neighbours' reads are waiting, then `503 read_memory_busy` | cell-watch to `<on-call>` |
+| 15 | `r15_live_pool` (level) | NOTIFY / PAGE | (`local.sse_connections` + `local.parked`) / `local.sse_max_connections` (one live pool; `SSE_MAX_CONNECTIONS`, 1,200) | 90 % for 1 min: NOTIFY; full for 1 min: PAGE, waits stop parking | cell-watch to `<notify channel>` / `<on-call>` |
+| 16 | `r16_object_store` (level) | PAGE / NOTIFY | `local.store.ops["put:wal"]` and `local.store.ops["put:manifest"]` (the last 60 s) | `err` at 5 % of `n` or more on 2 readings in a row: PAGE; `put:wal` `p99_ms` above 2,000 for 5 min: NOTIFY. Diagnose with §5's `/v1/debug/store` | cell-watch to `<on-call>` / `<notify channel>` |
+| 17 | `r17_unowned_usage` | NOTIFY | `ops.counters.unowned_meter_events_total` | grew in the last 15 min: usage billed to the cell's `ACCOUNT_ID` sink | cell-watch to `<notify channel>` |
+| 18 | `r18_billing_pipeline` | NOTIFY | `/operator/billing.json` `openAlerts`, `ready`, `drain.lastOkAgeSecs` | any open alert, `ready: false`, or no drain for 300 s (Billing pipeline runbooks, below) | cell-watch to `<notify channel>` |
+| 19 | `r19_canary` | PAGE | the canary: one small record appended to the canary project's stream every 60 s and read back durable, under its customer credential | 3 failures in a row; the alert names the step, who answered (as row 3) and the `error.code`. Read once the watch runs the canary | cell-watch to `<on-call>` |
+| 20 | `r20_snapshot_stale` | NOTIFY | `ops`; `ops.ts_ms` against `ts_ms` | `ops` still `null` 60 s after the boot id was first seen (no usage key, so the telemetry tick collects nothing), or `ops.ts_ms` over 60 s behind `ts_ms` (the telemetry loop stopped): the rows that read `ops` are blind | cell-watch to `<notify channel>` |
+| 21 | `r21_issuer_down` | PAGE | the issuer's `/healthz` | not 200, or no answer, for 2 min: tokens live 60 min by default, so every customer loses access within the hour. Only with `ISSUER_ORIGIN` | cell-watch to `<on-call>` |
+| 22 | `r22_canary_exchange` | PAGE | the canary's exchange at the issuer (`POST /v1/token/streams`) | 3 failures in a row, or a 200 whose `endpoint` is not `STREAMS_CELL_ORIGIN` (every refreshing client would go there): the issuer's fault, against row 19's cell. Only with `ISSUER_ORIGIN`, once the watch runs the canary | cell-watch to `<on-call>` |
+| 23 | `r23_stored_growth` | NOTIFY | `/operator/billing.json` `rollup.stored.writtenBytes` (each increase of the cell's projects' stored bytes that a drain round saw; a delete never lowers it) | grew by more than 50 GiB over the trailing 24 h (G, about 0.6 MB/s sustained; the owner's answer S3 of 2026-10-12, confirmed again when the production workspace exists). Skipped while the billing report has no `rollup.stored`. Until physical reclamation exists a delete frees quota but not the bucket's bytes, so this is the bucket's growth as far as the drain saw it: a drain round emits each segment as it then stands, so bytes stored and deleted between two rounds of a shard (8 s apart by default) never reach it, and a tenant that deletes what it writes within a round grows the bucket without growing this figure. `/operator/data.json` `local.store.totals.bytes_put` (every byte the process put since `totals.since_ms`, WAL and compaction included) bounds the bucket's growth from above. `rollup.stored.largest` lists the ten projects that wrote the most | cell-watch to `<notify channel>` |
+| 24 | `r24_daily_spend` | NOTIFY | `/operator/billing.json` `rollup.stored.writtenBytes`; `local.store.totals` | the day's estimated spend above $10, the cell's budget (S3, as G): billed store requests (`ok` plus `not_found`) of Class A (`put`, `mpu`, `copy`, `list`) and of Class B (`get`, `head`), each at the store's price (scaled to a day once an hour is seen), plus `writtenBytes` × 1.2 at $0.015 per GiB-month (`totalBytes` once physical reclamation exists), plus the kept-awake server's $0.144. The prices are inputs until the platform gives Prisma Buckets' own; the totals restart with the process (`totals.since_ms`), so a restart starts a new baseline. The authoritative budget alarm is the platform's, on the workspace's bill. Skipped as row 23 | cell-watch to `<notify channel>` |
+| 25 | `r25_stale_rollup` | NOTIFY | `/operator/billing.json` `rollup.lastApplyAgeSecs`; `ops.counters.ingest_bytes_total` | above 600 while ingest grew in the last 10 min (the cell takes appends): the rollup consumer stalled, and the stored cap judges a stale figure (Billing pipeline runbooks). Skipped as row 23 | cell-watch to `<notify channel>` |
+| 26 | `r26_usage_overflow` | NOTIFY | `local.usage_overflow_admits` | above 0: overflow streams share one limiter and one counter set, so their usage is mis-attributed under metered billing | cell-watch to `<notify channel>` |
+| 27 | `r27_issuer_cache_age` | NOTIFY | the issuer's `/v1/admin/metrics` `cache_age_secs` (bearer `STREAMS_ISSUER_METRICS_TOKEN`) | above 150: the exchange refuses with `503 issuer_unavailable` at 300. Only with `ISSUER_ORIGIN` | cell-watch to `<notify channel>` |
+| 28 | `r28_admission_gate_closed` | NOTIFY | the issuer's `/v1/admin/metrics` `gate_open` | `false`: sign-ups are refused, as expected after `cell-admin gate --close`. Only with `ISSUER_ORIGIN` | cell-watch to `<notify channel>` |
 
 A single-server shared cell publishes no `prisma-streams-internal` key and
 sets no `FLEET_INTERNAL_TOKEN`: its internal surface opens to nothing. A
