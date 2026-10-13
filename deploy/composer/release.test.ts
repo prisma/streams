@@ -1,0 +1,324 @@
+// A shared cell's release directory (public-beta deploy-q5 triage B5):
+// release.ts stages one commit's files, binaries and cells files with a
+// release.json describing every byte, and refuses a release that is not
+// what was cut; scripts/cut-release.sh refuses to overwrite one before it
+// does anything else. Offline: the tree is a scratch git repository of the
+// repository's own files, and the binaries are ELF headers that never run.
+// Run with `bun test ./deploy/composer`.
+import { afterAll, describe, expect, test } from "bun:test";
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { checkRelease, keysContract, layoutVersion, type Release, stageRelease } from "./release";
+
+const REPO = join(import.meta.dir, "..", "..");
+const scratch: string[] = [];
+afterAll(() => {
+  for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+function scratchDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "release-"));
+  scratch.push(dir);
+  return dir;
+}
+
+const sha256 = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
+/// An ELF header for `machine` that never runs.
+const elf = (machine: number, tag: string) =>
+  Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, ...new Array(9).fill(0), 2, 0, machine, 0]), Buffer.from(tag)]);
+
+/// The repository files a release takes, and the three it reads facts from.
+const TREE_FILES = [
+  "deploy/composer/package.json",
+  "deploy/composer/bun.lock",
+  "deploy/composer/prisma.config.ts",
+  "deploy/composer/app.ts",
+  "deploy/composer/streams/service.ts",
+  "deploy/composer/streams/entry.ts",
+  "deploy/composer/streams/env.ts",
+  "deploy/app-server/supervise.ts",
+  "deploy/app-server/feeds.ts",
+  "deploy/app-server/downloader.ts",
+  "deploy/cell-admin/profile.ts",
+  "deploy/cell-admin/errors.ts",
+  "deploy/profiles/compute-1g.env",
+  "deploy/profiles/shared-cell.env",
+  "src/registry.rs",
+  "contracts/streams-platform/v1/keys.schema.json",
+  "docs/MULTITENANCY.md",
+];
+
+function git(dir: string, ...args: string[]): string {
+  return execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args])
+    .toString()
+    .trim();
+}
+
+/// A git repository holding the repository's files at one commit.
+function fakeTree(): { tree: string; commit: string } {
+  const tree = scratchDir();
+  for (const p of TREE_FILES) {
+    mkdirSync(dirname(join(tree, p)), { recursive: true });
+    copyFileSync(join(REPO, p), join(tree, p));
+  }
+  git(tree, "init", "-q");
+  git(tree, "add", ".");
+  git(tree, "commit", "-qm", "release");
+  return { tree, commit: git(tree, "rev-parse", "HEAD") };
+}
+
+const CELLS_PRODUCTION = "CELL_STAGE=production\nCELL_ID=cell_p1\nREGION=eu-central-1\n";
+
+type Inputs = Parameters<typeof stageRelease>[0];
+
+/// Every input of a stage, in a fresh scratch root; `out` does not exist.
+function inputs(): Inputs {
+  const { tree, commit } = fakeTree();
+  const root = scratchDir();
+  const cells = join(root, "cells");
+  mkdirSync(cells);
+  writeFileSync(join(cells, "production.env"), CELLS_PRODUCTION);
+  writeFileSync(join(cells, "cert.env"), "CELL_STAGE=cert\nCELL_ID=cell_c1\n");
+  writeFileSync(join(cells, "production.provision.json"), "{}"); // not a cells file: never read
+  writeFileSync(join(root, "streams-slate"), elf(0x3e, "server"));
+  writeFileSync(join(root, "s3lite"), elf(0x3e, "s3lite"));
+  writeFileSync(join(root, "entry.js"), "// the bundle\n");
+  mkdirSync(join(root, "node_modules", ".bin"), { recursive: true });
+  writeFileSync(join(root, "node_modules", ".bin", "prisma"), "#!/bin/sh\n");
+  return {
+    tree, commit, tag: "rc-1", buildUnix: 1_760_000_000, cells,
+    server: join(root, "streams-slate"), s3lite: join(root, "s3lite"), entryJs: join(root, "entry.js"),
+    nodeModules: join(root, "node_modules"), out: join(root, "releases", "rc-1"),
+  };
+}
+
+/// Every path under `dir`, node_modules' contents aside.
+function listing(dir: string, rel = ""): string[] {
+  return readdirSync(join(dir, rel)).sort().flatMap((name) => {
+    const path = rel === "" ? name : `${rel}/${name}`;
+    if (path === "node_modules") return [path];
+    return statSync(join(dir, path)).isDirectory() ? [`${path}/`, ...listing(dir, path)] : [path];
+  });
+}
+
+const refusal = (fn: () => unknown) => {
+  try {
+    fn();
+  } catch (e) {
+    return (e as Error).message;
+  }
+  return "no refusal";
+};
+
+describe("stageRelease", () => {
+  test("stages the commit's files, both binaries, the bundle and the cells files, and release.json lists every byte", () => {
+    const i = inputs();
+    const r: Release = stageRelease(i);
+    expect(listing(i.out)).toEqual([
+      "bin/",
+      "bin/s3lite",
+      "bun.lock",
+      "deploy/",
+      "deploy/app-server/",
+      "deploy/app-server/downloader.ts",
+      "deploy/app-server/feeds.ts",
+      "deploy/app-server/supervise.ts",
+      "deploy/cell-admin/",
+      "deploy/cell-admin/errors.ts",
+      "deploy/cell-admin/profile.ts",
+      "deploy/cells/",
+      "deploy/cells/cert.env",
+      "deploy/cells/production.env",
+      "deploy/composer/",
+      "deploy/composer/app.ts",
+      "deploy/composer/streams/",
+      "deploy/composer/streams/entry.js",
+      "deploy/composer/streams/entry.ts",
+      "deploy/composer/streams/env.ts",
+      "deploy/composer/streams/service.ts",
+      "deploy/composer/streams/streams-slate",
+      "deploy/profiles/",
+      "deploy/profiles/compute-1g.env",
+      "deploy/profiles/shared-cell.env",
+      "deploy/release.json",
+      "node_modules",
+      "package.json",
+      "prisma.config.ts",
+    ]);
+    const read = (p: string) => readFileSync(join(REPO, p));
+    const pkg = JSON.parse(read("deploy/composer/package.json").toString());
+    expect({ ...r, files: Object.keys(r.files) }).toEqual({
+      tag: "rc-1",
+      commit: i.commit,
+      build_unix: 1_760_000_000,
+      server_sha256: sha256(elf(0x3e, "server")),
+      server_bytes: elf(0x3e, "server").length,
+      s3lite_sha256: sha256(elf(0x3e, "s3lite")),
+      profiles: {
+        "compute-1g.env": sha256(read("deploy/profiles/compute-1g.env")),
+        "shared-cell.env": sha256(read("deploy/profiles/shared-cell.env")),
+      },
+      cells: { cert: sha256(Buffer.from("CELL_STAGE=cert\nCELL_ID=cell_c1\n")), production: sha256(Buffer.from(CELLS_PRODUCTION)) },
+      layout_version: layoutVersion(read("src/registry.rs").toString()),
+      keys_contract: "r7",
+      composer_version: pkg.dependencies["@prisma/composer"],
+      compute_version: pkg.dependencies["@prisma/compute"],
+      lockfile_sha256: sha256(read("deploy/composer/bun.lock")),
+      files: listing(i.out).filter((p) => !p.endsWith("/") && p !== "node_modules" && p !== "deploy/release.json"),
+    });
+    expect(JSON.parse(readFileSync(join(i.out, "deploy/release.json"), "utf8"))).toEqual(r);
+    expect(readFileSync(join(i.out, "package.json"))).toEqual(read("deploy/composer/package.json"));
+    expect(readFileSync(join(i.out, "deploy/composer/app.ts"))).toEqual(read("deploy/composer/app.ts"));
+    expect(r.files["deploy/composer/streams/streams-slate"]).toBe(r.server_sha256);
+    const mode = (p: string) => statSync(join(i.out, p)).mode & 0o777;
+    expect([mode("deploy/composer/streams/streams-slate"), mode("bin/s3lite"), mode("deploy/cells/production.env")])
+      .toEqual([0o755, 0o755, 0o644]);
+    expect([existsSync(i.nodeModules), existsSync(join(i.out, "node_modules", ".bin", "prisma"))]).toEqual([false, true]);
+  });
+
+  test("never overwrites a release directory", () => {
+    const i = inputs();
+    mkdirSync(i.out, { recursive: true });
+    writeFileSync(join(i.out, "keep"), "an earlier cut");
+    expect(refusal(() => stageRelease(i))).toBe(`${i.out} exists: a release directory is never overwritten`);
+    expect([readdirSync(i.out), existsSync(i.nodeModules)]).toEqual([["keep"], true]);
+  });
+
+  test("takes a file only as the commit holds it", () => {
+    const i = inputs();
+    writeFileSync(join(i.tree, "deploy/profiles/shared-cell.env"), "KEEP_AWAKE=1\n");
+    expect(refusal(() => stageRelease(i))).toBe(
+      `${join(i.tree, "deploy/profiles/shared-cell.env")} differs from deploy/profiles/shared-cell.env at ${i.commit}: ` +
+        "a release takes the commit's files only",
+    );
+    expect(existsSync(i.out)).toBe(false);
+  });
+
+  test("refuses a binary that is not an x86_64 ELF", () => {
+    const i = inputs();
+    writeFileSync(i.server, elf(0xb7, "aarch64"));
+    expect(refusal(() => stageRelease(i))).toBe(`${i.server} is an ELF for machine 0xb7, not x86_64 (0x3e)`);
+    writeFileSync(i.s3lite, "#!/bin/sh\n");
+    writeFileSync(i.server, elf(0x3e, "server"));
+    expect(refusal(() => stageRelease(i))).toBe(`${i.s3lite} is not an ELF executable`);
+  });
+
+  test("refuses a cells file that names another stage, or that is a symlink, or none at all", () => {
+    const i = inputs();
+    writeFileSync(join(i.cells, "cert.env"), "CELL_STAGE=production\n");
+    expect(refusal(() => stageRelease(i))).toBe(`${join(i.cells, "cert.env")} does not set CELL_STAGE=cert`);
+    rmSync(join(i.cells, "cert.env"));
+    symlinkSync(join(i.cells, "production.env"), join(i.cells, "cert.env"));
+    expect(refusal(() => stageRelease(i))).toBe(`${join(i.cells, "cert.env")} is not a regular file`);
+    rmSync(join(i.cells, "cert.env"));
+    rmSync(join(i.cells, "production.env"));
+    expect(refusal(() => stageRelease(i))).toBe(`${i.cells} holds no cells file (scratch.env, cert.env, production.env)`);
+  });
+});
+
+describe("checkRelease", () => {
+  test("refuses a dotfile, a symlink, a file release.json does not list, a changed file and a missing one", () => {
+    const i = inputs();
+    stageRelease(i);
+    mkdirSync(join(i.out, ".prisma-composer", "artifacts"), { recursive: true });
+    mkdirSync(join(i.out, ".alchemy"));
+    expect(checkRelease(i.out).tag).toBe("rc-1");
+    const refused = (what: string) => `${i.out} is not the release it was cut as: ${what}`;
+    for (const stray of ["deploy/.env", ".env", "deploy/composer/streams/.env.local"]) {
+      writeFileSync(join(i.out, stray), "STREAMS_OPERATOR_TOKEN=x\n");
+      expect(refusal(() => checkRelease(i.out))).toBe(refused(`${stray} (a dotfile)`));
+      rmSync(join(i.out, stray));
+    }
+    symlinkSync("/etc/hosts", join(i.out, "deploy/hosts"));
+    expect(refusal(() => checkRelease(i.out))).toBe(refused("deploy/hosts (a symlink)"));
+    rmSync(join(i.out, "deploy/hosts"));
+    writeFileSync(join(i.out, "deploy/composer/streams/extra.js"), "");
+    expect(refusal(() => checkRelease(i.out))).toBe(refused("deploy/composer/streams/extra.js (not in release.json)"));
+    rmSync(join(i.out, "deploy/composer/streams/extra.js"));
+    const cells = join(i.out, "deploy/cells/production.env");
+    writeFileSync(cells, `${CELLS_PRODUCTION}KEEP_AWAKE_UNTIL_MS=1\n`);
+    expect(refusal(() => checkRelease(i.out))).toBe(refused("deploy/cells/production.env (changed since the cut)"));
+    rmSync(cells);
+    expect(refusal(() => checkRelease(i.out))).toBe(refused("deploy/cells/production.env (missing)"));
+    writeFileSync(cells, CELLS_PRODUCTION);
+    expect(checkRelease(i.out).cells.production).toBe(sha256(Buffer.from(CELLS_PRODUCTION)));
+  });
+});
+
+describe("the release's facts", () => {
+  test("LAYOUT_VERSION is read from its one declaration", () => {
+    const rs = "pub(crate) const LAYOUT_VERSION: u32 = 6;\n";
+    expect(layoutVersion(rs)).toBe(6);
+    expect(refusal(() => layoutVersion(rs + rs))).toBe("src/registry.rs does not declare LAYOUT_VERSION once");
+  });
+
+  test("the keys contract is the §14.1 revision the keys schema cites and MULTITENANCY's log lists", () => {
+    const schema = readFileSync(join(REPO, "contracts/streams-platform/v1/keys.schema.json"), "utf8");
+    const log = readFileSync(join(REPO, "docs/MULTITENANCY.md"), "utf8");
+    expect(keysContract(schema, log)).toBe("r7");
+    expect(refusal(() => keysContract(schema.replace("§14.1 r7", "§14.1 r9"), log))).toBe(
+      "MULTITENANCY's revision log has no r9 entry for §14.1",
+    );
+    // The log's last entry ends at the blank line after it: a later section
+    // that names §14.1 does not make it a §14.1 revision.
+    const lastOnly = "**Revision log**\n- r1 (x): §17.3 only\n\n---\n\n### 14.1 Fleet identity\n§14.1\n";
+    expect(refusal(() => keysContract(schema.replace("§14.1 r7", "§14.1 r1"), lastOnly))).toBe(
+      "MULTITENANCY's revision log has no r1 entry for §14.1",
+    );
+    expect(refusal(() => keysContract(schema.replace("§14.1 r7", "r7"), log))).toBe(
+      "the keys schema's aud does not cite one MULTITENANCY §14.1 revision",
+    );
+  });
+});
+
+describe("scripts/cut-release.sh", () => {
+  /// Run the script with `gh`, `git`'s worktrees, `cargo` and `bun` never
+  /// reached: each is a stub on PATH that records it ran.
+  function cut(releases: string, soak: string, cells: string) {
+    const bin = scratchDir();
+    for (const tool of ["gh", "cargo", "bun", "python3"]) {
+      writeFileSync(join(bin, tool), `#!/bin/sh\necho ${tool} >> ${join(bin, "ran")}\nexit 1\n`);
+      chmodSync(join(bin, tool), 0o755);
+    }
+    const run = spawnSync("bash", [join(REPO, "scripts", "cut-release.sh"), "HEAD", "rc-1", "--cells", cells], {
+      env: { PATH: `${bin}:${process.env.PATH}`, HOME: process.env.HOME ?? "/", STREAMS_RELEASES: releases, SOAK_HOME: soak },
+    });
+    const ran = existsSync(join(bin, "ran")) ? readFileSync(join(bin, "ran"), "utf8") : "";
+    return { code: run.status, err: run.stderr.toString(), ran };
+  }
+
+  test("refuses an existing release directory, or results of the tag, before anything else", () => {
+    const root = scratchDir();
+    const [releases, soak, cells] = ["releases", "soak", "cells"].map((d) => join(root, d));
+    mkdirSync(join(releases, "rc-1"), { recursive: true });
+    mkdirSync(cells);
+    const worktrees = git(REPO, "worktree", "list");
+    expect(cut(releases, soak, cells)).toEqual({
+      code: 1,
+      err: `cut-release: refused: ${join(releases, "rc-1")} exists: a release directory is never overwritten\n`,
+      ran: "",
+    });
+    rmSync(join(releases, "rc-1"), { recursive: true });
+    mkdirSync(join(soak, "results", "rc-1"), { recursive: true });
+    expect(cut(releases, soak, cells)).toEqual({
+      code: 1,
+      err: `cut-release: refused: ${join(soak, "results", "rc-1")} exists: tag rc-1 was cut before\n`,
+      ran: "",
+    });
+    expect([git(REPO, "worktree", "list"), readdirSync(releases)]).toEqual([worktrees, []]);
+  });
+});
