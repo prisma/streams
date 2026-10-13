@@ -21,8 +21,8 @@
 //      records as deployed to the stage; neither is "no cell yet",
 //      accepted (S27). Refused: a release whose layout_version,
 //      keys_contract or MAX_REQUEST_BODY_BYTES differs from the running
-//      one's (the body ceiling first, though check-sizing would refuse a
-//      changed profile too, so each refusal is met as itself);
+//      one's (before step 7, which refuses any changed profile too, so
+//      each refusal is met as itself);
 //   7. `cell-admin check-sizing` accepts the release's profiles for the
 //      cell's state (D9: a cell's ceilings are fixed for its life);
 //   8. `prisma deploy deploy/composer/app.ts [--stage <stage>]` with the
@@ -69,7 +69,7 @@ const USAGE = `usage: PRISMA_TOKEN_FILE=F deploy/composer/deploy-release.sh <sta
   [--cell-url URL --bearer-file F --canary-token-file T] [--management-api URL]
   [--issuer-release-dir DIR --issuer-project ID [--issuer-branch ID]]
 or: ... <scratch|cert> <release-dir> --project ID --branch ID --workspace ID --destroy`;
-export const DEPLOY_LOG = "deploy-log.jsonl";
+const DEPLOY_LOG = "deploy-log.jsonl";
 const CELL_CHECK_DEADLINE_SECS = 300;
 const PROBE_TIMEOUT_MS = 15_000;
 /// What a run did to the stage, as deploy-log.jsonl records it; the first
@@ -91,7 +91,7 @@ const layered = (dir: string) =>
   parseProfiles(PROFILES.map((p) => ({ path: fileIn(dir, p), text: readFileSync(fileIn(dir, p), "utf8") })));
 
 /// Step 1.
-export function refuseSecretsInEnv(names: readonly string[], env: Readonly<Record<string, string | undefined>>): void {
+function refuseSecretsInEnv(names: readonly string[], env: Readonly<Record<string, string | undefined>>): void {
   const set = names.filter((n) => env[n] !== undefined);
   if (set.length) {
     throw new AdminError(
