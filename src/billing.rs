@@ -1123,12 +1123,14 @@ pub(crate) async fn rollup_step(
         return Ok(0);
     }
     let t_apply = std::time::Instant::now();
-    rollup
+    let stored = rollup
         .apply_page(&envelopes, &next)
         .await
         .map_err(|e| e.to_string())?;
+    let now = state.runtime.clock.now();
+    state.quotas.stored_table().publish(&stored, now.ms());
     state.runtime.telemetry.rollup_applied(
-        state.runtime.clock.now(),
+        now,
         u64::try_from(t_apply.elapsed().as_millis()).unwrap_or(u64::MAX),
     );
     Ok(envelopes.len())
@@ -1308,10 +1310,8 @@ pub(crate) async fn open_rollup(
         state.runtime.telemetry.cache.clone(),
     )
     .await?;
-    if state.rollup.install(std::sync::Arc::new(r)).is_err() {
-        tracing::warn!("usage rollup already installed; keeping the first");
-    }
-    Ok(())
+    let stored = state.quotas.stored_table();
+    state.rollup.install_published(r, stored).await
 }
 
 #[expect(

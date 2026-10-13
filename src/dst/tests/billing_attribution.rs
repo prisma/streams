@@ -92,7 +92,7 @@ async fn same_name_cross_project_usage_attributes_exactly() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    install_rollup(&state, rollup);
+    install_rollup(&state, rollup).await;
 
     #[derive(serde::Serialize)]
     struct C<'a> {
@@ -310,7 +310,7 @@ async fn invoice_reconciliation_balances_and_detects_corruption() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    install_rollup(&state, rollup);
+    install_rollup(&state, rollup).await;
 
     #[derive(serde::Serialize)]
     struct C<'a> {

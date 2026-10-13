@@ -694,12 +694,23 @@ pub(super) async fn await_published(state: &Arc<crate::http::AppState>, stream: 
     }
 }
 
-/// Installs the rig's rollup consumer; a rig installs it exactly once.
-pub(super) fn install_rollup(state: &crate::http::AppState, rollup: crate::rollup::UsageRollup) {
+/// Installs the rig's rollup consumer as production does, its stored
+/// figures published into admission's table first; a rig installs it
+/// exactly once.
+pub(super) async fn install_rollup(
+    state: &crate::http::AppState,
+    rollup: crate::rollup::UsageRollup,
+) {
     assert!(
-        state.rollup.install(Arc::new(rollup)).is_ok(),
+        !state.rollup.installed(),
         "this rig installs its rollup once"
     );
+    let stored = state.quotas.stored_table();
+    state
+        .rollup
+        .install_published(rollup, stored)
+        .await
+        .unwrap();
 }
 
 /// Installs the rig's read spool; a rig installs it exactly once.

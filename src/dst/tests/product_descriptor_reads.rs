@@ -59,7 +59,7 @@ async fn a_product_descriptor_read_the_store_fails_is_retryable_and_corruption_i
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    install_rollup(&state, rollup);
+    install_rollup(&state, rollup).await;
     let name = "typed-product-read";
     let (status, _, _) = preq(
         addr,

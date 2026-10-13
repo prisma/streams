@@ -278,7 +278,7 @@ pub(super) async fn open_cell(spec: CellSpec) -> Cell {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    install_rollup(&state, rollup);
+    install_rollup(&state, rollup).await;
     let bearers = (0..spec.projects).map(|i| Token::of(i).bearer()).collect();
     let mut cell = Cell {
         svc,
@@ -661,6 +661,21 @@ pub(super) async fn hold_subscriptions(
         out.push((st, code));
     }
     (out, socks)
+}
+
+/// Drain the meters into `_usage` and roll the ledger up to its end.
+pub(super) async fn roll_up(state: &Arc<crate::http::AppState>) {
+    state.billing.reads().seal_if_aged(0);
+    for _ in 0..400 {
+        if crate::billing::drain_once(state).await.unwrap() == 0 {
+            break;
+        }
+    }
+    for _ in 0..400 {
+        if crate::billing::rollup_step(state).await.unwrap() == 0 {
+            break;
+        }
+    }
 }
 
 /// A JSON record padded to about `bytes` bytes.

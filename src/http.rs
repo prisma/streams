@@ -1642,7 +1642,6 @@ async fn billing_readiness_axum(
             "operator bearer required",
         );
     }
-    use std::sync::atomic::Ordering;
     let now = state.runtime.clock.now().ms();
     let (spool_open, quarantined, depth) = state.billing.read_spool_health().await;
     let progress = state.runtime.telemetry.progress();
@@ -1650,7 +1649,8 @@ async fn billing_readiness_axum(
     let last_apply = progress.last_rollup_apply_ms;
     let mut rollup_info = serde_json::json!({ "running": false });
     if let Some(r) = state.rollup.get() {
-        rollup_info = serde_json::json!(r.readiness(now, last_apply).await);
+        let stored = state.quotas.stored_table();
+        rollup_info = serde_json::json!(r.readiness(now, last_apply, stored).await);
     }
     let ready = !state.config.cli.billing_required()
         || (state.billing.usage_key().is_some()
@@ -1667,9 +1667,9 @@ async fn billing_readiness_axum(
         },
         "rollup": rollup_info,
         "artifactContentMismatches":
-            crate::billing::ARTIFACT_MISMATCHES.load(Ordering::Relaxed),
+            crate::billing::ARTIFACT_MISMATCHES.load(std::sync::atomic::Ordering::Relaxed),
         "tombstoneWalkCloseSubmits":
-            crate::billing::WALK_CLOSE_SUBMITS.load(Ordering::Relaxed),
+            crate::billing::WALK_CLOSE_SUBMITS.load(std::sync::atomic::Ordering::Relaxed),
         "openAlerts": state.runtime.ops.open_alerts(),
     }))
     .into_response()

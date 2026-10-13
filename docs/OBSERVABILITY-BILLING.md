@@ -518,10 +518,31 @@ segment/<account>/<project>/<stream-id>/<segment-id> → latest absolute segment
 month/<YYYY-MM>/<account>/<project>/<stream-id>      → per-incarnation monthly rollup
 name/<YYYY-MM>/<account>/<project>/<name-hash>       → aggregate across incarnations
 project/<YYYY-MM>/<account>/<project>                → project aggregate
+stored-seg/<project>/<stream-id>/<segment-id>        → the segment snapshot the stored index counts
+stored/<project>                                     → the project's stored bytes now and written
 corr-pending/... , corr-done/...                     → correction-artifact outbox
 meta/usage-cursor                                    → consumed `_usage` cursor
 meta/oldest-unclosed-month                           → ordered month-close marker
 ```
+
+The two `stored` families are the stored index (stored-cap, edge change
+#NEW-stored-cap-2; `src/rollup/stored_index.rs`). They are keyed by
+project without the account, so a segment a workspace change re-stamped
+counts once, by its latest snapshot (the greater usage version, or the same
+version accounted through a later instant). Each page's batch walks each
+advanced segment's snapshots in that order from the one the index held:
+`stored/<project>.bytes` moves by each step and `written` adds each
+increase, so a page holding several drain rounds of a segment (a rollup
+behind its ledger) writes what one page a round would. A drain round emits
+a segment as it then stands, so bytes stored and freed between two rounds
+of its shard never reach `written`: it bounds the bucket bytes a project
+left behind only as far as a drain round saw them. The rollup step then
+publishes the moved figures into admission's table, and the rollup's
+install publishes every `stored/` row. A database with
+`segment/` rows and no `stored-seg/` row predates the index: its install
+logs an error and is never backfilled. (A `stored-seg/` row with no
+`stored/` row is an index that has seen only gauge-0 snapshots, such as a
+stream created and deleted before any append; it is not reported.)
 
 ### 9.3 Transactional processing
 
@@ -531,6 +552,7 @@ For each `_usage` page, one rollup `WriteBatch` updates:
 - segment state;
 - monthly stream rows;
 - name/project aggregate rows;
+- the stored index's rows;
 - the `_usage` cursor.
 
 The batch is durable before the consumer advances. A crash replays the page safely.

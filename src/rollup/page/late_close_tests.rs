@@ -93,7 +93,7 @@ async fn apply(
     r: &UsageRollup,
     snapshots: impl IntoIterator<Item = SegmentSnapshot>,
     cursor: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<crate::quota::stored::StoredFigure>> {
     let envelopes: Vec<UsageEnvelope> = snapshots
         .into_iter()
         .map(|s| UsageEnvelope {

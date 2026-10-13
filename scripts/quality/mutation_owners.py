@@ -153,6 +153,8 @@ OWNERS = (
     owner('quota_parked', 'src/quota/parked.rs', 'quota::parked:: dst_tests::parked_waits::a_projects_'),
     owner('quota_pressure', 'src/quota/pressure.rs', 'quota::'),
     owner('quota_read_reservation', 'src/quota/read_reservation.rs', 'quota::read_reservation:: dst_tests::read_memory::a_project_at_its_memory_line'),
+    # The stored figures admission reads (stored-cap B3).
+    owner('quota_stored', 'src/quota/stored.rs', 'quota::stored'),
     owner('registry_cache', 'src/registry/cache.rs', 'registry::'),
     # The catalog page's byte bounds (phase B item B5); the owner decided the
     # row on 2026-10-12 (OWNER-DECISIONS-2 X1 (b)).
@@ -343,6 +345,8 @@ OWNERS = (
           'rollup:: dst_tests::billing_usage:: dst_tests::billing_attribution::'),
     owner('rollup_readiness', 'src/rollup/readiness.rs',
           'rollup:: dst_tests::billing_readiness::'),
+    # The rollup's stored index (stored-cap B3).
+    owner('rollup_stored_index', 'src/rollup/stored_index.rs', 'rollup::stored_index'),
     owner('registry_replaced', 'src/registry/replaced.rs',
           'dst_tests::billing_closure_debts:: dst_tests::billing_closure_owners:: '
           'dst_tests::billing_late_close:: dst_tests::fork_debt::'),

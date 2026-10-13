@@ -55,7 +55,7 @@ async fn valid_transfer_bills_each_workspace_on_its_own_side() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    install_rollup(&state, rollup);
+    install_rollup(&state, rollup).await;
     let tok_a = mint_token("c1", "proj-vtx", "ws_vta", 1, 1, "va", 600);
     rig_create(addr, "vtx", &tok_a).await;
     let mut promoter = rig_sse(addr, "vtx", &tok_a, "", None).await;

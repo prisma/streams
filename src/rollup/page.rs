@@ -7,21 +7,23 @@
 use super::{
     AggRow, K_CURSOR, MONTH_CLOSE_CAP, MonthRow, SegmentState, decode_json, get_json, k_month,
     k_name, k_project, k_segment, k_source, month_spans, month_start_ms, next_month, parse_month,
-    read_bytes,
+    read_bytes, stored_index,
 };
 use crate::billing::{
     BillingIdentity, ReadBatch, ReadRow, SegmentSnapshot, UsageCorrection, UsageEnvelope,
     UsagePayload,
 };
+use crate::quota::stored::StoredFigure;
 use slatedb::{Db, WriteBatch};
 use std::collections::HashMap;
 
 /// The only entry point: an application failure cannot reach the consuming commit.
+/// Answers the stored figures the page moved (`stored_index`).
 pub(super) async fn apply(
     db: &Db,
     envelopes: &[UsageEnvelope],
     next_cursor: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<StoredFigure>> {
     let mut page = Page::new(db);
     for envelope in envelopes {
         page.apply(envelope).await?;
@@ -36,6 +38,7 @@ struct Page<'a> {
     months: HashMap<Vec<u8>, MonthRow>,
     segs: HashMap<Vec<u8>, SegmentState>,
     aggregates: HashMap<Vec<u8>, AggRow>,
+    stored: stored_index::Pending,
     writes: WriteBatch,
     now: i64,
 }
@@ -48,6 +51,7 @@ impl<'a> Page<'a> {
             months: HashMap::new(),
             segs: HashMap::new(),
             aggregates: HashMap::new(),
+            stored: stored_index::Pending::default(),
             writes: WriteBatch::new(),
             now: crate::shard::now_ms(),
         }
@@ -101,7 +105,7 @@ impl<'a> Page<'a> {
         Ok(())
     }
 
-    async fn commit(mut self, next_cursor: &str) -> anyhow::Result<()> {
+    async fn commit(mut self, next_cursor: &str) -> anyhow::Result<Vec<StoredFigure>> {
         for (boot, seq) in self.sources {
             self.writes.put(k_source(&boot), seq.to_le_bytes());
         }
@@ -115,9 +119,10 @@ impl<'a> Page<'a> {
         for (key, row) in self.aggregates {
             self.writes.put(key, serde_json::to_vec(&row)?);
         }
+        let stored = self.stored.stage(self.db, &mut self.writes).await?;
         self.writes.put(K_CURSOR, next_cursor.as_bytes());
         self.db.write(self.writes).await?;
-        Ok(())
+        Ok(stored)
     }
 
     /// Append ONE correction to a month row: dedupe by correction_id
@@ -455,6 +460,7 @@ impl<'a> Page<'a> {
             st.stream_name = id.stream_name.clone();
             st.account_id = id.account_id.clone();
             self.segs.insert(skey, st);
+            self.stored.advanced(snap, through);
         }
         advances
     }

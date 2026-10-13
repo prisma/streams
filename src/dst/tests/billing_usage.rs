@@ -454,7 +454,7 @@ async fn usage_pipeline_end_to_end_exactly_once() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    install_rollup(&state, rollup);
+    install_rollup(&state, rollup).await;
 
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     let (st, _, _) = preq(
@@ -690,7 +690,7 @@ async fn ops_metrics_and_alerts_flow() {
         crate::rollup::UsageRollup::open(state.data_store.clone(), "opsflow", &state.config)
             .await
             .unwrap();
-    install_rollup(&state, rollup);
+    install_rollup(&state, rollup).await;
 
     // Two snapshot emissions land in the same minute bucket.
     crate::ops::emit_metrics_once(&state).await.expect("emit 1");
@@ -788,7 +788,7 @@ async fn telemetry_crash_points_and_cost_gates() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "p6", &state.config)
         .await
         .unwrap();
-    install_rollup(&state, rollup);
+    install_rollup(&state, rollup).await;
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     // Three streams, one record each.
     for i in 0..3 {
@@ -968,7 +968,7 @@ async fn read_batches_survive_crash_in_the_spool() {
 async fn the_usage_answer_states_the_read_loss_window_of_the_drain_cadence() {
     let (state, addr) = http_rig(mem()).await;
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config);
-    install_rollup(&state, rollup.await.unwrap());
+    install_rollup(&state, rollup.await.unwrap()).await;
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     let format = br#"{"format":{"kind":"json"}}"#;
     let (st, _, _) = preq(addr, "PUT", "/v1/streams/window", &key, format).await;

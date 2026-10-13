@@ -20,6 +20,7 @@ mod page;
 mod readiness;
 mod reconciliation;
 mod storage;
+mod stored_index;
 mod totals;
 
 use serde::{Deserialize, Serialize};
@@ -380,6 +381,21 @@ impl RollupSlot {
     pub(crate) fn installed(&self) -> bool {
         self.inner.get().is_some()
     }
+
+    /// Publish the database's stored figures into admission's `table`,
+    /// then install it, so admission holds the figures before the slot
+    /// reads as installed. Another install winning is logged, not an error.
+    pub(crate) async fn install_published(
+        &self,
+        rollup: UsageRollup,
+        table: &crate::quota::stored::StoredTable,
+    ) -> anyhow::Result<()> {
+        rollup.publish_stored_into(table).await?;
+        if self.install(Arc::new(rollup)).is_err() {
+            tracing::warn!("usage rollup already installed; keeping the first");
+        }
+        Ok(())
+    }
 }
 
 pub(crate) struct UsageRollup {
@@ -568,11 +584,13 @@ impl UsageRollup {
     }
 
     /// Apply one ledger page and its cursor in one durable transaction.
+    /// Answers the stored figures the page moved, for the caller to publish
+    /// into admission's table once the page is durable (stored-cap B3).
     pub(crate) async fn apply_page(
         &self,
         envelopes: &[UsageEnvelope],
         next_cursor: &str,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Vec<crate::quota::stored::StoredFigure>> {
         page::apply(&self.db, envelopes, next_cursor).await
     }
 

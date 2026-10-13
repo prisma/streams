@@ -63,6 +63,7 @@ use bucket::Bucket;
 pub(crate) mod parked;
 mod pin;
 pub(crate) mod read_reservation;
+pub(crate) mod stored;
 use pin::AdmissionCounters;
 
 pub(crate) struct ProjectAdmission {
@@ -516,6 +517,8 @@ impl Drop for SubscriptionGuard {
 pub(crate) struct QuotaRegistry {
     ops: Arc<crate::ops::OpsService>,
     projects: Arc<Mutex<HashMap<ProjectId, Arc<ProjectAdmission>>>>,
+    /// Each project's stored bytes, as the usage rollup publishes them.
+    stored: stored::StoredTable,
 }
 
 impl QuotaRegistry {
@@ -523,7 +526,13 @@ impl QuotaRegistry {
         Self {
             ops,
             projects: Default::default(),
+            stored: Default::default(),
         }
+    }
+
+    /// The table the usage rollup publishes each project's stored bytes into.
+    pub(crate) fn stored_table(&self) -> &stored::StoredTable {
+        &self.stored
     }
 
     /// A first-seen project's entry, its buckets full at `now_ms`.

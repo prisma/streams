@@ -10,7 +10,7 @@ use super::fixture_auth::rig_sse;
 use super::fixture_cell::{
     Answers, CREATE, Cell, CellSpec, KEYS, Ledger, NAMES, WORKSPACES, append_all, burst,
     cell_scale, error_code, for_each, hold_subscriptions, journal, key_query, marker, open_cell,
-    padded, project, record, seed, workspace,
+    padded, project, record, roll_up, seed, workspace,
 };
 use super::fixture_http::engine_shutdown;
 use super::fixture_livefeed::hub_sse_collect;
@@ -378,21 +378,6 @@ async fn read_every_key_once(cell: &Cell, i: usize) {
         for key in KEYS {
             let path = format!("/v1/streams/{name}/records{}", key_query(key));
             cell.json(i, "GET", &path).await;
-        }
-    }
-}
-
-/// Drain the meters into `_usage` and roll the ledger up to its end.
-async fn roll_up(state: &std::sync::Arc<crate::http::AppState>) {
-    state.billing.reads().seal_if_aged(0);
-    for _ in 0..400 {
-        if crate::billing::drain_once(state).await.unwrap() == 0 {
-            break;
-        }
-    }
-    for _ in 0..400 {
-        if crate::billing::rollup_step(state).await.unwrap() == 0 {
-            break;
         }
     }
 }

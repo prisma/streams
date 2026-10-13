@@ -405,7 +405,7 @@ pub(super) async fn idle_january() -> IdleJanuary {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    install_rollup(&state, rollup);
+    install_rollup(&state, rollup).await;
     let jan15 = month_start_ms(2026, 1) + 14 * DAY;
     set_clock(jan15);
     raw_put(addr, "mx", &[JSON], ROW).await;

@@ -101,7 +101,7 @@ async fn a_usage_stream_id_is_served_only_for_an_incarnation_of_the_url_name() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    install_rollup(&state, rollup);
+    install_rollup(&state, rollup).await;
     let (full, pfx) = bearers(&svc);
     let current = "/v1/streams/a/mine/usage/current";
 
@@ -194,7 +194,7 @@ async fn a_usage_stream_id_is_authorized_by_the_name_the_rollup_recorded() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    install_rollup(&state, rollup);
+    install_rollup(&state, rollup).await;
     let (full, pfx) = bearers(&svc);
 
     stream_with(addr, &full, "a/mine", 1).await;
@@ -267,7 +267,7 @@ async fn project_usage_totals_need_an_unrestricted_stream_grant() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    install_rollup(&state, rollup);
+    install_rollup(&state, rollup).await;
     let (full, pfx) = bearers(&svc);
     stream_with(addr, &full, "a/mine", 1).await;
     stream_with(addr, &full, "b/secret", 3).await;
@@ -299,7 +299,7 @@ async fn a_signed_month_is_refused_on_both_usage_routes() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    install_rollup(&state, rollup);
+    install_rollup(&state, rollup).await;
     let (full, _) = bearers(&svc);
     stream_with(addr, &full, "a/mine", 0).await;
     let routes = [

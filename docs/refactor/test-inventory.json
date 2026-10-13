@@ -1391,7 +1391,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "871564ff755457367db07812822a36ed62286b17c6e69e9ccedf8723660b105b",
+    "function_sha256": "94a77751031a47761c3e0e31944c8ccfa377e1613544c9caa27a9116259d4edb",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/product_descriptor_reads.rs",
@@ -2158,7 +2158,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "3ff987de71b8185ab578a38a8f252b5188ed59304f3d0b8f645b53fc2ff3836e",
+    "function_sha256": "61be139cc9116016bab44f9e26ad11f30c89a7c22eaec9e9195eac63ac6df0d8",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_usage.rs",
@@ -2530,7 +2530,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "c6d56fbe9af01c646e9f821f1e7a4d84fe1de5511c15469f6fd6540cb1e769ea",
+    "function_sha256": "a5c4bb1e4414a7214f65d5177efdd74d451d8d52fda56c181431556db1ec00c9",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_usage.rs",
@@ -2541,7 +2541,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "9584cc1e30152a1df7483c7faf0733f588b07ed2c950908e0ddef5283df801d0",
+    "function_sha256": "0a90b3bdc9dc26a42870c90e89abf8081320ab975a1c17bdd7266237a989ce88",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_usage.rs",
@@ -3146,6 +3146,17 @@
     "scenarios": []
   },
   {
+    "name": "an_opened_rollup_publishes_the_stored_index_it_holds",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "eee130c15a458a9d74cbce55748824efdce8cbe48d368dedb144dda9e9fab968",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_readiness.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_ordering_verdict_keeps_its_intent_until_the_claim_is_abandoned",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -3306,7 +3317,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "14dd839a045d774b835923bfa2b3c68e880b952f07966823da8675ebc09c9fc6",
+    "function_sha256": "5f764750c7a8d844c36b17c1b6a8226f8d3b7263ad15e3d5532b099bcc7ef44d",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_readiness.rs",
@@ -4587,7 +4598,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "cb7be18a0765196422976caff6ba0d660f965083cf69137049164c588547fc3b",
+    "function_sha256": "6e8f6ff897f9decffef27104c3feae330e69ff8815d1ecca4a7209f9b0eb34d1",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_attribution.rs",
@@ -5879,7 +5890,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "ec9128b8ea01f477ee18a52b0cea491e33409e35b6afd8684a42f642ba0e8f59",
+    "function_sha256": "3830f12d5936572514a9ccbe50f72912abf728ccecac9f5019ba3e78facbdaa7",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_usage.rs",
@@ -6620,7 +6631,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "e90b6622deaef749300b15770ee636efb3c2afe2dcc785ac6286fe52ad51ab96",
+    "function_sha256": "fdc512104f18ab2194d8a00234ff9a7797d82cc0e8bd5e34f1733d01dba71703",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_usage.rs",
@@ -7638,7 +7649,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "59adb3f600237320f8633b544fa6e6956ccc257286bc2da60756467e818ace21",
+    "function_sha256": "a3a272121612e4224cbc42f118685474556238c04b66a7f7f9432bd4ebe36075",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_attribution.rs",
@@ -8403,7 +8414,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "077951aea9449ba77e5d2dd7146d8c4b7541f500832cea70cf5ba9b6ac755fe5",
+    "function_sha256": "b9c5ed7e07623368145227b886c63c1052a71965c931b37836a2d1271794a9da",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_usage.rs",
@@ -8586,7 +8597,18 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "84dfe3af0a132d7f85c162dd22ff34b9706b57ae02aca970ad33c1f9baccdcff",
+    "function_sha256": "1a03bf57ba8aeaa035428de919207a4ae36e70438e7c6432f5c27245e1976eba",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_readiness.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_rollup_report_states_the_stored_figures_admission_holds",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "60523e4d0f70a251fe2d34c9d9ffb337f4fd843cacf8cfd6dee9addbf7e08f8e",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_readiness.rs",
@@ -8630,7 +8652,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "ca733d6e64865f9cfea36439f8ab0dbd272f843559be0f9ed92f6ce1da01526e",
+    "function_sha256": "919a940ecde52b4147ce4c094c4f4e84881f950061cc71b8a5549ada62a3db64",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_usage.rs",
@@ -8899,7 +8921,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "00bdc989340c03b510ed6454f446d2ccb249bdce4133afbd7b7b4e816f142f62",
+    "function_sha256": "6d8e238d525b0fb5b15f536947614006b350c5847647f222c822bf658382f107",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_usage.rs",
@@ -8979,7 +9001,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "fb41c74124e869ed166080a95d9e9b4eec0dea41a5786dcebfd605ebaeee9080",
+    "function_sha256": "0a3a220a3d28a860232771fdf69d657b47f4c5cebb81fa370337c8ed1082fbf0",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_subscription.rs",
