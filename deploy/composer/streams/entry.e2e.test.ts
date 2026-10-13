@@ -229,6 +229,15 @@ describe("the bundled entry", () => {
     expect(l.out()).toContain('the platform var "STREAMS_CURSOR_KEY" is unset or empty');
   }, 60_000);
 
+  maybe("serves the generic 500 when a secret is blank (set-secrets --blank on scratch), as when it is missing", async () => {
+    const binary = elf(0x3e, "the release's build");
+    const r = stageRelease(binary, sha256(binary), "scratch", cellLines("scratch", "http://127.0.0.1:9"));
+    const s = { ...secrets(), STREAMS_CURSOR_KEY: "" };
+    const l = launch(r, { ...PLATFORM, ...s, COMPOSER_INPUT: inputDocument("scratch") });
+    await refusedWith(l, "the service's input: secret input is not provisioned", Object.values(s).filter((v) => v !== ""));
+    expect(l.out()).toContain('the platform var "STREAMS_CURSOR_KEY" is unset or empty');
+  }, 60_000);
+
   maybe("serves the generic 500 for a cells file the child environment refuses", async () => {
     const binary = elf(0x3e, "the release's build");
     const lines = cellLines("production", "http://127.0.0.1:9", ["KEEP_AWAKE_UNTIL_MS=1767225600000"]);
