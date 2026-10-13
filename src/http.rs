@@ -657,7 +657,7 @@ async fn track_inflight(
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             [("retry-after", "1"), ("content-type", "application/json")],
-            r#"{"error":{"code":"overloaded","message":"retry"}}"#,
+            r#"{"error":{"code":"overloaded","message":"retry","retryable":true}}"#,
         )
             .into_response();
     }

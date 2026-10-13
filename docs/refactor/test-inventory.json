@@ -8597,7 +8597,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "bc7b80b53945bda1395411969facf6e888c392b1bdba0342e97e407c99f9e44e",
+    "function_sha256": "b5cb7607fc029907bfcd0528ce0fc40defb63ccef10582ecc9f00b0dfd925d97",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_routes.rs",
@@ -8608,7 +8608,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "b9ac68e0069243b2026fb14a162912c6a654afd74187cadc98bcaac985dc0bec",
+    "function_sha256": "65471d5581d5e21dee0dfd2c3d759d16a3344c99c0d4c18ca82c2ae44388133a",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_routes.rs",

@@ -815,7 +815,10 @@ async fn the_survival_refusal_is_marked_as_this_servers_answer() {
     let (st, h, body) = hreq(addr, "POST", "/v1/stream/any", &[ct], b"x").await;
     assert_eq!(
         (st, String::from_utf8_lossy(&body).as_ref()),
-        (503, r#"{"error":{"code":"overloaded","message":"retry"}}"#)
+        (
+            503,
+            r#"{"error":{"code":"overloaded","message":"retry","retryable":true}}"#
+        )
     );
     assert_eq!(
         (
@@ -864,7 +867,7 @@ async fn the_survival_refusal_covers_reads_and_the_product_surface_at_the_defaul
             ),
             (
                 503,
-                r#"{"error":{"code":"overloaded","message":"retry"}}"#,
+                r#"{"error":{"code":"overloaded","message":"retry","retryable":true}}"#,
                 Some("1"),
                 Some("application/json"),
                 Some("dst-instance"),

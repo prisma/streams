@@ -108,8 +108,9 @@ const unknownRows = [
     what: "HTTP 503 http_error",
     cause: { code: "http_error", message: "HTTP 503", retryable: true },
   },
-  // A JSON body without the field: the server's pre-auth survival refusal
-  // (src/http.rs track_inflight) until it carries `"retryable": true`.
+  // A JSON body without the field: the pre-auth survival refusal's body
+  // before SDK-E2. No answer of this server has that shape now, so nothing
+  // says that whoever sent it wrote nothing.
   {
     label: "a 503 whose JSON body names no retryable",
     answer: answer(503, '{"error":{"code":"overloaded","message":"retry"}}', { ...JSON_HEADERS, "retry-after": "1" }),
@@ -242,6 +243,18 @@ for (const op of plainAppends) {
       { ...JSON_HEADERS, "retry-after": "0" })]);
     assert.deepEqual(await op.run(s), JSON.parse(APPENDED));
     assert.equal(calls.length, 2);
+  });
+
+  // The server's pre-auth survival refusal (src/http.rs track_inflight),
+  // answered before any route, so nothing was written (SDK-E2).
+  test(`${op.name}: the pre-auth survival refusal is replayed and the replay succeeds`, async () => {
+    const { s, calls } = stream([answer(503,
+      '{"error":{"code":"overloaded","message":"retry","retryable":true}}',
+      { ...JSON_HEADERS, "retry-after": "0" })]);
+    assert.deepEqual(await op.run(s), JSON.parse(APPENDED));
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].url, calls[0].url);
+    assert.deepEqual(calls[1].body, calls[0].body);
   });
 
   test(`${op.name}: a 429 is replayed and the replay succeeds`, async () => {
