@@ -739,7 +739,7 @@ fn append_code_rows() -> Vec<(crate::application::append::AppendFailure, serde_j
                 "code": "content_type_mismatch", "message": "content type mismatch",
                 "retryable": false}}),
         ),
-        // A group the committer stranded, of a plain append (#NEW-small-1).
+        // A group the committer stranded, of a plain append (#153).
         (
             commit(AppendErr::Moved).answering(false),
             json!({"status": 503, "retryAfter": "1", "error": {

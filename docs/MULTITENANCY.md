@@ -79,7 +79,7 @@
   the contract changes.
 - r9 (2026-10-13, the stored-bytes quota; decided by the owner on
   2026-10-12 in the public-beta calls X3 and S1, and ratified at landing
-  under his X2, edge change #NEW-stored-cap-1): §17.3 — the policy
+  under his X2, edge change #156): §17.3 — the policy
   feed's `quotas` carries `max_stored_bytes`, the stored bytes a project
   may own (`contracts/streams-platform/v1/project-policies.schema.json`
   stays v1: the field is additive and optional). A 0 or absent value
@@ -88,7 +88,7 @@
   refuse the whole feed, so a binary before r9 refuses one carrying the
   field: deploy the binary first, then bundles that carry it. A project
   at its quota is refused new appends `429 stored_bytes_limit` (edge
-  change #NEW-stored-cap-3).
+  change #158).
 
 ---
 
@@ -1368,7 +1368,7 @@ declared quotas are live:
 * `max_live_subscriptions` — SSE subscriptions AND capability watch
   waits draw from the same pool.
 
-*Stored bytes (r9; edge change #NEW-stored-cap-1).* `max_stored_bytes`
+*Stored bytes (r9; edge change #156).* `max_stored_bytes`
 bounds the stored bytes a project may own: its live segments' stored page
 bytes after compression, page headers included (the unit of a stream's
 usage `ownedStoredBytesNow`, edge change #125). It has no shared bound,
@@ -1379,7 +1379,7 @@ and a value the feed sets stands, above the default too.
 `CellCeiling::effective` resolves it when a policy snapshot is published.
 A product append whose project stores at least its quota is refused
 `429 stored_bytes_limit`, not retryable, with the quota and the figure in
-its details (edge change #NEW-stored-cap-3): the first check of the
+its details (edge change #158): the first check of the
 append's queued-bytes charge, so a refusal charges nothing. The figure is
 the one the usage rollup publishes into admission's table after each
 ledger page and at install (`quota::stored`); it trails the store by a

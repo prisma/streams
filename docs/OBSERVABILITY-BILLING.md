@@ -526,7 +526,7 @@ meta/oldest-unclosed-month                           → ordered month-close mar
 ```
 
 The two `stored` families are the stored index (stored-cap, edge change
-#NEW-stored-cap-2; `src/rollup/stored_index.rs`). They are keyed by
+#157; `src/rollup/stored_index.rs`). They are keyed by
 project without the account, so a segment a workspace change re-stamped
 counts once, by its latest snapshot (the greater usage version, or the same
 version accounted through a later instant). Each page's batch walks each

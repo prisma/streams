@@ -253,7 +253,7 @@ async fn owned_now(cell: &Cell, i: usize) -> (usize, u64) {
     (i, usage["ownedStoredBytesNow"].as_u64().unwrap())
 }
 
-/// Stored-cap B3 (edge record #NEW-stored-cap-2): the rollup step
+/// Stored-cap B3 (edge record #157): the rollup step
 /// publishes each project's stored bytes, as the ledger's pages moved
 /// them, into the table admission reads, and the report states that
 /// table: its projects, both totals, when, and the ten that wrote the

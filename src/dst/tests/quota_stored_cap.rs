@@ -1,4 +1,4 @@
-//! Stored-cap B4 (edge change #NEW-stored-cap-3): a project whose stored
+//! Stored-cap B4 (edge change #158): a project whose stored
 //! bytes reach its `max_stored_bytes` quota is refused new appends with
 //! `429 stored_bytes_limit`, by the figure the usage rollup publishes into
 //! admission's table. Its neighbour is not; a restarted server refuses it

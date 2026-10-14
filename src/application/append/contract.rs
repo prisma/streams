@@ -123,7 +123,7 @@ enum AppendConflict {
     Capacity(crate::usage::CapacityRefusal),
     /// Not a conflict: a group the committer stranded (`AppendErr::Moved`)
     /// may have been written, and nothing the command carried lets the
-    /// committer recognise its retry (edge change #NEW-small-1).
+    /// committer recognise its retry (edge change #153).
     OutcomeUnknown,
 }
 

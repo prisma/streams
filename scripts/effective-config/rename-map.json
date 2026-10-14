@@ -79,7 +79,7 @@
       "new": "cli.project_stored_bytes_default",
       "old_semantics": "no stored-bytes quota: the policy feed had no max_stored_bytes (a feed carrying one was refused whole), and a project could own any number of stored bytes",
       "commit": null,
-      "edge_record": "NEW-stored-cap-1"
+      "edge_record": 156
     }
   ],
   "removed": [

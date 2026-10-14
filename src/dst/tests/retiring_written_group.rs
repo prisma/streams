@@ -8,7 +8,7 @@
 //! definitive rejection: retryable where the retry is recognised (a producer
 //! identity, a close), and on the product surface `outcome_unknown`, not
 //! retryable, for a plain append, whose retry would store a second copy
-//! (edge change #NEW-small-1); owed-final obligations are retained; the
+//! (edge change #153); owed-final obligations are retained; the
 //! successor recovers canonical state; retries preserve producer and
 //! idempotency identity. R17-B (`shard::retirement_tests`) pins the engine
 //! half; these scenarios pin what a client and a successor runtime see.
@@ -568,7 +568,7 @@ async fn a_stranded_product_seal_final_stays_owed_and_its_exact_retry_seals_on_t
 /// A plain product append (no producer identity) stranded by its engine's
 /// retirement may have been written, and nothing would recognise its retry
 /// as the same append: it is answered 503 `outcome_unknown`, not retryable,
-/// with `Retry-After: 1` and no cursor (edge change #NEW-small-1), and the
+/// with `Retry-After: 1` and no cursor (edge change #153), and the
 /// successor runtime holds the record exactly once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stranded_plain_product_append_is_answered_outcome_unknown_and_held_once_by_the_successor()

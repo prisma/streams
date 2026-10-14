@@ -3,7 +3,7 @@
 //! runbooks"): cursor progress, close debt and the publication outboxes,
 //! with the monthly artifact outbox split by publishability (bug #7, C1;
 //! edge record #93), and the stored figures admission holds (stored-cap
-//! B3, edge record #NEW-stored-cap-2).
+//! B3, edge record #157).
 
 use super::{K_OLDEST_UNCLOSED, UsageRollup, pending_artifact_row};
 use crate::quota::stored::StoredTable;
