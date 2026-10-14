@@ -24,7 +24,7 @@ and the target for certification. A `FACT` is reported as measured; a
 |---|---|---|
 | `d10-probe` (1) | Deploys [`sigterm-probe/`](sigterm-probe/README.md) into its own stage of the scratch app, redeploys it, then `compute versions stop`s the new version; reads both stops | the probe held the instance awake (`keep_awake=held`, as the kept-awake cell does); a SIGTERM arrives and the process lives at least 30 s after it (the binary's ordered stop bound; the started process's own last line, never its child's); the redeploy runs a new artifact. Facts: PID 1 or not, process or group, seconds to the kill, the child's life after its own SIGTERM (and how far it outlived the main), old/new overlap (any old process's last line) |
 | `d10-cell` (2) | Redeploys the cell under light k2gen load, kept running until `d10.tail_s` (60) after the deploy command returns however long it blocks; reads the old version's stop and the new one's boot; `/health` every 0.5 s | the wrapper's `wrapper received SIGTERM` line, the binary's ordered stop within 30 s, exit 0 with no kill, appends acked after the switch (windows that began after the new build's first `/health` 200 and the old one's SIGTERM) and `k2gen audit` clean (0 acked loss). An old/new overlap (instance clocks, the new process's shard open, clients seeing both boot ids) is a FINDING: F2's fenced-write 500 becomes reachable on one server |
-| `restart` (3) | The SC1-awake redeploys (`restart.count`, default 3, each `commands.restart`: `deploy-release.sh --restart`, a new version of the running release), timed by a raw product client: every 0.25 s a read of `restart.probe_path` (an existing stream: `load.setup` creates the example's, and the leg stops before it probes when that read does not answer 2xx), an append to `restart.append_stream` (created first; so a fenced write's 500 shows) and `/health`, whose boot id says which build answered the tick. Beside it the shipping SDK ([`sdk-probe.mjs`](sdk-probe.mjs), `node` on `sdk/dist`) calls a read, a plain append and a `Producer` append in turn, one at a time, on `restart.sdk.stream`, recording every attempt the SDK makes; the leg stops before the first restart when the probe makes no successful call within `restart.sdk.ready_s` (60 s), naming its error | every tick from a restart's trigger to the next one (or the cooldown's end) answers 2xx or `503` with `Retry-After`, not only those before the first 2xx: Composer's deploys are create-before-delete, so the old build answers after the new one's `listening` line and the switch comes later; the new build answers. D4's bar (owner decision D4 (a) of 2026-10-12, measured as the owner's round-3 call 10 of 2026-10-13 decided): no SDK call fails anywhere in the leg, and across each restart SDK successes come at most 10 s apart (a call the SDK retried for seconds counts as time without service); each FAIL names the path, the SDK's error class and the answer or cause that ended it. Raw clients are without service at most 10 s across the switch too (the longest time between completed all-2xx ticks, so a 2xx that took seconds, such as the new build's first request waiting on its lazy shard open, counts). Facts: when the new build first answered and the old one last did; the SDK's calls by path |
+| `restart` (3) | The SC1-awake redeploys (`restart.count`, default 3, each `commands.restart`: `deploy-release.sh --restart`, a new version of the running release), timed by a raw product client: every 0.25 s a read of `restart.probe_path` (an existing stream: `load.setup` creates the example's, and the leg stops before it probes when that read does not answer 2xx), an append to `restart.append_stream` (created first; so a fenced write's 500 shows) and `/health`, whose boot id says which build answered the tick. Beside it the shipping SDK ([`sdk-probe.mjs`](sdk-probe.mjs), `node` on `sdk/dist`) calls a read, a plain append and a `Producer` append in turn, one at a time, on `restart.sdk.stream`, recording every attempt the SDK makes; the leg stops before the first restart when the probe makes no successful call within `restart.sdk.ready_s` (60 s), naming its error | every tick from a restart's trigger to the next one (or the cooldown's end) answers 2xx or `503` with `Retry-After`, not only those before the first 2xx: Composer's deploys are create-before-delete, so the old build answers after the new one's `listening` line and the switch comes later; the new build answers. D4's bar (owner decision D4 (a) of 2026-10-12, measured as the owner's round-3 call 10 of 2026-10-13 decided): no SDK call fails anywhere in the leg, and across each restart SDK successes come at most 10 s apart (a call the SDK retried for seconds counts as time without service); each FAIL names the path, the SDK's error class and the answer or cause that ended it. Raw clients are without service at most 10 s across the switch too (the longest time between completed all-2xx ticks, so a 2xx that took seconds, such as the new build's first request waiting on its lazy shard open, counts). A plain append cut at the old build's SIGTERM is labelled [the old build's abort](#when-the-sdk-probe-fails) (the serving build's log is read across each restart). Facts: when the new build first answered and the old one last did; when the old build logged its `termination signal`; the SDK's calls by path |
 | `rollback` (4) | older -> newer -> older -> newer under load (each step's load kept until `rollback.tail_s` after its deploy returns), `/health` throughout, `cell-check` and an audit of every ledger so far after each step; then a copy of the last release whose `release.json` names another layout | every step deploys, checks and audits clean and its own build acks appends (windows that began after its boot id first answered `/health`), including the newer build's data read back by the older one (only once the newer build acked some); the cross-layout copy is refused, naming the layout, with the running boot untouched |
 | `oom` (5) | **Scratch only, non-shipping config** (CHAOS-5's recipe: `ADMIT_RSS_SHED_MB=2000`, `ABSORB_GLOBAL_GATHERS=4`, incompressible produce); stops the load at the kill; always redeploys the shipping release after | the wrapper's code-137 exit, a new boot, 0 acked loss, one boot over the stable window (no crash loop). Fact: seconds to the first 2xx. Refuses the production stage and any plan without `oom.scratch: true` |
 | `feeds` (6) | A quiet window, then an admit, a revoke, a malformed bundle and a good republish (operator publish commands) | no failed poll and no rewrite while nothing is published (each poll a 304: the presigned conditional GET works against the store); admit and revoke effects within 45 s (a revoke takes effect only at a 401 or 403 carrying the cell's revocation code, `credential_not_active` or `project_not_active` by default, `feeds.revoked_codes`: a transport failure or a 5xx is no answer); `feeds deleted` after 120-150 s without a good poll; `503 policy_stale` about 300 s after the deletion; service back within 45 s of the good republish |
@@ -33,6 +33,51 @@ and the target for certification. A `FACT` is reported as measured; a
 
 Leg 9, the target's platform export against the two profiles and `cell.env`,
 runs with the effective-config family.
+
+## When the SDK probe fails
+
+Expect the first field run of the restart leg to be red. Any SDK error
+FAILs it (D4: 0 SDK errors), and each of three switch failures makes one,
+each named by the FAIL line's path, error class and answer or cause:
+
+- **A 503 run longer than the SDK's replays.** The SDK replays a 429 or
+  503 at most three times, at min(Retry-After, 5) s. In the overlap of a
+  create-before-delete deploy, once the new build's lazy open has fenced
+  the old engine, the old build answers `shard_closing` with Retry-After
+  1, or `shard_moving` with the holdoff's seconds left (1 to 5).
+  `shard_opening` answers Retry-After 3. A plain append replays a 503
+  only when its body says `"retryable": true`.
+- **The old build's abort.** The binary's stop releases its address and
+  aborts every open connection before its shards close
+  (`src/http/serve.rs`, `src/bootstrap.rs`). A request in flight on the
+  old build at its SIGTERM is a cut connection, never a 503. A read is
+  replayed 1, 2 and 4 s later, and a producer append is replayed with the
+  same sequence, which the server deduplicates. A plain append is never
+  sent again: it rejects at once as `AppendOutcomeUnknownError`. When the
+  cut came within `ABORT_SLACK_S` (1 s) of the old build's `termination
+  signal` line, the FAIL line says **the old build's abort reached a
+  client**. When the old build's stop is not in its log, it says the cut
+  cannot be told. The leg reads the serving build's log across each
+  restart for this.
+- **The edge's own answer when no instance is routable**, such as a 502.
+  The SDK retries only transport failures, 429 and 503, so a 502 is an
+  immediate error on every path.
+
+A red here is as likely the cell's stop posture as the platform's. Its
+fixes are client-visible, so it is a finding for the owner, not a bench
+bug.
+
+For the labelled case the leg keeps the literal bar: any SDK error FAILs
+(the owner's round-3 call 10). The case comes back to the owner, whose
+remedies are one of:
+
+- (i) a drain before the abort in the binary, so requests in flight
+  finish before the connections close: a client-visible edge change the
+  owner ratifies, about 1 d;
+- (ii) the owner amends the bar to count this case as a FINDING.
+
+Nothing is built for either until the owner chooses. Until then the leg
+only reports.
 
 ## The plan
 

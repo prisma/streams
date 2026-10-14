@@ -356,6 +356,7 @@ def restart(ctx: Ctx, ev: dict | None = None) -> dict:
     p = ctx.plan
     ctx.compute.warm()
     known = ctx.versions()
+    serving = ctx.newest()
     path = p.get("restart.probe_path")
     stream = stream_path(p.get("restart.append_stream"))
     made = ctx.cell.product(stream, method="PUT", body=b'{"format":{"kind":"json"}}')
@@ -387,6 +388,10 @@ def restart(ctx: Ctx, ev: dict | None = None) -> dict:
     restarts = ev["restarts"] = []
     for i in range(1, p.get("restart.count", 3) + 1):
         ctx.sleep(p.get("restart.spacing_s", 300) if i > 1 else p.get("restart.warmup_s", 30))
+        # The serving build's log across its stop, read to the leg's end:
+        # its stop aborts every open connection before the shards close, so
+        # a plain append the SDK had in flight then fails (verdicts.aborted).
+        old = ctx.logs(serving, tail_lines=50)
         t = ctx.now()
         r = ctx.run(f"restart-{i}", p.get("commands.restart"), must=False)
         v, lines = None, []
@@ -397,10 +402,15 @@ def restart(ctx: Ctx, ev: dict | None = None) -> dict:
             s.wait_for(has_listen, 300)
             s.close()
             lines = s.snapshot()
-        restarts.append({"t_trigger": t, "t_done": ctx.now(), "rc": r["rc"], "new_version": v, "new_lines": lines})
+        restarts.append({"t_trigger": t, "t_done": ctx.now(), "rc": r["rc"], "new_version": v, "new_lines": lines,
+                         "old_version": serving, "old_lines": old})
+        serving = v or serving
     ctx.sleep(p.get("restart.cooldown_s", 60))
     ev["samples"] = prober.stop()
     ev["sdk"] = sdk.stop()
+    for rs in restarts:
+        rs["old_lines"].close()
+        rs["old_lines"] = rs["old_lines"].snapshot()
     return ev
 
 

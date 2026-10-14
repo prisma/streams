@@ -272,9 +272,12 @@ class Restart(unittest.TestCase):
         return {"t": ms, "t_end": ms + took_ms, "boot": boot,
                 "answers": [answer("read", read), answer("append", read if append is None else append)]}
 
-    def ev(self, ticks, sdk=None, t_stop: int = T0 + 45_000) -> dict:
+    def ev(self, ticks, sdk=None, t_stop: int = T0 + 45_000, old_lines=None) -> dict:
+        """One restart triggered at 10 s: the new build listens at 20 s and
+        the old one logs its `termination signal` at 24.5 s."""
         return {"restarts": [{"t_trigger": T0 + 10_000, "rc": 0, "new_version": "v2",
-                              "new_lines": boot_lines(self.LISTEN - 400, "b2")}],
+                              "new_lines": boot_lines(self.LISTEN - 400, "b2"), "old_version": "v1",
+                              "old_lines": stop_lines(T0 + 24_500) if old_lines is None else old_lines}],
                 "samples": sorted(ticks, key=lambda x: x["t"]), "probe_every_s": 0.25,
                 "sdk": {"t_stop": t_stop, "calls": self.sdk(T0, t_stop) if sdk is None else sdk}}
 
@@ -314,6 +317,7 @@ class Restart(unittest.TestCase):
             "all-2xx ticks; bar 10 s)",
             "FACT restart: restart 1: 6 x 503 with Retry-After while restarting ['503:shard_moving']",
             "PASS restart: restart 1: raw clients saw only 503 with Retry-After",
+            "FACT restart: restart 1: the old build (v1) logged `termination signal` 4.5 s after `listening`",
             "PASS restart: restart 1: SDK successes came at most 0.5 s apart across the switch (bar 10 s)",
             "FACT restart: the SDK probe (sdk/dist) made 90 calls one at a time: 30 reads, 30 plain appends, 30 producer "
             "appends; 0 failed",
@@ -405,6 +409,37 @@ class Restart(unittest.TestCase):
                                              "failed; cause: SocketError: other side closed (UND_ERR_SOCKET))")
         self.assertIn("FAIL restart: the SDK probe made no call: D4's bar is the shipping SDK's (restart.sdk)",
                       lines_of(V.judge_restart(self.ev(self.switch(), []))))
+
+    def test_a_plain_append_cut_at_the_old_builds_sigterm_is_labelled_the_old_builds_abort(self):
+        # The old build's stop aborts every open connection before its
+        # shards close; the SDK never sends a plain append again. Still a
+        # FAIL (any SDK error), labelled so the owner can choose its remedy.
+        cause = "TypeError: fetch failed; cause: SocketError: other side closed (UND_ERR_SOCKET)"
+        unknown = {"class": "AppendOutcomeUnknownError", "status": 0, "code": "outcome_unknown", "cause": cause}
+        what = f"plain append: AppendOutcomeUnknownError (no answer: {cause})"
+
+        def run(cut_at: int, old_lines=None, path="append", error=unknown) -> list:
+            cut = self.call(path, cut_at - 30, [(0, None, 30)], error)
+            sdk = self.sdk(T0, cut_at - 30) + [cut] + self.sdk(cut_at + 300, T0 + 45_000, k0=2)
+            return lines_of(V.judge_restart(self.ev(self.switch(), sdk, old_lines=old_lines)))
+        got = run(T0 + 24_505)
+        self.assertIn("FAIL restart: restart 1: 1 SDK call(s) failed, the first 4.5 s after `listening`: "
+                      f"{what}; the old build's abort reached a client (the old build logged `termination signal` 4.5 s "
+                      "after `listening`)", got)
+        self.assertIn("FACT restart: restart 1: the old build (v1) logged `termination signal` 4.5 s after `listening`", got)
+        self.assertEqual(got[-1], "LEG_FAIL restart")
+        # A cut seconds after the old build's stop is not its abort.
+        self.assertIn(f"FAIL restart: restart 1: 1 SDK call(s) failed, the first 7.5 s after `listening`: {what}",
+                      run(T0 + 27_505))
+        # Without the old build's stop in its log the cut cannot be told.
+        got = run(T0 + 24_505, old_lines=[])
+        self.assertIn(f"FAIL restart: restart 1: 1 SDK call(s) failed, the first 4.5 s after `listening`: {what}; the old "
+                      "build's stop is not in its log, so a cut by its abort cannot be told", got)
+        self.assertIn("FACT restart: restart 1: the old build's stop (v1) is not in its log", got)
+        # A read is replayed after a cut; one that still failed is not labelled.
+        transport = {"class": "StreamsTransportError", "status": 0, "code": "transport_error", "cause": cause}
+        self.assertIn(f"FAIL restart: restart 1: 1 SDK call(s) failed, the first 4.5 s after `listening`: read: "
+                      f"StreamsTransportError (no answer: {cause})", run(T0 + 24_505, path="read", error=transport))
 
     def test_a_new_build_that_never_serves_and_reads_alone_fail(self):
         ticks = [t for t in self.switch() if t["boot"] != "b2"]

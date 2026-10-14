@@ -467,6 +467,31 @@ def judge_restart(ev: dict) -> Report:
 
 #: The SDK probe's calls, made in turn (lifecycle.SdkProbe, sdk-probe.mjs).
 SDK_PATHS = {"read": "read", "append": "plain append", "producer": "producer append"}
+#: The old build's stop releases its address and aborts every open
+#: connection before its shards close (src/http/serve.rs serve_connections,
+#: src/bootstrap.rs: "its connections are already gone"), so a plain
+#: append in flight on it fails in transport within moments of its
+#: `termination signal` line, and the SDK never sends a plain append
+#: again. The slack covers the instance's and the collector's clocks (NTP)
+#: and the stop's own steps. The case still FAILs (any SDK error does); its
+#: remedy is the owner's (README "When the SDK probe fails").
+ABORT_SLACK_S = 1
+ABORTED = "the old build's abort reached a client"
+
+
+def aborted(c: dict, stop: dict) -> bool | None:
+    """Whether a failed SDK call is a plain append cut by the old build's
+    abort at its SIGTERM: no answer (status 0) between its `termination
+    signal` line and its last line, give or take ABORT_SLACK_S. None for
+    such an append when the old build's stop is not in its log."""
+    e = c.get("error") or {}
+    if c.get("path") != "append" or e.get("class") != "AppendOutcomeUnknownError" or e.get("status") != 0:
+        return False
+    if stop["term_t"] is None:
+        return None
+    cut = next((a["end"] for a in reversed(c.get("attempts") or []) if a.get("end") is not None), c["end"])
+    slack = ABORT_SLACK_S * 1000
+    return stop["term_t"] - slack <= cut <= max(stop["last_t"] or 0, stop["term_t"]) + slack
 
 
 def sdk_failure(c: dict) -> str:
@@ -501,6 +526,7 @@ def judge_sdk(r: Report, ev: dict, restarts: list) -> None:
         return
     triggers = [rs["t_trigger"] for rs in restarts]
     listens = [cell_boot_facts(rs.get("new_lines"))["listen_t"] for rs in restarts]
+    stops = [cell_stop_facts(rs.get("old_lines")) for rs in restarts]
 
     def at(t: int, i: int) -> str:
         if i == 0:
@@ -511,13 +537,21 @@ def judge_sdk(r: Report, ev: dict, restarts: list) -> None:
     failed: dict = {}
     for c in calls:
         if not c.get("ok") and not c.get("stopped"):
-            failed.setdefault((sum(1 for x in triggers if x <= c["end"]), sdk_failure(c)), []).append(c)
-    for (i, what), cs in sorted(failed.items(), key=lambda kv: kv[1][0]["end"]):
+            i = sum(1 for x in triggers if x <= c["end"])
+            failed.setdefault((i, sdk_failure(c), aborted(c, stops[i - 1]) if i else False), []).append(c)
+    for (i, what, cut), cs in sorted(failed.items(), key=lambda kv: kv[1][0]["end"]):
+        if cut:
+            what += f"; {ABORTED} (the old build logged `termination signal` {at(stops[i - 1]['term_t'], i)})"
+        elif cut is None:
+            what += "; the old build's stop is not in its log, so a cut by its abort cannot be told"
         r.add("FAIL", f"{f'restart {i}' if i else 'before the first restart'}: {len(cs)} SDK call(s) failed, the first "
                       f"{at(cs[0]['end'], i)}: {what}")
     done = [c["end"] for c in calls if c.get("ok")]
     t_stop = sdk.get("t_stop") or calls[-1]["end"]
     for i, start in enumerate(triggers, 1):
+        old = restarts[i - 1].get("old_version")
+        r.add("FACT", f"restart {i}: the old build ({old}) logged `termination signal` {at(stops[i - 1]['term_t'], i)}"
+              if stops[i - 1]["term_t"] is not None else f"restart {i}: the old build's stop ({old}) is not in its log")
         end = triggers[i] if i < len(triggers) else max(t_stop, start)
         edges = ([e for e in done if e <= start][-1:] or [start]) + [e for e in done if start < e < end] + [end]
         gap, a, b = max(((y - x) / 1000, x, y) for x, y in zip(edges, edges[1:]))

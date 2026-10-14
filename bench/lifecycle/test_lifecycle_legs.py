@@ -278,6 +278,7 @@ class Legs(unittest.TestCase):
         def restart(cmd, subs):
             t = self.clock.now()
             compute.add("v2", boot_lines(t + 3_000, "b2"), at=t + 4_000)
+            compute.add("v1", stop_lines(t + 8_000), at=t + 10_000)
             self.clock.ticks.append(lambda now: boots.append("b2") if now >= t + 9_000 and boots[-1] != "b2" else None)
             return 0, ""
         cell = mock.Mock()
@@ -323,11 +324,16 @@ class Legs(unittest.TestCase):
         self.assertLessEqual(sdk[1]["end"], first["t"])
         self.assertEqual((ctx.shell.stopped, ev["sdk"]["t_stop"]), (["sdk-probe"], self.clock.now()))
         self.assertTrue(all(c["end"] <= ev["sdk"]["t_stop"] for c in sdk[1:]))
+        # The serving build's log, read across its stop to the leg's end.
+        rs = ev["restarts"][0]
+        self.assertEqual((rs["old_version"], V.cell_stop_facts(rs["old_lines"])["term_t"]), ("v1", rs["t_trigger"] + 8_000))
         r = L.judge({"leg": "restart", **ev})
         self.assertTrue(r.ok, r.render())
         self.assertIn("PASS restart: restart 1: raw clients were without service at most 0.3 s across the switch "
                       "(between completed all-2xx ticks; bar 10 s)", r.render())
         self.assertIn("PASS restart: restart 1: SDK successes came at most 0.2 s apart across the switch (bar 10 s)",
+                      r.render())
+        self.assertIn("FACT restart: restart 1: the old build (v1) logged `termination signal` 4.6 s after `listening`",
                       r.render())
 
     def test_restart_stops_before_it_probes_when_its_read_probes_stream_does_not_answer_2xx(self):
