@@ -103,6 +103,11 @@ class World:
         timings = [0.2 + (i % 50) / 100 for i in range(2000)]
         self.h11t = {"leg": "h11t", "pairs": 2000, "rate": 8, "gap_min_ms": 125.0, "names": {"projects": 600, "names": 1800},
                      "differences": 0, "quiet_ms": timings, "never_ms": list(reversed(timings)), "quiet_p50_ms": 0.45, "never_p50_ms": 0.45}
+        # A name used in the last seconds answers from its fresh slot, 20 ms
+        # before a never-held one's store fetch: the gap P4 accepted, a fact.
+        self.h11t_fresh = {"leg": "h11t-fresh", "pairs": 400, "rate": 8, "target": "h11t-target", "differences": 0,
+                           "answers": {"fresh": {"403:watch_unauthorized": 400}, "never": {"403:watch_unauthorized": 400}},
+                           "fresh_ms": timings[:400], "never_ms": [x + 20 for x in timings[:400]], "fresh_p50_ms": 0.45, "never_p50_ms": 20.45}
         self.run = {"projects": 1000, "manifest": "layer-b", "manifest_sha256": shipped_layer_b(), "time_scale": 1,
                     "classes": {c: {"count": v["count"], "role": v["role"], "quotas": "q-hostile" if c == "h1" else "ceilings"}
                                 for c, v in self.classes.items()},
@@ -137,6 +142,8 @@ class World:
         if self.h11t is not None:
             dump(os.path.join(t, "legs", "h11t-0.json"), self.h11t)
         dump(os.path.join(t, "legs", "probes-1.json"), self.probes)
+        if self.h11t_fresh is not None:
+            dump(os.path.join(t, "legs", "h11t-fresh-2.json"), self.h11t_fresh)
         return d
 
     def judge(self) -> dict:
@@ -175,6 +182,7 @@ class LayerB(unittest.TestCase):
             "ceilings": {"compliant": ["app"], "hostile": ["h9", "h9b"], "victim": ["victim"]}, "q-hostile": {"hostile": ["h1"]}}})
         self.assertEqual(m["bars"]["load: the run's manifest is the commit's bench/k2cost/tenants/layer-b.json"]["pass"], True)
         self.assertIn("tenants/legs/h11t-0.json", m["evidence"])
+        self.assertIn("tenants/legs/h11t-fresh-2.json", m["evidence"])
         self.assertEqual(m["bars"]["victim: append p99 under noise"],
                          {"value": {"noisy": 20.0, "solo": 8.0, "loop_lag_p99_ms": 2.0, "harness_bound": False}, "bar": 25.0, "pass": True})
 
@@ -256,6 +264,22 @@ class LayerB(unittest.TestCase):
         self.assertEqual(m["bars"]["H11t: timed pairs (quiet vs never)"],
                          {"value": {"pairs": 2000, "rate": 8, "gap_min_ms": 125.0, "names": {"projects": 600, "names": 1800}, "error": None},
                           "bar": 2000, "pass": True})
+
+    def test_the_fresh_gap_is_a_fact_in_the_manifest_never_a_leg(self):
+        # The owner's round-3 call 9 (a): a name used in the last 5 s against
+        # a never-held one is reported, not judged; 20 ms apart still certifies.
+        m = self.w.judge()
+        self.assertEqual((m["verdict"], sorted(m["legs"])), ("PASS", sorted(LEGS)))
+        f = m["facts"]["H11t-fresh"]
+        self.assertLess(f["ks"]["p"], 1e-10)
+        self.assertEqual({k: v for k, v in f.items() if k != "ks"}, {
+            "pairs": 400, "rate": 8, "target": "h11t-target", "differences": 0, "fresh_p50_ms": 0.45, "never_p50_ms": 20.45,
+            "answers": {"fresh": {"403:watch_unauthorized": 400}, "never": {"403:watch_unauthorized": 400}}, "error": None})
+        # Without the leg the fact is missing, and still nothing is judged on it.
+        self.w.h11t_fresh = None
+        m = self.w.judge()
+        self.assertEqual((m["verdict"], m["facts"]), ("PASS", {"H11t-fresh": None}))
+        self.assertNotIn("tenants/legs/h11t-fresh-2.json", m["evidence"])
 
     def test_a_known_red_leg_fails_and_is_named_never_masked(self):
         m = self.mutated(lambda w: [b["body"].update(rss_mb=325.0) for b in w.loads if b["t"] >= T0 + 100 * MIN], "Q0")

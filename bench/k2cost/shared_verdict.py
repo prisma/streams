@@ -17,7 +17,8 @@ legs (PASS|FAIL each), started_unix, finished_unix, projects; the layer-b
 legs include the three the lead's call 7 names (H9, H9b, H11t). Beside them,
 the fence fields verify_arm will check (triage B9): commit, profile {files,
 sha256, pins, pins_missing}, cell_env_sha256, harness_trees, region; and
-bars {name: {value, bar, pass}}, known_red, evidence {file: sha256}.
+bars {name: {value, bar, pass}}, known_red, facts (measured, never judged:
+H11t-fresh), evidence {file: sha256}.
 
 Known-red legs are judged like any other and reported FAIL: Q0 until its
 fix; known_red only names why. H11t times quiet names against never-held
@@ -290,7 +291,7 @@ def leg_h11t(r: Run, bars: dict) -> bool:
     the residual the owner accepted (P4, 2026-10-12), not judged here. The
     rig's s3lite sleeps the same 20 ms before every op whatever it answers,
     so the bar certifies the server's path, not a real store's 404-versus-200
-    latency."""
+    latency. The fresh gap is the h11t-fresh leg's, a fact (facts())."""
     h = r.legs.get("h11t") or {}
     quiet, never = h.get("quiet_ms") or [], h.get("never_ms") or []
     d, p = ks(quiet, never)
@@ -301,6 +302,23 @@ def leg_h11t(r: Run, bars: dict) -> bool:
     ok &= bar(bars, "H11t: KS p (quiet vs never)", {"p": p, "d": d, "quiet_p50_ms": h.get("quiet_p50_ms"),
               "never_p50_ms": h.get("never_p50_ms")}, f"> {H11T_KS_P_MIN}", p > H11T_KS_P_MIN)
     return ok
+
+
+def facts(r: Run) -> dict:
+    """What the arm measured and does not judge. H11t-fresh: the leg
+    h11t-fresh's pairs, a name its target used in the last few seconds
+    (answered from its fresh descriptor slot without the store) against a
+    never-held name, the gap the owner accepted (P4, 2026-10-12) and asked
+    to see reported (round-3 call 9, (a)); None when the run has no such
+    leg."""
+    h = r.legs.get("h11t-fresh")
+    if h is None:
+        return {"H11t-fresh": None}
+    fresh, never = h.get("fresh_ms") or [], h.get("never_ms") or []
+    d, p = ks(fresh, never) if fresh and never else (None, None)
+    return {"H11t-fresh": {"pairs": min(len(fresh), len(never)), "rate": h.get("rate"), "target": h.get("target"),
+                           "differences": h.get("differences"), "answers": h.get("answers"), "ks": {"d": d, "p": p},
+                           "fresh_p50_ms": h.get("fresh_p50_ms"), "never_p50_ms": h.get("never_p50_ms"), "error": h.get("error")}}
 
 
 def _rss_sheds(r: Run, t0: int, t1: int) -> int | None:
@@ -524,6 +542,7 @@ def layer_b(run_dir: str, repo: str) -> dict:
         "region": r.rig.get("region"),
         "bars": bars,
         "known_red": {k: v for k, v in KNOWN_RED.items() if leg_words.get(k) == "FAIL"},
+        "facts": facts(r),
         "evidence": evidence,
     }
 
@@ -550,6 +569,8 @@ def main(argv: list | None = None) -> int:
         f.write("\n")
     for name, b in m["bars"].items():
         print(f"{'PASS' if b['pass'] else 'FAIL'} {name}: {json.dumps(b['value'], sort_keys=True)[:200]} (bar {b['bar']})")
+    for name, f in m.get("facts", {}).items():
+        print(f"FACT {name}: {json.dumps(f, sort_keys=True)[:200]}")
     print(f"{m['arm']}: {m['verdict']} {json.dumps(m['legs'], sort_keys=True)} -> {out}")
     return 0 if m["verdict"] == "PASS" else 1
 

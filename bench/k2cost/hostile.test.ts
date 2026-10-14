@@ -78,6 +78,7 @@ test("H9 bursts wait out the read debt, H9b's stalled readers finish whole, the 
     legs: [
       { leg: "h11t", at: 0.5, args: { pairs: 150, rate: 1000, target: "quiet" } },
       { leg: "probes", at: 0.5, args: { pairs: 30, rate: 1000, from: "ghost", to: "target" } },
+      { leg: "h11t-fresh", at: 0.5, args: { pairs: 100, rate: 1000, target: "target" } },
     ],
   };
   cell.trace = [];
@@ -123,8 +124,17 @@ test("H9 bursts wait out the read debt, H9b's stalled readers finish whole, the 
     const k = `${w.held ? "held" : "never"} ${w.store ? "store" : "free"}`;
     paths[k] = (paths[k] ?? 0) + 1;
   }
-  expect([paths, cell.watches.length, new Set(timed.filter((w) => w.held).map((w) => `${w.project} ${w.name}`)).size])
-    .toEqual([{ "held store": 150, "never store": 150 }, 300, 6]);
+  expect([paths, new Set(timed.filter((w) => w.held).map((w) => `${w.project} ${w.name}`)).size])
+    .toEqual([{ "held store": 150, "never store": 150 }, 6]);
+  // h11t-fresh: the producing targets' names, used in the last moments,
+  // against never-held ones (a fact, not judged): every never-held name is
+  // fetched from the store; a used name's slot may still be fresh.
+  const f = json(join(out, "legs", "h11t-fresh-2.json"));
+  expect([f.pairs, f.differences, f.answers, f.names, f.fresh_ms.length, f.never_ms.length]).toEqual([100, 0,
+    { fresh: { "403:watch_unauthorized": 100 }, never: { "403:watch_unauthorized": 100 } }, { projects: 2, names: 8 }, 100, 100]);
+  const targets = [ids.target0!, ids.target1!];
+  const used = cell.watches.filter((w) => targets.includes(w.project));
+  expect([cell.watches.length, used.filter((w) => w.held).length, used.filter((w) => !w.held && w.store).length]).toEqual([500, 100, 100]);
   // Every (ghost, target name) once, each a first contact: 3 ghosts x the
   // targets' 4 names (v/00000..v/00003), fewer than the 30 pairs asked.
   const p = json(join(out, "legs", "probes-1.json"));

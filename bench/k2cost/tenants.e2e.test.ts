@@ -11,12 +11,14 @@
 // every path of the real server, every project's meters settle at its
 // ledger, the audit passes every producing project, compliant tenants are
 // never refused, and a hostile tenant at Q-hostile is refused with a code.
-// The hostile legs run too (H9, H9b, the cost mix, H11t, the probes): their
-// answers are checked, and H11t's KS result is printed, not judged (its bar
-// is shared_verdict.py's). H11t times the cold class's quiet names (created
-// at setup, untouched since, so past the cell's 5 s descriptor TTL) against
-// never-held names, as the owner re-specified it (round-3 call 9, (a),
-// 2026-10-13): on the server both take the same budgeted store fetch.
+// The hostile legs run too (H9, H9b, the cost mix, H11t, h11t-fresh, the
+// probes): their answers are checked, and the KS results are printed, not
+// judged (H11t's bar is shared_verdict.py's; h11t-fresh is a fact). H11t
+// times the cold class's quiet names (created at setup, untouched since, so
+// past the cell's 5 s descriptor TTL) against never-held names, as the
+// owner re-specified it (round-3 call 9, (a), 2026-10-13): on the server
+// both take the same budgeted store fetch. h11t-fresh times names the
+// target uses every few seconds, answered from their fresh slots.
 import { afterAll, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -112,10 +114,14 @@ maybe("the tiny Layer B manifest runs clean on the real binary: oracle, meters, 
   const leg = (name: string) => JSON.parse(readFileSync(join(out, "legs", name), "utf8"));
   const h11t = leg("h11t-0.json");
   const probes = leg("probes-1.json");
+  const fresh = leg("h11t-fresh-2.json");
   console.log(JSON.stringify({ h11t: { pairs: h11t.pairs, names: h11t.names, answers: h11t.answers, ks: h11t.ks, quiet_p50_ms: h11t.quiet_p50_ms, never_p50_ms: h11t.never_p50_ms },
+    h11t_fresh: { pairs: fresh.pairs, answers: fresh.answers, ks: fresh.ks, fresh_p50_ms: fresh.fresh_p50_ms, never_p50_ms: fresh.never_p50_ms },
     probes: { pairs: probes.pairs, first_contacts: probes.first_contacts, differences: probes.differences, usage: probes.usage_answers, put: probes.put, examples: probes.examples } }));
   // 300 pairs over the 3 cold projects' 9 quiet names.
   expect([h11t.pairs, h11t.differences, h11t.names]).toEqual([300, 0, { projects: 3, names: 9 }]);
+  // 100 pairs over the h11t-target's 8 names.
+  expect([fresh.pairs, fresh.names]).toEqual([100, { projects: 1, names: 8 }]);
   // Every (prober, target name) once: 2 probers x 13 names in the tiny manifest.
   expect([probes.pairs, probes.first_contacts, probes.differences, probes.put]).toEqual([26, 26, { name: 0, usage: 0 }, { "201": 26 }]);
   const phase = (cls: string, i: number) => JSON.parse(readFileSync(join(out, "projects", plan.projects.find((p) => p.cls.class === cls)!.id, `phase-${i}.ledger.json`), "utf8"));

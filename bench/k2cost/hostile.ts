@@ -1,6 +1,6 @@
 // The hostile legs of the shared-cell harness (deploy-q5 design §3.2;
 // shared-cells PLAN §4.1 "New hostile legs", review-isolation.md H11t),
-// run by tenants.ts: three phase modes a class runs per project, and two
+// run by tenants.ts: three phase modes a class runs per project, and three
 // run-level legs.
 //
 //   h9      64 concurrent 8 MiB reads from the beginning of the project's
@@ -29,6 +29,11 @@
 //                 and code must be identical; the time distributions are
 //                 compared by a two-sample KS test (shared_verdict.py
 //                 recomputes it).
+//   leg h11t-fresh  the same pairs on a --target class that uses its names
+//                 every few seconds: a fresh descriptor slot is answered
+//                 without the store, so these stay apart from never-held
+//                 names (the residual the owner accepted, P4). Reported by
+//                 shared_verdict.py as a fact, never judged.
 //   leg probes    >= --pairs cross-project probes, each a first contact:
 //                 every (prober A, target name) once, A from a class with
 //                 no streams, the name one some B of the --to classes holds.
@@ -343,25 +348,29 @@ function setupNames(env: RunEnv, p: Project): string[] {
   });
 }
 
-export async function h11t(env: RunEnv, leg: LegSpec, signal: AbortSignal): Promise<Record<string, unknown>> {
+/** The timed pairs of legs h11t (`side` quiet: the target class's names
+ * sit untouched after its setup) and h11t-fresh (`side` fresh: the target
+ * uses its names every few seconds): a name of the target against a name
+ * never created in the same project. */
+async function timedPairs(env: RunEnv, leg: LegSpec, signal: AbortSignal, side: "quiet" | "fresh"): Promise<Record<string, unknown>> {
   const pairs = Number(arg(leg, "pairs", "2000"));
   const rate = Number(arg(leg, "rate", "8"));
-  const cls = arg(leg, "target", "cold");
+  const cls = arg(leg, "target", side === "quiet" ? "cold" : "h11t-target");
   const targets = classProjects(env, cls);
-  const rng = new Rng(Number(arg(leg, "seed", String(env.plan.manifest.seed))), 11);
-  // The quiet names are what the target's setup recorded as created, never
-  // names derived from the manifest: a setup that failed or wrote other
-  // names would leave those uncreated, and an uncreated name timed against
-  // a never-held one matches by construction. Pairs take them in a seeded
+  const rng = new Rng(Number(arg(leg, "seed", String(env.plan.manifest.seed))), side === "quiet" ? 11 : 17);
+  // The names are what the target's setup recorded as created, never names
+  // derived from the manifest: a setup that failed or wrote other names
+  // would leave those uncreated, and an uncreated name timed against a
+  // never-held one matches by construction. Pairs take them in a seeded
   // shuffle, each timed once before any is timed twice.
-  const quiet = targets.flatMap((p) => setupNames(env, p).map((n): [Project, string] => [p, n]));
-  if (!quiet.length) {
+  const named = targets.flatMap((p) => setupNames(env, p).map((n): [Project, string] => [p, n]));
+  if (!named.length) {
     const n = `${targets.length} project${targets.length === 1 ? "" : "s"}`;
-    throw new Error(`h11t: the setup of class ${cls} recorded no stream it created (${n}), so there is no quiet name to time`);
+    throw new Error(`${leg.leg}: the setup of class ${cls} recorded no stream it created (${n}), so there is no ${side} name to time`);
   }
-  for (let i = quiet.length - 1; i > 0; i--) {
+  for (let i = named.length - 1; i > 0; i--) {
     const j = rng.int(i + 1);
-    [quiet[i], quiet[j]] = [quiet[j]!, quiet[i]!];
+    [named[i], named[j]] = [named[j]!, named[i]!];
   }
   const anon = async (path: string): Promise<{ ms: number; ans: string }> => {
     const t0 = performance.now();
@@ -375,9 +384,9 @@ export async function h11t(env: RunEnv, leg: LegSpec, signal: AbortSignal): Prom
     }
     return { ms: performance.now() - t0, ans };
   };
-  const quietMs: number[] = [];
+  const namedMs: number[] = [];
   const neverMs: number[] = [];
-  const answers = { quiet: {} as Record<string, number>, never: {} as Record<string, number> };
+  const answers: Record<string, Record<string, number>> = { [side]: {}, never: {} };
   let differences = 0;
   const examples: string[] = [];
   // At most `rate` pairs a second: a pair starts no sooner than 1000/rate
@@ -394,28 +403,31 @@ export async function h11t(env: RunEnv, leg: LegSpec, signal: AbortSignal): Prom
     if (last !== null) gapMin = Math.min(gapMin, start - last);
     last = start;
     due = start + 1000 / rate;
-    const [b, name] = quiet[i % quiet.length]!;
+    const [b, name] = named[i % named.length]!;
     const path = (n: string) => `/v1/streams/${encName(n)}/watches/w/keys/0000000000000000?cap=${encodeURIComponent(b.id)}.x&timeoutMs=0`;
     const first = rng.next() < 0.5;
     const one = first ? await anon(path(name)) : null;
     const two = await anon(path(`never/${env.plan.manifest.name}-${i}`));
     const q = one ?? (await anon(path(name)));
-    quietMs.push(q.ms);
+    namedMs.push(q.ms);
     neverMs.push(two.ms);
-    bump(answers.quiet, q.ans);
-    bump(answers.never, two.ans);
+    bump(answers[side]!, q.ans);
+    bump(answers.never!, two.ans);
     if (q.ans !== two.ans) {
       differences++;
-      if (examples.length < 5) examples.push(`pair ${i}: quiet ${q.ans}, never ${two.ans}`);
+      if (examples.length < 5) examples.push(`pair ${i}: ${side} ${q.ans}, never ${two.ans}`);
     }
   }
   return {
-    pairs: quietMs.length, rate, gap_min_ms: Number.isFinite(gapMin) ? round3(gapMin) : null, target: cls,
-    names: { projects: new Set(quiet.map(([p]) => p.id)).size, names: quiet.length },
-    answers, differences, examples, ks: ks(quietMs, neverMs), quiet_p50_ms: pct(quietMs, 0.5), never_p50_ms: pct(neverMs, 0.5),
-    quiet_ms: quietMs.map(round3), never_ms: neverMs.map(round3),
+    pairs: namedMs.length, rate, gap_min_ms: Number.isFinite(gapMin) ? round3(gapMin) : null, target: cls,
+    names: { projects: new Set(named.map(([p]) => p.id)).size, names: named.length },
+    answers, differences, examples, ks: ks(namedMs, neverMs),
+    [`${side}_p50_ms`]: pct(namedMs, 0.5), never_p50_ms: pct(neverMs, 0.5), [`${side}_ms`]: namedMs.map(round3), never_ms: neverMs.map(round3),
   };
 }
+
+export const h11t = (env: RunEnv, leg: LegSpec, signal: AbortSignal) => timedPairs(env, leg, signal, "quiet");
+export const h11tFresh = (env: RunEnv, leg: LegSpec, signal: AbortSignal) => timedPairs(env, leg, signal, "fresh");
 
 const VOLATILE = /^(date|content-length|x-streams-.*|.*request-id.*|traceparent|server-timing)$/;
 function shape(r: Resp, masks: string[]): string {
@@ -493,4 +505,4 @@ export async function probes(env: RunEnv, leg: LegSpec, signal: AbortSignal): Pr
 }
 
 export const HOSTILE_MODES = { h9, h9b, cost };
-export const HOSTILE_LEGS = { h11t, probes };
+export const HOSTILE_LEGS = { h11t, "h11t-fresh": h11tFresh, probes };

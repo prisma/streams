@@ -487,6 +487,16 @@
     "from": "cold-none",
     "to": "warm,victim,h11t-target"
    }
+  },
+  {
+   "leg": "h11t-fresh",
+   "at": 100,
+   "secs": 40,
+   "args": {
+    "pairs": 100,
+    "rate": 8,
+    "target": "h11t-target"
+   }
   }
  ]
 }

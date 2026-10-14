@@ -51,6 +51,7 @@ export const EXTRA_MODES: Record<string, string[]> = {
 };
 export const LEG_ARGS: Record<string, string[]> = {
   h11t: ["pairs", "rate", "target", "seed"],
+  "h11t-fresh": ["pairs", "rate", "target", "seed"],
   probes: ["pairs", "rate", "from", "to", "seed"],
 };
 

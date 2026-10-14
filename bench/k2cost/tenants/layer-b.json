@@ -748,7 +748,7 @@
    "role": "compliant",
    "streams": 16,
    "prefix": "u/",
-   "comment": "a busy target: 10 appends/s over 16 streams, so each name is used every few seconds",
+   "comment": "the h11t-fresh target: 10 appends/s over 16 streams, so each name is used every few seconds",
    "phases": [
     {
      "mode": "setup",
@@ -834,6 +834,16 @@
     "rate": 10,
     "from": "cold-none",
     "to": "warm,victim,s0,h11t-target"
+   }
+  },
+  {
+   "leg": "h11t-fresh",
+   "at": 3300,
+   "secs": 120,
+   "args": {
+    "pairs": 400,
+    "rate": 8,
+    "target": "h11t-target"
    }
   }
  ]

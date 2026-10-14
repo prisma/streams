@@ -18,7 +18,7 @@ ratchet here is 1,000 lines per file; the s3lite census it reads (C2) is
 | `points/*.env` | one tiny smoke point and one full-scale point per design run (L0, L1, L2, L3, L5, L6, L7) |
 | `oracle.ts` | the shared-cell leak oracle: a `--payload oracle` record names its project and carries a MAC under that project's harness key, which the server never sees. Every read path (pages, long-polls, SSE, pulls, churn's read-back, the audit) counts each record it is delivered as `oracle_ok`, `oracle_foreign` (another project's record: a leak), `oracle_bad_mac` (corruption) or `oracle_unmarked`. Only a generator that names an owner writes it (`tenants.ts`) |
 | `tenants.ts` (+ `tenant-plan.ts`, `tenants/*.json`) | the shared-cell harness's multi-project driver: a tenants manifest of classes, counts, quotas and phases, every project on k2gen's own modes under its own token (below) |
-| `hostile.ts` | the hostile legs `tenants.ts` runs: phase modes `h9`, `h9b`, `cost` and run-level legs `h11t`, `probes` (below) |
+| `hostile.ts` | the hostile legs `tenants.ts` runs: phase modes `h9`, `h9b`, `cost` and run-level legs `h11t`, `h11t-fresh`, `probes` (below) |
 | `shared_verdict.py` (+ `test_shared_verdict.py`) | the Q5 arms' bars and the arm manifest the single-cell RC gate reads (below) |
 | `run-shared.sh` (+ `../docker/Dockerfile.rig`, `test_run_shared.py`) | the Layer B rig: one shared cell from a release directory in a linux/amd64 container at 1 vCPU / 1 GiB, s3lite at 20 ms, a tenants manifest, the verdict (below) |
 | `tenants-admit.ts` | the manifest's projects onto a cell-admin cell (its own CLI's `init` and `admit`, each with its class's quota set), the token map (12 h tokens, re-minted every 8 h, optionally uploaded), and the bundle's publication |
@@ -437,7 +437,7 @@ mode (`setup`, `produce`, `walk`, `tail`, `group`, `churn`, `subs`) or
 and bounded by `secs`. Every project of the class runs every phase, in the
 same process, under its own token and its own record key, and writes
 oracle records (`oracle.ts`), so every read is checked for leaks. Three
-more phase modes and two run-level legs are the hostile legs (`hostile.ts`):
+more phase modes and three run-level legs are the hostile legs (`hostile.ts`):
 
 | Mode or leg | What it does |
 |---|---|
@@ -445,6 +445,7 @@ more phase modes and two run-level legs are the hostile legs (`hostile.ts`):
 | `h9b` | `--readers` raw GETs of an 8 MiB page that stall after the response headers for `--hold-secs` (the server's response buffers stay full), then resume and read to the end: statuses, bytes before the stall, resets during the hold, early graceful closes, bodies cut short |
 | `cost` | the cost-hostile mix at `--rate`: catalog reads, creates of new names, reads of names that never existed, a usage read of a project not its own; answers per kind |
 | leg `h11t` | `--pairs` timed pairs on the anonymous capability path (`GET …/watches/w/keys/<16 hex>?cap=<B>.x`): a quiet name against a name that never existed in the same project, in random order, at most `--rate` pairs a second: a pair starts at least 1000/rate ms after the one before it, and never sooner to catch up after a stall (`gap_min_ms` is the shortest gap). A quiet name is one the `--target` class's setup created and nothing touched since, so its descriptor slot on the cell is past its 5 s TTL; the names are those the target's setup ledgers record as created (`setup.names`), never names derived from the manifest, and a target whose setup recorded none fails the leg (a quiet name nobody created would match a never-held one by construction). The manifest check refuses an `h11t` target that runs anything besides setup. Answers must be identical; the timings go to `shared_verdict.py`'s KS test |
+| leg `h11t-fresh` | the same pairs, paced the same, on a `--target` class that uses its names every few seconds (from its setup record too): a name used in the last 5 s against a never-held one. The server answers the first from its fresh descriptor slot without the store, so the two stay apart: the residual the owner accepted (P4), which `shared_verdict.py` reports as a fact and never judges |
 | leg `probes` | up to `--pairs` cross-project probes from a class with no streams (`--from`) to the classes `--to`, each a first contact: every (prober A, target name) once, in seeded random order. A reads a stream only B has against a name nobody has (status, code, header names and the masked body must match), B's usage against a never-placed project's, and then creates B's name in its own namespace (201) and deletes it; A never reads that name again. `first_contacts` (the distinct pairs read) is the bar's value, `available` the probers times the names (layer-b: 139 x 21 = 2,919) | A reader
 phase embeds no producer and a produce phase never repeats, so the audit
 can replay every acked record.
@@ -458,7 +459,7 @@ bun bench/k2cost/tenants.ts audit --manifest M --base URL --token-map F --out DI
 
 | Manifest | What |
 |---|---|
-| `tenants/layer-b.json` | Layer B on the single-server shape, 1,000 projects: S0 ×8, S1 ×8, S2 ×12, S3s ×4 (100 SSE subscribers each), N0 ×8, the victim, H1-H8 at Q-hostile and again at the cell's k ceilings, the cost-hostile tenant, H9 and H9b, a busy target (10 appends a second over 16 streams), 200 warm idle (about 1 MiB each) and cold idle (3 empty streams, or none). Setup 0-600 s, the compliant classes 600-4,200 s, the hostile ones from 1,800 s, H11t (2,000 pairs at 8 a second on the cold class's quiet names, its own 360 s window) 2,040-2,400 s, H9 2,400-3,000 s, H9b 3,000-3,300 s, the probes (2,000 pairs) from 3,600 s; the victim's periods `solo` 900-1,800 s and `noisy` 2,100-4,200 s. Writers stop 60 s before the readers of their window |
+| `tenants/layer-b.json` | Layer B on the single-server shape, 1,000 projects: S0 ×8, S1 ×8, S2 ×12, S3s ×4 (100 SSE subscribers each), N0 ×8, the victim, H1-H8 at Q-hostile and again at the cell's k ceilings, the cost-hostile tenant, H9 and H9b, the h11t-fresh target (10 appends a second over 16 streams), 200 warm idle (about 1 MiB each) and cold idle (3 empty streams, or none). Setup 0-600 s, the compliant classes 600-4,200 s, the hostile ones from 1,800 s, H11t (2,000 pairs at 8 a second on the cold class's quiet names, its own 360 s window) 2,040-2,400 s, H9 2,400-3,000 s, H9b 3,000-3,300 s, h11t-fresh (400 pairs, a fact) 3,300-3,420 s, the probes (2,000 pairs) from 3,600 s; the victim's periods `solo` 900-1,800 s and `noisy` 2,100-4,200 s. Writers stop 60 s before the readers of their window |
 | `tenants/layer-b-tiny.json` | Layer B's classes and legs, one project per class (three warm, three cold, two with no stream), about 4 min: for building the harness. `tenants.e2e.test.ts` runs it on the real binary (`TENANTS_E2E_BIN_DIR=target/release`) |
 
 Admission and tokens (operator side, where the cell's signing key is):
@@ -488,7 +489,7 @@ and soon after a 401. Outputs under `--out`:
 | `classes.json` | per class: totals, error codes, refusals (`typed` by code, `untyped` by status, `transport`), latency over the whole run (`run`) and over each manifest period |
 | `projects/<id>/phase-<i>.ledger.json` | k2gen's ledger of each phase (the audit's `--expect`) |
 | `projects/<id>/ledger.json` | the project's totals, oracle counts, error codes and refusals |
-| `legs/<leg>-<i>.json` | a run-level leg's result (`h11t`: the quiet names' count, answers, differences, the pacing, the quiet and never timing samples and their KS, or the error that stopped it; `probes`: pairs, differences, examples, answers) |
+| `legs/<leg>-<i>.json` | a run-level leg's result (`h11t`: the quiet names' count, answers, differences, the pacing, the quiet and never timing samples and their KS, or the error that stopped it; `h11t-fresh`: the same with fresh samples; `probes`: pairs, differences, examples, answers) |
 | `usage.json` | `usage`: every project's meters (`GET /v1/projects/{p}/usage`) polled until they reach its ledger and two polls agree |
 | `audit.json` | `audit`: every project's produced streams read back record for record against its produce ledgers, with the oracle's counts |
 
@@ -504,7 +505,9 @@ python3 -m unittest discover -s bench/k2cost -p 'test_*.py'
 the manifest `scripts/rc-certify.sh --shape single-cell` reads (arm,
 `server_sha256`, verdict, legs, run window, projects; docs/OPS-RELEASE.md
 §7) plus the fence fields: commit, the profiles' sha256s and pins,
-`cell_env_sha256`, the harness trees, the region, every bar's value. The
+`cell_env_sha256`, the harness trees, the region, every bar's value, and
+`facts`, what the run measured and nothing judges (`H11t-fresh`: its pairs,
+answers and the fresh-versus-never KS, or null without the leg). The
 layer-b legs: `H9`, `H9b` (each ran, 0 `admit_shed_rss` in its window),
 `H11t` (2,000 quiet-versus-never pairs, identical answers, KS p > 0.01:
 the owner's round-3 call 9, (a), 2026-10-13; see below), `leaks` (0 foreign,
@@ -540,7 +543,8 @@ both take that GET, so their answers must be identical and their times
 must not tell them apart; a regression that answers an expired slot
 without the store fails the KS bar. A name used in the last 5 s is answered
 from its fresh slot, faster than a never-held one: the residual the owner
-accepted (P4, 2026-10-12, edge record #141's "Given up"), not judged here.
+accepted (P4, 2026-10-12, edge record #141's "Given up"), measured by the
+`h11t-fresh` leg and reported in the manifest's `facts`, never judged.
 The rig's s3lite sleeps the same 20 ms before every operation whatever it
 answers (`--latency-ms`), so the bar certifies the server's path only: a
 real store's latency difference between a 404 and a 200 is invisible to
