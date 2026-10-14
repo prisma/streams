@@ -124,7 +124,7 @@ describe("creating a project", () => {
     const cell = await allowedCell();
     const m = await managed(cell);
     const a = m.signIn("ws_a");
-    expect((await m.get(PROJECTS, a)).status).toBe(200); // the allow-list is read and kept 5 s
+    expect((await m.get("/auth/session", a)).status).toBe(200); // the allow-list is read and kept 5 s
     const unavailable = (detail: string) => [503, refusal("issuer_unavailable", "the issuer cannot reach the cell's state; retry shortly"), "5", detail];
     const outcome = async (res: Response) => {
       const [status, body] = await answer(res);

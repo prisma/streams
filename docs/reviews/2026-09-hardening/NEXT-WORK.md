@@ -166,9 +166,8 @@ alongside and finish before admission opens.
      a sweep, before 2027-11 (`deploy/issuer/audit.ts`);
    - owner calls issuer #1 (offboarding a suspended project) and issuer
      #2 (a workspace taken off the allow-list), decided on 2026-10-13 as
-     calls 15 ((iv), a canary witness) and 16 ((b), a reduced mode); 15
-     built in round 4, 16 to be built ("Decided 2026-10-13, to be
-     built", below);
+     calls 15 ((iv), a canary witness) and 16 ((b), a reduced mode); both
+     built in round 4 ("Decided 2026-10-13, to be built", below);
    - found by the stack review of 2026-10-13, open: `cell-admin
      credential` drops its staged secret when a state save's outcome is
      unknown (eea3f381, "Not covered"); closed in round 4: a drain's one
@@ -439,7 +438,13 @@ re-record at landing covers it too.
   flight, must mint its catalog-read canary tokens per probe too
   (`deploy/cell-admin/README.md`, "Offboarding a suspended project").
 - Call 16: an off-list workspace's reduced mode, with #151, #152,
-  WIRE-MATRIX and the page amended (item 3).
+  WIRE-MATRIX and the page amended (item 3). Built in round 4
+  (#NEW-r4-issuer-1): only a project create, a credential create and a
+  rotation read the allow-list (403 `workspace_not_allowed` off it);
+  sign-in admits a workspace off the list while the issuer's state copy
+  shows it holding a project (`unavailable` while that copy is stale);
+  `GET /auth/session` says `allowListed`, and the page shows the reduced
+  mode.
 
 ### Decided 2026-10-14, to be built
 

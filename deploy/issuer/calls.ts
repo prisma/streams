@@ -41,6 +41,11 @@ export interface Call extends Asker {
   req: Request;
   /// The path's ids, decoded.
   ids: string[];
+}
+
+/// A call that gives the workspace something new (a project, a credential
+/// or a secret), which only a workspace on the allow-list makes.
+export interface GrowthCall extends Call {
   /// The session's workspace's allow-list entry.
   entry: AllowEntry;
 }

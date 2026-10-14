@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { cleanup, run } from "../cell-admin/test-rig";
-import { issuerCell, managed } from "./rig";
+import { fakeS3, issuerCell, managed } from "./rig";
 import { csrfToken, readSession } from "./session";
 
 afterEach(cleanup);
@@ -59,9 +59,17 @@ describe("the issuer's page", () => {
       expect(script).toMatch(new RegExp(`\\n\\s+${code}: "[^"]+",\\n`));
     }
     expect(script).toContain("is not on the Prisma Streams beta's allow-list");
-    // Off the list (I8 (a)), its projects run on, but nothing here manages them.
-    expect(script).toContain("If this workspace has Streams projects, they keep running and their credentials keep working");
-    expect(script).toContain("to revoke a credential or delete a project, ask the Prisma Streams team.");
+    // Off the list (the owner's call 16), a workspace that still has
+    // projects keeps a reduced mode: it sees them, revokes and deletes,
+    // and is offered no create and no rotation.
+    expect(script).toContain("Its projects keep running and their credentials keep working.");
+    expect(script).toContain("Here you can see them, revoke a credential and delete a project.");
+    expect(script).toContain("main.replaceChildren(reducedCard(), ...projects.map(projectCard))");
+    expect(script).toContain('...(p.status === "active" && session.allowListed ? [newCredentialForm(p, list)] : []));');
+    expect(script).toContain("if (session.allowListed) actions.append(rotateButton(p, c, list), \" \");");
+    expect(script).toContain("session.allowListed = false;");
+    expect(script).not.toContain("to revoke a credential or delete a project, ask");
+    expect(html).toContain("A workspace taken off the list keeps its projects running");
     expect(script).toContain("The Prisma Streams beta is at capacity");
     expect(html).toContain("There is no role check during the beta");
     // The SDK snippet: the credential in the environment, this issuer's origin.
@@ -79,7 +87,7 @@ describe("the issuer's page", () => {
 });
 
 describe("GET /auth/session", () => {
-  test("tells the page who is signed in and the CSRF value its changes send", async () => {
+  test("tells the page who is signed in, whether its workspace is on the allow-list, and the CSRF value its changes send", async () => {
     const cell = await issuerCell();
     const m = await managed(cell);
     const cookie = m.signIn("ws_a");
@@ -87,17 +95,30 @@ describe("GET /auth/session", () => {
     const sid = readSession(m.cfg.sessionKey, new Request("https://issuer.example.com/", { headers: { cookie } }), m.clock.t)!.sid;
     expect([res.status, res.headers.get("cache-control"), res.headers.get("x-content-type-options"), await res.json()]).toEqual([
       200, "no-store", "nosniff",
-      { userId: "usr_ws_a", email: "owner@ws_a.example.com", workspaceId: "ws_a", csrfToken: csrfToken(m.cfg.sessionKey, sid) },
+      {
+        userId: "usr_ws_a", email: "owner@ws_a.example.com", workspaceId: "ws_a", allowListed: false,
+        csrfToken: csrfToken(m.cfg.sessionKey, sid),
+      },
     ]);
     expect(res.headers.get("access-control-allow-origin")).toBeNull();
-    // The value it gives is the one a change needs.
+    // The list is read at most every 5 s; the value it gives is the one a
+    // change needs.
     expect((await run("allow", "--state", cell.state, "--workspace", "ws_a")).code).toBe(0);
-    const { csrfToken: token } = await (await m.get("/auth/session", cookie)).json();
+    m.clock.t += 5_001;
+    const { allowListed, csrfToken: token } = await (await m.get("/auth/session", cookie)).json();
+    expect(allowListed).toBe(true);
     const created = await m.call("POST", "/v1/workspaces/ws_a/streams/projects", cookie, {
       body: JSON.stringify({ displayName: "app" }),
       headers: { "content-type": "application/json", "x-csrf-token": token },
     });
     expect(created.status).toBe(201);
+    // It cannot say while the list cannot be read.
+    m.clock.t += 5_001;
+    fakeS3().failReads = true;
+    const down = await m.get("/auth/session", cookie);
+    expect([down.status, down.headers.get("retry-after"), await down.json()]).toEqual([
+      503, "5", { error: { code: "issuer_unavailable", message: "the issuer cannot read the beta's allow-list; retry shortly" } },
+    ]);
   });
 
   test("answers 401 without a session, and takes from the session's budget", async () => {

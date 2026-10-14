@@ -7,7 +7,7 @@ import { AdminError } from "../cell-admin/errors";
 import { cleanup, fakeS3, run } from "../cell-admin/test-rig";
 import { readConfig } from "./config";
 import { MockIdp, type MockPrincipal } from "./mock-idp";
-import { envWith, ISSUER_ORIGIN, type IssuerCell, issuerCell, managed } from "./rig";
+import { admin, envWith, ISSUER_ORIGIN, type IssuerCell, issuerCell, managed } from "./rig";
 import { readSession } from "./session";
 
 const idps: MockIdp[] = [];
@@ -161,16 +161,51 @@ describe("signing in with Prisma", () => {
     expect(idp.calls.me).toBe(cases.length);
   });
 
-  test("refuses a workspace off the beta's allow-list, and answers unavailable while the allow-list cannot be read", async () => {
+  test("refuses a workspace off the beta's allow-list that holds no project, and answers unavailable while the allow-list cannot be read", async () => {
     const cell = await issuerCell();
-    const { m } = await withIdp(cell);
+    const { idp, m } = await withIdp(cell);
     refusedWith(await signIn(m), "workspace_not_allowed");
+    expect(m.logs.at(-1)).toBe(
+      "sign-in refused (workspace_not_allowed): workspace ws_dev is not on the beta's allow-list and holds no Streams project",
+    );
+    // The canary's project is never a user's.
+    idp.principal = { ...idp.principal, workspace: { id: "streams-issuer-canary", name: "Canary" } };
+    refusedWith(await signIn(m), "workspace_not_allowed");
+    idp.principal = { ...idp.principal, workspace: { id: "ws_dev", name: "Dev" } };
     await allow(cell, "ws_dev");
     m.clock.t += 5_001;
     expect((await signIn(m)).headers.get("location")).toBe("/");
     m.clock.t += 5_001;
     fakeS3().failReads = true;
     refusedWith(await signIn(m), "unavailable");
+  });
+
+  test("admits a workspace off the allow-list that still holds a project, in the reduced mode, and answers unavailable while its copy of the state is stale", async () => {
+    const cell = await issuerCell();
+    const { m } = await withIdp(cell);
+    await admin(cell, "admit", "--project", "sp_dev", "--workspace", "ws_dev");
+    await m.cache.refresh();
+    const res = await signIn(m);
+    expect(res.headers.get("location")).toBe("/");
+    expect(m.logs.at(-1)).toBe("signed in user usr_dev to workspace ws_dev, off the beta's allow-list (reduced mode)");
+    const cookie = cookiesOf(res)[0].split(";")[0];
+    expect(await (await m.get("/auth/session", cookie)).json()).toMatchObject({ workspaceId: "ws_dev", allowListed: false });
+    const listed = await (await m.get("/v1/workspaces/ws_dev/streams/projects", cookie)).json();
+    expect(listed.projects.map((p: any) => [p.id, p.status])).toEqual([["sp_dev", "active"]]);
+    // A project being deleted is still the workspace's to see.
+    await admin(cell, "offboard", "--project", "sp_dev");
+    await m.cache.refresh();
+    expect((await signIn(m)).headers.get("location")).toBe("/");
+    // Whether it holds one is read from the issuer's copy of the state,
+    // which must be fresh, as the management API's is.
+    m.clock.t += 301_000;
+    refusedWith(await signIn(m), "unavailable");
+    expect(m.logs.at(-1)).toBe(
+      "sign-in refused (unavailable): workspace ws_dev is not on the beta's allow-list, and the issuer cannot see " +
+        "the cell's current state to tell whether it holds a Streams project",
+    );
+    await m.cache.refresh();
+    expect((await signIn(m)).headers.get("location")).toBe("/");
   });
 
   test("answers a declined consent denied, and a refused code, an authorization error or a /v1/me outage failed", async () => {

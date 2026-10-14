@@ -14,6 +14,11 @@
 //   POST /v1/projects/{p}/streams/credentials/{c}/revoke
 //        revoked for good, at grant_version + 1
 //
+// A create and a rotation give the workspace something new, so
+// management.ts answers them only for a workspace on the beta's
+// allow-list (403 workspace_not_allowed); a listing, a read and a
+// revocation read no list (the owner's call 16 of 2026-10-13).
+//
 // A create takes {displayName?, scopes?, streamPrefixes?, expiresAt?}
 // (every scope, no prefix and no expiry by default) and checks, in order,
 // each refusal audited: the body (400 invalid_request); the project's 20

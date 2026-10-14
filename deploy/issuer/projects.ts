@@ -46,6 +46,7 @@ import {
   type Call,
   commit,
   displayNameOf,
+  type GrowthCall,
   type ManagementDeps,
   readObject,
   Refusal,
@@ -145,7 +146,7 @@ export class Projects {
     return json(200, { ...projectView(this.cfg, state, id, p), ready });
   }
 
-  async create(c: Call): Promise<Response> {
+  async create(c: GrowthCall): Promise<Response> {
     const body = await readObject(c.req, ["displayName"]);
     const name = typeof body === "string" ? null : displayNameOf(body.displayName);
     if (typeof body === "string" || name === null) {
@@ -229,7 +230,7 @@ export class Projects {
 
   /// Burn the id, then place the project in one compare-and-swap.
   private async place(
-    c: Call,
+    c: GrowthCall,
     a: { id: string; name: string; cap: number; place: (s: CellState) => void; storedDefault: number },
   ): Promise<Response> {
     const w = c.session.workspace_id;

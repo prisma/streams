@@ -13,13 +13,16 @@
 //   6. the workspace in the path is the session's (403 forbidden), or
 //      the project in the path is one of its projects, not the canary,
 //      not offboarded (404 not_found);
-//   7. the session's workspace on the beta's allow-list (allowlist.ts),
-//      read from the control bucket at most every 5 s and refused while
-//      there is none (403 workspace_not_allowed; 503 while it cannot be
-//      read): taking
-//      a workspace off the list stops its management within 5 s (owner
-//      question I8 (a): its projects keep running until the owner
-//      suspends them).
+//   7. for a call that gives the workspace something new (a project, a
+//      credential or a secret: a project create, a credential create, a
+//      rotation), the session's workspace on the beta's allow-list
+//      (allowlist.ts), read from the control bucket at most every 5 s and
+//      refused while there is none (403 workspace_not_allowed; 503 while
+//      it cannot be read). Every other call reads no list. A workspace
+//      taken off the list (the owner's call 16 of 2026-10-13, answer (b),
+//      the reduced mode) gets nothing new within 5 s; its projects keep
+//      running (I8 (a)), and its users still see them, revoke a credential
+//      and delete a project, so a leaked secret is cut without the owner.
 // A refusal of a change from step 4 on is audited (calls.ts).
 //
 //   GET  /v1/workspaces/{w}/streams/projects       the workspace's projects
@@ -37,7 +40,7 @@
 // No answer carries a CORS header (respond.ts): the page that calls these
 // routes is the issuer's own. Every answer carries X-Request-Id.
 import { randomBytes } from "node:crypto";
-import { type Asker, type Call, type ManagementDeps, refused } from "./calls";
+import { type Asker, type Call, type GrowthCall, type ManagementDeps, refused } from "./calls";
 import type { IssuerConfig } from "./config";
 import { Credentials } from "./credentials";
 import { rateLimited, UNAVAILABLE_RETRY_SECS } from "./exchange";
@@ -49,11 +52,22 @@ import { ownProject } from "./views";
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const JSON_TYPE = /^application\/json\s*(;|$)/i;
 
-interface Method {
-  /// The audit's name for what it does.
-  action: string;
-  handle: (c: Call) => Promise<Response> | Response;
-}
+type Answer = Promise<Response> | Response;
+
+/// What a route's method does, under the audit's name for it (`action`).
+/// One that gives the workspace something new (`grows`) is answered only
+/// for a workspace on the allow-list, and is handed its entry.
+type Method =
+  | { action: string; grows: false; handle: (c: Call) => Answer }
+  | { action: string; grows: true; handle: (c: GrowthCall) => Answer };
+
+const keeps = (action: string, handle: (c: Call) => Answer): Method => ({ action, grows: false, handle });
+const grows = (action: string, handle: (c: GrowthCall) => Answer): Method => ({ action, grows: true, handle });
+
+/// The refusal of what would give a workspace off the allow-list something new.
+const offListMessage = (w: string) =>
+  `workspace ${w} is not on the Streams beta's allow-list: its projects and credentials can be seen, revoked and ` +
+  "deleted, not created or rotated";
 
 interface Route {
   path: RegExp;
@@ -77,40 +91,40 @@ export class Management {
         path: /^\/v1\/workspaces\/([^/]+)\/streams\/projects$/,
         scope: "workspace",
         methods: {
-          GET: { action: "project.list", handle: (c) => projects.list(c) },
-          POST: { action: "project.create", handle: (c) => projects.create(c) },
+          GET: keeps("project.list", (c) => projects.list(c)),
+          POST: grows("project.create", (c) => projects.create(c)),
         },
       },
       {
         path: /^\/v1\/workspaces\/([^/]+)\/streams\/projects\/([^/]+)$/,
         scope: "workspace",
         methods: {
-          GET: { action: "project.get", handle: (c) => projects.get(c) },
-          DELETE: { action: "project.delete", handle: (c) => projects.delete(c) },
+          GET: keeps("project.get", (c) => projects.get(c)),
+          DELETE: keeps("project.delete", (c) => projects.delete(c)),
         },
       },
       {
         path: /^\/v1\/projects\/([^/]+)\/streams\/credentials$/,
         scope: "project",
         methods: {
-          GET: { action: "credential.list", handle: (c) => credentials.list(c) },
-          POST: { action: "credential.create", handle: (c) => credentials.create(c) },
+          GET: keeps("credential.list", (c) => credentials.list(c)),
+          POST: grows("credential.create", (c) => credentials.create(c)),
         },
       },
       {
         path: /^\/v1\/projects\/([^/]+)\/streams\/credentials\/([^/]+)$/,
         scope: "project",
-        methods: { GET: { action: "credential.get", handle: (c) => credentials.get(c) } },
+        methods: { GET: keeps("credential.get", (c) => credentials.get(c)) },
       },
       {
         path: /^\/v1\/projects\/([^/]+)\/streams\/credentials\/([^/]+)\/rotate$/,
         scope: "project",
-        methods: { POST: { action: "credential.rotate", handle: (c) => credentials.rotate(c) } },
+        methods: { POST: grows("credential.rotate", (c) => credentials.rotate(c)) },
       },
       {
         path: /^\/v1\/projects\/([^/]+)\/streams\/credentials\/([^/]+)\/revoke$/,
         scope: "project",
-        methods: { POST: { action: "credential.revoke", handle: (c) => credentials.revoke(c) } },
+        methods: { POST: keeps("credential.revoke", (c) => credentials.revoke(c)) },
       },
     ];
   }
@@ -169,11 +183,10 @@ export class Management {
     if (route.scope === "project" && ownProject(this.deps.cache.state, workspace, ids[0]) === undefined) {
       return no(404, "not_found", `workspace ${workspace} has no Streams project ${ids[0]}`);
     }
+    if (!method.grows) return method.handle({ ...asker, req, ids });
     const entry = await this.deps.allowlist.entryOf(workspace);
     if (entry === null) return unavailable("the issuer cannot read the beta's allow-list; retry shortly");
-    if (entry === undefined) {
-      return no(403, "workspace_not_allowed", `workspace ${workspace} is not on the Streams beta's allow-list`);
-    }
+    if (entry === undefined) return no(403, "workspace_not_allowed", offListMessage(workspace));
     return method.handle({ ...asker, req, ids, entry });
   }
 }

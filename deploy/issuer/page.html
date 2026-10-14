@@ -62,7 +62,7 @@ footer { padding-top: 8px; padding-bottom: 32px; font-size: 13px; }
 <div id="secret"></div>
 <main id="main"><p class="muted">Loading…</p></main>
 <footer class="muted">
-  <p>Who may manage: anyone who signs in with Prisma to a workspace on the beta's allow-list can create, rotate, revoke and delete that workspace's Streams project and credentials. There is no role check during the beta; every change is recorded with who made it.</p>
+  <p>Who may manage: anyone who signs in with Prisma to a workspace on the beta's allow-list can create, rotate, revoke and delete that workspace's Streams project and credentials. A workspace taken off the list keeps its projects running: anyone who signs in to it can still see them, revoke a credential and delete a project, but not create or rotate. There is no role check during the beta; every change is recorded with who made it.</p>
 </footer>
 <script>
 (() => {
@@ -77,8 +77,8 @@ footer { padding-top: 8px; padding-bottom: 32px; font-size: 13px; }
     no_user: "Prisma did not name a user for that sign-in. Sign in with your Prisma account.",
     no_workspace: "Prisma did not name a workspace for that sign-in. Sign in again and choose a workspace.",
     invalid_workspace: "Prisma Streams cannot take that workspace's id. Sign in again and choose another workspace.",
-    workspace_not_allowed: "The workspace you chose is not on the Prisma Streams beta's allow-list. Sign in again and choose a workspace that is. Its Streams projects, if it has any, keep running; to revoke a credential or delete a project, ask the Prisma Streams team.",
-    unavailable: "Prisma Streams cannot check the beta's allow-list right now. Try again shortly.",
+    workspace_not_allowed: "The workspace you chose is not on the Prisma Streams beta's allow-list and has no Streams project. Sign in again and choose a workspace that is on it.",
+    unavailable: "Prisma Streams cannot check your workspace's access right now. Try again shortly.",
   };
   const POLL_MS = 5000;
 
@@ -146,7 +146,12 @@ footer { padding-top: 8px; padding-bottom: 32px; font-size: 13px; }
   /// What the page does with a refused call it has no better answer for.
   function handleError(r) {
     if (r.status === 401) return renderSignedOut("Your session has ended. Sign in again.");
-    if (r.status === 403 && r.code === "workspace_not_allowed") return renderNotAllowed();
+    if (r.status === 403 && r.code === "workspace_not_allowed") {
+      // Taken off the allow-list since this page asked: the reduced mode.
+      session.allowListed = false;
+      notice(r.message);
+      return load();
+    }
     if (r.status === 409 && r.code === "beta_at_capacity") return renderAtCapacity();
     if (r.status === 403 && r.code === "csrf_failed") {
       notice("Your session changed in another tab. Reloading it; try again.");
@@ -174,14 +179,25 @@ footer { padding-top: 8px; padding-bottom: 32px; font-size: 13px; }
       el("a", { href: "/auth/login", text: "Sign in to another workspace" }));
   }
 
+  /// A workspace off the allow-list with no project: nothing to show.
   function renderNotAllowed() {
     main.replaceChildren(el("section", { class: "card" },
       el("h2", { text: "Not on the allow-list" }),
-      el("p", { text: "Workspace " + session.workspaceId + " is not on the Prisma Streams beta's allow-list. " +
+      el("p", { text: "Workspace " + session.workspaceId + " is not on the Prisma Streams beta's allow-list and has no Streams project. " +
         "Sign in to a workspace that is, or ask the Prisma Streams team to add this one." }),
-      el("p", { text: "If this workspace has Streams projects, they keep running and their credentials keep working, " +
-        "but they cannot be managed here: to revoke a credential or delete a project, ask the Prisma Streams team." }),
       el("p", {}, signInLink("Sign in to another workspace"))));
+  }
+
+  /// A workspace off the allow-list that still has projects (the reduced
+  /// mode): it sees them, revokes credentials and deletes projects, and
+  /// is offered no create and no rotation.
+  function reducedCard() {
+    return el("section", { class: "card" },
+      el("h2", { text: "Not on the allow-list" }),
+      el("p", { text: "Workspace " + session.workspaceId + " is not on the Prisma Streams beta's allow-list. " +
+        "Its projects keep running and their credentials keep working." }),
+      el("p", { text: "Here you can see them, revoke a credential and delete a project. Creating a project or a credential " +
+        "and rotating a secret come back once the Prisma Streams team adds this workspace to the allow-list again." }));
   }
 
   function renderAtCapacity() {
@@ -296,35 +312,42 @@ footer { padding-top: 8px; padding-bottom: 32px; font-size: 13px; }
     }
   }
 
+  function rotateButton(p, c, list) {
+    return el("button", {
+      text: "Rotate",
+      onclick: async () => {
+        if (!confirm("Rotate " + c.displayName + "? Its current secret stops working at once.")) return;
+        const r = await api("POST", credentialsPath(p) + "/" + enc(c.id) + "/rotate", {});
+        if (r.status !== 200) return handleError(r);
+        pending.add(c.id);
+        showSecret(r.data.secret, c.displayName,
+          "Tokens made with the old secret stop working once the cell has the change, within about a minute.");
+        refreshCredentials(p, list);
+      },
+    });
+  }
+
+  function revokeButton(p, c, list) {
+    return el("button", {
+      class: "danger",
+      text: "Revoke",
+      onclick: async () => {
+        if (!confirm("Revoke " + c.displayName + " for good? Apps using it stop working within about a minute.")) return;
+        const r = await api("POST", credentialsPath(p) + "/" + enc(c.id) + "/revoke", {});
+        if (r.status !== 200) return handleError(r);
+        pending.add(c.id);
+        refreshCredentials(p, list);
+      },
+    });
+  }
+
   function credentialRow(p, c, list) {
     const status = el("td", { text: c.status });
     const actions = el("td", { class: "actions" });
     if (c.status === "active" && p.status === "active") {
-      actions.append(
-        el("button", {
-          text: "Rotate",
-          onclick: async () => {
-            if (!confirm("Rotate " + c.displayName + "? Its current secret stops working at once.")) return;
-            const r = await api("POST", credentialsPath(p) + "/" + enc(c.id) + "/rotate", {});
-            if (r.status !== 200) return handleError(r);
-            pending.add(c.id);
-            showSecret(r.data.secret, c.displayName,
-              "Tokens made with the old secret stop working once the cell has the change, within about a minute.");
-            refreshCredentials(p, list);
-          },
-        }),
-        " ",
-        el("button", {
-          class: "danger",
-          text: "Revoke",
-          onclick: async () => {
-            if (!confirm("Revoke " + c.displayName + " for good? Apps using it stop working within about a minute.")) return;
-            const r = await api("POST", credentialsPath(p) + "/" + enc(c.id) + "/revoke", {});
-            if (r.status !== 200) return handleError(r);
-            pending.add(c.id);
-            refreshCredentials(p, list);
-          },
-        }));
+      // Off the allow-list a workspace revokes but makes no new secret.
+      if (session.allowListed) actions.append(rotateButton(p, c, list), " ");
+      actions.append(revokeButton(p, c, list));
     }
     if (pending.has(c.id)) watchServed(p, c, status);
     return el("tr", {},
@@ -366,7 +389,8 @@ footer { padding-top: 8px; padding-bottom: 32px; font-size: 13px; }
           el("thead", {}, el("tr", {}, ...["Name", "Secret", "Scopes", "Status", "Created", ""].map((h) => el("th", { text: h })))),
           el("tbody", {}, ...rows))
         : el("p", { class: "muted", text: "No credentials." }),
-      p.status === "active" ? newCredentialForm(p, list) : null);
+      // replaceChildren, unlike el, would write a null as the text "null".
+      ...(p.status === "active" && session.allowListed ? [newCredentialForm(p, list)] : []));
   }
 
   function credentialsSection(p) {
@@ -431,6 +455,9 @@ footer { padding-top: 8px; padding-bottom: 32px; font-size: 13px; }
     const r = await api("GET", projectsPath());
     if (r.status !== 200) return r.status === 503 || r.status === 0 ? renderUnavailable(r) : handleError(r);
     const projects = r.data.projects;
+    if (!session.allowListed) {
+      return projects.length === 0 ? renderNotAllowed() : main.replaceChildren(reducedCard(), ...projects.map(projectCard));
+    }
     if (projects.length === 0) return renderCreate();
     main.replaceChildren(...projects.map(projectCard),
       el("details", {}, el("summary", { text: "Create another project" }), createForm()));

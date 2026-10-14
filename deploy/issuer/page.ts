@@ -6,7 +6,10 @@
 // deletes the project once its name is typed, gives the SDK snippet, and
 // says who may manage (owner question I4 (a)); it has no admin control,
 // and it says "the beta is at capacity" and "not on the allow-list" when
-// the management API does.
+// the management API does. For a workspace off the allow-list
+// (`/auth/session`'s `allowListed` false, the owner's call 16) it shows
+// the reduced mode: the projects and credentials, revoke and delete, and
+// no create or rotate.
 //
 // The browser runs only what the CSP names by hash: no other script or
 // style, nothing from another origin, never framed, connections to this

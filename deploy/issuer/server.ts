@@ -79,6 +79,7 @@ export class Issuer {
     this.signIn = new SignIn(cfg, {
       limits: this.limits,
       allowlist,
+      cache: deps.cache,
       now,
       log,
       ...(deps.ipHeader !== undefined ? { ipHeader: deps.ipHeader } : {}),
