@@ -627,6 +627,46 @@
     {
       "category": "effect",
       "count": 1,
+      "owner": "crate::on_every_worker",
+      "path": "src/bootstrap/allocator.rs",
+      "reason": "Allocator collect probes: an idle-release collect round spawns one probe per worker onto the served runtime and onto the shared SlateDB runtime, which no supervisor owns, so each worker collects on its own thread even while it would stay parked; every probe ends within PROBE_HOLD and is joined before the round returns.",
+      "syntax": "tokio::runtime::Handle::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::hold_until_started",
+      "path": "src/bootstrap/allocator.rs",
+      "reason": "Allocator collect probe: a probe holds the worker it runs on, checking every 1 ms for at most PROBE_HOLD (100 ms), until every worker of its runtime has taken one, so the remaining probes wake the parked workers and each collects on its own thread; it runs only in an idle-release collect round, and an async sleep would free the worker to take a second probe.",
+      "syntax": "std::thread::sleep"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::rounds_seen_on_every_worker",
+      "path": "src/bootstrap/allocator.rs",
+      "reason": "Test-only reading of the collect round each worker last ran: the thread identity proves every probe ran on a distinct worker; it collects nothing and is compiled only under cfg(test).",
+      "syntax": "std::thread::ThreadId"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::rounds_seen_on_every_worker",
+      "path": "src/bootstrap/allocator.rs",
+      "reason": "Test-only reading of the collect round each worker last ran: the thread identity proves every probe ran on a distinct worker; it collects nothing and is compiled only under cfg(test).",
+      "syntax": "std::thread::current"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::collect_tests::a_round_runs_on_every_worker_of_an_idle_runtime",
+      "path": "src/bootstrap/allocator.rs",
+      "reason": "Collect-round regression: the test thread waits 100 ms so every worker of its own runtime has parked once before the round is requested; nothing else runs on that runtime.",
+      "syntax": "std::thread::sleep"
+    },
+    {
+      "category": "effect",
+      "count": 1,
       "owner": "crate::spawn_sentinels",
       "path": "src/store_timing/sentinels.rs",
       "reason": "Process scheduler instrumentation owner; preserves the existing detached OS-thread and Tokio sentinels, with no service state; their lifetime intentionally measures the process rather than one runtime.",

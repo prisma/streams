@@ -164,6 +164,8 @@ async fn run(
         }
         if policy.collect_due(reading.now) {
             super::allocator::request_collect();
+            super::allocator::collect_on_every_worker(&tokio::runtime::Handle::current()).await;
+            super::allocator::collect_on_every_worker(super::slatedb_runtime().handle()).await;
         }
     }
 }

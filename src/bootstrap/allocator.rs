@@ -10,7 +10,9 @@
 //! empty allocator pages once per requested round.
 
 use std::cell::Cell;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 /// What the kernel reports after the process asked it to stop backing this
 /// process's memory with transparent huge pages.
@@ -65,8 +67,9 @@ thread_local! {
 }
 
 /// Asks every long-lived runtime thread to return its empty allocator pages
-/// to the OS: each worker of both runtimes the next time it parks, and the
-/// thread that runs the served future within a second. Requested after the
+/// to the OS: each worker of both runtimes when [`collect_on_every_worker`]
+/// reaches it or it next parks, and the thread that runs the served future
+/// within a second. Requested after the
 /// idle release, never under load: after a release most pages are empty
 /// but held by the thread-local heap of the thread that last used them,
 /// and only that thread can return them (Q0 PROFILE §4b-4d: 25-50 MiB of
@@ -94,6 +97,72 @@ fn collect_due(epoch: u64, seen: &Cell<u64>) -> bool {
     }
     seen.set(epoch);
     true
+}
+
+/// How long a probe holds its worker for the others to start. An idle worker
+/// takes its probe within a millisecond of being woken; a worker still busy
+/// past this misses the round and collects at its next park.
+const PROBE_HOLD: Duration = Duration::from_millis(100);
+
+/// Runs a requested round on every worker of the runtime behind `runtime`,
+/// parked or not. A park hook runs only when a worker goes to park, and an
+/// idle worker stays parked: under a few periodic timers one worker in four
+/// parks at all (Q0 RESULT.md, round 1), so the pages the others hold would
+/// stay.
+pub(crate) async fn collect_on_every_worker(runtime: &tokio::runtime::Handle) {
+    on_every_worker(runtime, collect_if_requested).await;
+}
+
+/// Runs `probe` once on each worker of the runtime behind `runtime` and
+/// returns what each returned. Every probe holds its worker until all have
+/// started or `PROBE_HOLD` passes: a worker that holds one cannot take
+/// another, so the rest wake the parked workers and run there.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "on_every_worker; a probe must run as an ordinary task on each worker of a runtime, the storage runtime included, which no supervisor owns; each ends within PROBE_HOLD and is joined here"
+)]
+async fn on_every_worker<T: Send + 'static>(
+    runtime: &tokio::runtime::Handle,
+    probe: fn() -> T,
+) -> Vec<T> {
+    let workers = runtime.metrics().num_workers();
+    let started = Arc::new(AtomicUsize::new(0));
+    let probes: Vec<_> = (0..workers)
+        .map(|_| {
+            let started = Arc::clone(&started);
+            runtime.spawn(async move {
+                let out = probe();
+                hold_until_started(&started, workers);
+                out
+            })
+        })
+        .collect();
+    let mut outs = Vec::with_capacity(workers);
+    for probe in probes {
+        if let Ok(out) = probe.await {
+            outs.push(out);
+        }
+    }
+    outs
+}
+
+/// Counts this probe as started, then holds its worker until `workers`
+/// probes have, or `PROBE_HOLD` passes.
+fn hold_until_started(started: &AtomicUsize, workers: usize) {
+    started.fetch_add(1, Ordering::AcqRel);
+    let deadline = Instant::now() + PROBE_HOLD;
+    while started.load(Ordering::Acquire) < workers && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// The thread and the last round it collected for, on every worker of the
+/// runtime behind `runtime`; reading it collects nothing.
+#[cfg(test)]
+pub(crate) async fn rounds_seen_on_every_worker(
+    runtime: &tokio::runtime::Handle,
+) -> Vec<(std::thread::ThreadId, u64)> {
+    on_every_worker(runtime, || (std::thread::current().id(), seen_round())).await
 }
 
 /// The latest round requested.
@@ -137,6 +206,61 @@ mod collect_tests {
         assert!(!collect_due(3, &seen));
         assert!(!collect_due(2, &seen), "never for an older round");
         assert_eq!(seen.get(), 3);
+    }
+
+    /// A round reaches every worker of an idle runtime, the ones that stay
+    /// parked included.
+    #[test]
+    fn a_round_runs_on_every_worker_of_an_idle_runtime() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .on_thread_park(super::collect_if_requested)
+            .build()
+            .expect("runtime");
+        // Every worker parks once at start; nothing wakes it afterwards.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        request_collect();
+        let round = current_round();
+        runtime.block_on(super::collect_on_every_worker(runtime.handle()));
+        let seen = runtime.block_on(super::rounds_seen_on_every_worker(runtime.handle()));
+        let threads: std::collections::HashSet<_> = seen.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            threads.len(),
+            4,
+            "a probe did not run on its own worker: {seen:?}"
+        );
+        let missed: Vec<_> = seen.iter().filter(|(_, last)| *last < round).collect();
+        assert!(
+            missed.is_empty(),
+            "workers that did not collect for round {round}: {missed:?}"
+        );
+    }
+
+    /// A probe holds its worker while another has not started, and only up
+    /// to the hold; the last one to start releases at once.
+    #[test]
+    fn a_probe_holds_its_worker_until_every_probe_has_started_or_the_hold_passes() {
+        let started = std::sync::atomic::AtomicUsize::new(0);
+        let first = std::time::Instant::now();
+        super::hold_until_started(&started, 2);
+        let held = first.elapsed();
+        assert!(
+            held >= super::PROBE_HOLD,
+            "the first probe held only {held:?}"
+        );
+        assert!(
+            held < 20 * super::PROBE_HOLD,
+            "the first probe held {held:?}, past its hold"
+        );
+        let last = std::time::Instant::now();
+        super::hold_until_started(&started, 2);
+        let held = last.elapsed();
+        assert!(
+            held < super::PROBE_HOLD / 2,
+            "the last probe to start held {held:?}"
+        );
+        assert_eq!(started.load(std::sync::atomic::Ordering::Acquire), 2);
     }
 
     #[test]
