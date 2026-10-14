@@ -1,6 +1,6 @@
 {
   "command": "python3 scripts/quality/mutation_driver.py --measure-sizes",
-  "commit": "db4ed7ab23e7e170f3cc32c38a6a4acc9e1e22f0",
+  "commit": "fbbbdbf43f1a1ce1b472ad361c14648c2f958ce0",
   "measured_on": "2026-10-14",
   "owners": {
     "admission_body": 9,
@@ -67,7 +67,7 @@
     "lifecycle_fence_relay": 5,
     "maintenance_row": 21,
     "offsets": 43,
-    "ops": 59,
+    "ops": 62,
     "pilot-benchmark": 99,
     "pilot-generator": 65,
     "postings": 27,
