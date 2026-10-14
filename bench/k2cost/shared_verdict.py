@@ -65,7 +65,7 @@ def _lifecycle_verdicts():
 # ---- bars ---------------------------------------------------------------------
 # Layer B (design §3.3; shared-cells PLAN §4.1 "Layer B" pass table).
 LEAKS_MAX = 0                    # foreign, bad-MAC and unmarked records, audit mismatches
-PROBE_PAIRS_MIN = 2000           # cross-project probes, each a first contact (prober, name)
+PROBE_PAIRS_MIN = 2000           # cross-project probes, each a first contact (prober, name) (round-3 call 13)
 H11T_PAIRS_MIN = 2000            # timed pairs on the capability path, quiet vs never (round-3 call 9, (a))
 H11T_KS_P_MIN = 0.01             # quiet and never indistinguishable: KS p > 0.01
 VICTIM_P99_FACTOR = 2.0          # victim p99 under noise <= max(2 x solo p99, 25 ms)

@@ -513,7 +513,9 @@ layer-b legs: `H9`, `H9b` (each ran, 0 `admit_shed_rss` in its window),
 the owner's round-3 call 9, (a), 2026-10-13; see below), `leaks` (0 foreign,
 bad-MAC or unmarked records on any read, every producing project's audit
 passes), `probes` (2,000 first contacts, every pair one; 0 differences,
-every create 201),
+every create 201: the bar counts distinct (prober, name) first contacts,
+not pairs run, by the owner's decision of 2026-10-13, round-3 call 13, a
+change to what the gate counts, AGENTS.md section 1 (3)),
 `compliant-refusals` (0, every typed code counted), `hostile-typed`
 (untyped answers under 0.5%), `victim-p99` (noisy <= max(2 x solo, 25 ms),
 appends and reads, for each victim class, its bars named by the class;
@@ -526,10 +528,14 @@ load), `load` (the run's manifest is the server commit's
 `tenants/layer-b.json` byte for byte, at time scale 1: an edited manifest
 or a `--time-scale` rehearsal cannot certify; the manifest records both,
 and the quota posture: which classes ran at the cell's ceilings, which
-under a quota set),
+under a quota set), `harness` (the checkout the harness ran from,
+`checkout.json` in `rig.json`, holds the server commit's `bench/k2cost`,
+`deploy/cell-admin` and `bench/docker` trees, nothing uncommitted under
+them: a harness fixed after the RC commit cannot judge it),
 `identity` (the wrapper's `binary sha256` line, `/v1/debug/load`
 and the shipped file agree), `release-binary` (not a `--binary`
-rehearsal). Known-red legs (Q0) fail like any
+rehearsal). The owner confirmed `load`, `harness` and the first-contact
+bar as built on 2026-10-13 (round-3 call 13). Known-red legs (Q0) fail like any
 other; `known_red` only says why. The bars of the owner's decision D4
 (a) of 2026-10-12 (SC0-1s projection, day-90 open, idle RSS, restart
 window) are constants here for the field arms, which take their evidence
