@@ -904,18 +904,20 @@ async fn telemetry_crash_points_and_cost_gates() {
 
 /// Round-21 blocker 3: sealed read batches are DURABLE. They enter a
 /// per-instance spool before the ledger sees them, survive a process
-/// "crash" (a second spool handle on the same store), and leave only
-/// after `_usage` acknowledged. During a ledger outage the spool
-/// absorbs on disk while the accumulator keeps rotating.
+/// "crash" (the handle is dropped unclosed and the restart opens a second
+/// one on the same store), and leave only after `_usage` acknowledged.
+/// During a ledger outage the spool absorbs on disk while the accumulator
+/// keeps rotating. The restart drains through its own handle: opening it
+/// fences the dropped one, whose compactor closes it with "detected newer
+/// DB client" at its next manifest poll (5 s in `telemetry_settings`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn read_batches_survive_crash_in_the_spool() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    let spool =
+    let crashed =
         crate::billing::ReadSpool::open(state.data_store.clone(), "sp1", "inst", &state.config)
             .await
             .unwrap();
-    install_read_spool(&state, spool);
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     let (st, _, _) = preq(
         addr,
@@ -940,10 +942,11 @@ async fn read_batches_survive_crash_in_the_spool() {
     // pre-append half of a drain by spooling directly.
     let sealed = state.billing.reads().drain_sealed(16);
     assert_eq!(sealed.len(), 1);
-    let sp = state.billing.read_spool().unwrap();
-    sp.persist(&sealed[0]).await.unwrap();
+    crashed.persist(&sealed[0]).await.unwrap();
 
-    // "Crash": a fresh spool handle over the same store still has it.
+    // "Crash": the process ends without closing its spool, and the fresh
+    // handle its restart opens over the same store still has the batch.
+    drop(crashed);
     let recovered =
         crate::billing::ReadSpool::open(state.data_store.clone(), "sp1", "inst", &state.config)
             .await
@@ -952,8 +955,10 @@ async fn read_batches_survive_crash_in_the_spool() {
     assert_eq!(pending.len(), 1, "the sealed batch survived the crash");
     assert_eq!(pending[0].1.rows.len(), 1);
     assert_eq!(pending[0].1.rows[0].identity.stream_name, "spool1");
+    assert_eq!(recovered.depth().await, 1, "the reopened ledger counts it");
 
-    // A full drain now emits from the spool and clears it after ack.
+    // The restart's drain emits from its spool and clears it after ack.
+    install_read_spool(&state, recovered);
     let n = crate::billing::drain_once(&state).await.unwrap();
     assert!(n >= 1);
     assert_eq!(state.billing.read_spool().unwrap().depth().await, 0);
