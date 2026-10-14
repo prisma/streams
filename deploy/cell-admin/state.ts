@@ -79,6 +79,12 @@ export interface ProjectRecord {
   /// Never published.
   offboard_attempts?: number;
   next_attempt_at?: string;
+  /// A project offboarded while suspended (deploy/cell-admin/offboard.ts):
+  /// the grant_version its revocation moved the canary's catalog-read
+  /// credential to, in the same change. A canary token at that version or
+  /// later answering 200 proves the cell holds the revocation. Never
+  /// published.
+  witness_grant_version?: number;
   display_name?: string;
   created_by?: Actor;
 }

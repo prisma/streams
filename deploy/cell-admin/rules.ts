@@ -49,8 +49,11 @@ export const CUSTOMER_SCOPES = [
 /// per cell, `sp_canary_<cell id>` in its own workspace (never ACCOUNT_ID,
 /// which placement refuses), at 5 requests/s and 1 stream, hidden from
 /// every listing. Its catalog-read credential (no secret) lets the issuer
-/// and `cell-admin canary` prove the cell serves a key or a generation;
-/// the watch's credential is added later with `credential --hidden`.
+/// and `cell-admin canary` prove the cell serves a key or a generation,
+/// and offboarding a suspended project prove the cell holds its
+/// revocation: that offboarding moves the credential's grant_version, so
+/// a probe mints at its current version, never an earlier token's. The
+/// watch's credential is added later with `credential --hidden`.
 export const CANARY_WORKSPACE = "streams-issuer-canary";
 const CANARY_PREFIX = "sp_canary_";
 export const canaryProjectId = (cellId: string) => `${CANARY_PREFIX}${cellId}`;

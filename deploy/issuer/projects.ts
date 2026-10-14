@@ -99,8 +99,8 @@ function deleteRefusal(state: CellState, w: string, id: string): Refusal | null 
   const p = ownProject(state, w, id);
   if (p === undefined) return new Refusal(404, "not_found", `workspace ${w} has no Streams project ${id}`);
   if (p.phase !== "active") return new Refusal(409, "project_not_active", `project ${id} is already being deleted`);
-  // The drain reads the catalog with the operator's token, which the cell
-  // refuses for a suspended project.
+  // The owner looks before an abusive project's data goes: only
+  // `cell-admin offboard` takes a suspended project (its canary witness).
   if (p.status !== "active") {
     return new Refusal(409, "project_not_active",
       `project ${id} is suspended: the Streams beta's operator resumes it before it can be deleted`);

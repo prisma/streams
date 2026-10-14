@@ -5,9 +5,12 @@
 //   cargo build --locked --bin streams-slate --bin s3lite
 //   CELL_ADMIN_E2E_BIN_DIR=target/debug bun test ./deploy/cell-admin/e2e.test.ts
 //
-// The second test runs the S3 store (s3store.ts) against s3lite itself,
-// which fake-s3.ts imitates for the unit suite: its precondition
-// self-test passes, and concurrent writers lose no update.
+// The second test offboards a suspended project through the canary
+// witness: the cell's feeds are read one by one (a torn read), which the
+// fake cell, replacing them at once, cannot show. The third runs the S3
+// store (s3store.ts) against s3lite itself, which fake-s3.ts imitates for
+// the unit suite: its precondition self-test passes, and concurrent
+// writers lose no update.
 //
 // It proves what the fake cell of offboard.test.ts assumes: the bundle
 // boots an enforce cell with BILLING_MODE=required, minted tokens verify,
@@ -18,10 +21,23 @@ import { afterAll, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { call, describeReply } from "./cell-client";
 import { DEFAULT_PROFILES } from "./commands";
 import { readProfiles } from "./profile";
+import { canaryProbeCredential } from "./rules";
 import { S3Store } from "./s3store";
-import { cleanup, customerCredential, initCell, keyFile, readBundle, run, scratchDir } from "./test-rig";
+import {
+  type Cell,
+  cleanup,
+  customerCredential,
+  initCell,
+  keyFile,
+  readBundle,
+  readState,
+  run,
+  scratchDir,
+} from "./test-rig";
+import { customerClaims, loadSigningKey, signJwt } from "./tokens";
 
 const BIN_DIR = process.env.CELL_ADMIN_E2E_BIN_DIR;
 const maybe = BIN_DIR ? test : test.skip;
@@ -61,14 +77,9 @@ async function until<T>(what: string, secs: number, probe: () => Promise<T | und
 
 const KEY = randomBytes(32).toString("base64");
 
-maybe("a shared cell admits, serves and offboards projects on the real binary", async () => {
-  const c = await initCell();
-  const feeds = join(scratchDir(), "feeds");
-  mkdirSync(feeds);
-  for (const [p, w] of [["proj_a", "wksp_a"], ["proj_b", "wksp_b"]]) {
-    expect((await run("admit", "--state", c.state, "--project", p, "--workspace", w)).code).toBe(0);
-  }
-  publish(c.state, feeds);
+/// The real server for `c`'s cell over its own s3lite, reading the feeds
+/// in `feeds` every second; its origin and deployment bearer once ready.
+async function boot(c: Cell, feeds: string): Promise<{ cell: string; operator: string }> {
   const [s3Port, port] = [freePort(), freePort()];
   const bin = resolve(BIN_DIR ?? "");
   children.push(Bun.spawn([join(bin, "s3lite"), "--listen", `127.0.0.1:${s3Port}`, "--latency-ms", "2"],
@@ -94,6 +105,18 @@ maybe("a shared cell admits, serves and offboards projects on the real binary", 
     { env, stdout: Bun.file(log), stderr: Bun.file(log) }));
   const cell = `http://127.0.0.1:${port}`;
   await until("the cell to be ready", 90, async () => ((await fetch(`${cell}/health`)).ok ? true : undefined));
+  return { cell, operator };
+}
+
+maybe("a shared cell admits, serves and offboards projects on the real binary", async () => {
+  const c = await initCell();
+  const feeds = join(scratchDir(), "feeds");
+  mkdirSync(feeds);
+  for (const [p, w] of [["proj_a", "wksp_a"], ["proj_b", "wksp_b"]]) {
+    expect((await run("admit", "--state", c.state, "--project", p, "--workspace", w)).code).toBe(0);
+  }
+  publish(c.state, feeds);
+  const { cell, operator } = await boot(c, feeds);
 
   const tokens: Record<string, string> = {};
   for (const p of ["proj_a", "proj_b"]) {
@@ -167,6 +190,84 @@ maybe("a shared cell admits, serves and offboards projects on the real binary", 
   expect(await read.json()).toEqual([{ m: "b-marker" }]);
   expect((await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "wksp_z")).err)
     .toBe("cell-admin admit: project id proj_a was used before: an id is never placed twice");
+}, 240_000);
+
+/// A bearer's answer to `GET /v1/streams?limit=1`: "200", or the status
+/// and the error's code. A 429 is waited out (cell-client's call): the
+/// canary's listing weighs 10 against its 5 requests a second.
+const catalogAnswer = async (cell: string, bearer: string) =>
+  describeReply(await call(cell, "GET", "/v1/streams?limit=1", bearer));
+
+/// `project`'s status in the bundle `state` holds, or "omitted".
+const statusIn = (state: string, project: string) =>
+  (readBundle(state).policies.projects as { project_id: string; status: string }[])
+    .find((p) => p.project_id === project)?.status ?? "omitted";
+
+maybe("a suspended project is offboarded through the canary witness on the real binary", async () => {
+  const c = await initCell();
+  const feeds = join(scratchDir(), "feeds");
+  mkdirSync(feeds);
+  expect((await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "wksp_a")).code).toBe(0);
+  publish(c.state, feeds);
+  const { cell } = await boot(c, feeds);
+  const sk = loadSigningKey(c.key);
+  // The abuser's token, minted before anything below.
+  const token = signJwt(sk, customerClaims(readState(c.state), customerCredential(c.state, "proj_a"), 3600, "e2e"));
+  for (const name of ["s1", "dir/s2"]) {
+    const res = await fetch(`${cell}/v1/streams/${name}`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "prisma-encryption-key": KEY },
+      body: JSON.stringify({ format: { kind: "json" } }),
+    });
+    expect(res.status === 201 ? "201" : `${res.status} ${await res.text()}`).toBe("201");
+  }
+  expect((await run("suspend", "--state", c.state, "--project", "proj_a")).code).toBe(0);
+  publish(c.state, feeds);
+  await until("the suspension to reach the cell", 30, async () =>
+    (await catalogAnswer(cell, token)) === "403 project_not_active" ? true : undefined);
+
+  // The first run revokes the credentials while the project stays
+  // suspended, and moves the canary's catalog-read credential.
+  const first = await run("offboard", "--state", c.state, "--project", "proj_a");
+  expect([first.code, first.err]).toEqual([0, ""]);
+  const witness = readState(c.state).projects.proj_a.witness_grant_version!;
+  const canary = canaryProbeCredential(readState(c.state));
+  const canaryAnswer = () => catalogAnswer(cell, signJwt(sk, customerClaims(readState(c.state), canary, 300, "e2e")));
+  expect([witness, readState(c.state).credentials[canary].grant_version]).toEqual([2, 2]);
+
+  // The second run starts while the cell lags the revocation: it asks the
+  // canary every 2 s and sets nothing active.
+  const drained = run("offboard", "--state", c.state, "--project", "proj_a", "--cell-url", cell, "--key-file", c.key,
+    "--settle-secs", "2");
+  await Bun.sleep(5_000);
+  expect([await canaryAnswer(), statusIn(c.state, "proj_a")]).toEqual(["401 grant_version_mismatch", "suspended"]);
+  publish(c.state, feeds);
+
+  // Only once the canary answers 200 does the run set the project active,
+  // in a bundle of its own: the cell holds the revocation, beside the
+  // suspension, before it can see that bundle.
+  await until("the run to resume proj_a", 60, async () => (statusIn(c.state, "proj_a") === "active" ? true : undefined));
+  expect([await canaryAnswer(), await catalogAnswer(cell, token)]).toEqual(["200", "403 project_not_active"]);
+  // Then the cell refuses the same token as revoked.
+  publish(c.state, feeds);
+  await until("the resume to reach the cell", 30, async () =>
+    (await catalogAnswer(cell, token)) === "403 credential_not_active" ? true : undefined);
+
+  // Then it proves, drains and omits as for any project.
+  const done = await drained;
+  expect([done.code, done.err]).toEqual([0, ""]);
+  const lines = done.out.split("\n");
+  expect(lines.slice(0, 2)).toEqual([
+    "the cell holds the revocation of proj_a: the canary's catalog-read credential answered 200 at grant_version 2",
+    "proj_a is active again at project_policy_version 3, for its drain",
+  ]);
+  const walks = lines.filter((l) => l.startsWith("walk "));
+  expect(walks[0]).toBe("walk 1: listed 2, deleted 2");
+  expect(walks[walks.length - 1]).toMatch(/^walk \d+: listed 0, deleted 0$/);
+  expect(statusIn(c.state, "proj_a")).toBe("omitted");
+  publish(c.state, feeds);
+  await until("the omission to reach the cell", 30, async () =>
+    (await catalogAnswer(cell, token)) === "421 wrong_cell" ? true : undefined);
 }, 240_000);
 
 maybe("the S3 store's preconditions hold on s3lite, and concurrent writers lose no update", async () => {

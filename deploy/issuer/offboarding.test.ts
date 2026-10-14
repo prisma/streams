@@ -197,13 +197,10 @@ describe("the offboarding job", () => {
 
   test("fails a suspended project's attempts without asking the cell: its operator token would be refused", async () => {
     const { cell, fake, m, a, id } = await deleted();
-    // Neither writer offboards a suspended project (the issuer's delete and
-    // cell-admin offboard refuse it); a state edited by hand can still hold
-    // one, and the job must not mint for it.
+    // The issuer's delete refuses a suspended project; a state edited by
+    // hand can still hold one being offboarded, and the job must not mint
+    // for it.
     await customerSecret(cell, "sp_c");
-    await admin(cell, "suspend", "--project", "sp_c");
-    await expect(admin(cell, "offboard", "--project", "sp_c")).rejects.toThrow("project sp_c is suspended");
-    await admin(cell, "resume", "--project", "sp_c");
     await admin(cell, "offboard", "--project", "sp_c");
     await m.cache.refresh();
     await m.cache.mutate((s) => setProjectField(s, "sp_c", { status: "suspended" }));

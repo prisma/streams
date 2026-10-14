@@ -6,18 +6,24 @@
 import type { Bundle } from "./feeds";
 import { verifiedClaims } from "./test-rig";
 
-/// A fake cell: it serves the bundle the test publishes to it, and keeps
-/// each project's streams. Hooks let a test add a stream between walks
-/// or rate-limit a request once.
+/// A fake cell: it serves the bundle the test publishes to it (or, with
+/// `follow`, the one the store holds at each request), and keeps each
+/// project's streams. Hooks let a test add a stream between walks or
+/// rate-limit a request once.
 export class FakeCell {
   live?: Bundle;
   streams = new Map<string, Set<string>>();
   pageSize = 2;
-  requests: { method: string; path: string; status: number }[] = [];
+  /// Every request, with the credential of its token when its signature
+  /// verified.
+  requests: { method: string; path: string; status: number; credential?: string }[] = [];
   /// The claims of every token whose signature verified, in order.
   tokens: any[] = [];
   afterWalk?: (walks: number) => void;
   rateLimitNext = 0;
+  /// The cell's wrapper and refresh without delay, when set: each request
+  /// is answered on the bundle it returns at that moment.
+  follow?: () => Bundle;
   /// The cell's clock in milliseconds (a test's clock): a token's expiry
   /// and the store bucket's refill read it.
   now: () => number = () => Date.now();
@@ -29,6 +35,8 @@ export class FakeCell {
   storeOps?: { perSec: number };
   private levels = new Map<string, { level: number; at: number }>();
   private walks = 0;
+  /// The credential of the request being answered, when its token verified.
+  private credential?: string;
   private server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => this.answer(req) });
 
   get url(): string {
@@ -56,10 +64,12 @@ export class FakeCell {
   /// every token is refused, an operator's too), credential known, its
   /// project, its status, its grant_version; then the catalog's scope.
   private authorize(req: Request): { project: string } | Response {
+    if (this.follow) this.publish(this.follow());
     const bearer = req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
     const claims = this.live && verifiedClaims(this.live, bearer);
     if (!this.live || !claims) return this.reply(401, "bad_signature");
     this.tokens.push(claims);
+    this.credential = claims.credential_id;
     if (claims.exp + 30 <= this.now() / 1000) return this.reply(401, "expired");
     const policy = (this.live.policies.projects as any[]).find((p) => p.project_id === claims.project_id);
     if (!policy) return this.reply(421, "wrong_cell");
@@ -80,8 +90,10 @@ export class FakeCell {
 
   private answer(req: Request): Response {
     const url = new URL(req.url);
+    this.credential = undefined;
     const r = this.route(req, url);
-    this.requests.push({ method: req.method, path: url.pathname + url.search, status: r.status });
+    const credential = this.credential === undefined ? {} : { credential: this.credential };
+    this.requests.push({ method: req.method, path: url.pathname + url.search, status: r.status, ...credential });
     return r;
   }
 

@@ -23,7 +23,7 @@ const USAGE = `usage: cell-admin <command> --state DIR|s3://BUCKET/cells/CELL [-
             [--profile F]...
   check-sizing --profile F [--profile F]...
   token     --credential C --key-file K --out FILE [--ttl SECS] [--sub NAME]
-  offboard  --project P [--cell-url URL --key-file K] [--max-walks N] [--settle-secs S]
+  offboard  --project P [--cell-url URL --key-file K] [--max-walks N] [--settle-secs S] [--wait-secs S]
   list      [--json]
   bundle
   suspend   --project P
@@ -72,7 +72,7 @@ const COMMANDS = {
   offboard: {
     run: offboard,
     spec: {
-      single: ["state", "s3-credentials", "project", "cell-url", "key-file", "max-walks", "settle-secs"],
+      single: ["state", "s3-credentials", "project", "cell-url", "key-file", "max-walks", "settle-secs", "wait-secs"],
       required: ["state", "project"],
     },
   },

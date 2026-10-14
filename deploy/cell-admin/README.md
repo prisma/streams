@@ -155,8 +155,8 @@ A compromised key, in this order:
 | `admit --project P --workspace W` | Places a project and creates its customer credential. Each bounded quota defaults to the cell's ceiling; `--quota field=value` sets a lower one. `max_stored_bytes` defaults to the profile's `PROJECT_STORED_BYTES_DEFAULT`, and `--quota max_stored_bytes=N` sets any positive N, larger included. Also `--scopes "..."` (default: every scope), `--prefix p` (repeatable; a prefix the cell's grants parser takes: at most 256 UTF-8 bytes, no control character or space, no empty, `.` or `..` component, not under `__ds`, so `orders`, never `orders/`) and `--profile F` (repeatable; default the two shipped profiles), the profile it checks against the one `init` recorded |
 | `check-sizing --profile F [--profile F]...` | Checks a release's profiles (the files it ships, given in full: `--profile` is required and repeats, later wins) against the cell, exactly as `admit` checks its own copy: the same k and ceilings as at `init`, and the layered profile `init` recorded. Exit 0, or 1 with `admit`'s refusal ("the profiles changed since init ..." or "the layered profile differs ..."). A cell's ceilings are fixed for its life, and the server installs its own from the profiles it boots with, so a release that moves one would make every later `admit` fail: run it before a release deploys to the cell. It changes neither the state nor the bundle (on an `s3://` state, the buckets' self-test that every command runs writes and deletes one probe object) |
 | `token --credential C --key-file K --out FILE [--ttl SECS]` | Mints a customer token, valid at most 24 h (default 1 h; the first minute is backdated for clock skew). The token goes to FILE with mode 0600 and is never printed. Hand the file over; never paste the token |
-| `offboard --project P` | First run: revokes the project's customer credentials and adds an operator credential. Publish the bundle. On a cell with the interim issuer, its offboarding job makes the second run on its own (`deploy/issuer/offboarding.ts`: every 15 s, failed attempts retried after 1, 2, 4, ... minutes, at most an hour) |
-| `offboard --project P --cell-url URL --key-file K` | Second run: checks the cell serves the revocation, deletes every stream (listing pages of twice the project's `requests_per_sec`, each deleted before the next is listed, and waiting out a `Retry-After` of up to 120 s: the operator's token draws on the project's own buckets), re-walks the catalog until a walk at least `--settle-secs` (default 60) after that check lists nothing, then omits the project. Publish the bundle. Exit 3 means "publish, wait, run again"; the walk is bounded by `--max-walks` (default 10) |
+| `offboard --project P` | First run: revokes the project's customer credentials and adds an operator credential; for a suspended project, also moves the canary's catalog-read credential to a newer `grant_version`, its witness (below). Publish the bundle. On a cell with the interim issuer, its offboarding job makes the second run on its own (`deploy/issuer/offboarding.ts`: every 15 s, failed attempts retried after 1, 2, 4, ... minutes, at most an hour) |
+| `offboard --project P --cell-url URL --key-file K` | Second run: for a suspended project, waits until the canary answers 200 at its witness version and sets the project active for its drain (publish that bundle too; on an `s3://` state the cell's wrapper polls it); then checks the cell serves the revocation, deletes every stream (listing pages of twice the project's `requests_per_sec`, each deleted before the next is listed, and waiting out a `Retry-After` of up to 120 s: the operator's token draws on the project's own buckets), re-walks the catalog until a walk at least `--settle-secs` (default 60) after that check lists nothing, then omits the project. Publish the bundle. Exit 3 means "publish, wait, run again"; the walk is bounded by `--max-walks` (default 10), and a suspended project's two waits by `--wait-secs` each (default 120; 0 asks once) |
 | `list [--json]` | Shows the cell, its ceilings, and each project's phase, quotas and credentials. Holds no secrets |
 | `bundle` | Rewrites the bundle at a newer `feed_version`, for example after a crash between the state and the bundle |
 | `suspend --project P` / `resume --project P` | Publishes the project `suspended` (the cell answers its requests `403 project_not_active`; the issuer mints it no token) or `active` again, at a newer `project_policy_version`. Only an active (not offboarding) project |
@@ -271,14 +271,61 @@ What the catalog does not list, offboarding cannot see:
 
 ### Offboarding a suspended project
 
-`offboard` refuses a suspended project before it changes anything, as the
-issuer's delete does: the cell checks a project's status before any
-credential, so it would refuse the drain's operator token for a
-suspended project, and `resume` refuses a project being offboarded, so its
-offboarding could never finish. Resume it, then offboard it. Resuming
-gives the project's credentials back until the offboarding's revocation
-reaches the cell (about 45 s); how the owner offboards a suspended
-(abusive) project without that window is an open owner question.
+`offboard` takes a suspended (abusive) project without resuming it first
+(the owner's call 15 of 2026-10-13, the canary witness). The cell checks
+a project's status before any credential (`src/auth.rs`,
+`verify_customer`), so while the project is suspended none of its own
+tokens, the operator's included, can show whether the revocation has
+reached the cell; the canary, another project, can.
+
+1. The first run revokes every customer credential and adds the operator
+   credential, as for any project, and the project stays suspended. In
+   the same change it moves the canary's catalog-read credential to a
+   newer `grant_version` (its published entry otherwise unchanged) and
+   records that version in the project's record as
+   `witness_grant_version` (never published). Publish the bundle.
+2. The second run mints a canary token at the credential's current
+   `grant_version`, at least the witness version, and asks `GET
+   /v1/streams?limit=1` every 2 s for up to `--wait-secs` (default 120):
+   `401 grant_version_mismatch` and `403` are "not yet", any other answer
+   refuses (exit 1), and the wait running out is exit 3. A 200 proves the cell holds a grants snapshot at least as
+   new as the revocation: it compares grant versions exactly and never
+   takes an older snapshot, so whatever policy feed it reads beside it
+   (the three feeds are read one by one), the project's customer
+   credentials are revoked there.
+3. Only then does the run set the project active, at a newer
+   `project_policy_version`, in a bundle of its own (refused unless every
+   customer credential of the project is revoked or omitted). The cell's
+   answer to a token minted before the revocation turns from `403
+   project_not_active` to `403 credential_not_active`. Publish the
+   bundle; the run's proof waits for it the same way, then it drains and
+   omits the project as for any other.
+
+The second run refuses (exit 1, before asking the cell anything) a
+suspended project being offboarded without a witness version: a state
+edited by hand, whose revocation no canary answer can prove.
+
+Conditions:
+- The witness proves the snapshot of the instance that answered: exact on
+  the single-server, fleet-off cell this beta runs (the proof has the
+  same property); a fleet needs a witness per instance.
+- Each such offboarding moves the canary's catalog-read credential, so
+  its tokens minted at an older version answer `401
+  grant_version_mismatch` once the cell takes the bundle. Whatever probes
+  the canary (the alerting watch, say) mints a token per probe at the
+  credential's current `grant_version` and never keeps one across
+  minutes. The watch's own canary credential (append and read) is not
+  moved.
+- From the resume to each stream's delete (about one feed delay, then
+  the drain), anyone holding a stream's key can long-poll its change
+  cursors (no record data, no writes), within the project's quotas: watch
+  capabilities are checked against the project's status only
+  (`src/application/watch.rs`). A residual the owner accepted; closing it
+  needs a feed-contract change.
+
+The issuer's delete still refuses a suspended project `409
+project_not_active`: the owner looks before an abusive project's data
+goes, and offboards it with `cell-admin offboard`.
 
 ## Watch
 
