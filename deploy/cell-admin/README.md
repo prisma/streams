@@ -284,26 +284,34 @@ reached the cell; the canary, another project, can.
    newer `grant_version` (its published entry otherwise unchanged) and
    records that version in the project's record as
    `witness_grant_version` (never published). Publish the bundle.
-2. The second run mints a canary token at the credential's current
-   `grant_version`, at least the witness version, and asks `GET
-   /v1/streams?limit=1` every 2 s for up to `--wait-secs` (default 120):
-   `401 grant_version_mismatch` and `403` are "not yet", any other answer
-   refuses (exit 1), and the wait running out is exit 3. A 200 proves the cell holds a grants snapshot at least as
+2. The second run, or the issuer's offboarding job in one attempt, asks
+   `GET /v1/streams?limit=1` every 2 s for up to `--wait-secs` (default
+   120; the job's 120 s) with a canary token minted for each probe at the
+   credential's `grant_version` as the state holds it then (the run
+   reloads it, the job revalidates its copy), at least the witness
+   version: another suspended project's offboarding may move it on during
+   the wait, and the cell may take that bundle without ever holding this
+   one's. `401
+   grant_version_mismatch` and `403` are "not yet", any other answer
+   refuses (exit 1), and the wait running out is exit 3 (for the job, a
+   failed attempt, retried after its backoff). A 200 proves the cell holds a grants snapshot at least as
    new as the revocation: it compares grant versions exactly and never
    takes an older snapshot, so whatever policy feed it reads beside it
    (the three feeds are read one by one), the project's customer
    credentials are revoked there.
 3. Only then does the run set the project active, at a newer
    `project_policy_version`, in a bundle of its own (refused unless every
-   customer credential of the project is revoked or omitted). The cell's
+   customer credential of the project is revoked or omitted; the job
+   audits it, `project.resume`). The cell's
    answer to a token minted before the revocation turns from `403
    project_not_active` to `403 credential_not_active`. Publish the
    bundle; the run's proof waits for it the same way, then it drains and
    omits the project as for any other.
 
 The second run refuses (exit 1, before asking the cell anything) a
-suspended project being offboarded without a witness version: a state
-edited by hand, whose revocation no canary answer can prove.
+suspended project being offboarded without a witness version, and the
+job fails its attempts the same way: a state edited by hand, whose
+revocation no canary answer can prove.
 
 Conditions:
 - The witness proves the snapshot of the instance that answered: exact on

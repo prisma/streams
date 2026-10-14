@@ -5,9 +5,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { FakeCell } from "../cell-admin/fake-cell";
 import { OPERATOR_SCOPES } from "../cell-admin/offboard";
-import { setProjectField } from "../cell-admin/rules";
+import { canaryProbeCredential, setProjectField } from "../cell-admin/rules";
 import { cleanup, denylistText, fakeS3, readBundle, readBundleText } from "../cell-admin/test-rig";
 import { publicKeyRecord } from "../cell-admin/tokens";
+import { Offboarding } from "./offboarding";
 import { admin, cellState, customerSecret, envWith, issuerCell, managed, managementAudits } from "./rig";
 
 const fakes: FakeCell[] = [];
@@ -195,11 +196,112 @@ describe("the offboarding job", () => {
     expect(cellState(cell).projects.sp_z.offboard_attempts).toBeUndefined();
   });
 
-  test("fails a suspended project's attempts without asking the cell: its operator token would be refused", async () => {
+  test("drains a project cell-admin offboarded while suspended in one attempt: waits for the canary witness, resumes it, waits for the proof, drains and omits it, auditing the resume", async () => {
     const { cell, fake, m, a, id } = await deleted();
-    // The issuer's delete refuses a suspended project; a state edited by
-    // hand can still hold one being offboarded, and the job must not mint
-    // for it.
+    await customerSecret(cell, "sp_c");
+    const customer = Object.entries(cellState(cell).credentials).find(([, c]) => c.project_id === "sp_c")![0];
+    await admin(cell, "suspend", "--project", "sp_c");
+    const lagging = readBundle(cell.state);
+    await admin(cell, "offboard", "--project", "sp_c");
+    await m.cache.refresh();
+    const offboarded = cellState(cell);
+    const canary = canaryProbeCredential(offboarded);
+    const operator = Object.entries(offboarded.credentials).find(([, c]) => c.project_id === "sp_c" && c.role === "operator")![0];
+    expect(offboarded.projects.sp_c).toMatchObject({ status: "suspended", witness_grant_version: 2 });
+    // The cell holds the suspension, not the revocation; it takes what
+    // the store holds only during the job's pauses.
+    fake.streams.set("sp_c", new Set(["c1", "c2"]));
+    let served = lagging;
+    fake.follow = () => served;
+    const slept: number[] = [];
+    const job = new Offboarding(m.cfg, {
+      cache: m.cache, audit: m.issuer.audit, now: () => m.clock.t, log: (l) => m.logs.push(l), settleMs: 0,
+      sleep: async (ms) => {
+        slept.push(ms);
+        served = readBundle(cell.state);
+      },
+    });
+    await job.runDue();
+    const after = cellState(cell);
+    expect(after.projects.sp_c).toMatchObject({ phase: "offboarded", status: "active", project_policy_version: 3 });
+    expect(after.projects.sp_c.offboard_attempts).toBeUndefined();
+    expect(slept).toEqual([2000, 2000]);
+    // The witness (not yet, then 200 once the cell took the revocation),
+    // then the proof (the operator refused for the project's status until
+    // the cell took the resume), then the walks.
+    const kind: Record<string, string> = { [canary]: "canary", [operator]: "operator", [customer]: "customer" };
+    expect(fake.requests.filter((q) => kind[q.credential ?? ""]).slice(0, 5).map((q) => [kind[q.credential!], q.status]))
+      .toEqual([["canary", 401], ["canary", 200], ["operator", 403], ["operator", 200], ["customer", 403]]);
+    expect([...fake.streams.get("sp_c")!]).toEqual([]);
+    expect(m.logs.filter((l) => l.startsWith("offboarding sp_c: ")).slice(0, 2)).toEqual([
+      "offboarding sp_c: the cell holds the revocation of sp_c: the canary's catalog-read credential answered 200 " +
+        "at grant_version 2",
+      "offboarding sp_c: sp_c is active again at project_policy_version 3, for its drain",
+    ]);
+    // Audit objects are keyed by the millisecond, which this clock keeps:
+    // found by their actions.
+    const audits = managementAudits(cell).filter((e) => e.project_id === "sp_c");
+    expect(audits.map((e) => [e.actor, e.action, e.outcome]).sort()).toEqual([
+      ["issuer:offboard", "project.offboard", "done"], ["issuer:offboard", "project.resume", "done"],
+    ]);
+    const resume = audits.find((e) => e.action === "project.resume");
+    expect(resume).toMatchObject({
+      reason: "the cell holds the revocation (the canary answered 200 at grant_version 2): active for its drain",
+      before: { project_policy_version: 2 }, after: { project_policy_version: 3 },
+    });
+    // One change: the deleted project's omit may come before it.
+    expect(resume.after.feed_version).toBe(resume.before.feed_version + 1);
+    // The deleted project drained beside it.
+    expect(after.projects[id].phase).toBe("offboarded");
+    expect((await m.get(`${PROJECTS}/${id}`, a)).status).toBe(404);
+  });
+
+  test("mints each witness probe at the canary's grant_version as its revalidated copy holds it then: another suspended project offboarded during the wait does not fail the attempt", async () => {
+    const { cell, fake, m } = await deleted();
+    for (const p of ["sp_c", "sp_d"]) {
+      await customerSecret(cell, p);
+      await admin(cell, "suspend", "--project", p);
+    }
+    const lagging = readBundle(cell.state);
+    await admin(cell, "offboard", "--project", "sp_c");
+    await m.cache.refresh();
+    const canary = canaryProbeCredential(cellState(cell));
+    // The cell holds the suspensions, not sp_c's revocation. During the
+    // job's first pause the owner offboards sp_d too (the canary moves on
+    // to grant_version 3), and the cell takes that bundle, which holds
+    // both revocations, never sp_c's own.
+    let served = lagging;
+    fake.follow = () => served;
+    const slept: number[] = [];
+    const job = new Offboarding(m.cfg, {
+      cache: m.cache, audit: m.issuer.audit, now: () => m.clock.t, log: (l) => m.logs.push(l), settleMs: 0,
+      waitMs: 10_000,
+      sleep: async (ms) => {
+        slept.push(ms);
+        if (slept.length === 1) await admin(cell, "offboard", "--project", "sp_d");
+        served = readBundle(cell.state);
+      },
+    });
+    await job.runDue();
+    expect(cellState(cell).projects.sp_c).toMatchObject({ phase: "offboarded", status: "active", witness_grant_version: 2 });
+    expect(cellState(cell).projects.sp_c.offboard_attempts).toBeUndefined();
+    expect(fake.requests.filter((q) => q.credential === canary).map((q) => q.status)).toEqual([401, 200]);
+    expect(fake.tokens.filter((t) => t.credential_id === canary).map((t) => t.grant_version)).toEqual([2, 3]);
+    expect(m.logs).toContain(
+      "offboarding sp_c: the cell holds the revocation of sp_c: the canary's catalog-read credential answered 200 " +
+        "at grant_version 3",
+    );
+    expect(managementAudits(cell).find((e) => e.project_id === "sp_c" && e.action === "project.resume")).toMatchObject({
+      reason: "the cell holds the revocation (the canary answered 200 at grant_version 3): active for its drain",
+    });
+    expect(cellState(cell).projects.sp_d).toMatchObject({ phase: "offboarding", status: "suspended", witness_grant_version: 3 });
+  });
+
+  test("fails, asking the cell nothing for it, the attempts at a suspended project being offboarded without a witness version", async () => {
+    const { cell, fake, m, id } = await deleted();
+    // The issuer's delete refuses a suspended project, and cell-admin
+    // records a witness for one; a state edited by hand can still hold one
+    // without, whose revocation no canary answer proves.
     await customerSecret(cell, "sp_c");
     await admin(cell, "offboard", "--project", "sp_c");
     await m.cache.refresh();
@@ -208,14 +310,13 @@ describe("the offboarding job", () => {
     await m.cache.refresh();
     await m.issuer.offboarding.runDue();
     expect(cellState(cell).projects.sp_c).toMatchObject({ phase: "offboarding", status: "suspended", offboard_attempts: 1 });
-    expect(fake.tokens.map((t) => t.project_id)).not.toContain("sp_c");
+    expect(fake.tokens.map((t) => t.project_id).filter((p) => p === "sp_c" || p.startsWith("sp_canary_"))).toEqual([]);
     expect(m.logs).toContain(
-      `offboarding sp_c: attempt 1 failed (project sp_c is suspended: the cell refuses the drain's operator token for ` +
+      "offboarding sp_c: attempt 1 failed (project sp_c is suspended and being offboarded without a witness " +
+        "version: its revocation was not made by offboard's first run, so no canary answer proves the cell holds " +
         `it); next attempt at ${cellState(cell).projects.sp_c.next_attempt_at}`,
     );
-    // The deleted project drained beside it.
     expect(cellState(cell).projects[id].phase).toBe("offboarded");
-    expect((await m.get(`${PROJECTS}/${id}`, a)).status).toBe(404);
   });
 
   test("runs on its interval once started", async () => {
