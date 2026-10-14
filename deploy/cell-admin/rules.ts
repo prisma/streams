@@ -412,11 +412,14 @@ export const placedProjects = (state: CellState) =>
 
 /// Place the cell's canary; `init` calls it on a new state, with the
 /// stored bytes its profile gives a project (`CellSizing.stored_default`).
+/// Two streams: cell-check's own `cell-check` stream and the alerting
+/// watch's canary stream, one each, so neither's create meets the other's
+/// `429 stream_limit`.
 export function placeCanary(state: CellState, storedDefault: number): void {
   admitProject(state, {
     project: canaryProjectId(state.cell.cell_id),
     workspace: CANARY_WORKSPACE,
-    quotas: admittedQuotas(state, ["requests_per_sec=5", "max_streams=1"], storedDefault),
+    quotas: admittedQuotas(state, ["requests_per_sec=5", "max_streams=2"], storedDefault),
     scopes: "streams.catalog.read",
     display_name: "canary",
     credential: { id: newCredentialId(state), display_name: "catalog-read", hidden: true },

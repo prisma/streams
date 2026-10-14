@@ -75,11 +75,13 @@ for (const kind of STORES) {
         expect((b.keys.keys[0] as any).aud).toBe("prisma-streams-data");
         expect((b.keys.keys[0] as any).kid).toMatch(/^streams-rs256-[0-9a-f]{16}$/);
         // The issuer's canary (B1.9): a reserved project, one hidden catalog-read
-        // credential without a secret, at the smallest quotas that serve a probe.
+        // credential without a secret, at the smallest quotas that serve a probe:
+        // two streams, one for cell-check's `cell-check` stream and one for the
+        // alerting watch's canary stream, so neither's create meets the other's.
         expect(b.policies.projects).toEqual([{
           project_id: "sp_canary_cell_sc1", workspace_id: "streams-issuer-canary", cell_id: "cell_sc1",
           project_policy_version: 1, ownership_version: 1, status: "active",
-          quotas: { ...CEILINGS, requests_per_sec: 5, max_streams: 1 },
+          quotas: { ...CEILINGS, requests_per_sec: 5, max_streams: 2 },
         }]);
         const [[id, canary]] = Object.entries(readState(c.state).credentials);
         expect(b.grants.credentials).toEqual([{ credential_id: id, project_id: "sp_canary_cell_sc1", grant_version: 1,

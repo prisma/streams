@@ -172,8 +172,9 @@ A compromised key, in this order:
 
 `init` also places the issuer's canary: the reserved project
 `sp_canary_<cell id>` in the workspace `streams-issuer-canary`, at 5
-requests/s and 1 stream (every other quota at the ceiling, and the stored
-bytes at the profile's default), with one
+requests/s and 2 streams, one for cell-check's own `cell-check` stream and
+one for the alerting watch's canary stream (every other quota at the
+ceiling, and the stored bytes at the profile's default), with one
 hidden credential holding only `streams.catalog.read` and no secret. The
 issuer and `cell-admin canary` mint tokens for it to prove the cell
 serves a key or a generation; the watch's own credential is added with
