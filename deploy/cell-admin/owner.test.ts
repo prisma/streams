@@ -383,6 +383,25 @@ for (const kind of STORES) {
       expect((await canary(stranger)).err).toBe(`cell-admin canary: key file ${stranger} is not a key of cell cell_sc1`);
     });
 
+    test("canary mints each probe at the catalog-read credential's version as the state holds it then: an offboarding that moves it during a drill does not time the drill out", async () => {
+      const c = await initCell();
+      await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "wksp_a");
+      await run("suspend", "--state", c.state, "--project", "proj_a");
+      // A cell that serves no bundle yet: the first probe is refused.
+      fake = new FakeCell();
+      const drill = run("canary", "--state", c.state, "--key-file", c.key, "--cell-url", fake.url, "--wait-secs", "3");
+      while (fake.requests.length === 0) await Bun.sleep(10);
+      // Before the second probe, 2 s later, the owner offboards the
+      // suspended project (the canary's catalog-read credential moves to
+      // grant_version 2) and the cell takes that bundle.
+      expect((await run("offboard", "--state", c.state, "--project", "proj_a")).code).toBe(0);
+      fake.publish(readBundle(c.state));
+      const r = await drill;
+      expect([r.code, r.err]).toEqual([0, ""]);
+      expect(fake.requests.map((q) => q.status)).toEqual([401, 200]);
+      expect(fake.tokens.map((t) => t.grant_version)).toEqual([2]);
+    }, 15_000);
+
     test("export writes the Stage 1 import set of the cell's active customer projects to a 0600 file", async () => {
       const c = await initCell();
       await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "wksp_a", "--quota", "max_streams=10");

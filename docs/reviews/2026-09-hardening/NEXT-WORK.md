@@ -166,8 +166,9 @@ alongside and finish before admission opens.
      a sweep, before 2027-11 (`deploy/issuer/audit.ts`);
    - owner calls issuer #1 (offboarding a suspended project) and issuer
      #2 (a workspace taken off the allow-list), decided on 2026-10-13 as
-     calls 15 ((iv), a canary witness) and 16 ((b), a reduced mode), to
-     be built ("Decided 2026-10-13, to be built", below);
+     calls 15 ((iv), a canary witness) and 16 ((b), a reduced mode); 15
+     built in round 4, 16 to be built ("Decided 2026-10-13, to be
+     built", below);
    - found by the stack review of 2026-10-13, open: `cell-admin
      credential` drops its staged secret when a state save's outcome is
      unknown (eea3f381, "Not covered"); closed in round 4: a drain's one
@@ -428,7 +429,15 @@ re-record at landing covers it too.
 - Call 14: CI's Composer good boot in the sdk-package job, the issuer's
   four opt-in Composer tests in that step, Bun pinned at 1.4.3.
 - Call 15: offboarding a suspended project through a canary witness,
-  with the skeptic's five amendments (item 3).
+  with the skeptic's five amendments (item 3). Built in round 4:
+  `cell-admin offboard` takes a suspended project (the first run moves
+  the canary's catalog-read credential and records the witness version;
+  the second sets it active only once the canary answers 200 there), the
+  issuer's offboarding job does the same in one attempt, `cell-admin
+  canary` mints each probe at the current version, and #151 and
+  WIRE-MATRIX restate the delete's reason; the alerting watch, in
+  flight, must mint its catalog-read canary tokens per probe too
+  (`deploy/cell-admin/README.md`, "Offboarding a suspended project").
 - Call 16: an off-list workspace's reduced mode, with #151, #152,
   WIRE-MATRIX and the page amended (item 3).
 

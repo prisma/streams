@@ -89,15 +89,19 @@ export async function credential(f: Flags, io: Io): Promise<void> {
 /// `--wait-secs` (default 120). A 200 proves the cell serves that key and
 /// a grants generation holding the canary credential's current version;
 /// anything else after the wait is exit 3 (publish, wait, run again).
+/// Each probe mints from the state as it is then: offboarding a suspended
+/// project moves the credential's grant_version (its witness, offboard.ts),
+/// and a token at the version a drill began with would never answer 200
+/// once the cell takes that bundle.
 export async function canary(f: Flags, io: Io): Promise<void> {
   const store = await openStore(f);
   const base = cellBase(f.must("cell-url"));
   const waitMs = f.count("wait-secs", 120) * 1000;
-  const { state } = await loadChecked(store);
+  let { state } = await loadChecked(store);
   const sk = cellSigningKey(state, f.must("key-file"));
-  const id = canaryProbeCredential(state);
   const deadline = Date.now() + waitMs;
   for (;;) {
+    const id = canaryProbeCredential(state);
     const token = signJwt(sk, customerClaims(state, id, CANARY_TOKEN_TTL_SECS, "cell-admin-canary"));
     const reply = await call(base, "GET", "/v1/streams?limit=1", token);
     if (reply.status === 200) {
@@ -111,6 +115,7 @@ export async function canary(f: Flags, io: Io): Promise<void> {
       );
     }
     await new Promise((r) => setTimeout(r, CANARY_POLL_MS));
+    ({ state } = await loadChecked(store));
   }
 }
 

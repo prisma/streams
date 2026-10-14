@@ -165,7 +165,7 @@ A compromised key, in this order:
 | `allow --workspace W [--max-projects N] [--requests-per-sec R] [--note TEXT]` | Puts a Prisma workspace on the beta's allow-list (`allowlist.json` beside a directory state; `beta/allowlist.json` in the control bucket, shared by its cells), or replaces its limits: `--max-projects` over the cell's workspace cap (`init --workspace-cap`), `--requests-per-sec` (at most the ceiling) over the free-tier rate. The issuer creates projects only for listed workspaces |
 | `disallow --workspace W` | Takes a workspace off the allow-list: it creates no new project, and its projects keep running until you suspend them (the owner's question I8, answer (a)) |
 | `gate --open \| --close \| --n-max N` | Opens or closes self-serve admission, or sets how many customer projects the issuer places (default open, 50: the static u = 0.5 rule). It publishes nothing |
-| `canary --key-file K --cell-url URL [--wait-secs S]` | Mints a 5-minute token for the canary's catalog-read credential under K (a key of the cell) and asks the cell `GET /v1/streams?limit=1` until it answers 200, for at most S seconds (default 120): the proof that the cell serves that key, the rotation drill's step 2. Exit 3 when it does not yet |
+| `canary --key-file K --cell-url URL [--wait-secs S]` | Mints a 5-minute token for the canary's catalog-read credential under K (a key of the cell) and asks the cell `GET /v1/streams?limit=1` until it answers 200, for at most S seconds (default 120): the proof that the cell serves that key, the rotation drill's step 2. Each probe re-reads the state and mints at the credential's current `grant_version`, which offboarding a suspended project moves. Exit 3 when it does not yet |
 | `export --out FILE` | Writes the Stage 1 import set: every active customer project (suspended included; offboarding ones and the canary not) with its versions and quotas, and its customer credentials with their grant versions and, where they have a secret, its hash and pepper version. Mode 0600: keep it like the state |
 | `keys add --public-key FILE [--retire-others]` | Publishes a new key's public half beside the cell's keys: the rotation drill's overlap generation. With `--retire-others`, alone: the compromise drill, after which every token under another kid answers 401 |
 | `keys retire --kid K` | Omits a kid, which retires it at the cell for good (refused for the cell's last key). The state remembers retired kids, and `keys add` refuses one: the cell refuses a keys snapshot in which a retired kid returns |
@@ -320,9 +320,10 @@ Conditions:
 - Each such offboarding moves the canary's catalog-read credential, so
   its tokens minted at an older version answer `401
   grant_version_mismatch` once the cell takes the bundle. Whatever probes
-  the canary (the alerting watch, say) mints a token per probe at the
-  credential's current `grant_version` and never keeps one across
-  minutes. The watch's own canary credential (append and read) is not
+  the canary mints a token per probe at the credential's current
+  `grant_version` and never keeps one across minutes: `cell-admin canary`
+  re-reads the state before each probe, and the alerting watch must do
+  the same. The watch's own canary credential (append and read) is not
   moved.
 - From the resume to each stream's delete (about one feed delay, then
   the drain), anyone holding a stream's key can long-poll its change
