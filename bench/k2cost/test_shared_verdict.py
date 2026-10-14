@@ -196,6 +196,19 @@ class LayerB(unittest.TestCase):
         self.assertEqual(m["bars"]["victim: append p99 under noise"]["value"]["harness_bound"], True)
         self.assertEqual(m["bars"]["victim: append p99 under noise"]["pass"], True)
 
+    def test_each_victim_class_has_its_own_p99_bars(self):
+        # Layer B's free-tier twin of the victim (lead decision deploy-q5 #6
+        # (1)) is a second victim class: one failing victim must not be
+        # hidden behind the other's passing numbers.
+        self.w.classes["victim-free"] = copy.deepcopy(self.w.classes["victim"])
+        self.w.run["classes"]["victim-free"] = {"count": 1, "role": "victim", "quotas": "free-tier"}
+        m = self.mutated(lambda w: w.classes["victim"]["periods"]["noisy"].update(read_p99_ms=30.0), "victim-p99")
+        bars = {k: (v["value"]["noisy"], v["pass"]) for k, v in m["bars"].items() if "p99 under noise" in k}
+        self.assertEqual(bars, {
+            "victim: append p99 under noise": (20.0, True), "victim: read p99 under noise": (30.0, False),
+            "victim-free: append p99 under noise": (20.0, True), "victim-free: read p99 under noise": (24.0, True)})
+        self.assertEqual(m["load"]["quota_posture"]["free-tier"], {"victim": ["victim-free"]})
+
     def mutated(self, edit, *want):
         edit(self.w)
         m = self.w.judge()

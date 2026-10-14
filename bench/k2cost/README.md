@@ -516,7 +516,8 @@ passes), `probes` (2,000 first contacts, every pair one; 0 differences,
 every create 201),
 `compliant-refusals` (0, every typed code counted), `hostile-typed`
 (untyped answers under 0.5%), `victim-p99` (noisy <= max(2 x solo, 25 ms),
-appends and reads; flagged `harness_bound` when the driver's own event-loop
+appends and reads, for each victim class, its bars named by the class;
+flagged `harness_bound` when the driver's own event-loop
 lag p99 in the noisy period is at least a quarter of the victim's p99, as
 the victim is timed in the process that drives every project), `billing` (every project's meters settled at its
 ledger), `memory` (peak < 500 MB, slope < 2 MB/min over the load's last

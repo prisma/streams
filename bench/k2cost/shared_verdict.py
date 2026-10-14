@@ -387,17 +387,19 @@ def leg_hostile(r: Run, bars: dict) -> bool:
 
 
 def leg_victim(r: Run, bars: dict) -> bool:
-    victims = [c for c in r.classes.values() if c.get("role") == "victim"]
+    """Each victim class's p99 under noise against its own solo p99, its
+    bars named by the class (Layer B has the victim and its free-tier twin)."""
+    victims = [(cls, c) for cls, c in r.classes.items() if c.get("role") == "victim"]
     ok = bool(victims)
     lag = ((r.run.get("loop_lag") or {}).get("noisy") or {}).get("lag_p99_ms")
-    for v in victims:
+    for cls, v in victims:
         per = v.get("periods") or {}
         solo, noisy = per.get("solo") or {}, per.get("noisy") or {}
         for kind in ("append", "read"):
             s, n = solo.get(f"{kind}_p99_ms"), noisy.get(f"{kind}_p99_ms")
             limit = max(VICTIM_P99_FACTOR * s, VICTIM_P99_FLOOR_MS) if s is not None else None
             bound = lag is not None and n is not None and lag >= LOOP_LAG_MATERIAL_SHARE * n
-            ok &= bar(bars, f"victim: {kind} p99 under noise",
+            ok &= bar(bars, f"{cls}: {kind} p99 under noise",
                       {"noisy": n, "solo": s, "loop_lag_p99_ms": lag, "harness_bound": bound}, limit,
                       n is not None and limit is not None and n <= limit)
     return ok
