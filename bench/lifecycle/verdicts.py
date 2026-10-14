@@ -28,12 +28,15 @@ import re
 #: The binary's ordered stop bound, PROCESS_STOP_DEADLINE (src/tasks/exits.rs).
 STOP_BOUND_S = 30
 #: Owner decision D4 (deploy-q5 Q4), (a), 2026-10-12: the restart window,
-#: 10 s (its measure confirmed by the owner on 2026-10-13). Measured as
-#: the time raw clients are without service across a redeploy's switch
-#: (judge_restart): with create-before-delete deploys the first success
-#: after the new version's `listening` line is the old build's, so that
-#: reading would be about 0 s whatever the switch does; the new build's
-#: first answer after `listening` is reported beside it.
+#: 10 s, as the owner's round-3 call 10 (2026-10-13) measures it: across a
+#: redeploy, at most 10 s without an SDK success, and 0 SDK errors
+#: (judge_sdk, on the shipping SDK's read, plain append and producer
+#: append; sdk-probe.mjs). The raw prober's window, between its completed
+#: all-2xx ticks, is held to the same 10 s (raw_window). The anchor is the
+#: outage across the switch, not the new version's `listening` line: with
+#: create-before-delete deploys the first success after it is the old
+#: build's, so that reading would be about 0 s whatever the switch does;
+#: the new build's first answer after `listening` is reported beside it.
 RESTART_WINDOW_BAR_S = 10
 #: Publish to effect for an admit or a revoke: the wrapper's 15 s poll plus
 #: the server's 30 s feed refresh (RUNBOOK "Shared cells", "Publishing").
@@ -420,7 +423,6 @@ def judge_restart(ev: dict) -> Report:
     r = Report("restart")
     restarts = ev.get("restarts") or []
     ticks = sorted(ev.get("samples") or [], key=lambda s: s["t"])
-    every = ev.get("probe_every_s")
     if not restarts:
         r.add("FAIL", "no restart ran")
     if not any(a.get("kind") == "append" for s in ticks for a in s.get("answers") or []):
@@ -456,10 +458,80 @@ def judge_restart(ev: dict) -> Report:
         seen = sorted({"%s %s:%s (%s)" % (a.get("kind"), a.get("status"), a.get("code"), build(s)) for s, a in bad})
         r.check(not bad, f"restart {i}: raw clients saw only 503 with Retry-After",
                 f"restart {i}: raw clients saw {len(bad)} other answer(s): {seen}")
-    if restarts and every:
-        r.add("FACT", f"the windows are a raw client's, polling every {every} s; an SDK client's first success after a "
-                      "switch can come up to one retry backoff later, so they understate D4's window to the first SDK success")
+    if restarts:
+        judge_sdk(r, ev, restarts)
     return r
+
+
+# ---------------------------------------------------------------- leg 3: the SDK probe
+
+#: The SDK probe's calls, made in turn (lifecycle.SdkProbe, sdk-probe.mjs).
+SDK_PATHS = {"read": "read", "append": "plain append", "producer": "producer append"}
+
+
+def sdk_failure(c: dict) -> str:
+    """A failed SDK call (or the probe's setup): its path, the SDK's error
+    class and the answer or cause that ended it."""
+    e = c.get("error") or {}
+    why = f"answered {e['answer']}" if e.get("answer") else f"no answer: {e.get('cause') or e.get('message')}"
+    return f"{SDK_PATHS.get(c.get('path'), c.get('path') or 'setup')}: {e.get('class')} ({why})"
+
+
+def sdk_call(c: dict) -> str:
+    """One call in a gap: its path, how it ended, how long it took and the
+    answers to each of the SDK's attempts."""
+    how = "ok" if c.get("ok") else "in flight at the probe's stop" if c.get("stopped") else (c.get("error") or {}).get("class")
+    tries = ", ".join(f"{a.get('status') or 'no answer'}" + (f" Retry-After {a['retry_after']}" if a.get("retry_after") else "")
+                      for a in c.get("attempts") or [])
+    return f"{SDK_PATHS.get(c.get('path'), c.get('path'))} {how} after {secs(c['end'] - c['start'])} s [{tries}]"
+
+
+def judge_sdk(r: Report, ev: dict, restarts: list) -> None:
+    """D4's bar on the shipping SDK's calls (the owner's round-3 call 10):
+    no SDK call fails anywhere in the leg, and across each restart (its
+    trigger to the next one, or to the probe's stop) SDK successes come at
+    most RESTART_WINDOW_BAR_S apart, from the last success before it. A
+    success is a call's end: a call the SDK retried for seconds counts as
+    time without service."""
+    sdk = ev.get("sdk") or {}
+    calls = sorted((c for c in sdk.get("calls") or [] if c.get("path") and c.get("end") is not None),
+                   key=lambda c: c["end"])
+    if not calls:
+        r.add("FAIL", "the SDK probe made no call: D4's bar is the shipping SDK's (restart.sdk)")
+        return
+    triggers = [rs["t_trigger"] for rs in restarts]
+    listens = [cell_boot_facts(rs.get("new_lines"))["listen_t"] for rs in restarts]
+
+    def at(t: int, i: int) -> str:
+        if i == 0:
+            return f"{secs(triggers[0] - t)} s before the first restart's trigger"
+        if listens[i - 1] is None:
+            return f"{secs(t - triggers[i - 1])} s after the restart's trigger"
+        return f"{secs(t - listens[i - 1])} s after `listening`"
+    failed: dict = {}
+    for c in calls:
+        if not c.get("ok") and not c.get("stopped"):
+            failed.setdefault((sum(1 for x in triggers if x <= c["end"]), sdk_failure(c)), []).append(c)
+    for (i, what), cs in sorted(failed.items(), key=lambda kv: kv[1][0]["end"]):
+        r.add("FAIL", f"{f'restart {i}' if i else 'before the first restart'}: {len(cs)} SDK call(s) failed, the first "
+                      f"{at(cs[0]['end'], i)}: {what}")
+    done = [c["end"] for c in calls if c.get("ok")]
+    t_stop = sdk.get("t_stop") or calls[-1]["end"]
+    for i, start in enumerate(triggers, 1):
+        end = triggers[i] if i < len(triggers) else max(t_stop, start)
+        edges = ([e for e in done if e <= start][-1:] or [start]) + [e for e in done if start < e < end] + [end]
+        gap, a, b = max(((y - x) / 1000, x, y) for x, y in zip(edges, edges[1:]))
+        inside = [sdk_call(c) for c in sorted(calls, key=lambda c: c["start"]) if a <= c["start"] < b]
+        r.check(gap <= RESTART_WINDOW_BAR_S,
+                f"restart {i}: SDK successes came at most {gap:.1f} s apart across the switch (bar {RESTART_WINDOW_BAR_S} s)",
+                f"restart {i}: no SDK success for {gap:.1f} s, from {at(a, i)} to {at(b, i)}"
+                + (" (the probe's stop)" if b == t_stop and i == len(triggers) else "")
+                + f", over the {RESTART_WINDOW_BAR_S} s bar; its calls: " + ("; ".join(inside[:4]) or "none")
+                + (f"; {len(inside) - 4} more" if len(inside) > 4 else ""))
+    kinds = [c["path"] for c in calls if not c.get("stopped")]
+    r.add("FACT", f"the SDK probe (sdk/dist) made {len(kinds)} calls one at a time: {kinds.count('read')} reads, "
+                  f"{kinds.count('append')} plain appends, {kinds.count('producer')} producer appends; "
+                  f"{sum(len(cs) for cs in failed.values())} failed")
 
 
 # ---------------------------------------------------------------- leg 4: rollback

@@ -139,6 +139,39 @@ class FakeShell:
         return Job()
 
 
+class FakeSdk:
+    """sdk-probe.mjs on the fake clock: from when the leg starts it until the
+    leg stops it, a call ending every 250 ms in turn (read, plain append,
+    producer append) into the run's sdk-calls.jsonl, each answered 200 50 ms
+    after it began unless `answer(ms, path)` returns a failed call's fields."""
+
+    PATHS = ("read", "append", "producer")
+
+    def __init__(self, ctx, clock, answer=lambda ms, path: None, setup=None):
+        self.ctx, self.answer, self.setup, self.n, self.next = ctx, answer, setup, 0, None
+        clock.ticks.append(self.tick)
+
+    def line(self, rec: dict) -> None:
+        with open(os.path.join(self.ctx.out, "sdk-calls.jsonl"), "a") as f:
+            f.write(json.dumps(rec) + "\n")
+
+    def tick(self, now: int) -> None:
+        names = [n for n, _ in self.ctx.shell.calls]
+        if "sdk-probe" not in names or "sdk-probe" in self.ctx.shell.stopped:
+            return
+        if self.next is None:
+            self.next = now
+            self.line(self.setup or {"setup": "ok", "t": now})
+        while self.setup is None and self.next <= now:
+            path = self.PATHS[self.n % 3]
+            t = self.next - 50
+            rec = {"path": path, "start": t, "attempts": [{"t": t, "end": self.next, "status": 200}], "ok": True,
+                   "end": self.next}
+            self.line({**rec, **(self.answer(self.next, path) or {})})
+            self.n += 1
+            self.next += 250
+
+
 def load_hook(clock):
     """A k2gen produce job: its window lines from its start until it was
     waited for, or until its --duration ran out, whichever came first."""
@@ -164,6 +197,12 @@ class Legs(unittest.TestCase):
         self.plan = H.Plan.load(os.path.join(HERE, "plan.example.json"))
         self.plan.doc["out"] = self.tmp
         self.clock = FakeClock()
+        # The SDK probe's header file: its token and key, readable by its owner alone.
+        self.sdk_headers = os.path.join(self.tmp, "sdk-headers.txt")
+        with open(self.sdk_headers, "w") as f:
+            f.write("authorization: Bearer t0k\nprisma-encryption-key: k3y\n")
+        os.chmod(self.sdk_headers, 0o600)
+        self.plan.doc["restart"]["sdk"]["headers_file"] = self.sdk_headers
 
     def tearDown(self):
         shutil.rmtree(self.tmp)
@@ -228,27 +267,36 @@ class Legs(unittest.TestCase):
         self.assertTrue(any("under light load across the redeploy" in x and "appends acked after the switch" in x
                             for x in r.render()), r.render())
 
-    def test_restart_probes_a_read_an_append_and_the_boot_id_every_tick_across_the_switch(self):
+    def restart_rig(self, product, sdk_answer=lambda ms, path: None, sdk_setup=None):
+        """One restart (count 1): v2 boots 3 s after the trigger and /health
+        answers b2 from 9 s after it; `product` answers the cell's product
+        surface; the fake SDK probe answers as `sdk_answer` says."""
         compute = FakeCompute(self.clock, ["v1"])
         self.plan.doc["restart"].update(count=1, warmup_s=5, cooldown_s=20)
         boots = ["b1"]
-        calls = []
 
         def restart(cmd, subs):
             t = self.clock.now()
             compute.add("v2", boot_lines(t + 3_000, "b2"), at=t + 4_000)
             self.clock.ticks.append(lambda now: boots.append("b2") if now >= t + 9_000 and boots[-1] != "b2" else None)
             return 0, ""
+        cell = mock.Mock()
+        cell.product.side_effect = product
+        cell.health.side_effect = lambda: {"t": self.clock.now(), "status": 200, "boot": boots[-1]}
+        ctx = self.ctx(compute, {"restart": restart}, cell)
+        FakeSdk(ctx, self.clock, sdk_answer, sdk_setup)
+        return ctx
+
+    def test_restart_probes_a_read_an_append_and_the_boot_id_every_tick_across_the_switch(self):
+        calls = []
 
         def product(path, headers_file=None, method="GET", body=None):
             calls.append((method, path, body))
             t = self.clock.now()
             self.clock.t += 20  # each answer takes 20 ms
             return {"t": t, "status": 201 if method == "PUT" else 200, "code": None, "retry_after": None, "boot": None}
-        cell = mock.Mock()
-        cell.product.side_effect = product
-        cell.health.side_effect = lambda: {"t": self.clock.now(), "status": 200, "boot": boots[-1]}
-        ev = L.restart(self.ctx(compute, {"restart": restart}, cell))
+        ctx = self.restart_rig(product)
+        ev = L.restart(ctx)
         self.assertEqual(calls[0], ("PUT", "/v1/streams/lc/restart-probe", b'{"format":{"kind":"json"}}'))
         # The read probe's stream checked once, then every tick a read and an append.
         self.assertEqual(calls[1], ("GET", "/v1/streams/lc/s00000", None))
@@ -259,35 +307,41 @@ class Legs(unittest.TestCase):
         self.assertEqual((first["t_end"] - first["t"], first["boot"], [a["kind"] for a in first["answers"]]),
                          (40, "b1", ["read", "append"]))
         self.assertEqual(ev["samples"][-1]["boot"], "b2")
+        # The SDK probe: node on sdk-probe.mjs, the header file by its path
+        # (never its token), started before the raw prober and the restart,
+        # its first success before the first raw tick, stopped at the end.
+        out = self.tmp
+        self.assertEqual(ctx.shell.calls[0], ("sdk-probe", [
+            "node", L.SDK_PROBE, "--url", self.plan.get("cell.url"), "--stream", "lc/restart-sdk-probe",
+            "--headers-file", self.sdk_headers, "--out", os.path.join(out, "sdk-calls.jsonl"),
+            "--producer-id", f"lifecycle-{os.path.basename(out)}", "--state", os.path.join(out, "sdk-producer-state.json"),
+            "--pause-ms", "250"]))
+        self.assertEqual([n for n, _ in ctx.shell.calls], ["sdk-probe", "restart-1"])
+        self.assertNotIn("t0k", json.dumps(ctx.shell.calls))
+        sdk = ev["sdk"]["calls"]
+        self.assertEqual((sdk[0]["setup"], [c["path"] for c in sdk[1:4]]), ("ok", ["read", "append", "producer"]))
+        self.assertLessEqual(sdk[1]["end"], first["t"])
+        self.assertEqual((ctx.shell.stopped, ev["sdk"]["t_stop"]), (["sdk-probe"], self.clock.now()))
+        self.assertTrue(all(c["end"] <= ev["sdk"]["t_stop"] for c in sdk[1:]))
         r = L.judge({"leg": "restart", **ev})
         self.assertTrue(r.ok, r.render())
         self.assertIn("PASS restart: restart 1: raw clients were without service at most 0.3 s across the switch "
                       "(between completed all-2xx ticks; bar 10 s)", r.render())
+        self.assertIn("PASS restart: restart 1: SDK successes came at most 0.2 s apart across the switch (bar 10 s)",
+                      r.render())
 
     def test_restart_stops_before_it_probes_when_its_read_probes_stream_does_not_answer_2xx(self):
         # A cell where load.setup never ran: the example's probe_path is
         # k2gen's stream 0, which only the setup creates. Each restart
         # works; the leg must name the plan, never blame the build.
-        compute = FakeCompute(self.clock, ["v1"])
-        self.plan.doc["restart"].update(count=1, warmup_s=5, cooldown_s=20)
-        boots = ["b1"]
         calls = []
-
-        def restart(cmd, subs):
-            t = self.clock.now()
-            compute.add("v2", boot_lines(t + 3_000, "b2"), at=t + 4_000)
-            self.clock.ticks.append(lambda now: boots.append("b2") if now >= t + 9_000 and boots[-1] != "b2" else None)
-            return 0, ""
 
         def product(path, headers_file=None, method="GET", body=None):
             calls.append((method, path))
             found = method != "GET"
             return {"t": self.clock.now(), "status": 201 if found else 404, "code": None if found else "not_found",
                     "retry_after": None, "boot": None}
-        cell = mock.Mock()
-        cell.product.side_effect = product
-        cell.health.side_effect = lambda: {"t": self.clock.now(), "status": 200, "boot": boots[-1]}
-        ctx = self.ctx(compute, {"restart": restart}, cell)
+        ctx = self.restart_rig(product)
         with open(L.run_leg(ctx, "restart")) as f:
             ev = json.load(f)
         self.assertEqual(L.judge(ev).render(), [
@@ -295,6 +349,41 @@ class Legs(unittest.TestCase):
             "probe's stream must exist before the leg (load.setup creates the example's; or name an existing stream)",
             "LEG_FAIL restart"])
         self.assertEqual(calls, [("PUT", "/v1/streams/lc/restart-probe"), ("GET", "/v1/streams/lc/s00000")])
+        self.assertEqual((ctx.shell.calls, self.clock.probers), ([], []))
+
+    def test_restart_stops_before_the_first_restart_when_the_sdk_probe_is_not_served(self):
+        # The SDK's token or key is refused, or the probe never writes a
+        # line: the leg names the plan and the probe's own error, and no
+        # restart runs, so the new build is never blamed.
+        served = lambda path, headers_file=None, method="GET", body=None: {  # noqa: E731
+            "t": self.clock.now(), "status": 201 if method == "PUT" else 200, "code": None, "retry_after": None, "boot": None}
+        refused = {"setup": "failed", "t": T0, "error": {"class": "StreamsError", "status": 403, "code": "wrong_key",
+                                                         "answer": "HTTP 403 wrong_key", "message": "key mismatch"}}
+        ctx = self.restart_rig(served, sdk_setup=refused)
+        with open(L.run_leg(ctx, "restart")) as f:
+            ev = json.load(f)
+        self.assertEqual(L.judge(ev).render(), [
+            "FAIL restart: the run stopped: the SDK probe made no successful call within 60 s: setup: StreamsError "
+            "(answered HTTP 403 wrong_key): restart.sdk must name a stream and a header file the cell serves",
+            "LEG_FAIL restart"])
+        self.assertEqual(([n for n, _ in ctx.shell.calls], ctx.shell.stopped, self.clock.probers), (["sdk-probe"], ["sdk-probe"], []))
+        self.assertEqual(ev["sdk"], {"calls": [refused]})
+        silent = L.Ctx(self.plan, os.path.join(self.tmp, "silent"), shell=FakeShell({}, self.clock),
+                       compute=FakeCompute(self.clock, ["v1"]), cell=ctx.cell, clock=self.clock, say=lambda _: None)
+        os.makedirs(silent.out)
+        t0 = self.clock.now()
+        with self.assertRaisesRegex(L.LegError, r"^the SDK probe made no successful call within 60 s: no call ended "
+                                                r"\(its log is the run's cmd-\*-sdk-probe.log\)"):
+            L.restart(silent)
+        self.assertEqual(self.clock.now() - t0, 60_000)
+
+    def test_restart_refuses_an_sdk_header_file_others_can_read_before_anything_runs(self):
+        os.chmod(self.sdk_headers, 0o644)
+        ctx = self.restart_rig(lambda path, headers_file=None, method="GET", body=None: {
+            "t": self.clock.now(), "status": 201 if method == "PUT" else 200, "code": None, "retry_after": None, "boot": None})
+        with open(L.run_leg(ctx, "restart")) as f:
+            ev = json.load(f)
+        self.assertEqual(ev["error"], f"secret file {self.sdk_headers} is readable by others (chmod 600)")
         self.assertEqual((ctx.shell.calls, self.clock.probers), ([], []))
 
     def test_rollback_deploys_the_sequence_and_a_fake_cross_layout_release_that_must_be_refused(self):

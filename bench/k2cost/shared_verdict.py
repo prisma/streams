@@ -28,7 +28,9 @@ binary) writes its manifest with verdict FAIL and leg "release-binary"
 FAIL: it can never certify.
 
 Bars of the owner's decision D4 (deploy-q5 Q4), (a), of 2026-10-12 (the
-restart window's measure confirmed on 2026-10-13); each is one constant:
+restart window measured as the owner's round-3 call 10 of 2026-10-13
+decided: across a redeploy, at most 10 s without a success of the
+shipping SDK, and 0 SDK errors); each is one constant:
 SC01S_PROJECTION_DAYS_MIN, DAY90_OPEN_SECS_MAX, IDLE_RSS_MB_MAX and the
 restart window, which is
 bench/lifecycle/verdicts.py's RESTART_WINDOW_BAR_S (one copy). The field
@@ -89,7 +91,7 @@ SC01S_PROJECTION_DAYS_MIN = 30.0  # SC0-1s-awake: hours 24-72 RSS slope projects
 SC01S_LINE_MB = 500.0
 DAY90_OPEN_SECS_MAX = 10.0        # shard open latency extrapolated to day 90
 IDLE_RSS_MB_MAX = 400.0           # idle RSS at the claimed stream count
-RESTART_WINDOW_SECS_MAX = _lifecycle_verdicts().RESTART_WINDOW_BAR_S  # SC1-awake: 10 s to the first SDK success
+RESTART_WINDOW_SECS_MAX = _lifecycle_verdicts().RESTART_WINDOW_BAR_S  # SC1-awake: <= 10 s without an SDK success, 0 SDK errors
 
 # The load Layer B certifies: the commit's own manifest, at full time.
 LOAD_MANIFEST = "bench/k2cost/tenants/layer-b.json"

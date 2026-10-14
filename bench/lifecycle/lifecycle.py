@@ -285,11 +285,73 @@ def stream_path(name: str) -> str:
     return "/v1/streams/" + "/".join(urllib.parse.quote(part, safe="") for part in name.split("/"))
 
 
+#: The SDK probe, and the shipping SDK it imports (sdk/dist, built from this tree).
+SDK_PROBE = os.path.join(H.HERE, "sdk-probe.mjs")
+SDK_DIST = os.path.join(H.ROOT, "sdk", "dist", "index.js")
+
+
+def read_jsonl(path: str) -> list:
+    out = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    out.append(json.loads(line))
+                except ValueError:
+                    continue
+    except OSError:
+        pass
+    return out
+
+
+class SdkProbe:
+    """sdk-probe.mjs, run by the restart leg beside the raw prober: the
+    shipping SDK's read, plain append and producer append in turn, one JSON
+    line per call in the run's sdk-calls.jsonl."""
+
+    def __init__(self, ctx: Ctx):
+        p = ctx.plan
+        headers = os.path.expanduser(p.get("restart.sdk.headers_file"))
+        # The SDK's token and key: a header file only its owner can read
+        # (the probe reads it again for each token and refuses it too).
+        p.secret(headers)
+        self.ctx, self.path = ctx, os.path.join(ctx.out, "sdk-calls.jsonl")
+        self.job = ctx.start("sdk-probe", [
+            p.get("restart.sdk.node", "node"), SDK_PROBE, "--url", "{url}", "--stream", p.get("restart.sdk.stream"),
+            "--headers-file", headers, "--out", self.path, "--producer-id", f"lifecycle-{os.path.basename(ctx.out)}",
+            "--state", os.path.join(ctx.out, "sdk-producer-state.json"),
+            "--pause-ms", str(int(p.get("restart.sdk.pause_s", 0.25) * 1000))])
+
+    def snapshot(self) -> dict:
+        return {"calls": read_jsonl(self.path)}
+
+    def ready(self, timeout_s: float) -> None:
+        """Until the probe's first successful call: a probe that cannot be
+        served before the first restart (a refused token, a missing key, a
+        stream it cannot create) names the plan, never the new build."""
+        served = lambda: any(c.get("ok") or c.get("setup") == "failed" for c in read_jsonl(self.path))  # noqa: E731
+        self.ctx.until(served, timeout_s, 0.25)
+        lines = read_jsonl(self.path)
+        if not any(c.get("ok") for c in lines):
+            last = next((c for c in reversed(lines) if c.get("error")), None)
+            why = V.sdk_failure(last) if last else "no call ended (its log is the run's cmd-*-sdk-probe.log)"
+            raise LegError(f"the SDK probe made no successful call within {timeout_s} s: {why}: restart.sdk must name "
+                           "a stream and a header file the cell serves")
+
+    def stop(self) -> dict:
+        t_stop = self.ctx.now()
+        self.job.stop()
+        self.job.wait(timeout=30)
+        return {"t_stop": t_stop, "calls": read_jsonl(self.path)}
+
+
 def restart(ctx: Ctx, ev: dict | None = None) -> dict:
     """The SC1-awake redeploys, timed by a raw product client: every tick a
     read of restart.probe_path, an append to restart.append_stream (so a
     fenced write's 500 shows) and /health, whose boot id says which build
-    was answering then (product answers carry none)."""
+    was answering then (product answers carry none). Beside it the shipping
+    SDK (SdkProbe) calls a read, a plain append and a producer append in
+    turn: D4's bar is the SDK's."""
     ev = {} if ev is None else ev
     p = ctx.plan
     ctx.compute.warm()
@@ -306,6 +368,8 @@ def restart(ctx: Ctx, ev: dict | None = None) -> dict:
     if not 200 <= got["status"] < 300:
         raise LegError(f"restart.probe_path {path} answered {got['status']} {got.get('code')}: the read probe's stream "
                        "must exist before the leg (load.setup creates the example's; or name an existing stream)")
+    sdk = ev["sdk"] = SdkProbe(ctx)
+    sdk.ready(p.get("restart.sdk.ready_s", 60))
     seq = [0]
 
     def tick() -> dict:
@@ -336,6 +400,7 @@ def restart(ctx: Ctx, ev: dict | None = None) -> dict:
         restarts.append({"t_trigger": t, "t_done": ctx.now(), "rc": r["rc"], "new_version": v, "new_lines": lines})
     ctx.sleep(p.get("restart.cooldown_s", 60))
     ev["samples"] = prober.stop()
+    ev["sdk"] = sdk.stop()
     return ev
 
 
@@ -605,7 +670,7 @@ REQUIRES = {
     "d10-probe": ["probe.project_id|probe.service_id"],
     "d10-cell": ["cell.url", "cell.service_id", "commands.restart", "load.produce", "load.audit"],
     "restart": ["cell.url", "cell.service_id", "cell.headers_file", "commands.restart", "restart.probe_path",
-                "restart.append_stream"],
+                "restart.append_stream", "restart.sdk.stream", "restart.sdk.headers_file"],
     "rollback": ["cell.url", "cell.service_id", "commands.deploy", "commands.cell_check", "load.produce", "load.audit",
                  "rollback.older", "rollback.newer"],
     "oom": ["cell.url", "cell.service_id", "oom.scratch", "oom.deploy", "oom.restore", "load.produce", "load.audit"],

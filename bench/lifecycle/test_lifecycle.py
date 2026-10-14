@@ -272,10 +272,29 @@ class Restart(unittest.TestCase):
         return {"t": ms, "t_end": ms + took_ms, "boot": boot,
                 "answers": [answer("read", read), answer("append", read if append is None else append)]}
 
-    def ev(self, ticks) -> dict:
+    def ev(self, ticks, sdk=None, t_stop: int = T0 + 45_000) -> dict:
         return {"restarts": [{"t_trigger": T0 + 10_000, "rc": 0, "new_version": "v2",
                               "new_lines": boot_lines(self.LISTEN - 400, "b2")}],
-                "samples": sorted(ticks, key=lambda x: x["t"]), "probe_every_s": 0.25}
+                "samples": sorted(ticks, key=lambda x: x["t"]), "probe_every_s": 0.25,
+                "sdk": {"t_stop": t_stop, "calls": self.sdk(T0, t_stop) if sdk is None else sdk}}
+
+    PATHS = ("read", "append", "producer")
+
+    @classmethod
+    def sdk(cls, t0: int, t1: int, k0: int = 0) -> list:
+        """The SDK probe's calls in turn, one every 500 ms from t0 to t1, each
+        answered 200 after 50 ms."""
+        return [{"path": cls.PATHS[(k0 + k) % 3], "start": ms, "end": ms + 50, "ok": True,
+                 "attempts": [{"t": ms, "end": ms + 50, "status": 200}]} for k, ms in enumerate(range(t0, t1, 500))]
+
+    @staticmethod
+    def call(path: str, start: int, attempts: list, error: dict | None = None) -> dict:
+        """One SDK call whose attempts are (status, Retry-After, ms after the
+        call began that the attempt ended); a status 0 got no answer."""
+        tries = [dict({"t": start + i * 1000, "end": start + end_ms, "status": status},
+                      **({"retry_after": ra} if ra else {})) for i, (status, ra, end_ms) in enumerate(attempts)]
+        c = {"path": path, "start": start, "end": tries[-1]["end"], "ok": error is None, "attempts": tries}
+        return dict(c, error=error) if error else c
 
     def switch(self, gap_s: int = 3, middle=None) -> list:
         """The old build b1 answers until 24 s (4 s after the new build's
@@ -295,8 +314,9 @@ class Restart(unittest.TestCase):
             "all-2xx ticks; bar 10 s)",
             "FACT restart: restart 1: 6 x 503 with Retry-After while restarting ['503:shard_moving']",
             "PASS restart: restart 1: raw clients saw only 503 with Retry-After",
-            "FACT restart: the windows are a raw client's, polling every 0.25 s; an SDK client's first success after a "
-            "switch can come up to one retry backoff later, so they understate D4's window to the first SDK success",
+            "PASS restart: restart 1: SDK successes came at most 0.5 s apart across the switch (bar 10 s)",
+            "FACT restart: the SDK probe (sdk/dist) made 90 calls one at a time: 30 reads, 30 plain appends, 30 producer "
+            "appends; 0 failed",
             "LEG_PASS restart",
         ])
 
@@ -331,6 +351,60 @@ class Restart(unittest.TestCase):
         self.assertIn("FAIL restart: restart 1: raw clients were without service 13.0 s across the switch (between "
                       "completed all-2xx ticks, from 4.0 s to 17.0 s after `listening`), over the 10 s bar", got)
         self.assertEqual(got[-1], "LEG_FAIL restart")
+
+    def test_a_503_run_the_raw_window_passes_fails_when_the_sdk_errors(self):
+        # Five seconds of 503 Retry-After: 1 pass the raw window, but the
+        # SDK replays a read's 503 at most three times, a second apart, and
+        # then rejects it: D4's bar counts any SDK error.
+        stuck = self.call("read", T0 + 25_000, [(503, "1", 50), (503, "1", 1050), (503, "1", 2050), (503, "1", 3100)],
+                          {"class": "StreamsError", "status": 503, "code": "shard_moving",
+                           "answer": "HTTP 503 shard_moving", "message": "the shard is moving"})
+        late = self.call("append", T0 + 28_300, [(503, "1", 50), (503, "1", 1050), (200, None, 2050)])
+        sdk = self.sdk(T0, T0 + 25_000) + [stuck, late] + self.sdk(T0 + 30_850, T0 + 45_000, k0=2)
+        got = lines_of(V.judge_restart(self.ev(self.switch(5), sdk)))
+        self.assertIn("PASS restart: restart 1: raw clients were without service at most 6.0 s across the switch "
+                      "(between completed all-2xx ticks; bar 10 s)", got)
+        self.assertIn("FAIL restart: restart 1: 1 SDK call(s) failed, the first 8.1 s after `listening`: read: "
+                      "StreamsError (answered HTTP 503 shard_moving)", got)
+        self.assertIn("PASS restart: restart 1: SDK successes came at most 5.8 s apart across the switch (bar 10 s)", got)
+        self.assertIn("FACT restart: the SDK probe (sdk/dist) made 81 calls one at a time: 28 reads, 27 plain appends, "
+                      "26 producer appends; 1 failed", got)
+        self.assertEqual(got[-1], "LEG_FAIL restart")
+
+    def test_sdk_successes_further_apart_than_the_bar_fail_and_name_the_calls_between_them(self):
+        # The new build cuts a read's connection while it opens the shard;
+        # the SDK replays it 1, 2 and 4 s later, and the last replay is
+        # answered: no SDK error, but no success for 12.5 s.
+        slow = self.call("read", T0 + 25_000, [(0, None, 50), (0, None, 1100), (0, None, 3200), (200, None, 12_050)])
+        sdk = self.sdk(T0, T0 + 25_000) + [slow] + self.sdk(T0 + 37_500, T0 + 45_000, k0=1)
+        got = lines_of(V.judge_restart(self.ev(self.switch(), sdk)))
+        self.assertIn("FAIL restart: restart 1: no SDK success for 12.5 s, from 4.5 s after `listening` to 17.1 s after "
+                      "`listening`, over the 10 s bar; its calls: read ok after 12.1 s [no answer, no answer, no answer, 200]",
+                      got)
+        # A probe whose last call never ended: the gap runs to its stop.
+        hung = [dict(self.call("read", T0 + 30_000, [(0, None, 0)]), end=T0 + 45_000, ok=False, stopped=True)]
+        got = lines_of(V.judge_restart(self.ev(self.switch(), self.sdk(T0, T0 + 30_000) + hung)))
+        self.assertIn("FAIL restart: restart 1: no SDK success for 15.4 s, from 9.6 s after `listening` to 25.0 s after "
+                      "`listening` (the probe's stop), over the 10 s bar; its calls: read in flight at the probe's stop "
+                      "after 15.0 s [no answer]", got)
+        self.assertIn("FACT restart: the SDK probe (sdk/dist) made 60 calls one at a time: 20 reads, 20 plain appends, "
+                      "20 producer appends; 0 failed", got)
+
+    def test_an_sdk_error_before_the_first_restart_and_no_sdk_calls_fail(self):
+        fenced = self.call("producer", T0 + 5_000, [(403, None, 40)],
+                           {"class": "ProducerFencedError", "status": 403, "code": "stale_producer_epoch",
+                            "answer": "HTTP 403 stale_producer_epoch", "message": "fenced"})
+        got = lines_of(V.judge_restart(self.ev(self.switch(), self.sdk(T0, T0 + 5_000) + [fenced]
+                                               + self.sdk(T0 + 5_500, T0 + 45_000))))
+        self.assertIn("FAIL restart: before the first restart: 1 SDK call(s) failed, the first 5.0 s before the first "
+                      "restart's trigger: producer append: ProducerFencedError (answered HTTP 403 stale_producer_epoch)", got)
+        cut = self.call("append", T0 + 26_000, [(0, None, 3)],
+                        {"class": "AppendOutcomeUnknownError", "status": 0, "code": "outcome_unknown",
+                         "cause": "TypeError: fetch failed; cause: SocketError: other side closed (UND_ERR_SOCKET)"})
+        self.assertEqual(V.sdk_failure(cut), "plain append: AppendOutcomeUnknownError (no answer: TypeError: fetch "
+                                             "failed; cause: SocketError: other side closed (UND_ERR_SOCKET))")
+        self.assertIn("FAIL restart: the SDK probe made no call: D4's bar is the shipping SDK's (restart.sdk)",
+                      lines_of(V.judge_restart(self.ev(self.switch(), []))))
 
     def test_a_new_build_that_never_serves_and_reads_alone_fail(self):
         ticks = [t for t in self.switch() if t["boot"] != "b2"]
@@ -484,6 +558,136 @@ class ProbeOutput(unittest.TestCase):
         self.assertIn("FAIL d10-probe: stop: the probe was not kept awake (keep_awake=unavailable): Compute's "
                       "scale-to-zero could suspend it, so its stop facts would describe a sleeping service, not a "
                       "kept-awake cell", lines_of(r))
+
+
+@unittest.skipIf(shutil.which("node") is None or not os.path.exists(L.SDK_DIST),
+                 "node or a built sdk/dist is missing (cd sdk && npm ci && npm run build)")
+class SdkProbeOutput(unittest.TestCase):
+    """sdk-probe.mjs run for real (node on sdk/dist) against a fake cell that
+    answers its second read 502, cuts its second plain append's connection
+    without an answer, and holds its fourth read until the probe is stopped."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="lifecycle-sdk-")
+        self.seen, self.release = [], threading.Event()
+        self.holding = threading.Event()
+        test = self
+
+        class Cell(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def answer(self, status: int, body: bytes, **headers) -> None:
+                self.send_response(status)
+                for k, v in {"content-type": "application/json", **headers}.items():
+                    self.send_header(k.replace("_", "-"), v)
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def take(self) -> None:
+                body = self.rfile.read(int(self.headers.get("content-length") or 0))
+                test.seen.append((self.command, self.path, {k.lower(): v for k, v in self.headers.items()}, body))
+
+            def do_PUT(self):
+                self.take()
+                self.answer(201, b"{}")
+
+            def do_GET(self):
+                self.take()
+                n = sum(1 for m, *_ in test.seen if m == "GET")
+                if n == 2:
+                    return self.answer(502, b"bad gateway", content_type="text/plain")
+                if n == 4:
+                    test.holding.set()
+                    test.release.wait(20)
+                self.answer(200, b"[]", prisma_next_cursor=f"c{n}")
+
+            def do_POST(self):
+                self.take()
+                plain = [h for m, _, h, _ in test.seen if m == "POST" and "producer-id" not in h]
+                if "producer-id" not in self.headers and len(plain) == 2:
+                    self.close_connection = True  # the old build's abort: no answer at all
+                    return
+                self.answer(200, b'{"cursor":"c","count":1,"duplicate":false,"sealed":false}')
+
+            def log_message(self, *a):
+                pass
+
+        class Server(http.server.ThreadingHTTPServer):
+            daemon_threads = True
+
+            def server_bind(self):
+                socketserver.TCPServer.server_bind(self)
+                self.server_name, self.server_port = "127.0.0.1", self.server_address[1]
+        self.srv = Server(("127.0.0.1", 0), Cell)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.release.set()
+        self.srv.shutdown()
+        self.srv.server_close()
+        shutil.rmtree(self.tmp)
+
+    def probe(self, mode: int = 0o600) -> tuple:
+        headers = os.path.join(self.tmp, "headers.txt")
+        with open(headers, "w") as f:
+            f.write("# the SDK probe's\nauthorization: Bearer tok-1\nprisma-encryption-key: a2V5\n")
+        os.chmod(headers, mode)
+        out = os.path.join(self.tmp, "calls.jsonl")
+        p = subprocess.Popen(["node", L.SDK_PROBE, "--url", f"http://127.0.0.1:{self.srv.server_address[1]}",
+                              "--stream", "lc/sdk", "--headers-file", headers, "--out", out, "--producer-id", "lc-run-1",
+                              "--state", os.path.join(self.tmp, "state.json"), "--pause-ms", "10"],
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        return p, out
+
+    def test_each_call_names_its_path_its_attempts_and_what_ended_it(self):
+        p, out = self.probe()
+        try:
+            self.assertTrue(self.holding.wait(30), "the probe never reached its fourth read")
+            p.send_signal(signal.SIGTERM)
+            said, _ = p.communicate(timeout=30)
+            self.assertEqual(p.returncode, 0, said)
+        finally:
+            p.kill()
+            p.communicate()
+        lines = L.read_jsonl(out)
+        self.assertEqual(lines[0]["setup"], "ok")
+        calls = lines[1:]
+        self.assertEqual([(c["path"], c["ok"]) for c in calls], [
+            ("read", True), ("append", True), ("producer", True), ("read", False), ("append", False), ("producer", True),
+            ("read", True), ("append", True), ("producer", True), ("read", False)])
+        # A 502 is no SDK retry: one attempt, the edge's answer named.
+        self.assertEqual(calls[3]["error"], {"class": "StreamsError", "message": "HTTP 502", "status": 502,
+                                             "code": "http_error", "answer": "HTTP 502 http_error"})
+        self.assertEqual([a["status"] for a in calls[3]["attempts"]], [502])
+        # A plain append whose connection is cut is never sent again.
+        cut = calls[4]
+        self.assertEqual((cut["error"]["class"], cut["error"]["status"], [a["status"] for a in cut["attempts"]]),
+                         ("AppendOutcomeUnknownError", 0, [0]))
+        self.assertRegex(V.sdk_failure(cut), r"^plain append: AppendOutcomeUnknownError \(no answer: TypeError: fetch "
+                                             r"failed; cause: SocketError: other side closed")
+        # The read in flight at SIGTERM is written as stopped, not failed.
+        self.assertEqual((calls[-1].get("stopped"), "error" in calls[-1]), (True, False))
+        gets = [(path, h) for m, path, h, _ in self.seen if m == "GET"]
+        self.assertEqual([path for path, _ in gets], ["/v1/streams/lc/sdk/records?cursor=now"] + [
+            f"/v1/streams/lc/sdk/records?cursor=c{n}" for n in (1, 1, 3)])
+        self.assertEqual({(h["authorization"], h["prisma-encryption-key"]) for _, _, h, _ in self.seen},
+                         {("Bearer tok-1", "a2V5")})
+        self.assertEqual(self.seen[0][3], b'{"format":{"kind":"json"}}')
+        made = [(h["producer-id"], h["producer-epoch"], h["producer-seq"]) for m, _, h, _ in self.seen if "producer-id" in h]
+        self.assertEqual(made, [("lc-run-1", "0", "0"), ("lc-run-1", "0", "1"), ("lc-run-1", "0", "2")])
+        with open(os.path.join(self.tmp, "state.json")) as f:
+            self.assertEqual(json.load(f), {"epoch": 0, "nextSeq": 3})
+
+    def test_a_header_file_others_can_read_is_refused_before_any_request(self):
+        p, out = self.probe(mode=0o644)
+        said, _ = p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 2, said)
+        (line,) = L.read_jsonl(out)
+        self.assertEqual((line["setup"], line["error"]["class"]), ("failed", "Error"))
+        self.assertEqual(V.sdk_failure(line), f"setup: Error (no answer: Error: {self.tmp}/headers.txt is readable by "
+                                              "others (chmod 600))")
+        self.assertEqual(self.seen, [])
 
 
 # ---------------------------------------------------------------- plumbing
