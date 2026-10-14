@@ -1,5 +1,5 @@
-// The few product requests offboarding makes against a cell, under a
-// token cell-admin mints in memory (never written, never printed):
+// The few product requests offboarding makes against a cell, under
+// tokens cell-admin mints in memory (never written, never printed):
 // the catalog (`GET /v1/streams`, scope streams.catalog.read) and the
 // stream delete (`DELETE /v1/streams/{name}`, scope
 // streams.lifecycle.manage). A 429 or 503 is retried after its
@@ -126,9 +126,14 @@ export const WALK_PAGE_MAX = 1000;
 
 /// One full catalog walk that deletes every stream it lists, a page of at
 /// most `pageLimit` at a time, each page deleted before the next is listed.
+/// `token` mints the bearer of each request (each page's listing and each
+/// delete), so a walk may outlast any one token: at the free tier's 10
+/// requests a second under phase B's store bucket a walk takes about
+/// 1.25 s a stream, and an operator token is usable for 29.5 minutes. One
+/// request's own retries wait at most 5 x 120 s at a drain's bound.
 export async function walkAndDelete(
   base: string,
-  token: string,
+  token: () => string,
   log: (line: string) => void,
   opts: Waits & { pageLimit?: number } = {},
 ): Promise<Walk> {
@@ -137,14 +142,14 @@ export async function walkAndDelete(
   let cursor: string | undefined;
   do {
     const q = cursor ? `${limit}&cursor=${encodeURIComponent(cursor)}` : limit;
-    const page = await call(base, "GET", `/v1/streams?${q}`, token, opts);
+    const page = await call(base, "GET", `/v1/streams?${q}`, token(), opts);
     if (page.status !== 200) {
       throw new AdminError(`catalog walk answered ${describeReply(page)}`);
     }
     const body = page.body as { streams?: { name: string }[]; cursor?: string };
     for (const s of body.streams ?? []) {
       walk.listed += 1;
-      const del = await call(base, "DELETE", `/v1/streams/${encName(s.name)}`, token, opts);
+      const del = await call(base, "DELETE", `/v1/streams/${encName(s.name)}`, token(), opts);
       if (del.status === 204) walk.deleted += 1;
       else if (del.status !== 404 && del.status !== 410) {
         throw new AdminError(`DELETE of a listed stream answered ${describeReply(del)}`);

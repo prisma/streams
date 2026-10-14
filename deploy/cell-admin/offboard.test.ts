@@ -199,31 +199,42 @@ for (const kind of STORES) {
 }
 
 describe("the drain at a project's own rate", () => {
-  test("drains a 1,000-stream project at 10 requests a second under phase B's store bucket: small pages, Retry-After honoured", async () => {
+  test("drains a 2,000-stream project at 10 requests a second under phase B's store bucket, longer than an operator token lives: small pages, Retry-After honoured", async () => {
     const c = await initCell();
     await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "wksp_a", "--quota", "requests_per_sec=10");
     expect((await run("offboard", "--state", c.state, "--project", "proj_a")).code).toBe(0);
-    const clock = { t: 1_000_000 };
+    // One clock for the drain's waits, the minter and the fake cell (its
+    // tokens' expiry and its store bucket).
+    const clock = { t: Date.now() };
+    const t0 = clock.t;
     fake = new FakeCell();
     fake.publish(readBundle(c.state));
     fake.pageSize = 1000;
+    fake.now = () => clock.t;
     // P1 (b′): listing N streams weighs N + 10, a delete 11, at the
     // project's 10 a second; a listing of 1,000 would leave ~100 s of debt.
-    fake.storeOps = { perSec: 10, now: () => clock.t };
-    fake.streams.set("proj_a", new Set(Array.from({ length: 1000 }, (_, i) => `s${String(i).padStart(4, "0")}`)));
+    // About 1.25 s a stream, so the walk outlasts the 1,770 s an operator
+    // token is usable (30 min, less the 60 s backdate and the cell's 30 s
+    // of skew) after about 1,400 streams.
+    fake.storeOps = { perSec: 10 };
+    fake.streams.set("proj_a", new Set(Array.from({ length: 2000 }, (_, i) => `s${String(i).padStart(4, "0")}`)));
     const sk = loadSigningKey(c.key);
     const deleted = await drainProject(readState(c.state), "proj_a", {
       base: fake.url,
-      mint: (s, credential, ttl) => signJwt(sk, customerClaims(s, credential, ttl, "test")),
+      mint: (s, credential, ttl) => signJwt(sk, customerClaims(s, credential, ttl, "test", Math.floor(clock.t / 1000))),
       maxWalks: 10,
       settleMs: 0,
       log: () => {},
-      // The waits pass on the fake cell's clock, not the test's.
       sleep: async (ms) => {
         clock.t += ms;
       },
     });
-    expect([deleted, fake.streams.get("proj_a")!.size]).toEqual([1000, 0]);
+    expect([deleted, fake.streams.get("proj_a")!.size]).toEqual([2000, 0]);
+    expect(fake.requests.filter((q) => q.status === 401)).toEqual([]);
+    expect(clock.t - t0).toBeGreaterThan(1770 * 1000);
+    // A fresh token for every request (the proof's two, each listing,
+    // each delete); only a request's own 429 retries resend it.
+    expect(new Set(fake.tokens.map((claims) => claims.jti)).size).toBe(fake.requests.filter((q) => q.status !== 429).length);
     const listings = fake.requests.filter((q) => q.method === "GET").map((q) => new URLSearchParams(q.path.split("?")[1]).get("limit"));
     expect([...new Set(listings)].sort()).toEqual(["1", "20"]);
     expect(fake.requests.filter((q) => q.status === 429).length).toBeGreaterThan(0);

@@ -18,12 +18,15 @@ export class FakeCell {
   tokens: any[] = [];
   afterWalk?: (walks: number) => void;
   rateLimitNext = 0;
+  /// The cell's clock in milliseconds (a test's clock): a token's expiry
+  /// and the store bucket's refill read it.
+  now: () => number = () => Date.now();
   /// Phase B's store bucket (P1 (b′)), per project, when set: a listing
   /// of N streams weighs N + 10 and a delete 11, debited after it is
   /// served; both are refused 429 project_rate_limit while the level is
   /// below 0, with Retry-After from the debt. The level refills at
-  /// `perSec` on the clock `now` and holds at most one second of it.
-  storeOps?: { perSec: number; now: () => number };
+  /// `perSec` on the cell's clock and holds at most one second of it.
+  storeOps?: { perSec: number };
   private levels = new Map<string, { level: number; at: number }>();
   private walks = 0;
   private server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => this.answer(req) });
@@ -57,7 +60,7 @@ export class FakeCell {
     const claims = this.live && verifiedClaims(this.live, bearer);
     if (!this.live || !claims) return this.reply(401, "bad_signature");
     this.tokens.push(claims);
-    if (claims.exp + 30 <= Date.now() / 1000) return this.reply(401, "expired");
+    if (claims.exp + 30 <= this.now() / 1000) return this.reply(401, "expired");
     const policy = (this.live.policies.projects as any[]).find((p) => p.project_id === claims.project_id);
     if (!policy) return this.reply(421, "wrong_cell");
     if (claims.ownership_version !== policy.ownership_version) return this.reply(401, "ownership_version_mismatch");
@@ -85,10 +88,11 @@ export class FakeCell {
   /// The project's store bucket refilled to now, or undefined when off.
   private storeLevel(project: string): { level: number; at: number } | undefined {
     if (!this.storeOps) return undefined;
-    const { perSec, now } = this.storeOps;
-    const b = this.levels.get(project) ?? { level: perSec, at: now() };
-    b.level = Math.min(perSec, b.level + ((now() - b.at) / 1000) * perSec);
-    b.at = now();
+    const { perSec } = this.storeOps;
+    const now = this.now();
+    const b = this.levels.get(project) ?? { level: perSec, at: now };
+    b.level = Math.min(perSec, b.level + ((now - b.at) / 1000) * perSec);
+    b.at = now;
     this.levels.set(project, b);
     return b;
   }

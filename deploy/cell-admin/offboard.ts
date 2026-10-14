@@ -89,7 +89,8 @@ export type Minter = (state: CellState, credential: string, ttlSecs: number) => 
 
 /// The cell serves the offboarding snapshot: the operator reads the
 /// catalog and every revoked credential is refused as revoked. Returns a
-/// minter of fresh operator tokens, so a long drain never outlives one.
+/// minter of fresh operator tokens, which a walk calls for each request,
+/// so a drain longer than one token's life is never refused as expired.
 async function proveRevocation(
   state: CellState,
   project: string,
@@ -144,7 +145,7 @@ async function drain(
   let deleted = 0;
   for (let walk = 1; walk <= d.maxWalks; walk++) {
     const settled = Date.now() - proven >= d.settleMs;
-    const w = await walkAndDelete(d.base, opToken(), d.log, walking);
+    const w = await walkAndDelete(d.base, opToken, d.log, walking);
     deleted += w.deleted;
     d.log(`walk ${walk}: listed ${w.listed}, deleted ${w.deleted}`);
     if (w.listed === 0 && settled) return deleted;

@@ -170,9 +170,10 @@ alongside and finish before admission opens.
      be built ("Decided 2026-10-13, to be built", below);
    - found by the stack review of 2026-10-13, open: `cell-admin
      credential` drops its staged secret when a state save's outcome is
-     unknown (eea3f381, "Not covered"), and a drain's one operator token
-     (about 1,770 s usable) expires on a free-tier project of more than
-     about 1,400 streams (4d5cae9c, "Not covered").
+     unknown (eea3f381, "Not covered"); closed in round 4: a drain's one
+     operator token (about 1,770 s usable) expired on a free-tier project
+     of more than about 1,400 streams (4d5cae9c, "Not covered"), and a
+     walk now mints a fresh one for each request.
    Who: engineering; key custody stays the owner's cryptographic
    acceptance (I2 of 2026-10-12).
 4. **The Q5 harness and a shared-cell deploy path** (README "Shared cells
