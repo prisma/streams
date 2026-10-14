@@ -466,5 +466,8 @@ describe("the drain at a project's own rate", () => {
     const listings = fake.requests.filter((q) => q.method === "GET").map((q) => new URLSearchParams(q.path.split("?")[1]).get("limit"));
     expect([...new Set(listings)].sort()).toEqual(["1", "20"]);
     expect(fake.requests.filter((q) => q.status === 429).length).toBeGreaterThan(0);
-  });
+    // Over 2,000 requests to the fake cell, each with a freshly signed and
+    // verified token: about 0.5 s on an idle host, 5 to 6 s at a load
+    // average of 25, past bun's 5 s default.
+  }, 60_000);
 });
