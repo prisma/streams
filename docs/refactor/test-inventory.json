@@ -2552,7 +2552,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "aada164c5da4ddc7c70a68c074af6a95da1631f179659136821edde837533f06",
+    "function_sha256": "d844b193efedcf2d761d03c3e4de126ef6309bb80f793c791a2c42716736077b",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_memory_wakes.rs",

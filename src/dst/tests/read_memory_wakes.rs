@@ -16,7 +16,10 @@
 //!
 //! A client that "never reads" sends its request over a socket with a
 //! 4 KiB receive buffer and leaves the response unread, so its page is
-//! held until it leaves.
+//! held until it leaves if it is larger than what the kernel takes from
+//! the server ahead of the client: about 1.7 MB on Linux (a loopback send
+//! buffer autotuned to 2,626,560 B) and 0.65 MB on macOS. A page the
+//! kernel takes whole ends and releases its hold at once.
 
 use super::fixture_cell::{Cell, CellSpec, open_cell};
 use super::fixture_http::engine_shutdown;
@@ -26,6 +29,8 @@ use super::read_memory::{
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+use tokio::io::AsyncReadExt;
+use tokio::net::TcpStream;
 
 /// The shared-cell profile's project memory line.
 const LINE: u64 = 32 * MIB;
@@ -113,13 +118,16 @@ async fn a_woken_long_poll_reserves_what_was_appended_while_it_waited() {
 /// unread pages that leave the read memory 1 KiB of room, and waits; 1 MiB
 /// more is appended; the capacity is then raised by 63 KiB, room for the
 /// 1 KiB record but not for the 1 MiB, and a 1 KiB read's release wakes
-/// the waiter, which keeps waiting, holding nothing; a page's release
-/// with room for both lets it take them, and its page is no larger than
-/// what it took. The read memory never holds more than its capacity, and
-/// its project's read bytes move with it. Measured at the wake, the
-/// waiter takes 5 KiB at the first release and renders a 1 MiB page past
-/// the capacity. Before: it took its whole 8 MiB budget again, which
-/// neither release leaves, so it never rendered.
+/// the waiter, which keeps waiting, holding and answering nothing; a
+/// page's release with room for both lets it take them, and it answers a
+/// page no larger than what it took. The read memory never holds more
+/// than its capacity, and its project's read bytes move with it. Measured
+/// at the wake, the waiter takes 5 KiB at the first release and answers a
+/// 1 MiB page past the capacity. Before: it took its whole 8 MiB budget
+/// again, which neither release leaves, so it never rendered. The
+/// waiter's page is read from its socket, not from the ledgers: a woken
+/// page is at most 1 MiB (`tail_max_bytes`), which Linux takes whole from
+/// the server, ending its body and its hold, though its client never reads.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_woken_long_poll_held_out_of_room_never_takes_the_read_memory_past_its_capacity() {
     let cell = open_cell(CellSpec::open(1)).await;
@@ -127,7 +135,7 @@ async fn a_woken_long_poll_held_out_of_room_never_takes_the_read_memory_past_its
     create_lp(&cell).await;
     cell.state.admission.set_project_memory_pressure_bytes(LINE);
     let poll = format!("{LP}/records:long-poll?cursor=now&waitMs=20000");
-    let waiter = never_read(&cell, 0, "GET", &poll, b"").await;
+    let mut waiter = never_read(&cell, 0, "GET", &poll, b"").await;
     until(|| cell.state.admission.parked() >= 1).await;
     let mut pages = Vec::new();
     for _ in 0..3 {
@@ -148,11 +156,12 @@ async fn a_woken_long_poll_held_out_of_room_never_takes_the_read_memory_past_its
         cell.state.admission.set_read_memory_capacity(capacity);
         let first = format!("{records}?maxBytes=1024");
         let read = cell.call(0, "GET", &first, b"").await;
-        let partial = at_rest(&cell, 0).await;
+        let partial = (at_rest(&cell, 0).await, received(&waiter).await);
         drop(pages.pop());
+        let answered = answer(&mut waiter).await;
         let room = at_rest(&cell, 0).await;
         done.store(true, Ordering::Relaxed);
-        ((woke.0, read.0, read.2.len()), partial, room)
+        ((woke.0, read.0, read.2.len()), partial, answered, room)
     };
     let sampled = async {
         let mut peak = (0, 0);
@@ -163,20 +172,34 @@ async fn a_woken_long_poll_held_out_of_room_never_takes_the_read_memory_past_its
         }
         peak
     };
-    let ((answers, partial, room), peak) = futures_util::future::join(scenario, sampled).await;
+    let ((answers, partial, (status, body), room), peak) =
+        futures_util::future::join(scenario, sampled).await;
     let payload = kib_record().len() + (0..16).map(|n| padded(n).len()).sum::<usize>();
     let measure = u64::try_from(payload).unwrap() + 17 * RECORD_FRAMING + PAGE_FRAMING;
-    let rendered = room.0.saturating_sub(2 * page);
+    // The 1 KiB record and the first 15 appended: `tail_max_bytes` cuts the 16th.
+    let woken: Vec<String> = std::iter::once(kib_record())
+        .chain((0..15).map(padded))
+        .collect();
+    let woken = format!("[{}]", woken.join(","));
     assert_eq!(
         (answers, partial),
-        ((200, 200, kib_record().len() + 2), (3 * page, 3 * page)),
+        (
+            (200, 200, kib_record().len() + 2),
+            ((3 * page, 3 * page), 0)
+        ),
         "with room for the 1 KiB record but not for the 1 MiB appended while it waited, \
-         the waiter holds nothing (capacity {capacity} B)"
+         the waiter holds nothing and has answered no byte (capacity {capacity} B)"
     );
-    assert!(
-        room.0 == room.1 && rendered > 0 && rendered <= measure,
-        "with room for both, the waiter holds its page of {rendered} B (it took {measure} B): \
-         {room:?}"
+    assert_eq!(
+        (status, body.len(), body == woken.as_bytes()),
+        (200, woken.len(), true),
+        "with room for both, the waiter answers the 1 KiB record and 15 appended, no more \
+         than the {measure} B it took"
+    );
+    assert_eq!(
+        room,
+        (2 * page, 2 * page),
+        "once its client has read its page, the waiter holds nothing"
     );
     assert!(
         peak.0 <= capacity && peak.1 <= capacity,
@@ -185,6 +208,49 @@ async fn a_woken_long_poll_held_out_of_room_never_takes_the_read_memory_past_its
     drop((waiter, pages));
     assert_eq!(settle_at(&cell, 0, (0, 0)).await, (0, 0));
     engine_shutdown(&cell.state).await;
+}
+
+/// The bytes `stream` has received and not read, waiting up to 100 ms for
+/// the first.
+async fn received(stream: &TcpStream) -> usize {
+    let mut buf = vec![0; 64 * 1024];
+    tokio::time::timeout(Duration::from_millis(100), stream.peek(&mut buf))
+        .await
+        .map_or(0, |peeked| peeked.unwrap())
+}
+
+/// The response `stream` receives within 5 s: (its status, its body), or
+/// (0, nothing) if none arrives whole. 5 s is well inside the 10 s drain
+/// window after which the server cuts the unread pages beside it, whose
+/// release would otherwise make room for any take.
+async fn answer(stream: &mut TcpStream) -> (u16, Vec<u8>) {
+    let read = async {
+        let (mut bytes, mut chunk) = (Vec::new(), vec![0; 64 * 1024]);
+        loop {
+            let n = stream.read(&mut chunk).await.unwrap();
+            bytes.extend_from_slice(&chunk[..n]);
+            match response(&bytes) {
+                Some(whole) => return whole,
+                None if n == 0 => return (0, Vec::new()),
+                None => {}
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), read)
+        .await
+        .unwrap_or((0, Vec::new()))
+}
+
+/// The response `bytes` hold once it is whole, read by its
+/// `content-length`: (its status, its body).
+fn response(bytes: &[u8]) -> Option<(u16, Vec<u8>)> {
+    let head = bytes.windows(4).position(|w| w == b"\r\n\r\n")? + 4;
+    let text = String::from_utf8_lossy(&bytes[..head]).to_ascii_lowercase();
+    let length = text
+        .lines()
+        .find_map(|line| line.strip_prefix("content-length:"))?;
+    let body = bytes.get(head..head + length.trim().parse::<usize>().ok()?)?;
+    Some((text.get(9..12)?.parse().ok()?, body.to_vec()))
 }
 
 /// A woken long-poll takes exactly what was appended while it waited, 64 B
