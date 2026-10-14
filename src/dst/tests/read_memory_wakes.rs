@@ -5,6 +5,10 @@
 //! most its admission budget, measured each time it tries for room, so
 //! what is appended while it waits for room is taken too. A read from a
 //! cursor behind the tail still reserves its whole budget at admission.
+//! A fork's woken long-poll takes its whole budget again (the owner's
+//! round-3 call 3): its page is read from the tail once its fork chain is
+//! resolved, after the wait, so what was appended while it waited cannot
+//! bound it.
 //!
 //! The first leg is bound by its project's memory line. The others are
 //! bound by the instance's read memory: a project whose held pages leave
@@ -21,12 +25,17 @@
 //! buffer autotuned to 2,626,560 B) and 0.65 MB on macOS. A page the
 //! kernel takes whole ends and releases its hold at once.
 
-use super::fixture_cell::{Cell, CellSpec, open_cell};
+use super::fixture_cell::{Cell, CellSpec, open_cell, project};
 use super::fixture_http::engine_shutdown;
+use super::fixture_requests::PRISMA_KEY;
+use super::fixture_storage::mem;
 use super::read_memory::{
     MIB, PAGE_BUDGET, RECORDS, append_to_lp, at_rest, big_stream, ledgers, never_read, padded,
     settle_at, until,
 };
+use crate::application::creation::{CreateCommand, ForkCommand};
+use crate::dst::{FaultProfile, FaultStore, ObjClass, StoreOp};
+use crate::tenant::{ProjectId, TenantStreamRef};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
@@ -35,6 +44,8 @@ use tokio::net::TcpStream;
 /// The shared-cell profile's project memory line.
 const LINE: u64 = 32 * MIB;
 const LP: &str = "/v1/streams/lp";
+/// Project 0's fork of its stream `src` (`fork_of_src`).
+const FK: &str = "/v1/streams/fk";
 /// What a woken page takes beside the payload appended while it waited
 /// (`application::read_request`).
 const RECORD_FRAMING: u64 = 64;
@@ -242,15 +253,21 @@ async fn answer(stream: &mut TcpStream) -> (u16, Vec<u8>) {
 }
 
 /// The response `bytes` hold once it is whole, read by its
-/// `content-length`: (its status, its body).
+/// `content-length` (a 204 has none and no body): (its status, its body).
 fn response(bytes: &[u8]) -> Option<(u16, Vec<u8>)> {
     let head = bytes.windows(4).position(|w| w == b"\r\n\r\n")? + 4;
     let text = String::from_utf8_lossy(&bytes[..head]).to_ascii_lowercase();
-    let length = text
+    let status = text.get(9..12)?.parse().ok()?;
+    let length = match text
         .lines()
-        .find_map(|line| line.strip_prefix("content-length:"))?;
-    let body = bytes.get(head..head + length.trim().parse::<usize>().ok()?)?;
-    Some((text.get(9..12)?.parse().ok()?, body.to_vec()))
+        .find_map(|line| line.strip_prefix("content-length:"))
+    {
+        Some(length) => length.trim().parse::<usize>().ok()?,
+        None if status == 204 => 0,
+        None => return None,
+    };
+    let body = bytes.get(head..head + length)?;
+    Some((status, body.to_vec()))
 }
 
 /// A woken long-poll takes exactly what was appended while it waited, 64 B
@@ -306,4 +323,211 @@ async fn woken_with_room(cell: &Cell, capacity: u64, batch: &str) -> (u16, Strin
         futures_util::future::join(cell.call(0, "GET", &poll, b""), wake).await;
     let body = String::from_utf8_lossy(&body).into_owned();
     (status, body, woke.elapsed().as_millis())
+}
+
+/// Project 0's JSON stream `src` and `fk`, a fork of it at its tail, made
+/// as the raw surface's fork makes one (`CreationService::create`): a
+/// shared cell's customer forks on neither surface. Returns `src`.
+async fn fork_of_src(cell: &Cell) -> TenantStreamRef {
+    let created = cell
+        .call(
+            0,
+            "PUT",
+            "/v1/streams/src",
+            br#"{"format":{"kind":"json"}}"#,
+        )
+        .await;
+    assert_eq!(created.0, 201);
+    let id = ProjectId::new(&project(0)).unwrap();
+    let forked = cell
+        .state
+        .creation_service()
+        .create(CreateCommand {
+            sref: id.stream_ref("fk"),
+            key: crate::crypto::StreamKey::from_b64(PRISMA_KEY).unwrap(),
+            content_type: Some("application/json".to_string()),
+            ttl_secs: None,
+            expires_at_ms: None,
+            close: false,
+            body: bytes::Bytes::new(),
+            fork: Some(ForkCommand {
+                source: id.stream_ref("src"),
+                offset: None,
+                sub_offset: None,
+            }),
+        })
+        .await
+        .map(|out| out.created);
+    assert!(matches!(forked, Ok(true)), "the fork: {forked:?}");
+    id.stream_ref("src")
+}
+
+/// `n` records of 64 KiB appended to project 0's stream at `path` in one
+/// batch: the append's status.
+async fn append_to(cell: &Cell, path: &str, n: usize) -> u16 {
+    let records: Vec<String> = (0..n).map(padded).collect();
+    let batch = format!("[{}]", records.join(","));
+    let path = format!("{path}/records:batch");
+    cell.call(0, "POST", &path, batch.as_bytes()).await.0
+}
+
+/// `work`'s output and the most project 0 held in read bytes and the
+/// instance in read memory while it ran, sampled every millisecond.
+async fn peak_while<T>(cell: &Cell, work: impl Future<Output = T>) -> (T, (u64, u64)) {
+    let done = AtomicBool::new(false);
+    let working = async {
+        let output = work.await;
+        done.store(true, Ordering::Relaxed);
+        output
+    };
+    let sampling = async {
+        let mut peak = (0, 0);
+        while !done.load(Ordering::Relaxed) {
+            let now = ledgers(cell, 0);
+            peak = (peak.0.max(now.0), peak.1.max(now.1));
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        peak
+    };
+    futures_util::future::join(working, sampling).await
+}
+
+/// A woken fork long-poll takes its whole page budget again (the owner's
+/// round-3 call 3): its page is read from the tail once its fork chain is
+/// resolved (`read_stitched`, a registry read for each ancestor), after
+/// its wait, so what was appended while it waited cannot bound it. Eight
+/// never-read long-polls of project 0 on its fork `fk` are woken by a
+/// 1 KiB record while the read of `fk`'s source descriptor is held at the
+/// store (its cache slot expired), and 96 records of 64 KiB are appended
+/// before the read is released. With the read memory at a page budget and
+/// 1 MiB, one waiter takes its 8 MiB and answers the record and the 96, a
+/// page of 6 MiB its client leaves unread (more than either kernel takes,
+/// so it stays held, exactly, in both ledgers), and the seven others, with
+/// no room beside it, answer 204 at their deadline. Neither the project's
+/// read bytes nor the read memory ever passes its line or its capacity.
+/// Before (D′ on forks): each waiter took 5 KiB, the record and its
+/// framing, and all eight rendered the 6 MiB: the ledgers held 50,353,536 B
+/// against the 32 MiB line and the 9 MiB read memory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_woken_fork_long_poll_takes_its_whole_page_budget_again() {
+    let store = FaultStore::new(mem(), 808, FaultProfile::clean());
+    let cell = open_cell(CellSpec {
+        store: store.clone(),
+        ..CellSpec::open(1)
+    })
+    .await;
+    let src = fork_of_src(&cell).await;
+    let started = Instant::now();
+    let poll = format!("{FK}/records:long-poll?cursor=now&waitMs=5000");
+    let mut waiters = Vec::new();
+    for _ in 0..8 {
+        waiters.push(never_read(&cell, 0, "GET", &poll, b"").await);
+    }
+    until(|| cell.state.admission.parked() >= 8).await;
+    let capacity = PAGE_BUDGET + MIB;
+    cell.state.admission.set_project_memory_pressure_bytes(LINE);
+    cell.state.admission.set_read_memory_capacity(capacity);
+    cell.state.registry.expire_cache_for_tests(&src);
+    let hex = |raw: &str| crate::crypto::hex(raw.as_bytes());
+    let descriptor = format!(
+        "registry/v4/projects/{}/streams/{}.json",
+        hex(&project(0)),
+        hex("src")
+    );
+    let engaged = store.hold_class_under(StoreOp::Get, ObjClass::Other, &descriptor, 8);
+    let page: Vec<String> = std::iter::once(kib_record())
+        .chain((0..96).map(padded))
+        .collect();
+    let page = format!("[{}]", page.join(","));
+    let held = u64::try_from(page.len()).unwrap();
+    let scenario = async {
+        let records = format!("{FK}/records");
+        let woke = cell
+            .call(0, "POST", &records, kib_record().as_bytes())
+            .await;
+        until(|| engaged.load(Ordering::SeqCst) >= 1).await;
+        let appended = append_to(&cell, FK, 96).await;
+        store.release_hold();
+        until(|| cell.state.admission.parked() == 0).await;
+        let waited = started.elapsed();
+        let rest = settle_at(&cell, 0, (held, held)).await;
+        let mut answers = Vec::new();
+        for waiter in &mut waiters {
+            answers.push(answer(waiter).await);
+        }
+        (woke.0, appended, waited, rest, answers)
+    };
+    let ((woke, appended, waited, rest, answers), peak) = peak_while(&cell, scenario).await;
+    let statuses: Vec<(u16, usize)> = answers.iter().map(|(s, b)| (*s, b.len())).collect();
+    assert!(
+        peak.0 <= LINE && peak.1 <= capacity,
+        "the ledgers peaked at {peak:?} against the {LINE} B line and the {capacity} B read \
+         memory; the woken fork long-polls answered {statuses:?}"
+    );
+    let served = answers
+        .iter()
+        .filter(|(status, body)| *status == 200 && *body == page.as_bytes())
+        .count();
+    let timeouts = answers
+        .iter()
+        .filter(|(status, body)| *status == 204 && body.is_empty())
+        .count();
+    assert_eq!(
+        (woke, appended, rest, served, timeouts),
+        (200, 200, (held, held), 1, 7),
+        "the woken fork long-polls answered {statuses:?}, the ledgers then at rest"
+    );
+    assert!(
+        waited >= Duration::from_millis(4900),
+        "the waits ended after {waited:?}"
+    );
+    drop(waiters);
+    assert_eq!(settle_at(&cell, 0, (0, 0)).await, (0, 0));
+    engine_shutdown(&cell.state).await;
+}
+
+/// Woken fork long-polls beside no held page all answer their record
+/// (round-3 call 3's companion): under the same 32 MiB line and 9 MiB read
+/// memory, eight of project 0's long-polls on its fork `fk` each take
+/// their whole 8 MiB again in turn, render the 1 KiB record and, their
+/// clients reading, release it, so all eight answer it within 1 s of its
+/// append.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn woken_fork_long_polls_beside_no_held_page_all_answer_their_record() {
+    let cell = open_cell(CellSpec::open(1)).await;
+    fork_of_src(&cell).await;
+    let poll = format!("{FK}/records:long-poll?cursor=now&waitMs=10000");
+    let polls = futures_util::future::join_all((0..8).map(|_| cell.call(0, "GET", &poll, b"")));
+    let wake = async {
+        until(|| cell.state.admission.parked() >= 8).await;
+        cell.state.admission.set_project_memory_pressure_bytes(LINE);
+        cell.state
+            .admission
+            .set_read_memory_capacity(PAGE_BUDGET + MIB);
+        let woke = Instant::now();
+        let records = format!("{FK}/records");
+        let appended = cell
+            .call(0, "POST", &records, kib_record().as_bytes())
+            .await;
+        (appended.0, woke)
+    };
+    let (answers, (appended, woke)) = futures_util::future::join(polls, wake).await;
+    let answered = woke.elapsed();
+    let page = format!("[{}]", kib_record());
+    let statuses: Vec<u16> = answers.iter().map(|(status, _, _)| *status).collect();
+    let served = answers
+        .iter()
+        .filter(|(status, _, body)| *status == 200 && body == page.as_bytes())
+        .count();
+    assert_eq!(
+        (appended, served),
+        (200, 8),
+        "the woken fork long-polls answered {statuses:?} after {answered:?}"
+    );
+    assert!(
+        answered < Duration::from_secs(1),
+        "answered after {answered:?}"
+    );
+    assert_eq!(settle_at(&cell, 0, (0, 0)).await, (0, 0));
+    engine_shutdown(&cell.state).await;
 }

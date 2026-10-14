@@ -147,17 +147,19 @@
       "lint": "clippy::unwrap_used",
       "metrics": {
         "scope_lines": 81,
-        "syntax_facts": 141,
+        "syntax_facts": 140,
         "unwrap_site:ordinary-call::0eca504d0924318b": 1,
         "unwrap_site:ordinary-call::3d96856466cfd4a9": 1,
         "unwrap_site:ordinary-call::53080bf8c14d085d": 1,
+        "unwrap_site:ordinary-call::943907e179873d9a": 1,
         "unwrap_site:ordinary-call::aeaaa3050e5a45de": 1,
         "unwrap_site:ordinary-call::c6ce19da235c5f39": 1,
+        "unwrap_site:path::11e284f3072042af": 1,
         "unwrap_site:path::170a730da262f661": 2,
         "unwrap_site:path::7f34e5ba4975f4ed": 3
       },
-      "rationale": "Fork reads take the typed scan start that separates a u64::MAX position from now (ec55262f).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+      "rationale": "Fork reads take the typed scan start that separates a u64::MAX position from now (ec55262f). A woken fork long-poll waits through wait_fork_tail(&handle, start, wait) in place of wait_tail(&handle, Deliver::Durable, start, wait), so it takes its whole min(maxBytes, 8 MiB) page budget again: one call fingerprint and one path swapped, one syntax fact fewer, no unwrap added.",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge; restated under his round-3 call 3 of 2026-10-13 (README \"Owner decisions\", row \"Public-beta calls, round 3 (decided 2026-10-13)\", (3): execute_fork_read's row restated so a woken fork long-poll takes min(maxBytes, 8 MiB) again), with the values the gate prints"
     },
     {
       "path": "src/application/read_request.rs",

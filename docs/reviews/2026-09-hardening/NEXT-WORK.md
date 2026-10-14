@@ -399,11 +399,13 @@ never declined), pinned by two fleet-off legs in `scaler_split_gate` and
 a byte proof in `shared_cell_capacity` (125,820 of 131,072 bytes);
 `src/application/topology.rs` is the `topology` mutation owner; #144 is
 amended (d) and ratified; sealed-segment pruning is recorded before
-cross-server splits (14.6).
+cross-server splits (14.6). Call 3 is built: a woken fork long-poll
+waits through `wait_fork_tail` (`src/application/read_request.rs`) and
+takes its whole `min(maxBytes, 8 MiB)` again, `execute_fork_read`'s
+exception row restated with the gate's values; pinned by a red fork leg
+and its companion in `read_memory_wakes`; #113 is amended; TLA-018 is
+re-recorded at landing.
 
-- Call 3, fork long-polls: `execute_fork_read`'s row restated so a woken
-  fork long-poll takes `min(maxBytes, 8 MiB)` again (a fork `wait_tail`
-  variant, a red fork leg, a TLA-018 re-record).
 - Call 7, #148: the SDK text-and-test commit for the three-branch
   recovery (fence, seal, anything else; a `421` through the new
   endpoint's client), before `publish-sdk`.
@@ -2285,11 +2287,11 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
   layout 6, is the fallback if Layer B shows `read_memory_busy`, a
   `429 project_memory_pressure` for a compliant tail follower or its
   appends after a fan-out wake, or a `204` with records waiting (#113
-  amended); (2) decided (a), to be built (call 3): a fork's woken
-  long-poll can still render a page larger than it took (the fork read
-  measures its end after awaits on the ancestors' descriptors), so it
-  takes the whole `min(maxBytes, 8 MiB)` again under a restated
-  `execute_fork_read` row, with a red leg; (3) closed (call 2, (a′),
+  amended); (2) closed (call 3, (a), built): a fork's woken long-poll
+  could render a page larger than it took (the fork read measures its
+  end after awaits on the ancestors' descriptors), so it takes the whole
+  `min(maxBytes, 8 MiB)` again (`wait_fork_tail`) under a restated
+  `execute_fork_read` row, with a red leg in `read_memory_wakes`; (3) closed (call 2, (a′),
   built): the scaler's segment map could take a customer's descriptor
   past the catalog's 128 KiB guard and fail the cell-wide reconciliation
   page (#144), so a split is declined once segments + live + 2 > 192 (at

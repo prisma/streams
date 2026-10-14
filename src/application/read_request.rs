@@ -487,7 +487,7 @@ impl ReadService {
             && start >= end
             && !closed
         {
-            (end, closed, durable) = wait_tail(&handle, Deliver::Durable, start, wait).await;
+            (end, closed, durable) = wait_fork_tail(&handle, start, wait).await;
         }
         if matches!(command.mode, ReadMode::LongPoll(_)) && start >= end {
             return Ok(ReadOutcome::empty(
@@ -571,6 +571,30 @@ async fn wait_tail(
     start: u64,
     wait: Duration,
 ) -> (u64, bool, u64) {
+    wait_tail_measuring(handle, visibility, start, wait, true).await
+}
+
+/// A fork's long-poll wait for its durable tail to pass `start`: one that
+/// ends with records to read takes its whole page budget again, as
+/// `park::resume` does (the owner's round-3 call 3 of 2026-10-13). A
+/// fork's page is read from the tail once its fork chain is resolved,
+/// after awaits on its ancestors' descriptors (`read_stitched`), so what
+/// was appended while it waited cannot bound it.
+async fn wait_fork_tail(handle: &StreamHandle, start: u64, wait: Duration) -> (u64, bool, u64) {
+    wait_tail_measuring(handle, Deliver::Durable, start, wait, false).await
+}
+
+/// The parked wait of both: a `measured` one records `parked_at`, so its
+/// take is at most what was appended while it waited; any other never
+/// does, so `appended_since` measures nothing and the take is the whole
+/// page budget.
+async fn wait_tail_measuring(
+    handle: &StreamHandle,
+    visibility: Deliver,
+    start: u64,
+    wait: Duration,
+    measured: bool,
+) -> (u64, bool, u64) {
     let deadline = tokio::time::Instant::now() + wait.min(Duration::from_secs(25));
     let _parked = crate::admission::park::park();
     let mut parked_at = None;
@@ -580,7 +604,7 @@ async fn wait_tail(
         let applied = handle.applied_notify.notified();
         // Read before the tail is checked, so a tail found at most `start`
         // proves nothing past `start` is counted in it.
-        let before = tail_payload(handle, visibility);
+        let before = measured.then(|| tail_payload(handle, visibility)).flatten();
         let state = tail_state(handle, visibility);
         if state.0 > start || state.1 {
             return resumed(state, start, deadline, appended(parked_at)).await;

@@ -317,7 +317,7 @@
       "count": 1,
       "owner": "crate::read_memory_wakes",
       "path": "src/dst/dst_tests.rs",
-      "reason": "Woken long-poll DSTs (public-beta phase B item B8, D′ for the owner's shared cells Q1 (D)): a woken long-poll takes again only what was appended while it waited, plus 64 B a record and 4 KiB a page, measured when room comes, so a project's fan-out wake fits beside its held pages and a waiter held out of room never takes the read memory past its capacity on the plain path (a publish racing the synchronous window between the take and the page's tail snapshot can add up to tail_max_bytes a waiter; a fork's woken long-poll is not covered, an open owner question); the compiler and the DST suite exercise the module.",
+      "reason": "Woken long-poll DSTs (public-beta phase B item B8, D′ for the owner's shared cells Q1 (D)): a woken long-poll takes again only what was appended while it waited, plus 64 B a record and 4 KiB a page, measured when room comes, so a project's fan-out wake fits beside its held pages and a waiter held out of room never takes the read memory past its capacity on the plain path (a publish racing the synchronous window between the take and the page's tail snapshot can add up to tail_max_bytes a waiter); a fork's woken long-poll takes its whole page budget again (the owner's round-3 call 3), so its page, read after awaits on its ancestors' descriptors, never passes its line or the read memory; the compiler and the DST suite exercise the module.",
       "syntax": "path = \"tests/read_memory_wakes.rs\""
     },
     {
@@ -2511,6 +2511,14 @@
       "path": "src/application/read_remote.rs",
       "reason": "Unit tests of the relay's typed-refusal codec and decoder live beside the adapter under a sibling path, keeping the adapter file within budget; the module is compiled only under cfg(test).",
       "syntax": "path = \"read_remote_tests.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::wait_tail_measuring",
+      "path": "src/application/read_request.rs",
+      "reason": "A long-poll's parked wait selects between its stream's durable notification (and, for an applied read, its applied one) and its deadline; moved from wait_tail when the fork long-poll's variant came to share it (the owner's round-3 call 3 of 2026-10-13); compiler checks expansion, and the read_memory_wakes and reads_applied DSTs exercise both arms.",
+      "syntax": "tokio::select"
     },
     {
       "category": "effect",

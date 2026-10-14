@@ -2382,13 +2382,6 @@
     },
     {
       "category": "macro-dsl",
-      "count": 2,
-      "owner": "crate::wait_tail",
-      "path": "src/application/read_request.rs",
-      "syntax": "tokio::select"
-    },
-    {
-      "category": "macro-dsl",
       "count": 1,
       "owner": "crate::macro(tokio::task_local)",
       "path": "src/application/read_retention_probe.rs",
