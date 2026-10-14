@@ -437,11 +437,12 @@ re-record at landing covers it too.
   with the skeptic's five amendments (item 3). Built in round 4:
   `cell-admin offboard` takes a suspended project (the first run moves
   the canary's catalog-read credential and records the witness version;
-  the second sets it active only once the canary answers 200 there), the
-  issuer's offboarding job does the same in one attempt, `cell-admin
-  canary` mints each probe at the current version, and #151 and
-  WIRE-MATRIX restate the delete's reason; the alerting watch, in
-  flight, must mint its catalog-read canary tokens per probe too
+  the second sets it active only once the canary answers 200 there or at
+  a later version, each probe minted at the version the state holds
+  then), the issuer's offboarding job does the same in one attempt,
+  `cell-admin canary` mints each probe at the current version, and
+  #151 and WIRE-MATRIX restate the delete's reason; the alerting watch,
+  in flight, must mint its catalog-read canary tokens per probe too
   (`deploy/cell-admin/README.md`, "Offboarding a suspended project").
 - Call 16: an off-list workspace's reduced mode, with #151, #152,
   WIRE-MATRIX and the page amended (item 3). Built in round 4
