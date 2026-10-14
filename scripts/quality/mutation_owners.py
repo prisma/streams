@@ -115,9 +115,15 @@ OWNERS = (
     owner('scaler', 'src/scaler3.rs', 'scaler3:: dst_tests::scaler_loop::'),
     # The split and merge transitions and the segment budget a split must
     # fit (#144); the owner decided the row on 2026-10-13
-    # (OWNER-DECISIONS-3, call 2; AGENTS 1(3)).
+    # (OWNER-DECISIONS-3, call 2; AGENTS 1(3)). Its baseline and mutants skip
+    # the capacity test post_split_throughput_scales (a 1.8x ratio on eight
+    # workers that fails under host load; the commit and release gates run it
+    # alone): the owner's decision of 2026-10-14 (OWNER-DECISIONS-5, call 1;
+    # AGENTS 1(3), approved). The skip is one word and never the first filter,
+    # which the driver hands to cargo rather than to libtest.
     owner('topology', 'src/application/topology.rs',
-          'dst_tests::topology_lifecycle:: dst_tests::scaler_split_gate:: dst_tests::topology_scaling::'),
+          'dst_tests::topology_lifecycle:: dst_tests::scaler_split_gate:: dst_tests::topology_scaling:: '
+          '--skip=post_split_throughput_scales'),
     owner('postings_cache', 'src/postings_cache.rs', 'postings_cache::'),
     owner('postings_cache_owned_load', 'src/postings_cache/owned_load.rs', 'postings_cache::'),
     owner('sharddir', 'src/sharddir.rs', 'sharddir::'),

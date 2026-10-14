@@ -34,6 +34,60 @@ def receipt(*paths, owners=()):
     }
 
 
+CAPACITY_TEST = 'dst::dst_tests::topology_scaling::post_split_throughput_scales'
+
+
+def dst_test_names():
+    """Every inventoried DST test under dst::dst_tests, by its libtest name
+    (src/dst/dst_tests.rs declares each file's module by #[path]), to its file."""
+    declared = re.findall(r'#\[path = "([^"]+)"\]\s*mod (\w+);',
+                          (ROOT / 'src/dst/dst_tests.rs').read_text())
+    modules = {f'src/dst/{path}': module for path, module in declared}
+    inventory = json.loads((ROOT / 'docs/refactor/test-inventory.json').read_text())
+    return {f'dst::dst_tests::{modules[test["file"]]}::{test["name"]}': test['file']
+            for test in inventory if test['file'] in modules}
+
+
+def libtest_arguments(entry):
+    """The arguments libtest gets for an owner's tests in the driver's command:
+    cargo hands its one TESTNAME before `--` to libtest as a filter and every
+    argument after `--` as written; an option before `--` would be cargo's."""
+    with mock.patch.dict(os.environ, {'QUALITY_MUTANT_SHARD': ''}):
+        command = mutation_command(entry, Path('/tmp'), Path('/tmp/r'), None)
+    words = [arg.removeprefix('--cargo-test-arg=') for arg in command
+             if arg.startswith('--cargo-test-arg=')]
+    split = words.index('--') if '--' in words else len(words)
+    cargo, libtest = words[:split], words[split + 1:]
+    if len(cargo) > 1 or any(word.startswith('-') for word in cargo):
+        raise ValueError(f'{entry.name}: cargo test takes one TESTNAME before --, not {cargo}')
+    return [*cargo, *libtest]
+
+
+def libtest_selection(arguments, names):
+    """The names libtest runs: each matching a filter (any name without one)
+    and no --skip, by substring, or whole under --exact."""
+    filters, skips, exact = [], [], False
+    words = iter(arguments)
+    for word in words:
+        if word == '--exact':
+            exact = True
+        elif word == '--skip':
+            skips.append(next(words))
+        elif word.startswith('--skip='):
+            skips.append(word.removeprefix('--skip='))
+        elif word.startswith('-'):
+            raise ValueError(f'unmodelled libtest option: {word}')
+        else:
+            filters.append(word)
+
+    def matches(name, value):
+        return name == value if exact else value in name
+
+    return {name for name in names
+            if (not filters or any(matches(name, value) for value in filters))
+            and not any(matches(name, value) for value in skips)}
+
+
 class MutationOwnership(unittest.TestCase):
     def test_mixed_registered_and_unregistered_scope_fails_before_counts_exist(self):
         plan = receipt(
@@ -255,6 +309,45 @@ class MutationOwnership(unittest.TestCase):
     def test_prior_table_parser_rejects_dynamic_owner_construction(self):
         with self.assertRaisesRegex(ValueError, 'literal OWNERS sequence'):
             declared_source_map('OWNERS = make_runtime_table()\n')
+
+
+class OwnerTestSelection(unittest.TestCase):
+    def test_the_topology_owner_runs_every_leg_of_its_three_dst_modules_but_the_capacity_test(self):
+        # The owner's decision of 2026-10-14 (OWNER-DECISIONS-5, call 1): the
+        # capacity test's 1.8x ratio on eight workers fails under host load, so
+        # the gates run it alone and neither the topology owner's baseline nor
+        # its mutants run it. Every other leg of the three modules still runs,
+        # a leg added later included.
+        names = dst_test_names()
+        modules = ('topology_lifecycle', 'scaler_split_gate', 'topology_scaling')
+        legs = {name for name, path in names.items()
+                if path in {f'src/dst/tests/{module}.rs' for module in modules}}
+        self.assertEqual({name.split('::')[2] for name in legs}, set(modules))
+        self.assertIn(CAPACITY_TEST, legs)
+        topology = source_map()['src/application/topology.rs']
+        selected = libtest_selection(libtest_arguments(topology), names)
+        self.assertNotIn(CAPACITY_TEST, selected)
+        self.assertEqual(sorted(selected), sorted(legs - {CAPACITY_TEST}))
+
+    def test_every_owner_filter_reaches_libtest_as_a_filter_or_a_one_word_skip(self):
+        # The driver passes the first filter to cargo, so it is never an
+        # option; impact.py sorts and merges owners' filters into one
+        # `cargo test -- ...` line, so a skip is one word, `--skip=NAME`.
+        for entry in OWNERS:
+            with self.subTest(owner=entry.name):
+                arguments = libtest_arguments(entry)
+                libtest_selection(arguments, ())
+                self.assertEqual([word for word in arguments if word.startswith('-')
+                                  and not word.startswith('--skip=')], [])
+
+    def test_the_libtest_model_ors_filters_and_drops_skips(self):
+        names = ('a::x', 'a::y', 'b::x', 'c::z')
+        self.assertEqual(libtest_selection(['a::', 'b::'], names), {'a::x', 'a::y', 'b::x'})
+        self.assertEqual(libtest_selection(['a::', 'b::', '--skip=x'], names), {'a::y'})
+        self.assertEqual(libtest_selection(['--skip', 'x'], names), {'a::y', 'c::z'})
+        self.assertEqual(libtest_selection(['a::x', '--exact', '--skip=a::'], names), {'a::x'})
+        with self.assertRaisesRegex(ValueError, 'unmodelled libtest option: --include-ignored'):
+            libtest_selection(['--include-ignored'], names)
 
 
 if __name__ == '__main__':
