@@ -5,10 +5,15 @@
 #   scripts/dev/ci-status.sh [SHA] --wait   # blocks until every run finishes
 #
 # A push to slate runs three workflows: ci.yml, rust-quality.yml and
-# workflow-lint.yml. Exit 0 only when all three have a run for exactly this
-# commit and each concluded success; a run still in progress is not
+# workflow-lint.yml. Exit 0 only when all three have a push run for exactly
+# this commit and each concluded success; a run still in progress is not
 # evidence. Runs are selected by workflow file, not display name (GitHub
-# names a workflow from the default branch). Run --wait in the background
+# names a workflow from the default branch), and by the push event: ci.yml
+# and rust-quality.yml also run nightly on slate's head, and a scheduled run
+# at the same commit is not this push's verdict, red or green (the owner's
+# round-3 call 8, 2026-10-13). A run's verdict is its latest attempt; a
+# release candidate's evidence is stricter (scripts/required-checks.sh:
+# every attempt of every required job). Run --wait in the background
 # (rust-quality takes 12 min to 4 h); read failures with
 # `gh run view <id> --log-failed` before any rerun, and report every rerun.
 set -euo pipefail
@@ -20,9 +25,9 @@ done
 sha=$(git rev-parse "$rev")
 workflows=(ci.yml rust-quality.yml workflow-lint.yml)
 # One line per workflow file: file, run id, status, conclusion, url (the
-# newest run of that file for this commit; empty when there is none yet).
+# newest push run of that file for this commit; empty when there is none yet).
 run_of() {
-  gh run list --workflow "$1" --commit "$sha" --limit 5 \
+  gh run list --workflow "$1" --commit "$sha" --event push --limit 5 \
     --json databaseId,status,conclusion,url \
     --jq ".[0] | select(. != null) | \"$1\t\(.databaseId)\t\(.status)\t\(.conclusion)\t\(.url)\""
 }
@@ -48,7 +53,7 @@ ok=true
 for workflow in "${workflows[@]}"; do
   line=$(run_of "$workflow")
   if [[ -z "$line" ]]; then
-    echo "CI_PENDING: no $workflow run for this commit yet"
+    echo "CI_PENDING: no $workflow push run for this commit yet"
     ok=false
     continue
   fi
