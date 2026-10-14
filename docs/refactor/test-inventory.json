@@ -2858,7 +2858,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "794cc7e236caec92f32ba66dd35cfe4831b9ec5869d27bef60be74d0d5d65f14",
+    "function_sha256": "e3e58a87836ab2ea0e3330bd88837bf3be8ae53bed9bc1ac47efbdfa0e0d1a7f",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_hostile.rs",

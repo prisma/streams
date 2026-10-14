@@ -386,9 +386,12 @@ alongside and finish before admission opens.
 
 The owner's round-3 answers that need code (README, row "Public-beta
 calls, round 3 (decided 2026-10-13)": "accept all recommended."); each
-lands red first with its record, and the records it amends (#142, #144,
-#151, #152) keep their status until then; #148's refused-replay rule is
-ratified as built (call 7), and its record says so.
+lands red first with its record, and the records it amends (#144, #151,
+#152) keep their status until then; #148's refused-replay rule is
+ratified as built (call 7), and its record says so. Call 5 is built: the
+denial journal's 64-event allowance is deleted, each aggregate per (code,
+status) and drain carries its first denial's route and method as a
+sample, R10 is not re-pinned, and #142 is amended and ratified.
 
 - Call 2, #144: a split declined once segments + live + 2 > 192, with a
   fleet-off DST and #144's line; sealed-segment pruning before
@@ -396,9 +399,6 @@ ratified as built (call 7), and its record says so.
 - Call 3, fork long-polls: `execute_fork_read`'s row restated so a woken
   fork long-poll takes `min(maxBytes, 8 MiB)` again (a fork `wait_tail`
   variant, a red fork leg, a TLA-018 re-record).
-- Call 5, #142: the 64-event allowance deleted, one aggregate per (code,
-  status) per drain carrying the first denial's route and method; no R10
-  re-pin.
 - Call 7, #148: the SDK text-and-test commit for the three-branch
   recovery (fence, seal, anything else; a `421` through the new
   endpoint's client), before `publish-sdk`.
@@ -2287,12 +2287,13 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
   `execute_fork_read` row, with a red leg; (3) decided (a′), to be built
   (call 2): the scaler's segment map can take a customer's descriptor past
   the catalog's 128 KiB guard and fail the cell-wide reconciliation page
-  (#144), so a split is declined past 192 segments; (4) decided (b′), to be
-  built (call 5): the denial journal's allowance of 64 single events
-  (#142) is deleted, R10 not re-pinned; (5) closed (call 6): #141 is
-  ratified as built, the off-and-shadow refusal of a key beside a
-  capability that does not verify kept and the served-project signal
-  accepted like P4, its record corrected.
+  (#144), so a split is declined past 192 segments; (4) closed (call 5,
+  (b′), built): the denial journal's allowance of 64 single events (#142)
+  is deleted, each aggregate carries its first denial's route and method
+  as a sample, R10 is not re-pinned, and #142 is ratified; (5) closed
+  (call 6): #141 is ratified as built, the off-and-shadow refusal of a
+  key beside a capability that does not verify kept and the
+  served-project signal accepted like P4, its record corrected.
 
 ### 14.5 Multi-server cells and routing (later, on the new Compute generation)
 

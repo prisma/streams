@@ -132,44 +132,73 @@ fn aggregate(code: &'static str, status: u16, count: u64) -> AuditEvent {
         ..event("aggregate", 0)
     }
 }
-fn queued(service: &AuditJournal) -> Vec<(String, u16, Option<u64>)> {
+/// The aggregate `drain_audit_once` builds, with its sample.
+fn sampled(code: &'static str, status: u16, denials: UnverifiedDenials) -> AuditEvent {
+    AuditEvent {
+        route: denials.route,
+        method: denials.method,
+        ..aggregate(code, status, denials.count)
+    }
+}
+type Queued = (String, u16, Option<u64>, String, String);
+fn queued(service: &AuditJournal) -> Vec<Queued> {
     let queue = service.queue.lock().unwrap();
     queue
         .iter()
-        .map(|e| (e.code.clone(), e.status, e.count))
+        .map(|e| {
+            let (code, route, method) = (e.code.clone(), e.route.clone(), e.method.clone());
+            (code, e.status, e.count, route, method)
+        })
         .collect()
 }
+fn row(code: &str, status: u16, count: u64, route: &str, method: &str) -> Queued {
+    (
+        code.into(),
+        status,
+        Some(count),
+        route.into(),
+        method.into(),
+    )
+}
+const GET: axum::http::Method = axum::http::Method::GET;
+const POST: axum::http::Method = axum::http::Method::POST;
 
+/// No unverified denial is queued as an event of its own: each is counted
+/// by (code, status), and a drain queues one aggregate per pair, in that
+/// order, carrying the pair's first route (bounded) and method since the
+/// last drain as its sample.
 #[test]
-fn unverified_denials_past_the_allowance_drain_as_one_aggregate_per_code_and_status() {
+fn unverified_denials_drain_as_one_aggregate_per_code_and_status_sampling_the_first() {
     let service = AuditJournal::new();
-    for _ in 0..UNVERIFIED_EVENTS_PER_DRAIN {
-        assert!(
-            !service.count_unverified("malformed", 401),
-            "a single event"
-        );
-    }
-    for _ in 0..3 {
-        assert!(service.count_unverified("malformed", 401));
-    }
-    assert!(service.count_unverified("watch_unauthorized", 403));
-    assert!(service.count_unverified("malformed", 400));
+    service.count_unverified("malformed", 401, "a/records", &GET);
+    service.count_unverified("malformed", 401, "b/records", &POST);
+    service.count_unverified("malformed", 401, "c/records", &GET);
+    service.count_unverified("watch_unauthorized", 403, "w/watches", &GET);
+    service.count_unverified("malformed", 400, &"r".repeat(300), &POST);
     assert!(
         service.queue.lock().unwrap().is_empty(),
         "counted, not queued"
     );
-    service.queue_unverified(aggregate);
+    service.queue_unverified(sampled);
+    let route_max = "r".repeat(ROUTE_MAX);
     let expected = [
-        ("malformed".to_string(), 400, Some(1)),
-        ("malformed".to_string(), 401, Some(3)),
-        ("watch_unauthorized".to_string(), 403, Some(1)),
+        row("malformed", 400, 1, &route_max, "POST"),
+        row("malformed", 401, 3, "a/records", "GET"),
+        row("watch_unauthorized", 403, 1, "w/watches", "GET"),
     ];
     assert_eq!(queued(&service), expected);
-    // The drain leaves no count behind; the allowance stays spent until
-    // its batch is appended (a_drain_whose_append_fails_reopens_no_allowance).
-    service.queue_unverified(aggregate);
+    // The drain leaves no count behind; a pair's next denial is its next
+    // sample.
+    service.queue_unverified(sampled);
     assert_eq!(queued(&service), expected);
-    assert!(service.count_unverified("malformed", 401), "still spent");
+    service.queue.lock().unwrap().clear();
+    service.count_unverified("malformed", 401, "d/records", &POST);
+    service.count_unverified("malformed", 401, "e/records", &GET);
+    service.queue_unverified(sampled);
+    assert_eq!(
+        queued(&service),
+        [row("malformed", 401, 2, "d/records", "POST")]
+    );
     assert_eq!(service.dropped(), 0);
     assert_eq!(service.gap.load(Ordering::Relaxed), 0);
 }
@@ -197,10 +226,8 @@ fn an_aggregate_the_full_queue_refuses_is_lost_as_the_denials_it_counts() {
     let service = AuditJournal::new();
     let full = (0..AUDIT_QUEUE_CAP).map(|i| event(&format!("queued-{i}"), 0));
     service.queue.lock().unwrap().extend(full);
-    for _ in 0..UNVERIFIED_EVENTS_PER_DRAIN + 5 {
-        service.count_unverified("malformed", 401);
-    }
-    service.queue_unverified(aggregate);
+    deny(&service, 5);
+    service.queue_unverified(sampled);
     assert_eq!(service.queue.lock().unwrap().len(), AUDIT_QUEUE_CAP);
     assert_eq!(service.dropped(), 5);
     assert_eq!(service.gap.load(Ordering::Relaxed), 5);
@@ -225,50 +252,40 @@ fn an_aggregate_the_full_queue_refuses_is_lost_as_the_denials_it_counts() {
     assert_eq!(cancelled.gap.load(Ordering::Relaxed), 9 + 1);
 }
 
-/// Queues `n` unverified denials as `observe_denial` does: a single event
-/// each while the drain's allowance lasts, a count past it.
+/// Counts `n` unverified denials as `observe_denial` does.
 fn deny(service: &AuditJournal, n: u64) {
     for _ in 0..n {
-        if !service.count_unverified("malformed", 401) {
-            service.queue.lock().unwrap().push_back(event("single", 0));
-        }
+        service.count_unverified("malformed", 401, "x/records", &GET);
     }
 }
 
-/// The allowance of single unverified events reopens only once a drain's
-/// batch is durably appended (or the drain found nothing to take): a drain
-/// whose append fails requeues its batch and reopens nothing, so while
-/// `_audit_events` appends fail an anonymous flood adds one aggregate per
-/// (code, status) and drain attempt to the queue, never another allowance
-/// of single events. The first drain that appends reopens it.
+/// A drain whose `_audit_events` append fails requeues its batch, the
+/// aggregates included, and adds nothing else: while appends fail an
+/// anonymous flood adds one aggregate per (code, status) and drain attempt
+/// to the queue and never an event per denial. The first drain that
+/// appends takes them all.
 #[tokio::test]
-async fn a_drain_whose_append_fails_reopens_no_allowance() {
-    let allowance = usize::try_from(UNVERIFIED_EVENTS_PER_DRAIN).unwrap();
+async fn a_failed_drain_adds_only_its_aggregates() {
     let service = AuditJournal::new();
-    deny(&service, UNVERIFIED_EVENTS_PER_DRAIN + 5);
+    deny(&service, 5);
     for attempt in 1..=3 {
-        service.queue_unverified(aggregate);
+        service.queue_unverified(sampled);
         let batch = take(&service).unwrap();
         let down = |_| async { Err::<(), String>("store down".into()) };
-        assert!(service.append_batch(batch, down).await.is_err());
-        deny(&service, UNVERIFIED_EVENTS_PER_DRAIN);
+        assert!(persist_audit_batch(batch, down).await.is_err());
+        deny(&service, 64);
         let held = service.queue.lock().unwrap().len();
-        assert_eq!(
-            held,
-            allowance + attempt,
-            "queued after failed drain {attempt}"
-        );
+        assert_eq!(held, attempt, "queued after failed drain {attempt}");
     }
-    service.queue_unverified(aggregate);
+    service.queue_unverified(sampled);
     let batch = take(&service).unwrap();
-    let appended = service.append_batch(batch, |_| async { Ok(()) }).await;
-    assert_eq!(
-        appended,
-        Ok(allowance + 4),
-        "the singles and four aggregates"
-    );
+    let appended = persist_audit_batch(batch, |_| async { Ok(()) }).await;
+    assert_eq!(appended, Ok(4), "four aggregates");
     deny(&service, 1);
-    assert_eq!(queued(&service), [("denied".to_string(), 403, None)]);
+    assert!(
+        service.queue.lock().unwrap().is_empty(),
+        "counted, not queued"
+    );
     assert_eq!(
         (service.dropped(), service.gap.load(Ordering::Relaxed)),
         (0, 0)

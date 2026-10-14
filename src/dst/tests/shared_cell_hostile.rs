@@ -560,8 +560,9 @@ async fn names_ground_onto_the_victims_shard_never_shed_the_victim() {
 /// A11 (M6): an anonymous flood of unverifiable bearers, more than the
 /// denial journal's queue holds; the victim's own denial afterwards (a
 /// probe of a neighbour's usage) is still journaled with its project.
-/// The flood journals the drain's allowance of single events and one
-/// aggregate event counting the rest (phase B step 14(a)).
+/// The flood journals no single event: one aggregate event counts every
+/// denial and carries the first one's route and method as its sample
+/// (phase B step 14(a), the owner's round-3 call 5 (b')).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_anonymous_denial_flood_never_drops_the_victims_denial() {
     const FLOOD: usize = 4_200;
@@ -586,7 +587,6 @@ async fn an_anonymous_denial_flood_never_drops_the_victims_denial() {
         "the victim's denial among {} journaled events",
         events.len()
     );
-    let single = crate::audit::UNVERIFIED_EVENTS_PER_DRAIN;
     let anonymous: Vec<_> = events
         .iter()
         .filter(|e| e["project_id"].is_null())
@@ -597,27 +597,19 @@ async fn an_anonymous_denial_flood_never_drops_the_victims_denial() {
         .map(|e| {
             let field = |name: &str| e[name].as_str().map(str::to_owned);
             let status = e["status"].as_u64();
-            (field("code"), status, e["count"].as_u64(), field("route"))
+            let sample = (field("route"), field("method"));
+            (field("code"), status, e["count"].as_u64(), sample)
         })
         .collect();
-    let rest = Some(FLOOD as u64 - single);
     let malformed = (
         Some("malformed".into()),
         Some(401),
-        rest,
-        Some(String::new()),
+        Some(FLOOD as u64),
+        (Some("x/records".into()), Some("GET".into())),
     );
     assert_eq!(aggregates, [malformed], "the flood's aggregate");
-    assert_eq!(
-        anonymous.len() as u64,
-        single + 1,
-        "the allowance's single events and the aggregate"
-    );
-    assert_eq!(
-        events.len() as u64,
-        single + 2,
-        "no gap marker, nothing else"
-    );
+    assert_eq!(anonymous.len(), 1, "the aggregate and no single event");
+    assert_eq!(events.len(), 2, "no gap marker, nothing else");
     engine_shutdown(&cell.state).await;
 }
 
