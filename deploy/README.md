@@ -57,7 +57,8 @@ Six more directories:
   environment and the secrets set on the platform. Tests:
   `deploy/issuer/composer.test.ts`; the bundled entry's are opt-in: `bun
   install --frozen-lockfile` in `deploy/composer-issuer`, then
-  `ISSUER_COMPOSER_E2E=1 bun test ./deploy/issuer/composer.test.ts`.
+  `ISSUER_COMPOSER_E2E=1 bun test ./deploy/issuer/composer.test.ts`. CI's
+  `sdk-package` job runs them after cell-admin's end to end.
 - `composer/` is the shared cell's Composer app (`app.ts`, the
   `streamscell` service in `streams/service.ts`, no Composer port). Its
   entry (`streams/entry.ts`, bundled into `entry.js` when a release is
@@ -73,7 +74,12 @@ Six more directories:
   ./deploy/composer`; the end-to-end test is opt-in: `bun install
   --frozen-lockfile` in `deploy/composer`, then
   `CELL_ADMIN_E2E_BIN_DIR=target/release bun test ./deploy/composer`
-  (its good boot runs on an x86_64 Linux host only).
+  (its good boot runs on an x86_64 Linux host only, and is skipped
+  elsewhere unless `COMPOSER_E2E_REQUIRE_BOOT=1` makes that a failure).
+  CI's `sdk-package` job runs it after cell-admin's end to end, on the
+  release binaries it builds, with `COMPOSER_E2E_REQUIRE_BOOT=1`, so its
+  good boot is gated (the owner's round-3 call 14 of 2026-10-13). Both
+  Composer apps' packages install there frozen and uncached.
 - `cell-watch/` is the shared cell's alerting watch (the public-beta
   alerting design). So far it holds `rules.ts`, a pure step from the
   previous state and one poll of the cell's `/health`, `/operator/data.json`

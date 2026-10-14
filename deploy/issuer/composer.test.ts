@@ -5,11 +5,14 @@
 // `bun test ./deploy/issuer`.
 //
 // The binding tests read the app's sources as text, so they run without
-// deploy/composer-issuer's packages, as CI's bun step does. The bundled
-// entry's tests need those packages and are opt-in:
+// deploy/composer-issuer's packages, as CI's general bun line does. The
+// bundled entry's tests need those packages and are opt-in:
 //
 //   (cd deploy/composer-issuer && bun install --frozen-lockfile)
 //   ISSUER_COMPOSER_E2E=1 bun test ./deploy/issuer/composer.test.ts
+//
+// CI's sdk-package job runs exactly that after cell-admin's end to end (the
+// owner's round-3 call 14 of 2026-10-13).
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { builtinModules } from "node:module";

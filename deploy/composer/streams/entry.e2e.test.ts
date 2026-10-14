@@ -14,9 +14,12 @@
 // run. The good boot needs what a release ships, an x86_64 Linux ELF, so
 // it runs on an x86_64 Linux host only and a Mac skips it, unless
 // COMPOSER_E2E_REQUIRE_BOOT=1 is set: then a good boot that cannot run
-// fails, naming why, so no runner change can pass it unbooted. CI's bun step
-// sets no CELL_ADMIN_E2E_BIN_DIR and installs no packages here, so it
-// skips the whole file but its last two tests.
+// fails, naming why, so no runner change can pass it unbooted. CI's
+// general bun line sets no CELL_ADMIN_E2E_BIN_DIR and installs no packages
+// here, so it skips the whole file but its last two tests; the sdk-package
+// job's steps after cell-admin's end to end install the packages and run
+// this file on the release binaries with COMPOSER_E2E_REQUIRE_BOOT=1 (the
+// owner's round-3 call 14 of 2026-10-13).
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
