@@ -17,6 +17,17 @@ The workspace lock contained neither banned package nor `openssl-sys`.
 - Updated the locked transitive `chacha20` from yanked 0.10.1 to 0.10.2 within
   `object_store`'s existing dependency requirements. This is a dependency patch,
   not a claim of cryptographic acceptance or performance equivalence.
+- On 15 October 2026, updated the locked transitive `rustls` from 0.23.45 to
+  0.23.46 for the vulnerability advisories RUSTSEC-2026-0346, -0347, -0348 and
+  -0349, and, in the same lockfile change, `lru` from 0.18.0 to 0.18.5
+  (RUSTSEC-2026-0253) and `event-listener` from 5.4.1 to 5.4.2
+  (RUSTSEC-2026-0221). The last two are `unsound` advisories that reach the
+  graph only through SlateDB, so `cargo-deny`'s default `unsound` scope
+  (workspace crates' direct dependencies) does not report them; the gate's
+  configuration is unchanged. Every update stays within the dependents'
+  existing requirements, and no manifest changed. The separate lockfiles of
+  `bench/probe` and `bench/awsbench` are not part of this workspace and were
+  not changed.
 - `bincode` 1.3.3, through pinned SlateDB → foyer-common 0.22.3:
   [RUSTSEC-2025-0141](https://rustsec.org/advisories/RUSTSEC-2025-0141) reports
   discontinued maintenance and no safe upgrade. Retain this exact inherited
