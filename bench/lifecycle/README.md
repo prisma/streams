@@ -8,7 +8,7 @@ prints `PASS`, `FAIL`, `FACT` and `FINDING` lines ending in `LEG_PASS` or
 `LEG_FAIL` (exit 0 only for `LEG_PASS`).
 
 ```bash
-python3 bench/lifecycle/lifecycle.py check <leg> --plan PLAN.json   # offline: keys, placeholders, out dir
+python3 bench/lifecycle/lifecycle.py check <leg> --plan PLAN.json   # offline: keys, placeholders, out dir, the SDK probe's node and build
 python3 bench/lifecycle/lifecycle.py <leg> --plan PLAN.json         # run it
 python3 bench/lifecycle/lifecycle.py judge RUN/evidence.json        # re-judge a saved run, offline
 python3 -m unittest discover -s bench/lifecycle -v                  # the tests (no platform)
@@ -105,7 +105,9 @@ under `env PRISMA_TOKEN_FILE=<path>`.
   the evidence.
 - **The SDK probe** (restart leg) runs `node` (`restart.sdk.node`) on
   `sdk/dist`, so build the SDK from this tree first
-  (`cd sdk && npm ci && npm run build`). Its token and stream key are the
+  (`cd sdk && npm ci && npm run build`); `check` refuses a restart plan
+  when the node binary is missing, or `sdk/dist/index.js` is missing or
+  older than `sdk/src/index.ts`. Its token and stream key are the
   `authorization: Bearer` and `prisma-encryption-key` lines of
   `restart.sdk.headers_file`, a k2gen header file of mode 0600 that the leg
   checks and the probe reads again for each token the SDK asks for (its

@@ -288,6 +288,7 @@ def stream_path(name: str) -> str:
 #: The SDK probe, and the shipping SDK it imports (sdk/dist, built from this tree).
 SDK_PROBE = os.path.join(H.HERE, "sdk-probe.mjs")
 SDK_DIST = os.path.join(H.ROOT, "sdk", "dist", "index.js")
+SDK_SRC = os.path.join(H.ROOT, "sdk", "src", "index.ts")
 
 
 def read_jsonl(path: str) -> list:
@@ -693,9 +694,25 @@ DUMMY = {k: "x" for k in ("stage", "out", "url", "release", "home", "ledger", "l
                           "app", "probe_stage", "report")}
 
 
-def check(plan: H.Plan, leg: str) -> list:
-    """Problems with `plan` for `leg`, offline: missing keys, unknown placeholders, an out dir in the repo."""
+def sdk_problems(plan: H.Plan) -> list:
+    """The restart leg's SDK probe needs a node binary and the SDK built
+    from this tree (sdk/dist no older than sdk/src)."""
     problems = []
+    node = plan.get("restart.sdk.node", "node")
+    if shutil.which(os.path.expanduser(node)) is None:
+        problems.append(f"restart.sdk: no node binary `{node}` (restart.sdk.node): the SDK probe runs on node")
+    if not os.path.exists(SDK_DIST):
+        problems.append("restart.sdk: no built SDK at sdk/dist/index.js: cd sdk && npm ci && npm run build")
+    elif os.path.getmtime(SDK_DIST) < os.path.getmtime(SDK_SRC):
+        problems.append("restart.sdk: sdk/dist/index.js is older than sdk/src/index.ts: rebuild it (cd sdk && npm run "
+                        "build), so the probe runs this tree's SDK")
+    return problems
+
+
+def check(plan: H.Plan, leg: str) -> list:
+    """Problems with `plan` for `leg`, offline: missing keys, unknown
+    placeholders, an out dir in the repo, the SDK probe's node and build."""
+    problems = sdk_problems(plan) if leg == "restart" else []
     for key in ["stage", "out", "platform_token_file"] + REQUIRES[leg]:
         if all(plan.get(k, None) is None for k in key.split("|")):
             problems.append(f"`{key}` is required")

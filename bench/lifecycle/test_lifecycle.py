@@ -883,10 +883,40 @@ else:
         self.assertEqual([x["status"] for x in got[:3]], [200, 0, 200])
         self.assertEqual(got[1]["code"], "probe KeyError: 'boot'")
 
+    def built_sdk(self, age_s: int = 0) -> mock._patch:
+        """sdk/dist/index.js and sdk/src/index.ts in the temp dir, the build
+        `age_s` older than the source."""
+        src, dist = os.path.join(self.tmp, "index.ts"), os.path.join(self.tmp, "index.js")
+        for path in (src, dist):
+            with open(path, "w") as f:
+                f.write("//\n")
+        now = time.time()
+        os.utime(src, (now, now))
+        os.utime(dist, (now - age_s, now - age_s))
+        return mock.patch.multiple(L, SDK_DIST=dist, SDK_SRC=src)
+
     def test_the_example_plan_checks_clean_for_every_leg(self):
         plan = H.Plan.load(os.path.join(HERE, "plan.example.json"))
-        for leg in L.LEGS:
-            self.assertEqual(L.check(plan, leg), [], leg)
+        with self.built_sdk(), mock.patch.object(L.shutil, "which", lambda name: f"/opt/bin/{name}"):
+            for leg in L.LEGS:
+                self.assertEqual(L.check(plan, leg), [], leg)
+
+    def test_check_refuses_a_restart_plan_whose_sdk_probe_lacks_node_or_a_built_sdk(self):
+        plan = H.Plan.load(os.path.join(HERE, "plan.example.json"))
+        plan.doc["restart"]["sdk"]["node"] = "no-such-node"
+        with mock.patch.object(L, "SDK_DIST", os.path.join(self.tmp, "absent.js")):
+            self.assertEqual(L.check(plan, "restart"), [
+                "restart.sdk: no node binary `no-such-node` (restart.sdk.node): the SDK probe runs on node",
+                "restart.sdk: no built SDK at sdk/dist/index.js: cd sdk && npm ci && npm run build"])
+        plan.doc["restart"]["sdk"]["node"] = sys.executable
+        with self.built_sdk(age_s=60):
+            self.assertEqual(L.check(plan, "restart"), [
+                "restart.sdk: sdk/dist/index.js is older than sdk/src/index.ts: rebuild it (cd sdk && npm run build), "
+                "so the probe runs this tree's SDK"])
+            # Only the restart leg runs the SDK probe.
+            self.assertEqual(L.check(plan, "rollback"), [])
+        with self.built_sdk():
+            self.assertEqual(L.check(plan, "restart"), [])
 
     def test_the_example_plan_runs_the_deploy_tools_with_flags_they_take_and_every_flag_they_require(self):
         plan = H.Plan.load(os.path.join(HERE, "plan.example.json"))
