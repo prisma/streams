@@ -12,7 +12,8 @@
 // - GET …/records, :long-poll, :sse, consumers (PUT, :pull, :settle),
 //   GET /v1/streams (catalog), DELETE, GET /v1/projects/{p}/usage (meters
 //   counted the way the generators count them) and the watch capability
-//   path (403 `watch_unauthorized`, slower for a name never seen).
+//   path (403 `watch_unauthorized`, slower for a name never seen; each
+//   request recorded in `watches`, and `watchStall` answers one late).
 // - `refuse(project, n, status, code)` answers the project's next n
 //   requests with that status (code null: an untyped body); `plant` puts a
 //   record into a project's stream without metering it (a leak).
@@ -68,6 +69,12 @@ export class FakeCell {
   existenceLeak = false;
   /** When set, every authenticated request as [project, method, path]. */
   trace: Array<[string, string, string]> | null = null;
+  /** Every watch request, in arrival order: when it arrived
+   * (performance.now()), the project its capability claims, the name. */
+  watches: Array<{ t: number; project: string; name: string }> = [];
+  /** The watch request at this index of `watches` is answered this many
+   * ms late: a stall the timed pairs must not catch up after. */
+  watchStall: { index: number; ms: number } | null = null;
   private waiters = new Set<() => void>();
 
   constructor() {
@@ -175,6 +182,8 @@ export class FakeCell {
       const name = watch[1]!.split("/").map(decodeURIComponent).join("/");
       const cap = url.searchParams.get("cap") ?? "";
       const project = cap.split(".")[0] ?? "";
+      const index = this.watches.push({ t: performance.now(), project, name }) - 1;
+      if (this.watchStall?.index === index) await Bun.sleep(this.watchStall.ms);
       if (!this.ns(project).has(name) && this.coldLookupMs > 0) await Bun.sleep(this.coldLookupMs);
       return error(403, "watch_unauthorized");
     }

@@ -150,6 +150,30 @@ test("H11t's timing and the probes' answers each catch the defect they look for"
   }
 }, 30_000);
 
+test("H11t's pairs start at least 1000/rate ms apart and never catch up after a stall", async () => {
+  cell.watches = [];
+  // The first request of pair 10 is answered 400 ms late.
+  cell.watchStall = { index: 20, ms: 400 };
+  try {
+    const m: Manifest = {
+      name: "pacing", seed: 7, duration: 3,
+      classes: [{ class: "target", count: 1, role: "idle", streams: 2, prefix: "v/", phases: [{ mode: "setup", at: 0 }] }],
+      legs: [{ leg: "h11t", at: 0.2, args: { pairs: 30, rate: 25, target: "target" } }],
+    };
+    const { out } = await runManifest(m, "pace");
+    // Each pair sends its two requests one after the other: a pair starts
+    // with the cell's request 2k. One gap holds the stall; after it the
+    // pairs keep the 40 ms beat, none sent in a burst to catch up.
+    const starts = cell.watches.filter((_, k) => k % 2 === 0).map((w) => w.t);
+    const gaps = starts.slice(1).map((t, k) => t - starts[k]!);
+    expect([starts.length, gaps.filter((g) => g >= 400).length, gaps.filter((g) => g < 10).map((g) => Math.round(g))]).toEqual([30, 1, []]);
+    const h = json(join(out, "legs", "h11t-0.json"));
+    expect([h.pairs, h.rate, h.gap_min_ms >= 40]).toEqual([30, 25, true]);
+  } finally {
+    cell.watchStall = null;
+  }
+}, 30_000);
+
 test("H9b reports a stalled reader whose body the server cut short, and counts none of it as delivered", async () => {
   const srv = createServer((s) => s.once("data", () => s.end("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 4096\r\n\r\n[{\"o\":1}")));
   await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));

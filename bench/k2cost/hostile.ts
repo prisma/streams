@@ -21,9 +21,10 @@
 //   leg h11t      >= --pairs timed pairs on the anonymous capability path
 //                 (GET …/watches/w/keys/<16 hex>?cap=<B>.x): a name a target
 //                 project used in the last few seconds against a name that
-//                 never existed, in random order. Status and code must be
-//                 identical; the time distributions are compared by a
-//                 two-sample KS test (shared_verdict.py recomputes it).
+//                 never existed, in random order, at most --rate pairs a
+//                 second with no catch-up after a stall. Status and code
+//                 must be identical; the time distributions are compared
+//                 by a two-sample KS test (shared_verdict.py recomputes it).
 //   leg probes    >= --pairs cross-project probes, each a first contact:
 //                 every (prober A, target name) once, A from a class with
 //                 no streams, the name one some B of the --to classes holds.
@@ -36,7 +37,7 @@
 
 import { connect as netConnect, type Socket } from "node:net";
 import { connect as tlsConnect } from "node:tls";
-import { Http, Meter, Rng, type Resp, encName, errCode, sleep, streamName, utf8 } from "./common.ts";
+import { Http, Meter, Rng, type Resp, encName, errCode, round3, sleep, streamName, utf8 } from "./common.ts";
 import { countOracle } from "./oracle.ts";
 import type { Ctx } from "./produce.ts";
 import type { LegSpec, Project } from "./tenant-plan.ts";
@@ -343,9 +344,20 @@ export async function h11t(env: RunEnv, leg: LegSpec, signal: AbortSignal): Prom
   const answers = { used: {} as Record<string, number>, never: {} as Record<string, number> };
   let differences = 0;
   const examples: string[] = [];
-  const t0 = performance.now();
+  // At most `rate` pairs a second: a pair starts no sooner than 1000/rate
+  // ms after the one before it started, and a late pair never makes the
+  // next one early, so after a stall the leg does not burst to catch up
+  // (each request may spend one of the cell's lookups).
+  let due = performance.now();
+  let last: number | null = null;
+  let gapMin = Infinity;
   for (let i = 0; i < pairs && !signal.aborted; i++) {
-    await sleep(t0 + (i * 1000) / rate - performance.now(), signal);
+    while (performance.now() < due && !signal.aborted) await sleep(due - performance.now(), signal);
+    if (signal.aborted) break;
+    const start = performance.now();
+    if (last !== null) gapMin = Math.min(gapMin, start - last);
+    last = start;
+    due = start + 1000 / rate;
     const b = targets[i % targets.length]!;
     const name = streamName(b.cls.prefix ?? "t/", rng.int(b.cls.streams ?? 1));
     const path = (n: string) => `/v1/streams/${encName(n)}/watches/w/keys/0000000000000000?cap=${encodeURIComponent(b.id)}.x&timeoutMs=0`;
@@ -363,7 +375,8 @@ export async function h11t(env: RunEnv, leg: LegSpec, signal: AbortSignal): Prom
     }
   }
   return {
-    pairs: used.length, rate, target: targets[0]!.cls.class, answers, differences, examples, ks: ks(used, never),
+    pairs: used.length, rate, gap_min_ms: Number.isFinite(gapMin) ? round3(gapMin) : null, target: targets[0]!.cls.class,
+    answers, differences, examples, ks: ks(used, never),
     used_p50_ms: pct(used, 0.5), never_p50_ms: pct(never, 0.5), used_ms: used.map((x) => Math.round(x * 1000) / 1000),
     never_ms: never.map((x) => Math.round(x * 1000) / 1000),
   };
