@@ -468,7 +468,7 @@ export const MODE_FLAGS: Record<string, string[]> = {
   produce: [...COMMON, ...PRODUCER],
   walk: [...COMMON, ...PRODUCER, "from", "readers", "stagger", "parallel", "max-bytes", "expect"],
   tail: [...COMMON, ...PRODUCER, "via", "readers", "wait-ms", "from"],
-  group: [...COMMON, ...PRODUCER, "pull", "consumers", "group", "settle", "wait-ms", "visibility-ms", "retry-frac", "extend-frac", "until-empty", "dlq", "max-attempts"],
+  group: [...COMMON, ...PRODUCER, "pull", "consumers", "group", "settle", "wait-ms", "visibility-ms", "retry-frac", "extend-frac", "until-empty", "dlq", "max-attempts", "stagger"],
   churn: [...COMMON, "count", "size-kib", "end", "record-bytes", "payload", "concurrency", "rate", "records"],
   subs: [...COMMON, ...PRODUCER, "count", "via", "connect-rate", "wait-ms"],
   audit: [...COMMON, "parallel", "max-bytes", "expect"],

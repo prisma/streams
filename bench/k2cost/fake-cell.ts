@@ -9,7 +9,8 @@
 //   "[" + records joined by "," + "]", so the readers' byte counts are
 //   exact. Cursors are key cursors in the server's shape (kind 0x12, the
 //   offset at byte 37, audit.ts cursorOffset).
-// - GET …/records, :long-poll, :sse, consumers (PUT, :pull, :settle),
+// - GET …/records, :long-poll, :sse, consumers (PUT, :pull, :settle; a
+//   pull with nothing to lease waits up to its waitMs for an append),
 //   GET /v1/streams (catalog), DELETE, GET /v1/projects/{p}/usage (meters
 //   counted the way the generators count them) and the watch capability
 //   path (403 `watch_unauthorized`; each request recorded in `watches`,
@@ -286,7 +287,9 @@ export class FakeCell {
       return json(200, { acked: body.acks?.length ?? 0, retried: 0, extended: 0, dlq: 0, stale: 0 });
     }
     if (!op.endsWith(":pull")) return json(201, {});
-    const { max } = (await req.json()) as { max: number };
+    const { max, waitMs } = (await req.json()) as { max: number; waitMs?: number };
+    // Nothing to lease: wait up to waitMs for an append, as the server does.
+    if ((this.groups.get(key) ?? 0) >= recs.length && waitMs) await this.waitAppend(waitMs, req.signal);
     const at = this.groups.get(key) ?? 0;
     const out = recs.slice(at, at + max);
     this.groups.set(key, at + out.length);

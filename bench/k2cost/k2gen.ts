@@ -34,6 +34,7 @@ Modes
   group         consumer groups: --pull N (1..1000) --consumers K/stream --settle every|none --group NAME
                 --wait-ms 1000 --visibility-ms 30000 --retry-frac F --extend-frac F --until-empty 1
                 --dlq STREAM --max-attempts N (dead-letter after N deliveries; the DLQ stream must exist)
+                --stagger SECS (stream i's consumer is set up, and then first pulls, i x SECS after stream 0's)
                 (a pull leases one message per routing key: give the producer --routing-keys K)
   churn         lifecycles: --count N --size-kib S --end delete|ttl:SECS [--rate L/s | --concurrency C]
   subs          --count N idle subscribers over the streams: --via sse|long-poll --connect-rate 20

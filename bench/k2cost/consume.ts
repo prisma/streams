@@ -458,6 +458,12 @@ export async function group(ctx: Ctx, signal: AbortSignal): Promise<Record<strin
   const untilEmpty = o.int("until-empty", 0) === 1;
   const dlq = o.str("dlq");
   const maxAttempts = o.has("max-attempts") ? o.int("max-attempts", 5) : undefined;
+  // --stagger SECS: stream i's metadata read and consumer PUT, and then
+  // its first pull, each come i x SECS after the first stream's, so a
+  // project at the free tier never opens its consumers with one burst.
+  const staggerMs = o.num("stagger", 0) * 1000;
+  if (!(staggerMs >= 0)) throw new Error("--stagger must be >= 0 seconds");
+  const paced = (i: number, t0: number) => sleep(t0 + i * staggerMs - performance.now(), signal);
   const rng = new Rng(ctx.seed, 5);
   const ts: Target[] = Array.from({ length: ctx.streams }, (_, i) => {
     const n = streamName(ctx.prefix, i);
@@ -466,7 +472,9 @@ export async function group(ctx: Ctx, signal: AbortSignal): Promise<Record<strin
   const bytesStream = new Map<string, boolean>();
   const cfg = JSON.stringify({ maxBatchRecords: pull, visibilityTimeoutMs: visibilityMs, maxAttempts, deadLetterStream: dlq });
   let conflicts = 0;
-  await pool(ts.length, 8, async (i) => {
+  const setupAt = performance.now();
+  await pool(ts.length, staggerMs > 0 ? 1 : 8, async (i) => {
+    await paced(i, setupAt);
     const t = ts[i]!;
     const md = await http.call("GET", `/v1/streams/${encName(t.name)}`);
     if (md.status === 200) {
@@ -541,11 +549,12 @@ export async function group(ctx: Ctx, signal: AbortSignal): Promise<Record<strin
     }
   };
   const loops: Promise<void>[] = [];
-  for (const t of ts) for (let k = 0; k < consumers; k++) loops.push(loop(t));
+  const pullsAt = performance.now();
+  for (const [i, t] of ts.entries()) for (let k = 0; k < consumers; k++) loops.push(paced(i, pullsAt).then(() => loop(t)));
   await Promise.all(loops);
   const producer = prod ? await prod.done : {};
   return {
-    group: { name, pull, consumers_per_stream: consumers, settle: settleMode, wait_ms: waitMs, visibility_ms: visibilityMs, retry_frac: retryFrac, extend_frac: extendFrac, dlq: dlq ?? null, max_attempts: maxAttempts ?? null, until_empty: untilEmpty, config_conflicts: conflicts, streams: ts.length },
+    group: { name, pull, consumers_per_stream: consumers, settle: settleMode, wait_ms: waitMs, visibility_ms: visibilityMs, retry_frac: retryFrac, extend_frac: extendFrac, dlq: dlq ?? null, max_attempts: maxAttempts ?? null, until_empty: untilEmpty, config_conflicts: conflicts, streams: ts.length, stagger_secs: staggerMs / 1000 },
     ...producer,
   };
 }

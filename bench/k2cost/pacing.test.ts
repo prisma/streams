@@ -3,10 +3,13 @@
 // one second of that rate in its request bucket and in its store budget,
 // and a create weighs 10 of the budget's 10 a second (src/quota/bucket.rs,
 // src/quota/parked.rs, src/store_timing.rs): setup --stagger spaces a
-// project's creates so none meets the budget in debt. Run with
+// project's creates so none meets the budget in debt, and group --stagger
+// spaces its consumers' starts (a metadata read, a consumer PUT and a pull
+// each) so they never open with one burst. Run with
 // `bun test ./bench/k2cost`.
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { HeaderSource, Http, Meter, Opts } from "./common.ts";
+import { HeaderSource, Http, Meter, Opts, deadlineSignal } from "./common.ts";
+import { group } from "./consume.ts";
 import { FakeCell } from "./fake-cell.ts";
 import { setup, type Ctx } from "./produce.ts";
 import { type Manifest, checkManifest } from "./tenant-plan.ts";
@@ -44,4 +47,26 @@ test("setup --stagger creates a project's streams one at a time, each at least S
     classes: [{ class: "free", count: 1, role: "compliant", streams: 4, phases: [{ mode: "setup", at: 0, args: { stagger: 1 } }] }],
   };
   expect(() => checkManifest(m)).not.toThrow();
+}, 20_000);
+
+test("group --stagger starts stream i's consumer, and then its pulls, i x SECS after the first stream's", async () => {
+  expect(await setup(ctx({ prefix: "g/" }, 3))).toMatchObject({ created: 3, failed: 0 });
+  cell.trace = [];
+  const t0 = performance.now();
+  const r = await group(ctx({ prefix: "g/", pull: "10", "wait-ms": "200", stagger: "0.3" }, 3), deadlineSignal(1.6));
+  const span = performance.now() - t0;
+  const reads = [0, 1, 2].map((i) => arrivals("GET", new RegExp(`^/v1/streams/g/0000${i}$`)));
+  const configs = [0, 1, 2].map((i) => arrivals("PUT", new RegExp(`^/v1/streams/g/0000${i}/consumers/`)));
+  const pulls = [0, 1, 2].map((i) => arrivals("POST", new RegExp(`^/v1/streams/g/0000${i}/consumers/[^/]+:pull$`)));
+  cell.trace = null;
+  expect([r.group, reads.map((x) => x.length), configs.map((x) => x.length)])
+    .toEqual([expect.objectContaining({ streams: 3, config_conflicts: 0 }), [1, 1, 1], [1, 1, 1]]);
+  // Each stream's metadata read and consumer PUT 300 ms after the last
+  // stream's, then each stream's first pull 300 ms after the last's.
+  for (const g of gaps(reads.map((x) => x[0]!))) expect(g).toBeGreaterThanOrEqual(250);
+  for (const g of gaps(pulls.map((x) => x[0]!))) expect(g).toBeGreaterThanOrEqual(250);
+  expect(pulls[0]![0]!).toBeGreaterThan(configs[2]![0]!);
+  // An empty pull waits its wait-ms for an append, as the server's does:
+  // a consumer never pulls more often than every 200 ms here.
+  for (const x of pulls) expect(x.length).toBeLessThanOrEqual(Math.ceil(span / 200) + 1);
 }, 20_000);
