@@ -175,20 +175,37 @@ def probe_events(lines) -> list:
 
 
 def probe_facts(lines) -> dict:
-    """What one version's probe log says about its stop."""
+    """What one version's probe log says about its stop. The main, the
+    process the platform started, is measured by its own lines: the child
+    ticks after a group signal however the main fares, so its life is kept
+    apart, and any old process's last line bounds an old/new overlap."""
     ev = probe_events(lines)
     pick = lambda role, event: next((e for e in ev if e["role"] == role and e["event"] == event), None)  # noqa: E731
+    last = lambda roles: max((e["t"] for e in ev if e["t"] is not None and e["role"] in roles), default=None)  # noqa: E731
     boot, term, cterm = pick("main", "boot"), pick("main", "SIGTERM"), pick("child", "SIGTERM")
-    last = max((e["t"] for e in ev if e["t"] is not None), default=None)
+    main_last, child_last = last(("main",)), last(("child",))
     start = term or cterm
     return {
         "boot": boot,
         "sigterm": term is not None,
         "group": cterm is not None,
         "sigterm_t": start["t"] if start else None,
-        "last_t": last,
-        "lived_s": (last - start["t"]) / 1000 if start and last is not None else None,
+        "last_t": main_last,
+        "any_last_t": last(("main", "child")),
+        "lived_s": (main_last - term["t"]) / 1000 if term and main_last is not None else None,
+        "child_last_t": child_last,
+        "child_lived_s": (child_last - cterm["t"]) / 1000 if cterm and child_last is not None else None,
     }
+
+
+def child_fact(old: dict) -> str | None:
+    """The child's life after its own SIGTERM (seen only when the group was
+    signalled), and how far it outlived the main beyond one tick."""
+    if old["child_lived_s"] is None:
+        return None
+    past = (old["child_last_t"] - old["last_t"]) / 1000
+    beyond = f", {past:.0f} s past the main's last line: the kill hit the process, not its group" if past > 1 else ""
+    return f"the child lived {old['child_lived_s']:.0f} s after its own SIGTERM{beyond}"
 
 
 def judge_d10_probe(ev: dict) -> Report:
@@ -227,6 +244,9 @@ def judge_d10_probe(ev: dict) -> Report:
         else:
             r.add("FACT", f"{scenario}: not observed to the end: the log ended ({end}) {lived:.0f} s after SIGTERM, "
                           "before the version stopped")
+        child = child_fact(old)
+        if child:
+            r.add("FACT", f"{scenario}: {child}")
         if lived >= STOP_BOUND_S:
             r.add("PASS", f"{scenario}: SIGTERM delivered and the process lived {lived:.0f} s after it, "
                           f">= the binary's {STOP_BOUND_S} s ordered stop")
@@ -242,7 +262,7 @@ def judge_d10_probe(ev: dict) -> Report:
         r.check(old["boot"]["fields"].get("nonce") != new["boot"]["fields"].get("nonce"),
                 "redeploy: the new version runs the new artifact (its own nonce)",
                 f"redeploy: the new version runs the old nonce {new['boot']['fields'].get('nonce')}: not a new artifact")
-        overlap = None if old["last_t"] is None else old["last_t"] - new["boot"]["t"]
+        overlap = None if old["any_last_t"] is None else old["any_last_t"] - new["boot"]["t"]
         r.add("FACT", f"redeploy: the new version booted {secs(new['boot']['t'] - old['sigterm_t']) if old['sigterm_t'] else '?'} s "
                       f"after the old one's SIGTERM; old and new overlapped {secs(max(overlap, 0)) if overlap is not None else '?'} s")
     return r

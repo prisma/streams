@@ -101,13 +101,15 @@ class LogLines(unittest.TestCase):
 
 
 class D10Probe(unittest.TestCase):
-    def ev(self, lived_s: int, end: str = "vm_stopped", group: bool = False, new_nonce: str = '"n2"') -> dict:
+    def ev(self, lived_s: int, end: str = "vm_stopped", group: bool = False, new_nonce: str = '"n2"',
+           child_lived_s: int = 0) -> dict:
         boot = ' pid=7 ppid=1 pgid=7 runtime=bun-1.3.13 port=3000 nonce="n1" keep_awake=held pid1="/sbin/init"'
         old = [probe_line("main", "boot", T0, boot), probe_line("child", "boot", T0 + 5, " pid=9 ppid=7 pgid=7"),
                probe_line("main", "SIGTERM", T0 + 60_000, " pid=7")]
-        if group:
+        if group or child_lived_s:
             old.append(probe_line("child", "SIGTERM", T0 + 60_001, " pid=9"))
         old += [probe_line("main", "alive", T0 + 60_000 + k * 1000, f" after={k}s") for k in range(1, lived_s + 1)]
+        old += [probe_line("child", "alive", T0 + 60_001 + k * 1000, f" after={k}s") for k in range(1, child_lived_s + 1)]
         new = [probe_line("main", "boot", T0 + 62_000, boot.replace('"n1"', new_nonce))]
         return {"read_window_s": 600,
                 "redeploy": {"old_version": "v1", "new_version": "v2", "old": old, "new": new, "log_end": end},
@@ -134,6 +136,28 @@ class D10Probe(unittest.TestCase):
         self.assertIn("FAIL d10-probe: redeploy: the process lived only 9 s after SIGTERM, inside the binary's 30 s ordered stop", text)
         self.assertIn("the process group was signalled", text)
         self.assertIn('FAIL d10-probe: redeploy: the new version runs the old nonce "n1": not a new artifact', text)
+
+    def test_a_main_killed_before_its_child_is_judged_by_its_own_last_line(self):
+        # The group signalled, then the main killed 5 s in while its child
+        # ticked on to 40 s: the main (the process the platform started) is
+        # the measure, the child's life a fact, and any old line bounds the
+        # overlap.
+        group = 'the probe ran as pid 7 (PID 1 is "/sbin/init") under bun-1.3.13; the process group was signalled'
+        per = lambda s: [  # noqa: E731
+            f"FACT d10-probe: {s}: {group}",
+            f"FACT d10-probe: {s}: killed 5-6 s after SIGTERM",
+            f"FACT d10-probe: {s}: the child lived 40 s after its own SIGTERM, 35 s past the main's last line: "
+            "the kill hit the process, not its group",
+            f"FAIL d10-probe: {s}: the process lived only 5 s after SIGTERM, inside the binary's 30 s ordered stop"]
+        self.assertEqual(lines_of(V.judge_d10_probe(self.ev(5, child_lived_s=40))), per("redeploy") + per("stop") + [
+            "PASS d10-probe: redeploy: the new version runs the new artifact (its own nonce)",
+            "FACT d10-probe: redeploy: the new version booted 2.0 s after the old one's SIGTERM; old and new overlapped 38.0 s",
+            "LEG_FAIL d10-probe"])
+        # A child that dies with the main is reported without the clause.
+        got = lines_of(V.judge_d10_probe(self.ev(31, child_lived_s=31)))
+        self.assertIn("FACT d10-probe: stop: the child lived 31 s after its own SIGTERM", got)
+        self.assertIn("PASS d10-probe: stop: SIGTERM delivered and the process lived 31 s after it, >= the binary's 30 s "
+                      "ordered stop", got)
 
     def test_a_probe_that_was_not_kept_awake_fails(self):
         ev = self.ev(31)
@@ -428,10 +452,13 @@ class ProbeOutput(unittest.TestCase):
         self.assertEqual(facts["boot"]["fields"]["pid"], str(p.pid))
         self.assertTrue(facts["sigterm"] and facts["group"])
         self.assertTrue(2 <= facts["lived_s"] < 3, facts["lived_s"])
+        self.assertTrue(2 <= facts["child_lived_s"] < 3, facts["child_lived_s"])
         r = V.judge_d10_probe({"read_window_s": 9, "redeploy": {"old": out, "log_end": "vm_stopped"},
                                "stop": {"old": out, "log_end": "vm_stopped"}})
         self.assertIn("FAIL d10-probe: stop: the process lived only 2 s after SIGTERM, inside the binary's 30 s ordered stop",
                       lines_of(r))
+        # The whole group was killed at once: never read as a kill of the process alone.
+        self.assertIn("FACT d10-probe: stop: the child lived 2 s after its own SIGTERM", lines_of(r))
         # Off Compute the probe has no scale-to-zero control to hold.
         self.assertIn("FAIL d10-probe: stop: the probe was not kept awake (keep_awake=unavailable): Compute's "
                       "scale-to-zero could suspend it, so its stop facts would describe a sleeping service, not a "
