@@ -321,7 +321,7 @@ describe("verifySecret", () => {
     const peppers = parsePeppers(`v2:${randomBytes(32).toString("base64")},v1:${randomBytes(32).toString("base64")}`, "test");
     const secret = randomBytes(32).toString("base64url");
     const cred = (hv: number, role: "customer" | "operator" = "customer") => ({
-      project_id: "p", role, grant_version: 1, status: "active" as const, scopes: "", expires_at: null, omitted: false,
+      project_id: "p", role, grant_version: 1, status: "active" as const, scopes: "", expires_at: null, omitted: false, seq: 1,
       secret_hash: hashSecret(peppers.find((p) => p.version === hv)!, secret), hv,
     });
     expect(verifySecret(peppers, cred(1), secret)?.version).toBe(1);

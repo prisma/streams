@@ -1,6 +1,6 @@
 // A project's credentials through the management API (public-beta issuer
 // triage B3.4). Run with `bun test ./deploy/issuer`.
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { FakeCell } from "../cell-admin/fake-cell";
 import { CUSTOMER_SCOPES } from "../cell-admin/rules";
@@ -75,6 +75,24 @@ describe("a project's credentials", () => {
       before: { feed_version: before }, after: { feed_version: before + 1, grant_version: 1 },
       request_id: res.headers.get("x-request-id"),
     });
+  });
+
+  test("lists a project's credentials in the order they were made, also when several are made in one millisecond", async () => {
+    const { m, a, first, path } = await withProject();
+    const made: string[] = [first.id];
+    // The state's clock (rules.ts stamps created_at) held still: nine
+    // creates in one millisecond, whose ids sort in any order.
+    setSystemTime(new Date(Date.now()));
+    try {
+      for (let i = 2; i <= 10; i++) {
+        made.push((await (await m.send("POST", path, a, { displayName: `c${i}` })).json()).credential.id);
+      }
+    } finally {
+      setSystemTime();
+    }
+    const listed: any[] = (await (await m.get(path, a)).json()).credentials;
+    expect(new Set(listed.slice(1).map((c) => c.createdAt)).size).toBe(1);
+    expect(listed.map((c) => c.id)).toEqual(made);
   });
 
   test("gives every scope, no prefix and no expiry by default, and refuses a body it cannot take 400 invalid_request", async () => {

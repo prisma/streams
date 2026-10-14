@@ -43,7 +43,14 @@ import { call, cellBase, describeReply, WALK_PAGE_MAX, type Waits, walkAndDelete
 import type { Io } from "./commands";
 import { AdminError, notYet } from "./errors";
 import { loadChecked, mutate } from "./publish";
-import { bumpFeed, canaryProbeCredential, refuseCanary, setCredentialField, setProjectField } from "./rules";
+import {
+  bumpFeed,
+  canaryProbeCredential,
+  nextCredentialSeq,
+  refuseCanary,
+  setCredentialField,
+  setProjectField,
+} from "./rules";
 import { type CellState, journal } from "./state";
 import type { StateStore } from "./store";
 import { openStore, publishNote } from "./stores";
@@ -99,6 +106,7 @@ export function revoke(state: CellState, project: string): { revoked: string[]; 
     scopes: OPERATOR_SCOPES,
     expires_at: null,
     omitted: false,
+    seq: nextCredentialSeq(state),
   };
   const p = state.projects[project];
   p.phase = "offboarding";

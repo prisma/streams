@@ -114,6 +114,11 @@ export interface CredentialRecord {
   display_name?: string;
   created_by?: Actor;
   created_at?: string;
+  /// Where it comes in the order the cell's credentials were made: 1 for
+  /// the first, then each one more than the highest before it. Two made
+  /// in one millisecond share a created_at, so the listings order by this.
+  /// Never published.
+  seq: number;
   /// Hidden from every listing (the canary's credentials).
   hidden?: boolean;
 }

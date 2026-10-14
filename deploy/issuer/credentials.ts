@@ -5,7 +5,8 @@
 //
 //   GET  /v1/projects/{p}/streams/credentials   the project's customer
 //        credentials (never the canary's or an operator's), revoked ones
-//        included, oldest first, in the contract's Credential shape
+//        included, in the order they were made, in the contract's
+//        Credential shape
 //   POST /v1/projects/{p}/streams/credentials   create one
 //   GET  /v1/projects/{p}/streams/credentials/{c}
 //        one, and whether the cell serves its last change (probe.ts)
@@ -103,14 +104,12 @@ function askOf(body: Record<string, unknown>, nowMs: number): Ask | string {
   return ask;
 }
 
-/// The customer credentials of `project` a user sees, oldest first.
+/// The customer credentials of `project` a user sees, in the order they
+/// were made (`seq`: two made in one millisecond share a created_at).
 export function projectCredentials(state: CellState, project: string) {
   return Object.entries(state.credentials)
     .filter(([, c]) => c.project_id === project && c.role === "customer" && !c.omitted && !c.hidden)
-    .sort(([a, c], [b, d]) => {
-      const [x, y] = [c.created_at ?? "", d.created_at ?? ""];
-      return x < y ? -1 : x > y ? 1 : a < b ? -1 : 1;
-    });
+    .sort(([, c], [, d]) => c.seq - d.seq);
 }
 
 /// Why credential `id` of `project` cannot be rotated on `state` (as of

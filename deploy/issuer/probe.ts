@@ -41,7 +41,7 @@ function firstCredential(state: CellState, project: string): string | undefined 
         !c.omitted &&
         c.scopes.split(" ").includes(PROBE_SCOPE),
     )
-    .sort(([a, c], [b, d]) => ((c.created_at ?? "") < (d.created_at ?? "") ? -1 : (c.created_at ?? "") > (d.created_at ?? "") ? 1 : a < b ? -1 : 1))
+    .sort(([, c], [, d]) => c.seq - d.seq)
     .at(0)?.[0];
 }
 

@@ -313,6 +313,11 @@ export function newCredentialId(state: CellState): string {
   return id;
 }
 
+/// The `seq` of the next credential made on this cell: one more than any
+/// before it.
+export const nextCredentialSeq = (state: CellState): number =>
+  Object.values(state.credentials).reduce((max, c) => Math.max(max, c.seq), 0) + 1;
+
 /// A new customer credential's identity and, for one with a secret, the
 /// secret's hash (secrets.ts); the CLI's `admit` makes one without. It
 /// expires at `expires_at` (epoch seconds) when given, else never.
@@ -407,6 +412,7 @@ function addCredentialRecord(
     omitted: false,
     ...rest,
     created_at: now,
+    seq: nextCredentialSeq(state),
   };
   bumpFeed(state);
 }
