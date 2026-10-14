@@ -311,8 +311,15 @@ jobs:
           cd /tmp/consumer
           STREAMS_SDK=@prisma/streams node "$GITHUB_WORKSPACE"/sdk/smoke.mjs http://127.0.0.1:8091
       # The SDK claims Bun and Deno too, so gate them rather than assert
-      # them. Both run the same package through the same smoke.
+      # them. Both run the same package through the same smoke. Bun is
+      # pinned to 1.4.3 by the owner's round-3 call 14 of 2026-10-13: this
+      # job installs the Composer apps' bun.lock files frozen, which a Bun
+      # that would rewrite them refuses, and it is the Bun the SDK's Bun
+      # smoke gates. Moving it is a commit that re-verifies both lockfiles
+      # (scripts/quality/test_workflow_bun.py).
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
       - name: Credential-wait cancellation (Bun)
         run: bun test sdk/scripts/credential-cancellation.test.mjs
       # The interim issuer's, the shared cell's Composer app's and the cell

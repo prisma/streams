@@ -79,7 +79,8 @@ Six more directories:
   CI's `sdk-package` job runs it after cell-admin's end to end, on the
   release binaries it builds, with `COMPOSER_E2E_REQUIRE_BOOT=1`, so its
   good boot is gated (the owner's round-3 call 14 of 2026-10-13). Both
-  Composer apps' packages install there frozen and uncached.
+  Composer apps' packages install there frozen and uncached, on CI's Bun
+  pinned at 1.4.3, which installs both `bun.lock` files as written.
 - `cell-watch/` is the shared cell's alerting watch (the public-beta
   alerting design). So far it holds `rules.ts`, a pure step from the
   previous state and one poll of the cell's `/health`, `/operator/data.json`
