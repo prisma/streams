@@ -12,9 +12,11 @@
 //
 // The refusals run on any host: their binaries are ELF headers that never
 // run. The good boot needs what a release ships, an x86_64 Linux ELF, so
-// it runs on an x86_64 Linux host only and a Mac skips it. CI's bun step
+// it runs on an x86_64 Linux host only and a Mac skips it, unless
+// COMPOSER_E2E_REQUIRE_BOOT=1 is set: then a good boot that cannot run
+// fails, naming why, so no runner change can pass it unbooted. CI's bun step
 // sets no CELL_ADMIN_E2E_BIN_DIR and installs no packages here, so it
-// skips the whole file but its last test.
+// skips the whole file but its last two tests.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -32,7 +34,17 @@ const native = (path: string) => {
   return b.length > 20 && b.subarray(0, 4).equals(Buffer.from("\x7fELF", "latin1")) && b.readUInt16LE(18) === 0x3e;
 };
 const onLinuxX64 = process.platform === "linux" && process.arch === "x64";
-const maybeBoot = BIN_DIR && onLinuxX64 && native(SERVER) ? test : test.skip;
+/// Why the good boot cannot run here, or undefined when it can.
+const bootBlocker = !BIN_DIR
+  ? "CELL_ADMIN_E2E_BIN_DIR is unset"
+  : !onLinuxX64
+    ? `this host is ${process.platform}-${process.arch}, not linux-x64`
+    : !native(SERVER)
+      ? `${SERVER} is not an x86_64 ELF`
+      : undefined;
+/// COMPOSER_E2E_REQUIRE_BOOT=1 (for CI, by the owner's round-3 call 14)
+/// fails a good boot that cannot run, which otherwise skips.
+const maybeBoot = bootBlocker === undefined || process.env.COMPOSER_E2E_REQUIRE_BOOT === "1" ? test : test.skip;
 
 /// What the wrapper's port answers while no binary runs (supervise.ts).
 const GENERIC = JSON.stringify({
@@ -282,6 +294,7 @@ const SUMMARY: [string, string][] = [
 
 describe("a good boot", () => {
   maybeBoot("serves the release's binary on the computed environment and stops on SIGTERM", async () => {
+    if (bootBlocker !== undefined) throw new Error(`COMPOSER_E2E_REQUIRE_BOOT=1, but the good boot cannot run: ${bootBlocker}`);
     const bin = resolve(BIN_DIR ?? "");
     const s3Port = freePort();
     children.push(Bun.spawn([join(bin, "s3lite"), "--listen", `127.0.0.1:${s3Port}`, "--latency-ms", "2"], { stdout: "ignore", stderr: "ignore" }));
@@ -355,3 +368,34 @@ test("the generic body is the wrapper's own", () => {
     'message: "the service is not running; its exit is recorded in the platform log",',
   );
 });
+
+// This file again, with COMPOSER_E2E_REQUIRE_BOOT=1 and no
+// CELL_ADMIN_E2E_BIN_DIR: a good boot that cannot run fails the run. Not in
+// that child itself.
+(process.env.COMPOSER_E2E_REQUIRE_BOOT === "1" ? test.skip : test)(
+  "COMPOSER_E2E_REQUIRE_BOOT=1 fails a good boot that cannot run, naming why",
+  async () => {
+    // Uncoloured, so each result line reads (pass), (skip) or (fail).
+    const { CELL_ADMIN_E2E_BIN_DIR: _, FORCE_COLOR: __, ...env } = process.env;
+    const child = Bun.spawn([process.execPath, "test", join(import.meta.dir, "entry.e2e.test.ts")], {
+      cwd: join(DEPLOY, ".."),
+      env: { ...env, NO_COLOR: "1", COMPOSER_E2E_REQUIRE_BOOT: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    const log = out + err;
+    expect([
+      code,
+      log.match(/^ \d+ (pass|skip|fail)$/gm),
+      log.match(/^\(fail\) .*$/gm)?.map((l) => l.replace(/ \[[\d.]+m?s\]$/, "")),
+      log.includes("COMPOSER_E2E_REQUIRE_BOOT=1, but the good boot cannot run: CELL_ADMIN_E2E_BIN_DIR is unset"),
+    ]).toEqual([
+      1,
+      [" 1 pass", " 7 skip", " 1 fail"],
+      ["(fail) a good boot > serves the release's binary on the computed environment and stops on SIGTERM"],
+      true,
+    ]);
+  },
+  60_000,
+);
