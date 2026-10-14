@@ -11,7 +11,7 @@ import { resolve } from "node:path";
 import type { Flags } from "./args";
 import { call, cellBase, describeReply } from "./cell-client";
 import type { Io } from "./commands";
-import { AdminError, notYet } from "./errors";
+import { AdminError, notYet, StoreUnavailable } from "./errors";
 import { loadChecked, mutate, unpublishedMessage } from "./publish";
 import {
   addCredential,
@@ -31,6 +31,16 @@ import { cellSigningKey, customerClaims, signJwt } from "./tokens";
 const CANARY_TOKEN_TTL_SECS = 300;
 const CANARY_POLL_MS = 2_000;
 
+/// What `credential` says when the store fails its commit with the
+/// outcome unknown (errors.ts, StoreUnavailable: a save that timed out or
+/// answered 5xx may have landed). The secret stays staged: dropped, the
+/// secret of a credential that did land would be lost for good. `list
+/// --json` shows hidden credentials too.
+const outcomeUnknown = (e: Error, id: string, staged: string, out: string) =>
+  `${e.message}: the commit of credential ${id} may have landed. Run cell-admin list --json: if it holds ${id}, ` +
+  `its secret is in ${staged} (mode 0600): move that file to ${out} and run cell-admin bundle; if not, delete ` +
+  "that file and run this command again";
+
 export async function credential(f: Flags, io: Io): Promise<void> {
   const store = await openStore(f);
   const project = f.must("project");
@@ -49,7 +59,9 @@ export async function credential(f: Flags, io: Io): Promise<void> {
   const fields = secretFields(peppers, secret);
   // The id is chosen before the commit: the secret file names it. The
   // secret is staged beside `out` and moved there once the commit has
-  // landed, published or not: a committed credential's secret is never lost.
+  // landed, published or not, and kept staged when the store failed the
+  // commit with its outcome unknown: a committed credential's secret is
+  // never lost.
   const id = randomCredentialId();
   const staged = stageFile(out, `${presentedSecret(id, secret)}\n`, "the secret");
   await store.exclusive(async () => {
@@ -73,6 +85,7 @@ export async function credential(f: Flags, io: Io): Promise<void> {
         },
       ));
     } catch (e) {
+      if (e instanceof StoreUnavailable) throw new AdminError(outcomeUnknown(e, id, staged.path, out));
       staged.drop();
       throw e;
     }

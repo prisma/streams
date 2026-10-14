@@ -165,20 +165,21 @@ export function renameDurable(from: string, to: string): void {
 /// `text` written durably beside `out` before a change commits, so a
 /// missing or unwritable directory refuses before anything is committed;
 /// `keep` moves it to `out` once the commit has landed, and `drop` removes
-/// whatever is still staged (nothing after `keep`).
+/// whatever is still staged (nothing after `keep`). `path` is where it is
+/// staged, for a caller that can tell neither.
 export function stageFile(
   out: string,
   text: string,
   what: string,
   mode = 0o600,
-): { keep: () => void; drop: () => void } {
+): { path: string; keep: () => void; drop: () => void } {
   const staged = join(dirname(out), `.${basename(out)}.staged-${process.pid}`);
   try {
     writeDurable(staged, text, mode);
   } catch (e) {
     throw new AdminError(`cannot write ${what} beside ${out}: ${(e as Error).message}`);
   }
-  return { keep: () => renameDurable(staged, out), drop: () => rmSync(staged, { force: true }) };
+  return { path: staged, keep: () => renameDurable(staged, out), drop: () => rmSync(staged, { force: true }) };
 }
 
 /// Run `fn` holding the state directory's exclusive lock.

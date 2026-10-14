@@ -7,7 +7,7 @@ import { bundleOf } from "./feeds";
 import { unversionedChanges } from "./publish";
 import { admitProject, admittedQuotas, newCredentialId, setCredentialField, setProjectField } from "./rules";
 import { createHmac, generateKeyPairSync, randomBytes } from "node:crypto";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   allowlistOf,
@@ -276,6 +276,53 @@ for (const kind of STORES) {
       expect((await run("bundle", "--state", c.state)).code).toBe(0);
       expect(policyOf(c.state, "proj_a").status).toBe("suspended");
       expect((readBundle(c.state).grants.credentials as any[]).map((g) => g.credential_id)).toContain(id);
+    });
+
+    test("credential keeps the staged secret and names it when the store fails the state's save, whose outcome is unknown", async () => {
+      if (kind !== "s3") return;
+      const c = await initCell();
+      await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w");
+      const pepper = pepperFile(c.root);
+      const make = (name: string, project = "proj_a") => run("credential", "--state", c.state, "--project", project,
+        "--pepper-file", pepper.path, "--out", join(c.root, name));
+      const stagedOf = (name: string) => join(c.root, `.${name}.staged-${process.pid}`);
+      const told = (id: string, name: string) => "cell-admin credential: PUT s3://ctl-1/cells/cell_sc1/cell-state.json " +
+        `answered 500 InternalError: the commit of credential ${id} may have landed. Run cell-admin list --json: if it ` +
+        `holds ${id}, its secret is in ${stagedOf(name)} (mode 0600): move that file to ${join(c.root, name)} and ` +
+        "run cell-admin bundle; if not, delete that file and run this command again";
+      const saves = (key: string) => key.endsWith("/cell-state.json");
+      // The store applies the save, then answers 500: the commit landed.
+      const before = readState(c.state);
+      fakeS3().failAfterPut = saves;
+      let r = await make("ci.secret");
+      fakeS3().failAfterPut = undefined;
+      const landed = readState(c.state);
+      const [id] = Object.keys(landed.credentials).filter((k) => !before.credentials[k]);
+      expect([r.code, r.err, r.out, existsSync(join(c.root, "ci.secret"))]).toEqual([1, told(id, "ci.secret"), "", false]);
+      const presented = readFileSync(stagedOf("ci.secret"), "utf8").trim();
+      expect(statSync(stagedOf("ci.secret")).mode & 0o777).toBe(0o600);
+      expect(presented.startsWith(`prisma_streams_${id}.`)).toBe(true);
+      const secret = presented.slice(`prisma_streams_${id}.`.length);
+      expect(landed.credentials[id]).toMatchObject({
+        project_id: "proj_a", status: "active", grant_version: 1,
+        secret_hash: createHmac("sha256", pepper.key).update(secret).digest("base64url"),
+      });
+      // The advice works: the file moved into place, the bundle publishes it.
+      renameSync(stagedOf("ci.secret"), join(c.root, "ci.secret"));
+      expect((await run("bundle", "--state", c.state)).code).toBe(0);
+      expect((readBundle(c.state).grants.credentials as any[]).map((g) => g.credential_id)).toContain(id);
+      // The store refuses the save: nothing committed, the same advice, the
+      // staged file kept for the operator to delete.
+      fakeS3().failPut = saves;
+      r = await make("ci2.secret");
+      fakeS3().failPut = undefined;
+      const lost = /credential (strcred_[0-9a-f]{32}) may have landed/.exec(r.err)?.[1] ?? "";
+      expect([r.code, r.err]).toEqual([1, told(lost, "ci2.secret")]);
+      expect(Object.keys(readState(c.state).credentials)).toEqual(Object.keys(landed.credentials));
+      expect(readFileSync(stagedOf("ci2.secret"), "utf8")).toStartWith(`prisma_streams_${lost}.`);
+      // A refusal still leaves nothing staged.
+      expect((await make("ci3.secret", "proj_none")).err).toBe("cell-admin credential: project proj_none is not on this cell");
+      expect(readdirSync(c.root).filter((n) => n.includes(".staged-")).sort()).toEqual([`.ci2.secret.staged-${process.pid}`]);
     });
 
     test("credential refuses an open pepper file, an 11th live credential, and hidden ones outside the canary", async () => {

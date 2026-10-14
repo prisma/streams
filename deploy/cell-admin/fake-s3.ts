@@ -28,6 +28,9 @@ export class FakeS3 {
   conflictOnce?: (key: string) => boolean;
   /// A PUT of a `key` it returns true for answers 500, as an outage would.
   failPut?: (key: string) => boolean;
+  /// A PUT of a `key` it returns true for is applied and then answers 500,
+  /// as a store whose answer to a write that landed is lost.
+  failAfterPut?: (key: string) => boolean;
   private n = 0;
   private server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => this.answer(req) });
 
@@ -91,6 +94,7 @@ export class FakeS3 {
     }
     const [bucket, ...rest] = key.split("/");
     this.put(bucket, rest.join("/"), body);
+    if (this.failAfterPut?.(key)) return this.error(500, "InternalError");
     return new Response(null, { headers: { etag: this.objects.get(key)!.etag } });
   }
 }
