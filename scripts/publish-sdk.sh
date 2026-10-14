@@ -10,8 +10,9 @@
 # The tarball is the one scripts/promote-rc.sh packed at the tag's commit
 # and kept in target/rc/<rc-tag>/; the tag message names it and records its
 # sha256 and npm integrity (sha512). The steps:
-#   1. the tag is annotated, and CI is green at its commit
-#      (scripts/dev/ci-status.sh prints CI_GREEN);
+#   1. the tag is annotated, and every attempt of every required job in
+#      the push runs at its commit succeeded (scripts/required-checks.sh,
+#      the rule scripts/promote-rc.sh certified the commit by);
 #   2. the kept tarball's sha256 and integrity equal the tag's, it is the
 #      @prisma/streams package of the version the tag is a release
 #      candidate of (v<version>-rc.<n>: the SDK and the server move in
@@ -49,12 +50,15 @@ fail() {
 ERR=$(mktemp "${TMPDIR:-/tmp}/publish-sdk.XXXXXX")
 trap 'rm -f "$ERR"' EXIT
 
-echo "== 1/6 annotated tag $TAG and CI at its commit =="
+echo "== 1/6 annotated tag $TAG and the required jobs at its commit =="
 [ "$(git cat-file -t "refs/tags/$TAG" 2>/dev/null)" = tag ] || fail "$TAG is not an annotated tag"
 SHA=$(git rev-parse --verify "refs/tags/$TAG^{commit}")
-CI_OUT=$(scripts/dev/ci-status.sh "$SHA") || { echo "$CI_OUT"; fail "CI is not green at $SHA"; }
-echo "$CI_OUT"
-[ "$(printf '%s\n' "$CI_OUT" | tail -n 1)" = CI_GREEN ] || fail "scripts/dev/ci-status.sh printed no CI_GREEN for $SHA"
+CHECKS_OUT=$(scripts/required-checks.sh "$SHA") || { echo "$CHECKS_OUT"; fail "a required job is not green at $SHA"; }
+echo "$CHECKS_OUT"
+case "$(printf '%s\n' "$CHECKS_OUT" | tail -n 1)" in
+  "REQUIRED_CHECKS_GREEN $SHA: "?*) ;;
+  *) fail "scripts/required-checks.sh printed no REQUIRED_CHECKS_GREEN for $SHA" ;;
+esac
 
 echo "== 2/6 the kept tarball is the one the tag pins =="
 MSG=$(git for-each-ref --format='%(contents)' "refs/tags/$TAG")

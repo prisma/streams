@@ -209,9 +209,9 @@ bridging change carry measured costs (docs/PRISMA-STREAMS-FORMAL-VERIFICATION-RO
 ## 7. Release-candidate certification: the fleet and single-cell shapes
 
 `scripts/promote-rc.sh <sha> <rc-tag> <arguments>` mints a release-candidate
-tag. It requires every `REQUIRED_CHECKS` check run green at the SHA, then
-runs `scripts/rc-certify.sh <arguments>` in a clean detached worktree at
-that SHA. rc-certify has two shapes, and each refuses the other's
+tag. It requires the SHA's CI evidence by one rule, then runs
+`scripts/rc-certify.sh <arguments>` in a clean detached worktree at that
+SHA. rc-certify has two shapes, and each refuses the other's
 arguments before the gate runs. Both start the same way: the local
 release gate (`scripts/release-gate.sh`, with the capacity mechanism test
 run alone, so on an idle host), then the RC identity from the
@@ -219,6 +219,24 @@ run alone, so on an idle host), then the RC identity from the
 `gitCommit` must be the tagged commit, and its `sha256` is the RC identity
 that every later manifest must name. Every check runs as `python3 -E`, so
 the caller's `PYTHONOPTIMIZE` cannot strip its asserts.
+
+**The CI evidence** (the owner's round-3 call 8, 2026-10-13):
+`scripts/required-checks.sh <sha>` requires that every attempt of every
+required job (its `REQUIRED_CHECKS`: `rust`, `livefeed`,
+`livefeed-fleet-cert`, `platform-e2e`, `mt-cert-1000`,
+`durable-streams-server-conformance`, `product-field-gate`, `sdk-package`
+and workflow-lint's `actionlint`) in the push runs at the SHA succeeded.
+`promote-rc.sh` runs it before minting the tag, and `publish-sdk.sh`
+before publishing, so publishing reads exactly what certified. It reads
+the Actions API: the runs at the SHA whose event is `push`, then every
+attempt (`filter=all`) of each run's jobs, every page. So a red attempt
+that a green rerun followed refuses, and such a commit needs a new
+commit, not a rerun. The nightly runs of ci.yml and rust-quality.yml at
+an RC that stays slate's head are not its evidence: a red one blocks
+neither promotion nor publishing. A missing name refuses (a workflow
+GitHub cannot parse runs no job), and so does a job still running.
+`scripts/quality/test_required_checks.py` runs the real script against a
+stubbed API that answers as the real one does.
 
 **Fleet** (`--shape fleet`, the default): the capacity campaign (its
 `binaries.json` is the identity), handoff, LiveFeed fleet and LiveFeed
@@ -269,8 +287,8 @@ Waived for a single-cell RC: the script prints each waiver, and the
 certification manifest and the tag record them. They are the capacity
 campaign as product evidence (post-split scaling needs a fleet; the
 release gate still runs the capacity mechanism test alone), handoff (one
-server owns every shard), the LiveFeed fleet certification (`promote-rc.sh`
-still requires CI's `livefeed-fleet-cert` check at the SHA) and the
+server owns every shard), the LiveFeed fleet certification (`scripts/required-checks.sh`
+still requires CI's `livefeed-fleet-cert` job at the SHA) and the
 LiveFeed canary (its battery runs a three-instance fleet). The tag says
 that it certifies no multi-server operation.
 
@@ -318,8 +336,9 @@ gates, `gh` and `npm`.
 
 **Publishing the SDK** (the owner's, a release hold): `scripts/publish-sdk.sh
 <rc-tag>`, in the checkout that minted the tag, publishes that kept
-tarball and nothing else. It refuses a lightweight tag, a commit without
-`CI_GREEN` from `scripts/dev/ci-status.sh`, a tarball whose sha256 or
+tarball and nothing else. It refuses a lightweight tag, a commit whose
+CI evidence `scripts/required-checks.sh` refuses (the rule promote-rc
+certified it by, above), a tarball whose sha256 or
 integrity differs from the tag's, another package, a version the tag is
 not a release candidate of (`v<version>-rc.<n>`: the SDK moves in lockstep
 with the server, the owner's N2 of 2026-10-12), a README that still holds
@@ -336,7 +355,7 @@ reads the registry's integrity back against the tarball's, prints `npm
 dist-tag ls @prisma/streams` and a `RELEASE_NOTES:` line, and ends
 `PUBLISH_SDK_OK`. `--dry-run` runs the checks and stops before the publish
 (`PUBLISH_SDK_DRY_RUN_OK`). `scripts/quality/test_publish_sdk.py` covers
-each refusal with a stubbed `npm`.
+each refusal with stubbed `gh` and `npm`.
 
 ## Release checklist (the short form)
 
@@ -358,4 +377,6 @@ each refusal with a stubbed `npm`.
    RELEASE-PRODUCT-SURFACE.md → docs commit → tag.
 6. The SDK, after the RC is certified and by the owner (§7, "Publishing
    the SDK"): `scripts/publish-sdk.sh --dry-run <rc-tag>`, then
-   `scripts/publish-sdk.sh <rc-tag>`.
+   `scripts/publish-sdk.sh <rc-tag>`. Both re-read the RC commit's CI
+   evidence by promote-rc's rule (§7, "The CI evidence"); a red nightly
+   at that commit does not block them.

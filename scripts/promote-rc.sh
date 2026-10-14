@@ -16,7 +16,8 @@
 #     SHA — never the (possibly dirty) working directory;
 #   * the worktree is verified pristine with porcelain v1 INCLUDING
 #     untracked files before and after the gates;
-#   * the GitHub check asserts EVERY required named job at that SHA,
+#   * the GitHub check (scripts/required-checks.sh) asserts every
+#     attempt of EVERY required named job in the push runs at that SHA,
 #     not one run's overall conclusion;
 #   * rc-certify.sh (the exact-binary certification path: local gate,
 #     x86_64-musl binary sha as RC identity, capacity + handoff
@@ -64,32 +65,15 @@ fi
 
 echo "== promote-rc: $SHA -> $TAG =="
 
-echo "== 1/4 required check runs at $SHA =="
-# Round-9 review item 4: query ALL check runs attached to the exact
-# SHA, not one workflow run's jobs — workflow-lint lives in its OWN
-# workflow (check-run name `actionlint`), and the LiveFeed engine job
-# + real-fleet certification are the engine's certification. A commit
-# with an unparseable workflow must never receive an RC tag.
-REQUIRED_CHECKS=(rust livefeed livefeed-fleet-cert platform-e2e
-  mt-cert-1000 durable-streams-server-conformance product-field-gate sdk-package
-  actionlint)
-# Filter to the github-actions app: a required name must be satisfied
-# by OUR workflows, never by another installed app that happens to
-# publish a check run with the same name (round-10 hardening).
-CHECKS_JSON=$(gh api "repos/{owner}/{repo}/commits/$SHA/check-runs?per_page=100" \
-  --jq '[.check_runs[] | select(.app.slug == "github-actions") | {name, conclusion}]')
-for c in "${REQUIRED_CHECKS[@]}"; do
-  C=$(echo "$CHECKS_JSON" | python3 -c "
-import sys, json
-runs = json.load(sys.stdin)
-m = [x['conclusion'] for x in runs if x['name'] == '$c']
-# A check may run more than once at a SHA (re-runs): require it to
-# exist and EVERY run of that name to have succeeded — a red run
-# alongside a green re-run is not clean evidence.
-print('missing' if not m else ('success' if all(x == 'success' for x in m) else next(x for x in m if x != 'success')))")
-  if [ "$C" != "success" ]; then echo "FAIL: check $c = $C"; exit 1; fi
-  echo "ok   $c"
-done
+echo "== 1/4 required jobs at $SHA =="
+# Every attempt of every required job in the push runs at the SHA
+# succeeded (scripts/required-checks.sh, the owner's round-3 call 8; its
+# header gives the rule). scripts/publish-sdk.sh reads the tag's commit by
+# the same script, so publishing applies exactly this certification.
+CHECKS_OUT=$(scripts/required-checks.sh "$SHA") || { echo "$CHECKS_OUT"; echo "FAIL: a required job is not green at $SHA"; exit 1; }
+echo "$CHECKS_OUT"
+REQUIRED_JOBS=$(printf '%s\n' "$CHECKS_OUT" | sed -n "s/^REQUIRED_CHECKS_GREEN $SHA: //p")
+[ -n "$REQUIRED_JOBS" ] || { echo "FAIL: scripts/required-checks.sh printed no REQUIRED_CHECKS_GREEN for $SHA"; exit 1; }
 
 echo "== 2/4 clean detached worktree at $SHA =="
 WORKTREE=$(mktemp -d /tmp/promote-rc.XXXXXX)
@@ -194,7 +178,7 @@ m = json.load(open(sys.argv[1]))
 tag, sha, srv, sdk, sdk_name, repro, sdk_integrity = sys.argv[2:9]
 print(f"release candidate {tag}\n")
 print(f"Certified at {sha} (all gates ran in a clean detached worktree):")
-print("- required check runs green at the SHA")
+print("- every attempt of every required job green in the push runs at the SHA")
 print("- local release gate + bare multitenancy audit")
 print("- noisy-neighbor campaign at contract scale (locked thresholds)")
 print("- exact-artifact canary battery on the tagged binary "
@@ -227,7 +211,7 @@ fi
 git tag -a "$TAG" "$SHA" -m "release candidate $TAG
 
 Certified at $SHA (all gates ran in a clean detached worktree):
-- required check runs green at the SHA: ${REQUIRED_CHECKS[*]}
+- every attempt of every required job green in the push runs at the SHA: $REQUIRED_JOBS
 - local release gate + bare multitenancy audit
 - noisy-neighbor campaign at contract scale (locked thresholds)
 - $FIELD_LINE

@@ -1,11 +1,13 @@
 """publish-sdk.sh publishes only the SDK tarball a release candidate's tag pins.
 
-Each test runs the real script, copied into a disposable Git repository
-whose `scripts/dev/ci-status.sh` is a stub, beside a real tarball kept in
+Each test runs the real script and the real `scripts/required-checks.sh`,
+copied into a disposable Git repository, beside a real tarball kept in
 `target/rc/<tag>/` and an annotated tag whose message records it as
-promote-rc.sh writes it. `npm` is a stub on PATH that logs every call and
-answers `view`, `publish` and `dist-tag ls` from the test's environment;
-nothing reaches a registry.
+promote-rc.sh writes it. `gh` is gh_actions_stub's stub on PATH, answering
+the Actions API from the runs the test writes (by default the push runs
+at the tag's commit, every required job green). `npm` is a stub on PATH
+that logs every call and answers `view`, `publish` and `dist-tag ls` from
+the test's environment; nothing reaches GitHub or a registry.
 """
 import base64
 import hashlib
@@ -19,15 +21,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from gh_actions_stub import GH_STUB, ci_jobs, job, push_runs, run
+
 ROOT = Path(__file__).resolve().parents[2]
 TAG = 'v9.9.9-beta.1-rc.1'
 VERSION = '9.9.9-beta.1'
 TARBALL = f'prisma-streams-{VERSION}.tgz'
-CI_STUB = '''#!/bin/bash
-echo "ci-status $*" >> "$STUB_LOG"
-echo "commit $1"
-if [ "${STUB_CI:-green}" = green ]; then echo CI_GREEN; else echo "CI_FAIL: ci.yml concluded failure"; exit 1; fi
-'''
 # STUB_NPM_VIEW: what `npm view <pkg>@<v> version` meets before a publish:
 # "missing" (E404), "empty" (an older npm's answer for a missing version),
 # "published" or "error". After a publish, `view ... dist.integrity`
@@ -116,7 +115,8 @@ class PublishSdk(unittest.TestCase):
         self.state = self.tmp / 'npm-state.json'
         (self.repo / 'scripts').mkdir(parents=True)
         shutil.copy(ROOT / 'scripts' / 'publish-sdk.sh', self.repo / 'scripts' / 'publish-sdk.sh')
-        self.executable(self.repo / 'scripts' / 'dev' / 'ci-status.sh', CI_STUB)
+        shutil.copy(ROOT / 'scripts' / 'required-checks.sh', self.repo / 'scripts' / 'required-checks.sh')
+        self.executable(self.bin / 'gh', GH_STUB)
         self.executable(self.bin / 'npm', NPM_STUB)
         self.git('init', '-q')
         self.git('config', 'user.name', 'publish-sdk fixture')
@@ -127,6 +127,8 @@ class PublishSdk(unittest.TestCase):
         self.git('add', '.')
         self.git('commit', '-qm', 'fixture')
         self.head = self.git('rev-parse', 'HEAD')
+        self.runs = self.tmp / 'runs.json'
+        self.runs.write_text(json.dumps(push_runs(self.head)))
         self.data = tarball()
         self.kept = self.repo / 'target' / 'rc' / TAG / TARBALL
         self.kept.parent.mkdir(parents=True)
@@ -154,6 +156,7 @@ class PublishSdk(unittest.TestCase):
         return subprocess.run(['bash', 'scripts/publish-sdk.sh', *args, TAG], cwd=self.repo,
                               env={**os.environ, 'PATH': f'{self.bin}:{os.environ["PATH"]}',
                                    'STUB_LOG': str(self.log), 'STUB_STATE': str(self.state),
+                                   'GH_STUB_RUNS': str(self.runs),
                                    'STUB_VERSION': VERSION, 'PUBLISH_SDK_READBACK_SECS': '0',
                                    **NO_TOKEN, **env},
                               text=True, capture_output=True)
@@ -176,7 +179,9 @@ class PublishSdk(unittest.TestCase):
             f'npm view @prisma/streams@{VERSION} dist.integrity{REGISTRY}',
             f'npm dist-tag ls @prisma/streams{REGISTRY}',
         ])
-        self.assertIn(f'ci-status {self.head}', self.log.read_text())
+        self.assertIn(f'gh api repos/{{owner}}/{{repo}}/actions/runs?head_sha={self.head}&event=push&per_page=100 '
+                      '--paginate --slurp\n', self.log.read_text())
+        self.assertIn(f'REQUIRED_CHECKS_GREEN {self.head}: rust ', result.stdout)
         self.assertIn(f'beta: {VERSION}\n', result.stdout)
         self.assertIn(
             f'RELEASE_NOTES: @prisma/streams@{VERSION} (npm dist-tag beta) published to '
@@ -203,9 +208,23 @@ class PublishSdk(unittest.TestCase):
         self.assert_refused(self.publish(), f'{TAG} is not an annotated tag')
         self.assertEqual(self.log.read_text(), '')
 
-    def test_a_commit_ci_has_not_passed_is_refused(self):
+    def test_a_red_attempt_hidden_by_a_green_rerun_is_refused(self):
+        self.runs.write_text(json.dumps(push_runs(self.head, ci=ci_jobs(1, rust='failure') + ci_jobs(2))))
         self.mint()
-        self.assert_refused(self.publish(STUB_CI='red'), f'CI is not green at {self.head}')
+        result = self.publish()
+        self.assert_refused(result, f'a required job is not green at {self.head}')
+        self.assertIn('FAIL: rust: attempt 1 of push run 1001 (.github/workflows/ci.yml) concluded failure', result.stdout)
+
+    def test_a_required_job_red_only_in_a_nightly_run_at_the_commit_is_accepted(self):
+        # ci.yml and rust-quality.yml run nightly on slate's head: an RC that
+        # stays the head gains red runs that are not its evidence.
+        nightly = [run(2001, 'ci.yml', self.head, ci_jobs(rust='failure', noisy_campaign='failure'), event='schedule'),
+                   run(2002, 'rust-quality.yml', self.head, [job('quality', 'failure')], event='schedule')]
+        self.runs.write_text(json.dumps(push_runs(self.head) + nightly))
+        self.mint()
+        result = self.publish('--dry-run')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('PUBLISH_SDK_DRY_RUN_OK', result.stdout)
 
     def test_a_tarball_other_than_the_tagged_one_is_refused(self):
         self.mint()
