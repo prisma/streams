@@ -33,7 +33,15 @@ not carried over).
   A producer append whose replay after a transport failure the server
   refuses (a fence by another writer of its producer id, a seal, a quota)
   rejects with `AppendOutcomeUnknownError` as well, the refusal as
-  `cause`, and `autoClaim` claims no new epoch for it. A plain append
+  `cause`, and `autoClaim` claims no new epoch for it. Its message names
+  the recovery for the refusal (README, "Producer state ownership"): after
+  a fence, read the stream and send the value again only if it is absent,
+  under an epoch above the fence's (`autoClaim` claims one; `bumpEpoch()`
+  can land on the fence's); after a seal, read the stream, which is final;
+  after any other refusal, send the same value through the same producer
+  before any other value on its routing key, which the server answers
+  `duplicate: true` if it was written (through a client for the new
+  endpoint after a `421`). A plain append
   answered `2xx` whose answer cannot be read rejects with `StreamsError`
   `unreadable_response` (`retryable: false`): it was written. A token
   provider's failure is never classified as an append's unknown outcome.

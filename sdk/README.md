@@ -153,7 +153,10 @@ In plain words:
 - A producer append whose replay the server refuses (another writer
   fenced its producer id, the collection was sealed, a quota still refused
   it) rejects with `AppendOutcomeUnknownError` too, the refusal as its
-  `cause`: the attempt whose answer was lost may have been written.
+  `cause`: the attempt whose answer was lost may have been written. Its
+  message names the recovery for that refusal, and "Producer state
+  ownership" gives each: read the stream after a fence or a seal, and
+  send the same value through the same producer after anything else.
 - Consumer, subscription and watch loops reconnect after transport
   failures and retryable `429`/`503` answers until you abort them; any
   other error ends them, and so does a consumer loop's failed settlement.
@@ -233,14 +236,46 @@ URL minted before a hostname change keeps the old host; mint a new one.
 A producer append whose fetch fails is sent again with the same sequence
 after 1, 2 and 4 s, before any later operation of its routing key; the
 server answers a replay of an append that landed with `duplicate: true` and
-stores it once. Some refusals come before that check: when another writer
-has fenced the producer id, the collection has been sealed, or a quota
-refuses every replay, the append rejects with `AppendOutcomeUnknownError`
-(the refusal as `cause`), the producer keeps its epoch and sequence, and
-`autoClaim` claims no new epoch for it, which would store the record a
-second time. Read the stream to learn whether it was written before sending
-it again. A fetch failure that outlasts those attempts, or a failed
-state save, rejects the operation and leaves later queue operations usable.
+stores it once. The seal, the quotas and another writer's fence are
+checked before that, so a replay can be refused instead: it then rejects
+with `AppendOutcomeUnknownError` (`retryable: false`, the refusal as
+`cause`), the producer keeps its epoch and sequence, and `autoClaim` claims
+no new epoch for it, which would store the record a second time. Its
+message names the recovery, by `cause`:
+
+- Another writer fenced the producer id (`ProducerFencedError`, `403`
+  `stale_producer_epoch`): read the stream. Send the value again only if it
+  is absent, and only under an epoch above `cause.currentEpoch`: a
+  producer with `autoClaim` claims one when its resend is refused (and so
+  fences the other writer in turn). `bumpEpoch()` does not: it adds one to
+  this producer's own epoch, which can land on the other writer's, where
+  the server answers a sequence below that writer's `duplicate: true`
+  without writing it. Without `autoClaim`, stop using the producer id.
+- The collection is sealed (`409` `sealed`): read the stream; it is final.
+  Sending the value again is refused `409` `sealed` before the server's
+  duplicate check, so it cannot tell you whether it was written.
+- Any other refusal (a `429`, a `503`, a `401`, a `421`, any other `4xx`):
+  send the same value on the same routing key through the same producer
+  scope before any other value on that key. The server answers
+  `duplicate: true` if it was written and writes it once if not. It keeps
+  only the last sequence of each routing key and producer id, so a
+  different value sent first is refused `409` `producer_sequence_reused`
+  (`ProducerSequenceReusedError`) if the lost attempt was written, and is
+  written ahead of it if not; appends already queued on that routing key
+  are sent first and meet the same answer. A `producer_sequence_reused`
+  there tells you the record was written: send the same value (answered
+  `duplicate: true`, which moves the sequence on), then the refused one
+  again. After a `421`, send it through a client for the project's new
+  endpoint (see "Errors and retries"): a client made by `connect` keys the
+  producer's state on the issuer URL, so the producer there keeps its
+  epoch and sequence; a client made with `new StreamsClient({ url })` keys
+  it on `url`, so a producer there starts at epoch 0, sequence 0, which the
+  server can answer `duplicate: true` without writing it: carry the state
+  over in your store first, saving what it holds for the scope whose
+  `endpoint` is the old `url` under the same scope with the new one.
+
+A fetch failure that outlasts the replay's attempts, or a failed state
+save, rejects the operation and leaves later queue operations usable.
 The server may already have committed the request. Retry the same payload
 to resolve that uncertain outcome before sending different content or
 intentionally changing the epoch. A rejected state save may itself

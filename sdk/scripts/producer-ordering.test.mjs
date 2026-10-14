@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  AppendOutcomeUnknownError, ProducerFencedError, StreamsClient, StreamsError, StreamsTransportError,
-  WrongCellError,
+  AppendOutcomeUnknownError, ProducerFencedError, ProducerSequenceReusedError, StreamsClient, StreamsError,
+  StreamsTransportError, WrongCellError,
 } from "../dist/index.js";
 
 function deferred() {
@@ -90,9 +90,12 @@ test("a fetch failure is replayed at the same sequence before later operations a
 // One producer id's server, refusing in the product's order: a cell that
 // no longer serves the project (421, before the product handler), a sealed
 // collection (refuse_if_sealed) and a quota before the core, then
-// decide_producer's stale epoch (403) before its duplicate check.
+// decide_producer's stale epoch (403) before its duplicate check, which
+// keeps the last sequence and its request: that sequence again with another
+// body is 409 producer_sequence_reused, and with the same body, or any lower
+// sequence (whose body is not checked), is answered duplicate: true.
 function producerServer() {
-  const server = { epoch: -1, seq: -1, wrongCell: false, sealed: false, quota: false, stored: [] };
+  const server = { epoch: -1, seq: -1, body: undefined, wrongCell: false, sealed: false, quota: false, stored: [] };
   const refuse = (status, code, details, headers = {}) => new Response(
     JSON.stringify({ error: { code, message: code, retryable: status === 429, details } }), { status, headers });
   server.answer = (epoch, seq, body) => {
@@ -100,57 +103,88 @@ function producerServer() {
     if (server.sealed) return refuse(409, "sealed");
     if (server.quota) return refuse(429, "rate_limited", undefined, { "retry-after": "0" });
     if (epoch < server.epoch) return refuse(403, "stale_producer_epoch", { currentEpoch: server.epoch });
+    if (epoch === server.epoch && seq === server.seq && body !== server.body) {
+      return refuse(409, "producer_sequence_reused");
+    }
     if (epoch === server.epoch && seq <= server.seq) {
       return new Response(JSON.stringify({ cursor: "c", count: 0, duplicate: true, sealed: false }));
     }
-    Object.assign(server, { epoch, seq });
+    Object.assign(server, { epoch, seq, body });
     server.stored.push(body);
     return new Response(JSON.stringify({ cursor: "c", count: 1, duplicate: false, sealed: false }));
   };
   return server;
 }
 
+// A producer append `{n: 1}` whose first attempt's answer is lost, after the
+// server committed it unless `landed` is false; `between` then sets up the
+// refusal its replays meet. Every backoff runs at once.
+async function lostAnswer({ autoClaim = false, between, landed = true }) {
+  const server = producerServer();
+  const sent = [];
+  let state = { epoch: 0, nextSeq: 0 };
+  const s = new StreamsClient({ url: "https://cell.example", fetch: async (_url, init) => {
+    const h = init.headers;
+    sent.push([h["producer-epoch"], h["producer-seq"], init.body]);
+    if (sent.length > 1) return server.answer(Number(h["producer-epoch"]), Number(h["producer-seq"]), init.body);
+    if (landed) server.answer(0, 0, init.body);
+    between(server);
+    throw new Error(`connection lost ${landed ? "after the server committed" : "before the server read"} the append`);
+  } }).stream("orders", { encryptionKey: "A".repeat(43) });
+  const p = s.producer("p", { autoClaim, state: {
+    load: async () => ({ ...state }), save: async (_scope, next) => { state = { ...next }; },
+  } });
+  const { value: outcome, delays } = await fastTimers(() =>
+    p.append({ n: 1 }).then(value => ({ value }), error => ({ error })));
+  return { server, sent, p, state: () => state, error: outcome.error, delays };
+}
+
+// The unknown outcome's message: what happened, then the recovery for its cause.
+const refusedReplay = (answer, recovery) =>
+  "the producer append's outcome is unknown: an attempt's answer was lost and the server refused its " +
+  `replay (${answer}), so the SDK cannot tell whether it was written; no new epoch was claimed for it; ${recovery}`;
+const FENCED =
+  "another writer fenced this producer id at epoch 1: read the stream, and send the value again only if " +
+  "it is absent, and only under an epoch above 1, which a producer with autoClaim claims when the resend " +
+  "is refused (bumpEpoch() adds one to this producer's epoch, which can land on epoch 1, where the server " +
+  "can answer the resend duplicate: true without writing it); without autoClaim, stop using this producer id";
+const SEALED =
+  "the collection is sealed, so the stream is final: read it to learn whether the value was written; " +
+  "sending it again is refused 409 sealed before the server's duplicate check";
+const RESEND =
+  "send the same value on the same routing key through this producer before any other value on that key: " +
+  "the server answers duplicate: true if it was written and writes it once if not; a different value sent " +
+  "first is refused 409 producer_sequence_reused if it was written";
+const MOVED =
+  "send the same value on the same routing key through this producer id on a client for the project's new " +
+  "endpoint, before any other value on that key: the server answers duplicate: true if it was written and " +
+  "writes it once if not; a client made by connect keeps this producer's epoch and sequence there, while one " +
+  "made with new StreamsClient({ url }) starts them at 0 unless your state store carries them over";
+
 const fence = server => server.answer(1, 0, '{"n":"successor"}');
+const quota = server => { server.quota = true; };
 for (const row of [
   { label: "another writer fences the producer id, autoClaim", autoClaim: true, between: fence,
-    status: 403, code: "stale_producer_epoch", attempts: 2, delays: [1000] },
+    status: 403, code: "stale_producer_epoch", attempts: 2, delays: [1000], recovery: FENCED },
   { label: "another writer fences the producer id", autoClaim: false, between: fence,
-    status: 403, code: "stale_producer_epoch", attempts: 2, delays: [1000] },
+    status: 403, code: "stale_producer_epoch", attempts: 2, delays: [1000], recovery: FENCED },
   { label: "the collection is sealed", autoClaim: true, between: server => { server.sealed = true; },
-    status: 409, code: "sealed", attempts: 2, delays: [1000] },
-  { label: "a quota refuses every replay", autoClaim: true, between: server => { server.quota = true; },
-    status: 429, code: "rate_limited", attempts: 4, delays: [1000, 0, 0] },
+    status: 409, code: "sealed", attempts: 2, delays: [1000], recovery: SEALED },
+  { label: "a quota refuses every replay", autoClaim: true, between: quota,
+    status: 429, code: "rate_limited", attempts: 4, delays: [1000, 0, 0], recovery: RESEND },
   { label: "the cell no longer serves the project", autoClaim: true, between: server => { server.wrongCell = true; },
-    status: 421, code: "wrong_cell", attempts: 2, delays: [1000] },
+    status: 421, code: "wrong_cell", attempts: 2, delays: [1000], recovery: MOVED },
 ]) {
   test(`a replay refused after a lost answer (${row.label}) is an unknown outcome, stored once`, async () => {
     // The first append commits and its answer is lost; the replay meets a
     // refusal the server answers before its duplicate check.
-    const server = producerServer();
-    const sent = [];
-    let state = { epoch: 0, nextSeq: 0 };
-    const s = new StreamsClient({ url: "https://cell.example", fetch: async (_url, init) => {
-      const h = init.headers;
-      sent.push([h["producer-epoch"], h["producer-seq"], init.body]);
-      const answer = server.answer(Number(h["producer-epoch"]), Number(h["producer-seq"]), init.body);
-      if (sent.length > 1) return answer;
-      row.between(server);
-      throw new Error("connection lost after the server committed the append");
-    } }).stream("orders", { encryptionKey: "A".repeat(43) });
-    const p = s.producer("p", { autoClaim: row.autoClaim, state: {
-      load: async () => ({ ...state }), save: async (_scope, next) => { state = { ...next }; },
-    } });
-    const { value: outcome, delays } = await fastTimers(() =>
-      p.append({ n: 1 }).then(value => ({ value }), error => ({ error })));
+    const { server, sent, state, error, delays } = await lostAnswer(row);
     assert.equal(server.stored.filter(body => body === '{"n":1}').length, 1, "stored once");
     assert.deepEqual(sent, Array(row.attempts).fill(["0", "0", '{"n":1}']), "the append and its replays only");
-    const { error } = outcome;
     assert.ok(error instanceof AppendOutcomeUnknownError, `rejected as an unknown outcome, got ${error?.name}`);
     assert.deepEqual([error.status, error.code, error.retryable], [row.status, "outcome_unknown", false]);
-    assert.equal(error.message,
-      "the producer append's outcome is unknown: an attempt's answer was lost and the server refused its " +
-      `replay (HTTP ${row.status} ${row.code}), so the SDK cannot tell whether it was written; no new ` +
-      "epoch was claimed for it; read the stream before sending it again");
+    assert.equal(error.message, refusedReplay(`HTTP ${row.status} ${row.code}`, row.recovery),
+      "the message names the recovery for the refusal");
     assert.ok(error.cause instanceof StreamsError, "the cause is the refusal");
     assert.deepEqual([error.cause.status, error.cause.code], [row.status, row.code]);
     if (row.code === "stale_producer_epoch") {
@@ -158,10 +192,57 @@ for (const row of [
       assert.equal(error.cause.currentEpoch, 1);
     }
     if (row.code === "wrong_cell") assert.ok(error.cause instanceof WrongCellError, "the cause is the wrong-cell refusal");
-    assert.deepEqual(state, { epoch: 0, nextSeq: 0 }, "no epoch claimed, no sequence consumed");
+    assert.deepEqual(state(), { epoch: 0, nextSeq: 0 }, "no epoch claimed, no sequence consumed");
     assert.deepEqual(delays, row.delays);
   });
 }
+
+// The recoveries the messages name, followed against the same server.
+for (const landed of [true, false]) {
+  test(`a quota-refused unknown outcome is settled by the same value sent again (${landed ? "it was written: duplicate" : "it was not: written once"})`, async () => {
+    const f = await lostAnswer({ between: quota, landed });
+    assert.equal(f.error?.message, refusedReplay("HTTP 429 rate_limited", RESEND));
+    f.server.quota = false;
+    const result = await f.p.append({ n: 1 });
+    assert.equal(result.duplicate, landed, landed ? "answered duplicate: true" : "written by the resend");
+    assert.deepEqual(f.sent.at(-1), ["0", "0", '{"n":1}'], "sent again at the lost attempt's sequence");
+    assert.deepEqual(f.server.stored, ['{"n":1}'], "stored once");
+    assert.deepEqual(f.state(), { epoch: 0, nextSeq: 1 });
+  });
+}
+
+test("after a quota-refused unknown outcome that was written, a different value is producer_sequence_reused, the same value then duplicate: true", async () => {
+  const f = await lostAnswer({ between: quota });
+  assert.equal(f.error?.message, refusedReplay("HTTP 429 rate_limited", RESEND));
+  f.server.quota = false;
+  await assert.rejects(f.p.append({ n: 2 }), e => e instanceof ProducerSequenceReusedError &&
+    e.status === 409 && e.code === "producer_sequence_reused" && e.retryable === false);
+  assert.deepEqual(f.state(), { epoch: 0, nextSeq: 0 }, "the refusal consumes no sequence");
+  assert.equal((await f.p.append({ n: 1 })).duplicate, true, "the same value is answered duplicate: true");
+  assert.equal((await f.p.append({ n: 2 })).duplicate, false, "the different value is written after it");
+  assert.deepEqual(f.sent.slice(4), [["0", "0", '{"n":2}'], ["0", "0", '{"n":1}'], ["0", "1", '{"n":2}']]);
+  assert.deepEqual(f.server.stored, ['{"n":1}', '{"n":2}'], "each stored once, in the order sent");
+  assert.deepEqual(f.state(), { epoch: 0, nextSeq: 2 });
+});
+
+test("a fenced unknown outcome that was not written: autoClaim's resend writes it once above the fence, while bumpEpoch() can land on the fence's epoch and the resend is answered duplicate: true unwritten", async () => {
+  // The other writer has gone past its epoch's sequence 0.
+  const fenceTwice = server => { fence(server); server.answer(1, 1, '{"n":"successor 2"}'); };
+  const claimed = await lostAnswer({ autoClaim: true, between: fenceTwice, landed: false });
+  assert.equal(claimed.error?.message, refusedReplay("HTTP 403 stale_producer_epoch", FENCED));
+  assert.equal((await claimed.p.append({ n: 1 })).duplicate, false, "written by the resend");
+  assert.deepEqual(claimed.sent.slice(2), [["0", "0", '{"n":1}'], ["2", "0", '{"n":1}']], "refused, then claimed above 1");
+  assert.deepEqual(claimed.server.stored, ['{"n":"successor"}', '{"n":"successor 2"}', '{"n":1}']);
+  assert.deepEqual(claimed.state(), { epoch: 2, nextSeq: 1 });
+
+  const bumped = await lostAnswer({ between: fenceTwice, landed: false });
+  assert.equal(bumped.error?.message, refusedReplay("HTTP 403 stale_producer_epoch", FENCED));
+  await assert.rejects(bumped.p.append({ n: 1 }), e => e instanceof ProducerFencedError && e.currentEpoch === 1);
+  await bumped.p.bumpEpoch();
+  assert.equal((await bumped.p.append({ n: 1 })).duplicate, true, "answered duplicate: true");
+  assert.deepEqual(bumped.sent.at(-1), ["1", "0", '{"n":1}'], "sent on the other writer's epoch");
+  assert.deepEqual(bumped.server.stored, ['{"n":"successor"}', '{"n":"successor 2"}'], "never written");
+});
 
 test("fetch failure propagates and does not poison subsequent producer operations", async () => {
   const failure = new Error("connection lost: append outcome unknown");

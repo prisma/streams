@@ -315,7 +315,8 @@ export interface ProducerOptions {
   /** Opt-in: claim a fresh epoch on 403 stale-epoch (can fence a live
    * producer sharing this id). Not for a fence that refuses the replay of
    * an append whose answer was lost (`AppendOutcomeUnknownError`): that
-   * append may have been written, and claiming would store it again. */
+   * append may have been written, and claiming would store it again. Read
+   * the stream; if it is absent, sending it again claims above the fence. */
   autoClaim?: boolean;
   /**
    * This session's guarantees end when the process does: state is kept
@@ -380,6 +381,47 @@ export class StreamsTransportError extends StreamsError {
   }
 }
 
+/** How to settle a producer append whose replay the server refused after a
+ * lost answer, by the refusal (`cause`). A fence: a resend under the
+ * producer's own epoch is refused again, and one under the fencing writer's
+ * epoch can be answered `duplicate: true` unwritten (`decide_producer` checks
+ * no body below its last sequence), so only an epoch above the fence's writes
+ * it. A seal is checked before the duplicate check, so a resend cannot settle
+ * it. Any other refusal (a quota, a `503`, a `401`, a `421`, another `4xx`)
+ * passes once its cause does, and the server, which keeps the last sequence
+ * and request hash per routing key and producer id, then answers the same
+ * value at the same sequence `duplicate: true` if it was written and writes
+ * it once if not. */
+function refusedReplayRecovery(cause: unknown): string {
+  if (cause instanceof ProducerFencedError) {
+    const fenced = cause.currentEpoch;
+    return `another writer fenced this producer id at epoch ${fenced}: read the ` +
+      "stream, and send the value again only if it is absent, and only under an " +
+      `epoch above ${fenced}, which a producer with autoClaim claims when the ` +
+      "resend is refused (bumpEpoch() adds one to this producer's epoch, which " +
+      `can land on epoch ${fenced}, where the server can answer the resend ` +
+      "duplicate: true without writing it); without autoClaim, stop using this " +
+      "producer id";
+  }
+  if (cause instanceof StreamsError && cause.code === "sealed") {
+    return "the collection is sealed, so the stream is final: read it to learn " +
+      "whether the value was written; sending it again is refused 409 sealed " +
+      "before the server's duplicate check";
+  }
+  const settles = "the server answers duplicate: true if it was written and " +
+    "writes it once if not";
+  if (cause instanceof WrongCellError) {
+    return "send the same value on the same routing key through this producer " +
+      "id on a client for the project's new endpoint, before any other value " +
+      `on that key: ${settles}; a client made by connect keeps this producer's ` +
+      "epoch and sequence there, while one made with new StreamsClient({ url }) " +
+      "starts them at 0 unless your state store carries them over";
+  }
+  return "send the same value on the same routing key through this producer " +
+    `before any other value on that key: ${settles}; a different value sent ` +
+    "first is refused 409 producer_sequence_reused if it was written";
+}
+
 /**
  * A plain append (`append`, `appendBytes`, `appendMany`: no producer
  * identity) whose last attempt ended in an answer that leaves its outcome
@@ -401,7 +443,8 @@ export class StreamsTransportError extends StreamsError {
  * attempt whose answer was lost may have been written. `status` is the
  * refusal's and `cause` the refusal (a `ProducerFencedError` for a fence);
  * the producer keeps its epoch and sequence, and `autoClaim` claims no new
- * epoch for it.
+ * epoch for it. The message names the recovery for the refusal
+ * (`refusedReplayRecovery`; README, "Producer state ownership").
  */
 export class AppendOutcomeUnknownError extends StreamsError {
   constructor(status: number, cause: unknown, replayRefused = false) {
@@ -415,7 +458,7 @@ export class AppendOutcomeUnknownError extends StreamsError {
         ? "the producer append's outcome is unknown: an attempt's answer was " +
           `lost and the server refused its replay (${answer}), so the SDK ` +
           "cannot tell whether it was written; no new epoch was claimed for " +
-          "it; read the stream before sending it again"
+          `it; ${refusedReplayRecovery(cause)}`
         : `the append's last attempt ended in ${answer}, so the SDK cannot ` +
           "tell whether it was written; it will not send it again; retry only " +
           "if a second copy is acceptable, or append through a producer",
