@@ -9,7 +9,8 @@
 //        Credential shape
 //   POST /v1/projects/{p}/streams/credentials   create one
 //   GET  /v1/projects/{p}/streams/credentials/{c}
-//        one, and whether the cell serves its last change (probe.ts)
+//        one, and whether the cell serves its last change (probe.ts), or
+//        why that cannot be asked
 //   POST /v1/projects/{p}/streams/credentials/{c}/rotate
 //        a new secret, at grant_version + 1
 //   POST /v1/projects/{p}/streams/credentials/{c}/revoke
@@ -167,7 +168,8 @@ export class Credentials {
   }
 
   /// One credential, with whether the cell serves its last change
-  /// (`served`, probe.ts): the page polls it after a rotation or a
+  /// (`served`, probe.ts) and, while that cannot be asked, why
+  /// (`reason`): the page polls it after a create, a rotation or a
   /// revocation.
   async get(c: Call): Promise<Response> {
     const [project, id] = c.ids;
@@ -176,7 +178,7 @@ export class Credentials {
     if (!cred || cred.project_id !== project || cred.role !== "customer" || cred.omitted || cred.hidden) {
       return refused(this.deps, c, { status: 404, code: "not_found", message: `project ${project} has no credential ${id}` });
     }
-    return json(200, { ...credentialView(id, cred), served: await this.prober.credentialServed(state, id) });
+    return json(200, { ...credentialView(id, cred), ...(await this.prober.credentialServed(state, id)) });
   }
 
   /// The project's budget of creates and rotations: a 429, or null.

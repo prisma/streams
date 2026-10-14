@@ -24,8 +24,8 @@ export class FakeCell {
   /// The cell's wrapper and refresh without delay, when set: each request
   /// is answered on the bundle it returns at that moment.
   follow?: () => Bundle;
-  /// The cell's clock in milliseconds (a test's clock): a token's expiry
-  /// and the store bucket's refill read it.
+  /// The cell's clock in milliseconds (a test's clock): a token's and a
+  /// credential's expiry and the store bucket's refill read it.
   now: () => number = () => Date.now();
   /// Phase B's store bucket (P1 (b′)), per project, when set: a listing
   /// of N streams weighs N + 10 and a delete 11, debited after it is
@@ -62,7 +62,8 @@ export class FakeCell {
   /// verify_customer's order: signature, project placed, ownership, the
   /// project's status (before any credential, so a suspended project's
   /// every token is refused, an operator's too), credential known, its
-  /// project, its status, its grant_version; then the catalog's scope.
+  /// project, its status, its expiry, its grant_version; then the
+  /// catalog's scope.
   private authorize(req: Request): { project: string } | Response {
     if (this.follow) this.publish(this.follow());
     const bearer = req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
@@ -79,6 +80,9 @@ export class FakeCell {
     if (!cred) return this.reply(401, "credential_unknown");
     if (cred.project_id !== claims.project_id) return this.reply(401, "credential_project_mismatch");
     if (cred.status !== "active") return this.reply(403, "credential_not_active");
+    if (cred.expires_at !== null && cred.expires_at <= Math.floor(this.now() / 1000)) {
+      return this.reply(401, "credential_expired");
+    }
     if (cred.grant_version !== claims.grant_version) return this.reply(401, "grant_version_mismatch");
     // The catalog needs catalog reads, in the token and in the grant.
     const granted = (scopes: string) => scopes.split(" ").includes("streams.catalog.read");

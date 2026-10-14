@@ -388,6 +388,45 @@ describe("acknowledging a credential's last change", () => {
     }
   });
 
+  test("says credential_expired once an active credential has expired, and project_suspended while its project is, probing for neither", async () => {
+    const { cell, id, path } = await withProject();
+    const fake = new FakeCell();
+    try {
+      const n = await managed(cell, { ...cell.env, STREAMS_CELL_ORIGIN: fake.url });
+      fake.now = () => n.clock.t;
+      const b = n.signIn("ws_a");
+      const one = async (cid: string) => answer(await n.get(`${path}/${cid}`, b));
+      const listed = async (cid: string) =>
+        (await (await n.get(path, b)).json()).credentials.find((c: { id: string }) => c.id === cid);
+      const expiresAt = new Date(n.clock.t + 3_600_000).toISOString();
+      const expiring: string = (await (await n.send("POST", path, b, { expiresAt })).json()).credential.id;
+      const other: string = (await (await n.send("POST", path, b, {})).json()).credential.id;
+      fake.publish(readBundle(cell.state));
+      n.clock.t += 2 * 3_600_000;
+      await n.cache.refresh();
+      // The cell refuses an expired credential's every token, whatever
+      // grant_version it holds, so whether it holds the last one cannot be
+      // asked.
+      expect(await one(expiring)).toEqual([200, { ...(await listed(expiring)), served: false, reason: "credential_expired" }]);
+      await admin(cell, "suspend", "--project", id);
+      await n.cache.refresh();
+      // The cell refuses a suspended project's every token before its
+      // credential.
+      expect(await one(other)).toEqual([200, { ...(await listed(other)), served: false, reason: "project_suspended" }]);
+      expect(fake.requests).toEqual([]);
+      // Revoked, an expired credential is asked again: the cell checks its
+      // status before its expiry.
+      await admin(cell, "resume", "--project", id);
+      await n.cache.refresh();
+      expect((await n.send("POST", `${path}/${expiring}/revoke`, b)).status).toBe(200);
+      fake.publish(readBundle(cell.state));
+      expect(await one(expiring)).toEqual([200, { ...(await listed(expiring)), served: true }]);
+      expect(fake.requests.map((r) => [r.credential, r.status])).toEqual([[expiring, 403]]);
+    } finally {
+      fake.stop();
+    }
+  });
+
   test("answers 404 for a credential that is not the project's", async () => {
     const { cell, m, a, id, path } = await withProject();
     const other = await customerSecret(cell, "sp_other");

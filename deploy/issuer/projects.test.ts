@@ -411,10 +411,16 @@ describe("a project's readiness", () => {
     fakes.push(fake);
     fake.publish(readBundle(cell.state));
     const m = await managed(cell, envWith(cell, { STREAMS_CELL_ORIGIN: fake.url }));
+    // The cell's clock is the test's: a credential's expiry is read on it.
+    fake.now = () => m.clock.t;
     const a = m.signIn("ws_a");
     const body = await (await m.send("POST", PROJECTS, a, { displayName: "Orders" })).json();
-    return { cell, fake, m, a, id: body.project.id as string, cid: body.credential.id as string };
+    const id: string = body.project.id;
+    return { cell, fake, m, a, id, cid: body.credential.id as string, creds: `/v1/projects/${id}/streams/credentials` };
   }
+  /// The project as the workspace's listing shows it.
+  const listed = async (m: Awaited<ReturnType<typeof managed>>, a: string) =>
+    (await (await m.get(PROJECTS, a)).json()).projects[0];
   const fakes: FakeCell[] = [];
   afterEach(() => {
     for (const f of fakes.splice(0)) f.stop();
@@ -474,8 +480,89 @@ describe("a project's readiness", () => {
     await admin(cell, "offboard", "--project", id);
     await m.cache.refresh();
     const body = await (await m.get(`${PROJECTS}/${id}`, a)).json();
-    expect([body.status, body.ready]).toEqual(["deleting", false]);
+    expect([body.status, body.ready, body.reason]).toEqual(["deleting", false, "project_deleting"]);
     expect(fake.requests).toEqual([]);
+  });
+
+  test("is not ready, and not probed, while the owner has the project suspended, and is probed again once resumed", async () => {
+    const { cell, fake, m, a, id } = await created();
+    const project = `${PROJECTS}/${id}`;
+    const ready = async () => (await (await m.get(project, a)).json()).ready;
+    const statuses = () => fake.requests.map((r) => r.status);
+    // Proven ready before the suspension.
+    fake.publish(readBundle(cell.state));
+    expect(await ready()).toBe(true);
+    await admin(cell, "suspend", "--project", id);
+    await m.cache.refresh();
+    expect(await answer(await m.get(project, a))).toEqual([
+      200, { ...(await listed(m, a)), ready: false, reason: "project_suspended" },
+    ]);
+    expect(statuses()).toEqual([200]);
+    // The cell takes the suspension, then the owner resumes the project:
+    // not ready while the cell refuses it 403 project_not_active, ready
+    // once it takes the resume.
+    fake.publish(readBundle(cell.state));
+    await admin(cell, "resume", "--project", id);
+    await m.cache.refresh();
+    expect(await answer(await m.get(project, a))).toEqual([200, { ...(await listed(m, a)), ready: false }]);
+    expect(statuses()).toEqual([200, 403]);
+    fake.publish(readBundle(cell.state));
+    m.clock.t += 5_000;
+    expect(await ready()).toBe(true);
+    expect(statuses()).toEqual([200, 403, 200]);
+    // A suspension and a resume that no ask saw: probed again all the same.
+    await admin(cell, "suspend", "--project", id);
+    fake.publish(readBundle(cell.state));
+    await admin(cell, "resume", "--project", id);
+    await m.cache.refresh();
+    m.clock.t += 5_000;
+    expect(await ready()).toBe(false);
+    fake.publish(readBundle(cell.state));
+    m.clock.t += 5_000;
+    expect(await ready()).toBe(true);
+    expect(statuses()).toEqual([200, 403, 200, 403, 200]);
+  });
+
+  test("passes over an expired credential: a newer live one proves the project ready", async () => {
+    const { cell, fake, m, a, id, cid, creds } = await created();
+    const expiresAt = new Date(m.clock.t + 3_600_000).toISOString();
+    expect((await m.send("POST", creds, a, { displayName: "expiring", expiresAt })).status).toBe(201);
+    const live: string = (await (await m.send("POST", creds, a, { displayName: "live" })).json()).credential.id;
+    expect((await m.send("POST", `${creds}/${cid}/revoke`, a)).status).toBe(200);
+    fake.publish(readBundle(cell.state));
+    m.clock.t += 2 * 3_600_000;
+    await m.cache.refresh();
+    expect(await answer(await m.get(`${PROJECTS}/${id}`, a))).toEqual([200, { ...(await listed(m, a)), ready: true }]);
+    expect(fake.tokens.map((t) => [t.credential_id, t.scope])).toEqual([[live, "streams.catalog.read"]]);
+    expect(fake.requests.map((r) => r.status)).toEqual([200]);
+  });
+
+  test("is proven by a live credential without catalog reads: the cell's 403 missing_scope comes after the policy and the grant", async () => {
+    const { cell, fake, m, a, id, cid, creds } = await created();
+    const narrow: string = (await (await m.send("POST", creds, a, { scopes: ["streams.records.read"] })).json()).credential.id;
+    expect((await m.send("POST", `${creds}/${cid}/revoke`, a)).status).toBe(200);
+    fake.publish(readBundle(cell.state));
+    expect(await answer(await m.get(`${PROJECTS}/${id}`, a))).toEqual([200, { ...(await listed(m, a)), ready: true }]);
+    expect(fake.tokens.map((t) => [t.credential_id, t.scope])).toEqual([[narrow, "streams.records.read"]]);
+    expect(fake.requests.map((r) => r.status)).toEqual([403]);
+  });
+
+  test("says no_live_credential, without probing, while the project has no live credential, and is probed once it has one", async () => {
+    const { cell, fake, m, a, id, cid, creds } = await created();
+    const get = async () => answer(await m.get(`${PROJECTS}/${id}`, a));
+    expect((await m.send("POST", `${creds}/${cid}/revoke`, a)).status).toBe(200);
+    expect(await get()).toEqual([200, { ...(await listed(m, a)), ready: false, reason: "no_live_credential" }]);
+    // An expired credential is not live either.
+    const expiresAt = new Date(m.clock.t + 3_600_000).toISOString();
+    expect((await m.send("POST", creds, a, { expiresAt })).status).toBe(201);
+    m.clock.t += 2 * 3_600_000;
+    await m.cache.refresh();
+    expect((await get())[1]).toMatchObject({ ready: false, reason: "no_live_credential" });
+    expect(fake.requests).toEqual([]);
+    const live: string = (await (await m.send("POST", creds, a, {})).json()).credential.id;
+    fake.publish(readBundle(cell.state));
+    expect(await get()).toEqual([200, { ...(await listed(m, a)), ready: true }]);
+    expect([fake.tokens.map((t) => t.credential_id), fake.requests.map((r) => r.status)]).toEqual([[live], [200]]);
   });
 });
 

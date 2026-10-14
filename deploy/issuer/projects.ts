@@ -133,8 +133,8 @@ export class Projects {
     return json(200, { projects });
   }
 
-  /// One project, with whether the cell serves it yet (`ready`, probe.ts):
-  /// the page polls it after a create.
+  /// One project, with whether the cell serves it yet (`ready`, probe.ts),
+  /// and, while it cannot be asked, why (`reason`): the page polls it.
   async get(c: Call): Promise<Response> {
     const state = this.deps.cache.state;
     const [w, id] = c.ids;
@@ -142,8 +142,7 @@ export class Projects {
     if (p === undefined) {
       return refused(this.deps, c, { status: 404, code: "not_found", message: `workspace ${w} has no Streams project ${id}` });
     }
-    const ready = p.phase === "active" && (await this.prober.projectReady(state, id));
-    return json(200, { ...projectView(this.cfg, state, id, p), ready });
+    return json(200, { ...projectView(this.cfg, state, id, p), ...(await this.prober.projectReady(state, id)) });
   }
 
   async create(c: GrowthCall): Promise<Response> {
