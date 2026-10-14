@@ -1,6 +1,7 @@
-//! Stored-cap B4 (T4): an append's charge first refuses a project at its
-//! stored cap, by the figure the usage rollup published, and charges it
-//! nothing.
+//! The append's queued-byte charge. Stored-cap B4 (T4): it first refuses a
+//! project at its stored cap, by the figure the usage rollup published, and
+//! charges it nothing; then it holds the body's bytes up to the project's
+//! `queued_append_bytes` ceiling.
 #![cfg(test)]
 
 use std::sync::atomic::Ordering;
@@ -113,4 +114,31 @@ fn the_stored_cap_emits_one_event_per_engage_and_release() {
         ("max_stored_bytes", 0.into()),
     ]);
     assert_eq!((event.severity.as_str(), &event.fields), ("info", &want));
+}
+
+/// `queued_append_bytes` is the most a project may hold in the committer
+/// queues: a charge that brings its queue exactly to the ceiling is admitted
+/// and held, one byte more is refused and charged nothing, and the decided
+/// append releases what it held.
+#[test]
+fn a_charge_up_to_the_queued_ceiling_is_admitted_and_one_byte_more_is_refused() {
+    let p = pid("p");
+    let r = tracking(&p);
+    let quotas = ProjectQuotas {
+        queued_append_bytes: 1_000,
+        ..ProjectQuotas::default()
+    };
+    let first = r.charge_queued(&p, &quotas, 600).unwrap();
+    let at_ceiling = r.charge_queued(&p, &quotas, 400);
+    let refused = at_ceiling.as_ref().err();
+    assert!(
+        refused.is_none(),
+        "the ceiling itself is admitted: {refused:?}"
+    );
+    assert_eq!(queued(&r, &p), 1_000);
+    let over = r.charge_queued(&p, &quotas, 1);
+    assert!(matches!(over, Err(QuotaRefusal::QueuedBytes)));
+    assert_eq!(queued(&r, &p), 1_000, "a refused charge charges nothing");
+    drop((first, at_ceiling));
+    assert_eq!(queued(&r, &p), 0);
 }
