@@ -1082,6 +1082,17 @@
     ]
   },
   {
+    "name": "a_map_whose_root_was_pruned_has_room_for_one_more_split",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "59873141e554a487872ea1a53fb3d0be6e6e067648b444a16ce0379a2c999829",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/scaler_split_gate.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_member_that_boots_or_stops_is_read_by_the_next_pass",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -2439,6 +2450,17 @@
     "scenarios": [
       "DUR-008"
     ]
+  },
+  {
+    "name": "a_stream_that_has_split_63_times_declines_its_next_split_and_keeps_its_map",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a402799c1f0583e391abe09e19eb0188568fd0515b528e5a5554f8fcf14a7ad2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/scaler_split_gate.rs",
+    "scenarios": []
   },
   {
     "name": "a_stuck_tick_keeps_its_heartbeat_but_not_its_progress",
@@ -8537,6 +8559,17 @@
     "scenarios": [
       "DUR-001"
     ]
+  },
+  {
+    "name": "the_largest_creatable_descriptor_with_a_full_segment_map_fits_the_catalog_guard",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7bc30598cfd7ba75af665bf09fd38ad70163e1105852897842f57598218a478f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_capacity.rs",
+    "scenarios": []
   },
   {
     "name": "the_longest_idle_window_is_admitted_and_reported",

@@ -386,16 +386,21 @@ alongside and finish before admission opens.
 
 The owner's round-3 answers that need code (README, row "Public-beta
 calls, round 3 (decided 2026-10-13)": "accept all recommended."); each
-lands red first with its record, and the records it amends (#144, #151,
+lands red first with its record, and the records it amends (#151,
 #152) keep their status until then; #148's refused-replay rule is
 ratified as built (call 7), and its record says so. Call 5 is built: the
 denial journal's 64-event allowance is deleted, each aggregate per (code,
 status) and drain carries its first denial's route and method as a
-sample, R10 is not re-pinned, and #142 is amended and ratified.
+sample, R10 is not re-pinned, and #142 is amended and ratified. Call 2
+is built: a split is declined in its phase A once the map's segments
+plus its live ones plus two pass 192 (`SEGMENT_BUDGET`,
+`src/application/topology.rs`; at most 63 splits an incarnation, merges
+never declined), pinned by two fleet-off legs in `scaler_split_gate` and
+a byte proof in `shared_cell_capacity` (125,820 of 131,072 bytes);
+`src/application/topology.rs` is the `topology` mutation owner; #144 is
+amended (d) and ratified; sealed-segment pruning is recorded before
+cross-server splits (14.6).
 
-- Call 2, #144: a split declined once segments + live + 2 > 192, with a
-  fleet-off DST and #144's line; sealed-segment pruning before
-  cross-server splits; `src/application/topology.rs` a mutation owner.
 - Call 3, fork long-polls: `execute_fork_read`'s row restated so a woken
   fork long-poll takes `min(maxBytes, 8 MiB)` again (a fork `wait_tail`
   variant, a red fork leg, a TLA-018 re-record).
@@ -2284,10 +2289,12 @@ outside the repository, under `~/.streams-k2/analysis/` on the owner's machine
   long-poll can still render a page larger than it took (the fork read
   measures its end after awaits on the ancestors' descriptors), so it
   takes the whole `min(maxBytes, 8 MiB)` again under a restated
-  `execute_fork_read` row, with a red leg; (3) decided (a′), to be built
-  (call 2): the scaler's segment map can take a customer's descriptor past
-  the catalog's 128 KiB guard and fail the cell-wide reconciliation page
-  (#144), so a split is declined past 192 segments; (4) closed (call 5,
+  `execute_fork_read` row, with a red leg; (3) closed (call 2, (a′),
+  built): the scaler's segment map could take a customer's descriptor
+  past the catalog's 128 KiB guard and fail the cell-wide reconciliation
+  page (#144), so a split is declined once segments + live + 2 > 192 (at
+  most 63 splits an incarnation; merges never declined), and #144 is
+  amended and ratified; the budget's later cost is 14.6's; (4) closed (call 5,
   (b′), built): the denial journal's allowance of 64 single events (#142)
   is deleted, each aggregate carries its first denial's route and method
   as a sample, R10 is not re-pinned, and #142 is ratified; (5) closed
@@ -2354,6 +2361,20 @@ segment) are separate layers, as Pravega's containers and segments are.
   relay for watches, DLQ through forwarding, per-segment rate buckets, a
   cross-server merge probe, and a two-server DST written red first), about
   17-28 days. Shard splits (SPEC D3) come after launch.
+- **Sealed-segment pruning must land with or before cross-server splits**
+  (the owner's round-3 call 2 of 2026-10-13, the skeptic's amendment 1).
+  The segment budget (#144 (d), `SEGMENT_BUDGET` in
+  `src/application/topology.rs`) declines a split once a map's segments
+  plus its live ones plus two pass 192, so an incarnation splits at most
+  63 times in its life: merges never give the budget back. On one shard a
+  split adds no capacity, so that costs nothing today, but once the split
+  package lets splits add capacity across servers a diurnal stream (splits
+  by day, merges by night) spends the budget in about two months and can
+  never split again. Pruning sealed segments once their data is absorbed
+  (option (d) of the call; `src/segmap.rs`, KANI-028, and the read path)
+  gives the room back, since the budget counts the segments a map holds,
+  not the ids it allocated (pinned by
+  `scaler_split_gate::a_map_whose_root_was_pruned_has_room_for_one_more_split`).
 
 ### 14.7 Defects found on the way, not yet fixed
 

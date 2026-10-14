@@ -113,6 +113,11 @@ OWNERS = (
     owner('history_page_read_tests', 'src/history/page_read/tests.rs', 'history::page_read::'),
     owner('ops', 'src/ops.rs', 'ops:: dst_tests::fork_debt:: dst_tests::runtime_journals::'),
     owner('scaler', 'src/scaler3.rs', 'scaler3:: dst_tests::scaler_loop::'),
+    # The split and merge transitions and the segment budget a split must
+    # fit (#144); the owner decided the row on 2026-10-13
+    # (OWNER-DECISIONS-3, call 2; AGENTS 1(3)).
+    owner('topology', 'src/application/topology.rs',
+          'dst_tests::topology_lifecycle:: dst_tests::scaler_split_gate:: dst_tests::topology_scaling::'),
     owner('postings_cache', 'src/postings_cache.rs', 'postings_cache::'),
     owner('postings_cache_owned_load', 'src/postings_cache/owned_load.rs', 'postings_cache::'),
     owner('sharddir', 'src/sharddir.rs', 'sharddir::'),

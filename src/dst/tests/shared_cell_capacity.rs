@@ -3,7 +3,9 @@
 //! share, besides read memory (`read_memory`). Each test pins one bound.
 //!
 //! Green: a write's buffered bodies share their project's memory line
-//! (C3), a creation document holds at most 64 KiB (C4), a catalog page
+//! (C3), a creation document holds at most 64 KiB (C4) and the largest
+//! creatable descriptor with a full segment map fits the catalog's
+//! per-descriptor guard (#144 (d)), a catalog page
 //! reserves what it may hold as a read does (C8), a settle's dead-letter
 //! handoff reads only what its project can hold (C1's residual), and a
 //! deleted or expired watched stream's touch journal ends with it (C9).
@@ -374,6 +376,78 @@ async fn descriptor_bytes_are_held_to_a_byte_bound() {
         .filter_map(|s| s["name"].as_str())
         .collect();
     assert_eq!(listed, ["fat-at"], "only the create at the bound stored");
+    engine_shutdown(&cell.state).await;
+}
+
+/// A segment map of `n` segments, each as long as a segment's JSON can be
+/// while the map keeps every segment it allocated (so no id reaches `n`):
+/// the largest id, two predecessors and two successors, every bound and
+/// frozen offset at `u64::MAX`, route bytes of 255 and both clocks at 13
+/// digits (any millisecond before the year 2286), with a transition
+/// pending. A bound on the bytes, not a valid topology.
+fn longest_map(n: usize) -> crate::segmap::SegmentMap {
+    let last = u32::try_from(n - 1).unwrap();
+    let clock = 9_999_999_999_999;
+    let segment = crate::segmap::SegmentDesc {
+        seg_id: last,
+        lo: u64::MAX,
+        hi: u64::MAX,
+        shard_prefix: String::new(),
+        route_hash: [255; 16],
+        created_ms: clock,
+        predecessors: vec![last; 2],
+        successors: vec![last; 2],
+        sealed_ms: Some(clock),
+        sealed_next_offset: Some(u64::MAX),
+    };
+    crate::segmap::SegmentMap {
+        version: u64::MAX,
+        next_seg_id: u32::try_from(n).unwrap(),
+        segments: vec![segment; n],
+        pending: Some(crate::segmap::PendingTransition {
+            kind: "merge".into(),
+            segs: vec![last; 2],
+            split_at: u64::MAX,
+            started_ms: clock,
+            seal_gen: u64::MAX,
+        }),
+    }
+}
+
+/// The segment budget's bytes (edge change #144, the owner's call 2 of
+/// 2026-10-13). The largest descriptor a create can make (a 512-byte name,
+/// a creation document of 64 KiB, account and project ids of 128 bytes)
+/// with `SEGMENT_BUDGET` segments each at its longest JSON and a
+/// transition pending is written, as a transition writes it, in at most
+/// 131,072 bytes: the catalog's per-descriptor guard (`MAX_DESCRIPTOR_BYTES`,
+/// held at that edge by
+/// `registry::catalog::tests::a_descriptor_over_128_kib_fails_its_catalog_page_closed`),
+/// so no map the scaler can grow fails the project's catalog or the cell's
+/// reconciliation page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_largest_creatable_descriptor_with_a_full_segment_map_fits_the_catalog_guard() {
+    use crate::application::topology::SEGMENT_BUDGET;
+    use crate::tenant::{CanonicalStreamName, ID_MAX_BYTES, NAME_MAX_BYTES, TenantStreamRef};
+    let cell = open_cell(CellSpec::open(1)).await;
+    let name = "n".repeat(NAME_MAX_BYTES);
+    let path = format!("/v1/streams/{name}");
+    let body = fat_create(CREATE_BOUND);
+    assert_eq!(cell.call(0, "PUT", &path, body.as_bytes()).await.0, 201);
+    let sref = TenantStreamRef::new(
+        ProjectId::new(&project(0)).unwrap(),
+        CanonicalStreamName::new(&name).unwrap(),
+    );
+    let stored = cell.state.registry.get(&sref).await.unwrap().unwrap();
+    let mut desc = stored.to_persisted();
+    let created = serde_json::to_vec(&desc).unwrap().len();
+    desc.project_id = ProjectId::new(&"p".repeat(ID_MAX_BYTES)).unwrap();
+    desc.account_id = Some("a".repeat(ID_MAX_BYTES));
+    desc.segments = Some(longest_map(SEGMENT_BUDGET));
+    let written = serde_json::to_vec(&desc).unwrap().len();
+    assert!(
+        written <= 131_072,
+        "{written} bytes: a created descriptor of {created} bytes with {SEGMENT_BUDGET} segments"
+    );
     engine_shutdown(&cell.state).await;
 }
 

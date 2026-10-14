@@ -5,6 +5,23 @@ use crate::scaler3::{SEGMENT_MAP_REFRESHES, SEGMENT_MERGES, SEGMENT_SPLITS, Scal
 use crate::shard::ShardEngine;
 use std::sync::Arc;
 
+/// The most segments an incarnation's map may come to hold (edge change
+/// #144, the owner's call 2 of 2026-10-13). The map keeps every segment it
+/// ever had, so it grows with each transition: a split seals its parent and
+/// adds two children, a merge seals two parents and adds one. Merges are
+/// never declined, and a map of `s` segments with `l` live ones can still
+/// merge its live segments down to one, each merge adding a segment: it can
+/// come to hold `s + l - 1`. A split, after which the map holds `s + 2`
+/// with `l + 1` live, is declined when that would pass the budget, that is
+/// when `s + l + 2` exceeds it. A split spends three of `s + l` and a merge
+/// none, so an incarnation splits at most 63 times. The largest creatable
+/// descriptor with this many segments, each at its longest JSON, stays
+/// under the catalog's 128 KiB per-descriptor guard (pinned by
+/// `shared_cell_capacity::the_largest_creatable_descriptor_with_a_full_segment_map_fits_the_catalog_guard`).
+/// It counts the segments the map holds, never the ids it has allocated,
+/// so pruning sealed segments would give the room back.
+pub(crate) const SEGMENT_BUDGET: usize = 192;
+
 #[derive(Clone)]
 pub(crate) struct TopologyService {
     pub(crate) registry: Arc<Registry>,
@@ -272,6 +289,19 @@ pub(crate) async fn execute_split_fenced(
                 });
                 if map.pending.is_some() {
                     return Mutation::Decline(false); // an in-flight transition owns the map
+                }
+                let (segments, live) = (map.segments.len(), map.live().count());
+                if segments + live + 2 > SEGMENT_BUDGET {
+                    tracing::info!(
+                        project = sref.project_id().as_str(),
+                        stream = sref.name().as_str(),
+                        epoch = expect_epoch,
+                        seg_id,
+                        segments,
+                        live,
+                        "split declined: the segment map is at its budget"
+                    );
+                    return Mutation::Decline(false);
                 }
                 let Some(seg) = map.get(seg_id) else {
                     return Mutation::Decline(false);

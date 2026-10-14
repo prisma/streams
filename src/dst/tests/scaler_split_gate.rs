@@ -10,11 +10,17 @@
 //! Each instance has two one-bit shards over the shared store. The stream's
 //! shard is `inst-a`'s and the other is `inst-b`'s while `inst-b` is active,
 //! so the split's high child would be `inst-b`'s.
+//!
+//! The segment budget (edge change #144, the owner's call 2 of 2026-10-13)
+//! gates a split on any server: once a map's segments plus its live ones
+//! plus two would pass 192, the split is declined in its phase A, so an
+//! incarnation splits at most 63 times.
 use super::fixture_http::{HttpRig, HttpRigOptions, http_rig_build};
-use super::fixture_requests::hreq;
+use super::fixture_requests::{hreq, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
 use crate::scaler3::controller::{Controller, Decision, PassReport};
+use crate::segmap::SegmentMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -261,6 +267,112 @@ async fn a_hot_stream_on_a_server_without_a_fleet_ring_still_splits() {
     assert_eq!(
         segments(&a.state).await,
         Some(vec![(0, false), (1, true), (2, true)])
+    );
+    assert_eq!(splits_committed(&a.state), 1);
+    a.shutdown().await;
+}
+
+/// The stream's segment map after `splits` splits, each of the oldest live
+/// segment at its middle (breadth first, so every segment stays wide), all
+/// on the stream's own route.
+fn split_map(splits: usize) -> SegmentMap {
+    let mut map = SegmentMap::initial("", 1);
+    for _ in 0..splits {
+        let (seg_id, middle) = oldest_live(&map);
+        map.split(seg_id, middle, 0, [0; 16], [0; 16], 1).unwrap();
+    }
+    map
+}
+
+/// The oldest live segment of `map` and its middle: the split a test decides.
+fn oldest_live(map: &SegmentMap) -> (u32, u64) {
+    let oldest = map.live().min_by_key(|s| s.seg_id).unwrap();
+    (oldest.seg_id, oldest.lo + (oldest.hi - oldest.lo) / 2)
+}
+
+/// The stream's segment map as the store holds it.
+async fn stored_map(state: &crate::http::AppState) -> Option<SegmentMap> {
+    let sref = state.deployment.raw_adapter_sref(NAME);
+    state.registry.invalidate(&sref);
+    let desc = state.registry.get(&sref).await.unwrap().unwrap();
+    desc.segments.clone()
+}
+
+/// Create the stream on `rig` and store `map` as its segment map: the
+/// scaler's split of its oldest live segment, and the map as stored.
+async fn planted(rig: &HttpRig, map: SegmentMap) -> (Decision, SegmentMap) {
+    assert_eq!(hreq(rig.addr, "PUT", PATH, &TEXT, b"").await.0, 201);
+    let sref = rig.state.deployment.raw_adapter_sref(NAME);
+    let plant = |d: &mut crate::registry::PersistedDescriptor| {
+        d.segments = Some(map.clone());
+        true
+    };
+    let planted = rig.state.registry.cas_update(&sref, plant).await.unwrap();
+    assert!(planted, "the map is planted");
+    let desc = rig.state.registry.get(&sref).await.unwrap().unwrap();
+    let (seg_id, middle) = oldest_live(&map);
+    let split = Decision::Split(sref, desc.stream_epoch.clone(), seg_id, middle);
+    (split, stored_map(&rig.state).await.unwrap())
+}
+
+/// The segment budget (edge change #144, the owner's call 2 of
+/// 2026-10-13), fleet off: a stream that has split 63 times holds 127
+/// segments, 64 of them live, so its next split would leave a map that
+/// merges alone can take to 193 segments, past the 192 the catalog's
+/// per-descriptor guard is sized for. The controller's split is declined
+/// in phase A and no debt is kept: the map is exactly as stored and no
+/// split is committed. The project's catalog and the cell's
+/// reconciliation page still read the stream.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stream_that_has_split_63_times_declines_its_next_split_and_keeps_its_map() {
+    let a = instance(mem(), "inst-a", 1).await;
+    let (split, before) = planted(&a, split_map(63)).await;
+    assert_eq!((before.segments.len(), before.live().count()), (127, 64));
+    let report = one_pass(&a.state, split).await;
+    assert_eq!(
+        (report.attempted, report.completed, report.deferred),
+        (1, 0, 0),
+        "the split past the segment budget is declined, and no debt is kept"
+    );
+    assert_eq!(
+        stored_map(&a.state).await,
+        Some(before),
+        "the map is unchanged"
+    );
+    assert_eq!(splits_committed(&a.state), 0);
+    let (status, _, body) = preq(a.addr, "GET", "/v1/streams", &[], b"").await;
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        (status, &body["streams"][0]["name"]),
+        (200, &serde_json::json!(NAME)),
+        "{body}"
+    );
+    let page = a.state.registry.reconciliation_page(None, 100).await;
+    assert_eq!(page.map(|page| page.streams.len()).ok(), Some(1));
+    a.shutdown().await;
+}
+
+/// The budget counts the segments a map holds, never the ids it has
+/// allocated: with the 63-split map's root pruned (as sealed-segment
+/// pruning will, NEXT-WORK section 14.6; `validate` admits an absorbed
+/// predecessor) it holds 126 segments, 64 live, so one more split fits and
+/// commits. It leaves 128 segments, 65 live, which merges can take to
+/// exactly 192.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_map_whose_root_was_pruned_has_room_for_one_more_split() {
+    let a = instance(mem(), "inst-a", 1).await;
+    let mut map = split_map(63);
+    map.segments.retain(|s| s.seg_id != 0);
+    let (split, _) = planted(&a, map).await;
+    let report = one_pass(&a.state, split).await;
+    assert_eq!(
+        (report.attempted, report.completed, report.deferred),
+        (1, 1, 0)
+    );
+    let after = stored_map(&a.state).await.unwrap();
+    assert_eq!(
+        (after.segments.len(), after.live().count(), after.pending),
+        (128, 65, None)
     );
     assert_eq!(splits_committed(&a.state), 1);
     a.shutdown().await;

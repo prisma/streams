@@ -187,6 +187,7 @@
     "tasks_shutdown": 16,
     "tasks_signal": 2,
     "telemetry_batch": 26,
+    "topology": 80,
     "touch": 72,
     "transaction_append": 58,
     "transaction_billing": 2,
