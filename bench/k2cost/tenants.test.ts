@@ -145,8 +145,11 @@ test("Layer B runs both quota postures: the ceilings classes as the stress, and 
       // is refused by a bucket of 10, at 8 about 0.3% are.
       const rate = nominalRate(c);
       expect([f, c.class, rate, rate <= FREE_TIER_REQUESTS_PER_SEC / 2]).toEqual([f, c.class, rate, true]);
-      // Creates a second apart (a create weighs 10 of the store budget's 10
-      // a second), all before any other phase starts; no delete at all.
+      // Creates a second apart, all before any other phase starts; no
+      // delete at all. A create weighs 11 of the store budget's 10 a second
+      // and a project's first since its cell booted 21, so on the real
+      // binary each twin's second create is refused once (README, "Known
+      // red"; the owner's call).
       const [setup, ...rest] = c.phases;
       const stagger = Number(setup?.args?.stagger ?? 0);
       expect([f, c.class, setup?.mode, stagger >= 1]).toEqual([f, c.class, "setup", true]);

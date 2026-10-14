@@ -32,8 +32,10 @@ const SDK_RETRIES = 3;
  * leg that times quiet names (hostile.ts h11t) takes them from what was
  * created, never from what the manifest says should have been. With
  * --stagger SECS the creates go one at a time, each attempt at least SECS
- * after the one before: a project at the free tier (requests_per_sec 10)
- * pays 10 of its store budget's 10 a second for each create. */
+ * after the one before's start: a project at the free tier
+ * (requests_per_sec 10) pays 11 of its store budget's 10 a second for a
+ * create, and 21 for its first since its cell booted, so at SECS 1 its
+ * second create is refused once (bench/k2cost/README.md, "Known red"). */
 export async function setup(ctx: Ctx): Promise<Record<string, unknown>> {
   const { o, http, meter } = ctx;
   const format = o.str("format", o.str("payload", "corpus") === "bytes" ? "bytes" : "json");
