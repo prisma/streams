@@ -80,7 +80,23 @@ footer { padding-top: 8px; padding-bottom: 32px; font-size: 13px; }
     workspace_not_allowed: "The workspace you chose is not on the Prisma Streams beta's allow-list and has no Streams project. Sign in again and choose a workspace that is on it.",
     unavailable: "Prisma Streams cannot check your workspace's access right now. Try again shortly.",
   };
+  // Asking whether the cell serves a change: every 5 s for the first
+  // minute (it usually does within about 45 s), then every 30 s, and
+  // after ten minutes not at all, with a Retry.
   const POLL_MS = 5000;
+  const POLL_SLOW_MS = 30000;
+  const POLL_FAST_FOR_MS = 60000;
+  const POLL_FOR_MS = 600000;
+  // Why the issuer cannot ask the cell (the management API's `reason`).
+  const READY_REASONS = {
+    no_live_credential: "No live credential, so its cell cannot be asked whether it serves this project.",
+    project_suspended: "Suspended by the Prisma Streams team.",
+    project_deleting: "Being deleted.",
+  };
+  const SERVED_REASONS = {
+    credential_expired: "expired",
+    project_suspended: "project suspended",
+  };
 
   const main = document.getElementById("main");
   const who = document.getElementById("who");
@@ -114,8 +130,9 @@ footer { padding-top: 8px; padding-bottom: 32px; font-size: 13px; }
   const projectsPath = () => "/v1/workspaces/" + enc(session.workspaceId) + "/streams/projects";
   const credentialsPath = (p) => "/v1/projects/" + enc(p.id) + "/streams/credentials";
 
-  /// One call to the issuer: {status, data, code, message}. A change
-  /// sends JSON and the session's CSRF value.
+  /// One call to the issuer: {status, data, code, message, retryAfter}
+  /// (Retry-After in seconds, or null). A change sends JSON and the
+  /// session's CSRF value.
   async function api(method, path, body) {
     const headers = { accept: "application/json" };
     if (method !== "GET") {
@@ -131,7 +148,10 @@ footer { padding-top: 8px; padding-bottom: 32px; font-size: 13px; }
         body: method === "GET" ? undefined : JSON.stringify(body || {}),
       });
     } catch {
-      return { status: 0, data: null, code: "network", message: "Prisma Streams could not be reached. Check your connection and retry." };
+      return {
+        status: 0, data: null, code: "network", retryAfter: null,
+        message: "Prisma Streams could not be reached. Check your connection and retry.",
+      };
     }
     let data = null;
     try {
@@ -140,7 +160,11 @@ footer { padding-top: 8px; padding-bottom: 32px; font-size: 13px; }
       data = null;
     }
     const error = data && data.error;
-    return { status: res.status, data, code: error ? error.code : null, message: error ? error.message : null };
+    const after = res.headers.get("retry-after");
+    return {
+      status: res.status, data, code: error ? error.code : null, message: error ? error.message : null,
+      retryAfter: after !== null && /^\d+$/.test(after) ? Number(after) : null,
+    };
   }
 
   /// What the page does with a refused call it has no better answer for.
@@ -280,36 +304,68 @@ footer { padding-top: 8px; padding-bottom: 32px; font-size: 13px; }
 
   const later = (ms) => new Promise((done) => setTimeout(done, ms));
 
-  /// Show whether the cell serves project `p` yet, asking every 5 s until
-  /// it does, while `line` is on the page (it is put there after this call).
-  async function watchReady(p, line) {
+  /// Ask `ask` while `alive()`, until `settle` takes its answer as final:
+  /// every POLL_MS for the first minute, then every POLL_SLOW_MS. A 429 or
+  /// 503 with Retry-After is waited out (at least the usual wait) and
+  /// asked again. Any other failure, or ten minutes without a final
+  /// answer, ends it with `failed(text)`.
+  async function poll(alive, ask, settle, failed) {
+    let waited = 0;
     await later(0);
-    while (line.isConnected) {
-      const r = await api("GET", projectsPath() + "/" + enc(p.id));
-      if (r.status !== 200) return;
-      if (r.data.ready) {
-        line.textContent = "Serving at its cell.";
-        return;
+    while (alive()) {
+      const r = await ask();
+      if (!alive()) return;
+      let wait = waited < POLL_FAST_FOR_MS ? POLL_MS : POLL_SLOW_MS;
+      const unchecked = "Not checked: " + (r.message || "the answer was " + r.status + ".");
+      if (r.status === 200) {
+        if (settle(r.data)) return;
+        if (waited + wait > POLL_FOR_MS) return failed("Not confirmed after 10 minutes.");
+      } else if ((r.status === 429 || r.status === 503) && r.retryAfter !== null) {
+        wait = Math.max(wait, r.retryAfter * 1000);
+        if (waited + wait > POLL_FOR_MS) return failed(unchecked);
+      } else {
+        return failed(unchecked);
       }
-      line.textContent = "Being placed on its cell; usually under a minute…";
-      await later(POLL_MS);
+      waited += wait;
+      await later(wait);
     }
   }
 
-  /// Show whether the cell serves credential `c`'s last change yet.
-  async function watchServed(p, c, cell) {
-    await later(0);
-    while (cell.isConnected && pending.has(c.id)) {
-      const r = await api("GET", credentialsPath(p) + "/" + enc(c.id));
-      if (r.status !== 200) return;
-      if (r.data.served) {
-        pending.delete(c.id);
-        cell.textContent = r.data.status;
-        return;
+  /// A Retry button; `again` replaces it, so one click asks once.
+  const retryButton = (again) => el("button", { text: "Retry", onclick: again });
+
+  /// Show whether the cell serves project `p` yet on `line` (put on the
+  /// page after this call), until it does or the issuer says why it
+  /// cannot be asked; a failure shows a Retry.
+  function watchReady(p, line) {
+    poll(() => line.isConnected, () => api("GET", projectsPath() + "/" + enc(p.id)), (d) => {
+      if (d.ready || d.reason) {
+        line.textContent = d.ready ? "Serving at its cell." : READY_REASONS[d.reason] || "Not served (" + d.reason + ").";
+        return true;
       }
-      cell.textContent = r.data.status + " (reaching the cell…)";
-      await later(POLL_MS);
-    }
+      line.textContent = "Being placed on its cell; usually under a minute…";
+      return false;
+    }, (text) => line.replaceChildren(text + " ", retryButton(() => {
+      line.textContent = "Checking…";
+      watchReady(p, line);
+    })));
+  }
+
+  /// Show whether the cell serves credential `c`'s last change yet in its
+  /// status `cell`, as watchReady does.
+  function watchServed(p, c, cell) {
+    poll(() => cell.isConnected && pending.has(c.id), () => api("GET", credentialsPath(p) + "/" + enc(c.id)), (d) => {
+      if (d.served || d.reason) {
+        pending.delete(c.id);
+        cell.textContent = d.served ? d.status : d.status + " (" + (SERVED_REASONS[d.reason] || d.reason) + ")";
+        return true;
+      }
+      cell.textContent = d.status + " (reaching the cell…)";
+      return false;
+    }, (text) => cell.replaceChildren(c.status + ". " + text + " ", retryButton(() => {
+      cell.textContent = c.status + " (checking…)";
+      watchServed(p, c, cell);
+    })));
   }
 
   function rotateButton(p, c, list) {

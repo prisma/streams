@@ -174,7 +174,12 @@ alongside and finish before admission opens.
      covered"), and a walk now mints a fresh one for each request;
      `cell-admin credential` dropped its staged secret when a state
      save's outcome was unknown (eea3f381, "Not covered"), and now keeps
-     it and names it.
+     it and names it; `ready` and `served` could stay false for good
+     while the page polled every 5 s or stopped without a word (3632c9e9,
+     cb64345c, f75db7f1), and now a project is proven through any live
+     credential, both say why they cannot turn true, and the page backs
+     off and stops with a Retry (#NEW-r4-issuer-3, awaiting
+     ratification).
    Who: engineering; key custody stays the owner's cryptographic
    acceptance (I2 of 2026-10-12).
 4. **The Q5 harness and a shared-cell deploy path** (README "Shared cells

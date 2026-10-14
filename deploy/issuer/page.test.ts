@@ -2,8 +2,10 @@
 // issuer triage B4.3, B4.4, B4.6). Run with `bun test ./deploy/issuer`.
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { cleanup, run } from "../cell-admin/test-rig";
-import { fakeS3, issuerCell, managed } from "./rig";
+import { FakeCell } from "../cell-admin/fake-cell";
+import { cleanup, readBundle, run } from "../cell-admin/test-rig";
+import { type FakeElement, FakePage } from "./page-dom";
+import { admin, envWith, fakeS3, ISSUER_ORIGIN, issuerCell, managed } from "./rig";
 import { csrfToken, readSession } from "./session";
 
 afterEach(cleanup);
@@ -131,5 +133,136 @@ describe("GET /auth/session", () => {
     for (let i = 0; i < 60; i++) expect((await m.get("/auth/session", cookie)).status).toBe(200);
     expect((await m.get("/auth/session", cookie)).status).toBe(429);
     expect((await m.call("POST", "/auth/session", cookie)).status).toBe(405);
+  });
+});
+
+describe("the page's watches", () => {
+  const PROJECTS = "/v1/workspaces/ws_a/streams/projects";
+  const fakes: FakeCell[] = [];
+  afterEach(() => {
+    for (const f of fakes.splice(0)) f.stop();
+  });
+
+  /// Workspace ws_a on the allow-list with one project the issuer just
+  /// made, and a fake cell, on the test's clock, serving the bundle as it
+  /// was before the project.
+  async function placed() {
+    const cell = await issuerCell();
+    await admin(cell, "allow", "--workspace", "ws_a");
+    const fake = new FakeCell();
+    fakes.push(fake);
+    fake.publish(readBundle(cell.state));
+    const m = await managed(cell, envWith(cell, { STREAMS_CELL_ORIGIN: fake.url }));
+    fake.now = () => m.clock.t;
+    const cookie = m.signIn("ws_a");
+    const made = await (await m.send("POST", PROJECTS, cookie, { displayName: "Orders" })).json();
+    const id: string = made.project.id;
+    return { cell, fake, m, cookie, id, cid: made.credential.id as string, project: `${PROJECTS}/${id}` };
+  }
+
+  /// The project card's line saying whether its cell serves it.
+  const readyLine = (page: FakePage) =>
+    page.find((e) => e.tagName === "p" && e.className === "muted" && e.parent?.className === "card")!;
+
+  /// The status cell of the credential named `name`.
+  const statusCell = (page: FakePage, name: string) =>
+    page.find((e) => e.tagName === "tr" && (e.children[0] as FakeElement | undefined)?.textContent === name)!
+      .children[3] as FakeElement;
+
+  /// An answer of `status` with `retryAfter`, in the management API's form.
+  const waitAnswer = (status: number, retryAfter: string) => () =>
+    new Response(JSON.stringify({ error: { code: "issuer_unavailable", message: "retry shortly" } }), {
+      status, headers: { "content-type": "application/json", "retry-after": retryAfter },
+    });
+
+  test("asks whether a new project's cell serves it until it does, through a 429 it waits out, then asks no more", async () => {
+    const { cell, fake, m, cookie, project } = await placed();
+    const page = await new FakePage(m, cookie).open();
+    const line = readyLine(page);
+    expect([line.textContent, page.statuses(project)]).toEqual(["Being placed on its cell; usually under a minute…", [200]]);
+    // The session's budget spent just before the next ask: 429, Retry-After 1.
+    await page.advance(4_999);
+    const sid = readSession(m.cfg.sessionKey, new Request(`${ISSUER_ORIGIN}/`, { headers: { cookie } }), m.clock.t)!.sid;
+    for (let i = 0; i < 60; i++) m.issuer.limits.charge("management_session", sid);
+    await page.advance(1);
+    expect(page.statuses(project)).toEqual([200, 429]);
+    fake.publish(readBundle(cell.state));
+    await page.advance(5_000);
+    expect([line.textContent, page.statuses(project)]).toEqual(["Serving at its cell.", [200, 429, 200]]);
+    await page.advance(120_000);
+    expect(page.statuses(project)).toEqual([200, 429, 200]);
+  });
+
+  test("waits out a Retry-After longer than its own wait before it asks again", async () => {
+    const { m, cookie, project } = await placed();
+    const page = await new FakePage(m, cookie).open();
+    page.faults.push({ path: new RegExp(`^${project}$`), answer: waitAnswer(503, "40") });
+    await page.advance(5_000);
+    await page.advance(39_999);
+    expect(page.askedAt(project)).toEqual([0, 5_000]);
+    await page.advance(1);
+    expect(page.askedAt(project)).toEqual([0, 5_000, 45_000]);
+    expect(page.statuses(project)).toEqual([200, 503, 200]);
+  });
+
+  test("asks every 5 s for a minute, then every 30 s, and gives up after ten minutes beside a Retry", async () => {
+    const { m, cookie, project } = await placed();
+    const page = await new FakePage(m, cookie).open();
+    await page.advance(900_000);
+    const fast = Array.from({ length: 12 }, (_, i) => i * 5_000);
+    const slow = Array.from({ length: 19 }, (_, i) => 60_000 + i * 30_000);
+    expect(page.askedAt(project)).toEqual([...fast, ...slow]);
+    expect(readyLine(page).textContent).toBe("Not confirmed after 10 minutes. Retry");
+  });
+
+  test("stops on any other failure, says so beside a Retry, and asks again on Retry", async () => {
+    const { cell, fake, m, cookie, project } = await placed();
+    const page = await new FakePage(m, cookie).open();
+    page.faults.push({ path: new RegExp(`^${project}$`), answer: () => { throw new TypeError("fetch failed"); } });
+    await page.advance(5_000);
+    const line = readyLine(page);
+    expect(line.textContent).toBe("Not checked: Prisma Streams could not be reached. Check your connection and retry. Retry");
+    await page.advance(120_000);
+    expect(page.statuses(project)).toEqual([200, 0]);
+    fake.publish(readBundle(cell.state));
+    page.button("Retry", line)!.dispatch("click");
+    await page.advance(0);
+    expect([line.textContent, page.statuses(project)]).toEqual(["Serving at its cell.", [200, 0, 200]]);
+  });
+
+  test("stops once the issuer says why a project cannot be ready, and says it", async () => {
+    const { m, cookie, id, cid, project } = await placed();
+    expect((await m.send("POST", `/v1/projects/${id}/streams/credentials/${cid}/revoke`, cookie)).status).toBe(200);
+    const page = await new FakePage(m, cookie).open();
+    expect(readyLine(page).textContent).toBe("No live credential, so its cell cannot be asked whether it serves this project.");
+    await page.advance(120_000);
+    expect(page.statuses(project)).toEqual([200]);
+  });
+
+  test("watches a credential the page made until the cell serves it, and stops once its project is suspended, saying so", async () => {
+    const { cell, fake, m, cookie, id } = await placed();
+    fake.publish(readBundle(cell.state));
+    const page = await new FakePage(m, cookie).open();
+    const create = async (name: string) => {
+      const form = page.find((e) => e.tagName === "form" && page.button("Create credential", e) !== undefined)!;
+      (form.children[0] as FakeElement).value = name;
+      form.dispatch("submit");
+      await page.advance(0);
+      return (await (await m.get(`/v1/projects/${id}/streams/credentials`, cookie)).json()).credentials
+        .find((c: { displayName: string }) => c.displayName === name).id as string;
+    };
+    const svc = await create("svc");
+    expect(statusCell(page, "svc").textContent).toBe("active (reaching the cell…)");
+    fake.publish(readBundle(cell.state));
+    await page.advance(5_000);
+    expect(statusCell(page, "svc").textContent).toBe("active");
+    const other = await create("other");
+    await admin(cell, "suspend", "--project", id);
+    await m.cache.refresh();
+    await page.advance(5_000);
+    expect(statusCell(page, "other").textContent).toBe("active (project suspended)");
+    await page.advance(120_000);
+    const path = (c: string) => `/v1/projects/${id}/streams/credentials/${c}`;
+    expect([page.statuses(path(svc)), page.statuses(path(other))]).toEqual([[200, 200], [200, 200]]);
   });
 });
