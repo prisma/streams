@@ -33,10 +33,11 @@ Contents:
 The owner answered the public-beta decision list on 2026-10-11 (README,
 "Owner decisions", row "Public beta (decided 2026-10-11)", which quotes his
 eleven answers and states in full the two calls he left to the lead); his
-answers to the 45 calls of 2026-10-12 and to the sixteen of 2026-10-13 are
-the rows "Public-beta calls (decided 2026-10-12)" and "Public-beta calls,
-round 3 (decided 2026-10-13)". The work list below is drawn from the
-read-only gap analysis of 50fab9d9 made
+answers to the 45 calls of 2026-10-12, to the sixteen of 2026-10-13 and to
+the two of 2026-10-14 are the rows "Public-beta calls (decided
+2026-10-12)", "Public-beta calls, round 3 (decided 2026-10-13)" and
+"Public-beta calls, round 4 (decided 2026-10-14)". The work list below is
+drawn from the read-only gap analysis of 50fab9d9 made
 the same day (`~/.streams-k2/analysis/public-beta-gap.json` on the owner's
 machine): its blockers that remain under these answers, in the order to
 start them. Sizes are the sources' where the analysis cites one; no
@@ -153,7 +154,8 @@ alongside and finish before admission opens.
      Prisma Composer together with Streams");
    - B7's opt-in end-to-end test against the real binary, and with it
      X1 (a)'s issuer e2e CI step beside `cell-admin`'s (X1 (a)'s
-     `./deploy/composer` and `./deploy/cell-watch` wait on their code);
+     `./deploy/composer` and `./deploy/cell-watch` are in CI's Bun step
+     since 7fcf1b43 and 1186883a);
    - B8: the RUNBOOK section, the customer "Authenticating" reference
      and the internal adversarial pass, which runs before any allow-list
      entry;
@@ -420,6 +422,31 @@ ratified as built (call 7), and its record says so.
   with the skeptic's five amendments (item 3).
 - Call 16: an off-list workspace's reduced mode, with #151, #152,
   WIRE-MATRIX and the page amended (item 3).
+
+### Decided 2026-10-14, to be built
+
+The owner's round-4 answers (README, row "Public-beta calls, round 4
+(decided 2026-10-14)": "Agreed on the two questions. Thanks."); both as
+recommended.
+
+- Stored-cap #1, the stored-growth alarm's drain-round blind spot (bytes
+  stored and deleted between two drain rounds of a shard never reach
+  #157's `writtenBytes`): (a) the recorded residual, as built (#158 and
+  RUNBOOK's row 23, which names `local.store.totals.bytes_put` as the
+  bound from above); (c) now: a cell-wide alarm in the cell watch on the
+  growth rate of `bytes_put` (unattributed; compaction raises it too);
+  (b), exact per-project written bytes through a lifetime written-bytes
+  counter in the segment snapshot, folded into layout 6's billing-row
+  work (L4, slim rows, the same snapshot format change) before L6-G opens
+  physical reclamation.
+- Alerting #1, the server meters its own billing reads (14.7; RUNBOOK's
+  row 17 open on every enforce cell): (a), being built in round 4: a red
+  DST (idle rollup steps on an enforce rig leave `UNOWNED_METER_EVENTS`
+  and the deployment account's read rows unchanged), then
+  `billing::system_read` reads with `internal: true` (line-neutral in
+  `src/billing.rs`), with its edge record for the usage change, ratified
+  with this answer. RUNBOOK's row 17 text and the watch's two opt-in e2e
+  tests change with the fix, not before.
 
 ### Open for the owner
 
@@ -2375,8 +2402,9 @@ segment) are separate layers, as Pravega's containers and segments are.
 - The pilot router hashes the bare stream name, which no longer matches the
   layout-4 route hash: about 63-65% of first hops in a 4-server cell get `409`
   and are replayed. The SDK never follows `Streams-Replay-To`.
-- **Needs the owner: the cell counts its own metering as unowned usage,
-  so RUNBOOK row 17 (`r17_unowned_usage`) is open on every enforce cell.**
+- **Decided 2026-10-14, being built: the cell counts its own metering as
+  unowned usage, so RUNBOOK row 17 (`r17_unowned_usage`) is open on every
+  enforce cell.**
   On an idle local shared cell with only the canary in the feed,
   `ops.counters.unowned_meter_events_total` grew 0, 8, 17, 26 ... 107 over
   195 s (target/debug, the alerting lane's B4), so the watch's row 17
@@ -2390,16 +2418,19 @@ segment) are separate layers, as Pravega's containers and segments are.
   system project, which no policy feed names (a feed that names it is
   dropped: row 7). The same path accrues those reads as read usage of the
   deployment's `ACCOUNT_ID` in every auth mode, in off mode the single
-  tenant's own. Recommended: a DST that runs the rollup step on an
-  enforce rig and asserts that `UNOWNED_METER_EVENTS` and the deployment
-  account's read rows stay unchanged (red today), then `system_read` sets
-  `internal: true` (the in-process reads are not externally delivered
-  pages, the §4.2 rule `internal` already carries), not a looser row 17.
-  Cost: `src/billing.rs` has no headroom (2,002 of 2,002 lines), its edit
-  selects CI's `billing` mutation owner, it stales no formal receipt, and
-  it needs an edge record if the off-mode usage report counts as
-  client-visible. Until then the watch's two opt-in e2e tests set row 17
-  aside and hold it to at most one open, so the fix leaves them green.
+  tenant's own. The owner decided it on 2026-10-14 (alerting #1, option
+  (a), as recommended; README, row "Public-beta calls, round 4 (decided
+  2026-10-14)"), and round 4 builds it: a DST that runs the rollup step on
+  an enforce rig and asserts that `UNOWNED_METER_EVENTS` and the
+  deployment account's read rows stay unchanged (red today), then
+  `system_read` sets `internal: true` (the in-process reads are not
+  externally delivered pages, the §4.2 rule `internal` already carries),
+  not a looser row 17, with an edge record for the usage change, ratified
+  with that answer. Cost: `src/billing.rs` has no headroom (2,002 of 2,002
+  lines; the change is line-neutral), its edit selects CI's `billing`
+  mutation owner, and it stales no formal receipt. Until it lands the
+  watch's two opt-in e2e tests set row 17 aside and hold it to at most one
+  open, so the fix leaves them green.
 - Fixed (2026-10-08, T6): the two `sharddir` mutants (`492:28`, `653:26`)
   that differed only when the clock read exactly the holdoff deadline are
   gone: `OpenGate`'s two holdoff checks ask one
