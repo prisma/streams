@@ -8,11 +8,12 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { FREE_TIER_REQUESTS_PER_SEC } from "../../deploy/issuer/projects.ts";
 import { Opts } from "./common.ts";
 import { PayloadGen } from "./corpus.ts";
 import { FakeCell } from "./fake-cell.ts";
 import { ownerOf } from "./oracle.ts";
-import { type Manifest, checkManifest, expand, phaseFlags, phaseStart, readManifest } from "./tenant-plan.ts";
+import { type ClassSpec, type Manifest, checkManifest, expand, phaseFlags, phaseStart, readManifest } from "./tenant-plan.ts";
 import { TokenMap, auditAll, run, usage } from "./tenants.ts";
 
 let cell: FakeCell;
@@ -83,7 +84,88 @@ test("a manifest expands into projects with their own ids, seeds, keys and quota
   expect(bad((m) => (m.classes[0]!.phases[1]!.mode = "audit"))).toContain("unknown mode");
   for (const f of ["layer-b", "layer-b-tiny"]) {
     const { manifest: m } = readManifest(join(import.meta.dir, "tenants", `${f}.json`));
-    expect([f, expand(m, "").projects.length]).toEqual([f, f === "layer-b" ? 1000 : 22]);
+    expect([f, expand(m, "").projects.length]).toEqual([f, f === "layer-b" ? 1000 : 28]);
+  }
+});
+
+/** A project's nominal requests a second with every phase of its class
+ * running at once (setup is checked to end before the others start), from
+ * what k2gen's modes send: produce its rate; a periodic walk (lag:SECS, no
+ * embedded producer) a page per stream every SECS; a consumer group a pull
+ * per stream and consumer every wait-ms while idle, and a pull and a
+ * settle for each append it is fed; an SSE tail nothing once connected;
+ * subs its connect rate; churn a create, its appends and a read-back page
+ * per lifecycle (and a delete unless it ends by TTL). Throws on a shape it
+ * does not model. */
+function nominalRate(c: ClassSpec): number {
+  const num = (v: string | number | undefined, d: number) => (v === undefined ? d : Number(v));
+  const produce = c.phases.filter((ph) => ph.mode === "produce").map((ph) => ph.args ?? {});
+  let rate = 0;
+  for (const ph of c.phases) {
+    const a = ph.args ?? {};
+    const streams = num(a.streams, c.streams ?? 1);
+    const lag = /^lag:([0-9.]+)$/.exec(String(a.from ?? ""));
+    if (ph.mode === "setup") continue;
+    else if (ph.mode === "produce" && a.rate !== undefined && a.mbps === undefined) rate += Number(a.rate);
+    else if (ph.mode === "walk" && lag && a.rate === undefined) rate += streams / Number(lag[1]);
+    else if (ph.mode === "tail" && a.via === "sse") continue;
+    else if (ph.mode === "subs" && a.via === "sse") rate += num(a["connect-rate"], 20);
+    else if (ph.mode === "group" && a.rate === undefined) {
+      const pull = num(a.pull, 10);
+      rate += (streams * num(a.consumers, 1) * 1000) / num(a["wait-ms"], 1000);
+      for (const p of produce) rate += Number(p.rate) * Math.ceil(num(p.records, 1) / pull) * 2;
+    } else if (ph.mode === "churn" && a.rate !== undefined) {
+      const recordBytes = num(a["record-bytes"], 1024);
+      const perLife = Math.max(1, Math.round((num(a["size-kib"], 10) * 1024) / recordBytes));
+      const perReq = Math.max(1, Math.min(num(a.records, 100), Math.floor((1 << 20) / recordBytes)));
+      const del = String(a.end ?? "delete").startsWith("ttl:") ? 0 : 1;
+      rate += Number(a.rate) * (1 + Math.ceil(perLife / perReq) + 1 + del);
+    } else throw new Error(`class ${c.class}: no request model for its ${ph.mode} phase ${JSON.stringify(a)}`);
+  }
+  return rate;
+}
+
+test("Layer B runs both quota postures: the ceilings classes as the stress, and free-tier twins shaped under the bucket", () => {
+  // Lead decision deploy-q5 #6 (1), 2026-10-13. A free-tier project's
+  // request bucket and store budget each hold one second of its rate
+  // (src/quota/bucket.rs, src/quota/parked.rs).
+  const twins = ["s0", "s1", "s2", "s3s", "n0", "victim"];
+  for (const f of ["layer-b", "layer-b-tiny"]) {
+    const { manifest: m } = readManifest(join(import.meta.dir, "tenants", `${f}.json`));
+    expect([f, m.quota_sets?.["free-tier"]]).toEqual([f, { requests_per_sec: FREE_TIER_REQUESTS_PER_SEC }]);
+    const free = m.classes.filter((c) => c.quotas === "free-tier");
+    expect([f, free.map((c) => c.class)]).toEqual([f, twins.map((t) => `${t}-free`)]);
+    for (const cls of [...twins, "h11t-target", "warm", "cold", "cold-none"]) {
+      expect([f, cls, m.classes.find((c) => c.class === cls)?.quotas ?? "ceilings"]).toEqual([f, cls, "ceilings"]);
+    }
+    for (const c of free) {
+      const twin = m.classes.find((o) => o.class === c.class.replace(/-free$/, ""))!;
+      expect([f, c.class, c.role, c.count, c.streams]).toEqual([f, c.class, twin.role, twin.count, twin.streams]);
+      // k2gen's appends are Poisson: at a mean of 5 a second or less none
+      // is refused by a bucket of 10, at 8 about 0.3% are.
+      const rate = nominalRate(c);
+      expect([f, c.class, rate, rate <= FREE_TIER_REQUESTS_PER_SEC / 2]).toEqual([f, c.class, rate, true]);
+      // Creates a second apart (a create weighs 10 of the store budget's 10
+      // a second), all before any other phase starts; no delete at all.
+      const [setup, ...rest] = c.phases;
+      const stagger = Number(setup?.args?.stagger ?? 0);
+      expect([f, c.class, setup?.mode, stagger >= 1]).toEqual([f, c.class, "setup", true]);
+      const setupEnd = setup!.at + (setup!.spread ?? 0) + ((c.streams ?? 1) - 1) * stagger + 1;
+      for (const ph of rest) expect([f, c.class, ph.mode, ph.at >= setupEnd]).toEqual([f, c.class, ph.mode, true]);
+      for (const ph of rest.filter((p) => p.mode === "churn")) {
+        expect([f, c.class, String(ph.args?.end).startsWith("ttl:"), Number(ph.args?.rate) <= 1]).toEqual([f, c.class, true, true]);
+      }
+      // A consumer group's appends each bring a pull's return and a settle
+      // within milliseconds, so its Poisson clusters come three times over:
+      // its consumers start a second apart and it appends at most 0.1 a
+      // second (simulated, N0's 0.41 a second draws about one refusal an
+      // hour, S1's 41 records a second as one :batch a second about 20).
+      const groups = rest.filter((p) => p.mode === "group");
+      const appends = rest.filter((p) => p.mode === "produce").reduce((a, p) => a + Number(p.args?.rate), 0);
+      for (const g of groups) {
+        expect([f, c.class, Number(g.args?.stagger) >= 1, appends <= 0.1]).toEqual([f, c.class, true, true]);
+      }
+    }
   }
 });
 

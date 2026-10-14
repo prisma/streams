@@ -445,9 +445,10 @@ def leg_memory(r: Run, bars: dict) -> tuple:
 # ---- manifest -----------------------------------------------------------------
 
 def quota_posture(run: dict) -> dict:
-    """Which quota set each class ran under (run.json's classes): the
-    compliant classes at the cell's ceilings certify isolation at the
-    ceilings, not the beta's free-tier posture (owner decision I7 (a))."""
+    """Which quota set each class ran under (run.json's classes): Layer B
+    runs its compliant classes at the cell's ceilings as the stress and
+    their twins at the beta's free-tier set (owner decision I7 (a); lead
+    decision deploy-q5 #6 (1)), so each posture's classes are listed."""
     out: dict = {}
     for cls, c in sorted((run.get("classes") or {}).items()):
         out.setdefault(c.get("quotas") or "ceilings", {}).setdefault(c.get("role") or "?", []).append(cls)

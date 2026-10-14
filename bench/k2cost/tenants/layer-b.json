@@ -2,7 +2,7 @@
  "name": "layer-b",
  "seed": 1,
  "duration": 4200,
- "comment": "Layer B on the single-server shape (deploy-q5 design \u00a73.3; shared-cells PLAN \u00a74.1): 1,000 projects. Setup 0-600 s, the compliant classes 600-4200 s, the hostile classes from 1800 s. The victim's period solo is 900-1800 s, noisy 2100-4200 s. Writers stop 60 s before the readers of their window, so a subscriber cut at the end has read everything it was sent. Quota posture: the compliant, victim and idle classes are admitted at the cell's ceilings (no quota set), the hostile ones at q-hostile and again at the ceilings. The beta admits every project at the issuer's free-tier table (owner decision I7 (a): requests_per_sec 10, the other axes at the ceilings), so this load certifies isolation at the ceilings, not the beta's posture (S1's 41 single appends a second is above what a beta project may send); a free-tier variant is the lead's call. shared_verdict.py records the posture in the arm manifest.",
+ "comment": "Layer B on the single-server shape (deploy-q5 design \u00a73.3; shared-cells PLAN \u00a74.1): 1,000 projects. Setup 0-600 s, the compliant classes 600-4200 s, the hostile classes from 1800 s. The victim's period solo is 900-1800 s, noisy 2100-4200 s. Writers stop 60 s before the readers of their window, so a subscriber cut at the end has read everything it was sent. Quota posture, both in this one manifest (lead decision deploy-q5 #6 (1), 2026-10-13): the compliant classes, the victim, the h11t-fresh target and the idle classes are admitted at the cell's ceilings (no quota set) as the stress, the hostile ones at q-hostile and again at the ceilings, and free-tier twins of S0, S1 (batched), S2, S3s, N0 and the victim at the issuer's free-tier table (quota set free-tier: requests_per_sec 10, the other axes at the ceilings; owner decision I7 (a)). A free-tier project's request bucket and store budget each hold one second of its rate. k2gen's appends are an open-loop Poisson process, so each twin's aggregate mean (appends, pulls, settles, reads and SSE connects) is at most 5 requests a second: simulated against that bucket, a mean of 8 refuses about 0.3% and 5 or less none. A consumer group's appends each bring a pull's return and a settle within milliseconds, so its Poisson clusters come three times over: a twin with a group appends at most 0.1 times a second and starts its consumers a second apart. Every twin creates its streams a second apart (a create weighs 10 of the store budget's 10 a second) and none deletes. An honest refusal that survives this shaping is a PB-E3 finding. cold makes room for the twins, so the manifest keeps 1,000 projects (rc-certify's MIN_PROJECTS). shared_verdict.py records the posture in the arm manifest.",
  "periods": {
   "solo": [
    900,
@@ -23,6 +23,9 @@
    "max_live_subscriptions": 16,
    "max_streams": 50,
    "queued_append_bytes": 1048576
+  },
+  "free-tier": {
+   "requests_per_sec": 10
   }
  },
  "classes": [
@@ -767,6 +770,242 @@
    ]
   },
   {
+   "class": "s0-free",
+   "count": 8,
+   "role": "compliant",
+   "quotas": "free-tier",
+   "streams": 3,
+   "comment": "S0's free-tier twin: S0's load at requests_per_sec 10 (about 1.3 a second: one :batch of 41 x 300 B a second, a reader catching up every 10 s), creates a second apart",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 300,
+     "args": {
+      "stagger": 1
+     }
+    },
+    {
+     "mode": "produce",
+     "at": 600,
+     "secs": 3540,
+     "args": {
+      "rate": 1,
+      "records": 41,
+      "record-bytes": 300
+     }
+    },
+    {
+     "mode": "walk",
+     "at": 600,
+     "secs": 3600,
+     "args": {
+      "from": "lag:10",
+      "max-bytes": 1048576
+     }
+    }
+   ]
+  },
+  {
+   "class": "s1-free",
+   "count": 8,
+   "role": "compliant",
+   "quotas": "free-tier",
+   "streams": 2,
+   "comment": "S1's free-tier twin, batched: its 41 records a second as one :batch of 410 every 10 s, and a live group pulling up to 500 whose consumers start a second apart (about 2.3 requests a second)",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 300,
+     "args": {
+      "stagger": 1
+     }
+    },
+    {
+     "mode": "produce",
+     "at": 600,
+     "secs": 3540,
+     "args": {
+      "rate": 0.1,
+      "record-bytes": 300,
+      "records": 410
+     }
+    },
+    {
+     "mode": "group",
+     "at": 600,
+     "secs": 3600,
+     "args": {
+      "pull": 500,
+      "consumers": 1,
+      "wait-ms": 1000,
+      "stagger": 1
+     }
+    }
+   ]
+  },
+  {
+   "class": "s2-free",
+   "count": 12,
+   "role": "compliant",
+   "quotas": "free-tier",
+   "streams": 2,
+   "comment": "S2's free-tier twin: S2's load at requests_per_sec 10 (about 1.2 a second: lifecycles 17 s apart that end by TTL, never a delete), creates a second apart",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 300,
+     "args": {
+      "stagger": 1
+     }
+    },
+    {
+     "mode": "churn",
+     "at": 600,
+     "secs": 3600,
+     "args": {
+      "rate": 0.0583,
+      "count": 210,
+      "size-kib": 40,
+      "end": "ttl:86400",
+      "record-bytes": 1024,
+      "records": 40,
+      "prefix": "c/"
+     }
+    },
+    {
+     "mode": "produce",
+     "at": 600,
+     "secs": 3540,
+     "args": {
+      "rate": 1,
+      "record-bytes": 512
+     }
+    },
+    {
+     "mode": "tail",
+     "at": 600,
+     "secs": 3600,
+     "args": {
+      "via": "sse",
+      "readers": 1
+     }
+    }
+   ]
+  },
+  {
+   "class": "s3s-free",
+   "count": 4,
+   "role": "compliant",
+   "quotas": "free-tier",
+   "streams": 2,
+   "comment": "S3s's free-tier twin: its subscribers connect 4 a second (about 4.4 requests a second while they connect, 0.4 after)",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 300,
+     "args": {
+      "stagger": 1
+     }
+    },
+    {
+     "mode": "produce",
+     "at": 600,
+     "secs": 3540,
+     "args": {
+      "rate": 0.4,
+      "record-bytes": 300
+     }
+    },
+    {
+     "mode": "subs",
+     "at": 600,
+     "secs": 3600,
+     "args": {
+      "count": 100,
+      "via": "sse",
+      "connect-rate": 4
+     }
+    }
+   ]
+  },
+  {
+   "class": "n0-free",
+   "count": 8,
+   "role": "compliant",
+   "quotas": "free-tier",
+   "streams": 5,
+   "comment": "N0's free-tier twin: 0.1 singles a second over 5 streams and a live group whose consumers start a second apart (about 2.8 requests a second)",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 300,
+     "args": {
+      "stagger": 1
+     }
+    },
+    {
+     "mode": "produce",
+     "at": 600,
+     "secs": 3540,
+     "args": {
+      "rate": 0.1,
+      "record-bytes": 300
+     }
+    },
+    {
+     "mode": "group",
+     "at": 600,
+     "secs": 3600,
+     "args": {
+      "pull": 10,
+      "consumers": 1,
+      "wait-ms": 2000,
+      "stagger": 1
+     }
+    }
+   ]
+  },
+  {
+   "class": "victim-free",
+   "count": 1,
+   "role": "victim",
+   "quotas": "free-tier",
+   "streams": 4,
+   "comment": "the victim's free-tier twin, a second victim: 2 appends a second and a reader 2 s behind (about 4 requests a second), alone and under the hostile load",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 300,
+     "args": {
+      "stagger": 1
+     }
+    },
+    {
+     "mode": "produce",
+     "at": 600,
+     "secs": 3540,
+     "args": {
+      "rate": 2,
+      "record-bytes": 512
+     }
+    },
+    {
+     "mode": "walk",
+     "at": 600,
+     "secs": 3600,
+     "args": {
+      "from": "lag:2"
+     }
+    }
+   ]
+  },
+  {
    "class": "warm",
    "count": 200,
    "role": "idle",
@@ -794,7 +1033,7 @@
   },
   {
    "class": "cold",
-   "count": 600,
+   "count": 559,
    "role": "idle",
    "streams": 3,
    "comment": "cold idle: 3 empty streams, created at setup and never touched again: H11t's quiet names",
