@@ -500,6 +500,10 @@ python3 bench/k2cost/shared_verdict.py layer-b RUN_DIR        # writes RUN_DIR/l
 python3 -m unittest discover -s bench/k2cost -p 'test_*.py'
 ```
 
+CI's `sdk-package` job runs these Python tests and `bun test ./bench/k2cost`
+(where `tenants.e2e.test.ts` skips), by the owner's round-3 call 13, and
+`scripts/quality/test_layer_b_ci.py` holds the job to both.
+
 `shared_verdict.py` judges a `run-shared.sh` run (its `rig.json`,
 `marks.jsonl`, `scrape.jsonl` and `tenants/`) against named bars and writes
 the manifest `scripts/rc-certify.sh --shape single-cell` reads (arm,

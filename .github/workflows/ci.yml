@@ -318,9 +318,16 @@ jobs:
       # The interim issuer's, the shared cell's Composer app's and the cell
       # watch's suites join by the owner's answer X1 (a) of 2026-10-12.
       # ./deploy/composer runs without its node_modules; its end-to-end test
-      # is opt-in (CELL_ADMIN_E2E_BIN_DIR) and skips here.
-      - name: Deploy wrapper, its feed poller, campaign staging, cell-admin, the interim issuer, the cell's Composer app and the cell watch (Bun)
-        run: bun test ./deploy/supervise.test.ts ./deploy/feeds.test.ts ./deploy/stage-app.test.ts ./deploy/cell-admin ./deploy/issuer ./deploy/composer ./deploy/cell-watch
+      # is opt-in (CELL_ADMIN_E2E_BIN_DIR) and skips here. Layer B's harness
+      # (./bench/k2cost) joins by the owner's round-3 call 13 of 2026-10-13
+      # (AGENTS.md section 1 (3)): its tests pin the verdict's `load` and
+      # `harness` legs and the probes leg's first-contact bar, which no gate
+      # ran before. Its end-to-end test is opt-in (TENANTS_E2E_BIN_DIR) and
+      # skips here.
+      - name: Deploy wrapper, its feed poller, campaign staging, cell-admin, the interim issuer, the cell's Composer app, the cell watch and Layer B's harness (Bun)
+        run: bun test ./deploy/supervise.test.ts ./deploy/feeds.test.ts ./deploy/stage-app.test.ts ./deploy/cell-admin ./deploy/issuer ./deploy/composer ./deploy/cell-watch ./bench/k2cost
+      - name: Layer B's harness, its verdict and rig (Python)
+        run: python3 -m unittest discover -s bench/k2cost -p 'test_*.py'
       # cell-admin's end-to-end test boots the release streams-slate over
       # s3lite (free ports) on the shared-cell profile, admits, serves and
       # offboards two projects (owner decision 2026-10-08, Q3(b)).
