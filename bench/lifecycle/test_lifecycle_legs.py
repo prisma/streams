@@ -249,14 +249,49 @@ class Legs(unittest.TestCase):
         cell.health.side_effect = lambda: {"t": self.clock.now(), "status": 200, "boot": boots[-1]}
         ev = L.restart(self.ctx(compute, {"restart": restart}, cell))
         self.assertEqual(calls[0], ("PUT", "/v1/streams/lc/restart-probe", b'{"format":{"kind":"json"}}'))
-        self.assertEqual(calls[1][:2], ("GET", "/v1/streams/lc/s00000"))
-        self.assertEqual(calls[2], ("POST", "/v1/streams/lc/restart-probe/records", b'{"lifecycle": "restart", "seq": 1}'))
+        # The read probe's stream checked once, then every tick a read and an append.
+        self.assertEqual(calls[1], ("GET", "/v1/streams/lc/s00000", None))
+        self.assertEqual(calls[2], ("GET", "/v1/streams/lc/s00000", None))
+        self.assertEqual(calls[3], ("POST", "/v1/streams/lc/restart-probe/records", b'{"lifecycle": "restart", "seq": 1}'))
         first = ev["samples"][0]
         self.assertEqual((first["t"], first["boot"], [a["kind"] for a in first["answers"]]), (T0, "b1", ["read", "append"]))
         self.assertEqual(ev["samples"][-1]["boot"], "b2")
         r = L.judge({"leg": "restart", **ev})
         self.assertTrue(r.ok, r.render())
         self.assertIn("PASS restart: restart 1: raw clients were without service 0.0 s across the switch (bar 10 s)", r.render())
+
+    def test_restart_stops_before_it_probes_when_its_read_probes_stream_does_not_answer_2xx(self):
+        # A cell where load.setup never ran: the example's probe_path is
+        # k2gen's stream 0, which only the setup creates. Each restart
+        # works; the leg must name the plan, never blame the build.
+        compute = FakeCompute(self.clock, ["v1"])
+        self.plan.doc["restart"].update(count=1, warmup_s=5, cooldown_s=20)
+        boots = ["b1"]
+        calls = []
+
+        def restart(cmd, subs):
+            t = self.clock.now()
+            compute.add("v2", boot_lines(t + 3_000, "b2"), at=t + 4_000)
+            self.clock.ticks.append(lambda now: boots.append("b2") if now >= t + 9_000 and boots[-1] != "b2" else None)
+            return 0, ""
+
+        def product(path, headers_file=None, method="GET", body=None):
+            calls.append((method, path))
+            found = method != "GET"
+            return {"t": self.clock.now(), "status": 201 if found else 404, "code": None if found else "not_found",
+                    "retry_after": None, "boot": None}
+        cell = mock.Mock()
+        cell.product.side_effect = product
+        cell.health.side_effect = lambda: {"t": self.clock.now(), "status": 200, "boot": boots[-1]}
+        ctx = self.ctx(compute, {"restart": restart}, cell)
+        with open(L.run_leg(ctx, "restart")) as f:
+            ev = json.load(f)
+        self.assertEqual(L.judge(ev).render(), [
+            "FAIL restart: the run stopped: restart.probe_path /v1/streams/lc/s00000 answered 404 not_found: the read "
+            "probe's stream must exist before the leg (load.setup creates the example's; or name an existing stream)",
+            "LEG_FAIL restart"])
+        self.assertEqual(calls, [("PUT", "/v1/streams/lc/restart-probe"), ("GET", "/v1/streams/lc/s00000")])
+        self.assertEqual((ctx.shell.calls, self.clock.probers), ([], []))
 
     def test_rollback_deploys_the_sequence_and_a_fake_cross_layout_release_that_must_be_refused(self):
         for name in ("a", "b"):

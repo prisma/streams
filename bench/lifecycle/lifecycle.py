@@ -299,6 +299,13 @@ def restart(ctx: Ctx, ev: dict | None = None) -> dict:
     made = ctx.cell.product(stream, method="PUT", body=b'{"format":{"kind":"json"}}')
     if made["status"] not in (200, 201):
         raise LegError(f"creating the append probe's stream {stream} answered {made['status']} {made.get('code')}")
+    # The read probe's stream is the plan's (k2gen's setup may create it
+    # with its own config), so the leg checks it rather than creating it:
+    # a missing one would fail every tick and read as the build's fault.
+    got = ctx.cell.product(path)
+    if not 200 <= got["status"] < 300:
+        raise LegError(f"restart.probe_path {path} answered {got['status']} {got.get('code')}: the read probe's stream "
+                       "must exist before the leg (load.setup creates the example's; or name an existing stream)")
     seq = [0]
 
     def tick() -> dict:
