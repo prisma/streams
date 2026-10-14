@@ -25,7 +25,8 @@ import { audit } from "./audit.ts";
 const USAGE = `k2gen <mode> [flags]
 
 Modes
-  setup         create --streams streams (--format json|bytes, --ttl SECS idle expiry, --parallel 8)
+  setup         create --streams streams (--format json|bytes, --ttl SECS idle expiry, --parallel 8,
+                --stagger SECS: one at a time, each at least SECS after the last)
   produce       appends; --rate R (open-loop Poisson req/s) | --mbps X (payload MB/s) | --concurrency C
   walk          catch-up reads: --from earliest|lag:SECS --readers K --stagger SECS --parallel P
                 --max-bytes B --expect a.ledger.json[,b...] (verify reader 0 against acked counts)

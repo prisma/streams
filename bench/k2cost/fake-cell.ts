@@ -80,8 +80,9 @@ export class FakeCell {
   /** A defect to detect: a read of a name another project holds is
    * refused instead of answering like a name nobody holds. */
   existenceLeak = false;
-  /** When set, every authenticated request as [project, method, path]. */
-  trace: Array<[string, string, string]> | null = null;
+  /** When set, every authenticated request as [project, method, path,
+   * when it arrived (performance.now())]. */
+  trace: Array<[string, string, string, number]> | null = null;
   /** Every watch request, in arrival order: when it arrived
    * (performance.now()), the project its capability claims, the name,
    * whether that project holds the name, and whether the cell took a
@@ -217,7 +218,7 @@ export class FakeCell {
     const project = this.tokens.get(token);
     if (!project) return error(401, "unauthorized");
     this.requests.set(project, (this.requests.get(project) ?? 0) + 1);
-    this.trace?.push([project, req.method, path]);
+    this.trace?.push([project, req.method, path, performance.now()]);
     const refusal = this.refusals.get(project);
     if (refusal && refusal.left > 0) {
       refusal.left--;

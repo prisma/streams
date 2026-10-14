@@ -464,7 +464,7 @@ export class Reporter {
 const PRODUCER = ["rate", "mbps", "concurrency", "records", "record-bytes", "payload", "zipf", "routing-keys", "pool", "timeout-ms", "drain-secs"];
 const COMMON = ["base", "headers-file", "streams", "prefix", "duration", "seed", "out", "ledger", "key", "window", "port"];
 export const MODE_FLAGS: Record<string, string[]> = {
-  setup: [...COMMON, "format", "ttl", "parallel", "payload"],
+  setup: [...COMMON, "format", "ttl", "parallel", "payload", "stagger"],
   produce: [...COMMON, ...PRODUCER],
   walk: [...COMMON, ...PRODUCER, "from", "readers", "stagger", "parallel", "max-bytes", "expect"],
   tail: [...COMMON, ...PRODUCER, "via", "readers", "wait-ms", "from"],

@@ -30,21 +30,29 @@ const SDK_RETRIES = 3;
 /** PUT /v1/streams/{name} for every stream (idempotent: 201 new, 200 same).
  * `names` records every stream it holds afterwards (201 or 200), so a
  * leg that times quiet names (hostile.ts h11t) takes them from what was
- * created, never from what the manifest says should have been. */
+ * created, never from what the manifest says should have been. With
+ * --stagger SECS the creates go one at a time, each attempt at least SECS
+ * after the one before: a project at the free tier (requests_per_sec 10)
+ * pays 10 of its store budget's 10 a second for each create. */
 export async function setup(ctx: Ctx): Promise<Record<string, unknown>> {
   const { o, http, meter } = ctx;
   const format = o.str("format", o.str("payload", "corpus") === "bytes" ? "bytes" : "json");
   if (format !== "json" && format !== "bytes") throw new Error("--format must be json|bytes");
   const ttl = o.int("ttl", 0);
   const parallel = o.int("parallel", 8);
+  const staggerMs = o.num("stagger", 0) * 1000;
+  if (!(staggerMs >= 0)) throw new Error("--stagger must be >= 0 seconds");
   const doc: Record<string, unknown> = { format: { kind: format } };
   if (ttl > 0) doc.expiry = { idle: `${ttl}s` };
   const body = JSON.stringify(doc);
   let created = 0, existing = 0, failed = 0;
   const names: string[] = [];
-  await pool(ctx.streams, parallel, async (i) => {
+  let lastPut = -Infinity;
+  await pool(ctx.streams, staggerMs > 0 ? 1 : parallel, async (i) => {
     const name = streamName(ctx.prefix, i);
     for (let attempt = 0; attempt < 6; attempt++) {
+      await sleep(lastPut + staggerMs - performance.now(), stop.signal);
+      lastPut = performance.now();
       const r = await http.call("PUT", `/v1/streams/${encName(name)}`, { body, contentType: "application/json" });
       if (r.status === 201 || r.status === 200) names.push(name);
       if (r.status === 201) return void created++;
