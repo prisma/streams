@@ -2,7 +2,8 @@
 // `credential` adds a customer credential to a project and writes its
 // secret, once, to a new file only its owner can read; the state keeps the
 // secret's peppered hash (secrets.ts), exactly as the issuer stores the
-// credentials it creates, so the issuer's exchange serves both. `canary`
+// credentials it creates, so the issuer's exchange serves both. `revoke`
+// cuts one credential, a leaked or a rogue one, for good. `canary`
 // mints a token for the canary's catalog-read credential to prove the cell
 // serves a key (the rotation drill's check, design §7.3). `export` writes
 // what the platform's Stage 1 imports when it replaces the interim issuer.
@@ -20,6 +21,7 @@ import {
   placedProjects,
   prefixesOf,
   randomCredentialId,
+  revokeCredential,
   scopesOf,
 } from "./rules";
 import { newSecret, presentedSecret, readPepperFile, secretFields } from "./secrets";
@@ -93,6 +95,29 @@ export async function credential(f: Flags, io: Io): Promise<void> {
     io.out(`credential ${id} for ${project} (${scopes}), hint ${fields.hint}`);
     io.out(`its secret is in ${out} (mode 0600) and nowhere else: hand the file over, never paste it`);
     if (why !== undefined) throw new AdminError(unpublishedMessage(state, why));
+    io.out(`bundle: ${store.bundlePath} (feed_version ${state.feed_version}); ${publishNote(store)}`);
+  });
+}
+
+/// Revoke one credential of `--project` for good (rules.ts,
+/// revokeCredential), hidden ones included: the issuer's exchange
+/// refuses its secret once its 5 s revalidation reads the state, and the
+/// cell its tokens once it holds the bundle (about 45 s after the
+/// publish). A new credential replaces it (`credential`).
+export async function revokeOne(f: Flags, io: Io): Promise<void> {
+  const store = await openStore(f);
+  const project = f.must("project");
+  const id = f.must("credential");
+  await store.exclusive(async () => {
+    const { state } = await mutate(store, (s) => {
+      revokeCredential(s, project, id);
+      journal(s, "revoke", `${project} credential=${id} grant=v${s.credentials[id].grant_version}`);
+    });
+    io.out(
+      `credential ${id} of ${project} is revoked at grant_version ${state.credentials[id].grant_version}: the ` +
+        "issuer exchanges its secret no more within 5 s, and the cell refuses its tokens 403 credential_not_active " +
+        "once it holds the bundle",
+    );
     io.out(`bundle: ${store.bundlePath} (feed_version ${state.feed_version}); ${publishNote(store)}`);
   });
 }

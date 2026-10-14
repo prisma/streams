@@ -5,7 +5,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { FakeCell } from "./fake-cell";
 import { bundleOf } from "./feeds";
 import { unversionedChanges } from "./publish";
-import { admitProject, admittedQuotas, newCredentialId, setCredentialField, setProjectField } from "./rules";
+import {
+  admitProject,
+  admittedQuotas,
+  newCredentialId,
+  revokeCredential,
+  setCredentialField,
+  setProjectField,
+} from "./rules";
 import { createHmac, generateKeyPairSync, randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -344,8 +351,13 @@ for (const kind of STORES) {
       const pepper = pepperFile(c.root);
       for (let i = 2; i <= 10; i++) expect((await make(`s${i}`, "--project", "proj_a")).code).toBe(0);
       expect((await make("s11", "--project", "proj_a")).err)
-        .toBe("cell-admin credential: project proj_a has its 10 live credentials: revoke one first");
+        .toBe("cell-admin credential: project proj_a has its 10 live credentials: revoke one first " +
+          "(cell-admin revoke --project proj_a --credential C)");
       expect(existsSync(join(c.root, "s11"))).toBe(false);
+      // The command the refusal names makes room.
+      const first = customerCredential(c.state, "proj_a");
+      expect((await run("revoke", "--state", c.state, "--project", "proj_a", "--credential", first)).code).toBe(0);
+      expect((await make("s11", "--project", "proj_a")).code).toBe(0);
       expect((await make("h", "--project", "proj_a", "--hidden")).err)
         .toBe("cell-admin credential: --hidden is for the canary's credentials only");
       expect((await make("w", "--project", "sp_canary_cell_sc1")).err)
@@ -355,6 +367,68 @@ for (const kind of STORES) {
       expect([watch.code, watch.err]).toEqual([0, ""]);
       const hidden = Object.values(readState(c.state).credentials).filter((cr) => cr.hidden);
       expect(hidden.map((cr) => [cr.display_name, cr.secret_hash === undefined])).toEqual([["catalog-read", true], ["watch", false]]);
+    });
+
+    test("revoke retires one customer credential for good at a newer grant_version, the canary's hidden ones too, never its catalog-read one", async () => {
+      const c = await initCell();
+      await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w");
+      await run("admit", "--state", c.state, "--project", "proj_b", "--workspace", "w2");
+      const [a, b] = [customerCredential(c.state, "proj_a"), customerCredential(c.state, "proj_b")];
+      const revoke = (project: string, credential: string) =>
+        run("revoke", "--state", c.state, "--project", project, "--credential", credential);
+      const before = readState(c.state);
+      let r = await revoke("proj_a", a);
+      const after = readState(c.state);
+      const [said, bundled] = r.out.split("\n");
+      expect([r.code, r.err, said]).toEqual([0, "", `credential ${a} of proj_a is revoked at grant_version 2: the ` +
+        "issuer exchanges its secret no more within 5 s, and the cell refuses its tokens 403 credential_not_active " +
+        "once it holds the bundle"]);
+      expect(bundled).toStartWith("bundle: ");
+      expect(bundled).toContain(`(feed_version ${before.feed_version + 1}); `);
+      expect(after.credentials[a]).toEqual({ ...before.credentials[a], status: "revoked", grant_version: 2 });
+      expect({ ...after.credentials, [a]: before.credentials[a] }).toEqual(before.credentials);
+      expect([after.projects, after.feed_version]).toEqual([before.projects, before.feed_version + 1]);
+      expect(after.journal.at(-1)).toMatchObject({ command: "revoke", detail: `proj_a credential=${a} grant=v2` });
+      expect((readBundle(c.state).grants.credentials as any[]).find((g) => g.credential_id === a)).toEqual({
+        credential_id: a, project_id: "proj_a", grant_version: 2, status: "revoked",
+        scopes: before.credentials[a].scopes, expires_at: null,
+      });
+      expect((await run("token", "--state", c.state, "--credential", a, "--key-file", c.key, "--out",
+        join(c.root, "a.token"))).err).toBe(`cell-admin token: credential ${a} is not active (project proj_a)`);
+      // The canary's hidden credentials, which no page shows, may be
+      // revoked (the compromise drill's step 0), except its catalog-read one.
+      const pepper = pepperFile(c.root);
+      expect((await run("credential", "--state", c.state, "--project", "sp_canary_cell_sc1", "--hidden", "--pepper-file",
+        pepper.path, "--out", join(c.root, "watch"))).code).toBe(0);
+      const canary = Object.entries(readState(c.state).credentials).filter(([, cr]) => cr.hidden);
+      const [[probe], [watch]] = [canary.find(([, cr]) => !cr.secret_hash)!, canary.find(([, cr]) => cr.secret_hash)!];
+      expect((await revoke("sp_canary_cell_sc1", watch)).code).toBe(0);
+      expect(readState(c.state).credentials[watch].status).toBe("revoked");
+      // Refusals change nothing; offboarding proj_b gives it an operator credential.
+      expect((await run("offboard", "--state", c.state, "--project", "proj_b")).code).toBe(0);
+      const op = Object.keys(readState(c.state).credentials).find((id) => id.startsWith("strcred_op_"))!;
+      const settled = readStateText(c.state);
+      const refusals: [string, string, string][] = [
+        ["proj_a", a, `credential ${a} is already revoked`],
+        ["proj_a", b, `project proj_a has no credential ${b}`],
+        ["proj_a", "strcred_none", "project proj_a has no credential strcred_none"],
+        ["proj_x", a, "project proj_x is not on this cell"],
+        ["proj_b", b, `credential ${b} is already revoked`],
+        ["proj_b", op, `credential ${op} is proj_b's operator credential, which offboarding omits once its drain ends`],
+        ["sp_canary_cell_sc1", probe, `credential ${probe} is the canary's catalog-read credential, which the ` +
+          "issuer's probes, cell-admin canary and offboarding's witness mint for: it is never revoked"],
+      ];
+      for (const [project, credential, message] of refusals) {
+        r = await revoke(project, credential);
+        expect([r.code, r.err]).toEqual([1, `cell-admin revoke: ${message}`]);
+      }
+      expect(readStateText(c.state)).toBe(settled);
+      // An omitted customer credential (its project offboarded) is refused
+      // by the rule, whatever its status.
+      const s = readState(c.state);
+      Object.assign(s.credentials[b], { status: "active", omitted: true });
+      expect(() => revokeCredential(s, "proj_b", b)).toThrow(`credential ${b} is omitted: its project was offboarded`);
+      expect((await run("revoke", "--state", c.state, "--project", "proj_a")).code).toBe(2);
     });
 
     test("allow and disallow keep the beta allow-list, a disallowed workspace's projects keep running (I8 (a)), and disallow names the reduced mode and its levers (call 16)", async () => {

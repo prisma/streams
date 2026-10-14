@@ -376,7 +376,10 @@ export function addCredential(
     (c) => c.project_id === project && c.role === "customer" && c.status === "active" && !c.omitted,
   ).length;
   if (live >= MAX_LIVE_CREDENTIALS) {
-    throw new AdminError(`project ${project} has its ${MAX_LIVE_CREDENTIALS} live credentials: revoke one first`);
+    throw new AdminError(
+      `project ${project} has its ${MAX_LIVE_CREDENTIALS} live credentials: revoke one first ` +
+        `(cell-admin revoke --project ${project} --credential C)`,
+    );
   }
   addCredentialRecord(state, project, a.scopes, a.stream_prefixes, a.credential, new Date().toISOString());
 }
@@ -429,20 +432,45 @@ export function placeCanary(state: CellState, storedDefault: number): void {
   });
 }
 
-/// The canary's catalog-read credential: hidden, `streams.catalog.read`
-/// only, without a secret, live. The issuer's and `cell-admin canary`'s
-/// probes mint tokens for it.
+/// Whether `c` is a catalog-read credential of the canary: hidden,
+/// `streams.catalog.read` only, without a secret.
+const isCanaryCatalogRead = (state: CellState, c: CredentialRecord) =>
+  c.project_id === canaryProjectId(state.cell.cell_id) &&
+  c.hidden === true &&
+  c.scopes === "streams.catalog.read" &&
+  c.secret_hash === undefined;
+
+/// The canary's catalog-read credential, live. The issuer's and
+/// `cell-admin canary`'s probes mint tokens for it.
 export function canaryProbeCredential(state: CellState): string {
-  const project = canaryProjectId(state.cell.cell_id);
   const found = Object.entries(state.credentials).find(
-    ([, c]) =>
-      c.project_id === project &&
-      c.hidden === true &&
-      c.scopes === "streams.catalog.read" &&
-      c.secret_hash === undefined &&
-      c.status === "active" &&
-      !c.omitted,
+    ([, c]) => isCanaryCatalogRead(state, c) && c.status === "active" && !c.omitted,
   );
   if (!found) throw new AdminError(`cell ${state.cell.cell_id} has no live canary catalog-read credential`);
   return found[0];
+}
+
+/// Revoke one credential of `project` for good: status revoked at a newer
+/// grant_version (cell-admin's `revoke`). Refused unless it is the
+/// project's customer credential, active and not omitted, and not the
+/// canary's catalog-read credential, which the probes mint for for the
+/// cell's life. The canary's other hidden credentials (the watch's, or
+/// one planted with a leaked writer key) may be revoked: no page shows
+/// them, so nobody else can.
+export function revokeCredential(state: CellState, project: string, id: string): void {
+  projectOf(state, project);
+  const c = state.credentials[id];
+  if (!c || c.project_id !== project) throw new AdminError(`project ${project} has no credential ${id}`);
+  if (c.role !== "customer") {
+    throw new AdminError(`credential ${id} is ${project}'s operator credential, which offboarding omits once its drain ends`);
+  }
+  if (c.omitted) throw new AdminError(`credential ${id} is omitted: its project was offboarded`);
+  if (c.status !== "active") throw new AdminError(`credential ${id} is already revoked`);
+  if (isCanaryCatalogRead(state, c)) {
+    throw new AdminError(
+      `credential ${id} is the canary's catalog-read credential, which the issuer's probes, cell-admin canary ` +
+        "and offboarding's witness mint for: it is never revoked",
+    );
+  }
+  setCredentialField(state, id, { status: "revoked" });
 }
