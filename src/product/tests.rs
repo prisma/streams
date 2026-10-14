@@ -824,6 +824,55 @@ async fn every_append_failure_renders_its_product_row() {
     }
 }
 
+/// The handler's own refusal of a sealed or sealing collection
+/// (`refuse_if_sealed`, WIRE-MATRIX §2.7: the 409 `sealed` that precedes the
+/// body's shape 400s and the §17.2 volume debit): a sealed collection refuses
+/// every append, a sealing one every append but its seal's own final record,
+/// an active one none.
+#[tokio::test]
+async fn a_sealed_or_sealing_collection_refuses_the_append_in_the_handler() {
+    let desc = |edit: fn(&mut crate::registry::PersistedDescriptor)| {
+        let mut persisted = desc_with("orders", &"11".repeat(16)).to_persisted();
+        edit(&mut persisted);
+        StreamDesc::try_from(persisted).expect("valid descriptor fixture")
+    };
+    let (active, sealed) = (desc(|_| {}), desc(|d| d.sealed = true));
+    let sealing = desc(|d| {
+        d.sealing = Some(crate::registry::SealState {
+            operation_id: "seal-op".into(),
+            intent: crate::registry::SealIntent::Empty,
+            claimed_ms: 1,
+            claim_generation: 0,
+        });
+    });
+    let refused = |message: &str| {
+        let error = serde_json::Value::from_iter([
+            ("code", serde_json::Value::from("sealed")),
+            ("message", message.into()),
+            ("retryable", false.into()),
+        ]);
+        serde_json::Value::from_iter([("status", 409.into()), ("error", error)])
+    };
+    let is_sealed = refused("collection is sealed");
+    let being_sealed = refused("collection is being sealed");
+    // The final-record rows pin the exemption; the handler passes `false`.
+    let rows = [
+        ("active", &active, false, None),
+        ("active, final record", &active, true, None),
+        ("sealed", &sealed, false, Some(&is_sealed)),
+        ("sealed, final record", &sealed, true, Some(&is_sealed)),
+        ("sealing", &sealing, false, Some(&being_sealed)),
+        ("sealing, final record", &sealing, true, None),
+    ];
+    for (label, target, is_seal_final, want) in rows {
+        let got = match refuse_if_sealed(target, is_seal_final) {
+            Some(refusal) => Some(append_refusal(refusal).await),
+            None => None,
+        };
+        assert_eq!(got.as_ref(), want, "{label}");
+    }
+}
+
 /// Generated JSON values: every scalar kind, strings that need escaping and
 /// nested arrays and objects.
 fn json_value() -> impl proptest::strategy::Strategy<Value = serde_json::Value> {
