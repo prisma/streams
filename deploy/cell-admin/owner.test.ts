@@ -21,11 +21,14 @@ import {
   publicKeyFile,
   readBundle,
   readState,
+  readStateText,
   run,
+  statePathOf,
   STORES,
   storeTexts,
   useStore,
   verifiedClaims,
+  writeStateText,
 } from "./test-rig";
 import { parsePeppers, secretFields } from "./secrets";
 import { loadSigningKeyFromPem, publicKeyRecord } from "./tokens";
@@ -404,16 +407,29 @@ for (const kind of STORES) {
         .toBe("cell-admin disallow: workspace wksp_a is not on the allow-list");
     });
 
-    test("gate opens and closes self-serve admission and sets its project count, publishing nothing", async () => {
+    test("gate opens and closes self-serve admission and sets its project count at a new generation with no entry changed, so a state restored from before it is refused", async () => {
       const c = await initCell();
       expect(readState(c.state).cell.gate).toEqual({ open: true, n_max: 50 });
-      const v = readBundle(c.state).keys.feed_version;
+      const was = readBundle(c.state);
+      const v = was.keys.feed_version;
+      const backup = readStateText(c.state);
       let r = await run("gate", "--state", c.state, "--close");
       expect([r.code, r.out, readState(c.state).cell.gate]).toEqual(
         [0, "gate: closed, n_max 50 (0 project(s) placed)", { open: false, n_max: 50 }]);
+      // A backup taken before the close, written back, is behind the
+      // bundle: refused, never a silently reopened gate.
+      const closed = readStateText(c.state);
+      writeStateText(c.state, backup);
+      r = await run("list", "--state", c.state);
+      expect([r.code, r.err]).toEqual([1, `cell-admin list: ${statePathOf(c.state)} is at feed_version ${v} but its ` +
+        `bundle is at ${v + 1}: the state was restored from a stale copy; recover the newest state before any change`]);
+      writeStateText(c.state, closed);
       r = await run("gate", "--state", c.state, "--open", "--n-max", "10");
       expect([r.code, readState(c.state).cell.gate]).toEqual([0, { open: true, n_max: 10 }]);
-      expect(readBundle(c.state).keys.feed_version).toBe(v);
+      const now = readBundle(c.state);
+      expect([now.keys.feed_version, now.policies.feed_version, now.grants.feed_version]).toEqual([v + 2, v + 2, v + 2]);
+      expect([now.keys.keys, now.policies.projects, now.grants.credentials])
+        .toEqual([was.keys.keys, was.policies.projects, was.grants.credentials]);
       for (const flags of [[], ["--open", "--close"], ["--n-max", "0"]]) {
         expect((await run("gate", "--state", c.state, ...flags)).code).toBe(2);
       }

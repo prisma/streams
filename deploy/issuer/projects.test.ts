@@ -331,13 +331,14 @@ describe("creating a project", () => {
       const [bucket, ...rest] = key.split("/");
       const state = JSON.parse(fake.text(bucket, rest.join("/"))!);
       state.cell.gate.open = false;
+      state.feed_version += 1;
       fake.put(bucket, rest.join("/"), `${JSON.stringify(state, null, 2)}\n`);
     };
     expect(await answer(await m.send("POST", PROJECTS, m.signIn("ws_a"), { displayName: "A" }))).toEqual([
       409, refusal("beta_at_capacity", "the Streams beta is at capacity; try again later"),
     ]);
     const after = cellState(cell);
-    expect([closed, after.cell.gate.open, after.feed_version]).toEqual([true, false, before.feed_version]);
+    expect([closed, after.cell.gate.open, after.feed_version]).toEqual([true, false, before.feed_version + 1]);
     expect(Object.keys(after.projects)).toEqual(Object.keys(before.projects));
     expect(managementAudits(cell).map((r) => [r.outcome, r.reason])).toEqual([
       ["refused", "beta_at_capacity: the admission gate is closed"],

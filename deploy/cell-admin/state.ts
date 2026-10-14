@@ -2,9 +2,12 @@
 // a tool that loses or rolls back its state can republish a revoked
 // credential). One JSON document per cell, kept by a StateStore (store.ts)
 // and replaced only by compare-and-swap. Versions
-// only move forward: every write bumps `feed_version`, a changed project
-// bumps its `project_policy_version`, a changed credential its
-// `grant_version`. Nothing is ever deleted from the state: an offboarded
+// only move forward: every change to a published field, and every gate
+// change, bumps `feed_version`, a changed project its
+// `project_policy_version`, a changed credential its `grant_version`.
+// The journal, the offboarding job's bookkeeping and re-hashed secrets
+// move no version, and revert with a restored copy taken before them.
+// Nothing is ever deleted from the state: an offboarded
 // project stays as a tombstone and its credentials as omitted, so no id
 // is ever reused (finding M4). The state holds no private key and no token.
 import { closeSync, fchmodSync, fsyncSync, openSync, renameSync, rmSync, writeSync } from "node:fs";

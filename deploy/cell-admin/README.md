@@ -164,7 +164,7 @@ A compromised key, in this order:
 | `credential --project P --pepper-file F --out FILE` | Adds a customer credential with a secret (at most 10 live per project): the secret, `prisma_streams_<credential id>.<32 random bytes, base64url>`, goes once to a new file of mode 0600 (written beside it before the change commits, so a directory it cannot write refuses first, and moved into place once the commit lands, even when the bundle then fails to publish; when the store fails the commit itself, a timeout or a 5xx that may have landed, it stays where it was written and the refusal names it and the credential: if `list --json` holds the credential, move the file to FILE and run `bundle`, else delete it and run again); the state keeps only HMAC-SHA-256 of it under the newest pepper (`v<N>:<base64>[,v<N-1>:<base64>]`, read from a mode-0600 file), the pepper's version and the secret's last 6 characters, exactly as the issuer stores the credentials it makes. Also `--scopes`, `--prefix` and `--name`; `--hidden` only for the canary's credentials (the watch's) |
 | `allow --workspace W [--max-projects N] [--requests-per-sec R] [--note TEXT]` | Puts a Prisma workspace on the beta's allow-list (`allowlist.json` beside a directory state; `beta/allowlist.json` in the control bucket, shared by its cells), or replaces its limits: `--max-projects` over the cell's workspace cap (`init --workspace-cap`), `--requests-per-sec` (at most the ceiling) over the free-tier rate. The issuer creates projects only for listed workspaces |
 | `disallow --workspace W` | Takes a workspace off the allow-list: within 5 s it gets no new project, credential or secret, and its projects keep running until you suspend them (the owner's question I8, answer (a)). While it holds a project its users keep sign-in in the issuer's reduced mode: they see its projects and credentials, revoke a credential and delete a project (the owner's call 16 of 2026-10-13). The output names the levers against a hostile session there: `suspend` stops a delete but not a revoke (a revocation is for good); rotating `STREAMS_ISSUER_SESSION_KEY` ends every session; `credential` (or `allow`) replaces a credential such a session revoked |
-| `gate --open \| --close \| --n-max N` | Opens or closes self-serve admission, or sets how many customer projects the issuer places (default open, 50: the static u = 0.5 rule). It publishes nothing |
+| `gate --open \| --close \| --n-max N` | Opens or closes self-serve admission, or sets how many customer projects the issuer places (default open, 50: the static u = 0.5 rule). It publishes a new generation with no entry changed, as `bundle` does, so a state restored from a copy taken before it is refused |
 | `canary --key-file K --cell-url URL [--wait-secs S]` | Mints a 5-minute token for the canary's catalog-read credential under K (a key of the cell) and asks the cell `GET /v1/streams?limit=1` until it answers 200, for at most S seconds (default 120): the proof that the cell serves that key, the rotation drill's step 2. Each probe re-reads the state and mints at the credential's current `grant_version`, which offboarding a suspended project moves. Exit 3 when it does not yet |
 | `export --out FILE` | Writes the Stage 1 import set: every active customer project (suspended included; offboarding ones and the canary not) with its versions and quotas, and its customer credentials with their grant versions and, where they have a secret, its hash and pepper version. Mode 0600: keep it like the state |
 | `keys add --public-key FILE [--retire-others]` | Publishes a new key's public half beside the cell's keys: the rotation drill's overlap generation. With `--retire-others`, alone: the compromise drill, after which every token under another kid answers 401 |
@@ -203,9 +203,15 @@ The state directory holds `cell-state.json` (the source of truth),
 up after every change. The state's journal keeps its newest 100 entries;
 older ones are written, before the state that drops them, to one object
 under `audit/YYYY/MM/DD/` (in the state directory, or in the control
-bucket for an s3 state). Versions only move forward: a state restored from
-an older copy is refused, because republishing from it could revive a
-revoked credential at a version the cell already saw. Publishing means
+bucket for an s3 state). Versions only move forward: every change to a
+field the cell reads, and every `gate` change, moves `feed_version`, and a
+state behind its bundle (restored from an older copy) is refused, by every
+command and by the issuer's revalidation, because republishing from it
+could revive a revoked credential at a version the cell already saw. The
+journal, the bookkeeping of the issuer's offboarding job (its attempts and
+next try) and the issuer's re-hashed secrets move no version: a copy taken
+before them is accepted and reverts them, so drop an older pepper only
+after backing up the state written after the re-hash. Publishing means
 uploading the bundle to `FEEDS_S3_KEY`, nothing more: the cell's wrapper
 (`deploy/app-server/feeds.ts`) polls it every 15 s with `If-None-Match`
 and rewrites the three feed files atomically when it changed, and the

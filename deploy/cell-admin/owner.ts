@@ -6,7 +6,16 @@ import type { Flags } from "./args";
 import type { Io } from "./commands";
 import { AdminError, notYet } from "./errors";
 import { CAS_ATTEMPTS, loadChecked, mutate } from "./publish";
-import { CANARY_WORKSPACE, checkId, placedProjects, projectOf, quotaValues, refuseCanary, setProjectField } from "./rules";
+import {
+  bumpFeed,
+  CANARY_WORKSPACE,
+  checkId,
+  placedProjects,
+  projectOf,
+  quotaValues,
+  refuseCanary,
+  setProjectField,
+} from "./rules";
 import { type CellState, journal } from "./state";
 import { type AllowEntry, type Allowlist, Conflict, type StateStore } from "./store";
 import { openStore, publishNote } from "./stores";
@@ -157,8 +166,11 @@ export async function disallow(f: Flags, io: Io): Promise<void> {
 }
 
 /// Open or close self-serve admission, or set how many customer projects
-/// it places (`--n-max`). The gate is the issuer's, not the cell's: it
-/// publishes nothing.
+/// it places (`--n-max`). The gate is the issuer's, not the cell's, yet
+/// its change publishes a new generation with no entry changed (the cell
+/// takes one, as after `bundle`): a state restored from before it is then
+/// behind the bundle, so every command and the issuer's revalidation
+/// refuse it instead of silently reopening the gate.
 export async function gate(f: Flags, io: Io): Promise<void> {
   const store = await openStore(f);
   const [open, close] = [f.has("open"), f.has("close")];
@@ -168,6 +180,7 @@ export async function gate(f: Flags, io: Io): Promise<void> {
   await store.exclusive(async () => {
     const { state } = await mutate(store, (s) => {
       s.cell.gate = { open: open ? true : close ? false : s.cell.gate.open, n_max: n_max ?? s.cell.gate.n_max };
+      bumpFeed(s);
       journal(s, "gate", `${s.cell.gate.open ? "open" : "closed"} n_max=${s.cell.gate.n_max}`);
     });
     const g = state.cell.gate;
