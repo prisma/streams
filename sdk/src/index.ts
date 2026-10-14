@@ -1198,6 +1198,8 @@ export class StreamsClient {
     name: string,
     options: CreateStreamOptions,
   ): Promise<Stream<T>> {
+    // The handle first: it refuses a key that cannot be sent.
+    const stream = new Stream<T>(this.ctx, name, options.encryptionKey);
     const doc: Record<string, unknown> = { format: options.format };
     if (options.expiry) doc["expiry"] = options.expiry;
     if (options.watches) doc["watches"] = options.watches;
@@ -1205,13 +1207,10 @@ export class StreamsClient {
       this.ctx,
       "PUT",
       `/v1/streams/${encName(name)}`,
-      {
-        "content-type": "application/json",
-        "prisma-encryption-key": options.encryptionKey,
-      },
+      { "content-type": "application/json", ...stream._kh() },
       JSON.stringify(doc),
     );
-    return new Stream<T>(this.ctx, name, options.encryptionKey);
+    return stream;
   }
 
   async *listStreams(options?: {
@@ -1265,6 +1264,28 @@ export class StreamsClient {
 // ---------------------------------------------------------------------
 // Stream handle
 
+/** The characters a stream key can hold: printable ASCII without spaces.
+ * Every key the server accepts is base64 text (`StreamKey::from_b64`). */
+const KEY_TEXT = /^[\x21-\x7e]*$/;
+
+/** The key without the whitespace around it (fetch trims a header value's
+ * ends too), or a refusal that does not echo it, before any request. Sent,
+ * a control character or a character above U+00FF makes fetch throw a
+ * `TypeError` (one that quotes the whole key for a line break, a carriage
+ * return or a NUL), which `req()` would take for a transport failure and
+ * replay; a tab, a space or another character beyond ASCII would reach the
+ * server, which refuses it. */
+function presentedKey(key: string): string {
+  const presented = typeof key === "string" ? key.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "") : undefined;
+  if (presented === undefined || !KEY_TEXT.test(presented)) {
+    throw new StreamsError(0, "invalid_encryption_key_format",
+      "the encryption key is not printable ASCII without spaces (a line break, a control character, a " +
+        "space or a character beyond ASCII is inside it, or it is not a string); copy it again from " +
+        "where you keep it", false);
+  }
+  return presented;
+}
+
 export class Stream<T = unknown> {
   private ctx: Ctx;
   readonly name: string;
@@ -1272,10 +1293,12 @@ export class Stream<T = unknown> {
   private defsCache?: Promise<WatchDefinition[]>;
   private epochCache?: Promise<string>;
 
+  /** Refuses a key that is not printable ASCII without spaces once the
+   * whitespace around it is trimmed (`invalid_encryption_key_format`). */
   constructor(ctx: Ctx, name: string, key: string) {
     this.ctx = ctx;
     this.name = name;
-    this.key = key;
+    this.key = presentedKey(key);
   }
 
   private path(rest = ""): string {

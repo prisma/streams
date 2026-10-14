@@ -123,6 +123,20 @@ WebCrypto, as 43 characters of unpadded base64url) and keep it in your
 secret store. The service never stores it: if you lose it, the stream's
 data cannot be read by anyone.
 
+`client.stream()` and `client.createStream()` trim the whitespace around a
+key, as `fetch` trims a header value, and refuse a key that then holds
+anything but printable ASCII without spaces (a line break from a wrapped
+paste, a control character, a space, a character beyond ASCII), or that is
+not a string: `stream()` throws, and `createStream()` rejects before any
+request, with a `StreamsError` (`status` 0, `code`
+`invalid_encryption_key_format`, `retryable: false`) whose message and
+fields do not show the key. The SDK checks only the key so: a routing key
+and a producer id are sent as given, and one holding a line break, another
+control character but a tab, or a character above U+00FF fails inside
+`fetch` before anything is sent, which the SDK reports as a transport
+failure (a plain append's as `AppendOutcomeUnknownError`, a producer
+append's after its replays).
+
 ## Errors and retries
 
 In plain words:

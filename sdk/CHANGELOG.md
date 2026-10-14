@@ -49,6 +49,17 @@ not carried over).
   sequence: send the same value through it before any other value on that
   routing key, which the server answers `duplicate: true`. A token
   provider's failure is never classified as an append's unknown outcome.
+- `client.stream()` throws, and `client.createStream()` rejects before any
+  request, with `StreamsError` `invalid_encryption_key_format` (`status` 0,
+  `retryable: false`, the key not shown) for a key that, the whitespace
+  around it trimmed, holds anything but printable ASCII without spaces, or
+  that is not a string. Such a key was sent: `fetch` refused a control
+  character or a character above U+00FF with a `TypeError`, which quoted
+  the whole key for a line break, and the SDK replayed it as a transport
+  failure (a plain append rejected with `AppendOutcomeUnknownError`
+  although nothing was sent; a subscription retried for ever); the server
+  refused any other such key, except on a route that reads no key, such as
+  `metadata()`.
 
 ### Added
 
