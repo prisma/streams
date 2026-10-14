@@ -285,10 +285,13 @@ class PublishSdk(unittest.TestCase):
     def test_a_token_is_refused_whatever_else_the_environment_holds(self):
         # `env` lists the token first, then 500 KB more: a scan that stops
         # reading at its first match (grep -q) makes that writer die of
-        # SIGPIPE, which under pipefail must not read as "no token".
+        # SIGPIPE, which under pipefail must not read as "no token". The
+        # bulk is eight variables of 64,000 B: Linux's execve refuses any
+        # one environment string over 128 KiB (MAX_ARG_STRLEN, E2BIG).
         self.executable(self.bin / 'env', '#!/bin/bash\nprintf "npm_config__authToken=npm_secret\\n"\nexec /usr/bin/env\n')
         self.mint()
-        result = self.publish(npm_config__authToken='npm_secret', PUBLISH_SDK_TEST_BULK='x' * 500_000)
+        bulk = {f'PUBLISH_SDK_TEST_BULK_{n}': 'x' * 64_000 for n in range(8)}
+        result = self.publish(npm_config__authToken='npm_secret', **bulk)
         self.assert_refused(result, 'an npm_config_*_auth* variable is set',
                             [f'npm view @prisma/streams@{VERSION} version{REGISTRY}'])
         self.assertNotIn('npm_secret', result.stdout + result.stderr)
