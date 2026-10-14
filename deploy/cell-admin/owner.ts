@@ -120,8 +120,11 @@ export async function allow(f: Flags, io: Io): Promise<void> {
 }
 
 /// Take a workspace off the allow-list. Under the owner's question I8's
-/// recommended answer (a), it creates no new project and its projects keep
-/// running until the owner suspends them.
+/// answer (a), it creates no new project and its projects keep running
+/// until the owner suspends them; under call 16 (2026-10-13, the reduced
+/// mode), it gets no new credential or secret either, and while it holds
+/// a project its users keep sign-in, reads, revoke and delete at the
+/// issuer. The output names the levers against a hostile session there.
 export async function disallow(f: Flags, io: Io): Promise<void> {
   const store = await openStore(f);
   const workspace = f.must("workspace");
@@ -136,9 +139,20 @@ export async function disallow(f: Flags, io: Io): Promise<void> {
     .filter(([, p]) => p.workspace_id === workspace)
     .map(([id]) => id);
   io.out(`allow-list v${doc.version}: ${workspace} removed`);
+  const none = `${workspace} gets no new project, credential or secret within 5 s`;
+  if (running.length === 0) {
+    io.out(`${none}; it holds no project, so its users sign in no more`);
+    return;
+  }
+  io.out(`${none}; its ${running.length} project(s) keep running: ${running.join(", ")}`);
   io.out(
-    `${workspace} creates no new project; its ${running.length} project(s) keep running` +
-      `${running.length ? `: ${running.join(", ")}` : ""} (suspend them with cell-admin suspend)`,
+    "while it holds a project its users keep sign-in in the issuer's reduced mode: they see its projects and " +
+      "credentials, revoke a credential and delete a project",
+  );
+  io.out(
+    "levers against a hostile session: cell-admin suspend --project P stops a delete, not a revoke; rotating " +
+      "STREAMS_ISSUER_SESSION_KEY ends every session; cell-admin credential --project P (or allow) replaces a " +
+      "credential it revoked",
   );
 }
 

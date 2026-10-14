@@ -443,8 +443,10 @@ re-record at landing covers it too.
   rotation read the allow-list (403 `workspace_not_allowed` off it);
   sign-in admits a workspace off the list while the issuer's state copy
   shows it holding a project (`unavailable` while that copy is stale);
-  `GET /auth/session` says `allowListed`, and the page shows the reduced
-  mode.
+  `GET /auth/session` says `allowListed`, the page shows the reduced
+  mode, and `cell-admin disallow` names the levers against a hostile
+  session (suspend for a delete, the session key, a replacement
+  credential).
 
 ### Decided 2026-10-14, to be built
 

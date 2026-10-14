@@ -307,7 +307,7 @@ for (const kind of STORES) {
       expect(hidden.map((cr) => [cr.display_name, cr.secret_hash === undefined])).toEqual([["catalog-read", true], ["watch", false]]);
     });
 
-    test("allow and disallow keep the beta allow-list, and a disallowed workspace's projects keep running (I8 (a))", async () => {
+    test("allow and disallow keep the beta allow-list, a disallowed workspace's projects keep running (I8 (a)), and disallow names the reduced mode and its levers (call 16)", async () => {
       const c = await initCell();
       let r = await run("allow", "--state", c.state, "--workspace", "wksp_b", "--note", "design partner");
       expect([r.code, r.err]).toEqual([0, ""]);
@@ -337,9 +337,22 @@ for (const kind of STORES) {
       r = await run("disallow", "--state", c.state, "--workspace", "wksp_a");
       expect([r.code, allowlistOf(c.state).entries.map((e: any) => e.workspace_id), allowlistOf(c.state).version])
         .toEqual([0, ["wksp_b"], 4]);
-      expect(r.out).toContain("wksp_a creates no new project; its 1 project(s) keep running: proj_a (suspend them " +
-        "with cell-admin suspend)");
+      expect(r.out).toBe([
+        "allow-list v4: wksp_a removed",
+        "wksp_a gets no new project, credential or secret within 5 s; its 1 project(s) keep running: proj_a",
+        "while it holds a project its users keep sign-in in the issuer's reduced mode: they see its projects and " +
+          "credentials, revoke a credential and delete a project",
+        "levers against a hostile session: cell-admin suspend --project P stops a delete, not a revoke; rotating " +
+          "STREAMS_ISSUER_SESSION_KEY ends every session; cell-admin credential --project P (or allow) replaces a " +
+          "credential it revoked",
+      ].join("\n"));
       expect(policyOf(c.state, "proj_a").status).toBe("active");
+      // A workspace that holds no project signs in no more.
+      r = await run("disallow", "--state", c.state, "--workspace", "wksp_b");
+      expect([r.code, r.out]).toEqual([0, [
+        "allow-list v5: wksp_b removed",
+        "wksp_b gets no new project, credential or secret within 5 s; it holds no project, so its users sign in no more",
+      ].join("\n")]);
       expect((await run("disallow", "--state", c.state, "--workspace", "wksp_a")).err)
         .toBe("cell-admin disallow: workspace wksp_a is not on the allow-list");
     });
