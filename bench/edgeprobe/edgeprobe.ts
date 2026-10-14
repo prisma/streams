@@ -617,10 +617,11 @@ export function report(recs: Rec[], wall?: number): string[] {
   }
   // The deadline: what matters is how long the origin held a long-poll's
   // first byte, not the wait asked. The binary caps every long-poll's wait
-  // at 25 s (src/application/read_request.rs wait_tail; MAX_LONG_POLL,
-  // src/http.rs; consumer pulls likewise), so it answers a longer wait
-  // with 204 at its cap: the edge's first-byte deadline is then out of a
-  // long-poll's reach, whatever the wait asked.
+  // at 25 s in all, a split's refresh included (src/application/
+  // read_request.rs wait_tail; MAX_LONG_POLL, src/http.rs; consumer pulls
+  // likewise), so it answers a longer wait with 204 at its cap: no
+  // long-poll waits more than 25 s in total, and the edge's first-byte
+  // deadline is out of its reach, whatever the wait asked.
   const s1 = (ms: number) => Math.round(ms / 100) / 10;
   for (const [v, rs] of Object.entries(Object.groupBy(of("deadline"), (r) => `${r.vantage}`))) {
     const waits = [...new Set(rs!.map((r) => r.wait_s as number))].sort((a, b) => a - b);

@@ -1427,6 +1427,28 @@
     ]
   },
   {
+    "name": "a_product_long_poll_over_the_cap_refreshed_across_a_split_waits_25_s",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "12ea9b9db80e1dd2cdf39da63666cbc5fb412b5af01fce2745f50c21c8e8a4cf",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_application.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_product_long_poll_refreshed_across_a_split_waits_one_budget",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "5294008322fa0a3c5f09e8f5fe67e642531f1a58c3aaecf0d6bbe2e19f56980c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_application.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_product_pager_at_the_byte_floor_resumes_inside_pages",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1590,6 +1612,17 @@
     "scenarios": [
       "SEL-009"
     ]
+  },
+  {
+    "name": "a_raw_long_poll_refreshed_across_a_split_waits_one_budget",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ec3477f5b19501951b34c39defc8e433731bac207ec7974915086b73820ed0e4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_application.rs",
+    "scenarios": []
   },
   {
     "name": "a_raw_put_behind_a_stale_tombstone_never_revives_a_deleted_source",

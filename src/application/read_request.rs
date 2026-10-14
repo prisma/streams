@@ -393,7 +393,7 @@ impl ReadService {
             }
             let wait_started = std::time::Instant::now();
             let mut waited = false;
-            if let ReadMode::LongPoll(wait) = command.mode
+            if let ReadMode::LongPoll(wait) = &mut command.mode
                 && last
                 && start >= end
                 && !closed
@@ -565,11 +565,14 @@ const WOKEN_PAGE_FRAMING: u64 = 4096;
 /// that ends with records to read takes its page's read reservation again
 /// first (`resumed`), at most what was appended since it saw the tail at
 /// most `start` (`parked_at`, the payload bytes before the tail then).
+/// It leaves in `wait` what its deadline had left, so a read refreshed
+/// across a split waits only that on the successor: no long-poll waits
+/// more than 25 s in all (the owner's round-3 call 11 of 2026-10-13).
 async fn wait_tail(
     handle: &StreamHandle,
     visibility: Deliver,
     start: u64,
-    wait: Duration,
+    wait: &mut Duration,
 ) -> (u64, bool, u64) {
     wait_tail_measuring(handle, visibility, start, wait, true).await
 }
@@ -580,26 +583,27 @@ async fn wait_tail(
 /// fork's page is read from the tail once its fork chain is resolved,
 /// after awaits on its ancestors' descriptors (`read_stitched`), so what
 /// was appended while it waited cannot bound it.
-async fn wait_fork_tail(handle: &StreamHandle, start: u64, wait: Duration) -> (u64, bool, u64) {
-    wait_tail_measuring(handle, Deliver::Durable, start, wait, false).await
+async fn wait_fork_tail(handle: &StreamHandle, start: u64, mut wait: Duration) -> (u64, bool, u64) {
+    wait_tail_measuring(handle, Deliver::Durable, start, &mut wait, false).await
 }
 
-/// The parked wait of both: a `measured` one records `parked_at`, so its
-/// take is at most what was appended while it waited; any other never
-/// does, so `appended_since` measures nothing and the take is the whole
-/// page budget.
+/// The parked wait of both, at most 25 s: a `measured` one records
+/// `parked_at`, so its take is at most what was appended while it waited;
+/// any other never does, so `appended_since` measures nothing and the take
+/// is the whole page budget. It ends leaving in `wait` what its deadline
+/// had left.
 async fn wait_tail_measuring(
     handle: &StreamHandle,
     visibility: Deliver,
     start: u64,
-    wait: Duration,
+    wait: &mut Duration,
     measured: bool,
 ) -> (u64, bool, u64) {
-    let deadline = tokio::time::Instant::now() + wait.min(Duration::from_secs(25));
+    let deadline = tokio::time::Instant::now() + (*wait).min(Duration::from_secs(25));
     let _parked = crate::admission::park::park();
     let mut parked_at = None;
     let appended = |parked_at| move || appended_since(handle, visibility, start, parked_at);
-    loop {
+    let tail = loop {
         let durable = handle.notify.notified();
         let applied = handle.applied_notify.notified();
         // Read before the tail is checked, so a tail found at most `start`
@@ -607,15 +611,17 @@ async fn wait_tail_measuring(
         let before = measured.then(|| tail_payload(handle, visibility)).flatten();
         let state = tail_state(handle, visibility);
         if state.0 > start || state.1 {
-            return resumed(state, start, deadline, appended(parked_at)).await;
+            break resumed(state, start, deadline, appended(parked_at)).await;
         }
         parked_at = parked_at.or(before.map(|(_, payload)| payload));
         if visibility == Deliver::Applied {
-            tokio::select! {_=durable=>{},_=applied=>{},_=tokio::time::sleep_until(deadline)=>return resumed(tail_state(handle,visibility),start,deadline,appended(parked_at)).await}
+            tokio::select! {_=durable=>{},_=applied=>{},_=tokio::time::sleep_until(deadline)=>break resumed(tail_state(handle,visibility),start,deadline,appended(parked_at)).await}
         } else {
-            tokio::select! {_=durable=>{},_=tokio::time::sleep_until(deadline)=>return resumed(tail_state(handle,visibility),start,deadline,appended(parked_at)).await}
+            tokio::select! {_=durable=>{},_=tokio::time::sleep_until(deadline)=>break resumed(tail_state(handle,visibility),start,deadline,appended(parked_at)).await}
         }
-    }
+    };
+    *wait = deadline.saturating_duration_since(tokio::time::Instant::now());
+    tail
 }
 
 /// The tail a wait at `visibility` sees and the payload bytes before it

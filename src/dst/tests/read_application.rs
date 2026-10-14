@@ -1,13 +1,16 @@
 //! R06 application positions and protocol adapters use the same consumed range.
 use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig, http_rig_build};
-use super::fixture_requests::{PRISMA_KEY, preq};
+use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::{mem, skey};
 use crate::application::read::{
     ReadCommand, ReadFailure, ReadMode, ReadPosition, ReadStart, ScanStart,
 };
 use crate::application::read_remote::{InternalTarget, remote_read_page};
-use std::time::Duration;
+use crate::application::request_work::{Ticket, WorkError};
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 fn command(desc: &crate::registry::StreamDesc) -> ReadCommand {
     ReadCommand {
@@ -855,4 +858,143 @@ async fn a_keyed_read_follows_the_lineage_when_the_clocks_disagree() {
         .collect();
     assert_eq!(snapshot, [0, 1, 2], "a scan snapshot walks the lineage too");
     engine_shutdown(&state).await;
+}
+
+/// The read service's topology, holding each read that asks it to help a
+/// transition until the test drops `go`: a long-poll woken by a split asks
+/// just before its refresh reads the registry (round-3 call 11's race).
+struct HeldRefresh {
+    topology: crate::application::topology::TopologyService,
+    arrived: tokio::sync::Notify,
+    go: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl crate::application::read::TopologyResume for HeldRefresh {
+    fn schedule(&self, desc: &crate::registry::StreamDesc) -> Result<Ticket, WorkError> {
+        self.arrived.notify_one();
+        let go = self.go.lock().unwrap();
+        tokio::task::block_in_place(|| go.recv_timeout(Duration::from_secs(10))).unwrap_or(());
+        self.topology.schedule(desc)
+    }
+}
+
+const KEY: (&str, &str) = ("prisma-encryption-key", PRISMA_KEY);
+
+/// A long-poll's surface: the raw route reads the default key from an
+/// offset, the product route key `ga` from a cursor (the SDK's subscribe).
+#[derive(Clone, Copy, PartialEq)]
+enum Surface {
+    Raw,
+    Product,
+}
+
+impl Surface {
+    /// One record appended to the key this surface reads.
+    async fn append(self, addr: SocketAddr, name: &str) {
+        let key = if self == Self::Raw { "" } else { "ga" };
+        let headers = [KEY, ("prisma-routing-key", key)];
+        let path = format!("/v1/streams/{name}/records");
+        let appended = preq(addr, "POST", &path, &headers, br#"{"n":1}"#);
+        assert_eq!(appended.await.0, 200);
+    }
+
+    /// Its read of `name` at `query`: status, next cursor, records served.
+    async fn read(self, addr: SocketAddr, name: &str, query: &str) -> (u16, String, usize) {
+        let (status, headers, body) = if self == Self::Raw {
+            let path = format!("/v1/stream/{name}{query}");
+            hreq(addr, "GET", &path, &[], b"").await
+        } else {
+            let path = format!("/v1/streams/{name}/records{query}");
+            preq(addr, "GET", &path, &[KEY], b"").await
+        };
+        let next = headers.get("stream-next-offset");
+        let next = next.or_else(|| headers.get("prisma-next-cursor")).cloned();
+        let served = serde_json::from_slice::<Vec<serde_json::Value>>(&body).map_or(0, |r| r.len());
+        (status, next.unwrap_or_default(), served)
+    }
+
+    /// The query of a read from `cursor`, a `wait` s long-poll when given.
+    fn at(self, cursor: &str, wait: Option<u64>) -> String {
+        match (self, wait) {
+            (Self::Raw, None) => format!("?offset={cursor}"),
+            (Self::Raw, Some(s)) => format!("?offset={cursor}&live=long-poll&timeout={s}s"),
+            (Self::Product, None) => format!("?routingKey=ga&cursor={cursor}"),
+            (Self::Product, Some(s)) => {
+                format!(":long-poll?routingKey=ga&cursor={cursor}&waitMs={s}000")
+            }
+        }
+    }
+}
+
+/// A long-poll woken by its stream's split and refreshed onto the published
+/// child waits only what its first wait left (the owner's round-3 call 11
+/// of 2026-10-13): its two waits take its one budget, `wait` s capped at
+/// 25 s, where the child's wait used to take a whole second one.
+async fn a_refreshed_long_poll_waits_one_budget(surface: Surface, name: &str, wait: u64) {
+    let _serial = super::fixture_failpoints::gap_lock().lock().await;
+    let (state, addr) = http_rig(mem()).await;
+    let (go, gate) = std::sync::mpsc::channel::<()>();
+    let held = Arc::new(HeldRefresh {
+        topology: state.topology_service(),
+        arrived: tokio::sync::Notify::new(),
+        go: Mutex::new(gate),
+    });
+    let reads = crate::application::read::ReadService::new(
+        state.registry.clone(),
+        state.shards.clone(),
+        state.peer.clone(),
+        state.ownership.clone(),
+        state.keys.clone(),
+        held.clone(),
+    );
+    let installed = state.reads.set(Arc::new(reads));
+    assert!(installed.is_ok(), "no read before the hold");
+    let json = [("content-type", "application/json")];
+    let path = format!("/v1/stream/{name}");
+    let created = hreq(addr, "PUT", &path, &json, b"");
+    assert!(matches!(created.await.0, 200 | 201));
+    let (_, tail, _) = surface.read(addr, name, &surface.at("now", None)).await;
+    let budget = Duration::from_secs(wait.min(25));
+    let polled = surface.at(&tail, Some(wait));
+    let sent = Instant::now();
+    let poll = async { (surface.read(addr, name, &polled).await, Instant::now()) };
+    let split = async {
+        tokio::time::sleep(budget / 2).await;
+        let sref = state.deployment.raw_adapter_sref(name);
+        assert!(crate::scaler3::execute_split(&state, &sref, 0, 1 << 63).await);
+        let woken = tokio::time::timeout(Duration::from_secs(5), held.arrived.notified());
+        woken.await.expect("the seal woke the poll to refresh");
+        let (first, released) = (sent.elapsed(), Instant::now());
+        drop(go);
+        (first, released)
+    };
+    let (((status, next, served), answered), (first, released)) =
+        futures_util::future::join(poll, split).await;
+    let second = answered - released;
+    assert_eq!((status, served), (204, 0), "the child holds nothing yet");
+    assert!(
+        first + second >= budget && first + second < budget + Duration::from_millis(750),
+        "a long-poll refreshed onto its child waits what its first wait left of its \
+         {budget:?}: it waited {first:?} on the parent and {second:?} on the child"
+    );
+    surface.append(addr, name).await;
+    let (_, _, served) = surface.read(addr, name, &surface.at(&next, None)).await;
+    assert_eq!(served, 1, "its cursor starts at the child's first record");
+    engine_shutdown(&state).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_raw_long_poll_refreshed_across_a_split_waits_one_budget() {
+    a_refreshed_long_poll_waits_one_budget(Surface::Raw, "deadline-raw", 2).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_product_long_poll_refreshed_across_a_split_waits_one_budget() {
+    a_refreshed_long_poll_waits_one_budget(Surface::Product, "deadline-product", 2).await;
+}
+
+/// `waitMs` is unclamped: a 60 s long-poll's two waits take the 25 s cap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_product_long_poll_over_the_cap_refreshed_across_a_split_waits_25_s() {
+    a_refreshed_long_poll_waits_one_budget(Surface::Product, "deadline-cap", 60).await;
 }

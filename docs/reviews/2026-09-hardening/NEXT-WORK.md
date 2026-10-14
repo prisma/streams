@@ -404,7 +404,12 @@ waits through `wait_fork_tail` (`src/application/read_request.rs`) and
 takes its whole `min(maxBytes, 8 MiB)` again, `execute_fork_read`'s
 exception row restated with the gate's values; pinned by a red fork leg
 and its companion in `read_memory_wakes`; #113 is amended; TLA-018 is
-re-recorded at landing.
+re-recorded at landing. Call 11 is built: `wait_tail` leaves in the
+read's mode what its deadline had left, so a long-poll its split wakes
+and refreshes onto the published child waits there only that, 25 s at
+most in all, on the raw and product surfaces; pinned by a red leg per
+surface in `read_application`; #NEW-r4-rust-2 records it; the TLA-018
+re-record at landing covers it too.
 
 - Call 7, #148: the SDK text-and-test commit for the three-branch
   recovery (fence, seal, anything else; a `421` through the new
@@ -417,10 +422,6 @@ re-recorded at landing.
   the fresh gap a FACT.
 - Call 10, the restart window: an SDK probe (a read, a plain append, a
   producer append; any SDK error fails) beside the 10 s bar.
-- Call 11, the 60 s deadline: the probe item dropped; a long-poll
-  refreshed across a split keeps its first wait's deadline (25 s at most
-  in all) on the SDK and raw surfaces, with a red DST, an edge record and
-  a TLA-018 re-record.
 - Call 13: the OPS-RELEASE section 7 rule (Layer B first from a clean RC
   checkout) and CI running bench/k2cost's unit and Bun tests.
 - Call 14: CI's Composer good boot in the sdk-package job, the issuer's
