@@ -19,12 +19,16 @@
 //           creates of new names, reads of names that never existed, and
 //           a usage read of a project not its own (a refused request).
 //   leg h11t      >= --pairs timed pairs on the anonymous capability path
-//                 (GET …/watches/w/keys/<16 hex>?cap=<B>.x): a name a target
-//                 project used in the last few seconds against a name that
-//                 never existed, in random order, at most --rate pairs a
-//                 second with no catch-up after a stall. Status and code
-//                 must be identical; the time distributions are compared
-//                 by a two-sample KS test (shared_verdict.py recomputes it).
+//                 (GET …/watches/w/keys/<16 hex>?cap=<B>.x): a quiet name
+//                 of a --target project (created by its setup and touched
+//                 by nothing since, so past the cell's 5 s descriptor TTL)
+//                 against a name that never existed, in random order, at
+//                 most --rate pairs a second with no catch-up after a
+//                 stall. The quiet names are the ones the target's setup
+//                 ledgers record as created; none fails the leg. Status
+//                 and code must be identical; the time distributions are
+//                 compared by a two-sample KS test (shared_verdict.py
+//                 recomputes it).
 //   leg probes    >= --pairs cross-project probes, each a first contact:
 //                 every (prober A, target name) once, A from a class with
 //                 no streams, the name one some B of the --to classes holds.
@@ -35,7 +39,9 @@
 //                 (201) and deletes it; A never reads that name again, so
 //                 no later probe meets a name A itself created.
 
+import { readFileSync } from "node:fs";
 import { connect as netConnect, type Socket } from "node:net";
+import { join } from "node:path";
 import { connect as tlsConnect } from "node:tls";
 import { Http, Meter, Rng, type Resp, encName, errCode, round3, sleep, streamName, utf8 } from "./common.ts";
 import { countOracle } from "./oracle.ts";
@@ -322,11 +328,41 @@ const classProjects = (env: RunEnv, cls: string): Project[] => {
 };
 const arg = (leg: LegSpec, k: string, d: string): string => String(leg.args?.[k] ?? d);
 
+/** The names a project's setup phases recorded as held (setup's `names`),
+ * from the phase ledgers tenants.ts writes as each phase ends: none for a
+ * setup that has not ended, never ran, or created nothing. */
+function setupNames(env: RunEnv, p: Project): string[] {
+  return p.cls.phases.flatMap((ph, i) => {
+    if (ph.mode !== "setup") return [];
+    try {
+      const ledger = JSON.parse(readFileSync(join(env.out, "projects", p.id, `phase-${i}.ledger.json`), "utf8"));
+      return (ledger.setup?.names ?? []) as string[];
+    } catch {
+      return [];
+    }
+  });
+}
+
 export async function h11t(env: RunEnv, leg: LegSpec, signal: AbortSignal): Promise<Record<string, unknown>> {
   const pairs = Number(arg(leg, "pairs", "2000"));
-  const rate = Number(arg(leg, "rate", "20"));
-  const targets = classProjects(env, arg(leg, "target", "victim"));
+  const rate = Number(arg(leg, "rate", "8"));
+  const cls = arg(leg, "target", "cold");
+  const targets = classProjects(env, cls);
   const rng = new Rng(Number(arg(leg, "seed", String(env.plan.manifest.seed))), 11);
+  // The quiet names are what the target's setup recorded as created, never
+  // names derived from the manifest: a setup that failed or wrote other
+  // names would leave those uncreated, and an uncreated name timed against
+  // a never-held one matches by construction. Pairs take them in a seeded
+  // shuffle, each timed once before any is timed twice.
+  const quiet = targets.flatMap((p) => setupNames(env, p).map((n): [Project, string] => [p, n]));
+  if (!quiet.length) {
+    const n = `${targets.length} project${targets.length === 1 ? "" : "s"}`;
+    throw new Error(`h11t: the setup of class ${cls} recorded no stream it created (${n}), so there is no quiet name to time`);
+  }
+  for (let i = quiet.length - 1; i > 0; i--) {
+    const j = rng.int(i + 1);
+    [quiet[i], quiet[j]] = [quiet[j]!, quiet[i]!];
+  }
   const anon = async (path: string): Promise<{ ms: number; ans: string }> => {
     const t0 = performance.now();
     let ans = "0:transport";
@@ -339,9 +375,9 @@ export async function h11t(env: RunEnv, leg: LegSpec, signal: AbortSignal): Prom
     }
     return { ms: performance.now() - t0, ans };
   };
-  const used: number[] = [];
-  const never: number[] = [];
-  const answers = { used: {} as Record<string, number>, never: {} as Record<string, number> };
+  const quietMs: number[] = [];
+  const neverMs: number[] = [];
+  const answers = { quiet: {} as Record<string, number>, never: {} as Record<string, number> };
   let differences = 0;
   const examples: string[] = [];
   // At most `rate` pairs a second: a pair starts no sooner than 1000/rate
@@ -358,27 +394,26 @@ export async function h11t(env: RunEnv, leg: LegSpec, signal: AbortSignal): Prom
     if (last !== null) gapMin = Math.min(gapMin, start - last);
     last = start;
     due = start + 1000 / rate;
-    const b = targets[i % targets.length]!;
-    const name = streamName(b.cls.prefix ?? "t/", rng.int(b.cls.streams ?? 1));
+    const [b, name] = quiet[i % quiet.length]!;
     const path = (n: string) => `/v1/streams/${encName(n)}/watches/w/keys/0000000000000000?cap=${encodeURIComponent(b.id)}.x&timeoutMs=0`;
     const first = rng.next() < 0.5;
     const one = first ? await anon(path(name)) : null;
     const two = await anon(path(`never/${env.plan.manifest.name}-${i}`));
-    const u = one ?? (await anon(path(name)));
-    used.push(u.ms);
-    never.push(two.ms);
-    bump(answers.used, u.ans);
+    const q = one ?? (await anon(path(name)));
+    quietMs.push(q.ms);
+    neverMs.push(two.ms);
+    bump(answers.quiet, q.ans);
     bump(answers.never, two.ans);
-    if (u.ans !== two.ans) {
+    if (q.ans !== two.ans) {
       differences++;
-      if (examples.length < 5) examples.push(`pair ${i}: used ${u.ans}, never ${two.ans}`);
+      if (examples.length < 5) examples.push(`pair ${i}: quiet ${q.ans}, never ${two.ans}`);
     }
   }
   return {
-    pairs: used.length, rate, gap_min_ms: Number.isFinite(gapMin) ? round3(gapMin) : null, target: targets[0]!.cls.class,
-    answers, differences, examples, ks: ks(used, never),
-    used_p50_ms: pct(used, 0.5), never_p50_ms: pct(never, 0.5), used_ms: used.map((x) => Math.round(x * 1000) / 1000),
-    never_ms: never.map((x) => Math.round(x * 1000) / 1000),
+    pairs: quietMs.length, rate, gap_min_ms: Number.isFinite(gapMin) ? round3(gapMin) : null, target: cls,
+    names: { projects: new Set(quiet.map(([p]) => p.id)).size, names: quiet.length },
+    answers, differences, examples, ks: ks(quietMs, neverMs), quiet_p50_ms: pct(quietMs, 0.5), never_p50_ms: pct(neverMs, 0.5),
+    quiet_ms: quietMs.map(round3), never_ms: neverMs.map(round3),
   };
 }
 

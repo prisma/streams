@@ -101,8 +101,8 @@ class World:
             "proj_0002": {"mode": "h9b", "start_ms": T0 + 50 * MIN, "end_ms": T0 + 55 * MIN, "h9b": {"statuses": {"200": 64}}},
         }
         timings = [0.2 + (i % 50) / 100 for i in range(2000)]
-        self.h11t = {"leg": "h11t", "pairs": 2000, "differences": 0, "used_ms": timings, "never_ms": list(reversed(timings)),
-                     "used_p50_ms": 0.45, "never_p50_ms": 0.45}
+        self.h11t = {"leg": "h11t", "pairs": 2000, "rate": 8, "gap_min_ms": 125.0, "names": {"projects": 600, "names": 1800},
+                     "differences": 0, "quiet_ms": timings, "never_ms": list(reversed(timings)), "quiet_p50_ms": 0.45, "never_p50_ms": 0.45}
         self.run = {"projects": 1000, "manifest": "layer-b", "manifest_sha256": shipped_layer_b(), "time_scale": 1,
                     "classes": {c: {"count": v["count"], "role": v["role"], "quotas": "q-hostile" if c == "h1" else "ceilings"}
                                 for c, v in self.classes.items()},
@@ -204,9 +204,14 @@ class LayerB(unittest.TestCase):
             "2,000 pairs but 140 first contacts": (lambda w: w.probes.update(first_contacts=140), "probes"),
             "probes without a first-contact count": (lambda w: w.probes.pop("first_contacts"), "probes"),
             "a probe create that was not 201": (lambda w: w.probes.update(put={"201": 1999, "409": 1}), "probes"),
-            "1,999 timed pairs": (lambda w: (w.h11t.update(used_ms=w.h11t["used_ms"][:1999])), "H11t"),
+            "1,999 timed pairs": (lambda w: (w.h11t.update(quiet_ms=w.h11t["quiet_ms"][:1999])), "H11t"),
             "a timed-pair answer that differs": (lambda w: w.h11t.update(differences=1), "H11t"),
             "no H11t leg": (lambda w: setattr(w, "h11t", None), "H11t"),
+            # The leg found no quiet name in its target's setup record (hostile.ts): it timed nothing.
+            "an H11t leg with no quiet name": (lambda w: setattr(w, "h11t", {"leg": "h11t", "error": "h11t: the setup of class cold "
+                                               "recorded no stream it created (600 projects), so there is no quiet name to time"}), "H11t"),
+            # A leg of the old shape (a used name's timings) is not a quiet arm.
+            "fresh-vs-never timings in H11t's place": (lambda w: w.h11t.update(used_ms=w.h11t.pop("quiet_ms")), "H11t"),
             "a refused compliant tenant": (lambda w: w.classes["app"]["refusals"]["typed"].update({"429:project_rate_limit": 1}), "compliant-refusals"),
             "a victim transport failure": (lambda w: w.classes["victim"]["refusals"].update(transport=1), "compliant-refusals"),
             "hostile untyped answers just over 0.5%": (lambda w: w.classes["h1"]["refusals"]["untyped"].update({"503": 501}), "hostile-typed"),
@@ -239,16 +244,23 @@ class LayerB(unittest.TestCase):
                 self.w.__dict__.update(copy.deepcopy(pristine))
                 self.mutated(edit, *want)
 
-    def test_a_known_red_leg_fails_and_is_named_never_masked(self):
-        self.w.h11t["never_ms"] = [x + 7 for x in self.w.h11t["used_ms"]]
+    def test_quiet_names_apart_from_never_held_ones_fail_h11t_and_are_not_known_red(self):
+        # The owner's round-3 call 9 (a): quiet versus never is a bar like
+        # any other, no longer red by construction.
+        self.w.h11t["never_ms"] = [x + 7 for x in self.w.h11t["quiet_ms"]]
         m = self.mutated(lambda w: None, "H11t")
-        self.assertEqual(list(m["known_red"]), ["H11t"])
-        # Not "until phase B step 15": under the owner's P4 the leg as built stays red after it.
-        self.assertIn("stay apart after phase B step 15 too", m["known_red"]["H11t"])
-        self.assertIn("owner's call", m["known_red"]["H11t"])
-        b = m["bars"]["H11t: KS p (used vs never)"]
+        self.assertEqual(m["known_red"], {})
+        b = m["bars"]["H11t: KS p (quiet vs never)"]
         self.assertLess(b["value"]["p"], 1e-10)
         self.assertEqual(b["pass"], False)
+        self.assertEqual(m["bars"]["H11t: timed pairs (quiet vs never)"],
+                         {"value": {"pairs": 2000, "rate": 8, "gap_min_ms": 125.0, "names": {"projects": 600, "names": 1800}, "error": None},
+                          "bar": 2000, "pass": True})
+
+    def test_a_known_red_leg_fails_and_is_named_never_masked(self):
+        m = self.mutated(lambda w: [b["body"].update(rss_mb=325.0) for b in w.loads if b["t"] >= T0 + 100 * MIN], "Q0")
+        self.assertEqual(m["known_red"], {"Q0": V.KNOWN_RED["Q0"]})
+        self.assertEqual(V.KNOWN_RED, {"Q0": "Q0 (RSS after a load stays above the baseline; README Q0)"})
 
     def test_a_compliant_tenants_503_temporarily_unavailable_is_a_refusal_like_any_other(self):
         # The product's generic "could not serve" answer, not a boot-only holdoff: no code is excused.

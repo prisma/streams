@@ -19,9 +19,9 @@ the fence fields verify_arm will check (triage B9): commit, profile {files,
 sha256, pins, pins_missing}, cell_env_sha256, harness_trees, region; and
 bars {name: {value, bar, pass}}, known_red, evidence {file: sha256}.
 
-Known-red legs are judged like any other and reported FAIL: H11t as built
-(it cannot pass under the owner's P4: see KNOWN_RED), Q0 until its fix;
-known_red only names why. A
+Known-red legs are judged like any other and reported FAIL: Q0 until its
+fix; known_red only names why. H11t times quiet names against never-held
+ones (the owner's round-3 call 9, (a)): see leg_h11t. A
 rehearsal run (rig.json rehearsal: true: run-shared.sh --binary, any
 binary) writes its manifest with verdict FAIL and leg "release-binary"
 FAIL: it can never certify.
@@ -63,8 +63,8 @@ def _lifecycle_verdicts():
 # Layer B (design §3.3; shared-cells PLAN §4.1 "Layer B" pass table).
 LEAKS_MAX = 0                    # foreign, bad-MAC and unmarked records, audit mismatches
 PROBE_PAIRS_MIN = 2000           # cross-project probes, each a first contact (prober, name)
-H11T_PAIRS_MIN = 2000            # timed pairs on the capability path
-H11T_KS_P_MIN = 0.01             # distributions indistinguishable: KS p > 0.01
+H11T_PAIRS_MIN = 2000            # timed pairs on the capability path, quiet vs never (round-3 call 9, (a))
+H11T_KS_P_MIN = 0.01             # quiet and never indistinguishable: KS p > 0.01
 VICTIM_P99_FACTOR = 2.0          # victim p99 under noise <= max(2 x solo p99, 25 ms)
 VICTIM_P99_FLOOR_MS = 25.0
 # The victim's latency is measured in the one process that drives every
@@ -102,16 +102,7 @@ HARNESS_TREES = ("bench/k2cost", "deploy/composer", "deploy/app-server")
 CHECKOUT_TREES = ("bench/k2cost", "deploy/cell-admin", "bench/docker")
 # The legs rc-certify.sh's verify_arm requires (db518611), and those known red.
 REQUIRED_LEGS = {"layer-b": ("H9", "H9b", "H11t")}
-# H11t times a name the target used in the last few seconds against a name
-# never held. Phase B step 15 (phase-b triage B1) answers a held fresh slot
-# without a store fetch and an absent or expired one after a budgeted
-# fetch, so the two stay apart after it too: the timing residual the owner
-# accepted (OWNER-DECISIONS-2 P4, 2026-10-12). What H11t should check is the
-# owner's call (it is a gated leg); until then it is red by construction.
-KNOWN_RED = {"H11t": "as built it cannot pass: a name used in the last seconds and a never-held name stay apart after phase "
-                     "B step 15 too (shared-cells M2; the residual the owner accepted, P4 2026-10-12); its "
-                     "re-specification is the owner's call",
-             "Q0": "Q0 (RSS after a load stays above the baseline; README Q0)"}
+KNOWN_RED = {"Q0": "Q0 (RSS after a load stays above the baseline; README Q0)"}
 
 
 # ---- pure bar functions ----------------------------------------------------------
@@ -286,12 +277,28 @@ def leg_probes(r: Run, bars: dict) -> bool:
 
 
 def leg_h11t(r: Run, bars: dict) -> bool:
+    """H11t, as the owner re-specified it (round-3 call 9, (a), 2026-10-13):
+    on the anonymous capability path, a quiet name (one the target's setup
+    created and nothing has touched since, so its descriptor slot is past
+    the cell's 5 s TTL) against a never-held name, at 8 pairs a second with
+    no catch-up in a window of its own of at least 360 s. Both take the
+    server's budgeted store fetch, so their times must not tell them apart
+    (KS p > 0.01) and their answers must be identical. The quiet names come
+    from the setup's record of what it created; a leg that found none fails
+    here with its error, never passes by timing never against never. A name
+    used in the last 5 s is answered from its fresh slot without the store:
+    the residual the owner accepted (P4, 2026-10-12), not judged here. The
+    rig's s3lite sleeps the same 20 ms before every op whatever it answers,
+    so the bar certifies the server's path, not a real store's 404-versus-200
+    latency."""
     h = r.legs.get("h11t") or {}
-    used, never = h.get("used_ms") or [], h.get("never_ms") or []
-    d, p = ks(used, never)
-    ok = bar(bars, "H11t: timed pairs", min(len(used), len(never)), H11T_PAIRS_MIN, min(len(used), len(never)) >= H11T_PAIRS_MIN)
+    quiet, never = h.get("quiet_ms") or [], h.get("never_ms") or []
+    d, p = ks(quiet, never)
+    n = min(len(quiet), len(never))
+    ok = bar(bars, "H11t: timed pairs (quiet vs never)", {"pairs": n, "rate": h.get("rate"), "gap_min_ms": h.get("gap_min_ms"),
+             "names": h.get("names"), "error": h.get("error")}, H11T_PAIRS_MIN, n >= H11T_PAIRS_MIN)
     ok &= bar(bars, "H11t: answers identical", h.get("differences"), 0, h.get("differences") == 0)
-    ok &= bar(bars, "H11t: KS p (used vs never)", {"p": p, "d": d, "used_p50_ms": h.get("used_p50_ms"),
+    ok &= bar(bars, "H11t: KS p (quiet vs never)", {"p": p, "d": d, "quiet_p50_ms": h.get("quiet_p50_ms"),
               "never_p50_ms": h.get("never_p50_ms")}, f"> {H11T_KS_P_MIN}", p > H11T_KS_P_MIN)
     return ok
 

@@ -748,7 +748,7 @@
    "role": "compliant",
    "streams": 16,
    "prefix": "u/",
-   "comment": "the H11t target: 10 appends/s over 16 streams, so each name is used every few seconds",
+   "comment": "a busy target: 10 appends/s over 16 streams, so each name is used every few seconds",
    "phases": [
     {
      "mode": "setup",
@@ -797,7 +797,7 @@
    "count": 600,
    "role": "idle",
    "streams": 3,
-   "comment": "cold idle: 3 empty streams",
+   "comment": "cold idle: 3 empty streams, created at setup and never touched again: H11t's quiet names",
    "phases": [
     {
      "mode": "setup",
@@ -817,12 +817,12 @@
  "legs": [
   {
    "leg": "h11t",
-   "at": 3300,
-   "secs": 300,
+   "at": 2040,
+   "secs": 360,
    "args": {
     "pairs": 2000,
-    "rate": 20,
-    "target": "h11t-target"
+    "rate": 8,
+    "target": "cold"
    }
   },
   {

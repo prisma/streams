@@ -191,6 +191,13 @@ export function checkManifest(m: Manifest): void {
       if (cls !== undefined && !seen.has(String(cls))) fail(`leg ${i}: no class ${cls}`);
     }
     for (const cls of String(leg.args?.to ?? "").split(",").filter(Boolean)) if (!seen.has(cls)) fail(`leg ${i}: no class ${cls}`);
+    // h11t times quiet names: its target's projects create their streams
+    // in a setup and send nothing after it, so no request of theirs
+    // refreshes a stream's descriptor slot (hostile.ts).
+    const quiet = leg.leg === "h11t" ? m.classes.find((c) => c.class === String(leg.args?.target ?? "cold")) : undefined;
+    if (quiet && (!quiet.phases.length || quiet.phases.some((ph) => ph.mode !== "setup"))) {
+      fail(`leg ${i}: h11t's target class ${quiet.class} must run setup phases and nothing else, so its streams stay quiet`);
+    }
   }
 }
 

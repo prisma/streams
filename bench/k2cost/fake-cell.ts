@@ -12,8 +12,15 @@
 // - GET …/records, :long-poll, :sse, consumers (PUT, :pull, :settle),
 //   GET /v1/streams (catalog), DELETE, GET /v1/projects/{p}/usage (meters
 //   counted the way the generators count them) and the watch capability
-//   path (403 `watch_unauthorized`, slower for a name never seen; each
-//   request recorded in `watches`, and `watchStall` answers one late).
+//   path (403 `watch_unauthorized`; each request recorded in `watches`,
+//   and `watchStall` answers one late).
+// - The server's descriptor cache, per (project, name): a create fills the
+//   slot, and any authenticated request naming the stream fills it again
+//   once it is `slotTtlMs` old (a hit on a fresh slot does not renew it); a
+//   delete empties it. A capability on a fresh slot (the stream's or its
+//   absence's) is refused at once; on an expired slot or none the cell
+//   takes a store fetch (`storeMs`, the same for a stream and a name nobody
+//   holds, as s3lite's fixed sleep) and fills nothing.
 // - `refuse(project, n, status, code)` answers the project's next n
 //   requests with that status (code null: an untyped body); `plant` puts a
 //   record into a project's stream without metering it (a leak).
@@ -62,20 +69,30 @@ export class FakeCell {
    * transfer): a reader that abandons one leaves it metered, uncounted. */
   pageDelayMs = 0;
   groups = new Map<string, number>();
-  /** Watch lookups: never-seen names answer after this many ms. */
-  coldLookupMs = 0;
+  /** A descriptor slot's freshness (the server's is 5 s). */
+  slotTtlMs = 5000;
+  /** A store fetch's latency. */
+  storeMs = 0;
+  /** A defect to detect: an expired slot refuses a capability at once, as
+   * a fresh one does, where the server takes the store fetch it takes for
+   * a name with no slot. */
+  expiredAnsweredFree = false;
   /** A defect to detect: a read of a name another project holds is
    * refused instead of answering like a name nobody holds. */
   existenceLeak = false;
   /** When set, every authenticated request as [project, method, path]. */
   trace: Array<[string, string, string]> | null = null;
   /** Every watch request, in arrival order: when it arrived
-   * (performance.now()), the project its capability claims, the name. */
-  watches: Array<{ t: number; project: string; name: string }> = [];
+   * (performance.now()), the project its capability claims, the name,
+   * whether that project holds the name, and whether the cell took a
+   * store fetch to answer it. */
+  watches: Array<{ t: number; project: string; name: string; held: boolean; store: boolean }> = [];
   /** The watch request at this index of `watches` is answered this many
    * ms late: a stall the timed pairs must not catch up after. */
   watchStall: { index: number; ms: number } | null = null;
   private waiters = new Set<() => void>();
+  /** When each (project, name) slot was last filled (performance.now()). */
+  private slots = new Map<string, number>();
 
   constructor() {
     this.server = Bun.serve({ port: 0, hostname: "127.0.0.1", idleTimeout: 0, fetch: (req) => this.handle(req) });
@@ -94,6 +111,13 @@ export class FakeCell {
     let n = this.streams.get(project);
     if (!n) this.streams.set(project, (n = new Map()));
     return n;
+  }
+  /** A read through the cache: fills the slot when it is absent or
+   * expired; a fresh slot stays as it is. */
+  private fill(project: string, name: string): void {
+    const k = `${project} ${name}`;
+    const at = this.slots.get(k);
+    if (at === undefined || performance.now() - at >= this.slotTtlMs) this.slots.set(k, performance.now());
   }
   refuse(project: string, n: number, status: number, code: string | null): void {
     this.refusals.set(project, { left: n, status, code });
@@ -177,14 +201,16 @@ export class FakeCell {
     const path = url.pathname;
     const watch = /^\/v1\/streams\/(.+)\/watches\/[^/]+\/keys\/[^/]+$/.exec(path);
     if (watch) {
-      // The anonymous capability path: one uniform 403, slower for a name
-      // no project has used (a store GET), as the H11t leg measures.
+      // The anonymous capability path: one uniform 403, at once on a
+      // fresh slot, after a store fetch on an expired slot or none.
       const name = watch[1]!.split("/").map(decodeURIComponent).join("/");
       const cap = url.searchParams.get("cap") ?? "";
       const project = cap.split(".")[0] ?? "";
-      const index = this.watches.push({ t: performance.now(), project, name }) - 1;
+      const at = this.slots.get(`${project} ${name}`);
+      const free = at !== undefined && (performance.now() - at < this.slotTtlMs || this.expiredAnsweredFree);
+      const index = this.watches.push({ t: performance.now(), project, name, held: this.ns(project).has(name), store: !free }) - 1;
       if (this.watchStall?.index === index) await Bun.sleep(this.watchStall.ms);
-      if (!this.ns(project).has(name) && this.coldLookupMs > 0) await Bun.sleep(this.coldLookupMs);
+      if (!free && this.storeMs > 0) await Bun.sleep(this.storeMs);
       return error(403, "watch_unauthorized");
     }
     const token = (req.headers.get("authorization") ?? "").replace(/^Bearer /, "");
@@ -207,13 +233,18 @@ export class FakeCell {
     if (!m) return error(404, "not_found");
     const name = m[1]!.split("/").map(decodeURIComponent).join("/");
     const op = m[2] ?? "";
+    if (op === "" && req.method === "DELETE") {
+      this.slots.delete(`${project} ${name}`);
+      return ns.delete(name) ? new Response(null, { status: 204 }) : error(404, "stream_not_found");
+    }
+    if (op === "" && req.method === "PUT" && !ns.has(name)) {
+      ns.set(name, []);
+      this.slots.set(`${project} ${name}`, performance.now());
+      return json(201, { name });
+    }
+    this.fill(project, name);
     if (op === "") {
-      if (req.method === "PUT") {
-        if (ns.has(name)) return json(200, { name });
-        ns.set(name, []);
-        return json(201, { name });
-      }
-      if (req.method === "DELETE") return ns.delete(name) ? new Response(null, { status: 204 }) : error(404, "stream_not_found");
+      if (req.method === "PUT") return json(200, { name });
       if (req.method === "GET") return ns.has(name) ? json(200, { name, contentType: "application/json" }) : error(404, "stream_not_found");
     }
     const recs = ns.get(name);

@@ -2,8 +2,10 @@
 // product-surface fake: H9's bursts and its read-debt wait, H9b's stalled
 // readers, the cost-hostile mix, H11t's timed pairs on the capability path
 // and the cross-project probes, each checked for exact counts, and each
-// leg shown to catch the defect it exists for (a slower lookup for a name
-// nobody used, an existence oracle on reads). Run with `bun test ./bench/k2cost`.
+// leg shown to catch the defect it exists for (a quiet name answered
+// without the store fetch a never-held name takes, an existence oracle on
+// reads), H11t also shown to refuse a quiet name nobody created. Run with
+// `bun test ./bench/k2cost`.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -13,13 +15,16 @@ import { HeaderSource, Http, Meter, Opts } from "./common.ts";
 import { FakeCell } from "./fake-cell.ts";
 import { bodyOf, h9, h9b, ks } from "./hostile.ts";
 import { ownerOf } from "./oracle.ts";
-import { type Manifest, expand } from "./tenant-plan.ts";
+import { type Manifest, checkManifest, expand } from "./tenant-plan.ts";
 import { run } from "./tenants.ts";
 
 let cell: FakeCell;
 const dir = mkdtempSync(join(tmpdir(), "k2-hostile-"));
 beforeAll(() => {
   cell = new FakeCell();
+  // A descriptor slot is fresh for 100 ms here (the server's 5 s): a name
+  // created at a run's start is quiet a few hundred ms later.
+  cell.slotTtlMs = 100;
 });
 afterAll(() => {
   cell.stop();
@@ -53,7 +58,7 @@ test("a raw response's body is whole only when its framing says so; KS tells a s
 });
 
 test("H9 bursts wait out the read debt, H9b's stalled readers finish whole, the cost mix is answered per kind, and H11t and the probes see no difference", async () => {
-  cell.coldLookupMs = 0;
+  cell.watches = [];
   const m: Manifest = {
     name: "hostile", seed: 5, duration: 3.6,
     classes: [
@@ -68,9 +73,10 @@ test("H9 bursts wait out the read debt, H9b's stalled readers finish whole, the 
         { mode: "setup", at: 0 }, { mode: "produce", at: 0.1, secs: 3.4, args: { rate: 20, "record-bytes": 256 } },
       ] },
       { class: "ghost", count: 3, role: "idle", phases: [] },
+      { class: "quiet", count: 2, role: "idle", streams: 3, prefix: "q/", phases: [{ mode: "setup", at: 0 }] },
     ],
     legs: [
-      { leg: "h11t", at: 0.5, args: { pairs: 150, rate: 1000, target: "target" } },
+      { leg: "h11t", at: 0.5, args: { pairs: 150, rate: 1000, target: "quiet" } },
       { leg: "probes", at: 0.5, args: { pairs: 30, rate: 1000, from: "ghost", to: "target" } },
     ],
   };
@@ -101,9 +107,24 @@ test("H9 bursts wait out the read debt, H9b's stalled readers finish whole, the 
   const sent = Object.values(answers).flatMap((a: any) => Object.values(a) as number[]).reduce((x, y) => x + y, 0);
   expect(sent).toBeGreaterThanOrEqual(38);
 
+  // H11t's quiet names are the ones the quiet projects' setups recorded,
+  // each past its slot's TTL, so the cell fetched from the store for every
+  // quiet name exactly as for every never-held name.
+  const quiet = [ids.quiet0!, ids.quiet1!];
+  const recorded = quiet.map((q) => json(join(out, "projects", q, "phase-0.ledger.json")).setup.names);
+  expect(recorded).toEqual([["q/00000", "q/00001", "q/00002"], ["q/00000", "q/00001", "q/00002"]]);
   const h = json(join(out, "legs", "h11t-0.json"));
-  expect([h.pairs, h.differences, h.answers]).toEqual([150, 0, { used: { "403:watch_unauthorized": 150 }, never: { "403:watch_unauthorized": 150 } }]);
-  expect(h.used_ms).toHaveLength(150);
+  expect([h.pairs, h.differences, h.answers, h.names]).toEqual([150, 0,
+    { quiet: { "403:watch_unauthorized": 150 }, never: { "403:watch_unauthorized": 150 } }, { projects: 2, names: 6 }]);
+  expect([h.quiet_ms.length, h.never_ms.length]).toEqual([150, 150]);
+  const timed = cell.watches.filter((w) => quiet.includes(w.project));
+  const paths: Record<string, number> = {};
+  for (const w of timed) {
+    const k = `${w.held ? "held" : "never"} ${w.store ? "store" : "free"}`;
+    paths[k] = (paths[k] ?? 0) + 1;
+  }
+  expect([paths, cell.watches.length, new Set(timed.filter((w) => w.held).map((w) => `${w.project} ${w.name}`)).size])
+    .toEqual([{ "held store": 150, "never store": 150 }, 300, 6]);
   // Every (ghost, target name) once, each a first contact: 3 ghosts x the
   // targets' 4 names (v/00000..v/00003), fewer than the 30 pairs asked.
   const p = json(join(out, "legs", "probes-1.json"));
@@ -123,7 +144,10 @@ test("H9 bursts wait out the read debt, H9b's stalled readers finish whole, the 
 }, 30_000);
 
 test("H11t's timing and the probes' answers each catch the defect they look for", async () => {
-  cell.coldLookupMs = 4;
+  // A cell that answers an expired slot without the store fetch an absent
+  // name takes: a quiet name answers about 4 ms sooner than a never-held one.
+  cell.storeMs = 4;
+  cell.expiredAnsweredFree = true;
   cell.existenceLeak = true;
   try {
     const m: Manifest = {
@@ -139,15 +163,50 @@ test("H11t's timing and the probes' answers each catch the defect they look for"
     };
     const { out } = await runManifest(m, "d");
     const h = json(join(out, "legs", "h11t-0.json"));
-    expect([h.differences, h.ks.p < 1e-6, h.used_p50_ms < h.never_p50_ms]).toEqual([0, true, true]);
+    expect([h.pairs, h.differences, h.ks.p < 1e-6, h.quiet_p50_ms < h.never_p50_ms]).toEqual([120, 0, true, true]);
     const p = json(join(out, "legs", "probes-1.json"));
     // 2 ghosts x the target's 3 names: 6 first contacts, every one a difference.
     expect([p.first_contacts, p.differences]).toEqual([6, { name: 6, usage: 0 }]);
     expect(p.examples[0]).toContain("403|forbidden");
   } finally {
-    cell.coldLookupMs = 0;
+    cell.storeMs = 0;
+    cell.expiredAnsweredFree = false;
     cell.existenceLeak = false;
   }
+}, 30_000);
+
+test("H11t fails rather than time a quiet name nobody created: its names come only from its target's setup record", async () => {
+  cell.watches = [];
+  const m: Manifest = {
+    name: "vacuous", seed: 8, duration: 1.5,
+    classes: [{ class: "quiet", count: 1, role: "idle", streams: 3, prefix: "q/", phases: [{ mode: "setup", at: 0 }] }],
+    legs: [{ leg: "h11t", at: 0.3, args: { pairs: 50, rate: 1000, target: "quiet" } }],
+  };
+  // The cell refuses the quiet project's three creates, so its names exist
+  // nowhere: timed against never-held names they would match by construction.
+  const { out, ids } = await runManifest(m, "v", (ids) => cell.refuse(ids.quiet0!, 3, 403, "forbidden"));
+  const h = json(join(out, "legs", "h11t-0.json"));
+  expect([h.error ?? null, h.pairs ?? null, cell.watches.length]).toEqual([
+    "h11t: the setup of class quiet recorded no stream it created (1 project), so there is no quiet name to time", null, 0,
+  ]);
+  const setup = json(join(out, "projects", ids.quiet0!, "phase-0.ledger.json")).setup;
+  expect([setup.created, setup.failed, setup.names]).toEqual([0, 3, []]);
+  // A target whose names are touched after its setup, or which has no
+  // setup to record them, is refused before the run.
+  const refused = (edit: (x: Manifest) => void) => {
+    const x = structuredClone(m);
+    edit(x);
+    try {
+      checkManifest(x);
+      return "accepted";
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
+  const why = "manifest: leg 0: h11t's target class quiet must run setup phases and nothing else, so its streams stay quiet";
+  expect(refused((x) => x.classes[0]!.phases.push({ mode: "produce", at: 0.5, secs: 0.5, args: { rate: 1 } }))).toBe(why);
+  expect(refused((x) => (x.classes[0]!.phases = []))).toBe(why);
+  expect(refused(() => {})).toBe("accepted");
 }, 30_000);
 
 test("H11t's pairs start at least 1000/rate ms apart and never catch up after a stall", async () => {

@@ -471,10 +471,11 @@
   {
    "leg": "h11t",
    "at": 150,
+   "secs": 90,
    "args": {
-    "pairs": 400,
-    "rate": 20,
-    "target": "h11t-target"
+    "pairs": 300,
+    "rate": 8,
+    "target": "cold"
    }
   },
   {

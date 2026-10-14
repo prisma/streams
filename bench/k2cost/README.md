@@ -444,7 +444,7 @@ more phase modes and two run-level legs are the hostile legs (`hostile.ts`):
 | `h9` | 64 concurrent 8 MiB reads from the beginning of the project's streams, then a cheap read every `--probe-ms` until the read debt clears (no 429), then again until the phase ends; per burst the answers, bytes, latency and the debt's clearing time. A burst always finishes, so every page the server served is counted |
 | `h9b` | `--readers` raw GETs of an 8 MiB page that stall after the response headers for `--hold-secs` (the server's response buffers stay full), then resume and read to the end: statuses, bytes before the stall, resets during the hold, early graceful closes, bodies cut short |
 | `cost` | the cost-hostile mix at `--rate`: catalog reads, creates of new names, reads of names that never existed, a usage read of a project not its own; answers per kind |
-| leg `h11t` | `--pairs` timed pairs on the anonymous capability path (`GET …/watches/w/keys/<16 hex>?cap=<B>.x`): a name the `--target` class used in the last seconds against a name that never existed, in random order, at most `--rate` pairs a second: a pair starts at least 1000/rate ms after the one before it, and never sooner to catch up after a stall (`gap_min_ms` is the shortest gap). Answers must be identical; the timings go to `shared_verdict.py`'s KS test |
+| leg `h11t` | `--pairs` timed pairs on the anonymous capability path (`GET …/watches/w/keys/<16 hex>?cap=<B>.x`): a quiet name against a name that never existed in the same project, in random order, at most `--rate` pairs a second: a pair starts at least 1000/rate ms after the one before it, and never sooner to catch up after a stall (`gap_min_ms` is the shortest gap). A quiet name is one the `--target` class's setup created and nothing touched since, so its descriptor slot on the cell is past its 5 s TTL; the names are those the target's setup ledgers record as created (`setup.names`), never names derived from the manifest, and a target whose setup recorded none fails the leg (a quiet name nobody created would match a never-held one by construction). The manifest check refuses an `h11t` target that runs anything besides setup. Answers must be identical; the timings go to `shared_verdict.py`'s KS test |
 | leg `probes` | up to `--pairs` cross-project probes from a class with no streams (`--from`) to the classes `--to`, each a first contact: every (prober A, target name) once, in seeded random order. A reads a stream only B has against a name nobody has (status, code, header names and the masked body must match), B's usage against a never-placed project's, and then creates B's name in its own namespace (201) and deletes it; A never reads that name again. `first_contacts` (the distinct pairs read) is the bar's value, `available` the probers times the names (layer-b: 139 x 21 = 2,919) | A reader
 phase embeds no producer and a produce phase never repeats, so the audit
 can replay every acked record.
@@ -458,7 +458,7 @@ bun bench/k2cost/tenants.ts audit --manifest M --base URL --token-map F --out DI
 
 | Manifest | What |
 |---|---|
-| `tenants/layer-b.json` | Layer B on the single-server shape, 1,000 projects: S0 ×8, S1 ×8, S2 ×12, S3s ×4 (100 SSE subscribers each), N0 ×8, the victim, H1-H8 at Q-hostile and again at the cell's k ceilings, the cost-hostile tenant, H9 and H9b, the H11t target, 200 warm idle (about 1 MiB each) and cold idle (3 empty streams, or none). Setup 0-600 s, the compliant classes 600-4,200 s, the hostile ones from 1,800 s, H9 2,400-3,000 s, H9b 3,000-3,300 s, H11t (2,000 pairs) 3,300-3,600 s, the probes (2,000 pairs) from 3,600 s; the victim's periods `solo` 900-1,800 s and `noisy` 2,100-4,200 s. Writers stop 60 s before the readers of their window |
+| `tenants/layer-b.json` | Layer B on the single-server shape, 1,000 projects: S0 ×8, S1 ×8, S2 ×12, S3s ×4 (100 SSE subscribers each), N0 ×8, the victim, H1-H8 at Q-hostile and again at the cell's k ceilings, the cost-hostile tenant, H9 and H9b, a busy target (10 appends a second over 16 streams), 200 warm idle (about 1 MiB each) and cold idle (3 empty streams, or none). Setup 0-600 s, the compliant classes 600-4,200 s, the hostile ones from 1,800 s, H11t (2,000 pairs at 8 a second on the cold class's quiet names, its own 360 s window) 2,040-2,400 s, H9 2,400-3,000 s, H9b 3,000-3,300 s, the probes (2,000 pairs) from 3,600 s; the victim's periods `solo` 900-1,800 s and `noisy` 2,100-4,200 s. Writers stop 60 s before the readers of their window |
 | `tenants/layer-b-tiny.json` | Layer B's classes and legs, one project per class (three warm, three cold, two with no stream), about 4 min: for building the harness. `tenants.e2e.test.ts` runs it on the real binary (`TENANTS_E2E_BIN_DIR=target/release`) |
 
 Admission and tokens (operator side, where the cell's signing key is):
@@ -488,7 +488,7 @@ and soon after a 401. Outputs under `--out`:
 | `classes.json` | per class: totals, error codes, refusals (`typed` by code, `untyped` by status, `transport`), latency over the whole run (`run`) and over each manifest period |
 | `projects/<id>/phase-<i>.ledger.json` | k2gen's ledger of each phase (the audit's `--expect`) |
 | `projects/<id>/ledger.json` | the project's totals, oracle counts, error codes and refusals |
-| `legs/<leg>-<i>.json` | a run-level leg's result (`h11t`: answers, differences, the timing samples and their KS; `probes`: pairs, differences, examples, answers) |
+| `legs/<leg>-<i>.json` | a run-level leg's result (`h11t`: the quiet names' count, answers, differences, the pacing, the quiet and never timing samples and their KS, or the error that stopped it; `probes`: pairs, differences, examples, answers) |
 | `usage.json` | `usage`: every project's meters (`GET /v1/projects/{p}/usage`) polled until they reach its ledger and two polls agree |
 | `audit.json` | `audit`: every project's produced streams read back record for record against its produce ledgers, with the oracle's counts |
 
@@ -506,10 +506,8 @@ the manifest `scripts/rc-certify.sh --shape single-cell` reads (arm,
 §7) plus the fence fields: commit, the profiles' sha256s and pins,
 `cell_env_sha256`, the harness trees, the region, every bar's value. The
 layer-b legs: `H9`, `H9b` (each ran, 0 `admit_shed_rss` in its window),
-`H11t` (2,000 pairs, identical answers, KS p > 0.01; as built it times a
-name used in the last few seconds against a never-held one, which phase B
-step 15 leaves apart, the residual the owner accepted in P4, so it is red
-until the owner re-specifies it), `leaks` (0 foreign,
+`H11t` (2,000 quiet-versus-never pairs, identical answers, KS p > 0.01:
+the owner's round-3 call 9, (a), 2026-10-13; see below), `leaks` (0 foreign,
 bad-MAC or unmarked records on any read, every producing project's audit
 passes), `probes` (2,000 first contacts, every pair one; 0 differences,
 every create 201),
@@ -527,11 +525,29 @@ and the quota posture: which classes ran at the cell's ceilings, which
 under a quota set),
 `identity` (the wrapper's `binary sha256` line, `/v1/debug/load`
 and the shipped file agree), `release-binary` (not a `--binary`
-rehearsal). Known-red legs (H11t as built, Q0) fail like any
+rehearsal). Known-red legs (Q0) fail like any
 other; `known_red` only says why. The bars of the owner's decision D4
 (a) of 2026-10-12 (SC0-1s projection, day-90 open, idle RSS, restart
 window) are constants here for the field arms, which take their evidence
 from the field adapters.
+
+H11t's bar, and what it does not certify. On the anonymous capability
+path the server answers a capability against a fresh descriptor slot (one
+read through the cell's cache in the last 5 s; a cache hit does not renew
+it) without the store, and against an expired slot or none after one
+budgeted store GET that fills nothing. A quiet name and a never-held name
+both take that GET, so their answers must be identical and their times
+must not tell them apart; a regression that answers an expired slot
+without the store fails the KS bar. A name used in the last 5 s is answered
+from its fresh slot, faster than a never-held one: the residual the owner
+accepted (P4, 2026-10-12, edge record #141's "Given up"), not judged here.
+The rig's s3lite sleeps the same 20 ms before every operation whatever it
+answers (`--latency-ms`), so the bar certifies the server's path only: a
+real store's latency difference between a 404 and a 200 is invisible to
+it. If the first Layer B run fails the quiet KS bar, the measured gap goes
+back to the owner with two options (call 9's fallback): judge the answers
+only and document the gap in #141, or close it in the server; it is never
+absorbed into the bar.
 
 ### The Layer B rig (`run-shared.sh`)
 

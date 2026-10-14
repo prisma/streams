@@ -27,7 +27,10 @@ const SDK_RETRIES = 3;
 
 // ---------------------------------------------------------------- setup
 
-/** PUT /v1/streams/{name} for every stream (idempotent: 201 new, 200 same). */
+/** PUT /v1/streams/{name} for every stream (idempotent: 201 new, 200 same).
+ * `names` records every stream it holds afterwards (201 or 200), so a
+ * leg that times quiet names (hostile.ts h11t) takes them from what was
+ * created, never from what the manifest says should have been. */
 export async function setup(ctx: Ctx): Promise<Record<string, unknown>> {
   const { o, http, meter } = ctx;
   const format = o.str("format", o.str("payload", "corpus") === "bytes" ? "bytes" : "json");
@@ -38,10 +41,12 @@ export async function setup(ctx: Ctx): Promise<Record<string, unknown>> {
   if (ttl > 0) doc.expiry = { idle: `${ttl}s` };
   const body = JSON.stringify(doc);
   let created = 0, existing = 0, failed = 0;
+  const names: string[] = [];
   await pool(ctx.streams, parallel, async (i) => {
     const name = streamName(ctx.prefix, i);
     for (let attempt = 0; attempt < 6; attempt++) {
       const r = await http.call("PUT", `/v1/streams/${encName(name)}`, { body, contentType: "application/json" });
+      if (r.status === 201 || r.status === 200) names.push(name);
       if (r.status === 201) return void created++;
       if (r.status === 200) return void existing++;
       if (r.status === 429 || r.status === 503 || r.status === 0) {
@@ -56,7 +61,7 @@ export async function setup(ctx: Ctx): Promise<Record<string, unknown>> {
   meter.add("streams_created", created);
   meter.add("streams_existing", existing);
   meter.add("streams_failed", failed);
-  return { format, ttl_secs: ttl || null, created, existing, failed };
+  return { format, ttl_secs: ttl || null, created, existing, failed, names: names.sort() };
 }
 
 // ---------------------------------------------------------------- spec
