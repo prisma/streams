@@ -1,8 +1,10 @@
 """run-shared.sh's offline half (--dry-run) on a fake release directory:
 what it refuses, what it stages, the cell's scratch.env, the seven secret names
-it hands the container through a file, and the docker invocation; and
-scrape.py loop's --operator scrape against a fake cell. The live half
-needs the cell's Composer entry (deploy-q5 triage B2) and docker images.
+it hands the container through a file, and the docker invocation; the
+live half's host-side addresses with every tool that would start or reach
+something replaced by a recorder; and scrape.py loop's --operator scrape
+against a fake cell. A real live run needs the cell's Composer entry
+(deploy-q5 triage B2) and docker images.
 
     python3 -m unittest discover -s bench/k2cost -p 'test_*.py'
 """
@@ -74,6 +76,59 @@ class Rig(unittest.TestCase):
         runs = os.listdir(os.path.join(self.home, "results"))
         self.assertEqual(len(runs), 1)
         return os.path.join(self.home, "results", runs[0], "rig-context")
+
+    def live(self, s3_bind: str | None) -> tuple[subprocess.CompletedProcess, list]:
+        """The live half end to end with every tool that would start, bind,
+        reach or build something replaced by a recorder (bun, docker, curl,
+        lsof, openssl, s3lite, and python3 for scrape.py and
+        shared_verdict.py): what each was asked to do, in order. Nothing
+        listens and nothing connects."""
+        fake = os.path.join(self.tmp, f"fakebin-{s3_bind}")
+        os.makedirs(fake)
+        log = os.path.join(fake, "calls.log")
+        scripts = {
+            "bun": 'case $2 in tokens) while [ $# -gt 0 ]; do [ "$1" = --out ] && echo "{}" > "$2"; shift; done ;; esac',
+            "docker": f'[ "$1" = logs ] && echo "binary sha256 {self.sha}"',
+            "curl": 'for a; do url=$a; done; echo "curl $url" >> "$RIG_FAKE_LOG"\n'
+                    'case $url in */v1/debug/load) echo \'{"git_commit": "c0ffee", "boot_id": "b1"}\' ;; esac\nexit 0',
+            "lsof": "exit 1",
+            "openssl": 'while [ $# -gt 0 ]; do [ "$1" = -out ] && : > "$2"; shift; done',
+            "python3": f'case $1 in */scrape.py|*/shared_verdict.py) ;; *) exec {sys.executable} "$@" ;; esac',
+        }
+        for name, body in scripts.items():
+            with open(os.path.join(fake, name), "w") as f:
+                record = "" if name == "curl" else f'echo "{name} $*" >> "$RIG_FAKE_LOG"\n'
+                f.write(f"#!/bin/sh\n{record}{body}\nexit 0\n")
+            os.chmod(os.path.join(fake, name), 0o755)
+        with open(self.s3lite, "w") as f:
+            f.write('#!/bin/sh\necho "s3lite $*" >> "$RIG_FAKE_LOG"\nexec sleep 30\n')
+        env = {**os.environ, "K2_HOME": self.home, "RIG_FAKE_LOG": log, "PATH": fake + os.pathsep + os.environ["PATH"],
+               "RIG_IDLE_SECS": "0", "RIG_Q0_IDLE_SECS": "0"}
+        env.pop("S3_BIND", None)
+        if s3_bind is not None:
+            env["S3_BIND"] = s3_bind
+        r = subprocess.run(["/bin/bash", SCRIPT, "--release", self.rel, "--s3lite", self.s3lite, "--bun-baseline-sha256", BASELINE],
+                           capture_output=True, text=True, env=env, cwd=REPO, timeout=120)
+        with open(log) as f:
+            return r, [line.rstrip("\n") for line in f]
+
+    def test_the_host_side_clients_reach_s3lite_on_the_address_it_listens_on(self):
+        # A specific address (Linux: the docker bridge) answers only there;
+        # 0.0.0.0 answers on the loopback too. The cell stays on 127.0.0.1.
+        for bind, host in ((None, "127.0.0.1"), ("172.17.0.1", "172.17.0.1"), ("0.0.0.0", "127.0.0.1")):
+            r, calls = self.live(bind)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            want = f"http://{host}:9591"
+            arg = lambda prefix, flag: [c.split()[c.split().index(flag) + 1] for c in calls if c.startswith(prefix)]  # noqa: E731
+            self.assertEqual(arg("s3lite ", "--listen"), [f"{bind or '127.0.0.1'}:9591"])
+            self.assertEqual({"ready": sorted({c[5:] for c in calls if c.startswith("curl ") and "/_s3lite/" in c}),
+                              "publish": arg(f"bun {HERE}/tenants-admit.ts publish ", "--s3-endpoint"),
+                              "scrape": arg(f"python3 {HERE}/scrape.py loop ", "--s3lite")},
+                             {"ready": [f"{want}/_s3lite/stats"], "publish": [want], "scrape": [want]}, bind)
+            self.assertEqual(sorted({c[5:] for c in calls if c.startswith("curl ") and "/_s3lite/" not in c}),
+                             ["http://127.0.0.1:9592/health", "http://127.0.0.1:9592/v1/debug/load"])
+            self.assertEqual(arg(f"python3 {HERE}/scrape.py loop ", "--servers"), ["streams-1=http://127.0.0.1:9592"])
+            shutil.rmtree(self.home)
 
     def test_a_dry_run_stages_the_release_the_cell_env_and_the_container_invocation(self):
         r = self.rig("--dry-run")

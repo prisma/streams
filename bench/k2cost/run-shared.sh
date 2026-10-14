@@ -50,7 +50,8 @@
 #
 # The host: s3lite listens on S3_BIND (127.0.0.1; Docker Desktop reaches a
 # host's loopback as host.docker.internal; on Linux set S3_BIND to the
-# docker bridge address). On an arm64 host bun runs under Rosetta, which
+# docker bridge address), and the rig's host-side clients reach it there
+# (0.0.0.0 at 127.0.0.1). On an arm64 host bun runs under Rosetta, which
 # lacks AVX: give --bun-baseline-sha256 (the sha256 of
 # bun-linux-x64-baseline.zip, Bun 1.3.13, from its release page) or run on
 # an x86_64 host.
@@ -72,6 +73,12 @@ S3_PORT=9591
 CELL_PORT=9592
 S3LITE_LATENCY_MS=20
 S3_BIND=${S3_BIND:-127.0.0.1}
+# The host-side clients (the readiness check, the bundle publish, the
+# scrape) reach s3lite where it listens: a specific address answers only
+# there, 0.0.0.0 on the loopback too.
+S3_HOST=$S3_BIND
+[ "$S3_HOST" != 0.0.0.0 ] || S3_HOST=127.0.0.1
+S3_URL=http://$S3_HOST:$S3_PORT
 IDLE_SECS=${RIG_IDLE_SECS:-900}
 Q0_IDLE_SECS=${RIG_Q0_IDLE_SECS:-900}
 USAGE_WAIT_SECS=${USAGE_WAIT_SECS:-600}
@@ -293,12 +300,12 @@ PID_TOKENS=$!
 "$S3LITE" --listen "$S3_BIND:$S3_PORT" --latency-ms "$S3LITE_LATENCY_MS" > "$RUN/s3lite.log" 2>&1 < /dev/null &
 PID_S3=$!
 for _ in $(seq 1 100); do
-  [ -s "$SECRETS/tokens.json" ] && curl -sf -o /dev/null "http://127.0.0.1:$S3_PORT/_s3lite/stats" && break
+  [ -s "$SECRETS/tokens.json" ] && curl -sf -o /dev/null "$S3_URL/_s3lite/stats" && break
   sleep 0.2
 done
 [ -s "$SECRETS/tokens.json" ] || die 1 "no token map (see $RUN/tokens.log)"
 "${ADMIT[@]}" publish --state "$SECRETS/cell" --upload "s3://$FEEDS_BUCKET/$FEEDS_KEY" \
-  --s3-endpoint "http://127.0.0.1:$S3_PORT" --s3-creds "$SECRETS/s3.json"
+  --s3-endpoint "$S3_URL" --s3-creds "$SECRETS/s3.json"
 
 # ---- 2. the cell -------------------------------------------------------------
 log "building the rig image from $RELEASE"
@@ -329,7 +336,7 @@ json.dump({
 }, open(out, "w"), indent=1)
 PY
 python3 "$HERE/scrape.py" loop --run "$RUN" --servers "streams-1=http://127.0.0.1:$CELL_PORT" \
-  --s3lite "http://127.0.0.1:$S3_PORT" --auth-file "$SECRETS/debug.hdr" --operator \
+  --s3lite "$S3_URL" --auth-file "$SECRETS/debug.hdr" --operator \
   > "$RUN/scrape.log" 2>&1 < /dev/null &
 PID_SCRAPE=$!
 
