@@ -531,7 +531,9 @@ and the quota posture: which classes ran at the cell's ceilings, which
 under a quota set), `harness` (the checkout the harness ran from,
 `checkout.json` in `rig.json`, holds the server commit's `bench/k2cost`,
 `deploy/cell-admin` and `bench/docker` trees, nothing uncommitted under
-them: a harness fixed after the RC commit cannot judge it),
+them: a harness fixed after the RC commit cannot judge it, so Layer B runs
+first, rehearsed before the cut, docs/OPS-RELEASE.md §7, a rule no run can
+follow until the rig takes a cut release, below),
 `identity` (the wrapper's `binary sha256` line, `/v1/debug/load`
 and the shipped file agree), `release-binary` (not a `--binary`
 rehearsal). The owner confirmed `load`, `harness` and the first-contact
@@ -587,7 +589,16 @@ certify. The harness that runs is the checkout's: `checkout.json` (in
 `rig.json`) records its trees and uncommitted paths, and the verdict's
 `harness` leg requires the server commit's trees, clean. Results under
 `$K2_HOME/results/layer-b-<stamp>/`; the secrets
-directory is removed at exit. It needs the cell's Composer entry (triage
-B2) in the release directory, and `--canary` the solo LiveFeed canary
-(triage B9); both refuse until they exist.
+directory is removed at exit. It cannot run yet. Its staging predates
+triage B2's release layout: it requires `release.json` and `cells/` at the
+release directory's root and passes `CELL_STAGE` in the environment, while
+a release cut by `scripts/cut-release.sh` holds `deploy/release.json`,
+`deploy/cells/` and `bin/s3lite` (`deploy/composer/release.ts`), and B2's
+entry reads `release.json` under `deploy/` and its stage and deploy nonce
+from the service's input (`COMPOSER_INPUT`). So the rig refuses a cut
+release (`<dir> has no release.json`), and the entry refuses a directory in
+the rig's layout before the server starts: no Layer B run, certifying or
+rehearsal, boots until the rig is re-staged to B2's layout (the lead's
+decision deploy-q5 #6 (3) of 2026-10-13, not built). `--canary` needs the
+solo LiveFeed canary (triage B9) and refuses until it exists.
 

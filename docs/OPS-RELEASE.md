@@ -279,9 +279,56 @@ x86_64-musl RC binary, so an arm run on a host build cannot certify.
 and SC1 later by at least the arm's floor in the table, so a short run
 that writes `PASS` does not certify either arm. Like the verdict, the
 window is the harness's own statement: rc-certify checks it but cannot
-re-derive it from raw results. The Q5 harness and the reshaped battery
-that will write these manifests do not exist yet (NEXT-WORK, public beta
-items 9 and 11). This table is the contract they write to.
+re-derive it from raw results. Of the harnesses that write these
+manifests only Layer B's exists (`bench/k2cost/run-shared.sh`, judged by
+`bench/k2cost/shared_verdict.py`, which writes `layer-b-manifest.json`);
+the field arms' adapters (deploy-q5 triage B8) and the reshaped battery do
+not exist yet (NEXT-WORK, public beta items 9 and 11). This table is the
+contract they write to.
+
+**Layer B runs first.** This is a rule, the owner's round-3 call 13 of
+2026-10-13, not advice. The certifying Layer B run comes from a clean
+checkout at the RC commit (nothing uncommitted under `bench/k2cost`,
+`deploy/cell-admin` or `bench/docker`), on the release cut from that
+commit (`scripts/cut-release.sh`), with the committed
+`bench/k2cost/tenants/layer-b.json` at time scale 1 (no `--manifest`, no
+`--time-scale`), and it ends `PASS` before any field arm starts: the
+envelope arm, SC0-1s, SC1, the stream-count arm and the battery. The
+reason is its `load` and `harness` legs, which require the run's manifest
+and the checkout's harness trees to be the server commit's
+(bench/k2cost/README.md, "The verdict and the arm manifest"). A Layer B
+harness fix found after the cut is a new commit; `build.rs` embeds the
+commit in the binary, so its sha256 changes, and `verify_arm` requires
+every arm manifest's `server_sha256` to be the RC identity. So the fix
+voids every arm already run on the old binary, the 72 h of SC0-1s and the
+30 h of SC1 included, not Layer B alone.
+
+The pre-cut rehearsal: before the cut, run Layer B from a clean checkout
+at the candidate commit, with the committed `layer-b.json` at time scale
+1, on `--binary` an x86_64-musl `streams-slate` built in that checkout as
+`cut-release.sh` builds it (`cargo zigbuild --locked --release --target
+x86_64-unknown-linux-musl --bin streams-slate`), so `/v1/debug/load` names
+the candidate commit (`run-shared.sh --release <a release directory>
+--binary <that binary>`: the rig stages that directory's deploy tree
+around the candidate's binary). The rehearsal is judged like the
+certifying run. `load` and `harness` must `PASS`; `release-binary` fails
+by construction, as a `--binary` run never certifies, and a known-red leg
+(Q0) may fail, as the manifest's `known_red` records. Any other red leg is
+fixed, and rehearsed again, before the cut.
+
+Neither run can be made yet: the rule is recorded, not yet executable.
+`run-shared.sh` is staged for a release layout older than triage B2's. It
+requires `release.json` and `cells/` at the release directory's root and
+passes `CELL_STAGE` in the container's environment, while
+`scripts/cut-release.sh` writes `deploy/release.json`, `deploy/cells/` and
+`bin/s3lite` (`deploy/composer/release.ts`), and B2's entry reads
+`release.json` under `deploy/` and its stage and deploy nonce from the
+service's input (`COMPOSER_INPUT`), never the environment. So the rig
+refuses a cut release (`<dir> has no release.json`), and the entry refuses
+a directory in the rig's layout before the server starts, for the
+certifying run and the rehearsal alike. Both wait for the rig's
+re-staging to B2's layout (the lead's decision deploy-q5 #6 (3) of
+2026-10-13, not built; it needs a lane: NEXT-WORK, public beta item 9).
 
 Waived for a single-cell RC: the script prints each waiver, and the
 certification manifest and the tag record them. They are the capacity
