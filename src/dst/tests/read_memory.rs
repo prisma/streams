@@ -13,6 +13,7 @@
 use super::fixture_cell::{Cell, CellSpec, open_cell, project};
 use super::fixture_http::engine_shutdown;
 use super::fixture_requests::{PRISMA_KEY, preq};
+use super::read_memory_wakes::woken_at_a_full_line;
 use crate::failpoints::{Fp, parked};
 use crate::tenant::ProjectId;
 use std::time::{Duration, Instant};
@@ -481,7 +482,7 @@ async fn parked_waits_weigh_in_their_projects_pressure() {
 
 /// Project `i`'s default read of its stream `big`: (status, error code,
 /// answered within 1 s).
-async fn prompt_read(cell: &Cell, i: usize) -> (u16, Option<String>, bool) {
+pub(super) async fn prompt_read(cell: &Cell, i: usize) -> (u16, Option<String>, bool) {
     let started = Instant::now();
     let (status, _, body) = cell.call(i, "GET", RECORDS, b"").await;
     let code = serde_json::from_slice::<serde_json::Value>(&body)
@@ -506,7 +507,7 @@ pub(super) async fn at_rest(cell: &Cell, i: usize) -> (u64, u64) {
 
 /// `polls` long-polls of project 0 on its empty stream `lp`, each from a
 /// client that never reads, parked holding nothing.
-async fn parked_polls(cell: &Cell, polls: usize, query: &str) -> Vec<TcpStream> {
+pub(super) async fn parked_polls(cell: &Cell, polls: usize, query: &str) -> Vec<TcpStream> {
     let created = cell
         .call(0, "PUT", "/v1/streams/lp", br#"{"format":{"kind":"json"}}"#)
         .await;
@@ -540,65 +541,32 @@ pub(super) async fn append_to_lp(cell: &Cell, n: usize) {
 
 /// A woken long-poll takes its read reservation again before it renders
 /// (isolation review F1): twelve of project 0's long-polls of 1 MiB each,
-/// woken together by one append of 15 x 64 KiB to clients that never read,
-/// hold at most project 0's line of one page budget, so the instance's
-/// read memory of two page budgets keeps a page budget for project 1,
-/// whose read is served at once. Before: each woken page was charged
-/// unreserved, project 0 held 11,799,612 B past its line of 8,388,608 B
-/// and project 1 was refused 503 `read_memory_busy` after 2 s.
+/// from clients that never read, woken together by one append of
+/// 15 x 64 KiB while unread pages hold its line but for 64 KiB, take
+/// nothing, answer no byte and stay parked, and project 1 reads at once
+/// beside them; once the pages leave they hold at most the line, project
+/// 1 still reads at once, and each answers its page
+/// (`read_memory_wakes::woken_at_a_full_line`). Before: each woken page
+/// was charged unreserved and sent, so all twelve answered and none stayed
+/// parked; on macOS project 0 held 18,092,778 B against its line of
+/// 6,358,702 B and project 1 was refused 503 `read_memory_busy`, while
+/// Linux, taking each page whole, showed only the two unread pages.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_projects_woken_long_polls_stay_inside_its_line_and_its_neighbour_reads() {
-    let cell = open_cell(CellSpec::open(2)).await;
-    big_stream(&cell, 1).await;
-    cell.state
-        .admission
-        .set_project_memory_pressure_bytes(PAGE_BUDGET);
-    cell.state
-        .admission
-        .set_read_memory_capacity(2 * PAGE_BUDGET);
-    let polls = parked_polls(&cell, 12, "waitMs=20000&maxBytes=1048576").await;
-    append_to_lp(&cell, 15).await;
-    let (held, instance) = at_rest(&cell, 0).await;
-    let neighbour = prompt_read(&cell, 1).await;
-    assert_eq!(
-        (held <= PAGE_BUDGET, held == instance, neighbour.clone()),
-        (true, true, (200, None, true)),
-        "project 0 holds {held} B against its line of {PAGE_BUDGET} B (instance {instance} B); \
-         its neighbour's read: {neighbour:?}"
-    );
-    drop(polls);
-    engine_shutdown(&cell.state).await;
+    woken_at_a_full_line(12, "waitMs=20000&maxBytes=1048576", 15).await;
 }
 
 /// The same with long-polls that leave `maxBytes` to its default (capacity
-/// review C2): 32 of them, woken by one append of 48 x 64 KiB, take the
-/// default page budget again each before reading their 1 MiB tail page, so
-/// project 0 holds at most its line and project 1 reads at once beside
-/// it. Before: project 0 held 31,465,632 B under a line of 8,388,608 B,
-/// past the instance's read memory of 25,165,824 B, and project 1 was
-/// refused 503 `read_memory_busy`.
+/// review C2): 32 of them, woken by one append of 48 x 64 KiB, each take
+/// what was appended (at most the default page budget) before reading
+/// their 1 MiB tail page, so none renders beside unread pages that hold
+/// the line but for 64 KiB, and once the pages leave project 0 holds at
+/// most its line and project 1 reads at once beside it. Before: the woken
+/// pages were charged unreserved and sent, so all 32 answered and none
+/// stayed parked (on macOS project 0 held 37,758,798 B).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn woken_default_long_polls_stay_inside_their_projects_line_and_its_neighbour_reads() {
-    let cell = open_cell(CellSpec::open(2)).await;
-    big_stream(&cell, 1).await;
-    cell.state
-        .admission
-        .set_project_memory_pressure_bytes(PAGE_BUDGET);
-    cell.state
-        .admission
-        .set_read_memory_capacity(3 * PAGE_BUDGET);
-    let polls = parked_polls(&cell, 32, "waitMs=20000").await;
-    append_to_lp(&cell, 48).await;
-    let (held, instance) = at_rest(&cell, 0).await;
-    let neighbour = prompt_read(&cell, 1).await;
-    assert_eq!(
-        (held <= PAGE_BUDGET, held == instance, neighbour.clone()),
-        (true, true, (200, None, true)),
-        "project 0 holds {held} B against its line of {PAGE_BUDGET} B (instance {instance} B); \
-         its neighbour's read: {neighbour:?}"
-    );
-    drop(polls);
-    engine_shutdown(&cell.state).await;
+    woken_at_a_full_line(32, "waitMs=20000", 48).await;
 }
 
 /// A woken long-poll whose page finds no room in the read memory before

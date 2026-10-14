@@ -15,8 +15,11 @@
 //! it a few KiB under its line also latches its own writes (its pressure
 //! counts its held pages and its parked waits), so the appends that wake
 //! a waiter there would be refused, and writes never consult the
-//! instance's read memory. A reservation takes one amount in both ledgers
-//! at once (`ReadHold::take`).
+//! instance's read memory. `woken_at_a_full_line` (F1 and C2, run from
+//! `read_memory`) is bound by its project's line all the same: it sets
+//! the line once the append that wakes its waiters is applied and before
+//! its shard's held dispatch makes it durable. A reservation takes one
+//! amount in both ledgers at once (`ReadHold::take`).
 //!
 //! A client that "never reads" sends its request over a socket with a
 //! 4 KiB receive buffer and leaves the response unread, so its page is
@@ -31,7 +34,7 @@ use super::fixture_requests::PRISMA_KEY;
 use super::fixture_storage::mem;
 use super::read_memory::{
     MIB, PAGE_BUDGET, RECORDS, append_to_lp, at_rest, big_stream, ledgers, never_read, padded,
-    settle_at, until,
+    parked_polls, prompt_read, settle_at, until,
 };
 use crate::application::creation::{CreateCommand, ForkCommand};
 use crate::dst::{FaultProfile, FaultStore, ObjClass, StoreOp};
@@ -268,6 +271,101 @@ fn response(bytes: &[u8]) -> Option<(u16, Vec<u8>)> {
     };
     let body = bytes.get(head..head + length)?;
     Some((status, body.to_vec()))
+}
+
+/// A project's fan-out wake at its full line (isolation review F1 and
+/// capacity review C2, in `read_memory`): project 0's `polls` long-polls
+/// (`query`) on `lp`, from clients that never read, are woken by one
+/// append of `appended` x 64 KiB while two unread pages of its `big` hold
+/// its line but for 64 KiB, less than any woken take. They take nothing,
+/// answer no byte and stay parked, and project 1 reads at once beside
+/// them. Once the pages leave, project 0 holds at most its line, project
+/// 1 still reads at once, and each waiter answers the first 15 appended
+/// (`tail_max_bytes` cuts the 16th). The waiters are observed on their
+/// sockets and in the parked count, which Linux keeps: it takes a woken
+/// page whole from the server, ending its hold, and leaves at rest only
+/// what a page larger than that holds.
+pub(super) async fn woken_at_a_full_line(polls: usize, query: &str, appended: usize) {
+    let cell = open_cell(CellSpec::open(2)).await;
+    let page = big_stream(&cell, 0).await;
+    big_stream(&cell, 1).await;
+    let line = 2 * page + 64 * 1024;
+    cell.state
+        .admission
+        .set_read_memory_capacity(line + PAGE_BUDGET);
+    let mut waiters = parked_polls(&cell, polls, query).await;
+    let pages = fill_the_line_and_wake(&cell, appended, page, line).await;
+    let rest = at_rest(&cell, 0).await;
+    let parked = cell.state.admission.parked();
+    let received = futures_util::future::join_all(waiters.iter().map(received)).await;
+    let answered = received.iter().filter(|bytes| **bytes > 0).count();
+    assert_eq!(
+        (rest, parked, answered, prompt_read(&cell, 1).await),
+        (
+            (2 * page, 2 * page),
+            i64::try_from(polls).unwrap(),
+            0,
+            (200, None, true)
+        ),
+        "woken beside unread pages that hold project 0's line of {line} B but for 64 KiB, \
+         the long-polls hold nothing, stay parked and answer no byte, and project 1 reads \
+         at once (the ledgers at rest, the parked waits, the waiters that answered, \
+         project 1's read)"
+    );
+    drop(pages);
+    let (held, instance) = at_rest(&cell, 0).await;
+    let neighbour = prompt_read(&cell, 1).await;
+    assert_eq!(
+        (held <= line, held == instance, neighbour.clone()),
+        (true, true, (200, None, true)),
+        "project 0 holds {held} B against its line of {line} B (instance {instance} B); \
+         its neighbour's read: {neighbour:?}"
+    );
+    let answers = futures_util::future::join_all(waiters.iter_mut().map(answer)).await;
+    let woken: Vec<String> = (0..15).map(padded).collect();
+    let woken = format!("[{}]", woken.join(","));
+    let statuses: Vec<(u16, usize)> = answers.iter().map(|(s, b)| (*s, b.len())).collect();
+    let served = answers
+        .iter()
+        .filter(|(status, body)| *status == 200 && *body == woken.as_bytes())
+        .count();
+    assert_eq!(
+        served, polls,
+        "each waiter answers the first 15 appended: {statuses:?}"
+    );
+    assert_eq!(settle_at(&cell, 0, (0, 0)).await, (0, 0));
+    engine_shutdown(&cell.state).await;
+}
+
+/// Append `n` x 64 KiB to project 0's `lp` with its shard's dispatch held
+/// and, once they are applied, read two pages of `big` from clients that
+/// never read, then set project 0's memory line to `line`: the release
+/// makes the append durable and wakes `lp`'s waits. Set before, the line
+/// would refuse the append, whose body and the parked waits weigh in the
+/// pressure its writes are latched at. Returns the pages' sockets.
+async fn fill_the_line_and_wake(cell: &Cell, n: usize, page: u64, line: u64) -> Vec<TcpStream> {
+    let sref = ProjectId::new(&project(0)).unwrap().stream_ref("lp");
+    let desc = cell.state.registry.get(&sref).await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
+    let engine = cell.state.engine_for(&route).await.unwrap();
+    let handle = engine.stream_handle(seg.identity).await.unwrap();
+    let applied = || handle.state.lock().unwrap().applied.next;
+    let guard = engine.test_hold_dispatch().await;
+    let fill = async {
+        until(|| applied() >= u64::try_from(n).unwrap()).await;
+        let mut pages = Vec::new();
+        for _ in 0..2 {
+            pages.push(never_read(cell, 0, "GET", RECORDS, b"").await);
+        }
+        let held = settle_at(cell, 0, (2 * page, 2 * page)).await;
+        assert_eq!(held, (2 * page, 2 * page), "two unread pages of big");
+        cell.state.admission.set_project_memory_pressure_bytes(line);
+        drop(guard);
+        pages
+    };
+    let ((), pages) = futures_util::future::join(append_to_lp(cell, n), fill).await;
+    pages
 }
 
 /// A woken long-poll takes exactly what was appended while it waited, 64 B
