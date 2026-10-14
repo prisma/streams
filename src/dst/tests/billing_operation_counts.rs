@@ -2,9 +2,11 @@
 //! `queue_operations`) follow the typed outcome (item 28 step B). An
 //! accepted request is counted once, against the incarnation it committed
 //! to, with no second descriptor read between the outcome and the count; a
-//! refusal, and a request whose handler never answered, count nothing.
+//! refusal, and a request whose handler never answered, count nothing. The
+//! server's reads of its own ledgers count nothing either.
 
-use super::fixture_http::{engine_shutdown, http_rig};
+use super::fixture_auth::{auth_rig, mint_token, rig_append, rig_create};
+use super::fixture_http::{engine_shutdown, http_rig, install_rollup};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_storage::mem;
 use crate::failpoints::Fp;
@@ -525,5 +527,97 @@ async fn settle_counts_follow_the_typed_outcome() {
     );
     let got = counts(&state, &desc.stream_epoch).queue_operations;
     assert_eq!(got, 3, "a refusal was counted");
+    engine_shutdown(&state).await;
+}
+
+/// An enforce rig whose rollup has consumed `_usage` (one append's usage)
+/// and `_ops_metrics` (one snapshot), so each later step reads a page of its
+/// ledger and finds nothing to apply.
+async fn consumed_ledgers() -> std::sync::Arc<crate::http::AppState> {
+    let (_feeds, state, addr) = auth_rig("proj-opcsys", "ws_opcsys", &["c1"], None).await;
+    let store = state.data_store.clone();
+    let rollup = crate::rollup::UsageRollup::open(store, "", &state.config).await;
+    install_rollup(&state, rollup.unwrap()).await;
+    let bearer = mint_token("c1", "proj-opcsys", "ws_opcsys", 1, 1, "opcsys", 600);
+    rig_create(addr, "opcsys", &bearer).await;
+    assert_eq!(rig_append(addr, "opcsys", &bearer, r#"{"n":1}"#).await, 200);
+    state.billing.reads().seal_if_aged(0);
+    let mut drained = 0;
+    for _ in 0..100 {
+        let round = crate::billing::drain_once(&state).await.unwrap();
+        drained += round;
+        if round == 0 && drained > 0 {
+            break;
+        }
+    }
+    crate::ops::emit_metrics_once(&state).await.unwrap();
+    let mut applied = (0, 0);
+    for _ in 0..50 {
+        let usage = crate::billing::rollup_step(&state).await.unwrap();
+        let ops = crate::billing::ops_rollup_step(&state).await.unwrap();
+        if (usage, ops) == (0, 0) {
+            break;
+        }
+        applied = (applied.0 + usage, applied.1 + ops);
+    }
+    assert_eq!(
+        (applied.0 == drained, drained > 0, applied.1),
+        (true, true, 1),
+        "the rollup consumed {applied:?} of {drained} usage envelopes and one snapshot"
+    );
+    state
+}
+
+/// The deployment account's rows in the active read window, in a stable order.
+fn account_rows(
+    state: &crate::http::AppState,
+) -> Vec<(crate::billing::BillingIdentity, crate::billing::RowDelta)> {
+    let account = state.deployment.account_id();
+    let mut rows: Vec<_> = state.billing.reads().snapshot_active();
+    rows.retain(|(id, _)| id.account_id == account);
+    rows.sort_by(|(a, _), (b, _)| {
+        (&a.project_id, &a.stream_id).cmp(&(&b.project_id, &b.stream_id))
+    });
+    rows
+}
+
+/// Owner decision 2026-10-14 (round 4, item 2; alerting #1): the server's
+/// reads of its own ledgers are no one's usage. On an enforce rig, an idle
+/// rollup step and an idle ops rollup step read a page of `_usage` and of
+/// `_ops_metrics` and count no unowned meter event, and the deployment
+/// account's read rows stay as they were. `UNOWNED_METER_EVENTS` is
+/// process-wide, and a scenario running beside this one may count a feed
+/// miss of its own, so the pair is taken again, 10 ms apart, until one runs
+/// in a window nothing else counted in: a pair that meters its two reads
+/// counts two in every window.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idle_rollup_steps_count_no_unowned_meter_event() {
+    use crate::billing::UNOWNED_METER_EVENTS;
+    use std::sync::atomic::Ordering::Relaxed;
+    let _clock = crate::billing::billing_clock_lock().read().await;
+    let state = consumed_ledgers().await;
+    let (rows, unflushed) = (account_rows(&state), state.billing.reads().unflushed());
+    let mut counted = Vec::new();
+    while counted.len() < 50 && counted.last() != Some(&0) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let before = UNOWNED_METER_EVENTS.load(Relaxed);
+        let usage = crate::billing::rollup_step(&state).await.unwrap();
+        let ops = crate::billing::ops_rollup_step(&state).await.unwrap();
+        counted.push(UNOWNED_METER_EVENTS.load(Relaxed) - before);
+        assert_eq!(
+            (
+                (usage, ops),
+                account_rows(&state),
+                state.billing.reads().unflushed()
+            ),
+            ((0, 0), rows.clone(), unflushed),
+            "an idle rollup pair applied a page or changed the read window"
+        );
+    }
+    assert_eq!(
+        counted.last(),
+        Some(&0),
+        "every idle rollup pair counted unowned meter events: {counted:?}"
+    );
     engine_shutdown(&state).await;
 }

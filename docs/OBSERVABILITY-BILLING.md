@@ -490,7 +490,7 @@ retained_by_forks
 
 ### 8.4 Self-metering
 
-All reserved system streams and rollup databases are excluded from customer usage, rate limits, and catalog cardinality.
+All reserved system streams and rollup databases are excluded from customer usage, rate limits, and catalog cardinality. The server's own reads of its ledgers (`billing::system_read`, the usage and ops rollup steps) are internal reads that meter nothing, so under enforce they count no `unowned_meter_events_total` either (edge change #NEW-r4-rust-1, the owner's round-4 decision of 2026-10-14).
 
 Their object-store requests and bytes remain visible as system COGS metrics.
 

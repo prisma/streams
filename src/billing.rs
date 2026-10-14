@@ -1889,11 +1889,11 @@ pub(crate) async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>
 // Fleet-safe system-stream client (round-21 blocker 5)
 // ---------------------------------------------------------------------
 
-/// Read a page of a reserved system stream from ANY fleet member:
-/// local read; on an ownership 409, one relay hop through the
-/// incarnation-bound internal segment read. Returns (json body, next
-/// cursor); a 2xx page without `stream-next-offset` is an error, never
-/// a "" cursor.
+/// Read a page of a reserved system stream from ANY fleet member: local
+/// read; on an ownership 409, one relay hop through the incarnation-bound
+/// internal segment read. Both are internal reads and meter nothing (the
+/// server's own reads are no one's usage). Returns (json body, next cursor);
+/// a 2xx page without `stream-next-offset` is an error, never a "" cursor.
 // mt-lint: allow(name-param-shared-core): system ledger under the system project; names are crate constants, never customer input
 pub(crate) async fn system_read(
     state: &std::sync::Arc<crate::http::AppState>,
@@ -1909,6 +1909,7 @@ pub(crate) async fn system_read(
     );
     let params = crate::http::ReadParams {
         offset: offset.clone(),
+        internal: true,
         ..Default::default()
     };
     let resp = crate::http::read_inner(
@@ -1935,7 +1936,6 @@ pub(crate) async fn system_read(
     let Some((_, base)) = crate::http::replay_peer_url(state, &resp) else {
         return Err(format!("system read {stream}: {}", resp.status()));
     };
-    // Relay through the incarnation-bound internal read.
     let desc = state
         .registry
         // mt-lint: allow(stream-ref-construction): system ledger under the system project; names are crate constants

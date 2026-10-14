@@ -4563,6 +4563,17 @@
     ]
   },
   {
+    "name": "idle_rollup_steps_count_no_unowned_meter_event",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "17646094fe044268e808516649b492a579ecfafa0e984afabca7cda4da074223",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_operation_counts.rs",
+    "scenarios": []
+  },
+  {
     "name": "idle_stream_handles_evict_and_reload",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
