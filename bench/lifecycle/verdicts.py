@@ -382,6 +382,34 @@ def retry_answer(a: dict) -> bool:
     return a.get("status") == 503 and bool(a.get("retry_after"))
 
 
+def whole(s: dict) -> bool:
+    """A tick whose every answer is 2xx."""
+    return bool(s.get("answers")) and all(ok_answer(a) for a in s["answers"])
+
+
+def raw_window(r: Report, i: int, start: int, end: float, ticks: list, listen: int) -> None:
+    """The longest time between completed all-2xx ticks (`t_end`) across a
+    restart, from the last one before its trigger: a 2xx that took seconds
+    (the new build's first request waits on its lazy shard open, up to
+    SHARD_OPEN_WAIT_MS, inside the prober's 10 s timeout) is time without
+    service as much as a refusal is."""
+    done = sorted(s["t_end"] for s in ticks if whole(s) and s["t"] < end)
+    edges = [e for e in done if e <= start][-1:] or [start]
+    edges += [e for e in done if e > start]
+    failed = [s for s in ticks if start <= s["t"] < end and not whole(s)]
+    if failed and failed[-1]["t"] >= edges[-1]:
+        r.add("FAIL", f"restart {i}: clients were without service from {secs(failed[0]['t'] - listen)} s after "
+                      "`listening` and never got it back")
+        return
+    gap, a, b = max([((y - x) / 1000, x, y) for x, y in zip(edges, edges[1:])] or [(0.0, start, start)])
+    r.check(gap <= RESTART_WINDOW_BAR_S,
+            f"restart {i}: raw clients were without service at most {gap:.1f} s across the switch "
+            f"(between completed all-2xx ticks; bar {RESTART_WINDOW_BAR_S} s)",
+            f"restart {i}: raw clients were without service {gap:.1f} s across the switch (between completed all-2xx "
+            f"ticks, from {secs(a - listen)} s to {secs(b - listen)} s after `listening`), over the "
+            f"{RESTART_WINDOW_BAR_S} s bar")
+
+
 def judge_restart(ev: dict) -> Report:
     """Every tick from a restart's trigger to the next trigger (or the end
     of the cooldown) is judged, not only those up to the first 2xx: a
@@ -397,7 +425,6 @@ def judge_restart(ev: dict) -> Report:
         r.add("FAIL", "no restart ran")
     if not any(a.get("kind") == "append" for s in ticks for a in s.get("answers") or []):
         r.add("FAIL", "no append was probed: a fenced write's 500 (F2) cannot show on reads alone")
-    whole = lambda s: bool(s.get("answers")) and all(ok_answer(a) for a in s["answers"])  # noqa: E731
     for i, rs in enumerate(restarts, 1):
         if rs.get("rc") != 0:
             r.add("FAIL", f"restart {i}: the restart command exited {rs.get('rc')}")
@@ -418,19 +445,7 @@ def judge_restart(ev: dict) -> Report:
         r.add("FACT", f"restart {i}: the new build first answered every probe {secs(first_new['t'] - listen)} s after its "
                       f"`listening` line" + (f"; the old build answered until {secs(last_old['t'] - listen)} s after it"
                                              if last_old else ""))
-        # The window: from the first tick with a failed or refused answer to
-        # the next tick whose every answer is 2xx.
-        failed = [s for s in win if not whole(s)]
-        back = next((s for s in win if failed and s["t"] > failed[-1]["t"] and whole(s)), None)
-        if failed and back is None:
-            r.add("FAIL", f"restart {i}: clients were without service from {secs(failed[0]['t'] - listen)} s after "
-                          "`listening` and never got it back")
-        else:
-            gap = (back["t"] - failed[0]["t"]) / 1000 if failed else 0.0
-            r.check(gap <= RESTART_WINDOW_BAR_S,
-                    f"restart {i}: raw clients were without service {gap:.1f} s across the switch (bar {RESTART_WINDOW_BAR_S} s)",
-                    f"restart {i}: raw clients were without service {gap:.1f} s across the switch, over the "
-                    f"{RESTART_WINDOW_BAR_S} s bar")
+        raw_window(r, i, rs["t_trigger"], end, ticks, listen)
         build = lambda s: "new" if s.get("boot") == boot else "old" if old and s.get("boot") == old else (  # noqa: E731
             f"boot {s['boot'][:8]}" if s.get("boot") else "no /health")
         answers = [(s, a) for s in win for a in s.get("answers") or []]

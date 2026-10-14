@@ -262,12 +262,15 @@ class Restart(unittest.TestCase):
     LISTEN = T0 + 20_000
 
     @staticmethod
-    def tick(ms: int, boot, read: int = 200, append: int | None = None, code=None, retry_after=None) -> dict:
-        """One probe tick: a read and an append, and the /health boot id beside them."""
+    def tick(ms: int, boot, read: int = 200, append: int | None = None, code=None, retry_after=None,
+             took_ms: int = 0) -> dict:
+        """One probe tick: a read and an append, answered `took_ms` after it
+        began, and the /health boot id beside them."""
         def answer(kind: str, status: int) -> dict:
             return {"t": ms, "kind": kind, "status": status, "code": code if status >= 400 else None,
                     "retry_after": retry_after if status == 503 else None}
-        return {"t": ms, "boot": boot, "answers": [answer("read", read), answer("append", read if append is None else append)]}
+        return {"t": ms, "t_end": ms + took_ms, "boot": boot,
+                "answers": [answer("read", read), answer("append", read if append is None else append)]}
 
     def ev(self, ticks) -> dict:
         return {"restarts": [{"t_trigger": T0 + 10_000, "rc": 0, "new_version": "v2",
@@ -288,7 +291,8 @@ class Restart(unittest.TestCase):
         self.assertEqual(lines_of(V.judge_restart(self.ev(self.switch()))), [
             "FACT restart: restart 1: the new build first answered every probe 8.0 s after its `listening` line; "
             "the old build answered until 4.0 s after it",
-            "PASS restart: restart 1: raw clients were without service 3.0 s across the switch (bar 10 s)",
+            "PASS restart: restart 1: raw clients were without service at most 4.0 s across the switch (between completed "
+            "all-2xx ticks; bar 10 s)",
             "FACT restart: restart 1: 6 x 503 with Retry-After while restarting ['503:shard_moving']",
             "PASS restart: restart 1: raw clients saw only 503 with Retry-After",
             "FACT restart: the windows are a raw client's, polling every 0.25 s; an SDK client's first success after a "
@@ -309,7 +313,24 @@ class Restart(unittest.TestCase):
         fenced = lines_of(V.judge_restart(self.ev(self.switch(1, lambda ms: self.tick(ms, "b1", 200, 500, code="fenced")))))
         self.assertIn("FAIL restart: restart 1: raw clients saw 1 other answer(s): ['append 500:fenced (old)']", fenced)
         slow = lines_of(V.judge_restart(self.ev(self.switch(12))))
-        self.assertIn("FAIL restart: restart 1: raw clients were without service 12.0 s across the switch, over the 10 s bar", slow)
+        self.assertIn("FAIL restart: restart 1: raw clients were without service 13.0 s across the switch (between completed "
+                      "all-2xx ticks, from 4.0 s to 17.0 s after `listening`), over the 10 s bar", slow)
+
+    def test_a_2xx_that_stalls_is_time_without_service(self):
+        # The new build's first request waits on its lazy shard open (up to
+        # SHARD_OPEN_WAIT_MS, 10 s) and then answers 2xx inside the
+        # prober's 10 s timeout: no tick fails, yet clients wait. The
+        # prober is one blocking thread, so the next tick starts after it.
+        def stalled(took_s: int) -> list:
+            ticks = [self.tick(T0 + i * 1000, "b1") for i in range(25)]
+            ticks.append(self.tick(T0 + 25_000, "b2", took_ms=took_s * 1000))
+            return ticks + [self.tick(T0 + (26 + took_s) * 1000 + k * 1000, "b2") for k in range(5)]
+        self.assertIn("PASS restart: restart 1: raw clients were without service at most 8.0 s across the switch "
+                      "(between completed all-2xx ticks; bar 10 s)", lines_of(V.judge_restart(self.ev(stalled(7)))))
+        got = lines_of(V.judge_restart(self.ev(stalled(12))))
+        self.assertIn("FAIL restart: restart 1: raw clients were without service 13.0 s across the switch (between "
+                      "completed all-2xx ticks, from 4.0 s to 17.0 s after `listening`), over the 10 s bar", got)
+        self.assertEqual(got[-1], "LEG_FAIL restart")
 
     def test_a_new_build_that_never_serves_and_reads_alone_fail(self):
         ticks = [t for t in self.switch() if t["boot"] != "b2"]

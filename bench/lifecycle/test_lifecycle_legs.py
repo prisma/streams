@@ -242,8 +242,9 @@ class Legs(unittest.TestCase):
 
         def product(path, headers_file=None, method="GET", body=None):
             calls.append((method, path, body))
-            return {"t": self.clock.now(), "status": 201 if method == "PUT" else 200, "code": None, "retry_after": None,
-                    "boot": None}
+            t = self.clock.now()
+            self.clock.t += 20  # each answer takes 20 ms
+            return {"t": t, "status": 201 if method == "PUT" else 200, "code": None, "retry_after": None, "boot": None}
         cell = mock.Mock()
         cell.product.side_effect = product
         cell.health.side_effect = lambda: {"t": self.clock.now(), "status": 200, "boot": boots[-1]}
@@ -254,11 +255,14 @@ class Legs(unittest.TestCase):
         self.assertEqual(calls[2], ("GET", "/v1/streams/lc/s00000", None))
         self.assertEqual(calls[3], ("POST", "/v1/streams/lc/restart-probe/records", b'{"lifecycle": "restart", "seq": 1}'))
         first = ev["samples"][0]
-        self.assertEqual((first["t"], first["boot"], [a["kind"] for a in first["answers"]]), (T0, "b1", ["read", "append"]))
+        # A tick ends when its product answers did: the window counts a slow 2xx.
+        self.assertEqual((first["t_end"] - first["t"], first["boot"], [a["kind"] for a in first["answers"]]),
+                         (40, "b1", ["read", "append"]))
         self.assertEqual(ev["samples"][-1]["boot"], "b2")
         r = L.judge({"leg": "restart", **ev})
         self.assertTrue(r.ok, r.render())
-        self.assertIn("PASS restart: restart 1: raw clients were without service 0.0 s across the switch (bar 10 s)", r.render())
+        self.assertIn("PASS restart: restart 1: raw clients were without service at most 0.3 s across the switch "
+                      "(between completed all-2xx ticks; bar 10 s)", r.render())
 
     def test_restart_stops_before_it_probes_when_its_read_probes_stream_does_not_answer_2xx(self):
         # A cell where load.setup never ran: the example's probe_path is

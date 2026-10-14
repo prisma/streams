@@ -309,12 +309,15 @@ def restart(ctx: Ctx, ev: dict | None = None) -> dict:
     seq = [0]
 
     def tick() -> dict:
+        # t_end: when the product answers completed, so the verdict's
+        # window counts a 2xx that took seconds as time without service.
         t = ctx.now()
         seq[0] += 1
         read = dict(ctx.cell.product(path), kind="read")
         append = dict(ctx.cell.product(stream + "/records", method="POST",
                                        body=json.dumps({"lifecycle": "restart", "seq": seq[0]}).encode()), kind="append")
-        return {"t": t, "boot": ctx.cell.health().get("boot"), "answers": [read, append]}
+        t_end = ctx.now()
+        return {"t": t, "t_end": t_end, "boot": ctx.cell.health().get("boot"), "answers": [read, append]}
     every = ev["probe_every_s"] = p.get("restart.probe_every_s", 0.25)
     prober = ev["samples"] = ctx.prober(tick, every)
     restarts = ev["restarts"] = []
