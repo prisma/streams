@@ -43,7 +43,11 @@ not carried over).
   `duplicate: true` if it was written (through a client for the new
   endpoint after a `421`). A plain append
   answered `2xx` whose answer cannot be read rejects with `StreamsError`
-  `unreadable_response` (`retryable: false`): it was written. A token
+  `unreadable_response` (`retryable: false`): it was written. A producer
+  append answered so rejects the same way, where it rejected with the
+  runtime's `SyntaxError` or `TypeError`, and the producer keeps its
+  sequence: send the same value through it before any other value on that
+  routing key, which the server answers `duplicate: true`. A token
   provider's failure is never classified as an append's unknown outcome.
 
 ### Added

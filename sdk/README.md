@@ -131,7 +131,11 @@ In plain words:
   the HTTP `status` (0 when no answer arrived), a `code` (the server's, or
   the SDK's own, such as `transport_error`) and a `retryable` flag. An
   abort rejects with the signal's reason, and an error of your
-  `tokenProvider` or producer state store propagates unchanged.
+  `tokenProvider` or producer state store propagates unchanged. A `2xx`
+  whose body the SDK reads and cannot read (not JSON, or cut off
+  mid-body) rejects with the runtime's own `SyntaxError` or `TypeError`,
+  except an append's (below) and the credential exchange's, which is
+  `invalid_exchange_response` ("Authenticating").
 - The SDK replays a `429` or a `503` the server does not mark
   `retryable: false` (a plain append's `503` only when the server marks it
   `retryable: true`), on its `Retry-After`, and a transport failure of a
@@ -149,7 +153,10 @@ In plain words:
   deduplicates. A `503` the server marks retryable wrote nothing, and the
   SDK replays it. A plain append answered `2xx` whose answer cannot be
   read rejects with `unreadable_response`: it was written, so do not send
-  it again.
+  it again. A producer append answered so rejects with
+  `unreadable_response` too, and the producer keeps its sequence: send the
+  same value through it before any other value on that routing key, which
+  the server answers `duplicate: true` (see "Producer state ownership").
 - A producer append whose replay the server refuses (another writer
   fenced its producer id, the collection was sealed, a quota still refused
   it) rejects with `AppendOutcomeUnknownError` too, the refusal as its
@@ -273,6 +280,16 @@ message names the recovery, by `cause`:
   server can answer `duplicate: true` without writing it: carry the state
   over in your store first, saving what it holds for the scope whose
   `endpoint` is the old `url` under the same scope with the new one.
+
+A producer append answered `2xx` whose answer cannot be read (not JSON, or
+cut off mid-body) rejects with `StreamsError` `unreadable_response`
+(`retryable: false`, the read failure as `cause`). The server answered
+`2xx`, so the record was written, but the SDK saves a producer's state
+only from an answer it read, so the producer keeps its sequence. Send the
+same value on the same routing key through it before any other value on
+that key: the server answers it `duplicate: true` and the producer moves
+on. A different value sent first is refused `409`
+`producer_sequence_reused`.
 
 A fetch failure that outlasts the replay's attempts, or a failed state
 save, rejects the operation and leaves later queue operations usable.

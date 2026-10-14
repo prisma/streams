@@ -204,6 +204,48 @@ for (const op of plainAppends) {
   }
 }
 
+// A producer append's 2xx: written too, but the producer saves its state
+// only from an answer it read, so it keeps its sequence, and the recovery
+// the message names (the same value again) is answered duplicate: true.
+const PRODUCER_UNREADABLE =
+  "the server accepted the append (HTTP 200), so it was written, but its answer could not be read; " +
+  "this producer keeps its sequence, so send the same value on the same routing key through it before " +
+  "any other value on that key: the server answers it duplicate: true and the producer moves on, while a " +
+  "different value sent first is refused 409 producer_sequence_reused";
+const DUPLICATE = '{"cursor":"c","count":0,"duplicate":true,"sealed":false}';
+for (const [name, path, run] of [
+  ["a producer append", "/records", (p, n) => p.append({ n }, { routingKey: "k" })],
+  ["a producer appendMany", "/records:batch", (p, n) => p.appendMany([{ n }], { routingKey: "k" })],
+]) {
+  for (const [label, reply, Cause] of unreadable) {
+    test(`${name}: ${label} rejects as written but unreadable, sent once, and the same value sent again is a duplicate`, async () => {
+      let state = { epoch: 0, nextSeq: 0 };
+      const { s, calls } = stream([reply, () => new Response(DUPLICATE, { headers: JSON_HEADERS })]);
+      const p = s.producer("p", { state: {
+        load: async () => ({ ...state }), save: async (_scope, next) => { state = { ...next }; },
+      } });
+      const error = await rejection(run(p, 1));
+      assert.equal(calls.length, 1, "a 2xx is never sent again");
+      assert.ok(error instanceof StreamsError);
+      assert.ok(!(error instanceof sdk.AppendOutcomeUnknownError));
+      assert.equal(error.name, "StreamsError");
+      assert.deepEqual([error.status, error.code, error.retryable], [200, "unreadable_response", false]);
+      assert.equal(error.message, PRODUCER_UNREADABLE);
+      assert.ok(error.cause instanceof Cause, "the cause is the read failure");
+      assert.deepEqual(state, { epoch: 0, nextSeq: 0 }, "the producer keeps its sequence");
+
+      assert.equal((await run(p, 1)).duplicate, true, "the same value again is answered duplicate: true");
+      assert.equal((await run(p, 2)).duplicate, false);
+      assert.ok(calls.every(c => c.url.endsWith(`/v1/streams/orders${path}`)));
+      assert.deepEqual(calls.map(c => [c.headers["producer-epoch"], c.headers["producer-seq"], c.body]), [
+        ["0", "0", calls[0].body], ["0", "0", calls[0].body], ["0", "1", calls[2].body],
+      ], "the same value at the same sequence, then the next value at the next");
+      assert.notEqual(calls[2].body, calls[0].body);
+      assert.deepEqual(state, { epoch: 0, nextSeq: 2 });
+    });
+  }
+}
+
 // Pins: answers that prove nothing was written, or that S-1 leaves alone.
 
 test("append: a retryable 503 and then a transport failure are two requests and the unknown outcome of the last", async () => {

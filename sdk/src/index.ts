@@ -818,11 +818,22 @@ function producerAppendFailure(failure: StreamsError, answerLost: boolean): unkn
     : failure;
 }
 
-/** A plain append's 2xx answer. The server wrote the record, so a body that
+/** How to go on after a producer append's unreadable 2xx: `Producer.sendNow`
+ * saves the producer's state only from an answer it read, so the producer
+ * keeps its sequence (a 2xx an intermediary made up wrote nothing, and the
+ * next sequence would be refused `producer_gap`), and the server, which
+ * keeps the last sequence and request hash per routing key and producer id,
+ * answers the same value at that sequence `duplicate: true`. */
+const PRODUCER_UNREADABLE_NEXT = "this producer keeps its sequence, so send the same value on " +
+  "the same routing key through it before any other value on that key: the server answers it " +
+  "duplicate: true and the producer moves on, while a different value sent first is refused 409 " +
+  "producer_sequence_reused";
+
+/** An append's 2xx answer. The server wrote the record, so a body that
  * cannot be read (not JSON, or a connection lost mid-body) is neither a
- * retryable failure nor an unknown outcome: a second append would be a
- * second copy. */
-async function appendedResult(res: Response): Promise<AppendResult> {
+ * retryable failure nor an unknown outcome: a second plain append would be
+ * a second copy, and a producer append goes on as `next` says. */
+async function appendedResult(res: Response, next = "do not send it again"): Promise<AppendResult> {
   try {
     return (await res.json()) as AppendResult;
   } catch (cause) {
@@ -830,7 +841,7 @@ async function appendedResult(res: Response): Promise<AppendResult> {
       res.status,
       "unreadable_response",
       `the server accepted the append (HTTP ${res.status}), so it was written, ` +
-        "but its answer could not be read; do not send it again",
+        `but its answer could not be read; ${next}`,
       false,
     );
     error.cause = cause;
@@ -1322,20 +1333,18 @@ export class Stream<T = unknown> {
     body: BodyInit,
     routingKey?: string,
     bytes = false,
-    producerHeaders?: Record<string, string>,
   ): Promise<AppendResult> {
     const h: Record<string, string> = {
       ...this.kh(),
       "content-type": bytes ? "application/octet-stream" : "application/json",
-      ...(producerHeaders ?? {}),
     };
     if (routingKey) h["prisma-routing-key"] = routingKey;
     const res = await req(
-      this.ctx, "POST", this.path("/records"), h, body, undefined, producerHeaders !== undefined,
-      producerHeaders ? undefined : plainAppendFailure,
-      producerHeaders ? undefined : plainAppendReplays,
+      this.ctx, "POST", this.path("/records"), h, body, undefined, false,
+      plainAppendFailure,
+      plainAppendReplays,
     );
-    return producerHeaders ? (await res.json()) as AppendResult : appendedResult(res);
+    return appendedResult(res);
   }
 
   // ---- producer sessions (spec Stage 5) -----------------------------
@@ -1389,7 +1398,7 @@ export class Stream<T = unknown> {
       true,
       producerAppendFailure,
     );
-    return (await res.json()) as AppendResult;
+    return appendedResult(res, PRODUCER_UNREADABLE_NEXT);
   }
 
   // ---- read / subscribe / scan (spec Stage 6) -----------------------
