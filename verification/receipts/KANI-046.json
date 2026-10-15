@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "d15d7b0ceb4f473e0683f9145e6f26ea25a63c00b9b48fba2045fe188ec6eaa8",
+      "log_sha256": "db496514107b3ea9aa1875d2772f636082daf8c6148a912682e1e6d2fec6c4a8",
       "role": "baseline",
-      "seconds": 33.9,
+      "seconds": 41.6,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "095ecc4beef9b0656ba47102481efcfc0febbff5cd70fcf1dd115797f3064c29",
+      "log_sha256": "3f3cd796cac9e68823967d147a7c5e64db98f9a91bef7823e601d7de384f12cd",
       "role": "baseline",
-      "seconds": 34.7,
+      "seconds": 58.0,
       "verdict": "pass"
     },
     {
@@ -30,7 +30,7 @@
       "failed_checks": [
         "\"a trim never passes the safe boundary\""
       ],
-      "log_sha256": "199d5fb46f338183e29605fff5df442c78f14533b105d90d166a704fc1aa8768",
+      "log_sha256": "031892ac47ff4664b752922acd59e621bcedff569f1904431a63da7db574f704",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
@@ -38,7 +38,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 32.7,
+      "seconds": 91.6,
       "verdict": "fail"
     },
     {
@@ -49,7 +49,7 @@
       "failed_checks": [
         "\"a trim never moves backwards\""
       ],
-      "log_sha256": "3f28466a5579838ac0dedbda097182b3c013919e7011457daaa6340b4deca850",
+      "log_sha256": "0fbbfe3ffcf8cf343913d799ca6c5dfd832401cd5dc0915891f67203b6f4479b",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
@@ -57,7 +57,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 34.2,
+      "seconds": 141.8,
       "verdict": "fail"
     },
     {
@@ -68,7 +68,7 @@
       "failed_checks": [
         "\"the boundary moves forward within the log\""
       ],
-      "log_sha256": "ee717d98f83ef8c9073cbe81c304fe0686c8ae5fc029023f7482a20cf1f2e6d0",
+      "log_sha256": "f37084b1d97c01f19f321143b61f72d434532c2f3ffaa9f1837b5addd28bfa06",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
@@ -76,7 +76,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 34.5,
+      "seconds": 109.6,
       "verdict": "fail"
     }
   ],
@@ -88,7 +88,7 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "2bb3b0ec7217d6e97175f2ce947b4284ccb6a872eceb439b5589a556cfa00f0c",
+      "Cargo.lock": "3f126bc2792cafa1d98160478f4d5eea9eea6ccea165ce84f5123c61d204e449",
       "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
@@ -122,10 +122,10 @@
       }
     }
   },
-  "inputs_sha256": "605992532e496322192be7bef6b9dc23665fc66f93ff3efcc1f3870b95c29056",
+  "inputs_sha256": "6664b29dc47d60da69135d5aa7fab51921dec9a987783eb6c7eb2939d7242619",
   "run_on": {
     "dirty_tree": false,
-    "revision": "443843ec572bbc33064b982367483c0f36f36316"
+    "revision": "73589068dcfeff1d36f44addbe3aeaec3ee9a4e6"
   },
   "schema": 2,
   "tools": {

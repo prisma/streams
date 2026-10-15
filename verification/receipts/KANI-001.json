@@ -6,18 +6,18 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "72eba751a3c656e446f99d2f6df508b763d62ea1a4a6c6494acce1128c583dfb",
+      "log_sha256": "5eb703295366c1100a9c9ac7546ec876cae6eca16c1d35b827ad0bb90bc0897e",
       "role": "baseline",
-      "seconds": 358.1,
+      "seconds": 416.9,
       "verdict": "pass"
     },
     {
       "check": "KANI-001/canonical-digits",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "0a935f88bb8c919e92777d8ca082d3d6d1fab2b98408d21bbae299bb7532c737",
+      "log_sha256": "862b4e8bf94e2f78905e1c79deb6dfaf20dde9afbe9c17190b97ec15ab34a23e",
       "role": "baseline",
-      "seconds": 272.7,
+      "seconds": 275.0,
       "verdict": "pass"
     },
     {
@@ -28,7 +28,7 @@
       "failed_checks": [
         "\"epoch and next survive the round trip\""
       ],
-      "log_sha256": "813cb46e4ce4575ca8981b1d66918f3d851fd43e6ecc6987753bcfd11ad0aea0",
+      "log_sha256": "837b4a47d18a1da60d1fff5d349f6b2797da865a8ecf5f4424e8212c53fb1cfd",
       "mutated": {
         "src/offsets.rs": {
           "baseline": "7f5bfa2ef61b991c1919aea7b51a9d587c7117f3c53f2184f4916a3ba54fd43c",
@@ -36,7 +36,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 361.8,
+      "seconds": 416.2,
       "verdict": "fail"
     }
   ],
@@ -49,7 +49,7 @@
       "ASM-OFFSET-DOMAIN": "aef34325e54b8193d77cf768b07426056852471934347bda2d6476cdd90cc297"
     },
     "files": {
-      "Cargo.lock": "2bb3b0ec7217d6e97175f2ce947b4284ccb6a872eceb439b5589a556cfa00f0c",
+      "Cargo.lock": "3f126bc2792cafa1d98160478f4d5eea9eea6ccea165ce84f5123c61d204e449",
       "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
@@ -80,10 +80,10 @@
       }
     }
   },
-  "inputs_sha256": "5c3fee037277f5ec18fb553bba05f03e13f13fa46c1bde742bef635b7af0c67e",
+  "inputs_sha256": "98211c2e25d2050b9584e2abe7308a37bf0d9c7f5ebd646fb4b85fceee106187",
   "run_on": {
-    "dirty_tree": true,
-    "revision": "108438ea0f963e992216357f40575d7a5b7baf6d"
+    "dirty_tree": false,
+    "revision": "73589068dcfeff1d36f44addbe3aeaec3ee9a4e6"
   },
   "schema": 2,
   "tools": {
