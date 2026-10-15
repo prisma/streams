@@ -806,6 +806,21 @@
       },
       "rationale": "The harness includes src/product_cursor.rs verbatim; it grew with the provisional V3 session cursor that proves the history it continues (TLA-018-F3, 55881d7a).",
       "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+    },
+    {
+      "path": "tools/quality-invariants/src/lib.rs",
+      "owner": "crate::quota_bucket",
+      "scope": "module",
+      "lint": "dead_code",
+      "metrics": {
+        "field_site:crate::Bucket::floor:5f3b565ae094846c": 1,
+        "fields": 3,
+        "nested_items": 16,
+        "scope_lines": 108,
+        "syntax_facts": 201
+      },
+      "rationale": "The harness includes src/quota/bucket.rs verbatim; it grew with the request bucket's burst floor (the floor field, the floored constructor that full now calls, the refill cap at max(rate, floor), and the floor's assertions in its own test), so a project's request bucket holds max(requests_per_sec, 50) tokens while QuotaRegistry::admit's frozen scopes stay unchanged (edge change #NEW-r5-rust-1).",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-15 with the round-5 public-beta calls (\"accept all recommended\"; OWNER-DECISIONS-6 call 1: the burst floor built in src/quota/bucket.rs, its by-path include's growth an approved exception-growth row); these are the gate's after-values"
     }
   ],
   "schema": 1

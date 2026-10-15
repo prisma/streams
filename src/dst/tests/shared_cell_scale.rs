@@ -611,7 +611,7 @@ async fn flood(cell: &Cell, i: usize) -> Answers {
     let records = "/v1/streams/orders/records";
     let (small, large) = (padded(40), padded(300));
     match hostile(i).unwrap() {
-        0 => burst(cell, i, ("GET", records, b""), 30, true).await,
+        0 => burst(cell, i, ("GET", records, b""), 100, true).await,
         1 => burst(cell, i, ("POST", records, &large), 12, false).await,
         2 => burst(cell, i, ("POST", records, &small), 20, false).await,
         3 => {

@@ -57,6 +57,11 @@ pub(crate) const MAX_TRACKED_PROJECTS: usize = 32_768;
 /// accumulated debt worth keeping at this horizon.
 pub(crate) const IDLE_EVICT_MS: i64 = 300_000;
 
+/// The least burst a project's request bucket holds, whatever its rate: at
+/// the free tier's 10 a second, 50 requests at once and then 10 a second
+/// (the owner's round-5 call 1). The store budget keeps one second's rate.
+const REQUEST_BURST_FLOOR: u64 = 50;
+
 mod append_charge;
 mod bucket;
 use bucket::Bucket;
@@ -548,7 +553,11 @@ impl QuotaRegistry {
         Arc::new(ProjectAdmission {
             ops: self.ops.clone(),
             last_seen_ms: std::sync::atomic::AtomicI64::new(now_ms),
-            bucket: Mutex::new(Bucket::full(quotas.requests_per_sec, now_ms)),
+            bucket: Mutex::new(Bucket::floored(
+                quotas.requests_per_sec,
+                REQUEST_BURST_FLOOR,
+                now_ms,
+            )),
             append_bytes: Mutex::new(Bucket::full(quotas.append_bytes_per_sec, now_ms)),
             append_records: Mutex::new(Bucket::full(quotas.append_records_per_sec, now_ms)),
             read_bytes: Mutex::new(Bucket::full(quotas.read_bytes_per_sec, now_ms)),
@@ -614,7 +623,7 @@ impl QuotaRegistry {
 
         admission.last_seen_ms.store(now_ms, Ordering::Relaxed);
         // Request-rate token bucket: refill rps/sec continuously,
-        // capped at one second's worth (burst == rate). The rate is
+        // capped at max(rate, REQUEST_BURST_FLOOR) tokens. The rate is
         // re-read from the CURRENT quotas every admit, so a policy
         // update takes effect on the next request without any
         // republish handshake.

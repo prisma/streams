@@ -1,6 +1,6 @@
 # Prisma Streams — Shared-Cell Multitenancy Implementation Plan
 
-**Status:** FROZEN CONTRACT (Stage 0, committed 2026-08-15; revision 9, 2026-10-13 — see Revision log)
+**Status:** FROZEN CONTRACT (Stage 0, committed 2026-08-15; revision 10, 2026-10-15 — see Revision log)
 **Author:** Søren Bramer Schmidt (implementation plan, delivered 2026-08-15)
 **Target:** Many projects in each Prisma Streams cell
 **Migration posture:** Clean layout switch; no mixed-layout operation
@@ -89,6 +89,17 @@
   field: deploy the binary first, then bundles that carry it. A project
   at its quota is refused new appends `429 stored_bytes_limit` (edge
   change #158).
+- r10 (2026-10-15, the free tier's burst; decided by the owner in the
+  round-5 public-beta calls, call 1, `docs/reviews/2026-09-hardening/README.md`
+  row "Public-beta calls, round 5 (decided 2026-10-15)"; edge change
+  #NEW-r5-rust-1): §17.3 — a project's request bucket holds
+  max(`requests_per_sec`, 50) tokens and refills at `requests_per_sec`,
+  so below 50 a second a project is admitted 50 requests at once and then
+  its rate; at 50 or more nothing changes. The store budget keeps one
+  second's rate, and the debt a concurrent burst of registry writes
+  leaves grows with the burst (at 10 a second about 54 s after 50
+  creates). The policy contract is unchanged: `requests_per_sec` is
+  still the rate, and its description names the burst.
 
 ---
 
@@ -1357,6 +1368,19 @@ Reject only the offending project:
 
 Never merge unrelated projects into one overflow token bucket.
 
+*Request rate (edge change #NEW-r5-rust-1; the owner's round-5 call 1
+of 2026-10-15).* Each verified request takes one token of its project's
+request bucket, which starts full, refills at `requests_per_sec` and
+holds max(`requests_per_sec`, 50) tokens (`REQUEST_BURST_FLOOR`,
+`src/quota.rs`): below 50 a second a project is admitted 50 requests at
+once and then its rate (at the free tier's 10, 50 and then 10 a second),
+and at 50 or more one second's rate. An SDK app's delivered append costs
+1, plus 2 for each consumer group (its pull and its settle), plus 1 for
+each long-poll subscriber, all within about 60 ms, so one second's
+burst (10) refused SDK consumer apps at about a tenth of the published
+rate. The other buckets (append bytes and records, read bytes, the store
+budget below) hold one second's rate.
+
 *Enforced ceilings (r4).* Beyond the rate/volume buckets, three
 declared quotas are live:
 
@@ -1401,8 +1425,9 @@ pages it reads) or a COPY 10 (the class-A price ratio), a 304, a refusal
 or a failure nothing. SlateDB objects and the store work of other tasks
 (the committer, sweeps) are charged to no request. The weight is debited
 from the project's **store budget**, a second bucket at its
-`requests_per_sec` with one second's burst, without a floor (a cap would
-bound the debt by one request's work instead of the rate). While the
+`requests_per_sec` with one second's burst (no burst floor) and no
+floor on its debt (a cap would bound the debt by one request's work
+instead of the rate). While the
 store budget is in debt, the project's creates (recreates and forks
 included), deletes and seals answer `429 project_rate_limit` with the
 whole seconds until it is not; every other request only pays into it,
@@ -1411,11 +1436,14 @@ PUT or COPY is weighed by how it ended, once it answers, as a GET is.
 A refused route is admitted while the budget is not in debt, so from a
 full budget a sequential client gets floor(rate / weight) + 1 back to
 back, and concurrent requests all pass the gate before any is debited
-(up to one second's `requests_per_sec` at once, leaving about 10 s of
-debt for creates). A project's registry spend is thus bounded by the
-budget's rate for the refused routes, plus the descriptor GETs that the
-other routes pay but are never refused for (a few a request at most,
-within its request rate), plus one burst. A fresh create weighs 11 (a 404 and a PUT): at the
+(up to the request bucket's burst, max(`requests_per_sec`, 50), at
+once, leaving about (11 x burst - rate) / rate seconds of debt for
+creates: 54 s at the free tier's 10 a second, 27 s at 20, 10 s at 50
+and above; #NEW-r5-rust-1). A project's registry spend is thus bounded
+by the budget's rate for the refused routes, plus the descriptor GETs
+that the other routes pay but are never refused for (a few a request at
+most, within its request rate), plus one burst (the store work of
+max(`requests_per_sec`, 50) concurrent requests). A fresh create weighs 11 (a 404 and a PUT): at the
 beta's free tier of 10 requests a second a project creates one stream
 and then one every 1.1 s, at 20 two back to back and then one every
 0.55 s, at the k = 8 ceiling of 176 seventeen and then sixteen a

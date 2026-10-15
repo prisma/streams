@@ -268,3 +268,29 @@ pub(super) async fn preq(
     }
     (status, headers, raw_body)
 }
+
+/// `GET path` with `extra` until an answer is not 200, and that answer: a
+/// request bucket's burst on the wire. At least `burst` are served first,
+/// and no more than that plus what `per_sec` refilled while they ran.
+pub(super) async fn past_the_burst(
+    addr: std::net::SocketAddr,
+    path: &str,
+    extra: &[(&str, &str)],
+    burst: u32,
+    per_sec: u32,
+) -> (u16, std::collections::HashMap<String, String>, Vec<u8>) {
+    let start = std::time::Instant::now();
+    for served in 0..1_000u32 {
+        let answer = preq(addr, "GET", path, extra, b"").await;
+        if answer.0 != 200 {
+            let most = f64::from(burst) + start.elapsed().as_secs_f64() * f64::from(per_sec);
+            let within = served >= burst && f64::from(served) <= most;
+            assert!(
+                within,
+                "{served} served before a refusal, {burst} to {most}"
+            );
+            return answer;
+        }
+    }
+    panic!("1,000 GETs of {path} were all served")
+}

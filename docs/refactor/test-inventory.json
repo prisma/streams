@@ -6708,7 +6708,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "3b0740edd478e8160d7c631799d7d2c1f829e71b7ae1e9548fd58117f2273444",
+    "function_sha256": "6f5fe97db37cb233fab6b6a2923d58fe71c2092881b0b84d1263837ff11503f4",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/quota_enforcement.rs",

@@ -5,21 +5,29 @@ pub(super) struct Bucket {
     /// The admission owner checks and debits paired buckets atomically.
     pub(super) level: f64,
     last_ms: i64,
+    /// The least burst held whatever the rate; 0 holds one second's rate.
+    floor: f64,
 }
 
 impl Bucket {
     /// A fresh project starts with one full second's burst.
     pub(super) fn full(rate: u64, now_ms: i64) -> Self {
+        Self::floored(rate, 0, now_ms)
+    }
+
+    /// A full bucket holding max(rate, floor) tokens.
+    pub(super) fn floored(rate: u64, floor: u64, now_ms: i64) -> Self {
         Self {
-            level: rate as f64,
+            level: rate.max(floor) as f64,
             last_ms: now_ms,
+            floor: floor as f64,
         }
     }
 
     /// Refill without attempting a debit, including while read balance is negative.
     pub(super) fn refill(&mut self, rate: f64, now_ms: i64) {
         let dt_s = (now_ms.saturating_sub(self.last_ms).max(0) as f64) / 1000.0;
-        self.level = (self.level + dt_s * rate).min(rate);
+        self.level = (self.level + dt_s * rate).min(rate.max(self.floor));
         self.last_ms = now_ms;
     }
 
@@ -68,6 +76,12 @@ mod tests {
             bucket.level, 2.0,
             "a policy reduction caps the existing burst"
         );
+        let mut floored = Bucket::floored(4, 10, 0);
+        assert_eq!(floored.take(4.0, 11.0, 0), Err(1), "a full floor of 10");
+        floored.refill(4.0, 20_000);
+        let held = floored.level;
+        floored.refill(16.0, 40_000);
+        assert_eq!((held, floored.level), (10.0, 16.0), "max(rate, floor)");
     }
 
     #[test]

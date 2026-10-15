@@ -96,23 +96,37 @@ fn tracker_capacity_churn_evicts_idle_never_active() {
         .expect("evicted project returns");
 }
 
+/// The owner's round-5 call 1: a project's request bucket holds
+/// max(requests_per_sec, 50) tokens and refills at its rate. At the free
+/// tier's 10 a second the 50th request in one millisecond is admitted and
+/// the 51st refused with Retry-After 1; a tenth of a second refills one; an
+/// idle bucket refills to 50 and no further; a rate above the floor holds
+/// one second of it.
 #[test]
 fn rate_bucket_admits_burst_then_refuses_then_refills() {
     let r = QuotaRegistry::default();
-    let p = pid("proj_a");
-    let quotas = q(2, 0);
-    assert!(r.admit(&p, &quotas, 1_000).is_ok());
-    assert!(r.admit(&p, &quotas, 1_000).is_ok());
-    match r.admit(&p, &quotas, 1_000) {
-        Err(QuotaRefusal::Rate { retry_after_secs }) => assert!(retry_after_secs >= 1),
-        _ => panic!("third request in the same second must be rate-refused"),
-    }
-    // 500ms later: one token refilled (2/sec).
-    assert!(r.admit(&p, &quotas, 1_500).is_ok());
+    let admitted = |p: &str, rps: u64, n: usize, now_ms: i64| {
+        let quotas = q(rps, 0);
+        (0..n)
+            .filter(|_| r.admit(&pid(p), &quotas, now_ms).is_ok())
+            .count()
+    };
+    assert_eq!(
+        admitted("free", 10, 51, 1_000),
+        50,
+        "a burst at 10 a second"
+    );
     assert!(matches!(
-        r.admit(&p, &quotas, 1_500),
-        Err(QuotaRefusal::Rate { .. })
+        r.admit(&pid("free"), &q(10, 0), 1_000),
+        Err(QuotaRefusal::Rate {
+            retry_after_secs: 1
+        })
     ));
+    assert_eq!(admitted("free", 10, 2, 1_100), 1, "100 ms refills one");
+    assert_eq!(admitted("free", 10, 51, 60_000), 50, "idle refills to 50");
+    assert_eq!(admitted("slow", 1, 51, 1_000), 50, "a burst at 1 a second");
+    assert_eq!(admitted("slow", 1, 2, 2_000), 1, "a second refills one");
+    assert_eq!(admitted("fast", 80, 81, 1_000), 80, "one second above 50");
 }
 
 #[test]
@@ -125,7 +139,9 @@ fn zero_rate_is_unlimited_and_projects_never_share_buckets() {
     }
     // Project A being hot must not consume B's tokens.
     let limited = q(1, 0);
-    assert!(r.admit(&b, &limited, 1_000).is_ok());
+    for _ in 0..50 {
+        assert!(r.admit(&b, &limited, 1_000).is_ok());
+    }
     assert!(matches!(
         r.admit(&b, &limited, 1_000),
         Err(QuotaRefusal::Rate { .. })
@@ -366,7 +382,9 @@ fn a_looked_up_entry_survives_a_sweep_before_its_charge() {
 fn a_refused_admission_leaves_its_entry_evictable() {
     let r = QuotaRegistry::default();
     let limited = pid("limited");
-    r.admit(&limited, &q(1, 1), 0).unwrap();
+    for _ in 0..50 {
+        r.admit(&limited, &q(1, 1), 0).unwrap();
+    }
     assert!(matches!(
         r.admit(&limited, &q(1, 1), 0),
         Err(QuotaRefusal::Rate { .. })

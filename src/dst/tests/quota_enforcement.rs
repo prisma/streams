@@ -1,14 +1,14 @@
 //! Quota enforcement.
 
 use super::fixture_http::{engine_shutdown, http_rig, http_rig_with_auth_service};
-use super::fixture_requests::{PRISMA_KEY, hreq, preq};
+use super::fixture_requests::{PRISMA_KEY, hreq, past_the_burst, preq};
 use super::fixture_storage::{mem, skey};
 
 /// MT Stage 6a (§17.3): the server-side project admission backstop on
 /// the wire. A verified project with `requests_per_sec: 2` in the
-/// CURRENT policy gets two requests and then 429 `project_rate_limit`
-/// with a Retry-After — scoped to that project alone (bucket isolation
-/// is pinned at the unit level).
+/// CURRENT policy gets its burst of 50 (the owner's round-5 call 1) and
+/// then 429 `project_rate_limit` with a Retry-After — that project alone
+/// (the exact count and bucket isolation are pinned at the unit level).
 #[expect(
     clippy::too_many_lines,
     reason = "rate backstop scenario; verifying the project, exhausting the admission budget and reading the refusal on the wire form one causal sequence; helper phases would hide which request crossed the budget"
@@ -132,11 +132,9 @@ async fn project_rate_quota_backstop_answers_429() {
     )
     .await;
     assert_eq!(st, 201);
-    let (st, _, _) = preq(addr, "GET", "/v1/streams/qb", &[ekey, auth], b"").await;
-    assert_eq!(st, 200);
-    // Third request inside the same second: the project's bucket is
-    // dry — 429 project_rate_limit, Retry-After present, retryable.
-    let (st, h, b) = preq(addr, "GET", "/v1/streams/qb", &[ekey, auth], b"").await;
+    // Past the burst of 50 (the create was its first request) the bucket
+    // is dry — 429 project_rate_limit, Retry-After present, retryable.
+    let (st, h, b) = past_the_burst(addr, "/v1/streams/qb", &[ekey, auth], 49, 2).await;
     assert_eq!(st, 429, "{}", String::from_utf8_lossy(&b));
     let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
     assert_eq!(v["error"]["code"], "project_rate_limit");
