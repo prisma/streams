@@ -8,6 +8,8 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DEFAULT_PROFILES } from "../../deploy/cell-admin/commands.ts";
+import { type Ceilings, cellSizing, readProfiles } from "../../deploy/cell-admin/profile.ts";
 import { FREE_TIER_REQUESTS_PER_SEC } from "../../deploy/issuer/projects.ts";
 import { Opts } from "./common.ts";
 import { PayloadGen } from "./corpus.ts";
@@ -140,7 +142,10 @@ test("Layer B runs both quota postures: the ceilings classes as the stress, and 
     }
     for (const c of free) {
       const twin = m.classes.find((o) => o.class === c.class.replace(/-free$/, ""))!;
-      expect([f, c.class, c.role, c.count, c.streams]).toEqual([f, c.class, twin.role, twin.count, twin.streams]);
+      // As many projects as the original, except S3s's twin in Layer B:
+      // one, for the live pool (the next test; lead decision 2026-10-14 night).
+      const count = f === "layer-b" && c.class === "s3s-free" ? 1 : twin.count;
+      expect([f, c.class, c.role, c.count, c.streams]).toEqual([f, c.class, twin.role, count, twin.streams]);
       // k2gen's appends are Poisson: at a mean of 5 a second or less none
       // is refused by a bucket of 10, at 8 about 0.3% are.
       const rate = nominalRate(c);
@@ -169,6 +174,55 @@ test("Layer B runs both quota postures: the ceilings classes as the stress, and 
         expect([f, c.class, Number(g.args?.stagger) >= 1, appends <= 0.1]).toEqual([f, c.class, true, true]);
       }
     }
+  }
+});
+
+/** A manifest's hold on the instance's live pool in its noisy period
+ * (src/admission.rs `park`, src/quota/parked.rs): each project's SSE
+ * connections (an SSE tail's readers on each stream, an SSE subs phase's
+ * count), at most its max_live_subscriptions; then its waits (a consumer
+ * group's pulls, one per stream and consumer, a long-poll tail's or subs
+ * phase's readers), at most its in-flight quota and what its share has
+ * left after its SSE. A project's quotas are its class's set, the cell's
+ * ceilings on every axis the set leaves out. Every phase that overlaps the
+ * period counts at once, so it is an upper bound. */
+function livePool(m: Manifest, ceilings: Ceilings): { sse: number; waits: number } {
+  const [from, to] = m.periods!.noisy!;
+  let sse = 0;
+  let waits = 0;
+  for (const c of m.classes) {
+    const q = { ...ceilings, ...(c.quotas ? m.quota_sets![c.quotas] : {}) };
+    let wantSse = 0;
+    let wantWaits = 0;
+    for (const ph of c.phases) {
+      if (ph.at >= to || ph.at + (ph.spread ?? 0) + (ph.secs ?? m.duration) <= from) continue;
+      const a = ph.args ?? {};
+      const streams = Number(a.streams ?? c.streams ?? 1);
+      if (ph.mode === "group") wantWaits += streams * Number(a.consumers ?? 1);
+      if (ph.mode !== "tail" && ph.mode !== "subs") continue;
+      const n = ph.mode === "tail" ? streams * Number(a.readers ?? 1) : Number(a.count ?? 100);
+      if ((a.via ?? (ph.mode === "subs" ? "sse" : "long-poll")) === "sse") wantSse += n;
+      else wantWaits += n;
+    }
+    const held = Math.min(wantSse, q.max_live_subscriptions!);
+    sse += c.count * held;
+    waits += c.count * Math.min(wantWaits, q.max_inflight_requests!, q.max_live_subscriptions! - held);
+  }
+  return { sse, waits };
+}
+
+test("Layer B's noisy period fits the cell's live pool: every SSE connection held and every wait parked", () => {
+  // Lead decision 2026-10-14 night: s3s-free at count 1, not the twins at
+  // the originals' counts (1,130 SSE connections of 1,200, and about 114
+  // waits left active against the write gate). A wait that finds the pool
+  // full stays an active request (src/admission.rs `park`).
+  const { bounds, ceilings } = cellSizing(readProfiles(DEFAULT_PROFILES));
+  expect([bounds.max_live_subscriptions, ceilings.max_live_subscriptions, ceilings.max_inflight_requests]).toEqual([1200, 150, 64]);
+  const want: Record<string, { sse: number; waits: number }> = { "layer-b": { sse: 830, waits: 184 }, "layer-b-tiny": { sse: 40, waits: 22 } };
+  for (const f of ["layer-b", "layer-b-tiny"]) {
+    const { manifest: m } = readManifest(join(import.meta.dir, "tenants", `${f}.json`));
+    const live = livePool(m, ceilings);
+    expect([f, live, live.sse + live.waits <= bounds.max_live_subscriptions]).toEqual([f, want[f], true]);
   }
 });
 
