@@ -4,7 +4,8 @@ Leg 1 of the Compute lifecycle checklist (the public-beta deploy-q5 design
 §3.4, triage item B6: the D10 platform-semantics questions). One Bun file,
 `app/probe.ts`, importing only `node:*`:
 
-- serves `200 sigterm-probe` on `$PORT` (default 3000) on `0.0.0.0`;
+- serves `200 sigterm-probe` on `$PORT` (default 3000) on `0.0.0.0` (its
+  tests bind it at `127.0.0.1` with `SIGTERM_PROBE_HOST`);
 - starts one child process in its own process group, and never forwards a
   signal to it;
 - on SIGTERM logs one line and then one line a second until it is killed;

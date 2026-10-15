@@ -32,18 +32,20 @@ afterEach(() => {
   }
 });
 
+/// A port free at 127.0.0.1, where start() binds the probe.
 async function freePort(): Promise<number> {
-  const server = Bun.serve({ port: 0, fetch: () => new Response("") });
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });
   const port = server.port;
   server.stop(true);
   return port;
 }
 
-/// The probe as a group leader; every stdout line it and its child print.
+/// The probe as a group leader, bound at 127.0.0.1; every stdout line it and
+/// its child print.
 function start(port: number, env: Record<string, string> = {}) {
   const p = spawn(process.execPath, [PROBE], {
     detached: true,
-    env: { ...process.env, PORT: String(port), ...env },
+    env: { ...process.env, PORT: String(port), SIGTERM_PROBE_HOST: "127.0.0.1", ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   running.push(p);
@@ -114,6 +116,27 @@ test("a SIGTERM to the probe's process group: the child logs it too, which the m
   const alive = lines().filter((l) => l.event === "alive");
   expect(new Set(alive.map((l) => l.role))).toEqual(new Set(["child", "main"]));
 }, 15_000);
+
+test("no other listener can take the probe's port at 127.0.0.1, where the tests fetch it", async () => {
+  const port = await freePort();
+  start(port);
+  const end = Date.now() + 3000;
+  while ((await fetch(`http://127.0.0.1:${port}/`).then((r) => r.status, () => 0)) !== 200) {
+    if (Date.now() > end) throw new Error("the probe never answered 200");
+    await Bun.sleep(25);
+  }
+  // On macOS a socket can bind 127.0.0.1 on a port another holds at the
+  // wildcard, and then it, not the probe, answers the tests' fetches.
+  const shadow = (() => {
+    try {
+      Bun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("", { status: 404 }) }).stop(true);
+      return "bound";
+    } catch (e) {
+      return (e as { code?: string }).code ?? String(e);
+    }
+  })();
+  expect(shadow).toBe("EADDRINUSE");
+});
 
 test("the nonce file beside the entry names the deploy in the boot line", async () => {
   const { lines, until } = start(await freePort());

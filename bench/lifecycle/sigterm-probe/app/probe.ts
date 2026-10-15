@@ -59,7 +59,9 @@ function holdAwake(): "held" | "unavailable" | "failed" {
 if (role === "main") {
   const keepAwake = holdAwake();
   const port = Number(process.env.PORT ?? 3000);
-  createServer((_, res) => res.end("sigterm-probe\n")).listen(port, "0.0.0.0");
+  // The tests bind 127.0.0.1 (SIGTERM_PROBE_HOST exists for them only): on
+  // macOS another socket can take 127.0.0.1 on a port held at the wildcard.
+  createServer((_, res) => res.end("sigterm-probe\n")).listen(port, process.env.SIGTERM_PROBE_HOST ?? "0.0.0.0");
   spawn(process.execPath, [import.meta.filename, "child"], { stdio: "inherit" });
   const nonce = read(new URL("./nonce.txt", import.meta.url));
   const runtime = process.versions.bun ? `bun-${process.versions.bun}` : `node-${process.versions.node}`;
