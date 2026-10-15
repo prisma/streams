@@ -26,6 +26,13 @@
 
 export interface StreamsClientOptions {
   url: string;
+  /**
+   * A bearer token, sent as `Authorization: Bearer <token>`; absent or empty
+   * sends none. A token a header cannot carry as it is (anything but
+   * printable ASCII and tabs, or whitespace at either end) is refused here
+   * with `StreamsError` `invalid_token_format` (`status` 0), and so is one a
+   * `tokenProvider` returns, by the request that waits for it.
+   */
   token?: string;
   /**
    * Source of short-lived bearer tokens (MULTITENANCY §5: one
@@ -582,12 +589,56 @@ const REFRESH_MARGIN_FRACTION = 0.2;
  * first request this long after it, not at every request. */
 const REFRESH_RETRY_MS = 30_000;
 
+/** The text a header carries byte for byte through `fetch`: printable ASCII
+ * and tabs, at least one character, with no whitespace at either end.
+ * `fetch` strips a space, a tab, a line break or a carriage return at a
+ * header value's ends without a word, so the value would be sent as
+ * another; it refuses a line break, a carriage return, a NUL or another
+ * control character inside one with a `TypeError` (quoting the value for the
+ * first three), which `req()` would take for a transport failure, and
+ * cannot convert a character above U+00FF; it sends a Latin-1 character,
+ * which the server refuses. */
+const HEADER_TEXT = /^[\x21-\x7e](?:[\t\x20-\x7e]*[\x21-\x7e])?$/;
+
+/** The server's limit on a routing key (`parse_routing_key`). */
+const MAX_ROUTING_KEY_LENGTH = 1024;
+
+/** `value` when it is `HEADER_TEXT` of at most `maxLength` characters, else a
+ * refusal before any request that does not show it. */
+function headerText(value: unknown, code: string, what: string, limit: string, maxLength = Infinity): string {
+  if (typeof value === "string" && value.length <= maxLength && HEADER_TEXT.test(value)) return value;
+  throw new StreamsError(0, code,
+    `${what} is not text a header carries as it is (printable ASCII and tabs, no whitespace at either ` +
+      `end, ${limit}); nothing was sent`, false);
+}
+
+/** A routing key as the `prisma-routing-key` header or a final seal's
+ * record carries it: `undefined`, the default lane, when it is absent or
+ * empty; otherwise `invalid_routing_key` unless a header carries it as it
+ * is, nothing trimmed. */
+function presentedRoutingKey(routingKey: string | undefined): string | undefined {
+  if (routingKey == null || routingKey === "") return undefined;
+  return headerText(routingKey, "invalid_routing_key", "the routing key",
+    "at most 1,024 characters", MAX_ROUTING_KEY_LENGTH);
+}
+
+/** A bearer token as `Authorization: Bearer` carries it, or
+ * `invalid_token_format`. */
+function presentedToken(token: unknown): string {
+  return headerText(token, "invalid_token_format",
+    "the bearer token (the client's token, or one a tokenProvider or the issuer returned)", "not empty");
+}
+
+/** A provider's answer as it is cached, or `invalid_token_format` for a
+ * token a header cannot carry (a refresh's failure: the cache keeps no such
+ * token and asks the provider again). */
 function cachedToken(t: string | TokenWithExpiry): CachedToken {
-  if (typeof t === "string") return { value: t };
+  if (typeof t !== "object" || t === null) return { value: presentedToken(t) };
+  const value = presentedToken(t.token);
   const expiresAt = t.expiresAt instanceof Date ? t.expiresAt.getTime() : t.expiresAt;
-  if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt)) return { value: t.token };
+  if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt)) return { value };
   const margin = Math.max(REFRESH_MARGIN_MIN_MS, REFRESH_MARGIN_FRACTION * (expiresAt - Date.now()));
-  return { value: t.token, expiresAt, refreshAt: expiresAt - margin };
+  return { value, expiresAt, refreshAt: expiresAt - margin };
 }
 
 /** One provider call, shared by every request that waits for it. A token it
@@ -597,10 +648,10 @@ function cachedToken(t: string | TokenWithExpiry): CachedToken {
 function refreshToken(ctx: Ctx, cache: TokenCache): Promise<Refreshed> {
   const generation = cache.generation;
   // Defer invocation so synchronous provider throws also reach every
-  // waiter on the same promise and leave the cache recoverable.
-  const inflight: Promise<Refreshed> = Promise.resolve().then(() => ctx.tokenProvider!()).then(
-    (t) => {
-      const token = cachedToken(t);
+  // waiter on the same promise and leave the cache recoverable; so does a
+  // token `cachedToken` refuses.
+  const inflight: Promise<Refreshed> = Promise.resolve().then(() => ctx.tokenProvider!()).then(cachedToken).then(
+    (token) => {
       if (cache.inflight !== inflight) return { value: token.value, generation };
       cache.generation++;
       cache.token = token;
@@ -1192,7 +1243,8 @@ export class StreamsClient {
     this.ctx = {
       base: options.url.replace(/\/$/, ""),
       project: options.project,
-      token: options.token,
+      // An absent or empty token sends no Authorization header.
+      token: options.token == null || options.token === "" ? undefined : presentedToken(options.token),
       tokenProvider: options.tokenProvider,
       fetch: options.fetch ?? fetch.bind(globalThis),
       transportRetry: options.retry?.transport ?? true,
@@ -1360,6 +1412,12 @@ export class Stream<T = unknown> {
 
   // ---- append (spec Stage 4) ----------------------------------------
 
+  /** A routing key travels in the `prisma-routing-key` header (a final
+   * seal's in its body); absent or empty, it is the default lane. One a
+   * header cannot carry as it is (anything but printable ASCII and tabs,
+   * whitespace at either end, more than 1,024 characters) is refused before
+   * any request with `StreamsError` `invalid_routing_key` (`status` 0) by
+   * every append, a producer's included, and by `seal()`. */
   async append(
     value: T,
     options?: { routingKey?: string },
@@ -1386,7 +1444,8 @@ export class Stream<T = unknown> {
       ...this.kh(),
       "content-type": "application/json",
     };
-    if (options?.routingKey) h["prisma-routing-key"] = options.routingKey;
+    const routingKey = presentedRoutingKey(options?.routingKey);
+    if (routingKey !== undefined) h["prisma-routing-key"] = routingKey;
     const res = await req(
       this.ctx,
       "POST",
@@ -1410,7 +1469,8 @@ export class Stream<T = unknown> {
       ...this.kh(),
       "content-type": bytes ? "application/octet-stream" : "application/json",
     };
-    if (routingKey) h["prisma-routing-key"] = routingKey;
+    const presented = presentedRoutingKey(routingKey);
+    if (presented !== undefined) h["prisma-routing-key"] = presented;
     const res = await req(
       this.ctx, "POST", this.path("/records"), h, body, undefined, false,
       plainAppendFailure,
@@ -1421,6 +1481,10 @@ export class Stream<T = unknown> {
 
   // ---- producer sessions (spec Stage 5) -----------------------------
 
+  /** The producer id travels in the `producer-id` header: an empty one, or
+   * one a header cannot carry as it is (anything but printable ASCII and
+   * tabs, or whitespace at either end), throws `StreamsError`
+   * `invalid_producer` (`status` 0). */
   producer(id: string, options: ProducerOptions = {}): Producer<T> {
     if (!options.state && !options.ephemeral) {
       throw new StreamsError(
@@ -1451,7 +1515,8 @@ export class Stream<T = unknown> {
       "content-type": "application/json",
       ...ph,
     };
-    if (routingKey) h["prisma-routing-key"] = routingKey;
+    const presented = presentedRoutingKey(routingKey);
+    if (presented !== undefined) h["prisma-routing-key"] = presented;
     // A lost answer (a transport failure, or a 2xx whose body cannot be
     // read: `producerAnswer`) is replayed with the same producer id, epoch,
     // sequence and body, which the server deduplicates (an append that
@@ -1711,10 +1776,14 @@ export class Stream<T = unknown> {
   }
 
   async seal(options?: SealOptions<T>): Promise<void> {
+    // The final record's routing key travels in the JSON body, but it is held
+    // to the append header's rule, so a seal makes no lane an append cannot
+    // write.
+    const routingKey = presentedRoutingKey(options?.routingKey);
     const doc: Record<string, unknown> = {};
     if (options?.final !== undefined) {
       doc["final"] = options.final;
-      if (options.routingKey) doc["routingKey"] = options.routingKey;
+      if (routingKey !== undefined) doc["routingKey"] = routingKey;
     }
     const h: Record<string, string> = {
       ...this.kh(),
@@ -1735,7 +1804,7 @@ export class Stream<T = unknown> {
     // nextSeq and one of the two would be rejected as reuse — or worse,
     // ordered wrongly against the record that closes the collection.
     if (options?.final !== undefined && options.producer) {
-      const rk = options.routingKey ?? "";
+      const rk = routingKey ?? "";
       await options.producer._chain(rk, async () => {
         Object.assign(h, await options.producer!._sealHeaders(rk));
         await send();
@@ -1775,7 +1844,7 @@ export class Producer<T> {
     this.stream = stream;
     this.ctx = ctx;
     this.streamName = streamName;
-    this.id = id;
+    this.id = headerText(id, "invalid_producer", "the producer id", "not empty");
     this.options = options;
   }
 

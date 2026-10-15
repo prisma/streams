@@ -65,6 +65,29 @@ not carried over).
   although nothing was sent; a subscription retried for ever); the server
   refused any other such key, except on a route that reads no key, such as
   `metadata()`.
+- A routing key, a producer id or a bearer token that a header cannot carry
+  byte for byte (anything but printable ASCII and tabs, whitespace at
+  either end, a routing key over 1,024 characters, an empty producer id or
+  token, or one that is not a string) is refused before any request,
+  nothing trimmed (README, "Routing keys, producer ids and tokens"): an
+  append (`append`, `appendBytes`, `appendMany`, `Producer.append`,
+  `Producer.appendMany`) and `seal()` reject with `StreamsError`
+  `invalid_routing_key`, `stream.producer(id)` throws `invalid_producer`,
+  and `new StreamsClient({ token })` throws, a request whose
+  `tokenProvider` returned such a token rejects, and `connect()` rejects
+  for such an issuer token, with `invalid_token_format` (each `status` 0,
+  `retryable: false`, the value not shown). Such a value was sent: `fetch`
+  stripped whitespace at either end without a word, so `"k\n"` was written
+  under `"k"` and producer `"p "` shared producer `"p"`'s sequence (a
+  record could be answered `duplicate: true` unwritten), and a seal's
+  `"k "` made a lane no append could write; `fetch` refused a control
+  character inside or a character above U+00FF, which the SDK reported as
+  a transport failure (a plain append's as `AppendOutcomeUnknownError`
+  although nothing was sent, a producer append's after 7 s of replays);
+  the server refused the rest. A `tokenProvider` that returned no token
+  failed every later request without being asked again; it is now asked
+  again. An empty or absent routing key is still the default lane, and an
+  empty `token` still sends no `Authorization` header.
 
 ### Added
 

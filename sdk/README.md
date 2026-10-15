@@ -130,12 +130,34 @@ paste, a control character, a space, a character beyond ASCII), or that is
 not a string: `stream()` throws, and `createStream()` rejects before any
 request, with a `StreamsError` (`status` 0, `code`
 `invalid_encryption_key_format`, `retryable: false`) whose message and
-fields do not show the key. The SDK checks only the key so: a routing key
-and a producer id are sent as given, and one holding a line break, another
-control character but a tab, or a character above U+00FF fails inside
-`fetch` before anything is sent, which the SDK reports as a transport
-failure (a plain append's as `AppendOutcomeUnknownError`, a producer
-append's after its replays).
+fields do not show the key.
+
+## Routing keys, producer ids and tokens
+
+A routing key, a producer id and a bearer token travel in request headers,
+and the SDK sends each exactly as you give it or not at all: one a header
+cannot carry byte for byte is refused before any request, and nothing is
+trimmed. A header carries printable ASCII and tabs, with no whitespace at
+either end. `fetch` would strip a space, a tab or a line break at either
+end without a word (so `"customer-7\n"` read from a file would be written
+under `"customer-7"`), and fails on a line break, another control character
+or a character above U+00FF inside one; the server refuses a Latin-1
+character. A routing key may hold
+at most 1,024 characters, and a producer id or a token may not be empty.
+
+- An append (`append`, `appendBytes`, `appendMany`, a producer's `append`
+  and `appendMany`) and `seal()` given such a `routingKey` reject with
+  `StreamsError` `invalid_routing_key`. An empty or absent routing key is
+  the default lane. A final seal's routing key travels in its body, and is
+  held to the same rule, so a seal writes no lane an append cannot.
+- `stream.producer(id)` throws `invalid_producer`.
+- `new StreamsClient({ token })` throws `invalid_token_format`; a request
+  whose `tokenProvider` returned such a token rejects with it, and the next
+  request asks the provider again; `connect()` rejects with it when the
+  issuer's token is one. An empty `token` sends no `Authorization` header.
+
+Each refusal has `status` 0 and `retryable: false`, and neither its message
+nor its fields show the value.
 
 ## Errors and retries
 
