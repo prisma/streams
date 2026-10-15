@@ -316,19 +316,18 @@ by construction, as a `--binary` run never certifies, and a known-red leg
 (Q0) may fail, as the manifest's `known_red` records. Any other red leg is
 fixed, and rehearsed again, before the cut.
 
-Neither run can be made yet: the rule is recorded, not yet executable.
-`run-shared.sh` is staged for a release layout older than triage B2's. It
-requires `release.json` and `cells/` at the release directory's root and
-passes `CELL_STAGE` in the container's environment, while
-`scripts/cut-release.sh` writes `deploy/release.json`, `deploy/cells/` and
-`bin/s3lite` (`deploy/composer/release.ts`), and B2's entry reads
-`release.json` under `deploy/` and its stage and deploy nonce from the
-service's input (`COMPOSER_INPUT`), never the environment. So the rig
-refuses a cut release (`<dir> has no release.json`), and the entry refuses
-a directory in the rig's layout before the server starts, for the
-certifying run and the rehearsal alike. Both wait for the rig's
-re-staging to B2's layout (the lead's decision deploy-q5 #6 (3) of
-2026-10-13, not built; it needs a lane: NEXT-WORK, public beta item 9).
+Both runs can be made: the rule is executable. `run-shared.sh` is staged
+for triage B2's release layout (the lead's decision deploy-q5 #6 (3) of
+2026-10-13). It takes a directory `scripts/cut-release.sh` cut
+(`deploy/composer/release.ts`'s layout: `deploy/release.json`,
+`deploy/cells/`, `bin/s3lite` and the bundled entry), stages its `deploy/`
+tree, the build dir Compute ships, and runs the bundled `entry.js` with
+the stage and the deploy nonce in the service's input (`COMPOSER_INPUT`),
+as Compute runs it, for the certifying run and the rehearsal alike.
+`deploy/composer/streams/entry.e2e.test.ts` runs that entry from the rig's
+staging of a release `release.ts` staged, both ways, through every check
+before the feeds download. The re-staged rig has not yet booted a cell in
+its container; its first run is this rule's pre-cut rehearsal.
 
 Waived for a single-cell RC: the script prints each waiver, and the
 certification manifest and the tag record them. They are the capacity

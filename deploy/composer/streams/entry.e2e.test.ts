@@ -11,8 +11,12 @@
 //   CELL_ADMIN_E2E_BIN_DIR=target/release bun test ./deploy/composer
 //
 // The refusals run on any host: their binaries are ELF headers that never
-// run. The good boot needs what a release ships, an x86_64 Linux ELF, so
-// it runs on an x86_64 Linux host only and a Mac skips it, unless
+// run. So does the Layer B rig's test: bench/k2cost/run-shared.sh
+// --dry-run stages a release that release.ts staged as cut-release does,
+// and the bundled entry, run from that staging, must pass every check up
+// to the rig's feeds bucket, which only a rig's host serves. The good boot
+// needs what a release ships, an x86_64 Linux ELF, so it runs on an
+// x86_64 Linux host only and a Mac skips it, unless
 // COMPOSER_E2E_REQUIRE_BOOT=1 is set: then a good boot that cannot run
 // fails, naming why, so no runner change can pass it unbooted. CI's
 // general bun line sets no CELL_ADMIN_E2E_BIN_DIR and installs no packages
@@ -26,6 +30,8 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import { builtinModules } from "node:module";
 import { join, resolve } from "node:path";
 import { cleanup, keyFile, run, scratchDir } from "../../cell-admin/test-rig";
+import { stageRelease as cutRelease } from "../release";
+import { cellsText, cleanupScratch, fakeTree, stageInputs } from "../release-rig";
 import { buildChildEnv } from "./env";
 
 const BIN_DIR = process.env.CELL_ADMIN_E2E_BIN_DIR;
@@ -59,6 +65,7 @@ const children: ReturnType<typeof Bun.spawn>[] = [];
 afterAll(() => {
   for (const c of children) c.kill("SIGKILL");
   cleanup();
+  cleanupScratch();
 });
 
 function freePort(): number {
@@ -172,7 +179,7 @@ type Launched = { child: ReturnType<typeof Bun.spawn>; port: number; out: () => 
 
 /// The bundled entry with exactly `env` (plus PORT and a TMPDIR of the
 /// release's own), as Compute's runner imports it: cwd the release.
-function launch(r: Release, env: Record<string, string>): Launched {
+function launch(r: Pick<Release, "root">, env: Record<string, string>): Launched {
   const port = freePort();
   const child = Bun.spawn([process.execPath, join(r.root, "deploy", "composer", "streams", "entry.js")], {
     env: { ...env, PORT: String(port), TMPDIR: join(r.root, "tmp") },
@@ -268,6 +275,51 @@ describe("the bundled entry", () => {
     // input's only use of it: it never reaches the child environment.
     expect(l.out()).toContain("deploy: stage production, nonce e2e.r1\n");
   }, 60_000);
+});
+
+/// The Layer B rig.
+const RIG = join(DEPLOY, "..", "bench", "k2cost", "run-shared.sh");
+
+/// The rig's staging of the release at `dir` (run-shared.sh --dry-run, plus
+/// `extra`): the staged copy, which holds the release's build dir as
+/// deploy/, the service's input the rig hands the container, and the
+/// platform names its env file holds.
+function rigStaging(dir: string, extra: string[]): { root: string; input: string; names: string[] } {
+  const home = scratchDir();
+  const s3lite = join(home, "s3lite");
+  writeFileSync(s3lite, "#!/bin/sh\n", { mode: 0o755 });
+  const argv = ["/bin/bash", RIG, "--release", dir, "--s3lite", s3lite, "--bun-baseline-sha256", "0f".repeat(32), "--dry-run", ...extra];
+  const r = Bun.spawnSync(argv, { env: { ...process.env, K2_HOME: home }, stdout: "pipe", stderr: "pipe" });
+  const out = r.stdout.toString();
+  expect([r.exitCode, r.exitCode === 0 ? "" : r.stderr.toString()]).toEqual([0, ""]);
+  const root = /^DRY_RUN staged: (\S+) /m.exec(out)?.[1];
+  const input = / -e COMPOSER_INPUT=(\S+) /.exec(out)?.[1];
+  const names = /^DRY_RUN container env names: (.*)$/m.exec(out)?.[1].trim().split(" ");
+  if (!root || !input || !names) throw new Error(`run-shared.sh --dry-run printed no staging:\n${out}`);
+  mkdirSync(join(root, "tmp"));
+  return { root, input, names };
+}
+
+describe("the Layer B rig's staging", () => {
+  maybe("runs a cut release's bundled entry, and a --binary rehearsal's, through every check before the rig's feeds bucket", async () => {
+    const { tree, commit } = fakeTree();
+    const cut = stageInputs({ tree, commit, tag: "rc-rig", cells: { production: cellsText("production") } });
+    cutRelease({ ...cut, entryJs });
+    const rehearsal = join(scratchDir(), "streams-slate");
+    writeFileSync(rehearsal, elf(0x3e, "a build of the candidate commit"));
+    for (const extra of [[], ["--binary", rehearsal]]) {
+      const staged = rigStaging(cut.out, extra);
+      const s = secrets();
+      expect([...staged.names].sort()).toEqual(Object.keys(s).sort());
+      const l = launch(staged, { ...PLATFORM, ...s, COMPOSER_INPUT: staged.input });
+      // The stage, the deploy's nonce (the release's tag), the cells file,
+      // the profiles and the binary all passed: what refuses is the feeds
+      // download from the rig's s3lite, which nothing here serves.
+      await refusedWith(l, "feeds bundle cells/cell_rig/feeds-bundle.json: ", Object.values(s));
+      expect(l.out()).toContain("deploy: stage scratch, nonce rc-rig\n");
+      l.child.kill("SIGKILL");
+    }
+  }, 120_000);
 });
 
 /// The effective configuration the binary logs at boot, by the env name
@@ -395,7 +447,7 @@ test("the generic body is the wrapper's own", () => {
       log.includes("COMPOSER_E2E_REQUIRE_BOOT=1, but the good boot cannot run: CELL_ADMIN_E2E_BIN_DIR is unset"),
     ]).toEqual([
       1,
-      [" 1 pass", " 7 skip", " 1 fail"],
+      [" 1 pass", " 8 skip", " 1 fail"],
       ["(fail) a good boot > serves the release's binary on the computed environment and stops on SIGTERM"],
       true,
     ]);

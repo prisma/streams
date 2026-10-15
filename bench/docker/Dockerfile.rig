@@ -1,11 +1,13 @@
 # The Layer B rig's image (deploy-q5 triage B7 and D6;
 # bench/k2cost/run-shared.sh builds it from a staged copy of a release
-# directory, so this file never sees the repository). The release
-# directory sits under /app exactly as it was cut (deploy/, cells/,
-# release.json, the x86_64-musl streams-slate inside deploy/), and bun runs
-# the cell's Composer entry as Compute does: the real entry, env builder,
+# directory's deploy/ tree, so this file never sees the repository). That
+# tree, the build dir Compute ships, sits at /app/deploy as it was cut
+# (release.json, cells/, profiles/, composer/app.ts, the bundled
+# composer/streams/entry.js and the x86_64-musl streams-slate beside it)
+# but for the rig's cells/scratch.env, with no node_modules anywhere, and
+# bun runs the bundled entry as Compute does: the real entry, env builder,
 # wrapper and feed poller, on linux/amd64 at 1 vCPU and 1 GiB (the docker
-# run flags).
+# run flags), with the service's input in COMPOSER_INPUT (run-shared.sh).
 #
 # Bun's default x64 build needs AVX, which Rosetta's amd64 emulation on an
 # Apple-silicon host does not have: a bun-linux-x64 runtime there prints
@@ -30,4 +32,4 @@ RUN if [ -n "$BUN_BASELINE_SHA256" ]; then \
 WORKDIR /app
 COPY . /app
 ENV PORT=8080
-CMD ["bun", "deploy/composer/streams/entry.ts"]
+CMD ["bun", "deploy/composer/streams/entry.js"]

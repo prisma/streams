@@ -8,22 +8,38 @@
 #       [--binary PATH] [--bun-baseline-sha256 HEX] [--s3lite PATH] [--dry-run]
 #   bench/k2cost/run-shared.sh --release DIR --canary
 #
-# The container is bench/docker/Dockerfile.rig over a staged copy of DIR
-# (deploy/, cells/, release.json, the release's own streams-slate), and runs
-# `bun deploy/composer/streams/entry.ts` with PORT=8080, CELL_STAGE=scratch
-# and the cell's seven platform secret names (an env file, never argv), so
-# Layer B runs the real entry, env builder, wrapper and feed poller. The rig
-# writes cells/scratch.env into the staged copy, over any the release
+# DIR is a directory scripts/cut-release.sh cut, in
+# deploy/composer/release.ts's layout: the Composer project root
+# (package.json, node_modules/, bin/s3lite, ...) around deploy/, the cell's
+# build dir, which Compute ships whole: release.json, cells/<stage>.env,
+# profiles/, composer/app.ts, the bundled composer/streams/entry.js and the
+# x86_64-musl composer/streams/streams-slate. The container is
+# bench/docker/Dockerfile.rig over a staged copy of that deploy/ tree alone
+# (no node_modules: the entry is one bundled file), and runs `bun
+# deploy/composer/streams/entry.js` as Compute runs it, so Layer B runs the
+# real entry, env builder, wrapper and feed poller. The entry takes its
+# stage and the deploy's nonce from the service's input (COMPOSER_INPUT, as
+# Composer's runtime reads it), never the environment: the rig writes the
+# document app.ts's binding makes, a $secret pointer per envSecret (which
+# must be the cell's seven platform secret names, whose values reach the
+# container in an env file, never argv), CELL_STAGE scratch, and
+# CELL_DEPLOY_NONCE the release's tag (a first deploy of it, as
+# deploy-release.sh names one); PORT=8080. The rig writes
+# deploy/cells/scratch.env into the staged copy, over any the release
 # carries: the per-cell keys, the data bucket and the feeds bucket on the
 # host's s3lite (host.docker.internal). Triage B2's env builder admits
 # CELL_STAGE scratch, cert or production, equal to its cells file's name;
 # the rig is scratch (it sets no KEEP_AWAKE_UNTIL_MS, the one key only
-# scratch admits). If B2's entry ever checks a cells file against
-# release.json, the rig needs its own way past that check.
+# scratch admits). The entry reads release.json's server_sha256 and no
+# cells file's sha (lead decision deploy-q5 #6 (3): release.ts's
+# checkRelease, which deploy-release.sh runs, holds a cells file to
+# release.json), so the staged copy keeps the release's release.json byte
+# for byte and never passes the rig's cells file off as the release's.
 #
 # Certification takes the release's binary only: its sha256 must be
 # release.json's server_sha256 and it must be an x86_64 ELF. --binary PATH
-# is the layout-5 rehearsal: any x86_64 binary, staged with release.json's
+# is a rehearsal (the layout-5 one, and OPS-RELEASE section 7's pre-cut
+# one): any x86_64 binary, staged with the staged release.json's
 # server_sha256 rewritten to it, and recorded as a rehearsal, which
 # shared_verdict.py can never pass.
 #
@@ -54,7 +70,8 @@
 # (0.0.0.0 at 127.0.0.1). On an arm64 host bun runs under Rosetta, which
 # lacks AVX: give --bun-baseline-sha256 (the sha256 of
 # bun-linux-x64-baseline.zip, Bun 1.3.13, from its release page) or run on
-# an x86_64 host.
+# an x86_64 host. s3lite is the release's bin/s3lite on an x86_64 Linux
+# host, else this checkout's target/release/s3lite (or --s3lite PATH).
 #
 # --canary runs the solo LiveFeed canary (triage B9) on the release's
 # binaries in a node linux/amd64 container over this worktree, once
@@ -83,8 +100,12 @@ IDLE_SECS=${RIG_IDLE_SECS:-900}
 Q0_IDLE_SECS=${RIG_Q0_IDLE_SECS:-900}
 USAGE_WAIT_SECS=${USAGE_WAIT_SECS:-600}
 SECRET_NAMES="STREAMS_OPERATOR_TOKEN STREAMS_USAGE_STREAM_KEY STREAMS_CURSOR_KEY STREAMS_DATA_S3_ACCESS_KEY_ID STREAMS_DATA_S3_SECRET_ACCESS_KEY STREAMS_FEEDS_S3_ACCESS_KEY_ID STREAMS_FEEDS_S3_SECRET_ACCESS_KEY"
-ENTRY=deploy/composer/streams/entry.ts
+# deploy/composer/release.ts's paths, under the release root.
+RELEASE_JSON=deploy/release.json
+ENTRY=deploy/composer/streams/entry.js
+APP=deploy/composer/app.ts
 BIN_IN_RELEASE=deploy/composer/streams/streams-slate
+S3LITE_IN_RELEASE=bin/s3lite
 
 die() { local rc=$1; shift; echo "run-shared: $*" >&2; exit "$rc"; }
 log() { echo "[rig $(date -u +%H:%M:%S)] $*"; }
@@ -106,8 +127,9 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$RELEASE" ] || die 2 "--release DIR is required (a directory cut by scripts/cut-release.sh)"
 RELEASE=$(cd "$RELEASE" 2>/dev/null && pwd) || die 2 "no release directory $RELEASE"
-[ -f "$RELEASE/release.json" ] || die 2 "$RELEASE has no release.json"
-[ -f "$RELEASE/$ENTRY" ] || die 2 "$RELEASE has no $ENTRY (the cell's Composer entry, triage B2)"
+[ -f "$RELEASE/$RELEASE_JSON" ] || die 2 "$RELEASE has no $RELEASE_JSON (not a release scripts/cut-release.sh cut)"
+[ -f "$RELEASE/$ENTRY" ] || die 2 "$RELEASE has no $ENTRY (the cell's Composer entry, bundled at the cut: triage B2)"
+[ -f "$RELEASE/$APP" ] || die 2 "$RELEASE has no $APP (the cell's Composer app, whose binding the service's input follows)"
 for p in compute-1g.env shared-cell.env; do
   [ -f "$RELEASE/deploy/profiles/$p" ] || die 2 "$RELEASE has no deploy/profiles/$p"
 done
@@ -120,9 +142,54 @@ data = open(sys.argv[1], "rb").read()
 print(hashlib.sha256(data).hexdigest(), hex(data[18]) if data[:4] == b"\x7fELF" and len(data) > 18 else "none")
 PY
 }
-json_get() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get(sys.argv[2]) or "")' "$1" "$2"; }
+# release.json -> "tag server_sha256"; exit 1 for one cut-release did not
+# write (release.ts's readRelease: its files, a lowercase-hex sha256; and
+# the tag, which names the deploy).
+release_facts() {
+  python3 - "$1" <<'PY'
+import json, re, sys
+try:
+    with open(sys.argv[1]) as f:
+        doc = json.load(f)
+except (OSError, ValueError):
+    sys.exit(1)
+ok = (isinstance(doc, dict) and isinstance(doc.get("files"), dict)
+      and re.fullmatch(r"[0-9a-f]{64}", str(doc.get("server_sha256", "")))
+      and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", str(doc.get("tag", ""))))
+if not ok:
+    sys.exit(1)
+print(doc["tag"], doc["server_sha256"])
+PY
+}
+# app.ts STAGE NONCE NAME... -> the service's input document as Composer's
+# runtime reads it (COMPOSER_INPUT; entry.e2e.test.ts writes the same):
+# app.ts's binding, each envSecret a $secret pointer to its platform name,
+# which must be the rig's seven, and each envParam its value, which the rig
+# has for CELL_STAGE and CELL_DEPLOY_NONCE only. Compact, so it is one word
+# of the docker command line; on a refusal, exit 1 and why.
+composer_input() {
+  python3 - "$@" <<'PY'
+import json, re, sys
+app, stage, nonce, *names = sys.argv[1:]
+with open(app) as f:
+    text = f.read()
+secrets = re.findall(r'^\s*(\w+): envSecret\("([A-Z0-9_]+)"\),$', text, re.M)
+params = re.findall(r'^\s*(\w+): envParam\("([A-Z0-9_]+)"\),$', text, re.M)
+values = {"CELL_STAGE": stage, "CELL_DEPLOY_NONCE": nonce}
+bound = [name for _, name in secrets]
+if sorted(bound) != sorted(names):
+    sys.exit(f"binds the secrets {' '.join(bound) or 'none'}, not the seven the rig provides")
+if sorted(name for _, name in params) != sorted(values):
+    sys.exit(f"binds the settings {' '.join(name for _, name in params) or 'none'}, not the rig's CELL_STAGE and CELL_DEPLOY_NONCE")
+doc = {field: {"$secret": name} for field, name in secrets}
+doc.update({field: values[name] for field, name in params})
+print(json.dumps(doc, separators=(",", ":")))
+PY
+}
 
-RELEASE_SHA=$(json_get "$RELEASE/release.json" server_sha256)
+RELEASE_FACTS=$(release_facts "$RELEASE/$RELEASE_JSON") \
+  || die 2 "$RELEASE/$RELEASE_JSON is not a release.json cut-release wrote"
+read -r RELEASE_TAG RELEASE_SHA <<< "$RELEASE_FACTS"
 REHEARSAL=false
 if [ -n "$BINARY" ]; then
   [ -f "$BINARY" ] || die 2 "no binary $BINARY"
@@ -134,8 +201,8 @@ else
 fi
 read -r SHIP_SHA SHIP_MACHINE < <(bin_facts "$SHIP")
 [ "$SHIP_MACHINE" = 0x3e ] || die 2 "$SHIP is not an x86_64 ELF (e_machine $SHIP_MACHINE): the rig runs linux/amd64"
-if [ "$REHEARSAL" = false ] && [ "$SHIP_SHA" != "${RELEASE_SHA#sha256:}" ]; then
-  die 2 "$SHIP has sha256 $SHIP_SHA, release.json names ${RELEASE_SHA#sha256:}: certification runs the release's binary only"
+if [ "$REHEARSAL" = false ] && [ "$SHIP_SHA" != "$RELEASE_SHA" ]; then
+  die 2 "$SHIP has sha256 $SHIP_SHA, release.json names $RELEASE_SHA: certification runs the release's binary only"
 fi
 
 HOST_ARCH=$(uname -m)
@@ -149,19 +216,21 @@ fi
 if [ "$CANARY" = 1 ]; then
   grep -q CANARY_SHAPE bench/canary/livefeed-canary.mjs \
     || die 2 "--canary needs the solo LiveFeed canary (CANARY_SHAPE=solo, triage B9), which this tree does not have"
-  S3LITE_REL=$RELEASE/s3lite
-  [ -f "$S3LITE_REL" ] || die 2 "$RELEASE has no s3lite for the canary"
+  [ -f "$RELEASE/$S3LITE_IN_RELEASE" ] || die 2 "$RELEASE has no $S3LITE_IN_RELEASE for the canary"
   exec docker run --rm --platform linux/amd64 -v "$ROOT:/src:ro" -v "$RELEASE:/release:ro" -w /src \
-    -e CANARY_SHAPE=solo -e CANARY_SERVER_BIN="/release/$BIN_IN_RELEASE" -e CANARY_S3LITE_BIN=/release/s3lite \
+    -e CANARY_SHAPE=solo -e CANARY_SERVER_BIN="/release/$BIN_IN_RELEASE" -e CANARY_S3LITE_BIN="/release/$S3LITE_IN_RELEASE" \
     node:22-bookworm-slim node bench/canary/livefeed-canary.mjs
 fi
 
 if [ -z "$S3LITE" ]; then
   S3LITE=$ROOT/target/release/s3lite
-  [ -x "$RELEASE/s3lite" ] && [ "$HOST_ARCH" = x86_64 ] && [ "$(uname -s)" = Linux ] && S3LITE=$RELEASE/s3lite
+  [ -x "$RELEASE/$S3LITE_IN_RELEASE" ] && [ "$HOST_ARCH" = x86_64 ] && [ "$(uname -s)" = Linux ] && S3LITE=$RELEASE/$S3LITE_IN_RELEASE
 fi
 [ -x "$S3LITE" ] || die 2 "no s3lite at $S3LITE (cargo build --locked --release --bin s3lite, or --s3lite PATH)"
 [ -f "$MANIFEST" ] || die 2 "no manifest $MANIFEST"
+# shellcheck disable=SC2086 # the names split on purpose
+COMPOSER_INPUT=$(composer_input "$RELEASE/$APP" "$RIG_STAGE" "$RELEASE_TAG" $SECRET_NAMES 2>&1) \
+  || die 2 "$RELEASE/$APP $COMPOSER_INPUT"
 
 K2_HOME=${K2_HOME:-$HOME/.streams-k2}
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
@@ -213,21 +282,25 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 # ---- the staged release and the cell's files ---------------------------------
+# The release's build dir alone, as Compute ships it.
 mkdir -p "$CONTEXT"
-(cd "$RELEASE" && tar cf - .) | (cd "$CONTEXT" && tar xf -)
+(cd "$RELEASE" && tar cf - deploy) | (cd "$CONTEXT" && tar xf -)
 if [ "$REHEARSAL" = true ]; then
   cp "$BINARY" "$CONTEXT/$BIN_IN_RELEASE"
-  python3 - "$CONTEXT/release.json" "$SHIP_SHA" <<'PY'
+  python3 - "$CONTEXT/$RELEASE_JSON" "$SHIP_SHA" <<'PY'
 import json, sys
 path, sha = sys.argv[1:3]
-doc = json.load(open(path))
-doc["server_sha256"] = ("sha256:" if str(doc.get("server_sha256", "")).startswith("sha256:") else "") + sha
+with open(path) as f:
+    doc = json.load(f)
+doc["server_sha256"] = sha
 doc["rehearsal"] = True
-json.dump(doc, open(path, "w"), indent=1)
+with open(path, "w") as f:
+    json.dump(doc, f, indent=1)
 PY
 fi
-mkdir -p "$CONTEXT/cells"
-cat > "$CONTEXT/cells/$RIG_STAGE.env" <<EOF
+CELL_ENV=deploy/cells/$RIG_STAGE.env
+mkdir -p "$CONTEXT/deploy/cells"
+cat > "$CONTEXT/$CELL_ENV" <<EOF
 CELL_STAGE=$RIG_STAGE
 CELL_ID=$CELL_ID
 PROJECT_ID=$DEPLOY_PROJECT
@@ -264,12 +337,12 @@ BUILD=(docker build --platform linux/amd64 -f "$ROOT/bench/docker/Dockerfile.rig
 BUILD+=("$CONTEXT")
 RUNC=(docker run -d --name "$NAME" --platform linux/amd64 --cpus 1 --memory 1g --memory-swap 1g
   -p "127.0.0.1:$CELL_PORT:8080" --add-host=host.docker.internal:host-gateway
-  --env-file "$SECRETS/container.env" -e PORT=8080 -e "CELL_STAGE=$RIG_STAGE" "$IMAGE")
+  --env-file "$SECRETS/container.env" -e PORT=8080 -e "COMPOSER_INPUT=$COMPOSER_INPUT" "$IMAGE")
 
 if [ "$DRY_RUN" = 1 ]; then
   echo "DRY_RUN staged: $CONTEXT (rehearsal: $REHEARSAL, binary sha256 $SHIP_SHA)"
-  echo "DRY_RUN cells/$RIG_STAGE.env:"
-  sed 's/^/  /' "$CONTEXT/cells/$RIG_STAGE.env"
+  echo "DRY_RUN $CELL_ENV:"
+  sed 's/^/  /' "$CONTEXT/$CELL_ENV"
   echo "DRY_RUN container env names: $(cut -d= -f1 "$SECRETS/container.env" | tr '\n' ' ')"
   echo "DRY_RUN ${BUILD[*]}"
   echo "DRY_RUN ${RUNC[*]}"
@@ -316,15 +389,15 @@ for _ in $(seq 1 300); do curl -sf -o /dev/null "http://127.0.0.1:$CELL_PORT/hea
 curl -sf -o /dev/null "http://127.0.0.1:$CELL_PORT/health" || die 1 "the cell never answered /health (see docker logs $NAME)"
 WRAPPER_SHA=$(docker logs "$NAME" 2>&1 | grep -oE 'binary sha256 [0-9a-f]{64}' | tail -1 | awk '{print $3}' || true)
 curl -sf -H @"$SECRETS/debug.hdr" "http://127.0.0.1:$CELL_PORT/v1/debug/load" > "$RUN/debug-load-boot.json"
-python3 - "$RUN/rig.json" "$RUN/debug-load-boot.json" "$RELEASE" "$CONTEXT" "$SHIP" "$SHIP_SHA" "$WRAPPER_SHA" "$REHEARSAL" "$RIG_STAGE" "$RUN/checkout.json" <<'PY'
+python3 - "$RUN/rig.json" "$RUN/debug-load-boot.json" "$RELEASE" "$CONTEXT" "$SHIP" "$SHIP_SHA" "$WRAPPER_SHA" "$REHEARSAL" "$CELL_ENV" "$RUN/checkout.json" "$RELEASE_JSON" <<'PY'
 import hashlib, json, os, sys, time
-out, load_file, release, context, ship, ship_sha, wrapper, rehearsal, stage, checkout = sys.argv[1:11]
+out, load_file, release, context, ship, ship_sha, wrapper, rehearsal, cell_env, checkout, release_json = sys.argv[1:12]
 load = json.load(open(load_file))
 sha = lambda p: hashlib.sha256(open(p, "rb").read()).hexdigest()
 prof = {n: {"path": os.path.join(context, "deploy", "profiles", n), "sha256": sha(os.path.join(context, "deploy", "profiles", n))}
         for n in ("compute-1g.env", "shared-cell.env")}
-cell_env = os.path.join(context, "cells", f"{stage}.env")
-rel = json.load(open(os.path.join(release, "release.json")))
+cell_env = os.path.join(context, cell_env)
+rel = json.load(open(os.path.join(release, release_json)))
 json.dump({
     "arm": "layer-b", "rehearsal": rehearsal == "true", "release_dir": release, "release": rel,
     "commit": load.get("git_commit"), "region": "local",

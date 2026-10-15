@@ -598,18 +598,34 @@ absorbed into the bar.
 ```bash
 bench/k2cost/run-shared.sh --release ~/.streams-releases/<tag> [--manifest M] [--time-scale F] \
     [--bun-baseline-sha256 HEX]          # an arm64 host: Rosetta has no AVX for bun's x64 build
-bench/k2cost/run-shared.sh --release DIR --binary PATH ...   # the layout-5 rehearsal: any x86_64 binary
+bench/k2cost/run-shared.sh --release DIR --binary PATH ...   # a rehearsal (layout 5's, the pre-cut one): any x86_64 binary
 bench/k2cost/run-shared.sh --release DIR --dry-run ...       # stage and print, start nothing
 ```
 
-It stages the release directory (`deploy/`, `cells/`, `release.json`, the
-release's own x86_64-musl `streams-slate`) with its own `cells/scratch.env`, builds
-`bench/docker/Dockerfile.rig` over it and runs `bun
-deploy/composer/streams/entry.ts` in a `--platform linux/amd64 --cpus 1
---memory 1g` container, with `CELL_STAGE=scratch` (triage B2's stages are
-scratch, cert and production, each its cells file's name) and the cell's seven
-platform secret names from an env file. s3lite runs on the host at 20 ms
-(the cell reaches it as `host.docker.internal`), `tenants-admit.ts` admits
+The release directory is one `scripts/cut-release.sh` cut, in
+`deploy/composer/release.ts`'s layout. The rig stages its `deploy/` tree
+alone, the build dir Compute ships (`release.json`, `cells/`, `profiles/`,
+`composer/app.ts`, the bundled `composer/streams/entry.js` and the
+release's own x86_64-musl `streams-slate`; no `node_modules`), with its own
+`deploy/cells/scratch.env`, builds `bench/docker/Dockerfile.rig` over it
+and runs `bun deploy/composer/streams/entry.js` in a `--platform
+linux/amd64 --cpus 1 --memory 1g` container. The entry's stage and deploy
+nonce come from the service's input (`COMPOSER_INPUT`), as Composer's
+runtime reads it: the document the release's `app.ts` binding makes, with
+`CELL_STAGE` scratch (triage B2's stages are scratch, cert and production,
+each its cells file's name), `CELL_DEPLOY_NONCE` the release's tag and a
+`$secret` pointer to each of the cell's seven platform secret names, whose
+values come from an env file. A release whose `app.ts` binds any other
+secret or setting is refused before anything is staged. The staged
+`release.json` is the release's, byte for byte (a rehearsal's names its
+`--binary`); the entry reads its `server_sha256` and no cells file's sha
+(the lead's decision deploy-q5 #6 (3): `release.ts`'s `checkRelease`,
+which `deploy-release.sh` runs, holds a cells file to `release.json`).
+`deploy/composer/streams/entry.e2e.test.ts` runs the bundled entry from
+the rig's staging of a release that `release.ts` staged, certifying and
+rehearsal, through every check before the feeds download. s3lite runs on
+the host at 20 ms (the cell reaches it as `host.docker.internal`),
+`tenants-admit.ts` admits
 the manifest and publishes the bundle to s3lite's feeds bucket, and
 `scrape.py loop --operator` samples the cell every 10 s. Then: 15 min idle
 (the Q0 baseline), the tenants run, usage, the audit, 15 min idle (the Q0
@@ -620,16 +636,8 @@ certify. The harness that runs is the checkout's: `checkout.json` (in
 `rig.json`) records its trees and uncommitted paths, and the verdict's
 `harness` leg requires the server commit's trees, clean. Results under
 `$K2_HOME/results/layer-b-<stamp>/`; the secrets
-directory is removed at exit. It cannot run yet. Its staging predates
-triage B2's release layout: it requires `release.json` and `cells/` at the
-release directory's root and passes `CELL_STAGE` in the environment, while
-a release cut by `scripts/cut-release.sh` holds `deploy/release.json`,
-`deploy/cells/` and `bin/s3lite` (`deploy/composer/release.ts`), and B2's
-entry reads `release.json` under `deploy/` and its stage and deploy nonce
-from the service's input (`COMPOSER_INPUT`). So the rig refuses a cut
-release (`<dir> has no release.json`), and the entry refuses a directory in
-the rig's layout before the server starts: no Layer B run, certifying or
-rehearsal, boots until the rig is re-staged to B2's layout (the lead's
-decision deploy-q5 #6 (3) of 2026-10-13, not built). `--canary` needs the
-solo LiveFeed canary (triage B9) and refuses until it exists.
+directory is removed at exit. On an x86_64 Linux host s3lite is the
+release's `bin/s3lite`; elsewhere this checkout's `target/release/s3lite`
+(or `--s3lite PATH`). `--canary` needs the solo LiveFeed canary (triage
+B9) and refuses until it exists.
 

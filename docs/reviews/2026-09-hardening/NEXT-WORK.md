@@ -255,15 +255,14 @@ alongside and finish before admission opens.
    horizon; a cell tracks at most 65,536 streams); the one-shard envelope
    arm that sets `CELL_ENVELOPE_*` (Q2(a)'s rows and an edge record);
    SC0-1s (72 h, with item 1's slope bar) and SC1 (about 30 h). About
-   6 days of wall time and $40-60. Layer B cannot run yet:
-   `bench/k2cost/run-shared.sh` predates triage B2's release layout and
-   refuses a release cut by `scripts/cut-release.sh`, and B2's entry
-   refuses the rig's layout, so OPS-RELEASE §7's rule (Layer B first, from
-   the RC commit, rehearsed before the cut) waits for the rig's re-staging
-   to that layout (`deploy/release.json` and `deploy/cells/`, the bundled
-   `entry.js`, `COMPOSER_INPUT` carrying `cellStage` and `deployNonce`):
-   the lead's decision deploy-q5 #6 (3) of 2026-10-13, not built; it needs
-   a lane. The runs carry the deployment gates on the
+   6 days of wall time and $40-60. `bench/k2cost/run-shared.sh` runs a
+   release cut by `scripts/cut-release.sh` in triage B2's layout
+   (`deploy/release.json` and `deploy/cells/`, the bundled `entry.js`,
+   `COMPOSER_INPUT` carrying `cellStage` and `deployNonce`; the lead's
+   decision deploy-q5 #6 (3) of 2026-10-13), so OPS-RELEASE §7's rule
+   (Layer B first, from the RC commit, rehearsed before the cut) can be
+   followed; the re-staged rig has not yet booted a cell in its container,
+   and its first run is that rule's pre-cut rehearsal. The runs carry the deployment gates on the
    existing Compute generation (section 11; README "Deployment gates"):
    Compute lifecycle validation (startup, readiness, restart, the stop
    signal and its kill wait, OOM under 1 GiB, rollback, the wrapper's feed
