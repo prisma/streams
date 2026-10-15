@@ -563,7 +563,25 @@ class KeepAwake(unittest.TestCase):
 PROBE_WAIT_S = 10
 
 
-@unittest.skipIf(shutil.which("bun") is None, "bun is not installed")
+def skip_or_fail_if(missing: bool, reason: str):
+    """unittest.skipIf(missing, reason), except under
+    LIFECYCLE_REQUIRE_PROBES=1 (for CI's sdk-package job, by the owner's
+    round-6 call 8 of 2026-10-15): there each of the class's tests fails,
+    naming the reason, so the probes run for real or the job is red."""
+    if not missing:
+        return lambda cls: cls
+    if os.environ.get("LIFECYCLE_REQUIRE_PROBES") != "1":
+        return unittest.skip(reason)
+
+    def failing(cls):
+        def setUp(self):
+            self.fail(f"LIFECYCLE_REQUIRE_PROBES=1, but {reason}")
+        cls.setUp = setUp
+        return cls
+    return failing
+
+
+@skip_or_fail_if(shutil.which("bun") is None, "bun is not installed")
 class ProbeOutput(unittest.TestCase):
     def read_until(self, p: subprocess.Popen, out: list, what: str, done) -> None:
         """Appends the probe's stdout lines to `out` until done(its events)
@@ -621,7 +639,7 @@ class ProbeOutput(unittest.TestCase):
                       "kept-awake cell", lines_of(r))
 
 
-@unittest.skipIf(shutil.which("node") is None or not os.path.exists(L.SDK_DIST),
+@skip_or_fail_if(shutil.which("node") is None or not os.path.exists(L.SDK_DIST),
                  "node or a built sdk/dist is missing (cd sdk && npm ci && npm run build)")
 class SdkProbeOutput(unittest.TestCase):
     """sdk-probe.mjs run for real (node on sdk/dist) against a fake cell that
@@ -749,6 +767,28 @@ class SdkProbeOutput(unittest.TestCase):
         self.assertEqual(V.sdk_failure(line), f"setup: Error (no answer: Error: {self.tmp}/headers.txt is readable by "
                                               "others (chmod 600))")
         self.assertEqual(self.seen, [])
+
+
+class RequiredProbes(unittest.TestCase):
+    def run_probe_tests(self, flag: str | None) -> tuple:
+        """ProbeOutput and SdkProbeOutput in a fresh interpreter whose PATH
+        holds neither bun nor node, with LIFECYCLE_REQUIRE_PROBES=`flag` (or
+        unset): unittest's verdict line and each failure's message."""
+        env = {k: v for k, v in os.environ.items() if k != "LIFECYCLE_REQUIRE_PROBES"}
+        if flag is not None:
+            env["LIFECYCLE_REQUIRE_PROBES"] = flag
+        with tempfile.TemporaryDirectory() as empty:
+            r = subprocess.run([sys.executable, "-m", "unittest", "test_lifecycle.ProbeOutput",
+                                "test_lifecycle.SdkProbeOutput"], cwd=HERE, env={**env, "PATH": empty},
+                               capture_output=True, text=True, timeout=60)
+        return r.stderr.splitlines()[-1], sorted(re.findall(r"^AssertionError: (.*)$", r.stderr, re.M))
+
+    def test_a_missing_bun_or_node_fails_the_probe_tests_under_the_flag_and_skips_them_without_it(self):
+        self.assertEqual(self.run_probe_tests(None), ("OK (skipped=3)", []))
+        self.assertEqual(self.run_probe_tests("0"), ("OK (skipped=3)", []))
+        node = "LIFECYCLE_REQUIRE_PROBES=1, but node or a built sdk/dist is missing (cd sdk && npm ci && npm run build)"
+        self.assertEqual(self.run_probe_tests("1"), ("FAILED (failures=3)", [
+            "LIFECYCLE_REQUIRE_PROBES=1, but bun is not installed", node, node]))
 
 
 # ---------------------------------------------------------------- plumbing
