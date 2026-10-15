@@ -10,6 +10,7 @@ test_lifecycle_legs.py, which imports this file's line builders.
 """
 from __future__ import annotations
 
+import contextlib
 import http.server
 import json
 import os
@@ -558,8 +559,27 @@ class KeepAwake(unittest.TestCase):
 
 # ---------------------------------------------------------------- the probe, read for real
 
+# How long the real probe gets to print each set of lines a test waits for.
+PROBE_WAIT_S = 10
+
+
 @unittest.skipIf(shutil.which("bun") is None, "bun is not installed")
 class ProbeOutput(unittest.TestCase):
+    def read_until(self, p: subprocess.Popen, out: list, what: str, done) -> None:
+        """Appends the probe's stdout lines to `out` until done(its events)
+        holds. A probe that has not printed them within PROBE_WAIT_S is
+        killed, which ends its stdout, and the test fails naming `what`."""
+        watchdog = threading.Timer(PROBE_WAIT_S, os.killpg, (p.pid, signal.SIGKILL))
+        watchdog.start()
+        try:
+            for line in p.stdout:
+                out.append(line.rstrip("\n"))
+                if done(V.probe_events(out)):
+                    return
+        finally:
+            watchdog.cancel()
+        self.fail(f"no {what} within {PROBE_WAIT_S} s: {out}")
+
     def test_the_probes_own_lines_read_as_a_group_signal_and_a_short_life(self):
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
@@ -568,14 +588,20 @@ class ProbeOutput(unittest.TestCase):
                              env={**os.environ, "PORT": str(port)}, start_new_session=True, text=True)
         out = []
         try:
-            for line in p.stdout:
-                out.append(line.rstrip("\n"))
-                if sum("boot" in l for l in out) == 2:
-                    break
+            self.read_until(p, out, "boot line from both processes",
+                            lambda ev: sum(e["event"] == "boot" for e in ev) == 2)
             os.killpg(p.pid, signal.SIGTERM)
-            time.sleep(2.4)
+            # The group is killed once both processes have printed that they
+            # lived 2 s after their SIGTERM, never after a fixed sleep: a
+            # probe stalled past the sleep would die before its 2 s lines.
+            self.read_until(p, out, "`alive after=2s` line from both processes",
+                            lambda ev: {e["role"] for e in ev if e["event"] == "alive"
+                                        and e["fields"].get("after") == "2s"} == {"main", "child"})
         finally:
-            os.killpg(p.pid, signal.SIGKILL)
+            # read_until's watchdog may have killed the group already (macOS
+            # answers EPERM for a group whose only member is a zombie).
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(p.pid, signal.SIGKILL)
             rest, _ = p.communicate(timeout=10)
         out += rest.splitlines()
         facts = V.probe_facts(out)
