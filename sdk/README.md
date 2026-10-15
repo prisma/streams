@@ -354,6 +354,32 @@ acknowledged write by about 10 s and a read by about 20 s.
 The beta's limits (per project and per request) are listed at
 `<the beta's limits page, published with the beta>`.
 
+Plan your request rate against the free tier's 10 requests a second per
+project. Every request counts one: an append (an `appendMany` of up to
+10,000 records is one request), a read, a consumer pull, a settlement, a
+subscription's or a watch's long poll, a create. A project quiet for 5 s
+can send 50 requests at once, and then 10 a second. An append that is
+read as it arrives costs 1, plus 2 for each consumer group (its pull and
+its settlement), plus 1 for each subscription waiting on the stream, all
+within a few tens of milliseconds. Keep the project's average near 5
+requests a second: there one or two consumer groups are rarely if ever
+refused (one group stays clear up to about 7 a second; a third group at
+5 meets about one refusal an hour, which the SDK replays). 10 a
+second is a ceiling, not a working rate: a producer whose appends arrive
+at random around an average of 10 a second has some refused even after
+the SDK's replays, so batch records with `appendMany` rather than
+appending them one at a time. A refusal is `429` `project_rate_limit`
+with `Retry-After`; the SDK replays it three times, each wait capped at
+5 s, about 15 s in all (see "Errors and retries"). Creates, deletes,
+seals and stream listings also pay for the registry work they do, from
+a second budget at the same rate (a create costs 11, a listing of 100
+streams about 110), and are refused while it is in debt: at 10 a second
+a project creates about one stream every 1.1 s. A burst is admitted at
+once and paid for afterwards, so 50 concurrent creates leave the
+project's next create, delete, seal or listing refused for about 54 s,
+longer than the SDK replays; create streams one at a time (the SDK
+replays the short waits between them) or ahead of when you need them.
+
 ## Beta terms and support
 
 `<the beta's terms and support channel, published with the beta>`
