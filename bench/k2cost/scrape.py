@@ -405,11 +405,20 @@ def cmd_snapshot(args) -> int:
         # L6 spike: the usage aggregate (per-stream frame bytes) at the
         # snapshot, so stored bytes are read at the phase boundaries.
         _, usage, uerr = get_json(f"{url}/v1/debug/usage", auth)
+        # L6 spike M6: the ring gauges per shard DB (/v1/debug/timings'
+        # tail_ring, with the L6 share and the process budget's resident and
+        # peak bytes) and the per-project memory pressure, at the boundary.
+        _, timings, terr = get_json(f"{url}/v1/debug/timings", auth)
+        rings = None
+        if isinstance(timings, dict) and not terr:
+            rings = {p: v.get("tail_ring") for p, v in timings.items() if isinstance(v, dict)}
         servers[name] = {
             "store": shape_store(store) if store and not serr else None,
             "boot_id": (load or {}).get("boot_id") if not lerr else None,
             "rss_mb": (load or {}).get("rss_mb") if not lerr else None,
             "usage": shape_usage(usage) if usage and not uerr else None,
+            "tail_ring": rings,
+            "project_memory": (load or {}).get("project_memory") if not lerr else None,
             "error": serr or lerr or uerr,
         }
     procs = proc_stats(args.pids)
