@@ -153,8 +153,9 @@ In plain words:
 - The SDK replays a `429` or a `503` the server does not mark
   `retryable: false` (a plain append's `503` only when the server marks it
   `retryable: true`), on its `Retry-After`, and a transport failure of a
-  request the server answers idempotently, after 1, 2 and 4 s: at most
-  four attempts in all, and one more after a `401` refreshes the token.
+  request the server answers idempotently (and a producer append's `2xx`
+  whose answer cannot be read), after 1, 2 and 4 s: at most four attempts
+  in all, and one more after a `401` refreshes the token.
 - A plain append (`append`, `appendBytes`, `appendMany`) that meets a
   transport failure, a `408` or a `5xx` other than `503` is not sent
   again: it rejects with `AppendOutcomeUnknownError` (`retryable: false`),
@@ -167,10 +168,10 @@ In plain words:
   deduplicates. A `503` the server marks retryable wrote nothing, and the
   SDK replays it. A plain append answered `2xx` whose answer cannot be
   read rejects with `unreadable_response`: it was written, so do not send
-  it again. A producer append answered so rejects with
-  `unreadable_response` too, and the producer keeps its sequence: send the
-  same value through it before any other value on that routing key, which
-  the server answers `duplicate: true` (see "Producer state ownership").
+  it again. A producer append answered so is sent again, as after a
+  transport failure, and resolves with the server's answer; it rejects
+  with `unreadable_response` (`retryable: true`) only when its last
+  attempt's answer cannot be read either (see "Producer state ownership").
 - A producer append whose replay the server refuses (another writer
   fenced its producer id, the collection was sealed, a quota still refused
   it) rejects with `AppendOutcomeUnknownError` too, the refusal as its
@@ -201,7 +202,8 @@ for a retry the server deduplicates.
 A request whose `fetch` fails is sent again up to three times, after 1, 2
 and 4 s (abort-aware), within the same four attempts as the 429/503 replay,
 and rejects with `StreamsTransportError` once they are spent. A producer
-append is sent again with the same producer id, epoch and sequence, so the
+append is sent again with the same producer id, epoch, sequence and body,
+after a fetch failure and after a `2xx` whose answer cannot be read, so the
 server deduplicates a replay of an append that landed (`duplicate: true`; a
 replay it refuses before that check rejects with `AppendOutcomeUnknownError`,
 see "Producer state ownership"), and the producer's later operations on
@@ -254,8 +256,9 @@ change of the service's hostname keeps every producer's sequence; a client
 made with `new StreamsClient({ url })` keys it on `url`, as before. A watch
 URL minted before a hostname change keeps the old host; mint a new one.
 
-A producer append whose fetch fails is sent again with the same sequence
-after 1, 2 and 4 s, before any later operation of its routing key; the
+A producer append whose fetch fails, or whose `2xx` answer cannot be read
+(not JSON, or cut off mid-body), is sent again with the same sequence and
+body after 1, 2 and 4 s, before any later operation of its routing key; the
 server answers a replay of an append that landed with `duplicate: true` and
 stores it once. The seal, the quotas and another writer's fence are
 checked before that, so a replay can be refused instead: it then rejects
@@ -295,15 +298,21 @@ message names the recovery, by `cause`:
   over in your store first, saving what it holds for the scope whose
   `endpoint` is the old `url` under the same scope with the new one.
 
-A producer append answered `2xx` whose answer cannot be read (not JSON, or
-cut off mid-body) rejects with `StreamsError` `unreadable_response`
-(`retryable: false`, the read failure as `cause`). The server answered
-`2xx`, so the record was written, but the SDK saves a producer's state
-only from an answer it read, so the producer keeps its sequence. Send the
-same value on the same routing key through it before any other value on
-that key: the server answers it `duplicate: true` and the producer moves
-on. A different value sent first is refused `409`
-`producer_sequence_reused`.
+A `2xx` whose answer cannot be read may come from the server, which wrote
+the record, or from something in front of it that never forwarded the
+request, so the SDK takes it as a lost answer: the resend resolves with
+the server's answer, `duplicate: true` with the original record's cursor
+if the record was written, written once if not. Only when the last
+attempt's answer cannot be read either (with `retry: { transport: false }`,
+the first attempt's) does the append reject, with `StreamsError`
+`unreadable_response` (`retryable: true`, the `2xx` status, the read
+failure as `cause`): the SDK cannot tell whether the record was written,
+and it saves a producer's state only from an answer it read, so the
+producer keeps its sequence. Send the same value on the same routing key
+through the same producer before any other value on that key: the server
+answers `duplicate: true` if it was written and writes it once if not. A
+different value sent first is refused `409` `producer_sequence_reused` if
+it was written.
 
 A fetch failure that outlasts the replay's attempts, or a failed state
 save, rejects the operation and leaves later queue operations usable.

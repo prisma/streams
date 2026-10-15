@@ -44,11 +44,16 @@ not carried over).
   endpoint after a `421`). A plain append
   answered `2xx` whose answer cannot be read rejects with `StreamsError`
   `unreadable_response` (`retryable: false`): it was written. A producer
-  append answered so rejects the same way, where it rejected with the
-  runtime's `SyntaxError` or `TypeError`, and the producer keeps its
-  sequence: send the same value through it before any other value on that
-  routing key, which the server answers `duplicate: true`. A token
-  provider's failure is never classified as an append's unknown outcome.
+  append answered so, which rejected with the runtime's `SyntaxError` or
+  `TypeError`, is sent again with the same producer id, epoch, sequence
+  and body, as after a transport failure, and resolves with the server's
+  answer (`duplicate: true` with the original cursor if the first attempt
+  was written; a refused resend is the `AppendOutcomeUnknownError` above).
+  Only when its last attempt's answer cannot be read either does it reject,
+  with `StreamsError` `unreadable_response` (`retryable: true`), the
+  producer keeping its sequence: send the same value through it before any
+  other value on that routing key. A token provider's failure is never
+  classified as an append's unknown outcome.
 - `client.stream()` throws, and `client.createStream()` rejects before any
   request, with `StreamsError` `invalid_encryption_key_format` (`status` 0,
   `retryable: false`, the key not shown) for a key that, the whitespace

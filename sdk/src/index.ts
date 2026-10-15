@@ -381,6 +381,19 @@ export class StreamsTransportError extends StreamsError {
   }
 }
 
+/** What the server answers the same value at the same sequence of a producer
+ * append whose outcome is unknown: it keeps the last sequence and request
+ * hash per routing key and producer id. */
+const SETTLES = "the server answers duplicate: true if it was written and writes it once if not";
+
+/** The recovery for a producer append whose outcome is unknown when nothing
+ * but the server's duplicate check stands before a resend: a refused replay
+ * whose refusal passes (`refusedReplayRecovery`), and an answer that could
+ * not be read at the last attempt (`producerAnswer`). */
+const RESEND_SAME_VALUE = "send the same value on the same routing key through this producer " +
+  `before any other value on that key: ${SETTLES}; a different value sent first is refused 409 ` +
+  "producer_sequence_reused if it was written";
+
 /** How to settle a producer append whose replay the server refused after a
  * lost answer, by the refusal (`cause`). A fence: a resend under the
  * producer's own epoch is refused again, and one under the fencing writer's
@@ -408,18 +421,14 @@ function refusedReplayRecovery(cause: unknown): string {
       "whether the value was written; sending it again is refused 409 sealed " +
       "before the server's duplicate check";
   }
-  const settles = "the server answers duplicate: true if it was written and " +
-    "writes it once if not";
   if (cause instanceof WrongCellError) {
     return "send the same value on the same routing key through this producer " +
       "id on a client for the project's new endpoint, before any other value " +
-      `on that key: ${settles}; a client made by connect keeps this producer's ` +
+      `on that key: ${SETTLES}; a client made by connect keeps this producer's ` +
       "epoch and sequence there, while one made with new StreamsClient({ url }) " +
       "starts them at 0 unless your state store carries them over";
   }
-  return "send the same value on the same routing key through this producer " +
-    `before any other value on that key: ${settles}; a different value sent ` +
-    "first is refused 409 producer_sequence_reused if it was written";
+  return RESEND_SAME_VALUE;
 }
 
 /**
@@ -806,34 +815,55 @@ function plainAppendFailure(e: unknown): unknown {
 }
 
 /** A producer append request's own failure (`req()`'s `classify`): an
- * error answer after an earlier attempt's transport failure (a replay the
- * server refused before its duplicate check: another writer's fence, a
- * seal, a quota) cannot say the lost attempt was not written, so it becomes
+ * error answer after an attempt whose answer was lost (a transport failure,
+ * or a `2xx` whose body could not be read) is a replay the server refused
+ * before its duplicate check (another writer's fence, a seal, a quota). It
+ * cannot say the lost attempt was not written, so it becomes
  * `AppendOutcomeUnknownError`'s producer variant, which `Producer.sendNow`
- * does not answer with a new epoch. A transport failure that outlasts the
- * attempts, and an answer with no lost attempt before it, pass through. */
+ * does not answer with a new epoch. A lost answer that outlasts the
+ * attempts (a transport failure, or `producerAnswer`'s
+ * `unreadable_response`), and an answer with no lost attempt before it,
+ * pass through. */
 function producerAppendFailure(failure: StreamsError, answerLost: boolean): unknown {
-  return answerLost && !(failure instanceof StreamsTransportError)
+  return answerLost && !(failure instanceof StreamsTransportError) &&
+      failure.code !== "unreadable_response"
     ? new AppendOutcomeUnknownError(failure.status, failure, true)
     : failure;
 }
 
-/** How to go on after a producer append's unreadable 2xx: `Producer.sendNow`
- * saves the producer's state only from an answer it read, so the producer
- * keeps its sequence (a 2xx an intermediary made up wrote nothing, and the
- * next sequence would be refused `producer_gap`), and the server, which
- * keeps the last sequence and request hash per routing key and producer id,
- * answers the same value at that sequence `duplicate: true`. */
-const PRODUCER_UNREADABLE_NEXT = "this producer keeps its sequence, so send the same value on " +
-  "the same routing key through it before any other value on that key: the server answers it " +
-  "duplicate: true and the producer moves on, while a different value sent first is refused 409 " +
-  "producer_sequence_reused";
+/** A producer append's `2xx` answer (`req()`'s `read`), or
+ * `unreadable_response` when its body cannot be read (not JSON, or a
+ * connection lost mid-body). That answer is lost: the `2xx` may have come
+ * from something in front of the server that never forwarded the request,
+ * so `req()` sends the same producer id, epoch, sequence and body again, as
+ * after a transport failure, and the server answers `duplicate: true` with
+ * the original record's cursor if the lost attempt was written, and writes
+ * it once if not. Only an unreadable answer at the last attempt rejects;
+ * `Producer.sendNow` saves the producer's state only from an answer it read,
+ * so the producer keeps its sequence, and the error is retryable, as a
+ * transport failure that outlasts the attempts is, with the same recovery. */
+async function producerAnswer(res: Response): Promise<AppendResult | StreamsError> {
+  try {
+    return (await res.json()) as AppendResult;
+  } catch (cause) {
+    const unreadable = new StreamsError(
+      res.status,
+      "unreadable_response",
+      `the producer append's last attempt was answered HTTP ${res.status}, but its answer ` +
+        "could not be read, so the SDK cannot tell whether it was written; this producer " +
+        `keeps its sequence, so ${RESEND_SAME_VALUE}`,
+      true,
+    );
+    unreadable.cause = cause;
+    return unreadable;
+  }
+}
 
-/** An append's 2xx answer. The server wrote the record, so a body that
+/** A plain append's 2xx answer. The server wrote the record, so a body that
  * cannot be read (not JSON, or a connection lost mid-body) is neither a
- * retryable failure nor an unknown outcome: a second plain append would be
- * a second copy, and a producer append goes on as `next` says. */
-async function appendedResult(res: Response, next = "do not send it again"): Promise<AppendResult> {
+ * retryable failure nor an unknown outcome: a second append would be a
+ * second copy. */
+async function appendedResult(res: Response): Promise<AppendResult> {
   try {
     return (await res.json()) as AppendResult;
   } catch (cause) {
@@ -841,7 +871,7 @@ async function appendedResult(res: Response, next = "do not send it again"): Pro
       res.status,
       "unreadable_response",
       `the server accepted the append (HTTP ${res.status}), so it was written, ` +
-        `but its answer could not be read; ${next}`,
+        "but its answer could not be read; do not send it again",
       false,
     );
     error.cause = cause;
@@ -882,8 +912,15 @@ async function reconnectAfter(backoffMs: number, signal?: AbortSignal): Promise<
  * `replays` decides which refusals are sent again on their `Retry-After`
  * within the attempts: a retryable `429` or `503`, except where a `503`
  * may have followed a write the server does not deduplicate (plain
- * appends). */
-async function req(
+ * appends).
+ *
+ * `read` reads a `2xx` answer inside the attempts (a producer append's,
+ * `producerAnswer`), or returns the `StreamsError` saying it could not:
+ * that attempt's answer was lost after the request reached something that
+ * answered it, so it is replayed as a transport failure is (and sets
+ * `answerLost`), and is the request's failure when it ends the attempts.
+ * Without it a `2xx` is returned unread. */
+async function req<R = Response>(
   ctx: Ctx,
   method: string,
   path: string | (() => Promise<string>),
@@ -893,11 +930,23 @@ async function req(
   replayTransport = true,
   classify: (failure: StreamsError, answerLost: boolean) => unknown = (failure) => failure,
   replays: (error: StreamsError) => boolean = retryableRequestError,
-): Promise<Response> {
+  read?: (res: Response) => Promise<R | StreamsError>,
+): Promise<R> {
   const h: Record<string, string> = { ...headers };
   let rejectedGeneration: number | undefined;
   let refreshed = false;
   let answerLost = false;
+  // An attempt whose answer was lost (its transport failed, or `read`
+  // could not read its 2xx) is sent again after 1, 2 or 4 s, or is the
+  // request's failure. The four attempts the 429/503 replay counts too. A
+  // 401's single token refresh is not bounded by them, so a request makes
+  // at most five attempts: the fifth only after a 401 at the fourth.
+  const lose = async (failure: StreamsError, attempt: number): Promise<void> => {
+    if (!ctx.transportRetry || !replayTransport || attempt >= 3) throw classify(failure, answerLost);
+    answerLost = true;
+    await sleep(TRANSPORT_BACKOFF_MS[attempt], signal);
+    signal?.throwIfAborted();
+  };
   for (let attempt = 0; ; attempt++) {
     signal?.throwIfAborted();
     const auth = await requestWait(authHeader(ctx, rejectedGeneration), signal);
@@ -917,17 +966,17 @@ async function req(
       });
     } catch (cause) {
       signal?.throwIfAborted();
-      const failure = new StreamsTransportError(cause);
-      // The four attempts the 429/503 replay counts too. A 401's single
-      // token refresh is not bounded by them, so a request makes at most
-      // five attempts: the fifth only after a 401 at the fourth.
-      if (!ctx.transportRetry || !replayTransport || attempt >= 3) throw classify(failure, answerLost);
-      answerLost = true;
-      await sleep(TRANSPORT_BACKOFF_MS[attempt], signal);
-      signal?.throwIfAborted();
+      await lose(new StreamsTransportError(cause), attempt);
       continue;
     }
-    if (res.ok) return res;
+    if (res.ok) {
+      if (read === undefined) return res as R;
+      const answer = await read(res);
+      if (!(answer instanceof StreamsError)) return answer;
+      signal?.throwIfAborted();
+      await lose(answer, attempt);
+      continue;
+    }
     // Consume/classify failure before applying generic retry. In
     // particular a 503 routing response is permanent at this endpoint.
     const error = await (ctx.errors ?? errorFrom)(res);
@@ -1403,15 +1452,16 @@ export class Stream<T = unknown> {
       ...ph,
     };
     if (routingKey) h["prisma-routing-key"] = routingKey;
-    // A transport failure is replayed with the same producer id, epoch and
-    // sequence, which the server deduplicates (an append that landed is
-    // answered `duplicate: true`); the scope's queue holds later operations
-    // until it settles. A replay the server refuses before that check (a
-    // fence by another writer, a seal, a quota) cannot say the lost attempt
-    // was not written: it rejects as `AppendOutcomeUnknownError`
+    // A lost answer (a transport failure, or a 2xx whose body cannot be
+    // read: `producerAnswer`) is replayed with the same producer id, epoch,
+    // sequence and body, which the server deduplicates (an append that
+    // landed is answered `duplicate: true`); the scope's queue holds later
+    // operations until it settles. A replay the server refuses before that
+    // check (a fence by another writer, a seal, a quota) cannot say the lost
+    // attempt was not written: it rejects as `AppendOutcomeUnknownError`
     // (`producerAppendFailure`), which Producer.sendNow does not answer
     // with a new epoch.
-    const res = await req(
+    return req(
       this.ctx,
       "POST",
       this.path(batch ? "/records:batch" : "/records"),
@@ -1420,8 +1470,9 @@ export class Stream<T = unknown> {
       undefined,
       true,
       producerAppendFailure,
+      retryableRequestError,
+      producerAnswer,
     );
-    return appendedResult(res, PRODUCER_UNREADABLE_NEXT);
   }
 
   // ---- read / subscribe / scan (spec Stage 6) -----------------------
