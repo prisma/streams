@@ -275,8 +275,7 @@ WAdvance ==        \* CommitOp::Absorbed applied by the committer
     /\ A.abs < hF
     /\ \E u \in (A.abs + 1)..hF, allowed \in TrimBudgets :
          PageEdge(u) /\
-         LET prev == A.abs
-             safe == Max(A.safe, prev)
+         LET safe == Max(A.safe, Min(u, A.next))   \* zero lag: the new boundary
          IN NewGroup([A EXCEPT !.abs = Min(u, A.next), !.safe = safe,
                                !.trimmed = Max(A.trimmed, Min(safe, A.trimmed + allowed))])
     /\ UNCHANGED <<D, P, hF, gen, eng, old, moves, lostPost, lostCanon, cvars, gvars>>

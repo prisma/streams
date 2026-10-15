@@ -29,22 +29,9 @@ MutSubmitBeforeFlush(a) == a.ph \in {"staged", "flushed"}
 \* only canonical frames become durable for the advanced range.
 MutPostingsNotWritten(h, S) == h
 
-\* NC trim-to-proposed: the advancing op trims toward the newly proposed
-\* absorbed boundary instead of trim_safe_to (the previous boundary).
-MutTrimToProposed(safe, newAbs) == newAbs
-
-\* NC tick-trim-to-absorbed: the TrimTick trims toward the current absorbed
-\* boundary instead of trim_safe_to (drops the one-advance lag).
-MutTickTrimToAbsorbed(t) == t.abs
-
 \* NC trim-past-absorbed: the TrimTick trims toward next, past the absorbed
 \* boundary (removes rows history does not hold).
 MutTickTrimToNext(t) == t.next
-
-\* Historical regression control (2026-07-27 boundary race, see
-\* src/dst/tests/reads_ring.rs a_duplicate_absorbed_op_does_not_advance_the_trim):
-\* a duplicate Absorbed op raises trim_safe_to to the LIVE boundary.
-MutSafeRaisedOnDuplicate == TRUE
 
 \* NC pre-fix TLA-016-F1 (slate's planted control for 9c6675d7,
 \* `if copied.from != tail.absorbed && false`): retire_absorbed ignores

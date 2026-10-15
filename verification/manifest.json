@@ -2240,36 +2240,6 @@
           }
         },
         {
-          "id": "TLA-016/nc-trim-to-proposed",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_nc_trim_to_proposed.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "StaleReaderRangeIntact"
-          }
-        },
-        {
-          "id": "TLA-016/nc-duplicate-collapse",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_nc_duplicate_collapse.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "StaleReaderRangeIntact"
-          }
-        },
-        {
-          "id": "TLA-016/nc-tick-trim-to-absorbed",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_nc_tick_trim_to_absorbed.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "StaleReaderRangeIntact"
-          }
-        },
-        {
           "id": "TLA-016/nc-lastcopy-publish-before-flush",
           "role": "negative-control",
           "spec": "verification/tla/history/MC_HistoryAbsorb.tla",

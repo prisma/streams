@@ -112,12 +112,9 @@ SetMax(S) == CHOOSE x \in S : \A y \in S : y <= x
 SetMin(S) == CHOOSE x \in S : \A y \in S : x <= y
 
 (* Tail row fields (src/shard.rs TailFields): next, absorbed, trim_safe_to, *)
-(* trimmed, unabsorbed_bytes (ub).  gprev is a GHOST: the absorbed value    *)
-(* immediately before the most recent advancing Absorbed op (H4 anchor).    *)
-TailT == [next : 0..N, abs : 0..N, safe : 0..N, trimmed : 0..N, gprev : 0..N,
-          ub : 0..N]
-InitTail == [next |-> InitNext, abs |-> 0, safe |-> 0, trimmed |-> 0, gprev |-> 0,
-             ub |-> InitNext]
+(* trimmed, unabsorbed_bytes (ub).                                         *)
+TailT == [next : 0..N, abs : 0..N, safe : 0..N, trimmed : 0..N, ub : 0..N]
+InitTail == [next |-> InitNext, abs |-> 0, safe |-> 0, trimmed |-> 0, ub |-> InitNext]
 Rows == {"none", "mem", "dur"}
 NoSnap == [set |-> FALSE, trimmed |-> 0, next |-> 0]
 IdleAb == [ph |-> "idle", from |-> 0, upto |-> 0, cur |-> 0, chunk |-> {}, ring |-> FALSE,
@@ -194,7 +191,7 @@ SubmitReady(a) == a.ph = "flushed"
 \* stage_checked writes the postings pages into the SAME WriteBatch.
 WriteRows(h, S) == [o \in Offs |-> IF o \in S /\ h[o] = "none" THEN "mem" ELSE h[o]]
 PostingsWrite(h, S) == WriteRows(h, S)
-\* advance_boundary trims toward trim_safe_to (previous boundary).
+\* advance_boundary trims toward trim_safe_to (zero lag: the new boundary).
 AdvanceTrimTarget(safe, newAbs) == safe
 \* CommitTransaction::trim targets trim_safe_to.min(absorbed).
 TickTrimTarget(t) == Min(t.safe, t.abs)
@@ -572,12 +569,11 @@ CommitAbsorbed ==
                                /\ UNCHANGED <<A, pend, held, dupSeen, detached>>
                           ELSE \* Exact
                                /\ \E allowed \in TrimBudgets :
-                                    LET safe   == Max(A.safe, prev)
+                                    LET safe   == Max(A.safe, newAbs)
                                         tt     == Min(AdvanceTrimTarget(safe, newAbs),
                                                       A.trimmed + allowed)
                                     IN NewGroupH([A EXCEPT !.abs = newAbs, !.safe = safe,
                                                           !.trimmed = Max(A.trimmed, tt),
-                                                          !.gprev = prev,
                                                           !.ub = A.ub - m.b], TRUE)
                                /\ UNCHANGED <<dupSeen, diverged, detached>>
                    ELSE \* Detached (warned, dropped whole); a no-write group
@@ -750,23 +746,15 @@ LastRecoverableCopy ==
     \A T \in {A, D} : \A o \in Offs :
         o < T.next => (o >= T.trimmed \/ (hc[o] = "dur" /\ hp[o] = "dur"))
 
-\* H4 GUARD CHECK: trim never passes the absorbed boundary as of the
-\* PREVIOUS advance.  This restates the committer's guard (safe = max(safe,
-\* prev), trims capped at safe); it checks that every path (duplicates,
-\* trim ticks, budgets, crashes) keeps the guard, not a reader guarantee.
-H4_TrimWithinPreviousBoundary ==
-    \A T \in TailStates : T.trimmed <= T.safe /\ T.safe <= T.gprev
-
-\* GUARD CHECK of the documented trim_safe_to contract (src/shard.rs
-\* TailFields): a reader whose published snapshot lags the current boundary
-\* by AT MOST ONE advance still finds its whole tail range in the shard log.
-\* Its antecedent excludes snapshots two or more advances stale, which
-\* Witness_StaleSnapshotLosesTail shows are NOT protected (TLA-016-F2); the
-\* read path's revalidation (TLA-018) carries that case.
-StaleReaderRangeIntact ==
-    rd.ph = "snap" =>
-        /\ (rd.B >= D.gprev => D.trimmed <= rd.B)
-        /\ (rd.B >= A.gprev => A.trimmed <= rd.B)
+\* H4 GUARD CHECK: trim never passes trim_safe_to, and trim_safe_to never
+\* passes the absorbed boundary (zero lag: an Exact advance makes its new
+\* boundary trimmable).  This restates the committer's guard (safe =
+\* max(safe, new boundary), trims capped at safe); it checks that every path
+\* (duplicates, trim ticks, budgets, crashes) keeps the guard, not a reader
+\* guarantee: a stale reader is carried by the read path's revalidation
+\* (TLA-018), whatever its staleness.
+H4_TrimWithinBoundary ==
+    \A T \in TailStates : T.trimmed <= T.safe /\ T.safe <= T.abs
 
 \* A lane mark never claims more than durable history (it would otherwise
 \* let plan_read skip an unabsorbed range forever).
