@@ -267,6 +267,24 @@ export async function h9b(ctx: Ctx, signal: AbortSignal): Promise<Record<string,
   };
 }
 
+/** H9b's readers by answer, from its phase's ledger: how many read their
+ * body whole, the refusals that carry a code (by "status:code"), and every
+ * other answer by its status ("200 cut short" for a body the server ended
+ * early; "0" for no answer). */
+export function h9bAnswers(phase: { h9b: { statuses: Record<string, number>; cut_short: number }; error_codes: Record<string, number> }): {
+  readers: number; whole: number; typed: Record<string, number>; other: Record<string, number>;
+} {
+  const { statuses, cut_short: cut } = phase.h9b;
+  const typed = Object.fromEntries(Object.entries(phase.error_codes).filter(([k]) => !k.endsWith(":-")));
+  const other: Record<string, number> = cut > 0 ? { "200 cut short": cut } : {};
+  for (const [status, n] of Object.entries(statuses)) {
+    const coded = Object.entries(typed).reduce((a, [k, v]) => a + (k.startsWith(`${status}:`) ? v : 0), 0);
+    if (status !== "200" && n > coded) other[status] = n - coded;
+  }
+  const readers = Object.values(statuses).reduce((a, n) => a + n, 0);
+  return { readers, whole: (statuses["200"] ?? 0) - cut, typed, other };
+}
+
 // ---------------------------------------------------------------- cost
 
 const COST_KINDS = ["catalog", "create", "missing", "refused"] as const;

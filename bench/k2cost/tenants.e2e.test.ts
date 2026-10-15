@@ -27,6 +27,7 @@ import { DEFAULT_PROFILES } from "../../deploy/cell-admin/commands.ts";
 import { readProfiles } from "../../deploy/cell-admin/profile.ts";
 import { cleanup, keyFile, readBundle, scratchDir } from "../../deploy/cell-admin/test-rig.ts";
 import { Opts } from "./common.ts";
+import { h9bAnswers } from "./hostile.ts";
 import { expand, readManifest } from "./tenant-plan.ts";
 import { main as admitMain } from "./tenants-admit.ts";
 import { auditAll, run, usage } from "./tenants.ts";
@@ -105,6 +106,8 @@ maybe("the tiny Layer B manifest runs clean on the real binary: oracle, meters, 
     // 0 refusals, every code counted (shared_verdict.py's compliant bar).
     expect([cls, c.refusals.typed, c.refusals.untyped, c.refusals.transport]).toEqual([cls, {}, {}, 0]);
   }
+  // Both victims were held to that bar, whatever H9b's readers met.
+  expect(Object.keys(classes).filter((k) => classes[k].role === "victim").sort()).toEqual(["victim", "victim-free"]);
   // Every hostile class at Q-hostile is refused, each refusal typed.
   for (const h of ["h1", "h2", "h4", "h6"]) {
     expect([h, Object.keys(classes[h].refusals.typed).some((k) => k.startsWith("429:")), classes[h].refusals.untyped])
@@ -126,11 +129,21 @@ maybe("the tiny Layer B manifest runs clean on the real binary: oracle, meters, 
   expect([probes.pairs, probes.first_contacts, probes.differences, probes.put]).toEqual([26, 26, { name: 0, usage: 0 }, { "201": 26 }]);
   const phase = (cls: string, i: number) => JSON.parse(readFileSync(join(out, "projects", plan.projects.find((p) => p.cls.class === cls)!.id, `phase-${i}.ledger.json`), "utf8"));
   const h9 = phase("h9", 2).h9;
-  const h9b = phase("h9b", 2).h9b;
+  const h9bPhase = phase("h9b", 2);
+  const h9b = h9bPhase.h9b;
   const costAnswers = phase("cost", 0).cost.answers;
   console.log(JSON.stringify({ h9: h9.bursts.map((b: any) => [b.answers, b.payload_bytes, b.p99_ms, b.debt_clear_ms]), h9b, cost: costAnswers }));
   expect(h9.bursts.length).toBeGreaterThan(0);
-  expect([h9b.statuses, h9b.cut_short]).toEqual([{ "200": 8 }, 0]);
+  // Every H9b reader read its stalled body whole or was refused with a
+  // code. H9b runs at the k ceilings: a reader admitted after another's
+  // page put the project in read debt is refused 429 project_rate_limit
+  // (one of 8 in one of the round-4 lane's two runs), and one that finds
+  // the project's read memory full waits and may then be refused 429
+  // project_memory_pressure. The first reader admitted meets neither, so
+  // at least one holds a stalled body.
+  const stalled = h9bAnswers(h9bPhase);
+  const typed = Object.values(stalled.typed).reduce((a, n) => a + n, 0);
+  expect([stalled.readers, stalled.whole >= 1, stalled.whole + typed, stalled.other]).toEqual([8, true, 8, {}]);
   // Every kind of the cost mix was answered, every error answer with a code.
   for (const kind of ["catalog", "create", "missing", "refused"]) {
     const keys = Object.keys(costAnswers[kind]);

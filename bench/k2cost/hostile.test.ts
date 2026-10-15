@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HeaderSource, Http, Meter, Opts } from "./common.ts";
 import { FakeCell } from "./fake-cell.ts";
-import { bodyOf, h9, h9b, ks } from "./hostile.ts";
+import { bodyOf, h9, h9b, h9bAnswers, ks } from "./hostile.ts";
 import { ownerOf } from "./oracle.ts";
 import { type Manifest, checkManifest, expand } from "./tenant-plan.ts";
 import { run } from "./tenants.ts";
@@ -257,6 +257,29 @@ test("H9b reports a stalled reader whose body the server cut short, and counts n
   srv.close();
   expect([r.statuses, r.cut_short, meter.tot.get("delivered_records")]).toEqual([{ "200": 2 }, 2, 0]);
 });
+
+test("H9b's readers by answer: a refusal with a code is typed; an untyped one, a body cut short and no answer are other", async () => {
+  const stall = (name: string): Manifest => ({
+    name, seed: 7, duration: 2.6, classes: [{ class: "stall", count: 1, role: "hostile", streams: 2, phases: [
+      { mode: "setup", at: 0 },
+      { mode: "produce", at: 0.1, secs: 0.3, args: { rate: 100, "record-bytes": 512 } },
+      { mode: "h9b", at: 1.2, secs: 1.2, args: { readers: 3, "max-bytes": 8192, "hold-secs": 0.2 } },
+    ] }],
+  });
+  // The project's first request after its writes is one of H9b's readers:
+  // refused as the real server refuses a reader admitted after another's
+  // page put the project in read debt, then as no server should.
+  const answers = async (name: string, status: number, code: string | null) => {
+    const { out, ids } = await runManifest(stall(name), name, (ids) => setTimeout(() => cell.refuse(ids.stall0!, 1, status, code), 800));
+    return h9bAnswers(json(join(out, "projects", ids.stall0!, "phase-2.ledger.json")));
+  };
+  expect(await answers("h9btyped", 429, "project_rate_limit")).toEqual({ readers: 3, whole: 2, typed: { "429:project_rate_limit": 1 }, other: {} });
+  expect(await answers("h9buntyped", 503, null)).toEqual({ readers: 3, whole: 2, typed: {}, other: { "503": 1 } });
+  // A body the server ended early, no answer at all, and a 429 whose body
+  // never came (so no code was read).
+  expect(h9bAnswers({ h9b: { statuses: { "200": 2, "0": 1, "429": 1 }, cut_short: 1 }, error_codes: {} }))
+    .toEqual({ readers: 4, whole: 1, typed: {}, other: { "200 cut short": 1, "0": 1, "429": 1 } });
+}, 30_000);
 
 test("an H9 read whose page does not parse counts as a corrupt delivery on the oracle", async () => {
   const srv = Bun.serve({
