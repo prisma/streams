@@ -14,6 +14,14 @@ python3 bench/lifecycle/lifecycle.py judge RUN/evidence.json        # re-judge a
 python3 -m unittest discover -s bench/lifecycle -v                  # the tests (no platform)
 ```
 
+CI's `sdk-package` job runs these tests and `bun test
+./bench/lifecycle/sigterm-probe`, by the owner's round-6 call 8 of
+2026-10-15. The Python tests run with `LIFECYCLE_REQUIRE_PROBES=1`, under
+which a probe test that would skip for a missing `bun`, `node` or
+`sdk/dist` fails instead, after the job builds the SDK, and on Node 18 (the
+SDK's engines floor), so the SDK probe's test sees Node 18's `fetch`.
+`scripts/quality/test_layer_b_ci.py` holds the job to both.
+
 Runs need a cell: the scratch project of owner decision D1 (deploy-q5 Q1,
 decided (a) on 2026-10-12: Composer creates `streams-beta-scratch` in the
 Personal workspace, eu-central-1) for the layout-5 rehearsal, then the RC

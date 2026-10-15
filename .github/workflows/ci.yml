@@ -331,11 +331,25 @@ jobs:
       # (AGENTS.md section 1 (3)): its tests pin the verdict's `load` and
       # `harness` legs and the probes leg's first-contact bar, which no gate
       # ran before. Its end-to-end test is opt-in (TENANTS_E2E_BIN_DIR) and
-      # skips here.
-      - name: Deploy wrapper, its feed poller, campaign staging, cell-admin, the interim issuer, the cell's Composer app, the cell watch and Layer B's harness (Bun)
-        run: bun test ./deploy/supervise.test.ts ./deploy/feeds.test.ts ./deploy/stage-app.test.ts ./deploy/cell-admin ./deploy/issuer ./deploy/composer ./deploy/cell-watch ./bench/k2cost
+      # skips here. The Compute lifecycle checklist's SIGTERM probe
+      # (./bench/lifecycle/sigterm-probe, whose tests import only bun:test
+      # and node:*, so it needs no install) joins by the owner's round-6
+      # call 8 of 2026-10-15 (AGENTS.md section 1 (3)), with the checklist's
+      # Python tests two steps on.
+      - name: Deploy wrapper, its feed poller, campaign staging, cell-admin, the interim issuer, the cell's Composer app, the cell watch, Layer B's harness and the lifecycle checklist's SIGTERM probe (Bun)
+        run: bun test ./deploy/supervise.test.ts ./deploy/feeds.test.ts ./deploy/stage-app.test.ts ./deploy/cell-admin ./deploy/issuer ./deploy/composer ./deploy/cell-watch ./bench/k2cost ./bench/lifecycle/sigterm-probe
       - name: Layer B's harness, its verdict and rig (Python)
         run: python3 -m unittest discover -s bench/k2cost -p 'test_*.py'
+      # The Compute lifecycle checklist's tests (the owner's round-6 call 8
+      # of 2026-10-15, AGENTS.md section 1 (3)): its legs on fake platforms,
+      # its verdicts, the example plan against the deploy tools' flags, the
+      # real SIGTERM probe (Bun) and sdk-probe.mjs on this job's sdk/dist.
+      # LIFECYCLE_REQUIRE_PROBES=1 fails a probe test that would skip for a
+      # missing bun, node or sdk/dist. The SDK probe runs on the Node set up
+      # last, 18 (the engines floor); scripts/quality/test_layer_b_ci.py
+      # holds this step after that setup, setup-bun and the SDK's build.
+      - name: The lifecycle checklist's legs, verdicts and probes, the SDK probe on Node 18 (Python)
+        run: LIFECYCLE_REQUIRE_PROBES=1 python3 -m unittest discover -s bench/lifecycle -p 'test_*.py'
       # cell-admin's end-to-end test boots the release streams-slate over
       # s3lite (free ports) on the shared-cell profile, admits, serves and
       # offboards two projects (owner decision 2026-10-08, Q3(b)).
