@@ -144,7 +144,20 @@ impl CreationService {
         }
         Ok((created, desc))
     }
+    /// The project's stream count, which seeds its `max_streams` count once
+    /// per boot, from a walk of its catalog. A walk that completes is
+    /// charged to no project (the owner's round-5 call 2), so a create pays
+    /// only its own registry work; one that fails a page stays charged to
+    /// the request, so a client that retries a walk that cannot finish
+    /// still pays for each attempt.
     async fn count_project_streams(
+        &self,
+        project: &crate::tenant::ProjectId,
+    ) -> Result<u64, CreationError> {
+        crate::admission::park::uncharged_when_complete(self.walk_project_streams(project)).await
+    }
+
+    async fn walk_project_streams(
         &self,
         project: &crate::tenant::ProjectId,
     ) -> Result<u64, CreationError> {

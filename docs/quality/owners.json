@@ -2499,6 +2499,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::quota_stream_seed",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Stream-count seed charge (the owner's round-5 call 2, edge change #143 as amended): a project with a max_streams quota creates over real HTTP on a cell over a TimingStore, its store budget read after each create; a restart over the same store and a seed walk that fails its page; compiled and executed with DST.",
+      "syntax": "path = \"tests/quota_stream_seed.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::reads_applied_history",
       "path": "src/dst/dst_tests.rs",
       "reason": "TLA-018-F3 continuation scenarios; a held shard WAL PUT, a fencing replacement instance and real HTTP product, raw and relay reads of the stale and durable cursors; compiled and executed with DST.",

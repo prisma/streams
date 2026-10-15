@@ -174,6 +174,9 @@ mod quota_read_volume;
 #[path = "tests/quota_stored_cap.rs"]
 mod quota_stored_cap;
 
+#[path = "tests/quota_stream_seed.rs"]
+mod quota_stream_seed;
+
 #[path = "tests/reads_applied.rs"]
 mod reads_applied;
 

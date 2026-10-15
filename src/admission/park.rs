@@ -27,7 +27,8 @@
 //! served, or its handler dropped, the total is debited from its bound
 //! project's store budget (`ParkShare::debit_store_ops`). Store work
 //! outside a served request (the committer, sweeps, other tasks) is
-//! charged to no one.
+//! charged to no one, and neither is work a request runs through
+//! `uncharged_when_complete` that completes (the stream-count seed walk).
 
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -108,6 +109,26 @@ pub(crate) fn charge_store_weight(weight: u64) {
             request.weight.fetch_add(weight, Ordering::Relaxed);
         })
         .unwrap_or(());
+}
+
+/// Run `work` in the served request, which pays nothing for the registry
+/// store work `work` makes if it completes (`Ok`): the weight charged
+/// before it is restored once it returns. Work that fails, or is dropped
+/// before it returns, stays charged. Outside a served request nothing is
+/// charged either way.
+pub(crate) async fn uncharged_when_complete<T, E>(
+    work: impl Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    let before = REQUEST.try_with(|request| request.weight.load(Ordering::Relaxed));
+    let done = work.await;
+    if done.is_ok()
+        && let Ok(before) = before
+    {
+        REQUEST
+            .try_with(|request| request.weight.store(before, Ordering::Relaxed))
+            .unwrap_or(());
+    }
+    done
 }
 
 /// Bind the served request's read hold. The first bind stands; a hold that

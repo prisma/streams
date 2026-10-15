@@ -97,7 +97,8 @@ OWNERS = (
     owner('admission_park', 'src/admission/park.rs',
           'admission:: dst_tests::parked_waits:: dst_tests::read_memory:: '
           'dst_tests::shared_cell_hostile::a_create_pays_for_its_registry_writes '
-          'dst_tests::shared_cell_hostile::a_listing_pays_for_the_descriptors_it_reads'),
+          'dst_tests::shared_cell_hostile::a_listing_pays_for_the_descriptors_it_reads '
+          'dst_tests::quota_stream_seed::'),
     owner('product_read_memory', 'src/product/read_memory.rs',
           'dst_tests::read_memory:: dst_tests::shared_cell_capacity:: '
           'dst_tests::shared_cell_hostile::a_create_pays_for_its_registry_writes '

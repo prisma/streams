@@ -1,6 +1,6 @@
 # Prisma Streams — Shared-Cell Multitenancy Implementation Plan
 
-**Status:** FROZEN CONTRACT (Stage 0, committed 2026-08-15; revision 10, 2026-10-15 — see Revision log)
+**Status:** FROZEN CONTRACT (Stage 0, committed 2026-08-15; revision 11, 2026-10-15 — see Revision log)
 **Author:** Søren Bramer Schmidt (implementation plan, delivered 2026-08-15)
 **Target:** Many projects in each Prisma Streams cell
 **Migration posture:** Clean layout switch; no mixed-layout operation
@@ -100,6 +100,16 @@
   leaves grows with the burst (at 10 a second about 54 s after 50
   creates). The policy contract is unchanged: `requests_per_sec` is
   still the rate, and its description names the burst.
+- r11 (2026-10-15, the first create after a boot; decided by the owner
+  in the round-5 public-beta calls, call 2, the same README row; edge
+  change #143 as amended): §17.3 — a create's stream-count seed walk
+  (the catalog walk a project with a `max_streams` quota makes on its
+  first create since the instance booted) is charged to no project once
+  it completes, the one exception to "a verified request pays for the
+  registry store work its own task makes". So every served create weighs
+  its own work, 11 for a fresh one, however many names the project has
+  held; a walk that fails stays charged. The cell pays the completed
+  walks, once per project per boot.
 
 ---
 
@@ -1423,7 +1433,13 @@ served (or its handler is dropped): a GET or HEAD the provider bills (a
 body or a 404) weighs 1, a PUT, a listing (once, however many provider
 pages it reads) or a COPY 10 (the class-A price ratio), a 304, a refusal
 or a failure nothing. SlateDB objects and the store work of other tasks
-(the committer, sweeps) are charged to no request. The weight is debited
+(the committer, sweeps) are charged to no request. One piece of a
+request's own work is charged to no project either (r11, the owner's
+round-5 call 2): a create's stream-count seed walk that completes, the
+walk of the project's catalog (a LIST, 10, a page and a GET, 1, for
+every descriptor under its prefix, tombstones included) that a project
+with a `max_streams` quota makes on its first create since the instance
+booted; a walk that fails a page stays charged to its create. The weight is debited
 from the project's **store budget**, a second bucket at its
 `requests_per_sec` with one second's burst (no burst floor) and no
 floor on its debt (a cap would bound the debt by one request's work
@@ -1443,7 +1459,10 @@ and above; #NEW-r5-rust-1). A project's registry spend is thus bounded
 by the budget's rate for the refused routes, plus the descriptor GETs
 that the other routes pay but are never refused for (a few a request at
 most, within its request rate), plus one burst (the store work of
-max(`requests_per_sec`, 50) concurrent requests). A fresh create weighs 11 (a 404 and a PUT): at the
+max(`requests_per_sec`, 50) concurrent requests); the completed seed
+walks are the cell's, once per project per boot (times the creates that
+make a project's first concurrently). A fresh create weighs 11 (a 404 and
+a PUT), a project's first since the instance booted too (r11): at the
 beta's free tier of 10 requests a second a project creates one stream
 and then one every 1.1 s, at 20 two back to back and then one every
 0.55 s, at the k = 8 ceiling of 176 seventeen and then sixteen a

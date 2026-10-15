@@ -2152,6 +2152,17 @@
     "scenarios": []
   },
   {
+    "name": "a_seed_walk_that_fails_its_page_stays_charged",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b9a52bf2dda20cf063f82cad97685c710b2402ef8d34d9c8477a5b0ad00273f9",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/quota_stream_seed.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_served_page_is_debited_and_held_until_its_body_ends",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -4231,6 +4242,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/json_fidelity.rs",
+    "scenarios": []
+  },
+  {
+    "name": "every_served_create_weighs_11_its_seed_walk_included",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "796df58a0e042a5070299c146c71fcbe572e92b3c27d8552d3c15fc7895c6e54",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/quota_stream_seed.rs",
     "scenarios": []
   },
   {
@@ -8576,6 +8598,17 @@
       "let store = FaultStore::uniform(inner.clone(), 103, FaultPlan::new(0, 0, 0));"
     ],
     "file": "src/dst/tests/reads_history.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_first_create_after_a_restart_weighs_11_whatever_names_the_project_held",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ec73e5990f258796d54755cd0d668c95054efb55b0a3ddd9667d7e954110ebf9",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/quota_stream_seed.rs",
     "scenarios": []
   },
   {
