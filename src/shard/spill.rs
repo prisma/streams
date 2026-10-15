@@ -901,6 +901,7 @@ impl ShardEngine {
                 report.groups += 1;
             }
         }
+        sp.stats.seal_groups(report.groups as u64);
         report.commit_ms = ms(t_commit.elapsed());
         sp.stats.commit_ms(report.commit_ms);
         sp.check_abort(SealStep::AfterApplied)?;

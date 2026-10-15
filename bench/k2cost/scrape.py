@@ -64,7 +64,10 @@ import urllib.request
 HEAVY_PUT_OPS = {"put", "copy"}
 MULTIPART_OPS = {"multipart", "upload_part", "mpu_create", "mpu_complete"}
 DELETE_OPS = {"delete", "delete_objects"}
-PER_STREAM_MAX = 256  # debug/usage per-stream frame bytes kept per line up to this many streams
+# debug/usage per-stream frame bytes kept per line up to this many streams.
+# L6 spike M6: K2_PER_STREAM_MAX raises it (L6S.env exports 4096) so the
+# 1,000-stream Stage 8 points keep the customer streams' stored bytes.
+PER_STREAM_MAX = int(os.environ.get("K2_PER_STREAM_MAX") or 256)
 
 
 def now_ms() -> int:

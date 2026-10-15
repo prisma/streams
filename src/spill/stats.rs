@@ -127,6 +127,14 @@ pub(crate) struct SpillStats {
     /// L0 bytes SlateDB reported (`l0_flush_bytes`) around the seals' flushes.
     pub(crate) spill_l0_bytes: AtomicU64,
     pub(crate) chunk_sizes: Histogram<4>,
+    /// M6: the chunk bytes in each `chunk_sizes` bucket, so the share of
+    /// sealed bytes in chunks under 32 KiB is read directly (rBn F5).
+    pub(crate) chunk_bytes: [AtomicU64; 4],
+    /// M6: groups beyond the first in a seal (a split by the 1,024-stream
+    /// cap or by a stream's second chunk), summed over seals.
+    pub(crate) group_splits: AtomicU64,
+    /// M6: the most groups one seal submitted.
+    pub(crate) groups_per_seal_max: AtomicU64,
     /// M4: DST fixtures that put an absorber's cadence on this sealer.
     pub(crate) absorber_cadences: AtomicU64,
     /// M4: failed attempts of the sealer's startup dirty-index seed.
@@ -155,6 +163,18 @@ impl SpillStats {
 
     pub(crate) fn chunk(&self, bytes: u64) {
         self.chunk_sizes.record(&CHUNK_BOUNDS, bytes);
+        let i = CHUNK_BOUNDS
+            .iter()
+            .position(|b| bytes <= *b)
+            .unwrap_or(CHUNK_BOUNDS.len());
+        self.chunk_bytes[i].fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    /// M6: one seal's group count (its splits are the groups past one).
+    pub(crate) fn seal_groups(&self, groups: u64) {
+        self.group_splits
+            .fetch_add(groups.saturating_sub(1), Ordering::Relaxed);
+        self.groups_per_seal_max.fetch_max(groups, Ordering::Relaxed);
     }
 
     pub(crate) fn seal_ms(&self, ms: u64) {
@@ -229,6 +249,14 @@ impl SpillStats {
             "wal_objects_last": g(&self.wal_objects_last),
             "spill_l0_bytes": g(&self.spill_l0_bytes),
             "chunk_sizes": self.chunk_sizes.json(&CHUNK_BOUNDS, "B_lt"),
+            "chunk_bytes": {
+                "le_32768B": g(&self.chunk_bytes[0]),
+                "le_262144B": g(&self.chunk_bytes[1]),
+                "le_1048576B": g(&self.chunk_bytes[2]),
+                "more": g(&self.chunk_bytes[3]),
+            },
+            "group_splits": g(&self.group_splits),
+            "groups_per_seal_max": g(&self.groups_per_seal_max),
             "seal_ms": self.seal_ms.json(&MS_BOUNDS, "ms"),
             "put_ms": self.put_ms.json(&MS_BOUNDS, "ms"),
             "commit_ms": self.commit_ms.json(&MS_BOUNDS, "ms"),
@@ -348,4 +376,31 @@ pub(crate) fn snapshot_json() -> serde_json::Value {
         "shards": shards,
         "keyed_history_reads_unsupported": KEYED_UNSUPPORTED_TOTAL.load(Ordering::Relaxed),
     })
+}
+
+#[cfg(test)]
+mod m6_tests {
+    use super::*;
+
+    /// M6: chunk bytes land in the chunk-size bucket their count lands in,
+    /// and a seal's groups past the first count as splits.
+    #[test]
+    fn chunk_bytes_and_group_splits() {
+        let s = SpillStats::default();
+        for b in [100, 32 << 10, (32 << 10) + 1, 300 << 10, 2 << 20] {
+            s.chunk(b);
+        }
+        let j = s.json();
+        assert_eq!(j["chunk_bytes"]["le_32768B"], 100 + (32 << 10));
+        assert_eq!(j["chunk_bytes"]["le_262144B"], (32 << 10) + 1);
+        assert_eq!(j["chunk_bytes"]["le_1048576B"], 300 << 10);
+        assert_eq!(j["chunk_bytes"]["more"], 2 << 20);
+        assert_eq!(j["chunk_sizes"]["buckets"]["le_32768B_lt"], 2);
+        s.seal_groups(1);
+        s.seal_groups(3);
+        s.seal_groups(0);
+        let j = s.json();
+        assert_eq!(j["group_splits"], 2);
+        assert_eq!(j["groups_per_seal_max"], 3);
+    }
 }
