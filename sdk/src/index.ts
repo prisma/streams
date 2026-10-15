@@ -742,6 +742,15 @@ function encName(name: string): string {
   return name.split("/").map(encodeURIComponent).join("/");
 }
 
+/** A records read's query (`read`, `subscribe`) with a space sent as `%20`:
+ * the server decodes only `%XX` and reads a `+` as a plus, and
+ * `URLSearchParams` writes a space as `+` and a plus as `%2B`, so every `+`
+ * it wrote is a space. A routing key then asks for the lane its appends
+ * were written to. */
+function recordsQuery(q: URLSearchParams): string {
+  return q.toString().replace(/\+/g, "%20");
+}
+
 /** The refusals `errorFrom` read `"retryable": true` from: the server's own
  * word that the request may be sent again. `errorFrom` also reads a `429` or
  * `503` without that field as retryable; a plain append's `503` may not rely
@@ -1551,7 +1560,7 @@ export class Stream<T = unknown> {
     const res = await req(
       this.ctx,
       "GET",
-      this.path(`/records?${q}`),
+      this.path(`/records?${recordsQuery(q)}`),
       this.kh(),
     );
     const records =
@@ -1594,7 +1603,7 @@ export class Stream<T = unknown> {
       if (applied) q.set("deliver", "applied");
       if (live) q.set("waitMs", "25000");
       const path = this.path(
-        live ? `/records:long-poll?${q}` : `/records?${q}`,
+        live ? `/records:long-poll?${recordsQuery(q)}` : `/records?${recordsQuery(q)}`,
       );
       let res: Response;
       try {

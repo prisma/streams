@@ -159,6 +159,11 @@ at most 1,024 characters, and a producer id or a token may not be empty.
 Each refusal has `status` 0 and `retryable: false`, and neither its message
 nor its fields show the value.
 
+`read()` and `subscribe()` send the routing key in the query, a space as
+`%20`, so a key with a space or a tab reads the lane its appends were
+written to. They do not check it: a key no append can write reads an empty
+lane.
+
 ## Errors and retries
 
 In plain words:

@@ -135,6 +135,10 @@ not carried over).
 
 ### Fixed since 0.2.0-rc.4 (2026-08-31)
 
+- `read()` and `subscribe()` send a space in a routing key as `%20`. They
+  sent `+`, which the server reads as a plus, so a key with a space read
+  the lane of the key with a `+` in its place: an empty lane, or another
+  key's records.
 - Concurrent `401` answers for one cached credential share one refresh
   (R19, 6a79dfb3).
 - A producer's state mutations are serialized per scope (R20, 29daf449).

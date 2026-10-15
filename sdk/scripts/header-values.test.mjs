@@ -9,6 +9,8 @@ import { MemoryProducerStateStore, StreamsClient, StreamsError } from "../dist/i
 // routing key, producer id and authorization headers as their bytes (Node
 // reads a header value as Latin-1, one character per byte). Assertions are on
 // the SDK's own errors and on these bytes, never on a runtime's message text.
+// A records read is answered up to date, and a long poll also sealed, so a
+// subscription reads once, polls once and ends.
 async function cell() {
   const seen = [];
   const server = http.createServer((req, res) => {
@@ -28,7 +30,7 @@ async function cell() {
       if (req.method === "GET" && /\/records(:long-poll)?\?/.test(req.url)) {
         res.setHeader("prisma-next-cursor", "c");
         res.setHeader("prisma-up-to-date", "true");
-        res.setHeader("prisma-sealed", "true");
+        if (req.url.includes("/records:long-poll?")) res.setHeader("prisma-sealed", "true");
         res.setHeader("content-type", "application/json");
         res.end("[]");
         return;
@@ -171,6 +173,50 @@ test("a routing key a header carries is sent byte for byte, and an empty or abse
     }
     assert.deepEqual(c.seen.map(s => s.routingKey),
       [...kept.flatMap(k => [k, k, k]), undefined, undefined, undefined, undefined]);
+  } finally {
+    await c.close();
+  }
+});
+
+// A query value as the server reads it (src/product.rs parse_query): the
+// query split on '&', each pair at its first '=', and only %XX decoded; a
+// '+' is not a space.
+function queryValue(url, name) {
+  for (const pair of url.slice(url.indexOf("?") + 1).split("&")) {
+    const eq = pair.indexOf("=");
+    if ((eq < 0 ? pair : pair.slice(0, eq)) !== name) continue;
+    const value = eq < 0 ? "" : pair.slice(eq + 1);
+    const bytes = [];
+    for (let i = 0; i < value.length; i++) {
+      const hex = value.slice(i + 1, i + 3);
+      if (value[i] === "%" && /^[0-9A-Fa-f]{2}$/.test(hex)) {
+        bytes.push(parseInt(hex, 16));
+        i += 2;
+      } else {
+        bytes.push(...Buffer.from(value[i], "utf8"));
+      }
+    }
+    return Buffer.from(bytes).toString("utf8");
+  }
+  return undefined;
+}
+
+test("read() and subscribe() ask for the lane a routing key's appends were written to", async () => {
+  const c = await cell();
+  try {
+    const stream = c.client({}).stream("orders", { encryptionKey: KEY });
+    const kept = ["a b", "a  b c", "a\tb", "a+b", "a%20b", "a&b=c", "!~", "k ".repeat(512).slice(0, 1023) + "k"];
+    for (const routingKey of kept) {
+      c.seen.length = 0;
+      await stream.append({ n: 1 }, { routingKey });
+      await stream.read({ routingKey });
+      for await (const _ of stream.subscribe({ routingKey })) { /* the cell answers no records */ }
+      const [appended, read, caughtUp, polled] = c.seen;
+      assert.equal(appended.routingKey, routingKey, "the append's header");
+      assert.match(polled.url, /\/records:long-poll\?/, "the subscription polled");
+      assert.deepEqual([read, caughtUp, polled].map(r => queryValue(r.url, "routingKey")),
+        [routingKey, routingKey, routingKey], JSON.stringify(routingKey));
+    }
   } finally {
     await c.close();
   }
