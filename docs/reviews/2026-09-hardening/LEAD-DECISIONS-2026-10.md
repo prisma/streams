@@ -1,5 +1,8 @@
 # Lead decisions, unsupervised week 2026-10-17 to 2026-10-24
 
+(The repository copy of the lead's log, taken at landing-4 on 2026-10-17;
+a lane commit it cites is followed by the hash it landed as.)
+
 The owner, 2026-10-17 (verbatim): "Your goal is to bring this project to the
 public beta stage. Please make all decisions yourself, and only ask Fable 5.1
 when you absolutely need external review. Don't wait for me to make any
@@ -71,8 +74,8 @@ Round 5 leftovers (owner-calls-5.txt, never put on a page):
   shapes that would fail compliant-refusals in the field: accepted.
 - D2.8 The twins' setup refusal (first create weighed 21) is settled by the
   owner's round-6 call 2 (seed walk uncharged, every create weighs 11), built
-  in r4-rust 29aabde6; deploy commit 9d9071b6's "weighs 21" text is corrected
-  at landing.
+  in r4-rust 29aabde6 (landed as a00aa935); deploy commit 9d9071b6's
+  (landed as 5125d2e6) "weighs 21" text is corrected at landing.
 
 ## Decisions taken during the week
 
