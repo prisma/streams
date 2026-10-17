@@ -330,8 +330,9 @@ jobs:
       # (./bench/k2cost) joins by the owner's round-3 call 13 of 2026-10-13
       # (AGENTS.md section 1 (3)): its tests pin the verdict's `load` and
       # `harness` legs and the probes leg's first-contact bar, which no gate
-      # ran before. Its end-to-end test is opt-in (TENANTS_E2E_BIN_DIR) and
-      # skips here. The Compute lifecycle checklist's SIGTERM probe
+      # ran before. Its end-to-end test is opt-in (TENANTS_E2E_BIN_DIR): it
+      # skips here and runs on the release binaries after the Composer
+      # entries' end to end. The Compute lifecycle checklist's SIGTERM probe
       # (./bench/lifecycle/sigterm-probe, whose tests import only bun:test
       # and node:*, so it needs no install) joins by the owner's round-6
       # call 8 of 2026-10-15 (AGENTS.md section 1 (3)), with the checklist's
@@ -373,6 +374,16 @@ jobs:
         run: |
           CELL_ADMIN_E2E_BIN_DIR=target/release COMPOSER_E2E_REQUIRE_BOOT=1 bun test ./deploy/composer/streams/entry.e2e.test.ts
           ISSUER_COMPOSER_E2E=1 bun test ./deploy/issuer/composer.test.ts
+      # Layer B's tiny manifest end to end (bench/k2cost/tenants.e2e.test.ts):
+      # the release streams-slate on the shared-cell profile over s3lite
+      # (free ports), every class admitted through cell-admin, the free-tier
+      # twins held to zero refusals and the hostile legs to typed refusals,
+      # about two to four minutes (the owner's round-3 call 13 of
+      # 2026-10-13, AGENTS.md section 1 (3)). Green only on a server where
+      # every served create weighs 11 (#143 as amended by the owner's call 2
+      # of 2026-10-15).
+      - name: Layer B's tiny manifest end to end on the release binaries (Bun)
+        run: TENANTS_E2E_BIN_DIR=target/release bun test ./bench/k2cost/tenants.e2e.test.ts
       - name: Smoke through the package (Bun)
         run: |
           ./target/release/streams-slate --listen 127.0.0.1:8092 \
