@@ -126,6 +126,32 @@ async fn a_catalog_page_holds_at_most_4_mib_of_descriptors() {
     assert_eq!(shape(&rest), (8, Some("s39".to_string()), true));
 }
 
+/// A page scans at most eight listed descriptors for each stream it may
+/// return, and 64 more: a page of one stream behind 72 tombstones ends
+/// after the 72nd, empty and not exhausted, and the page continued after
+/// it serves the live stream.
+#[tokio::test]
+async fn a_catalog_page_scans_eight_descriptors_a_stream_and_64_more() {
+    let (_store, reg) = registry();
+    for n in 0..72 {
+        let tombstone = filed("proj-a", &format!("s{n:02}"), true);
+        assert!(reg.create(tombstone).await.unwrap().0);
+    }
+    assert!(reg.create(filed("proj-a", "s72", false)).await.unwrap().0);
+    let a = crate::tenant::ProjectId::new("proj-a").unwrap();
+    let shape = |page: crate::registry::CatalogPage| {
+        let names: Vec<String> = page.streams.iter().map(|d| d.name.clone()).collect();
+        (names, page.next_after, page.exhausted)
+    };
+    let first = shape(reg.list_page(&a, None, 1).await.unwrap());
+    assert_eq!(first, (Vec::new(), Some("s71".to_string()), false));
+    let next = shape(reg.list_page(&a, Some("s71"), 1).await.unwrap());
+    assert_eq!(
+        next,
+        (vec!["s72".to_string()], Some("s72".to_string()), false)
+    );
+}
+
 /// C8 (phase B item B6, the review of 2026-10-12): a page holds its
 /// descriptors decoded, and a watch definition's pointers decode to far
 /// more than they store (`"/",` is 4 bytes stored, a 24-byte header and an
