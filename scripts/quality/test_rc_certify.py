@@ -40,12 +40,33 @@ SINGLE_CELL_ARMS = ('layer-b', 'envelope', 'sc0-1s', 'sc1', 'stream-count', 'bat
 # least 72 h and SC1 at least 30 h.
 STARTED = 1_790_000_000
 HOUR = 3600
+# The tag tree's deploy profiles (triage B9's fence): an arm ran the
+# shared-cell profile layered on compute-1g, byte for byte the tag's, with
+# the single-cell pins and no FLEET_PREFIX; fleet.env is a fleet-pinned file
+# the tag tree also holds.
+PROFILES = {
+    'compute-1g.env': 'TOKIO_WORKERS=2\n',
+    'shared-cell.env': '# the shared cell\nSTREAMS_RELEASE_POSTURE=1\nKEEP_AWAKE=1\nINITIAL_SHARDS=1\nPROJECT_SHARE_K=8\n',
+    'fleet.env': 'FLEET_PREFIX=fleet/\n',
+}
+CELL_ENV = 'ce11' + '0' * 60
+
+
+def sha256_text(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def profile(*files):
+    """An arm manifest's `profile`, as bench/k2cost/shared_verdict.py's profile_fence writes it."""
+    return {'files': sorted(files), 'sha256': {f: sha256_text(PROFILES.get(f, '')) for f in sorted(files)},
+            'pins': [], 'pins_missing': []}
 
 
 def arm(name, legs, secs=HOUR, **facts):
     return {'arm': name, 'server_sha256': 'sha256:' + RC, 'verdict': 'PASS',
             'legs': {leg: 'PASS' for leg in legs},
-            'started_unix': STARTED, 'finished_unix': STARTED + secs, **facts}
+            'started_unix': STARTED, 'finished_unix': STARTED + secs,
+            'profile': profile('compute-1g.env', 'shared-cell.env'), 'cell_env_sha256': CELL_ENV, **facts}
 
 
 class RcCertify(unittest.TestCase):
@@ -60,6 +81,9 @@ class RcCertify(unittest.TestCase):
         gate = self.repo / 'scripts' / 'release-gate.sh'
         gate.write_text(GATE_STUB)
         gate.chmod(0o755)
+        (self.repo / 'deploy' / 'profiles').mkdir(parents=True)
+        for name, text in PROFILES.items():
+            (self.repo / 'deploy' / 'profiles' / name).write_text(text)
         self.git('init', '-q')
         self.git('config', 'user.name', 'rc-certify fixture')
         self.git('config', 'user.email', 'fixture@example.invalid')
@@ -240,6 +264,31 @@ class RcCertify(unittest.TestCase):
                                                                               projects=1000)},
             'envelope: started_unix None': {('envelope-1', 'envelope-manifest.json'): arm(
                 'envelope', ['WC_PMP'], started_unix=None)},
+            # The profile fence (triage B9): the arm ran the tag tree's
+            # single-cell profile, and every field arm one cell environment.
+            'battery: no profile': {('battery-1', 'battery-manifest.json'): {
+                **arm('battery', BATTERY_LEGS, projects=1000), 'profile': None}},
+            f"layer-b: profile shared-cell.env has sha256 {OTHER[:16]}, the tag tree's": {
+                ('layer-b-1', 'layer-b-manifest.json'): {
+                    **arm('layer-b', LAYER_B_LEGS, projects=1000),
+                    'profile': {**profile('compute-1g.env', 'shared-cell.env'),
+                                'sha256': {'compute-1g.env': sha256_text(PROFILES['compute-1g.env']),
+                                           'shared-cell.env': OTHER}}}},
+            'envelope: profile deploy/profiles/staging.env is not in the tag tree': {
+                ('envelope-1', 'envelope-manifest.json'): arm(
+                    'envelope', ['WC_PMP'], profile=profile('shared-cell.env', 'staging.env'))},
+            "sc0-1s: the profile's files lack the single-cell pins ['INITIAL_SHARDS=1', 'KEEP_AWAKE=1', "
+            "'STREAMS_RELEASE_POSTURE=1', 'PROJECT_SHARE_K=8']": {
+                ('sc0-1s-1', 'sc0-1s-manifest.json'): arm(
+                    'sc0-1s', ['idle-floor', 'rss-slope'], secs=72 * HOUR, profile=profile('compute-1g.env'))},
+            'sc1: the profile sets FLEET_PREFIX (fleet.env): a fleet-pinned run': {
+                ('sc1-1', 'sc1-manifest.json'): arm(
+                    'sc1', ['wake-p99'], secs=30 * HOUR,
+                    profile=profile('compute-1g.env', 'shared-cell.env', 'fleet.env'))},
+            'stream-count: cell_env_sha256 None': {('streams-1', 'stream-count-manifest.json'): arm(
+                'stream-count', ['churn'], streams=30000, cell_env_sha256=None)},
+            'the field arms ran 2 cell environments': {('streams-1', 'stream-count-manifest.json'): arm(
+                'stream-count', ['churn'], streams=30000, cell_env_sha256=OTHER)},
         }
         # Under PYTHONOPTIMIZE, which strips `assert`: refused there, refused anywhere.
         for reason, override in broken.items():

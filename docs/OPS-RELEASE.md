@@ -267,7 +267,10 @@ contract every arm manifest meets:
 ```json
 {"arm": "battery", "server_sha256": "sha256:<RC identity>", "verdict": "PASS",
  "legs": {"hostile-tenants": "PASS", "...": "PASS"},
- "started_unix": 1791000000, "finished_unix": 1791043200, "projects": 1000}
+ "started_unix": 1791000000, "finished_unix": 1791043200, "projects": 1000,
+ "profile": {"files": ["compute-1g.env", "shared-cell.env"],
+             "sha256": {"compute-1g.env": "<hex>", "shared-cell.env": "<hex>"}},
+ "cell_env_sha256": "<hex>"}
 ```
 
 `arm` is the arm's own name. `server_sha256` (with or without the
@@ -279,7 +282,14 @@ x86_64-musl RC binary, so an arm run on a host build cannot certify.
 and SC1 later by at least the arm's floor in the table, so a short run
 that writes `PASS` does not certify either arm. Like the verdict, the
 window is the harness's own statement: rc-certify checks it but cannot
-re-derive it from raw results. Of the harnesses that write these
+re-derive it from raw results. `profile` is the profile fence (deploy-q5
+triage B9, made under the lead's call 7): each file it names is, by its
+sha256, the tag tree's `deploy/profiles/<file>`, and rc-certify reads those
+files from the tag tree and requires the lines `INITIAL_SHARDS=1`,
+`KEEP_AWAKE=1`, `STREAMS_RELEASE_POSTURE=1` and `PROJECT_SHARE_K=8` and no
+`FLEET_PREFIX=` line, so a fleet-pinned or a hand-edited profile does not
+certify. Every field arm (all but Layer B) names `cell_env_sha256`, and
+they name one value: the field arms ran one cell. Of the harnesses that write these
 manifests only Layer B's exists (`bench/k2cost/run-shared.sh`, judged by
 `bench/k2cost/shared_verdict.py`, which writes `layer-b-manifest.json`);
 the field arms' adapters (deploy-q5 triage B8) and the reshaped battery do

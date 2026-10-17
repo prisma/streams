@@ -33,7 +33,12 @@
 #      run's window (started_unix, finished_unix) at least 72 h for sc0-1s,
 #      30 h for sc1 and non-empty for the rest, at least 1,000 projects for
 #      layer-b and battery, and the stream-count arm's `streams`, the scale
-#      it certifies
+#      it certifies; the profile fence (triage B9): each profile file the
+#      manifest names is byte for byte the tag tree's deploy/profiles/<file>,
+#      their lines hold INITIAL_SHARDS=1, KEEP_AWAKE=1,
+#      STREAMS_RELEASE_POSTURE=1 and PROJECT_SHARE_K=8 and none sets
+#      FLEET_PREFIX; every field arm (all but layer-b) names one and the
+#      same cell_env_sha256
 # then prints each fleet-only leg it waives (capacity campaign, handoff,
 # LiveFeed fleet, LiveFeed canary).
 #
@@ -157,9 +162,9 @@ verify_arm() { # <step> <arm> <manifest-path-or-run-id>
   local manifest
   manifest=$(resolve_manifest "$3" "$2-manifest.json")
   echo "== $1/$STEPS $2 manifest ($3) =="
-  python3 -E - "$2" "$manifest" "$RC_SHA" <<'PY'
-import json, os, sys
-arm, path, rc = sys.argv[1:4]
+  python3 -E - "$2" "$manifest" "$RC_SHA" "$HEAD_COMMIT" <<'PY'
+import hashlib, json, os, subprocess, sys
+arm, path, rc, head = sys.argv[1:5]
 def refuse(why):
     sys.exit(f"{arm}: {why}")
 # The legs and scale the lead's call 7 (2026-10-11) names for an arm.
@@ -200,6 +205,41 @@ secs, floor = finished - started, MIN_SECS.get(arm, 1)
 if secs < floor:
     refuse(f"ran {secs} s, under the arm's floor of {floor} s"
            + (f" ({floor // 3600} h)" if floor >= 3600 else ""))
+# The profile fence (deploy-q5 triage B9, under the lead's call 7): the
+# arm's cell ran deploy profiles that are, byte for byte, the tag tree's,
+# whose layered lines hold the single-cell pins and no FLEET_PREFIX (a
+# fleet-pinned run cannot certify a fleet-off RC). The lines are read from
+# the tag tree, not taken from the manifest's own `pins`.
+PINS = ("INITIAL_SHARDS=1", "KEEP_AWAKE=1", "STREAMS_RELEASE_POSTURE=1", "PROJECT_SHARE_K=8")
+prof = m.get("profile")
+if (not isinstance(prof, dict) or not isinstance(prof.get("files"), list) or not prof["files"]
+        or not isinstance(prof.get("sha256"), dict)):
+    refuse("no profile: the manifest names the deploy profiles its cell ran (files, sha256)")
+lines, fleet = set(), []
+for f in prof["files"]:
+    if not isinstance(f, str) or not f or "/" in f or f.startswith("."):
+        refuse(f"profile file {f!r} is not a deploy/profiles/ name")
+    shown = subprocess.run(["git", "show", f"{head}:deploy/profiles/{f}"], capture_output=True)
+    if shown.returncode != 0:
+        refuse(f"profile deploy/profiles/{f} is not in the tag tree")
+    want = hashlib.sha256(shown.stdout).hexdigest()
+    got = str(prof["sha256"].get(f, "")).removeprefix("sha256:")
+    if got != want:
+        refuse(f"profile {f} has sha256 {got[:16]}, the tag tree's {want[:16]}")
+    text = [line.strip() for line in shown.stdout.decode(errors="replace").splitlines()]
+    lines |= set(text)
+    if any(line.startswith("FLEET_PREFIX=") for line in text):
+        fleet.append(f)
+missing = [p for p in PINS if p not in lines]
+if missing:
+    refuse(f"the profile's files lack the single-cell pins {missing}")
+if fleet:
+    refuse(f"the profile sets FLEET_PREFIX ({', '.join(fleet)}): a fleet-pinned run")
+# A field arm names the cell environment it ran; one across them (below).
+if arm != "layer-b":
+    cell_env = m.get("cell_env_sha256")
+    if not isinstance(cell_env, str) or not cell_env:
+        refuse(f"cell_env_sha256 {cell_env!r}: a field arm names the cell environment it ran")
 scale = ""
 if arm in MIN_PROJECTS:
     projects = m.get("projects")
@@ -250,6 +290,19 @@ PY
   verify_arm 7 sc1 "$SC1_RUN"
   verify_arm 8 stream-count "$STREAMS_RUN"
   verify_arm 9 battery "$BATTERY_RUN"
+  # The field arms ran one cell: one cell environment across them (triage B9).
+  python3 -E - ${ARMS[@]+"${ARMS[@]}"} <<'PY'
+import json, sys
+envs = {}
+for pair in sys.argv[1:]:
+    arm, path = pair.split("=", 1)
+    if arm != "layer-b":
+        envs.setdefault(json.load(open(path))["cell_env_sha256"], []).append(arm)
+if len(envs) != 1:
+    sys.exit(f"the field arms ran {len(envs)} cell environments: "
+             + "; ".join(f"{', '.join(a)} on {e[:16]}" for e, a in envs.items()))
+print(f"  one cell environment across the field arms: {next(iter(envs))[:16]}")
+PY
 
   echo "== waived for a single-cell, fleet-off RC (the lead's call 7, 2026-10-11) =="
   mkdir -p target
