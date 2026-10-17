@@ -49,7 +49,11 @@ hmac = "0.12"
 # hand-rolled JWT parsing is the classic alg-confusion trap. arc-swap
 # provides the lock-free policy/JWKS snapshot swap the request path
 # reads (no request performs a synchronous Control Plane lookup).
-jsonwebtoken = "9"
+# 11.x carries the GHSA-h395-gr6q-cpjc fix (SECURITY.md); its crypto
+# backend is aws-lc-rs, which rustls and object_store already link, so the
+# upgrade adds no crypto crate (rust_crypto would add rsa, p256, p384,
+# ed25519-dalek and their trees).
+jsonwebtoken = { version = "11.1", features = ["aws_lc_rs"] }
 arc-swap = "1"
 
 [dev-dependencies]
