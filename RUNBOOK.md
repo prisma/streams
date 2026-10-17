@@ -1171,6 +1171,8 @@ origin and keeps what it took in memory: `GET /changes` with the routing
 key as bearer lists it. Nobody is called: read the listing after each
 drill. Production pages through the real paging service, PagerDuty Events
 v2, as §7.5 sets it up; `deploy-release.sh` refuses the stand-in there.
+The whole scratch sequence, from the projects to the teardown, is
+`docs/BETA-SCRATCH-DEPLOY.md`.
 
 A single-server shared cell publishes no `prisma-streams-internal` key and
 sets no `FLEET_INTERNAL_TOKEN`: its internal surface opens to nothing. A

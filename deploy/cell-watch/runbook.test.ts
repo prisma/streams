@@ -204,6 +204,7 @@ describe("RUNBOOK.md's §7.5 and §8", () => {
       "`https://<domain>/heartbeat/<token>`",
       "`GET /changes`",
       "Production pages through the real paging service, PagerDuty Events v2, as §7.5 sets it up",
+      "`docs/BETA-SCRATCH-DEPLOY.md`",
     ]) {
       expect([want, para.includes(want)]).toEqual([want, true]);
     }
