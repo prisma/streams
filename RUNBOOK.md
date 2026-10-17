@@ -347,14 +347,21 @@ OOM-killed container under load otherwise stays down.
 | `POST /v1/stream/{name}` | bearer + key | append (`{"events":[…]}`); 204 on durable commit |
 | `GET /v1/stream/{name}?…` | bearer + key | read/tail (offsets, long-poll, SSE; profile-specific routes per [PROFILES.md](./PROFILES.md)) |
 | `GET /v1/debug/timings` | bearer | per-shard commit-pipeline rings: `queue_wait_us`, `encode_us`, `write_us`, `durable_wait_us` per group — splits our pipeline from store waits |
-| `GET /v1/debug/load` | none | `inflight_now`, `inflight_peak` (swap-on-read), `rss_mb`, `admit_shed` |
+| `GET /v1/debug/load` | bearer | `inflight_now`, `inflight_peak` (swap-on-read), `rss_mb`, `admit_shed` |
 | `GET /v1/debug/store?window=60&swap=1` | bearer | per-(op,class) object-store latency cells (`put:wal`, `get:manifest`, …: n/err/p50/p90/p99/max), slow-op ring (≥300 ms with paths), outbound in-flight gauge, **timer sentinels** (`timer_thread`, `timer_tokio` drift) and `steal_pct`. `swap=1` resets the gauge peak — samplers only |
-| `GET /v1/debug/sleep?ms=N` | none | calibrated-latency probe (≤5000 ms): separates concurrency caps from rate caps at the edge |
+| `GET /v1/debug/sleep?ms=N` | bearer | calibrated-latency probe (≤5000 ms): separates concurrency caps from rate caps at the edge |
+
+Every `/v1/debug` path, an unrouted one included, answers 401 without the
+deployment bearer (`src/http/debug.rs`), as `/operator` does (§8); only
+auth mode off with no `AUTH_TOKEN` set, for local development, leaves it open.
 
 **429 semantics**: body `{"error":{"code":"overloaded"…}}` with
 `Retry-After: 1` (in-flight shed) or `2` (RSS shed), after a 25 ms tarpit.
 The per-stream cap answers `stream_overloaded` with `Retry-After: 1` and no
-tarpit.
+tarpit. Above four times `ADMIT_MAX_INFLIGHT` every `/v1/stream` and
+`/v1/streams` request is refused before authentication with `503
+overloaded`, `"retryable": true`, `Retry-After: 1` and no tarpit (edge
+change #155).
 Sustained 429s are the *designed* behavior under overload — the alternative
 was death (§3.6).
 
