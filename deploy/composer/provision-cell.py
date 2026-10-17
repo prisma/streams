@@ -9,6 +9,8 @@ files the release tools read.
         --region R --cells DIR --secrets DIR [--cell-id ID] [--management-api URL]
     PRISMA_TOKEN_FILE=F deploy/composer/provision-cell.py <stage> --app NAME
         --cells DIR --teardown [--management-api URL]
+    PRISMA_TOKEN_FILE=F deploy/composer/provision-cell.py <stage> --app NAME
+        --region R --cells DIR --no-buckets [--management-api URL]
 
 The project: for the default stage (production), the Compute project named
 as the Composer app (--app: streams-cell for the cell), created in --region
@@ -48,6 +50,13 @@ is never retried) leaves an entry a re-run resolves by name before it
 creates anything. A key's secret is answered once: a key whose files are
 missing is deleted and minted again. A re-run with everything in place
 makes no POST.
+
+--no-buckets makes the project (created when absent, whatever the stage),
+its production Branch and a named stage's Branch, and nothing else: the
+containers of an app with no bucket of its own (the issuer, streams-issuer;
+the cell watch, streams-cell-watch; the paging stand-in,
+streams-pager-standin), or the cell's project before its scratch stage's
+buckets. Its ledger is --cells DIR/<stage>.<app>.provision.json.
 
 --teardown deletes the stage's keys and buckets, the bucket's objects with
 it, and refuses production (S30: Composer's destroy of a named stage
@@ -227,7 +236,8 @@ def project(api: Platform, ledger: Ledger, app: str, region: str, stage: str) ->
     else:
         live = one_named(api.list("/projects"), app, "project")
         if live is None and stage != "production":
-            raise Refused(f"no project is named {app}: provision the production stage first (a named stage is its Branch)")
+            raise Refused(f"no project is named {app}: provision the production stage first (a named stage is its Branch; "
+                          "--no-buckets makes the project and its Branches alone)")
         if live is None:
             data = created(api, ledger, slot, "/projects", {"name": app, "region": region, "createDatabase": False})
             slot["createdWithRegion"] = region
@@ -450,6 +460,20 @@ def provision(api: Platform, a: argparse.Namespace) -> None:
         f"and the issuer's from {a.secrets}/issuer")
 
 
+def containers(api: Platform, a: argparse.Namespace) -> None:
+    """--no-buckets: the project, its production Branch and the stage's."""
+    if a.region not in REGIONS:
+        raise Refused(f"--region {a.region} is not one of {', '.join(REGIONS)}", 2)
+    ledger = Ledger(os.path.join(a.cells, f"{a.stage}.{a.app}.provision.json"), a.stage, a.app)
+    if ledger.doc.setdefault("region", a.region) != a.region:
+        raise Refused(f"{ledger.path} provisioned {a.stage} in {ledger.doc['region']}, not {a.region}")
+    pid = project(api, ledger, a.app, a.region, "production")
+    production_branch(api, ledger, pid)
+    b = branch(api, ledger, pid, a.stage) if a.stage != "production" else None
+    scope = f"--project {pid}" + (f" --branch {b}" if b else "")
+    say(f"done (no buckets); next: set-secrets {a.stage} {scope} --app <its app> --from <its secrets directory>")
+
+
 def teardown(api: Platform, a: argparse.Namespace) -> None:
     if a.stage == "production":
         raise Refused("--teardown refuses production: its buckets hold every tenant's data")
@@ -485,17 +509,20 @@ def main(argv: list) -> int:
     p.add_argument("--cell-id")
     p.add_argument("--management-api", default=API)
     p.add_argument("--teardown", action="store_true")
+    p.add_argument("--no-buckets", action="store_true")
     a = p.parse_args(argv)
     try:
+        if a.no_buckets and a.teardown:
+            raise Refused("--no-buckets provisions no bucket to tear down: delete the app's Branch or project by hand", 2)
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", a.app):
             raise Refused(f"--app {a.app} is not a lowercase project name", 2)
-        if not a.teardown and (a.region is None or a.secrets is None):
-            raise Refused("provisioning needs --region and --secrets", 2)
+        if not a.teardown and (a.region is None or (a.secrets is None and not a.no_buckets)):
+            raise Refused("provisioning needs --region and --secrets (--region alone with --no-buckets)", 2)
         token_file = os.environ.get("PRISMA_TOKEN_FILE")
         if not token_file:
             raise Refused("PRISMA_TOKEN_FILE must name the file holding the Management API token", 2)
         api = Platform(a.management_api, owner_only(token_file, "the token file"))
-        (teardown if a.teardown else provision)(api, a)
+        (teardown if a.teardown else containers if a.no_buckets else provision)(api, a)
         return 0
     except Refused as e:
         print(f"provision-cell: {e}", file=sys.stderr)

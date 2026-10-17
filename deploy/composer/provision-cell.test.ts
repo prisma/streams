@@ -131,7 +131,8 @@ describe("provision-cell.py", () => {
     const r = rig();
     const none = await provision(r, "cert", ...full(r), "--cell-id", "cell_c1");
     expect([none.code, none.err.trim()]).toEqual([
-      1, "provision-cell: no project is named streams-cell: provision the production stage first (a named stage is its Branch)",
+      1, "provision-cell: no project is named streams-cell: provision the production stage first (a named stage is its Branch; " +
+        "--no-buckets makes the project and its Branches alone)",
     ]);
     const p = r.api.addProject("streams-cell", "eu-central-1");
     const run = await provision(r, "cert", ...full(r), "--cell-id", "cell_c1");
@@ -163,6 +164,42 @@ describe("provision-cell.py", () => {
         "(default) Branch (GET /v1/projects/{id}/branches must list one with role production or isDefault true), then run " +
         "again; do not deploy a named stage first (Composer would create its Branch as the project's first)",
       [["main", "preview"]], [],
+    ]);
+  }, 30_000);
+
+  test("--no-buckets gives an app without buckets its project, production Branch and stage Branch, and nothing else", async () => {
+    const r = rig();
+    const app = (name: string, stage: string, ...more: string[]) =>
+      Bun.spawn(["python3", TOOL, stage, "--app", name, "--cells", r.cells, "--management-api", r.api.url, ...more], {
+        env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PRISMA_TOKEN_FILE: r.token }, stdout: "pipe", stderr: "pipe",
+      });
+    const result = async (proc: ReturnType<typeof app>) => {
+      const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+      return { code, out, err };
+    };
+    const run = await result(app("streams-cell-watch", "scratch", "--region", "eu-central-1", "--no-buckets"));
+    expect([run.code, run.err]).toEqual([0, ""]);
+    const [p] = r.api.projects;
+    expect([p.name, p.defaultRegion, r.api.branches.map((b) => [b.gitName, b.role]), r.api.buckets, r.api.keys]).toEqual([
+      "streams-cell-watch", "eu-central-1", [["main", "production"], ["scratch", "preview"]], [], [],
+    ]);
+    expect(run.out.trim().split("\n").at(-1)).toBe(
+      `provision-cell: done (no buckets); next: set-secrets scratch --project ${p.id} --branch ${r.api.branches[1].id} ` +
+        "--app <its app> --from <its secrets directory>",
+    );
+    expect(ledger(r, "scratch.streams-cell-watch")).toMatchObject({ app: "streams-cell-watch", stage: "scratch" });
+    const posted = posts(r).length;
+    expect([(await result(app("streams-cell-watch", "scratch", "--region", "eu-central-1", "--no-buckets"))).code, posts(r).length])
+      .toEqual([0, posted]);
+    const cell = await result(app("streams-cell", "production", "--region", "eu-central-1", "--no-buckets"));
+    expect([cell.code, r.api.projects.map((x) => x.name), r.api.buckets]).toEqual([0, ["streams-cell-watch", "streams-cell"], []]);
+    const scratchCell = await provision(r, "scratch", ...full(r), "--cell-id", "cell_s1");
+    expect([scratchCell.code, scratchCell.err, r.api.buckets.map((b) => b.name)]).toEqual([
+      0, "", ["streams-cell-scratch-data", "streams-cell-scratch-feeds", "streams-cell-scratch-control"],
+    ]);
+    const td = await result(app("streams-cell-watch", "scratch", "--no-buckets", "--teardown"));
+    expect([td.code, td.err.trim()]).toEqual([
+      2, "provision-cell: --no-buckets provisions no bucket to tear down: delete the app's Branch or project by hand",
     ]);
   }, 30_000);
 
