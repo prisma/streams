@@ -462,32 +462,29 @@ bun bench/k2cost/tenants.ts audit --manifest M --base URL --token-map F --out DI
 | `tenants/layer-b.json` | Layer B on the single-server shape, 1,000 projects: S0 ×8, S1 ×8, S2 ×12, S3s ×4 (100 SSE subscribers each), N0 ×8, the victim, H1-H8 at Q-hostile and again at the cell's k ceilings, the cost-hostile tenant, H9 and H9b, the h11t-fresh target (10 appends a second over 16 streams), 200 warm idle (about 1 MiB each) and cold idle (562 with 3 empty streams, 139 with none). Both quota postures (lead decision deploy-q5 #6 (1)): those classes run at the cell's ceilings as the stress, and free-tier twins of S0, S1, S2, S3s, N0 and the victim (as many projects each, except S3s's twin: one, so the noisy period's 830 SSE connections and 184 parked waits fit the instance's live pool of 1,200, where four held 1,130 and left about 114 waits active; lead decision of 2026-10-14 night) run at the issuer's free-tier table (quota set `free-tier`, `requests_per_sec` 10), shaped under its one-second bucket: each twin's mean (appends, pulls, settles, reads, SSE connects) at most 5 requests a second, as k2gen's appends are Poisson; a twin with a consumer group appends at most 0.1 times a second (S1's twin as a :batch of 410 every 10 s), as each append brings a pull's return and a settle within milliseconds, and starts its consumers a second apart (`group --stagger 1`); S3s's twin connects 4 subscribers a second, the victim's appends 2 a second; every twin creates its streams a second apart (`setup --stagger 1`) and never deletes. `tenants.test.ts` pins the set to the issuer's `FREE_TIER_REQUESTS_PER_SEC` and these rules, and the live pool's hold. Setup 0-600 s, the compliant classes 600-4,200 s, the hostile ones from 1,800 s, H11t (2,000 pairs at 8 a second on the cold class's quiet names, its own 360 s window) 2,040-2,400 s, H9 2,400-3,000 s, H9b 3,000-3,300 s, h11t-fresh (400 pairs, a fact) 3,300-3,420 s, the probes (2,000 pairs) from 3,600 s; the victim's periods `solo` 900-1,800 s and `noisy` 2,100-4,200 s. Writers stop 60 s before the readers of their window |
 | `tenants/layer-b-tiny.json` | Layer B's classes and legs, one project per class (three warm, three cold, two with no stream) and the free-tier twins shaped as Layer B's, about 4 min: for building the harness. `tenants.e2e.test.ts` runs it on the real binary (`TENANTS_E2E_BIN_DIR=target/release`) |
 
-Known red (found 2026-10-14): the free-tier twins' setup. A create
-weighs 11 of its project's store budget (a 404 and a PUT; edge record
-#143), and a project's first create since its cell booted weighs 21: with
-a `max_streams` quota, which every admitted project has, it also lists
-the project's streams to seed that count (`count_project_streams`, a LIST
-of 10; `src/application/creation/product.rs`). Measured on a DST cell
-over the timing store with `max_streams` 10: 21, 11, 11. At
-`requests_per_sec` 10 the budget holds 10 and refills 10 a second, so the
-first create leaves it 11 in debt for 1.1 s after it is served, and
-`setup --stagger 1` (each attempt a second after the previous attempt's
-start) sends the second create inside that window: it is refused `429
-project_rate_limit` with `Retry-After: 1`, then retried and admitted. So
-every free-tier twin meets exactly one refusal in its setup on the real
-binary (the lane's two runs of `tenants.e2e.test.ts` on 2026-10-14;
-s0-free: 4 requests, 201 x3 and 429 x1, over 3.0 s), the end-to-end test
-fails its compliant-refusals check at the first twin (`"s0-free"`, `{
-"429:project_rate_limit": 1 }` where it expects `{}`), and a full
-`layer-b.json` run would fail `compliant-refusals` (38 twin projects, each
-with one refusal). It stays red until the owner decides (NEXT-WORK, "Open for
-the owner"): (a) shape the setup, each create at least 1.1 s plus slack
-after the previous create's answer (measuring from the previous attempt's
-start, or a 1 s gap from the answer, is not enough); (b) a server change,
-such as charging the seeding listing to no project; (c) a project's first
-create exempt from the budget. (b) and (c) are client-visible. By the
-lead's decision deploy-q5 #6 (1) an honest refusal that survives the
-shaping is a PB-E3 finding, never an allowance.
+Free-tier twins' setup (found red on 2026-10-14, settled by the owner's
+call 2 of 2026-10-15). A create weighs 11 of its project's store budget
+(a 404 and a PUT; edge record #143). A project's first create since its
+cell booted also walks the project's streams to seed its `max_streams`
+count (`count_project_streams`, `src/application/creation/product.rs`;
+every admitted project has the quota), and that walk's LIST made the
+create weigh 21 (measured on a DST cell with `max_streams` 10: 21, 11,
+11): at `requests_per_sec` 10, `setup --stagger 1` sent each twin's
+second create inside the first's 1.1 s of debt, refused `429
+project_rate_limit` once (the lane's two runs of `tenants.e2e.test.ts` on
+2026-10-14; s0-free: 201 x3 and 429 x1). The owner's call 2 charges a
+seed walk that completes to no project (#143 as amended; the server
+commit "Every served create weighs 11, a project's first since its cell
+booted included"), so every served create weighs 11. The budget holds 10
+and refills 10 a second, so a create a second after the one before finds
+one less than that one found: a twin's k-th create finds 11 - k, and
+with at most 10 streams a twin (`tenants.test.ts` pins it; n0-free has
+5, the most) none meets the budget in debt. The stagger stays 1 s. This
+holds on a binary that includes that commit; one without it still
+refuses each twin's second create once. A seed walk that fails (503
+`catalog_unavailable`) stays charged. By the lead's decision deploy-q5
+#6 (1) an honest refusal that survives the shaping is a PB-E3 finding,
+never an allowance.
 
 Admission and tokens (operator side, where the cell's signing key is):
 

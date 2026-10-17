@@ -2,10 +2,10 @@
 // A project admitted at the beta's free tier (requests_per_sec 10) holds
 // one second of that rate in its request bucket and in its store budget,
 // and a create weighs 11 of the budget's 10 a second, a project's first
-// since its cell booted 21 (src/quota/bucket.rs, src/quota/parked.rs,
-// src/store_timing.rs, src/application/creation/product.rs): setup
-// --stagger spaces a project's creates (at 1 s not far enough apart for
-// the first two: README, "Known red"), and group --stagger
+// since its cell booted too, its seed walk charged to no project once it
+// completes (src/quota/bucket.rs, src/quota/parked.rs, src/store_timing.rs,
+// src/application/creation/product.rs): setup --stagger spaces a
+// project's creates (README, "Free-tier twins' setup"), and group --stagger
 // spaces its consumers' starts (a metadata read, a consumer PUT and a pull
 // each) so they never open with one burst. Run with
 // `bun test ./bench/k2cost`.

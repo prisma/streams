@@ -151,10 +151,12 @@ test("Layer B runs both quota postures: the ceilings classes as the stress, and 
       const rate = nominalRate(c);
       expect([f, c.class, rate, rate <= FREE_TIER_REQUESTS_PER_SEC / 2]).toEqual([f, c.class, rate, true]);
       // Creates a second apart, all before any other phase starts; no
-      // delete at all. A create weighs 11 of the store budget's 10 a second
-      // and a project's first since its cell booted 21, so on the real
-      // binary each twin's second create is refused once (README, "Known
-      // red"; the owner's call).
+      // delete at all. A create weighs 11 of the store budget's 10 a second,
+      // a project's first since its cell booted too (#143 as amended by the
+      // owner's call 2 of 2026-10-15), so the k-th create a second after the
+      // one before finds 11 - k: at most 10 streams a twin, none meets the
+      // budget in debt (README, "Free-tier twins' setup").
+      expect([f, c.class, (c.streams ?? 1) <= 10]).toEqual([f, c.class, true]);
       const [setup, ...rest] = c.phases;
       const stagger = Number(setup?.args?.stagger ?? 0);
       expect([f, c.class, setup?.mode, stagger >= 1]).toEqual([f, c.class, "setup", true]);

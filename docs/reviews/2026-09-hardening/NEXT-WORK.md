@@ -500,22 +500,6 @@ recommended.
 - Whether fresh cells start on physical rollup keying (Bug #7 C2 and its
   knob, so no migration is ever needed), before the first invoiced month.
 - "Also seed": the create-with-initial-body `429` (14.7).
-- Layer B's free-tier twins (lead decision deploy-q5 #6 (1)) each meet
-  one `429 project_rate_limit` in setup (found 2026-10-14;
-  bench/k2cost/README.md, "Known red"). A project's first create since
-  its cell booted weighs 21 of its store budget, not #143's 11: with a
-  `max_streams` quota it also lists the project's streams to seed that
-  count (a LIST, 10), which #143 does not mention. At `requests_per_sec`
-  10 the next create within 1.1 s of it is refused, and `setup --stagger
-  1` sends it at 1 s. Until the owner chooses, `tenants.e2e.test.ts` is
-  red and a full Layer B run would fail `compliant-refusals`: (a) shape
-  the twins' setup (each create at least 1.1 s plus slack after the
-  previous answer); (b) a server change, such as charging the seeding
-  listing to no project, an edge change amending #143; or (c) a
-  project's first create exempt from the budget, also an edge change. A
-  free-tier client meets the same refusal when its second create comes
-  within 1.1 s of its first since a cell boot; the SDK sends it again
-  after `Retry-After: 1`, so an SDK client sees a one-second wait.
 - Whether `cell-admin` keeps requiring `KEEP_AWAKE=1` and refusing
   `KEEP_AWAKE_UNTIL_MS` (item 5, #140): the implementer's operator-side
   additions to "Keep awake", which no client observes; confirm or drop.
