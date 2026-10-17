@@ -17,6 +17,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
+# The token reads the repository and nothing else: no job writes
+# through it (no release, comment, artifact, package or OIDC step).
+# scripts/quality/test_workflow_permissions.py holds every workflow to it.
+permissions:
+  contents: read
+
 # Product-surface spec appendix §7: the required CI topology. The
 # dual-surface equivalence corpus, DST scenarios, and product
 # conformance run inside `cargo test --release` (dst::dst_tests);

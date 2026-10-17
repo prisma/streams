@@ -23,6 +23,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
+# The token reads the repository and nothing else: no job writes
+# through it (no release, comment, artifact, package or OIDC step).
+# scripts/quality/test_workflow_permissions.py holds every workflow to it.
+permissions:
+  contents: read
+
 jobs:
   actionlint:
     runs-on: ubuntu-24.04

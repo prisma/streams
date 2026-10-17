@@ -53,6 +53,16 @@ SlateDB/foyer dependency update.
 | RUSTSEC-2024-0436 | SlateDB 0.14.1 → foyer → paste | unmaintained build-time macro crate | same |
 | RUSTSEC-2024-0449 | SlateDB 0717cc1 → figment → serde_yaml → unsafe-libyaml | unmaintained; Streams never calls SlateDB's YAML/file/env settings loaders (only `Settings::default()`) | SlateDB drops or feature-gates figment's `yaml` provider |
 
+## Triaged advisories outside RustSec
+
+GitHub advisories that the RustSec database (and so `cargo deny`) does
+not carry, raised by Dependabot. Each row is a triage, not a `deny.toml`
+exception.
+
+| advisory | dependency path | why it is not currently exploitable | removal condition |
+|---|---|---|---|
+| GHSA-h395-gr6q-cpjc (CVE-2026-25537), Dependabot alert 1, triaged 2026-09-27, re-checked 2026-10-17 | streams-slate → jsonwebtoken 9.3.1 (direct; `cargo tree -i jsonwebtoken`: no other dependent, in no other lockfile) | the flaw: a time claim of the wrong JSON type (`"nbf": "…"`) parses as absent, so jsonwebtoken's own `exp`/`nbf` checks skip it. `src/auth.rs` uses jsonwebtoken only to verify the signature: `validate_exp`, `validate_nbf` and `validate_aud` are off and `required_spec_claims` is empty; the claims then deserialize into `RawClaims` / `RawInternalClaims`, whose `exp: i64` and `nbf: Option<i64>` refuse a string (the decode fails and the token is refused as `AuthError::BadSignature`), and `check_times` checks them against the injected clock | upgrade to jsonwebtoken ≥ 10.3.0 (a `Cargo.toml` edit: stales every formal receipt; re-record in the same push) |
+
 ## Surface posture
 
 Two independent factors: authentication gates each surface, and the
