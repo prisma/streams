@@ -839,7 +839,7 @@
         "scope_lines": 108,
         "syntax_facts": 201
       },
-      "rationale": "The harness includes src/quota/bucket.rs verbatim; it grew with the request bucket's burst floor (the floor field, the floored constructor that full now calls, the refill cap at max(rate, floor), and the floor's assertions in its own test), so a project's request bucket holds max(requests_per_sec, 50) tokens while QuotaRegistry::admit's frozen scopes stay unchanged (edge change #NEW-r5-rust-1).",
+      "rationale": "The harness includes src/quota/bucket.rs verbatim; it grew with the request bucket's burst floor (the floor field, the floored constructor that full now calls, the refill cap at max(rate, floor), and the floor's assertions in its own test), so a project's request bucket holds max(requests_per_sec, 50) tokens while QuotaRegistry::admit's frozen scopes stay unchanged (edge change #162).",
       "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-15 with the round-5 public-beta calls (\"accept all recommended\"; OWNER-DECISIONS-6 call 1: the burst floor built in src/quota/bucket.rs, its by-path include's growth an approved exception-growth row); these are the gate's after-values"
     }
   ],

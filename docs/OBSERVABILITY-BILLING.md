@@ -490,7 +490,7 @@ retained_by_forks
 
 ### 8.4 Self-metering
 
-All reserved system streams and rollup databases are excluded from customer usage, rate limits, and catalog cardinality. The server's own reads of its ledgers (`billing::system_read`, the usage and ops rollup steps) are internal reads that meter nothing, so under enforce they count no `unowned_meter_events_total` either (edge change #NEW-r4-rust-1, the owner's round-4 decision of 2026-10-14: `docs/reviews/2026-09-hardening/README.md`, "Owner decisions", row "Public-beta calls, round 4 (decided 2026-10-14)", item 2).
+All reserved system streams and rollup databases are excluded from customer usage, rate limits, and catalog cardinality. The server's own reads of its ledgers (`billing::system_read`, the usage and ops rollup steps) are internal reads that meter nothing, so under enforce they count no `unowned_meter_events_total` either (edge change #160, the owner's round-4 decision of 2026-10-14: `docs/reviews/2026-09-hardening/README.md`, "Owner decisions", row "Public-beta calls, round 4 (decided 2026-10-14)", item 2).
 
 Their object-store requests and bytes remain visible as system COGS metrics.
 
@@ -711,7 +711,7 @@ The live plane is for immediate diagnosis, not historical truth.
 
 Every active instance emits a low-cardinality snapshot every 15 seconds, or earlier on a size threshold.
 
-A snapshot the ledger refuses (a shed write while the instance drains, a store error) is kept and sent again at the next drain round (`TELEMETRY_DRAIN_SECS`, 8 s), together with the next snapshot when one is due, oldest first. Only the newest refused snapshot is kept, so a refusal loses a snapshot only when it lasts past the next one; a resent snapshot whose first append's outcome was unknown may be stored twice (edge change #NEW-r5-rust-3).
+A snapshot the ledger refuses (a shed write while the instance drains, a store error) is kept and sent again at the next drain round (`TELEMETRY_DRAIN_SECS`, 8 s), together with the next snapshot when one is due, oldest first. Only the newest refused snapshot is kept, so a refusal loses a snapshot only when it lasts past the next one; a resent snapshot whose first append's outcome was unknown may be stored twice (edge change #164).
 
 Use counters and mergeable histograms, not instance p50 values that cannot be aggregated.
 

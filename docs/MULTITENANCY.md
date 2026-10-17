@@ -91,8 +91,8 @@
   change #158).
 - r10 (2026-10-15, the free tier's burst; decided by the owner in the
   round-5 public-beta calls, call 1, `docs/reviews/2026-09-hardening/README.md`
-  row "Public-beta calls, round 5 (decided 2026-10-15)"; edge change
-  #NEW-r5-rust-1): §17.3 — a project's request bucket holds
+  row "Public-beta calls, round 6 (decided 2026-10-15)"; edge change
+  #162): §17.3 — a project's request bucket holds
   max(`requests_per_sec`, 50) tokens and refills at `requests_per_sec`,
   so below 50 a second a project is admitted 50 requests at once and then
   its rate; at 50 or more nothing changes. The store budget keeps one
@@ -1378,7 +1378,7 @@ Reject only the offending project:
 
 Never merge unrelated projects into one overflow token bucket.
 
-*Request rate (edge change #NEW-r5-rust-1; the owner's round-5 call 1
+*Request rate (edge change #162; the owner's round-5 call 1
 of 2026-10-15).* Each verified request takes one token of its project's
 request bucket, which starts full, refills at `requests_per_sec` and
 holds max(`requests_per_sec`, 50) tokens (`REQUEST_BURST_FLOOR`,
@@ -1455,7 +1455,7 @@ back, and concurrent requests all pass the gate before any is debited
 (up to the request bucket's burst, max(`requests_per_sec`, 50), at
 once, leaving about (11 x burst - rate) / rate seconds of debt for
 creates: 54 s at the free tier's 10 a second, 27 s at 20, 10 s at 50
-and above; #NEW-r5-rust-1). A project's registry spend is thus bounded
+and above; #162). A project's registry spend is thus bounded
 by the budget's rate for the refused routes, plus the descriptor GETs
 that the other routes pay but are never refused for (a few a request at
 most, within its request rate), plus one burst (the store work of

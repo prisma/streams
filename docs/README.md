@@ -56,6 +56,7 @@ Do not read these whole. Find the heading first, then read only that range
 - [refactor/WIRE-MATRIX.md](refactor/WIRE-MATRIX.md): the per-route wire contract, first characterized at 685ea035. Update it with every client-visible change. Its `file:line` references are from 685ea035 and have drifted, so find code by symbol.
 - [edge-changes.md](reviews/2026-09-hardening/edge-changes.md): before/after records #1-#60. Each new edge change adds a record in the same format.
 - [reviews/2026-09-hardening/README.md](reviews/2026-09-hardening/README.md): the hardening acceptance record, the owner's decisions from the second external review (2026-09-25), the split-500 release hold and the deployment gates.
+- [LEAD-DECISIONS-2026-10.md](reviews/2026-09-hardening/LEAD-DECISIONS-2026-10.md): the lead's decisions under the owner's delegation of 2026-10-17 (the week to 2026-10-24), each with its reason and open to the owner's reversal; the hardening README's "Owner decisions" table names it.
 - [effective-config-diff.md](reviews/2026-09-hardening/effective-config-diff.md): rc.4 vs HEAD effective configuration for each deployment family. This is a deploy prerequisite.
 - [config-simplification.md](reviews/2026-09-hardening/config-simplification.md): the audit of every setting the binary reads (2026-09-29) and the five packages of simplifications proposed to the owner. Its per-setting detail is `reviews/2026-09-hardening/evidence/config-audit-2026-09-29/detail.md` (170 KB, hidden from `rg`; read one item by its `#### ` heading).
 

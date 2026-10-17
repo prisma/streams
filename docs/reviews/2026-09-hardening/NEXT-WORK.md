@@ -167,7 +167,7 @@ alongside and finish before admission opens.
    - owner calls issuer #1 (offboarding a suspended project) and issuer
      #2 (a workspace taken off the allow-list), decided on 2026-10-13 as
      calls 15 ((iv), a canary witness) and 16 ((b), a reduced mode); both
-     built in round 4 ("Decided 2026-10-13, to be built", below);
+     built in round 4 ("Decided 2026-10-13, built in round 4", below);
    - found by the stack review of 2026-10-13, closed in round 4: a
      drain's one operator token (about 1,770 s usable) expired on a
      free-tier project of more than about 1,400 streams (4d5cae9c, "Not
@@ -178,7 +178,7 @@ alongside and finish before admission opens.
      while the page polled every 5 s or stopped without a word (3632c9e9,
      cb64345c, f75db7f1), and now a project is proven through any live
      credential, both say why they cannot turn true, and the page backs
-     off and stops with a Retry (#NEW-r4-issuer-3, ratified by the
+     off and stops with a Retry (#171, ratified by the
      owner on 2026-10-15, round-6 call 7).
    Who: engineering; key custody stays the owner's cryptographic
    acceptance (I2 of 2026-10-12).
@@ -396,7 +396,7 @@ alongside and finish before admission opens.
   the beta if the lifecycle validation shows Compute overlapping an old
   and a new process.
 
-### Decided 2026-10-13, to be built
+### Decided 2026-10-13, built in round 4 (landed 2026-10-17)
 
 The owner's round-3 answers that need code (README, row "Public-beta
 calls, round 3 (decided 2026-10-13)": "accept all recommended."); each
@@ -422,24 +422,30 @@ re-recorded at landing. Call 11 is built: `wait_tail` leaves in the
 read's mode what its deadline had left, so a long-poll its split wakes
 and refreshes onto the published child waits there only that, 25 s at
 most in all, on the raw and product surfaces; pinned by a red leg per
-surface in `read_application`; #NEW-r4-rust-2 records it; the TLA-018
+surface in `read_application`; #161 records it; the TLA-018
 re-record at landing covers it too.
 
 - Call 7, #148: the SDK text-and-test commit for the three-branch
   recovery (fence, seal, anything else; a `421` through the new
-  endpoint's client), before `publish-sdk`.
+  endpoint's client), before `publish-sdk`. Built: c1a500e0.
 - Call 8: one shared required-checks script for `promote-rc` and
   `publish-sdk` over the push-event runs at the RC commit, every attempt
-  of every required job, and `ci-status.sh` the same selection.
+  of every required job, and `ci-status.sh` the same selection. Built:
+  `scripts/required-checks.sh` (acc1bce4) and `ci-status.sh`'s push runs
+  (d7b81d6f).
 - Call 9, H11t: quiet versus never (KS p > 0.01 and identical answers,
   8 pairs a second, its own window of at least 360 s, a vacuity guard),
-  the fresh gap a FACT.
+  the fresh gap a FACT. Built: 47be52ae, 49b8c154, f7305784.
 - Call 10, the restart window: an SDK probe (a read, a plain append, a
-  producer append; any SDK error fails) beside the 10 s bar.
+  producer append; any SDK error fails) beside the 10 s bar. Built:
+  de5456bd, 76789d58, d7c25a78, 07cd083d.
 - Call 13: the OPS-RELEASE section 7 rule (Layer B first from a clean RC
-  checkout) and CI running bench/k2cost's unit and Bun tests.
+  checkout) and CI running bench/k2cost's unit and Bun tests. Built:
+  the rule (d6997ea9), CI's k2cost tests (f501e4f5), and at landing-4
+  the tiny manifest's end to end in CI (995f7978).
 - Call 14: CI's Composer good boot in the sdk-package job, the issuer's
-  four opt-in Composer tests in that step, Bun pinned at 1.4.3.
+  four opt-in Composer tests in that step, Bun pinned at 1.4.3. Built:
+  33786b3f, eb1a2a94, c69e146c.
 - Call 15: offboarding a suspended project through a canary witness,
   with the skeptic's five amendments (item 3). Built in round 4:
   `cell-admin offboard` takes a suspended project (the first run moves
@@ -448,12 +454,15 @@ re-record at landing covers it too.
   a later version, each probe minted at the version the state holds
   then), the issuer's offboarding job does the same in one attempt,
   `cell-admin canary` mints each probe at the current version, and
-  #151 and WIRE-MATRIX restate the delete's reason; the alerting watch,
-  in flight, must mint its catalog-read canary tokens per probe too
-  (`deploy/cell-admin/README.md`, "Offboarding a suspended project").
+  #151 and WIRE-MATRIX restate the delete's reason (f2db04c6, 2340c911,
+  0a1d4c1c). The alerting watch, landed since, probes only with its own
+  canary credential (append and read), which an offboarding never moves,
+  and mints no catalog-read token, so the per-probe rule
+  (`deploy/cell-admin/README.md`, "Offboarding a suspended project") asks
+  nothing of it.
 - Call 16: an off-list workspace's reduced mode, with #151, #152,
   WIRE-MATRIX and the page amended (item 3). Built in round 4
-  (#NEW-r4-issuer-1): only a project create, a credential create and a
+  (#169): only a project create, a credential create and a
   rotation read the allow-list (403 `workspace_not_allowed` off it);
   sign-in admits a workspace off the list while the issuer's state copy
   shows it holding a project (`unavailable` while that copy is stale);
@@ -462,7 +471,7 @@ re-record at landing covers it too.
   session (suspend for a delete, the session key, a replacement
   credential).
 
-### Decided 2026-10-14, to be built
+### Decided 2026-10-14, built (landed 2026-10-17)
 
 The owner's round-4 answers (README, row "Public-beta calls, round 4
 (decided 2026-10-14)": "Agreed on the two questions. Thanks."); both as
@@ -482,7 +491,7 @@ recommended.
   physical reclamation.
 - Alerting #1, the server meters its own billing reads (14.7; RUNBOOK's
   row 17 opened on every enforce cell): (a), built in round 4 (edge
-  #NEW-r4-rust-1): a red DST (idle rollup steps on an enforce rig leave
+  #160): a red DST (idle rollup steps on an enforce rig leave
   `UNOWNED_METER_EVENTS` and the deployment account's read rows
   unchanged), then `billing::system_read` reads with `internal: true`
   (line-neutral in `src/billing.rs`). RUNBOOK's row 17 text and the
@@ -2471,7 +2480,7 @@ segment) are separate layers, as Pravega's containers and segments are.
   was metered under the system project, which no policy feed names, and
   counted as unowned under enforce. The owner decided it on 2026-10-14
   (alerting #1, option (a); README, row "Public-beta calls, round 4
-  (decided 2026-10-14)"), and round 4 built it (edge #NEW-r4-rust-1):
+  (decided 2026-10-14)"), and round 4 built it (edge #160):
   `system_read` reads with `internal: true`, pinned by the DST
   `billing_operation_counts::idle_rollup_steps_count_no_unowned_meter_event`.
   The question's other half did not hold: no read row ever counted those
