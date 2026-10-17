@@ -56,17 +56,44 @@ fn reap(tasks: &crate::tasks::TaskSupervisor, joined: Result<(), tokio::task::Jo
     }
 }
 
+/// The accept queue every served listener listens with. Tokio (through
+/// mio) binds with the standard library's 128, and a burst of more
+/// simultaneous connects than the queue holds has the rest of its SYNs
+/// dropped: each of those clients waits out the 1 s initial retransmit,
+/// and longer while the burst lasts (the shared-cell flood test's 256
+/// connects showed it on Linux). The kernel caps the request at
+/// `net.core.somaxconn` (4,096 by default since Linux 5.4; macOS's
+/// `kern.ipc.somaxconn` is 128).
+const ACCEPT_BACKLOG: u32 = 1024;
+
+/// `listener`'s own socket, listening again with `ACCEPT_BACKLOG`.
+/// listen(2) on a listening socket changes only its queue length, so the
+/// socket keeps its address, the options it was bound with
+/// (`SO_REUSEADDR`) and every connection already queued. Tokio takes a
+/// socket to configure only as an unconnected `std::net::TcpStream`; the
+/// descriptor passes through one, owned throughout, and is registered
+/// with the runtime again as a listener.
+fn with_accept_backlog(
+    listener: tokio::net::TcpListener,
+) -> std::io::Result<tokio::net::TcpListener> {
+    let socket = std::os::fd::OwnedFd::from(listener.into_std()?);
+    tokio::net::TcpSocket::from_std_stream(std::net::TcpStream::from(socket)).listen(ACCEPT_BACKLOG)
+}
+
 /// #269: the one h1 serve entry — production and every test rig serve
 /// through THIS function, so the suite exercises the real connection
 /// path; what each connection is served with is `serve::h1_builder` over
 /// a socket under the drain floor (`drain`), and every response it serves
-/// passes `challenge`.
+/// passes `challenge`. Production and every rig bind with Tokio's
+/// default queue and hand the listener here, which listens again with
+/// `ACCEPT_BACKLOG` before its first accept.
 pub(crate) async fn serve_h1(
     listener: tokio::net::TcpListener,
     app: axum::Router,
     http: &crate::config::HttpConfig,
     tasks: crate::tasks::TaskSupervisor,
 ) -> std::io::Result<()> {
+    let listener = with_accept_backlog(listener)?;
     let app = app.layer(axum::middleware::map_response(challenge));
     serve_connections(drain::DrainListener::new(listener, http), app, http, tasks).await
 }
@@ -348,6 +375,112 @@ mod tests {
             1,
             "one panicked connection is counted; the aborted one is not"
         );
+    }
+
+    /// Simultaneous connects: four times the 128 the standard library, mio
+    /// and Tokio bind with, and half of the queue `serve_h1` listens with.
+    const BURST: usize = 512;
+
+    /// The status line a fresh connection's one request is answered with,
+    /// or what ended the exchange first.
+    async fn status_line(connected: std::io::Result<TcpStream>) -> String {
+        let mut sock = match connected {
+            Ok(sock) => sock,
+            Err(e) => return format!("connect: {e}"),
+        };
+        let request = b"GET /fast HTTP/1.1\r\nhost: rig\r\nconnection: close\r\n\r\n";
+        if let Err(e) = sock.write_all(request).await {
+            return format!("write: {e}");
+        }
+        let mut response = Vec::new();
+        match tokio::time::timeout(BOUND, sock.read_to_end(&mut response)).await {
+            Ok(Ok(_)) => String::from_utf8_lossy(&response)
+                .lines()
+                .next()
+                .unwrap_or("closed with no response")
+                .to_string(),
+            Ok(Err(e)) => format!("read: {e}"),
+            Err(_) => format!("no response within {BOUND:?}"),
+        }
+    }
+
+    /// A burst of `BURST` simultaneous connects is queued whole: every
+    /// connect completes inside a second and every request on one is
+    /// answered `200`. A connect the accept queue has no room for has its
+    /// SYN dropped and completes no sooner than the 1 s initial retransmit,
+    /// so a connect of a second or more is one the queue refused. The burst
+    /// is sent in one poll of this single-threaded runtime, unconstrained so
+    /// the cooperative budget never yields inside it: the accept loop takes
+    /// none of it before its last SYN is sent, and the queue alone holds it.
+    /// That holds on Linux, whose loopback completes each handshake inside
+    /// the connect call. macOS completes it on its input thread, after the
+    /// connect returns, so the accept loop drains the queue while the burst
+    /// arrives and the test passes there on a 128 queue too (it measures
+    /// nothing there; macOS also caps every backlog at `kern.ipc.somaxconn`,
+    /// 128 by default).
+    #[tokio::test]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        ignore = "only Linux's loopback queues a burst before the accept loop runs"
+    )]
+    async fn a_connect_burst_past_the_default_backlog_is_queued_whole() {
+        // The head deadline is not what this measures: BOUND keeps it away.
+        let (addr, tasks) = serve(BOUND).await;
+        // One request served first: the accept loop is running, on the
+        // queue `serve_h1` listens with.
+        let mut first = TcpStream::connect(addr).await.unwrap();
+        first
+            .write_all(b"GET /fast HTTP/1.1\r\nhost: rig\r\n\r\n")
+            .await
+            .unwrap();
+        let head = response_head(&mut first).await;
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        let started = std::time::Instant::now();
+        let burst = (0..BURST).map(|_| async move {
+            let connected = TcpStream::connect(addr).await;
+            let took = started.elapsed();
+            (took, status_line(connected).await)
+        });
+        let outcomes = tokio::task::unconstrained(futures_util::future::join_all(burst)).await;
+        let slow: Vec<Duration> = outcomes
+            .iter()
+            .map(|(took, _)| *took)
+            .filter(|took| *took >= Duration::from_secs(1))
+            .collect();
+        assert_eq!(
+            slow.len(),
+            0,
+            "{} of {BURST} connects took a second or more, the slowest {:?}: the accept queue dropped their SYNs",
+            slow.len(),
+            slow.iter().max()
+        );
+        let mut answers = std::collections::BTreeMap::<&str, usize>::new();
+        for (_, line) in &outcomes {
+            *answers.entry(line.as_str()).or_default() += 1;
+        }
+        assert_eq!(
+            answers,
+            std::collections::BTreeMap::from([("HTTP/1.1 200 OK", BURST)]),
+            "every connection of the burst is answered"
+        );
+        drop(first);
+        tasks.shutdown(Duration::from_secs(5)).await;
+    }
+
+    /// Listening again keeps the socket: its address, and a connection
+    /// queued on it before is the one its next accept takes.
+    #[tokio::test]
+    async fn listening_with_the_deeper_queue_keeps_the_address_and_the_queue() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let queued = TcpStream::connect(addr).await.unwrap();
+        let listener = super::with_accept_backlog(listener).unwrap();
+        assert_eq!(listener.local_addr().unwrap(), addr);
+        let (_, peer) = tokio::time::timeout(BOUND, listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(peer, queued.local_addr().unwrap());
     }
 
     /// The validated floor is exactly the one hyper asserts: a buffer at
