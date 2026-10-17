@@ -3077,7 +3077,7 @@ dependencies = [
 
 [[package]]
 name = "streams-slate"
-version = "0.2.0-rc.4"
+version = "0.3.0-beta.1"
 dependencies = [
  "aes-gcm",
  "aes-gcm-siv",
