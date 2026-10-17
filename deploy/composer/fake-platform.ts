@@ -23,6 +23,8 @@ export interface Branch {
   projectId: string;
   gitName: string;
   role: "production" | "preview";
+  /// Composer 0.29.1 finds the default stage's Branch by this flag.
+  isDefault: boolean;
 }
 export interface Variable {
   id: string;
@@ -64,6 +66,8 @@ export class FakePlatform {
   /// The next POST of this path is applied but its answer lost (a 502
   /// with no body), as a dropped connection would leave it.
   loseNextAnswer?: string;
+  /// The role the platform gives a project's first Branch.
+  firstBranchRole: Branch["role"] = "production";
   private seq = 0;
   private server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => this.serve(req) });
 
@@ -93,8 +97,8 @@ export class FakePlatform {
   }
 
   addBranch(projectId: string, gitName: string): Branch {
-    const role = this.branches.some((b) => b.projectId === projectId) ? "preview" : "production";
-    const b = { id: this.id("br"), projectId, gitName, role } as Branch;
+    const role = this.branches.some((b) => b.projectId === projectId) ? "preview" : this.firstBranchRole;
+    const b: Branch = { id: this.id("br"), projectId, gitName, role, isDefault: role === "production" };
     this.branches.push(b);
     return b;
   }

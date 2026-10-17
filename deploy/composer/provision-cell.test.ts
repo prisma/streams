@@ -53,7 +53,10 @@ describe("provision-cell.py", () => {
     const run = await provision(r, "production", ...full(r));
     expect([run.code, run.err]).toEqual([0, ""]);
     const [p] = r.api.projects;
-    expect([p.name, p.defaultRegion, r.api.branches]).toEqual(["streams-cell", "eu-central-1", []]);
+    expect([p.name, p.defaultRegion, r.api.branches.map((b) => [b.projectId, b.gitName, b.role])]).toEqual([
+      "streams-cell", "eu-central-1", [[p.id, "main", "production"]],
+    ]);
+    expect(run.out).toContain(`provision-cell: branch ${r.api.branches[0].id} (main) created in ${p.id}: its production Branch\n`);
     expect(r.api.buckets.map((b) => b.name)).toEqual(["streams-cell-production-data", "streams-cell-production-feeds", "streams-cell-production-control"]);
     const bucketOf = (id: string) => r.api.buckets.find((b) => b.id === id)?.name.split("-").at(-1);
     expect(r.api.keys.map((k) => [k.name, bucketOf(k.bucketId), k.role])).toEqual([
@@ -124,26 +127,43 @@ describe("provision-cell.py", () => {
     expect(read(join(r.secrets, "issuer", "STREAMS_FEEDS_S3_ACCESS_KEY_ID"))).toBe(`AK${now}\n`);
   }, 30_000);
 
-  test("a named stage is a Branch of the app's project, after its production Branch, with buckets of its own", async () => {
+  test("a named stage is a Branch of the app's project, after its production Branch, which a bare project gets first", async () => {
     const r = rig();
     const none = await provision(r, "cert", ...full(r), "--cell-id", "cell_c1");
     expect([none.code, none.err.trim()]).toEqual([
       1, "provision-cell: no project is named streams-cell: provision the production stage first (a named stage is its Branch)",
     ]);
     const p = r.api.addProject("streams-cell", "eu-central-1");
-    const bare = await provision(r, "cert", ...full(r), "--cell-id", "cell_c1");
-    expect([bare.code, bare.err.trim(), r.api.branches]).toEqual([
-      1,
-      `provision-cell: project ${p.id} has no production Branch yet: the first Branch of a project becomes its production ` +
-        "Branch, so cert's can only follow it",
-      [],
-    ]);
-    r.api.addBranch(p.id, "main");
     const run = await provision(r, "cert", ...full(r), "--cell-id", "cell_c1");
     expect([run.code, run.err]).toEqual([0, ""]);
     expect(r.api.branches.map((b) => [b.gitName, b.role])).toEqual([["main", "production"], ["cert", "preview"]]);
+    expect(posts(r).slice(0, 2)).toEqual([`/v1/projects/${p.id}/branches`, `/v1/projects/${p.id}/branches`]);
     expect(r.api.buckets.map((b) => b.name)).toEqual(["streams-cell-cert-data", "streams-cell-cert-feeds", "streams-cell-cert-control"]);
+    expect(ledger(r, "cert").productionBranch).toMatchObject({ gitName: "main", id: r.api.branches[0].id, status: "created" });
     expect(run.out).toContain(`set-secrets cert --project ${p.id} --branch ${r.api.branches[1].id} --from ${r.secrets}`);
+    const posted = posts(r).length;
+    expect([(await provision(r, "cert", ...full(r))).code, posts(r).length]).toEqual([0, posted]);
+  }, 30_000);
+
+  test("a Branch the platform marks isDefault is the production Branch; a first Branch it answers as preview is refused, with what to do", async () => {
+    const r = rig();
+    const p = r.api.addProject("streams-cell", "eu-central-1");
+    r.api.branches.push({ id: "br_default", projectId: p.id, gitName: "trunk", role: undefined, isDefault: true } as never);
+    const adopted = await provision(r, "scratch", ...full(r), "--cell-id", "cell_s1");
+    expect([adopted.code, adopted.err, r.api.branches.map((b) => b.gitName)]).toEqual([0, "", ["trunk", "scratch"]]);
+    expect(ledger(r, "scratch").productionBranch).toMatchObject({ id: "br_default", status: "adopted" });
+    const r2 = rig();
+    const p2 = r2.api.addProject("streams-cell", "eu-central-1");
+    r2.api.firstBranchRole = "preview";
+    const refused = await provision(r2, "scratch", ...full(r2), "--cell-id", "cell_s1");
+    expect([refused.code, refused.err.trim(), r2.api.branches.map((b) => [b.gitName, b.role]), r2.api.buckets]).toEqual([
+      1,
+      `provision-cell: project ${p2.id} has no production Branch, and the Branch main created for it (${r2.api.branches[0].id}) is ` +
+        "answered as role preview, not production: this tool cannot make one. Have Platform give the project a production " +
+        "(default) Branch (GET /v1/projects/{id}/branches must list one with role production or isDefault true), then run " +
+        "again; do not deploy a named stage first (Composer would create its Branch as the project's first)",
+      [["main", "preview"]], [],
+    ]);
   }, 30_000);
 
   test("refuses a project of the app's name in another region, and a stage without a cell id", async () => {
@@ -164,7 +184,6 @@ describe("provision-cell.py", () => {
   test("--teardown deletes a named stage's buckets and keys, and refuses production", async () => {
     const r = rig();
     expect((await provision(r, "production", ...full(r), "--cell-id", "cell_p1")).code).toBe(0);
-    r.api.addBranch(r.api.projects[0].id, "main");
     expect((await provision(r, "scratch", "--region", "eu-central-1", "--secrets", join(r.root, "s2"), "--cell-id", "cell_s1")).code).toBe(0);
     const prod = await provision(r, "production", "--teardown");
     expect([prod.code, prod.err.trim()]).toEqual([1, "provision-cell: --teardown refuses production: its buckets hold every tenant's data"]);

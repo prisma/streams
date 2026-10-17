@@ -15,8 +15,17 @@ as the Composer app (--app: streams-cell for the cell), created in --region
 with no database, or the one of that name adopted when it is there and in
 that region; `prisma deploy` adopts it by name (D10). A named stage
 (scratch, cert) is a Branch of that project, gitName the stage; the
-project must exist in --region, and must already have its production
-Branch (the first Branch of a project becomes its production Branch).
+project must exist in --region.
+
+The production Branch, for every stage: the project's Branch with role
+production or isDefault true (Composer 0.29.1 reads the default stage's
+Branch by isDefault and never makes one; a named stage's Branch it
+creates by gitName when absent). A project without one (a fresh project
+can have no Branch at all, and the first Branch of a project becomes its
+production Branch) gets it first, gitName main, before any stage's
+Branch, so a named stage's Branch, here or from Composer, never becomes
+the production one. When the platform answers that first Branch as
+anything but production the run is refused with what to ask Platform for.
 
 The buckets, in the project: <app>-<stage>-data (SlateDB's), -feeds (the
 cell's feed bundle only) and -control (cell-admin's and the issuer's
@@ -65,6 +74,8 @@ import urllib.request
 
 API = "https://api.prisma.io/v1"
 STAGES = ("scratch", "cert", "production")
+# The production Branch's gitName when this tool makes it: no stage's name.
+PRODUCTION_BRANCH = "main"
 REGIONS = ("us-east-1", "us-west-1", "eu-west-3", "eu-central-1", "ap-northeast-1", "ap-southeast-1")
 BUCKETS = ("data", "feeds", "control")
 IDEMPOTENT = {"GET", "DELETE"}
@@ -232,6 +243,40 @@ def project(api: Platform, ledger: Ledger, app: str, region: str, stage: str) ->
     return live["id"]
 
 
+def is_production(b: dict) -> bool:
+    """The platform's production Branch: role production (the Management
+    API's listing) or isDefault (what Composer reads)."""
+    return b.get("role") == "production" or b.get("isDefault") is True
+
+
+def production_branch(api: Platform, ledger: Ledger, project_id: str) -> str:
+    """The project's production Branch, made first when it has none."""
+    slot = ledger.doc.setdefault("productionBranch", {"gitName": PRODUCTION_BRANCH})
+    path = f"/projects/{urllib.parse.quote(project_id)}/branches"
+    rows = api.list(path)
+    found = [b for b in rows if is_production(b)]
+    if found:
+        if slot.get("id") != found[0]["id"]:
+            pending = slot.get("status") == "pending" and found[0].get("gitName") == PRODUCTION_BRANCH
+            slot.update({"id": found[0]["id"], "gitName": found[0].get("gitName"),
+                         "status": "resolved_by_name" if pending else "adopted"})
+            ledger.save()
+        return found[0]["id"]
+    if rows:
+        names = ", ".join(f"{b.get('gitName')} ({b.get('id')})" for b in rows)
+        raise Refused(f"project {project_id} has Branches but no production one ({names}): resolve it by hand with Platform; "
+                      "a Branch made now would not become the production Branch")
+    data = created(api, ledger, slot, path, {"gitName": PRODUCTION_BRANCH})
+    if not is_production(data):
+        raise Refused(f"project {project_id} has no production Branch, and the Branch {PRODUCTION_BRANCH} created for it "
+                      f"({data['id']}) is answered as role {data.get('role')}, not production: this tool cannot make one. "
+                      "Have Platform give the project a production (default) Branch (GET /v1/projects/{id}/branches must "
+                      "list one with role production or isDefault true), then run again; do not deploy a named stage "
+                      "first (Composer would create its Branch as the project's first)")
+    say(f"branch {data['id']} ({PRODUCTION_BRANCH}) created in {project_id}: its production Branch")
+    return data["id"]
+
+
 def branch(api: Platform, ledger: Ledger, project_id: str, stage: str) -> str:
     slot = ledger.doc.setdefault("branch", {"gitName": stage})
     rows = api.list(f"/projects/{urllib.parse.quote(project_id)}/branches")
@@ -241,9 +286,6 @@ def branch(api: Platform, ledger: Ledger, project_id: str, stage: str) -> str:
         ledger.save()
         say(f"branch {mine[0]['id']} ({stage}) of {project_id}")
         return mine[0]["id"]
-    if not any(b.get("role") == "production" for b in rows):
-        raise Refused(f"project {project_id} has no production Branch yet: the first Branch of a project becomes its "
-                      f"production Branch, so {stage}'s can only follow it")
     data = created(api, ledger, slot, f"/projects/{urllib.parse.quote(project_id)}/branches", {"gitName": stage})
     say(f"branch {data['id']} ({stage}) created in {project_id}")
     return data["id"]
@@ -397,6 +439,7 @@ def provision(api: Platform, a: argparse.Namespace) -> None:
         raise Refused(f"{ledger.path} provisioned {a.stage} in {ledger.doc['region']}, not {a.region}")
     ledger.doc["cell_id"] = cell_id
     pid = project(api, ledger, a.app, a.region, a.stage)
+    production_branch(api, ledger, pid)
     if a.stage != "production":
         branch(api, ledger, pid, a.stage)
     keys(api, ledger, buckets(api, ledger, pid, a.app, a.stage), a.app, a.stage, a.secrets)
