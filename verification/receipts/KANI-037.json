@@ -6,9 +6,9 @@
       "covers_satisfied": 5,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "efeb50e51b0ecd7a606c01c1147716b4672a9fee4121d9bf4bae6f3a65b3ca4a",
+      "log_sha256": "d424e74ee357eb71ea6a6e731e23e63222b1683a7b6cfb748f952ed733f2dbec",
       "role": "baseline",
-      "seconds": 54.0,
+      "seconds": 145.0,
       "verdict": "pass"
     },
     {
@@ -20,7 +20,7 @@
         "\"a known hash conflict at the remembered sequence is refused\"",
         "\"a duplicate is answered, not admitted or refused\""
       ],
-      "log_sha256": "30b70a35fd10c060086368d308205286e66de5948d85a040727e6e3576c9f9cd",
+      "log_sha256": "2f5603c42b89eb023ab0b28777144be684447de35922994e5e52f4bc19ad7ded",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
@@ -28,7 +28,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 64.9,
+      "seconds": 43.5,
       "verdict": "fail"
     },
     {
@@ -39,7 +39,7 @@
       "failed_checks": [
         "\"a known hash conflict at the remembered sequence is refused\""
       ],
-      "log_sha256": "ace62da1a06e38a698dcf1791f21c31d58c5e8e47f122dfd3cd17e251a830e9c",
+      "log_sha256": "fee53691fb4977b6891931e609e81b101be260b354e208779af5ee4653fda9ba",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
@@ -47,7 +47,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 84.3,
+      "seconds": 113.5,
       "verdict": "fail"
     },
     {
@@ -58,7 +58,7 @@
       "failed_checks": [
         "\"a duplicate is answered, not admitted or refused\""
       ],
-      "log_sha256": "dd34d7b3acff3eea4b27c7773ebe9112cf4d6f9e4165af4727452aae01c525dc",
+      "log_sha256": "80685c252c1cbc7ee5a618f2b3f6090696ea7729d02ed4d1f7bfbbb8461754aa",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
@@ -66,7 +66,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 114.2,
+      "seconds": 151.7,
       "verdict": "fail"
     }
   ],
@@ -79,8 +79,8 @@
       "ASM-PRODUCER-ROW": "bf02f39f80c7bc9a81911b57a7923e77dfc913a0720422f22701974a94ab335c"
     },
     "files": {
-      "Cargo.lock": "3f126bc2792cafa1d98160478f4d5eea9eea6ccea165ce84f5123c61d204e449",
-      "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
+      "Cargo.lock": "ab78fbe410e25b260785c0a02805645f0e39c743c35b77bff087974145f1987a",
+      "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -112,10 +112,10 @@
       }
     }
   },
-  "inputs_sha256": "e2acbf1b69d118324cb8f29a2a51bc3fb79628bed130a7a1c5c11dbaad89bf04",
+  "inputs_sha256": "bcb28b21bb6377efb810a760bd9ebcd10b123216b02fe8b34352a1eff1df5eea",
   "run_on": {
     "dirty_tree": false,
-    "revision": "73589068dcfeff1d36f44addbe3aeaec3ee9a4e6"
+    "revision": "7813e3083e01ee5b14e5a79d187970e3303bf76d"
   },
   "schema": 2,
   "tools": {

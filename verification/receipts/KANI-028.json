@@ -6,9 +6,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "dcb95d1dfecd366d0da25acb91496463e90a3b2a0b6620199857364ff23e037e",
+      "log_sha256": "de92d22e5279dbef9015a1282be576b8c5f3d472769ce1cc9f8301b342471ae8",
       "role": "baseline",
-      "seconds": 37.7,
+      "seconds": 64.7,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "193cf191dcf32c9019a59a6cf13f8199c406a7e354df0f188ddaed73d41fe31e",
+      "log_sha256": "9e9cd2d0910370aad56c1a212630bd504733dbc3d2b81b1c6d47b8d0ac3c98db",
       "role": "baseline",
-      "seconds": 49.5,
+      "seconds": 91.9,
       "verdict": "pass"
     },
     {
@@ -28,9 +28,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "e35016d515e9c0e54a80d39b3ab49b769e3c153c069a1bb2741e1b2eaeee5e27",
+      "log_sha256": "39e6267dff07eede4c6ee15480565f7ddee6fbe67f2b665a51f6c9a12a95c171",
       "role": "baseline",
-      "seconds": 55.1,
+      "seconds": 100.4,
       "verdict": "pass"
     },
     {
@@ -39,9 +39,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "2685df1fe02c178d5d68c24879e6e072b871579a36bc2159eb80003a77a0d9ce",
+      "log_sha256": "e99113e9546a584653d3348d513196fa2d6e80055555b2817e6fdbf127ab9550",
       "role": "baseline",
-      "seconds": 65.8,
+      "seconds": 89.5,
       "verdict": "pass"
     },
     {
@@ -52,7 +52,7 @@
       "failed_checks": [
         "\"every key lies in exactly one terminal segment\""
       ],
-      "log_sha256": "3a9018664a0d30d0b954b086062ce56f318624f02aef7572ea6aae7a01285e4e",
+      "log_sha256": "7481515c2103866e57dcf048ad70950a62e64ef9a6c61f52f8e9b069c7e702e7",
       "mutated": {
         "src/segmap.rs": {
           "baseline": "82ca57379a09ee725edc6dfcc21eab18574712e95a8ed834920227ad62edd202",
@@ -60,7 +60,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 50.4,
+      "seconds": 74.3,
       "verdict": "fail"
     },
     {
@@ -71,7 +71,7 @@
       "failed_checks": [
         "\"every key lies in exactly one terminal segment\""
       ],
-      "log_sha256": "fecc408281e78731dfdbef18e128c21f1cfd3598aedac0edbd6efc473ecef9c4",
+      "log_sha256": "c44f75fe1c7d0d43433d0ec661d4ca6212b673d25f2eb60a6f338757e94ec0c2",
       "mutated": {
         "src/segmap.rs": {
           "baseline": "82ca57379a09ee725edc6dfcc21eab18574712e95a8ed834920227ad62edd202",
@@ -79,7 +79,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 60.7,
+      "seconds": 62.1,
       "verdict": "fail"
     },
     {
@@ -90,7 +90,7 @@
       "failed_checks": [
         "\"the route answers every key with the segment that holds it\""
       ],
-      "log_sha256": "62c1bb9b2868e0219528a772c9eeabc20ae61476f6b032c072d069acceb89bbe",
+      "log_sha256": "58c0d9007f2a0771170813d49335e5597168cdc9c626bd48337a431c631a9477",
       "mutated": {
         "src/segmap.rs": {
           "baseline": "82ca57379a09ee725edc6dfcc21eab18574712e95a8ed834920227ad62edd202",
@@ -98,7 +98,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 65.7,
+      "seconds": 76.9,
       "verdict": "fail"
     }
   ],
@@ -110,8 +110,8 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "3f126bc2792cafa1d98160478f4d5eea9eea6ccea165ce84f5123c61d204e449",
-      "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
+      "Cargo.lock": "ab78fbe410e25b260785c0a02805645f0e39c743c35b77bff087974145f1987a",
+      "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -143,10 +143,10 @@
       }
     }
   },
-  "inputs_sha256": "e21c004085674a17337abbcf6510798ce9a41cce7f512ab413e73004d4f12374",
+  "inputs_sha256": "b134631f97e90e0a486a05b627cc47375bb0bcbd8eb35e96e90437e2ee4bc3a5",
   "run_on": {
     "dirty_tree": false,
-    "revision": "73589068dcfeff1d36f44addbe3aeaec3ee9a4e6"
+    "revision": "7813e3083e01ee5b14e5a79d187970e3303bf76d"
   },
   "schema": 2,
   "tools": {

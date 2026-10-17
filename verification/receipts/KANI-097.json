@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "4ddff2fe1a54604c46965513bb1b4fd23a3fe60bd310ac23e973be6641fa0770",
+      "log_sha256": "e7ffb1bb6747227b14956d52a0bbbd8f934a39cbbf0181badc7c2a24c1be898e",
       "role": "baseline",
-      "seconds": 41.3,
+      "seconds": 80.4,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "1ed2c3571d5e19c6745026bd5e150172728204a75d8c954a42ca0465b154803d",
+      "log_sha256": "f32c1736e8f63b686bea44c70e7e89d9f6e5211a145b3c220c635d06124a348e",
       "role": "baseline",
-      "seconds": 52.5,
+      "seconds": 91.6,
       "verdict": "pass"
     },
     {
@@ -28,9 +28,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "64fc978ac1814a81a09d3c7c39719fc88c6c8405ed2f8481514e945dddc0cdd8",
+      "log_sha256": "05bfd1761c6be23a2479ef416818ab3defb2d050cb019508e07e81c005092011",
       "role": "baseline",
-      "seconds": 66.9,
+      "seconds": 129.2,
       "verdict": "pass"
     },
     {
@@ -41,7 +41,7 @@
       "failed_checks": [
         "\"an accepted body is exactly the minimal encoding of its tables and payloads\""
       ],
-      "log_sha256": "0c0cd2b2a3af70b15044cc73e119be75a04a953e88bb1e03d932e6dfc5ff1c65",
+      "log_sha256": "3000c70714467e55af00b058632e409ae225e6ec45f85dbebc06286c72d7e171",
       "mutated": {
         "src/crypto_page/body.rs": {
           "baseline": "7a61c8c65651a9d1622dde812a5f17c58281d073ca9184c4fa2de00a5a8bbe67",
@@ -49,7 +49,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 40.2,
+      "seconds": 51.0,
       "verdict": "fail"
     },
     {
@@ -61,7 +61,7 @@
         "\"the first record is at the page timestamp and none goes back\"",
         "\"an accepted body is exactly the minimal encoding of its tables and payloads\""
       ],
-      "log_sha256": "8229407c11d8c8ba7354003aa6ffe4009981684d317fc865d07163eb28adbebb",
+      "log_sha256": "4cacc93cfa9673f6315b82f62354b544de040d2c804ffc9d2ec26de79a63b75a",
       "mutated": {
         "src/crypto_page/body.rs": {
           "baseline": "7a61c8c65651a9d1622dde812a5f17c58281d073ca9184c4fa2de00a5a8bbe67",
@@ -69,7 +69,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 63.4,
+      "seconds": 105.0,
       "verdict": "fail"
     },
     {
@@ -80,7 +80,7 @@
       "failed_checks": [
         "\"the first record is at the page timestamp and none goes back\""
       ],
-      "log_sha256": "0f8f0bbb0eaf2f8ab8a3b1e2e516566eca1d43fa6bbb34ef16509c7722c49882",
+      "log_sha256": "b63f2960f819a3489377e3bc724604c7cce8bb40ea0c257f1b1b5a84e6d991fd",
       "mutated": {
         "src/crypto_page/body.rs": {
           "baseline": "7a61c8c65651a9d1622dde812a5f17c58281d073ca9184c4fa2de00a5a8bbe67",
@@ -88,7 +88,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 40.3,
+      "seconds": 87.2,
       "verdict": "fail"
     },
     {
@@ -99,7 +99,7 @@
       "failed_checks": [
         "\"the lengths tile the payload bytes exactly\""
       ],
-      "log_sha256": "c25e4027a54dcfd749ccaef85aad8b0e7a77c1ad1288d5cb54b9054acae01bec",
+      "log_sha256": "611ee26b8540de460fea20ce5d045b2389d96c1fcdd9b12cd3cbd7ed10d666f7",
       "mutated": {
         "src/crypto_page/body.rs": {
           "baseline": "7a61c8c65651a9d1622dde812a5f17c58281d073ca9184c4fa2de00a5a8bbe67",
@@ -107,7 +107,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 39.7,
+      "seconds": 228.5,
       "verdict": "fail"
     }
   ],
@@ -119,8 +119,8 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "3f126bc2792cafa1d98160478f4d5eea9eea6ccea165ce84f5123c61d204e449",
-      "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
+      "Cargo.lock": "ab78fbe410e25b260785c0a02805645f0e39c743c35b77bff087974145f1987a",
+      "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -154,10 +154,10 @@
       }
     }
   },
-  "inputs_sha256": "df0786bbd45b027249579962678002f23c5b51fa392a03c205c282ab79d9b8cc",
+  "inputs_sha256": "406950a5bbd7aba8d1753b31d6aed0589e553704fe3e2d862331908337842db0",
   "run_on": {
     "dirty_tree": false,
-    "revision": "73589068dcfeff1d36f44addbe3aeaec3ee9a4e6"
+    "revision": "7813e3083e01ee5b14e5a79d187970e3303bf76d"
   },
   "schema": 2,
   "tools": {

@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "53c28f533659543bc4ff43da93d005942b631b9861a1d7138d0d0003e884da46",
+      "log_sha256": "cc1e76b8e09860ca5839341378af6a40db057a42b19912a8f5728873bdb8c826",
       "role": "baseline",
-      "seconds": 38.7,
+      "seconds": 47.6,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "b15088050e0733307652159becff18d7dc4b2efe9af8a44d272373c4465bf6e4",
+      "log_sha256": "65e8df6fc8aa5a50b5a859f436e9e48a95188cb8d78aa80976436476ded60959",
       "role": "baseline",
-      "seconds": 37.7,
+      "seconds": 50.0,
       "verdict": "pass"
     },
     {
@@ -30,7 +30,7 @@
       "failed_checks": [
         "\"an unterminated or overflowing run is refused\""
       ],
-      "log_sha256": "b28dcfb68d5de0d26a855e6b56349a795fafcdd1e6a6fc9b2f658203756306fc",
+      "log_sha256": "9b88cd901a62b9adc69ee98f3190612c748fef4bc3ad89e6fef032c087fb4c50",
       "mutated": {
         "src/postings.rs": {
           "baseline": "6c15d9738e2d0bff530f63dc6fbb9ad2241775cd6406af4982cbc55153111f73",
@@ -38,7 +38,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 65.9,
+      "seconds": 173.5,
       "verdict": "fail"
     },
     {
@@ -49,7 +49,7 @@
       "failed_checks": [
         "\"the value survives the round trip\""
       ],
-      "log_sha256": "4d5489a5d96c0a98081ea175b463b3f7c31b16103005c80785ddae4297051c1f",
+      "log_sha256": "9924e3dd575ecbfabacd5e423c57deb15c3fc0654f5de1a08e15dfab9841055f",
       "mutated": {
         "src/postings.rs": {
           "baseline": "6c15d9738e2d0bff530f63dc6fbb9ad2241775cd6406af4982cbc55153111f73",
@@ -57,7 +57,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 83.8,
+      "seconds": 188.3,
       "verdict": "fail"
     }
   ],
@@ -69,8 +69,8 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "3f126bc2792cafa1d98160478f4d5eea9eea6ccea165ce84f5123c61d204e449",
-      "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
+      "Cargo.lock": "ab78fbe410e25b260785c0a02805645f0e39c743c35b77bff087974145f1987a",
+      "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -101,10 +101,10 @@
       }
     }
   },
-  "inputs_sha256": "1bcacee1c53f1729947341cd419f93f26f69e08aeec9d650937612342bd13d15",
+  "inputs_sha256": "23342b033f55de0efce32628f2f2c197d0ad1ca6ea2d461429ea3e86e971db92",
   "run_on": {
     "dirty_tree": false,
-    "revision": "73589068dcfeff1d36f44addbe3aeaec3ee9a4e6"
+    "revision": "7813e3083e01ee5b14e5a79d187970e3303bf76d"
   },
   "schema": 2,
   "tools": {

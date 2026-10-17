@@ -6,9 +6,9 @@
       "covers_satisfied": 4,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "231c2ae43e3eeebe87f01c72689b30001f7ec098a64f1860b106ea7cad859df5",
+      "log_sha256": "fc742bc2f990ea764648d935353ee541aa198fdf2df719153655d1181e956443",
       "role": "baseline",
-      "seconds": 76.0,
+      "seconds": 225.8,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"a sealed span below the tail holds only positions before its end\""
       ],
-      "log_sha256": "0d074c94b8723ced11ab5aa0619befd5d3c49daeb2b6627b351a354d11bcfc1c",
+      "log_sha256": "f6a3e36b36b66ec1da45022c34134896c77275d4f3a831cea13d959f715512b7",
       "mutated": {
         "src/sse/source/spans.rs": {
           "baseline": "a23a4ffcd7726ef863cda91e7e86e3d9cc560d100756dc887a21201e27bb5fec",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 129.5,
+      "seconds": 239.5,
       "verdict": "fail"
     },
     {
@@ -38,7 +38,7 @@
       "failed_checks": [
         "\"the local offset is relative to its span's start\""
       ],
-      "log_sha256": "d1b82e2425b2b03837162e79406a0e3fa7ba15e75a970b84eab166089b350035",
+      "log_sha256": "28aca1b1720db96211a1dd81b003cf2f5358100c65a8c0d1c9949f37e463ac1a",
       "mutated": {
         "src/sse/source/spans.rs": {
           "baseline": "a23a4ffcd7726ef863cda91e7e86e3d9cc560d100756dc887a21201e27bb5fec",
@@ -46,7 +46,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 71.8,
+      "seconds": 220.1,
       "verdict": "fail"
     }
   ],
@@ -59,8 +59,8 @@
       "ASM-LINEAGE-CONTRACT": "ce6f37d8d180ff751216f81cd4f7df089b1a743437c7fd52e895f1266c41ad90"
     },
     "files": {
-      "Cargo.lock": "3f126bc2792cafa1d98160478f4d5eea9eea6ccea165ce84f5123c61d204e449",
-      "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
+      "Cargo.lock": "ab78fbe410e25b260785c0a02805645f0e39c743c35b77bff087974145f1987a",
+      "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -91,10 +91,10 @@
       }
     }
   },
-  "inputs_sha256": "9e1873b5fa8fd8405d837c2f0d17c1dae1fd00a2beddc77da213bec7fe9032d6",
+  "inputs_sha256": "9470947962b5b572aac19826c6bf155c7090549747ad16534e4214d99a325399",
   "run_on": {
     "dirty_tree": false,
-    "revision": "73589068dcfeff1d36f44addbe3aeaec3ee9a4e6"
+    "revision": "7813e3083e01ee5b14e5a79d187970e3303bf76d"
   },
   "schema": 2,
   "tools": {

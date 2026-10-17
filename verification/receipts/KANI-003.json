@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "08285f5108416bca85e1601bf5f739d64c476edc28286269d4582bc307873c09",
+      "log_sha256": "7b5a48d05d5ea911441c2b63d72ec44333b8606188697a73e0bf15f2b10fad72",
       "role": "baseline",
-      "seconds": 88.7,
+      "seconds": 54.1,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"token byte order is position order\""
       ],
-      "log_sha256": "f8e44fea6a16bcbb3b46367516263e715ec2c3633a10eaed2ba4c55370a0f849",
+      "log_sha256": "e8ee17ff7b14137e214b3568c8acea98ecdb3c499a551a6ddf7e97032108e9ef",
       "mutated": {
         "src/offsets.rs": {
           "baseline": "7f5bfa2ef61b991c1919aea7b51a9d587c7117f3c53f2184f4916a3ba54fd43c",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 92.7,
+      "seconds": 213.3,
       "verdict": "fail"
     }
   ],
@@ -40,8 +40,8 @@
       "ASM-OFFSET-DOMAIN": "aef34325e54b8193d77cf768b07426056852471934347bda2d6476cdd90cc297"
     },
     "files": {
-      "Cargo.lock": "3f126bc2792cafa1d98160478f4d5eea9eea6ccea165ce84f5123c61d204e449",
-      "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
+      "Cargo.lock": "ab78fbe410e25b260785c0a02805645f0e39c743c35b77bff087974145f1987a",
+      "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -71,10 +71,10 @@
       }
     }
   },
-  "inputs_sha256": "3c382fff518bd45c8e53681cd117b5338f29958ca5bf05de58f8963018f84011",
+  "inputs_sha256": "6b51fb899a30f6dcec9a563eeebbf7b750a9b9ee81f9c5caafa3ca193b8950f4",
   "run_on": {
     "dirty_tree": false,
-    "revision": "73589068dcfeff1d36f44addbe3aeaec3ee9a4e6"
+    "revision": "7813e3083e01ee5b14e5a79d187970e3303bf76d"
   },
   "schema": 2,
   "tools": {

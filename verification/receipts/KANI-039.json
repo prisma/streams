@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "6979d262967d51245e6a98c4685b0cba80855eac56731db1ff119eac531926d2",
+      "log_sha256": "39e49f4143f9a2632164c50b46123cb50ac9d21064d3286e265437b112ea55ad",
       "role": "baseline",
-      "seconds": 69.9,
+      "seconds": 133.5,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"a tagged operation is authorized exactly at or above the fence\""
       ],
-      "log_sha256": "1bb5870bee00a05f24b2910ab764dfc93a1992e0821c490fb529ff007af9c0b0",
+      "log_sha256": "162414e555a057c01be02f961bfab2c6b05bbef42480c844048486debfcaf116",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 149.7,
+      "seconds": 40.0,
       "verdict": "fail"
     },
     {
@@ -38,7 +38,7 @@
       "failed_checks": [
         "\"an untagged close is refused once a fence exists\""
       ],
-      "log_sha256": "63fbfff7076ed7752130824f7a9755a0097a007ed0d4768d20bb6636f1b50bd5",
+      "log_sha256": "a522893886754f9cf5cc907bbe599b68d474470cd87ba579a3f396b9a71019df",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
@@ -46,7 +46,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 107.4,
+      "seconds": 38.8,
       "verdict": "fail"
     }
   ],
@@ -58,8 +58,8 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "3f126bc2792cafa1d98160478f4d5eea9eea6ccea165ce84f5123c61d204e449",
-      "Cargo.toml": "ef514625179a4724b8c88dc9e826ae6a103d5c599fae696eeacc332df782420a",
+      "Cargo.lock": "ab78fbe410e25b260785c0a02805645f0e39c743c35b77bff087974145f1987a",
+      "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -90,10 +90,10 @@
       }
     }
   },
-  "inputs_sha256": "a53f0b9c1c6e8d83e70663eeb78a148e73562d014bc8ddbeaaa240e869969743",
+  "inputs_sha256": "c9d3410655d65e4c88494b87e96d148cfefe6230905aa6976696ec29f4f76c13",
   "run_on": {
     "dirty_tree": false,
-    "revision": "73589068dcfeff1d36f44addbe3aeaec3ee9a4e6"
+    "revision": "7813e3083e01ee5b14e5a79d187970e3303bf76d"
   },
   "schema": 2,
   "tools": {
