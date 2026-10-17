@@ -1,6 +1,6 @@
 {
   "command": "python3 scripts/quality/mutation_driver.py --measure-sizes",
-  "commit": "f1c5bc257a7a5616b9fbfab3cf4c5a1d962c496b",
+  "commit": "c9f0bc9eb39e3db9560a58d16d132c332536ff50",
   "measured_on": "2026-10-17",
   "owners": {
     "admission_body": 9,
@@ -109,6 +109,7 @@
     "quota_read_reservation": 19,
     "quota_registry": 163,
     "quota_stored": 21,
+    "quota_stream_seed": 8,
     "read_accumulator": 46,
     "read_batch_tests": 0,
     "read_budget": 39,
