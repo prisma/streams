@@ -405,20 +405,25 @@ alongside and finish before admission opens.
   hands out.
 - Done 2026-10-17: a custody table for the cell's other secrets, in
   `docs/SECRETS-CUSTODY.md`, linked from RUNBOOK's shared-cell section,
-  with the issuer's and the watch's secrets too. It found two gaps, still
-  open: `USAGE_STREAM_KEY` has no rotation path (its ledgers pin the
-  key's fingerprint), and no command revokes a hidden canary credential.
+  with the issuer's and the watch's secrets too. It found two gaps:
+  `USAGE_STREAM_KEY` has no rotation path (its ledgers pin the key's
+  fingerprint), still open; and a hidden canary credential had no revoke,
+  closed by landing-4's `cell-admin revoke` (1fa43eec), which takes the
+  watch's hidden credentials, with RUNBOOK's canary rotation (f46a2ed9).
 - Operator hygiene. Done: RUNBOOK no longer calls `/operator` unsecured
   (cb5e79fa, pinned by `deploy/cell-watch/runbook.test.ts`), and its §5
   table no longer lists `/v1/debug/load` and `/v1/debug/sleep` as open
-  (2026-10-17). Open, a code change: the wrapper's download failure
-  serves `{stage, key, error}` on the public port
-  (`serveDownloadFailure` in `deploy/app-server/index.ts`, and its copy
-  in `deploy/app-gen/index.ts`); the Composer entry
-  (`deploy/composer/streams/entry.ts`) already serves a generic body.
-- Security-scanning hygiene: the jsonwebtoken triage recorded in the
-  repository, CodeQL's false positives dismissed, workflow permissions
-  added (about half a day).
+  (2026-10-17); the wrappers' download failure
+  (`serveDownloadFailure` in `deploy/app-server/index.ts` and
+  `deploy/app-gen/index.ts`) serves the generic 500 `binary_exited`, as
+  the Composer entry and the supervisor do, and keeps the stage, key and
+  error in the platform log (627ae830, #172).
+- Security-scanning hygiene. Done: every workflow grants its
+  GITHUB_TOKEN `contents: read` only, held by
+  `scripts/quality/test_workflow_permissions.py`, and the jsonwebtoken
+  advisory is recorded as triaged not exploitable in SECURITY.md
+  (9b544c2f). Open: dismissing the Dependabot alert and CodeQL's false
+  positives on GitHub, an owner action.
 - A spend alert in the Tigris and Compute consoles, and a daily human
   check for the first two weeks.
 - Pricing validation (the 2 h local 100 ms point, the K2 cost re-run in

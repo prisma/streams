@@ -63,12 +63,11 @@ signing key lives there, and there is no backup of it).
 |---|---|---|---|---|
 | `ALERT_SINK_URL`, `ALERT_SINK_KEY` | Watch environment; the paging tool | Make new ones in the paging tool, set them, redeploy the watch | Anyone can send alerts to the on-call | Make new ones |
 | `HEARTBEAT_URL` | Watch environment; the paging tool | As above | Anyone can beat the heartbeat and hide a dead watch | Make a new one |
-| `CANARY_CREDENTIAL` | Watch environment; made on the operator's machine (RUNBOOK "The canary") | Make a new one with `cell-admin credential --hidden`, set it, redeploy the watch. **No command revokes the old one at this tip**: the issuer's credential API and `cell-admin` both skip hidden credentials | Reads and writes of the canary project only, within its 5 requests a second and 2 streams; false canary pages | Make a new one |
+| `CANARY_CREDENTIAL` | Watch environment; made on the operator's machine (RUNBOOK "The canary") | Make a new one with `cell-admin credential --hidden`, set it, redeploy the watch, then revoke the old one with `cell-admin revoke --project sp_canary_<cell id> --credential <old id>` and publish the bundle (the issuer's credential API skips hidden credentials; `cell-admin revoke` takes them, never the catalog-read one) | Reads and writes of the canary project only, within its 5 requests a second and 2 streams; false canary pages | Make a new one |
 | `STREAMS_OPERATOR_TOKEN`, `STREAMS_ISSUER_METRICS_TOKEN` | Copies of the cell's and the issuer's (above) | With the original | As above | As above |
 
 ## Open gaps
 
 - `USAGE_STREAM_KEY` has no rotation path.
-- A hidden canary credential cannot be revoked.
 - The issuer's signing key and the cell's secrets have no backup beyond
   the operator's files, and the operator's machine is not named yet.

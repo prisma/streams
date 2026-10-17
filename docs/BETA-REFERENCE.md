@@ -41,22 +41,33 @@ shared bounds), `src/auth/ceiling.rs` (`CellCeiling::effective`; its test
 
 Notes:
 
-- **Bursts.** The request rate is a token bucket that holds one second's
-  worth of requests. A project at 10 requests a second can send 10 at
-  once, then 10 a second. The byte rates work the same way. One append
-  larger than a full second's byte budget is admitted once from a full
-  bucket; the project then waits until the debt is paid. Source:
-  `src/quota.rs` (`QuotaRegistry::admit`, `admit_append`, `check_read`).
+- **Bursts.** The request rate is a token bucket that holds the larger
+  of one second's worth of requests and 50. A project at 10 requests a
+  second that has been quiet for 5 s can send 50 at once, then 10 a
+  second; a project at 50 a second or more holds one second's worth. The
+  byte rates hold one second's worth. One append larger than a full
+  second's byte budget is admitted once from a full bucket; the project
+  then waits until the debt is paid. Source: `src/quota.rs`
+  (`REQUEST_BURST_FLOOR`, `QuotaRegistry::admit`, `admit_append`,
+  `check_read`), `src/quota/bucket.rs` (`Bucket::floored`); edge change
+  #162.
 - **Creates, deletes, seals and listings cost more.** These requests also
   pay for the storage work they cause, from a second budget that refills
   at the project's request rate. A create weighs 11. A listing weighs 10
-  plus one per stream it scans. While that budget is in debt, creates,
+  plus one per stream it scans. Every create weighs 11, a project's first
+  after a deploy or restart included: the count of its streams the server
+  makes then is not charged to it. While that budget is in debt, creates,
   deletes, seals and listings are refused `429 project_rate_limit` with a
   `Retry-After` of the seconds until the debt clears. Appends and reads
   are never refused by it. At 10 requests a second, a project creates one
   stream and then one every 1.1 s, and one listing of 100 streams holds
-  the next create or listing back for about 10 s. Source: edge change
-  #143; `src/quota/parked.rs`, `src/store_timing.rs`.
+  the next create or listing back for about 10 s. Concurrent requests are
+  all admitted before any is charged, so up to 50 concurrent creates are
+  admitted at once and paid for afterwards: at 10 a second they leave the
+  next create, delete, seal or listing refused for about 54 s, longer
+  than the SDK's replays. Create streams one at a time, or ahead of when
+  you need them. Source: edge changes #143 and #162;
+  `src/quota/parked.rs`, `src/store_timing.rs`.
 - **Self-serve.** A workspace on the beta's allow-list creates at most 5
   projects a day. It holds as many active projects as its allow-list
   entry allows, or else the cell's workspace cap (1 unless the operator
