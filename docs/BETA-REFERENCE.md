@@ -1,0 +1,188 @@
+# Prisma Streams public beta: limits and answers
+
+This page is for customers of the public beta. It states the limits a
+project meets on a shared beta cell, the answers the server gives when a
+limit is reached, how to retry, and what the beta does not promise.
+Every number here is the value at the time of writing, read from the
+deployed profile and the server's code. Each section names the file
+where an engineer checks it.
+
+The ceilings below are **provisional**. They come from a throughput
+envelope measured on a different shape of server. The envelope is being
+measured again on the beta's own shape (one server, one shard), and the
+ceilings will be restated from that measurement. Do not size a production
+workload on them yet.
+
+## How a beta cell is shared
+
+A beta cell is one server that up to `k = 8` projects can use at their
+full ceiling at once. Each shared limit of the server is divided by 8,
+and every project gets that share unless the operator set a lower value
+for it. More than 8 projects are placed on a cell, because most projects
+use far less than their ceiling.
+
+Source: `deploy/profiles/shared-cell.env` (`PROJECT_SHARE_K=8` and the
+shared bounds), `src/auth/ceiling.rs` (`CellCeiling::effective`; its test
+`a_shared_cell_holds_every_bounded_axis_to_its_share` pins the shares).
+
+## Per-project limits
+
+| Limit | Value | What happens at the limit |
+|---|---|---|
+| Requests per second | 176 at the ceiling; **10** for a project created through self-serve, unless its workspace's allow-list entry names another rate | `429 project_rate_limit`, `Retry-After` |
+| Appended bytes per second | 257,500 | `429 project_rate_limit`, `Retry-After` |
+| Read bytes per second | 3,750,000 | `429 project_rate_limit`, `Retry-After` |
+| Requests in flight at once | 64 | `429 project_concurrency_limit` |
+| Live subscriptions (SSE) | 150 | `429 project_concurrency_limit` |
+| Streams | 8,192 | `429 stream_limit`, not retryable |
+| Appended bytes queued, not yet stored | 64 MiB | `429 queued_bytes` |
+| Memory a project's requests hold | 32 MiB | `429 project_memory_pressure`, `Retry-After: 1` |
+| Stored bytes | 10 GiB by default; the operator can set more | `429 stored_bytes_limit`, not retryable |
+
+Notes:
+
+- **Bursts.** The request rate is a token bucket that holds one second's
+  worth of requests. A project at 10 requests a second can send 10 at
+  once, then 10 a second. The byte rates work the same way. One append
+  larger than a full second's byte budget is admitted once from a full
+  bucket; the project then waits until the debt is paid. Source:
+  `src/quota.rs` (`QuotaRegistry::admit`, `admit_append`, `check_read`).
+- **Creates, deletes, seals and listings cost more.** These requests also
+  pay for the storage work they cause, from a second budget that refills
+  at the project's request rate. A create weighs 11. A listing weighs 10
+  plus one per stream it scans. While that budget is in debt, creates,
+  deletes, seals and listings are refused `429 project_rate_limit` with a
+  `Retry-After` of the seconds until the debt clears. Appends and reads
+  are never refused by it. At 10 requests a second, a project creates one
+  stream and then one every 1.1 s, and one listing of 100 streams holds
+  the next create or listing back for about 10 s. Source: edge change
+  #143; `src/quota/parked.rs`, `src/store_timing.rs`.
+- **Self-serve.** A workspace on the beta's allow-list creates at most 5
+  projects a day. It holds as many active projects as its allow-list
+  entry allows, or else the cell's workspace cap (1 unless the operator
+  set another when the cell was made). A project holds at most 10 live credentials and creates or
+  rotates at most 20 a day. Source: `deploy/issuer/projects.ts`
+  (`FREE_TIER_REQUESTS_PER_SEC`), `deploy/issuer/limits.ts`,
+  `deploy/cell-admin/commands.ts` (`--workspace-cap`, default 1).
+- **The stored-bytes figure lags.** It is the project's stored bytes
+  after compression, as the usage rollup last counted them: about 10 s
+  behind at the default cadence. A project can store past its limit by
+  what it writes in that time plus one request. After a delete, appends
+  are admitted again within 10-20 s. Reads, creates, deletes, seals and
+  consumers are never refused on it, so a project at its limit can always
+  delete to get under. Project usage
+  (`GET /v1/projects/{project}/usage`) states the figure as
+  `ownedStoredBytesNow`. Source: edge change #158;
+  `src/quota/stored.rs`, `src/quota/append_charge.rs`.
+
+## Size limits
+
+| Limit | Value | Answer |
+|---|---|---|
+| Request body | 8 MiB (8,388,608 bytes) on a beta cell | `413 body_too_large`, not retryable |
+| One record, as stored | 131,072 bytes | `413 body_too_large`, not retryable |
+| Records in one `records:batch` | 10,000 | `400 batch_too_large` |
+| A body larger than the stream's own rate bucket | depends on the stream | `413 payload_too_large`, not retryable, with `details` `{dimension, capacity, requested}` |
+
+On a bytes stream the whole body is one record, so a bytes append is at
+most 131,072 bytes. A JSON record is measured as stored: the client's
+text with the whitespace outside strings removed. The body limit is
+stored with the cell when it is created. Source:
+`deploy/profiles/shared-cell.env` (`MAX_REQUEST_BODY_BYTES`),
+`src/config/cli.rs` (`MAX_RECORD_PAYLOAD_BYTES`),
+`src/product/append_body.rs` (`MAX_BATCH_RECORDS`).
+
+## Error answers
+
+Every error on the `/v1/streams` surface has this body:
+
+```json
+{"error": {"code": "<code>", "message": "<text>", "retryable": true, "details": {}}}
+```
+
+`details` is present only for some codes. `retryable: true` means the
+request wrote nothing and can be sent again unchanged, after its
+`Retry-After` when one is given. `retryable: false` means sending it
+again unchanged will not help, or, for `outcome_unknown`, may store a
+second copy. Source: `perr` in `src/product.rs`; the full per-route list
+is `docs/refactor/WIRE-MATRIX.md` §0 and §2.
+
+### 413
+
+| Code | When | `retryable` |
+|---|---|---|
+| `body_too_large` | The body is over 8 MiB, or one record is over 131,072 bytes | false |
+| `payload_too_large` | The body is larger than the stream can ever take in one request | false |
+
+### 429
+
+| Code | When | `retryable` | `Retry-After` |
+|---|---|---|---|
+| `project_rate_limit` | The project's request rate, append or read byte rate, or storage-work budget is spent | true | yes |
+| `project_concurrency_limit` | 64 requests in flight, or 150 live subscriptions | true | no |
+| `queued_bytes` | 64 MiB of the project's appends wait to be stored | true | no |
+| `project_memory_pressure` | The project's requests hold 32 MiB | true | 1 |
+| `rate_limited` | The server or the stream is at capacity | true | when the server gives one |
+| `stream_limit` | The project holds its maximum number of streams | false | no |
+| `stored_bytes_limit` | The project stores its stored-bytes limit; `details` `{dimension, limit, stored}` | false | no |
+
+### 503
+
+| Code | When | `retryable` | `Retry-After` |
+|---|---|---|---|
+| `overloaded` | The server is far over its load and refuses before reading the request | true | 1 |
+| `read_memory_busy` | The server's read memory is full | true | 1 |
+| `subscription_capacity` | The server holds its 1,200 live subscriptions | true | 5 |
+| `temporarily_unavailable` | Storage could not be read for this request | true | 1 |
+| `maintenance_backpressure` | The stream's storage maintenance is behind | true | when given |
+| `project_tracker_capacity` | The server tracks too many projects at once | true | no |
+| `policy_stale`, `grants_stale`, `keys_stale` | The server's copy of the access policy is too old | true | 1 |
+| `outcome_unknown` | A plain append was in flight when its shard moved (a deploy or a restart): it may or may not have been written | **false** | 1 |
+
+A `503` from in front of the server (the platform's edge) has no such
+body. Treat it like `outcome_unknown` for an append, and as retryable for
+anything else.
+
+## Retrying appends safely
+
+The service promises that an ambiguous append is explicit (guarantee G7,
+`SPEC.md` §4): after a timeout, a lost connection, a `408`, a `5xx` other
+than a retryable `503`, or `503 outcome_unknown`, an append may or may not
+have been stored. Do not resend a plain append blindly. Either:
+
+- append through a **producer** (the `producer-id`, `producer-epoch` and
+  `producer-seq` headers; `producer(...)` on a collection in the SDK). The server
+  recognises the producer's retry and answers it `duplicate: true` with
+  the original position instead of storing it twice; or
+- read the stream and check whether the record is there before you send
+  it again; or
+- resend only if a second copy is acceptable to you.
+
+The SDK does this for you: it replays a `429` or a `503` whose body says
+`"retryable": true` on its `Retry-After` (capped at 5 s), at most four
+attempts in all, and it rejects a plain append whose outcome is unknown
+with `AppendOutcomeUnknownError` instead of sending it again. Source:
+`sdk/README.md` ("In plain words"), `sdk/src/index.ts`; edge changes #147,
+#153 and #154.
+
+## What the beta does not give you
+
+- **One server per cell, with no spare.** A deploy, a restart or a crash
+  of that server stops every project on the cell until it is back. While
+  it starts, requests get the platform's `404` or a `503`.
+- **No SLA.** There is no availability or latency commitment. Append
+  latency includes a write to object storage and waits for the next
+  flush, up to 100 ms; it has not been measured again on the beta's
+  shape. Source: `docs/OPS-RELEASE.md` ("Ack SLO").
+- **No backups.** Data is as durable as the object store that holds it,
+  and nothing more, until Prisma decides a backup posture.
+- **The cell is kept awake.** It does not sleep when idle, so after a
+  quiet spell there is no wake delay (edge change #140). This is how the
+  beta runs, not a promise for later.
+- **No invoices.** Usage is metered and shown, not charged.
+- **No physical erasure on delete yet.** A deleted stream is gone from
+  the API at once; its encrypted bytes stay in the bucket until
+  reclamation is built.
+- **Limits can change.** The ceilings above are restated after the
+  envelope measurement, and the cell's endpoint may change before the
+  beta ends.

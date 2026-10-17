@@ -369,11 +369,22 @@ share.
 
 ## 6. What customers need to be aware of
 
-- **C1 Append latency includes durability**: ~25–45 ms typical (Tigris).
+The customer reference for the public beta's shared cells (per-project
+limits, error answers, retry rules, what the beta does not promise) is
+[docs/BETA-REFERENCE.md](docs/BETA-REFERENCE.md).
+
+- **C1 Append latency includes durability**: an append is acknowledged
+  after its WAL write to object storage, and at the default 100 ms write
+  tier (`WAL_FLUSH_GAP_MS=100`, edge change #97) it first waits for the
+  next flush, up to the rest of the gap. Not re-measured at 100 ms; the
+  interpolated p50 in fra is about 0.09-0.14 s (docs/OPS-RELEASE.md).
   Producers wanting throughput should use JSON-array batched appends and/or
   concurrency — batching is where this architecture excels.
 - **C2 Ambiguous appends**: on `408`/disconnect, check `Stream-Next-Offset`
-  or use `Stream-Seq` before retrying (G7).
+  or use `Stream-Seq` before retrying (G7). On the product surface, append
+  through a producer (`producer-id`, `producer-epoch`, `producer-seq`),
+  whose retry the server answers as a duplicate, or read before resending;
+  a plain append's `503 outcome_unknown` is ambiguous in the same way.
 - **C3 Per-stream write ceiling**: one stream = one server's capacity. Model
   high-fan-in workloads as one stream per product with routing keys inside
   it (unlimited), not as one global firehose stream.
@@ -383,8 +394,13 @@ share.
 - **C5 Speculative tails are optimistic**: entries may be followed by
   `aborted`; render accordingly (e.g., pending-state styling) and rely on
   the durable checkpoint for resume.
-- **C6 Deletion semantics**: crypto-erasure is immediate on key destruction;
-  physical byte removal (prefix delete + compaction filter) is asynchronous.
+- **C6 Deletion semantics**: a delete tombstones the stream at once (reads
+  and writes answer 404/410). Its objects stay in the bucket as ciphertext
+  under keys the server never stored: no code removes them yet (physical
+  reclamation, TLA-019-F3 in docs/READINESS.md, cost lever E11), and their
+  names, routing keys and sizes stay visible to the operator until it
+  exists (G8). Crypto-erasure is complete once the customer destroys the
+  stream key.
 - **C7 Offsets are opaque**: treat `Stream-Next-Offset` as a cursor; never
   arithmetic on it.
 - **C8 Reads of freshly-appended data by routing key** may briefly scan the
@@ -395,19 +411,22 @@ share.
 
   | limit | value | enforcement |
   |---|---|---|
-  | append body | 32 MB | router + engine reject |
+  | append body | 32 MiB by default (`MAX_REQUEST_BODY_BYTES`); 8 MiB on a shared cell (`deploy/profiles/shared-cell.env`), stored with the namespace at creation | body buffering: 413 `body_too_large` |
   | record | 131,072 bytes as stored, by default (`MAX_RECORD_PAYLOAD_BYTES`; on a non-JSON stream the request body is one record, so the ceiling bounds the body there) | 413 `record_too_large` (raw) / `body_too_large` (product); with a producer, 400 `invalid_body` |
   | response chunk | 8 MB | engine |
   | per-stream sustained appends | measured (engine, 2026-07-14 round 2): **12.4k req/s, 55k ev/s, 56 MB/s** peak; **~750 req/s / 48k ev/s / ~49 MB/s pinned-sustained** with absorber+trim active — the earlier ~0.4–1.7 MB/s figure was two config defaults (`l0_max_ssts_per_key`, manifest-poll staleness), not a compaction defect. Stated product limit: 5k req/s / 50k ev/s / 50 MB/s per ordered stream, latency floor 2× flush + PUT (EXPERIMENT-PILOT bench round 2) | admission token bucket + committer fair-share |
   | live tail connections per instance | 1,200 direct by default (`SSE_MAX_CONNECTIONS`, the 1 GiB Compute class value; all streams of the instance share it; unbounded via CDN/mux tier — OPERATIONS.md §4) | connection counter: 503 `subscription_capacity`, `retry-after: 5` |
-  | per-customer streams | 1,000,000 (D21) | create-time counter leases |
-  | per-customer connections/cell | 100,000 | admission |
-  | stream size / retention | unbounded bytes; retention configurable per stream, default none | TTL + archive tiering |
+  | per-project streams | the project's `max_streams`; on a shared cell at most 65,536 ÷ `PROJECT_SHARE_K`, 8,192 at k = 8 (`src/auth/ceiling.rs`) | create-time reservation: 429 `stream_limit` |
+  | per-project live subscriptions | the project's `max_live_subscriptions`; on a shared cell at most `SSE_MAX_CONNECTIONS` ÷ k, 150 at k = 8 | 429 `project_concurrency_limit` |
+  | per-project stored bytes | the project's `max_stored_bytes`, else `PROJECT_STORED_BYTES_DEFAULT` (10 GiB on a shared cell; 0, no limit, by default) | 429 `stored_bytes_limit` on appends (edge change #158) |
+  | stream lifetime / retention | bytes bounded only by the project's stored-bytes limit; a whole-stream expiry set at creation (`expiry: {idle}` or `{at}`), default none; no per-record maximum age yet, and no archive tier (Prisma Buckets expose one storage class) | an expired stream ends as a deleted one does (C6) |
   | request rate 429 contract | Retry-After + scoped error body | COMPUTE-SPEC §12.2 |
 
-  Stream names are UTF-8 and **globally unique** (D21); customer-scoped
-  naming is under reconsideration (O13) because global uniqueness leaks a
-  cross-tenant existence oracle (create → 409).
+  Stream names are UTF-8 and unique **within a project**: the registry
+  keeps each project's descriptors under its own prefix
+  (`registry/v4/projects/<project>/streams/`, `src/registry.rs`), so two
+  projects can use the same name and a create reveals nothing about
+  another project's streams (O13).
 - **C10 Routing keys are metadata, not secrets**: they appear in read URLs,
   CDN cache keys, and record headers (§3.7). Payloads are encrypted
   everywhere; routing keys are not. Don't encode confidential data in them.
