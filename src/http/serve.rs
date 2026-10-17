@@ -381,6 +381,18 @@ mod tests {
     /// and Tokio bind with, and half of the queue `serve_h1` listens with.
     const BURST: usize = 512;
 
+    /// The descriptors the burst holds at once, a client and an accepted
+    /// socket for each connect, with room for the tests beside it.
+    const BURST_FDS: u64 = 2 * BURST as u64 + 256;
+
+    /// This process's soft `RLIMIT_NOFILE`, as `/proc/self/limits` states
+    /// it; `None` when unlimited or unreadable.
+    fn open_files_soft_limit() -> Option<u64> {
+        let limits = std::fs::read_to_string("/proc/self/limits").ok()?;
+        let line = limits.lines().find(|l| l.starts_with("Max open files"))?;
+        line.split_whitespace().nth(3)?.parse().ok()
+    }
+
     /// The status line a fresh connection's one request is answered with,
     /// or what ended the exchange first.
     async fn status_line(connected: std::io::Result<TcpStream>) -> String {
@@ -417,13 +429,25 @@ mod tests {
     /// connect returns, so the accept loop drains the queue while the burst
     /// arrives and the test passes there on a 128 queue too (it measures
     /// nothing there; macOS also caps every backlog at `kern.ipc.somaxconn`,
-    /// 128 by default).
+    /// 128 by default). Under a soft `RLIMIT_NOFILE` too low for the burst
+    /// (1,024 in a common Linux shell; the standard library raises it only
+    /// on Apple targets) it skips with a message rather than failing on
+    /// `connect: Too many open files`, which would read as a product fault.
     #[tokio::test]
     #[cfg_attr(
         not(target_os = "linux"),
         ignore = "only Linux's loopback queues a burst before the accept loop runs"
     )]
     async fn a_connect_burst_past_the_default_backlog_is_queued_whole() {
+        if let Some(soft) = open_files_soft_limit()
+            && soft < BURST_FDS
+        {
+            eprintln!(
+                "skipped: the soft RLIMIT_NOFILE is {soft}, and the burst needs {BURST_FDS} \
+                 descriptors; raise it (ulimit -n) to run this test"
+            );
+            return;
+        }
         // The head deadline is not what this measures: BOUND keeps it away.
         let (addr, tasks) = serve(BOUND).await;
         // One request served first: the accept loop is running, on the
@@ -468,9 +492,11 @@ mod tests {
     }
 
     /// Listening again keeps the socket: its address, and a connection
-    /// queued on it before is the one its next accept takes.
+    /// queued on it before is the one its next accept takes. It does not
+    /// check the queue's depth (macOS caps it at `kern.ipc.somaxconn`); the
+    /// Linux burst test above does.
     #[tokio::test]
-    async fn listening_with_the_deeper_queue_keeps_the_address_and_the_queue() {
+    async fn listening_again_keeps_the_address_and_a_queued_connection() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let queued = TcpStream::connect(addr).await.unwrap();
