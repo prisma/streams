@@ -178,8 +178,8 @@ alongside and finish before admission opens.
      while the page polled every 5 s or stopped without a word (3632c9e9,
      cb64345c, f75db7f1), and now a project is proven through any live
      credential, both say why they cannot turn true, and the page backs
-     off and stops with a Retry (#NEW-r4-issuer-3, awaiting
-     ratification).
+     off and stops with a Retry (#NEW-r4-issuer-3, ratified by the
+     owner on 2026-10-15, round-6 call 7).
    Who: engineering; key custody stays the owner's cryptographic
    acceptance (I2 of 2026-10-12).
 4. **The Q5 harness and a shared-cell deploy path** (README "Shared cells
