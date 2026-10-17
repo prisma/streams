@@ -89,7 +89,8 @@ describe("RUNBOOK.md's What to alert on", () => {
     expect(cells(17)[4]).toContain("open on every enforce cell at this tip, idle or not");
     expect(cells(17)[4]).toContain("NEXT-WORK 14.7");
     const next = readFileSync(join(import.meta.dir, "..", "..", "docs", "reviews", "2026-09-hardening", "NEXT-WORK.md"), "utf8");
-    const defects = next.slice(next.indexOf("### 14.7 "), next.indexOf("### 14.8 "));
+    // Markdown wraps a sentence wherever its line fills, so the section is read as words.
+    const defects = next.slice(next.indexOf("### 14.7 "), next.indexOf("### 14.8 ")).replace(/\s+/g, " ");
     expect(defects).toContain("RUNBOOK row 17 (`r17_unowned_usage`) is open on every enforce cell");
   });
 
