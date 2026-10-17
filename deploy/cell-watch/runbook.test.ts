@@ -85,13 +85,15 @@ describe("RUNBOOK.md's What to alert on", () => {
     expect(cells(2)[4]).toContain("a watch whose `STREAMS_OPERATOR_TOKEN` the cell refuses (401 or 403) does not start");
   });
 
-  test("row 17 says it is open on every enforce cell at this tip, and NEXT-WORK 14.7 records the server's defect", () => {
-    expect(cells(17)[4]).toContain("open on every enforce cell at this tip, idle or not");
+  test("row 17 says an idle cell's own metering no longer grows its counter, and NEXT-WORK 14.7 records the server's defect as fixed", () => {
+    expect(cells(17)[4]).not.toContain("open on every enforce cell at this tip");
+    expect(cells(17)[4]).toContain("the rollup's reads of its own ledgers meter nothing");
     expect(cells(17)[4]).toContain("NEXT-WORK 14.7");
     const next = readFileSync(join(import.meta.dir, "..", "..", "docs", "reviews", "2026-09-hardening", "NEXT-WORK.md"), "utf8");
     // Markdown wraps a sentence wherever its line fills, so the section is read as words.
     const defects = next.slice(next.indexOf("### 14.7 "), next.indexOf("### 14.8 ")).replace(/\s+/g, " ");
-    expect(defects).toContain("RUNBOOK row 17 (`r17_unowned_usage`) is open on every enforce cell");
+    expect(defects).not.toContain("RUNBOOK row 17 (`r17_unowned_usage`) is open on every enforce cell");
+    expect(defects).toContain("Fixed (2026-10-14, round 4): the cell counted its own metering as unowned usage");
   });
 
   test("gives each row its class, a PAGE paged to the on-call and a NOTIFY to the channel", () => {
@@ -139,7 +141,7 @@ describe("RUNBOOK.md's drills paragraph", () => {
       "`CELL_WATCH_E2E_BIN_DIR=target/debug CELL_WATCH_DRILLS=1 bun test ./deploy/cell-watch/drills.e2e.test.ts`",
       "`NOTIFY_ONLY=0`",
       "`pager.ts`",
-      "set row 17 aside (open on every enforce cell at this tip, NEXT-WORK 14.7) and allow it at most one open",
+      "row 17 among the rules that never open on the drills' cell",
     ]) {
       expect([want, text.includes(want)]).toEqual([want, true]);
     }

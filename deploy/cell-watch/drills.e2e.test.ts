@@ -44,18 +44,17 @@ afterAll(teardown);
 
 const ROUTING_KEY = `routing-key-${randomBytes(8).toString("hex")}`;
 const page = (rule: string) => `cell_sc1/${rule}/page`;
-/// Row 17 is open on an idle cell at this tip (B4's finding; NEXT-WORK
-/// 14.7, a server defect): it opens once and stays open, no drill counts
-/// it, and the drills hold it to at most one open, so the server's fix,
-/// after which it never opens, leaves them green.
-const IDLE_OPEN = "cell_sc1/r17_unowned_usage/notify";
+/// Row 17 (`r17_unowned_usage`), which the cell's own metering opened on
+/// every idle enforce cell until round 4's fix (B4's finding; NEXT-WORK
+/// 14.7): no drill causes it, so it never opens.
+const ROW_17 = "cell_sc1/r17_unowned_usage/notify";
 
 type Seen = [PagerChange["action"], string, boolean];
 
-/// The pager's changes from `from` on but row 17's, sorted: a drill's
-/// changes may land in any order.
+/// The pager's changes from `from` on, sorted: a drill's changes may land
+/// in any order.
 const changes = (p: Pager, from: number): Seen[] =>
-  p.since(from).filter(([, key]) => key !== IDLE_OPEN).sort((a, b) => (a.join() < b.join() ? -1 : 1));
+  p.since(from).sort((a, b) => (a.join() < b.join() ? -1 : 1));
 
 /// Waits up to `secs` for the pager to show as many changes as `want`
 /// since `from`, then holds them to exactly `want` (in any order).
@@ -173,9 +172,8 @@ maybe("the cell's drills each page the on-call: rows 7, 6, 13, 12, 3 with the up
   await shows(p, mark, 240, [["open", HEARTBEAT_KEY, true]]);
   const last = p.beats[p.beats.length - 1] ?? 0;
   expect([last < stopped, p.changes[p.changes.length - 1]!.at - last >= 180_000]).toEqual([true, true]);
-  // Row 17 opened at most once in all of it (today once; never after
-  // NEXT-WORK 14.7's server fix), and no event carried the operator bearer.
-  expect([[], [["open", IDLE_OPEN, false]]]).toContainEqual(p.since(0).filter(([, key]) => key === IDLE_OPEN));
+  // Row 17 never opened in all of it, and no event carried the operator bearer.
+  expect(p.since(0).filter(([, key]) => key === ROW_17)).toEqual([]);
   expect([watch.log(), watch.out()].filter((t) => t.includes(operator) || t.includes(ROUTING_KEY))).toEqual([]);
 }, 45 * 60_000);
 
@@ -213,7 +211,7 @@ maybe("the issuer's drills each page the on-call: row 21 with the issuer stopped
     STREAMS_ISSUER_METRICS_TOKEN: ic.env.STREAMS_ISSUER_METRICS_TOKEN ?? "",
     CANARY_CREDENTIAL: credential,
   }));
-  // The canary's first round has put its record in the stream; nothing is open but row 17.
+  // The canary's first round has put its record in the stream; nothing is open, row 17 included.
   const token = (await (await fetch(`${issuerOrigin}${EXCHANGE_PATH}`, {
     method: "POST", headers: { authorization: `StreamsCredential ${credential}` },
   })).json() as { accessToken: string }).accessToken;
