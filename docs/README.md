@@ -63,6 +63,7 @@ Do not read these whole. Find the heading first, then read only that range
 
 **Operations and release**
 - [RUNBOOK.md](../RUNBOOK.md): build, configure, deploy, monitor, debug. It is compiled into the binary (`include_str!` in `src/operator.rs`), so an edit changes the build.
+- [SECRETS-CUSTODY.md](SECRETS-CUSTODY.md): every secret of a shared cell, its issuer and its watch: who holds it, where it is stored, how it rotates, what a leak or a loss means. RUNBOOK's "Shared cells" links it.
 - [OPERATIONS.md](../OPERATIONS.md) (durability dependencies, backup, identity, SLOs), [SECURITY.md](../SECURITY.md), [OPS-RELEASE.md](OPS-RELEASE.md) (standing release policies and the fork ledger).
 - [STAGING.md](STAGING.md) (staging plan, not yet executed), [GUIDE-COMPOSER.md](GUIDE-COMPOSER.md) (standalone deploy with Prisma Composer), [deploy/README.md](../deploy/README.md) (Compute wrapper apps), [deploy/cell-admin/README.md](../deploy/cell-admin/README.md) (the operator guide of a single-server shared cell: profile, admission, tokens, offboarding).
 

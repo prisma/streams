@@ -994,6 +994,16 @@ key, then `keys retire --kid` the old one after the longest token lifetime
 (`--retire-others` on `keys add` is the compromise path). A lost key means
 re-minting every credential under a new key.
 
+**Secret custody.** Every other secret of the cell, the issuer and the
+watch (`USAGE_STREAM_KEY`, `STREAMS_CURSOR_KEY`, `AUTH_TOKEN`, the bucket
+keys, the issuer's pepper and session key, the paging keys,
+`CANARY_CREDENTIAL`) has a row in `docs/SECRETS-CUSTODY.md`: who holds it,
+where it is stored, how it rotates, and what a leak or a loss means. Each
+value reaches the platform only through `deploy/composer/set-secrets` and
+an app only by a redeploy, so a rotation of a cell secret is a restart of
+the cell. `USAGE_STREAM_KEY` has no rotation path: never change it on a
+cell that holds data.
+
 **Keys feed and binary change together.** Every key in the keys feed names
 its audience (`aud`, contract r7). A binary from before r7 refuses a feed
 that carries `aud`, a binary from r7 on refuses one without it, and either
