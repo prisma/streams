@@ -2,9 +2,10 @@
 # Cut a shared cell's release (public-beta deploy-q5 triage B5): one commit,
 # built and staged once into $STREAMS_RELEASES/<tag>/ (default
 # ~/.streams-releases), with the interim issuer's release from the same
-# commit beside it as <tag>-issuer/ (Q6 (b)), never overwritten, and the
-# only things deploy/composer/deploy-release.sh deploys. Their layouts and
-# rules are deploy/composer/release.ts's.
+# commit beside it as <tag>-issuer/ (Q6 (b)) and the cell watch's as
+# <tag>-watch/, never overwritten, and the only things
+# deploy/composer/deploy-release.sh deploys. Their layouts and rules are
+# deploy/composer/release.ts's and, for the watch, watch-release.ts's.
 #
 #   SOAK_HOME=~/.streams-soak scripts/cut-release.sh <commit> <tag> --cells DIR
 #
@@ -12,13 +13,15 @@
 # the release may deploy to (scratch, cert, production; provision-cell.py
 # and `cell-admin init --cell-env` write them); each is copied into the
 # release as deploy/cells/<stage>.env; each <stage>.issuer.env (the issuer's
-# settings for that stage) into the issuer's as stages/<stage>.env; nothing
-# else of DIR is read.
+# settings for that stage) into the issuer's as stages/<stage>.env; each
+# <stage>.watch.env (the cell watch's settings) into the watch's as
+# stages/<stage>.env; nothing else of DIR is read.
 # $SOAK_HOME holds the artifact bucket's files, as build-upload.sh reads
 # them (artifact-endpoint.txt, artifact-bucket.txt, binid.txt, binsec.txt).
 #
 # In order:
-#   1. refuses an existing release directory (the cell's or the issuer's),
+#   1. refuses an existing release directory (the cell's, the issuer's or
+#      the watch's),
 #      results/<tag>/ or a cut of the same tag in progress, before anything
 #      else: a tag is cut once;
 #   2. scripts/dev/ci-status.sh <commit> must print CI_GREEN (AGENTS.md §1:
@@ -26,10 +29,11 @@
 #   3. a clean detached worktree at <commit>, beside the release directory;
 #   4. the x86_64-musl streams-slate and s3lite, with STREAMS_GIT_COMMIT,
 #      BUILD_UNIX and SOURCE_DATE_EPOCH pinned (build-upload.sh's identity);
-#   5. deploy/composer's and deploy/composer-issuer's packages (`bun install
-#      --frozen-lockfile`) and each app's entry bundled into one file (D0
-#      finding 2);
-#   6. the commit's own deploy/composer/release.ts stages both releases:
+#   5. deploy/composer's, deploy/composer-issuer's and deploy/cell-watch's
+#      packages (`bun install --frozen-lockfile`) and each app's entry
+#      bundled into one file (D0 finding 2);
+#   6. the commit's own deploy/composer/release.ts (and watch-release.ts)
+#      stages the three releases:
 #      every repository file byte-identical to the commit's, both binaries
 #      x86_64 ELFs, each release.json, the rules;
 #   7. the server uploaded to the artifact bucket as
@@ -49,6 +53,7 @@ COMMIT_ARG=$1 TAG=$2 CELLS=$4
 RELEASES=${STREAMS_RELEASES:-$HOME/.streams-releases}
 FINAL=$RELEASES/$TAG
 ISSUER_FINAL=$RELEASES/$TAG-issuer
+WATCH_FINAL=$RELEASES/$TAG-watch
 CUT=$RELEASES/.cut-$TAG
 S=${SOAK_HOME:?set SOAK_HOME, which holds the artifact bucket files and results/}
 RESULTS=$S/results/$TAG
@@ -56,6 +61,7 @@ RESULTS=$S/results/$TAG
 # 1.
 [ ! -e "$FINAL" ] || refuse "$FINAL exists: a release directory is never overwritten"
 [ ! -e "$ISSUER_FINAL" ] || refuse "$ISSUER_FINAL exists: a release directory is never overwritten"
+[ ! -e "$WATCH_FINAL" ] || refuse "$WATCH_FINAL exists: a release directory is never overwritten"
 [ ! -e "$RESULTS" ] || refuse "$RESULTS exists: tag $TAG was cut before"
 [ ! -e "$CUT" ] || refuse "$CUT exists: another cut of $TAG is running, or one failed and left it (remove it)"
 [ -d "$CELLS" ] || refuse "--cells $CELLS is not a directory"
@@ -92,10 +98,13 @@ BINS=$TREE/target/x86_64-unknown-linux-musl/release
 # 5.
 (cd "$TREE/deploy/composer" && bun install --frozen-lockfile)
 (cd "$TREE/deploy/composer-issuer" && bun install --frozen-lockfile)
+(cd "$TREE/deploy/cell-watch" && bun install --frozen-lockfile)
 ENTRY_JS=$CUT/entry.js
 ISSUER_JS=$CUT/issuer-entry.js
+WATCH_JS=$CUT/watch-entry.js
 (cd "$TREE" && bun build deploy/composer/streams/entry.ts --target=bun --format=esm --outfile "$ENTRY_JS")
 (cd "$TREE" && bun build deploy/composer-issuer/issuer/entry.ts --target=bun --format=esm --outfile "$ISSUER_JS")
+(cd "$TREE" && bun build deploy/cell-watch/entry.ts --target=bun --format=esm --outfile "$WATCH_JS")
 
 # 6.
 STAGED=$CUT/release
@@ -106,6 +115,9 @@ ISSUER_STAGED=$CUT/issuer
 (cd "$TREE" && bun deploy/composer/release.ts stage-issuer --tree "$TREE" --commit "$COMMIT" --tag "$TAG" \
   --cells "$CELLS" --entry-js "$ISSUER_JS" --node-modules "$TREE/deploy/composer-issuer/node_modules" \
   --out "$ISSUER_STAGED")
+WATCH_STAGED=$CUT/watch
+(cd "$TREE" && bun deploy/composer/watch-release.ts stage --tree "$TREE" --commit "$COMMIT" --tag "$TAG" \
+  --cells "$CELLS" --entry-js "$WATCH_JS" --node-modules "$TREE/deploy/cell-watch/node_modules" --out "$WATCH_STAGED")
 
 # 7.
 python3 -E - "$STAGED/deploy/composer/streams/streams-slate" "releases/$TAG/streams-slate" "$S" "$RESULTS" \
@@ -132,7 +144,8 @@ print(f"uploaded and verified {key} ({len(data)} bytes); {results}/binaries.json
 PY
 
 # 8.
-for d in "$FINAL" "$ISSUER_FINAL"; do [ ! -e "$d" ] || refuse "$d appeared during the cut"; done
+for d in "$FINAL" "$ISSUER_FINAL" "$WATCH_FINAL"; do [ ! -e "$d" ] || refuse "$d appeared during the cut"; done
 mv "$STAGED" "$FINAL"
 mv "$ISSUER_STAGED" "$ISSUER_FINAL"
-echo "cut-release: $TAG is $FINAL and $ISSUER_FINAL (commit $COMMIT); deploy them with deploy/composer/deploy-release.sh"
+mv "$WATCH_STAGED" "$WATCH_FINAL"
+echo "cut-release: $TAG is $FINAL, $ISSUER_FINAL and $WATCH_FINAL (commit $COMMIT); deploy them with deploy/composer/deploy-release.sh"

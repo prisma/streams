@@ -10,9 +10,11 @@
 // `prisma deploy app.ts` (and `prisma dev app.ts`) runs from this
 // directory, the app's Composer project root: package.json, bun.lock,
 // prisma.config.ts, node_modules installed with `bun install
-// --frozen-lockfile`, and entry.js built (service.ts says how). The release
-// run that deploys the cell deploys this app too, with the settings
-// exported in its shell (module.ts).
+// --frozen-lockfile`, and entry.js built (service.ts says how). A release
+// is cut with the cell's as <tag>-watch (deploy/composer/watch-release.ts),
+// and `deploy/composer/deploy-release.sh <stage> <tag>-watch --app
+// cell-watch` deploys it from there, its stage's settings as the envParams
+// module.ts binds.
 import { module } from "@prisma/composer";
 import cellWatch from "./module.ts";
 

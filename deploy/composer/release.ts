@@ -33,7 +33,8 @@
 //   bun deploy/composer/release.ts stage-issuer --tree DIR --commit SHA
 //     --tag TAG --cells DIR --entry-js FILE --node-modules DIR --out DIR
 // are cut-release's staging steps (the cell's, and the interim issuer's,
-// below); each moves --node-modules into its release.
+// below; the cell watch's is watch-release.ts's); each moves
+// --node-modules into its release.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -96,7 +97,7 @@ export interface Release {
   files: Record<string, string>;
 }
 
-const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+export const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 /// Refuse a release root that breaks the rules; its release.json otherwise.
 export function checkRelease(root: string): Release {
@@ -107,7 +108,7 @@ export function checkRelease(root: string): Release {
 
 /// The rules over a release root whose manifest (at `manifest`, itself
 /// unlisted) lists `files`.
-function checkTree(root: string, manifest: string, files: Record<string, string>): void {
+export function checkTree(root: string, manifest: string, files: Record<string, string>): void {
   const found = new Set<string>();
   const strays: string[] = [];
   const walk = (rel: string) => {
@@ -229,7 +230,7 @@ const committedText = (tree: string, commit: string, path: string) =>
 
 /// `path` as the tree holds it, which must be a regular file byte-identical
 /// to the commit's.
-function committedFile(tree: string, commit: string, path: string): Uint8Array {
+export function committedFile(tree: string, commit: string, path: string): Uint8Array {
   const at = join(tree, path);
   if (!existsSync(at) || !lstatSync(at).isFile()) throw new AdminError(`${at} is not a regular file`);
   const bytes = readFileSync(at);
@@ -256,7 +257,7 @@ function cellsFiles(dir: string): Map<string, Uint8Array> {
   return out;
 }
 
-function isLink(path: string): boolean {
+export function isLink(path: string): boolean {
   try {
     return lstatSync(path).isSymbolicLink();
   } catch {
@@ -299,7 +300,7 @@ export function keysContract(keysSchema: string, multitenancy: string): string {
   return rev;
 }
 
-function exactPin(pkg: { dependencies?: Record<string, string> }, name: string, where = "deploy/composer"): string {
+export function exactPin(pkg: { dependencies?: Record<string, string> }, name: string, where = "deploy/composer"): string {
   const v = pkg.dependencies?.[name];
   if (typeof v !== "string" || !/^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$/.test(v)) {
     throw new AdminError(`${where}/package.json pins ${name} at ${v}, not an exact version`);

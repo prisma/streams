@@ -91,8 +91,9 @@ const USAGE = `usage: PRISMA_TOKEN_FILE=F deploy/composer/deploy-release.sh <sta
   --project ID [--branch ID] --workspace ID --state DIR|s3://... [--s3-credentials F]
   [--cell-url URL --bearer-file F --canary-token-file T [--restart]] [--management-api URL]
   [--issuer-release-dir DIR --issuer-project ID [--issuer-branch ID]]
-or: ... <scratch|cert> <release-dir> --project ID --branch ID --workspace ID --destroy`;
-const DEPLOY_LOG = "deploy-log.jsonl";
+or: ... <scratch|cert> <release-dir> --project ID --branch ID --workspace ID --destroy
+or: ... <stage> <tag>-watch --app cell-watch --project ID [--branch ID] --workspace ID [--management-api URL]`;
+export const DEPLOY_LOG = "deploy-log.jsonl";
 const CELL_CHECK_DEADLINE_SECS = 300;
 const PROBE_TIMEOUT_MS = 15_000;
 /// What a run did to the stage, as deploy-log.jsonl records it; the first
@@ -124,7 +125,7 @@ const profilesOf = (dir: string, rules: Rules) =>
 const rulesOf = (dir: string): Promise<Rules> => import(fileIn(dir, "composer/streams/env.ts"));
 
 /// Step 2.
-function refuseSecretsInEnv(names: readonly string[], env: Readonly<Record<string, string | undefined>>): void {
+export function refuseSecretsInEnv(names: readonly string[], env: Readonly<Record<string, string | undefined>>): void {
   const set = names.filter((n) => env[n] !== undefined);
   if (set.length) {
     throw new AdminError(
@@ -159,7 +160,7 @@ function cellsFile(run: Run): Map<string, string> {
 
 /// An app as the platform checks see it: the scope the operator named,
 /// the app's module name (its project's name) and its envSecret names.
-interface Target {
+export interface Target {
   scope: Scope;
   app: string;
   names: readonly string[];
@@ -182,7 +183,7 @@ async function adoptedProject(api: Platform, workspace: string, app: string): Pr
 }
 
 /// Step 4's first half: the named scope is the one the deploy reaches.
-async function refuseOtherScope(run: Run, api: Platform, { scope, app }: Target): Promise<void> {
+async function refuseOtherScope(run: Pick<Run, "stage" | "flags">, api: Platform, { scope, app }: Target): Promise<void> {
   const workspace = run.flags.must("workspace");
   const adopted = await adoptedProject(api, workspace, app);
   if (adopted === null) {
@@ -211,8 +212,8 @@ async function refuseOtherScope(run: Run, api: Platform, { scope, app }: Target)
   }
 }
 
-/// Steps 4 and 5, for the cell's scope or the issuer's.
-async function platformChecks(run: Run, api: Platform, target: Target, region: string): Promise<void> {
+/// Steps 4 and 5, for the cell's scope, the issuer's or the watch's.
+export async function platformChecks(run: Pick<Run, "stage" | "flags">, api: Platform, target: Target, region: string): Promise<void> {
   const { scope, names } = target;
   await refuseOtherScope(run, api, target);
   const project = (await api.call("GET", `/projects/${encodeURIComponent(scope.project)}`)).body?.data;
@@ -392,7 +393,7 @@ async function refuseCrossing(run: Run, running: Release): Promise<void> {
 
 /// Run `argv` from a release root (`cwd`) in an environment of PATH, HOME,
 /// the workspace, the token and `extra`, and nothing else.
-async function fromRelease(run: Run, api: Platform, cwd: string, argv: string[], extra: Record<string, string>): Promise<boolean> {
+export async function fromRelease(run: Pick<Run, "flags">, api: Platform, cwd: string, argv: string[], extra: Record<string, string>): Promise<boolean> {
   const child = Bun.spawn(argv, {
     cwd,
     env: {
@@ -515,6 +516,7 @@ export async function main(argv: readonly string[], out: (line: string) => void)
   if (!(STAGES as readonly string[]).includes(stage ?? "") || !rawDir || rawDir.startsWith("--")) {
     throw new AdminError("give the stage and the release directory first", 2);
   }
+  if (rest.includes("--app")) return (await import("./deploy-watch")).deployWatch(stage, rawDir, rest, out);
   const flags = parseFlags(rest, {
     single: [
       "project", "branch", "workspace", "state", "s3-credentials", "cell-url", "bearer-file", "canary-token-file",

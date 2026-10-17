@@ -10,6 +10,9 @@
 #     [--issuer-release-dir DIR --issuer-project ID [--issuer-branch ID]]
 #   PRISMA_TOKEN_FILE=F deploy/composer/deploy-release.sh <scratch|cert>
 #     <release-dir> --project ID --branch ID --workspace ID --destroy
+#   PRISMA_TOKEN_FILE=F deploy/composer/deploy-release.sh <stage>
+#     <releases>/<tag>-watch --app cell-watch --project ID [--branch ID]
+#     --workspace ID [--management-api URL]
 #
 # <stage> is production (the app's default stage) or scratch or cert (named
 # stages: Branches of the project, --branch). <release-dir> is one
@@ -53,6 +56,12 @@
 # differs from the one that answered before (lead decision deploy-q5 #6
 # (2)). It takes no --issuer-release-dir. A plain deploy after it keeps
 # the restart's nonce.
+#
+# --app cell-watch deploys the cell watch's release (<tag>-watch, cut beside
+# the cell's <tag>) alone, into the watch's own project: deploy-watch.ts's
+# header lists its refusals; its settings are its stage's envParams, its
+# region the cell's, and its check is its heartbeat (exit 0, logged
+# unchecked).
 #
 # --destroy (scratch or cert only, never production) runs the release's
 # destroy.ts instead: Composer's destroy of that named stage, whose

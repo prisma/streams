@@ -11,7 +11,10 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { checkIssuerRelease, checkRelease, issuerSettings, keysContract, layoutVersion, type Release, stageRelease } from "./release";
-import { cleanupScratch, elf, fakeTree, git, issuerSettingsText, REPO, scratchDir, stageInputs, stageIssuer } from "./release-rig";
+import {
+  cleanupScratch, elf, fakeTree, git, issuerSettingsText, REPO, scratchDir, stageInputs, stageIssuer, stageWatch, watchSettingsText,
+} from "./release-rig";
+import { checkWatchRelease, releaseWatchSettings } from "./watch-release";
 
 afterAll(cleanupScratch);
 
@@ -225,6 +228,53 @@ describe("the issuer's release", () => {
   });
 });
 
+describe("the cell watch's release", () => {
+  test("stages deploy/cell-watch's files from the same commit, the bundle, and a stage's settings from <stage>.watch.env", () => {
+    const { tree, commit } = fakeTree();
+    const releases = join(scratchDir(), "releases");
+    const settings = watchSettingsText(commit.slice(0, 12), "cell_p1");
+    const { dir, release } = stageWatch({ tree, commit, tag: "rc-1", settings: { production: settings }, releases });
+    expect([dir, listing(dir)]).toEqual([join(releases, "rc-1-watch"), [
+      "app.ts", "bun.lock", "entry.js", "module.ts", "node_modules", "package.json", "prisma.config.ts", "release.json",
+      "service.ts", "stages/", "stages/production.env",
+    ]]);
+    const pkg = JSON.parse(readFileSync(join(REPO, "deploy/cell-watch/package.json"), "utf8"));
+    expect({ ...release, files: Object.keys(release.files) }).toEqual({
+      app: "cell-watch", tag: "rc-1", commit,
+      stages: { production: sha256(Buffer.from(settings)) },
+      composer_version: pkg.dependencies["@prisma/composer"],
+      lockfile_sha256: sha256(readFileSync(join(REPO, "deploy/cell-watch/bun.lock"))),
+      files: ["app.ts", "bun.lock", "entry.js", "module.ts", "package.json", "prisma.config.ts", "service.ts", "stages/production.env"],
+    });
+    expect(readFileSync(join(dir, "module.ts"))).toEqual(readFileSync(join(REPO, "deploy/cell-watch/module.ts")));
+    writeFileSync(join(dir, ".env"), "ALERT_SINK_KEY=x\n");
+    expect(refusal(() => checkWatchRelease(dir))).toBe(`${dir} is not the release it was cut as: .env (a dotfile)`);
+  });
+
+  test("a stage's settings are the watch module's envParams, all of them, as its config accepts them, https, and EXPECTED_GIT this commit's", () => {
+    const moduleTs = readFileSync(join(REPO, "deploy/cell-watch/module.ts"), "utf8");
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    const check = (text: string) => refusal(() => releaseWatchSettings("w.env", text, moduleTs, commit));
+    expect(releaseWatchSettings("w.env", watchSettingsText(commit), moduleTs, commit).get("STREAMS_CELL_ID")).toBe("cell_sc1");
+    expect(releaseWatchSettings("w.env", watchSettingsText("none"), moduleTs, commit).get("EXPECTED_GIT")).toBe("none");
+    expect([
+      check(watchSettingsText(commit, "cell_sc1", ["ALERT_SINK_URL=https://x.example"])),
+      check(watchSettingsText(commit).replace(/^NOTIFY_ONLY=.*\n/m, "")),
+      check(watchSettingsText(commit, "cell_sc1", ["NOTIFY_ONLY=0"])),
+      check(watchSettingsText(commit).replace("NOTIFY_ONLY=1", "NOTIFY_ONLY=2")),
+      check(watchSettingsText(commit).replace("https://cell.example", "http://127.0.0.1:8080")),
+      check(watchSettingsText("fedcba9")),
+    ]).toEqual([
+      "w.env sets ALERT_SINK_URL, which is not one of the cell watch's settings",
+      "w.env does not set NOTIFY_ONLY",
+      "w.env sets NOTIFY_ONLY twice",
+      "w.env: the watch would refuse it: NOTIFY_ONLY is 0 or 1",
+      "w.env sets STREAMS_CELL_ORIGIN=http://127.0.0.1:8080: a release's watch runs in the cloud, so https",
+      `w.env sets EXPECTED_GIT=fedcba9, not this release's commit ${commit}: row 5 would page the release it watches as the wrong build`,
+    ]);
+  });
+});
+
 describe("the release's facts", () => {
   test("LAYOUT_VERSION is read from its one declaration", () => {
     const rs = "pub(crate) const LAYOUT_VERSION: u32 = 6;\n";
@@ -267,7 +317,7 @@ describe("scripts/cut-release.sh", () => {
     return { code: run.status, err: run.stderr.toString(), ran };
   }
 
-  test("refuses an existing release directory, the cell's or the issuer's, or results of the tag, before anything else", () => {
+  test("refuses an existing release directory, the cell's, the issuer's or the watch's, or results of the tag, before anything else", () => {
     const root = scratchDir();
     const [releases, soak, cells] = ["releases", "soak", "cells"].map((d) => join(root, d));
     mkdirSync(join(releases, "rc-1"), { recursive: true });
@@ -293,6 +343,13 @@ describe("scripts/cut-release.sh", () => {
       ran: "",
     });
     rmSync(join(releases, "rc-1-issuer"), { recursive: true });
+    mkdirSync(join(releases, "rc-1-watch"));
+    expect(cut(releases, soak, cells)).toEqual({
+      code: 1,
+      err: `cut-release: refused: ${join(releases, "rc-1-watch")} exists: a release directory is never overwritten\n`,
+      ran: "",
+    });
+    rmSync(join(releases, "rc-1-watch"), { recursive: true });
     expect([git(REPO, "worktree", "list"), readdirSync(releases)]).toEqual([worktrees, []]);
   });
 });

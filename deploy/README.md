@@ -126,7 +126,12 @@ Six more directories:
   dev` or `prisma deploy` (`service.ts` gives the command), hands them
   over, holds Compute's keep-awake guard and runs the watch (`run.ts`).
   Composer 0.29.1, the CLI and `@prisma/compute` are pinned exactly, and
-  `node_modules` comes from `bun install --frozen-lockfile` here. Tests:
+  `node_modules` comes from `bun install --frozen-lockfile` here.
+  `scripts/cut-release.sh` cuts it with the cell as `<tag>-watch`
+  (`composer/watch-release.ts`: these files, the bundle and each stage's
+  settings from `<stage>.watch.env`), and `composer/deploy-release.sh
+  <stage> <tag>-watch --app cell-watch` deploys it into its own project;
+  `composer/set-secrets --app cell-watch` sets its six secrets. Tests:
   `bun test ./deploy/cell-watch`; the bundled entry run out of the tree
   (`CELL_WATCH_COMPOSER_E2E=1`, packages installed) and the app in
   `prisma dev` against a local cell (`CELL_WATCH_E2E_BIN_DIR=target/debug`,

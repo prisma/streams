@@ -18,7 +18,9 @@ import { cleanup, initCell, readBundle } from "../cell-admin/test-rig";
 import { FakeStreamsCell } from "./fake-cell";
 import { FakePlatform } from "./fake-platform";
 import type { Release } from "./release";
-import { cellsText, cleanupScratch, fakeTree, issuerSettingsText, scratchDir, stage, stageIssuer } from "./release-rig";
+import {
+  cellsText, cleanupScratch, fakeTree, issuerSettingsText, scratchDir, stage, stageIssuer, stageWatch, watchSettingsText,
+} from "./release-rig";
 
 const SCRIPT = join(import.meta.dir, "deploy-release.sh");
 const NAMES = [
@@ -31,6 +33,9 @@ const NAMES = [
   "STREAMS_FEEDS_S3_SECRET_ACCESS_KEY",
 ];
 const CANARY = "sp_canary_cell_sc1";
+const WATCH_NAMES = [
+  "STREAMS_OPERATOR_TOKEN", "ALERT_SINK_URL", "ALERT_SINK_KEY", "HEARTBEAT_URL", "STREAMS_ISSUER_METRICS_TOKEN", "CANARY_CREDENTIAL",
+];
 const ISSUER_NAMES = [
   "STREAMS_ISSUER_SIGNING_KEY",
   "STREAMS_ISSUER_PEPPER",
@@ -502,6 +507,82 @@ describe("deploy-release.sh", () => {
     refusedBeforeDeploy(w3, await deploy(w3, "production", dir3, unset.args, { STREAMS_ISSUER_SIGNING_KEY: "pem" }),
       "STREAMS_ISSUER_SIGNING_KEY is set in this shell's environment: a secret reaches the platform through set-secrets only " +
         "(Composer's preflight would push it from here); unset it");
+  }, 60_000);
+
+  /// The world's cell watch: its project holding its six secrets in the
+  /// production class, and its release <tag>-watch beside the cell's.
+  function watch(w: World, tag: string, o: { settings?: string; tree?: World["tree"] } = {}) {
+    const project = w.api.addProject("streams-cell-watch", "eu-central-1");
+    for (const n of WATCH_NAMES) w.api.addVariable({ projectId: project.id, branchId: null, class: "production", key: n }, `${n}-v`);
+    const { dir } = stageWatch({
+      ...(o.tree ?? w.tree), tag, releases: w.releases, settings: { production: o.settings ?? watchSettingsText(w.tree.commit) },
+      prismaScript: prismaScript(w.record, null),
+    });
+    return { dir, project: project.id, args: ["--app", "cell-watch", "--project", project.id, "--workspace", "wksp_1"] };
+  }
+
+  /// deploy-release.sh for the watch: its own --project, no cell flags.
+  async function deployWatch(w: World, dir: string, args: string[], env: Record<string, string> = {}) {
+    const proc = Bun.spawn(["bash", SCRIPT, "production", dir, ...args, "--management-api", w.api.url], {
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "/", PRISMA_TOKEN_FILE: w.tokenFile, ...env },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+    return { code, out, err };
+  }
+
+  test("--app cell-watch deploys the watch's release on its own, from its root, its settings as envParams, in the cell's region", async () => {
+    const w = await world();
+    const cell = release(w, "rc-1").release;
+    const v = watch(w, "rc-1");
+    const run = await deployWatch(w, v.dir, v.args);
+    expect([run.code, run.err]).toEqual([0, ""]);
+    expect(run.out.trim().split("\n")).toEqual([
+      `deploy-release: prisma deploy app.ts (the cell watch of rc-1, project ${v.project}'s production variables, eu-central-1)`,
+      "deploy-release: the cell watch of rc-1 is deployed to production; its check is its heartbeat reaching HEARTBEAT_URL " +
+        "within 3 minutes (row 2)",
+    ]);
+    const settings = Object.fromEntries(watchSettingsText(w.tree.commit).trim().split("\n").map((l) => l.split("=")));
+    const [only, ...more] = prismaRuns(w);
+    expect([more.length, only.argv, realpathSync(only.cwd), only.env]).toEqual([
+      0, ["deploy", "app.ts"], realpathSync(v.dir),
+      {
+        PATH: process.env.PATH, HOME: process.env.HOME, PRISMA_WORKSPACE_ID: "wksp_1", PRISMA_SERVICE_TOKEN: w.api.token,
+        PRISMA_REGION: "eu-central-1", ...settings,
+      },
+    ]);
+    expect(log(w).map((e) => [e.app, e.stage, e.project, e.branch, e.tag, e.server_sha256, e.result])).toEqual([
+      ["cell-watch", "production", v.project, null, "rc-1", cell.server_sha256, "unchecked"],
+    ]);
+  }, 30_000);
+
+  test("--app cell-watch refuses before it deploys: no cell release beside it, settings naming another cell, a secret unset or in the shell", async () => {
+    const w = await world();
+    const alone = watch(w, "rc-9");
+    refusedBeforeDeploy(w, await deployWatch(w, alone.dir, alone.args),
+      `no cell release ${join(w.releases, "rc-9")} beside the watch's: the watch deploys beside the cell release of its cut`);
+    const w2 = await world();
+    release(w2, "rc-1");
+    const named = watch(w2, "rc-1", { settings: watchSettingsText(w2.tree.commit, "cell_other") });
+    refusedBeforeDeploy(w2, await deployWatch(w2, named.dir, named.args),
+      `${join(named.dir, "stages", "production.env")} names STREAMS_CELL_ID=cell_other; the cell is cell_sc1`);
+    const w3 = await world();
+    release(w3, "rc-1");
+    const unset = watch(w3, "rc-1");
+    w3.api.variables = w3.api.variables.filter((x) => !(x.projectId === unset.project && x.key === "HEARTBEAT_URL"));
+    refusedBeforeDeploy(w3, await deployWatch(w3, unset.dir, unset.args),
+      `project ${unset.project}'s production variables holds no HEARTBEAT_URL: set them with set-secrets first`);
+    refusedBeforeDeploy(w3, await deployWatch(w3, unset.dir, unset.args, { ALERT_SINK_KEY: "k" }),
+      "ALERT_SINK_KEY is set in this shell's environment: a secret reaches the platform through set-secrets only " +
+        "(Composer's preflight would push it from here); unset it");
+    const other = await deployWatch(w3, unset.dir, ["--app", "issuer", "--project", unset.project, "--workspace", "wksp_1"]);
+    const destroy = await deployWatch(w3, unset.dir, [...unset.args, "--destroy"]);
+    expect([other, destroy].map((x) => [x.code, x.err.split("\n")[0]])).toEqual([
+      [2, "deploy-release: --app issuer is cell-watch (the cell deploys without --app)"],
+      [2, "deploy-release: --app cell-watch takes no --destroy: delete the watch's Branch (or its project) by hand"],
+    ]);
+    expect(prismaRuns(w3)).toEqual([]);
   }, 60_000);
 
   test("a failed CLI run is logged and refused; --cell-url without cell-check's files is usage", async () => {

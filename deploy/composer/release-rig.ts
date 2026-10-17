@@ -8,6 +8,7 @@ import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type IssuerRelease, type Release, type StageInput, stageIssuerRelease, stageRelease } from "./release";
+import { stageWatchRelease, type WatchRelease } from "./watch-release";
 
 export const REPO = join(import.meta.dir, "..", "..");
 
@@ -47,6 +48,12 @@ export const TREE_FILES = [
   "deploy/composer-issuer/prisma.config.ts",
   "deploy/composer-issuer/app.ts",
   "deploy/composer-issuer/issuer/service.ts",
+  "deploy/cell-watch/package.json",
+  "deploy/cell-watch/bun.lock",
+  "deploy/cell-watch/prisma.config.ts",
+  "deploy/cell-watch/app.ts",
+  "deploy/cell-watch/module.ts",
+  "deploy/cell-watch/service.ts",
   "deploy/profiles/compute-1g.env",
   "deploy/profiles/shared-cell.env",
   "src/registry.rs",
@@ -169,6 +176,45 @@ export function stageIssuer(o: {
   chmodSync(join(root, "node_modules", ".bin", "prisma"), 0o755);
   const out = join(o.releases, `${o.tag}-issuer`);
   const release = stageIssuerRelease({
+    tree: o.tree, commit: o.commit, tag: o.tag, cells, entryJs: join(root, "entry.js"), nodeModules: join(root, "node_modules"), out,
+  });
+  return { dir: out, release };
+}
+
+/// A stage's cell watch settings its release accepts; EXPECTED_GIT is
+/// `git` (the release's commit, or none).
+export function watchSettingsText(git: string, cellId = "cell_sc1", extra: string[] = []): string {
+  return `${[
+    "STREAMS_CELL_ORIGIN=https://cell.example",
+    `STREAMS_CELL_ID=${cellId}`,
+    "ALERT_SINK_KIND=events-v2",
+    `EXPECTED_GIT=${git}`,
+    "NOTIFY_ONLY=1",
+    "ISSUER_ORIGIN=https://issuer.example",
+    ...extra,
+  ].join("\n")}\n`;
+}
+
+/// A cell watch release staged as cut-release stages one, at
+/// <releases>/<tag>-watch, from `settings` (<stage>.watch.env texts).
+export function stageWatch(o: {
+  tree: string;
+  commit: string;
+  tag: string;
+  settings: Record<string, string>;
+  releases: string;
+  prismaScript?: string;
+}): { dir: string; release: WatchRelease } {
+  const root = scratchDir();
+  const cells = join(root, "cells");
+  mkdirSync(cells);
+  for (const [stage, text] of Object.entries(o.settings)) writeFileSync(join(cells, `${stage}.watch.env`), text);
+  writeFileSync(join(root, "entry.js"), "// the watch's bundle\n");
+  mkdirSync(join(root, "node_modules", ".bin"), { recursive: true });
+  writeFileSync(join(root, "node_modules", ".bin", "prisma"), o.prismaScript ?? "#!/bin/sh\nexit 0\n");
+  chmodSync(join(root, "node_modules", ".bin", "prisma"), 0o755);
+  const out = join(o.releases, `${o.tag}-watch`);
+  const release = stageWatchRelease({
     tree: o.tree, commit: o.commit, tag: o.tag, cells, entryJs: join(root, "entry.js"), nodeModules: join(root, "node_modules"), out,
   });
   return { dir: out, release };
