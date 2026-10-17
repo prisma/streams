@@ -293,6 +293,16 @@ alongside and finish before admission opens.
     handoff, LiveFeed-fleet and canary manifests; a gate-selection change,
     decided by the lead under the owner's "you decide"). Who: engineering;
     the owner supplies the Tigris credentials and starts the field legs.
+    Status 2026-10-18 (rc lane, not yet pushed): the versions are
+    0.3.0-beta.1 (the v0.1.0..v0.15.0 tags are SlateDB's upstream releases;
+    this product's line is v0.2.0-preview/rc, so its RC tag is
+    v0.3.0-beta.1-rc.<n>, and a plain v0.3.0 GA tag would collide with
+    SlateDB's); jsonwebtoken is 11.1.0 (SECURITY.md's GHSA row fixed);
+    rc-certify's single-cell shape has the profile fence (the B9 half;
+    the solo LiveFeed canary and the field arms' adapters, B8, are still
+    unbuilt, so only Layer B can write its manifest); every receipt was
+    re-recorded at the lane's tip. Left: the tag, the x86_64-musl build,
+    the Tigris provider-contract run and the field arms.
 11. **The shared-cell battery, reshaped for one server**, on the exact RC
     binary (the lead's call on question 7; MULTITENANCY Stage 8): hostile
     and cost-hostile tenants, 1,000 parked consumers (SC0b), the CH probe,
@@ -339,6 +349,15 @@ alongside and finish before admission opens.
     or compare `Stream-Next-Offset`; an edge record). Small. Who: the
     owner (npm organisation access, the channel) and engineering. With W1
     settled and the wake 404 retired, its retry semantics are final.
+    Status 2026-10-18 (rc lane, not yet pushed): the duplicate-on-retry
+    fix landed earlier (edges #147, #153-#155: a plain append's unknown
+    outcome is `AppendOutcomeUnknownError`, never replayed); the version
+    is 0.3.0-beta.1, and sdk/CHANGELOG.md's release heading is final, with
+    the edge records listed. `npm pack --dry-run`: @prisma/streams
+    0.3.0-beta.1, 9 files, 93,688 bytes packed. publish-sdk.sh would still
+    refuse the README's four placeholders (the issuer URL, the limits page,
+    the terms and support channel, and the "re-verify against storage
+    layout 6" note), which need the production target.
 14. **A customer reference page and SPEC §6** (about half a day): the
     per-project ceilings a shared-cell tenant meets at k = 8 (today's
     profile values, pending item 9's envelope arm: 176 requests/s,
