@@ -992,5 +992,8 @@ async fn a_refused_metrics_point_is_sent_again_at_the_next_drain_round() {
     let points: Vec<crate::ops::OpsSnapshot> = serde_json::from_slice(&body).unwrap();
     assert_eq!(points.len(), 1, "sent once");
     assert!(points[0].ts_ms < cleared_ms, "the shed one");
+    // The loop cached the shed point for /operator/data.json before its append (#159).
+    let cached = state.runtime.ops.last_snapshot().map(|s| s.ts_ms);
+    assert_eq!(cached, Some(points[0].ts_ms), "cached");
     rig.shutdown().await;
 }
