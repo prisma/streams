@@ -1754,6 +1754,17 @@
     "scenarios": []
   },
   {
+    "name": "a_refused_metrics_point_is_sent_again_at_the_next_drain_round",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "99e290e44923d005b7470b2b638c29e44629452c083b5d283d37205d8ace6596",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_controller.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_refused_oversized_chunk_defers_and_sizes_the_next_reservation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

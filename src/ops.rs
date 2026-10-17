@@ -600,29 +600,34 @@ pub(crate) fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) ->
     }
 }
 
-/// Emit one snapshot to `_ops_metrics` (§11.2 cadence: the telemetry
-/// task calls this every METRICS_INTERVAL_SECS, default 15).
+/// Emit one snapshot to `_ops_metrics` at once, as the rigs do; the
+/// telemetry task emits one every METRICS_INTERVAL_SECS, default 15
+/// (§11.2), and sends a refused one again (`MetricsEmission`).
+#[cfg(test)]
 pub(crate) async fn emit_metrics_once(
     state: &std::sync::Arc<crate::http::AppState>,
 ) -> Result<(), String> {
-    let Some(key) = state.billing.usage_key() else {
+    if state.billing.usage_key().is_none() {
         return Ok(());
-    };
+    }
     // Cached for /operator/data.json before the append, so the operator
     // surface keeps it while the cell's own telemetry appends are shed.
     let snap = std::sync::Arc::new(collect_snapshot(state));
     state.runtime.ops.remember(std::sync::Arc::clone(&snap));
     evaluate_alerts(state, &snap).await;
-    let body = serde_json::to_vec(&[snap.as_ref()]).map_err(|e| e.to_string())?;
-    metrics_ledger_append(state, &key, body).await
+    append_metrics(state, &[std::sync::Arc::unwrap_or_clone(snap)]).await
 }
 
-async fn metrics_ledger_append(
+/// Appends `points` to `_ops_metrics` as one batch, in order.
+pub(crate) async fn append_metrics(
     state: &std::sync::Arc<crate::http::AppState>,
-    key: &str,
-    body: Vec<u8>,
+    points: &[OpsSnapshot],
 ) -> Result<(), String> {
-    crate::billing::system_append(state, crate::billing::OPS_METRICS_STREAM, key, body).await
+    let Some(key) = state.billing.usage_key() else {
+        return Ok(());
+    };
+    let body = serde_json::to_vec(points).map_err(|e| e.to_string())?;
+    crate::billing::system_append(state, crate::billing::OPS_METRICS_STREAM, &key, body).await
 }
 
 // ---- alerts (§13.2) --------------------------------------------------

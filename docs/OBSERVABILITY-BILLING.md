@@ -711,6 +711,8 @@ The live plane is for immediate diagnosis, not historical truth.
 
 Every active instance emits a low-cardinality snapshot every 15 seconds, or earlier on a size threshold.
 
+A snapshot the ledger refuses (a shed write while the instance drains, a store error) is kept and sent again at the next drain round (`TELEMETRY_DRAIN_SECS`, 8 s), together with the next snapshot when one is due, oldest first. Only the newest refused snapshot is kept, so a refusal loses a snapshot only when it lasts past the next one; a resent snapshot whose first append's outcome was unknown may be stored twice (edge change #NEW-r5-rust-3).
+
 Use counters and mergeable histograms, not instance p50 values that cannot be aggregated.
 
 Recommended dimensions:

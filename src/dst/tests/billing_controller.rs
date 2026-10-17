@@ -962,3 +962,35 @@ async fn an_unreadable_ops_checkpoint_fails_the_step_instead_of_restarting_the_l
     rollup.db.close().await.unwrap();
     engine_shutdown(&state).await;
 }
+
+/// The owner's round-6 call 16: a metrics point the ledger refuses (here a
+/// shed write, as in Q0's drain window) is sent again at the next drain
+/// round, 8 s on and before the next point is due at 15 s, not lost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_metrics_point_is_sent_again_at_the_next_drain_round() {
+    let _clock = crate::billing::billing_clock_lock().read().await;
+    let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
+    let state = rig.state.clone();
+    state.admission.set_max_inflight(1);
+    state.admission.add_inflight_for_test(2);
+    crate::billing::spawn_telemetry(state.clone(), &rig.tasks);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(ops_metrics_records(&state).await, 0, "shed");
+    assert!(state.admission.snapshot().shed.inflight >= 1);
+    state.admission.add_inflight_for_test(-2);
+    let cleared_ms = state.protocol_clock.now().ms();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while ops_metrics_records(&state).await == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the shed point is sent again before the next point is due");
+    let key = state.billing.usage_key().unwrap();
+    let read = crate::billing::system_read(&state, crate::billing::OPS_METRICS_STREAM, &key, None);
+    let (body, _) = read.await.unwrap().unwrap();
+    let points: Vec<crate::ops::OpsSnapshot> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(points.len(), 1, "sent once");
+    assert!(points[0].ts_ms < cleared_ms, "the shed one");
+    rig.shutdown().await;
+}

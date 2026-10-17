@@ -63,13 +63,16 @@ pub(crate) fn spawn_telemetry(
         }
     }
     let cadence = Duration::from_secs(state.config.billing.telemetry_drain_secs.max(1));
-    let metrics_secs: u64 = state.config.billing.metrics_interval_secs;
+    let mut metrics = MetricsEmission {
+        every: Duration::from_secs(state.config.billing.metrics_interval_secs),
+        last: None,
+        refused: None,
+    };
     if let Err(rejected) = tasks.spawn(
         "telemetry-drain",
         crate::tasks::Policy::Critical,
         move |cancel| async move {
             let mut tick = tokio::time::interval(cadence);
-            let mut last_metrics = None;
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
@@ -94,15 +97,7 @@ pub(crate) fn spawn_telemetry(
                         if let Err(e) = crate::fleet::drain_fleet_events(&state).await {
                             tracing::warn!("fleet event drain: {e}");
                         }
-                        let now = state.runtime.clock.monotonic();
-                        if last_metrics.is_none_or(|previous| {
-                            now.since(previous) >= std::time::Duration::from_secs(metrics_secs)
-                        }) {
-                            last_metrics = Some(now);
-                            if let Err(e) = crate::ops::emit_metrics_once(&state).await {
-                                tracing::warn!("ops metrics emit: {e}");
-                            }
-                        }
+                        metrics.round(&state).await;
                     } => {}
                 }
             }
@@ -111,6 +106,47 @@ pub(crate) fn spawn_telemetry(
         },
     ) {
         tracing::warn!("telemetry-drain not spawned: {rejected:?}");
+    }
+}
+
+/// The drain loop's `_ops_metrics` emission: a point every
+/// `METRICS_INTERVAL_SECS` (default 15), and the newest point the ledger
+/// refused, kept and sent again at the next drain round (the owner's
+/// round-6 call 16: a shed while an instance drains lost the point). The
+/// kept point and a new one go as one batch, oldest first; a refused batch
+/// keeps only its newest point, so a refusal costs a point only when it
+/// lasts past the next point. An append whose outcome was unknown may
+/// have been written: sending it again stores the point twice, which the
+/// rollup's raw tier keys by instance and time.
+struct MetricsEmission {
+    every: Duration,
+    last: Option<crate::runtime::MonotonicNow>,
+    refused: Option<crate::ops::OpsSnapshot>,
+}
+
+impl MetricsEmission {
+    async fn round(&mut self, state: &Arc<crate::http::AppState>) {
+        let now = state.runtime.clock.monotonic();
+        let mut batch: Vec<crate::ops::OpsSnapshot> = self.refused.take().into_iter().collect();
+        if self
+            .last
+            .is_none_or(|previous| now.since(previous) >= self.every)
+        {
+            self.last = Some(now);
+            let point = Arc::new(crate::ops::collect_snapshot(state));
+            // Cached for /operator/data.json before the append (#159), so
+            // the operator surface keeps it while this append is shed.
+            state.runtime.ops.remember(Arc::clone(&point));
+            crate::ops::evaluate_alerts(state, &point).await;
+            batch.push(Arc::unwrap_or_clone(point));
+        }
+        if batch.is_empty() {
+            return;
+        }
+        if let Err(e) = crate::ops::append_metrics(state, &batch).await {
+            tracing::warn!("ops metrics emit: {e}; the newest point is sent again next round");
+            self.refused = batch.pop();
+        }
     }
 }
 
