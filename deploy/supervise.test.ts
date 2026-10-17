@@ -3,7 +3,8 @@
 // process, so each case runs it in a child Bun process over a scripted
 // "binary" (another Bun process) and watches it from outside.
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { App, DeathPolicy } from "./app-server/supervise";
 
@@ -280,3 +281,64 @@ test("a child that ignores the forwarded SIGTERM is killed after the grace", asy
     proc.kill();
   }
 }, 15_000);
+
+// A download that fails before any binary runs is answered on $PORT with the
+// same generic 500 a dead binary gets: the port is customer-reachable and
+// unauthenticated, so the stage, the object key and the error go to the
+// platform log only (edge change #NEW-hyg-1). Each app's index.ts runs for
+// real in a child Bun, its @prisma/compute import stubbed (CI has no
+// node_modules) and its bucket a closed port, so the download fails at once.
+const COMPUTE_STUB = `
+import { plugin } from "bun";
+plugin({ name: "stub @prisma/compute", setup(build) {
+  build.module("@prisma/compute", () => ({ exports: { KeepAwakeGuard: class {} }, loader: "object" }));
+} });
+`;
+
+test("a failed binary download serves the generic 500 and logs its stage, key and error", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "boot-failure-"));
+  const stub = join(dir, "compute-stub.ts");
+  writeFileSync(stub, COMPUTE_STUB);
+  const closed = await freePort();
+  try {
+    for (const app of ["app-server", "app-gen"] as const) {
+      const port = await freePort();
+      const key = `bin/LEAK-KEY-${app}`;
+      const proc = Bun.spawn([process.execPath, "--preload", stub, join(import.meta.dir, app, "index.ts")], {
+        env: {
+          PATH: process.env.PATH ?? "",
+          HOME: process.env.HOME ?? "",
+          PORT: String(port),
+          SERVER_BINARY_S3_KEY: key,
+          AWSBENCH_S3_KEY: key,
+          S3_ENDPOINT: `http://127.0.0.1:${closed}`,
+          S3_BUCKET: "LEAK-BUCKET",
+          S3_ACCESS_KEY_ID: "LEAK-ID",
+          S3_SECRET_ACCESS_KEY: "LEAK-SECRET",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      try {
+        const response = await diagnostic(port, 20_000);
+        expect(response?.status).toBe(500);
+        expect(await response!.text()).toBe(
+          JSON.stringify({
+            error: "binary_exited",
+            message: "the service is not running; its exit is recorded in the platform log",
+          }),
+        );
+        expect(response!.headers.get("content-type")).toBe("application/json");
+        expect(response!.headers.get("cache-control")).toBe("no-store");
+      } finally {
+        proc.kill();
+      }
+      const log = (await new Response(proc.stdout).text()) + (await new Response(proc.stderr).text());
+      expect(log).toContain('"stage":"binary_download"');
+      expect(log).toContain(`"key":"${key}"`);
+      expect(log).toContain('"error":');
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 45_000);

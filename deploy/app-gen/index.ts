@@ -87,19 +87,25 @@ const { downloadBinary } = await import("./downloader");
 // R25-G: a failed download must be DIAGNOSABLE from outside. Exiting
 // here leaves a platform 404 indistinguishable from an edge-routing
 // failure — which cost the 2026-08-11 campaign its longest debugging
-// detour. Serve the failure instead.
+// detour. Serve the failure instead: $PORT is customer-reachable and
+// unauthenticated, so it answers supervise.ts's generic 500 and the stage,
+// key and error go to the platform log only (edge change #NEW-hyg-1).
 const serveDownloadFailure = (err: unknown) => {
-  const body = JSON.stringify({
+  const details = JSON.stringify({
     stage: "binary_download",
     key: process.env.SERVER_BINARY_S3_KEY ?? process.env.AWSBENCH_S3_KEY ?? "",
     error: String(err),
-  }, null, 2);
-  console.error(`binary download failed; serving diagnostic: ${body}`);
+  });
+  console.error(`binary download failed; serving the generic 500; details: ${details}`);
+  const body = JSON.stringify({
+    error: "binary_exited",
+    message: "the service is not running; its exit is recorded in the platform log",
+  });
   Bun.serve({
     port: Number(process.env.PORT ?? 8080),
     fetch: () => new Response(body, {
       status: 500,
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "cache-control": "no-store" },
     }),
   });
   return new Promise<never>(() => {});
