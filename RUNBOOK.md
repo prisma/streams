@@ -1095,7 +1095,12 @@ watch --scopes "streams.create streams.records.append
 streams.records.read" --pepper-file <the issuer's pepper file> --out
 <file>`, then set the file's one line, without its newline, as the
 watch project's secret `CANARY_CREDENTIAL` (set-secrets, never a shell
-or a log) and redeploy the watch. A row 19 page whose `error_code` is
+or a log) and redeploy the watch. To rotate it (a leak, or a watch
+project's secrets exposed), make a new one as above, set it as
+`CANARY_CREDENTIAL` and redeploy the watch, then revoke the old one,
+which the issuer cannot (it skips hidden credentials): `cell-admin
+revoke --project sp_canary_<cell id> --credential <old id>`, and
+publish the bundle. A row 19 page whose `error_code` is
 `kid_unknown` or another auth code while `/health` is green is what the
 canary exists for: start at "Keys feed and binary change together".
 
