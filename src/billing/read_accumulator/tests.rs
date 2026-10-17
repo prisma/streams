@@ -308,3 +308,37 @@ fn repeated_observations_seal_at_the_estimated_byte_boundary() {
     assert_eq!(acc.unflushed(), (0, 0, 1));
     assert_eq!(acc.drain_sealed(1).len(), 1);
 }
+
+/// L6 spike Gate S (2026-10-18): a sealed read batch is one record of the
+/// `_usage` append, so it must fit the release posture's per-record ceiling
+/// (MAX_RECORD_PAYLOAD_BYTES=131072, deploy/profiles/compute-1g.env) with
+/// room for its envelope; an audit reading 1,000 streams in 10 s sealed one
+/// batch of 174,802 bytes and wedged every later usage drain.
+#[test]
+fn a_sealed_read_batch_fits_the_release_record_ceiling() {
+    let acc = accumulator();
+    for i in 0..2_000u32 {
+        let id = BillingIdentity {
+            account_id: "ws-k2".into(),
+            project_id: "proj-k2".into(),
+            stream_id: format!("{i:032x}"),
+            stream_name: format!("k2/l6s{i:05}"),
+        };
+        acc.meter(
+            &id,
+            RowDelta {
+                read_payload_bytes: 1 << 20,
+                read_records: 1 << 10,
+                read_operations: 4,
+                ..Default::default()
+            },
+        );
+    }
+    acc.seal_if_aged(0);
+    let batches = acc.drain_sealed(usize::MAX);
+    assert_eq!(batches.iter().map(|b| b.rows.len()).sum::<usize>(), 2_000);
+    for b in &batches {
+        let encoded = serde_json::to_vec(b).unwrap().len();
+        assert!(encoded <= 131_072 - 4_096, "a sealed read batch encodes to {encoded} bytes");
+    }
+}

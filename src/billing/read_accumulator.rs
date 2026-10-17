@@ -7,7 +7,10 @@ use std::sync::{Mutex, atomic::AtomicU64};
 /// these; a sealed batch is what the drainer appends to `_usage`.
 pub(crate) const READ_FLUSH_INTERVAL_MS: i64 = 10_000;
 const READ_FLUSH_MAX_ENTRIES: usize = 10_000;
-const READ_FLUSH_MAX_EST_BYTES: usize = 1 << 20;
+// L6 spike Gate S: a sealed batch is ONE record of the `_usage` append, so it
+// stays under the release record ceiling (128 KiB); the estimate runs about
+// 0.76 x the encoded size (231 B per row encoded).
+const READ_FLUSH_MAX_EST_BYTES: usize = 64 << 10;
 /// Sealed batches waiting for the ledger. When the ledger is down long
 /// enough to fill this, sealing PAUSES and deltas keep merging into the
 /// active map — attribution is never discarded (§14.1), memory stays
