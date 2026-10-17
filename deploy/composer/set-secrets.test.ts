@@ -30,6 +30,14 @@ const ISSUER_NAMES = [
   "STREAMS_FEEDS_S3_ACCESS_KEY_ID",
   "STREAMS_FEEDS_S3_SECRET_ACCESS_KEY",
 ];
+const WATCH_NAMES = [
+  "STREAMS_OPERATOR_TOKEN",
+  "ALERT_SINK_URL",
+  "ALERT_SINK_KEY",
+  "HEARTBEAT_URL",
+  "STREAMS_ISSUER_METRICS_TOKEN",
+  "CANARY_CREDENTIAL",
+];
 
 const scratch: string[] = [];
 const fakes: FakePlatform[] = [];
@@ -204,6 +212,35 @@ describe("set-secrets", () => {
     expect(r.api.variables.map((v) => [v.projectId, v.key])).toEqual(ISSUER_NAMES.map((n) => [issuer.id, n]));
     expect(r.api.valueOf(issuer.id, "production", null, "STREAMS_ISSUER_SIGNING_KEY")).toBe(pem);
     expect(run.out.includes("BEGIN PRIVATE KEY")).toBe(false);
+  });
+
+  test("sets the cell watch's six names from its module (--app cell-watch), refuses a URL its boot would refuse, and blanks one on scratch", async () => {
+    const r = rig();
+    const watch = r.api.addProject("streams-cell-watch", "eu-central-1");
+    const scratchBranch = r.api.addBranch(watch.id, "scratch");
+    const value = (n: string) =>
+      n === "ALERT_SINK_URL" ? "https://pager.example/v2/enqueue" : n === "HEARTBEAT_URL" ? "https://pager.example/heartbeat/t" : `${n}-v`;
+    const s = secretsDir(r.root, WATCH_NAMES, value);
+    const env = { PRISMA_TOKEN_FILE: r.tokenFile };
+    const base = ["--project", watch.id, "--app", "cell-watch", "--management-api", r.api.url];
+    const run = await setSecrets(env, "production", ...base, "--from", s.dir);
+    expect([run.code, run.err]).toEqual([0, ""]);
+    expect(run.out.trim().split("\n").at(-1)).toBe("set-secrets: the cell-watch's 6 secrets are set for production; deploy to use them");
+    expect(r.api.variables.map((v) => [v.projectId, v.class, v.key])).toEqual(WATCH_NAMES.map((n) => [watch.id, "production", n]));
+    expect(WATCH_NAMES.map((n) => r.api.valueOf(watch.id, "production", null, n))).toEqual(WATCH_NAMES.map(value));
+    expect(Object.values(s.values).filter((v) => run.out.includes(v) || run.err.includes(v))).toEqual([]);
+    const writes = r.api.requests.length;
+    const plain = secretsDir(r.root, WATCH_NAMES, (n) => (n === "HEARTBEAT_URL" ? "http://pager.example/heartbeat/t" : value(n)));
+    expect(await setSecrets(env, "production", ...base, "--from", plain.dir)).toEqual({
+      code: 1, out: "",
+      err: `set-secrets: the value of HEARTBEAT_URL in ${join(plain.dir, "HEARTBEAT_URL")} is not an https URL: the watch's boot refuses it\n`,
+    });
+    expect(r.api.requests.length).toBe(writes);
+    const blank = await setSecrets(env, "scratch", "--project", watch.id, "--branch", scratchBranch.id, "--app", "cell-watch",
+      "--blank", "CANARY_CREDENTIAL", "--management-api", r.api.url);
+    expect([blank.code, r.api.valueOf(watch.id, "preview", scratchBranch.id, "CANARY_CREDENTIAL")]).toEqual([0, ""]);
+    const other = await setSecrets(env, "production", "--project", watch.id, "--app", "watch", "--from", s.dir, "--management-api", r.api.url);
+    expect([other.code, other.err.split("\n")[0]]).toEqual([2, "set-secrets: --app watch is cell, issuer or cell-watch"]);
   });
 
   test("reads the token only from the file PRISMA_TOKEN_FILE names, which only its owner may read", async () => {
