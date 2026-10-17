@@ -710,7 +710,8 @@ mod tests {
     /// and the cell's (100 a second, 200 at most), both or neither: a
     /// lookup its project refuses costs the cell nothing, one the cell
     /// refuses costs its project nothing, and a project's budget untouched
-    /// for a minute is dropped when another project's is added.
+    /// for a minute is dropped when another project's is added, never when
+    /// a held one is spent.
     #[test]
     fn a_claimed_project_spends_its_own_lookups_and_the_cells() {
         let clock = crate::runtime::ManualClock::at(0);
@@ -736,10 +737,12 @@ mod tests {
         let shares: Vec<usize> = (1..5).map(spend).collect();
         assert_eq!(shares, [40; 4], "the other projects keep theirs");
         assert_eq!(spend(5), 0, "the cell's burst is spent");
-        assert_eq!(held().1.len(), 5, "the cell's refusal added a project");
+        assert_eq!(held().1.len(), 5, "the cell's refusal added no project");
         clock.advance_monotonic(Duration::from_secs(1));
         assert_eq!(spend(0), 20, "a project refills at 20 a second");
         clock.advance_monotonic(Duration::from_secs(59));
+        assert_eq!(spend(0), 40, "a held project's burst, refilled");
+        assert_eq!(held().1.len(), 5, "spending a held budget drops none");
         assert_eq!(spend(6), 40);
         assert_eq!(
             held().1,
