@@ -232,12 +232,17 @@ alongside and finish before admission opens.
    2026-10-13 (call 4: D′ ratified for woken tail long-polls on plain
    streams; 14.4). Who: the owner first (C4 and C7 are open capacity
    decisions; growth rows are his), then engineering.
-7. **A per-project stored-bytes cap.** Metered and not charged, nothing
-   bounds what a project stores: a quota field, a policy-contract
-   revision and an edge record; small to medium. Until it lands,
-   `cell-admin admit --quota` can lower `append_bytes_per_sec` and
-   `max_streams`. Who: engineering; its edge record awaits the owner's
-   ratification, since answer (2) does not decide the cap's shape.
+7. **A per-project stored-bytes cap.** Done. The policy feed carries
+   `max_stored_bytes` and a 0 or absent value takes
+   `PROJECT_STORED_BYTES_DEFAULT`, 10 GiB on the shared-cell profile
+   (19c525fc, #156); the rollup keeps each project's stored bytes and
+   publishes them into admission (b454d923, #157); an append of a
+   project at its quota is refused `429 stored_bytes_limit`, not
+   retryable (49e3a78d, #158); RUNBOOK documents it and the watch alerts
+   on stored growth, daily spend and a stale figure (157cc30e). All
+   three records were ratified at landing under X2 (owner answers S1-S3
+   of 2026-10-12). Open: the drain-round blind spot ("Decided
+   2026-10-14, to be built", stored-cap #1).
 8. **The production target** (the owner: "I will provide this later."):
    the Compute workspace on a paid plan, the region, the Tigris data
    bucket, the `FEEDS_S3_KEY` bundle bucket, the artifact bucket and the
@@ -342,6 +347,15 @@ alongside and finish before admission opens.
     `413`, `429` and `503` answers with `Retry-After` and `retryable`, the
     G7 retry rule, and SPEC §6's five stale claims. Who: engineering; the
     owner adopts the wording, and H11's contract is his choice.
+    Engineering part done (2026-10-17): `docs/BETA-REFERENCE.md` states
+    the ceilings from the profile and the code, marked provisional until
+    item 9's envelope arm, with the stored-bytes cap, the free tier's
+    rate and store budget, the size limits, every 413, 429 and 503 code
+    with `retryable` and `Retry-After`, the retry rule and what the beta
+    does not give; SPEC §6 corrects C1, C6, C9 (body, streams, a sixth
+    row for connections, retention, a stored-bytes row) and the names
+    sentence, and links the page. Still the owner's: adopting the
+    wording, H11, and restating the ceilings after the envelope arm.
 15. **Terms and a written data posture:** the backup posture item 18
     picks, retention and erasure as built (a deleted stream is
     crypto-erased at once and its objects reclaimed later), content
@@ -349,6 +363,15 @@ alongside and finish before admission opens.
     with layout 6 first, no layout-reset clause. Who: Prisma legal (the
     owner records whether Compute's platform terms cover Streams) and
     engineering (a page and the OPERATIONS.md §2.4 correction; hours).
+    Engineering part done (2026-10-17): `docs/BETA-DATA-POSTURE.md`
+    states the posture as built, with the legal parts marked for Prisma
+    legal. It found that content is unreadable to the operator at rest,
+    not end to end: the server holds a stream's key in memory while it
+    serves (at most 15 min after the last request, `src/history.rs`) and
+    JSON reads return plaintext. OPERATIONS.md §2 says its backup design
+    is not built, and §2.4 states deletion as built above the design
+    target. Still open: the region (item 8), the backup posture (item
+    18) and the legal review.
 16. **Support, notices and escalation:** a support route, an outage and
     maintenance notice channel, and a named Compute escalation contact.
     Who: the owner and Prisma; a line in RUNBOOK §7.5.
@@ -380,11 +403,19 @@ alongside and finish before admission opens.
 - A stable endpoint: ask whether a Prisma-owned hostname can front the
   Compute service, and have `cell-admin admit` record the endpoint it
   hands out.
-- A custody table for the cell's other secrets (`USAGE_STREAM_KEY`,
-  `STREAMS_CURSOR_KEY`, `AUTH_TOKEN`, `SLATE_S3_*`, `FEEDS_S3_KEY`).
-- Operator hygiene: RUNBOOK still calls `/operator` unsecured (it answers
-  401), and the wrapper's download failure serves `{stage, key, error}` on
-  the public port.
+- Done 2026-10-17: a custody table for the cell's other secrets, in
+  `docs/SECRETS-CUSTODY.md`, linked from RUNBOOK's shared-cell section,
+  with the issuer's and the watch's secrets too. It found two gaps, still
+  open: `USAGE_STREAM_KEY` has no rotation path (its ledgers pin the
+  key's fingerprint), and no command revokes a hidden canary credential.
+- Operator hygiene. Done: RUNBOOK no longer calls `/operator` unsecured
+  (cb5e79fa, pinned by `deploy/cell-watch/runbook.test.ts`), and its §5
+  table no longer lists `/v1/debug/load` and `/v1/debug/sleep` as open
+  (2026-10-17). Open, a code change: the wrapper's download failure
+  serves `{stage, key, error}` on the public port
+  (`serveDownloadFailure` in `deploy/app-server/index.ts`, and its copy
+  in `deploy/app-gen/index.ts`); the Composer entry
+  (`deploy/composer/streams/entry.ts`) already serves a generic body.
 - Security-scanning hygiene: the jsonwebtoken triage recorded in the
   repository, CodeQL's false positives dismissed, workflow permissions
   added (about half a day).
