@@ -716,8 +716,11 @@ mod tests {
         let clock = crate::runtime::ManualClock::at(0);
         let budgets = LookupBudgets::new(clock.monotonic());
         let project = |i: usize| ProjectId::new(&format!("prj-{i}")).unwrap();
+        // At most one lookup past a project's burst of 40, so a budget
+        // that never refuses fails the count instead of spending forever.
         let spend = |i: usize| {
             std::iter::repeat_with(|| budgets.take(Some(&project(i)), clock.monotonic()))
+                .take(41)
                 .take_while(|taken| *taken)
                 .count()
         };
