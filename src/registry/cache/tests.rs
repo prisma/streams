@@ -576,6 +576,26 @@ async fn the_cache_holds_its_byte_budget() {
     assert_eq!(size(&cache), (1, 3 * FAT), "a slot over the budget");
 }
 
+/// The purge runs only for a put that would pass a cap: a put that fills
+/// the byte budget to the byte, like every put below it, keeps even a slot
+/// untouched for a TTL, which the next put past the budget purges first.
+#[test]
+fn a_budget_filled_exactly_keeps_its_stale_slot() {
+    const FAT: usize = 4_096;
+    let all = ["a", "b", "c", "d"];
+    let size = |cache: &DescriptorCache| (cache.len(), cache.bytes());
+    let cache = DescriptorCache::bounded(Duration::from_secs(5), 1_024, 3 * FAT);
+    cache.insert(ts("a"), fat("a", FAT));
+    cache.expire_for_tests(&ts("a"));
+    cache.insert(ts("b"), fat("b", FAT));
+    cache.insert(ts("c"), fat("c", FAT));
+    assert_eq!(size(&cache), (3, 3 * FAT), "a budget filled exactly");
+    assert_eq!(holding(&cache, &all), ["a", "b", "c"]);
+    cache.insert(ts("d"), fat("d", FAT));
+    assert_eq!(size(&cache), (3, 3 * FAT), "past the budget");
+    assert_eq!(holding(&cache, &all), ["b", "c", "d"]);
+}
+
 /// A slot is charged for what it allocates, not for how long its strings
 /// are: the slot itself and its key whatever it holds, and for a
 /// descriptor each watch definition's inline 48 bytes, its name's heap
