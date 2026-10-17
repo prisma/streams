@@ -285,7 +285,7 @@ test("a child that ignores the forwarded SIGTERM is killed after the grace", asy
 // A download that fails before any binary runs is answered on $PORT with the
 // same generic 500 a dead binary gets: the port is customer-reachable and
 // unauthenticated, so the stage, the object key and the error go to the
-// platform log only (edge change #NEW-hyg-1). Each app's index.ts runs for
+// platform log only (edge change #172). Each app's index.ts runs for
 // real in a child Bun, its @prisma/compute import stubbed (CI has no
 // node_modules) and its bucket a closed port, so the download fails at once.
 const COMPUTE_STUB = `

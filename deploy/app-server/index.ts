@@ -83,7 +83,7 @@ const { downloadBinary } = await import("./downloader");
 // failure — which cost the 2026-08-11 campaign its longest debugging
 // detour. Serve the failure instead: $PORT is customer-reachable and
 // unauthenticated, so it answers supervise.ts's generic 500 and the stage,
-// key and error go to the platform log only (edge change #NEW-hyg-1).
+// key and error go to the platform log only (edge change #172).
 const serveDownloadFailure = (err: unknown) => {
   const details = JSON.stringify({
     stage: "binary_download",
