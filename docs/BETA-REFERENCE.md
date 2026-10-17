@@ -175,14 +175,15 @@ with `AppendOutcomeUnknownError` instead of sending it again. Source:
   flush, up to 100 ms; it has not been measured again on the beta's
   shape. Source: `docs/OPS-RELEASE.md` ("Ack SLO").
 - **No backups.** Data is as durable as the object store that holds it,
-  and nothing more, until Prisma decides a backup posture.
+  and nothing more, until Prisma decides a backup posture. See
+  [BETA-DATA-POSTURE.md](BETA-DATA-POSTURE.md).
 - **The cell is kept awake.** It does not sleep when idle, so after a
   quiet spell there is no wake delay (edge change #140). This is how the
   beta runs, not a promise for later.
 - **No invoices.** Usage is metered and shown, not charged.
 - **No physical erasure on delete yet.** A deleted stream is gone from
   the API at once; its encrypted bytes stay in the bucket until
-  reclamation is built.
+  reclamation is built. See [BETA-DATA-POSTURE.md](BETA-DATA-POSTURE.md).
 - **Limits can change.** The ceilings above are restated after the
   envelope measurement, and the cell's endpoint may change before the
   beta ends.

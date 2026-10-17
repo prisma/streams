@@ -371,7 +371,9 @@ share.
 
 The customer reference for the public beta's shared cells (per-project
 limits, error answers, retry rules, what the beta does not promise) is
-[docs/BETA-REFERENCE.md](docs/BETA-REFERENCE.md).
+[docs/BETA-REFERENCE.md](docs/BETA-REFERENCE.md); its data posture (where data
+lives, encryption, retention, erasure as built, backups) is
+[docs/BETA-DATA-POSTURE.md](docs/BETA-DATA-POSTURE.md).
 
 - **C1 Append latency includes durability**: an append is acknowledged
   after its WAL write to object storage, and at the default 100 ms write

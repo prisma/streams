@@ -52,9 +52,17 @@ ownership is a manifest property, not an instance property).
 
 ## 2. Backup, PITR, and corruption recovery
 
-Everything at rest is ciphertext (§3.7 of SPEC.md), so **backup requires no
-tenant keys** — backups are exact object copies, useless without the
-customer-held keys.
+**Status (2026-10-17): §2.1-§2.3 are a design, not built.** No copy
+actor, backup bucket, checkpoint pin, scrubber or restore drill exists,
+and bucket versioning is not enabled by the deploy tooling. A cell's data
+is as durable as its object store and no more, until the durability
+posture is decided (NEXT-WORK "Public beta" item 18). What runs is in
+[docs/BETA-DATA-POSTURE.md](docs/BETA-DATA-POSTURE.md).
+
+Record content at rest is ciphertext (§3.7 of SPEC.md), so **backup
+requires no tenant keys** — backups are exact object copies, useless
+without the customer-held keys. Page headers, stream descriptors and the
+usage rollup are not encrypted under a customer key.
 
 ### 2.1 What is backed up
 
@@ -106,6 +114,20 @@ at 64 concurrent opens ≈ 15–30 min, dominated by manifest reads.
   backup (it is immutable — restore is a copy).
 
 ### 2.4 Deletion protection & GDPR
+
+**As built (2026-10-17).** A delete or an expiry writes a registry
+tombstone at once (`src/application/creation/deletion.rs`): reads and
+writes answer 404/410. Nothing deletes the stream's objects afterwards:
+no compaction filter or prefix delete removes a deleted incarnation's
+shard-log, tail, producer or history rows (docs/READINESS.md, TLA-019-F3;
+physical reclamation is cost lever E11, not built). The objects stay
+ciphertext under keys the server never stored, so they are crypto-erased
+from the operator's side, while their names, routing keys and sizes stay
+visible (SPEC.md G8, C6). There is no versioning, deny-delete policy,
+soft-delete window or backup copy to expire. The 30-day physical erasure
+below is therefore not a commitment today.
+
+**Design target (not built):**
 
 - Data prefixes: object versioning ON + deny-delete IAM for all service
   principals except the GC role; GC deletes go through a 24 h

@@ -51,7 +51,7 @@ Do not read these whole. Find the heading first, then read only that range
 - [OBSERVABILITY-BILLING.md](OBSERVABILITY-BILLING.md): the normative billing, usage and telemetry design.
 - [read-experiments/final-disposition.md](read-experiments/final-disposition.md): reads have one permanent production path, with no runtime switches.
 - [CONFORMANCE.md](../CONFORMANCE.md): the pinned Durable Streams suite. [sdk/README.md](../sdk/README.md): the TypeScript SDK; [sdk/CHANGELOG.md](../sdk/CHANGELOG.md): its release notes, packed with it.
-- [BETA-REFERENCE.md](BETA-REFERENCE.md): the public beta's customer reference: per-project limits on a shared cell (provisional until the envelope arm), the 413, 429 and 503 answers with `Retry-After` and `retryable`, the append retry rule, and what the beta does not promise. SPEC §6 links it.
+- [BETA-REFERENCE.md](BETA-REFERENCE.md): the public beta's customer reference: per-project limits on a shared cell (provisional until the envelope arm), the 413, 429 and 503 answers with `Retry-After` and `retryable`, the append retry rule, and what the beta does not promise. SPEC §6 links it. [BETA-DATA-POSTURE.md](BETA-DATA-POSTURE.md): the beta's data posture as built (where data lives, what is encrypted under which keys, retention, erasure, one instance, no SLA, no backups), the engineering half of its terms; the legal parts await Prisma legal.
 
 **Wire contract, edge changes and decisions**
 - [refactor/WIRE-MATRIX.md](refactor/WIRE-MATRIX.md): the per-route wire contract, first characterized at 685ea035. Update it with every client-visible change. Its `file:line` references are from 685ea035 and have drifted, so find code by symbol.
