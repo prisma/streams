@@ -314,9 +314,12 @@ export function newCredentialId(state: CellState): string {
 }
 
 /// The `seq` of the next credential made on this cell: one more than any
-/// before it.
+/// before it. A state written before credentials held `seq` has records
+/// without one (null once NaN was saved), which count as 0: the first made
+/// on it takes 1, where Math.max over a missing `seq` gave every later one
+/// NaN.
 export const nextCredentialSeq = (state: CellState): number =>
-  Object.values(state.credentials).reduce((max, c) => Math.max(max, c.seq), 0) + 1;
+  Object.values(state.credentials).reduce((max, c) => (Number.isFinite(c.seq) ? Math.max(max, c.seq) : max), 0) + 1;
 
 /// A new customer credential's identity and, for one with a secret, the
 /// secret's hash (secrets.ts); the CLI's `admit` makes one without. It

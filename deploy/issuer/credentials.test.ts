@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { FakeCell } from "../cell-admin/fake-cell";
 import { CUSTOMER_SCOPES } from "../cell-admin/rules";
 import { hashSecret, parsePeppers } from "../cell-admin/secrets";
-import { cleanup, customerOnly, decodeJwt, readBundle, storeTexts } from "../cell-admin/test-rig";
+import { cleanup, customerOnly, decodeJwt, readBundle, storeTexts, writeStateText } from "../cell-admin/test-rig";
 import { admin, cellState, customerSecret, fakeS3, type IssuerCell, issuerCell, managed, managementAudits } from "./rig";
 
 afterEach(cleanup);
@@ -93,6 +93,23 @@ describe("a project's credentials", () => {
     const listed: any[] = (await (await m.get(path, a)).json()).credentials;
     expect(new Set(listed.slice(1).map((c) => c.createdAt)).size).toBe(1);
     expect(listed.map((c) => c.id)).toEqual(made);
+  });
+
+  test("numbers the credentials made on a state written before seq from 1, and lists them after the older ones", async () => {
+    const { cell, m, a, first, path } = await withProject();
+    const second: string = (await (await m.send("POST", path, a, { displayName: "c2" })).json()).credential.id;
+    // A state written before the credential records held `seq`.
+    const state = cellState(cell);
+    for (const c of Object.values(state.credentials)) delete (c as { seq?: number }).seq;
+    writeStateText(cell.state, JSON.stringify(state));
+    await m.cache.refresh();
+    const made = [first.id, second];
+    for (const name of ["c3", "c4"]) {
+      made.push((await (await m.send("POST", path, a, { displayName: name })).json()).credential.id);
+    }
+    const stored = cellState(cell).credentials;
+    expect(made.map((id) => stored[id].seq)).toEqual([undefined, undefined, 1, 2]);
+    expect(((await (await m.get(path, a)).json()).credentials as any[]).map((c) => c.id)).toEqual(made);
   });
 
   test("gives every scope, no prefix and no expiry by default, and refuses a body it cannot take 400 invalid_request", async () => {
