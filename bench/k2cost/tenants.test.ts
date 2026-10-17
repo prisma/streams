@@ -129,8 +129,11 @@ function nominalRate(c: ClassSpec): number {
 
 test("Layer B runs both quota postures: the ceilings classes as the stress, and free-tier twins shaped under the bucket", () => {
   // Lead decision deploy-q5 #6 (1), 2026-10-13. A free-tier project's
-  // request bucket and store budget each hold one second of its rate
-  // (src/quota/bucket.rs, src/quota/parked.rs).
+  // request bucket holds max(rate, 50) tokens (#162; src/quota.rs
+  // REQUEST_BURST_FLOOR, src/quota/bucket.rs) and its store budget one
+  // second of its rate (src/quota/parked.rs). The twins keep, on purpose,
+  // the stricter shape of a one-second, 10-token bucket (lead decision at
+  // landing-5, 2026-10-18: the conservative shape is kept).
   const twins = ["s0", "s1", "s2", "s3s", "n0", "victim"];
   for (const f of ["layer-b", "layer-b-tiny"]) {
     const { manifest: m } = readManifest(join(import.meta.dir, "tenants", `${f}.json`));
