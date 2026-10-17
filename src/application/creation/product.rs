@@ -52,11 +52,10 @@ impl CreationService {
         if let Some(quotas) = quotas.filter(|q| q.max_streams > 0)
             && !existing.as_ref().is_some_and(|d| desc_alive(d))
         {
-            let seed = if self.quotas.needs_stream_seed(project) {
-                Some(self.count_project_streams(project).await?)
-            } else {
-                None
-            };
+            let seed = self
+                .quotas
+                .seed_streams_once(project, self.count_project_streams(project))
+                .await?;
             reservation = self
                 .quotas
                 .reserve_stream(project, quotas, seed)

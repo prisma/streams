@@ -10,6 +10,9 @@
 use super::fixture_cell::{CREATE, Cell, CellSpec, error_code, open_cell, project};
 use super::fixture_http::engine_shutdown;
 use super::fixture_storage::mem;
+use crate::dst::fault_store::{FaultPlan, FaultProfile, FaultStore};
+use crate::dst::trace_store::TraceStore;
+use crate::dst::{ObjClass, StoreOp};
 use crate::project_policy::ProjectQuotas;
 use crate::store_timing::{StoreResources, TimingStore};
 use crate::tenant::ProjectId;
@@ -52,6 +55,12 @@ fn level(cell: &Cell, rate: u64) -> f64 {
     let id = ProjectId::new(&project(0)).unwrap();
     let share = cell.state.quotas.park_share(&id, &quotas(rate)).unwrap();
     share.store_ops_level()
+}
+
+/// Project 0's catalog prefix, under which its seed walk lists.
+fn catalog_prefix() -> String {
+    let hex: String = project(0).bytes().map(|b| format!("{b:02x}")).collect();
+    format!("registry/v4/projects/{hex}/streams")
 }
 
 /// Project 0 creates `name` once its budget has refilled whole: the status,
@@ -132,8 +141,7 @@ async fn the_first_create_after_a_restart_weighs_11_whatever_names_the_project_h
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_seed_walk_that_fails_its_page_stays_charged() {
     let inner = mem();
-    let hex: String = project(0).bytes().map(|b| format!("{b:02x}")).collect();
-    let stray = object_store::path::Path::from(format!("registry/v4/projects/{hex}/streams/stray"));
+    let stray = object_store::path::Path::from(format!("{}/stray", catalog_prefix()));
     inner.put(&stray, b"{}".to_vec().into()).await.unwrap();
     let cell = open_cell(CellSpec {
         store: timed(inner.clone()),
@@ -153,6 +161,46 @@ async fn a_seed_walk_that_fails_its_page_stays_charged() {
         next,
         (201, None, 11.0),
         "the create once its walk completes"
+    );
+    engine_shutdown(&cell.state).await;
+}
+
+/// Eight first creates of one project sent at once, while each catalog LIST
+/// takes 200 ms, walk the project's catalog once between them: the first
+/// walks and seeds the count, and the others wait for its result instead of
+/// each making the cell walk, uncharged, again. All eight are created.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_first_creates_walk_the_catalog_once() {
+    let slow_list = FaultPlan {
+        latency_pct: 100,
+        latency_ms: (200, 200),
+        ..FaultPlan::CLEAN
+    };
+    let profile = FaultProfile::clean().with_op_class(StoreOp::List, ObjClass::Other, slow_list);
+    let trace = TraceStore::verbatim(FaultStore::new(mem(), 7, profile));
+    let cell = open_cell(CellSpec {
+        store: timed(trace.clone()),
+        ..measured()
+    })
+    .await;
+    let catalog = catalog_prefix();
+    let walks = || {
+        let listed = |e: &&crate::dst::trace_store::StoreTraceEvent| {
+            e.op == StoreOp::List && e.path.starts_with(&catalog)
+        };
+        trace.events().iter().filter(listed).count()
+    };
+    let before = walks();
+    let creates = (0..8).map(|n| {
+        let path = format!("/v1/streams/burst{n}");
+        let cell = &cell;
+        async move { cell.call(0, "PUT", &path, CREATE).await.0 }
+    });
+    let statuses = futures_util::future::join_all(creates).await;
+    assert_eq!(
+        (statuses, walks() - before),
+        (vec![201; 8], 1),
+        "eight concurrent first creates' statuses and catalog walks"
     );
     engine_shutdown(&cell.state).await;
 }

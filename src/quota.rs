@@ -69,6 +69,7 @@ pub(crate) mod parked;
 mod pin;
 pub(crate) mod read_reservation;
 pub(crate) mod stored;
+mod stream_seed;
 use pin::AdmissionCounters;
 
 pub(crate) struct ProjectAdmission {
@@ -96,6 +97,8 @@ pub(crate) struct ProjectAdmission {
     /// storage and the name — and release only on their terminal
     /// hard delete.
     streams: Mutex<StreamCount>,
+    /// Held while one create walks the catalog for that seed (`stream_seed`).
+    seed_walk: tokio::sync::Mutex<()>,
     /// SR2-4 queued_append_bytes: bytes admitted but not yet decided.
     queued_bytes: AtomicU64,
 
@@ -566,6 +569,7 @@ impl QuotaRegistry {
             live_subs: AtomicU64::new(0),
             parked: AtomicU64::new(0),
             streams: Mutex::new(StreamCount::default()),
+            seed_walk: tokio::sync::Mutex::new(()),
             queued_bytes: AtomicU64::new(0),
             live_feeds: AtomicU64::new(0),
             retained_sse_bytes: AtomicU64::new(0),

@@ -2178,7 +2178,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "b9a52bf2dda20cf063f82cad97685c710b2402ef8d34d9c8477a5b0ad00273f9",
+    "function_sha256": "2d9a329df4c25a514b28a40947137ca24e55369597d49d86942541b1ee118aa5",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/quota_stream_seed.rs",
@@ -3695,6 +3695,19 @@
     "scenarios": [
       "SEL-027"
     ]
+  },
+  {
+    "name": "concurrent_first_creates_walk_the_catalog_once",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0febafc1a6c19817a01945e2f1f5ac77a6521ec1a53e545f66b40f514650b6e6",
+    "mechanisms": [],
+    "configuration": [
+      "..FaultPlan::CLEAN"
+    ],
+    "file": "src/dst/tests/quota_stream_seed.rs",
+    "scenarios": []
   },
   {
     "name": "concurrent_plain_seals_serialize_into_one_terminal_transition",

@@ -1460,9 +1460,9 @@ by the budget's rate for the refused routes, plus the descriptor GETs
 that the other routes pay but are never refused for (a few a request at
 most, within its request rate), plus one burst (the store work of
 max(`requests_per_sec`, 50) concurrent requests); the completed seed
-walks are the cell's, once per project per boot (times the creates that
-make a project's first concurrently). A fresh create weighs 11 (a 404 and
-a PUT), a project's first since the instance booted too (r11): at the
+walks are the cell's, once per project per boot (concurrent first
+creates share one walk). A fresh create weighs 11 (a 404 and a PUT), a
+project's first since the instance booted too (r11): at the
 beta's free tier of 10 requests a second a project creates one stream
 and then one every 1.1 s, at 20 two back to back and then one every
 0.55 s, at the k = 8 ceiling of 176 seventeen and then sixteen a

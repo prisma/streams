@@ -172,6 +172,9 @@ OWNERS = (
     # enforces through the append charge (B4).
     owner('quota_stored', 'src/quota/stored.rs',
           'quota::stored quota::append_charge dst_tests::quota_stored_cap::'),
+    # The stream-count seed walk, once per project (the landing-4 review's L2).
+    owner('quota_stream_seed', 'src/quota/stream_seed.rs',
+          'quota::stream_seed:: dst_tests::quota_stream_seed::'),
     owner('registry_cache', 'src/registry/cache.rs', 'registry::'),
     # The catalog page's byte bounds (phase B item B5); the owner decided the
     # row on 2026-10-12 (OWNER-DECISIONS-2 X1 (b)).
