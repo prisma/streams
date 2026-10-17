@@ -191,6 +191,24 @@ describe("RUNBOOK.md's §7.5 and §8", () => {
     }
   });
 
+  test("Shared cells give a scratch or cert cell the stand-in pager as an app of its own, and production the real paging service", () => {
+    const text = section("## Shared cells");
+    const at = text.indexOf("**A scratch cell's paging stand-in.**");
+    expect(at).toBeGreaterThan(text.indexOf("**Drills ("));
+    const para = text.slice(at, text.indexOf("A single-server shared cell publishes", at));
+    for (const want of [
+      "`deploy-release.sh <scratch|cert> <tag>-watch --app pager-standin`",
+      "`set-secrets <stage> --app pager-standin`",
+      "`ALERT_SINK_KIND` `events-v2`",
+      "`https://<domain>/v2/enqueue`",
+      "`https://<domain>/heartbeat/<token>`",
+      "`GET /changes`",
+      "Production pages through the real paging service, PagerDuty Events v2, as §7.5 sets it up",
+    ]) {
+      expect([want, para.includes(want)]).toEqual([want, true]);
+    }
+  });
+
   test("§8 states the operator surface's bearer gate and nowhere calls it unsecured", () => {
     const text = section("## 8. ");
     expect(text).toContain("every server serves `/operator` behind the deployment bearer (SR-5");

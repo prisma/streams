@@ -20,11 +20,27 @@
 //              2xx closes it. The real check runs from two locations; this
 //              one from here.
 //
+//   listing  GET /changes with `Authorization: Bearer <routing key>`: what
+//              it took, as JSON (the changes, the open keys, the beats);
+//              GET / answers `ok`. Anything else is 404.
+//
 // Escalation (to the secondary after 15 minutes unacknowledged) is the
 // real tool's own and is not modelled: the drills stop at the page.
 // Nothing is forwarded anywhere; what arrives is kept in memory, in order.
+//
+// The same stand-in deploys as a Composer app of its own (pager-app.ts,
+// pager-service.ts, pager-entry.ts) for a scratch or cert cell that has no
+// paging service: its https domain is then the watch's ALERT_SINK_URL
+// (<domain>/v2/enqueue, ALERT_SINK_KIND events-v2, ALERT_SINK_KEY the
+// routing key) and HEARTBEAT_URL (<domain>/heartbeat/<token>), on a
+// service apart from the watch, so the dead-man pages while the watch is
+// down. pagerOptions reads its inputs. Production pages through the real
+// paging service (RUNBOOK §7.5), never this.
+
+import { timingSafeEqual } from "node:crypto";
 
 export const EVENTS_PATH = "/v2/enqueue";
+export const CHANGES_PATH = "/changes";
 export const HEARTBEAT_PREFIX = "/heartbeat/";
 /// Row 2: no beat for 3 minutes.
 export const HEARTBEAT_WINDOW_MS = 3 * 60_000;
@@ -39,6 +55,34 @@ export const UPTIME_KEY = "uptime check";
 const ACTIONS = ["trigger", "acknowledge", "resolve"];
 const SEVERITIES = ["critical", "error", "warning", "info"];
 
+/// The deployed stand-in's inputs, by their platform names.
+export const PAGER_INPUTS = ["PAGER_ROUTING_KEY", "PAGER_HEARTBEAT_TOKEN", "STREAMS_CELL_ORIGIN"] as const;
+const TOKEN = /^[A-Za-z0-9_-]{16,128}$/;
+const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
+
+/// The deployed stand-in's options from its inputs; a refusal names the
+/// input, never its value. STREAMS_CELL_ORIGIN `none` runs no uptime check.
+export function pagerOptions(inputs: Readonly<Partial<Record<(typeof PAGER_INPUTS)[number], string>>>): PagerOptions {
+  for (const name of PAGER_INPUTS) if (!inputs[name]) throw new Error(`${name} is required`);
+  const routingKey = inputs.PAGER_ROUTING_KEY as string;
+  if (routingKey.length < 16) throw new Error("PAGER_ROUTING_KEY must be at least 16 characters: its endpoint is public");
+  const heartbeatToken = inputs.PAGER_HEARTBEAT_TOKEN as string;
+  if (!TOKEN.test(heartbeatToken)) {
+    throw new Error("PAGER_HEARTBEAT_TOKEN must be 16 to 128 of [A-Za-z0-9_-]: it is the heartbeat URL's last segment");
+  }
+  const raw = inputs.STREAMS_CELL_ORIGIN as string;
+  if (raw === "none") return { routingKey, heartbeatToken, uptimeOrigin: null };
+  let u: URL | null = null;
+  try {
+    u = new URL(raw);
+  } catch {}
+  const secure = u !== null && (u.protocol === "https:" || (u.protocol === "http:" && LOCAL_HOSTS.includes(u.hostname)));
+  if (u === null || !secure || u.pathname !== "/" || u.search !== "" || u.hash !== "") {
+    throw new Error("STREAMS_CELL_ORIGIN must be an https origin (http only to this machine), or none");
+  }
+  return { routingKey, heartbeatToken, uptimeOrigin: u.origin };
+}
+
 export interface PagerOptions {
   /// The service's routing key: an event under any other is refused.
   routingKey: string;
@@ -49,6 +93,10 @@ export interface PagerOptions {
   heartbeatWindowMs?: number;
   uptimeEveryMs?: number;
   uptimeTimeoutMs?: number;
+  /// Where it listens: 127.0.0.1 on a free port unless given (the deployed
+  /// stand-in takes the service's port on every interface).
+  port?: number;
+  hostname?: string;
 }
 
 /// One change on the pager: an incident opened or resolved on a key. A
@@ -94,7 +142,7 @@ export class Pager {
   private failures = 0;
 
   constructor(private readonly opts: PagerOptions) {
-    this.server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => this.serve(req) });
+    this.server = Bun.serve({ port: opts.port ?? 0, hostname: opts.hostname ?? "127.0.0.1", fetch: (req) => this.serve(req) });
     const window = opts.heartbeatWindowMs ?? HEARTBEAT_WINDOW_MS;
     this.timers.push(setInterval(() => this.checkHeartbeat(window), Math.min(1_000, window / 4)));
     if (opts.uptimeOrigin !== null) {
@@ -142,6 +190,8 @@ export class Pager {
       this.close(HEARTBEAT_KEY);
       return new Response("OK");
     }
+    if (pathname === "/" && req.method === "GET") return new Response("ok");
+    if (pathname === CHANGES_PATH && req.method === "GET") return this.listing(req);
     if (pathname !== EVENTS_PATH || req.method !== "POST") return new Response(null, { status: 404 });
     let b: Body;
     try {
@@ -156,6 +206,14 @@ export class Pager {
     if (b.event_action === "trigger") this.raise(key, p.severity === "critical", String(p.summary));
     if (b.event_action === "resolve") this.close(key);
     return answer(202, { status: "success", message: "Event processed", dedup_key: key });
+  }
+
+  /// GET /changes, to the routing key's bearer only.
+  private listing(req: Request): Response {
+    const want = new TextEncoder().encode(`Bearer ${this.opts.routingKey}`);
+    const got = new TextEncoder().encode(req.headers.get("authorization") ?? "");
+    if (got.length !== want.length || !timingSafeEqual(got, want)) return answer(401, { status: "unauthorized" });
+    return answer(200, { open: [...this.open.keys()], changes: this.changes, beats: this.beats.length, last_beat_ms: this.beats.at(-1) ?? null });
   }
 
   /// Before the first beat the monitor waits (as the real one does).

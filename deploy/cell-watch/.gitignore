@@ -1,3 +1,4 @@
 .alchemy/
 .prisma-composer/
 entry.js
+pager-entry.js

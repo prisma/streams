@@ -142,6 +142,12 @@ Six more directories:
   runs RUNBOOK's shared-cell drills through it, one per PAGE rule they
   name (`CELL_WATCH_DRILLS=1` as well; about 25 minutes), on the cell and
   `prisma dev` rig it shares with `dev.e2e.test.ts` (`e2e-rig.ts`).
+  The same stand-in is a Composer app of its own (`pager-app.ts`,
+  `pager-service.ts`, `pager-entry.ts`, cut in the watch's release) that
+  gives a scratch or cert cell https sink and heartbeat endpoints without
+  a paging service (RUNBOOK, Shared cells, "A scratch cell's paging
+  stand-in"; `pager-app.test.ts`, its bundled entry opt-in with
+  `CELL_WATCH_COMPOSER_E2E=1`); production pages through the real one.
 
 All verify the download is an **x86_64 ELF** before exec. That check is
 not politeness: an aarch64 binary deploys "successfully" and crash-loops

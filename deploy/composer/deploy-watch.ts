@@ -26,8 +26,16 @@
 // its proof of life is its heartbeat reaching HEARTBEAT_URL (row 2), so
 // the deploy is logged unchecked and exits 0.
 //
-// --destroy is not taken: the watch's named stage goes with its Branch
-// (or the watch's project), which the operator deletes by hand.
+// --app pager-standin deploys the paging stand-in's app (pager-app.ts,
+// from the same release root) the same way, into its own project
+// (streams-pager-standin), with the stage's STREAMS_CELL_ORIGIN from the
+// watch's settings as its one envParam; on scratch or cert only:
+// production pages through the real paging service (RUNBOOK §7.5). Its
+// domain then gives the watch its ALERT_SINK_URL and HEARTBEAT_URL
+// (set-secrets --app cell-watch, then redeploy the watch).
+//
+// --destroy is not taken: an app's named stage goes with its Branch (or
+// its project), which the operator deletes by hand.
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseFlags } from "../cell-admin/args";
@@ -35,22 +43,32 @@ import { AdminError } from "../cell-admin/errors";
 import { parseProfiles } from "../cell-admin/profile";
 import { DEPLOY_LOG, fromRelease, platformChecks, refuseSecretsInEnv } from "./deploy-release";
 import { appModuleName, describeScope, envSecretNames, MANAGEMENT_API, Platform, scopeOf } from "./platform";
-import { checkRelease } from "./release";
+import { checkRelease, envParamNames } from "./release";
 import { checkWatchRelease, watchSettings } from "./watch-release";
 
-/// The apps deploy-release.sh deploys with --app.
-const APPS = ["cell-watch"];
+/// The apps deploy-release.sh deploys with --app from a watch release:
+/// each one's app file, the file binding its inputs, and what it is.
+const APPS: Record<string, { appTs: string; binds: string; what: string }> = {
+  "cell-watch": { appTs: "app.ts", binds: "module.ts", what: "the cell watch" },
+  "pager-standin": { appTs: "pager-app.ts", binds: "pager-app.ts", what: "the paging stand-in" },
+};
 
 export async function deployWatch(stage: string, rawDir: string, argv: readonly string[], out: (line: string) => void): Promise<number> {
   if (argv.includes("--destroy")) {
-    throw new AdminError("--app cell-watch takes no --destroy: delete the watch's Branch (or its project) by hand", 2);
+    throw new AdminError("--app takes no --destroy: delete the app's Branch (or its project) by hand", 2);
   }
   const flags = parseFlags(argv, {
     single: ["app", "project", "branch", "workspace", "management-api"],
     required: ["app", "project", "workspace"],
   });
   const app = flags.must("app");
-  if (!APPS.includes(app)) throw new AdminError(`--app ${app} is ${APPS.join(" or ")} (the cell deploys without --app)`, 2);
+  if (!Object.hasOwn(APPS, app)) {
+    throw new AdminError(`--app ${app} is ${Object.keys(APPS).join(" or ")} (the cell deploys without --app)`, 2);
+  }
+  const { appTs, binds, what } = APPS[app];
+  if (app === "pager-standin" && stage === "production") {
+    throw new AdminError("the paging stand-in deploys to scratch or cert only: production pages through the real paging service (RUNBOOK §7.5)");
+  }
   const dir = resolve(rawDir);
   const release = checkWatchRelease(dir);
   if (basename(dir) !== `${release.tag}-watch`) {
@@ -58,7 +76,8 @@ export async function deployWatch(stage: string, rawDir: string, argv: readonly 
   }
   const read = (p: string) => readFileSync(join(dir, p), "utf8");
   const moduleTs = read("module.ts");
-  refuseSecretsInEnv(envSecretNames(moduleTs), process.env);
+  const names = envSecretNames(read(binds));
+  refuseSecretsInEnv(names, process.env);
   const cellDir = join(dirname(dir), release.tag);
   if (!existsSync(join(cellDir, "deploy", "release.json"))) {
     throw new AdminError(`no cell release ${cellDir} beside the watch's: the watch deploys beside the cell release of its cut`);
@@ -79,14 +98,15 @@ export async function deployWatch(stage: string, rawDir: string, argv: readonly 
   const region = cells.get("REGION") as string;
   const scope = scopeOf(stage, flags.must("project"), flags.get("branch"));
   const api = Platform.open(flags.get("management-api") ?? MANAGEMENT_API);
-  await platformChecks({ stage, flags }, api, { scope, app: appModuleName(read("app.ts")), names: envSecretNames(moduleTs) }, region);
+  await platformChecks({ stage, flags }, api, { scope, app: appModuleName(read(appTs)), names }, region);
   const cli = join(dir, "node_modules", ".bin", "prisma");
   if (!existsSync(cli)) throw new AdminError(`${cli} does not exist: the watch's release carries its own pinned CLI`);
-  const args = ["deploy", "app.ts", ...(stage === "production" ? [] : ["--stage", stage])];
-  out(`deploy-release: prisma ${args.join(" ")} (the cell watch of ${release.tag}, ${describeScope(scope)}, ${region})`);
-  const ok = await fromRelease({ flags }, api, dir, [cli, ...args], { PRISMA_REGION: region, ...Object.fromEntries(settings) });
+  const args = ["deploy", appTs, ...(stage === "production" ? [] : ["--stage", stage])];
+  out(`deploy-release: prisma ${args.join(" ")} (${what} of ${release.tag}, ${describeScope(scope)}, ${region})`);
+  const params = envParamNames(read(binds)).map((n) => [n, settings.get(n) as string]);
+  const ok = await fromRelease({ flags }, api, dir, [cli, ...args], { PRISMA_REGION: region, ...Object.fromEntries(params) });
   const entry = {
-    app: "cell-watch",
+    app,
     stage,
     project: scope.project,
     branch: scope.class === "preview" ? scope.branch : null,
@@ -97,10 +117,14 @@ export async function deployWatch(stage: string, rawDir: string, argv: readonly 
     result: ok ? "unchecked" : "deploy_failed",
   };
   appendFileSync(join(dirname(dir), DEPLOY_LOG), `${JSON.stringify(entry)}\n`);
-  if (!ok) throw new AdminError(`the cell watch's prisma deploy failed: ${release.tag}-watch did not reach ${stage}`);
+  if (!ok) throw new AdminError(`${what}'s prisma deploy failed: ${release.tag}-watch did not reach ${stage}`);
   out(
-    `deploy-release: the cell watch of ${release.tag} is deployed to ${stage}; its check is its heartbeat reaching ` +
-      "HEARTBEAT_URL within 3 minutes (row 2)",
+    app === "cell-watch"
+      ? `deploy-release: the cell watch of ${release.tag} is deployed to ${stage}; its check is its heartbeat reaching ` +
+          "HEARTBEAT_URL within 3 minutes (row 2)"
+      : `deploy-release: the paging stand-in of ${release.tag} is deployed to ${stage}; give the watch its domain: ` +
+          "ALERT_SINK_URL https://<domain>/v2/enqueue (ALERT_SINK_KIND events-v2, ALERT_SINK_KEY its routing key) and " +
+          "HEARTBEAT_URL https://<domain>/heartbeat/<token>; GET /changes with the routing key's bearer lists what it took",
   );
   return 0;
 }

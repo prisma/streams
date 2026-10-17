@@ -9,6 +9,8 @@
 //   app.ts, module.ts, service.ts             the app, its module and its one service
 //   entry.js                                  entry.ts bundled at the cut (service.ts's
 //                                             build: Composer ships this file alone)
+//   pager-app.ts, pager-service.ts            the paging stand-in's app (scratch and
+//   pager-entry.js                            cert only, pager.ts), from the same root
 //   stages/<stage>.env                        the stage's settings: module.ts's envParams,
 //                                             which `prisma deploy` reads from its environment
 //   release.json                              WatchRelease
@@ -25,7 +27,8 @@
 // never pages the release it watches as the wrong build.
 //
 //   bun deploy/composer/watch-release.ts stage --tree DIR --commit SHA
-//     --tag TAG --cells DIR --entry-js FILE --node-modules DIR --out DIR
+//     --tag TAG --cells DIR --entry-js FILE --pager-entry-js FILE
+//     --node-modules DIR --out DIR
 // is cut-release's staging step; it moves --node-modules into the release.
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -40,7 +43,9 @@ import { STAGES } from "./streams/env";
 export const WATCH_RELEASE_JSON = "release.json";
 /// The app's directory in the repository.
 const WATCH_DIR = "deploy/cell-watch";
-const WATCH_FILES = ["package.json", "bun.lock", "prisma.config.ts", "app.ts", "module.ts", "service.ts"] as const;
+const WATCH_FILES = [
+  "package.json", "bun.lock", "prisma.config.ts", "app.ts", "module.ts", "service.ts", "pager-app.ts", "pager-service.ts",
+] as const;
 /// A stage's settings in the operator's cells directory.
 export const watchSettingsFile = (stage: string) => `${stage}.watch.env`;
 
@@ -112,12 +117,13 @@ export function releaseWatchSettings(path: string, text: string, moduleTs: strin
 
 /// Stage the watch's release at `out`, which must not exist; its stages
 /// are the cells directory's <stage>.watch.env files.
-export function stageWatchRelease(input: IssuerStageInput): WatchRelease {
+export function stageWatchRelease(input: IssuerStageInput & { pagerEntryJs: string }): WatchRelease {
   const { tree, commit, out } = input;
   if (existsSync(out)) throw new AdminError(`${out} exists: a release directory is never overwritten`);
   const files = new Map<string, Uint8Array>();
   for (const f of WATCH_FILES) files.set(f, committedFile(tree, commit, `${WATCH_DIR}/${f}`));
   files.set("entry.js", readFileSync(input.entryJs));
+  files.set("pager-entry.js", readFileSync(input.pagerEntryJs));
   const moduleTs = new TextDecoder().decode(files.get("module.ts"));
   const stages: Record<string, string> = {};
   for (const stage of STAGES) {
@@ -168,7 +174,7 @@ if (import.meta.main) {
   const [command, ...argv] = process.argv.slice(2);
   try {
     if (command !== "stage") throw new AdminError("usage: watch-release.ts stage --tree DIR ... (see the header)", 2);
-    const names = ["tree", "commit", "tag", "cells", "entry-js", "node-modules", "out"];
+    const names = ["tree", "commit", "tag", "cells", "entry-js", "pager-entry-js", "node-modules", "out"];
     const f = parseFlags(argv, { single: names, required: names });
     const r = stageWatchRelease({
       tree: f.must("tree"),
@@ -176,6 +182,7 @@ if (import.meta.main) {
       tag: f.must("tag"),
       cells: f.must("cells"),
       entryJs: f.must("entry-js"),
+      pagerEntryJs: f.must("pager-entry-js"),
       nodeModules: f.must("node-modules"),
       out: f.must("out"),
     });

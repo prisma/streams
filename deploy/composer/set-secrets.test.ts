@@ -240,7 +240,21 @@ describe("set-secrets", () => {
       "--blank", "CANARY_CREDENTIAL", "--management-api", r.api.url);
     expect([blank.code, r.api.valueOf(watch.id, "preview", scratchBranch.id, "CANARY_CREDENTIAL")]).toEqual([0, ""]);
     const other = await setSecrets(env, "production", "--project", watch.id, "--app", "watch", "--from", s.dir, "--management-api", r.api.url);
-    expect([other.code, other.err.split("\n")[0]]).toEqual([2, "set-secrets: --app watch is cell, issuer or cell-watch"]);
+    expect([other.code, other.err.split("\n")[0]]).toEqual([2, "set-secrets: --app watch is cell, issuer, cell-watch or pager-standin"]);
+  });
+
+  test("sets the paging stand-in's two names from its app (--app pager-standin) on a scratch Branch", async () => {
+    const r = rig();
+    const pager = r.api.addProject("streams-pager-standin", "eu-central-1");
+    r.api.addBranch(pager.id, "main");
+    const b = r.api.addBranch(pager.id, "scratch");
+    const s = secretsDir(r.root, ["PAGER_ROUTING_KEY", "PAGER_HEARTBEAT_TOKEN"]);
+    const run = await setSecrets({ PRISMA_TOKEN_FILE: r.tokenFile }, "scratch", "--project", pager.id, "--branch", b.id,
+      "--app", "pager-standin", "--from", s.dir, "--management-api", r.api.url);
+    expect([run.code, run.err]).toEqual([0, ""]);
+    expect(r.api.variables.map((v) => [v.class, v.branchId, v.key])).toEqual([
+      ["preview", b.id, "PAGER_ROUTING_KEY"], ["preview", b.id, "PAGER_HEARTBEAT_TOKEN"],
+    ]);
   });
 
   test("reads the token only from the file PRISMA_TOKEN_FILE names, which only its owner may read", async () => {

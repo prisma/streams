@@ -95,7 +95,7 @@ describe("the cell watch's Composer app", () => {
     expect(code("module.ts").join("\n")).toContain('id: "watch",');
     expect(code("service.ts").join("\n")).toContain('name: "cellwatch",');
     expect(read("service.ts")).toContain('build: node({ module: import.meta.url, entry: "entry.js" }),');
-    expect(read(".gitignore").split("\n")).toEqual([".alchemy/", ".prisma-composer/", "entry.js", ""]);
+    expect(read(".gitignore").split("\n")).toEqual([".alchemy/", ".prisma-composer/", "entry.js", "pager-entry.js", ""]);
   });
 
   test("pins Composer, the CLI and the keep-awake guard exactly, the guard at the issuer's version", () => {

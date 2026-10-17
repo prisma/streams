@@ -54,6 +54,8 @@ export const TREE_FILES = [
   "deploy/cell-watch/app.ts",
   "deploy/cell-watch/module.ts",
   "deploy/cell-watch/service.ts",
+  "deploy/cell-watch/pager-app.ts",
+  "deploy/cell-watch/pager-service.ts",
   "deploy/profiles/compute-1g.env",
   "deploy/profiles/shared-cell.env",
   "src/registry.rs",
@@ -210,12 +212,14 @@ export function stageWatch(o: {
   mkdirSync(cells);
   for (const [stage, text] of Object.entries(o.settings)) writeFileSync(join(cells, `${stage}.watch.env`), text);
   writeFileSync(join(root, "entry.js"), "// the watch's bundle\n");
+  writeFileSync(join(root, "pager-entry.js"), "// the paging stand-in's bundle\n");
   mkdirSync(join(root, "node_modules", ".bin"), { recursive: true });
   writeFileSync(join(root, "node_modules", ".bin", "prisma"), o.prismaScript ?? "#!/bin/sh\nexit 0\n");
   chmodSync(join(root, "node_modules", ".bin", "prisma"), 0o755);
   const out = join(o.releases, `${o.tag}-watch`);
   const release = stageWatchRelease({
-    tree: o.tree, commit: o.commit, tag: o.tag, cells, entryJs: join(root, "entry.js"), nodeModules: join(root, "node_modules"), out,
+    tree: o.tree, commit: o.commit, tag: o.tag, cells, entryJs: join(root, "entry.js"), pagerEntryJs: join(root, "pager-entry.js"),
+    nodeModules: join(root, "node_modules"), out,
   });
   return { dir: out, release };
 }

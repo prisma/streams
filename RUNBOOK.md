@@ -1153,6 +1153,25 @@ same drills, on the certification cell under the Q5 field approval and
 with the watch sending to the paging service, must each ring
 `<on-call>`'s phone (§7.5).
 
+**A scratch cell's paging stand-in.** A scratch or cert cell deployed
+before the paging service exists still needs https endpoints for the
+watch's sink and heartbeat (it refuses anything else off this machine).
+The watch's release carries `pager.ts` as a Composer app of its own
+(`pager-app.ts`, project `streams-pager-standin`, apart from the watch so
+that its heartbeat monitor pages while the watch is down): set its two
+secrets, `PAGER_ROUTING_KEY` (16 characters or more) and
+`PAGER_HEARTBEAT_TOKEN` (16 to 128 of `[A-Za-z0-9_-]`), with
+`set-secrets <stage> --app pager-standin`, deploy it with
+`deploy-release.sh <scratch|cert> <tag>-watch --app pager-standin`, and
+give the watch `ALERT_SINK_KIND` `events-v2`, `ALERT_SINK_URL`
+`https://<domain>/v2/enqueue`, `ALERT_SINK_KEY` the routing key and
+`HEARTBEAT_URL` `https://<domain>/heartbeat/<token>` (set-secrets, then
+redeploy the watch). It runs rows 1 and 2's checks against the cell's
+origin and keeps what it took in memory: `GET /changes` with the routing
+key as bearer lists it. Nobody is called: read the listing after each
+drill. Production pages through the real paging service, PagerDuty Events
+v2, as §7.5 sets it up; `deploy-release.sh` refuses the stand-in there.
+
 A single-server shared cell publishes no `prisma-streams-internal` key and
 sets no `FLEET_INTERNAL_TOKEN`: its internal surface opens to nothing. A
 key for that audience in its keys feed is an incident.

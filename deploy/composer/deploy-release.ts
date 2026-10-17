@@ -92,7 +92,7 @@ const USAGE = `usage: PRISMA_TOKEN_FILE=F deploy/composer/deploy-release.sh <sta
   [--cell-url URL --bearer-file F --canary-token-file T [--restart]] [--management-api URL]
   [--issuer-release-dir DIR --issuer-project ID [--issuer-branch ID]]
 or: ... <scratch|cert> <release-dir> --project ID --branch ID --workspace ID --destroy
-or: ... <stage> <tag>-watch --app cell-watch --project ID [--branch ID] --workspace ID [--management-api URL]`;
+or: ... <stage> <tag>-watch --app cell-watch|pager-standin --project ID [--branch ID] --workspace ID [--management-api URL]`;
 export const DEPLOY_LOG = "deploy-log.jsonl";
 const CELL_CHECK_DEADLINE_SECS = 300;
 const PROBE_TIMEOUT_MS = 15_000;

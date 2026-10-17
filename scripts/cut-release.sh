@@ -15,7 +15,9 @@
 # release as deploy/cells/<stage>.env; each <stage>.issuer.env (the issuer's
 # settings for that stage) into the issuer's as stages/<stage>.env; each
 # <stage>.watch.env (the cell watch's settings) into the watch's as
-# stages/<stage>.env; nothing else of DIR is read.
+# stages/<stage>.env (the watch's release also carries the paging
+# stand-in's app, which deploys to scratch or cert only); nothing else of
+# DIR is read.
 # $SOAK_HOME holds the artifact bucket's files, as build-upload.sh reads
 # them (artifact-endpoint.txt, artifact-bucket.txt, binid.txt, binsec.txt).
 #
@@ -102,9 +104,11 @@ BINS=$TREE/target/x86_64-unknown-linux-musl/release
 ENTRY_JS=$CUT/entry.js
 ISSUER_JS=$CUT/issuer-entry.js
 WATCH_JS=$CUT/watch-entry.js
+PAGER_JS=$CUT/pager-entry.js
 (cd "$TREE" && bun build deploy/composer/streams/entry.ts --target=bun --format=esm --outfile "$ENTRY_JS")
 (cd "$TREE" && bun build deploy/composer-issuer/issuer/entry.ts --target=bun --format=esm --outfile "$ISSUER_JS")
 (cd "$TREE" && bun build deploy/cell-watch/entry.ts --target=bun --format=esm --outfile "$WATCH_JS")
+(cd "$TREE" && bun build deploy/cell-watch/pager-entry.ts --target=bun --format=esm --outfile "$PAGER_JS")
 
 # 6.
 STAGED=$CUT/release
@@ -117,7 +121,8 @@ ISSUER_STAGED=$CUT/issuer
   --out "$ISSUER_STAGED")
 WATCH_STAGED=$CUT/watch
 (cd "$TREE" && bun deploy/composer/watch-release.ts stage --tree "$TREE" --commit "$COMMIT" --tag "$TAG" \
-  --cells "$CELLS" --entry-js "$WATCH_JS" --node-modules "$TREE/deploy/cell-watch/node_modules" --out "$WATCH_STAGED")
+  --cells "$CELLS" --entry-js "$WATCH_JS" --pager-entry-js "$PAGER_JS" --node-modules "$TREE/deploy/cell-watch/node_modules" \
+  --out "$WATCH_STAGED")
 
 # 7.
 python3 -E - "$STAGED/deploy/composer/streams/streams-slate" "releases/$TAG/streams-slate" "$S" "$RESULTS" \

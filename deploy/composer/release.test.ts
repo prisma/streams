@@ -229,14 +229,14 @@ describe("the issuer's release", () => {
 });
 
 describe("the cell watch's release", () => {
-  test("stages deploy/cell-watch's files from the same commit, the bundle, and a stage's settings from <stage>.watch.env", () => {
+  test("stages deploy/cell-watch's files from the same commit, both bundles, and a stage's settings from <stage>.watch.env", () => {
     const { tree, commit } = fakeTree();
     const releases = join(scratchDir(), "releases");
     const settings = watchSettingsText(commit.slice(0, 12), "cell_p1");
     const { dir, release } = stageWatch({ tree, commit, tag: "rc-1", settings: { production: settings }, releases });
     expect([dir, listing(dir)]).toEqual([join(releases, "rc-1-watch"), [
-      "app.ts", "bun.lock", "entry.js", "module.ts", "node_modules", "package.json", "prisma.config.ts", "release.json",
-      "service.ts", "stages/", "stages/production.env",
+      "app.ts", "bun.lock", "entry.js", "module.ts", "node_modules", "package.json", "pager-app.ts", "pager-entry.js",
+      "pager-service.ts", "prisma.config.ts", "release.json", "service.ts", "stages/", "stages/production.env",
     ]]);
     const pkg = JSON.parse(readFileSync(join(REPO, "deploy/cell-watch/package.json"), "utf8"));
     expect({ ...release, files: Object.keys(release.files) }).toEqual({
@@ -244,7 +244,10 @@ describe("the cell watch's release", () => {
       stages: { production: sha256(Buffer.from(settings)) },
       composer_version: pkg.dependencies["@prisma/composer"],
       lockfile_sha256: sha256(readFileSync(join(REPO, "deploy/cell-watch/bun.lock"))),
-      files: ["app.ts", "bun.lock", "entry.js", "module.ts", "package.json", "prisma.config.ts", "service.ts", "stages/production.env"],
+      files: [
+        "app.ts", "bun.lock", "entry.js", "module.ts", "package.json", "pager-app.ts", "pager-entry.js", "pager-service.ts",
+        "prisma.config.ts", "service.ts", "stages/production.env",
+      ],
     });
     expect(readFileSync(join(dir, "module.ts"))).toEqual(readFileSync(join(REPO, "deploy/cell-watch/module.ts")));
     writeFileSync(join(dir, ".env"), "ALERT_SINK_KEY=x\n");

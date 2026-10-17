@@ -11,8 +11,8 @@
 #   PRISMA_TOKEN_FILE=F deploy/composer/deploy-release.sh <scratch|cert>
 #     <release-dir> --project ID --branch ID --workspace ID --destroy
 #   PRISMA_TOKEN_FILE=F deploy/composer/deploy-release.sh <stage>
-#     <releases>/<tag>-watch --app cell-watch --project ID [--branch ID]
-#     --workspace ID [--management-api URL]
+#     <releases>/<tag>-watch --app cell-watch|pager-standin --project ID
+#     [--branch ID] --workspace ID [--management-api URL]
 #
 # <stage> is production (the app's default stage) or scratch or cert (named
 # stages: Branches of the project, --branch). <release-dir> is one
@@ -61,7 +61,9 @@
 # the cell's <tag>) alone, into the watch's own project: deploy-watch.ts's
 # header lists its refusals; its settings are its stage's envParams, its
 # region the cell's, and its check is its heartbeat (exit 0, logged
-# unchecked).
+# unchecked). --app pager-standin deploys the paging stand-in for a scratch
+# or cert cell from the same release (never production, which pages
+# through the real paging service, RUNBOOK §7.5).
 #
 # --destroy (scratch or cert only, never production) runs the release's
 # destroy.ts instead: Composer's destroy of that named stage, whose

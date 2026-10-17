@@ -579,11 +579,52 @@ describe("deploy-release.sh", () => {
     const other = await deployWatch(w3, unset.dir, ["--app", "issuer", "--project", unset.project, "--workspace", "wksp_1"]);
     const destroy = await deployWatch(w3, unset.dir, [...unset.args, "--destroy"]);
     expect([other, destroy].map((x) => [x.code, x.err.split("\n")[0]])).toEqual([
-      [2, "deploy-release: --app issuer is cell-watch (the cell deploys without --app)"],
-      [2, "deploy-release: --app cell-watch takes no --destroy: delete the watch's Branch (or its project) by hand"],
+      [2, "deploy-release: --app issuer is cell-watch or pager-standin (the cell deploys without --app)"],
+      [2, "deploy-release: --app takes no --destroy: delete the app's Branch (or its project) by hand"],
     ]);
     expect(prismaRuns(w3)).toEqual([]);
   }, 60_000);
+
+  test("--app pager-standin deploys the paging stand-in's app from the watch's release, on a named stage only, with the cell's origin", async () => {
+    const w = await world();
+    const cell = release(w, "rc-1", { cells: { production: cellsText("production"), scratch: cellsText("scratch") } }).release;
+    const project = w.api.addProject("streams-pager-standin", "eu-central-1");
+    w.api.addBranch(project.id, "main");
+    const b = w.api.addBranch(project.id, "scratch");
+    for (const n of ["PAGER_ROUTING_KEY", "PAGER_HEARTBEAT_TOKEN"]) {
+      w.api.addVariable({ projectId: project.id, branchId: b.id, class: "preview", key: n }, `${n}-v`);
+    }
+    const settings = watchSettingsText(w.tree.commit);
+    const { dir } = stageWatch({
+      ...w.tree, tag: "rc-1", releases: w.releases, settings: { production: settings, scratch: settings },
+      prismaScript: prismaScript(w.record, null),
+    });
+    const args = ["--app", "pager-standin", "--project", project.id, "--workspace", "wksp_1", "--management-api", w.api.url];
+    const spawn = async (stageName: string, more: string[]) => {
+      const proc = Bun.spawn(["bash", SCRIPT, stageName, dir, ...args, ...more], {
+        env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "/", PRISMA_TOKEN_FILE: w.tokenFile },
+        stdout: "pipe", stderr: "pipe",
+      });
+      const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+      return { code, out, err };
+    };
+    refusedBeforeDeploy(w, await spawn("production", []),
+      "the paging stand-in deploys to scratch or cert only: production pages through the real paging service (RUNBOOK §7.5)");
+    const run = await spawn("scratch", ["--branch", b.id]);
+    expect([run.code, run.err]).toEqual([0, ""]);
+    const [only] = prismaRuns(w);
+    expect([only.argv, realpathSync(only.cwd), only.env]).toEqual([
+      ["deploy", "pager-app.ts", "--stage", "scratch"], realpathSync(dir),
+      {
+        PATH: process.env.PATH, HOME: process.env.HOME, PRISMA_WORKSPACE_ID: "wksp_1", PRISMA_SERVICE_TOKEN: w.api.token,
+        PRISMA_REGION: "eu-central-1", STREAMS_CELL_ORIGIN: "https://cell.example",
+      },
+    ]);
+    expect(run.out).toContain("deploy-release: the paging stand-in of rc-1 is deployed to scratch; give the watch its");
+    expect(log(w).map((e) => [e.app, e.stage, e.branch, e.server_sha256, e.result])).toEqual([
+      ["pager-standin", "scratch", b.id, cell.server_sha256, "unchecked"],
+    ]);
+  }, 30_000);
 
   test("a failed CLI run is logged and refused; --cell-url without cell-check's files is usage", async () => {
     const w = await world();
