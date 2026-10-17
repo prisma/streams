@@ -1769,7 +1769,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "a30ac5669ead897c89808dc5450e03502e19293a66508f2ff0346760c96be041",
+    "function_sha256": "89555f4bd09d94abddafb1859f044fe9c4f605a963c73f587b4ab94a0865ad75",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_controller.rs",

@@ -977,6 +977,7 @@ async fn a_refused_metrics_point_is_sent_again_at_the_next_drain_round() {
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(ops_metrics_records(&state).await, 0, "shed");
     assert!(state.admission.snapshot().shed.inflight >= 1);
+    let shed = state.runtime.ops.last_snapshot().map(|s| s.ts_ms);
     state.admission.add_inflight_for_test(-2);
     let cleared_ms = state.protocol_clock.now().ms();
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -994,6 +995,6 @@ async fn a_refused_metrics_point_is_sent_again_at_the_next_drain_round() {
     assert!(points[0].ts_ms < cleared_ms, "the shed one");
     // The loop cached the shed point for /operator/data.json before its append (#159).
     let cached = state.runtime.ops.last_snapshot().map(|s| s.ts_ms);
-    assert_eq!(cached, Some(points[0].ts_ms), "cached");
+    assert_eq!([shed, cached], [Some(points[0].ts_ms); 2], "cached");
     rig.shutdown().await;
 }
