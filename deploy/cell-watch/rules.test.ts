@@ -17,9 +17,9 @@ const slug = (heading: string) =>
   heading.trim().toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, "").replace(/\s/g, "-");
 
 describe("the table", () => {
-  test("holds rows 3 to 28 once each, every anchor a RUNBOOK heading, the level rules 8, 10 and 12 to 16", () => {
-    expect(RULES.map((r) => r.row)).toEqual(Array.from({ length: 26 }, (_, i) => i + 3));
-    expect(new Set(RULES.map((r) => r.id)).size).toBe(26);
+  test("holds rows 3 to 29 once each, every anchor a RUNBOOK heading, the level rules 8, 10 and 12 to 16", () => {
+    expect(RULES.map((r) => r.row)).toEqual(Array.from({ length: 27 }, (_, i) => i + 3));
+    expect(new Set(RULES.map((r) => r.id)).size).toBe(27);
     for (const r of RULES) expect(r.id).toMatch(new RegExp(`^r${String(r.row).padStart(2, "0")}_[a-z0-9_]+$`));
     const runbook = readFileSync(join(import.meta.dir, "..", "..", "RUNBOOK.md"), "utf8");
     const anchors = new Set(
@@ -31,7 +31,7 @@ describe("the table", () => {
 
   test("the issuer's rows run only with ISSUER_ORIGIN, row 5 only with EXPECTED_GIT", () => {
     const on = (cfg: typeof CFG) => RULES.filter((r) => r.enabled(cfg)).map((r) => r.row);
-    expect(on(CFG)).toEqual([3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 23, 24, 25, 26]);
+    expect(on(CFG)).toEqual([3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 23, 24, 25, 26, 29]);
     expect(on(ALL_ROWS)).toEqual(RULES.map((r) => r.row));
   });
 });
@@ -224,6 +224,7 @@ function lacedData(i: number): Json {
     "local.store.ops.put:wal": { n: 10, err: 5, p50_ms: 2500, p90_ms: 2500, p99_ms: 2500, max_ms: 2500 },
     "local.store.slow": [{ ago_s: 1, op: "put", class: "wal", ms: 2500, ok: false, path: OBJECT_PATH }],
     "local.store.totals.ops.get:other": { ok: i * 1_000_000, not_found: 0, unbilled: 0, err: 0 },
+    "local.store.totals.bytes_put": i * 2 ** 40,
     "local.usage_overflow_admits": 3,
     "ops.cell": laced,
     "ops.counters.unowned_meter_events_total": i,

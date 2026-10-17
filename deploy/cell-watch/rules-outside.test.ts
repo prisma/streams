@@ -2,7 +2,9 @@
 // alerting triage B2, rows 18, 19, 21-25, 27 and 28). Run with
 // `bun test ./deploy/cell-watch`.
 import { describe, expect, test } from "bun:test";
-import { BUDGET_DEFAULT, type CanaryResult, type CanaryStep, DEFAULT_PRICES, type Json, type Poll, STORED_GROWTH_DEFAULT } from "./rules";
+import {
+  BUDGET_DEFAULT, BYTES_PUT_FACTOR, type CanaryResult, type CanaryStep, DEFAULT_PRICES, type Json, type Poll, STORED_GROWTH_DEFAULT,
+} from "./rules";
 import { ALL_ROWS, BILLING, billingWithStored, CFG, DATA, healthyPoll, kinds, ofRow, ORIGIN, patch, Watch } from "./rig";
 
 const GIB = 2 ** 30;
@@ -303,5 +305,54 @@ describe("rows 27 and 28: the issuer's metrics", () => {
     expect([row(w, 27), row(w, 28)]).toEqual([
       [["trigger", "NOTIFY"], ["resolve", "NOTIFY"]], [["trigger", "NOTIFY"], ["resolve", "NOTIFY"]],
     ]);
+  });
+});
+
+describe("row 29: the bytes the cell put", () => {
+  const put = (w: Watch, bytes: number, bootId = "boot-1") => {
+    const health = { ...healthyPoll(0).health, bootId };
+    w.poll({ health, data: patch(DATA, { "local.store.totals.bytes_put": bytes }) });
+    w.polls(3, { health, data: patch(DATA, { "local.store.totals.bytes_put": bytes }) });
+  };
+
+  test("notifies when bytes_put grows by more than 8 x G within 24 h, not when spread over more, and resolves once it leaves the window", () => {
+    const bar = BYTES_PUT_FACTOR * STORED_GROWTH_DEFAULT;
+    expect([BYTES_PUT_FACTOR, bar]).toEqual([8, 400 * GIB]);
+    const slow = new Watch();
+    // 26 h at a rate that adds the bar in 24.5 h: never more than it within 24 h.
+    for (let m = 0; m <= 26 * 60; m++) put(slow, Math.floor((bar * m) / (24.5 * 60)));
+    expect(row(slow, 29)).toEqual([]);
+    const fast = new Watch();
+    for (let m = 0; m <= 23 * 60; m++) put(fast, Math.floor((bar * m) / (23 * 60)));
+    put(fast, bar + 1);
+    expect(fired(fast, 29).map((e) => [e.class, e.values])).toEqual([
+      ["NOTIFY", { put_growth_bytes: bar + 1, window_secs: 23 * 3600 + 60, bar_bytes: bar }],
+    ]);
+    for (let m = 0; m < 24 * 60 + 50; m++) put(fast, bar + 1);
+    expect(row(fast, 29)).toEqual([["trigger", "NOTIFY"], ["resolve", "NOTIFY"]]);
+  });
+
+  test("a restart, or a counter that went down, starts the 24 h again", () => {
+    const bar = BYTES_PUT_FACTOR * STORED_GROWTH_DEFAULT;
+    // A new boot id whose counter is already past the old one's: what the
+    // old process put is not the new one's.
+    const restarted = new Watch();
+    put(restarted, 0);
+    put(restarted, bar, "boot-2");
+    put(restarted, bar + 10 * GIB, "boot-2");
+    expect(row(restarted, 29)).toEqual([]);
+    const reset = new Watch();
+    put(reset, 300 * GIB);
+    put(reset, GIB);
+    put(reset, GIB + bar + 1);
+    expect(fired(reset, 29).map((e) => e.values.put_growth_bytes)).toEqual([bar + 1]);
+  });
+
+  test("is skipped while /operator/data.json carries no store totals", () => {
+    const w = new Watch();
+    w.poll({ data: patch(DATA, { "local.store.totals.bytes_put": 0 }) });
+    w.poll({ data: patch(DATA, { "local.store": null }) });
+    w.poll({ data: patch(DATA, { "local.store.totals.bytes_put": 500 * GIB }) });
+    expect(fired(w, 29).map((e) => e.values.put_growth_bytes)).toEqual([500 * GIB]);
   });
 });

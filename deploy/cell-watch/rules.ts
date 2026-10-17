@@ -136,6 +136,12 @@ export interface RulesConfig {
 export const DEFAULT_PRICES: Prices = { classA: 5e-6, classB: 5e-7, storageGibMonth: 0.015, serverPerDay: 0.144 };
 /// The owner's answer S3 of 2026-10-12: G = 50 GiB/day and $10/day per cell.
 export const STORED_GROWTH_DEFAULT = 50 * GIB;
+/// Row 29's bar is this many G of `bytes_put` per 24 h: every byte the
+/// process puts, so the WAL, the L0 flushes, compaction and the history
+/// absorber each write a stored byte again. The lead's factor under the
+/// owner's delegation of 2026-10-17, uncalibrated until the certification
+/// cell measures `bytes_put` per stored byte.
+export const BYTES_PUT_FACTOR = 8;
 export const BUDGET_DEFAULT = 10;
 
 export function rulesConfig(c: Pick<RulesConfig, "cellId" | "cellOrigin"> & Partial<RulesConfig>): RulesConfig {
@@ -615,6 +621,22 @@ function storedGrowth(c: Ctx): Answer {
   return fire("NOTIFY", { written_growth_bytes: growth, window_secs: secs(c.at - first.at), g_bytes: c.cfg.storedGrowthPerDay });
 }
 
+/// `local.store.totals.bytes_put`, every byte the process put since
+/// `totals.since_ms`: the bound from above on the bucket's growth that
+/// row 23 cannot see (bytes written and deleted within one drain round
+/// never reach `writtenBytes`; the owner's call stored-cap #1 (c) of
+/// 2026-10-14). Cell-wide and unattributed. A restart starts it again.
+function bytesPutGrowth(c: Ctx): Answer {
+  if (c.boot.restarted) delete c.memo.samples.put;
+  const put = num(get(c.poll.data, "local", "store", "totals", "bytes_put"));
+  if (put === null) return "skip";
+  const first = c.window("put", [put], DAY);
+  const growth = put - (first.v[0] ?? put);
+  const bar = BYTES_PUT_FACTOR * c.cfg.storedGrowthPerDay;
+  if (growth <= bar) return "clean";
+  return fire("NOTIFY", { put_growth_bytes: growth, window_secs: secs(c.at - first.at), bar_bytes: bar });
+}
+
 /// Billed Class A and Class B requests in /operator/data.json's
 /// `local.store.totals.ops` (cells `<op>:<class>`, counts by outcome).
 function billedRequests(ops: Json): [number, number] {
@@ -742,6 +764,7 @@ export const RULES: readonly Rule[] = [
   rule(26, "usage_overflow", RUNBOOK.shared, usageOverflow),
   rule(27, "issuer_cache_age", RUNBOOK.shared, issuerCacheAge, { enabled: withIssuer }),
   rule(28, "admission_gate_closed", RUNBOOK.shared, admissionGateClosed, { enabled: withIssuer }),
+  rule(29, "bytes_put_growth", RUNBOOK.billing, bytesPutGrowth),
 ];
 
 // ---- the step --------------------------------------------------------------

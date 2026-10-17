@@ -472,8 +472,10 @@ recommended.
   stored and deleted between two drain rounds of a shard never reach
   #157's `writtenBytes`): (a) the recorded residual, as built (#158 and
   RUNBOOK's row 23, which names `local.store.totals.bytes_put` as the
-  bound from above); (c) now: a cell-wide alarm in the cell watch on the
-  growth rate of `bytes_put` (unattributed; compaction raises it too);
+  bound from above); (c), built at landing-4: the cell watch's row 29
+  (`r29_bytes_put_growth`), a cell-wide NOTIFY when `bytes_put` grows by
+  more than 8 × G in 24 h (unattributed; compaction raises it too; the
+  factor is the lead's, uncalibrated);
   (b), exact per-project written bytes through a lifetime written-bytes
   counter in the segment snapshot, folded into layout 6's billing-row
   work (L4, slim rows, the same snapshot format change) before L6-G opens
