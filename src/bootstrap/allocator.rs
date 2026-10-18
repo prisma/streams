@@ -33,9 +33,19 @@ pub enum ThpPosture {
 /// children, then reads the flag back. The binary calls this first, before
 /// the allocator maps the arenas the service runs on. The flag holds under
 /// both kernel modes (`always` and `madvise`), whatever the allocator asks
-/// for, which an allocator option alone does not.
-#[cfg(target_os = "linux")]
+/// for, which an allocator option alone does not. One body serves every
+/// target, so no variant of it is compiled out where it is tested.
 pub fn disable_transparent_huge_pages() -> ThpPosture {
+    #[cfg(target_os = "linux")]
+    let posture = prctl_disable_transparent_huge_pages();
+    #[cfg(not(target_os = "linux"))]
+    let posture = ThpPosture::NotLinux;
+    posture
+}
+
+/// Sets `PR_SET_THP_DISABLE` and reads it back.
+#[cfg(target_os = "linux")]
+fn prctl_disable_transparent_huge_pages() -> ThpPosture {
     let (zero, one): (libc::c_ulong, libc::c_ulong) = (0, 1);
     // SAFETY: PR_SET_THP_DISABLE takes only integer arguments and changes
     // this process's huge-page eligibility; no memory is passed to the
@@ -49,12 +59,6 @@ pub fn disable_transparent_huge_pages() -> ThpPosture {
         1 => ThpPosture::Off,
         other => ThpPosture::Unconfirmed(other),
     }
-}
-
-/// Not Linux: nothing to turn off.
-#[cfg(not(target_os = "linux"))]
-pub fn disable_transparent_huge_pages() -> ThpPosture {
-    ThpPosture::NotLinux
 }
 
 /// Collect rounds requested since boot. A thread collects once per round it
