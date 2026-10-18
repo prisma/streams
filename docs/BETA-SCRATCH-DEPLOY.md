@@ -70,6 +70,10 @@ four keys (their pairs under `$S/secrets` and `$S/secrets/issuer`,
 cell-admin's `$S/secrets/cell-admin-s3.json`), `$S/cells/scratch.env` and
 the bucket half of `$S/cells/scratch.issuer.env`.
 
+Seen on Compute (2026-10-18): a project created through the Management API
+already owns one Branch, `main`, with `role: production` and
+`isDefault: true`; the tool adopts it and makes no Branch POST for it.
+
 ## 2. Keys and the remaining secrets
 
 Each value is written by a builtin or a tool straight into its file:
@@ -99,15 +103,23 @@ credentials come from `cell-admin` (section 7).
 ## 3. The cell's state
 
 ```bash
-CA="bun deploy/cell-admin/cell-admin.ts"
+CA="bun deploy/cell-admin/cell-admin.ts"    # zsh does not split it: write ${=CA}
 STATE=s3://$(jq -r .bucket $S/secrets/cell-admin-s3.json)/cells/$CELL
 $CA init --cell-id $CELL --deployment-project <the cell's system project id> --account <the account sink> \
   --public-key $S/sign.pub --issuer https://auth.prisma.io --cell-env $S/cells/scratch.env \
   --state $STATE --s3-credentials $S/secrets/cell-admin-s3.json
+echo "PATH_PREFIX=cells/$CELL" >> $S/cells/scratch.env
 ```
 
 It publishes the first bundle (without it the cell answers 503
 `feeds_unpublished`) and places the canary project `sp_canary_$CELL`.
+The two ids are the cell's own reserved identities, any id but the
+placeholders `proj_local`/`acct_local` (the scratch rehearsal used
+`proj_beta_scratch_1_system` and `acct_beta_scratch_1_sink`).
+`PATH_PREFIX` is the operator's line of the cells file (neither tool
+writes it); without it `deploy-release.sh` refuses the release before
+it deploys (`scratch.env does not set PATH_PREFIX`), and a release is
+immutable, so it must be in the file before cut A.
 Optionally add `KEEP_AWAKE_UNTIL_MS=<epoch ms>` to `$S/cells/scratch.env`
 as a cost cap (scratch only; production refuses it).
 
@@ -149,8 +161,12 @@ $DR scratch $REL/$C-a --project $CP --branch $CB --workspace $WS --state $STATE 
   --s3-credentials $S/secrets/cell-admin-s3.json                     # exit 3: deployed, not checked
 ```
 
-Read the cell's domain from the Console or the deploy's output:
-`CELL_ORIGIN=https://<cell domain>`. Then make the canary token cell-check
+Read the cell's domain from the deploy's output, its line
+`{"kind":"endpoint","name":"streamscell","url":...}`:
+`CELL_ORIGIN=https://<cell domain>`. On Compute it is
+`https://<service id without cps_>.fra.prisma.build` and stays the same
+across every later deploy, restart and rollback of that service (the
+same holds for the issuer, the watch and the stand-in). Then make the canary token cell-check
 needs and run the same command again with the cell's address: the deploy
 is a no-op (same release, same nonce) and cell-check runs.
 
@@ -274,13 +290,41 @@ four projects, are deleted by hand (`DELETE /v1/branches/{id}`, then
 production Branch or a project. Then remove `$S` and the release
 directories.
 
-## Unverified on the platform
+## Seen on the platform (scratch rehearsal, 2026-10-18)
 
-Every tool above has run against offline fakes only. Not yet seen on
-Compute: whether a fresh project already owns its default Branch (the
-tools handle both), musl boot and the CA bundle, adoption of a
-pre-created project by name, a service domain's stability across deploys,
-two Composer apps deployed from one release root (the watch and the
-stand-in), Branch-scoped secrets being invisible to other Branches, an
-unchanged redeploy being a no-op, and the platform storing an empty
-variable value (`set-secrets --blank`).
+The first run of this sequence on Compute (owner's Personal workspace,
+eu-central-1, commit 590b0073):
+
+- **The Compute edge drops every request header named `Prisma-*`.** A
+  create with `Prisma-Encryption-Key` (any case, HTTP/2 or 1.1) answers
+  400 `missing_key`, while `Stream-Encryption-Key` on the same request
+  reaches the cell (400 `unknown_field`). Response headers named
+  `Prisma-*` pass. So on a `*.prisma.build` domain no stream can be
+  created, written or read: cell-check fails at its canary round trip,
+  the watch's canary (row 19) pages, and the SDK, `bench/k2cost` and
+  `bench/lifecycle` cannot exercise the data path. Everything that needs
+  no stream key works (health, `/v1/debug`, the catalog, usage, the
+  issuer's exchange). Until the platform passes the header or the wire
+  takes the key under another name, run cuts without `--cell-url` (exit
+  3) to deploy the issuer.
+- `provision-cell.py` needs its own User-Agent: api.prisma.io answers 403
+  to Python's default one.
+- A fresh project owns its production Branch; a project created first is
+  adopted by name by `prisma deploy`; musl boots (glibc host, CA bundle
+  `/etc/ssl/certs/ca-certificates.crt`, 1 GiB, 1 CPU, Bun 1.4.3); two
+  Composer apps (the watch and the stand-in) deploy from one release
+  root; service domains are stable across deploys.
+- A redeploy of the running release with the same nonce reports updates
+  but makes no new deployment (the cell's boot id and latest deployment
+  stay); a changed secret makes the issuer a new deployment.
+- `--restart` (new nonce), a rollback to the previous cut and the
+  forward deploy each switched to the new instance about 42 s after the
+  command started with no failed request at a 500 ms probe (overlap):
+  the slowest `/health` answer at the switch was 0.7 s, 0.3 s and 1.6 s.
+- Each cut of the same commit builds a server with a different sha256
+  (the cut's worktree path differs), so a "rollback" to an earlier cut of
+  one commit still changes the binary.
+
+Still unverified: Branch-scoped secrets being invisible to other
+Branches, and the platform storing an empty variable value
+(`set-secrets --blank`).
