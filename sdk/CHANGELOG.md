@@ -13,6 +13,19 @@ not carried over).
 
 ### Breaking
 
+- The SDK names its request headers in the `Streams-` form the server
+  accepts from this version on (edge change #173):
+  `Streams-Encryption-Key`, `Streams-Routing-Key` and
+  `Streams-Consumer-Version`, where it sent `Prisma-Encryption-Key`,
+  `Prisma-Routing-Key` and `Prisma-Consumer-Version`. The Prisma Compute
+  edge in front of `*.prisma.build` strips every request header whose
+  name starts with `Prisma-`, so a cell there never received the stream
+  key and refused every stream operation 400 `missing_key`. A server
+  before 0.3.0-beta.1 ignores the `Streams-` names (it answers
+  `missing_key`), so this SDK needs a server of its own version. Response
+  headers keep their `Prisma-` names. Code that calls the HTTP API itself
+  may send either form; both with different values are refused 400
+  `conflicting_header`.
 - A plain append (`append`, `appendBytes`, `appendMany`) whose answer
   leaves its outcome unknown rejects with the new
   `AppendOutcomeUnknownError` (`code: "outcome_unknown"`,
@@ -180,6 +193,7 @@ risk grade (high, medium, low) is the hardening program's.
 - #166 (low): The SDK refuses a stream key that, the whitespace around it trimmed, holds anything but printable ASCII without spaces, or that is not a string, with `StreamsError` `invalid_encryption_key_format` before any request and without showing the key
 - #167 (low): The SDK refuses, before any request, a routing key, a producer id or a bearer token that a header cannot carry byte for byte, with `StreamsError` `invalid_routing_key`, `invalid_producer` or `invalid_token_format`, without showing it
 - #168 (low): The SDK's `read()` and `subscribe()` send a space in a routing key as `%20`, so a key with a space reads the lane its appends were written to
+- #173 (medium): Every request header the product surface reads as `Prisma-<Name>` is also accepted as `Streams-<Name>`, because the Prisma Compute edge strips `Prisma-*` request headers; both names with different values are refused 400 `conflicting_header`; the SDK sends the `Streams-` form
 
 #### Access tokens and the interim token issuer (`connect()`, `prismaStreamsCredential`)
 

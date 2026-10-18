@@ -23,7 +23,7 @@ async function cell() {
       seen.push({
         method: req.method,
         url: req.url,
-        routingKey: header["prisma-routing-key"],
+        routingKey: header["streams-routing-key"],
         producerId: header["producer-id"],
         authorization: header["authorization"],
       });

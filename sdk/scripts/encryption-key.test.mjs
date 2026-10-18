@@ -9,7 +9,7 @@ import { StreamsClient, StreamsError, generateEncryptionKey } from "../dist/inde
 async function cell() {
   const keys = [];
   const server = http.createServer((req, res) => {
-    keys.push(req.headers["prisma-encryption-key"]);
+    keys.push(req.headers["streams-encryption-key"]);
     req.resume();
     req.on("end", () => {
       res.setHeader("content-type", "application/json");

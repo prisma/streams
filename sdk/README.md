@@ -123,6 +123,14 @@ WebCrypto, as 43 characters of unpadded base64url) and keep it in your
 secret store. The service never stores it: if you lose it, the stream's
 data cannot be read by anyone.
 
+The SDK sends the key in the `Streams-Encryption-Key` request header, a
+routing key in `Streams-Routing-Key` and a consumer's version in
+`Streams-Consumer-Version`. The server also accepts each under its
+`Prisma-` name, but the Prisma Compute edge in front of `*.prisma.build`
+strips every request header named `Prisma-*`, so code that calls the HTTP
+API itself should send the `Streams-` form too. Response headers keep
+their `Prisma-` names (`Prisma-Next-Cursor`, `Prisma-Consumer-Version`).
+
 `client.stream()` and `client.createStream()` trim the whitespace around a
 key, as `fetch` trims a header value, and refuse a key that then holds
 anything but printable ASCII without spaces (a line break from a wrapped

@@ -346,7 +346,7 @@ export class StreamsError extends Error {
    * On `consumer_deleting` conflicts: the DELETING incarnation's
    * version token. If the process that started the deletion died
    * without persisting it, pass this to `Consumer.delete()`'s wire
-   * equivalent (DELETE with `Prisma-Consumer-Version`) to resume and
+   * equivalent (DELETE with `Streams-Consumer-Version`) to resume and
    * finish the saga.
    */
   consumerVersion?: string;
@@ -612,7 +612,7 @@ function headerText(value: unknown, code: string, what: string, limit: string, m
       `end, ${limit}); nothing was sent`, false);
 }
 
-/** A routing key as the `prisma-routing-key` header or a final seal's
+/** A routing key as the `streams-routing-key` header or a final seal's
  * record carries it: `undefined`, the default lane, when it is absent or
  * empty; otherwise `invalid_routing_key` unless a header carries it as it
  * is, nothing trimmed. */
@@ -1416,12 +1416,12 @@ export class Stream<T = unknown> {
   }
 
   private kh(): Record<string, string> {
-    return { "prisma-encryption-key": this.key };
+    return { "streams-encryption-key": this.key };
   }
 
   // ---- append (spec Stage 4) ----------------------------------------
 
-  /** A routing key travels in the `prisma-routing-key` header (a final
+  /** A routing key travels in the `streams-routing-key` header (a final
    * seal's in its body); absent or empty, it is the default lane. One a
    * header cannot carry as it is (anything but printable ASCII and tabs,
    * whitespace at either end, more than 1,024 characters) is refused before
@@ -1454,7 +1454,7 @@ export class Stream<T = unknown> {
       "content-type": "application/json",
     };
     const routingKey = presentedRoutingKey(options?.routingKey);
-    if (routingKey !== undefined) h["prisma-routing-key"] = routingKey;
+    if (routingKey !== undefined) h["streams-routing-key"] = routingKey;
     const res = await req(
       this.ctx,
       "POST",
@@ -1479,7 +1479,7 @@ export class Stream<T = unknown> {
       "content-type": bytes ? "application/octet-stream" : "application/json",
     };
     const presented = presentedRoutingKey(routingKey);
-    if (presented !== undefined) h["prisma-routing-key"] = presented;
+    if (presented !== undefined) h["streams-routing-key"] = presented;
     const res = await req(
       this.ctx, "POST", this.path("/records"), h, body, undefined, false,
       plainAppendFailure,
@@ -1525,7 +1525,7 @@ export class Stream<T = unknown> {
       ...ph,
     };
     const presented = presentedRoutingKey(routingKey);
-    if (presented !== undefined) h["prisma-routing-key"] = presented;
+    if (presented !== undefined) h["streams-routing-key"] = presented;
     // A lost answer (a transport failure, or a 2xx whose body cannot be
     // read: `producerAnswer`) is replayed with the same producer id, epoch,
     // sequence and body, which the server deduplicates (an append that
@@ -2169,7 +2169,7 @@ export class Consumer<T> {
   async delete(): Promise<void> {
     const res = await req(this.ctx, "DELETE", this.base(), {
       ...this.stream._kh(),
-      "prisma-consumer-version": this.version,
+      "streams-consumer-version": this.version,
     });
   }
 }

@@ -750,8 +750,9 @@ class SdkProbeOutput(unittest.TestCase):
         gets = [(path, h) for m, path, h, _ in self.seen if m == "GET"]
         self.assertEqual([path for path, _ in gets], ["/v1/streams/lc/sdk/records?cursor=now"] + [
             f"/v1/streams/lc/sdk/records?cursor=c{n}" for n in (1, 1, 3)])
-        self.assertEqual({(h["authorization"], h["prisma-encryption-key"]) for _, _, h, _ in self.seen},
+        self.assertEqual({(h["authorization"], h["streams-encryption-key"]) for _, _, h, _ in self.seen},
                          {("Bearer tok-1", "a2V5")})
+        self.assertEqual({n for _, _, h, _ in self.seen for n in h if n.startswith("prisma-")}, set())
         self.assertEqual(self.seen[0][3], b'{"format":{"kind":"json"}}')
         made = [(h["producer-id"], h["producer-epoch"], h["producer-seq"]) for m, _, h, _ in self.seen if "producer-id" in h]
         self.assertEqual(made, [("lc-run-1", "0", "0"), ("lc-run-1", "0", "1"), ("lc-run-1", "0", "2")])
