@@ -306,3 +306,18 @@ async fn every_lookup_answers_from_the_generation_in_force() {
     cache.release();
     assert!(cache.get_block(&key).await.unwrap().is_none(), "released");
 }
+
+/// The bytes a caller asks for bound the cache, not foyer's default; the
+/// shards stay foyer's default (the host's CPU count).
+#[test]
+fn a_cache_with_a_capacity_is_bounded_at_the_bytes_asked_for() {
+    let bytes = 3 << 20;
+    let default = FoyerCacheOptions::default();
+    assert_ne!(
+        bytes, default.max_capacity,
+        "the test asks for a non-default"
+    );
+    let cache = BlockCache::with_capacity(bytes);
+    assert_eq!(cache.options.max_capacity, bytes);
+    assert_eq!(cache.options.shards, default.shards);
+}
