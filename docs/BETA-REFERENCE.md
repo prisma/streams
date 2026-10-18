@@ -25,6 +25,33 @@ Source: `deploy/profiles/shared-cell.env` (`PROJECT_SHARE_K=8` and the
 shared bounds), `src/auth/ceiling.rs` (`CellCeiling::effective`; its test
 `a_shared_cell_holds_every_bounded_axis_to_its_share` pins the shares).
 
+## Request headers
+
+Send the stream key, a routing key and a consumer's version under their
+`Streams-` names:
+
+| Header | Carries |
+|---|---|
+| `Streams-Encryption-Key` | the stream's key, on every request that reads or writes a stream |
+| `Streams-Routing-Key` | an append's routing key (absent: the default key) |
+| `Streams-Consumer-Version` | the consumer version a consumer `DELETE` names |
+
+The server also accepts each under its older `Prisma-` name
+(`Prisma-Encryption-Key`, `Prisma-Routing-Key`,
+`Prisma-Consumer-Version`), with the same value rules. Do not rely on
+those names on a beta cell: the Prisma Compute edge in front of
+`*.prisma.build` removes every request header whose name starts with
+`Prisma-`, so the cell never sees it and answers `400 missing_key`. A
+request that carries both names of one header with different values is
+refused `400 conflicting_header`, not retryable; the same value under
+both names is accepted. The SDK (`@prisma/streams` 0.3.0-beta.1) sends
+the `Streams-` names. Response headers keep their `Prisma-` names
+(`Prisma-Next-Cursor`, `Prisma-Consumer-Version`, ...).
+
+Source: `src/header_alias.rs` (`REQUEST_ALIASES`; its tests pin that the
+table holds every `Prisma-` request header the product surface reads),
+edge change #173.
+
 ## Per-project limits
 
 | Limit | Value | What happens at the limit |

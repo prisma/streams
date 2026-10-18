@@ -41,8 +41,8 @@ The service exposes **two HTTP surfaces**:
   idempotent closes, producer/sequence conflicts, seal fences) waits behind
   that same durability barrier.
 - **Tenant isolation by cryptography.** Each collection's data is AES-GCM
-  encrypted under a caller-supplied key (`Prisma-Encryption-Key`) the service
-  never stores. Backups are ciphertext.
+  encrypted under a caller-supplied key (`Streams-Encryption-Key`, also
+  accepted as `Prisma-Encryption-Key`) the service never stores. Backups are ciphertext.
 - **Product lifecycle.** Typed creation documents, producer sessions with
   exactly-once semantics, consumer groups (pull/settle, leases, per-key FIFO,
   DLQ), watches with signed observation URLs, forks with resumable lineage,
@@ -96,21 +96,23 @@ cargo build --release
 KEY=$(./target/release/streams-keys generate)   # 32 bytes, base64url
 
 # Product route: create a typed collection, append under a routing key, read.
+# Request headers take the Streams- names (the server also accepts each as
+# Prisma-<Name>, but the Prisma Compute edge strips Prisma-* request headers).
 curl -X PUT  http://127.0.0.1:8090/v1/streams/orders \
-  -H "authorization: Bearer devtoken" -H "Prisma-Encryption-Key: $KEY" \
+  -H "authorization: Bearer devtoken" -H "Streams-Encryption-Key: $KEY" \
   -H 'content-type: application/json' -d '{"format":{"kind":"json"}}'
 curl -X POST http://127.0.0.1:8090/v1/streams/orders/records \
-  -H "authorization: Bearer devtoken" -H "Prisma-Encryption-Key: $KEY" \
-  -H 'Prisma-Routing-Key: c1' -H 'content-type: application/json' -d '{"n":1}'
+  -H "authorization: Bearer devtoken" -H "Streams-Encryption-Key: $KEY" \
+  -H 'Streams-Routing-Key: c1' -H 'content-type: application/json' -d '{"n":1}'
 curl "http://127.0.0.1:8090/v1/streams/orders/records?routingKey=c1" \
-  -H "authorization: Bearer devtoken" -H "Prisma-Encryption-Key: $KEY"
+  -H "authorization: Bearer devtoken" -H "Streams-Encryption-Key: $KEY"
 
 # The raw Durable Streams surface is the DEFAULT routing key's view —
 # records appended under other routing keys (like c1 above) do not
-# appear there. Append one default-key record (no Prisma-Routing-Key),
+# appear there. Append one default-key record (no Streams-Routing-Key),
 # then read it back through the standards route:
 curl -X POST http://127.0.0.1:8090/v1/streams/orders/records \
-  -H "authorization: Bearer devtoken" -H "Prisma-Encryption-Key: $KEY" \
+  -H "authorization: Bearer devtoken" -H "Streams-Encryption-Key: $KEY" \
   -H 'content-type: application/json' -d '{"n":2}'
 curl http://127.0.0.1:8090/v1/stream/orders \
   -H "authorization: Bearer devtoken" -H "Prisma-Encryption-Key: $KEY"

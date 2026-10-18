@@ -33,7 +33,9 @@ Limits, error answers and retry rules are in
 ## What is encrypted, and with which keys
 
 - **Record content.** The client sends its stream key with every
-  request that reads or writes records (`Prisma-Encryption-Key`). The
+  request that reads or writes records (`Streams-Encryption-Key`, also
+  accepted as `Prisma-Encryption-Key`; `docs/BETA-REFERENCE.md`, "Request
+  headers"). The
   server derives per-routing-key subkeys from it and stores records in
   pages encrypted with AES-256-GCM-SIV (`src/crypto_page.rs`,
   `docs/crypto-page-v6.md`, `SPEC.md` §3.7). The server never writes the
