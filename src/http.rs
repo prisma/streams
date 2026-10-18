@@ -1182,13 +1182,8 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
         .layer(axum::middleware::map_response_with_state(
             state.clone(),
             |State(state): State<Arc<AppState>>, mut resp: Response| async move {
-                resp.headers_mut().insert(
-                    "x-content-type-options",
-                    axum::http::HeaderValue::from_static("nosniff"),
-                );
-                if let Ok(v) = axum::http::HeaderValue::from_str(&state.origin_marker) {
-                    resp.headers_mut().insert("prisma-streams-origin", v);
-                }
+                // Plus the `Streams-` form of every `Prisma-` header (#176).
+                crate::header_alias::stamp(resp.headers_mut(), &state.origin_marker);
                 resp
             },
         ))

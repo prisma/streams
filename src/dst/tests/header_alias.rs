@@ -1,7 +1,11 @@
 //! `Streams-<Name>` request headers on the product surface (edge change
 //! #173): the platform edge in front of `*.prisma.build` strips every
 //! request header named `Prisma-*`, so each request header the product
-//! surface reads as `Prisma-<Name>` is also read as `Streams-<Name>`.
+//! surface reads as `Prisma-<Name>` is also read as `Streams-<Name>`;
+//! it strips `Prisma-*` response headers too, so every one is also sent
+//! as `Streams-<Name>` (edge change #176).
+
+use std::collections::HashMap;
 
 use super::fixture_http::{engine_shutdown, http_rig};
 use super::fixture_requests::{PRISMA_KEY, preq};
@@ -173,6 +177,109 @@ async fn the_product_preflight_allows_the_streams_forms() {
     for name in ["encryption-key", "routing-key", "consumer-version"] {
         assert!(allowed.contains(&format!("prisma-{name}")), "{allowed:?}");
         assert!(allowed.contains(&format!("streams-{name}")), "{allowed:?}");
+    }
+    engine_shutdown(&state).await;
+}
+
+/// Every `prisma-` header of `headers` is also there under its `Streams-`
+/// name with the same value, and each of `expected` is among them.
+fn assert_mirrored(what: &str, headers: &HashMap<String, String>, expected: &[&str]) {
+    for name in expected {
+        assert!(headers.contains_key(*name), "{what}: {name} in {headers:?}");
+    }
+    for (name, value) in headers {
+        if let Some(rest) = name.strip_prefix("prisma-") {
+            // `prisma-streams-origin` is `streams-origin`: one prefix.
+            let twin = if rest.starts_with("streams-") {
+                rest.to_string()
+            } else {
+                format!("streams-{rest}")
+            };
+            assert_eq!(
+                headers.get(&twin),
+                Some(value),
+                "{what}: {name}'s streams- form in {headers:?}"
+            );
+        }
+    }
+}
+
+/// The edge strips `Prisma-*` response headers too (edge change #176):
+/// each product answer that carries a `Prisma-<Name>` header carries
+/// `Streams-<Name>` with the same value, and a browser may read both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn product_answers_send_each_prisma_response_header_as_its_streams_name() {
+    let (state, addr) = http_rig(mem()).await;
+    let key = [("streams-encryption-key", PRISMA_KEY)];
+    let (st, h, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/rs",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    assert_mirrored("create", &h, &["prisma-streams-origin"]);
+    let (st, _, _) = preq(addr, "POST", "/v1/streams/rs/records", &key, br#"{"n":1}"#).await;
+    assert_eq!(st, 200);
+    let (st, h, b) = preq(addr, "GET", "/v1/streams/rs/records", &key, b"").await;
+    assert_eq!(st, 200);
+    assert_eq!(records(&b), vec![serde_json::json!({"n": 1})]);
+    assert_mirrored("read", &h, &["prisma-next-cursor", "prisma-up-to-date"]);
+    let exposed: Vec<&str> = h["access-control-expose-headers"]
+        .split(',')
+        .map(str::trim)
+        .collect();
+    for name in [
+        "next-cursor",
+        "up-to-date",
+        "sealed",
+        "next-scan-cursor",
+        "scan-complete",
+        "durable-cursor",
+        "pending-from",
+        "consumer-version",
+    ] {
+        assert!(
+            exposed.contains(&format!("prisma-{name}").as_str()),
+            "{exposed:?}"
+        );
+        assert!(
+            exposed.contains(&format!("streams-{name}").as_str()),
+            "{exposed:?}"
+        );
+    }
+    let (st, h, _) = preq(addr, "GET", "/v1/streams/rs:scan", &key, b"").await;
+    assert_eq!(st, 200);
+    assert_mirrored("scan", &h, &["prisma-scan-complete"]);
+    let cfg = br#"{"visibilityTimeoutMs":5000,"maxAttempts":3}"#;
+    let (st, h, _) = preq(addr, "PUT", "/v1/streams/rs/consumers/w", &key, cfg).await;
+    assert_eq!(st, 201);
+    assert_mirrored("consumer create", &h, &["prisma-consumer-version"]);
+    let (st, _, _) = preq(addr, "POST", "/v1/streams/rs:seal", &key, b"{}").await;
+    assert!(st == 200 || st == 204, "seal: {st}");
+    let (st, h, _) = preq(addr, "GET", "/v1/streams/rs/records", &key, b"").await;
+    assert_eq!(st, 200);
+    assert_mirrored("sealed read", &h, &["prisma-sealed", "prisma-next-cursor"]);
+    engine_shutdown(&state).await;
+}
+
+/// The mirror is the server's, not the product route's: the listing, the
+/// raw surface and an unrouted path send it too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_surface_sends_its_prisma_response_headers_as_streams_names() {
+    let (state, addr) = http_rig(mem()).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    for (method, path) in [
+        ("GET", "/v1/streams"),
+        ("GET", "/v1/stream/absent"),
+        ("GET", "/v1/streams/absent"),
+        ("GET", "/no/such/route"),
+    ] {
+        let (_, h, _) = preq(addr, method, path, &key, b"").await;
+        assert_mirrored(path, &h, &["prisma-streams-origin", "streams-origin"]);
+        assert!(!h.contains_key("streams-streams-origin"), "{path}: {h:?}");
     }
     engine_shutdown(&state).await;
 }

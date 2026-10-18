@@ -4334,6 +4334,17 @@
     "scenarios": []
   },
   {
+    "name": "every_surface_sends_its_prisma_response_headers_as_streams_names",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "477263c3e4ac6f514683ebceacad44b121b65ac0137ba4fc393e82c9cf5f525c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/header_alias.rs",
+    "scenarios": []
+  },
+  {
     "name": "expired_streams_close_within_one_walk_circle",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -6423,6 +6434,17 @@
     "scenarios": [
       "SEL-006"
     ]
+  },
+  {
+    "name": "product_answers_send_each_prisma_response_header_as_its_streams_name",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6755dbf1bf3f1bedbb4a50c44d3f7b7e797c6e60dca637ad26bfcf7433018adc",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/header_alias.rs",
+    "scenarios": []
   },
   {
     "name": "product_append_and_append_many",

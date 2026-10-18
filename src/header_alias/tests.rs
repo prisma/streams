@@ -1,6 +1,9 @@
-//! The fold of `Streams-<Name>` request headers into `Prisma-<Name>`.
+//! The fold of `Streams-<Name>` request headers into `Prisma-<Name>`, and
+//! the `Streams-<Name>` form of every `Prisma-<Name>` response header.
 #![cfg(test)]
-use super::{REQUEST_ALIASES, allow_aliases, conflict, fold};
+use super::{
+    REQUEST_ALIASES, allow_aliases, conflict, expose_mirrors, fold, mirror, stamp, streams_name,
+};
 use axum::http::{HeaderMap, HeaderValue};
 
 fn map(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
@@ -136,4 +139,108 @@ async fn the_conflict_refusal_has_the_product_error_shape() {
     );
     let body = |r: axum::response::Response| axum::body::to_bytes(r.into_body(), 4096);
     assert_eq!(body(refusal).await.unwrap(), body(product).await.unwrap());
+}
+
+#[test]
+fn every_prisma_response_header_is_sent_as_its_streams_name_with_every_value() {
+    let mut headers = map(&[
+        ("prisma-next-cursor", "c1"),
+        ("Prisma-Up-To-Date", "true"),
+        ("prisma-pending-from", "3"),
+        ("prisma-durable-cursor", "d1"),
+        ("prisma-error-code", "wrong_cell"),
+        ("prisma-x", "a"),
+        ("prisma-x", "b"),
+        ("streams-x", "stale"),
+        ("streams-replay-to", "peer"),
+        ("content-type", "application/json"),
+    ]);
+    mirror(&mut headers);
+    for (name, expected) in [
+        ("next-cursor", &["c1"][..]),
+        ("up-to-date", &["true"]),
+        ("pending-from", &["3"]),
+        ("durable-cursor", &["d1"]),
+        ("error-code", &["wrong_cell"]),
+        ("x", &["a", "b"]),
+    ] {
+        assert_eq!(
+            values(&headers, &format!("prisma-{name}")),
+            expected,
+            "{name}"
+        );
+        assert_eq!(
+            values(&headers, &format!("streams-{name}")),
+            expected,
+            "{name}"
+        );
+    }
+    assert_eq!(values(&headers, "streams-replay-to"), ["peer"]);
+    assert_eq!(values(&headers, "content-type"), ["application/json"]);
+    assert_eq!(headers.len(), 16);
+}
+
+#[test]
+fn an_expose_list_naming_a_prisma_header_names_its_streams_form() {
+    let mut headers = map(&[(
+        "access-control-expose-headers",
+        "content-type, Prisma-Next-Cursor, prisma-sealed, streams-sealed",
+    )]);
+    expose_mirrors(&mut headers);
+    assert_eq!(
+        values(&headers, "access-control-expose-headers"),
+        [
+            "content-type, Prisma-Next-Cursor, prisma-sealed, streams-sealed, \
+          streams-next-cursor"
+        ]
+    );
+    for list in ["*", "content-type, retry-after"] {
+        let mut headers = map(&[("access-control-expose-headers", list)]);
+        expose_mirrors(&mut headers);
+        assert_eq!(values(&headers, "access-control-expose-headers"), [list]);
+    }
+}
+
+#[test]
+fn every_response_is_stamped_with_nosniff_the_origin_and_its_streams_forms() {
+    let mut headers = map(&[("prisma-sealed", "true")]);
+    stamp(&mut headers, "cell-1");
+    assert_eq!(values(&headers, "x-content-type-options"), ["nosniff"]);
+    assert_eq!(values(&headers, "prisma-streams-origin"), ["cell-1"]);
+    assert_eq!(values(&headers, "streams-origin"), ["cell-1"]);
+    assert_eq!(values(&headers, "streams-sealed"), ["true"]);
+    assert_eq!(headers.len(), 5);
+    let mut headers = HeaderMap::new();
+    stamp(&mut headers, "not\na header value");
+    assert_eq!(
+        headers.len(),
+        1,
+        "an unusable marker is left out: {headers:?}"
+    );
+}
+
+#[test]
+fn a_prisma_streams_header_takes_the_streams_prefix_once() {
+    for (name, twin) in [
+        ("prisma-streams-origin", Some("streams-origin")),
+        ("prisma-streams-data", Some("streams-data")),
+        ("prisma-next-cursor", Some("streams-next-cursor")),
+        ("prisma-streamsx", Some("streams-streamsx")),
+        ("streams-origin", None),
+        ("content-type", None),
+    ] {
+        assert_eq!(streams_name(name).as_deref(), twin, "{name}");
+    }
+    let mut headers = map(&[
+        ("prisma-streams-data", "d"),
+        ("access-control-expose-headers", "prisma-streams-data"),
+    ]);
+    mirror(&mut headers);
+    expose_mirrors(&mut headers);
+    assert_eq!(values(&headers, "streams-data"), ["d"]);
+    assert_eq!(
+        values(&headers, "access-control-expose-headers"),
+        ["prisma-streams-data, streams-data"]
+    );
+    assert_eq!(headers.len(), 3);
 }
