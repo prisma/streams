@@ -35,6 +35,12 @@ def head() -> str:
     return subprocess.run(["git", "-C", REPO, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
 
 
+def tree_profile(name: str) -> bytes:
+    """deploy/profiles/<name> as the tag tree holds it: the profile fence
+    (triage B9) accepts only these bytes."""
+    return subprocess.run(["git", "-C", REPO, "show", f"HEAD:deploy/profiles/{name}"], capture_output=True, check=True).stdout
+
+
 def shipped_layer_b() -> str:
     """sha256 of HEAD's tenants/layer-b.json, as tenants.ts records it."""
     blob = subprocess.run(["git", "-C", REPO, "show", "HEAD:bench/k2cost/tenants/layer-b.json"], capture_output=True).stdout
@@ -48,14 +54,14 @@ class World:
         self.dir = tempfile.mkdtemp(prefix="shared-verdict-")
         prof = os.path.join(self.dir, "profiles")
         os.makedirs(prof)
-        with open(os.path.join(prof, "compute-1g.env"), "w") as f:
-            f.write("ADMIT_RSS_SHED_MB=500\n")
-        with open(os.path.join(prof, "shared-cell.env"), "w") as f:
-            f.write("STREAMS_RELEASE_POSTURE=1\nINITIAL_SHARDS=1\nPROJECT_SHARE_K=8\nKEEP_AWAKE=1\n")
+        for n in ("compute-1g.env", "shared-cell.env"):
+            with open(os.path.join(prof, n), "wb") as f:
+                f.write(tree_profile(n))
         self.rig = {
             "arm": "layer-b", "rehearsal": False, "commit": head(), "region": "local",
             "binary": {"path": "/r/streams-slate", "sha256": SHA}, "wrapper_sha256": SHA, "debug_load_sha256": SHA,
-            "profiles": {n: {"path": os.path.join(prof, n), "sha256": n[:2] * 32} for n in ("compute-1g.env", "shared-cell.env")},
+            "profiles": {n: {"path": os.path.join(prof, n), "sha256": hashlib.sha256(tree_profile(n)).hexdigest()}
+                         for n in ("compute-1g.env", "shared-cell.env")},
             "cell_env": {"path": "/r/cells/scratch.env", "sha256": "ce" * 32},
             "checkout": {"head": head(), "trees": V.tree_oids(REPO, head(), V.CHECKOUT_TREES), "dirty": []},
             "started_unix": T0 // 1000, "finished_unix": T0 // 1000 + 4 * 3600,
@@ -172,7 +178,8 @@ class LayerB(unittest.TestCase):
         self.assertEqual((m["started_unix"], m["finished_unix"] - m["started_unix"]), (T0 // 1000, 4 * 3600))
         self.assertEqual(m["profile"]["pins"], list(V.PROFILE_PINS))
         self.assertEqual(m["profile"]["pins_missing"], [])
-        self.assertEqual(m["profile"]["sha256"], {"compute-1g.env": "co" * 32, "shared-cell.env": "sh" * 32})
+        self.assertEqual(m["profile"]["sha256"], {n: hashlib.sha256(tree_profile(n)).hexdigest()
+                                                  for n in ("compute-1g.env", "shared-cell.env")})
         self.assertEqual(m["cell_env_sha256"], "ce" * 32)
         tree = lambda path: subprocess.run(["git", "-C", REPO, "rev-parse", f"HEAD:{path}"],  # noqa: E731
                                            capture_output=True, text=True).stdout.strip()
@@ -320,11 +327,13 @@ class LayerB(unittest.TestCase):
         d = self.w.write()
         out = os.path.join(d, "layer-b-manifest.json")
         self.assertEqual(V.main(["layer-b", d, "--out", out, "--repo", REPO]), 0)
-        ok = subprocess.run([sys.executable, "-E", "-", "layer-b", out, SHA], input=script, capture_output=True, text=True)
+        ok = subprocess.run([sys.executable, "-E", "-", "layer-b", out, SHA, head()], input=script, capture_output=True,
+                            text=True, cwd=REPO)
         self.assertEqual((ok.returncode, ok.stdout.strip()), (0, f"layer-b: PASS ({len(LEGS)} legs, 1000 projects, 4.0 h) on {SHA[:16]}"))
         self.w.probes.update(pairs=10, first_contacts=10)
         self.assertEqual(V.main(["layer-b", self.w.write(), "--out", out, "--repo", REPO]), 1)
-        bad = subprocess.run([sys.executable, "-E", "-", "layer-b", out, SHA], input=script, capture_output=True, text=True)
+        bad = subprocess.run([sys.executable, "-E", "-", "layer-b", out, SHA, head()], input=script, capture_output=True,
+                             text=True, cwd=REPO)
         self.assertEqual(bad.returncode, 1)
         self.assertIn("layer-b: verdict 'FAIL'", bad.stderr)
 
