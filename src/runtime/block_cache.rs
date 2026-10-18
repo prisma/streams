@@ -113,8 +113,10 @@ impl DbCache for BlockCache {
         self.current.load_full().cache.remove(key).await;
     }
 
+    /// foyer keeps no entry count (slatedb's `FoyerCache` reports zero), so
+    /// no generation has one to report.
     fn entry_count(&self) -> u64 {
-        self.current.load().cache.entry_count()
+        0
     }
 
     async fn fetch_block(
