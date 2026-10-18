@@ -140,7 +140,10 @@ class Platform:
         retries = 3 if method in IDEMPOTENT else 0
         for attempt in range(retries + 1):
             req = urllib.request.Request(f"{self.base}{path}", method=method, data=data, headers={
-                "Authorization": f"Bearer {self.token}", "Content-Type": "application/json"})
+                "Authorization": f"Bearer {self.token}", "Content-Type": "application/json",
+                # api.prisma.io's edge answers 403 to Python's own
+                # User-Agent (Cloudflare 1010), as fieldlib.py found.
+                "User-Agent": "streams-provision-cell/1"})
             try:
                 with urllib.request.urlopen(req, timeout=60) as r:
                     raw = r.read()

@@ -151,6 +151,9 @@ export class FakePlatform {
 
   private async route(req: Request, url: URL): Promise<Response> {
     if (req.headers.get("authorization") !== `Bearer ${this.token}`) return this.error(401, "unauthorized");
+    // api.prisma.io's edge answers 403 with no error body (Cloudflare 1010)
+    // to a client announcing itself as Python's urllib (field, 2026-10-18).
+    if ((req.headers.get("user-agent") ?? "").startsWith("Python-urllib")) return new Response(null, { status: 403 });
     const parts = url.pathname.replace(/^\/v1\//, "").split("/");
     const body = req.method === "POST" || req.method === "PATCH" ? await req.json() : undefined;
     const q = (k: string) => url.searchParams.get(k);
