@@ -1,6 +1,8 @@
 //! History recovery.
 
-use super::fixture_storage::{append_n, append_sized, mem, skey, wait_all_absorbed};
+use super::fixture_storage::{
+    append_n, append_sized, mem, open_engine_with_settings, skey, wait_all_absorbed,
+};
 use crate::dst::{FaultPlan, FaultStore};
 use object_store::ObjectStore;
 use std::sync::Arc;
@@ -337,39 +339,28 @@ async fn budget_deferred_streams_absorb_on_the_next_tick() {
 /// (records × 1 KiB), below every default threshold — never absorbed
 /// again without a customer request. The tail now carries exact
 /// unabsorbed bytes and the seed reads them.
+///
+/// The dirty row and the published tail are two visibilities of one
+/// commit: the dirty scan reads the memtable (`DurabilityLevel::Memory`),
+/// while the tail a reader sees is published only when the acker
+/// dispatches the group after remote durability (G2). The dispatch gate
+/// is held across the row's disappearance so that gap is exercised on
+/// every run, not only under host load; the published tail must not run
+/// ahead of dispatch, and must follow once dispatch resumes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_large_record_absorbs_after_restart_under_default_policy() {
-    let inner = mem();
-    let store = FaultStore::uniform(inner.clone(), 98, FaultPlan::new(0, 0, 0));
+    let store = FaultStore::uniform(mem(), 98, FaultPlan::new(0, 0, 0));
     let key = skey();
     let hash = [0xA7u8; 16];
 
     {
-        let db = slatedb::Db::builder("dst-bigrec", store.clone() as Arc<dyn ObjectStore>)
-            .with_settings(slatedb::config::Settings {
-                flush_interval: Some(std::time::Duration::from_millis(5)),
-                manifest_poll_interval: std::time::Duration::from_millis(50),
-                ..Default::default()
-            })
-            .build()
-            .await
-            .expect("open db A");
-        let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
-        // R25-A: tests use the REAL load path — a fresh DB rebuilds to
-        // zero; a reopened DB restores its durable backlog, exactly as
-        // the production opener does.
-        let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-            .await
-            .expect("load maintenance");
-        let engine_a = crate::shard::ShardEngine::start(
-            "dst-bigrec".to_string(),
-            Arc::new(db),
+        let engine_a = open_engine_with_settings(
             store.clone(),
+            "dst-bigrec",
             crate::shard::ShardConfig::default(),
-            absorb_tx,
-            None,
-            __maint,
-        );
+            bigrec_settings(),
+        )
+        .await;
         // One 5 MiB record: above the default 4 MiB byte threshold in
         // truth, 1 KiB in the old estimate.
         append_sized(&engine_a, hash, &key, "", 5 * 1024 * 1024).await;
@@ -378,18 +369,11 @@ async fn a_large_record_absorbs_after_restart_under_default_policy() {
     }
 
     let db = slatedb::Db::builder("dst-bigrec", store.clone() as Arc<dyn ObjectStore>)
-        .with_settings(slatedb::config::Settings {
-            flush_interval: Some(std::time::Duration::from_millis(5)),
-            manifest_poll_interval: std::time::Duration::from_millis(50),
-            ..Default::default()
-        })
+        .with_settings(bigrec_settings())
         .build()
         .await
         .expect("open db B");
     let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
-    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
-    // zero; a reopened DB restores its durable backlog, exactly as
-    // the production opener does.
     let __maint = crate::shard::load_or_rebuild_maintenance(&db)
         .await
         .expect("load maintenance");
@@ -402,6 +386,7 @@ async fn a_large_record_absorbs_after_restart_under_default_policy() {
         None,
         __maint,
     );
+    let held = engine_b.test_hold_dispatch().await;
     // THE POINT: pure AbsorberConfig::default() — production thresholds,
     // production tick, production sweep cadence. No requests arrive.
     let _absorber = crate::history::Absorber::start(
@@ -422,13 +407,34 @@ async fn a_large_record_absorbs_after_restart_under_default_policy() {
         cleared,
         "a 5 MiB pre-restart record never absorbed under the default policy"
     );
-    let st = engine_b.stream_handle(hash).await.unwrap();
-    let (a, n) = {
-        let s = st.state.lock().unwrap();
-        (s.durable.absorbed, s.durable.next)
-    };
-    assert_eq!((a, n), (1, 1));
+    assert_eq!(published_tail(&engine_b, hash).await, (0, 1));
+    drop(held);
+    let mut tail = (0, 0);
+    for _ in 0..500 {
+        tail = published_tail(&engine_b, hash).await;
+        if tail == (1, 1) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(tail, (1, 1));
     engine_b.begin_close();
+}
+
+fn bigrec_settings() -> slatedb::config::Settings {
+    slatedb::config::Settings {
+        flush_interval: Some(std::time::Duration::from_millis(5)),
+        manifest_poll_interval: std::time::Duration::from_millis(50),
+        ..Default::default()
+    }
+}
+
+/// The (absorbed, next) watermarks readers see: the handle's published
+/// durable tail, never the memtable.
+async fn published_tail(engine: &crate::shard::ShardEngine, hash: [u8; 16]) -> (u64, u64) {
+    let handle = engine.stream_handle(hash).await.unwrap();
+    let s = handle.state.lock().unwrap();
+    (s.durable.absorbed, s.durable.next)
 }
 
 /// Review round 4, P1: the dirty-index scan must RETRY until it

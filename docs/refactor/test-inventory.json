@@ -1004,10 +1004,10 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "d33bd423e11903e5610711d13b22bed4540ac065adadf399cfcb86857d8b6a63",
+    "function_sha256": "3de7e3ef495b145d495797e839967d92e695ef784d78ff295320fd3694b23479",
     "mechanisms": [],
     "configuration": [
-      "let store = FaultStore::uniform(inner.clone(), 98, FaultPlan::new(0, 0, 0));"
+      "let store = FaultStore::uniform(mem(), 98, FaultPlan::new(0, 0, 0));"
     ],
     "file": "src/dst/tests/history_recovery.rs",
     "scenarios": [
