@@ -18,6 +18,9 @@ let failures = 0;
 const thrown = () => { const failure = new TypeError(`fetch failed #${++failures}`); return () => { throw failure; }; };
 const answer = (status, body = "", headers = {}) => () => new Response(body, { status, headers });
 const busy = () => answer(503, BUSY, { "content-type": "application/json", "retry-after": "0" });
+// A 503 with Retry-After is sent again past the four attempts until 15 s
+// have passed (edge change #177); one without it keeps the four.
+const busyBare = () => answer(503, BUSY, { "content-type": "application/json" });
 const ok = body => () => json(body);
 const pathOf = call => new URL(call.url).pathname;
 
@@ -170,8 +173,16 @@ test("a transport failure, a retryable 503, a transport failure and a 200 share 
   assert.deepEqual(delays, [1000, 0, 4000], "transport waits by attempt; the 503's Retry-After: 0");
 });
 
-test("a transport failure, a 503, a transport failure and a 503 are four requests, then the 503", async () => {
+test("a transport failure, a 503, a transport failure and a 503 with Retry-After at the fourth attempt: the fifth request succeeds", async () => {
   const f = fixture({ answers: [thrown(), busy(), thrown(), busy()] });
+  const { value, delays } = await fastTimers(() => f.stream.metadata());
+  assert.equal(value.name, "orders");
+  assert.equal(f.calls.length, 5);
+  assert.deepEqual(delays, [1000, 0, 4000, 1000], "past the attempts, Retry-After: 0 waits 1 s");
+});
+
+test("a transport failure, a 503, a transport failure and a 503 without Retry-After are four requests, then the 503", async () => {
+  const f = fixture({ answers: [thrown(), busy(), thrown(), busyBare()] });
   const { value: error, delays } = await fastTimers(() => rejection(f.stream.metadata()));
   assert.equal(f.calls.length, 4);
   assert.equal(error.name, "StreamsError");
@@ -300,7 +311,7 @@ test("abort during a transport backoff ends the request at once, with no further
 
 test("consumer.messages() reconnects through transport failures and a 503 burst, then yields", async () => {
   const f = fixture({ match: pulls, answers: [
-    thrown(), thrown(), thrown(), thrown(), busy(), busy(), busy(), busy(), ok({ messages: [MESSAGE], backlog: 0 }),
+    thrown(), thrown(), thrown(), thrown(), busy(), busy(), busy(), busyBare(), ok({ messages: [MESSAGE], backlog: 0 }),
   ] });
   const workers = await consumer(f);
   const iterator = workers.messages();

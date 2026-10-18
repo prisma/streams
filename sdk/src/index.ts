@@ -55,7 +55,9 @@ export interface StreamsClientOptions {
   /**
    * `transport` (default `true`): a request whose `fetch` fails is sent
    * again after 1, 2 and 4 s, within the four attempts it shares with the
-   * 429/503 replay; a producer append is sent again with the same
+   * 429/503 replay (a `503` with `Retry-After` is also sent again after
+   * them until 15 s have passed since the first, whatever `transport`
+   * says); a producer append is sent again with the same
    * sequence, which the server deduplicates (a replay it refuses rejects
    * with `AppendOutcomeUnknownError`), and a batch settlement with
    * the same decisions (an ack the lost attempt applied counts `stale`; a
@@ -575,6 +577,10 @@ interface Ctx {
   transportRetry: boolean;
   /** How a refusal is read, when not the Streams service's `errorFrom`. */
   errors?: (res: Response) => Promise<StreamsError>;
+  /** How long after a request's first attempt a `503` with `Retry-After`
+   * is still sent again (`refusalWait`): `RIDE_THROUGH_MS` for the
+   * service, 0 (the four attempts only) for the issuer's exchange. */
+  rideThroughMs?: number;
   /** The `endpoint` of producer scopes when it is not `base`: a client
    * made by `connect` keys them on the issuer URL, so following a new
    * endpoint keeps every producer's sequence. */
@@ -956,6 +962,33 @@ function retryableRequestError(error: unknown): boolean {
 /** The wait before a transport failure's replay, by the attempt that failed. */
 const TRANSPORT_BACKOFF_MS = [1000, 2000, 4000];
 
+/** How long after a request's first attempt a `503` with `Retry-After` is
+ * still sent again once the four attempts are spent: a restart or a deploy
+ * leaves a cell unable to serve for up to about 9 s (edge change #177). */
+const RIDE_THROUGH_MS = 15_000;
+
+/** The wait before a refusal `replays` sends again, or `undefined` when it
+ * is not sent again. Within the four attempts, its `Retry-After` (at most
+ * 5 s; 1 s without one). After them, only a `503` that carries
+ * `Retry-After` (a restart's or a deploy's `temporarily_unavailable`) is
+ * sent again, until `rideThroughMs` after `started` (`RIDE_THROUGH_MS`
+ * unless the context says otherwise), each wait its
+ * `Retry-After` within [1 s, 5 s] and none past that point; any other
+ * refusal surfaces. */
+function refusalWait(
+  res: Response,
+  attempt: number,
+  started: number,
+  rideThroughMs: number,
+): number | undefined {
+  const ra = Number(res.headers.get("retry-after") ?? "1");
+  const asked = (Number.isFinite(ra) ? Math.max(0, Math.min(ra, 5)) : 1) * 1000;
+  if (attempt < 3) return asked;
+  if (res.status !== 503 || !res.headers.has("retry-after")) return undefined;
+  const left = started + rideThroughMs - Date.now();
+  return left > 0 ? Math.min(Math.max(asked, 1000), left) : undefined;
+}
+
 /** A loop's reconnection: sleep `backoffMs` (abort-aware) and return the
  * next wait, doubled to at most 5 s; a successful request restarts at 1 s. */
 async function reconnectAfter(backoffMs: number, signal?: AbortSignal): Promise<number> {
@@ -980,7 +1013,9 @@ async function reconnectAfter(backoffMs: number, signal?: AbortSignal): Promise<
  * `replays` decides which refusals are sent again on their `Retry-After`
  * within the attempts: a retryable `429` or `503`, except where a `503`
  * may have followed a write the server does not deduplicate (plain
- * appends).
+ * appends). Such a `503` that carries `Retry-After` is also sent again
+ * after the attempts until 15 s have passed since the first one
+ * (`refusalWait`).
  *
  * `read` reads a `2xx` answer inside the attempts (a producer append's,
  * `producerAnswer`), or returns the `StreamsError` saying it could not:
@@ -1001,6 +1036,7 @@ async function req<R = Response>(
   read?: (res: Response) => Promise<R | StreamsError>,
 ): Promise<R> {
   const h: Record<string, string> = { ...headers };
+  const started = Date.now();
   let rejectedGeneration: number | undefined;
   let refreshed = false;
   let answerLost = false;
@@ -1057,12 +1093,14 @@ async function req<R = Response>(
       rejectedGeneration = auth.generation;
       continue;
     }
-    if (replays(error) && attempt < 3) {
+    const wait = replays(error)
+      ? refusalWait(res, attempt, started, ctx.rideThroughMs ?? RIDE_THROUGH_MS)
+      : undefined;
+    if (wait !== undefined) {
       signal?.throwIfAborted();
-      const ra = Number(res.headers.get("retry-after") ?? "1");
       // Abort-aware: a plain setTimeout here made cancellation wait out
-      // the backoff — up to ~15 s across three attempts.
-      await sleep((Number.isFinite(ra) ? Math.max(0, Math.min(ra, 5)) : 1) * 1000, signal);
+      // the backoff — up to ~15 s across the attempts.
+      await sleep(wait, signal);
       signal?.throwIfAborted();
       continue;
     }
@@ -1201,6 +1239,9 @@ export function prismaStreamsCredential(
     fetch: (input, init) => send(input, { ...init, signal: AbortSignal.timeout(EXCHANGE_ATTEMPT_TIMEOUT_MS) }),
     transportRetry: options.retry?.transport ?? true,
     errors: exchangeError,
+    // The exchange keeps its four attempts: a refresh that fails leaves
+    // the cached token in use, and connect() reports the issuer's answer.
+    rideThroughMs: 0,
   };
   let last: CredentialExchange | undefined;
   const exchange = async (): Promise<CredentialExchange> => {

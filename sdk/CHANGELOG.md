@@ -120,6 +120,19 @@ not carried over).
   again. An empty or absent routing key is still the default lane, and an
   empty `token` still sends no `Authorization` header.
 
+- A request refused with a `503` that carries `Retry-After` (a restart's
+  or a deploy's `temporarily_unavailable`, `retryable: true`) is sent
+  again past the four attempts until 15 s have passed since its first
+  attempt, each wait its `Retry-After` within 1 to 5 s, before its error
+  surfaces (edge change #177). A restart or a deploy leaves the service
+  unable to serve for 7 to 9 s, and the replays of 1, 2 and 4 s ran out
+  first: a read failed during a field restart. Reads, producer appends and
+  plain appends (only the `503`s the server marks retryable, which wrote
+  nothing; never an unknown outcome) ride through it; a call may now
+  take up to about 15 s to fail where it took about 3 to 7 s. A `429`, a
+  `503` without `Retry-After` and the issuer exchange keep the four
+  attempts.
+
 ### Added
 
 - `StreamsClient.connect({ credential, issuerUrl })` builds a client from
@@ -213,6 +226,7 @@ risk grade (high, medium, low) is the hardening program's.
 - #168 (low): The SDK's `read()` and `subscribe()` send a space in a routing key as `%20`, so a key with a space reads the lane its appends were written to
 - #173 (medium): Every request header the product surface reads as `Prisma-<Name>` is also accepted as `Streams-<Name>`, because the Prisma Compute edge strips `Prisma-*` request headers; both names with different values are refused 400 `conflicting_header`; the SDK sends the `Streams-` form
 - #176 (low): Every `Prisma-<Name>` response header is also sent as `Streams-<Name>` with the same values, and an expose list naming a `Prisma-<Name>` names its `Streams-` form, because the Prisma Compute edge strips `Prisma-*` response headers too; the SDK reads the `Streams-` form first
+- #177 (medium): The SDK sends a request refused with a `503` that carries `Retry-After` again past its four attempts until 15 s have passed since the first, each wait its `Retry-After` within 1 to 5 s, so reads and appends ride through a restart or a deploy (7-9 s); a `429`, a `503` without `Retry-After`, an unknown append outcome and the issuer exchange are unchanged
 
 #### Access tokens and the interim token issuer (`connect()`, `prismaStreamsCredential`)
 

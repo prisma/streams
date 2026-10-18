@@ -450,10 +450,12 @@ for (const op of plainAppends) {
   });
 }
 
-test("append: a 503 still refused after the retry budget stays a retryable StreamsError", async () => {
+// With Retry-After the refusal is sent again until 15 s have passed
+// (restart-ride-through.test.mjs); without it, four attempts.
+test("append: a 503 without Retry-After still refused after the retry budget stays a retryable StreamsError", async () => {
   const busy = answer(503,
     '{"error":{"code":"temporarily_unavailable","message":"retry shortly","retryable":true}}',
-    { ...JSON_HEADERS, "retry-after": "0" });
+    JSON_HEADERS);
   const { s, calls } = stream([busy, busy, busy, busy]);
   const error = await rejection(s.append({ n: 1 }));
   assert.equal(calls.length, 4);

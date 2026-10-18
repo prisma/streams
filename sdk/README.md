@@ -199,6 +199,17 @@ In plain words:
   request the server answers idempotently (and a producer append's `2xx`
   whose answer cannot be read), after 1, 2 and 4 s: at most four attempts
   in all, and one more after a `401` refreshes the token.
+- A restart or a deploy leaves the service unable to serve for up to about
+  9 s, and it answers `503` `temporarily_unavailable` (`retryable: true`)
+  with `Retry-After` meanwhile. A `503` that carries `Retry-After` is
+  therefore sent again past the four attempts, until 15 s have passed
+  since the request's first attempt: each wait is its `Retry-After`, at
+  least 1 s and at most 5 s, and the last ends at 15 s. Reads, producer
+  appends, plain appends (only the `503`s the server marks retryable,
+  which wrote nothing) and every other request ride through a restart
+  this way; the error surfaces as before once the 15 s are spent. A `429`
+  and a `503` without `Retry-After` keep the four attempts, and so does
+  the credential exchange with the issuer.
 - A plain append (`append`, `appendBytes`, `appendMany`) that meets a
   transport failure, a `408` or a `5xx` other than `503` is not sent
   again: it rejects with `AppendOutcomeUnknownError` (`retryable: false`),
@@ -244,7 +255,9 @@ for a retry the server deduplicates.
 
 A request whose `fetch` fails is sent again up to three times, after 1, 2
 and 4 s (abort-aware), within the same four attempts as the 429/503 replay,
-and rejects with `StreamsTransportError` once they are spent. A producer
+and rejects with `StreamsTransportError` once they are spent (a `503` with
+`Retry-After` sent again past them does not give a later transport failure
+another attempt). A producer
 append is sent again with the same producer id, epoch, sequence and body,
 after a fetch failure and after a `2xx` whose answer cannot be read, so the
 server deduplicates a replay of an append that landed (`duplicate: true`; a
