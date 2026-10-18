@@ -137,9 +137,20 @@ function codeOf(body: string): string | null {
   return typeof code === "string" ? code : null;
 }
 
+/// A cell's response header by its name after `Prisma-`: the `Streams-`
+/// form first, the only one a client behind the Prisma Compute edge gets
+/// (the edge strips `Prisma-*` response headers; edge change #176), then
+/// the `Prisma-` form a cell reached directly, or an older one, sends. A
+/// `Prisma-Streams-<X>` name's `Streams-` form is `Streams-<X>`
+/// (`streams-origin` for the origin marker), the prefix once.
+export function cellHeader(headers: Headers, name: string): string | null {
+  const streams = name.startsWith("streams-") ? name : `streams-${name}`;
+  return headers.get(streams) ?? headers.get(`prisma-${name}`);
+}
+
 /// A step's report; a step without an answer has no code and no origin.
 function stepOf(got: Got, ok: boolean): CanaryStep {
-  return { ok, status: got.status, errorCode: codeOf(got.body), origin: got.headers.has("prisma-streams-origin") };
+  return { ok, status: got.status, errorCode: codeOf(got.body), origin: cellHeader(got.headers, "streams-origin") !== null };
 }
 
 export class Canary {
@@ -202,7 +213,7 @@ export class Canary {
         if (created.status !== 200 && created.status !== 201) return { append: stepOf(created, false), read: null };
         got = await call("GET", this.page("now"));
       }
-      this.tail = got.status === 200 ? got.headers.get("prisma-next-cursor") : null;
+      this.tail = got.status === 200 ? cellHeader(got.headers, "next-cursor") : null;
       if (this.tail === null) return { append: null, read: stepOf(got, false) };
     }
     const nonce = this.nonce();
@@ -211,7 +222,7 @@ export class Canary {
     const got = await call("GET", this.page(this.tail));
     const records = got.status === 200 ? parsed(got.body) : undefined;
     const found = Array.isArray(records) && records.some((r) => field(r, "canary") === nonce);
-    this.tail = found ? got.headers.get("prisma-next-cursor") : null;
+    this.tail = found ? cellHeader(got.headers, "next-cursor") : null;
     return { append: stepOf(appended, true), read: stepOf(got, found) };
   }
 

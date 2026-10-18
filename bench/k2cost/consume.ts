@@ -9,7 +9,7 @@
 
 import { readFileSync } from "node:fs";
 import {
-  Http, Meter, Rng, b64Len, backoffMs, encName, errCode, parseJson, pool, sleep, stop, streamName,
+  Http, Meter, Rng, b64Len, backoffMs, encName, errCode, parseJson, pool, productHeader, sleep, stop, streamName,
   type Resp, type StreamTally,
 } from "./common.ts";
 import { Producer, produceSpec, targetKey, type Ctx } from "./produce.ts";
@@ -71,9 +71,9 @@ class Reader {
     const pg: Page = { r, ok: r.status === 200 || r.status === 204, records: 0, bytes: 0, next: null, upToDate: false, sealed: false, estimated: false };
     if (!pg.ok) return pg;
     this.meter.readMs(r.ms);
-    pg.next = r.headers?.get("prisma-next-cursor") ?? null;
-    pg.upToDate = r.headers?.get("prisma-up-to-date") === "true";
-    pg.sealed = r.headers?.get("prisma-sealed") === "true";
+    pg.next = productHeader(r.headers, "next-cursor") ?? null;
+    pg.upToDate = productHeader(r.headers, "up-to-date") === "true";
+    pg.sealed = productHeader(r.headers, "sealed") === "true";
     if (r.status === 200 && r.body.byteLength > 0) {
       const ct = r.headers?.get("content-type") ?? "";
       if (ct.startsWith("application/json")) {

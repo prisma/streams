@@ -320,8 +320,8 @@ const json = async (res) => {
       const r = await P(`${name}/records?routingKey=${k}${q}`, { headers: headers() });
       const page = r.status === 204 ? [] : await json(r);
       if (Array.isArray(page)) acc.push(...page);
-      const next = r.headers.get("prisma-next-cursor") ?? "";
-      const upToDate = r.headers.get("prisma-up-to-date") === "true";
+      const next = r.headers.get("streams-next-cursor") ?? r.headers.get("prisma-next-cursor") ?? "";
+      const upToDate = (r.headers.get("streams-up-to-date") ?? r.headers.get("prisma-up-to-date")) === "true";
       if (upToDate || !next || next === cursor) break;
       cursor = next;
     }

@@ -7,7 +7,7 @@
 // fresh prefix). Lifecycles start open loop at --rate per second, or
 // closed loop over --concurrency workers (default 4).
 
-import { backoffMs, encName, parseJson, pool, sleep, stop, type Resp } from "./common.ts";
+import { backoffMs, encName, parseJson, pool, productHeader, sleep, stop, type Resp } from "./common.ts";
 import type { Ctx } from "./produce.ts";
 import { PayloadGen, payloadKind } from "./corpus.ts";
 import { countOracle } from "./oracle.ts";
@@ -107,8 +107,8 @@ export async function churn(ctx: Ctx, signal: AbortSignal): Promise<Record<strin
           gotBytes += arr.length ? r.body.byteLength - 2 - (arr.length - 1) : 0;
         }
       }
-      const next = r.headers?.get("prisma-next-cursor");
-      if (r.headers?.get("prisma-up-to-date") === "true" || r.status === 204 || !next || next === cursor) break;
+      const next = productHeader(r.headers, "next-cursor");
+      if (productHeader(r.headers, "up-to-date") === "true" || r.status === 204 || !next || next === cursor) break;
       cursor = next;
     }
     meter.add("delivered_records", got);

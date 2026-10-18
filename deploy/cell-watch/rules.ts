@@ -53,7 +53,8 @@ export interface HealthPoll {
   status: number | null;
   /// The watch's 5 s timeout fired.
   timedOut: boolean;
-  /// `prisma-streams-origin` was present (its value is never kept).
+  /// `streams-origin` or `prisma-streams-origin` was present (its
+  /// value is never kept; the edge strips the `Prisma-` form, #176).
   origin: boolean;
   /// `x-streams-git` and `x-streams-boot-id`, which the cell sends on a 200 only.
   git: string | null;

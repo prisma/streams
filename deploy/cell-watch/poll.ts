@@ -36,7 +36,7 @@
 // cycle lasts as long as the slower; a round has at most six requests of
 // 5 s each, so a cycle whose cell and issuer answer nothing ends within
 // 30 s, and the next starts at once (watch.ts).
-import { Canary } from "./canary";
+import { Canary, cellHeader } from "./canary";
 import type { HealthPoll, IssuerHealthPoll, Json, Poll } from "./rules";
 
 /// One cycle every 15 s; billing and the issuer's metrics every fourth.
@@ -144,7 +144,7 @@ export class Poller {
     return {
       status: got.status,
       timedOut: false,
-      origin: got.headers.has("prisma-streams-origin"),
+      origin: cellHeader(got.headers, "streams-origin") !== null,
       git: got.headers.get("x-streams-git"),
       bootId: got.headers.get("x-streams-boot-id"),
       bodyPrefix: got.body.slice(0, BODY_PREFIX_CHARS),

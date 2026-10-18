@@ -100,12 +100,14 @@ function bearer(req: Request, token: string, answer: () => Answer): Answer {
 /// The healthy cell's /health: 200 "ok" with the origin and identity headers.
 export const HEALTHY: Answer = {
   status: 200,
-  headers: { "prisma-streams-origin": "streams/test", "x-streams-git": GIT, "x-streams-boot-id": BOOT },
+  headers: { "streams-origin": "streams/test", "x-streams-git": GIT, "x-streams-boot-id": BOOT },
   body: "ok",
 };
 
-/// What the cell's origin marker layer adds to every answer (src/http.rs).
-const ORIGIN = { "prisma-streams-origin": "streams/test" };
+/// What the cell's origin marker layer adds to every answer, as a client
+/// behind the Prisma Compute edge sees it: the edge strips `Prisma-*`
+/// response headers, so only the `Streams-` form arrives (edge change #176).
+const ORIGIN = { "streams-origin": "streams/test" };
 
 /// A refusal in the product envelope, from the server.
 const refusal = (status: number, code: string): Answer => ({
@@ -195,7 +197,7 @@ export class FakeCell {
     if (at === undefined) return refusal(400, "invalid_cursor");
     return {
       status: 200,
-      headers: { ...ORIGIN, "prisma-next-cursor": `c${s.records.length}`, "prisma-up-to-date": "true" },
+      headers: { ...ORIGIN, "streams-next-cursor": `c${s.records.length}`, "streams-up-to-date": "true" },
       body: JSON.stringify(s.records.slice(Number(at))),
     };
   }

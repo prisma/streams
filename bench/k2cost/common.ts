@@ -194,6 +194,13 @@ export function streamsNamed(headers: Record<string, string>): Record<string, st
   return out;
 }
 
+/** A response header by its name after `Prisma-`: the `Streams-` form
+ * first, the only one behind the Prisma Compute edge (it strips `Prisma-*`
+ * response headers; edge change #176), then the `Prisma-` form. */
+export function productHeader(headers: Headers | null | undefined, name: string): string | null {
+  return headers?.get(`streams-${name}`) ?? headers?.get(`prisma-${name}`) ?? null;
+}
+
 export class HeaderSource {
   private map: Record<string, string> = {};
   private readonly base: Record<string, string>;

@@ -29,7 +29,7 @@
 // read latency per page), so the rig's meter checks apply unchanged.
 
 import { readFileSync } from "node:fs";
-import { Rng, Zipf, backoffMs, encName, pool, sleep, streamName, type StreamTally } from "./common.ts";
+import { Rng, Zipf, backoffMs, encName, pool, productHeader, sleep, streamName, type StreamTally } from "./common.ts";
 import { PayloadGen, payloadKind } from "./corpus.ts";
 import { countOracle, type Owner } from "./oracle.ts";
 import type { Ctx } from "./produce.ts";
@@ -287,14 +287,14 @@ async function auditStream(ctx: Ctx, name: string, plan: StreamPlan, maxBytes: n
       t.delivered_records += recs.length;
       t.delivered_bytes += bytes;
     } else meter.add("empty_polls");
-    const next = r.headers?.get("prisma-next-cursor") ?? null;
+    const next = productHeader(r.headers, "next-cursor") ?? null;
     const pos = next ? cursorOffset(next) : null;
     if (!pos || pos.offset !== BigInt(c.read_records)) {
       c.offset_errors++;
       if (c.examples.length < 5) c.examples.push(`page ${c.pages}: cursor offset ${pos?.offset ?? "none"} after ${c.read_records} records`);
     }
     if (pos && !c.segments.includes(pos.segment)) c.segments.push(pos.segment);
-    if (r.headers?.get("prisma-up-to-date") === "true" || r.status === 204) break;
+    if (productHeader(r.headers, "up-to-date") === "true" || r.status === 204) break;
     if (!next || (recs.length === 0 && next === cursor)) break;
     cursor = next;
   }

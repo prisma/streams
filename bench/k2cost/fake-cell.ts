@@ -162,8 +162,8 @@ export class FakeCell {
       status: 200,
       headers: {
         "content-type": "application/json",
-        "prisma-next-cursor": cursorOf(next),
-        "prisma-up-to-date": String(next === recs.length),
+        "streams-next-cursor": cursorOf(next),
+        "streams-up-to-date": String(next === recs.length),
       },
     });
   }
@@ -272,7 +272,7 @@ export class FakeCell {
     if (op === "/records:long-poll" && from === recs.length) {
       await this.waitAppend(Number(url.searchParams.get("waitMs") ?? 1000), req.signal);
       if (from === recs.length) {
-        return new Response(null, { status: 204, headers: { "prisma-next-cursor": cursorOf(from), "prisma-up-to-date": "true" } });
+        return new Response(null, { status: 204, headers: { "streams-next-cursor": cursorOf(from), "streams-up-to-date": "true" } });
       }
     }
     const page = this.page(project, recs, from, maxBytes);
