@@ -296,18 +296,69 @@ describe("row 15: the live pool", () => {
 describe("row 16: the object store", () => {
   const cell = (n: number, err: number, p99 = 5) => ({ n, err, p50_ms: 4, p90_ms: 4, p99_ms: p99, max_ms: p99 });
 
-  test("pages on put:wal or put:manifest errors at 5 % or more on two consecutive polls", () => {
+  /// `local.store.totals` with the cumulative put:wal and put:manifest counts by outcome.
+  const SINCE = 1791830620434;
+  const totals = (wal: [number, number], manifest: [number, number, number] = [10, 0, 0], since = SINCE) =>
+    data({
+      "local.store.totals.since_ms": since,
+      "local.store.totals.ops.put:wal": { ok: wal[0], not_found: 0, unbilled: 0, err: wal[1] },
+      "local.store.totals.ops.put:manifest": { ok: manifest[0], not_found: 0, unbilled: manifest[2], err: manifest[1] },
+    });
+
+  test("pages on failed put:wal at 5 % or more of the trailing minute's puts on two consecutive polls", () => {
     const w = new Watch();
-    w.poll(data({ "local.store.ops.put:wal": cell(100, 5) }));
-    w.poll(data({ "local.store.ops.put:wal": cell(100, 4) }));
-    w.poll(data({ "local.store.ops.put:manifest": cell(20, 1) }));
+    w.poll(totals([1000, 0]));
+    w.poll(totals([1100, 5])); // 5 of 105
+    w.poll(totals([1200, 5])); // 5 of 205
+    w.poll(totals([1300, 20])); // 20 of 320: one poll at 5 % or more
     expect(row(w, 16)).toEqual([]);
-    w.poll(data({ "local.store.ops.put:wal": cell(100, 9) }));
+    w.poll(totals([1400, 25])); // 25 of 425 over the trailing minute
     expect(fired(w, 16).map((e) => [e.class, e.values])).toEqual([
-      ["PAGE", { put_wal_n: 100, put_wal_err: 9, put_manifest_n: 10, put_manifest_err: 0, put_wal_p99_ms: 5 }],
+      ["PAGE", { put_wal_n: 425, put_wal_err: 25, put_manifest_n: 0, put_manifest_err: 0, put_wal_p99_ms: 8 }],
     ]);
-    w.polls(MIN_POLLS);
+    // No new failure: the trailing minute drains of them, then four clean polls.
+    w.polls(5 + MIN_POLLS, totals([1400, 25]));
     expect(row(w, 16)).toEqual([["trigger", "PAGE"], ["resolve", "PAGE"]]);
+  });
+
+  test("pages on an idle cell's failed manifest puts", () => {
+    const w = new Watch();
+    w.poll(totals([24, 0], [10, 0, 0]));
+    w.poll(totals([24, 0], [12, 1, 0]));
+    expect(row(w, 16)).toEqual([]);
+    w.poll(totals([24, 0], [14, 2, 0]));
+    expect(fired(w, 16).map((e) => [e.class, e.values])).toEqual([
+      ["PAGE", { put_wal_n: 0, put_wal_err: 0, put_manifest_n: 6, put_manifest_err: 2, put_wal_p99_ms: 8 }],
+    ]);
+  });
+
+  test("a put the store refused (a 412 manifest CAS conflict) is no failure: an idle cell opens nothing", () => {
+    // The field's idle scratch cell: the latency window's `err` counts every
+    // answer that is not a 2xx or a 304 (1-3 refused manifest puts of 9 a
+    // minute), while `totals` counts them `unbilled` and fails none.
+    const w = new Watch();
+    for (let i = 0; i < 40; i++) {
+      w.poll({
+        data: patch(DATA, {
+          "local.store.ops.put:manifest": cell(9, 1 + (i % 3)),
+          "local.store.totals.ops.put:manifest": { ok: 10 + 7 * i, not_found: 0, unbilled: 2 * i, err: 0 },
+        }),
+      });
+    }
+    expect(row(w, 16)).toEqual([]);
+  });
+
+  test("a restart starts a new baseline: the counters a new process restarts are no failures", () => {
+    const w = new Watch();
+    w.polls(2, totals([1000, 900]));
+    const reboot = (wal: [number, number]) => ({ ...totals(wal, [3, 0, 0], SINCE + 600_000), ...health({ bootId: "boot-2" }) });
+    w.polls(2, reboot([500, 50]));
+    expect(row(w, 16)).toEqual([]);
+    w.poll(reboot([520, 60]));
+    w.poll(reboot([540, 70]));
+    expect(fired(w, 16).map((e) => [e.class, e.values])).toEqual([
+      ["PAGE", { put_wal_n: 60, put_wal_err: 20, put_manifest_n: 0, put_manifest_err: 0, put_wal_p99_ms: 8 }],
+    ]);
   });
 
   test("notifies after 5 min of put:wal p99 above 2 s; a window with no puts is clean", () => {

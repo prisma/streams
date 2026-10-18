@@ -362,6 +362,18 @@ class Ctx {
     this.memo.samples[key] = samples;
     return samples[0] ?? { at: this.at, v };
   }
+
+  /// The oldest of the samples of `v` kept over the trailing `span`, one a
+  /// poll, this one included; restarts when a component of `v` went down.
+  trailing(key: string, v: number[], span: number): Sample {
+    let samples = this.memo.samples[key] ?? [];
+    const last = samples[samples.length - 1];
+    if (last !== undefined && v.some((x, i) => x < (last.v[i] ?? 0))) samples = [];
+    samples.push({ at: this.at, v });
+    samples = samples.filter((s) => s.at >= this.at - span);
+    this.memo.samples[key] = samples;
+    return samples[0] ?? { at: this.at, v };
+  }
 }
 
 // ---- the rules: one function per row ----------------------------------------
@@ -506,16 +518,32 @@ function livePool(c: Ctx): Answer {
   return near === null ? "clean" : "pending";
 }
 
+/// One `local.store.totals.ops` cell's puts, every outcome, and its failed
+/// ones: `err` is a failure left after the client's retries, a transport
+/// error or a cancelled call; a 412 (a manifest CAS conflict) is `unbilled`.
+function putCounts(totals: Json, name: string): [number, number] {
+  const count = (k: string) => num(get(totals, "ops", name, k)) ?? 0;
+  const err = count("err");
+  return [count("ok") + count("not_found") + count("unbilled") + err, err];
+}
+
+/// Row 16 counts failed puts from the cumulative `totals`, over the trailing
+/// minute: the latency window `local.store.ops` counts as `err` every answer
+/// that is not a 2xx or a 304, so an idle cell's occasional refused manifest
+/// put (412) read as 1 of 9 failing.
 function objectStore(c: Ctx): Answer {
   const ops = get(c.poll.data, "local", "store", "ops");
-  if (ops === undefined || ops === null || typeof ops !== "object") return "skip";
-  const cell = (name: string) => ({
-    n: num(get(ops, name, "n")) ?? 0,
-    err: num(get(ops, name, "err")) ?? 0,
-    p99: num(get(ops, name, "p99_ms")) ?? 0,
-  });
-  const wal = cell("put:wal");
-  const manifest = cell("put:manifest");
+  const totals = get(c.poll.data, "local", "store", "totals");
+  const since = num(get(totals, "since_ms"));
+  if (ops === undefined || ops === null || typeof ops !== "object" || since === null) return "skip";
+  // A restart starts the counters again (a new `since_ms`): a new baseline.
+  if (c.boot.restarted || c.memo.mark.since !== since) delete c.memo.samples.puts;
+  c.memo.mark.since = since;
+  const now = [...putCounts(totals, "put:wal"), ...putCounts(totals, "put:manifest")];
+  const base = c.trailing("puts", now, MIN).v;
+  const [walN, walErr, manifestN, manifestErr] = now.map((x, i) => x - (base[i] ?? x));
+  const wal = { n: walN ?? 0, err: walErr ?? 0, p99: num(get(ops, "put:wal", "p99_ms")) ?? 0 };
+  const manifest = { n: manifestN ?? 0, err: manifestErr ?? 0 };
   const failing = (x: { n: number; err: number }) => x.err > 0 && x.n > 0 && x.err / x.n >= 0.05;
   const n = c.streak("failing", failing(wal) || failing(manifest));
   const slow = c.held("slow", wal.p99 > 2000);
