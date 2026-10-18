@@ -118,6 +118,9 @@ mod fork_debt;
 #[path = "tests/fork_lifecycle.rs"]
 mod fork_lifecycle;
 
+#[path = "tests/header_alias.rs"]
+mod header_alias;
+
 #[path = "tests/history_absorption.rs"]
 mod history_absorption;
 

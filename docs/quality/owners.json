@@ -259,6 +259,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::header_alias",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Streams-<Name> request headers on the product surface (edge change #173): the Streams- forms serve create, keyed append and read and the consumer delete saga, differing Prisma-/Streams- values are refused before any handler with nothing written, and the preflight allows both forms; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/header_alias.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::seal_fence_receiver",
       "path": "src/dst/dst_tests.rs",
       "reason": "The seal-fence receiver's scenarios (NEXT-WORK §5 F1-a, edge change #88): exact-operation authorization, target and generation binding, the non-owner redirect that opens no writer, the reply held until the fence is durable, and a failed group that never reports; compiler and the full DST suite exercise the module.",

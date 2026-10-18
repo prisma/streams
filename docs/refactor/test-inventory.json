@@ -4093,6 +4093,17 @@
     "scenarios": []
   },
   {
+    "name": "differing_prisma_and_streams_values_are_refused",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "377edc1c700e8a67bd7cecf396e5cf6af9b1cbb3ac4dba1f11a2fd74b106de83",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/header_alias.rs",
+    "scenarios": []
+  },
+  {
     "name": "dirty_scan_retries_until_it_succeeds",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -8458,6 +8469,17 @@
     ]
   },
   {
+    "name": "streams_named_request_headers_serve_the_product_surface",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "06ec37fe748c6c5cd19bb48bf624c292d5bb3f4855c460f062a7cddac533bfa1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/header_alias.rs",
+    "scenarios": []
+  },
+  {
     "name": "subscription_survives_when_both_feeds_refresh_before_the_deadline",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -8769,6 +8791,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/admission_maintenance.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_product_preflight_allows_the_streams_forms",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8323ebfd4d0fd2ebea6e12fc7930be28219c04c9360129e859e1579b02090d7b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/header_alias.rs",
     "scenarios": []
   },
   {

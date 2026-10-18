@@ -123,13 +123,13 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::crypto::{FrameHeader, StreamKey, derive_subkey, encrypt_frame};
-use crate::history::KeyCache;
 use crate::product::{
     internal_queue_cursor, internal_segment_scan, internal_sref, internal_sweep_segment,
     verify_internal_target,
 };
 use crate::registry::{Registry, StreamDesc};
 use crate::shard::{ShardEngine, now_ms};
+use crate::{header_alias::aliased, history::KeyCache};
 
 /// Protocol ceiling on a request body — the wire pin, re-exported from
 /// [`crate::protocol_pin`] (PR 3.2.1: the pin moved beside the other
@@ -1160,7 +1160,7 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
             "/v1/streams",
             axum::routing::get(product_list_axum).options(product_preflight),
         )
-        .route("/v1/streams/{*name}", any(product_entry_axum))
+        .route("/v1/streams/{*name}", aliased(any(product_entry_axum)))
         .route(
             "/v1/projects/{project}/usage",
             axum::routing::get(project_usage_axum).options(product_preflight),

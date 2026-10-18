@@ -37,6 +37,7 @@ mod dst;
 mod failpoints;
 mod fleet;
 mod golden_tests;
+mod header_alias;
 mod history;
 mod http;
 #[cfg(test)]
