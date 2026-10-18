@@ -146,7 +146,7 @@ maybe("the canary exchanges at the real issuer and appends and reads back on the
     method: "POST", headers: { authorization: `StreamsCredential ${credential}` },
   })).json() as { accessToken: string };
   const all = await fetch(`${cellOrigin}${RECORDS_PATH}?cursor=beginning`, {
-    headers: { authorization: `Bearer ${token.accessToken}`, "prisma-encryption-key": canaryStreamKey("cell_sc1") },
+    headers: { authorization: `Bearer ${token.accessToken}`, "streams-encryption-key": canaryStreamKey("cell_sc1") },
   });
   const records = await all.json() as { canary: string; at: number }[];
   expect([all.status, records.slice(-2).map((r) => r.canary)]).toEqual([200, [`e2e-${n - 1}`, `e2e-${n}`]]);

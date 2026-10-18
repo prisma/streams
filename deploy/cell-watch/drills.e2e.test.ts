@@ -217,7 +217,7 @@ maybe("the issuer's drills each page the on-call: row 21 with the issuer stopped
   })).json() as { accessToken: string }).accessToken;
   await until("the canary's first record", 150, async () => {
     const res = await fetch(`${cell.origin}${RECORDS_PATH}?cursor=beginning`, {
-      headers: { authorization: `Bearer ${token}`, "prisma-encryption-key": canaryStreamKey("cell_sc1") },
+      headers: { authorization: `Bearer ${token}`, "streams-encryption-key": canaryStreamKey("cell_sc1") },
     });
     return res.ok && ((await res.json()) as unknown[]).length > 0 ? true : undefined;
   });

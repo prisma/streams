@@ -163,7 +163,7 @@ async function ingested(cell: Cell, project: string): Promise<number> {
 /// Check 4: the canary's round trip on a stream of its own.
 async function canaryRoundTrip(cell: Cell, project: string): Promise<void> {
   const key = randomBytes(32).toString("base64");
-  const headers = { "content-type": "application/json", "prisma-encryption-key": key };
+  const headers = { "content-type": "application/json", "streams-encryption-key": key };
   const stream = `/v1/streams/${STREAM}`;
   await expectStatus(await ask(cell, "DELETE", stream, cell.canary), [204, 404, 410], `DELETE ${stream}`);
   await expectStatus(

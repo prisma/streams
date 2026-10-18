@@ -28,7 +28,9 @@ export interface Seen {
   connection: string | null;
   authorization: string | null;
   contentType: string | null;
-  /// `prisma-encryption-key`: the stream key the canary presents.
+  /// `streams-encryption-key`: the stream key the canary presents. The
+  /// Composer edge strips every `Prisma-*` request header, so a deployed
+  /// cell sees a key only under its `Streams-` name (edge change #173).
   encryptionKey: string | null;
   body: string;
 }
@@ -63,7 +65,7 @@ export class FakeServer {
           connection: req.headers.get("connection"),
           authorization: req.headers.get("authorization"),
           contentType: req.headers.get("content-type"),
-          encryptionKey: req.headers.get("prisma-encryption-key"),
+          encryptionKey: req.headers.get("streams-encryption-key"),
           body,
         });
         const route = this.routes[path];
@@ -163,7 +165,8 @@ export class FakeCell {
   /// the key against the one the stream was created under.
   private streamCall(req: Request, answer: (s: FakeStream) => Answer): Answer {
     if (req.headers.get("authorization") !== `Bearer ${CANARY_TOKEN}`) return refusal(401, "kid_unknown");
-    const key = req.headers.get("prisma-encryption-key");
+    // The edge strips `Prisma-*` request headers (edge change #173).
+    const key = req.headers.get("streams-encryption-key");
     if (key === null) return refusal(400, "missing_key");
     if (req.method === "PUT") return answer(this.stream as FakeStream);
     if (this.stream === null) return refusal(404, "not_found");
@@ -171,7 +174,7 @@ export class FakeCell {
   }
 
   private create(req: Request, config: string): Answer {
-    const key = req.headers.get("prisma-encryption-key") as string;
+    const key = req.headers.get("streams-encryption-key") as string;
     if (this.stream === null) {
       this.stream = { key, config, records: [] };
       return { status: 201, headers: ORIGIN, body: "{}" };

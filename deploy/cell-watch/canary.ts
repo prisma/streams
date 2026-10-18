@@ -223,7 +223,7 @@ export class Canary {
   /// key. A 401 drops the token; a 404 drops the tail, so the next round
   /// finds the stream missing and creates it.
   private async call(token: string, method: string, path: string, body?: string): Promise<Got> {
-    const headers: Record<string, string> = { authorization: `Bearer ${token}`, "prisma-encryption-key": this.key };
+    const headers: Record<string, string> = { authorization: `Bearer ${token}`, "streams-encryption-key": this.key };
     if (body !== undefined) headers["content-type"] = "application/json";
     const got = await send(new URL(path, this.cfg.cellOrigin), { method, headers, body }, this.cfg.timeoutMs);
     if (got.status === 401) this.token = null;

@@ -128,7 +128,7 @@ maybe("a shared cell admits, serves and offboards projects on the real binary", 
   const as = (p: string, method: string, path: string, body?: string) =>
     fetch(`${cell}${path}`, {
       method,
-      headers: { authorization: `Bearer ${tokens[p]}`, "content-type": "application/json", "prisma-encryption-key": KEY },
+      headers: { authorization: `Bearer ${tokens[p]}`, "content-type": "application/json", "streams-encryption-key": KEY },
       body,
     });
   // The status, and the body too when it is not the one wanted, so a
@@ -216,7 +216,7 @@ maybe("a suspended project is offboarded through the canary witness on the real 
   for (const name of ["s1", "dir/s2"]) {
     const res = await fetch(`${cell}/v1/streams/${name}`, {
       method: "PUT",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "prisma-encryption-key": KEY },
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "streams-encryption-key": KEY },
       body: JSON.stringify({ format: { kind: "json" } }),
     });
     expect(res.status === 201 ? "201" : `${res.status} ${await res.text()}`).toBe("201");

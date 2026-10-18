@@ -122,12 +122,16 @@ export class FakeStreamsCell {
     if (!m) return this.refuse(404, "not_found");
     const [name, records] = [decodeURIComponent(m[1]), m[2] !== undefined];
     const stream = this.streams.get(name);
-    const key = req.headers.get("prisma-encryption-key") ?? "";
+    // The Composer edge strips every `Prisma-*` request header, so a
+    // deployed cell sees the key only under its `Streams-` name (edge
+    // change #173).
+    const key = req.headers.get("streams-encryption-key");
     if (!records && req.method === "DELETE") {
       if (!stream) return this.json(404, { error: "not_found" });
       this.streams.delete(name);
       return new Response(null, { status: 204 });
     }
+    if (key === null) return this.refuse(400, "missing_key");
     if (!records && req.method === "PUT") {
       if (stream) return this.json(200, { name });
       if (this.streams.size >= this.maxStreams) return this.refuse(429, "stream_limit");
