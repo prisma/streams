@@ -18,7 +18,7 @@ not carried over).
   `*.localhost`, `127.0.0.1`, `[::1]`) before any request, with
   `CredentialExchangeError` `insecure_issuer` (status 0, not retryable),
   because the exchange sends the credential itself and an `http:` issuer
-  would hand it to anyone on the path (edge change #NEW-b8-1, the issuer's
+  would hand it to anyone on the path (edge change #174, the issuer's
   adversarial pass). Pass `allowInsecureIssuer: true` to send it anyway,
   as `allowInsecureEndpoint` does for the issuer's `endpoint`.
 - The SDK names its request headers in the `Streams-` form the server

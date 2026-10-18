@@ -173,7 +173,7 @@ alongside and finish before admission opens.
      failures behind a shared egress address lock other tenants' valid
      credentials out (9c943271, before K4 made it reachable); M3, the
      SDK sent the credential to an `http:` `issuerUrl` (7a59d754, edge
-     change #NEW-b8-1). The RUNBOOK's "The interim token issuer (public
+     change #174). The RUNBOOK's "The interim token issuer (public
      beta)" section and `docs/AUTHENTICATING.md` (linked from
      BETA-REFERENCE and the docs map) are written. Lows listed, not
      fixed: no sign-out and no server-side session revocation short of
