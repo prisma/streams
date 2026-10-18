@@ -61,6 +61,29 @@ describe("the buckets", () => {
     limits.take("exchange_credential", "new");
     expect(limits.keys("exchange_credential")).toBe(1);
   });
+
+  test("holds at most 10,000 keys under a spray faster than any bucket refills, scanning them once per 5,000 new keys past the first 10,000", () => {
+    // Adversarial pass B8 (H1): unknown credential ids sprayed within one
+    // refill (3 s for exchange_credential_failed) leave nothing to forget,
+    // and each new key used to scan the whole table, which kept growing.
+    const clock = { t: 1_000_000 };
+    const limits = new RateLimits(() => clock.t);
+    for (let i = 0; i < 30_000; i++) limits.take("exchange_credential_failed", `strcred_${i}`);
+    expect(limits.keys("exchange_credential_failed")).toBe(10_000);
+    expect(limits.scans("exchange_credential_failed")).toBe(4);
+    // The newest keys are kept: the latest 10,000 sprayed.
+    expect(limits.take("exchange_credential_failed", "strcred_29999")).toBe(0);
+    expect(limits.keys("exchange_credential_failed")).toBe(10_000);
+  });
+
+  test("forgets a locked-out key last, after every key that is not", () => {
+    const clock = { t: 1_000_000 };
+    const limits = new RateLimits(() => clock.t);
+    for (let i = 0; i < 20; i++) limits.charge("exchange_failed_ip", "203.0.113.7");
+    for (let i = 0; i < 12_000; i++) limits.charge("exchange_failed_ip", `198.51.100.${i}`);
+    expect(limits.keys("exchange_failed_ip")).toBeLessThanOrEqual(10_000);
+    expect(limits.locked("exchange_failed_ip", "203.0.113.7")).toBe(600);
+  });
 });
 
 async function issuerFor(cell: IssuerCell, ipHeader?: string | null) {

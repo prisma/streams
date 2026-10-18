@@ -54,9 +54,16 @@ export const LIMITS = {
 
 export type LimitName = keyof typeof LIMITS;
 
-/// Above this many keys, a bucket that has refilled is forgotten: it is
-/// the same as a new one. Keys come from requests (credential ids, IPs).
+/// At this many keys, a new key first scans the table: a bucket that has
+/// refilled is forgotten (it is the same as a new one), then, while more
+/// than KEEP_AFTER_PRUNE remain, the oldest (first seen first), a
+/// locked-out one only once no other is left. Keys come from requests
+/// (credential ids, IPs): a spray faster than any bucket refills leaves
+/// nothing refilled, and the cut to KEEP_AFTER_PRUNE keeps the table
+/// bounded and its scans to one per 5,000 new keys (adversarial pass B8,
+/// H1). A forgotten key's budget starts full again.
 const PRUNE_AT = 10_000;
+const KEEP_AFTER_PRUNE = 5_000;
 
 interface Bucket {
   tokens: number;
@@ -66,6 +73,8 @@ interface Bucket {
 
 class Buckets {
   private readonly buckets = new Map<string, Bucket>();
+  /// Scans of the whole table since boot.
+  scans = 0;
 
   constructor(private readonly limit: Limit) {}
 
@@ -87,9 +96,16 @@ class Buckets {
   }
 
   private prune(now: number): void {
+    this.scans += 1;
     for (const [key, b] of this.buckets) {
       const full = b.tokens + (Math.max(0, now - b.at) / 1000) * this.limit.perSec >= this.limit.burst;
       if (full && b.lockedUntil <= now) this.buckets.delete(key);
+    }
+    for (const lockedToo of [false, true]) {
+      for (const [key, b] of this.buckets) {
+        if (this.buckets.size <= KEEP_AFTER_PRUNE) return;
+        if (lockedToo || b.lockedUntil <= now) this.buckets.delete(key);
+      }
     }
   }
 
@@ -149,6 +165,11 @@ export class RateLimits {
   /// Keys `name` remembers (pruning keeps it bounded).
   keys(name: LimitName): number {
     return this.buckets[name].size;
+  }
+
+  /// How often `name`'s table has been scanned for keys to forget.
+  scans(name: LimitName): number {
+    return this.buckets[name].scans;
   }
 }
 
