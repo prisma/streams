@@ -18,6 +18,11 @@
 // Hysteresis: a rule opens as its row states, resolves after four
 // consecutive clean evaluations (one minute at 15 s, four at 60 s), and is
 // never triggered again while open, except once to raise NOTIFY to PAGE.
+// A fresh watch knows nothing of the incidents an earlier one opened (its
+// open rules live in memory), so each rule's first clean evaluation since
+// the watch started resolves the rule's keys once: an incident left open
+// across a watch redeploy closes as soon as its condition is seen clear,
+// and a resolve of a key that is not open changes nothing on the pager.
 // NOTIFY_ONLY demotes the level rules' PAGE to NOTIFY until they are
 // calibrated (triage B6): the binary rows page from the first deploy.
 // Counter baselines reset on the watch's first poll and whenever the
@@ -194,13 +199,17 @@ export interface WatchState {
   open: Record<string, { class: Class; since: number }>;
   /// Consecutive clean evaluations of each open rule.
   clean: Record<string, number>;
+  /// The rules this watch has not yet seen answer clean or fire; each one's
+  /// first clean answer resolves its keys (an earlier watch's incident).
+  unsettled: Record<string, true>;
   memo: Record<string, Memo>;
   /// Consecutive failed trigger deliveries (D7).
   failedTriggers: number;
 }
 
 export function initialState(): WatchState {
-  return { polls: 0, boot: null, bootIds: {}, baselines: {}, open: {}, clean: {}, memo: {}, failedTriggers: 0 };
+  const unsettled: Record<string, true> = Object.fromEntries(RULES.map((r) => [r.id, true]));
+  return { polls: 0, boot: null, bootIds: {}, baselines: {}, open: {}, clean: {}, unsettled, memo: {}, failedTriggers: 0 };
 }
 
 // ---- the fixed enums -------------------------------------------------------
@@ -837,7 +846,10 @@ function noteBoot(state: WatchState, poll: Poll): BootView {
 function settle(cfg: RulesConfig, state: WatchState, r: Rule, answer: Answer, at: number, events: WatchEvent[]): void {
   if (answer === "skip") return;
   const open = state.open[r.id];
+  const inherited = state.unsettled[r.id] === true && answer !== "pending";
+  if (answer !== "pending") delete state.unsettled[r.id];
   if (answer === "clean") {
+    if (open === undefined && inherited) events.push(event(cfg, r, "resolve", "NOTIFY", at, {}, {}));
     if (open === undefined) return;
     const n = (state.clean[r.id] ?? 0) + 1;
     state.clean[r.id] = n;

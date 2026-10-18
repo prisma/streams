@@ -71,9 +71,18 @@ export function healthyPoll(at: number): Poll {
   };
 }
 
-/// A watch on its own clock: each poll is POLL_MS after the one before.
+/// A watch's state once every rule has answered: its events are the cell's
+/// alone, without a fresh watch's first resolves.
+export function settledState(): WatchState {
+  return { ...initialState(), unsettled: {} };
+}
+
+/// A watch on its own clock: each poll is POLL_MS after the one before. It
+/// starts as a watch that has already seen every rule settle, so its events
+/// are the cell's alone; a test of a fresh watch sets `initialState()`, whose
+/// first clean evaluations resolve what an earlier watch may have left open.
 export class Watch {
-  state: WatchState = initialState();
+  state: WatchState = settledState();
   events: WatchEvent[] = [];
   at = T0;
 

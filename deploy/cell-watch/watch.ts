@@ -8,7 +8,9 @@
 // initial state and re-triggers whatever still holds, on the same alert
 // keys, which the pager folds into the alerts already open; a resolve
 // closes both of its rule's keys (sinks.ts), so it also closes a key only
-// the watch before the restart had opened.
+// the watch before the restart had opened. What no longer holds, it
+// resolves at the rule's first clean evaluation (rules.ts), so an incident
+// the watch before it opened closes even when it cleared in between.
 //
 // A cycle that throws (poll.ts answers every network failure as data, so
 // this is a bug or an unusable input) sends no heartbeat: a watch that
@@ -37,15 +39,18 @@ export interface CycleReport {
 }
 
 export class CellWatch {
-  private state: WatchState = initialState();
+  private state: WatchState;
   private readonly poller: Poller;
   private readonly outbox: Outbox;
   private readonly log: (line: string) => void;
 
   constructor(
     private readonly cfg: WatchConfig,
-    deps: { now?: () => number; log?: (line: string) => void } = {},
+    /// `state`: where the rules start, a fresh watch's (`initialState`)
+    /// unless given; tests start most watches from one that has settled.
+    deps: { now?: () => number; log?: (line: string) => void; state?: WatchState } = {},
   ) {
+    this.state = deps.state ?? initialState();
     this.log = deps.log ?? console.log;
     this.poller = new Poller(cfg.poll, deps.now);
     this.outbox = new Outbox(cfg.sink, this.log);

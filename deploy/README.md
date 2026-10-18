@@ -103,7 +103,9 @@ Six more directories:
   the class (a NOTIFY rising to PAGE pages), and sends the heartbeat GET,
   which it withholds after three cycles in a row with a trigger
   undelivered. `watch.ts` runs the cycle (poll, rules, delivery, heartbeat)
-  every 15 s with its state in memory only, and `serveOk` answers `ok` to
+  every 15 s with its state in memory only (so a fresh watch resolves each
+  rule's keys at the rule's first clean evaluation, closing an incident the
+  watch before it opened), and `serveOk` answers `ok` to
   `GET /` on `$PORT` and nothing else. `canary.ts` is rows 19 and 22's
   probe, made as a customer makes it: it exchanges the canary project's
   hidden credential at the issuer's public `POST /v1/token/streams`, keeps

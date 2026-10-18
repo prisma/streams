@@ -6,7 +6,7 @@
 // stop; the `ok` port; the log lines. Run with `bun test ./deploy/cell-watch`.
 import { afterEach, describe, expect, test } from "bun:test";
 import { type Answer, CANARY_CREDENTIAL, FakeCell, FakeIssuer, FakeServer, METRICS_TOKEN, OPERATOR_TOKEN } from "./fake-cell";
-import { CFG, DATA, patch, POLL_MS, T0 } from "./rig";
+import { CFG, DATA, patch, POLL_MS, settledState, T0 } from "./rig";
 import type { Json } from "./rules";
 import { CellWatch, type CycleReport, serveOk, type WatchConfig } from "./watch";
 
@@ -43,7 +43,7 @@ class Rig {
   }
 
   watch(cellOrigin?: string): CellWatch {
-    return new CellWatch(this.config(cellOrigin), { now: () => this.at, log: (l) => this.log.push(l) });
+    return new CellWatch(this.config(cellOrigin), { now: () => this.at, log: (l) => this.log.push(l), state: settledState() });
   }
 
   /// `n` cycles, POLL_MS apart on the watch's clock.
@@ -107,7 +107,11 @@ describe("a cycle", () => {
   test("notifies row 20 when the cell refuses the watch's bearer for 60 s while /health is 200, and still beats", async () => {
     const rig = new Rig();
     const cfg = rig.config();
-    const w = new CellWatch({ ...cfg, poll: { ...cfg.poll, operatorToken: "not-the-bearer" } }, { now: () => rig.at, log: () => {} });
+    const w = new CellWatch({ ...cfg, poll: { ...cfg.poll, operatorToken: "not-the-bearer" } }, {
+      now: () => rig.at,
+      log: () => {},
+      state: settledState(),
+    });
     const reports = await rig.cycles(w, 5);
     expect(kinds(reports)).toEqual([[], [], [], [], ["trigger NOTIFY"]]);
     expect(rig.sent()).toEqual([["trigger", "cell_sc1/r20_snapshot_stale/notify"]]);
@@ -147,7 +151,7 @@ describe("the canary", () => {
           issuerMetricsToken: METRICS_TOKEN,
           canary: { credential: CANARY_CREDENTIAL, cellId: "cell_sc1" },
         },
-      }, { now: () => rig.at, log: (l) => rig.log.push(l) });
+      }, { now: () => rig.at, log: (l) => rig.log.push(l), state: settledState() });
       const reports = await rig.cycles(w, 4);
       // The cell refuses the canary's token (the keys feed and the binary
       // disagree): each round's append is a 401, the token dropped and
@@ -197,6 +201,22 @@ describe("restarts and failures", () => {
     await rig.cycles(rig.watch(), 2);
     await rig.cycles(rig.watch(), 2);
     expect(rig.sent()).toEqual([["trigger", R07], ["trigger", R07]]);
+  });
+
+  test("a fresh watch resolves both keys of an incident the watch before it opened, once its condition has cleared", async () => {
+    const rig = new Rig();
+    rig.data({ "feeds.policies.reservedDropped": 1 });
+    await rig.cycles(rig.watch(), 2);
+    rig.data();
+    const fresh = new CellWatch(rig.config(), { now: () => rig.at, log: () => {} });
+    const [first] = await rig.cycles(fresh, 1);
+    const r07 = (sent: string[][]) => sent.filter(([, key]) => key?.startsWith("cell_sc1/r07_"));
+    expect(r07(rig.sent())).toEqual([["trigger", R07], ["resolve", "cell_sc1/r07_reserved_policy_dropped/notify"], ["resolve", R07]]);
+    // Every resolve of the first cycle closes both of its rule's keys, and
+    // the cycle raised resolves only.
+    expect(first?.events.every((e) => e.kind === "resolve")).toBe(true);
+    expect(rig.sent().length).toBe(1 + 2 * (first?.events.length ?? 0));
+    expect(await rig.cycles(fresh, 3)).toEqual(Array(3).fill({ events: [], queued: 0, heartbeat: "ok" }));
   });
 
   test("a cycle that cannot complete sends no heartbeat, is logged, and the loop carries on", async () => {

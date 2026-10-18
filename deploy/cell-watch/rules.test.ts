@@ -56,6 +56,44 @@ describe("the captured healthy cell", () => {
   });
 });
 
+describe("a fresh watch", () => {
+  const dropped = { data: patch(DATA, { "feeds.policies.reservedDropped": 1 }) };
+
+  test("resolves each rule's keys once, at its first clean evaluation, so an incident an earlier watch opened closes", () => {
+    const w = new Watch(ALL_ROWS);
+    w.state = initialState();
+    for (let i = 0; i < 480; i++) {
+      const minute = i % 4 === 0;
+      w.poll({
+        billing: minute ? billingWithStored(1_000_000, { "rollup.lastApplyAgeSecs": 5 }) : null,
+        issuerHealth: { status: 200, timedOut: false },
+        issuerMetrics: minute ? { cache_age_secs: 12, gate_open: true, profile_ok: true } : null,
+        canary: {
+          exchange: minute ? { ok: true, status: 200, errorCode: null, origin: false, endpoint: ALL_ROWS.cellOrigin } : null,
+          append: { ok: true, status: 200, errorCode: null, origin: true },
+          read: { ok: true, status: 200, errorCode: null, origin: true },
+        },
+      });
+    }
+    expect(w.events.map((e) => e.rule).toSorted()).toEqual(RULES.map((r) => r.id).toSorted());
+    for (const e of w.events) {
+      expect([e.rule, e.kind, e.dedupKey, e.values, e.labels]).toEqual([e.rule, "resolve", `cell_sc1/${e.rule}`, {}, {}]);
+    }
+    // The canary's row resolves at the watch's first poll, which an incident
+    // the rc.3 watch opened (field round 3) needed.
+    expect(ofRow(w.events, 19).map((e) => e.at)).toEqual([T0]);
+  });
+
+  test("a rule whose first evaluation fires opens as before and resolves once, after its clean polls", () => {
+    const w = new Watch();
+    w.state = initialState();
+    expect(kinds(ofRow(w.poll(dropped), 7))).toEqual([["trigger", "PAGE"]]);
+    expect(ofRow(w.polls(RESOLVE_AFTER - 1), 7)).toEqual([]);
+    expect(kinds(ofRow(w.poll(), 7))).toEqual([["resolve", "PAGE"]]);
+    expect(ofRow(w.polls(10), 7)).toEqual([]);
+  });
+});
+
 describe("hysteresis", () => {
   const dropped = { data: patch(DATA, { "feeds.policies.reservedDropped": 1 }) };
 
@@ -302,9 +340,11 @@ describe("the payload allowlist", () => {
       for (const v of Object.values(e.values)) expect(Number.isFinite(v)).toBe(true);
       for (const [k, v] of Object.entries(e.labels)) expect([k, r?.labels[k]?.includes(v)]).toEqual([k, true]);
     }
-    expect(ofRow(events, 19)[0]?.labels).toEqual({ step: "append", origin: "server", error_code: "other" });
-    expect(ofRow(events, 22)[0]?.labels).toEqual({ failure: "endpoint", answer: "status", error_code: "other" });
-    expect(ofRow(events, 3)[0]?.labels).toEqual({ origin: "server", answer: "status", reason: "tasks" });
+    // A fresh watch's first resolves carry no labels; each row's first trigger names them.
+    const fired = events.filter((e) => e.kind === "trigger");
+    expect(ofRow(fired, 19)[0]?.labels).toEqual({ step: "append", origin: "server", error_code: "other" });
+    expect(ofRow(fired, 22)[0]?.labels).toEqual({ failure: "endpoint", answer: "status", error_code: "other" });
+    expect(ofRow(fired, 3)[0]?.labels).toEqual({ origin: "server", answer: "status", reason: "tasks" });
     expect(ERROR_CODES).not.toContain(PROJECT);
   });
 });

@@ -78,7 +78,10 @@ describe("runWatch", () => {
     const bearer = r.cell.seen.filter((s) => s.path === "/operator/data.json").map((s) => s.authorization);
     expect(bearer).toEqual([`Bearer ${OPERATOR_TOKEN}`, `Bearer ${OPERATOR_TOKEN}`]);
     expect(r.monitor.seen.map((s) => [s.method, s.path])).toEqual([["GET", BEAT_PATH]]);
-    expect(r.sink.seen).toEqual([]);
+    // A fresh watch's first cycle resolves each rule it saw clean (an
+    // incident an earlier watch may have left open), and raises nothing else.
+    expect(r.sink.seen.length).toBeGreaterThan(0);
+    for (const s of r.sink.seen) expect(JSON.parse(s.body).kind).toBe("resolve");
     // No line names a URL or a secret.
     for (const secret of [OPERATOR_TOKEN, KEY, BEAT_PATH, r.cell.origin, r.sink.origin]) {
       expect(log.filter((l) => l.includes(secret))).toEqual([]);
@@ -93,8 +96,9 @@ describe("runWatch", () => {
     r.cell.setData({ ts_ms: 1, ops: null, feeds: { policies: { reservedDropped: 3 } } });
     const running = await runWatch(r.inputs, 0, () => "held", () => {});
     stops.push(running.stop);
-    await until("the trigger", () => r.sink.seen.length === 1);
-    const sent = r.sink.seen[0]!;
+    const trigger = () => r.sink.seen.find((s) => JSON.parse(s.body).kind === "trigger");
+    await until("the trigger", () => trigger() !== undefined);
+    const sent = trigger()!;
     expect([sent.method, sent.authorization, sent.contentType]).toEqual(["POST", `Bearer ${KEY}`, "application/json"]);
     // NOTIFY_ONLY=1 demotes the level rules only: binary row 7 pages.
     expect(JSON.parse(sent.body)).toMatchObject({ kind: "trigger", class: "PAGE", dedupKey: "cell_sc1/r07_reserved_policy_dropped/page" });
