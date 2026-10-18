@@ -295,18 +295,21 @@ directories.
 The first run of this sequence on Compute (owner's Personal workspace,
 eu-central-1, commit 590b0073):
 
-- **The Compute edge drops every request header named `Prisma-*`.** A
+- **The Compute edge drops every header named `Prisma-*`, both ways.** A
   create with `Prisma-Encryption-Key` (any case, HTTP/2 or 1.1) answers
   400 `missing_key`, while `Stream-Encryption-Key` on the same request
-  reaches the cell (400 `unknown_field`). Response headers named
-  `Prisma-*` pass. So on a `*.prisma.build` domain no stream can be
-  created, written or read: cell-check fails at its canary round trip,
-  the watch's canary (row 19) pages, and the SDK, `bench/k2cost` and
-  `bench/lifecycle` cannot exercise the data path. Everything that needs
-  no stream key works (health, `/v1/debug`, the catalog, usage, the
-  issuer's exchange). Until the platform passes the header or the wire
-  takes the key under another name, run cuts without `--cell-url` (exit
-  3) to deploy the issuer.
+  reaches the cell (400 `unknown_field`); edge change #173 (commit
+  b7b42c2c) takes the request headers as `Streams-*` too, and with it a
+  stream is created, written, read from the beginning and followed over
+  SSE (round 2, 2026-10-18). The cell's response headers named `Prisma-*`
+  are dropped as well: a records read through the edge carries no
+  `Prisma-Next-Cursor`, `Prisma-Up-To-Date`, `Prisma-Sealed` or any other
+  of them (the only `prisma-*` header a client sees, `prisma-request-id`,
+  is the edge's own). So the SDK cannot page a read or long-poll
+  (`subscribe` never wakes), the watch's canary cannot keep its tail (row
+  19 stays open although cell-check, which reads from the beginning,
+  passes), and `bench/k2cost`'s audit, walk, tail, group and churn modes
+  cannot follow a stream. SSE carries its cursor in the body and works.
 - `provision-cell.py` needs its own User-Agent: api.prisma.io answers 403
   to Python's default one.
 - A fresh project owns its production Branch; a project created first is
@@ -321,6 +324,14 @@ eu-central-1, commit 590b0073):
   forward deploy each switched to the new instance about 42 s after the
   command started with no failed request at a 500 ms probe (overlap):
   the slowest `/health` answer at the switch was 0.7 s, 0.3 s and 1.6 s.
+  That probe only read. With writes (round 2: `bench/lifecycle`'s restart
+  leg, three restarts, and an SDK append plus read every 500 ms) each
+  switch costs 7-9 s: the old build answers `503 temporarily_unavailable`
+  with `Retry-After` for 2-3 raw ticks, appends take up to 7.3 s inside
+  the SDK's replays, a read can exhaust them (1 of 1,846 SDK calls in the
+  leg, and 2-3 of about 2,400 in each probe, failed with that 503), and a
+  plain append can end `outcome_unknown` (2 of 2,448; neither was
+  committed). Nothing acked was lost. `/health` stayed 200 throughout.
 - Each cut of the same commit builds a server with a different sha256
   (the cut's worktree path differs), so a "rollback" to an earlier cut of
   one commit still changes the binary.
