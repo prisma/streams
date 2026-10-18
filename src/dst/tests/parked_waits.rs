@@ -160,6 +160,27 @@ async fn an_idle_pull_walks_twice_more_while_it_waits_and_wakes_no_other_pull() 
     engine_shutdown(&state).await;
 }
 
+/// An idle consumer's pull answers empty at its `waitMs`: its wait ends at
+/// the deadline rather than walking the lineage again without end. Bounded
+/// at three seconds, so a wait that always walks again fails here by name
+/// instead of holding the pull open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_idle_pull_answers_empty_at_its_wait_deadline() {
+    let (state, addr) = http_rig(mem()).await;
+    queue(addr, "deadline", b"{}").await;
+    let waiting = pull(addr, "deadline", r#"{"waitMs":300}"#);
+    let Ok((got, tokens, took)) = tokio::time::timeout(Duration::from_secs(3), waiting).await
+    else {
+        panic!("an idle pull with waitMs 300 did not answer within 3 s");
+    };
+    assert_eq!((got.len(), tokens.len()), (0, 0), "nothing to deliver");
+    assert!(
+        took >= Duration::from_millis(300),
+        "answered before its waitMs: {took:?}"
+    );
+    engine_shutdown(&state).await;
+}
+
 /// A record appended while a pull waits reaches it at once, not at the
 /// pull's deadline.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

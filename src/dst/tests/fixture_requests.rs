@@ -2,19 +2,41 @@
 
 pub(super) const RIG_KEY_B64: &str = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="; // skey() = [7u8; 32]
 
+/// How long a response may take. A consumer pull answers by its own
+/// `waitMs` (absent: at once), so it gets that plus twenty seconds: a pull
+/// whose wait never ends (a wait that always walks again) fails by name
+/// well inside the mutation leg's 90 s test timeout instead of after a
+/// minute. Every other request gets sixty seconds, far past the longest
+/// legitimate answer (a 25 s long-poll).
+fn answer_bound(path: &str, body: &[u8]) -> std::time::Duration {
+    let route = path.split('?').next().unwrap_or(path);
+    if !route.ends_with(":pull") {
+        return std::time::Duration::from_secs(60);
+    }
+    let wait_ms = serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|doc| doc["waitMs"].as_u64())
+        .unwrap_or(0);
+    std::time::Duration::from_millis(wait_ms) + std::time::Duration::from_secs(20)
+}
+
 /// Minimal HTTP/1.1 client: returns (status, lowercased headers, body).
-/// The whole response, bounded: a handler that never answers fails the
-/// test by name instead of hanging it (a hung DST once held a CI runner
-/// for an hour; the h1 head deadline never runs while a request is in
-/// flight, so nothing server-side ends such a wait). Sixty seconds is
-/// far past the longest legitimate answer (a 25 s long-poll).
-async fn response_bytes(s: &mut tokio::net::TcpStream, method: &str, path: &str) -> Vec<u8> {
+/// The whole response, bounded by `answer_bound`: a handler that never
+/// answers fails the test by name instead of hanging it (a hung DST once
+/// held a CI runner for an hour; the h1 head deadline never runs while a
+/// request is in flight, so nothing server-side ends such a wait).
+async fn response_bytes(
+    s: &mut tokio::net::TcpStream,
+    method: &str,
+    path: &str,
+    bound: std::time::Duration,
+) -> Vec<u8> {
     use tokio::io::AsyncReadExt;
     let mut buf = Vec::new();
-    let read = tokio::time::timeout(std::time::Duration::from_secs(60), s.read_to_end(&mut buf));
+    let read = tokio::time::timeout(bound, s.read_to_end(&mut buf));
     match read.await {
         Err(_) => panic!(
-            "{method} {path}: no complete response within 60 s ({} bytes so far)",
+            "{method} {path}: no complete response within {bound:?} ({} bytes so far)",
             buf.len()
         ),
         // A peer RESET after a complete response is normal on macOS when
@@ -56,7 +78,7 @@ pub(super) async fn hreq(
     req.push_str("\r\n");
     s.write_all(req.as_bytes()).await.unwrap();
     s.write_all(body).await.unwrap();
-    let buf = response_bytes(&mut s, method, path).await;
+    let buf = response_bytes(&mut s, method, path, answer_bound(path, body)).await;
     let split = buf
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
@@ -228,7 +250,7 @@ pub(super) async fn preq(
     req.push_str("\r\n");
     s.write_all(req.as_bytes()).await.unwrap();
     s.write_all(body).await.unwrap();
-    let buf = response_bytes(&mut s, method, path).await;
+    let buf = response_bytes(&mut s, method, path, answer_bound(path, body)).await;
     let split = buf
         .windows(4)
         .position(|w| w == b"\r\n\r\n")

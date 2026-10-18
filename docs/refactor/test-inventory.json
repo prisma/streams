@@ -3190,6 +3190,17 @@
     "scenarios": []
   },
   {
+    "name": "an_idle_pull_answers_empty_at_its_wait_deadline",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "f12057bda76ec8d3c07d4ffc58d39e838bdb55f149b00e9ac43cef2edc945700",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/parked_waits.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_idle_pull_walks_twice_more_while_it_waits_and_wakes_no_other_pull",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
