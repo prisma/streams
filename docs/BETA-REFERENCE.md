@@ -210,7 +210,7 @@ is `docs/refactor/WIRE-MATRIX.md` §0 and §2.
 | `overloaded` | The server is far over its load and refuses before reading the request | true | 1 |
 | `read_memory_busy` | The server's read memory is full | true | 1 |
 | `subscription_capacity` | The server holds its 1,200 live subscriptions | true | 5 |
-| `temporarily_unavailable` | Storage could not be read for this request | true | 1 |
+| `temporarily_unavailable` | Storage could not be read for this request, or the stream's shard is opening (a deploy or a restart) | true | 1 |
 | `maintenance_backpressure` | The stream's storage maintenance is behind | true | when given |
 | `project_tracker_capacity` | The server tracks too many projects at once | true | no |
 | `policy_stale`, `grants_stale`, `keys_stale` | The server's copy of the access policy is too old | true | 1 |
@@ -252,7 +252,10 @@ instead of sending it again. Source: `sdk/README.md` ("In plain words"),
   it starts, requests get the platform's `404` or a `503`. Measured on
   the beta's scratch cell: 7 to 9 s without a successful append or read
   per restart or deploy, `503 temporarily_unavailable` with `Retry-After`
-  meanwhile, which the SDK rides through (above).
+  meanwhile on reads and appends alike (reads since edge change #178),
+  which the SDK rides through (above). A plain append in flight at the
+  switch can still be answered `503 outcome_unknown` (field: up to two per
+  switch, none of them stored); appends through a producer never are.
 - **No SLA.** There is no availability or latency commitment. Append
   latency includes a write to object storage and waits for the next
   flush, up to 100 ms; it has not been measured again on the beta's

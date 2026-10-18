@@ -8,6 +8,7 @@ use serde_json::json;
 
 use crate::application::append::AppendFailure;
 
+use super::answers::retry_unavailable;
 use super::{append_failure_status, capacity_refused, perr};
 
 pub(super) fn render_product_append_error(error: AppendFailure) -> Response {
@@ -86,7 +87,7 @@ pub(super) fn render_product_append_error(error: AppendFailure) -> Response {
             _ => ("append_failed", "append failed", None, false),
         },
     };
-    let mut r = perr(status, code, message, details, retryable);
+    let mut r = retry_unavailable(code, perr(status, code, message, details, retryable));
     if let Some(retry) = error.retry_after {
         r.headers_mut()
             .insert("retry-after", axum::http::HeaderValue::from(retry));

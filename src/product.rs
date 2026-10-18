@@ -2592,7 +2592,7 @@ pub(crate) fn render_product_read_failure(
             None,
         ),
     };
-    let mut response = perr(status, code, message, None, retry);
+    let mut response = retry_unavailable(code, perr(status, code, message, None, retry));
     if let Some(owner) = owner
         && let Ok(owner) = axum::http::HeaderValue::from_str(&owner)
     {
@@ -3641,7 +3641,7 @@ pub(crate) async fn product_list(
 }
 
 mod answers;
-use answers::{json_ok_no_store, watch_observation_response};
+use answers::{json_ok_no_store, retry_unavailable, watch_observation_response};
 mod append_body;
 use append_body::{
     AppendBody, capacity_refused, names_a_producer, parse_append_body, refuse_if_sealed,

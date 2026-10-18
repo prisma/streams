@@ -6,9 +6,10 @@
 //! for both let a registry blip read as "gone" — the sealed-span SSE sender
 //! made it a fatal `IncarnationChanged` cutoff and disconnected every
 //! subscriber of a feed whose stream still existed (review item 30).
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::StatusCode;
 use axum::response::Response;
 
+use super::answers::retry_unavailable;
 use super::perr;
 use crate::registry::{Registry, StreamDesc};
 use crate::tenant::TenantStreamRef;
@@ -67,16 +68,13 @@ impl DescriptorReadAnswer for object_store::Error {
                 false,
             );
         }
-        let mut response = perr(
-            StatusCode::SERVICE_UNAVAILABLE,
+        let (code, message) = (
             "temporarily_unavailable",
             "stream metadata could not be read; retry",
-            None,
-            true,
         );
-        response
-            .headers_mut()
-            .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
-        response
+        retry_unavailable(
+            code,
+            perr(StatusCode::SERVICE_UNAVAILABLE, code, message, None, true),
+        )
     }
 }

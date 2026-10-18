@@ -53,11 +53,18 @@ pub(crate) fn read_failure_response(error: ReadFailure) -> Response {
             "deliver=applied is not supported on forked streams",
         ),
         E::Storage(message) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &message),
-        E::Remote(error) => err_resp(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "temporarily_unavailable",
-            &format!("peer read failed: {error:?}"),
-        ),
+        E::Remote(error) => {
+            // Edge change #178: a failed peer read asks for a retry after 1 s.
+            let mut response = err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "temporarily_unavailable",
+                &format!("peer read failed: {error:?}"),
+            );
+            response
+                .headers_mut()
+                .insert("retry-after", axum::http::HeaderValue::from_static("1"));
+            response
+        }
     }
 }
 #[expect(
@@ -682,4 +689,19 @@ pub(crate) async fn serve_read_sse(
         state, desc, key, epoch, source, start, params, selector, surface, slot,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    /// Edge change #178: the raw read's 503 `temporarily_unavailable` (a
+    /// peer read that failed) carries `Retry-After: 1`, as the raw read's
+    /// shard-opening 503 carries its delay.
+    #[test]
+    fn a_failed_peer_read_asks_for_a_retry_after_one_second() {
+        let remote = crate::application::read_remote::RemoteSpanError::Transport("reset".into());
+        let response = super::read_failure_response(super::ReadFailure::Remote(remote));
+        assert_eq!(response.status().as_u16(), 503);
+        let retry = response.headers().get("retry-after");
+        assert_eq!(retry.map(|v| v.as_bytes()), Some(b"1".as_slice()));
+    }
 }
