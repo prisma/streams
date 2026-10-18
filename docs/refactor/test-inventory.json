@@ -7266,6 +7266,17 @@
     "scenarios": []
   },
   {
+    "name": "r10_a_metrics_batch_reaches_the_ops_metrics_journal_in_order",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0806c103650ea6ccca7f2ebbfbd1500e4855f813f71ceb9944610566b63c867b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/runtime_journals.rs",
+    "scenarios": []
+  },
+  {
     "name": "r10_append_admission_and_committed_counters_share_only_their_runtime",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

@@ -262,3 +262,27 @@ async fn r10_operator_data_serves_the_cached_ops_snapshot_without_recollecting()
     assert!(local["usage_overflow_admits"].is_u64());
     engine_shutdown(&rig.state).await;
 }
+
+/// A metrics batch reaches `_ops_metrics` as exactly the points it carries,
+/// in order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn r10_a_metrics_batch_reaches_the_ops_metrics_journal_in_order() {
+    let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
+    let mut points = vec![crate::ops::collect_snapshot(&rig.state); 2];
+    points[0].ts_ms = 1;
+    points[1].ts_ms = 2;
+    crate::ops::append_metrics(&rig.state, &points)
+        .await
+        .unwrap();
+    let key = rig.state.billing.usage_key().unwrap();
+    let read =
+        crate::billing::system_read(&rig.state, crate::billing::OPS_METRICS_STREAM, &key, None);
+    let stored = read.await.unwrap().map(|(body, _)| body.to_vec());
+    let sent = serde_json::to_vec(&points).unwrap();
+    assert_eq!(
+        stored.map(String::from_utf8),
+        Some(String::from_utf8(sent)),
+        "the journal holds the batch's points, in order"
+    );
+    engine_shutdown(&rig.state).await;
+}
