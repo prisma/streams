@@ -112,7 +112,9 @@ Send the stream key as `Streams-Encryption-Key`, never as
 cells removes every request header whose name starts with `Prisma-`, so
 the server never sees it and answers `400 missing_key` (edge change #173).
 The SDK sends the `Streams-` names. [BETA-REFERENCE.md](BETA-REFERENCE.md),
-"Request headers", lists the others.
+"Request headers", lists the others. The edge removes `Prisma-*` response
+headers too: read a response header under its `Streams-` name
+(`Streams-Next-Cursor`, ...; "Response headers" there, edge change #176).
 
 ## Errors and retries
 
@@ -130,7 +132,9 @@ Every refusal is JSON, `{"error": {"code": "...", "message": "..."}}`.
 | 503 | `issuer_unavailable` | the issuer cannot mint right now (it cannot see the cell's current state, or a key change is in progress) | yes, after `Retry-After` (5 s) |
 
 The SDK replays a `429` and a `503` on `Retry-After`, and a transport
-failure after 1, 2 and 4 seconds, within four attempts; any other refusal
+failure after 1, 2 and 4 seconds, within four attempts (the exchange does
+not get the 15 s restart ride-through of the cell's requests, edge change
+#177); any other refusal
 rejects at once with `CredentialExchangeError`. It refuses some inputs
 before any request: `invalid_credential_format` (the credential is not
 `prisma_streams_<id>.<secret>` in printable characters without spaces:

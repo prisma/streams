@@ -49,8 +49,30 @@ those names on a beta cell: the Prisma Compute edge in front of
 request that carries both names of one header with different values is
 refused `400 conflicting_header`, not retryable; the same value under
 both names is accepted. The SDK (`@prisma/streams` 0.3.0-beta.1) sends
-the `Streams-` names. Response headers keep their `Prisma-` names
-(`Prisma-Next-Cursor`, `Prisma-Consumer-Version`, ...).
+the `Streams-` names.
+
+## Response headers
+
+The edge removes `Prisma-*` response headers too, so the server sends each
+response header under both names, with the same value: read the
+`Streams-` name (edge change #176).
+
+| Header | Carries |
+|---|---|
+| `Streams-Next-Cursor` | the cursor to read from next (records reads and long-polls) |
+| `Streams-Up-To-Date` | `true` when the page reached the stream's tail |
+| `Streams-Sealed` | `true` when the stream is sealed |
+| `Streams-Durable-Cursor`, `Streams-Pending-From` | a `deliver=applied` read's durable cursor and its first provisional record |
+| `Streams-Next-Scan-Cursor`, `Streams-Scan-Complete` | a `:scan` page's next cursor, or `true` on its last page |
+| `Streams-Consumer-Version` | a consumer's version (create, get, and the `consumer_deleting` conflict) |
+| `Streams-Error-Code` | `wrong_cell` on a refusal that has no body to say so |
+| `Streams-Origin` | present on every answer that came from a Streams server (not from the edge) |
+
+Each is also sent as `Prisma-<Name>` (`Prisma-Next-Cursor`, ...;
+`Prisma-Streams-Origin` for `Streams-Origin`), which a
+client that reaches the server without the edge sees, and a browser may
+read both (`Access-Control-Expose-Headers` lists both). The SDK reads the
+`Streams-` name first.
 
 Source: `src/header_alias.rs` (`REQUEST_ALIASES`; its tests pin that the
 table holds every `Prisma-` request header the product surface reads),
@@ -215,16 +237,22 @@ have been stored. Do not resend a plain append blindly. Either:
 
 The SDK does this for you: it replays a `429` or a `503` whose body says
 `"retryable": true` on its `Retry-After` (capped at 5 s), at most four
-attempts in all, and it rejects a plain append whose outcome is unknown
-with `AppendOutcomeUnknownError` instead of sending it again. Source:
-`sdk/README.md` ("In plain words"), `sdk/src/index.ts`; edge changes #147,
-#153 and #154.
+attempts in all; a `503` that carries `Retry-After` (a deploy's or a
+restart's `temporarily_unavailable`) it keeps replaying until 15 s have
+passed since the first attempt, each wait 1 to 5 s, so a call rides
+through a restart of up to about 9 s (edge change #177). It rejects a
+plain append whose outcome is unknown with `AppendOutcomeUnknownError`
+instead of sending it again. Source: `sdk/README.md` ("In plain words"),
+`sdk/src/index.ts`; edge changes #147, #153, #154 and #177.
 
 ## What the beta does not give you
 
 - **One server per cell, with no spare.** A deploy, a restart or a crash
   of that server stops every project on the cell until it is back. While
-  it starts, requests get the platform's `404` or a `503`.
+  it starts, requests get the platform's `404` or a `503`. Measured on
+  the beta's scratch cell: 7 to 9 s without a successful append or read
+  per restart or deploy, `503 temporarily_unavailable` with `Retry-After`
+  meanwhile, which the SDK rides through (above).
 - **No SLA.** There is no availability or latency commitment. Append
   latency includes a write to object storage and waits for the next
   flush, up to 100 ms; it has not been measured again on the beta's
