@@ -751,6 +751,14 @@ function recordsQuery(q: URLSearchParams): string {
   return q.toString().replace(/\+/g, "%20");
 }
 
+/** A product response header by its name after `Prisma-`: the
+ * `Streams-<Name>` form first, which reaches a client behind the Prisma
+ * Compute edge (it strips `Prisma-*` response headers; edge change #176),
+ * then the `Prisma-<Name>` form an older server sends alone. */
+function productHeader(res: Response, name: string): string | null {
+  return res.headers.get(`streams-${name}`) ?? res.headers.get(`prisma-${name}`);
+}
+
 /** The refusals `errorFrom` read `"retryable": true` from: the server's own
  * word that the request may be sent again. `errorFrom` also reads a `429` or
  * `503` without that field as retryable; a plain append's `503` may not rely
@@ -758,7 +766,7 @@ function recordsQuery(q: URLSearchParams): string {
 const statedRetryable = new WeakSet<StreamsError>();
 
 async function errorFrom(res: Response): Promise<StreamsError> {
-  if (res.status === 421 || res.headers.get("prisma-error-code") === "wrong_cell") {
+  if (res.status === 421 || productHeader(res, "error-code") === "wrong_cell") {
     const error = new WrongCellError(res.status,
       "this cell does not serve the project; re-resolve the project's endpoint (the credential itself is fine)");
     // Header-only routing failures need no body read. Release even an
@@ -767,7 +775,7 @@ async function errorFrom(res: Response): Promise<StreamsError> {
     return error;
   }
   const consumerVersion =
-    res.headers.get("prisma-consumer-version") ?? undefined;
+    productHeader(res, "consumer-version") ?? undefined;
   let code = "http_error";
   let message = `HTTP ${res.status}`;
   let retryable = res.status === 429 || res.status === 503;
@@ -797,7 +805,7 @@ async function errorFrom(res: Response): Promise<StreamsError> {
   if (
     code === "wrong_cell" ||
     res.status === 421 ||
-    res.headers.get("prisma-error-code") === "wrong_cell"
+    productHeader(res, "error-code") === "wrong_cell"
   ) {
     return new WrongCellError(
       res.status,
@@ -1592,13 +1600,13 @@ export class Stream<T = unknown> {
       res.status === 204 ? [] : ((await res.json()) as T[]) ?? [];
     const page: ReadPage<T> = {
       records,
-      cursor: res.headers.get("prisma-next-cursor") ?? "",
-      upToDate: res.headers.get("prisma-up-to-date") === "true",
-      sealed: res.headers.get("prisma-sealed") === "true",
+      cursor: productHeader(res, "next-cursor") ?? "",
+      upToDate: productHeader(res, "up-to-date") === "true",
+      sealed: productHeader(res, "sealed") === "true",
     };
-    const durable = res.headers.get("prisma-durable-cursor");
+    const durable = productHeader(res, "durable-cursor");
     if (durable !== null) page.durableCursor = durable;
-    const pending = res.headers.get("prisma-pending-from");
+    const pending = productHeader(res, "pending-from");
     if (pending !== null) page.pendingFrom = Number(pending);
     return page;
   }
@@ -1663,11 +1671,11 @@ export class Stream<T = unknown> {
       const records =
         res.status === 204 ? [] : ((await res.json()) as T[]) ?? [];
       for (const r of records) yield r;
-      cursor = res.headers.get("prisma-next-cursor") ?? cursor;
-      const d = res.headers.get("prisma-durable-cursor");
+      cursor = productHeader(res, "next-cursor") ?? cursor;
+      const d = productHeader(res, "durable-cursor");
       if (d !== null) durableCursor = d;
-      const sealed = res.headers.get("prisma-sealed") === "true";
-      const upToDate = res.headers.get("prisma-up-to-date") === "true";
+      const sealed = productHeader(res, "sealed") === "true";
+      const upToDate = productHeader(res, "up-to-date") === "true";
       if (sealed && upToDate) return;
       if (upToDate || res.status === 204) live = true;
     }
@@ -1687,8 +1695,8 @@ export class Stream<T = unknown> {
       );
       const items = (await res.json()) as ScanRecord<T>[];
       for (const i of items) yield i;
-      if (res.headers.get("prisma-scan-complete") === "true") return;
-      const next = res.headers.get("prisma-next-scan-cursor");
+      if (productHeader(res, "scan-complete") === "true") return;
+      const next = productHeader(res, "next-scan-cursor");
       if (!next) return;
       cursor = next;
     }
@@ -1707,7 +1715,7 @@ export class Stream<T = unknown> {
     // The consumer's incarnation token ({stream epoch, generation},
     // opaque). delete() sends it so a stale retry can never delete a
     // RECREATED consumer of the same name.
-    const version = res.headers.get("prisma-consumer-version") ?? "";
+    const version = productHeader(res, "consumer-version") ?? "";
     return new Consumer<T>(this.ctx, this, name, version);
   }
 

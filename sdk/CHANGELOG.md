@@ -30,10 +30,20 @@ not carried over).
   name starts with `Prisma-`, so a cell there never received the stream
   key and refused every stream operation 400 `missing_key`. A server
   before 0.3.0-beta.1 ignores the `Streams-` names (it answers
-  `missing_key`), so this SDK needs a server of its own version. Response
-  headers keep their `Prisma-` names. Code that calls the HTTP API itself
-  may send either form; both with different values are refused 400
-  `conflicting_header`.
+  `missing_key`), so this SDK needs a server of its own version. Code that
+  calls the HTTP API itself may send either form; both with different
+  values are refused 400 `conflicting_header`.
+- The SDK reads each response header under its `Streams-` name first and
+  under its `Prisma-` name only when that is absent (`Streams-Next-Cursor`,
+  `-Up-To-Date`, `-Sealed`, `-Durable-Cursor`, `-Pending-From`,
+  `-Next-Scan-Cursor`, `-Scan-Complete`, `-Consumer-Version`,
+  `-Error-Code`). The Prisma Compute edge strips `Prisma-*` response
+  headers too, so behind it `read()` returned an empty cursor, `subscribe()`
+  re-read the stream from its start and never went live, `scan()` stopped
+  after its first page and a consumer's `delete()` was refused
+  `missing_consumer_version`. The server of this version sends every
+  `Prisma-<Name>` response header also as `Streams-<Name>` with the same
+  value (edge change #176).
 - A plain append (`append`, `appendBytes`, `appendMany`) whose answer
   leaves its outcome unknown rejects with the new
   `AppendOutcomeUnknownError` (`code: "outcome_unknown"`,
@@ -202,6 +212,7 @@ risk grade (high, medium, low) is the hardening program's.
 - #167 (low): The SDK refuses, before any request, a routing key, a producer id or a bearer token that a header cannot carry byte for byte, with `StreamsError` `invalid_routing_key`, `invalid_producer` or `invalid_token_format`, without showing it
 - #168 (low): The SDK's `read()` and `subscribe()` send a space in a routing key as `%20`, so a key with a space reads the lane its appends were written to
 - #173 (medium): Every request header the product surface reads as `Prisma-<Name>` is also accepted as `Streams-<Name>`, because the Prisma Compute edge strips `Prisma-*` request headers; both names with different values are refused 400 `conflicting_header`; the SDK sends the `Streams-` form
+- #176 (low): Every `Prisma-<Name>` response header is also sent as `Streams-<Name>` with the same values, and an expose list naming a `Prisma-<Name>` names its `Streams-` form, because the Prisma Compute edge strips `Prisma-*` response headers too; the SDK reads the `Streams-` form first
 
 #### Access tokens and the interim token issuer (`connect()`, `prismaStreamsCredential`)
 

@@ -132,8 +132,12 @@ routing key in `Streams-Routing-Key` and a consumer's version in
 `Streams-Consumer-Version`. The server also accepts each under its
 `Prisma-` name, but the Prisma Compute edge in front of `*.prisma.build`
 strips every request header named `Prisma-*`, so code that calls the HTTP
-API itself should send the `Streams-` form too. Response headers keep
-their `Prisma-` names (`Prisma-Next-Cursor`, `Prisma-Consumer-Version`).
+API itself should send the `Streams-` form too. The edge strips
+`Prisma-*` response headers as well, so the server sends each response
+header both as `Prisma-<Name>` and as `Streams-<Name>` with the same value
+(`Streams-Next-Cursor`, `Streams-Up-To-Date`, `Streams-Sealed`,
+`Streams-Consumer-Version`, …), and the SDK reads the `Streams-` name
+first. Code that reads the HTTP API itself should do the same.
 
 `client.stream()` and `client.createStream()` trim the whitespace around a
 key, as `fetch` trims a header value, and refuse a key that then holds
