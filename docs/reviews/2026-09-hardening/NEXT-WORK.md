@@ -237,30 +237,29 @@ alongside and finish before admission opens.
    `KEEP_AWAKE_UNTIL_MS` are operator-side, no client observes them, and
    they are put to the owner to confirm or drop. The awake cell's RSS
    climb is item 1's.
-6. **Phase B, narrowed to one shard** (14.4, "Before self-serve"; PLAN):
-   step 14 (counted denials, weighted request tokens and the free-tier
-   rate, the only bound on an internet-exposed tenant's store-request
-   spend; 2-4 days), step 15 (an anonymous `cap=` flood exhausts the
-   process-wide `LookupBudget` and is a timing oracle; 1-2 days), step 13
-   (a per-workspace project cap in what admits self-serve projects, item
-   3; small), C4 (watch-definition and descriptor-cache bytes), C8 (64
-   concurrent listings of one project can materialise about 1 GiB; the
-   growth row README "Shared cells Q2" (b) provides for), Q1(D) (a read
-   reserves the bytes between its cursor and the tail, inside
-   `execute_read` and `ResolvedRead::execute`), the dead-letter handoff of
-   `delivery::settle` reading up to 4 MiB unreserved, and C7 (who pays for
-   an empty pull's coverage read). C4, C8, Q1(D) and the settle handoff go
-   in one `src/product.rs` batch (an extraction first: it has no line
-   headroom), so TLA-003 and TLA-018 re-record once; the four mutation
-   owners Q3(d) deferred (`src/admission/read_memory.rs`,
-   `src/admission/park.rs`, `src/product/read_memory.rs`,
-   `src/application/consumer/pull_wait.rs`; about a day) register with
-   them. C4, C8, Q1(D) and the settle handoff are unestimated; phase B
-   taken whole is 16.5-30 days. Step 12 is moot on one shard; steps 16-18
-   follow the beta. Q1(D) was dropped as a self-serve blocker on
-   2026-10-13 (call 4: D′ ratified for woken tail long-polls on plain
-   streams; 14.4). Who: the owner first (C4 and C7 are open capacity
-   decisions; growth rows are his), then engineering.
+6. **Phase B, narrowed to one shard** (14.4, "Before self-serve"; PLAN;
+   design `phase-b.md`, triage `phase-b.TRIAGE.md`). Built for the beta:
+   step 14 (counted denials, 38887253; weighted request tokens, the store
+   budget Q1 (b′), d25cbb4b and 4e04b354), step 15 (anonymous capability
+   lookups, c0d8cbf1), C4 (a creation document over 64 KiB refused,
+   0dd6a770; the descriptor cache held to 64 MiB, 9f1bea67), C8 (a catalog
+   page reads at most 4 MiB of descriptors, 22cdf30f, and reserves what it
+   may hold as a read does, 95329167), the settle handoff (its 4 MiB read
+   only under a reservation taken without waiting, a4492753), D′ (a woken
+   long-poll takes again only what was appended while it waited,
+   e68be656), the four mutation owners Q3(d) deferred (f328edb0; their
+   filters gained the C7 legs with C7), and C7 (a) (owner decision P3 of
+   2026-10-12: an empty pull pays its coverage read from its project's
+   read quota, and a parked pull of a project in read debt does not walk
+   again, edge change #175; the phaseb2 lane). Step 13 is covered by the
+   issuer's per-workspace cap, step 12 is moot on one shard, and Q1(D) was
+   dropped as a self-serve blocker on 2026-10-13 (call 4: D′ instead).
+   After the beta: steps 16-18; 14(d) (per-project shares of the denial
+   queue); C7 (b), a leased-prefix skip in `src/queue.rs` that makes empty
+   walks cheap and lets a group with more than 4 MiB in flight see newer
+   records (a by-path growth row and TLA checking, 3-5 days); and the
+   proposed mutation owners for `src/application/watch.rs` and
+   `src/audit.rs` (the owner's: what a gate selects).
 7. **A per-project stored-bytes cap.** Done. The policy feed carries
    `max_stored_bytes` and a 0 or absent value takes
    `PROJECT_STORED_BYTES_DEFAULT`, 10 GiB on the shared-cell profile
