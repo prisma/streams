@@ -20,9 +20,18 @@
 //! (`store_ops_available`), and so is the catalog, which binds its share
 //! at its own admission (phase B item B6); every other route only pays
 //! into it.
+//!
+//! And it carries the project's read rate (phase B C7, owner question P3,
+//! decided (a) on 2026-10-12): a consumer pull whose walk leased nothing
+//! pays the coverage it read from the project's read-byte bucket, debt
+//! allowed (`debit_read`), as a rendered page pays after it is served; a
+//! parked pull does not walk again while the project is in read debt
+//! (`read_debt`), and its next pull, read or scan is refused at admission
+//! (`QuotaRegistry::check_read`).
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use super::read_reservation::ProjectReadBytes;
 use super::{ProjectAdmission, QuotaRegistry};
@@ -38,6 +47,8 @@ pub(crate) struct ParkShare {
     /// The store budget's rate a second: the request rate (Q1 (b'); (b)
     /// would publish its own quota and read it here). 0 sets no budget.
     store_rate: u64,
+    /// The project's read quota a second. 0 sets no read limit.
+    read_rate: u64,
 }
 
 /// RAII place in a project's share, held while one wait is parked.
@@ -63,6 +74,7 @@ impl QuotaRegistry {
             admission,
             limit: quotas.max_live_subscriptions,
             store_rate: quotas.requests_per_sec,
+            read_rate: quotas.read_bytes_per_sec,
         })
     }
 }
@@ -126,6 +138,39 @@ impl ParkShare {
         Ok(())
     }
 
+    /// Debit `bytes` a served request read without rendering them (an
+    /// empty pull's coverage) from the project's read-byte bucket,
+    /// refilled to `now_ms` first. The bytes were read, so the debt stands
+    /// however deep; a poisoned bucket is left as it is.
+    pub(crate) fn debit_read(&self, bytes: u64, now_ms: i64) {
+        if self.read_rate == 0 || bytes == 0 {
+            return;
+        }
+        if let Ok(mut bucket) = self.admission.read_bytes.lock() {
+            bucket.refill(self.read_rate as f64, now_ms);
+            bucket.level -= bytes as f64;
+        }
+    }
+
+    /// How long the project's read debt at `now_ms` takes to clear at its
+    /// read rate: `None` when it is not in debt (or has no read limit). A
+    /// poisoned bucket cannot prove its debt cleared: one second, then ask
+    /// again.
+    pub(crate) fn read_debt(&self, now_ms: i64) -> Option<Duration> {
+        if self.read_rate == 0 {
+            return None;
+        }
+        let rate = self.read_rate as f64;
+        let Ok(mut bucket) = self.admission.read_bytes.lock() else {
+            return Some(Duration::from_secs(1));
+        };
+        bucket.refill(rate, now_ms);
+        if bucket.level >= 0.0 {
+            return None;
+        }
+        Some(Duration::try_from_secs_f64(-bucket.level / rate).unwrap_or(Duration::MAX))
+    }
+
     /// The project's parked waits now.
     #[cfg(test)]
     pub(crate) fn parked(&self) -> u64 {
@@ -146,6 +191,7 @@ impl ParkShare {
 mod tests {
     use crate::project_policy::ProjectQuotas;
     use crate::tenant::ProjectId;
+    use std::time::Duration;
 
     fn quotas(live: u64) -> ProjectQuotas {
         ProjectQuotas {
@@ -246,6 +292,61 @@ mod tests {
         share.debit_store_ops(11, 1_000);
         assert_eq!(share.store_ops_available(1_000), Err(1));
         assert!(share.store_ops_level().is_nan(), "still poisoned");
+    }
+
+    fn read_rated(read_bytes_per_sec: u64) -> ProjectQuotas {
+        ProjectQuotas {
+            read_bytes_per_sec,
+            ..ProjectQuotas::default()
+        }
+    }
+
+    /// Phase B C7, owner question P3 (a): the coverage an empty pull read is
+    /// paid from its project's read-byte bucket, full at its read rate,
+    /// into debt, and the debt lasts as long as the rate takes to refill
+    /// it. Nothing read leaves the bucket as it is, and a read rate of 0
+    /// sets no limit: nothing is debited and no debt is reported.
+    #[test]
+    fn coverage_is_paid_from_the_read_bucket_into_debt() {
+        let registry = super::QuotaRegistry::default();
+        let project = ProjectId::new("proj-cover").unwrap();
+        let _request = registry.admit(&project, &read_rated(1_000), 1_000);
+        let share = registry.park_share(&project, &read_rated(1_000)).unwrap();
+        let level = || share.admission.read_bytes.lock().unwrap().level;
+        assert_eq!(share.read_debt(1_000), None, "one second's burst");
+        share.debit_read(400, 1_000);
+        assert_eq!((level(), share.read_debt(1_000)), (600.0, None));
+        share.debit_read(0, 1_500);
+        assert_eq!(level(), 600.0, "nothing read, no refill");
+        share.debit_read(1_600, 1_000);
+        assert_eq!(level(), -1_000.0, "a debt stands");
+        assert_eq!(share.read_debt(1_000), Some(Duration::from_secs(1)));
+        assert_eq!(share.read_debt(1_250), Some(Duration::from_millis(750)));
+        assert_eq!(share.read_debt(2_000), None, "zero is no debt");
+        share.debit_read(1, 2_000);
+        assert_eq!(share.read_debt(2_000), Some(Duration::from_millis(1)));
+
+        let unrated = registry.park_share(&project, &read_rated(0)).unwrap();
+        unrated.debit_read(100, 2_000);
+        assert_eq!(level(), -1.0, "no read limit to debit");
+        assert_eq!(unrated.read_debt(2_000), None, "nor to report");
+    }
+
+    /// A read bucket whose lock a panic poisoned takes no debit and
+    /// reports a second of debt, then asks again.
+    #[test]
+    fn a_poisoned_read_bucket_reports_a_second_of_debt() {
+        let registry = super::QuotaRegistry::default();
+        let project = ProjectId::new("proj-read-poisoned").unwrap();
+        let _request = registry.admit(&project, &read_rated(1_000), 1_000);
+        let share = registry.park_share(&project, &read_rated(1_000)).unwrap();
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = share.admission.read_bytes.lock();
+            panic!("poison the read bucket");
+        }));
+        assert!(poisoned.is_err() && share.admission.read_bytes.is_poisoned());
+        share.debit_read(10, 1_000);
+        assert_eq!(share.read_debt(1_000), Some(Duration::from_secs(1)));
     }
 
     /// The tracker holds no entry for a project that was never admitted,

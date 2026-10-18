@@ -1248,6 +1248,17 @@
     ]
   },
   {
+    "name": "a_parked_pull_of_a_project_in_read_debt_does_not_walk_again",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "dfc5697dd303ebe371e5a9e5d335137a090ad5e39c0259e9709e9fdd62dc1f11",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_capacity.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_parked_saga_never_touches_a_recreated_stream",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -4189,8 +4200,7 @@
   {
     "name": "empty_pulls_are_held_to_their_projects_read_quota_by_what_they_read",
     "attributes": [
-      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]",
-      "#[ignore = \"red until the owner decides capacity review C7: who pays for a pull's coverage read\"]"
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
     "function_sha256": "6446388e29df7a3e9dc203caa72ba1057470bb0fba039a3aaa049da8fa32e581",
     "mechanisms": [],

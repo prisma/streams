@@ -1655,7 +1655,9 @@ deletion sagas and the Control-Plane feed remain platform-side.)*
   append bytes/records metered with exact parsed counts at the append
   site; read bytes debited POST-HOC at the render sites that serve
   decrypted records (records GET/long-poll, `:scan` and consumer
-  `:pull`) by framed body bytes, refusal at entry while in debt; SSE
+  `:pull`) by framed body bytes, refusal at entry while in debt, and a
+  pull walk that leased nothing pays the coverage it read (C7 (a), edge
+  change #175: a parked pull of a project in debt does not walk again); SSE
   subscriptions hold a
   `max_live_subscriptions` slot for the STREAM's lifetime via a guard
   riding the response body. `queued_append_bytes` and

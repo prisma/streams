@@ -99,6 +99,19 @@ Notes:
   than the SDK's replays. Create streams one at a time, or ahead of when
   you need them. Source: edge changes #143 and #162;
   `src/quota/parked.rs`, `src/store_timing.rs`.
+- **Empty consumer pulls pay for what they read.** Before it leases, a
+  pull reads up to 4 MiB of the stream from the consumer's cursor. A pull
+  that leases nothing (every record before it is leased to another pull,
+  or blocked behind its key's lease) pays those bytes from the read-byte
+  rate, as a pull that delivers pays for its batch. At 3,750,000 bytes a
+  second that is about one empty pull a second over 3 MiB of leased
+  records. While the project is in debt, its pulls, reads and scans are
+  refused `429 project_rate_limit` with a `Retry-After` of the seconds
+  until the debt clears, and a pull waiting with `waitMs` does not look
+  again until the debt clears: new records reach it later, or it answers
+  `{"messages": []}` at its deadline. Pull with a `max` that takes what
+  you can process, and settle leases promptly. Source: edge change #175;
+  `src/quota/parked.rs`, `src/application/consumer/pull_wait.rs`.
 - **Self-serve.** A workspace on the beta's allow-list creates at most 5
   projects a day. It holds as many active projects as its allow-list
   entry allows, or else the cell's workspace cap (1 unless the operator

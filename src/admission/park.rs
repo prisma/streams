@@ -29,6 +29,13 @@
 //! outside a served request (the committer, sweeps, other tasks) is
 //! charged to no one, and neither is work a request runs through
 //! `uncharged_when_complete` that completes (the stream-count seed walk).
+//!
+//! And it counts what a consumer pull's walks read before they lease
+//! (public-beta phase B C7, decided (a) by the owner on 2026-10-12): a walk
+//! notes its coverage (`note_coverage`), and when a walk leased nothing
+//! the pull's wait has the bound project pay what was noted from its
+//! read-byte bucket, debt allowed (`pay_coverage`), and, woken, waits
+//! parked while the project is in read debt (`out_of_read_debt`).
 
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -53,6 +60,8 @@ struct Request {
     read: Arc<OnceLock<ReadHold>>,
     /// The weighted registry store work the request's task has made.
     weight: AtomicU64,
+    /// The bytes its walks read that it has not paid for yet.
+    coverage: AtomicU64,
 }
 
 impl Drop for Request {
@@ -76,6 +85,7 @@ impl InflightTicket {
             share: OnceLock::new(),
             read: read.clone(),
             weight: AtomicU64::new(0),
+            coverage: AtomicU64::new(0),
         };
         let response = REQUEST.scope(request, handler).await;
         match Arc::into_inner(read).and_then(OnceLock::into_inner) {
@@ -109,6 +119,58 @@ pub(crate) fn charge_store_weight(weight: u64) {
             request.weight.fetch_add(weight, Ordering::Relaxed);
         })
         .unwrap_or(());
+}
+
+/// Note `bytes` a consumer pull's walk read before it leased, which the
+/// served request pays if the walk leased nothing (`pay_coverage`);
+/// nothing outside one.
+pub(crate) fn note_coverage(bytes: u64) {
+    REQUEST
+        .try_with(|request| {
+            request.coverage.fetch_add(bytes, Ordering::Relaxed);
+        })
+        .unwrap_or(());
+}
+
+/// The served request's walk leased nothing: its bound project pays the
+/// coverage noted since it last paid from its read-byte bucket. A request
+/// with no bound project pays nothing.
+pub(crate) fn pay_coverage() {
+    REQUEST
+        .try_with(|request| {
+            let bytes = request.coverage.swap(0, Ordering::Relaxed);
+            if let Some(share) = request.share.get() {
+                share.debit_read(bytes, crate::shard::now_ms());
+            }
+        })
+        .unwrap_or(());
+}
+
+/// Wait until the served request's bound project is out of read debt, or
+/// `deadline`, the wait's own, passes; the caller keeps its `Parked`
+/// across this. False: the deadline passed first. True outside a served
+/// request or for a request with no bound project.
+pub(crate) async fn out_of_read_debt(deadline: tokio::time::Instant) -> bool {
+    loop {
+        let debt = REQUEST
+            .try_with(|request| {
+                let share = request.share.get()?;
+                share.read_debt(crate::shard::now_ms())
+            })
+            .ok()
+            .flatten();
+        let Some(debt) = debt else {
+            return true;
+        };
+        let now = tokio::time::Instant::now();
+        let until = now
+            .checked_add(debt)
+            .map_or(deadline, |at| at.min(deadline));
+        tokio::time::sleep_until(until).await;
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+    }
 }
 
 /// Run `work` in the served request, which pays nothing for the registry

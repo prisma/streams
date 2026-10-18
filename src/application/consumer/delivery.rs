@@ -370,6 +370,9 @@ struct DeliveryCoverage {
     by_off: DeliveryRecords,
     covered_to: u64,
 }
+/// One walk's coverage from the consumer's cursor. The bytes it read are
+/// noted in the served request, which pays them if the walk leases nothing
+/// (`admission::park::pay_coverage`, phase B C7).
 async fn read_coverage(
     input: DeliveryRead<'_>,
     engine: &Arc<crate::shard::ShardEngine>,
@@ -426,10 +429,13 @@ async fn read_coverage(
     };
     let mut keys_map: std::collections::HashMap<u64, [u8; 16]> = Default::default();
     let mut covered_to = cursor;
+    let mut read = 0u64;
     for r in &out.recs {
         keys_map.insert(r.off, crate::crypto::stream_hash(&r.rkey));
         covered_to = covered_to.max(r.off + 1);
+        read += r.payload.len() as u64;
     }
+    crate::admission::park::note_coverage(read);
     Ok(DeliveryCoverage {
         keys_map,
         by_off: DeliveryRecords::new(out.recs),

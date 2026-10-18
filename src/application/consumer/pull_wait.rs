@@ -22,6 +22,12 @@
 //! still parked, for room under its project's line and in the instance's
 //! read memory until its deadline; with no room by then it answers empty.
 //!
+//! A pull pays for the walks that leased nothing (public-beta phase B C7):
+//! each wait first has the pull's project pay the coverage those walks
+//! read from its read quota, and a wait that ends to walk again first
+//! waits, still parked, while the project is in read debt; with the debt
+//! standing at its deadline it answers empty.
+//!
 //! The first wait of each pull always walks once more: its view is taken
 //! after the first walk, so a record committed during that walk could
 //! otherwise go unseen. From then on each wait compares the view the
@@ -66,8 +72,11 @@ struct Watched {
 
 impl PullPark {
     /// Wait, parked, until `consumer` may have a deliverable message in
-    /// `lineage` or `deadline` passes. True: walk the lineage again;
-    /// false: the deadline had already passed and the pull answers empty.
+    /// `lineage` or `deadline` passes, having its project pay the
+    /// coverage of the walks that leased nothing first. True: walk the
+    /// lineage again; false: the deadline passed (already, or while the
+    /// project was in read debt, or with no read memory free) and the pull
+    /// answers empty.
     pub(crate) async fn wait(
         &self,
         service: &Arc<ConsumerService>,
@@ -75,6 +84,7 @@ impl PullPark {
         consumer: &str,
         deadline: Instant,
     ) -> bool {
+        crate::admission::park::pay_coverage();
         if Instant::now() >= deadline {
             return false;
         }
@@ -84,7 +94,8 @@ impl PullPark {
             Some(watched) => self.until_moved(&watched, consumer, deadline).await,
             None => poll(deadline).await,
         };
-        walk && crate::admission::park::resume(deadline).await
+        walk && crate::admission::park::out_of_read_debt(deadline).await
+            && crate::admission::park::resume(deadline).await
     }
 
     /// Wait on `watched` until a view moved, a lease expired or `deadline`

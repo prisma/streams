@@ -91,20 +91,24 @@ OWNERS = (
     # Past the triage's filters, each names the legs that alone killed a
     # hand-applied mutant of its file: the store debit and the registry-write
     # and catalog binds (`a_create_pays_...`, `a_listing_pays_...`), and a
-    # woken pull's coverage retake (`a_woken_pull`).
+    # woken pull's coverage retake (`a_woken_pull`). C7 (a) adds its two
+    # legs: an empty pull pays its coverage, and a parked pull of a project
+    # in read debt does not walk again.
     owner('admission_read_memory', 'src/admission/read_memory.rs',
           'admission:: dst_tests::read_memory::'),
     owner('admission_park', 'src/admission/park.rs',
           'admission:: dst_tests::parked_waits:: dst_tests::read_memory:: '
           'dst_tests::shared_cell_hostile::a_create_pays_for_its_registry_writes '
           'dst_tests::shared_cell_hostile::a_listing_pays_for_the_descriptors_it_reads '
-          'dst_tests::quota_stream_seed::'),
+          'dst_tests::quota_stream_seed:: '
+          'dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull'),
     owner('product_read_memory', 'src/product/read_memory.rs',
           'dst_tests::read_memory:: dst_tests::shared_cell_capacity:: '
           'dst_tests::shared_cell_hostile::a_create_pays_for_its_registry_writes '
           'dst_tests::shared_cell_hostile::a_listing_pays_for_the_descriptors_it_reads'),
     owner('consumer_pull_wait', 'src/application/consumer/pull_wait.rs',
-          'dst_tests::parked_waits:: dst_tests::consumer_ dst_tests::read_memory::a_woken_pull'),
+          'dst_tests::parked_waits:: dst_tests::consumer_ dst_tests::read_memory::a_woken_pull'
+          ' dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull'),
     owner('shard_directory', 'src/shard_directory.rs', 'shard_directory:: shard::task_lifecycle_tests::'),
     owner('history_partition', 'src/shard/history_partition.rs', 'shard::'),
     owner('history_page_read', 'src/history/page_read.rs',
@@ -165,7 +169,8 @@ OWNERS = (
     owner('quota_registry', 'src/quota.rs', 'quota::'),
     owner('quota_append_charge', 'src/quota/append_charge.rs', 'quota:: dst_tests::quota_stored_cap::'),
     owner('quota_pin', 'src/quota/pin.rs', 'quota::'),
-    owner('quota_parked', 'src/quota/parked.rs', 'quota::parked:: dst_tests::parked_waits::a_projects_'),
+    owner('quota_parked', 'src/quota/parked.rs', 'quota::parked:: dst_tests::parked_waits::a_projects_'
+          ' dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull'),
     owner('quota_pressure', 'src/quota/pressure.rs', 'quota::'),
     owner('quota_read_reservation', 'src/quota/read_reservation.rs', 'quota::read_reservation:: dst_tests::read_memory::a_project_at_its_memory_line'),
     # The stored figures admission reads (stored-cap B3) and the cap it
@@ -285,7 +290,8 @@ OWNERS = (
     owner('consumer_delivery', 'src/application/consumer/delivery.rs',
           'application::consumer:: dst_tests::consumer_product:: dst_tests::consumer_dlq:: '
           'dst_tests::consumer_runs:: dst_tests::consumer_atomicity:: dst_tests::consumer_generations:: '
-          'dst_tests::shared_cell_capacity::a_poisoning_settle_reads_only_what_its_project_can_hold'),
+          'dst_tests::shared_cell_capacity::a_poisoning_settle_reads_only_what_its_project_can_hold '
+          'dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull'),
     owner('sse_source', 'src/sse/source.rs', 'sse:: livefeed_engine_retired'),
     owner('sse_source_tests', 'src/sse/source/tests.rs', 'sse::'),
     owner('sse_source_spans', 'src/sse/source/spans.rs', 'sse::'),

@@ -8,9 +8,10 @@
 //! per-descriptor guard (#144 (d)), a catalog page
 //! reserves what it may hold as a read does (C8), a settle's dead-letter
 //! handoff reads only what its project can hold (C1's residual), and a
-//! deleted or expired watched stream's touch journal ends with it (C9).
-//! Ignored, red until the owner decides it (`impl/fixes.md`): the coverage
-//! a pull reads charged to nobody (C7).
+//! deleted or expired watched stream's touch journal ends with it (C9),
+//! and a pull that leased nothing pays the coverage it read from its
+//! project's read quota and, parked, does not walk again while the
+//! project is in read debt (C7, decided (a) by the owner).
 //!
 //! The hostile project is project 0, its neighbour project 1. A client
 //! that "never reads" sends its request over a socket with a 4 KiB receive
@@ -451,15 +452,15 @@ async fn the_largest_creatable_descriptor_with_a_full_segment_map_fits_the_catal
     engine_shutdown(&cell.state).await;
 }
 
-/// C7. A consumer pull's coverage read is charged to nobody: a pull reads
+/// C7 (decided (a) by the owner, P3 of 2026-10-12). A consumer pull reads
 /// up to 4 MiB of the stream before it leases, and only the batch it
-/// renders is debited from its project's read quota. With every record
+/// renders was debited from its project's read quota. With every record
 /// leased, each further pull reads about 3 MiB and delivers nothing, so a
-/// project under a 4 MiB/s read quota runs every one of nine such pulls
-/// (and a parked pull repeats that walk on every append to the stream).
-/// Pass: the project is refused (429) before eight empty pulls.
+/// project under a 4 MiB/s read quota ran every one of nine such pulls.
+/// A walk that leased nothing now pays its coverage, debt allowed. Pass:
+/// the project is refused (429) before eight empty pulls (after the
+/// leasing pull, two empty walks take it into debt).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "red until the owner decides capacity review C7: who pays for a pull's coverage read"]
 async fn empty_pulls_are_held_to_their_projects_read_quota_by_what_they_read() {
     let cell = open_cell(CellSpec {
         quotas: |_| ProjectQuotas {
@@ -515,6 +516,97 @@ async fn empty_pulls_are_held_to_their_projects_read_quota_by_what_they_read() {
         admitted < 8,
         "{admitted} empty pulls admitted, each reading about 3 MiB of coverage, under a read \
          quota of 4 MiB/s"
+    );
+    engine_shutdown(&cell.state).await;
+}
+
+/// Append `body` to the stream at `path` as project 0 under routing key `key`.
+async fn keyed(cell: &Cell, path: &str, key: &str, body: &str) {
+    let headers = [
+        ("prisma-encryption-key", PRISMA_KEY),
+        ("authorization", cell.bearers[0].as_str()),
+        ("prisma-routing-key", key),
+    ];
+    let records = format!("{path}/records");
+    let (status, _, _) = preq(cell.addr, "POST", &records, &headers, body.as_bytes()).await;
+    assert_eq!(status, 200);
+}
+
+/// The cell's client operations so far: appends and queue operations
+/// (every walk of a pull is one receive).
+fn enqueued(cell: &Cell) -> u64 {
+    let engines = cell.state.shards.engines_by_prefix();
+    engines.iter().map(|(_, e)| e.appends_enqueued()).sum()
+}
+
+/// C7, the parked pull. A parked pull wakes on every durable append to its
+/// stream and walks its coverage again. Here key `a`'s 48 records of 64 KiB
+/// sit behind the lease of its first, so each walk reads about 3 MiB and
+/// leases nothing, and 5 appends to `a` wake a pull parked for 2 s. Pass:
+/// the pull walks once (it makes the operations of the leasing pull's one
+/// walk; before, 9 against 2): its walk puts its project (512 KiB/s of reads) in
+/// read debt for about 5 s, and it does not walk again while in debt, but
+/// answers empty at its deadline; the project's next pull is refused (429).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_parked_pull_of_a_project_in_read_debt_does_not_walk_again() {
+    let cell = open_cell(CellSpec {
+        quotas: |_| ProjectQuotas {
+            read_bytes_per_sec: 512 << 10,
+            ..ProjectQuotas::default()
+        },
+        ..CellSpec::open(1)
+    })
+    .await;
+    let path = "/v1/streams/debt";
+    assert_eq!(cell.call(0, "PUT", path, CREATE).await.0, 201);
+    for n in 0..48 {
+        keyed(&cell, path, "a", &padded(n)).await;
+    }
+    let consumer = format!("{path}/consumers/g0");
+    let created = cell.call(0, "PUT", &consumer, b"{}").await;
+    assert_eq!(created.0, 201);
+    let pull = format!("{consumer}:pull");
+    let leasing = br#"{"max":1,"visibilityMs":600000}"#;
+    let before = at_rest(|| enqueued(&cell)).await;
+    let (status, _, body) = cell.call(0, "POST", &pull, leasing).await;
+    assert_eq!(status, 200, "the leasing pull");
+    let before = (at_rest(|| enqueued(&cell)).await, before);
+    let one_walk = before.0 - before.1;
+    let started = Instant::now();
+    let parked = cell.call(0, "POST", &pull, br#"{"max":48,"waitMs":2000}"#);
+    let appending = async {
+        for n in 0..5 {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            keyed(&cell, path, "a", &format!(r#"{{"n":{n}}}"#)).await;
+        }
+    };
+    let ((status, _, parked), ()) = futures_util::future::join(parked, appending).await;
+    let took = started.elapsed();
+    let made = enqueued(&cell) - before.0 - 5;
+    let messages = |body: &[u8]| {
+        serde_json::from_slice::<serde_json::Value>(body).unwrap()["messages"]
+            .as_array()
+            .map(Vec::len)
+    };
+    assert_eq!(
+        messages(&body),
+        Some(1),
+        "the leasing pull leases a's first record"
+    );
+    assert_eq!(
+        (status, messages(&parked), made),
+        (200, Some(0), one_walk),
+        "the parked pull: status, messages and the operations it made"
+    );
+    assert!(
+        took >= Duration::from_secs(2) && took < Duration::from_secs(4),
+        "it answers at its deadline, not once the debt clears: {took:?}"
+    );
+    let (status, headers, _) = cell.call(0, "POST", &pull, b"{}").await;
+    let retry: Option<u64> = headers.get("retry-after").and_then(|v| v.parse().ok());
+    assert!(
+        status == 429 && retry.is_some_and(|secs| (2..=5).contains(&secs)),
+        "{status} after {retry:?} s: in debt by the walk's ~3 MiB less 2 s of refill"
     );
     engine_shutdown(&cell.state).await;
 }
