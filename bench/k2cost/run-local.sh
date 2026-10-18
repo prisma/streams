@@ -203,7 +203,7 @@ mint_headers() { # exchange the credential, then replace the headers file atomic
   [ -n "$tok" ] && [ "$tok" != null ] || return 1
   (
     umask 077
-    printf 'authorization: Bearer %s\nprisma-encryption-key: %s\n' "$tok" "$(cat "$SECRETS/stream_key")" \
+    printf 'authorization: Bearer %s\nstreams-encryption-key: %s\n' "$tok" "$(cat "$SECRETS/stream_key")" \
       > "$HDR.tmp"
   )
   mv -f "$HDR.tmp" "$HDR"

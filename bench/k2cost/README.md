@@ -127,8 +127,11 @@ Two product rules shape the read and queue points:
 
 - **Data plane.** The emulator's credential secret is exchanged at
   `POST /v1/token/streams` for an RS256 JWT, which lives 600 s. The rig writes
-  `authorization: Bearer <jwt>` and `prisma-encryption-key: <per-run
+  `authorization: Bearer <jwt>` and `streams-encryption-key: <per-run
   key>` to a headers file under `$K2_HOME/secrets/<run>/` (mode 600).
+  The harness sends a `prisma-encryption-key`, `prisma-routing-key` or
+  `prisma-consumer-version` line under its `streams-` name, because the
+  Prisma Compute edge strips `Prisma-*` request headers (edge change #173).
   It rewrites the file atomically every 240 s, and k2gen re-reads it when it
   changes and after a 401.
 - **Debug routes.** Every `/v1/debug/*` route mounts behind

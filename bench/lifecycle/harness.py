@@ -305,17 +305,32 @@ class Compute:
                          resume=lambda cursor: self.cli + ["logs", version, "--cursor", cursor, "--json"])
 
 
+# The server reads these request headers as Prisma-<Name> and as
+# Streams-<Name> (edge change #173); the Prisma Compute edge strips every
+# Prisma-* request header, so the harness sends the Streams- name.
+STREAMS_NAMES = {"prisma-encryption-key": "streams-encryption-key", "prisma-routing-key": "streams-routing-key",
+                 "prisma-consumer-version": "streams-consumer-version"}
+
+
 def read_headers(path: str | None) -> dict:
-    """A k2gen header file: `Name: value` lines (bench/k2cost/common.ts)."""
+    """A k2gen header file: `Name: value` lines (bench/k2cost/common.ts),
+    each Prisma- name above under its Streams- name (a Streams- line given
+    too stands)."""
     if not path:
         return {}
-    out = {}
+    out, renamed = {}, {}
     with open(os.path.expanduser(path), encoding="utf-8") as f:
         for raw in f:
             line = raw.strip()
             if line and not line.startswith("#") and ":" in line:
                 k, v = line.split(":", 1)
-                out[k.strip()] = v.strip()
+                alias = STREAMS_NAMES.get(k.strip().lower())
+                if alias:
+                    renamed[alias] = v.strip()
+                else:
+                    out[k.strip()] = v.strip()
+    lower = {k.lower() for k in out}
+    out.update({k: v for k, v in renamed.items() if k not in lower})
     return out
 
 

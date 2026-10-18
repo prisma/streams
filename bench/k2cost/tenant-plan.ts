@@ -102,7 +102,7 @@ export interface Project {
   global: number;
   seed: number;
   owner: Owner;
-  /** The project's record key (Prisma-Encryption-Key), base64. */
+  /** The project's record key (Streams-Encryption-Key), base64. */
   recordKey: string;
   quotaFlags: string[];
 }

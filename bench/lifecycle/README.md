@@ -116,7 +116,10 @@ under `env PRISMA_TOKEN_FILE=<path>`.
   (`cd sdk && npm ci && npm run build`); `check` refuses a restart plan
   when the node binary is missing, or `sdk/dist/index.js` is missing or
   older than `sdk/src/index.ts`. Its token and stream key are the
-  `authorization: Bearer` and `prisma-encryption-key` lines of
+  `authorization: Bearer` and `streams-encryption-key` (or the older
+  `prisma-encryption-key`, which the harness sends as
+  `streams-encryption-key`: the Prisma Compute edge strips `Prisma-*`
+  request headers, edge change #173) lines of
   `restart.sdk.headers_file`, a k2gen header file of mode 0600 that the leg
   checks and the probe reads again for each token the SDK asks for (its
   first request, and after a 401, so a rotated file is picked up); the

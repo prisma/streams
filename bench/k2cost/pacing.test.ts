@@ -25,7 +25,7 @@ afterAll(() => cell.stop());
 
 function ctx(flags: Record<string, string>, streams: number): Ctx {
   const meter = new Meter();
-  const hdrs = new HeaderSource(undefined, { authorization: "Bearer tok-p", "prisma-encryption-key": "k" });
+  const hdrs = new HeaderSource(undefined, { authorization: "Bearer tok-p", "streams-encryption-key": "k" });
   return { http: new Http(cell.base, hdrs, meter), meter, o: new Opts(new Map(Object.entries(flags))), prefix: flags.prefix!, streams, seed: 5, duration: 10 };
 }
 

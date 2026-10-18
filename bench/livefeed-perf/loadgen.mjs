@@ -48,7 +48,7 @@ mkdirSync(OUT, { recursive: true });
 const series = join(OUT, "series.jsonl");
 const H = (extra = {}) => ({
   authorization: `Bearer ${AUTH}`,
-  "prisma-encryption-key": KEY_B64,
+  "streams-encryption-key": KEY_B64,
   "content-type": "application/json",
   ...extra,
 });

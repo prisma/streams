@@ -30,7 +30,7 @@ function check(name, cond, extra = "") {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function headers(extra = {}) {
-  const h = { "prisma-encryption-key": key, ...extra };
+  const h = { "streams-encryption-key": key, ...extra };
   if (token) h["authorization"] = `Bearer ${token}`;
   return h;
 }
@@ -58,12 +58,12 @@ const json = async (res) => {
   if (token) {
     const anon = await P(name, {
       method: "PUT",
-      headers: { "prisma-encryption-key": key },
+      headers: { "streams-encryption-key": key },
       body,
     });
     const wrong = await P(name, {
       method: "PUT",
-      headers: { "prisma-encryption-key": key, authorization: "Bearer not-the-token" },
+      headers: { "streams-encryption-key": key, authorization: "Bearer not-the-token" },
       body,
     });
     check("anonymous product request refused", anon.status === 401, `status ${anon.status}`);
@@ -239,7 +239,7 @@ const json = async (res) => {
         mustAppend(`k=${k} round=${round}`, () =>
           P(`${name}/records`, {
             method: "POST",
-            headers: headers({ "prisma-routing-key": k }),
+            headers: headers({ "streams-routing-key": k }),
             body: JSON.stringify({ k, round }),
           }),
         ),
@@ -279,7 +279,7 @@ const json = async (res) => {
       hot.map((k) =>
         P(`${name}/records`, {
           method: "POST",
-          headers: headers({ "prisma-routing-key": k }),
+          headers: headers({ "streams-routing-key": k }),
           body: JSON.stringify({ k, r: rounds }),
         }),
       ),

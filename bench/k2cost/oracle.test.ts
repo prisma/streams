@@ -34,7 +34,7 @@ afterAll(() => {
 
 function ctx(token: string, owner: typeof A | undefined, flags: Record<string, string>, streams = 2): Ctx {
   const meter = new Meter();
-  const hdrs = new HeaderSource(undefined, { authorization: `Bearer ${token}`, "prisma-encryption-key": "k" });
+  const hdrs = new HeaderSource(undefined, { authorization: `Bearer ${token}`, "streams-encryption-key": "k" });
   return {
     http: new Http(cell.base, hdrs, meter), meter, o: new Opts(new Map(Object.entries(flags))),
     prefix: flags.prefix ?? "o/", streams, seed: 7, duration: 5, owner,

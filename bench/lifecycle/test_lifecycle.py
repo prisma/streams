@@ -1018,5 +1018,24 @@ else:
         self.assertIn("`cell.url` is required", L.check(plan, "d10-cell"))
 
 
+
+class HeaderFileTest(unittest.TestCase):
+    """A header file's Prisma- request headers are sent under their Streams-
+    names: the Prisma Compute edge strips every Prisma-* request header
+    (edge change #173); a Streams- line given too stands."""
+
+    def test_prisma_names_are_read_as_their_streams_names(self):
+        tmp = tempfile.mkdtemp(prefix="lifecycle-headers-")
+        self.addCleanup(shutil.rmtree, tmp)
+        path = os.path.join(tmp, "h.txt")
+        with open(path, "w") as f:
+            f.write("# k2gen\nauthorization: Bearer t\nPrisma-Encryption-Key: k\nprisma-routing-key: r\n"
+                    "prisma-consumer-version: v\n")
+        self.assertEqual(H.read_headers(path), {"authorization": "Bearer t", "streams-encryption-key": "k",
+                                                "streams-routing-key": "r", "streams-consumer-version": "v"})
+        with open(path, "w") as f:
+            f.write("streams-encryption-key: s\nprisma-encryption-key: p\n")
+        self.assertEqual(H.read_headers(path), {"streams-encryption-key": "s"})
+
 if __name__ == "__main__":
     unittest.main()

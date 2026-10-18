@@ -162,7 +162,7 @@ const mkCred = async (pid, name, scopes) =>
 const exchange = (secret) =>
   sfetch(`${emuBase}/v1/token/streams`, { method: "POST", headers: { authorization: `StreamsCredential ${secret}` } });
 const readRecords = (base, name, token) =>
-  rfetch(`${base}/v1/streams/${name}/records`, { headers: { authorization: `Bearer ${token}`, "prisma-encryption-key": KEY_B64 } });
+  rfetch(`${base}/v1/streams/${name}/records`, { headers: { authorization: `Bearer ${token}`, "streams-encryption-key": KEY_B64 } });
 
 // ---- Phase A: credential lifecycle through the GATEWAY -------------------
 const created = await mkCred("proj-e2e", "e2e ingest");
@@ -255,14 +255,14 @@ await sleep(1500);
 const tb = tokB.body.accessToken;
 const bCreate = await rfetch(`${gwBase}/v1/streams/e2e/orders`, {
   method: "PUT",
-  headers: { authorization: `Bearer ${tb}`, "content-type": "application/json", "prisma-encryption-key": KEY_B64 },
+  headers: { authorization: `Bearer ${tb}`, "content-type": "application/json", "streams-encryption-key": KEY_B64 },
   body: JSON.stringify({ format: { kind: "json" } }),
 });
 check("proj-b creates its own e2e/orders through the gateway", bCreate.status === 200 || bCreate.status === 201,
   `status ${bCreate.status} body ${await bCreate.text().catch(() => "")}`);
 const bAppend = await rfetch(`${gwBase}/v1/streams/e2e/orders/records`, {
   method: "POST",
-  headers: { authorization: `Bearer ${tb}`, "content-type": "application/json", "prisma-encryption-key": KEY_B64 },
+  headers: { authorization: `Bearer ${tb}`, "content-type": "application/json", "streams-encryption-key": KEY_B64 },
   body: JSON.stringify({ src: "cell-b" }),
 });
 check("proj-b appends through the gateway", bAppend.status === 200 || bAppend.status === 201,
@@ -555,7 +555,7 @@ check("workload JWTs rotate atomically on every cell", wA1 !== wA2 && wB1 !== wB
 async function streamCreateRaw(base, name, token) {
   const r = await rfetch(`${base}/v1/streams/${name}`, {
     method: "PUT",
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "prisma-encryption-key": KEY_B64 },
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "streams-encryption-key": KEY_B64 },
     body: JSON.stringify({ format: { kind: "json" } }),
   });
   return r.status;

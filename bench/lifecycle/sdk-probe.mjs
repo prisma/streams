@@ -12,8 +12,9 @@
 //     --out CALLS.jsonl --producer-id ID --state STATE.json [--pause-ms 250]
 //
 // FILE is a k2gen header file (mode 0600): its `authorization: Bearer`
-// line is the SDK's token and its `prisma-encryption-key` line the
-// stream's key. It is read again for every token the SDK asks for (its
+// line is the SDK's token and its `streams-encryption-key` line (or
+// `prisma-encryption-key`, the older name) the stream's key; the SDK sends
+// it as `Streams-Encryption-Key` (edge change #173). It is read again for every token the SDK asks for (its
 // first request, and after a 401), so a rotated file is picked up; a file
 // others can read is refused. Neither value is ever written out.
 //
@@ -130,8 +131,8 @@ process.on("SIGTERM", () => {
 const client = new StreamsClient({ url: args.url, tokenProvider: token, fetch: recordingFetch });
 let stream;
 try {
-  const encryptionKey = headers()["prisma-encryption-key"];
-  if (!encryptionKey) throw new Error(`${args["headers-file"]} has no "prisma-encryption-key" line`);
+  const encryptionKey = headers()["streams-encryption-key"] ?? headers()["prisma-encryption-key"];
+  if (!encryptionKey) throw new Error(`${args["headers-file"]} has no "streams-encryption-key" line`);
   stream = await client.createStream(args.stream, { encryptionKey, format: { kind: "json" } });
 } catch (e) {
   write({ setup: "failed", t: Date.now(), error: failure(e) });

@@ -46,7 +46,7 @@ Modes
 Common
   --base URL  --headers-file FILE ("Name: value" lines, re-read on change and after a 401)
   --streams N (1)  --prefix STR (k2/s; stream i is PREFIX%05d)  --duration SECS  --seed N (1)
-  --out FILE.jsonl  --ledger FILE.json  --key B64 (Prisma-Encryption-Key; the header file may set it)
+  --out FILE.jsonl  --ledger FILE.json  --key B64 (Streams-Encryption-Key; the header file may set it)
   --window SECS (10)  --port P (serve the latest window as JSON)  --routing-keys K (keys k0..k{K-1})
 
 Producer (produce; walk/tail/group/subs run one in-process when given --rate/--mbps/--concurrency)
@@ -99,7 +99,7 @@ try {
 
   const base = o.str("base");
   if (!base) throw new Error("--base URL is required");
-  const hdrs = new HeaderSource(o.str("headers-file"), { "prisma-encryption-key": o.str("key", DEFAULT_KEY_B64) });
+  const hdrs = new HeaderSource(o.str("headers-file"), { "streams-encryption-key": o.str("key", DEFAULT_KEY_B64) });
   const meter = new Meter();
   const http = new Http(base.replace(/\/+$/, ""), hdrs, meter);
   const walkLag = mode === "walk" && o.str("from", "earliest").startsWith("lag:");

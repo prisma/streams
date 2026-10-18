@@ -249,7 +249,7 @@ function streamsOf(o: Opts): string[] {
 }
 
 function product(o: Opts): () => Record<string, string> {
-  const src = new HeaderSource(o.str("headers-file"), { "prisma-encryption-key": DEFAULT_KEY_B64 });
+  const src = new HeaderSource(o.str("headers-file"), { "streams-encryption-key": DEFAULT_KEY_B64 });
   return () => src.get();
 }
 

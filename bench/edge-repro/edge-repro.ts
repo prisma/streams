@@ -154,7 +154,7 @@ if (mode === "server") {
             {
               headers: {
                 authorization: `Bearer ${token}`,
-                "prisma-encryption-key": pkey,
+                "streams-encryption-key": pkey,
                 accept: "text/event-stream",
               },
             },

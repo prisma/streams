@@ -126,7 +126,7 @@ async function req(method, path, token, body, extra = {}) {
     method,
     headers: {
       authorization: `Bearer ${token}`,
-      "prisma-encryption-key": KEY_B64,
+      "streams-encryption-key": KEY_B64,
       "content-type": "application/json",
       ...extra,
     },

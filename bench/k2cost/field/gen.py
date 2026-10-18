@@ -249,7 +249,7 @@ def main() -> None:
     data_key = F.ensure_secret(run, cell, "data-key", F.b64key)
     with open(jwt_path, encoding="utf-8") as f:
         jwt = f.read().strip()
-    headers = f"authorization: Bearer {jwt}\nprisma-encryption-key: {data_key}\n"
+    headers = f"authorization: Bearer {jwt}\nstreams-encryption-key: {data_key}\n"
     F.write_secret(os.path.join(sdir, f"gen-{k}-headers.txt"), headers)
     hkey = f"k2c/{run}/{cell}/gen-{k}-headers.txt"
     F.record_artifact_object(run, cell, hkey)

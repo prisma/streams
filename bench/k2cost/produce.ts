@@ -224,7 +224,7 @@ export class Producer {
       path = "/records:batch";
     }
     const target = targetKey(name, key);
-    const extra = key ? { "prisma-routing-key": key } : undefined;
+    const extra = key ? { "streams-routing-key": key } : undefined;
     const url = `/v1/streams/${encName(name)}${path}`;
     return async () => {
       meter.add("sent_requests");

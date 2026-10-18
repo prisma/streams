@@ -205,7 +205,7 @@ const refresher = setInterval(async () => {
 refresher.unref();
 const H = (extra = {}) => ({
   authorization: `Bearer ${TOK}`,
-  "prisma-encryption-key": KEY_B64,
+  "streams-encryption-key": KEY_B64,
   "content-type": "application/json",
   ...extra,
 });
@@ -296,7 +296,7 @@ async function buildBlackholeStream(nm) {
     `status=${c.status} body=${((await c.text?.().catch(() => "")) ?? "").slice(0, 120)}`);
   for (let i = 0; i < 3; i++) {
     await ownerFetch(`/v1/streams/${nm}/records`, {
-      method: "POST", headers: H({ "prisma-routing-key": "hot0" }), body: JSON.stringify({ seed: i }),
+      method: "POST", headers: H({ "streams-routing-key": "hot0" }), body: JSON.stringify({ seed: i }),
     });
   }
   const hot = Array.from({ length: 32 }, (_, i) => `hot${i}`);
@@ -312,7 +312,7 @@ async function buildBlackholeStream(nm) {
   while (Date.now() < deadline) {
     await Promise.all(hot.map((k) =>
       ownerFetch(`/v1/streams/${nm}/records`, {
-        method: "POST", headers: H({ "prisma-routing-key": k }), body: JSON.stringify({ k, r: rounds, pad: k === "hot0" ? PAD : PADS }),
+        method: "POST", headers: H({ "streams-routing-key": k }), body: JSON.stringify({ k, r: rounds, pad: k === "hot0" ? PAD : PADS }),
       })));
     rounds++;
     if (rounds % 4 === 0) {
@@ -428,7 +428,7 @@ async function ownerOfStream(name, key = "k") {
     });
     if (![200, 201].includes(c.status)) return `create:${c.status}`;
     const a = await ownerFetch(`/v1/streams/${nm}/records`, {
-      method: "POST", headers: H({ "prisma-routing-key": "k" }), body: JSON.stringify({ s: nm }),
+      method: "POST", headers: H({ "streams-routing-key": "k" }), body: JSON.stringify({ s: nm }),
     });
     return [200, 204].includes(a.status) ? null : `append:${a.status}`;
   });
@@ -468,7 +468,7 @@ async function ownerOfStream(name, key = "k") {
       method: "PUT", headers: H(), body: JSON.stringify({ format: { kind: "json" } }),
     });
     await ownerFetch(`/v1/streams/${nm}/records`, {
-      method: "POST", headers: H({ "prisma-routing-key": "k" }), body: JSON.stringify({ b: nm }),
+      method: "POST", headers: H({ "streams-routing-key": "k" }), body: JSON.stringify({ b: nm }),
     });
   });
   // Resolve each stream's owner once, then TWO subscribers each.
@@ -499,7 +499,7 @@ async function ownerOfStream(name, key = "k") {
       method: "PUT", headers: H(), body: JSON.stringify({ format: { kind: "json" } }),
     });
     await ownerFetch(`/v1/streams/${nm}/records`, {
-      method: "POST", headers: H({ "prisma-routing-key": "k" }), body: JSON.stringify({ c: nm }),
+      method: "POST", headers: H({ "streams-routing-key": "k" }), body: JSON.stringify({ c: nm }),
     });
   });
   const owner = {};
@@ -515,7 +515,7 @@ async function ownerOfStream(name, key = "k") {
     (await debug(n))?.sse_livefeed?.live_feeds ?? 0))).reduce((a, b) => a + b, 0);
   for (const nm of names) {
     await rfetch(`${base(owner[nm])}/v1/streams/${nm}/records`, {
-      method: "POST", headers: H({ "prisma-routing-key": "k" }), body: JSON.stringify({ live: 1 }),
+      method: "POST", headers: H({ "streams-routing-key": "k" }), body: JSON.stringify({ live: 1 }),
     });
   }
   const got = await results;
@@ -547,7 +547,7 @@ async function moveEverythingTo(target) {
     method: "PUT", headers: H(), body: JSON.stringify({ format: { kind: "json" } }),
   });
   await ownerFetch(`/v1/streams/${nm}/records`, {
-    method: "POST", headers: H({ "prisma-routing-key": "k" }), body: JSON.stringify({ m: 0 }),
+    method: "POST", headers: H({ "streams-routing-key": "k" }), body: JSON.stringify({ m: 0 }),
   });
   const before = await ownerOfStream(nm);
   const target = Object.keys(PORTS).find((n) => n !== before);
@@ -642,7 +642,7 @@ async function moveEverythingTo(target) {
     method: "PUT", headers: H(), body: JSON.stringify({ format: { kind: "json" } }),
   });
   await ownerFetch(`/v1/streams/${nm}/records`, {
-    method: "POST", headers: H({ "prisma-routing-key": "k" }), body: JSON.stringify({ z: 0 }),
+    method: "POST", headers: H({ "streams-routing-key": "k" }), body: JSON.stringify({ z: 0 }),
   });
   const own = await ownerOfStream(nm);
   const subs = pmap(Array.from({ length: 100 }), 250, async () =>
@@ -672,7 +672,7 @@ async function moveEverythingTo(target) {
 {
   console.log("== failure: cross-project retention pressure ==");
   const HN = (extra = {}) => ({
-    authorization: `Bearer ${TOK_NOISY}`, "prisma-encryption-key": KEY_B64,
+    authorization: `Bearer ${TOK_NOISY}`, "streams-encryption-key": KEY_B64,
     "content-type": "application/json", ...extra,
   });
   await ownerFetch(`/v1/streams/victim`, {
@@ -683,7 +683,7 @@ async function moveEverythingTo(target) {
   });
   leg("cross-project setup: noisy project stream created", [200, 201].includes(nc.status), `status=${nc.status}`);
   await ownerFetch(`/v1/streams/victim/records`, {
-    method: "POST", headers: H({ "prisma-routing-key": "k" }), body: JSON.stringify({ v: 0 }),
+    method: "POST", headers: H({ "streams-routing-key": "k" }), body: JSON.stringify({ v: 0 }),
   });
   const vown = await ownerOfStream("victim");
   const victim = sseCollect(`${base(vown)}/v1/streams/victim/records:sse?routingKey=k`, {
@@ -698,11 +698,11 @@ async function moveEverythingTo(target) {
   });
   const blast = pmap(Array.from({ length: 120 }), 8, async (_, i) =>
     ownerFetch(`/v1/streams/noisy/records`, {
-      method: "POST", headers: HN({ "prisma-routing-key": `n${i % 4}` }), body: JSON.stringify({ i, pad: noisyPad }),
+      method: "POST", headers: HN({ "streams-routing-key": `n${i % 4}` }), body: JSON.stringify({ i, pad: noisyPad }),
     }));
   for (let i = 1; i < 10; i++) {
     await ownerFetch(`/v1/streams/victim/records`, {
-      method: "POST", headers: H({ "prisma-routing-key": "k" }), body: JSON.stringify({ v: i }),
+      method: "POST", headers: H({ "streams-routing-key": "k" }), body: JSON.stringify({ v: i }),
     });
     await sleep(200);
   }

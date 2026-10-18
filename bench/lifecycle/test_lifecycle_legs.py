@@ -200,7 +200,7 @@ class Legs(unittest.TestCase):
         # The SDK probe's header file: its token and key, readable by its owner alone.
         self.sdk_headers = os.path.join(self.tmp, "sdk-headers.txt")
         with open(self.sdk_headers, "w") as f:
-            f.write("authorization: Bearer t0k\nprisma-encryption-key: k3y\n")
+            f.write("authorization: Bearer t0k\nstreams-encryption-key: k3y\n")
         os.chmod(self.sdk_headers, 0o600)
         self.plan.doc["restart"]["sdk"]["headers_file"] = self.sdk_headers
 

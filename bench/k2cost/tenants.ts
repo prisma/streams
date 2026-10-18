@@ -92,7 +92,7 @@ export class ProjectHeaders extends HeaderSource {
   }
   override get(): Record<string, string> {
     const t = this.tokenMap.token(this.project);
-    return { "prisma-encryption-key": this.recordKey, ...(t ? { authorization: `Bearer ${t}` } : {}) };
+    return { "streams-encryption-key": this.recordKey, ...(t ? { authorization: `Bearer ${t}` } : {}) };
   }
   override reloadSoon(): void {
     this.tokenMap.reloadSoon();

@@ -33,7 +33,7 @@
   },
   "d10": {"warmup_s": 60, "tail_s": 60},
   "restart": {"count": 3, "spacing_s": 300, "probe_path": "/v1/streams/lc/s00000", "append_stream": "lc/restart-probe", "probe_every_s": 0.25,
-    "sdk": {"_doc": "The shipping SDK's probe (sdk-probe.mjs, run by node on sdk/dist built from this tree): a read, a plain append and a producer append in turn on `stream`, which it creates. headers_file is a k2gen header file (mode 0600) whose `authorization: Bearer` line is its token and `prisma-encryption-key` its stream's key, read again for every token the SDK asks for.",
+    "sdk": {"_doc": "The shipping SDK's probe (sdk-probe.mjs, run by node on sdk/dist built from this tree): a read, a plain append and a producer append in turn on `stream`, which it creates. headers_file is a k2gen header file (mode 0600) whose `authorization: Bearer` line is its token and `streams-encryption-key` (or the older `prisma-encryption-key`) its stream's key, read again for every token the SDK asks for.",
             "stream": "lc/restart-sdk-probe", "headers_file": "~/.streams-k2/lifecycle/headers-steady.txt", "pause_s": 0.25, "ready_s": 60}},
   "rollback": {
     "older": "~/.streams-releases/l5-rehearsal-a",

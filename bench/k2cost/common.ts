@@ -173,11 +173,34 @@ export function encName(name: string): string {
 /** The rig's header file: raw "Name: value" lines sent on every request.
  * Re-read when its mtime changes (checked every 2 s) and after a 401, so
  * the rig can rotate the bearer token under a running generator. */
+/** The server reads these request headers as `Prisma-<Name>` and as
+ * `Streams-<Name>` (edge change #173); the Prisma Compute edge strips every
+ * `Prisma-*` request header, so a harness sends the `Streams-` name. */
+const STREAMS_NAMES: Record<string, string> = {
+  "prisma-encryption-key": "streams-encryption-key",
+  "prisma-routing-key": "streams-routing-key",
+  "prisma-consumer-version": "streams-consumer-version",
+};
+
+/** `headers` (lower-case names) with each `Prisma-` name above under its
+ * `Streams-` name; where both are given, the `Streams-` value stands. */
+export function streamsNamed(headers: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) if (!(name in STREAMS_NAMES)) out[name] = value;
+  for (const [name, value] of Object.entries(headers)) {
+    const alias = STREAMS_NAMES[name];
+    if (alias !== undefined && !(alias in out)) out[alias] = value;
+  }
+  return out;
+}
+
 export class HeaderSource {
   private map: Record<string, string> = {};
+  private readonly base: Record<string, string>;
   private mtime = -1;
   private checked = 0;
-  constructor(private readonly file: string | undefined, private readonly base: Record<string, string>) {
+  constructor(private readonly file: string | undefined, base: Record<string, string>) {
+    this.base = streamsNamed(base);
     this.load(true);
   }
   private load(force: boolean): void {
@@ -198,7 +221,7 @@ export class HeaderSource {
       if (i <= 0) continue;
       map[line.slice(0, i).trim().toLowerCase()] = line.slice(i + 1).trim();
     }
-    this.map = map;
+    this.map = streamsNamed(map);
     this.mtime = m;
   }
   get(): Record<string, string> {
@@ -214,7 +237,7 @@ export class HeaderSource {
   }
   /** The record key in force (the header file may carry its own). */
   key(): string {
-    return this.get()["prisma-encryption-key"] ?? "";
+    return this.get()["streams-encryption-key"] ?? "";
   }
 }
 
