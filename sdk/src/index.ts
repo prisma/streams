@@ -1149,11 +1149,24 @@ function presentedCredential(credential: string): string {
   return presented;
 }
 
+/** The issuer's base URL, or a refusal: the exchange carries the durable
+ * credential, so it goes only to `https:` or a loopback host unless the
+ * caller allows otherwise. The refusal does not echo the URL. */
+function issuerBase(issuerUrl: string, allowInsecure: boolean): string {
+  if (!allowInsecure && !secureEndpoint(issuerUrl)) {
+    throw new CredentialExchangeError(0, "insecure_issuer",
+      "issuerUrl is neither https nor a loopback host, and the exchange would send the credential in the clear; " +
+        "use the issuer's https URL, or pass allowInsecureIssuer to accept it", false);
+  }
+  return issuerUrl.replace(/\/$/, "");
+}
+
 /**
  * A Prisma Streams credential (`prisma_streams_<id>.<secret>`, shown once
  * when it is created) as a source of access tokens. A credential of
  * another form is refused at once (`invalid_credential_format`), before
- * any request. Each exchange is sent through the client's request loop: a
+ * any request, and so is an `issuerUrl` that is neither `https:` nor a
+ * loopback host (`insecure_issuer`) unless `allowInsecureIssuer`. Each exchange is sent through the client's request loop: a
  * `429` or `503` is replayed on its `Retry-After` and a transport failure
  * after 1, 2 and 4 s, within four attempts, each attempt given up after
  * 10 s without an answer (a transport failure too); any other refusal
@@ -1162,12 +1175,20 @@ function presentedCredential(credential: string): string {
  */
 export function prismaStreamsCredential(
   credential: string,
-  options: { issuerUrl: string; fetch?: typeof fetch; retry?: StreamsClientOptions["retry"] },
+  options: {
+    issuerUrl: string;
+    fetch?: typeof fetch;
+    retry?: StreamsClientOptions["retry"];
+    /** Send the credential to an `issuerUrl` that is neither `https:` nor
+     * a loopback host. */
+    allowInsecureIssuer?: boolean;
+  },
 ): CredentialProvider {
   const presented = presentedCredential(credential);
+  const base = issuerBase(options.issuerUrl, options.allowInsecureIssuer ?? false);
   const send = options.fetch ?? fetch.bind(globalThis);
   const ctx: Ctx = {
-    base: options.issuerUrl.replace(/\/$/, ""),
+    base,
     // A deadline per attempt (req() sends the exchange with no signal).
     fetch: (input, init) => send(input, { ...init, signal: AbortSignal.timeout(EXCHANGE_ATTEMPT_TIMEOUT_MS) }),
     transportRetry: options.retry?.transport ?? true,
@@ -1213,6 +1234,9 @@ export interface ConnectOptions {
   /** Accept an issuer `endpoint` that is neither `https:` nor a loopback
    * host. Every request carries the stream key. */
   allowInsecureEndpoint?: boolean;
+  /** Send the credential to an `issuerUrl` that is neither `https:` nor a
+   * loopback host. */
+  allowInsecureIssuer?: boolean;
 }
 
 /** `https:`, or `http:` to a loopback host. */
@@ -1279,6 +1303,7 @@ export class StreamsClient {
       issuerUrl: options.issuerUrl,
       fetch: options.fetch,
       retry: options.retry,
+      allowInsecureIssuer: options.allowInsecureIssuer,
     });
     const first = await provider.exchange();
     const follow = options.url === undefined;

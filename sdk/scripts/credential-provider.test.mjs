@@ -494,6 +494,35 @@ clocked("a credential that is not prisma_streams_<id>.<secret> in printable char
   }
 });
 
+clocked("an issuerUrl that is neither https nor loopback is refused before the credential is sent, unless allowInsecureIssuer", async () => {
+  // Adversarial pass B8 (M3): the exchange carries the durable secret, so
+  // an http issuerUrl would hand it to anyone on the path.
+  for (const issuerUrl of ["http://issuer.example", "ftp://issuer.example", "not a url"]) {
+    const { fetch, requests } = issuer();
+    const thrown = (() => {
+      try {
+        prismaStreamsCredential(CREDENTIAL, { issuerUrl, fetch });
+      } catch (error) {
+        return error;
+      }
+    })();
+    const refused = await rejection(StreamsClient.connect({ credential: CREDENTIAL, issuerUrl, fetch }));
+    for (const error of [thrown, refused]) {
+      assert.ok(error instanceof CredentialExchangeError, issuerUrl);
+      assert.deepEqual([error.status, error.code, error.retryable], [0, "insecure_issuer", false], issuerUrl);
+    }
+    assert.equal(requests.length, 0, issuerUrl);
+  }
+  for (const issuerUrl of ["http://localhost:8090", "http://app.localhost:8090", "http://127.0.0.1:8090", "http://[::1]:8090/"]) {
+    const { fetch, requests } = issuer();
+    await prismaStreamsCredential(CREDENTIAL, { issuerUrl, fetch }).exchange();
+    assert.equal(requests[0].url, `${issuerUrl.replace(/\/$/, "")}/v1/token/streams`);
+  }
+  const { fetch, requests } = issuer();
+  await prismaStreamsCredential(CREDENTIAL, { issuerUrl: "http://issuer:8080", fetch, allowInsecureIssuer: true }).exchange();
+  assert.equal(requests[0].url, "http://issuer:8080/v1/token/streams");
+});
+
 clocked("whitespace around the credential is trimmed, as fetch trims a header value", async () => {
   const { fetch, requests } = issuer();
   await prismaStreamsCredential(` ${CREDENTIAL}\n`, { issuerUrl: ISSUER, fetch }).exchange();

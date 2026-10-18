@@ -65,7 +65,11 @@ encryptionKey })` opens a stream without creating it.
 
 ## Authenticating
 
-`connect` exchanges the credential once. The client's base URL is the
+`connect` exchanges the credential once. The `issuerUrl` must be `https:`
+or a loopback host, because the exchange carries the credential itself:
+anything else is refused before any request (`CredentialExchangeError`
+`insecure_issuer`) unless you pass `allowInsecureIssuer: true` (a
+development issuer on a private network, say). The client's base URL is the
 issuer's `endpoint` and its project is the credential's. An explicit `url`
 wins, and the client then never follows the issuer's `endpoint`; an issuer
 that names no endpoint needs one (`endpoint_required`). An issuer's

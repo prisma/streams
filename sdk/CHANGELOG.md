@@ -13,6 +13,14 @@ not carried over).
 
 ### Breaking
 
+- `StreamsClient.connect` and `prismaStreamsCredential` refuse an
+  `issuerUrl` that is neither `https:` nor a loopback host (`localhost`,
+  `*.localhost`, `127.0.0.1`, `[::1]`) before any request, with
+  `CredentialExchangeError` `insecure_issuer` (status 0, not retryable),
+  because the exchange sends the credential itself and an `http:` issuer
+  would hand it to anyone on the path (edge change #NEW-b8-1, the issuer's
+  adversarial pass). Pass `allowInsecureIssuer: true` to send it anyway,
+  as `allowInsecureEndpoint` does for the issuer's `endpoint`.
 - The SDK names its request headers in the `Streams-` form the server
   accepts from this version on (edge change #173):
   `Streams-Encryption-Key`, `Streams-Routing-Key` and

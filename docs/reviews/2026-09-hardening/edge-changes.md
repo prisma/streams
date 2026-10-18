@@ -4060,6 +4060,20 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Risk reason:** low: the status is unchanged (500, as the Composer entry and the supervisor serve; not 503), only an unauthenticated failure body loses deployment detail, and it adds `cache-control: no-store` to that failure. WIRE-MATRIX lists no wrapper boot surface, so it has no entry. Status: ratified at landing by the lead under the owner's delegation of 2026-10-17.
 - **Check against commit:** written with the change (the hygiene lane's b9b8c9ef); numbered #172 at landing-5 (2026-10-18), the next free number at slate b673bb04.
 
+### #NEW-b8-1 — The SDK refuses an `issuerUrl` that is neither `https:` nor a loopback host before it sends the credential, with `CredentialExchangeError` `insecure_issuer`, unless `allowInsecureIssuer`
+
+- **Program item:** public-beta week of 2026-10-17, issuer triage item B8 (the internal adversarial pass over the interim issuer), finding M3 (medium): an attacker on the network path between a client and the edge (threat (d)) reads the durable credential from any exchange sent to an `http:` issuer. The SDK already refused an `http:` cell `endpoint` (`insecure_endpoint`) because every request carries the stream key; the exchange, which carries the credential itself, had no such check.
+- **Surface:** SDK (`@prisma/streams`, `sdk/src/index.ts`: `issuerBase`, called by `prismaStreamsCredential` and so by `StreamsClient.connect`). No answer of the server or the issuer changes.
+- **Endpoint:** `POST {issuerUrl}/v1/token/streams`, as the SDK sends it.
+- **Condition:** `issuerUrl` is not a URL, or its scheme is not `https:` and it is not `http:` to `localhost`, `*.localhost`, `127.0.0.1` or `[::1]`, and the caller did not pass `allowInsecureIssuer: true`.
+- **Before:** the exchange was sent to whatever `issuerUrl` named, `Authorization: StreamsCredential prisma_streams_<id>.<secret>` in the clear over `http:`.
+- **After:** `prismaStreamsCredential` throws, and `StreamsClient.connect` rejects with, `CredentialExchangeError` `status` 0, `code` `insecure_issuer`, `retryable` false, message "issuerUrl is neither https nor a loopback host, and the exchange would send the credential in the clear; use the issuer's https URL, or pass allowInsecureIssuer to accept it" (the URL is not echoed), before any request. `allowInsecureIssuer: true` (an option of both) sends it as before. A loopback `http:` issuer (the platform emulator, `prisma dev`) is unchanged.
+- **Retry semantics:** not retryable: fix `issuerUrl` (the beta issuer is served over `https:` only).
+- **Who is affected:** an app that configured an `http:` non-loopback issuer: none known (the issuer's page and `docs/AUTHENTICATING.md` give its `https:` origin; `scripts/platform-e2e.mjs` uses a loopback emulator). A development issuer on a private network (`http://issuer:8080` in Docker Compose) needs `allowInsecureIssuer: true`.
+- **Pinning tests:** sdk/scripts/credential-provider.test.mjs "an issuerUrl that is neither https nor loopback is refused before the credential is sent, unless allowInsecureIssuer" (three refused URLs, no request made, from both entry points; four loopback forms exchanged; the opt-in exchanged). Red on the unfixed tree: `AssertionError [ERR_ASSERTION]: the request resolved` (`connect` with `http://issuer.example` exchanged).
+- **Risk reason:** low: a new refusal for a configuration that leaks the credential, with an explicit opt-in; WIRE-MATRIX §4's SDK paragraph names it. Status: ratified at landing by the lead under the owner's delegation of 2026-10-17.
+- **Check against commit:** written with the change.
+
 ## Discrepancies
 
 One record has verified=false: its commit did not match the recorded text.
