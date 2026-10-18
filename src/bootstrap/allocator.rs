@@ -150,14 +150,29 @@ async fn on_every_worker<T: Send + 'static>(
     outs
 }
 
+/// The most 1 ms polls a probe makes while it holds its worker: twice
+/// `PROBE_HOLD`, so the deadline ends the hold, and the loop ends whatever
+/// the clock reads.
+const PROBE_POLLS: u32 = 200;
+
 /// Counts this probe as started, then holds its worker until `workers`
 /// probes have, or `PROBE_HOLD` passes.
 fn hold_until_started(started: &AtomicUsize, workers: usize) {
     started.fetch_add(1, Ordering::AcqRel);
     let deadline = Instant::now() + PROBE_HOLD;
-    while started.load(Ordering::Acquire) < workers && Instant::now() < deadline {
+    for _ in 0..PROBE_POLLS {
+        let now = Instant::now();
+        if !holds(started.load(Ordering::Acquire), workers, now, deadline) {
+            return;
+        }
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+/// Whether a probe still holds its worker at `now`: fewer than `workers`
+/// probes have started, and `deadline` has not come.
+fn holds(started: usize, workers: usize, now: Instant, deadline: Instant) -> bool {
+    started < workers && now < deadline
 }
 
 /// The thread and the last round it collected for, on every worker of the
@@ -265,6 +280,18 @@ mod collect_tests {
             "the last probe to start held {held:?}"
         );
         assert_eq!(started.load(std::sync::atomic::Ordering::Acquire), 2);
+    }
+
+    /// A probe holds while a probe has not started and before the deadline,
+    /// and not at the deadline itself.
+    #[test]
+    fn a_probe_holds_only_while_one_has_not_started_and_before_the_deadline() {
+        let now = std::time::Instant::now();
+        let later = now + std::time::Duration::from_millis(1);
+        assert!(super::holds(1, 2, now, later), "one has not started");
+        assert!(!super::holds(2, 2, now, later), "every probe has started");
+        assert!(!super::holds(1, 2, later, later), "the deadline has come");
+        assert!(!super::holds(1, 2, later, now), "the deadline has passed");
     }
 
     #[test]
