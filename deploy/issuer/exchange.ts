@@ -5,16 +5,16 @@
 // the credential's project at its cell. Optional JSON body
 // `{"requestedScopes": [...], "ttlSecs": n}`; the SDK sends none.
 //
-// Checks, in order: once K4 names the edge's client-IP header, the
-// address's exchanges and failures (limits.ts); the credential's form (a
-// malformed request spends the instance's malformed budget, never the
-// honest one); the body; the secret against the stored hash (only a
+// Checks, in order: the credential's form (a malformed request spends the
+// instance's malformed budget, never the honest one); the body; the secret against the stored hash (only a
 // customer credential with a secret has one: an operator's or the
 // canary's catalog-read credential answers as an unknown id; a wrong
 // secret spends the failures' budget of the id it named, never its
 // owner's; a match under an older pepper is noted for the re-hash sweep,
 // rehash.ts); then, for a secret that verified, the credential's own
-// exchanges and the instance's, so no stranger can spend either; the
+// exchanges and the instance's, so no stranger can spend either (nor an
+// address's budget: once K4 names the edge's client-IP header, an address
+// is charged, and locked out, only for exchanges that fail, limits.ts); the
 // credential active, not omitted, not expired; its project active and
 // not suspended; the state copy fresh; the signing key still the cell's.
 // The token is cell-admin's
@@ -157,16 +157,6 @@ export class Exchange {
     this.ipHeader = deps.ipHeader === undefined ? TRUSTED_CLIENT_IP_HEADER : deps.ipHeader;
   }
 
-  /// The address's limits, taken before the credential is even parsed
-  /// (only once K4 names the edge's header): a 429, or null.
-  private admit(ip: string | null): Response | null {
-    if (ip === null) return null;
-    const locked = this.limits.locked("exchange_failed_ip", ip);
-    if (locked > 0) return rateLimited(locked, "too many failed exchanges from this address");
-    const mine = this.limits.take("exchange_ip", ip);
-    return mine > 0 ? rateLimited(mine, "too many exchanges from this address") : null;
-  }
-
   /// The limits a verified secret takes, its credential's then the
   /// instance's: a 429, or null.
   private mint(id: string): Response | null {
@@ -176,9 +166,16 @@ export class Exchange {
     return all > 0 ? rateLimited(all, "the issuer is at its exchange rate") : null;
   }
 
-  /// A refused credential, counted against its address's failure budget.
+  /// A refused credential, counted against its address's failure budget
+  /// (once K4 names the edge's header); 429 while that address is locked
+  /// out. Only a failure is: many clients share an address (Compute's
+  /// egress, a NAT), so a secret that verifies never meets its budget.
   private failed(ip: string | null, message: string): Result {
-    if (ip !== null) this.limits.charge("exchange_failed_ip", ip);
+    if (ip !== null) {
+      const locked = this.limits.locked("exchange_failed_ip", ip);
+      if (locked > 0) return result("rate_limited", rateLimited(locked, "too many failed exchanges from this address"));
+      this.limits.charge("exchange_failed_ip", ip);
+    }
     return result("invalid_credential", unauthorized(message));
   }
 
@@ -209,8 +206,6 @@ export class Exchange {
 
   private async attempt(req: Request, seen: Seen): Promise<Result> {
     const ip = clientIp(req, this.ipHeader);
-    const busy = this.admit(ip);
-    if (busy !== null) return result("rate_limited", busy);
     const presented = PRESENTED.exec(req.headers.get("authorization") ?? "");
     if (!presented) return this.malformed(ip);
     const [, id, secret] = presented;

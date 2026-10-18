@@ -24,7 +24,6 @@ describe("the buckets", () => {
       oauth_start: [30, 2],
       project_create_workspace: [5, 17_280],
       credential_change_project: [20, 4_320],
-      exchange_ip: [50, 1],
       exchange_failed_ip: [20, 3],
       oauth_start_ip: [5, 12],
     };
@@ -157,22 +156,33 @@ describe("the exchange's limits", () => {
     expect([res.status, (await res.json()).error.message]).toEqual([429, "the issuer is at its exchange rate; retry after 1 s"]);
   });
 
-  test("per-address limits apply only once the edge's client-IP header is known (K4)", async () => {
+  test("per-address limits apply only once the edge's client-IP header is known (K4), and only to exchanges that fail", async () => {
     expect(TRUSTED_CLIENT_IP_HEADER).toBeNull();
     const cell = await issuerCell();
     const { id, secret } = await customerSecret(cell, "sp_a");
     const ip = { "x-client-ip": "203.0.113.7" };
     const unwired = await issuerFor(cell);
-    expect(await statuses(55, () => exchange(unwired.issuer, secret, ip))).toEqual({ 200: 55 });
+    expect(await statuses(20, () => exchange(unwired.issuer, wrongSecret(id), ip))).toEqual({ 401: 20 });
+    expect((await exchange(unwired.issuer, undefined, ip)).status).toBe(401);
+    // Adversarial pass B8 (M2): many customers' apps share one address
+    // (Compute's egress, an office's NAT), so no address budget stands in
+    // front of a secret that verifies: one client's failures there must not
+    // lock out another's valid credential, nor its cold starts spend it.
     const wired = await issuerFor(cell, "x-client-ip");
-    expect(await statuses(51, () => exchange(wired.issuer, secret, ip))).toEqual({ 200: 50, 429: 1 });
-    expect((await exchange(wired.issuer, secret, { "x-client-ip": "203.0.113.8" })).status).toBe(200);
+    expect(await statuses(55, () => exchange(wired.issuer, secret, ip))).toEqual({ 200: 55 });
     const failing = await issuerFor(cell, "x-client-ip");
     expect(await statuses(20, () => exchange(failing.issuer, wrongSecret(id), ip))).toEqual({ 401: 20 });
-    const locked = await exchange(failing.issuer, secret, ip);
-    expect([locked.status, locked.headers.get("retry-after")]).toEqual([429, "600"]);
+    const locked = await exchange(failing.issuer, `prisma_streams_strcred_${"0".repeat(32)}.${"A".repeat(43)}`, ip);
+    expect([locked.status, (await locked.json()).error.message, locked.headers.get("retry-after")]).toEqual([
+      429, "too many failed exchanges from this address; retry after 600 s", "600",
+    ]);
+    expect((await exchange(failing.issuer, undefined, ip)).status).toBe(429);
+    expect((await exchange(failing.issuer, secret, ip)).status).toBe(200);
+    // Another address is not locked out (an unknown id: this one's own
+    // failure budget is spent).
+    expect((await exchange(failing.issuer, `prisma_streams_strcred_${"1".repeat(32)}.${"A".repeat(43)}`, { "x-client-ip": "203.0.113.8" })).status).toBe(401);
     failing.clock.t += 600_000;
     await failing.cache.refresh();
-    expect((await exchange(failing.issuer, secret, ip)).status).toBe(200);
+    expect((await exchange(failing.issuer, `prisma_streams_strcred_${"0".repeat(32)}.${"A".repeat(43)}`, ip)).status).toBe(401);
   });
 });

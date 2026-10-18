@@ -10,7 +10,11 @@
 //
 // The per-source-IP buckets are built but wired only once Compute names
 // the header its edge sets and strips (question K4): a header a client can
-// forge would let it spend another client's bucket, or dodge its own.
+// forge would let it spend another client's bucket, or dodge its own. An
+// address is charged only for exchanges that fail, never in front of a
+// secret that verifies (adversarial pass B8, M2): many customers' apps
+// share one address (Compute's egress, a NAT), and one of them failing
+// must not lock the others out.
 
 /// K4: the edge's trusted client-IP header, unknown until Compute answers.
 export const TRUSTED_CLIENT_IP_HEADER: string | null = null;
@@ -44,10 +48,9 @@ export const LIMITS = {
   project_create_workspace: { perSec: 5 / DAY, burst: 5 },
   /// Credentials one project creates or rotates.
   credential_change_project: { perSec: 20 / DAY, burst: 20 },
-  /// Per source IP (K4): exchanges, failed exchanges, sign-ins started.
-  /// An address's sign-ins are taken before the instance's and are a
-  /// sixth of them, so one address cannot spend the instance's budget.
-  exchange_ip: { perSec: 10, burst: 50 },
+  /// Per source IP (K4): failed exchanges, sign-ins started. An
+  /// address's sign-ins are taken before the instance's and are a sixth
+  /// of them, so one address cannot spend the instance's budget.
   exchange_failed_ip: { perSec: 20 / MINUTE, burst: 20, lockoutMs: 600_000 },
   oauth_start_ip: { perSec: 5 / MINUTE, burst: 5 },
 } as const satisfies Record<string, Limit>;
