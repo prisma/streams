@@ -310,6 +310,10 @@ eu-central-1, commit 590b0073):
   19 stays open although cell-check, which reads from the beginning,
   passes), and `bench/k2cost`'s audit, walk, tail, group and churn modes
   cannot follow a stream. SSE carries its cursor in the body and works.
+  Edge change #176 (e94a8fd3) sends every such response header as
+  `Streams-*` too; with it (round 3, 2026-10-18) the SDK pages a read
+  (306 records over 10 pages), long-poll wakes 0.3 s after an append, the
+  canary's row 19 resolves, and the k2cost audit is clean.
 - `provision-cell.py` needs its own User-Agent: api.prisma.io answers 403
   to Python's default one.
 - A fresh project owns its production Branch; a project created first is
@@ -332,6 +336,16 @@ eu-central-1, commit 590b0073):
   leg, and 2-3 of about 2,400 in each probe, failed with that 503), and a
   plain append can end `outcome_unknown` (2 of 2,448; neither was
   committed). Nothing acked was lost. `/health` stayed 200 throughout.
+  Round 3 (e94a8fd3, the SDK replaying a 503 with `Retry-After` for 15 s,
+  edge #177) measured the same windows and still 2 SDK errors in the
+  leg: a records read's `503 temporarily_unavailable` (src/product.rs,
+  the `E::Resolve(_) | E::Remote(_)` arm) carries no `Retry-After`, so
+  the SDK stops after its usual four attempts (about 3.8 s), and a plain
+  append answered `503 outcome_unknown` is, by design, not sent again.
+- A watch redeployed while an alert is open, whose condition cleared
+  meanwhile, never resolves it: the new watch starts with no open rules
+  and only resolves what it opened itself (row 19 stayed open on the
+  stand-in until the condition was induced and cleared again).
 - Each cut of the same commit builds a server with a different sha256
   (the cut's worktree path differs), so a "rollback" to an earlier cut of
   one commit still changes the binary.
