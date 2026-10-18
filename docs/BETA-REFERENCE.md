@@ -3,6 +3,10 @@
 This page is for customers of the public beta. It states the limits a
 project meets on a shared beta cell, the answers the server gives when a
 limit is reached, how to retry, and what the beta does not promise.
+How an app exchanges its project credential for access tokens, and the
+issuer's and the server's authentication answers, are in
+[AUTHENTICATING.md](AUTHENTICATING.md).
+
 Every number here is the value at the time of writing, read from the
 deployed profile and the server's code. Each section names the file
 where an engineer checks it.

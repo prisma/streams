@@ -156,14 +156,43 @@ alongside and finish before admission opens.
      X1 (a)'s issuer e2e CI step beside `cell-admin`'s (X1 (a)'s
      `./deploy/composer` and `./deploy/cell-watch` are in CI's Bun step
      since 7fcf1b43 and 1186883a);
-   - B8: the RUNBOOK section, the customer "Authenticating" reference
-     and the internal adversarial pass, which runs before any allow-list
-     entry;
-   - C1, Prisma Auth registering the real OAuth client;
-   - K4: the per-address limits (`deploy/issuer/limits.ts`) wait on the
-     edge's trusted client-IP header;
+   - B8, done 2026-10-18 (the lane's report:
+     `~/.streams-k2/analysis/public-beta/week-2026-10-17/issuer-b8-report.md`):
+     the internal adversarial pass over the issuer, cell-admin and the
+     cell's acceptance of issuer tokens (no credential, another project's
+     credential, a revoked or suspended one, a network position before
+     the edge) found no high-severity cross-project or token-validation
+     defect: the cell re-checks `iss`, `aud`, the kid's pinned alg and
+     audience, the lifetime, the cell, ownership, project status,
+     workspace, credential status, expiry and exact `grant_version` on
+     every request. It found and fixed one high and two mediums: H1, a
+     spray of unknown credential ids grew the issuer's failure table
+     without bound and scanned it per request (quadratic CPU, an
+     unauthenticated outage of the authorization root; f1fc044c); M2,
+     the K4 per-address limits, once wired, would have let one tenant's
+     failures behind a shared egress address lock other tenants' valid
+     credentials out (9c943271, before K4 made it reachable); M3, the
+     SDK sent the credential to an `http:` `issuerUrl` (7a59d754, edge
+     change #NEW-b8-1). The RUNBOOK's "The interim token issuer (public
+     beta)" section and `docs/AUTHENTICATING.md` (linked from
+     BETA-REFERENCE and the docs map) are written. Lows listed, not
+     fixed: no sign-out and no server-side session revocation short of
+     rotating the session key (a member removed from the workspace keeps
+     management for up to 8 h); no HSTS from the issuer (the edge's
+     unknown); the allow-list read has no single flight while the bucket
+     fails; the audit is a record, not tamper evidence; per-instance
+     limits reset at a redeploy; the `workspace:admin` consent scope (C2)
+     hands the issuer an admin token of every signing-in workspace;
+   - C1, Prisma Auth registering the real OAuth client (until then the
+     mock identity provider; with the real client a member removed from
+     the workspace keeps an issued session for up to 8 h, C3);
+   - K4: the per-address limits (`deploy/issuer/limits.ts`, failures
+     only since B8's M2) wait on the edge's trusted client-IP header;
+     until then one anonymous client can spend the instance's 30 sign-in
+     starts a minute, and the exchange's unauthenticated work is bounded
+     only by the platform's request rate;
    - the audit's 13-month retention: a lifecycle rule on `audit/`, else
-     a sweep, before 2027-11 (`deploy/issuer/audit.ts`);
+     a sweep, before 2027-11 (`deploy/issuer/audit.ts`); not built;
    - owner calls issuer #1 (offboarding a suspended project) and issuer
      #2 (a workspace taken off the allow-list), decided on 2026-10-13 as
      calls 15 ((iv), a canary witness) and 16 ((b), a reduced mode); both

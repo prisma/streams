@@ -1177,3 +1177,136 @@ The whole scratch sequence, from the projects to the teardown, is
 A single-server shared cell publishes no `prisma-streams-internal` key and
 sets no `FLEET_INTERNAL_TOKEN`: its internal surface opens to nothing. A
 key for that audience in its keys feed is an incident.
+
+## The interim token issuer (public beta)
+
+The issuer (`deploy/issuer`, a Bun service in its own Compute project,
+`deploy/composer-issuer`) is the shared cell's authorization root: it
+exchanges a customer credential's secret for a signed access token
+(`POST /v1/token/streams`), signs users in with Prisma and serves the
+page and management API that create and delete projects and credentials,
+and drains deleted projects. It holds the cell's signing key, the
+credential pepper, the session key and the control and feeds buckets'
+writer keys: whoever holds its environment can mint any project's token
+and rewrite any project's state. Treat its environment, and the Prisma
+workspace that hosts it (the owner plus one backup member, both with
+2FA), as the root of trust. The customer side is
+`docs/AUTHENTICATING.md`; the code's own map is `deploy/issuer/server.ts`.
+
+**Deploy.** The release run deploys it beside the cell
+(`deploy-release.sh ... --issuer-release-dir ... --issuer-project ...
+--issuer-branch ...`); the first deploy and every step from the projects
+to the teardown are `docs/BETA-SCRATCH-DEPLOY.md`. Its secrets
+(`STREAMS_ISSUER_SIGNING_KEY`, `_PEPPER`, `_SESSION_KEY`,
+`_OAUTH_CLIENT_SECRET`, `_METRICS_TOKEN`, the two buckets' key pairs)
+are set from mode-0600 files, one per secret, by the set-secrets step
+of `docs/BETA-SCRATCH-DEPLOY.md` §4 (`--app issuer --from <directory>`),
+never on a command line, in a chat or a ticket; its other inputs are the
+release's settings file (`deploy/composer-issuer/app.ts` lists them).
+`STREAMS_ISSUER_OAUTH_AUTHORITY` stays unset on Compute (the issuer
+refuses any origin but this machine's for it: it names the mock identity
+provider). It refuses to boot (exit 1, a message that names inputs and
+ids only) when the state is not `STREAMS_CELL_ID`'s, is behind the
+published bundle, names another issuer than `STREAMS_ISSUER_ID` (the
+`iss` every token carries and the cell compares exactly), or the cell's
+keys feed lacks its key. It holds Compute's keep-awake guard.
+
+**Health.** `GET /healthz` is 200 `{"status":"ok"}` while it can mint,
+else 503 with `reason` `state_stale` (its copy of the control bucket's
+state was last revalidated over 300 s ago: the exchange answers 503
+`issuer_unavailable`) or `key_not_in_state` (its key is not in the cell's
+keys feed: a rotation step out of order, or the compromise drill). `GET
+/v1/admin/metrics` with `Authorization: Bearer
+<STREAMS_ISSUER_METRICS_TOKEN>` gives the counters: exchanges by outcome,
+rate-limit refusals by bucket, `cache_age_secs`, `state_feed_version`
+against `published_feed_version`, `gate_open`, `profile_ok` (false: every
+create is refused 409 `beta_at_capacity` while `/healthz` stays 200; the
+release's profiles moved, see `check-sizing`), the offboarding backlog,
+`rehash_pending` and `live_credentials_by_pepper`.
+
+**What pages** ("What to alert on", Shared cells): row 21
+`r21_issuer_down` (PAGE: `/healthz` not 200 for 2 min; customers lose
+access as their tokens expire, within 60 min at the default lifetime),
+row 22 `r22_canary_exchange` (PAGE: the canary's exchange fails 3 times,
+or names another `endpoint`), row 19 (PAGE: the canary's cell round trip;
+`kid_unknown` there with `/health` green is a keys-feed incident), rows
+27 (`cache_age_secs` above 150) and 28 (`gate_open` false) NOTIFY. For a
+row 21 page read the issuer's platform log first: `state revalidation
+failed` (the control bucket: its keys, its reachability, or a state
+restored behind the bundle, which the issuer refuses to follow until you
+recover the newest state) or a boot refusal after a redeploy.
+
+**Keys and rotation.** The issuer signs with one Ed25519 key whose public
+half is in the cell's keys feed. Rotate it yearly, before the allow-list
+first opens and on any doubt, by the rotation drill in
+`deploy/cell-admin/README.md` ("Rotating the issuer's key, and a
+compromised key": `keys add` the new public half, `canary` with the new
+key, redeploy the issuer with the new key, `keys retire` the old kid 70
+minutes later); `deploy/issuer/drills.test.ts` runs both drills against
+a fake cell. The pepper rotates by prepending a new version
+(`v2:<base64>,v1:<base64>`) and redeploying: credentials re-hash under
+the newest as they are next exchanged (`rehash_pending`,
+`live_credentials_by_pepper`), and the older version is dropped once none
+is left under it and the state written after the re-hash is backed up.
+Rotating `STREAMS_ISSUER_SESSION_KEY` signs every browser out (sessions
+are cookies only; nothing else ends one before its 8 hours).
+
+**Suspend, resume, offboard.** `cell-admin suspend --project P`: within
+5 s the issuer mints P no token (403 `project_not_active`) and its users
+cannot delete it; once the cell holds the bundle (about 45 s) every
+request of P is refused 403 `project_not_active`, tokens already minted
+included. `resume` undoes it. A user's delete, or `cell-admin offboard`,
+revokes the project's credentials at once; the issuer's offboarding job
+then proves the cell holds the revocation, deletes every stream and omits
+the project (every 15 s, failed attempts retried after 1, 2, 4 ... 60
+minutes; `offboarding_projects` and `offboarding_max_attempts` in the
+metrics). A workspace taken off the allow-list (`cell-admin disallow`)
+gets nothing new within 5 s and keeps its projects running until you
+suspend them; its users keep a reduced sign-in (see, revoke, delete).
+
+**Revoke.** A leaked customer credential: the workspace's users revoke it
+on the page, or `cell-admin revoke --project P --credential C`. Within
+5 s the issuer exchanges it no more, and once the cell holds the bundle
+(about 45 s) its outstanding tokens answer 403 `credential_not_active`:
+revocation does not wait for the token lifetime. Rotation (page or
+management API) replaces a secret at once with no overlap.
+
+**Audit.** Every change the issuer makes, and every refused management
+change of a signed-in user, is one JSON object under
+`audit/YYYY/MM/DD/<epoch ms>-<random>.json` in the control bucket
+(actor `{user_id, email, workspace_id}` or `issuer:<job>`, action, ids,
+versions before and after, outcome, request id; never a secret, token,
+key or pepper). Exchanges are counted per credential: a minute's counts
+to stdout as `{"kind":"exchanges",...}` lines, an hour's in one audit
+object with the `jti` of every token minted (up to 10,000 per credential
+an hour), the lookup for a leaked token. The audit is a record, not
+tamper evidence: anything holding the control bucket's writer key (the
+issuer included) can write or delete under the prefix. Nothing ages it
+out yet (13 months is the intended retention; no lifecycle rule or sweep
+exists). No source address is recorded until Compute names its trusted
+client-IP header (K4).
+
+**Incident: the signing key or the issuer's environment leaked.** Follow
+"A compromised key" in `deploy/cell-admin/README.md`, step 0 first:
+assume the whole environment leaked unless you know otherwise, so rotate
+the control bucket's writer keys (`/v1/buckets/{id}/keys`) and the feeds
+bucket's, then `keys add --retire-others` the new key (every outstanding
+token answers 401 once the cell holds it, about 45 s; the SDK refreshes
+and gets a token under the new key once the issuer is redeployed), and in
+the same redeploy rotate `STREAMS_ISSUER_SESSION_KEY` and
+`STREAMS_ISSUER_METRICS_TOKEN` (and the watch's copy). A leaked pepper
+alone exposes nothing (a 256-bit secret cannot be guessed from its HMAC);
+rotate it anyway in the same redeploy. Then `list --json` for kids,
+credentials and projects you did not make, revoke and offboard those, and
+read the audit prefix from before the leak for what the holder did (it
+may have deleted objects there). A leaked OAuth client secret: rotate it
+with Prisma Auth (team ask C1) and redeploy; it signs no token.
+
+**Known exposure until K4.** Without the edge's trusted client-IP header
+there is no per-address limit: one anonymous client can spend the
+instance's 30 sign-in starts a minute (every browser's sign-in answers
+429 meanwhile; the exchange is unaffected), and the exchange's
+unauthenticated work (one HMAC and at most one state read a second) is
+bounded only by the platform's request rate. A spray of unknown
+credential ids keeps the per-id failure table at 10,000 keys (adversarial
+pass B8).
