@@ -914,3 +914,84 @@ async fn capability(cell: &Cell, i: usize, khex: &str) -> String {
     );
     format!("{}.{exp}.{sig}", project(i))
 }
+
+/// Over the shed line an append is refused before its body is buffered
+/// (mem2 lane): the RSS shed's product answer (429 `rate_limited`,
+/// `Retry-After: 2`) comes to a head declaring 4 MiB with no body sent; a
+/// client uploading 1 MiB reads the same 429 and keeps its connection, the
+/// body read and dropped, and the next append on it is served under the
+/// line; a read is served over the line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_append_over_the_shed_line_is_refused_before_its_body_is_read() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let cell = open_cell(CellSpec::open(1)).await;
+    let created = cell.call(0, "PUT", "/v1/streams/orders", CREATE).await;
+    assert_eq!(created.0, 201);
+    let admission = &cell.state.admission;
+    admission.set_rss_shed_mb(500);
+    admission.record_rss_mb(501);
+    let head = |len: usize| {
+        format!(
+            "POST /v1/streams/orders/records HTTP/1.1\r\nhost: rig\r\nauthorization: {}\r\nprisma-encryption-key: {PRISMA_KEY}\r\ncontent-length: {len}\r\n\r\n",
+            cell.bearers[0]
+        )
+    };
+    let answer = async |socket: &mut tokio::net::TcpStream| {
+        let (mut text, mut chunk) = (Vec::new(), vec![0_u8; 4096]);
+        while !text.ends_with(b"}") {
+            match socket.read(&mut chunk).await {
+                Ok(n) if n > 0 => text.extend_from_slice(&chunk[..n]),
+                other => return format!("{other:?} after {}", String::from_utf8_lossy(&text)),
+            }
+        }
+        String::from_utf8_lossy(&text).to_lowercase()
+    };
+    let shed = |t: &str| {
+        t.starts_with("http/1.1 429") && t.contains("retry-after: 2") && t.contains("rate_limited")
+    };
+    let wait = std::time::Duration::from_secs(5);
+    let mut silent = tokio::net::TcpStream::connect(cell.addr).await.unwrap();
+    silent.write_all(head(4 << 20).as_bytes()).await.unwrap();
+    let text = tokio::time::timeout(wait, answer(&mut silent))
+        .await
+        .unwrap();
+    assert!(shed(&text), "{text}");
+    let socket = tokio::net::TcpStream::connect(cell.addr).await.unwrap();
+    let (mut reader, mut writer) = socket.into_split();
+    let body = format!("{{\"pad\":\"{}\"}}", "x".repeat(1 << 20));
+    let upload = async {
+        writer.write_all(head(body.len()).as_bytes()).await?;
+        writer.write_all(body.as_bytes()).await
+    };
+    let respond = async {
+        let mut text = String::new();
+        let mut chunk = vec![0_u8; 4096];
+        while !text.ends_with('}') {
+            let n = tokio::time::timeout(wait, reader.read(&mut chunk));
+            match n.await {
+                Ok(Ok(n)) if n > 0 => text.push_str(&String::from_utf8_lossy(&chunk[..n])),
+                other => return format!("{other:?} after {text}"),
+            }
+        }
+        text.to_lowercase()
+    };
+    let (uploaded, text) = futures_util::future::join(upload, respond).await;
+    assert!(shed(&text), "an uploading client reads the 429: {text}");
+    uploaded.unwrap();
+    let read = cell.call(0, "GET", "/v1/streams/orders/records", b"").await;
+    assert_eq!(read.0, 200, "a read is served over the line");
+    admission.record_rss_mb(0);
+    writer
+        .write_all(format!("{}{{}}", head(2)).as_bytes())
+        .await
+        .unwrap();
+    let mut socket = reader.reunite(writer).unwrap();
+    let text = tokio::time::timeout(wait, answer(&mut socket))
+        .await
+        .unwrap();
+    assert!(
+        text.starts_with("http/1.1 200"),
+        "the connection serves the next append: {text}"
+    );
+    engine_shutdown(&cell.state).await;
+}

@@ -730,3 +730,30 @@ async fn a_product_append_whose_engine_closes_between_resolve_and_enqueue_is_tem
     assert_eq!((status, stored), (200, serde_json::json!([{"n": 1}])));
     engine_shutdown(&state).await;
 }
+
+/// The append path keeps its own RSS gate beside the product entry's
+/// (edge change #NEW-mem2-2): a raw append over the shed line is refused
+/// 429 with `Retry-After: 2` and writes nothing, and under the line the
+/// same append is the stream's first record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_raw_append_over_the_shed_line_is_refused_by_the_append_paths_gate() {
+    use super::fixture_requests::hreq;
+    let (state, addr) = http_rig(mem()).await;
+    let path = "/v1/stream/shed";
+    let json = [("content-type", "application/json")];
+    let (status, _, _) = hreq(addr, "PUT", path, &json, b"").await;
+    assert!(status == 200 || status == 201, "create: {status}");
+    state.admission.set_rss_shed_mb(500);
+    state.admission.record_rss_mb(501);
+    let (status, headers, _) = hreq(addr, "POST", path, &json, br#"[{"n":1}]"#).await;
+    let retry = headers.get("retry-after").map(String::as_str);
+    assert_eq!((status, retry), (429, Some("2")));
+    state.admission.record_rss_mb(0);
+    let (status, headers, _) = hreq(addr, "POST", path, &json, br#"[{"n":1}]"#).await;
+    let first = crate::http::tail_token(1);
+    assert_eq!(
+        (status, headers.get("stream-next-offset")),
+        (204, Some(&first))
+    );
+    engine_shutdown(&state).await;
+}

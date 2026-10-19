@@ -57,5 +57,30 @@ pub(crate) async fn buffer_within(
     Ok((Bytes::from(buf), guard))
 }
 
+/// Read and drop `body` until it ends, `limit` bytes have arrived or `wait`
+/// has passed, holding one frame at a time: a request refused before its
+/// body (the RSS shed of an append) lets its client finish sending and read
+/// the answer on a connection that stays open, instead of meeting a reset
+/// while it uploads. True when the body ended inside both bounds; past
+/// either, the connection closes after the answer, as before.
+pub(crate) async fn discard_within(body: Body, limit: u64, wait: std::time::Duration) -> bool {
+    use futures_util::StreamExt;
+    let mut stream = body.into_data_stream();
+    let drained = async {
+        let mut read: u64 = 0;
+        while let Some(chunk) = stream.next().await {
+            let Ok(c) = chunk else {
+                return false;
+            };
+            read = read.saturating_add(c.len() as u64);
+            if read > limit {
+                return false;
+            }
+        }
+        true
+    };
+    tokio::time::timeout(wait, drained).await.unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests;

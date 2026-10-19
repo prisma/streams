@@ -137,6 +137,10 @@ struct Inner {
     per_stream_cap: i64,
     streams: Mutex<HashMap<[u8; 16], i64>>,
     rss_shed_mb: u64,
+    /// The line the RSS write gate enforces: the configured `rss_shed_mb`.
+    /// Atomic only so rigs can set one (theirs is 0, off); production never
+    /// moves it.
+    shed_line_mb: AtomicU64,
     /// Sampled RSS in MiB (the bootstrap sampler writes it every 250 ms;
     /// a /proc read per request would be silly).
     rss_mb: AtomicU64,
@@ -249,6 +253,7 @@ impl AdmissionController {
                 per_stream_cap: knobs.per_stream_cap,
                 streams: Mutex::new(HashMap::new()),
                 rss_shed_mb: knobs.rss_shed_mb,
+                shed_line_mb: AtomicU64::new(knobs.rss_shed_mb),
                 rss_mb: AtomicU64::new(0),
                 project_memory_pressure_bytes: AtomicU64::new(knobs.project_memory_pressure_bytes),
                 project_memory_release_pct: knobs.project_memory_release_pct.clamp(1, 100),
@@ -350,7 +355,7 @@ impl AdmissionController {
     /// absorber's reservation) against the shed line, so the line moves
     /// BEFORE the memory does.
     pub(crate) fn admit_write_memory(&self, reserved_bytes: u64) -> Result<(), WriteRefusal> {
-        let line = self.inner.rss_shed_mb;
+        let line = self.rss_shed_mb();
         if line > 0 && crate::history::memory_pressure_mb(self.rss_mb(), reserved_bytes) > line {
             self.inner.shed_total.fetch_add(1, Ordering::Relaxed);
             self.inner.shed_rss.fetch_add(1, Ordering::Relaxed);
@@ -463,7 +468,13 @@ impl AdmissionController {
     }
 
     pub(crate) fn rss_shed_mb(&self) -> u64 {
-        self.inner.rss_shed_mb
+        self.inner.shed_line_mb.load(Ordering::Relaxed)
+    }
+
+    /// Rigs set a shed line (theirs is off); production never moves it.
+    #[cfg(test)]
+    pub(crate) fn set_rss_shed_mb(&self, mb: u64) {
+        self.inner.shed_line_mb.store(mb, Ordering::Relaxed);
     }
 
     pub(crate) fn project_memory_pressure_bytes(&self) -> u64 {

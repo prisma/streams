@@ -19,6 +19,30 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 const APPEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// The instance's RSS write gate: while sampled RSS plus the absorber's
+/// reserved bytes is over the shed line a write is refused, retryable after
+/// 2 s, after a 25 ms tarpit. The product entry asks it before an append's
+/// body is read (`product::read_memory::refusal`), and the append path asks
+/// it again before the append is submitted (`AppendService::check_memory`).
+pub(crate) async fn memory_gate(
+    admission: &crate::admission::AdmissionController,
+    history: &crate::history::HistoryResources,
+) -> Result<(), AppendFailure> {
+    if admission
+        .admit_write_memory(history.budget.reserved_bytes())
+        .is_err()
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        return Err(AppendFailure::new(
+            FailureClass::Capacity,
+            AppendCode::Overloaded,
+            "instance memory pressure; retry",
+        )
+        .retry(2));
+    }
+    Ok(())
+}
+
 pub(crate) struct AppendService {
     pub(crate) registry: Arc<Registry>,
     pub(crate) shards: crate::shard_directory::ShardDirectory,
@@ -127,20 +151,7 @@ impl AppendService {
         Ok(AuthorizedAppend { descriptor, key })
     }
     pub(crate) async fn check_memory(&self) -> Result<(), AppendFailure> {
-        if self
-            .admission
-            .admit_write_memory(self.history.budget.reserved_bytes())
-            .is_err()
-        {
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-            return Err(AppendFailure::new(
-                FailureClass::Capacity,
-                AppendCode::Overloaded,
-                "instance memory pressure; retry",
-            )
-            .retry(2));
-        }
-        Ok(())
+        memory_gate(&self.admission, &self.history).await
     }
     pub(crate) async fn execute(&self, command: AppendCommand) -> AppendResult {
         let prepared = self

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use bytes::Bytes;
 
-use super::{BodyRefusal, buffer_within};
+use super::{BodyRefusal, buffer_within, discard_within};
 use crate::project_policy::ProjectQuotas;
 use crate::quota::{BufferedBodyGuard, ProjectAdmission, QuotaRegistry};
 use crate::tenant::ProjectId;
@@ -77,4 +77,19 @@ async fn the_limit_bounds_a_body_and_no_line_is_no_line() {
     let (bytes, guard) = buffer_within(chunked(3), 8 * KIB, None, 1).await.unwrap();
     assert_eq!((bytes.len(), guard.is_none()), (3 * KIB, true));
     drop(other);
+}
+
+/// A refused request's body is read and dropped to its end inside both
+/// bounds, and given up past `limit` bytes, at a chunk that fails, or past
+/// `wait`: 16 KiB ends under a 16 KiB limit and not under 15 KiB, and a body
+/// that never ends is given up when the wait passes.
+#[tokio::test]
+async fn a_discarded_body_ends_inside_its_bounds_or_is_given_up() {
+    let wait = std::time::Duration::from_millis(200);
+    assert!(discard_within(chunked(16), 16 * 1024, wait).await);
+    assert!(!discard_within(chunked(16), 15 * 1024, wait).await);
+    let failing = futures_util::stream::iter([Err::<Bytes, _>(std::io::Error::other("reset"))]);
+    assert!(!discard_within(Body::from_stream(failing), 16 * 1024, wait).await);
+    let endless = futures_util::stream::pending::<Result<Bytes, std::io::Error>>();
+    assert!(!discard_within(Body::from_stream(endless), 16 * 1024, wait).await);
 }

@@ -1614,6 +1614,17 @@
     "scenarios": []
   },
   {
+    "name": "a_raw_append_over_the_shed_line_is_refused_by_the_append_paths_gate",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ab3d33d8c5a99b6fbf7e4c10dc185e0c2481749241318189ffd00b229ab76fe6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/append_application.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_raw_close_that_takes_over_an_abandoned_final_claim_seals_with_its_record",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -3095,6 +3106,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/product_lifecycle.rs",
+    "scenarios": []
+  },
+  {
+    "name": "an_append_over_the_shed_line_is_refused_before_its_body_is_read",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a7f4b1d7bdbda0ccee78e1cdf77928b4ffc7480fcb328bc29e8c893b95f6238e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_hostile.rs",
     "scenarios": []
   },
   {
@@ -6471,6 +6493,17 @@
     "scenarios": [
       "TOP-007"
     ]
+  },
+  {
+    "name": "pressure_releases_beside_live_keyed_reads_keep_every_record",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "1a2e81a13e62f78f894942cf9cdd0d8595d7ed5f21b83baa374ec478594be11d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/idle_release.rs",
+    "scenarios": []
   },
   {
     "name": "producer_lanes_scoped_per_routing_key",

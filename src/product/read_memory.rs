@@ -1,6 +1,9 @@
 //! The product surface's memory backstops after project admission (round
 //! 13 and shared cells H3): a WRITE is refused while its project's
-//! estimated pressure is over its line (`project_memory_gate`), and a PAGE
+//! estimated pressure is over its line (`project_memory_gate`), an APPEND
+//! while the instance is over its RSS shed line, its body read and dropped
+//! rather than buffered (`application::append::memory_gate`, in `body`), and
+//! a PAGE
 //! READ (a records read or long-poll, or a scan) and a CONSUMER PULL
 //! reserve the bytes they may hold before they run
 //! (`admission::read_memory`). Established SSE delivery and every other
@@ -74,6 +77,10 @@ pub(crate) async fn refusal(
     let bytes = page_bytes(method, path, query)?;
     reserve(state, project_of(principal), bytes).await
 }
+
+/// How long an append refused over the shed line has to finish sending the
+/// body the server reads and drops before answering.
+const SHED_DISCARD_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The page a records read without `maxBytes` renders and reserves on a
 /// shared cell (owner call Shared cells Q1 (B), the fallback Layer B's
@@ -157,6 +164,18 @@ fn project_of(principal: Option<&RequestPrincipal>) -> Option<&ProjectId> {
     principal.map(|p| &p.project_id)
 }
 
+/// Whether the request is a records append, single or batch: over the shed
+/// line it is refused before its body is read.
+fn appends(method: &Method, path: &str) -> bool {
+    let Ok(route) = classify_route(path) else {
+        return false;
+    };
+    matches!(
+        ProductOperation::resolve(&route, strip_verb(path).1, method),
+        Some(ProductOperation::Append | ProductOperation::AppendBatch)
+    )
+}
+
 /// Whether the request names an operation that writes the registry: a
 /// create (a recreate and a fork are creates), a delete or a seal.
 fn writes_registry(method: &Method, path: &str) -> bool {
@@ -224,6 +243,16 @@ pub(crate) async fn body(
 ) -> Result<(bytes::Bytes, Option<crate::quota::BufferedBodyGuard>), Box<Response>> {
     if method != Method::POST && method != Method::PUT {
         return Ok((bytes::Bytes::new(), None));
+    }
+    if appends(method, path)
+        && let Err(failure) =
+            crate::application::append::memory_gate(&state.admission, &state.runtime.history).await
+    {
+        let limit = u64::try_from(state.config.cli.max_request_body_bytes).unwrap_or(u64::MAX);
+        crate::admission::body::discard_within(incoming, limit, SHED_DISCARD_WAIT).await;
+        return Err(Box::new(super::append_error::render_product_append_error(
+            failure,
+        )));
     }
     let buffered = crate::admission::body::buffer_within(
         incoming,
