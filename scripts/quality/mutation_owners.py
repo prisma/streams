@@ -109,7 +109,8 @@ OWNERS = (
     owner('consumer_pull_wait', 'src/application/consumer/pull_wait.rs',
           'dst_tests::parked_waits:: dst_tests::consumer_ dst_tests::read_memory::a_woken_pull'
           ' dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull'),
-    owner('shard_directory', 'src/shard_directory.rs', 'shard_directory:: shard::task_lifecycle_tests::'),
+    owner('shard_directory', 'src/shard_directory.rs',
+          'shard_directory:: shard::task_lifecycle_tests:: sharddir::supersede::'),
     owner('history_partition', 'src/shard/history_partition.rs', 'shard::'),
     owner('history_page_read', 'src/history/page_read.rs',
           'history::page_read:: history::postings_validation_tests:: history::record_validation_tests:: '
@@ -349,7 +350,7 @@ OWNERS = (
           'dst_tests::reads_product:: dst_tests::quota_read_volume:: '
           'dst_tests::product_descriptor_reads:: dst_tests::security_modes::'),
     owner('product_answers', 'src/product/answers.rs',
-          'dst_tests::product_lifecycle:: dst_tests::consumer_product::'),
+          'product::answers:: dst_tests::product_lifecycle:: dst_tests::consumer_product::'),
     owner('billing', 'src/billing.rs', 'billing'),
     # The storage clock left src/billing.rs (no line headroom) for its own
     # module; the row keeps it under mutation selection with billing's filter.

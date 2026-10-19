@@ -69,6 +69,43 @@ mod tests {
         )
     }
 
+    /// Edge change #178's header is for a 503 `temporarily_unavailable`
+    /// alone: a 503 with any other code (`outcome_unknown` above all, which
+    /// the SDK must never resend) and a `temporarily_unavailable` under any
+    /// other status pass unchanged.
+    #[test]
+    fn only_a_503_temporarily_unavailable_gains_retry_after() {
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
+        let answer = |status: StatusCode| (status, "{}").into_response();
+        let retry = |r: &Response| {
+            r.headers()
+                .get("retry-after")
+                .map(|v| v.to_str().unwrap().to_string())
+        };
+        let cases = [
+            (
+                "temporarily_unavailable",
+                StatusCode::SERVICE_UNAVAILABLE,
+                Some("1"),
+            ),
+            ("outcome_unknown", StatusCode::SERVICE_UNAVAILABLE, None),
+            (
+                "temporarily_unavailable",
+                StatusCode::INTERNAL_SERVER_ERROR,
+                None,
+            ),
+            ("outcome_unknown", StatusCode::INTERNAL_SERVER_ERROR, None),
+        ];
+        for (code, status, want) in cases {
+            let got = super::retry_unavailable(code, answer(status));
+            assert_eq!(
+                (code, status.as_u16(), retry(&got).as_deref()),
+                (code, status.as_u16(), want)
+            );
+        }
+    }
+
     /// Edge change #178: every product read 503 `temporarily_unavailable`
     /// (a shard opening or failing to open here, a peer read that failed)
     /// carries `Retry-After: 1`, so the SDK's restart ride-through (#177)
