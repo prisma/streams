@@ -170,6 +170,12 @@ fn a_round_takes_read_batches_up_to_four_mebibytes() {
     let rb = batch(100);
     let size = super::super::encoded_size(&reads.envelopes(&rb)[0]);
     let (mut envelopes, mut body) = (Vec::new(), 0);
-    while reads.admit(&rb, &mut envelopes, &mut body, READ_ROUND_BYTES) {}
-    assert_eq!(envelopes.len(), (4 << 20) / size);
+    // One offer more than fit, at most: a round that never refuses fails
+    // the count below instead of admitting forever.
+    let fit = (4 << 20) / size;
+    let mut offers = 0;
+    while offers <= fit && reads.admit(&rb, &mut envelopes, &mut body, READ_ROUND_BYTES) {
+        offers += 1;
+    }
+    assert_eq!((offers, envelopes.len()), (fit, fit));
 }
