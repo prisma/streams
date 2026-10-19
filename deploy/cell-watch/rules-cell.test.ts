@@ -75,6 +75,90 @@ describe("row 4: restarts", () => {
     expect(row(w, 4).slice(4)).toEqual([["trigger", "NOTIFY"]]);
   });
 
+  // The field sequence of 2026-10-17 (FIELD-REPORT Round 4, finding 2): a
+  // deploy, then a restart 6 min later. The server's operator data names, in
+  // `boot`, the boot it replaced and whether that boot learned of it (it
+  // wrote its mark when it saw a newer boot registered): a planned
+  // replacement. A boot that went before its successor registered has no mark.
+  type Marked = boolean | null;
+  /// A poll served by boot `id`, which replaced `predecessor` (`marked`: that boot's mark).
+  const served = (id: string, predecessor: string | null, marked: Marked): Partial<Poll> => ({
+    health: { ...healthyPoll(0).health, bootId: id },
+    data: patch(DATA, { boot: { id, predecessor, predecessorSuperseded: predecessor === null ? null : marked } }),
+  });
+  /// The cell is replaced by `to`: its first poll before the old boot's mark, then marked.
+  const replace = (w: Watch, to: string, from: string) => {
+    w.poll(served(to, from, null));
+    w.polls(3, served(to, from, true));
+  };
+  const pages = (w: Watch) => row(w, 4).filter(([, cls]) => cls === "PAGE");
+
+  test("a deploy and a restart 6 min later, each a replacement that learned of its successor, notify twice and never page", () => {
+    const w = new Watch();
+    w.polls(8, served("boot-1", null, null));
+    replace(w, "boot-2", "boot-1");
+    w.polls(4 * 6, served("boot-2", "boot-1", true));
+    replace(w, "boot-3", "boot-2");
+    w.polls(4 * 30, served("boot-3", "boot-2", true));
+    expect(row(w, 4)).toEqual([["trigger", "NOTIFY"], ["resolve", "NOTIFY"], ["trigger", "NOTIFY"], ["resolve", "NOTIFY"]]);
+    expect(fired(w, 4).map((e) => e.values)).toEqual([{ boot_ids_30m: 2 }, { boot_ids_30m: 2 }]);
+  });
+
+  test("any number of replacements in 30 min stay below the page", () => {
+    const w = new Watch();
+    w.polls(2, served("boot-1", null, null));
+    let from = "boot-1";
+    for (const id of ["boot-2", "boot-3", "boot-4", "boot-5", "boot-6"]) {
+      replace(w, id, from);
+      from = id;
+    }
+    expect(pages(w)).toEqual([]);
+  });
+
+  test("boots that went without a successor's link still page at three boot ids in 30 min, whatever the data says", () => {
+    const sequences: [string, (id: string, from: string) => Partial<Poll>][] = [
+      ["no mark", (id, from) => served(id, from, false)],
+      ["undecided", (id, from) => served(id, from, null)],
+      ["no predecessor", (id) => served(id, null, null)],
+      ["an operator payload without a boot section", (id) => ({ health: { ...healthyPoll(0).health, bootId: id } })],
+      ["no operator payload", (id) => ({ health: { ...healthyPoll(0).health, bootId: id }, data: null, dataStatus: null })],
+    ];
+    for (const [label, next] of sequences) {
+      const w = new Watch();
+      w.polls(2, next("boot-1", ""));
+      w.polls(2, next("boot-2", "boot-1"));
+      expect([label, row(w, 4)]).toEqual([label, [["trigger", "NOTIFY"]]]);
+      w.polls(2, next("boot-3", "boot-2"));
+      expect([label, row(w, 4)]).toEqual([label, [["trigger", "NOTIFY"], ["trigger", "PAGE"]]]);
+      expect([label, fired(w, 4)[1]?.values]).toEqual([label, { boot_ids_30m: 3 }]);
+    }
+  });
+
+  test("a replacement does not hide the crash loop after it: the replaced boot is the only one left out", () => {
+    const w = new Watch();
+    w.polls(2, served("boot-1", null, null));
+    replace(w, "boot-2", "boot-1");
+    w.polls(2, served("boot-3", "boot-2", false));
+    expect(pages(w)).toEqual([]);
+    w.polls(2, served("boot-4", "boot-3", false));
+    expect(pages(w)).toEqual([["trigger", "PAGE"]]);
+    expect(fired(w, 4).at(-1)?.values).toEqual({ boot_ids_30m: 3 });
+  });
+
+  test("the replaced boot is told by the serving boot's own record: a boot never replaces itself, and a mark ages out with its id", () => {
+    const w = new Watch();
+    w.polls(2, served("boot-1", null, null));
+    w.polls(2, served("boot-2", "boot-2", true));
+    w.polls(2, served("boot-3", "boot-3", true));
+    expect(fired(w, 4).at(-1)?.class).toBe("PAGE");
+    const aged = new Watch();
+    aged.polls(2, served("boot-1", null, null));
+    replace(aged, "boot-2", "boot-1");
+    aged.polls(4 * 31, served("boot-2", "boot-1", true));
+    expect(aged.state.replaced).toEqual({});
+    expect(Object.keys(aged.state.bootIds)).toEqual(["boot-2"]);
+  });
+
   test("a boot id is read from a 200 only", () => {
     const w = new Watch();
     w.polls(2);

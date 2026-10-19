@@ -194,6 +194,11 @@ export interface WatchState {
   boot: { id: string; firstSeenAt: number } | null;
   /// Boot ids seen in the last 30 min, with when each was last seen.
   bootIds: Record<string, number>;
+  /// The boot ids among them that a newer boot reported, on the operator
+  /// surface, as its replaced predecessor which learned of it (a deploy or a
+  /// restart, planned), with when the watch learned it. They do not count
+  /// toward row 4's crash loop; a boot that went without that link does.
+  replaced: Record<string, number>;
   /// Counter baselines, cleared on the first poll and on a new boot id.
   baselines: Record<string, number>;
   open: Record<string, { class: Class; since: number }>;
@@ -209,7 +214,7 @@ export interface WatchState {
 
 export function initialState(): WatchState {
   const unsettled: Record<string, true> = Object.fromEntries(RULES.map((r) => [r.id, true]));
-  return { polls: 0, boot: null, bootIds: {}, baselines: {}, open: {}, clean: {}, unsettled, memo: {}, failedTriggers: 0 };
+  return { polls: 0, boot: null, bootIds: {}, replaced: {}, baselines: {}, open: {}, clean: {}, unsettled, memo: {}, failedTriggers: 0 };
 }
 
 // ---- the fixed enums -------------------------------------------------------
@@ -319,7 +324,7 @@ interface BootView {
   /// Counter baselines were reset on this poll (the first poll, or a change).
   restarted: boolean;
   firstSeenAt: number | null;
-  /// Distinct boot ids seen in the last 30 min.
+  /// Distinct boot ids seen in the last 30 min, the replaced ones left out.
   idsInWindow: number;
 }
 
@@ -823,6 +828,17 @@ export function event(
   return { kind, dedupKey: `${cfg.cellId}/${r.id}`, class: cls, rule: r.id, values: nums, labels: enums, at, runbookAnchor: r.anchor };
 }
 
+/// The boot a newer boot replaced, from `/operator/data.json`'s `boot`: the
+/// serving boot names its predecessor and says whether that boot learned of
+/// it (the predecessor's mark, written when it saw a newer boot registered).
+/// A predecessor that went before its successor registered (a crash) has no
+/// mark, so it is not returned; so is one the successor has not yet decided.
+function replacedBoot(data: Json): string | null {
+  const predecessor = get(data, "boot", "predecessor");
+  if (typeof predecessor !== "string" || predecessor === "") return null;
+  return bool(get(data, "boot", "predecessorSuperseded")) === true ? predecessor : null;
+}
+
 /// Notes the boot id a 200 carried; reports a change and the 30 min window.
 function noteBoot(state: WatchState, poll: Poll): BootView {
   const first = state.polls === 0;
@@ -836,13 +852,16 @@ function noteBoot(state: WatchState, poll: Poll): BootView {
     }
     state.bootIds[bootId] = poll.at;
   }
+  const replaced = replacedBoot(poll.data);
+  if (replaced !== null && replaced !== get(poll.data, "boot", "id")) state.replaced[replaced] ??= poll.at;
   for (const [id, seen] of Object.entries(state.bootIds)) if (seen < poll.at - 30 * MIN) delete state.bootIds[id];
+  for (const id of Object.keys(state.replaced)) if (state.bootIds[id] === undefined) delete state.replaced[id];
   if (first || changed) state.baselines = {};
   return {
     changed,
     restarted: first || changed,
     firstSeenAt: state.boot?.firstSeenAt ?? null,
-    idsInWindow: Object.keys(state.bootIds).length,
+    idsInWindow: Object.keys(state.bootIds).filter((id) => state.replaced[id] === undefined).length,
   };
 }
 

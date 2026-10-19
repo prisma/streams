@@ -66,6 +66,21 @@ describe("RUNBOOK.md's What to alert on", () => {
     for (const r of RULES) expect([r.row, cells(r.row)[1]]).toEqual([r.row, `\`${r.id}\`${r.level ? " (level)" : ""}`]);
   });
 
+  test("row 4 leaves out a boot id its successor reports as replaced, by the operator data's boot section", () => {
+    const when = cells(4)[4] ?? "";
+    for (const want of [
+      "3 boot ids or more in 30 min",
+      "`boot.predecessor`",
+      "`boot.predecessorSuperseded`",
+      "`_cell/superseded`",
+      "a deploy and a restart within 30 min notify twice and do not page",
+      "the predecessor went before its successor registered (a crash, an OOM kill, a self-exit), and it counts",
+    ]) {
+      expect([want, when.includes(want)]).toEqual([want, true]);
+    }
+    expect((cells(4)[3] ?? "").includes("`/operator/data.json` `boot`")).toBe(true);
+  });
+
   test("says NOTIFY_ONLY=1 holds back the level rules' PAGE only, as rules.ts does (B6)", () => {
     const text = paragraph("**What to alert on.**");
     expect(text).toContain(
