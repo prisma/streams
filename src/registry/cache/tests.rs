@@ -9,7 +9,7 @@ use futures_util::future::BoxFuture;
 use object_store::path::Path as ObjPath;
 use object_store::{ObjectStore, ObjectStoreExt};
 
-use super::{DescriptorCache, Fetched, REGISTRY_CACHE_MAX_BYTES, within};
+use super::{DescriptorCache, Fetched, REGISTRY_CACHE_MAX_BYTES, SWEEP_FLOOR, within};
 use crate::registry::tests::{desc, ts};
 use crate::registry::{
     CachedDesc, Mutation, MutationResult, PersistedDescriptor, Registry, SealIntent, SealState,
@@ -455,6 +455,71 @@ async fn the_cap_evicts_stale_slots_first_then_the_least_recently_touched() {
         "the recently touched slot survived"
     );
     assert!(held(&cache, &ts("newer")).await);
+}
+
+/// Far below the cap, slots untouched for a TTL do not pile up: once the
+/// cache holds `SWEEP_FLOOR` slots and twice what its last sweep left, a
+/// new key sweeps every stale slot, and the map gives back the table the
+/// slots it keeps do not need. Layer B's hostile phase (reads of names
+/// that never existed, a create flood) filled the cache to its 65,536
+/// slots of 5 s entries that only the cap purged, and the purge kept the
+/// table.
+#[test]
+fn stale_slots_are_swept_long_before_the_cap() {
+    let cache = DescriptorCache::new(Duration::from_secs(5));
+    let names: Vec<String> = (0..4 * SWEEP_FLOOR).map(|i| format!("old-{i}")).collect();
+    for name in &names {
+        cache.insert(ts(name), filled(name));
+    }
+    assert_eq!(cache.len(), 4 * SWEEP_FLOOR, "young slots are all kept");
+    for name in &names {
+        cache.expire_for_tests(&ts(name));
+    }
+    cache.insert(ts("new"), filled("new"));
+    let slots = cache.slots();
+    assert_eq!(
+        (slots.by_ref.len(), slots.bytes),
+        (1, super::slot_bytes(Some(&filled("new")))),
+        "every stale slot swept, the new one held"
+    );
+    assert!(
+        slots.by_ref.capacity() <= 2 * SWEEP_FLOOR,
+        "the table shrank to its floor: capacity {}",
+        slots.by_ref.capacity()
+    );
+}
+
+/// A sweep sets the next one at twice the slots it kept (at least
+/// `SWEEP_FLOOR`), so puts sweep once per doubling, not once per put.
+#[test]
+fn a_sweep_waits_for_the_cache_to_double_before_the_next() {
+    let cache = DescriptorCache::new(Duration::from_secs(5));
+    for i in 0..=SWEEP_FLOOR {
+        cache.insert(ts(&format!("young-{i}")), filled("young"));
+    }
+    let slots = cache.slots();
+    assert_eq!(
+        (slots.by_ref.len(), slots.sweep_at),
+        (SWEEP_FLOOR + 1, 2 * SWEEP_FLOOR)
+    );
+}
+
+/// At the cap a stale slot goes before a young one that was touched
+/// earlier: the least recently touched falls out only when no slot is
+/// stale.
+#[test]
+fn at_the_cap_a_stale_slot_goes_before_an_older_young_one() {
+    let cache = DescriptorCache::bounded(Duration::from_secs(5), 2, REGISTRY_CACHE_MAX_BYTES);
+    cache.insert(ts("first"), filled("first"));
+    cache.insert(ts("stale"), filled("stale"));
+    cache.expire_for_tests(&ts("stale"));
+    cache.insert(ts("new"), filled("new"));
+    let slots = cache.slots();
+    let held = |name: &str| slots.by_ref.contains_key(&ts(name));
+    assert_eq!(
+        (held("first"), held("stale"), held("new")),
+        (true, false, true)
+    );
 }
 
 /// A fill charged exactly `bytes` (a multiple of 8) against the byte cap:

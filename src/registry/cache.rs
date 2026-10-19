@@ -46,6 +46,12 @@ pub(crate) const REGISTRY_CACHE_MAX: usize = 65_536;
 /// ordinary descriptors the count cap binds first.
 const REGISTRY_CACHE_MAX_BYTES: usize = 64 << 20;
 
+/// Below the caps, stale slots are swept once the cache holds this many
+/// slots and twice what its last sweep left, so it holds about twice the
+/// slots touched within a TTL (an ordinary cell's few thousand) instead of
+/// filling to the count cap with expired ones.
+const SWEEP_FLOOR: usize = 4_096;
+
 /// What every slot is charged before its descriptor's variable parts: the
 /// slot itself, inline (an emptied, claimed or absent slot is as large as
 /// a filled one), and its key. A descriptor's fixed strings (its name,
@@ -70,6 +76,9 @@ struct Slots {
     byte_cap: usize,
     /// The sum of every held slot's `bytes`.
     bytes: usize,
+    /// The slot count at which a put sweeps the stale slots first:
+    /// `SWEEP_FLOOR`, or twice what the last sweep left.
+    sweep_at: usize,
     /// The generation handed out last. Every fill, every invalidation and
     /// every read's claim takes the next one, so no two slot states (of
     /// any stream, at any time) share a generation.
@@ -82,10 +91,13 @@ struct Slots {
 struct Slot {
     generation: u64,
     /// When the slot was last filled, emptied, claimed or captured by a
-    /// read going to the store. The cap purges only slots untouched for
-    /// a TTL (a filled one is expired by then, an empty one is a stale
-    /// invalidation or an abandoned claim), so a read in flight always
-    /// finds the slot it left, or the write that moved it.
+    /// read going to the store. The cap purge and the sweep take only slots
+    /// untouched for a TTL (a filled one is expired by then, an empty one is
+    /// a stale invalidation or an abandoned claim). A read in flight longer
+    /// than a TTL can lose its slot to them; it then publishes nothing,
+    /// because a read publishes only against the generation it read
+    /// (`settle`), and generations are never reused: a lost publish, never a
+    /// stale fill.
     touched: Instant,
     /// What the slot is charged against the byte cap: `slot_bytes` of its
     /// entry, estimated when the slot was filled, emptied or claimed.
@@ -226,10 +238,13 @@ impl Slots {
     /// every slot for each; a slot touched at the same instant as the last
     /// one that had to go goes with it.
     fn make_room(&mut self, bytes: usize) {
+        let (ttl, now) = (self.ttl, Instant::now());
+        if self.by_ref.len() >= self.sweep_at {
+            self.sweep(now);
+        }
         if !self.over(bytes) {
             return;
         }
-        let (ttl, now) = (self.ttl, Instant::now());
         self.evict(|slot| !within(slot.touched, now, ttl));
         let mut ages: Vec<(Instant, usize)> = self
             .by_ref
@@ -247,6 +262,16 @@ impl Slots {
         if let Some(cutoff) = cutoff {
             self.evict(|slot| slot.touched <= cutoff);
         }
+    }
+
+    /// Every slot untouched for a TTL at `now` purges, and the table keeps
+    /// room for the next sweep's count only: a sweep runs once the slots
+    /// have doubled since the last one, so its cost is constant per put.
+    fn sweep(&mut self, now: Instant) {
+        let ttl = self.ttl;
+        self.evict(|slot| !within(slot.touched, now, ttl));
+        self.sweep_at = SWEEP_FLOOR.max(2 * self.by_ref.len());
+        self.by_ref.shrink_to(self.sweep_at);
     }
 
     /// Removes every slot `goes` names, giving back its bytes.
@@ -276,6 +301,7 @@ impl DescriptorCache {
                 cap,
                 byte_cap,
                 bytes: 0,
+                sweep_at: SWEEP_FLOOR,
                 last_generation: 0,
             }),
         }
