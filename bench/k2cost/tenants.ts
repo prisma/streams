@@ -43,6 +43,7 @@ import { churn } from "./churn.ts";
 import { group, subs, tail, walk } from "./consume.ts";
 import { HOSTILE_LEGS, HOSTILE_MODES } from "./hostile.ts";
 import { produce, setup, type Ctx } from "./produce.ts";
+import { resolve } from "./resolve.ts";
 import {
   type LegSpec, type PhaseSpec, type Plan, type Project, expand, phaseEnd, phaseFlags, phaseStart,
   readManifest,
@@ -550,7 +551,8 @@ export function heldNames(out: string, p: Project, prefix: string): Set<string> 
 
 /** Every project's produced streams read back against its produce
  * ledgers (audit.ts), one audit per stream prefix, reading the names its
- * setup created. */
+ * setup created; and its outcome-unknown appends resolved by read-back
+ * (resolve.ts), as `resolution`. */
 export async function auditAll(plan: Plan, base: string, tokenMap: string, out: string, o: Opts): Promise<Record<string, unknown>> {
   const tokens = new TokenMap(tokenMap);
   const projects: Record<string, unknown> = {};
@@ -572,6 +574,7 @@ export async function auditAll(plan: Plan, base: string, tokenMap: string, out: 
       byPrefix.set(f.get("prefix")!, e);
     });
     const checks: Record<string, unknown> = {};
+    const read = new Map<string, number>();
     for (const [prefix, e] of byPrefix) {
       const meter = new Meter();
       const ctx: Ctx = {
@@ -581,13 +584,24 @@ export async function auditAll(plan: Plan, base: string, tokenMap: string, out: 
       };
       try {
         const v = (await audit(ctx, stop.signal, heldNames(out, p, prefix))).verify as Record<string, unknown>;
-        const { per_stream: _ps, ...rest } = v;
+        const { per_stream: ps, ...rest } = v;
+        for (const c of (ps ?? []) as Array<{ name: string; pages: number; read_records: number }>) if (c.pages > 0) read.set(c.name, c.read_records);
         checks[prefix] = { ...rest, oracle: Object.fromEntries(["ok", "foreign", "bad_mac", "unmarked"].map((k) => [k, meter.tot.get(`oracle_${k}`)])) };
       } catch (err) {
         checks[prefix] = { ok: false, error: (err as Error).message };
       }
     }
-    if (byPrefix.size) projects[p.id] = { class: p.cls.class, prefixes: checks };
+    // Appends answered with an unknown outcome, settled by read-back
+    // (resolve.ts) for the billing bar.
+    const ledgers = p.cls.phases.flatMap((_, j) => {
+      try {
+        return [JSON.parse(readFileSync(join(out, "projects", p.id, `phase-${j}.ledger.json`), "utf8")) as Record<string, unknown>];
+      } catch {
+        return [];
+      }
+    });
+    const resolution = await resolve(new Http(base, new ProjectHeaders(tokens, p.id, p.recordKey), new Meter()), ledgers, read);
+    if (byPrefix.size || resolution) projects[p.id] = { class: p.cls.class, prefixes: checks, ...(resolution ? { resolution } : {}) };
   }, stop.signal);
   const doc = { t_ms: Date.now(), manifest: plan.manifest.name, projects };
   writeFileSync(join(out, "audit.json"), JSON.stringify(doc, null, 1) + "\n");

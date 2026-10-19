@@ -3,7 +3,8 @@
 // --concurrency, so a reader and its load run in one process.
 
 import {
-  Http, Meter, Opts, Rng, Zipf, backoffMs, encName, parseJson, pool, sdkBackoffMs, sdkRetryable, sleep, stop, streamName, utf8,
+  Http, Meter, Opts, Rng, Zipf, backoffMs, encName, noteOutcome, parseJson, pool, sdkBackoffMs, sdkRetryable, sleep, stop, streamName,
+  utf8,
 } from "./common.ts";
 import { PayloadGen, payloadKind, type PayloadKind } from "./corpus.ts";
 import type { Owner } from "./oracle.ts";
@@ -236,13 +237,17 @@ export class Producer {
       // shard's first touch answers 503 temporarily_unavailable), after
       // retry-after. Each attempt is a real request and stays in the
       // status counts; latency runs from the first attempt's schedule.
+      // An attempt answered with an unknown outcome is counted for the
+      // read-back (resolve.ts).
       for (let a = 0; a < SDK_RETRIES && sdkRetryable(r) && !stop.signal.aborted; a++) {
+        noteOutcome(meter, target, spec.records, r);
         meter.add("retries");
         await sleep(sdkBackoffMs(r), stop.signal);
         r = await http.call("POST", url, { body, contentType: ct, timeoutMs: spec.timeoutMs, extra });
       }
       meter.flight(-1);
       if (r.status !== 200) {
+        noteOutcome(meter, target, spec.records, r);
         meter.add("failed_requests");
         if (r.status === 0) this.ambiguous++;
         return { ok: false, ms: r.ms };

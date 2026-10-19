@@ -272,6 +272,36 @@ class LayerB(unittest.TestCase):
                 self.w.__dict__.update(copy.deepcopy(pristine))
                 self.mutated(edit, *want)
 
+    def test_billing_counts_the_outcome_unknown_appends_the_read_back_found_committed(self):
+        # proj_0500 acked 100 records; 3 appends of one record each were
+        # answered 408 (outcome unknown), and the server wrote 2 of them:
+        # the meter says 102. The audit's read-back found the 2.
+        def resolved(w, committed=2, unknown=3, unresolved=()):
+            w.ledgers["proj_0500"]["totals"]["outcome_unknown_records"] = 3
+            w.usage["proj_0500"]["meters"]["ingestRecords"] = 102
+            w.audit["proj_0500"]["resolution"] = {"unknown_records": unknown, "committed_records": committed, "unresolved": list(unresolved)}
+        resolved(self.w)
+        m = self.w.judge()
+        self.assertEqual(self.failing(m), [])
+        self.assertEqual(m["bars"]["billing: usage = ledger for every project"]["value"]["resolved"],
+                         {"projects": 1, "unknown_records": 3, "committed_records": 2})
+        pristine = copy.deepcopy(self.w.__dict__)
+        cases = {
+            # Still one record over after the read-back: the meter billed a record nobody wrote.
+            "a meter over the resolved ledger": lambda w: resolved(w, committed=1),
+            # A stream the read-back could not read is reported, never forgiven.
+            "an unresolved stream": lambda w: resolved(w, unresolved=[{"stream": "c/000003", "reason": "404: the stream is gone"}]),
+            # The resolution must cover every outcome-unknown record the ledger counts.
+            "a resolution short of the ledger's unknowns": lambda w: resolved(w, unknown=2),
+            "outcome-unknown appends and no resolution": lambda w: (resolved(w), w.audit["proj_0500"].pop("resolution")),
+        }
+        for name, edit in cases.items():
+            with self.subTest(name):
+                self.w.__dict__.update(copy.deepcopy(pristine))
+                m = self.mutated(edit, "billing")
+                ex = m["bars"]["billing: usage = ledger for every project"]["value"]["examples"]
+                self.assertEqual([e["project"] for e in ex], ["proj_0500"])
+
     def test_quiet_names_apart_from_never_held_ones_fail_h11t_and_are_not_known_red(self):
         # The owner's round-3 call 9 (a): quiet versus never is a bar like
         # any other, no longer red by construction.

@@ -28,7 +28,10 @@
 //   record into a project's stream without metering it (a leak).
 // - `delayMs` answers every authenticated request that much later (a slow
 //   rig); `maxStreams` refuses a project's create past that many streams
-//   (429 `stream_limit`, retry-after 0).
+//   (429 `stream_limit`, retry-after 0); `commitThenAnswer(project, n,
+//   status, code)` stores and meters the project's next n appends and then
+//   answers them with that status (an append whose outcome the client
+//   cannot know: the server wrote it).
 
 export interface Meters {
   ingestRecords: number;
@@ -103,6 +106,8 @@ export class FakeCell {
   delayMs = 0;
   /** A project's stream limit: a create past it is refused. */
   maxStreams = new Map<string, number>();
+  /** Appends stored and metered, then answered with an error. */
+  committedRefusals = new Map<string, Refusal>();
   private waiters = new Set<() => void>();
   /** When each (project, name) slot was last filled (performance.now()). */
   private slots = new Map<string, number>();
@@ -134,6 +139,9 @@ export class FakeCell {
   }
   refuse(project: string, n: number, status: number, code: string | null): void {
     this.refusals.set(project, { left: n, status, code });
+  }
+  commitThenAnswer(project: string, n: number, status: number, code: string | null): void {
+    this.committedRefusals.set(project, { left: n, status, code });
   }
   plant(project: string, stream: string, record: string): void {
     this.ns(project).get(stream)!.push(record);
@@ -282,6 +290,11 @@ export class FakeCell {
         meter.ingestPayloadBytes += r.length;
       }
       this.wake();
+      const after = this.committedRefusals.get(project);
+      if (after && after.left > 0) {
+        after.left--;
+        return after.code ? error(after.status, after.code) : new Response("upstream gone", { status: after.status });
+      }
       return json(200, { count: batch.length });
     }
     if (op.startsWith("/consumers/")) return this.consumer(project, name, op, recs, req);

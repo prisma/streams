@@ -7,7 +7,7 @@
 // fresh prefix). Lifecycles start open loop at --rate per second, or
 // closed loop over --concurrency workers (default 4).
 
-import { backoffMs, encName, parseJson, pool, productHeader, sleep, stop, type Resp } from "./common.ts";
+import { backoffMs, encName, noteOutcome, parseJson, pool, productHeader, sleep, stop, type Resp } from "./common.ts";
 import type { Ctx } from "./produce.ts";
 import { PayloadGen, payloadKind } from "./corpus.ts";
 import { countOracle } from "./oracle.ts";
@@ -76,7 +76,14 @@ export async function churn(ctx: Ctx, signal: AbortSignal): Promise<Record<strin
         path = "/records:batch";
       }
       const ts = performance.now();
-      r = await retrying(() => http.call("POST", base + path, { body, contentType: isBytes ? "application/octet-stream" : "application/json" }));
+      // Every attempt answered with an unknown outcome (a transport failure
+      // is sent again) is counted for the read-back (resolve.ts); a failed
+      // lifecycle leaves its stream, so the audit can read it.
+      r = await retrying(async () => {
+        const a = await http.call("POST", base + path, { body, contentType: isBytes ? "application/octet-stream" : "application/json" });
+        noteOutcome(meter, n, k, a);
+        return a;
+      });
       if (r.status !== 200) return fail("append", r);
       meter.appendMs(performance.now() - ts);
       const count = parseJson<{ count?: number }>(r, meter, "append")?.count ?? k;

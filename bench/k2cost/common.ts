@@ -341,6 +341,9 @@ export interface StreamTally {
   acked_bytes: number;
   delivered_records: number;
   delivered_bytes: number;
+  /** Records of appends answered with an unknown outcome
+   * (appendOutcomeUnknown): the server may have written them. */
+  unknown_records?: number;
 }
 
 export class Meter {
@@ -679,6 +682,36 @@ export function sdkRetryable(r: Resp): boolean {
   } catch {
     return true;
   }
+}
+
+/** The SDK's rule for a plain append whose outcome is unknown
+ * (`AppendOutcomeUnknownError`, docs/refactor/WIRE-MATRIX.md): a transport
+ * failure after the request was sent, a 408, a 5xx other than 503, or a
+ * 503 whose body does not say `"retryable": true` with a code other than
+ * `outcome_unknown`. The server may have written such an append; any other
+ * answer says whether it did. */
+export function appendOutcomeUnknown(r: Resp): boolean {
+  if (r.status === 0) return !(r.error ?? "").startsWith("unsent");
+  if (r.status === 408) return true;
+  if (r.status !== 503) return r.status >= 500;
+  try {
+    const e = (JSON.parse(utf8(r.body)) as { error?: { retryable?: boolean; code?: string } }).error;
+    return !(e?.retryable === true && e.code !== "outcome_unknown");
+  } catch {
+    return true;
+  }
+}
+
+/** Counts an append answered with an unknown outcome: `records` records
+ * to `target` that the server may have written (resolved by read-back,
+ * resolve.ts). Returns whether it was one. */
+export function noteOutcome(meter: Meter, target: string, records: number, r: Resp): boolean {
+  if (!appendOutcomeUnknown(r)) return false;
+  meter.add("outcome_unknown_requests");
+  meter.add("outcome_unknown_records", records);
+  const t = meter.tally(target);
+  t.unknown_records = (t.unknown_records ?? 0) + records;
+  return true;
 }
 
 /** The SDK's backoff: retry-after seconds clamped to 0..5 (default 1). */

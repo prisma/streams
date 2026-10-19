@@ -426,18 +426,46 @@ def leg_victim(r: Run, bars: dict) -> bool:
 
 
 def leg_billing(r: Run, bars: dict) -> bool:
+    """Every project's meters against its ledger. An append answered with
+    an unknown outcome (408, a transport failure, a 5xx: the SDK's
+    AppendOutcomeUnknownError) may have been written and billed; the
+    ledger counts only acked records. The tenants audit resolves them by
+    read-back (audit.json `resolution`: the records the streams hold past
+    the acked ones, each bounded by the unknown records sent there), and
+    the ingest expectation is the acked records plus those. A resolution
+    that is missing, short of the ledger's unknowns or names an unresolved
+    stream leaves the project differing."""
     bad = []
+    res_projects = res_unknown = res_committed = 0
     for p, lg in r.ledgers.items():
         u = r.usage.get(p) or {}
         m = u.get("meters") or {}
         t = lg.get("totals") or {}
-        want = (int(t.get("acked_records") or 0), int(t.get("delivered_payload_bytes") or 0), int(t.get("delivered_records") or 0))
+        acked = int(t.get("acked_records") or 0)
+        unknown = int(t.get("outcome_unknown_records") or 0)
+        res = (r.audit.get(p) or {}).get("resolution") if unknown else None
+        unresolved = None
+        if unknown:
+            if res is None:
+                unresolved = ["no read-back resolution in audit.json"]
+            elif int(res.get("unknown_records") or 0) != unknown or res.get("unresolved"):
+                unresolved = list(res.get("unresolved") or []) or [
+                    f"resolution covers {res.get('unknown_records')} of {unknown} outcome-unknown records"]
+            else:
+                acked += int(res.get("committed_records") or 0)
+                res_projects += 1
+                res_unknown += unknown
+                res_committed += int(res.get("committed_records") or 0)
+        want = (acked, int(t.get("delivered_payload_bytes") or 0), int(t.get("delivered_records") or 0))
         got = (m.get("ingestRecords"), m.get("readPayloadBytes"), m.get("readRecords"))
-        if not u.get("settled") or tuple(int(x) if x is not None else None for x in got) != want:
-            bad.append({"project": p, "settled": u.get("settled"), "ledger": want, "meters": got})
+        if not u.get("settled") or unresolved or tuple(int(x) if x is not None else None for x in got) != want:
+            bad.append({"project": p, "settled": u.get("settled"), "ledger": want, "meters": got,
+                        **({"outcome_unknown_records": unknown, "resolution": res, "unresolved": unresolved} if unknown else {})})
     projects = int(r.run.get("projects") or 0)
-    return bar(bars, "billing: usage = ledger for every project", {"projects": len(r.ledgers), "differ": len(bad), "examples": bad[:5]},
-               "all", projects > 0 and len(r.ledgers) == projects and not bad)
+    return bar(bars, "billing: usage = ledger for every project", {
+        "projects": len(r.ledgers), "differ": len(bad), "examples": bad[:5],
+        "resolved": {"projects": res_projects, "unknown_records": res_unknown, "committed_records": res_committed}},
+        "all", projects > 0 and len(r.ledgers) == projects and not bad)
 
 
 def leg_memory(r: Run, bars: dict) -> tuple:

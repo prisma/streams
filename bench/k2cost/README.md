@@ -18,6 +18,7 @@ ratchet here is 1,000 lines per file; the s3lite census it reads (C2) is
 | `points/*.env` | one tiny smoke point and one full-scale point per design run (L0, L1, L2, L3, L5, L6, L7) |
 | `oracle.ts` | the shared-cell leak oracle: a `--payload oracle` record names its project and carries a MAC under that project's harness key, which the server never sees. Every read path (pages, long-polls, SSE, pulls, churn's read-back, the audit) counts each record it is delivered as `oracle_ok`, `oracle_foreign` (another project's record: a leak), `oracle_bad_mac` (corruption) or `oracle_unmarked`. Only a generator that names an owner writes it (`tenants.ts`) |
 | `tenants.ts` (+ `tenant-plan.ts`, `tenants/*.json`) | the shared-cell harness's multi-project driver: a tenants manifest of classes, counts, quotas and phases, every project on k2gen's own modes under its own token (below) |
+| `resolve.ts` | the read-back `tenants.ts audit` runs for appends answered with an unknown outcome (`common.ts` `appendOutcomeUnknown`; `produce` and `churn` count them per stream as `unknown_records`): each stream they went to is counted from the beginning (or by the audit's own read), and the records past the acked ones, between 0 and the unknown ones, are written; a stream that is gone, a bytes stream or a count out of bounds is reported unresolved (`audit.json` `resolution`) |
 | `hostile.ts` | the hostile legs `tenants.ts` runs: phase modes `h9`, `h9b`, `cost` and run-level legs `h11t`, `h11t-fresh`, `probes` (below) |
 | `shared_verdict.py` (+ `test_shared_verdict.py`) | the Q5 arms' bars and the arm manifest the single-cell RC gate reads (below) |
 | `run-shared.sh` (+ `../docker/Dockerfile.rig`, `test_run_shared.py`) | the Layer B rig: one shared cell from a release directory in a linux/amd64 container at 1 vCPU / 1 GiB, s3lite at 20 ms, a tenants manifest, the verdict (below) |
@@ -575,7 +576,7 @@ appends and reads, for each victim class, its bars named by the class;
 flagged `harness_bound` when the driver's own event-loop
 lag p99 in the noisy period is at least a quarter of the victim's p99, as
 the victim is timed in the process that drives every project), `billing` (every project's meters settled at its
-ledger), `memory` (peak < 500 MB, slope < 2 MB/min over the load's last
+ledger; an append answered with an unknown outcome (a 408, a transport failure, a 5xx: the SDK's `AppendOutcomeUnknownError`) may have been written and billed, so the ingest expectation is the acked records plus the ones the audit's read-back found written (`resolve.ts`); a project whose resolution is missing, short of its ledger's `outcome_unknown_records` or names an unresolved stream still differs), `memory` (peak < 500 MB, slope < 2 MB/min over the load's last
 30 min), `Q0` (back within the idle baseline + 20 MB 10 min after the
 load), `load` (the run's manifest is the server commit's
 `tenants/layer-b.json` byte for byte, at time scale 1: an edited manifest

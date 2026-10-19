@@ -394,3 +394,48 @@ test("the audit reads the streams its project's setup created: a name the stream
   const b = await audited();
   expect([b.ok, b.unexpected_records]).toEqual([false, 1]);
 }, 30_000);
+
+test("an append answered 408 that the server wrote is resolved by read-back: the audit counts the records the streams hold past the acked ones", async () => {
+  const m: Manifest = {
+    name: "unknown", seed: 13, duration: 2.5, classes: [
+      { class: "s1", count: 1, role: "compliant", streams: 2, phases: [
+        { mode: "setup", at: 0 },
+        { mode: "produce", at: 0.3, secs: 1.5, args: { rate: 40, records: 4, "record-bytes": 256 } },
+      ] },
+      { class: "h5k", count: 1, role: "hostile", phases: [
+        { mode: "churn", at: 0.3, secs: 1.5, args: { count: 3, "size-kib": 1, "record-bytes": 256, records: 2, concurrency: 1 } },
+      ] },
+    ],
+  };
+  const plan = expand(m, "sha");
+  const [s1, h5k] = plan.projects;
+  const mapFile = join(dir, "tokens-unknown.json");
+  writeFileSync(mapFile, JSON.stringify(plan.projects.map((p) => ({ project: p.id, token: `tok-${p.id}` }))));
+  for (const p of plan.projects) cell.tokens.set(`tok-${p.id}`, p.id);
+  // The server writes and meters 3 of s1's appends (4 records each) and the
+  // churner's first, and answers each 408 append_failed.
+  setTimeout(() => cell.commitThenAnswer(s1!.id, 3, 408, "append_failed"), 700);
+  cell.commitThenAnswer(h5k!.id, 1, 408, "append_failed");
+  const out = join(dir, "run-unknown");
+  expect((await run(plan, cell.base, mapFile, out, 1)).phases_failed).toEqual([]);
+  const u = (await usage(plan, cell.base, mapFile, out, new Opts(new Map([["poll-secs", "0.05"], ["max-wait-secs", "3"]])))).projects as Record<string, any>;
+  const lg = (p: string) => json(join(out, "projects", p, "ledger.json")).totals;
+  for (const [p, unknown] of [[s1!.id, 12], [h5k!.id, 2]] as const) {
+    expect([p, lg(p).outcome_unknown_records, lg(p).outcome_unknown_requests, u[p].meters.ingestRecords - lg(p).acked_records])
+      .toEqual([p, unknown, unknown / (p === s1!.id ? 4 : 2), unknown]);
+  }
+  const resolution = async () => ((await auditAll(plan, cell.base, mapFile, out, new Opts(new Map()))).projects as Record<string, any>);
+  const a = await resolution();
+  expect(a[s1!.id].prefixes["t/"].ok).toBe(true);
+  expect([a[s1!.id].resolution, a[h5k!.id].resolution]).toEqual([
+    { streams: a[s1!.id].resolution.streams, unknown_records: 12, committed_records: 12, unresolved: [] },
+    { streams: 1, unknown_records: 2, committed_records: 2, unresolved: [] },
+  ]);
+  // A stream the read-back cannot read (the churner's, deleted) is reported, not forgiven.
+  const [left] = [...cell.ns(h5k!.id).keys()];
+  cell.ns(h5k!.id).delete(left!);
+  const b = await resolution();
+  expect(b[h5k!.id].resolution).toEqual({
+    streams: 1, unknown_records: 2, committed_records: 0, unresolved: [{ stream: left, reason: "404 stream_not_found: the stream is gone (deleted or expired)" }],
+  });
+}, 30_000);
