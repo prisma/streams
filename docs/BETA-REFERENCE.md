@@ -160,6 +160,7 @@ Notes:
 | One record, as stored | 131,072 bytes | `413 body_too_large`, not retryable |
 | Records in one `records:batch` | 10,000 | `400 batch_too_large` |
 | A body larger than the stream's own rate bucket | depends on the stream | `413 payload_too_large`, not retryable, with `details` `{dimension, capacity, requested}` |
+| A records read or long-poll without `maxBytes` | a page of at most 1 MiB on a beta cell (8 MiB on a dedicated one; `maxBytes` up to 8 MiB stands) | the next page's cursor, as for any page |
 
 On a bytes stream the whole body is one record, so a bytes append is at
 most 131,072 bytes. A JSON record is measured as stored: the client's

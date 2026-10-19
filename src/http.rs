@@ -1762,7 +1762,7 @@ pub(crate) async fn product_entry_axum_inner(
     headers: HeaderMap,
     req: axum::extract::Request,
 ) -> Response {
-    let query = req.uri().query().unwrap_or("").to_string();
+    let query = crate::product::read_memory::paged_query(&state, &method, &name, req.uri());
     // Authorize BEFORE buffering. Reading up to MAX_BODY_BYTES first
     // let an unauthenticated caller make the server allocate 32 MiB per
     // request; the gate needs only the path, method, query and headers.

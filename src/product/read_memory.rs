@@ -33,7 +33,7 @@
 //! 5.3 MiB), as a page read does. Its
 //! answer is names only, so the reservation is released once it answers.
 
-use axum::http::{HeaderValue, Method, StatusCode};
+use axum::http::{HeaderValue, Method, StatusCode, Uri};
 use axum::response::Response;
 
 use super::{
@@ -73,6 +73,34 @@ pub(crate) async fn refusal(
     }
     let bytes = page_bytes(method, path, query)?;
     reserve(state, project_of(principal), bytes).await
+}
+
+/// The page a records read without `maxBytes` renders and reserves on a
+/// shared cell (owner call Shared cells Q1 (B), the fallback Layer B's
+/// `read_memory_busy` triggered): eight of them fit where one 8 MiB
+/// default did.
+const SHARED_CELL_PAGE_BYTES: usize = 1 << 20;
+
+/// The query a product request is served with. On a shared cell
+/// (`PROJECT_SHARE_K` > 1) a records read or long-poll that names no
+/// `maxBytes` is served as if it named the shared cell's default page,
+/// 1 MiB, so its reservation (`page_bytes`) and its page (`product_read`)
+/// both take it; every other request, and every request on a dedicated
+/// cell, keeps its query as sent.
+pub(crate) fn paged_query(state: &AppState, method: &Method, path: &str, uri: &Uri) -> String {
+    let query = uri.query().unwrap_or("");
+    let default_paged = state.config.cli.project_share_k > 1
+        && method == Method::GET
+        && matches!(
+            (classify_route(path), strip_verb(path).1),
+            (Ok(ProductRoute::Records { .. }), None | Some("long-poll"))
+        )
+        && !parse_query(query).contains_key("maxBytes");
+    match (default_paged, query.is_empty()) {
+        (false, _) => query.to_string(),
+        (true, true) => format!("maxBytes={SHARED_CELL_PAGE_BYTES}"),
+        (true, false) => format!("{query}&maxBytes={SHARED_CELL_PAGE_BYTES}"),
+    }
 }
 
 impl AppState {

@@ -2297,6 +2297,17 @@
     "scenarios": []
   },
   {
+    "name": "a_shared_cells_default_page_reserves_one_mib_and_renders_at_most_that",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7c9208b178a961f613ef984b249326473e4d421cb80762aecf65107f733bb9ba",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_memory_wakes.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_signed_month_is_refused_on_both_usage_routes",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

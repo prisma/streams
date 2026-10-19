@@ -629,3 +629,45 @@ async fn woken_fork_long_polls_beside_no_held_page_all_answer_their_record() {
     assert_eq!(settle_at(&cell, 0, (0, 0)).await, (0, 0));
     engine_shutdown(&cell.state).await;
 }
+
+/// On a shared cell (k > 1) a read without `maxBytes` pages 1 MiB (owner
+/// call Shared cells Q1 (B), the Layer B fallback): beside a held 3 MiB
+/// page it fits a read memory with 1 MiB 4 KiB of room left and renders
+/// 14-47 records, at most 1 MiB. Before: it reserved 8 MiB and was refused
+/// 503. The held page is larger than either kernel takes from a client that
+/// never reads (Linux about 1.7 MB, macOS 0.65 MB), so it stays held on both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shared_cells_default_page_reserves_one_mib_and_renders_at_most_that() {
+    let mut spec = CellSpec::open(1);
+    spec.cli = |cli| cli.project_share_k = 8;
+    let cell = open_cell(spec).await;
+    let put = br#"{"format":{"kind":"json"}}"#;
+    assert_eq!(cell.call(0, "PUT", "/v1/streams/big", put).await.0, 201);
+    let batch = format!("[{}]", (0..48).map(padded).collect::<Vec<_>>().join(","));
+    let batched = cell.call(0, "POST", "/v1/streams/big/records:batch", batch.as_bytes());
+    assert_eq!(batched.await.0, 200);
+    let whole = "/v1/streams/big/records?maxBytes=8388608";
+    let full = u64::try_from(cell.call(0, "GET", whole, b"").await.2.len()).unwrap();
+    let held = never_read(&cell, 0, "GET", whole, b"").await;
+    assert_eq!(
+        settle_at(&cell, 0, (full, full)).await,
+        (full, full),
+        "held"
+    );
+    cell.state
+        .admission
+        .set_read_memory_capacity(full + MIB + 4096);
+    let (status, _, page) = cell.call(0, "GET", RECORDS, b"").await;
+    let records = serde_json::from_slice::<Vec<serde_json::Value>>(&page).map(|v| v.len());
+    let len = u64::try_from(page.len()).unwrap();
+    let paged = records.as_ref().is_ok_and(|n| (14..48).contains(n)) && len <= MIB;
+    assert_eq!((status, paged), (200, true), "{records:?} records, {len} B");
+    assert_eq!(
+        settle_at(&cell, 0, (full, full)).await,
+        (full, full),
+        "the page left"
+    );
+    drop(held);
+    assert_eq!(settle_at(&cell, 0, (0, 0)).await, (0, 0));
+    engine_shutdown(&cell.state).await;
+}
