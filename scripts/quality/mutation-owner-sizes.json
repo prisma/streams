@@ -17,6 +17,7 @@
     "audit": 38,
     "auth_ceiling": 43,
     "auth_signing_key": 39,
+    "auth_verified": 19,
     "batch": 35,
     "billing": 359,
     "billing_read_records": 42,

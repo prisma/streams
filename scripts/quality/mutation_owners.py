@@ -84,6 +84,10 @@ OWNERS = (
     # and reserved identities, and each signing key's one audience.
     owner('auth_ceiling', 'src/auth/ceiling.rs', 'auth:: dst_tests::shared_cell_hostile::reserved_ids'),
     owner('auth_signing_key', 'src/auth/signing_key.rs', 'auth:: auth_feed::'),
+    # The verified customer-token cache (mem2 lane): a kept verdict must
+    # never let a token pass that verification would refuse (lead decision
+    # of 2026-10-20 under the owner's delegation of 2026-10-17).
+    owner('auth_verified', 'src/auth/verified.rs', 'auth::'),
     # The four tenant-memory owners Q3(d) deferred until they settled after
     # the Q1 and C7 work (public-beta phase B item B10): the read
     # reservation, the request scope that carries it and the request's store

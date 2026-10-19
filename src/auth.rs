@@ -30,6 +30,7 @@ mod lease;
 mod publication;
 mod refusal;
 mod signing_key;
+mod verified;
 pub(crate) use lease::{AuthLease, LeaseInvalidReason};
 use publication::HighWater;
 pub(crate) use refusal::{Denial, Refusal};
@@ -38,7 +39,7 @@ pub(crate) use signing_key::key_fp;
 pub(crate) use signing_key::{JwksKey, KeyAudience, audience_shared};
 
 use arc_swap::ArcSwap;
-use jsonwebtoken::{Algorithm, Validation, decode, decode_header};
+use jsonwebtoken::Algorithm;
 
 use crate::project_policy::{CredentialStatus, GrantSnapshot, PolicySnapshot, ProjectStatus};
 use crate::tenant::{
@@ -356,6 +357,8 @@ pub(crate) struct AuthService {
     /// ceiling, fixed at the first publication (dedicated unless installed).
     cell_ceiling: std::sync::OnceLock<ceiling::CellCeiling>,
     pub shadow: ShadowCounters,
+    /// Customer tokens whose signatures verified, under the key set in force.
+    verified: verified::VerifiedTokens,
 }
 
 /// Read `exp` from a JWT WITHOUT verifying it — used only to schedule
@@ -390,6 +393,7 @@ impl AuthService {
             high_water: std::sync::Mutex::new(HighWater::default()),
             cell_ceiling: std::sync::OnceLock::new(),
             shadow: ShadowCounters::default(),
+            verified: verified::VerifiedTokens::default(),
             generation: AtomicU64::new(0),
             gen_tx: tokio::sync::watch::channel(0u64).0,
             staleness_max_secs: std::sync::atomic::AtomicI64::new(POLICY_STALENESS_MAX_SECS),
@@ -445,49 +449,6 @@ impl AuthService {
         true
     }
 
-    /// Signature + structural verification shared by all audiences, under
-    /// a kid the feed pinned to `audience`. Returns the
-    /// still-untrusted-but-authentic claim JSON.
-    fn verify_signature<T: serde::de::DeserializeOwned>(
-        &self,
-        token: &str,
-        now: i64,
-        audience: KeyAudience,
-    ) -> Result<T, AuthError> {
-        if token.len() > MAX_TOKEN_BYTES {
-            return Err(AuthError::TokenTooLarge);
-        }
-        let header = decode_header(token).map_err(|_| AuthError::Malformed("header"))?;
-        if !ALLOWED_ALGS.contains(&header.alg) {
-            return Err(AuthError::AlgNotAllowed);
-        }
-        let kid = header.kid.ok_or(AuthError::KidMissing)?;
-        // Bounded key-set staleness (review item 6): fail closed like
-        // policies and grants — retryable, not a credential error.
-        let jwks = self.fresh_jwks(now)?;
-        let entry = match jwks.keys.get(&kid) {
-            Some(k) => k,
-            None => {
-                self.unknown_kid_seen.fetch_add(1, Ordering::Relaxed);
-                self.request_kid_refresh();
-                return Err(AuthError::KidUnknown);
-            }
-        };
-        // The kid pins one alg (review item 6) and one audience (H6).
-        let key = entry.pinned(header.alg, audience)?;
-        // jsonwebtoken verifies the signature with EXACTLY the header
-        // alg (already allowlisted). Time and audience checks are done
-        // by us against the injected clock, so tests are deterministic
-        // and error kinds are precise.
-        let mut v = Validation::new(header.alg);
-        v.validate_exp = false;
-        v.validate_nbf = false;
-        v.validate_aud = false;
-        v.required_spec_claims.clear();
-        let data = decode::<T>(token, key, &v).map_err(|_| AuthError::BadSignature)?;
-        Ok(data.claims)
-    }
-
     fn check_times(&self, iat: i64, nbf: Option<i64>, exp: i64, now: i64) -> Result<(), AuthError> {
         // Review item 6: these are UNTRUSTED i64s — saturating
         // arithmetic, so i64::MIN/MAX claims fail closed instead of
@@ -516,7 +477,7 @@ impl AuthService {
         token: &str,
         now: i64,
     ) -> Result<RequestPrincipal, AuthError> {
-        let c: RawClaims = self.verify_signature(token, now, KeyAudience::Customer)?;
+        let c = self.verified_customer_claims(token, now)?;
         if c.iss != self.issuer {
             return Err(AuthError::WrongIssuer);
         }
