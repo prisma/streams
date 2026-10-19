@@ -953,3 +953,28 @@ fn the_shared_cells_instance_bounds_stay_within_the_sum_the_owner_accepted() {
          {connections} = {sum} > the {ACCEPTED} bytes the owner accepted"
     );
 }
+
+/// Layer B (mem lane, 2026-10-19): the shared cell's compliant load fills the
+/// block caches through cache-on-write and holds about 2.1 bytes of RSS per
+/// cached byte (the blocks and the allocator pages their eviction churn
+/// pins: 503-508 MiB of RSS over 283-290 MB of live heap at 128 + 32 + 16
+/// MiB). Everything else the load holds, at that load's p90 with 32 + 16 +
+/// 16 MiB, measured 359 MiB, 225 MiB of it not cache. The plateau that model
+/// gives for the profile's caches must leave 100 MiB under the shed line.
+#[test]
+fn the_shared_cells_load_working_set_leaves_room_under_the_shed_line() {
+    const NOT_CACHE_MIB: u64 = 225;
+    const HEADROOM_MIB: u64 = 100;
+    let c = shared_cell_profile(&[("SLATE_S3_ENDPOINT", "http://127.0.0.1:1")]);
+    let mib = 1u64 << 20;
+    let caches =
+        c.cli.shared_cache_bytes + (c.history.cache_bytes + c.billing.telemetry_cache_bytes) as u64;
+    let plateau = NOT_CACHE_MIB + caches * 21 / 10 / mib;
+    assert!(
+        plateau + HEADROOM_MIB <= c.cli.admit_rss_shed_mb,
+        "caches of {} MiB give a {plateau} MiB plateau, which leaves less than {HEADROOM_MIB} MiB \
+         under the {} MB shed line",
+        caches / mib,
+        c.cli.admit_rss_shed_mb
+    );
+}
