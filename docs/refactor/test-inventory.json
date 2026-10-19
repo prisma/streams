@@ -3395,6 +3395,17 @@
     ]
   },
   {
+    "name": "an_oversized_spooled_read_batch_drains_and_bills_once",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d47416d21e424adc65d672cc61c9194aeefaf2e10aa24dc5f9cddbbc0e54d1dd",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_drain_bounds.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_owner_change_that_loses_nothing_keeps_the_continuation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -4655,7 +4666,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "9d91610f452efbcd941e80a42ae0ccb7622e3c3bc8a581d7c884885cd61a0263",
+    "function_sha256": "d3b737be7a3448951366a16cf3a4ec299231b53eb36ed23fd0c361eb252e1ad0",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_controller.rs",
@@ -6071,7 +6082,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "45a4b780b2c1f90379b653572f2dbaa6a7e9984f772b9ab09ddd29a074f8d301",
+    "function_sha256": "ad2b42ac133b8a9b3e4492c09913fa609c271639a9e3f49c1eb75e970a904e55",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_drain_bounds.rs",
@@ -7606,6 +7617,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/review_readiness.rs",
+    "scenarios": []
+  },
+  {
+    "name": "reads_of_a_thousand_streams_in_one_window_bill_once_each",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8f20986939c563d5e43a8d4a26ce71c0464beb0a485528151f1cfccb448ae094",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_drain_bounds.rs",
     "scenarios": []
   },
   {

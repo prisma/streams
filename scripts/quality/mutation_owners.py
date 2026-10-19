@@ -355,6 +355,10 @@ OWNERS = (
     # The storage clock left src/billing.rs (no line headroom) for its own
     # module; the row keeps it under mutation selection with billing's filter.
     owner('billing_storage_clock', 'src/billing/storage_clock.rs', 'billing'),
+    # A read batch's bound and its emission as `_usage` records left
+    # src/billing.rs (no line headroom); billing's filter selects its own
+    # unit tests and the drain DSTs that drain oversized windows.
+    owner('billing_read_records', 'src/billing/read_records.rs', 'billing'),
     owner('billing_replaced', 'src/billing/replaced.rs',
           'dst_tests::billing_closure_debts:: dst_tests::billing_closure_owners:: '
           'dst_tests::billing_walk_custody:: dst_tests::billing_controller::'),

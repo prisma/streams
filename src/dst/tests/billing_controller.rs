@@ -288,7 +288,7 @@ async fn graceful_stop_seals_and_drains_the_active_read_window() {
     );
     assert_eq!(
         state.billing.unflushed_reads(),
-        (1, 150, 0),
+        (1, 292, 0),
         "the window is younger than the flush interval: nothing seals before the stop"
     );
     let report = rig.tasks.shutdown(Duration::from_secs(5)).await;

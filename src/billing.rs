@@ -23,6 +23,7 @@ use crate::http::AppState;
 use serde::{Deserialize, Serialize};
 
 mod read_accumulator;
+mod read_records;
 pub(crate) use read_accumulator::{
     READ_FLUSH_INTERVAL_MS, READ_SEALED_MAX_BATCHES, ReadUsageAccumulator, RowDelta,
 };
@@ -734,17 +735,21 @@ pub(crate) async fn drain_once(
     let mut spooled_keys: Vec<Vec<u8>> = Vec::new();
     let mut memless = state.billing.read_drain(0);
     let mut body_bytes = 0usize;
+    let reads = read_records::ReadEmission {
+        cell: &cell,
+        ceiling: state.admission.record_ceiling(),
+    };
     if state.billing.read_spool_open() {
         state.billing.spool_sealed_reads(64).await?;
         for (key, rb) in state.billing.pending_spooled(64).await? {
-            let env = envelope(
-                &cell,
-                UsagePayload::ReadBatch(rb.clone()),
-                rb.to_ms,
-                format!("read/{}/{}", rb.source.boot, rb.seq),
-            );
-            body_bytes += encoded_size(&env);
-            envelopes.push(env);
+            if !reads.admit(
+                &rb,
+                &mut envelopes,
+                &mut body_bytes,
+                read_records::READ_ROUND_BYTES,
+            ) {
+                break;
+            }
             spooled_keys.push(key);
         }
     } else if state.config.cli.billing_required() {
@@ -758,14 +763,7 @@ pub(crate) async fn drain_once(
         // No spool configured (bare test rigs): the pre-spool path.
         memless = state.billing.read_drain(16);
         for rb in &memless.batches {
-            let env = envelope(
-                &cell,
-                UsagePayload::ReadBatch(rb.clone()),
-                rb.to_ms,
-                format!("read/{}/{}", rb.source.boot, rb.seq),
-            );
-            body_bytes += encoded_size(&env);
-            envelopes.push(env);
+            reads.admit(rb, &mut envelopes, &mut body_bytes, usize::MAX);
         }
     }
 

@@ -1,6 +1,8 @@
 #![cfg(test)]
 
-use super::{MeterSource, READ_SEALED_MAX_BATCHES, ReadUsageAccumulator, RowDelta};
+use super::{
+    MeterSource, READ_BATCH_ROW_BYTES, READ_SEALED_MAX_BATCHES, ReadUsageAccumulator, RowDelta,
+};
 use crate::billing::BillingIdentity;
 use proptest::{prelude::any, prop_assert_eq};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -269,42 +271,61 @@ fn positive_age_waits_for_the_window_and_zero_age_forces_sealing() {
     assert_eq!(acc.drain_sealed(1).len(), 1);
 }
 
-#[test]
-fn repeated_observations_seal_at_the_estimated_byte_boundary() {
-    let acc = accumulator();
-    let mut id = identity(0);
-    id.stream_name.push('0'); // Align the initial estimate with the 8-byte updates.
-    acc.meter(
-        &id,
-        RowDelta {
-            read_operations: 1,
-            ..Default::default()
-        },
-    );
-    let estimate = acc.unflushed().1;
-    assert!(
-        estimate > 0,
-        "a nonempty active map must charge its identity"
-    );
-    let remaining = super::READ_FLUSH_MAX_EST_BYTES - estimate;
-    assert_eq!(remaining % 8, 0);
-    for _ in 1..remaining / 8 {
-        acc.meter(
-            &id,
-            RowDelta {
-                read_operations: 1,
-                ..Default::default()
-            },
-        );
+/// An identity whose read row is bounded at exactly 512 encoded bytes, so
+/// 128 rows fill a batch to `READ_BATCH_ROW_BYTES` exactly.
+fn wide_identity(stream: u32) -> BillingIdentity {
+    let id = BillingIdentity {
+        account_id: "account".into(),
+        project_id: "project".into(),
+        stream_id: format!("{stream:032x}"),
+        stream_name: format!("{stream:0>204}"),
+    };
+    assert_eq!(id.read_row_bound(), 512);
+    id
+}
+
+fn one_read() -> RowDelta {
+    RowDelta {
+        read_operations: 1,
+        ..Default::default()
     }
-    assert_eq!(acc.unflushed(), (1, super::READ_FLUSH_MAX_EST_BYTES - 8, 0));
-    acc.meter(
-        &id,
-        RowDelta {
-            read_operations: 1,
-            ..Default::default()
-        },
-    );
-    assert_eq!(acc.unflushed(), (0, 0, 1));
-    assert_eq!(acc.drain_sealed(1).len(), 1);
+}
+
+#[test]
+fn a_new_identity_seals_the_map_before_its_row_would_pass_the_bound() {
+    let acc = accumulator();
+    for stream in 0..128 {
+        acc.meter(&wide_identity(stream), one_read());
+    }
+    assert_eq!(acc.unflushed(), (128, READ_BATCH_ROW_BYTES, 0));
+    // Repeated observations never grow a row past its bound.
+    acc.meter(&wide_identity(0), one_read());
+    assert_eq!(acc.unflushed(), (128, READ_BATCH_ROW_BYTES, 0));
+    acc.meter(&wide_identity(128), one_read());
+    assert_eq!(acc.unflushed(), (1, 512, 1));
+    let sealed = acc.drain_sealed(1);
+    assert_eq!(sealed[0].rows.len(), 128);
+    let encoded = serde_json::to_vec(&sealed[0].rows).unwrap().len();
+    assert!(encoded <= READ_BATCH_ROW_BYTES, "{encoded}");
+}
+
+#[test]
+fn a_map_that_grew_while_sealing_paused_seals_as_bounded_batches() {
+    let acc = accumulator();
+    for _ in 0..READ_SEALED_MAX_BATCHES {
+        acc.meter(&identity(0), one_read());
+        acc.seal_if_aged(0);
+    }
+    for stream in 0..300 {
+        acc.meter(&wide_identity(stream), one_read());
+    }
+    assert_eq!(acc.unflushed(), (300, 300 * 512, READ_SEALED_MAX_BATCHES));
+    let paused = acc.drain_sealed(usize::MAX);
+    acc.seal_if_aged(0);
+    let sealed = acc.drain_sealed(usize::MAX);
+    let runs = sealed.iter().map(|b| b.rows.len()).collect::<Vec<_>>();
+    assert_eq!(runs.iter().sum::<usize>(), 300);
+    assert!(runs.iter().all(|rows| *rows <= 128), "{runs:?}");
+    let sequences = paused.iter().chain(&sealed).map(|b| b.seq);
+    assert!(sequences.eq(0..u64::try_from(READ_SEALED_MAX_BATCHES + runs.len()).unwrap()));
 }

@@ -1,13 +1,13 @@
 //! Read delivery observations and their ordered sealed batches share one owner.
+use super::read_records::{READ_BATCH_ROW_BYTES, split_rows};
 use super::{BillingIdentity, MeterSource, ReadBatch, ReadRow, is_reserved_stream};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, atomic::AtomicU64};
 
-/// Flush thresholds (§7.2). The active map seals into a batch on any of
-/// these; a sealed batch is what the drainer appends to `_usage`.
+/// Flush interval (§7.2). The active map also seals before a new identity
+/// would take its rows past `READ_BATCH_ROW_BYTES`; a sealed batch is one
+/// record of the drainer's `_usage` append.
 pub(crate) const READ_FLUSH_INTERVAL_MS: i64 = 10_000;
-const READ_FLUSH_MAX_ENTRIES: usize = 10_000;
-const READ_FLUSH_MAX_EST_BYTES: usize = 1 << 20;
 /// Sealed batches waiting for the ledger. When the ledger is down long
 /// enough to fill this, sealing PAUSES and deltas keep merging into the
 /// active map — attribution is never discarded (§14.1), memory stays
@@ -26,9 +26,38 @@ pub(crate) struct RowDelta {
 struct ActiveMap {
     rows: HashMap<BillingIdentity, RowDelta>,
     opened_ms: i64,
-    /// Rough encoded-size estimate (identity strings + numbers), used
-    /// only against READ_FLUSH_MAX_EST_BYTES.
+    /// The sum of the rows' `read_row_bound`s: an upper bound on their
+    /// encoded size, held under `READ_BATCH_ROW_BYTES`.
     est_bytes: usize,
+}
+
+impl ActiveMap {
+    /// A new identity whose row would take a nonempty map past
+    /// `READ_BATCH_ROW_BYTES`: the map seals before it joins.
+    fn would_overflow(&self, id: &BillingIdentity) -> bool {
+        !self.rows.is_empty()
+            && !self.rows.contains_key(id)
+            && self.est_bytes + id.read_row_bound() > READ_BATCH_ROW_BYTES
+    }
+
+    fn observe(&mut self, id: &BillingIdentity, d: RowDelta) {
+        if self.rows.is_empty() {
+            self.opened_ms = crate::shard::now_ms();
+        }
+        match self.rows.get_mut(id) {
+            Some(row) => {
+                row.read_payload_bytes += d.read_payload_bytes;
+                row.read_records += d.read_records;
+                row.read_operations += d.read_operations;
+                row.queue_operations += d.queue_operations;
+                row.append_requests += d.append_requests;
+            }
+            None => {
+                self.est_bytes += id.read_row_bound();
+                self.rows.insert(id.clone(), d);
+            }
+        }
+    }
 }
 
 struct ReadUsageState {
@@ -73,31 +102,15 @@ impl ReadUsageAccumulator {
             return;
         }
         let mut state = self.state.lock().unwrap();
-        let a = &mut state.active;
-        if a.rows.is_empty() {
-            a.opened_ms = crate::shard::now_ms();
+        self.observe_locked(&mut state, id, d);
+    }
+
+    /// A new identity whose row would pass the bound seals the map first.
+    fn observe_locked(&self, state: &mut ReadUsageState, id: &BillingIdentity, d: RowDelta) {
+        if state.active.would_overflow(id) {
+            self.seal_locked(state);
         }
-        match a.rows.get_mut(id) {
-            Some(row) => {
-                row.read_payload_bytes += d.read_payload_bytes;
-                row.read_records += d.read_records;
-                row.read_operations += d.read_operations;
-                row.queue_operations += d.queue_operations;
-                row.append_requests += d.append_requests;
-                a.est_bytes += 8;
-            }
-            None => {
-                a.est_bytes += 120
-                    + id.account_id.len()
-                    + id.project_id.len()
-                    + id.stream_id.len()
-                    + id.stream_name.len();
-                a.rows.insert(id.clone(), d);
-            }
-        }
-        if a.rows.len() >= READ_FLUSH_MAX_ENTRIES || a.est_bytes >= READ_FLUSH_MAX_EST_BYTES {
-            self.seal_locked(&mut state);
-        }
+        state.active.observe(id, d);
     }
 
     fn seal_locked(&self, state: &mut ReadUsageState) {
@@ -116,7 +129,7 @@ impl ReadUsageAccumulator {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return;
         }
-        let rows = std::mem::take(&mut a.rows)
+        let rows: Vec<ReadRow> = std::mem::take(&mut a.rows)
             .into_iter()
             .map(|(identity, d)| ReadRow {
                 identity,
@@ -128,15 +141,19 @@ impl ReadUsageAccumulator {
             })
             .collect();
         let now = crate::shard::now_ms();
-        sealed.push_back(ReadBatch {
-            source: self.source.clone(),
-            seq: *seq,
-            from_ms: a.opened_ms,
-            to_ms: now,
-            rows,
-        });
-        // Preserve the previous atomic sequence's wrapping arithmetic.
-        *seq = seq.wrapping_add(1);
+        // A map that grew past the bound while sealing paused seals as
+        // several batches, each one record.
+        for rows in split_rows(rows) {
+            sealed.push_back(ReadBatch {
+                source: self.source.clone(),
+                seq: *seq,
+                from_ms: a.opened_ms,
+                to_ms: now,
+                rows,
+            });
+            // Preserve the previous atomic sequence's wrapping arithmetic.
+            *seq = seq.wrapping_add(1);
+        }
         a.est_bytes = 0;
         a.opened_ms = now;
     }

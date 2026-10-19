@@ -374,12 +374,13 @@ It is keyed by `BillingIdentity`, rotates rather than falling back to an unattri
 
 ```text
 10 seconds active interval
-10,000 stream entries
-1 MiB encoded batch
+64 KiB of encoded rows (READ_BATCH_ROW_BYTES)
 shutdown/drain
 ```
 
-When the active map reaches its entry or size bound, it is sealed into a batch and a fresh map is installed. No per-stream attribution is discarded.
+A sealed batch is one record of the drain's `_usage` append, and an append with one record over the per-record ceiling (`MAX_RECORD_PAYLOAD_BYTES`, 131,072 bytes by default and in the release profile) is refused whole. Each row is charged an upper bound of its encoded size (its identity strings as JSON-escaped, its five counters at `u64::MAX` width), and a new identity whose row would take the map past 64 KiB seals the map first, so a batch is at most 64 KiB of rows plus its envelope (under 1 KiB). A map that grew past the bound while sealing paused (a full sealed queue) seals as several batches. No per-stream attribution is discarded.
+
+Until 2026-10-19 the map sealed at an estimated 1 MiB, which a project reading more than about 560 streams in one window passed: the ledger refused the batch, and the drain retried it forever, so no usage of any project on the cell reached `_usage` again.
 
 The interval is checked by the drain round (§6.3), every `TELEMETRY_DRAIN_SECS` (8 s by default; 2 s before edge change #117): a window seals at the first round after it is 10 s old, so a window that opens just after a round seals two rounds later (16 s), and no window lasts longer than the interval plus one cadence (18 s). The round that seals a window spools it in the same pass.
 
@@ -418,6 +419,8 @@ A read batch carries absolute source-batch identity and deltas:
 ```
 
 The producer retries the same sequence after an ambiguous append. The rollup tracks the last processed sequence per source boot and ignores duplicates.
+
+A spooled batch whose record would exceed the per-record ceiling (one sealed by a binary from before 2026-10-19) is emitted as consecutive runs of at most 64 KiB of rows: run `i` carries `source.boot` = `<boot>/<seq>` and `seq` = `i` (event id `read/<boot>/<seq>/<i>`), so the rollup deduplicates a second emission run by run. The runs depend only on the batch's spooled row order, so every emission is the same. One drain round appends at most 4 MiB of read batches (always at least one); the rest stays spooled for the next round.
 
 A restart creates a new boot ID; counters restart from zero without re-billing prior batches.
 
@@ -1090,7 +1093,7 @@ The telemetry design must not recreate the per-stream request tax removed by his
 
 ```text
 usage drain:              8 s (TELEMETRY_DRAIN_SECS): one _usage append per round with content
-read usage batches:       10 s active, sealed at the next drain round (16-18 s); early by 10k entries / 1 MiB
+read usage batches:       10 s active, sealed at the next drain round (16-18 s); early at 64 KiB of rows
 segment snapshot drain:   included in the same instance usage batch
 ops metrics snapshots:    15 s
 usage rollup flush:       1–5 s, batched across rows
