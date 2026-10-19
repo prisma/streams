@@ -709,6 +709,17 @@
     ]
   },
   {
+    "name": "a_fenced_older_boot_never_retakes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7341a885a5beec6c2f4acb5ccdd1926a5e09bd8aa9f9edc17b7ecf0e2cfbb027",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fence_yield.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_fenced_owner_acknowledges_nothing",
     "attributes": [
       "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
@@ -1962,6 +1973,17 @@
     "scenarios": []
   },
   {
+    "name": "a_restarted_newest_serves_and_the_superseded_stays_out",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "92f0d7289a883c05ad7110aba7b77ecb7325f22533cedaff6a84ff8b0620405a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fence_yield.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_resumed_mark_never_seals_a_later_incarnation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -2511,6 +2533,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/retiring_written_group.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_stray_older_open_does_not_unseat_the_newest",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "f633373f11de752de311cb3583ac55c00ce400388a031d57fc28754f1051ae33",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fence_yield.rs",
     "scenarios": []
   },
   {

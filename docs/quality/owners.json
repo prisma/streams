@@ -3169,6 +3169,14 @@
       "syntax": "tokio::select"
     },
     {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Checker::watch",
+      "path": "src/sharddir/supersede.rs",
+      "reason": "The supersession checker selects the runtime's stop against an engine death's wake (edge change #179); the pinned Tokio macro is the await-any form and both arms are owned by the checker; sharddir::supersede tests and the fence_yield DSTs drive both arms.",
+      "syntax": "tokio::select"
+    },
+    {
       "category": "effect",
       "count": 1,
       "owner": "crate::on_paused_clock",
@@ -3303,6 +3311,14 @@
       "path": "src/dst/dst_tests.rs",
       "reason": "F2 composition scenarios (NEXT-WORK item 6): a group the engine wrote but had not made durable when the fleet retired it is answered 503 shard_moving on the raw wire (temporarily_unavailable on a product :seal), a successor runtime over the same store recovers it exactly once, the producer-keyed retry is a duplicate, and an owed final (raw append-and-close, product :seal) stays owed until its exact retry completes it on the successor; compiled and executed with DST.",
       "syntax": "path = \"tests/retiring_written_group.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fence_yield",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Fence yield scenarios (edge change #179): fleet-off runtimes over one store, each registered in _cell/boot; an older boot fenced by a newer one never re-takes the shard and answers 503 shard_closing with Retry-After 1, a stray older open costs one round before the newest re-takes, and a restarted newest serves while the superseded stays out; compiled and executed with DST.",
+      "syntax": "path = \"tests/fence_yield.rs\""
     },
     {
       "category": "effect",

@@ -555,6 +555,17 @@ them into bogus keys (`RUST_LOG="info,slatedb=info"`).
 5. Redeploying under live load can zombie an instance (observed ~once per
    ~20 deploys). The heal is simply another deploy. Watch the first minute
    of `/v1/debug/load` after each roll.
+   On a fleet-off cell (edge change #179) each boot writes its id to
+   `_cell/boot` at start, and the new boot's first open fences the old
+   process. The old process then yields: it opens no shard again, answers
+   requests that need one `503` (`shard_closing` raw, `temporarily_unavailable`
+   product) with `Retry-After: 1` and nothing written, and `/health` and
+   `/readyz` answer `503 shard storage unavailable: superseded by a newer
+   boot` (cell-watch reason `superseded`) until the platform stops it. If the
+   new boot crashes after that, the old process does not take the shard
+   back: the platform's restart of the new one (a fresh boot) serves, and an
+   old process the platform keeps instead exits through the unready watchdog
+   (`UNREADY_EXIT_AFTER_SECS`, 300 s) and its replacement serves.
 6. After load tests: destroy generator versions, redeploy servers/LBs
    *without* `KEEP_AWAKE` so the fleet scales to zero.
 
@@ -1070,7 +1081,7 @@ NOTIFY, while every other row pages from the first deploy;
 |---|---|---|---|---|---|
 | 1 | uptime check | PAGE | the paging tool's `GET /health` from 2 locations every 60 s, 10 s timeout | 3 failures in a row: no 2xx from outside (§7.5: a zombie, the edge, `binary_exited`) | the paging tool to `<on-call>` |
 | 2 | heartbeat | PAGE | the watch's heartbeat GET after each cycle | none for 3 min: the watch is down (a watch whose `STREAMS_OPERATOR_TOKEN` the cell refuses (401 or 403) does not start: its log says `refused: STREAMS_OPERATOR_TOKEN is refused by the cell`), or it withholds the beat after three cycles in a row that ended with a trigger undelivered (its alerts are not getting out) | the paging tool to `<on-call>` |
-| 3 | `r03_no_2xx_inside` | PAGE | `/health` | not 200, or no answer in 5 s, for 2 min. The alert names who answered: `server` (its origin header) with the 503's reason (`tasks`, `feeds_unpublished`, `shard_storage`, `billing_not_ready`, `other`), `wrapper` (500 `binary_exited`, §7.5) or `platform` (anything else: the edge, a zombie, no instance) | cell-watch to `<on-call>` |
+| 3 | `r03_no_2xx_inside` | PAGE | `/health` | not 200, or no answer in 5 s, for 2 min. The alert names who answered: `server` (its origin header) with the 503's reason (`tasks`, `feeds_unpublished`, `superseded`, `shard_storage`, `billing_not_ready`, `other`; `superseded` is an older boot a newer boot of a fleet-off cell fenced, a deploy or a restart that left the old process answering, §7.4), `wrapper` (500 `binary_exited`, §7.5) or `platform` (anything else: the edge, a zombie, no instance) | cell-watch to `<on-call>` |
 | 4 | `r04_restarts` | NOTIFY / PAGE | `/health` `x-streams-boot-id` (sent on a 200 only) | a new boot id: NOTIFY; 3 boot ids or more in 30 min, a crash loop: PAGE (a loop that never reaches 200 is row 3) | cell-watch to `<notify channel>` / `<on-call>` |
 | 5 | `r05_wrong_build` | NOTIFY | `/health` `x-streams-git` | does not start with `EXPECTED_GIT`, the release's commit, for 10 min: the cell is not running the release deployed. Off when `EXPECTED_GIT` is `none` | cell-watch to `<notify channel>` |
 | 6 | `r06_feed_delivery` | PAGE | `feeds.jwks.ageSecs`, `feeds.policies.ageSecs`, `feeds.grants.ageSecs`; `feeds.policies.stale`, `feeds.grants.stale` | an age above 75 s (about 30 is normal), some 3 min before the cell refuses every request at 300 s; or `stale: true`: the outage has begun (`503 policy_stale`). The wrapper's log says `feeds poll failed`, `feeds bundle refused` or `feeds deleted` (Publishing, above) | cell-watch to `<on-call>` |

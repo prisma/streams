@@ -253,6 +253,10 @@ OWNERS = (
     owner('runtime_handoff', 'src/bootstrap/runtime_handoff.rs', 'bootstrap::'),
     owner('process_executor', 'src/bootstrap/process_executor.rs', 'bootstrap::'),
     owner('sharddir_health', 'src/sharddir/health.rs', 'sharddir::'),
+    # The boot record's verdict, registration and wake are unit tests; the
+    # yield across two runtimes over one store is the fence_yield DST (#179).
+    owner('sharddir_supersede', 'src/sharddir/supersede.rs',
+          'sharddir:: dst_tests::fence_yield::'),
     owner('sse_auth', 'src/sse/auth.rs', 'sse::'),
     owner('sse_registry', 'src/sse/registry.rs', 'sse::'),
     owner('sse_service', 'src/sse/service.rs', 'sse::'),

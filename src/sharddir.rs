@@ -86,6 +86,8 @@ pub(crate) use health::ShardHealth;
 /// The anti-flap ledger's verdict on a departure: evidence, or a release.
 mod holdoff;
 use holdoff::{Departure, ledger_after};
+/// Fleet off: a process that lost an engine to a newer boot opens no shard again (#179).
+pub(crate) mod supersede;
 /// The opener's unwind boundary; `new` wraps every opener with it.
 mod unwind;
 

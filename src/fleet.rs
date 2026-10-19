@@ -11,7 +11,7 @@
 //! out of the live set within 10 s — exactly the semantics the ring wants,
 //! since a sleeping instance serves nothing. The router waking instance N+1
 //! re-adds it to the live set on its next heartbeat.
-use crate::{http::AppState, shard::now_ms};
+use crate::{http::AppState, shard::now_ms, sharddir::supersede};
 use object_store::UpdateVersion;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -339,10 +339,10 @@ struct FleetCfg {
 /// runtime's repository and identity under another's instance name,
 /// fleet maximum and scaling thresholds — and a test rig once did.
 ///
-/// A runtime without fleet coordination starts nothing.
+/// A runtime without fleet coordination starts only its supersession (#179).
 pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskSupervisor) -> bool {
     if !state.fleet.enabled() {
-        return false;
+        return supersede::start(&state.shards, &state.data_store, &state.runtime, tasks);
     }
     let cfg = {
         let cli = &state.config.cli;

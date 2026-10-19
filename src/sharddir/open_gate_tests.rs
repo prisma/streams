@@ -51,7 +51,7 @@ enum Script {
 }
 
 /// A real engine over an in-memory store (`unwind::tests` keeps the same shape).
-async fn open_engine(prefix: &str) -> Arc<ShardEngine> {
+pub(super) async fn open_engine(prefix: &str) -> Arc<ShardEngine> {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let db = slatedb::Db::builder(prefix, store.clone())
         .build()

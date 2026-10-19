@@ -159,6 +159,7 @@
     "sharddir_adoption": 6,
     "sharddir_health": 13,
     "sharddir_holdoff": 8,
+    "sharddir_supersede": 21,
     "sharddir_unwind": 3,
     "sse_auth": 48,
     "sse_budget": 4,

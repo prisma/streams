@@ -213,6 +213,9 @@ mod retiring_written_group;
 #[path = "tests/runtime_sweep.rs"]
 mod runtime_sweep;
 
+#[path = "tests/fence_yield.rs"]
+mod fence_yield;
+
 #[path = "tests/seal_convergence.rs"]
 mod seal_convergence;
 

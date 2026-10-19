@@ -36,6 +36,7 @@ describe("row 3: no 2xx from inside", () => {
       [{ status: 503, origin: true, bodyPrefix: "critical task terminated: absorber" }, { origin: "server", reason: "tasks", answer: "status" }, 503],
       [{ status: 503, origin: true, bodyPrefix: "auth feeds not yet published: jwks" }, { origin: "server", reason: "feeds_unpublished", answer: "status" }, 503],
       [{ status: 503, origin: true, bodyPrefix: "shard storage unavailable: open failed" }, { origin: "server", reason: "shard_storage", answer: "status" }, 503],
+      [{ status: 503, origin: true, bodyPrefix: "shard storage unavailable: superseded by a newer boot" }, { origin: "server", reason: "superseded", answer: "status" }, 503],
       [{ status: 503, origin: true, bodyPrefix: "billing not ready (spool=false, rollup=true)" }, { origin: "server", reason: "billing_not_ready", answer: "status" }, 503],
       [{ status: 503, origin: true, bodyPrefix: "something new" }, { origin: "server", reason: "other", answer: "status" }, 503],
       [{ status: 500, origin: true, bodyPrefix: "runtime stopped" }, { origin: "server", reason: "other", answer: "status" }, 500],

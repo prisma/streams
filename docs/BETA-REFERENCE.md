@@ -253,9 +253,15 @@ instead of sending it again. Source: `sdk/README.md` ("In plain words"),
   the beta's scratch cell: 7 to 9 s without a successful append or read
   per restart or deploy, `503 temporarily_unavailable` with `Retry-After`
   meanwhile on reads and appends alike (reads since edge change #178),
-  which the SDK rides through (above). A plain append in flight at the
-  switch can still be answered `503 outcome_unknown` (field: up to two per
-  switch, none of them stored); appends through a producer never are.
+  which the SDK rides through (above). Since edge change #179 the old
+  server gives the cell up for good once the new one has taken it, so the
+  two no longer take it from each other in turn (the 7 to 9 s above were
+  measured before #179; the new window is not yet measured); the
+  old server answers what still reaches it `503 temporarily_unavailable`
+  with `Retry-After: 1`, nothing written. A plain append
+  in flight at the switch can still be answered `503 outcome_unknown`
+  (field: up to two per switch, none of them stored); appends through a
+  producer never are.
 - **No SLA.** There is no availability or latency commitment. Append
   latency includes a write to object storage and waits for the next
   flush, up to 100 ms; it has not been measured again on the beta's

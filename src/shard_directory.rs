@@ -10,6 +10,7 @@ use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
 
 use crate::shard::ShardEngine;
+use crate::sharddir::supersede::Supersession;
 use crate::sharddir::{EngineIncarnation, OpenFn, OpenGate, OpenOutcome};
 
 /// How a resolution counts for sweep custody (R29).
@@ -120,6 +121,9 @@ struct DirInner {
     /// gate different maps.
     shards: crate::sharddir::ServingMap,
     gate: OpenGate,
+    /// Whether a newer boot superseded this process, and its checker's wake
+    /// (#179, `sharddir::supersede`).
+    supersession: Arc<Supersession>,
     ownership: crate::ownership::OwnershipService,
     /// How long a request waits on an in-flight open before a retryable
     /// refusal.
@@ -148,18 +152,34 @@ impl ShardCloseNotifier {
     /// The engine of `incarnation` closed. Evicts it from the serving
     /// map and arms the anti-flap holdoff — only if it is still the
     /// resident; a late notification for a replaced engine is ignored.
+    /// An eviction is an engine death (a fence or a fatal fault), so it also
+    /// wakes the supersession checker; a retirement never reaches here.
     /// Returns whether it evicted.
     pub(crate) fn closed(&self, prefix: &str, incarnation: EngineIncarnation) -> bool {
-        match self.inner.upgrade() {
-            Some(dir) => dir.gate.notify_closed(prefix, incarnation),
-            None => false,
+        let Some(dir) = self.inner.upgrade() else {
+            return false;
+        };
+        let evicted = dir.gate.notify_closed(prefix, incarnation);
+        if evicted {
+            dir.supersession.engine_died();
         }
+        evicted
     }
 }
 
 impl ShardDirectory {
+    /// Why this runtime's shards cannot serve: a supersession first, then
+    /// the gate's own reasons.
     pub(crate) fn unready_reason(&self) -> Option<String> {
-        self.inner.gate.unready_reason()
+        self.inner
+            .supersession
+            .unready_reason()
+            .or_else(|| self.inner.gate.unready_reason())
+    }
+
+    /// This directory's supersession (#179): its checker's wake and its yield.
+    pub(crate) fn supersession(&self) -> Arc<Supersession> {
+        self.inner.supersession.clone()
     }
 
     /// Build the directory, its serving map and its open gate together.
@@ -180,6 +200,7 @@ impl ShardDirectory {
             DirInner {
                 prefixes,
                 shards,
+                supersession: Arc::new(Supersession::new(gate.clone())),
                 gate,
                 ownership,
                 open_wait: timing.open_wait,

@@ -215,7 +215,7 @@ export function initialState(): WatchState {
 // ---- the fixed enums -------------------------------------------------------
 
 export const ORIGINS = ["server", "wrapper", "platform"] as const;
-export const REASONS = ["tasks", "feeds_unpublished", "shard_storage", "billing_not_ready", "other"] as const;
+export const REASONS = ["tasks", "feeds_unpublished", "superseded", "shard_storage", "billing_not_ready", "other"] as const;
 export const ANSWERS = ["status", "timeout", "no_answer"] as const;
 export const STEPS = ["append", "read"] as const;
 export const FAILURES = ["exchange", "endpoint"] as const;
@@ -259,11 +259,14 @@ function originOf(status: number | null, origin: boolean, wrapperBody: boolean):
 }
 
 /// The server's 503 reason, from the prefix of /health's body (src/http.rs
-/// health_axum, src/tasks.rs readiness_reason).
+/// health_axum, src/tasks.rs readiness_reason). `superseded` is an older boot
+/// that a newer boot of the cell fenced (edge change #179, a deploy or a
+/// restart), not a storage fault.
 function reasonOf(status: number | null, body: string): (typeof REASONS)[number] {
   if (status !== 503) return "other";
   if (body.startsWith("runtime ") || body.startsWith("critical task terminated")) return "tasks";
   if (body.startsWith("auth feeds not yet published")) return "feeds_unpublished";
+  if (body.startsWith("shard storage unavailable: superseded by a newer boot")) return "superseded";
   if (body.startsWith("shard storage unavailable")) return "shard_storage";
   if (body.startsWith("billing not ready")) return "billing_not_ready";
   return "other";

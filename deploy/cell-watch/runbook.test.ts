@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CANARY_SCOPES } from "./canary";
 import { HEARTBEAT_WINDOW_MS, UPTIME_EVERY_MS, UPTIME_FAILURES, UPTIME_TIMEOUT_MS } from "./pager";
-import { RULES } from "./rules";
+import { REASONS, RULES } from "./rules";
 
 const LINES = readFileSync(join(import.meta.dir, "..", "..", "RUNBOOK.md"), "utf8").split("\n");
 
@@ -94,6 +94,11 @@ describe("RUNBOOK.md's What to alert on", () => {
     const defects = next.slice(next.indexOf("### 14.7 "), next.indexOf("### 14.8 ")).replace(/\s+/g, " ");
     expect(defects).not.toContain("RUNBOOK row 17 (`r17_unowned_usage`) is open on every enforce cell");
     expect(defects).toContain("Fixed (2026-10-14, round 4): the cell counted its own metering as unowned usage");
+  });
+
+  test("row 3 names every reason the watch gives a server's 503, superseded as a newer boot's fence (#179)", () => {
+    for (const reason of REASONS) expect([reason, (cells(3)[4] ?? "").includes(`\`${reason}\``)]).toEqual([reason, true]);
+    expect(cells(3)[4]).toContain("`superseded` is an older boot a newer boot of a fleet-off cell fenced");
   });
 
   test("gives each row its class, a PAGE paged to the on-call and a NOTIFY to the channel", () => {
