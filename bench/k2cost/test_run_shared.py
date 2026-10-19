@@ -15,6 +15,7 @@ needs docker images.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import http.server
 import json
@@ -124,7 +125,10 @@ class Rig(unittest.TestCase):
         log = os.path.join(fake, "calls.log")
         scripts = {
             "bun": 'case $2 in tokens) while [ $# -gt 0 ]; do [ "$1" = --out ] && echo "{}" > "$2"; shift; done ;; esac',
-            "docker": f'[ "$1" = logs ] && echo "binary sha256 {self.sha}"',
+            # `docker run` keeps a copy of the container's env file, which
+            # the rig removes with its secrets directory at exit.
+            "docker": f'case $1 in logs) echo "binary sha256 {self.sha}" ;;\n'
+                      '  run) while [ $# -gt 0 ]; do [ "$1" = --env-file ] && cp "$2" "$RIG_FAKE_LOG.env"; shift; done ;; esac',
             "curl": 'for a; do url=$a; done; echo "curl $url" >> "$RIG_FAKE_LOG"\n'
                     'case $url in */v1/debug/load) echo \'{"git_commit": "c0ffee", "boot_id": "b1"}\' ;; esac\nexit 0',
             "lsof": "exit 1",
@@ -165,6 +169,18 @@ class Rig(unittest.TestCase):
                              ["http://127.0.0.1:9592/health", "http://127.0.0.1:9592/v1/debug/load"])
             self.assertEqual(arg(f"python3 {HERE}/scrape.py loop ", "--servers"), ["streams-1=http://127.0.0.1:9592"])
             shutil.rmtree(self.home)
+
+    def test_the_container_secrets_are_what_the_server_decodes(self):
+        # src/config/validation.rs decodes STREAMS_CURSOR_KEY with base64's
+        # STANDARD engine (padded, + and /) to exactly 32 bytes; a key the
+        # binary refuses stops the cell before it answers /health.
+        r, _ = self.live(None)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        with open(os.path.join(self.tmp, "fakebin-None", "calls.log.env")) as f:
+            env = dict(line.rstrip("\n").split("=", 1) for line in f if line.strip())
+        self.assertEqual(sorted(env), sorted(SECRET_NAMES))
+        self.assertEqual(len(base64.b64decode(env["STREAMS_CURSOR_KEY"], validate=True)), 32)
+        self.assertTrue(all(env.values()), env.keys())
 
     def test_a_dry_run_stages_the_release_the_cell_env_and_the_container_invocation(self):
         r = self.rig("--dry-run")

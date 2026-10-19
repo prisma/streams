@@ -323,7 +323,8 @@ OPERATOR=$(rand)
 {
   echo "STREAMS_OPERATOR_TOKEN=$OPERATOR"
   echo "STREAMS_USAGE_STREAM_KEY=$(rand)"
-  echo "STREAMS_CURSOR_KEY=$(rand)"
+  # The server decodes the cursor key as standard, padded base64 to 32 bytes.
+  echo "STREAMS_CURSOR_KEY=$(python3 -c 'import os, base64; print(base64.b64encode(os.urandom(32)).decode())')"
   echo "STREAMS_DATA_S3_ACCESS_KEY_ID=rig"
   echo "STREAMS_DATA_S3_SECRET_ACCESS_KEY=$(rand)"
   echo "STREAMS_FEEDS_S3_ACCESS_KEY_ID=rig"
