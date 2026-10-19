@@ -1,7 +1,10 @@
 //! When the idle loop releases, as a pure function of its readings.
 #![cfg(test)]
 
-use super::{COLLECT_EVERY, DRAINED, IdlePolicy, QUIET, REFILL_FLOOR, RERELEASE_AFTER, Reading};
+use super::{
+    COLLECT_EVERY, DRAINED, IdlePolicy, PRESSURE_RELEASE_AFTER, QUIET, REFILL_FLOOR,
+    RERELEASE_AFTER, Reading, over_shed_line,
+};
 use crate::runtime::{Clock, ManualClock};
 use std::time::Duration;
 
@@ -31,6 +34,7 @@ impl Readings {
             active: 0,
             unabsorbed: 0,
             refilled: 0,
+            over_line: false,
         }
     }
 }
@@ -198,4 +202,42 @@ fn a_request_after_a_release_ends_its_collect_rounds() {
             at - QUIET
         );
     }
+}
+
+/// RSS over the shed line releases the caches at once, busy or quiet, and
+/// again only once `PRESSURE_RELEASE_AFTER` has passed; under the line,
+/// or with no shed line set, nothing is released for pressure. Layer B's
+/// hostile phase held RSS over the line for 40 minutes while the shed
+/// refused 2.75 M appends and the caches stayed full.
+#[test]
+fn rss_over_the_shed_line_releases_the_caches_every_thirty_seconds_busy_or_quiet() {
+    let mut readings = Readings::new();
+    let mut policy = policy(&mut readings);
+    let pressed = |reading: Reading, over_line| Reading {
+        over_line,
+        active: 40,
+        ..reading
+    };
+    let at = |readings: &mut Readings, secs: u64, n: u64| readings.at(Duration::from_secs(secs), n);
+    assert!(!policy.pressure_release_due(&pressed(at(&mut readings, 2, 1), false)));
+    assert!(policy.pressure_release_due(&pressed(at(&mut readings, 4, 2), true)));
+    assert!(!policy.pressure_release_due(&pressed(at(&mut readings, 6, 3), true)));
+    let soon = PRESSURE_RELEASE_AFTER.as_secs() + 2;
+    assert!(!policy.pressure_release_due(&pressed(at(&mut readings, soon, 4), true)));
+    let next = PRESSURE_RELEASE_AFTER.as_secs() + 4;
+    assert!(policy.pressure_release_due(&pressed(at(&mut readings, next, 5), true)));
+    assert!(!policy.release_due(&pressed(at(&mut readings, next + 2, 6), true)));
+}
+
+/// RSS is over the line only strictly above a set line; no line, no
+/// pressure.
+#[test]
+fn rss_is_over_the_shed_line_only_strictly_above_a_set_line() {
+    let rss = [0, 499, 500, 501, u64::MAX];
+    assert_eq!(
+        rss.map(|mb| over_shed_line(mb, 500)),
+        [false, false, false, true, true]
+    );
+    assert_eq!(rss.map(|mb| over_shed_line(mb, 0)), [false; 5]);
+    assert!(over_shed_line(2, 1) && !over_shed_line(1, 1));
 }

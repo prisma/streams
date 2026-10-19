@@ -32,6 +32,9 @@ const RERELEASE_AFTER: Duration = Duration::from_secs(60);
 /// (Q0 PROFILE §4d: 1-7 MiB more).
 const COLLECT_ROUNDS: u32 = 3;
 const COLLECT_EVERY: Duration = Duration::from_secs(30);
+/// The least time between two releases under memory pressure (RSS over the
+/// shed line, quiet or not): the caches refill from the store between them.
+const PRESSURE_RELEASE_AFTER: Duration = Duration::from_secs(30);
 
 /// One tick's reading of the instance.
 #[derive(Clone, Copy, Debug)]
@@ -45,6 +48,8 @@ struct Reading {
     unabsorbed: u64,
     /// Bytes inserted into the caches since they were last released.
     refilled: u64,
+    /// The sampled RSS is over a set shed line: writes are being shed.
+    over_line: bool,
 }
 
 /// When to release, as a pure function of successive readings.
@@ -56,6 +61,8 @@ struct IdlePolicy {
     released_at: Option<MonotonicNow>,
     /// The last release, and the collect rounds requested since.
     collecting: Option<(MonotonicNow, u32)>,
+    /// The last release under memory pressure.
+    pressed_at: Option<MonotonicNow>,
 }
 
 impl IdlePolicy {
@@ -65,7 +72,24 @@ impl IdlePolicy {
             quiet_since: first.now,
             released_at: None,
             collecting: None,
+            pressed_at: None,
         }
+    }
+
+    /// Whether the caches are released for memory pressure at `reading`:
+    /// RSS is over the shed line, so writes are being shed, and no pressure
+    /// release came in the last `PRESSURE_RELEASE_AFTER`. Quiet or not: a
+    /// shed must lower what the instance holds, and the caches are the
+    /// memory it can let go of at once.
+    fn pressure_release_due(&mut self, reading: &Reading) -> bool {
+        let due = reading.over_line
+            && self
+                .pressed_at
+                .is_none_or(|at| reading.now.since(at) >= PRESSURE_RELEASE_AFTER);
+        if due {
+            self.pressed_at = Some(reading.now);
+        }
+        due
     }
 
     /// Whether the caches are released at `reading`. An arrival starts a new
@@ -159,8 +183,14 @@ async fn run(
             // A request that arrived during the flush ends the quiet period,
             // and with it this release and its collect rounds.
             if !policy.arrived(&read(&admission, &shards, &runtime)) {
-                release(&runtime);
+                release(&runtime, "idle");
             }
+        }
+        // Under load the workers are not held for a collect: each collects
+        // its empty pages at its next park.
+        if policy.pressure_release_due(&reading) {
+            release(&runtime, "over the shed line");
+            super::allocator::request_collect();
         }
         if policy.collect_due(reading.now) {
             super::allocator::request_collect();
@@ -188,7 +218,15 @@ fn read(
         .map(|cache| cache.inserted_bytes())
         .iter()
         .sum(),
+        over_line: over_shed_line(admission.rss_mb(), admission.rss_shed_mb()),
     }
+}
+
+/// Whether a sampled RSS of `rss_mb` is over a shed line of `line_mb` (0:
+/// no line), as the write gate measures it without the absorber's
+/// reservation: strictly above.
+fn over_shed_line(rss_mb: u64, line_mb: u64) -> bool {
+    line_mb > 0 && rss_mb > line_mb
 }
 
 /// Flushes every open shard's memtable to an L0 table. The engine's flush
@@ -209,10 +247,12 @@ async fn flush_memtables(shards: &ShardDirectory) {
     }
 }
 
-/// Releases the three block caches and every postings slice. Unused slices
-/// after a quiet period are the sweep's tested zero-horizon case: a swept
-/// segment's warm absence proof is poisoned, so its next read reloads.
-fn release(runtime: &RuntimeCaps) {
+/// Releases the three block caches and every postings slice, at idle or
+/// under memory pressure (`why`). A swept segment's warm absence proof is
+/// poisoned, so its next read reloads; the zero-horizon sweep is tested
+/// after a quiet period and beside live keyed reads, appends and installs
+/// (DST `idle_release`).
+fn release(runtime: &RuntimeCaps, why: &'static str) {
     let shared = runtime.shared_cache.release();
     let history = runtime.history.cache.release();
     let telemetry = runtime.telemetry.cache.release();
@@ -226,7 +266,8 @@ fn release(runtime: &RuntimeCaps) {
         history_inserted_bytes = history,
         telemetry_inserted_bytes = telemetry,
         postings_slices = postings,
-        "idle: released the block caches and the postings slices"
+        why,
+        "released the block caches and the postings slices"
     );
 }
 
