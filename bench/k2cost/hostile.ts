@@ -56,6 +56,40 @@ import type { RunEnv } from "./tenants.ts";
 
 const MAX_PAGE = 8 << 20;
 
+/** The pairs of h11t, h11t-fresh and probes in flight at once. Each pair
+ * sends its requests one after the other, as before; only separate pairs
+ * overlap, so a rig that answers in ~110 ms still meets the legs' rates
+ * (probes' six requests and h11t's two in a pair at 10 and 8 pairs a
+ * second need 45 and 90 ms answers one pair at a time). The rate caps
+ * stay what they were: no pair starts before its turn. */
+export const PAIRS_IN_FLIGHT = 8;
+
+/** At most `max` holders at once; enter() waits for a free place. */
+export class Flight {
+  private n = 0;
+  private waiting: Array<() => void> = [];
+  private all = new Set<Promise<void>>();
+  constructor(readonly max: number) {}
+  private async enter(): Promise<void> {
+    while (this.n >= this.max) await new Promise<void>((r) => this.waiting.push(r));
+    this.n++;
+  }
+  /** Waits for a free place, then runs `job` without waiting for it. */
+  async start(job: () => Promise<void>): Promise<void> {
+    await this.enter();
+    const p: Promise<void> = job().finally(() => {
+      this.n--;
+      this.all.delete(p);
+      this.waiting.shift()?.();
+    });
+    this.all.add(p);
+  }
+  /** Every job started, finished. */
+  async drain(): Promise<void> {
+    while (this.all.size) await Promise.all(this.all);
+  }
+}
+
 const pct = (xs: number[], p: number): number | null => {
   if (!xs.length) return null;
   const s = [...xs].sort((a, b) => a - b);
@@ -390,14 +424,17 @@ async function timedPairs(env: RunEnv, leg: LegSpec, signal: AbortSignal, side: 
     const j = rng.int(i + 1);
     [named[i], named[j]] = [named[j]!, named[i]!];
   }
-  // One request at a time, on the leg's own keep-alive pool (conn-pool.ts).
+  // Each pair's requests one after the other, on the leg's own keep-alive
+  // pool (conn-pool.ts). A pair once started runs to its end: the leg's
+  // window stops new pairs, never one in flight, whose answer would
+  // otherwise be the harness's own abort (a transport difference).
   const pool = env.pools.get(`leg:${leg.leg}`);
   const anon = async (path: string): Promise<{ ms: number; ans: string }> => {
-    if ((await pool.acquire(signal)) === null) return { ms: 0, ans: "0:transport" };
+    if ((await pool.acquire()) === null) return { ms: 0, ans: "0:transport" };
     const t0 = performance.now();
     let ans = "0:transport";
     try {
-      const res = await pool.send(env.base + path, "GET", {}, undefined, signal);
+      const res = await pool.send(env.base + path, "GET", {}, undefined, AbortSignal.timeout(60_000));
       ans = `${res.status}:${errCode({ status: res.status, headers: res.headers, body: res.body, ms: 0 }) || "-"}`;
     } catch {
       // counted as a transport answer
@@ -408,40 +445,50 @@ async function timedPairs(env: RunEnv, leg: LegSpec, signal: AbortSignal, side: 
   };
   const namedMs: number[] = [];
   const neverMs: number[] = [];
+  const starts: number[] = [];
   const answers: Record<string, Record<string, number>> = { [side]: {}, never: {} };
   let differences = 0;
   const examples: string[] = [];
   // At most `rate` pairs a second: a pair starts no sooner than 1000/rate
   // ms after the one before it started, and a late pair never makes the
   // next one early, so after a stall the leg does not burst to catch up
-  // (each request may spend one of the cell's lookups).
+  // (each request may spend one of the cell's lookups). Up to
+  // PAIRS_IN_FLIGHT pairs overlap; a pair's own two requests never do,
+  // and its quiet and never samples are kept side by side for the KS test.
+  const flight = new Flight(PAIRS_IN_FLIGHT);
   let due = performance.now();
   let last: number | null = null;
   let gapMin = Infinity;
   for (let i = 0; i < pairs && !signal.aborted; i++) {
     while (performance.now() < due && !signal.aborted) await sleep(due - performance.now(), signal);
     if (signal.aborted) break;
-    const start = performance.now();
-    if (last !== null) gapMin = Math.min(gapMin, start - last);
-    last = start;
-    due = start + 1000 / rate;
-    const [b, name] = named[i % named.length]!;
-    const path = (n: string) => `/v1/streams/${encName(n)}/watches/w/keys/0000000000000000?cap=${encodeURIComponent(b.id)}.x&timeoutMs=0`;
-    const first = rng.next() < 0.5;
-    const one = first ? await anon(path(name)) : null;
-    const two = await anon(path(`never/${env.plan.manifest.name}-${i}`));
-    const q = one ?? (await anon(path(name)));
-    namedMs.push(q.ms);
-    neverMs.push(two.ms);
-    bump(answers[side]!, q.ans);
-    bump(answers.never!, two.ans);
-    if (q.ans !== two.ans) {
-      differences++;
-      if (examples.length < 5) examples.push(`pair ${i}: ${side} ${q.ans}, never ${two.ans}`);
-    }
+    await flight.start(async () => {
+      if (signal.aborted) return; // the window closed while it waited for a place
+      const start = performance.now();
+      if (last !== null) gapMin = Math.min(gapMin, start - last);
+      last = start;
+      starts.push(start);
+      due = start + 1000 / rate;
+      const [b, name] = named[i % named.length]!;
+      const path = (n: string) => `/v1/streams/${encName(n)}/watches/w/keys/0000000000000000?cap=${encodeURIComponent(b.id)}.x&timeoutMs=0`;
+      const first = rng.next() < 0.5;
+      const one = first ? await anon(path(name)) : null;
+      const two = await anon(path(`never/${env.plan.manifest.name}-${i}`));
+      const q = one ?? (await anon(path(name)));
+      namedMs.push(q.ms);
+      neverMs.push(two.ms);
+      bump(answers[side]!, q.ans);
+      bump(answers.never!, two.ans);
+      if (q.ans !== two.ans) {
+        differences++;
+        if (examples.length < 5) examples.push(`pair ${i}: ${side} ${q.ans}, never ${two.ans}`);
+      }
+    });
   }
+  await flight.drain();
   return {
-    pairs: namedMs.length, rate, gap_min_ms: Number.isFinite(gapMin) ? round3(gapMin) : null, target: cls,
+    pairs: namedMs.length, rate, in_flight_max: PAIRS_IN_FLIGHT, gap_min_ms: Number.isFinite(gapMin) ? round3(gapMin) : null,
+    starts_ms: starts.map((t) => round3(t - starts[0]!)), target: cls,
     names: { projects: new Set(named.map(([p]) => p.id)).size, names: named.length },
     answers, differences, examples, ks: ks(namedMs, neverMs),
     [`${side}_p50_ms`]: pct(namedMs, 0.5), never_p50_ms: pct(neverMs, 0.5), [`${side}_ms`]: namedMs.map(round3), never_ms: neverMs.map(round3),
@@ -490,38 +537,48 @@ export async function probes(env: RunEnv, leg: LegSpec, signal: AbortSignal): Pr
   const t0 = performance.now();
   let done = 0;
   const seen = new Set<string>();
+  // Pair i starts no sooner than i/rate s into the leg, with up to
+  // PAIRS_IN_FLIGHT pairs at once; a pair's six requests go one after the
+  // other. Two pairs in flight never share a (prober, name): each pair is
+  // a distinct one, and a prober's create touches only its own name.
+  const flight = new Flight(PAIRS_IN_FLIGHT);
   for (let i = 0; i < todo.length && !signal.aborted; i++) {
     await sleep(t0 + (i * 1000) / rate - performance.now(), signal);
-    const [a, name] = todo[i]!;
-    const bs = holders.get(name)!;
-    const b = bs[rng.int(bs.length)]!;
-    seen.add(`${a.id} ${name}`);
-    const http = new Http(env.base, env.headers.get(a.id)!, meter, env.pools.get(`leg:${leg.leg}`));
-    const never = `never/${env.plan.manifest.name}-p${i}`;
-    const r1 = await http.call("GET", `/v1/streams/${encName(name)}/records?cursor=beginning`);
-    const r2 = await http.call("GET", `/v1/streams/${encName(never)}/records?cursor=beginning`);
-    if (shape(r1, [name, encName(name)]) !== shape(r2, [never, encName(never)])) {
-      differences.name++;
-      if (examples.length < 5) examples.push(`pair ${i} ${a.id} -> ${b.id} ${name}: ${shape(r1, [name])} vs ${shape(r2, [never])}`.slice(0, 400));
-    }
-    const ghost = `proj_never_${env.plan.manifest.name.replaceAll("-", "_")}_${i}`;
-    const u1 = await http.call("GET", `/v1/projects/${encodeURIComponent(b.id)}/usage`);
-    const u2 = await http.call("GET", `/v1/projects/${encodeURIComponent(ghost)}/usage`);
-    bump(usageAnswers, answer(u1));
-    if (shape(u1, [b.id]) !== shape(u2, [ghost])) {
-      differences.usage++;
-      if (examples.length < 5) examples.push(`pair ${i} usage ${a.id} -> ${b.id}: ${shape(u1, [b.id])} vs ${shape(u2, [ghost])}`.slice(0, 400));
-    }
-    const p = await http.call("PUT", `/v1/streams/${encName(name)}`, { body: '{"format":{"kind":"json"}}', contentType: "application/json" });
-    bump(put, String(p.status));
-    if (p.status === 201 || p.status === 200) bump(del, String((await http.call("DELETE", `/v1/streams/${encName(name)}`)).status));
-    done++;
+    if (signal.aborted) break;
+    await flight.start(async () => {
+      if (signal.aborted) return; // the window closed while it waited for a place
+      const [a, name] = todo[i]!;
+      const bs = holders.get(name)!;
+      const b = bs[rng.int(bs.length)]!;
+      seen.add(`${a.id} ${name}`);
+      const http = new Http(env.base, env.headers.get(a.id)!, meter, env.pools.get(`leg:${leg.leg}`));
+      const never = `never/${env.plan.manifest.name}-p${i}`;
+      const r1 = await http.call("GET", `/v1/streams/${encName(name)}/records?cursor=beginning`);
+      const r2 = await http.call("GET", `/v1/streams/${encName(never)}/records?cursor=beginning`);
+      if (shape(r1, [name, encName(name)]) !== shape(r2, [never, encName(never)])) {
+        differences.name++;
+        if (examples.length < 5) examples.push(`pair ${i} ${a.id} -> ${b.id} ${name}: ${shape(r1, [name])} vs ${shape(r2, [never])}`.slice(0, 400));
+      }
+      const ghost = `proj_never_${env.plan.manifest.name.replaceAll("-", "_")}_${i}`;
+      const u1 = await http.call("GET", `/v1/projects/${encodeURIComponent(b.id)}/usage`);
+      const u2 = await http.call("GET", `/v1/projects/${encodeURIComponent(ghost)}/usage`);
+      bump(usageAnswers, answer(u1));
+      if (shape(u1, [b.id]) !== shape(u2, [ghost])) {
+        differences.usage++;
+        if (examples.length < 5) examples.push(`pair ${i} usage ${a.id} -> ${b.id}: ${shape(u1, [b.id])} vs ${shape(u2, [ghost])}`.slice(0, 400));
+      }
+      const p = await http.call("PUT", `/v1/streams/${encName(name)}`, { body: '{"format":{"kind":"json"}}', contentType: "application/json" });
+      bump(put, String(p.status));
+      if (p.status === 201 || p.status === 200) bump(del, String((await http.call("DELETE", `/v1/streams/${encName(name)}`)).status));
+      done++;
+    });
   }
+  await flight.drain();
   return {
     // first_contacts: distinct (prober, name) pairs read, the bar's value;
     // available: every such pair the classes allow (probers x names).
     pairs: done, first_contacts: seen.size, available: combos.length, probers: from.length, names: holders.size,
-    rate, from: from[0]!.cls.class, to: arg(leg, "to", "warm"), differences, examples,
+    rate, in_flight_max: PAIRS_IN_FLIGHT, from: from[0]!.cls.class, to: arg(leg, "to", "warm"), differences, examples,
     usage_answers: usageAnswers, put, delete: del, requests: meter.tot.get("requests"), error_codes: meter.errorCodes,
   };
 }

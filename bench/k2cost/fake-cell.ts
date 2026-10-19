@@ -14,7 +14,8 @@
 //   GET /v1/streams (catalog), DELETE, GET /v1/projects/{p}/usage (meters
 //   counted the way the generators count them) and the watch capability
 //   path (403 `watch_unauthorized`; each request recorded in `watches`,
-//   and `watchStall` answers one late).
+//   `watchHold` holds every one that arrives while it is set, and
+//   `watchPeak` is the most answered at once).
 // - The server's descriptor cache, per (project, name): a create fills the
 //   slot, and any authenticated request naming the stream fills it again
 //   once it is `slotTtlMs` old (a hit on a fresh slot does not renew it); a
@@ -25,6 +26,8 @@
 // - `refuse(project, n, status, code)` answers the project's next n
 //   requests with that status (code null: an untyped body); `plant` puts a
 //   record into a project's stream without metering it (a leak).
+// - `delayMs` answers every authenticated request that much later (a slow
+//   rig).
 
 export interface Meters {
   ingestRecords: number;
@@ -89,9 +92,14 @@ export class FakeCell {
    * whether that project holds the name, and whether the cell took a
    * store fetch to answer it. */
   watches: Array<{ t: number; project: string; name: string; held: boolean; store: boolean }> = [];
-  /** The watch request at this index of `watches` is answered this many
-   * ms late: a stall the timed pairs must not catch up after. */
-  watchStall: { index: number; ms: number } | null = null;
+  /** While set, every watch request waits for it before it is answered:
+   * a stall the timed pairs must not catch up after. */
+  watchHold: Promise<void> | null = null;
+  /** Watch requests being answered now, and the most at once. */
+  watchInflight = 0;
+  watchPeak = 0;
+  /** Every authenticated request is answered this many ms late. */
+  delayMs = 0;
   private waiters = new Set<() => void>();
   /** When each (project, name) slot was last filled (performance.now()). */
   private slots = new Map<string, number>();
@@ -210,9 +218,14 @@ export class FakeCell {
       const project = cap.split(".")[0] ?? "";
       const at = this.slots.get(`${project} ${name}`);
       const free = at !== undefined && (performance.now() - at < this.slotTtlMs || this.expiredAnsweredFree);
-      const index = this.watches.push({ t: performance.now(), project, name, held: this.ns(project).has(name), store: !free }) - 1;
-      if (this.watchStall?.index === index) await Bun.sleep(this.watchStall.ms);
-      if (!free && this.storeMs > 0) await Bun.sleep(this.storeMs);
+      this.watches.push({ t: performance.now(), project, name, held: this.ns(project).has(name), store: !free });
+      this.watchPeak = Math.max(this.watchPeak, ++this.watchInflight);
+      try {
+        if (this.watchHold) await this.watchHold;
+        if (!free && this.storeMs > 0) await Bun.sleep(this.storeMs);
+      } finally {
+        this.watchInflight--;
+      }
       return error(403, "watch_unauthorized");
     }
     const token = (req.headers.get("authorization") ?? "").replace(/^Bearer /, "");
@@ -220,6 +233,7 @@ export class FakeCell {
     if (!project) return error(401, "unauthorized");
     this.requests.set(project, (this.requests.get(project) ?? 0) + 1);
     this.trace?.push([project, req.method, path, performance.now()]);
+    if (this.delayMs > 0) await Bun.sleep(this.delayMs);
     const refusal = this.refusals.get(project);
     if (refusal && refusal.left > 0) {
       refusal.left--;

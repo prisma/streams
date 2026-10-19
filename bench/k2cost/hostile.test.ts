@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HeaderSource, Http, Meter, Opts } from "./common.ts";
 import { FakeCell } from "./fake-cell.ts";
-import { bodyOf, h9, h9b, h9bAnswers, ks } from "./hostile.ts";
+import { PAIRS_IN_FLIGHT, bodyOf, h9, h9b, h9bAnswers, ks } from "./hostile.ts";
 import { ownerOf } from "./oracle.ts";
 import { type Manifest, checkManifest, expand } from "./tenant-plan.ts";
 import { run } from "./tenants.ts";
@@ -221,25 +221,68 @@ test("H11t fails rather than time a quiet name nobody created: its names come on
 
 test("H11t's pairs start at least 1000/rate ms apart and never catch up after a stall", async () => {
   cell.watches = [];
-  // The first request of pair 10 is answered 400 ms late.
-  cell.watchStall = { index: 20, ms: 400 };
+  cell.watchPeak = 0;
+  // 0.3 s into the leg the cell holds every watch request for 0.6 s: the
+  // pairs in flight fill every slot, and the leg waits for one to free.
+  const m: Manifest = {
+    name: "pacing", seed: 7, duration: 3,
+    classes: [{ class: "target", count: 1, role: "idle", streams: 2, prefix: "v/", phases: [{ mode: "setup", at: 0 }] }],
+    legs: [{ leg: "h11t", at: 0.2, args: { pairs: 40, rate: 25, target: "target" } }],
+  };
+  let release = () => {};
+  const { out } = await runManifest(m, "pace", () => {
+    setTimeout(() => {
+      cell.watchHold = new Promise<void>((r) => (release = r));
+      setTimeout(() => {
+        cell.watchHold = null;
+        release();
+      }, 600);
+    }, 500);
+  });
+  const h = json(join(out, "legs", "h11t-0.json"));
+  // One gap holds the stall; after it the pairs keep the 40 ms beat, none
+  // sent in a burst to catch up, and never more than PAIRS_IN_FLIGHT at once.
+  const starts = h.starts_ms as number[];
+  const gaps = starts.slice(1).map((t, k) => t - starts[k]!);
+  expect([h.pairs, starts.length, gaps.filter((g) => g >= 200).length, gaps.filter((g) => g < 39.5).map((g) => Math.round(g))])
+    .toEqual([40, 40, 1, []]);
+  expect([h.rate, h.gap_min_ms >= 39.5, cell.watchPeak, cell.watches.length]).toEqual([25, true, PAIRS_IN_FLIGHT, 80]);
+}, 30_000);
+
+test("on a slow cell H11t and the probes keep up to PAIRS_IN_FLIGHT pairs in flight, each pair in order, so they meet their pairs", async () => {
+  cell.watches = [];
+  cell.watchPeak = 0;
+  // Every watch answer takes 60 ms (a pair 120 ms) and every authenticated
+  // request 30 ms (a probe 180 ms): one pair at a time would run 12 timed
+  // pairs and 8 probes in the legs' 1.5 s windows.
+  cell.storeMs = 60;
+  cell.delayMs = 30;
   try {
     const m: Manifest = {
-      name: "pacing", seed: 7, duration: 3,
-      classes: [{ class: "target", count: 1, role: "idle", streams: 2, prefix: "v/", phases: [{ mode: "setup", at: 0 }] }],
-      legs: [{ leg: "h11t", at: 0.2, args: { pairs: 30, rate: 25, target: "target" } }],
+      name: "slow", seed: 4, duration: 2.5,
+      classes: [
+        { class: "target", count: 1, role: "compliant", streams: 10, prefix: "v/", phases: [{ mode: "setup", at: 0 }] },
+        { class: "ghost", count: 3, role: "idle", phases: [] },
+      ],
+      legs: [
+        { leg: "h11t", at: 0.5, secs: 1.5, args: { pairs: 40, rate: 50, target: "target" } },
+        { leg: "probes", at: 0.5, secs: 1.5, args: { pairs: 30, rate: 200, from: "ghost", to: "target" } },
+      ],
     };
-    const { out } = await runManifest(m, "pace");
-    // Each pair sends its two requests one after the other: a pair starts
-    // with the cell's request 2k. One gap holds the stall; after it the
-    // pairs keep the 40 ms beat, none sent in a burst to catch up.
-    const starts = cell.watches.filter((_, k) => k % 2 === 0).map((w) => w.t);
-    const gaps = starts.slice(1).map((t, k) => t - starts[k]!);
-    expect([starts.length, gaps.filter((g) => g >= 400).length, gaps.filter((g) => g < 10).map((g) => Math.round(g))]).toEqual([30, 1, []]);
+    const { out, ids } = await runManifest(m, "slow");
     const h = json(join(out, "legs", "h11t-0.json"));
-    expect([h.pairs, h.rate, h.gap_min_ms >= 40]).toEqual([30, 25, true]);
+    expect([h.pairs, h.differences, h.quiet_ms.length, h.never_ms.length, h.gap_min_ms >= 19.5]).toEqual([40, 0, 40, 40, true]);
+    // Each pair sends its second request only after its first answered:
+    // never more watch requests in flight than pairs.
+    expect([cell.watchPeak > 1, cell.watchPeak <= PAIRS_IN_FLIGHT]).toEqual([true, true]);
+    const timed = cell.watches.filter((w) => w.project === ids.target0);
+    expect([timed.filter((w) => w.held && w.store).length, timed.filter((w) => !w.held && w.store).length]).toEqual([40, 40]);
+    const p = json(join(out, "legs", "probes-1.json"));
+    expect([p.pairs, p.first_contacts, p.available, p.differences, p.put, p.delete])
+      .toEqual([30, 30, 30, { name: 0, usage: 0 }, { "201": 30 }, { "204": 30 }]);
   } finally {
-    cell.watchStall = null;
+    cell.storeMs = 0;
+    cell.delayMs = 0;
   }
 }, 30_000);
 
