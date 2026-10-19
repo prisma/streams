@@ -14,6 +14,7 @@ import { canary, credential, exportCell, revokeOne } from "./credentials";
 import { keysAdd, keysRetire } from "./keys";
 import { offboard } from "./offboard";
 import { allow, disallow, gate, quota, resume, suspend } from "./owner";
+import { reprofile } from "./reprofile";
 
 const USAGE = `usage: cell-admin <command> --state DIR|s3://BUCKET/cells/CELL [--s3-credentials FILE] [flags]
   init      --cell-id C --deployment-project P --account A (--key-file K | --public-key FILE)
@@ -22,6 +23,7 @@ const USAGE = `usage: cell-admin <command> --state DIR|s3://BUCKET/cells/CELL [-
   admit     --project P --workspace W [--quota field=value]... [--scopes "s ..."] [--prefix p]...
             [--profile F]...
   check-sizing --profile F [--profile F]...
+  reprofile --recorded-profile F [--recorded-profile F]... --profile F [--profile F]...
   token     --credential C --key-file K --out FILE [--ttl SECS] [--sub NAME]
   offboard  --project P [--cell-url URL --key-file K] [--max-walks N] [--settle-secs S] [--wait-secs S]
   list      [--json]
@@ -62,6 +64,14 @@ const COMMANDS = {
   "check-sizing": {
     run: sizingCheck,
     spec: { single: ["state", "s3-credentials"], multi: ["profile"], required: ["state", "profile"] },
+  },
+  reprofile: {
+    run: reprofile,
+    spec: {
+      single: ["state", "s3-credentials"],
+      multi: ["recorded-profile", "profile"],
+      required: ["state", "recorded-profile", "profile"],
+    },
   },
   token: {
     run: token,
