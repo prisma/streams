@@ -2584,6 +2584,17 @@
     "scenarios": []
   },
   {
+    "name": "a_superseded_boots_last_read_window_is_billed_once",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "fdb45256da3208e7f24ecb61f38d4c088f0ce733c8140497619477beb0b7a8ba",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fence_yield.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_superseded_close_cannot_write_or_close",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

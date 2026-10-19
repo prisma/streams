@@ -219,3 +219,116 @@ async fn a_restarted_newest_serves_and_the_superseded_stays_out() {
     assert_eq!(started(&c), 1, "C opened once");
     assert_eq!(stored(&c).await, ACKED);
 }
+
+/// A deploy's two processes share the cell's read spool (one instance name),
+/// so B, the newer boot, opening it fences A's handle. A keeps serving reads
+/// until it stops, and its stop owes the ledger that window; the spool
+/// refuses it ("detected newer DB client"), so it once died with A. Every
+/// read A metered, before and after B started, and the appends of both,
+/// reach the rollup once, after B's sweeps and drains, also when an import
+/// whose delete was lost imports the handed-off window a second time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_superseded_boots_last_read_window_is_billed_once() {
+    let _clock = crate::billing::billing_clock_lock().read().await;
+    let store = mem();
+    let a = boot(&store, 1).await;
+    crate::billing::spawn_telemetry(a.state.clone(), &a.tasks);
+    wait_spool(&a).await;
+    assert_eq!(hreq(a.addr, "PUT", STREAM, &JSON, b"").await.0, 201);
+    assert_eq!(append(&a, r#"[{"n":0}]"#).await.0, 204);
+    for _ in 0..3 {
+        assert_eq!(read(&a).await.0, 200);
+    }
+    let b = boot(&store, 2).await;
+    crate::billing::open_read_spool(&b.state).await.unwrap();
+    for _ in 0..3 {
+        assert_eq!(read(&a).await.0, 200, "A still serves its shard");
+    }
+    assert_eq!(
+        a.state.billing.unflushed_reads().2,
+        0,
+        "no window sealed yet"
+    );
+    let metered = a.state.billing.reads().snapshot_active();
+    assert_eq!(metered.len(), 1, "{metered:?}");
+    let (identity, owed) = metered.into_iter().next().unwrap();
+    assert_eq!(owed.read_operations, 6, "{owed:?}");
+    let report = a.tasks.shutdown(Duration::from_secs(10)).await;
+    assert!(report.aborted.is_empty(), "A's stop: {report:?}");
+    assert_eq!(a.state.billing.unflushed_reads(), (0, 0, 0));
+    assert_eq!(handed_off(&store).await.len(), 1, "A handed its window off");
+    assert_eq!(append(&b, r#"[{"n":1}]"#).await.0, 204);
+    let rollup = crate::rollup::UsageRollup::open(mem(), "", &b.state.config);
+    super::fixture_http::install_rollup(&b.state, rollup.await.unwrap()).await;
+    let handed = handed_off(&store).await;
+    for pass in 0..2 {
+        crate::billing::sweep_owned_outboxes(&b.state).await;
+        b.state.billing.reads().seal_if_aged(0);
+        let drain = || crate::billing::drain_once(&b.state);
+        while drain().await.expect("B's drain") > 0 {}
+        while crate::billing::rollup_step(&b.state).await.expect("rollup") > 0 {}
+        assert!(handed_off(&store).await.is_empty(), "the import deleted it");
+        if pass == 0 {
+            // An import whose delete was lost imports the window again.
+            restore(&store, &handed).await;
+        }
+    }
+    let (year, month) = crate::billing::utc_year_month(crate::shard::now_ms());
+    let month = crate::billing::month_str(year, month);
+    let rollup = b.state.rollup.get().unwrap();
+    let (account, project) = (&identity.account_id, &identity.project_id);
+    let row = rollup.month_row(&month, account, project, &identity.stream_id);
+    let row = row.await.unwrap().expect("A's reads reached the rollup");
+    let billed = (
+        row.read_operations,
+        row.read_payload_bytes,
+        row.read_records,
+    );
+    let owed = (
+        owed.read_operations,
+        owed.read_payload_bytes,
+        owed.read_records,
+    );
+    assert_eq!(billed, owed, "A's metered reads, billed once");
+    let named = rollup.name_row(&month, account, project, &identity.stream_name);
+    let named = named.await.unwrap().expect("the stream's ingest");
+    assert_eq!(named.ingest_records, 2, "A's and B's appends, once each");
+}
+
+/// The handed-off read windows in the store, with their bodies.
+async fn handed_off(store: &Arc<dyn ObjectStore>) -> Vec<(object_store::path::Path, bytes::Bytes)> {
+    let prefix = object_store::path::Path::from("telemetry/read-handoff");
+    let listed = store.list(Some(&prefix));
+    let listed = futures_util::TryStreamExt::try_collect::<Vec<_>>(listed);
+    let mut handed = Vec::new();
+    for meta in listed.await.unwrap() {
+        let body = store
+            .get(&meta.location)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        handed.push((meta.location, body));
+    }
+    handed
+}
+
+async fn restore(
+    store: &Arc<dyn ObjectStore>,
+    handed: &[(object_store::path::Path, bytes::Bytes)],
+) {
+    for (path, body) in handed {
+        store.put(path, body.clone().into()).await.unwrap();
+    }
+}
+
+async fn wait_spool(rig: &HttpRig) {
+    for _ in 0..500 {
+        if rig.state.billing.read_spool_open() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the read spool never opened");
+}

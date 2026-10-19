@@ -23,6 +23,7 @@ use crate::http::AppState;
 use serde::{Deserialize, Serialize};
 
 mod read_accumulator;
+mod read_handoff;
 mod read_records;
 pub(crate) use read_accumulator::{
     READ_FLUSH_INTERVAL_MS, READ_SEALED_MAX_BATCHES, ReadUsageAccumulator, RowDelta,
@@ -1522,6 +1523,7 @@ pub(crate) fn scheduler_held(state: &std::sync::Arc<crate::http::AppState>) -> u
 /// customer engine that raced into the mark window costs one benign
 /// re-open on its next request.
 pub(crate) async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>) {
+    read_handoff::import(state).await;
     let budget = sweep_resident_budget(&state.config.billing);
     let cycle = state.billing.next_sweep_cycle();
 

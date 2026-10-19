@@ -227,6 +227,25 @@ impl BillingService {
         self.inner.read_spool.get().is_some()
     }
 
+    /// Every read batch this process holds, its active window sealed, under
+    /// the drain guard: unless accepted, they return to the accumulator.
+    pub(crate) fn read_drain_all(&self) -> ReadDrain<'_> {
+        let reads = &self.inner.reads;
+        let mut drain = ReadDrain::new(reads, usize::MAX);
+        reads.seal_if_aged(0);
+        drain.batches.extend(reads.drain_sealed(usize::MAX));
+        drain
+    }
+
+    /// Persist batches another boot handed off into the open spool.
+    pub(crate) async fn spool_handed_off(&self, batches: &[ReadBatch]) -> Result<(), String> {
+        let spool = self.inner.read_spool.get().ok_or("read spool not open")?;
+        let persisted = spool.persist_all(batches).await;
+        persisted
+            .map(drop)
+            .map_err(|e| format!("read spool persist: {e}"))
+    }
+
     /// Persist sealed read batches into the spool before the ledger.
     pub(crate) async fn spool_sealed_reads(&self, max: usize) -> Result<(), String> {
         match self.inner.read_spool.get() {

@@ -20,6 +20,7 @@
     "batch": 35,
     "billing": 359,
     "billing_read_records": 42,
+    "billing_read_handoff": 6,
     "billing_replaced": 25,
     "billing_storage_clock": 14,
     "billing_telemetry_loop": 4,

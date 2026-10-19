@@ -159,6 +159,10 @@ impl MetricsEmission {
 /// take one round inside it is the outage the spool already owns; the
 /// `ReadDrain` guard requeues whatever a cut round still held, exactly as it
 /// does for an interrupted ordinary round.
+/// The handoff after a terminal round: one object write, so the round's 5 s
+/// and this stay inside the supervisor's 10 s grace.
+const HANDOFF_MAX: Duration = Duration::from_secs(2);
+
 async fn terminal_round(state: &Arc<crate::http::AppState>, bound: Duration) {
     state.billing.seal_aged_reads(0);
     match tokio::time::timeout(bound, drain_once(state)).await {
@@ -166,9 +170,24 @@ async fn terminal_round(state: &Arc<crate::http::AppState>, bound: Duration) {
             .runtime
             .telemetry
             .drain_succeeded(state.runtime.clock.now()),
-        Ok(Err(e)) => tracing::warn!("usage drain at shutdown: {e}"),
+        Ok(Err(e)) => {
+            tracing::warn!("usage drain at shutdown: {e}");
+            hand_off(state).await;
+        }
         Err(_elapsed) => tracing::warn!(
             "usage drain at shutdown did not finish inside {bound:?}; the spool keeps what the store accepted"
         ),
+    }
+}
+
+/// What a refused terminal round could not spool (a newer boot fenced this
+/// process's spool handle) goes to the spool's next holder. A round its
+/// bound cut keeps its batches in memory, as an interrupted round does.
+async fn hand_off(state: &Arc<crate::http::AppState>) {
+    match tokio::time::timeout(HANDOFF_MAX, super::read_handoff::hand_off(state)).await {
+        Ok(Ok(0)) => {}
+        Ok(Ok(count)) => tracing::warn!("read usage at shutdown: {count} batches handed off"),
+        Ok(Err(e)) => tracing::warn!("read usage at shutdown not handed off: {e}"),
+        Err(_elapsed) => tracing::warn!("read usage handoff did not finish inside {HANDOFF_MAX:?}"),
     }
 }
