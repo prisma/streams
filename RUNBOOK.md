@@ -1051,6 +1051,32 @@ that is not JSON or lacks a feed is a failed poll (`feeds bundle refused`
 in the log) and replaces nothing, so a malformed bundle left published
 takes the cell down the same way: republish a good bundle at once.
 
+**Reprofiling a shared cell.** `cell-admin init` records the digest of the
+layered profile (`compute-1g.env` under `shared-cell.env`), and `admit`,
+the issuer and `deploy-release.sh` (through `check-sizing`) refuse any
+other, so k and every ceiling stay fixed for the cell's life. A release
+whose profile changes only the block-cache sizes (`SHARED_CACHE_BYTES`,
+`HISTORY_CACHE_BYTES`, `POSTINGS_CACHE_BYTES`, `TELEMETRY_CACHE_BYTES`:
+the server's memory, not a ceiling; no sizing rule reads them) is taken
+with `cell-admin reprofile`. `deploy-release.sh` names the exact command
+when it refuses such a release. The procedure:
+1. Run `deploy-release.sh` for the new release. On "the layered profile
+   differs", read the refusal: it ends with `cell-admin reprofile --state
+   S --recorded-profile <the running release's deploy/profiles/*.env>
+   --profile <the new release's>`.
+2. Run that command. It refuses unless the `--recorded-profile` files give
+   the digest the cell records, and refuses any changed, added or removed
+   key outside the four, naming each one; such a change needs a new cell.
+   Accepted, it records the new digest by compare-and-swap, journals
+   `reprofile` with each key `was -> now`, and prints them. No feed changes.
+3. Run `deploy-release.sh` again at once, with `--issuer-release-dir`. Until
+   the issuer runs the new release its `profile_ok` is false and it
+   refuses every create `409 beta_at_capacity`; exchanges and existing
+   projects are unaffected.
+A rollback to the release before is the same command reversed: the new
+release's files as `--recorded-profile`, the old release's as `--profile`,
+then `deploy-release.sh` with the old release.
+
 **Packing by hand (u = 0.5).** Quotas oversubscribe by design: k = 8
 projects at their ceilings fill each shared bound exactly. Place projects
 by their expected load instead: on each envelope axis (requests/s,
@@ -1239,7 +1265,8 @@ keys feed: a rotation step out of order, or the compromise drill). `GET
 rate-limit refusals by bucket, `cache_age_secs`, `state_feed_version`
 against `published_feed_version`, `gate_open`, `profile_ok` (false: every
 create is refused 409 `beta_at_capacity` while `/healthz` stays 200; the
-release's profiles moved, see `check-sizing`), the offboarding backlog,
+release's profiles moved, see `check-sizing`, or the cell was reprofiled
+and the issuer's new release is not deployed yet), the offboarding backlog,
 `rehash_pending` and `live_credentials_by_pepper`.
 
 **What pages** ("What to alert on", Shared cells): row 21

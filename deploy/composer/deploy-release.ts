@@ -30,7 +30,10 @@
 //      one's (before step 7, which refuses any changed profile too, so
 //      each refusal is met as itself);
 //   7. `cell-admin check-sizing` accepts the release's profiles for the
-//      cell's state (D9: a cell's ceilings are fixed for its life);
+//      cell's state (D9: a cell's ceilings are fixed for its life); a
+//      refused profile that moved no ceiling names the `cell-admin
+//      reprofile` from the running release's profiles to this one's,
+//      which takes a change of the block-cache sizes alone;
 //   8. `prisma deploy deploy/composer/app.ts [--stage <stage>]` with the
 //      release's own pinned CLI, from the release root, in an environment
 //      of PATH, HOME, CELL_STAGE, CELL_DEPLOY_NONCE, PRISMA_REGION,
@@ -238,15 +241,34 @@ export async function platformChecks(run: Pick<Run, "stage" | "flags">, api: Pla
 }
 
 /// Step 7.
-async function checkSizing(run: Run): Promise<void> {
+async function checkSizing(run: Run, running: Release | null): Promise<void> {
   const lines: string[] = [];
   const io = { out: (l: string) => lines.push(l), err: (l: string) => lines.push(l) };
   const state = ["--state", run.flags.must("state")];
   const creds = run.flags.get("s3-credentials");
-  const argv = ["check-sizing", ...state, ...(creds ? ["--s3-credentials", creds] : [])];
-  const code = await cellAdmin([...argv, ...run.rules.PROFILES.flatMap((p) => ["--profile", fileIn(run.dir, p)])], io);
-  if (code !== 0) throw new AdminError(`the cell refuses the release's profiles: ${lines.join("; ")}`);
+  const cell = [...state, ...(creds ? ["--s3-credentials", creds] : [])];
+  const code = await cellAdmin(["check-sizing", ...cell, ...profileArgs("--profile", run.dir, run.rules)], io);
+  if (code !== 0) {
+    const moved = lines.some((l) => l.includes("the layered profile differs"));
+    const hint = moved ? await reprofileHint(run, cell, running) : "";
+    throw new AdminError(`the cell refuses the release's profiles: ${lines.join("; ")}${hint}`);
+  }
   for (const l of lines) run.out(`deploy-release: ${l}`);
+}
+
+const profileArgs = (flag: string, dir: string, rules: Rules) => rules.PROFILES.flatMap((p) => [flag, fileIn(dir, p)]);
+
+/// Step 7's way on when the profile moved and no ceiling did: the
+/// `cell-admin reprofile` from the running release's profiles to this
+/// one's, which takes the change when it is the block-cache sizes alone
+/// (RUNBOOK "Reprofiling a shared cell").
+async function reprofileHint(run: Run, cell: string[], running: Release | null): Promise<string> {
+  const dir = running === null ? null : join(dirname(run.dir), running.tag);
+  const recorded = dir === null
+    ? ["--recorded-profile", "<each profile the cell was initialised or last reprofiled with>"]
+    : profileArgs("--recorded-profile", dir, await rulesOf(dir));
+  const argv = ["reprofile", ...cell, ...recorded, ...profileArgs("--profile", run.dir, run.rules)];
+  return `; if only the block-cache sizes changed, reprofile the cell first (RUNBOOK "Reprofiling a shared cell"): cell-admin ${argv.join(" ")}`;
 }
 
 /// Every release directory beside this one (a release lives in a
@@ -571,7 +593,7 @@ export async function main(argv: readonly string[], out: (line: string) => void)
   const running = await runningRelease(run);
   const replaced = restart ? restarted(run, running) : null;
   if (running) await refuseCrossing(run, running.release);
-  await checkSizing(run);
+  await checkSizing(run, running?.release ?? null);
   if (!(await prismaDeploy(run, api, region))) {
     logDeploy(run, "deploy_failed");
     throw new AdminError(`prisma deploy failed: release ${run.release.tag} did not reach ${stage}`);

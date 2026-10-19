@@ -36,7 +36,9 @@
 # found among the releases beside this one; or, when no cell answers, the
 # release deploy-log.jsonl last deployed there; neither is "no cell yet",
 # accepted); and profiles
-# `cell-admin check-sizing` refuses. Then the release's own pinned `prisma
+# `cell-admin check-sizing` refuses (a profile that moved and no ceiling
+# with it is refused naming the `cell-admin reprofile` that takes a
+# change of the block-cache sizes alone: run it, then this again). Then the release's own pinned `prisma
 # deploy`, from the release root, then cell-check within 5 minutes. The
 # deploy's CELL_DEPLOY_NONCE is the release's tag, or the nonce
 # deploy-log.jsonl recorded for the stage's last live deploy when that was

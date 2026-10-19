@@ -14,7 +14,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { cleanup, initCell, readBundle } from "../cell-admin/test-rig";
+import { cleanup, initCell, readBundle, run as cellAdminRun } from "../cell-admin/test-rig";
 import { FakeStreamsCell } from "./fake-cell";
 import { FakePlatform } from "./fake-platform";
 import type { Release } from "./release";
@@ -322,6 +322,29 @@ describe("deploy-release.sh", () => {
       `release rc-4 sets MAX_REQUEST_BODY_BYTES 16777216, the running cell's release rc-1 ${was}: the cell's namespaces ` +
         "stored their body ceiling at creation and the binary refuses another");
     expect(w.cell.requests.filter((q) => q.startsWith("GET /v1/debug/load")).length).toBe(3);
+  }, 60_000);
+
+  test("refuses a release that retunes only the block caches with the cell-admin reprofile that takes it, and deploys it after", async () => {
+    const w = await world();
+    const { dir: d1, release: r1 } = release(w, "rc-1");
+    runs(w, r1);
+    const tuned = fakeTree((t) => {
+      const p = join(t, "deploy/profiles/shared-cell.env");
+      writeFileSync(p, readFileSync(p, "utf8").replace(/^SHARED_CACHE_BYTES=.*$/m, "SHARED_CACHE_BYTES=16777216"));
+    });
+    const { dir: d2 } = release(w, "rc-2", { tree: tuned });
+    const profiles = (flag: string, dir: string) =>
+      ["compute-1g.env", "shared-cell.env"].flatMap((name) => [flag, join(dir, "deploy", "profiles", name)]);
+    const reprofile = ["reprofile", "--state", w.state, ...profiles("--recorded-profile", d1), ...profiles("--profile", d2)];
+    const r = await deploy(w, "production", d2, withCell(w));
+    refusedBeforeDeploy(w, { ...r, err: r.err.replace(/digest [0-9a-f]{12} -> [0-9a-f]{12}/, "digest <d> -> <d>") },
+      "the cell refuses the release's profiles: cell-admin check-sizing: the layered profile differs from the one init " +
+        "recorded (digest <d> -> <d>): a cell's profile is fixed for its life; if only the block-cache sizes changed, " +
+        `reprofile the cell first (RUNBOOK "Reprofiling a shared cell"): cell-admin ${reprofile.join(" ")}`);
+    expect((await cellAdminRun(...reprofile)).code).toBe(0);
+    const again = await deploy(w, "production", d2, withCell(w));
+    expect([again.code, again.err]).toEqual([0, ""]);
+    expect(again.out).toContain("deploy-release: rc-2 is deployed to production and passed cell-check");
   }, 60_000);
 
   test("a plain deploy of the stage's last release keeps the nonce the log records for it, so a re-run is the same input", async () => {

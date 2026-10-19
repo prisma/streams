@@ -255,6 +255,31 @@ $DR scratch $REL/$C-c-watch --app cell-watch --project $WP --branch $WB --worksp
 
 Only the watch redeploys; the cell and the issuer keep running cut B.
 
+**A later release that retunes the block caches.** `init` fixed the
+cell's profile digest, so `deploy-release.sh` refuses a release whose
+profile differs (field round 6: f8456a52 added `SHARED_CACHE_BYTES` and
+`HISTORY_CACHE_BYTES` to `shared-cell.env`, and every earlier cell refused
+it). When only the block-cache sizes changed, its refusal ends with the
+`cell-admin reprofile` that takes the change (RUNBOOK, Shared cells,
+"Reprofiling a shared cell"). For a new cut `$C2-b` replacing the
+running `$C-b`:
+
+```bash
+$CA reprofile --state $STATE --s3-credentials $S/secrets/cell-admin-s3.json \
+  --recorded-profile $REL/$C-b/deploy/profiles/compute-1g.env --recorded-profile $REL/$C-b/deploy/profiles/shared-cell.env \
+  --profile $REL/$C2-b/deploy/profiles/compute-1g.env --profile $REL/$C2-b/deploy/profiles/shared-cell.env
+$DR scratch $REL/$C2-b --project $CP --branch $CB --workspace $WS --state $STATE \
+  --s3-credentials $S/secrets/cell-admin-s3.json --cell-url $CELL_ORIGIN \
+  --bearer-file $S/secrets/STREAMS_OPERATOR_TOKEN --canary-token-file $S/canary.token \
+  --issuer-release-dir $REL/$C2-b-issuer --issuer-project $IP --issuer-branch $IB
+```
+
+`reprofile` refuses unless the `--recorded-profile` files are the ones the
+cell records, and refuses any other changed key by name (a new cell
+then). The issuer refuses creates (`profile_ok` false) from the reprofile
+until its new release deploys, so deploy at once. To roll back, run it
+reversed (`$C2-b`'s files recorded, `$C-b`'s new), then deploy `$C-b`.
+
 ## 6. The watch's drills against the stand-in
 
 RUNBOOK's drills are local (`drills.e2e.test.ts`); on the scratch cell,
