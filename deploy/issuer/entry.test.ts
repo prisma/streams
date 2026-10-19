@@ -105,7 +105,10 @@ describe("the bundled entry", () => {
 describe("the issuer's sources", () => {
   test("read the environment only in the entry, and only the names config.ts lists", () => {
     const dir = import.meta.dir;
-    const sources = readdirSync(dir).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && f !== "rig.ts");
+    // readdir's order is the filesystem's (ext4 hashes names), so the files are sorted.
+    const sources = readdirSync(dir)
+      .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && f !== "rig.ts")
+      .sort();
     const uses = sources.flatMap((f) =>
       [...readFileSync(join(dir, f), "utf8").matchAll(/.*process\.env.*/g)].map((m) => `${f}: ${m[0].trim()}`),
     );
