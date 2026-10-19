@@ -3216,7 +3216,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "669583ec944621bd697326c0002cf5027e5786042d657f75b4dccbd5ddb76b46",
+    "function_sha256": "e2ad96122005745b99c1de67ba7947438fa38eefed3991365f0e82b3ccc109c4",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_closure_debts.rs",

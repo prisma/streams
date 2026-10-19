@@ -133,7 +133,12 @@ pub(super) async fn expire(states: &[&State], sref: &Ref, at: i64) {
 /// committer op, so it lands shortly after it is submitted, and a loaded
 /// host (two instances' committers) gets room before a close counts as lost.
 pub(super) async fn closed(engine: &Engine, id: [u8; 16]) -> Option<Meta> {
-    for _ in 0..250 {
+    closed_within(engine, id, 250).await
+}
+
+/// The row once its gauge reads zero within `polls` reads 20 ms apart.
+async fn closed_within(engine: &Engine, id: [u8; 16], polls: usize) -> Option<Meta> {
+    for _ in 0..polls {
         let meta = engine.billing_meta(id).await;
         if meta
             .as_ref()
@@ -190,11 +195,13 @@ pub(super) fn settled(entry: &DebtEntry) -> Vec<u32> {
 }
 
 /// Runs the production sweep (discovery, the tombstone walk, then the debt
-/// pass) until `id`'s gauge closes.
+/// pass) until `id`'s gauge closes: half a second after each of ten sweeps,
+/// the five seconds `closed` gives one close, so a sweep that never closes
+/// fails in seconds instead of after ten full waits.
 async fn sweep_until_closed(state: &State, engine: &Engine, id: [u8; 16]) -> Meta {
     for _ in 0..10 {
         crate::billing::sweep_owned_outboxes(state).await;
-        if let Some(meta) = closed(engine, id).await {
+        if let Some(meta) = closed_within(engine, id, 25).await {
             return meta;
         }
     }
@@ -956,13 +963,13 @@ async fn an_expired_source_its_fork_reads_is_never_replaced_and_stops_billing_at
     assert_never_replaced(&state, addr, &forked).await;
     let id = forked.unforked.dynamic_segment_identity(0);
     let mut got = None;
-    for _ in 0..3 {
+    for _ in 0..10 {
         crate::billing::sweep_owned_outboxes(&state).await;
         crate::billing::drain_once(&state).await.expect("drain");
         // Stop sweeping once the close has landed. A sweep that finds the
         // gauge still open submits the close again; the committer skips
         // it, so the row below is the one closed once.
-        got = closed(&forked.engine, id).await;
+        got = closed_within(&forked.engine, id, 25).await;
         if got.is_some() {
             break;
         }
