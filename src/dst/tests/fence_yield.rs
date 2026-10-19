@@ -332,3 +332,100 @@ async fn wait_spool(rig: &HttpRig) {
     }
     panic!("the read spool never opened");
 }
+
+/// `rig`'s `/operator/data.json` `boot` section.
+async fn origin(rig: &HttpRig) -> serde_json::Value {
+    let (status, _, body) = hreq(rig.addr, "GET", "/operator/data.json", &[], b"").await;
+    assert_eq!(status, 200);
+    serde_json::from_slice::<serde_json::Value>(&body).unwrap()["boot"].clone()
+}
+
+/// Waits up to 10 s for `rig`'s `predecessorSuperseded` to be `want`; the last `boot` section.
+async fn origin_marked(rig: &HttpRig, want: bool) -> serde_json::Value {
+    let mut last = origin(rig).await;
+    for _ in 0..200 {
+        if last["predecessorSuperseded"] == serde_json::Value::Bool(want) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        last = origin(rig).await;
+    }
+    last
+}
+
+fn boot_id(rig: &HttpRig) -> String {
+    rig.state.runtime.identity.boot_id.clone()
+}
+
+/// A deploy: B registers over A and the operator surface names A as B's
+/// predecessor, undecided; when B fences A and A yields, A leaves its mark and
+/// B reports the predecessor superseded (a planned replacement, not a crash).
+/// The first boot of a cell has no predecessor, and a boot's origin is not on
+/// `/health`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_boot_names_the_boot_it_replaced_and_learns_it_was_superseded() {
+    let store = mem();
+    let a = boot(&store, 1).await;
+    assert_eq!(hreq(a.addr, "PUT", STREAM, &JSON, b"").await.0, 201);
+    assert_eq!(append(&a, r#"[{"n":0}]"#).await.0, 204);
+    let b = boot(&store, 2).await;
+    assert_eq!(
+        origin(&a).await,
+        serde_json::json!({"id": boot_id(&a), "predecessor": null, "predecessorSuperseded": null})
+    );
+    assert_eq!(
+        origin(&b).await,
+        serde_json::json!({"id": boot_id(&b), "predecessor": boot_id(&a), "predecessorSuperseded": null}),
+        "A has not yet learned of B"
+    );
+    assert_eq!(append(&b, r#"[{"n":1}]"#).await.0, 204);
+    assert_ne!(append(&a, r#"[{"fenced":0}]"#).await.0, 204);
+    assert_eq!(superseded(&a).await, (503, SUPERSEDED.to_string()));
+    assert_eq!(
+        origin_marked(&b, true).await,
+        serde_json::json!({"id": boot_id(&b), "predecessor": boot_id(&a), "predecessorSuperseded": true})
+    );
+    assert_eq!(health(&b).await, (200, "ok".to_string()));
+    let (_, headers, _) = hreq(b.addr, "GET", "/health", &[], b"").await;
+    assert!(
+        headers.keys().all(|name| !name.contains("predecessor")),
+        "the origin is operator-only: {headers:?}"
+    );
+}
+
+/// A replaced process that never lost an engine (it holds no shard) still
+/// leaves its mark, at its stop, because a newer boot is registered by then.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_idle_replaced_boot_marks_itself_at_its_stop() {
+    let store = mem();
+    let a = boot(&store, 1).await;
+    let b = boot(&store, 2).await;
+    assert_eq!(
+        origin(&b).await["predecessorSuperseded"],
+        serde_json::Value::Null
+    );
+    let report = a.tasks.shutdown(Duration::from_secs(5)).await;
+    assert!(report.aborted.is_empty(), "A's stop: {report:?}");
+    assert_eq!(
+        origin_marked(&b, true).await,
+        serde_json::json!({"id": boot_id(&b), "predecessor": boot_id(&a), "predecessorSuperseded": true})
+    );
+}
+
+/// A predecessor that stopped while its record still named it (no newer boot
+/// had registered: a crash, an OOM kill, a loop that exits) leaves no mark,
+/// so the next boot names it and never reports it superseded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_predecessor_that_went_before_the_next_boot_leaves_no_mark() {
+    let store = mem();
+    let a = boot(&store, 1).await;
+    let report = a.tasks.shutdown(Duration::from_secs(5)).await;
+    assert!(report.aborted.is_empty(), "A's stop: {report:?}");
+    let b = boot(&store, 2).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        origin(&b).await,
+        serde_json::json!({"id": boot_id(&b), "predecessor": boot_id(&a), "predecessorSuperseded": null}),
+        "no mark within the wait: undecided, never true"
+    );
+}

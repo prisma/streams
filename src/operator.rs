@@ -124,8 +124,22 @@ pub(crate) async fn data(
         "store": crate::store_timing::snapshot(60, false, &state.runtime.store_io, &shard_opens),
     });
 
+    // The boot's origin (the cell watch's row 4): the boot id it replaced and
+    // whether that boot learned of it, so a planned replacement is told from a
+    // crash. Operator surface only.
+    let origin = state
+        .shards
+        .supersession()
+        .lineage(&state.data_store, state.runtime.clock.now().ms())
+        .await;
+
     axum::Json(json!({
         "ts_ms": now_ms,
+        "boot": {
+            "id": state.runtime.identity.boot_id.as_str(),
+            "predecessor": origin.predecessor,
+            "predecessorSuperseded": origin.predecessor_superseded,
+        },
         "local": local,
         // The last telemetry tick's snapshot (null before the first one),
         // cached: re-collecting here would drain the peak gauges.

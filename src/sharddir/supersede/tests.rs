@@ -11,7 +11,10 @@ use std::time::Duration;
 use object_store::{ObjectStore, ObjectStoreExt};
 
 use super::super::open_gate_tests::open_engine;
-use super::{BOOT_RECORD, Checker, RECORD_BOUND, SUPERSEDED, Verdict, start, verdict};
+use super::{
+    BOOT_RECORD, BootLineage, Checker, MARK_WAIT_MS, RECORD_BOUND, REPLACED_RECORD, SUPERSEDED,
+    Verdict, mark_decision, start, verdict,
+};
 use crate::shard_directory::{
     Adoption, OpenTiming, ResolveError, RetireOutcome, RetirementReason, ShardDirectory,
 };
@@ -282,4 +285,122 @@ async fn the_older_boot_yields_at_an_engine_death_and_the_newest_does_not() {
             vec![("supersession", TaskOutcome::Finished)]
         );
     }
+}
+
+/// The mark decides a predecessor superseded only when it names that boot; one
+/// that names another, or none, is undecided until the wait passes and then
+/// a no. A mark found after the wait is still a yes.
+#[test]
+fn the_mark_decides_yes_at_once_and_no_only_after_the_wait() {
+    let failed = || object_store::Error::Generic {
+        store: "rig",
+        source: "unavailable".into(),
+    };
+    let cases = [
+        (Some(Ok(record("a"))), 0, Some(true)),
+        (Some(Ok(record("a"))), MARK_WAIT_MS, Some(true)),
+        (Some(Ok(record("b"))), 0, None),
+        (Some(Ok(record("b"))), MARK_WAIT_MS - 1, None),
+        (Some(Ok(record("b"))), MARK_WAIT_MS, Some(false)),
+        (Some(Err(failed())), MARK_WAIT_MS - 1, None),
+        (Some(Err(failed())), MARK_WAIT_MS, Some(false)),
+        (None, MARK_WAIT_MS - 1, None),
+        (None, MARK_WAIT_MS, Some(false)),
+    ];
+    for (read, waited, want) in cases {
+        let shown = format!("{read:?} after {waited} ms");
+        assert_eq!(mark_decision("a", read, waited), want, "{shown}");
+    }
+}
+
+/// The record a boot reads before it writes its own is its predecessor; the
+/// first boot of a store has none, and a boot never names itself.
+#[tokio::test]
+async fn a_registering_boot_learns_the_boot_the_record_named() {
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let tasks = TaskSupervisor::new();
+    let cancel = tasks.cancellation();
+    let (dir_a, _) = directory();
+    let (dir_b, _) = directory();
+    let (a, b) = (
+        checker(&dir_a, &store, "boot-a"),
+        checker(&dir_b, &store, "boot-b"),
+    );
+    let none = BootLineage {
+        predecessor: None,
+        predecessor_superseded: None,
+    };
+    assert_eq!(dir_a.supersession().lineage(&store, 0).await, none);
+    assert!(a.register(&cancel).await);
+    assert_eq!(dir_a.supersession().lineage(&store, 0).await, none);
+    assert!(b.register(&cancel).await);
+    let supersession = dir_b.supersession();
+    let at = |ms| supersession.lineage(&store, ms);
+    let undecided = BootLineage {
+        predecessor: Some("boot-a".to_string()),
+        predecessor_superseded: None,
+    };
+    assert_eq!(at(1_700_000_000_000).await, undecided);
+    let gone = BootLineage {
+        predecessor: Some("boot-a".to_string()),
+        predecessor_superseded: Some(false),
+    };
+    assert_eq!(at(1_700_000_000_000 + MARK_WAIT_MS).await, gone);
+}
+
+/// A replaced boot's mark names it, written once a newer boot is registered
+/// and not before; the next boot's answer is a yes, and a decided answer is
+/// kept without another read.
+#[tokio::test]
+async fn a_replaced_boot_marks_itself_and_the_next_boot_keeps_the_answer() {
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let tasks = TaskSupervisor::new();
+    let cancel = tasks.cancellation();
+    let (dir_a, _) = directory();
+    let (dir_b, _) = directory();
+    let (a, b) = (
+        checker(&dir_a, &store, "boot-a"),
+        checker(&dir_b, &store, "boot-b"),
+    );
+    let mark = || async {
+        let found = store
+            .get(&object_store::path::Path::from(REPLACED_RECORD))
+            .await
+            .ok()?;
+        let doc: serde_json::Value = serde_json::from_slice(&found.bytes().await.ok()?).ok()?;
+        doc["bootId"].as_str().map(str::to_string)
+    };
+    assert!(a.register(&cancel).await);
+    a.mark_if_replaced().await;
+    assert_eq!(mark().await, None, "the newest marks nothing");
+    assert!(b.register(&cancel).await);
+    b.mark_if_replaced().await;
+    assert_eq!(mark().await, None, "the newest marks nothing");
+    a.mark_if_replaced().await;
+    assert_eq!(mark().await.as_deref(), Some("boot-a"));
+    let yes = BootLineage {
+        predecessor: Some("boot-a".to_string()),
+        predecessor_superseded: Some(true),
+    };
+    assert_eq!(dir_b.supersession().lineage(&store, 0).await, yes);
+    store
+        .delete(&object_store::path::Path::from(REPLACED_RECORD))
+        .await
+        .unwrap();
+    assert_eq!(dir_b.supersession().lineage(&store, 0).await, yes, "kept");
+}
+
+/// An unreadable record leaves nothing to mark: a boot that cannot tell it was
+/// replaced writes no mark, as a crashed one wrote none.
+#[tokio::test]
+async fn an_unread_record_leaves_no_mark() {
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let (dir, _) = directory();
+    checker(&dir, &store, "boot-a").mark_if_replaced().await;
+    assert!(
+        store
+            .get(&object_store::path::Path::from(REPLACED_RECORD))
+            .await
+            .is_err()
+    );
 }

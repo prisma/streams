@@ -33,6 +33,17 @@
     "scenarios": []
   },
   {
+    "name": "a_boot_names_the_boot_it_replaced_and_learns_it_was_superseded",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "75b68c38e287a89c75f7a371ade74198b0b793e31c044832adeec3551e07cc98",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fence_yield.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_bounded_cleanup_drains_residue_without_touching_the_live_generation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1384,6 +1395,17 @@
       "let _serial = super::fixture_failpoints::gap_lock().lock().await;"
     ],
     "file": "src/dst/tests/read_application.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_predecessor_that_went_before_the_next_boot_leaves_no_mark",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a4b57a731e63be07b3321e0cf501cc7d91f46d5648395a4403a7a6130da1f592",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fence_yield.rs",
     "scenarios": []
   },
   {
@@ -3264,6 +3286,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/idle_release.rs",
+    "scenarios": []
+  },
+  {
+    "name": "an_idle_replaced_boot_marks_itself_at_its_stop",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "968162c6861beccaeb89d9eaa3ae58f069a24ca5924cd89655e0e5bafa650ee4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fence_yield.rs",
     "scenarios": []
   },
   {

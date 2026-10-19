@@ -29,6 +29,16 @@
 //! boot that could not register, decides nothing: the process behaves as it
 //! did before (it reopens after its holdoff).
 //!
+//! Which boot a new one replaced, and whether that was a planned replacement
+//! (the cell watch's crash-loop rule, RUNBOOK row 4): a boot reads the record
+//! before it writes its own, so it knows the boot it replaced. A process that
+//! learns a newer boot is registered (at its yield, or at its stop if it never
+//! lost an engine) writes `_cell/superseded` naming itself, the one record of
+//! the boot that last saw itself replaced. The new boot reports, on the
+//! operator surface only, its predecessor and whether that mark names it. A
+//! predecessor that crashed or was killed before a newer boot registered
+//! leaves no mark, so repeated crashes stay distinguishable from deploys.
+//!
 //! If the newest process crashes after fencing an older one, the older one
 //! never re-takes: a fleet-off cell has no liveness channel, and a timed
 //! re-take would bring the ping-pong back. The platform restarts the crashed
@@ -36,8 +46,8 @@
 //! the older process instead gets it back through the unready watchdog's exit
 //! (`spawn_unready_watchdog`) and a fresh boot.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use object_store::{ObjectStore, ObjectStoreExt};
@@ -58,6 +68,12 @@ const REGISTER_RETRIES: [Duration; 4] = [
     Duration::from_secs(4),
     Duration::from_secs(8),
 ];
+/// The mark a process leaves when it learns a newer boot replaced it.
+const REPLACED_RECORD: &str = "_cell/superseded";
+/// How long after registering a boot waits for its predecessor's mark before
+/// it reports there is none. The mark follows the registration within the
+/// predecessor's holdoff-bound yield or its stop (seconds in the field).
+const MARK_WAIT_MS: i64 = 60_000;
 /// What readiness reports once this process yielded; `/health` and `/readyz`
 /// answer it as `shard storage unavailable: superseded by a newer boot`.
 pub(crate) const SUPERSEDED: &str = "superseded by a newer boot";
@@ -87,6 +103,26 @@ pub(crate) struct Supersession {
     gate: OpenGate,
     superseded: AtomicBool,
     wake: tokio::sync::Notify,
+    lineage: OnceLock<Lineage>,
+    predecessor_marked: OnceLock<bool>,
+}
+
+/// The boot this one replaced, and when this one registered.
+struct Lineage {
+    predecessor: Option<String>,
+    registered_ms: i64,
+}
+
+/// What `/operator/data.json` reports of the boot's origin.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct BootLineage {
+    /// The boot id the record named when this boot registered.
+    pub(crate) predecessor: Option<String>,
+    /// `Some(true)`: the predecessor learned of this boot (a planned
+    /// replacement); `Some(false)`: it left no mark within the wait (it was
+    /// gone before this boot registered); `None`: no predecessor, or not yet
+    /// decided.
+    pub(crate) predecessor_superseded: Option<bool>,
 }
 
 impl Supersession {
@@ -95,6 +131,49 @@ impl Supersession {
             gate,
             superseded: AtomicBool::new(false),
             wake: tokio::sync::Notify::new(),
+            lineage: OnceLock::new(),
+            predecessor_marked: OnceLock::new(),
+        }
+    }
+
+    /// This boot registered; `predecessor` is the boot the record named before.
+    fn registered(&self, predecessor: Option<String>, registered_ms: i64) {
+        let first = Lineage {
+            predecessor,
+            registered_ms,
+        };
+        if self.lineage.set(first).is_err() {
+            tracing::warn!("a second registration of this boot is ignored");
+        }
+    }
+
+    /// The boot's origin as of `now_ms`. The predecessor's mark is read until
+    /// it is found or the wait passes; the answer is then kept.
+    pub(crate) async fn lineage(&self, store: &Arc<dyn ObjectStore>, now_ms: i64) -> BootLineage {
+        let Some(Lineage {
+            predecessor: Some(predecessor),
+            registered_ms,
+        }) = self.lineage.get()
+        else {
+            return BootLineage {
+                predecessor: None,
+                predecessor_superseded: None,
+            };
+        };
+        if self.predecessor_marked.get().is_none() {
+            let read = bounded(async {
+                let found = store.get(&replaced_path()).await?;
+                found.bytes().await
+            });
+            let waited = now_ms.saturating_sub(*registered_ms);
+            if let Some(marked) = mark_decision(predecessor, read.await, waited) {
+                // A concurrent reader may have settled it first: same answer.
+                self.predecessor_marked.get_or_init(|| marked);
+            }
+        }
+        BootLineage {
+            predecessor: Some(predecessor.clone()),
+            predecessor_superseded: self.predecessor_marked.get().copied(),
         }
     }
 
@@ -145,6 +224,20 @@ pub(crate) fn verdict(
     }
 }
 
+/// Whether the mark names `predecessor` (`true`), or none did within the wait
+/// (`false`), or it is too early to say (`None`). `waited_ms` is the time
+/// since this boot registered; `read` is one bounded read of the mark.
+pub(crate) fn mark_decision(
+    predecessor: &str,
+    read: Option<Result<bytes::Bytes, object_store::Error>>,
+    waited_ms: i64,
+) -> Option<bool> {
+    if verdict(predecessor, read) == Verdict::Newest {
+        return Some(true);
+    }
+    (waited_ms >= MARK_WAIT_MS).then_some(false)
+}
+
 /// `work` if it finishes within the record bound.
 async fn bounded<T>(work: impl std::future::Future<Output = T>) -> Option<T> {
     tokio::time::timeout(RECORD_BOUND, work).await.ok()
@@ -152,6 +245,10 @@ async fn bounded<T>(work: impl std::future::Future<Output = T>) -> Option<T> {
 
 fn record_path() -> object_store::path::Path {
     object_store::path::Path::from(BOOT_RECORD)
+}
+
+fn replaced_path() -> object_store::path::Path {
+    object_store::path::Path::from(REPLACED_RECORD)
 }
 
 /// Fleet off (`fleet::start_configured`): register this boot as its cell's
@@ -192,6 +289,7 @@ impl Checker {
     async fn run(self, cancel: crate::tasks::Cancellation) -> crate::tasks::TaskResult {
         if self.register(&cancel).await {
             self.watch(&cancel).await;
+            self.mark_if_replaced().await;
         }
         cancel.cancelled().await;
         crate::tasks::TaskResult::Done
@@ -208,9 +306,14 @@ impl Checker {
             return false;
         };
         let body = bytes::Bytes::from(body);
+        let predecessor = match self.check().await {
+            Verdict::Superseded { newest } => Some(newest),
+            Verdict::Newest | Verdict::Unknown => None,
+        };
         for retry in REGISTER_RETRIES.into_iter().map(Some).chain([None]) {
             match bounded(self.store.put(&record_path(), body.clone().into())).await {
                 Some(Ok(_)) => {
+                    self.supersession.registered(predecessor, self.at_ms);
                     tracing::info!(boot = %self.own, "registered as this cell's newest boot");
                     return true;
                 }
@@ -252,6 +355,32 @@ impl Checker {
                     tracing::warn!("boot record unread: an engine death decides nothing");
                 }
             }
+        }
+    }
+
+    /// At a yield or a stop: if a newer boot is registered, leaves the mark
+    /// that tells it this process was alive then (one bounded write; a failed
+    /// one only leaves the replacement unmarked, as a crash is).
+    async fn mark_if_replaced(&self) {
+        if !matches!(self.check().await, Verdict::Superseded { .. }) {
+            return;
+        }
+        let record = BootRecord {
+            boot_id: self.own.clone(),
+            at_ms: self.at_ms,
+        };
+        let Ok(body) = serde_json::to_vec(&record) else {
+            return;
+        };
+        match bounded(
+            self.store
+                .put(&replaced_path(), bytes::Bytes::from(body).into()),
+        )
+        .await
+        {
+            Some(Ok(_)) => tracing::info!(boot = %self.own, "replacement marked"),
+            Some(Err(error)) => tracing::warn!("replacement mark not written: {error}"),
+            None => tracing::warn!("replacement mark not written within {RECORD_BOUND:?}"),
         }
     }
 
