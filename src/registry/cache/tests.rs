@@ -489,6 +489,25 @@ fn stale_slots_are_swept_long_before_the_cap() {
     );
 }
 
+/// A sweep on demand (the idle and pressure releases) purges every stale
+/// slot whatever the count and keeps the young ones: after a load no put
+/// may come to sweep what it left.
+#[test]
+fn a_sweep_on_demand_purges_every_stale_slot_and_keeps_the_young() {
+    let cache = DescriptorCache::new(Duration::from_secs(5));
+    let names: Vec<String> = (1..SWEEP_FLOOR).map(|i| format!("old-{i}")).collect();
+    for name in &names {
+        cache.insert(ts(name), filled(name));
+        cache.expire_for_tests(&ts(name));
+    }
+    cache.insert(ts("young"), filled("young"));
+    assert_eq!(cache.len(), SWEEP_FLOOR, "below the floor no put swept");
+    assert_eq!(cache.sweep_now(), SWEEP_FLOOR - 1);
+    let slots = cache.slots();
+    assert_eq!(slots.by_ref.len(), 1, "the young slot is kept");
+    assert!(slots.by_ref.contains_key(&ts("young")));
+}
+
 /// A sweep sets the next one at twice the slots it kept (at least
 /// `SWEEP_FLOOR`), so puts sweep once per doubling, not once per put.
 #[test]
@@ -520,6 +539,19 @@ fn at_the_cap_a_stale_slot_goes_before_an_older_young_one() {
         (held("first"), held("stale"), held("new")),
         (true, false, true)
     );
+}
+
+/// The registry's sweep (the idle and pressure releases) answers the
+/// slots it purged.
+#[test]
+fn the_registrys_sweep_counts_the_slots_it_purged() {
+    let (registry, _) = rig();
+    for name in ["a", "b", "c"] {
+        registry.cache_insert(ts(name), filled(name));
+    }
+    registry.expire_cache_for_tests(&ts("a"));
+    registry.expire_cache_for_tests(&ts("b"));
+    assert_eq!((registry.sweep_cache(), registry.cache_len()), (2, 1));
 }
 
 /// A fill charged exactly `bytes` (a multiple of 8) against the byte cap:

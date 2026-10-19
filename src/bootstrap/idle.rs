@@ -4,9 +4,11 @@
 //! line (Q0). The next read refills what it needs.
 use super::AppState;
 use crate::admission::AdmissionController;
+use crate::registry::Registry;
 use crate::runtime::{MonotonicNow, RuntimeCaps};
 use crate::shard_directory::ShardDirectory;
 use crate::tasks::{Cancellation, Policy, TaskResult, TaskSupervisor};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// How often the loop reads the instance.
@@ -155,8 +157,9 @@ pub(crate) fn start(state: &AppState, tasks: &TaskSupervisor) {
     let admission = state.admission.clone();
     let shards = state.shards.clone();
     let runtime = state.runtime.clone();
+    let registry = state.registry.clone();
     if let Err(rejected) = tasks.spawn("idle-release", Policy::Noncritical, move |cancel| {
-        run(admission, shards, runtime, cancel)
+        run(admission, shards, runtime, registry, cancel)
     }) {
         tracing::warn!("idle-release not spawned: {rejected:?}");
     }
@@ -166,6 +169,7 @@ async fn run(
     admission: AdmissionController,
     shards: ShardDirectory,
     runtime: RuntimeCaps,
+    registry: Arc<Registry>,
     cancel: Cancellation,
 ) -> TaskResult {
     let mut policy = IdlePolicy::new(&read(&admission, &shards, &runtime));
@@ -183,13 +187,13 @@ async fn run(
             // A request that arrived during the flush ends the quiet period,
             // and with it this release and its collect rounds.
             if !policy.arrived(&read(&admission, &shards, &runtime)) {
-                release(&runtime, "idle");
+                release(&runtime, &registry, "idle");
             }
         }
         // Under load the workers are not held for a collect: each collects
         // its empty pages at its next park.
         if policy.pressure_release_due(&reading) {
-            release(&runtime, "over the shed line");
+            release(&runtime, &registry, "over the shed line");
             super::allocator::request_collect();
         }
         if policy.collect_due(reading.now) {
@@ -247,16 +251,17 @@ async fn flush_memtables(shards: &ShardDirectory) {
     }
 }
 
-/// Releases the three block caches and every postings slice, at idle or
-/// under memory pressure (`why`). A swept segment's warm absence proof is
-/// poisoned, so its next read reloads; the zero-horizon sweep is tested
-/// after a quiet period and beside live keyed reads, appends and installs
-/// (DST `idle_release`).
-fn release(runtime: &RuntimeCaps, why: &'static str) {
+/// Releases the three block caches and every postings slice, and sweeps
+/// the registry's stale descriptor slots, at idle or under memory pressure
+/// (`why`). A swept segment's warm absence proof is poisoned, so its next
+/// read reloads; the zero-horizon sweep is tested after a quiet period and
+/// beside live keyed reads, appends and installs (DST `idle_release`).
+fn release(runtime: &RuntimeCaps, registry: &Registry, why: &'static str) {
     let shared = runtime.shared_cache.release();
     let history = runtime.history.cache.release();
     let telemetry = runtime.telemetry.cache.release();
     let postings = runtime.postings.sweep_idle(Duration::ZERO);
+    let descriptors = registry.sweep_cache();
     // The byte counts are what writes inserted into each released generation
     // since the release before it (evicted entries included), not what it
     // held: foyer does not expose its usage.
@@ -266,6 +271,7 @@ fn release(runtime: &RuntimeCaps, why: &'static str) {
         history_inserted_bytes = history,
         telemetry_inserted_bytes = telemetry,
         postings_slices = postings,
+        descriptor_slots = descriptors,
         why,
         "released the block caches and the postings slices"
     );

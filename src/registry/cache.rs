@@ -240,7 +240,7 @@ impl Slots {
     fn make_room(&mut self, bytes: usize) {
         let (ttl, now) = (self.ttl, Instant::now());
         if self.by_ref.len() >= self.sweep_at {
-            self.sweep(now);
+            let _swept = self.sweep(now);
         }
         if !self.over(bytes) {
             return;
@@ -267,11 +267,13 @@ impl Slots {
     /// Every slot untouched for a TTL at `now` purges, and the table keeps
     /// room for the next sweep's count only: a sweep runs once the slots
     /// have doubled since the last one, so its cost is constant per put.
-    fn sweep(&mut self, now: Instant) {
-        let ttl = self.ttl;
+    /// The slots purged.
+    fn sweep(&mut self, now: Instant) -> usize {
+        let (ttl, before) = (self.ttl, self.by_ref.len());
         self.evict(|slot| !within(slot.touched, now, ttl));
         self.sweep_at = SWEEP_FLOOR.max(2 * self.by_ref.len());
         self.by_ref.shrink_to(self.sweep_at);
+        before - self.by_ref.len()
     }
 
     /// Removes every slot `goes` names, giving back its bytes.
@@ -314,6 +316,12 @@ impl DescriptorCache {
     )]
     fn slots(&self) -> MutexGuard<'_, Slots> {
         self.slots.lock().unwrap()
+    }
+
+    /// Sweeps the stale slots now, whatever the count (the idle release):
+    /// the slots purged.
+    fn sweep_now(&self) -> usize {
+        self.slots().sweep(Instant::now())
     }
 
     /// Slots held, emptied ones included: the cardinality figure.
@@ -449,6 +457,12 @@ impl Registry {
 
     pub(crate) fn cache_len(&self) -> usize {
         self.cache.len()
+    }
+
+    /// Purges every descriptor slot untouched for a TTL and gives back the
+    /// table they held (the idle and pressure releases): the slots purged.
+    pub(crate) fn sweep_cache(&self) -> usize {
+        self.cache.sweep_now()
     }
 
     /// The descriptor (or the absence) the cache holds for `sref`, fresh
