@@ -254,6 +254,10 @@ pub struct HttpConfig {
     /// environment name sets them, rigs shorten them.
     pub drain_window: std::time::Duration,
     pub drain_min_bytes: u64,
+    /// How long a stop lets connections finish the requests they are
+    /// serving before it resets them (#180, `http::serve::drain`): 10 s, no
+    /// environment name sets it; the DST rigs stop at once (zero).
+    pub stop_drain: std::time::Duration,
 }
 
 /// Billing/telemetry/rollup knobs (src/billing.rs, src/ops.rs).
@@ -485,6 +489,7 @@ impl Default for HttpConfig {
             h1_header_timeout: std::time::Duration::from_secs(120),
             drain_window: std::time::Duration::from_secs(10),
             drain_min_bytes: 16 * 1024,
+            stop_drain: std::time::Duration::from_secs(10),
         }
     }
 }

@@ -258,7 +258,9 @@ instead of sending it again. Source: `sdk/README.md` ("In plain words"),
   two no longer take it from each other in turn (the 7 to 9 s above were
   measured before #179; the new window is not yet measured); the
   old server answers what still reaches it `503 temporarily_unavailable`
-  with `Retry-After: 1`, nothing written. A plain append
+  with `Retry-After: 1`, nothing written. Since edge change #180 a request
+  in flight when the old server is stopped is answered, not cut off (up to
+  10 s; a live subscription or a long-poll is ended then). A plain append
   in flight at the switch can still be answered `503 outcome_unknown`
   (field: up to two per switch, none of them stored); appends through a
   producer never are.

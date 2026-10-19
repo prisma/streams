@@ -348,6 +348,9 @@ fn fixture_config(
     if let Some(admission) = admission {
         rig_config.admission = admission;
     }
+    // A rig's stop resets its connections at once, as every stop did before
+    // #180; `http::serve`'s tests pin the drain.
+    rig_config.http.stop_drain = std::time::Duration::ZERO;
     Arc::new(rig_config)
 }
 

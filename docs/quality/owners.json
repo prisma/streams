@@ -3171,6 +3171,14 @@
     {
       "category": "macro-dsl",
       "count": 1,
+      "owner": "crate::serve_one",
+      "path": "src/http/serve.rs",
+      "reason": "One connection selects its own end against the stop (edge change #180); the pinned Tokio macro is the await-any form, and the stop arm starts hyper's graceful shutdown and awaits the same connection; the http::serve stop tests drive both arms.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
       "owner": "crate::Checker::watch",
       "path": "src/sharddir/supersede.rs",
       "reason": "The supersession checker selects the runtime's stop against an engine death's wake (edge change #179); the pinned Tokio macro is the await-any form and both arms are owned by the checker; sharddir::supersede tests and the fence_yield DSTs drive both arms.",

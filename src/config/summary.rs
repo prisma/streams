@@ -54,6 +54,7 @@ impl ServerConfig {
                 "h1_header_timeout_ms": u64::try_from(self.http.h1_header_timeout.as_millis()).unwrap_or(u64::MAX),
                 "drain_window_ms": u64::try_from(self.http.drain_window.as_millis()).unwrap_or(u64::MAX),
                 "drain_min_bytes": self.http.drain_min_bytes,
+                "stop_drain_ms": u64::try_from(self.http.stop_drain.as_millis()).unwrap_or(u64::MAX),
                 "binary_sha256": &self.http.binary_sha256,
             },
             "billing": {

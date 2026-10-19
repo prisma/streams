@@ -519,6 +519,13 @@ process whose executor workers are all already blocked is never observed:
 it arms no bound, and that process runs until the platform's SIGKILL,
 exactly as before item 38.
 
+Inside that bound the HTTP connections drain first (edge change #180): at
+the stop the listener closes, and each connection finishes the request it
+is serving and takes no further one (an idle keep-alive closes at once).
+Connections still serving after 10 s (an SSE session, a long-poll, a client
+reading slowly) are reset; only then do the supervised loops join and the
+shards close, so an append in flight at a SIGTERM is answered, not reset.
+
 The ELF check is not optional politeness — it converts the silent
 crash-loop-zombie failure mode (§10) into a readable boot log. Binaries are
 uploaded to the object store and passed as 24 h-presigned GET URLs

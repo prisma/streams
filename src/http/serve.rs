@@ -139,9 +139,9 @@ async fn serve_connections(
     // PR 6.1-A: the accept loop OWNS its connections. A connection is
     // not request-scoped — keep-alives and live subscriptions outlive
     // any one request — so on cancellation the loop stops accepting,
-    // releases the address, then aborts and JOINS every connection: a
-    // runtime that has shut down has no socket left open, and a
-    // replacement can bind the same address immediately.
+    // releases the address, then drains and JOINS every connection
+    // (`drain`): a runtime that has shut down has no socket left open,
+    // and a replacement can bind the same address immediately.
     let cancel = tasks.cancellation();
     let mut conns = tokio::task::JoinSet::new();
     loop {
@@ -149,16 +149,8 @@ async fn serve_connections(
             _ = cancel.cancelled() => break,
             accepted = listener.accept() => match accepted {
                 Ok((sock, _peer)) => {
-                    let svc = svc.clone();
-                    let h1 = h1.clone();
-                    conns.spawn(async move {
-                        let _ = sock.set_nodelay(true);
-                        let io = hyper_util::rt::TokioIo::new(sock);
-                        // Errors here are routine client behavior (resets,
-                        // half-closed keep-alives, head deadlines), not
-                        // server faults.
-                        let _ = h1.serve_connection(io, svc).await;
-                    });
+                    let _ = sock.set_nodelay(true);
+                    conns.spawn(serve_one(sock, svc.clone(), h1.clone(), cancel.clone()));
                 }
                 Err(e) => {
                     // Transient accept errors (EMFILE bursts, aborted
@@ -173,11 +165,60 @@ async fn serve_connections(
         }
     }
     drop(listener);
+    drain(conns, http.stop_drain, &tasks).await;
+    Ok(())
+}
+
+/// One accepted connection (#180): served until it ends, and once the stop
+/// begins, until the request it is serving is answered. hyper's graceful
+/// shutdown finishes the response in flight and takes no further request on
+/// the connection; an idle keep-alive closes at once. Errors are routine
+/// client behaviour (resets, half-closed keep-alives, head deadlines), not
+/// server faults.
+async fn serve_one(
+    sock: drain::DrainStream<tokio::net::TcpStream>,
+    svc: hyper_util::service::TowerToHyperService<axum::Router>,
+    h1: hyper::server::conn::http1::Builder,
+    stop: crate::tasks::Cancellation,
+) {
+    let mut conn = Box::pin(h1.serve_connection(hyper_util::rt::TokioIo::new(sock), svc));
+    let served = tokio::select! {
+        served = conn.as_mut() => served,
+        () = stop.cancelled() => {
+            conn.as_mut().graceful_shutdown();
+            conn.await
+        }
+    };
+    if let Err(error) = served {
+        tracing::debug!("connection ended: {error}");
+    }
+}
+
+/// The stop's drain (#180): every connection began its graceful shutdown at
+/// the stop (`serve_one`). Those still serving are joined for at most
+/// `bound`, then the rest (an SSE session, a long-poll, a slow reader) are
+/// aborted and joined, each reaped as the accept loop reaps it.
+async fn drain(
+    mut conns: tokio::task::JoinSet<()>,
+    bound: std::time::Duration,
+    tasks: &crate::tasks::TaskSupervisor,
+) {
+    let settled = tokio::time::timeout(bound, async {
+        while let Some(joined) = conns.join_next().await {
+            reap(tasks, joined);
+        }
+    })
+    .await;
+    if settled.is_err() {
+        tracing::warn!(
+            "stop: {} connection(s) still serving after {bound:?} are reset",
+            conns.len()
+        );
+    }
     conns.abort_all();
     while let Some(joined) = conns.join_next().await {
-        reap(&tasks, joined);
+        reap(tasks, joined);
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -194,6 +235,9 @@ mod tests {
     /// Every wait is bounded well past the deadline; a test that waits
     /// this long fails by assertion, it never hangs.
     const BOUND: Duration = Duration::from_secs(4);
+    /// The rig's stop drain: past `/slow`'s answer, inside the 5 s grace
+    /// the rigs stop their supervisor with.
+    const DRAIN: Duration = Duration::from_secs(3);
 
     /// A handler that panics mid-request: neither axum nor hyper catches the
     /// unwind, so it ends the connection task.
@@ -219,6 +263,7 @@ mod tests {
         let serve_tasks = tasks.clone();
         let http = HttpConfig {
             h1_header_timeout: deadline,
+            stop_drain: DRAIN,
             ..HttpConfig::default()
         };
         tasks
@@ -375,6 +420,74 @@ mod tests {
             1,
             "one panicked connection is counted; the aborted one is not"
         );
+    }
+
+    /// #180: a request in flight when the stop begins is answered, not reset,
+    /// and its connection then closes; the stop waits for it, inside the drain.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_request_in_flight_at_the_stop_is_answered_before_its_connection_closes() {
+        let (addr, tasks) = serve(DEADLINE).await;
+        let mut sock = TcpStream::connect(addr).await.unwrap();
+        sock.write_all(b"GET /slow HTTP/1.1\r\nhost: rig\r\n\r\n")
+            .await
+            .unwrap();
+        tokio::time::sleep(DEADLINE / 5).await;
+        let started = tokio::time::Instant::now();
+        let (report, head) = futures_util::future::join(
+            tasks.shutdown(Duration::from_secs(5)),
+            response_head(&mut sock),
+        )
+        .await;
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        assert_eq!(
+            closed_within(&mut sock, BOUND).await,
+            Ok(()),
+            "the connection takes no request after the stop"
+        );
+        let stopped = started.elapsed();
+        assert!(report.aborted.is_empty(), "{report:?}");
+        assert!(
+            stopped >= DEADLINE * 2,
+            "the stop ended before the answer: {stopped:?}"
+        );
+    }
+
+    /// #180: at the stop an idle keep-alive closes at once, and a request
+    /// still running when the drain ends is reset then; the stop ends there.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_stop_closes_idle_connections_at_once_and_resets_the_rest_at_the_drain() {
+        let (addr, tasks) = serve(BOUND).await;
+        let mut idle = TcpStream::connect(addr).await.unwrap();
+        idle.write_all(b"GET /fast HTTP/1.1\r\nhost: rig\r\n\r\n")
+            .await
+            .unwrap();
+        let head = response_head(&mut idle).await;
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        let mut hung = TcpStream::connect(addr).await.unwrap();
+        hung.write_all(b"GET /hang HTTP/1.1\r\nhost: rig\r\n\r\n")
+            .await
+            .unwrap();
+        tokio::time::sleep(DEADLINE / 5).await;
+        let started = tokio::time::Instant::now();
+        let stop = tasks.shutdown(Duration::from_secs(5));
+        let watched = async {
+            let idle_closed = closed_within(&mut idle, BOUND).await;
+            let idle_at = started.elapsed();
+            let hung_closed = closed_within(&mut hung, BOUND * 2).await;
+            (idle_closed, idle_at, hung_closed, started.elapsed())
+        };
+        let (report, (idle_closed, idle_at, hung_closed, hung_at)) =
+            futures_util::future::join(stop, watched).await;
+        assert_eq!((idle_closed, hung_closed), (Ok(()), Ok(())));
+        assert!(
+            idle_at < DRAIN / 2,
+            "the idle keep-alive closed at {idle_at:?}"
+        );
+        assert!(
+            hung_at >= DRAIN,
+            "the running request was reset at {hung_at:?}"
+        );
+        assert!(report.aborted.is_empty(), "{report:?}");
     }
 
     /// Simultaneous connects: four times the 128 the standard library, mio
