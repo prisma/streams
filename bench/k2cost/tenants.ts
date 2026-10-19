@@ -529,8 +529,28 @@ export async function usage(plan: Plan, base: string, tokenMap: string, out: str
 
 // ---------------------------------------------------------------- audit
 
+/** The names a project's setup phases on `prefix` recorded as created
+ * (setup's `names`), or undefined when no setup phase writes that prefix
+ * (the audit then reads every name). A setup ledger that is missing
+ * records none. */
+export function heldNames(out: string, p: Project, prefix: string): Set<string> | undefined {
+  let held: Set<string> | undefined;
+  p.cls.phases.forEach((ph, j) => {
+    if (ph.mode !== "setup" || phaseFlags(p, ph).get("prefix") !== prefix) return;
+    held ??= new Set();
+    try {
+      const ledger = JSON.parse(readFileSync(join(out, "projects", p.id, `phase-${j}.ledger.json`), "utf8"));
+      for (const n of (ledger.setup?.names ?? []) as string[]) held.add(n);
+    } catch {
+      // never ran or never ended: it recorded nothing
+    }
+  });
+  return held;
+}
+
 /** Every project's produced streams read back against its produce
- * ledgers (audit.ts), one audit per stream prefix. */
+ * ledgers (audit.ts), one audit per stream prefix, reading the names its
+ * setup created. */
 export async function auditAll(plan: Plan, base: string, tokenMap: string, out: string, o: Opts): Promise<Record<string, unknown>> {
   const tokens = new TokenMap(tokenMap);
   const projects: Record<string, unknown> = {};
@@ -560,7 +580,7 @@ export async function auditAll(plan: Plan, base: string, tokenMap: string, out: 
         seed: p.seed, duration: 0, owner: p.owner,
       };
       try {
-        const v = (await audit(ctx, stop.signal)).verify as Record<string, unknown>;
+        const v = (await audit(ctx, stop.signal, heldNames(out, p, prefix))).verify as Record<string, unknown>;
         const { per_stream: _ps, ...rest } = v;
         checks[prefix] = { ...rest, oracle: Object.fromEntries(["ok", "foreign", "bad_mac", "unmarked"].map((k) => [k, meter.tot.get(`oracle_${k}`)])) };
       } catch (err) {

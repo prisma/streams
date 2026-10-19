@@ -359,3 +359,38 @@ test("a subscription refused at connect counts its status and code among the pro
   expect(ledger.totals.status_counts["429"]).toBe(3);
 }, 20_000);
 
+test("the audit reads the streams its project's setup created: a name the stream limit refused is not read, a created one is", async () => {
+  const m: Manifest = {
+    name: "limited", seed: 12, duration: 2.5, classes: [
+      { class: "h8", count: 1, role: "hostile", streams: 6, phases: [
+        { mode: "setup", at: 0 },
+        { mode: "produce", at: 0.8, secs: 1.2, args: { rate: 60, "record-bytes": 256 } },
+      ] },
+    ],
+  };
+  const plan = expand(m, "sha");
+  const p = plan.projects[0]!;
+  const mapFile = join(dir, "tokens-limited.json");
+  writeFileSync(mapFile, JSON.stringify([{ project: p.id, token: `tok-${p.id}` }]));
+  cell.tokens.set(`tok-${p.id}`, p.id);
+  // Its quota holds two streams: setup creates two of six names, and every
+  // append to the other four is answered 404.
+  cell.maxStreams.set(p.id, 2);
+  const out = join(dir, "run-limited");
+  expect((await run(plan, cell.base, mapFile, out, 1)).phases_failed).toEqual([]);
+  const setup = json(join(out, "projects", p.id, "phase-0.ledger.json")).setup;
+  expect([setup.created, setup.failed, setup.names.length]).toEqual([2, 4, 2]);
+  const produced = json(join(out, "projects", p.id, "phase-1.ledger.json"));
+  expect(produced.failed_requests).toBeGreaterThan(0);
+  const audited = async () => ((await auditAll(plan, cell.base, mapFile, out, new Opts(new Map()))).projects as Record<string, any>)[p.id].prefixes["t/"];
+  const a = await audited();
+  expect([a.ok, a.error ?? null, a.streams, a.not_created, a.read_records]).toEqual([
+    true, null, 2, ["t/00000", "t/00001", "t/00002", "t/00003", "t/00004", "t/00005"].filter((n) => !setup.names.includes(n)),
+    produced.acked_records,
+  ]);
+  // A stream setup created is still read in full: a record planted in one
+  // fails the audit.
+  cell.plant(p.id, setup.names[0], new PayloadGen("oracle", 256, 5, 3, ownerOf("limited:12", p.id)).json());
+  const b = await audited();
+  expect([b.ok, b.unexpected_records]).toEqual([false, 1]);
+}, 30_000);

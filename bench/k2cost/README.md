@@ -537,7 +537,7 @@ its connection while it lives. Outputs under `--out`:
 | `projects/<id>/ledger.json` | the project's totals, oracle counts, error codes and refusals |
 | `legs/<leg>-<i>.json` | a run-level leg's result (`h11t`: the quiet names' count, answers, differences, the pacing, the quiet and never timing samples and their KS, or the error that stopped it; `h11t-fresh`: the same with fresh samples; `probes`: pairs, differences, examples, answers) |
 | `usage.json` | `usage`: every project's meters (`GET /v1/projects/{p}/usage`) polled until they reach its ledger and two polls agree |
-| `audit.json` | `audit`: every project's produced streams read back record for record against its produce ledgers, with the oracle's counts |
+| `audit.json` | `audit`: every project's produced streams read back record for record against its produce ledgers, with the oracle's counts. It reads the names the project's setup recorded as created (`setup.names`), and any name a ledger acked records to; a name setup could not create (a stream limit: H8 at Q-hostile holds 50 of its 400) is listed in `not_created` and not read, every block sent to it counted missing, so every request to it must have failed. A created stream that answers 404 still fails its audit |
 
 ### The verdict and the arm manifest
 

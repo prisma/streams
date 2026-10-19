@@ -27,7 +27,8 @@
 //   requests with that status (code null: an untyped body); `plant` puts a
 //   record into a project's stream without metering it (a leak).
 // - `delayMs` answers every authenticated request that much later (a slow
-//   rig).
+//   rig); `maxStreams` refuses a project's create past that many streams
+//   (429 `stream_limit`, retry-after 0).
 
 export interface Meters {
   ingestRecords: number;
@@ -100,6 +101,8 @@ export class FakeCell {
   watchPeak = 0;
   /** Every authenticated request is answered this many ms late. */
   delayMs = 0;
+  /** A project's stream limit: a create past it is refused. */
+  maxStreams = new Map<string, number>();
   private waiters = new Set<() => void>();
   /** When each (project, name) slot was last filled (performance.now()). */
   private slots = new Map<string, number>();
@@ -252,6 +255,9 @@ export class FakeCell {
     if (op === "" && req.method === "DELETE") {
       this.slots.delete(`${project} ${name}`);
       return ns.delete(name) ? new Response(null, { status: 204 }) : error(404, "stream_not_found");
+    }
+    if (op === "" && req.method === "PUT" && !ns.has(name) && ns.size >= (this.maxStreams.get(project) ?? Infinity)) {
+      return json(429, { error: { code: "stream_limit", message: "stream_limit" } }, { "retry-after": "0" });
     }
     if (op === "" && req.method === "PUT" && !ns.has(name)) {
       ns.set(name, []);

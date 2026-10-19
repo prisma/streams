@@ -252,12 +252,17 @@ export class Matcher {
   }
 }
 
-async function auditStream(ctx: Ctx, name: string, plan: StreamPlan, maxBytes: number | undefined): Promise<StreamCheck> {
-  const { http, meter } = ctx;
-  const c: StreamCheck = {
+/** A stream's check before any read. */
+function unread(name: string): StreamCheck {
+  return {
     name, read_records: 0, read_bytes: 0, pages: 0, blocks_found: 0, blocks_missing: 0, records_missing: 0, unexpected_records: 0,
     mismatched_records: 0, incomplete_blocks: 0, offset_errors: 0, inversions: 0, segments: [], examples: [],
   };
+}
+
+async function auditStream(ctx: Ctx, name: string, plan: StreamPlan, maxBytes: number | undefined): Promise<StreamCheck> {
+  const { http, meter } = ctx;
+  const c = unread(name);
   const m = new Matcher(plan, c);
   let cursor = "beginning";
   let failures = 0;
@@ -302,11 +307,16 @@ async function auditStream(ctx: Ctx, name: string, plan: StreamPlan, maxBytes: n
   return c;
 }
 
-/** audit mode. */
-export async function audit(ctx: Ctx, signal: AbortSignal): Promise<Record<string, unknown>> {
+/** audit mode. `held`, when given, names the streams the project's setup
+ * recorded as created (tenants.ts): only those are read, and any name a
+ * ledger acked records to, so a name setup could not create (a stream
+ * limit) is not read as a 404 fifty times. A name not read counts every
+ * block sent to it as missing, so every request to it must have failed. */
+export async function audit(ctx: Ctx, signal: AbortSignal, held?: ReadonlySet<string>): Promise<Record<string, unknown>> {
   const files = (ctx.o.str("expect") ?? "").split(",").filter(Boolean);
   if (!files.length) throw new Error("audit needs --expect a.ledger.json[,b...]");
   const plans = new Map<string, StreamPlan>();
+  const acked = new Map<string, number>();
   let failed = 0, sent = 0;
   const replayErrors: string[] = [];
   const t0 = performance.now();
@@ -316,19 +326,28 @@ export async function audit(ctx: Ctx, signal: AbortSignal): Promise<Record<strin
     sent += s.sent;
     failed += r.failed;
     replayErrors.push(...r.replayErrors);
+    for (const [n, t] of Object.entries(s.perStream)) acked.set(n, (acked.get(n) ?? 0) + t.acked_records);
   }
   const replayS = (performance.now() - t0) / 1000;
   if (replayErrors.length) {
     return { verify: { ok: false, stage: "replay", replay_errors: replayErrors.slice(0, 10) } };
   }
-  const names = Array.from({ length: ctx.streams }, (_, i) => streamName(ctx.prefix, i));
-  for (const n of plans.keys()) if (!names.includes(n)) throw new Error(`audit: ${n} was produced but is not in --streams/--prefix`);
+  const all = Array.from({ length: ctx.streams }, (_, i) => streamName(ctx.prefix, i));
+  for (const n of plans.keys()) if (!all.includes(n)) throw new Error(`audit: ${n} was produced but is not in --streams/--prefix`);
+  const names = held ? all.filter((n) => held.has(n) || (acked.get(n) ?? 0) > 0) : all;
+  const notCreated = all.filter((n) => !names.includes(n));
   const maxBytes = ctx.o.int("max-bytes", 0) || undefined;
   const checks: StreamCheck[] = new Array(names.length);
   const empty: StreamPlan = { digests: [], blocks: [], first: new Map(), bytes: 0 };
   await pool(names.length, ctx.o.int("parallel", 4), async (i) => {
     checks[i] = await auditStream(ctx, names[i]!, plans.get(names[i]!) ?? empty, maxBytes);
   }, signal);
+  for (const n of notCreated) {
+    const c = unread(n);
+    const m = new Matcher(plans.get(n) ?? empty, c);
+    m.finish();
+    checks.push(c);
+  }
   const sum = (k: keyof StreamCheck) => checks.reduce((a, c) => a + (c[k] as number), 0);
   const expected = [...plans.values()].reduce((a, p) => a + p.digests.length, 0);
   const blocks = [...plans.values()].reduce((a, p) => a + p.blocks.length, 0);
@@ -344,6 +363,7 @@ export async function audit(ctx: Ctx, signal: AbortSignal): Promise<Record<strin
       failed_requests: failed,
       replay_s: Math.round(replayS * 10) / 10,
       streams: names.length,
+      not_created: notCreated,
       expected_records: expected,
       read_records: sum("read_records"),
       read_bytes: sum("read_bytes"),
