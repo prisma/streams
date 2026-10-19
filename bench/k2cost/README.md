@@ -506,11 +506,30 @@ the class's quota set as `--quota` flags): 1,000 projects took 6.7 s here.
 credentials come only from a 0600 JSON file `{"accessKeyId", "secretAccessKey"}`.
 
 The token map is a JSON list `[{"project", "token"}]`, re-read every 10 min
-and soon after a 401. Outputs under `--out`:
+and soon after a 401.
+
+Connections: every short request goes through a bounded keep-alive pool
+(`conn-pool.ts`): one per class, shared by its projects, and one per
+run-level leg, each of `CLASS_POOL_SOCKETS` (128, twice the cell's
+per-project in-flight ceiling of 512 / k 8) sockets kept open between
+requests. Bun's fetch keeps only 64 idle sockets per process and closes the
+rest as their answers end, so a driver with more in flight opened a
+connection for most requests: in the Layer B rehearsal of 2026-10-19 h1 and
+h1k (400 appends a second each, thousands in flight against a slow cell) ran
+the macOS host out of its 16,383 ephemeral ports (30 s TIME_WAIT: about 546
+new connections a second), and every class and the scrape met
+`EADDRNOTAVAIL` for 35 minutes. A request that finds its pool's every
+socket busy waits in the pool, in arrival order, before it is sent or
+timed: the driver's own backlog, counted as `pool_waits` (and
+`pool_unsent` when its caller gives up while it waits: status 0, error
+`unsent: ...`, never a request), never a status or a transport error. An
+open-loop producer's append latency is still measured from its scheduled
+arrival, so that wait is in it. SSE subscriptions stay on fetch: each holds
+its connection while it lives. Outputs under `--out`:
 
 | File | Content |
 |---|---|
-| `run.json` | the manifest's name and sha256, the run's window, the classes, the token map's reads, failed phases |
+| `run.json` | the manifest's name and sha256, the run's window, the classes, the token map's reads, failed phases, and `pools`: each keep-alive pool's sockets, peak in use, peak waiting, waits, wait times and unsent requests (below) |
 | `windows.jsonl` | one line per class per 10 s window: the class's summed counters, latency percentiles, error codes (`status:code`, the typed refusals), connections and requests in flight |
 | `loop.jsonl` | one line per 10 s window: the driver's own event-loop lag (a timer due every 50 ms, how late it fired: p50, p99, max, ticks); `run.json`'s `loop_lag` has it over the run and each manifest period. One process drives every project, so this lag is in every latency the run measures |
 | `classes.json` | per class: totals, error codes, refusals (`typed` by code, `untyped` by status, `transport`), latency over the whole run (`run`) and over each manifest period |

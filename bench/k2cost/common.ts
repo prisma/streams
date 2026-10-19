@@ -8,6 +8,7 @@
 
 import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { ConnPool } from "./conn-pool.ts";
 
 // ---------------------------------------------------------------- flags
 
@@ -572,20 +573,57 @@ export interface Resp {
 const dec = new TextDecoder();
 export const utf8 = (b: Uint8Array): string => dec.decode(b);
 
+export interface CallOpts {
+  body?: Uint8Array | string;
+  contentType?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  extra?: Record<string, string>;
+}
+
+/** Sockets of the pool an Http gets when its caller names none: k2gen's
+ * producer cap (produce.ts CAP), so a lone generator never waits on it. */
+export const DEFAULT_POOL_SOCKETS = 4096;
+let defaultPool: ConnPool | undefined;
+
 /** The product client. Counts request bodies sent (wire_bytes_up) and
  * response bodies received (wire_bytes_down), every status, and
  * transport failures as "err"/"timeout" (an abort we caused is
- * "cancelled"). Headers are not counted. */
+ * "cancelled"). Headers are not counted. Short requests go through a
+ * bounded keep-alive pool (conn-pool.ts; tenants.ts gives each class its
+ * own): a request waits there for a socket before it is sent or timed,
+ * the wait counted as the driver's own (pool_waits; the pool's summary
+ * has the wait times), and
+ * one whose caller gives up while it waits is never sent (pool_unsent,
+ * status 0 with error "unsent: ..."), never a status or a request. */
 export class Http {
   constructor(
     readonly base: string,
     readonly hdrs: HeaderSource,
     readonly meter: Meter,
+    readonly pool: ConnPool = (defaultPool ??= new ConnPool(DEFAULT_POOL_SOCKETS)),
   ) {}
   async call(
     method: string,
     path: string,
-    opt: { body?: Uint8Array | string; contentType?: string; timeoutMs?: number; signal?: AbortSignal; extra?: Record<string, string> } = {},
+    opt: CallOpts = {},
+  ): Promise<Resp> {
+    const waited = await this.pool.acquire(opt.signal);
+    if (waited === null) {
+      this.meter.add("pool_unsent");
+      return { status: 0, headers: null, body: new Uint8Array(0), ms: 0, error: "unsent: cancelled while waiting for a pooled connection" };
+    }
+    if (waited > 0) this.meter.add("pool_waits");
+    try {
+      return await this.send(method, path, opt);
+    } finally {
+      this.pool.release();
+    }
+  }
+  private async send(
+    method: string,
+    path: string,
+    opt: CallOpts,
   ): Promise<Resp> {
     const h = this.hdrs.get();
     if (opt.contentType) h["content-type"] = opt.contentType;
@@ -597,8 +635,8 @@ export class Http {
     this.meter.add("requests");
     this.meter.add("wire_bytes_up", up);
     try {
-      const res = await fetch(this.base + path, { method, headers: h, body: opt.body, signal });
-      const body = new Uint8Array(await res.arrayBuffer());
+      const res = await this.pool.send(this.base + path, method, h, opt.body, signal);
+      const body = res.body;
       this.meter.add("wire_bytes_down", body.byteLength);
       this.meter.status(String(res.status));
       if (res.status === 401) this.hdrs.reloadSoon();

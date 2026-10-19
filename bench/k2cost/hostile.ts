@@ -390,15 +390,19 @@ async function timedPairs(env: RunEnv, leg: LegSpec, signal: AbortSignal, side: 
     const j = rng.int(i + 1);
     [named[i], named[j]] = [named[j]!, named[i]!];
   }
+  // One request at a time, on the leg's own keep-alive pool (conn-pool.ts).
+  const pool = env.pools.get(`leg:${leg.leg}`);
   const anon = async (path: string): Promise<{ ms: number; ans: string }> => {
+    if ((await pool.acquire(signal)) === null) return { ms: 0, ans: "0:transport" };
     const t0 = performance.now();
     let ans = "0:transport";
     try {
-      const res = await fetch(env.base + path, { signal });
-      const body = new Uint8Array(await res.arrayBuffer());
-      ans = `${res.status}:${errCode({ status: res.status, headers: res.headers, body, ms: 0 }) || "-"}`;
+      const res = await pool.send(env.base + path, "GET", {}, undefined, signal);
+      ans = `${res.status}:${errCode({ status: res.status, headers: res.headers, body: res.body, ms: 0 }) || "-"}`;
     } catch {
       // counted as a transport answer
+    } finally {
+      pool.release();
     }
     return { ms: performance.now() - t0, ans };
   };
@@ -492,7 +496,7 @@ export async function probes(env: RunEnv, leg: LegSpec, signal: AbortSignal): Pr
     const bs = holders.get(name)!;
     const b = bs[rng.int(bs.length)]!;
     seen.add(`${a.id} ${name}`);
-    const http = new Http(env.base, env.headers.get(a.id)!, meter);
+    const http = new Http(env.base, env.headers.get(a.id)!, meter, env.pools.get(`leg:${leg.leg}`));
     const never = `never/${env.plan.manifest.name}-p${i}`;
     const r1 = await http.call("GET", `/v1/streams/${encName(name)}/records?cursor=beginning`);
     const r2 = await http.call("GET", `/v1/streams/${encName(never)}/records?cursor=beginning`);

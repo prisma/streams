@@ -38,6 +38,7 @@ import {
   sleep, stop,
 } from "./common.ts";
 import { audit } from "./audit.ts";
+import { Pools } from "./conn-pool.ts";
 import { churn } from "./churn.ts";
 import { group, subs, tail, walk } from "./consume.ts";
 import { HOSTILE_LEGS, HOSTILE_MODES } from "./hostile.ts";
@@ -288,6 +289,14 @@ export const MODES: Record<string, Mode> = {
 export type Leg = (env: RunEnv, leg: LegSpec, signal: AbortSignal) => Promise<Record<string, unknown>>;
 export const LEGS: Record<string, Leg> = { ...HOSTILE_LEGS };
 
+/** Sockets of each class's keep-alive pool (conn-pool.ts), shared by the
+ * class's projects; each run-level leg has a pool of its own. Twice the
+ * cell's per-project in-flight ceiling (ADMIT_MAX_INFLIGHT 512 / k 8 = 64),
+ * so a class at its ceilings can still be refused for in-flight, and the
+ * manifest's widest burst (h9's 64 readers) never waits; 37 classes at
+ * 128 hold at most 4,736 sockets, a third of macOS's 16,383 ports. */
+export const CLASS_POOL_SOCKETS = 128;
+
 export interface RunEnv {
   plan: Plan;
   base: string;
@@ -296,6 +305,8 @@ export interface RunEnv {
   tokens: TokenMap;
   headers: Map<string, ProjectHeaders>;
   windows: ClassWindows;
+  /** Keep-alive pools by class, and by "leg:<leg>" for run-level legs. */
+  pools: Pools;
 }
 
 // ---------------------------------------------------------------- run
@@ -315,7 +326,7 @@ async function runPhase(env: RunEnv, p: Project, i: number, ph: PhaseSpec): Prom
   const flags = phaseFlags(p, ph);
   const o = new Opts(flags);
   const ctx: Ctx = {
-    http: new Http(env.base, env.headers.get(p.id)!, meter), meter, o, prefix: flags.get("prefix")!,
+    http: new Http(env.base, env.headers.get(p.id)!, meter, env.pools.get(p.cls.class)), meter, o, prefix: flags.get("prefix")!,
     streams: Number(flags.get("streams")), seed: p.seed + i * 7919, duration: (endMs - startMs) / 1000, owner: p.owner,
   };
   const rep = new Reporter(ph.mode, meter, undefined, undefined, 10, o.asObject(), undefined);
@@ -424,10 +435,11 @@ export async function run(plan: Plan, base: string, tokenMap: string, out: strin
   const env: RunEnv = {
     plan, base, out, t0, tokens, windows: new ClassWindows(join(out, "windows.jsonl"), t0, spans),
     headers: new Map(plan.projects.map((p) => [p.id, new ProjectHeaders(tokens, p.id, p.recordKey)])),
+    pools: new Pools(CLASS_POOL_SOCKETS),
   };
   const head = {
     manifest: plan.manifest.name, manifest_sha256: plan.sha256, base, time_scale: plan.scale, started_ms: t0,
-    projects: plan.projects.length, duration_s: plan.manifest.duration * plan.scale,
+    projects: plan.projects.length, duration_s: plan.manifest.duration * plan.scale, pool_sockets: CLASS_POOL_SOCKETS,
     classes: Object.fromEntries(plan.manifest.classes.map((c) => [c.class, { count: c.count, role: c.role, quotas: c.quotas ?? "ceilings" }])),
   };
   writeFileSync(join(out, "run.json"), JSON.stringify(head, null, 1) + "\n");
@@ -445,6 +457,7 @@ export async function run(plan: Plan, base: string, tokenMap: string, out: strin
   writeFileSync(join(out, "classes.json"), JSON.stringify(classSummary(plan, ledgers, env.windows), null, 1) + "\n");
   const summary = {
     ...head, finished_ms: Date.now(), stopped_by_signal: stop.signal.aborted, loop_lag: loop.summary(),
+    pools: env.pools.summary(),
     token_map: { file: tokenMap, reads: tokens.reads, failed_reads: tokens.failedReads },
     phases_failed: ledgers.flatMap((l) => (l.phases as Array<Record<string, unknown>>).filter((ph) => ph.error).map((ph) => `${l.project}#${ph.i}: ${ph.error}`)),
   };
