@@ -557,7 +557,10 @@ the manifest `scripts/rc-certify.sh --shape single-cell` reads (arm,
 §7) plus the fence fields: commit, the profiles' sha256s and pins,
 `cell_env_sha256`, the harness trees, the region, every bar's value, and
 `facts`, what the run measured and nothing judges (`H11t-fresh`: its pairs,
-answers and the fresh-versus-never KS, or null without the leg). The
+answers and the fresh-versus-never KS, or null without the leg;
+`driver-pools`: the driver's keep-alive pools that met a backlog, any wait
+for a socket or unsent request, from `run.json`'s `pools`, so a FAIL in a
+class listed there may be the driver's; null for a driver without pools). The
 layer-b legs: `H9`, `H9b` (each ran, 0 `admit_shed_rss` in its window),
 `H11t` (2,000 quiet-versus-never pairs, identical answers, KS p > 0.01:
 the owner's round-3 call 9, (a), 2026-10-13; see below), `leaks` (0 foreign,

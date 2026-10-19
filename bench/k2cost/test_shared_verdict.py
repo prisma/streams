@@ -298,8 +298,22 @@ class LayerB(unittest.TestCase):
         # Without the leg the fact is missing, and still nothing is judged on it.
         self.w.h11t_fresh = None
         m = self.w.judge()
-        self.assertEqual((m["verdict"], m["facts"]), ("PASS", {"H11t-fresh": None}))
+        self.assertEqual((m["verdict"], m["facts"]["H11t-fresh"]), ("PASS", None))
         self.assertNotIn("tenants/legs/h11t-fresh-2.json", m["evidence"])
+
+    def test_the_drivers_pool_backlog_is_a_fact_in_the_manifest_never_a_bar(self):
+        # tenants.ts's keep-alive pools (conn-pool.ts): a request that waited
+        # for a socket, or was never sent, is the driver's own backlog. The
+        # manifest lists the pools that met one; no bar or leg changes.
+        before = self.w.judge()
+        self.assertIsNone(before["facts"]["driver-pools"])
+        h1 = {"sockets": 128, "peak_in_use": 128, "peak_waiting": 3400, "waits": 91000, "wait_ms_max": 8500,
+              "wait_ms_total": 400000000, "unsent": 12}
+        idle = {"sockets": 128, "peak_in_use": 3, "peak_waiting": 0, "waits": 0, "wait_ms_max": 0, "wait_ms_total": 0, "unsent": 0}
+        self.w.run.update(pool_sockets=128, pools={"h1": h1, "victim": idle, "leg:probes": idle})
+        m = self.w.judge()
+        self.assertEqual(m["facts"]["driver-pools"], {"sockets": 128, "pools": 3, "saturated": {"h1": h1}})
+        self.assertEqual((m["verdict"], m["legs"], m["bars"]), ("PASS", before["legs"], before["bars"]))
 
     def test_a_known_red_leg_fails_and_is_named_never_masked(self):
         m = self.mutated(lambda w: [b["body"].update(rss_mb=325.0) for b in w.loads if b["t"] >= T0 + 100 * MIN], "Q0")

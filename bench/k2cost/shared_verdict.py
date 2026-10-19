@@ -18,7 +18,7 @@ legs include the three the lead's call 7 names (H9, H9b, H11t). Beside them,
 the fence fields verify_arm will check (triage B9): commit, profile {files,
 sha256, pins, pins_missing}, cell_env_sha256, harness_trees, region; and
 bars {name: {value, bar, pass}}, known_red, facts (measured, never judged:
-H11t-fresh), evidence {file: sha256}.
+H11t-fresh, driver-pools), evidence {file: sha256}.
 
 Known-red legs are judged like any other and reported FAIL: Q0 until its
 fix; known_red only names why. H11t times quiet names against never-held
@@ -312,15 +312,35 @@ def facts(r: Run) -> dict:
     (answered from its fresh descriptor slot without the store) against a
     never-held name, the gap the owner accepted (P4, 2026-10-12) and asked
     to see reported (round-3 call 9, (a)); None when the run has no such
-    leg."""
+    leg. driver-pools: the driver's own backlog (driver_pools)."""
+    return {"H11t-fresh": h11t_fresh(r), "driver-pools": driver_pools(r)}
+
+
+def h11t_fresh(r: Run) -> dict | None:
     h = r.legs.get("h11t-fresh")
     if h is None:
-        return {"H11t-fresh": None}
+        return None
     fresh, never = h.get("fresh_ms") or [], h.get("never_ms") or []
     d, p = ks(fresh, never) if fresh and never else (None, None)
-    return {"H11t-fresh": {"pairs": min(len(fresh), len(never)), "rate": h.get("rate"), "target": h.get("target"),
-                           "differences": h.get("differences"), "answers": h.get("answers"), "ks": {"d": d, "p": p},
-                           "fresh_p50_ms": h.get("fresh_p50_ms"), "never_p50_ms": h.get("never_p50_ms"), "error": h.get("error")}}
+    return {"pairs": min(len(fresh), len(never)), "rate": h.get("rate"), "target": h.get("target"),
+            "differences": h.get("differences"), "answers": h.get("answers"), "ks": {"d": d, "p": p},
+            "fresh_p50_ms": h.get("fresh_p50_ms"), "never_p50_ms": h.get("never_p50_ms"), "error": h.get("error")}
+
+
+def driver_pools(r: Run) -> dict | None:
+    """The driver's keep-alive pools (tenants.ts run.json `pools`, one per
+    class and per run-level leg, bench/k2cost/conn-pool.ts): a request that
+    found its pool's every socket busy waited in the driver, and one whose
+    caller gave up there was never sent. Those are the driver's backlog,
+    not the cell's answers, so they are listed here (saturated: the pools
+    with a wait or an unsent request) beside the bars, which they do not
+    change; a FAIL in a class listed here may be the driver's. None for a
+    run whose driver had no pools."""
+    pools = r.run.get("pools")
+    if not isinstance(pools, dict):
+        return None
+    saturated = {k: v for k, v in sorted(pools.items()) if (v.get("waits") or 0) > 0 or (v.get("unsent") or 0) > 0}
+    return {"sockets": r.run.get("pool_sockets"), "pools": len(pools), "saturated": saturated}
 
 
 def _rss_sheds(r: Run, t0: int, t1: int) -> int | None:
