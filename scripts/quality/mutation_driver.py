@@ -75,7 +75,7 @@ def mutation_command(entry, out, output, diff, share=None):
     command.extend(('--package', entry.package))
     command.extend(cargo_test_args(entry.test_filters))
     command.extend(('--profile', 'quality', '--jobs', '1', '--timeout', '90',
-                    '--build-timeout', '600', '--gitignore', 'true', '--output', str(output)))
+                    '--build-timeout', '900', '--gitignore', 'true', '--output', str(output)))
     command.extend(shard_args(share))
     return command
 

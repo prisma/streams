@@ -160,6 +160,18 @@ class MutationOwnership(unittest.TestCase):
         self.assertIn('--cargo-test-arg=dst_tests::sse_delivery::', command)
         self.assertIn('--cargo-test-arg=dst_tests::livefeed_swap::', command)
 
+    def test_a_mutant_build_may_take_half_again_ci_s_slowest_baseline_build(self):
+        # CI's 4-vCPU runners build the owner's baseline in 454-635 s; at a
+        # 600 s build timeout the last mutants of a long shard ended
+        # TIMEOUT though their tests catch them (rust-quality run
+        # 39442753527). A build timeout says nothing about the tests.
+        entry = source_map()['src/sse/session.rs']
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            command = mutation_command(entry, root, root / 'result', root / 'selected.diff')
+        at = command.index('--build-timeout')
+        self.assertEqual((command[at + 1], command[command.index('--timeout') + 1]), ('900', '90'))
+
     def test_a_shard_lists_and_tests_its_round_robin_share_and_nothing_else(self):
         entry = source_map()['src/sse/session.rs']
         with tempfile.TemporaryDirectory() as directory:
