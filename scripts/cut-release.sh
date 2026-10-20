@@ -44,42 +44,75 @@
 #      which `rc-certify.sh --shape single-cell --artifact-run <tag>` reads;
 #   8. the staged directories moved to their places.
 # A failure removes the worktree and the half-staged directory.
+#
+#   scripts/cut-release.sh <commit> <tag> --cells DIR --local OUT
+#
+# A local staging, for the Layer B rig on a host with no artifact bucket
+# (.github/workflows/layer-b.yml's runner): steps 3 to 6 for the cell's
+# release alone (no issuer or watch release), built exactly as above, into
+# OUT, which must not exist and must not be under $STREAMS_RELEASES. It
+# skips step 2 (CI's verdict) and step 7 (no SOAK_HOME, no upload, no
+# binaries.json), and OUT holds NOT-A-RELEASE beside deploy/: a file
+# release.json does not list, so release.ts's checkRelease, which
+# deploy-release.sh runs, refuses OUT. A local staging never deploys and
+# never certifies; bench/k2cost/run-shared.sh --release OUT runs it.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 refuse() { echo "cut-release: refused: $*" >&2; exit 1; }
-usage() { echo "usage: scripts/cut-release.sh <commit> <tag> --cells DIR" >&2; exit 2; }
+usage() { echo "usage: scripts/cut-release.sh <commit> <tag> --cells DIR [--local OUT]" >&2; exit 2; }
 
+LOCAL=''
+if [ $# -eq 6 ] && [ "$5" = --local ]; then
+  LOCAL=$6
+  set -- "$1" "$2" "$3" "$4"
+fi
 [ $# -eq 4 ] && [ "$3" = --cells ] || usage
 COMMIT_ARG=$1 TAG=$2 CELLS=$4
 [[ "$TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || refuse "tag $TAG is not [A-Za-z0-9._-]"
 RELEASES=${STREAMS_RELEASES:-$HOME/.streams-releases}
-FINAL=$RELEASES/$TAG
-ISSUER_FINAL=$RELEASES/$TAG-issuer
-WATCH_FINAL=$RELEASES/$TAG-watch
-CUT=$RELEASES/.cut-$TAG
-S=${SOAK_HOME:?set SOAK_HOME, which holds the artifact bucket files and results/}
-RESULTS=$S/results/$TAG
 
 # 1.
-[ ! -e "$FINAL" ] || refuse "$FINAL exists: a release directory is never overwritten"
-[ ! -e "$ISSUER_FINAL" ] || refuse "$ISSUER_FINAL exists: a release directory is never overwritten"
-[ ! -e "$WATCH_FINAL" ] || refuse "$WATCH_FINAL exists: a release directory is never overwritten"
-[ ! -e "$RESULTS" ] || refuse "$RESULTS exists: tag $TAG was cut before"
+if [ -n "$LOCAL" ]; then
+  [ ! -e "$LOCAL" ] || refuse "$LOCAL exists: a local staging is never overwritten"
+  LOCAL_PARENT=$(cd "$(dirname "$LOCAL")" 2>/dev/null && pwd -P) || refuse "the parent of $LOCAL is not a directory"
+  RELEASES_REAL=$RELEASES
+  [ ! -d "$RELEASES" ] || RELEASES_REAL=$(cd "$RELEASES" && pwd -P)
+  case "$LOCAL_PARENT/$(basename "$LOCAL")/" in
+    "$RELEASES_REAL"/*) refuse "$LOCAL is under STREAMS_RELEASES ($RELEASES), where only cut releases live" ;;
+  esac
+  LOCAL=$LOCAL_PARENT/$(basename "$LOCAL")
+  CUT=$LOCAL_PARENT/.cut-$TAG
+else
+  FINAL=$RELEASES/$TAG
+  ISSUER_FINAL=$RELEASES/$TAG-issuer
+  WATCH_FINAL=$RELEASES/$TAG-watch
+  CUT=$RELEASES/.cut-$TAG
+  S=${SOAK_HOME:?set SOAK_HOME, which holds the artifact bucket files and results/}
+  RESULTS=$S/results/$TAG
+  [ ! -e "$FINAL" ] || refuse "$FINAL exists: a release directory is never overwritten"
+  [ ! -e "$ISSUER_FINAL" ] || refuse "$ISSUER_FINAL exists: a release directory is never overwritten"
+  [ ! -e "$WATCH_FINAL" ] || refuse "$WATCH_FINAL exists: a release directory is never overwritten"
+  [ ! -e "$RESULTS" ] || refuse "$RESULTS exists: tag $TAG was cut before"
+fi
 [ ! -e "$CUT" ] || refuse "$CUT exists: another cut of $TAG is running, or one failed and left it (remove it)"
 [ -d "$CELLS" ] || refuse "--cells $CELLS is not a directory"
 CELLS=$(cd "$CELLS" && pwd)
-for f in artifact-endpoint.txt artifact-bucket.txt binid.txt binsec.txt; do
-  [ -f "$S/$f" ] || refuse "$S/$f is missing (the artifact bucket, as build-upload.sh reads it)"
-done
+if [ -z "$LOCAL" ]; then
+  for f in artifact-endpoint.txt artifact-bucket.txt binid.txt binsec.txt; do
+    [ -f "$S/$f" ] || refuse "$S/$f is missing (the artifact bucket, as build-upload.sh reads it)"
+  done
+fi
 COMMIT=$(git -C "$ROOT" rev-parse --verify "$COMMIT_ARG^{commit}") || refuse "$COMMIT_ARG is not a commit"
 
 # 2.
-STATUS=$("$ROOT/scripts/dev/ci-status.sh" "$COMMIT" 2>&1) || true
-printf '%s\n' "$STATUS"
-printf '%s\n' "$STATUS" | grep -qx CI_GREEN || refuse "CI is not green for $COMMIT (ci-status.sh did not print CI_GREEN)"
+if [ -z "$LOCAL" ]; then
+  STATUS=$("$ROOT/scripts/dev/ci-status.sh" "$COMMIT" 2>&1) || true
+  printf '%s\n' "$STATUS"
+  printf '%s\n' "$STATUS" | grep -qx CI_GREEN || refuse "CI is not green for $COMMIT (ci-status.sh did not print CI_GREEN)"
+fi
 
 # 3.
-mkdir -p "$RELEASES"
+[ -n "$LOCAL" ] || mkdir -p "$RELEASES"
 mkdir "$CUT"
 TREE=$CUT/tree
 cleanup() {
@@ -98,23 +131,31 @@ export BUILD_UNIX SOURCE_DATE_EPOCH=$BUILD_UNIX
 BINS=$TREE/target/x86_64-unknown-linux-musl/release
 
 # 5.
-(cd "$TREE/deploy/composer" && bun install --frozen-lockfile)
-(cd "$TREE/deploy/composer-issuer" && bun install --frozen-lockfile)
-(cd "$TREE/deploy/cell-watch" && bun install --frozen-lockfile)
 ENTRY_JS=$CUT/entry.js
-ISSUER_JS=$CUT/issuer-entry.js
-WATCH_JS=$CUT/watch-entry.js
-PAGER_JS=$CUT/pager-entry.js
+(cd "$TREE/deploy/composer" && bun install --frozen-lockfile)
 (cd "$TREE" && bun build deploy/composer/streams/entry.ts --target=bun --format=esm --outfile "$ENTRY_JS")
-(cd "$TREE" && bun build deploy/composer-issuer/issuer/entry.ts --target=bun --format=esm --outfile "$ISSUER_JS")
-(cd "$TREE" && bun build deploy/cell-watch/entry.ts --target=bun --format=esm --outfile "$WATCH_JS")
-(cd "$TREE" && bun build deploy/cell-watch/pager-entry.ts --target=bun --format=esm --outfile "$PAGER_JS")
 
 # 6.
 STAGED=$CUT/release
 (cd "$TREE" && bun deploy/composer/release.ts stage --tree "$TREE" --commit "$COMMIT" --tag "$TAG" \
   --build-unix "$BUILD_UNIX" --cells "$CELLS" --server "$BINS/streams-slate" --s3lite "$BINS/s3lite" \
   --entry-js "$ENTRY_JS" --node-modules "$TREE/deploy/composer/node_modules" --out "$STAGED")
+if [ -n "$LOCAL" ]; then
+  printf '%s\n' "A local staging of commit $COMMIT (scripts/cut-release.sh --local), for the Layer B rig:" \
+    "no CI verdict, no upload, no binaries.json. It never deploys and never certifies." > "$STAGED/NOT-A-RELEASE"
+  [ ! -e "$LOCAL" ] || refuse "$LOCAL appeared during the cut"
+  mv "$STAGED" "$LOCAL"
+  echo "cut-release: $TAG staged locally at $LOCAL (commit $COMMIT); not a release: bench/k2cost/run-shared.sh --release $LOCAL runs it"
+  exit 0
+fi
+(cd "$TREE/deploy/composer-issuer" && bun install --frozen-lockfile)
+(cd "$TREE/deploy/cell-watch" && bun install --frozen-lockfile)
+ISSUER_JS=$CUT/issuer-entry.js
+WATCH_JS=$CUT/watch-entry.js
+PAGER_JS=$CUT/pager-entry.js
+(cd "$TREE" && bun build deploy/composer-issuer/issuer/entry.ts --target=bun --format=esm --outfile "$ISSUER_JS")
+(cd "$TREE" && bun build deploy/cell-watch/entry.ts --target=bun --format=esm --outfile "$WATCH_JS")
+(cd "$TREE" && bun build deploy/cell-watch/pager-entry.ts --target=bun --format=esm --outfile "$PAGER_JS")
 ISSUER_STAGED=$CUT/issuer
 (cd "$TREE" && bun deploy/composer/release.ts stage-issuer --tree "$TREE" --commit "$COMMIT" --tag "$TAG" \
   --cells "$CELLS" --entry-js "$ISSUER_JS" --node-modules "$TREE/deploy/composer-issuer/node_modules" \

@@ -186,6 +186,10 @@ describe("checkRelease", () => {
     expect(refusal(() => checkRelease(i.out))).toBe(refused("deploy/cells/production.env (missing)"));
     writeFileSync(cells, CELLS_PRODUCTION);
     expect(checkRelease(i.out).cells.production).toBe(sha256(Buffer.from(CELLS_PRODUCTION)));
+    // A local staging (cut-release.sh --local, the layer-b workflow's) is
+    // never deployed: its marker is a file release.json does not list.
+    writeFileSync(join(i.out, "NOT-A-RELEASE"), "a local staging\n");
+    expect(refusal(() => checkRelease(i.out))).toBe(refused("NOT-A-RELEASE (not in release.json)"));
   });
 });
 
@@ -354,5 +358,70 @@ describe("scripts/cut-release.sh", () => {
     });
     rmSync(join(releases, "rc-1-watch"), { recursive: true });
     expect([git(REPO, "worktree", "list"), readdirSync(releases)]).toEqual([worktrees, []]);
+  });
+
+  /// Run `--local OUT` with no SOAK_HOME: `gh` and `python3` (CI's verdict,
+  /// the upload) refuse and record; `cargo` and `bun` record and succeed,
+  /// and release.ts's `stage` makes its --out with a release.json.
+  function cutLocal(releases: string, cells: string, out: string) {
+    const bin = scratchDir();
+    for (const tool of ["gh", "python3"]) {
+      writeFileSync(join(bin, tool), `#!/bin/sh\necho ${tool} >> ${join(bin, "ran")}\nexit 1\n`);
+      chmodSync(join(bin, tool), 0o755);
+    }
+    for (const tool of ["cargo", "bun"]) {
+      writeFileSync(join(bin, tool), [
+        "#!/bin/sh",
+        `echo "${tool} $1" >> ${join(bin, "ran")}`,
+        'out=""; prev=""',
+        'for a in "$@"; do [ "$prev" = --out ] && out=$a; prev=$a; done',
+        '[ -z "$out" ] || { mkdir -p "$out/deploy" && echo "{}" > "$out/deploy/release.json"; }',
+        "exit 0",
+        "",
+      ].join("\n"));
+      chmodSync(join(bin, tool), 0o755);
+    }
+    const run = spawnSync("bash", [join(REPO, "scripts", "cut-release.sh"), "HEAD", "rc-1", "--cells", cells, "--local", out], {
+      env: { PATH: `${bin}:${process.env.PATH}`, HOME: process.env.HOME ?? "/", STREAMS_RELEASES: releases },
+    });
+    const ran = existsSync(join(bin, "ran")) ? readFileSync(join(bin, "ran"), "utf8") : "";
+    return { code: run.status, err: run.stderr.toString(), ran };
+  }
+
+  test("--local stages the cell's release alone into OUT, without CI's verdict, SOAK_HOME or an upload, marked NOT-A-RELEASE", () => {
+    const root = scratchDir();
+    const [releases, cells, staged] = ["releases", "cells", "staged"].map((d) => join(root, d));
+    mkdirSync(cells);
+    mkdirSync(staged);
+    writeFileSync(join(cells, "scratch.env"), "CELL_STAGE=scratch\nCELL_ID=cell_rig\n");
+    const out = join(staged, "rig");
+    const worktrees = git(REPO, "worktree", "list");
+    const run = cutLocal(releases, cells, out);
+    expect({ code: run.code, ran: run.ran }).toEqual({
+      code: 0,
+      ran: "cargo zigbuild\nbun install\nbun build\nbun deploy/composer/release.ts\n",
+    });
+    expect(readdirSync(out).sort()).toEqual(["NOT-A-RELEASE", "deploy"]);
+    expect(readFileSync(join(out, "NOT-A-RELEASE"), "utf8")).toContain("never deploys and never certifies");
+    expect([git(REPO, "worktree", "list"), readdirSync(staged), existsSync(releases)]).toEqual([worktrees, ["rig"], false]);
+  });
+
+  test("--local refuses an existing OUT, or one under STREAMS_RELEASES, before anything else", () => {
+    const root = scratchDir();
+    const [releases, cells, out] = ["releases", "cells", "out"].map((d) => join(root, d));
+    mkdirSync(cells);
+    mkdirSync(out);
+    expect(cutLocal(releases, cells, out)).toEqual({
+      code: 1,
+      err: `cut-release: refused: ${out} exists: a local staging is never overwritten\n`,
+      ran: "",
+    });
+    mkdirSync(releases);
+    expect(cutLocal(releases, cells, join(releases, "rig"))).toEqual({
+      code: 1,
+      err: `cut-release: refused: ${join(releases, "rig")} is under STREAMS_RELEASES (${releases}), where only cut releases live\n`,
+      ran: "",
+    });
+    expect(readdirSync(releases)).toEqual([]);
   });
 });
