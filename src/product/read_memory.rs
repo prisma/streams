@@ -96,7 +96,12 @@ const SHARED_CELL_PAGE_BYTES: usize = 1 << 20;
 /// cell, keeps its query as sent.
 pub(crate) fn paged_query(state: &AppState, method: &Method, path: &str, uri: &Uri) -> String {
     let query = uri.query().unwrap_or("");
-    let default_paged = state.config.cli.project_share_k > 1
+    query_on_cell(state.config.cli.project_share_k, method, path, query)
+}
+
+/// `query` as `paged_query` serves it on a cell of `share_k` projects.
+fn query_on_cell(share_k: u64, method: &Method, path: &str, query: &str) -> String {
+    let default_paged = share_k > 1
         && method == Method::GET
         && matches!(
             (classify_route(path), strip_verb(path).1),
@@ -340,3 +345,6 @@ pub(super) fn settle(state: &AppState, principal: Option<&RequestPrincipal>, ser
         ReadHold::unreserved(&state.admission, project)
     });
 }
+
+#[cfg(test)]
+mod tests;
