@@ -357,7 +357,7 @@
       "count": 1,
       "owner": "crate::fair_shed",
       "path": "src/dst/dst_tests.rs",
-      "reason": "Fair-shedding DST (fairshed lane, lead decision of 2026-10-20): over the RSS shed line on a cell shared k ways, the project over its share of the cell's offered requests is refused 429 project_memory_pressure while its neighbour's appends are served up to the line x 5/4, and at the in-flight cap 429 rate_limited while its neighbour's appends are served up to the cap x 5/4; the compiler and the DST suite exercise the module.",
+      "reason": "Fair-shedding DST (fairshed lane, lead decision of 2026-10-20): over the RSS shed line on a cell shared k ways, the project over its share of the cell's offered requests is refused 429 project_memory_pressure while its neighbour's appends are served up to the line x 9/8, and at the in-flight cap 429 rate_limited while its neighbour's appends are served up to the cap x 5/4; the compiler and the DST suite exercise the module.",
       "syntax": "path = \"tests/fair_shed.rs\""
     },
     {
