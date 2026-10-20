@@ -732,7 +732,7 @@ async fn a_product_append_whose_engine_closes_between_resolve_and_enqueue_is_tem
 }
 
 /// The append path keeps its own RSS gate beside the product entry's
-/// (edge change #NEW-mem2-2): a raw append over the shed line is refused
+/// (edge change #183): a raw append over the shed line is refused
 /// 429 with `Retry-After: 2` and writes nothing, and under the line the
 /// same append is the stream's first record.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
