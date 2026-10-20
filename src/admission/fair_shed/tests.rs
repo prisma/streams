@@ -1,4 +1,7 @@
-use super::{EPOCH_MS, InstanceLoad, ProjectLoad, Verdict, Window, hard_line, judge, over_share};
+use super::{
+    EPOCH_MS, InstanceLoad, ProjectLoad, Verdict, Window, inflight_hard_line, judge, over_share,
+    rss_hard_line,
+};
 
 /// `n` requests of `project` at `now_ms`, then its verdict.
 fn charge_n(cell: &InstanceLoad, project: &ProjectLoad, n: u64, k: u64, now_ms: i64) -> Verdict {
@@ -118,14 +121,30 @@ fn the_heaviest_load_ages_out_with_its_window() {
 }
 
 #[test]
-fn the_hard_line_is_a_quarter_over_the_shed_line() {
+fn the_rss_hard_line_is_an_eighth_over_the_shed_line() {
     assert_eq!(
         [
-            hard_line(500),
-            hard_line(3),
-            hard_line(0),
-            hard_line(u64::MAX)
+            rss_hard_line(500),
+            rss_hard_line(1000),
+            rss_hard_line(8),
+            rss_hard_line(7),
+            rss_hard_line(0),
+            rss_hard_line(u64::MAX)
         ],
-        [625, 3, 0, u64::MAX]
+        [562, 1125, 9, 7, 0, u64::MAX]
+    );
+}
+
+#[test]
+fn the_inflight_hard_line_is_a_quarter_over_the_cap() {
+    assert_eq!(
+        [
+            inflight_hard_line(500),
+            inflight_hard_line(8),
+            inflight_hard_line(3),
+            inflight_hard_line(0),
+            inflight_hard_line(u64::MAX)
+        ],
+        [625, 10, 3, 0, u64::MAX]
     );
 }

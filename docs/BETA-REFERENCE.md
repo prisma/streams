@@ -140,7 +140,7 @@ Notes:
   refused) gets `429 project_memory_pressure`,
   `Retry-After: 2`, on every request until the server is back under the
   line. Other projects' appends are still served, unless memory reaches
-  a quarter over the line or no project sends more than its share; then
+  an eighth over the line or no project sends more than its share; then
   every append gets `429 rate_limited`, `Retry-After: 2`, as before.
   The server's limit on requests in flight works the same way: while it
   is reached, such a project gets `429 rate_limited`, `Retry-After: 1`,

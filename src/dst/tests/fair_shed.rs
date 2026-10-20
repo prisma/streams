@@ -2,14 +2,16 @@
 //! lead's decision of 2026-10-20 20:00, edge change #184): on a
 //! cell shared k ways, the project that sends more than 1/k of the verified
 //! requests the cell was recently offered is refused first, and a project within its
-//! share keeps its appends while the instance is at most a quarter over the
+//! share keeps its appends while the instance is at most an eighth over the
 //! line (`admission::fair_shed`).
 
 use super::fixture_cell::{CREATE, Cell, CellSpec, error_code, open_cell};
 use super::fixture_http::engine_shutdown;
 
-/// The rig's shed line (MiB), the production default.
-const LINE_MB: u64 = 500;
+/// The rig's shed line (MiB): twice the production default, so that an
+/// eighth over it (125 MiB) leaves the 65 MiB the leg keeps for the
+/// absorber's reservation inside the hard line and still over the line.
+const LINE_MB: u64 = 1000;
 /// The flooder's appends under the line: far more than 8 times the
 /// compliant project's whole leg (fewer than 12 requests).
 const FLOOD: usize = 120;
@@ -44,7 +46,7 @@ fn refused(code: &str, retry: &str) -> (u16, Option<String>, Option<String>) {
 /// 120 appends of the cell's last ones) is refused `429
 /// project_memory_pressure`, Retry-After 2, on its appends, reads,
 /// creates and listings, while the compliant project 1 is served each
-/// append, exactly stored; inside line x 5/4 the compliant project is still
+/// append, exactly stored; inside line x 9/8 the compliant project is still
 /// served, past it every append is shed `429 rate_limited` as before; under
 /// the line both are served again. Before: the compliant project's first append over the
 /// line was refused `429 rate_limited` with the flooder's.
@@ -92,14 +94,14 @@ async fn over_the_shed_line_the_project_over_its_share_is_refused_before_its_nei
     );
     // The absorber's reservation adds to the pressure (tens of MiB while a
     // gather runs), so the leg stays 65 MiB inside the hard line; the exact
-    // boundary is `fair_shed::hard_line`'s unit test.
-    admission.record_rss_mb(LINE_MB * 5 / 4 - 65);
+    // boundary is `fair_shed::rss_hard_line`'s unit test.
+    admission.record_rss_mb(LINE_MB * 9 / 8 - 65);
     assert_eq!(
         append(&cell, 1, ROUNDS).await,
         (200, None, None),
-        "inside line x 5/4"
+        "inside line x 9/8"
     );
-    admission.record_rss_mb(LINE_MB * 5 / 4 + 1);
+    admission.record_rss_mb(LINE_MB * 9 / 8 + 1);
     assert_eq!(
         append(&cell, 1, 99).await,
         refused("rate_limited", "2"),

@@ -371,7 +371,7 @@ impl AdmissionController {
     /// over the cap.
     pub(crate) fn admit_write_inflight(&self) -> Result<(), WriteRefusal> {
         if let Some((active, cap)) = self.over_inflight_cap()
-            && (active > fair_shed::hard_line(cap)
+            && (active > fair_shed::inflight_hard_line(cap)
                 || park::verdict() != Some(fair_shed::Verdict::Spared))
         {
             self.inner.shed_total.fetch_add(1, Ordering::Relaxed);
@@ -384,10 +384,10 @@ impl AdmissionController {
     /// The RSS write-shed (R25-E): sampled RSS PLUS `reserved_bytes` (the
     /// absorber's reservation) against the shed line, so the line moves
     /// BEFORE the memory does. A served request fair shedding spares
-    /// (`fair_shed`) passes up to a quarter over the line.
+    /// (`fair_shed`) passes up to an eighth over the line.
     pub(crate) fn admit_write_memory(&self, reserved_bytes: u64) -> Result<(), WriteRefusal> {
         if let Some((pressure, line)) = self.over_shed_line(reserved_bytes)
-            && (pressure > fair_shed::hard_line(line)
+            && (pressure > fair_shed::rss_hard_line(line)
                 || park::verdict() != Some(fair_shed::Verdict::Spared))
         {
             self.inner.shed_total.fetch_add(1, Ordering::Relaxed);

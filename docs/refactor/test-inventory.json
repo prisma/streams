@@ -6390,7 +6390,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "5c7b4a967f0530b3769fa7707f3d01a84bf658c13dad4c3da87118a6c6bf17c8",
+    "function_sha256": "7b8ba683c69a2656cdfed433897bb147871a3c3d4e86fc42c2aa687c0c423394",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fair_shed.rs",

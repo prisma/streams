@@ -18,9 +18,10 @@
 //! not, and the heaviest project counted in the window is; `Even` otherwise
 //! (nobody over its share, or a dedicated cell, k = 1). Over the line a
 //! blamed project's requests are refused (`product::read_memory`), a spared
-//! append passes the RSS write gate while the instance is at most a quarter
-//! over the line (`AdmissionController::admit_write_memory`), and every
-//! other append is shed as before.
+//! append passes the RSS write gate while the instance is at most an eighth
+//! over the line (`AdmissionController::admit_write_memory`; at the
+//! in-flight cap, a quarter over it), and every other append is shed as
+//! before.
 //!
 //! Bounded: one window in each project's tracker entry (the tracker's
 //! 32,768 entries, idle-evicted) and one for the cell; a count or a verdict
@@ -33,12 +34,19 @@ use std::sync::{Mutex, PoisonError};
 /// previous epoch's, a window of 5 to 10 s.
 pub(crate) const EPOCH_MS: i64 = 5_000;
 
-/// How far over `limit` (the RSS shed line in MiB, or the in-flight cap in
-/// active requests) an append fair shedding spares still passes its gate:
-/// a quarter over it. Past it every append is shed, the instance-wide
-/// backstop.
-pub(crate) fn hard_line(limit: u64) -> u64 {
-    limit.saturating_add(limit / 4)
+/// How far over the RSS shed line (MiB) an append fair shedding spares
+/// still passes the RSS write gate: an eighth over it (562 MiB on the
+/// default 500), well inside the platform's kill line (~750 MiB, RUNBOOK).
+/// Past it every append is shed, the instance-wide backstop.
+pub(crate) fn rss_hard_line(line_mb: u64) -> u64 {
+    line_mb.saturating_add(line_mb / 8)
+}
+
+/// How far over the in-flight write cap (active requests) an append fair
+/// shedding spares still passes its gate: a quarter over it. Past it every
+/// append is refused, the instance-wide backstop.
+pub(crate) fn inflight_hard_line(cap: u64) -> u64 {
+    cap.saturating_add(cap / 4)
 }
 
 /// A count over the current epoch and the one before it.
