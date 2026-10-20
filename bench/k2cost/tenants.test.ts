@@ -428,8 +428,8 @@ test("an append answered 408 that the server wrote is resolved by read-back: the
   const a = await resolution();
   expect(a[s1!.id].prefixes["t/"].ok).toBe(true);
   expect([a[s1!.id].resolution, a[h5k!.id].resolution]).toEqual([
-    { streams: a[s1!.id].resolution.streams, unknown_records: 12, committed_records: 12, unresolved: [] },
-    { streams: 1, unknown_records: 2, committed_records: 2, unresolved: [] },
+    { streams: a[s1!.id].resolution.streams, unknown_records: 12, committed_records: 12, unresolved: [], reasons: {}, retried: {} },
+    { streams: 1, unknown_records: 2, committed_records: 2, unresolved: [], reasons: {}, retried: {} },
   ]);
   // A stream the read-back cannot read (the churner's, deleted) is reported, not forgiven.
   const [left] = [...cell.ns(h5k!.id).keys()];
@@ -437,5 +437,6 @@ test("an append answered 408 that the server wrote is resolved by read-back: the
   const b = await resolution();
   expect(b[h5k!.id].resolution).toEqual({
     streams: 1, unknown_records: 2, committed_records: 0, unresolved: [{ stream: left, reason: "404 stream_not_found: the stream is gone (deleted or expired)" }],
+    reasons: { "404 stream_not_found": 1 }, retried: {},
   });
 }, 30_000);

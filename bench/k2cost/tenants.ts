@@ -556,6 +556,7 @@ export function heldNames(out: string, p: Project, prefix: string): Set<string> 
 export async function auditAll(plan: Plan, base: string, tokenMap: string, out: string, o: Opts): Promise<Record<string, unknown>> {
   const tokens = new TokenMap(tokenMap);
   const projects: Record<string, unknown> = {};
+  const audited = new Map<string, { ledgers: Array<Record<string, unknown>>; read: Map<string, number> }>();
   await pool(plan.projects.length, o.int("parallel", 8), async (i) => {
     const p = plan.projects[i]!;
     const byPrefix = new Map<string, { files: string[]; streams: number }>();
@@ -591,8 +592,9 @@ export async function auditAll(plan: Plan, base: string, tokenMap: string, out: 
         checks[prefix] = { ok: false, error: (err as Error).message };
       }
     }
-    // Appends answered with an unknown outcome, settled by read-back
-    // (resolve.ts) for the billing bar.
+    // The ledgers of the appends answered with an unknown outcome, settled
+    // by read-back (resolve.ts) for the billing bar once every project is
+    // audited.
     const ledgers = p.cls.phases.flatMap((_, j) => {
       try {
         return [JSON.parse(readFileSync(join(out, "projects", p.id, `phase-${j}.ledger.json`), "utf8")) as Record<string, unknown>];
@@ -600,8 +602,18 @@ export async function auditAll(plan: Plan, base: string, tokenMap: string, out: 
         return [];
       }
     });
-    const resolution = await resolve(new Http(base, new ProjectHeaders(tokens, p.id, p.recordKey), new Meter()), ledgers, read);
-    if (byPrefix.size || resolution) projects[p.id] = { class: p.cls.class, prefixes: checks, ...(resolution ? { resolution } : {}) };
+    audited.set(p.id, { ledgers, read });
+    if (byPrefix.size) projects[p.id] = { class: p.cls.class, prefixes: checks };
+  }, stop.signal);
+  // The read-back runs after every project's audit reads, when the cell is
+  // no longer read by them, and asks again for as long as the cell refuses
+  // it (resolve.ts READ_BACK).
+  await pool(plan.projects.length, o.int("resolve-parallel", 4), async (i) => {
+    const p = plan.projects[i]!;
+    const a = audited.get(p.id);
+    if (!a) return;
+    const resolution = await resolve(new Http(base, new ProjectHeaders(tokens, p.id, p.recordKey), new Meter()), a.ledgers, a.read);
+    if (resolution) projects[p.id] = { ...(projects[p.id] ?? { class: p.cls.class, prefixes: {} }), resolution };
   }, stop.signal);
   const doc = { t_ms: Date.now(), manifest: plan.manifest.name, projects };
   writeFileSync(join(out, "audit.json"), JSON.stringify(doc, null, 1) + "\n");
