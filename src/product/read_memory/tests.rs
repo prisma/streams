@@ -2,7 +2,7 @@
 
 use axum::http::Method;
 
-use super::{appends, query_on_cell};
+use super::{appends, carries_body, query_on_cell};
 
 /// A shared cell's projects (`PROJECT_SHARE_K`).
 const SHARED: u64 = 8;
@@ -64,5 +64,24 @@ fn only_a_records_append_single_or_batch_appends() {
         (Method::POST, "orders/nowhere"),
     ] {
         assert!(!appends(&method, path), "{method} {path}");
+    }
+}
+
+/// Only a `POST` or a `PUT` has its body buffered under the project's
+/// memory line, and so only they can be shed before their body is read
+/// (fair shedding's blame or the RSS write gate); every other method's
+/// body is dropped unpolled and the request goes on to its handler.
+#[test]
+fn only_a_post_or_a_put_carries_a_body() {
+    assert!(carries_body(&Method::POST));
+    assert!(carries_body(&Method::PUT));
+    for method in [
+        Method::GET,
+        Method::HEAD,
+        Method::DELETE,
+        Method::PATCH,
+        Method::OPTIONS,
+    ] {
+        assert!(!carries_body(&method), "{method}");
     }
 }
