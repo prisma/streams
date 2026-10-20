@@ -274,7 +274,12 @@ def leg_probes(r: Run, bars: dict) -> bool:
     first = p.get("first_contacts")
     ok = bar(bars, "probes: cross-project first contacts", {"first_contacts": first, "pairs": p.get("pairs")}, PROBE_PAIRS_MIN,
              int(first or 0) >= PROBE_PAIRS_MIN and first == p.get("pairs"))
-    ok &= bar(bars, "probes: differences from a name nobody holds", diffs, 0, diffs == 0)
+    # Each difference by its class (status:code of the held side vs the
+    # side nobody holds), beside the pairs a load refusal left unjudged
+    # (hostile.ts PROBE_LOAD_REFUSALS): those were replaced by fresh first
+    # contacts, so the judged pairs still meet the bar above.
+    ok &= bar(bars, "probes: differences from a name nobody holds",
+              {"differences": diffs, "classes": p.get("difference_classes"), "unjudged": p.get("unjudged")}, 0, diffs == 0)
     ok &= bar(bars, "probes: B's name created in A's own namespace", put, "all 201", bool(put) and set(put) == {"201"})
     return ok
 

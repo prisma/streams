@@ -42,7 +42,10 @@
 //                 masked), reads B's usage and a never-placed project's
 //                 (same), and then creates B's name in its own namespace
 //                 (201) and deletes it; A never reads that name again, so
-//                 no later probe meets a name A itself created.
+//                 no later probe meets a name A itself created. A pair a
+//                 load refusal answered (PROBE_LOAD_REFUSALS) is unjudged
+//                 and replaced by the next unused (A, name); differences
+//                 are counted by class (status:code on each side).
 
 import { readFileSync } from "node:fs";
 import { connect as netConnect, type Socket } from "node:net";
@@ -543,6 +546,17 @@ async function timedPairs(env: RunEnv, leg: LegSpec, signal: AbortSignal, side: 
 export const h11t = (env: RunEnv, leg: LegSpec, signal: AbortSignal) => timedPairs(env, leg, signal, "quiet");
 export const h11tFresh = (env: RunEnv, leg: LegSpec, signal: AbortSignal) => timedPairs(env, leg, signal, "fresh");
 
+/** The answers a cell gives a request it refuses for load, before it
+ * looks at the name or project the request names: the project's request
+ * rate or store budget (429 project_rate_limit), its read memory line
+ * (429 project_memory_pressure), the instance's read memory (503
+ * read_memory_busy) and the pre-auth survival bound (503 overloaded). A
+ * probe pair with one of them on either side tells nothing about the name;
+ * any other answer, a 503 or 429 without one of these codes included, is
+ * judged. */
+const PROBE_LOAD_REFUSALS = new Set(["429:project_rate_limit", "429:project_memory_pressure", "503:read_memory_busy", "503:overloaded"]);
+const loadRefused = (r: Resp): boolean => PROBE_LOAD_REFUSALS.has(answer(r));
+
 const VOLATILE = /^(date|content-length|x-streams-.*|.*request-id.*|traceparent|server-timing)$/;
 function shape(r: Resp, masks: string[]): string {
   const names = r.headers ? [...r.headers.keys()].filter((h) => !VOLATILE.test(h)).sort().join(",") : "";
@@ -572,9 +586,14 @@ export async function probes(env: RunEnv, leg: LegSpec, signal: AbortSignal): Pr
     const j = rng.int(i + 1);
     [combos[i], combos[j]] = [combos[j]!, combos[i]!];
   }
-  const todo = combos.slice(0, pairs);
   const meter = new Meter();
   const differences = { name: 0, usage: 0 };
+  // Each difference by its class ("name 404:not_found vs 503:-"), and the
+  // pairs a load refusal left unjudged (PROBE_LOAD_REFUSALS): by class, and
+  // by the side refused (held: B's name or B's usage; never: the name or
+  // project nobody holds), so a refusal that leans on one side shows.
+  const differenceClasses: Record<string, number> = {};
+  const unjudged = { pairs: 0, held: 0, never: 0, classes: {} as Record<string, number> };
   const examples: string[] = [];
   const usageAnswers: Record<string, number> = {};
   const put: Record<string, number> = {};
@@ -586,36 +605,58 @@ export async function probes(env: RunEnv, leg: LegSpec, signal: AbortSignal): Pr
   // PAIRS_IN_FLIGHT pairs at once; a pair's six requests go one after the
   // other. Two pairs in flight never share a (prober, name): each pair is
   // a distinct one, and a prober's create touches only its own name.
+  // A pair a load refusal left unjudged is replaced by the next unused
+  // (prober, name), never retried (its read may have met the name), until
+  // `pairs` pairs are judged or the combinations run out.
   const flight = new Flight(PAIRS_IN_FLIGHT);
-  for (let i = 0; i < todo.length && !signal.aborted; i++) {
+  let running = 0;
+  let next = 0;
+  const settled: Array<() => void> = [];
+  for (let i = 0; done < pairs && next < combos.length && !signal.aborted; i++) {
     await sleep(t0 + (i * 1000) / rate - performance.now(), signal);
-    if (signal.aborted) break;
+    while (done + running >= pairs && running > 0 && !signal.aborted) await new Promise<void>((r) => settled.push(r));
+    if (signal.aborted || done >= pairs) break;
+    const [a, name] = combos[next++]!;
+    running++;
     await flight.start(async () => {
-      if (signal.aborted) return; // the window closed while it waited for a place
-      const [a, name] = todo[i]!;
-      const bs = holders.get(name)!;
-      const b = bs[rng.int(bs.length)]!;
-      seen.add(`${a.id} ${name}`);
-      const http = new Http(env.base, env.headers.get(a.id)!, meter, env.pools.get(`leg:${leg.leg}`));
-      const never = `never/${env.plan.manifest.name}-p${i}`;
-      const r1 = await http.call("GET", `/v1/streams/${encName(name)}/records?cursor=beginning`);
-      const r2 = await http.call("GET", `/v1/streams/${encName(never)}/records?cursor=beginning`);
-      if (shape(r1, [name, encName(name)]) !== shape(r2, [never, encName(never)])) {
-        differences.name++;
-        if (examples.length < 5) examples.push(`pair ${i} ${a.id} -> ${b.id} ${name}: ${shape(r1, [name])} vs ${shape(r2, [never])}`.slice(0, 400));
+      try {
+        if (signal.aborted) return; // the window closed while it waited for a place
+        const bs = holders.get(name)!;
+        const b = bs[rng.int(bs.length)]!;
+        const http = new Http(env.base, env.headers.get(a.id)!, meter, env.pools.get(`leg:${leg.leg}`));
+        const never = `never/${env.plan.manifest.name}-p${i}`;
+        const r1 = await http.call("GET", `/v1/streams/${encName(name)}/records?cursor=beginning`);
+        const r2 = await http.call("GET", `/v1/streams/${encName(never)}/records?cursor=beginning`);
+        const ghost = `proj_never_${env.plan.manifest.name.replaceAll("-", "_")}_${i}`;
+        const u1 = await http.call("GET", `/v1/projects/${encodeURIComponent(b.id)}/usage`);
+        const u2 = await http.call("GET", `/v1/projects/${encodeURIComponent(ghost)}/usage`);
+        const sides: Array<[string, Resp, Resp]> = [["name", r1, r2], ["usage", u1, u2]];
+        if ([r1, r2, u1, u2].some(loadRefused)) {
+          unjudged.pairs++;
+          for (const [kind, held, nobody] of sides) {
+            if (loadRefused(held)) unjudged.held++;
+            if (loadRefused(nobody)) unjudged.never++;
+            if (loadRefused(held) || loadRefused(nobody)) bump(unjudged.classes, `${kind} ${answer(held)} vs ${answer(nobody)}`);
+          }
+          return;
+        }
+        seen.add(`${a.id} ${name}`);
+        bump(usageAnswers, answer(u1));
+        for (const [kind, held, nobody] of sides) {
+          const [mh, mn] = kind === "name" ? [[name, encName(name)], [never, encName(never)]] : [[b.id], [ghost]];
+          if (shape(held, mh) === shape(nobody, mn)) continue;
+          differences[kind as "name" | "usage"]++;
+          bump(differenceClasses, `${kind} ${answer(held)} vs ${answer(nobody)}`);
+          if (examples.length < 5) examples.push(`pair ${i} ${kind} ${a.id} -> ${b.id} ${name}: ${shape(held, mh)} vs ${shape(nobody, mn)}`.slice(0, 400));
+        }
+        const p = await http.call("PUT", `/v1/streams/${encName(name)}`, { body: '{"format":{"kind":"json"}}', contentType: "application/json" });
+        bump(put, String(p.status));
+        if (p.status === 201 || p.status === 200) bump(del, String((await http.call("DELETE", `/v1/streams/${encName(name)}`)).status));
+        done++;
+      } finally {
+        running--;
+        for (const f of settled.splice(0)) f();
       }
-      const ghost = `proj_never_${env.plan.manifest.name.replaceAll("-", "_")}_${i}`;
-      const u1 = await http.call("GET", `/v1/projects/${encodeURIComponent(b.id)}/usage`);
-      const u2 = await http.call("GET", `/v1/projects/${encodeURIComponent(ghost)}/usage`);
-      bump(usageAnswers, answer(u1));
-      if (shape(u1, [b.id]) !== shape(u2, [ghost])) {
-        differences.usage++;
-        if (examples.length < 5) examples.push(`pair ${i} usage ${a.id} -> ${b.id}: ${shape(u1, [b.id])} vs ${shape(u2, [ghost])}`.slice(0, 400));
-      }
-      const p = await http.call("PUT", `/v1/streams/${encName(name)}`, { body: '{"format":{"kind":"json"}}', contentType: "application/json" });
-      bump(put, String(p.status));
-      if (p.status === 201 || p.status === 200) bump(del, String((await http.call("DELETE", `/v1/streams/${encName(name)}`)).status));
-      done++;
     });
   }
   await flight.drain();
@@ -623,7 +664,8 @@ export async function probes(env: RunEnv, leg: LegSpec, signal: AbortSignal): Pr
     // first_contacts: distinct (prober, name) pairs read, the bar's value;
     // available: every such pair the classes allow (probers x names).
     pairs: done, first_contacts: seen.size, available: combos.length, probers: from.length, names: holders.size,
-    rate, in_flight_max: PAIRS_IN_FLIGHT, from: from[0]!.cls.class, to: arg(leg, "to", "warm"), differences, examples,
+    rate, in_flight_max: PAIRS_IN_FLIGHT, from: from[0]!.cls.class, to: arg(leg, "to", "warm"), differences,
+    difference_classes: differenceClasses, unjudged, examples,
     usage_answers: usageAnswers, put, delete: del, requests: meter.tot.get("requests"), error_codes: meter.errorCodes,
   };
 }

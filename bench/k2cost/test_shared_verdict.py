@@ -330,6 +330,18 @@ class LayerB(unittest.TestCase):
                 ex = m["bars"]["billing: usage = ledger for every project"]["value"]["examples"]
                 self.assertEqual([e["project"] for e in ex], ["proj_0500"])
 
+    def test_the_probe_differences_are_shown_by_class_beside_the_pairs_load_left_unjudged(self):
+        # Native Layer B on 06b89311 printed only "88": the bar now shows each
+        # difference's class and the pairs a load refusal left unjudged.
+        unjudged = {"pairs": 90, "held": 50, "never": 41, "classes": {"name 503:read_memory_busy vs 404:stream_not_found": 50}}
+        self.w.probes.update(unjudged=unjudged, difference_classes={})
+        name = "probes: differences from a name nobody holds"
+        self.assertEqual(self.w.judge()["bars"][name],
+                         {"value": {"differences": 0, "classes": {}, "unjudged": unjudged}, "bar": 0, "pass": True})
+        diff = {"name 404:stream_not_found vs 403:forbidden": 1}
+        m = self.mutated(lambda w: w.probes.update(differences={"name": 1, "usage": 0}, difference_classes=diff), "probes")
+        self.assertEqual(m["bars"][name]["value"], {"differences": 1, "classes": diff, "unjudged": unjudged})
+
     def test_quiet_names_apart_from_never_held_ones_fail_h11t_and_are_not_known_red(self):
         # The owner's round-3 call 9 (a): quiet versus never is a bar like
         # any other, no longer red by construction.

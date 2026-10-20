@@ -286,6 +286,30 @@ test("on a slow cell H11t and the probes keep up to PAIRS_IN_FLIGHT pairs in fli
   }
 }, 30_000);
 
+test("a probe pair the cell refused for load is unjudged and replaced by a fresh first contact; any other difference is counted by its class", async () => {
+  const m: Manifest = {
+    name: "probeload", seed: 5, duration: 2.0,
+    classes: [
+      { class: "target", count: 1, role: "compliant", streams: 10, prefix: "v/", phases: [{ mode: "setup", at: 0 }] },
+      { class: "ghost", count: 4, role: "idle", phases: [] },
+    ],
+    legs: [{ leg: "probes", at: 0.5, secs: 1.2, args: { pairs: 20, rate: 200, from: "ghost", to: "target" } }],
+  };
+  // Each ghost's first request is the read of its first pair's held name:
+  // two load refusals (instance read memory, the project's rate), one 503
+  // with no code and one 429 whose code is not a load refusal.
+  const { out } = await runManifest(m, "probeload", (ids) => {
+    cell.refuse(ids.ghost0!, 1, 503, "read_memory_busy");
+    cell.refuse(ids.ghost1!, 1, 429, "project_rate_limit");
+    cell.refuse(ids.ghost2!, 1, 503, null);
+    cell.refuse(ids.ghost3!, 1, 429, "stream_limit");
+  });
+  const p = json(join(out, "legs", "probes-0.json"));
+  expect([p.pairs, p.first_contacts, p.available, p.differences, p.put]).toEqual([20, 20, 40, { name: 2, usage: 0 }, { "201": 20 }]);
+  expect(p.unjudged).toEqual({ pairs: 2, held: 2, never: 0, classes: { "name 429:project_rate_limit vs 404:stream_not_found": 1, "name 503:read_memory_busy vs 404:stream_not_found": 1 } });
+  expect(p.difference_classes).toEqual({ "name 429:stream_limit vs 404:stream_not_found": 1, "name 503:- vs 404:stream_not_found": 1 });
+}, 30_000);
+
 test("H9b reports a stalled reader whose body the server cut short, and counts none of it as delivered", async () => {
   const srv = createServer((s) => s.once("data", () => s.end("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 4096\r\n\r\n[{\"o\":1}")));
   await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
