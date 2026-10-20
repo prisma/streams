@@ -35,6 +35,7 @@ use std::time::Duration;
 
 use super::read_reservation::ProjectReadBytes;
 use super::{ProjectAdmission, QuotaRegistry};
+use crate::admission::fair_shed::Verdict;
 use crate::project_policy::ProjectQuotas;
 use crate::tenant::ProjectId;
 
@@ -49,6 +50,8 @@ pub(crate) struct ParkShare {
     store_rate: u64,
     /// The project's read quota a second. 0 sets no read limit.
     read_rate: u64,
+    /// The cell's recently offered requests (fair shedding).
+    cell: Arc<crate::admission::fair_shed::InstanceLoad>,
 }
 
 /// RAII place in a project's share, held while one wait is parked.
@@ -75,11 +78,18 @@ impl QuotaRegistry {
             limit: quotas.max_live_subscriptions,
             store_rate: quotas.requests_per_sec,
             read_rate: quotas.read_bytes_per_sec,
+            cell: Arc::clone(&self.load),
         })
     }
 }
 
 impl ParkShare {
+    /// What fair shedding makes of a request of the project at `now_ms`
+    /// on a cell shared `share_k` ways (`admission::fair_shed`).
+    pub(crate) fn judge(&self, share_k: u64, now_ms: i64) -> Verdict {
+        self.cell.judge(&self.admission.load, share_k, now_ms)
+    }
+
     /// Take one place for a parked wait: `None` when the project's live
     /// subscriptions, watch waits and parked waits already fill its share.
     pub(crate) fn park(&self) -> Option<ProjectParked> {

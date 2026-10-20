@@ -368,3 +368,6 @@ mod shared_cell_capacity;
 
 #[path = "tests/idle_release.rs"]
 mod idle_release;
+
+#[path = "tests/fair_shed.rs"]
+mod fair_shed;

@@ -65,6 +65,7 @@ const REQUEST_BURST_FLOOR: u64 = 50;
 mod append_charge;
 mod bucket;
 use bucket::Bucket;
+mod offered;
 pub(crate) mod parked;
 mod pin;
 pub(crate) mod read_reservation;
@@ -135,6 +136,8 @@ pub(crate) struct ProjectAdmission {
     memory_latch: std::sync::atomic::AtomicU8,
     memory_shed_count: AtomicU64,
     memory_engage_count: AtomicU64,
+    /// Its recently offered requests, which fair shedding judges.
+    load: crate::admission::fair_shed::ProjectLoad,
 }
 
 /// Round-13 pressure model, version 2 since shared cells H3 (reserved
@@ -535,6 +538,8 @@ pub(crate) struct QuotaRegistry {
     projects: Arc<Mutex<HashMap<ProjectId, Arc<ProjectAdmission>>>>,
     /// Each project's stored bytes, as the usage rollup publishes them.
     stored: stored::StoredTable,
+    /// The cell's recently offered requests, which fair shedding judges.
+    load: Arc<crate::admission::fair_shed::InstanceLoad>,
 }
 
 impl QuotaRegistry {
@@ -543,6 +548,7 @@ impl QuotaRegistry {
             ops,
             projects: Default::default(),
             stored: Default::default(),
+            load: Default::default(),
         }
     }
 
@@ -580,6 +586,7 @@ impl QuotaRegistry {
             memory_latch: std::sync::atomic::AtomicU8::new(0),
             memory_shed_count: AtomicU64::new(0),
             memory_engage_count: AtomicU64::new(0),
+            load: Default::default(),
         })
     }
 

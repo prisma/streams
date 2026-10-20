@@ -20,6 +20,12 @@
 //! a write's); the instance's read memory makes it wait, then refuses it
 //! (503 `read_memory_busy`). Both are retryable after 1 s.
 //!
+//! Over the RSS shed line on a cell shared k ways, every request of a
+//! project sending more than 1/k of the cell's recently offered requests
+//! is refused first, 429 `project_memory_pressure` with `Retry-After: 2`
+//! (fair shedding, `admission::fair_shed`): here for a request without a
+//! body, in `body` before a body is read, and at the catalog's admission.
+//!
 //! A request that writes the registry (a create, recreate or fork, a
 //! delete, a seal) is refused while its project's store budget is in debt
 //! (public-beta phase B step 14(b), owner question Q1, decided (b') on
@@ -64,6 +70,12 @@ pub(crate) async fn refusal(
     path: &str,
     query: &str,
 ) -> Option<Response> {
+    crate::admission::park::judge_load(state.config.cli.project_share_k);
+    if !carries_body(method)
+        && let Some(refusal) = blamed_refusal(state, principal)
+    {
+        return Some(refusal);
+    }
     if method == Method::POST
         && let Some(refusal) = project_memory_gate(state, principal)
     {
@@ -127,7 +139,8 @@ impl AppState {
     ) -> Result<Option<QuotaGuard>, Box<Response>> {
         let guard = project_admission(self, principal).map_err(Box::new)?;
         crate::admission::park::bind_principal(&self.quotas, principal);
-        match store_budget_refusal(self, principal) {
+        crate::admission::park::judge_load(self.config.cli.project_share_k);
+        match blamed_refusal(self, principal).or_else(|| store_budget_refusal(self, principal)) {
             Some(refusal) => Err(Box::new(refusal)),
             None => Ok(guard),
         }
@@ -246,18 +259,13 @@ pub(crate) async fn body(
     path: &str,
     incoming: axum::body::Body,
 ) -> Result<(bytes::Bytes, Option<crate::quota::BufferedBodyGuard>), Box<Response>> {
-    if method != Method::POST && method != Method::PUT {
+    if !carries_body(method) {
         return Ok((bytes::Bytes::new(), None));
     }
-    if appends(method, path)
-        && let Err(failure) =
-            crate::application::append::memory_gate(&state.admission, &state.runtime.history).await
-    {
+    if let Some(shed) = shed_before_body(state, principal, method, path).await {
         let limit = u64::try_from(state.config.cli.max_request_body_bytes).unwrap_or(u64::MAX);
         crate::admission::body::discard_within(incoming, limit, SHED_DISCARD_WAIT).await;
-        return Err(Box::new(super::append_error::render_product_append_error(
-            failure,
-        )));
+        return Err(Box::new(shed));
     }
     let buffered = crate::admission::body::buffer_within(
         incoming,
@@ -273,6 +281,55 @@ pub(crate) async fn body(
         return Err(Box::new(refusal));
     }
     Ok(buffered)
+}
+
+/// Only a `POST` or a `PUT` buffers its body.
+fn carries_body(method: &Method) -> bool {
+    method == Method::POST || method == Method::PUT
+}
+
+/// The refusal of a request that carries a body before it is read, which
+/// the caller reads and drops: a project fair shedding blames over the shed
+/// line, and an append the RSS write gate sheds.
+async fn shed_before_body(
+    state: &AppState,
+    principal: Option<&RequestPrincipal>,
+    method: &Method,
+    path: &str,
+) -> Option<Response> {
+    if let Some(refusal) = blamed_refusal(state, principal) {
+        return Some(refusal);
+    }
+    if !appends(method, path) {
+        return None;
+    }
+    let gate = crate::application::append::memory_gate(&state.admission, &state.runtime.history);
+    let failure = gate.await.err()?;
+    Some(super::append_error::render_product_append_error(failure))
+}
+
+/// Fair shedding (`admission::fair_shed`): over the RSS shed line, a
+/// request of a project over its share of the cell's load is refused 429
+/// `project_memory_pressure`, retryable after 2 s as the shed's appends
+/// are, tagged with the project.
+fn blamed_refusal(state: &AppState, principal: Option<&RequestPrincipal>) -> Option<Response> {
+    let project = &principal?.project_id;
+    let reserved = state.runtime.history.budget.reserved_bytes();
+    if !state.admission.shed_blamed(reserved) {
+        return None;
+    }
+    let mut refusal = perr(
+        StatusCode::TOO_MANY_REQUESTS,
+        "project_memory_pressure",
+        "the instance is over its memory line and this project carries more than its share of the cell's load; retry",
+        None,
+        true,
+    );
+    refusal
+        .headers_mut()
+        .insert("retry-after", HeaderValue::from_static("2"));
+    let tagged = crate::audit::tag(refusal, "project_memory_pressure");
+    Some(crate::audit::tag_project(tagged, project))
 }
 
 /// A body that was not buffered: 413 `body_too_large` past the body

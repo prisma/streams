@@ -43,6 +43,7 @@ use std::sync::{Arc, OnceLock};
 
 use axum::response::Response;
 
+use super::fair_shed::Verdict;
 use super::read_memory::ReadHold;
 use super::{InflightTicket, ParkedTicket};
 use crate::auth::RequestPrincipal;
@@ -62,6 +63,8 @@ struct Request {
     weight: AtomicU64,
     /// The bytes its walks read that it has not paid for yet.
     coverage: AtomicU64,
+    /// What fair shedding made of it (`judge_load`).
+    verdict: OnceLock<Verdict>,
 }
 
 impl Drop for Request {
@@ -86,6 +89,7 @@ impl InflightTicket {
             read: read.clone(),
             weight: AtomicU64::new(0),
             coverage: AtomicU64::new(0),
+            verdict: OnceLock::new(),
         };
         let response = REQUEST.scope(request, handler).await;
         match Arc::into_inner(read).and_then(OnceLock::into_inner) {
@@ -109,6 +113,29 @@ pub(crate) fn bind_principal(quotas: &QuotaRegistry, principal: Option<&RequestP
             request.share.get().is_some()
         })
         .unwrap_or(false)
+}
+
+/// Judge the served request by its bound project's share of the cell's
+/// offered requests, on a cell shared `share_k` ways, once, and keep the
+/// verdict for the request's gates (`verdict`). A request with no bound
+/// project, or outside a served request, has none.
+pub(crate) fn judge_load(share_k: u64) {
+    let _judged = REQUEST.try_with(|request| {
+        let share = request.share.get()?;
+        Some(
+            *request
+                .verdict
+                .get_or_init(|| share.judge(share_k, crate::shard::now_ms())),
+        )
+    });
+}
+
+/// The served request's fair-shed verdict: `None` when it was not counted.
+pub(crate) fn verdict() -> Option<Verdict> {
+    REQUEST
+        .try_with(|request| request.verdict.get().copied())
+        .ok()
+        .flatten()
 }
 
 /// Charge `weight` units of registry store work to the served request,

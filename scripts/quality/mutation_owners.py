@@ -105,13 +105,21 @@ OWNERS = (
           'dst_tests::shared_cell_hostile::a_create_pays_for_its_registry_writes '
           'dst_tests::shared_cell_hostile::a_listing_pays_for_the_descriptors_it_reads '
           'dst_tests::quota_stream_seed:: '
-          'dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull'),
+          'dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull '
+          'dst_tests::fair_shed::'),
     owner('product_read_memory', 'src/product/read_memory.rs',
           'product::read_memory:: dst_tests::read_memory:: dst_tests::shared_cell_capacity:: '
           'dst_tests::read_memory_wakes::a_shared_cells_default_page_reserves_one_mib '
           'dst_tests::shared_cell_hostile::a_create_pays_for_its_registry_writes '
           'dst_tests::shared_cell_hostile::a_listing_pays_for_the_descriptors_it_reads '
-          'dst_tests::shared_cell_hostile::an_append_over_the_shed_line_is_refused'),
+          'dst_tests::shared_cell_hostile::an_append_over_the_shed_line_is_refused '
+          'dst_tests::fair_shed::'),
+    # Fair shedding over the RSS line (fairshed lane, lead decision of
+    # 2026-10-20 under the owner's delegation of 2026-10-17): the blame
+    # windows and verdicts, and the leg that sheds the flooder first.
+    owner('admission_fair_shed', 'src/admission/fair_shed.rs',
+          'admission::fair_shed:: dst_tests::fair_shed::'),
+    owner('quota_offered', 'src/quota/offered.rs', 'quota::offered:: dst_tests::fair_shed::'),
     owner('consumer_pull_wait', 'src/application/consumer/pull_wait.rs',
           'dst_tests::parked_waits:: dst_tests::consumer_ dst_tests::read_memory::a_woken_pull'
           ' dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull'),
@@ -177,7 +185,8 @@ OWNERS = (
     owner('quota_append_charge', 'src/quota/append_charge.rs', 'quota:: dst_tests::quota_stored_cap::'),
     owner('quota_pin', 'src/quota/pin.rs', 'quota::'),
     owner('quota_parked', 'src/quota/parked.rs', 'quota::parked:: dst_tests::parked_waits::a_projects_'
-          ' dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull'),
+          ' dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull'
+          ' dst_tests::fair_shed::'),
     owner('quota_pressure', 'src/quota/pressure.rs', 'quota::'),
     owner('quota_read_reservation', 'src/quota/read_reservation.rs', 'quota::read_reservation:: dst_tests::read_memory::a_project_at_its_memory_line'),
     # The stored figures admission reads (stored-cap B3) and the cap it

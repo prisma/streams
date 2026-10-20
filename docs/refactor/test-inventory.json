@@ -6375,6 +6375,17 @@
     "scenarios": []
   },
   {
+    "name": "over_the_shed_line_the_project_over_its_share_is_refused_before_its_neighbour",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "5c7b4a967f0530b3769fa7707f3d01a84bf658c13dad4c3da87118a6c6bf17c8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fair_shed.rs",
+    "scenarios": []
+  },
+  {
     "name": "overloaded_engine_sheds_while_sibling_admits",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"

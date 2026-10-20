@@ -698,7 +698,7 @@ pub(crate) fn project_admission(
     // snapshot this request verified against, never a second read.
     state
         .quotas
-        .admit(&p.project_id, &p.quotas, crate::shard::now_ms())
+        .admit_counted(&p.project_id, &p.quotas, crate::shard::now_ms())
         .map(Some)
         .map_err(|r| crate::audit::tag_project(quota_refusal_response(&r), &p.project_id))
 }

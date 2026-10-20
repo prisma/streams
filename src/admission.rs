@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex};
 use crate::backpressure::GlobalLatch;
 
 pub(crate) mod body;
+pub(crate) mod fair_shed;
 pub(crate) mod park;
 pub(crate) mod read_memory;
 
@@ -94,6 +95,9 @@ pub(crate) struct ShedSnapshot {
     pub rss: u64,
     pub stream: u64,
     pub wedge: u64,
+    /// Requests of a project over its share refused over the shed line
+    /// (fair shedding; not in `total`, which counts instance-wide sheds).
+    pub blamed: u64,
 }
 
 /// An immutable reading of the controller for operator surfaces.
@@ -152,6 +156,7 @@ struct Inner {
     shed_rss: AtomicU64,
     shed_stream: AtomicU64,
     shed_wedge: AtomicU64,
+    shed_blamed: AtomicU64,
     subscriptions: SubscriptionCapacity,
     sse_connections: AtomicU64,
     maintenance: GlobalLatch,
@@ -164,6 +169,21 @@ struct Inner {
     /// The instance's read memory: page reads in flight and the bodies
     /// that still hold their pages (shared cells H3).
     read_memory: read_memory::ReadMemory,
+}
+
+impl Inner {
+    fn shed_snapshot(&self) -> ShedSnapshot {
+        let ord = Ordering::Relaxed;
+        ShedSnapshot {
+            total: self.shed_total.load(ord),
+            inflight: self.shed_inflight.load(ord),
+            survival: self.shed_survival.load(ord),
+            rss: self.shed_rss.load(ord),
+            stream: self.shed_stream.load(ord),
+            wedge: self.shed_wedge.load(ord),
+            blamed: self.shed_blamed.load(ord),
+        }
+    }
 }
 
 /// RAII in-flight ticket: the count drops on response AND on
@@ -263,6 +283,7 @@ impl AdmissionController {
                 shed_rss: AtomicU64::new(0),
                 shed_stream: AtomicU64::new(0),
                 shed_wedge: AtomicU64::new(0),
+                shed_blamed: AtomicU64::new(0),
                 subscriptions: knobs.subscriptions,
                 sse_connections: AtomicU64::new(0),
                 maintenance: GlobalLatch::new(),
@@ -353,15 +374,38 @@ impl AdmissionController {
 
     /// The RSS write-shed (R25-E): sampled RSS PLUS `reserved_bytes` (the
     /// absorber's reservation) against the shed line, so the line moves
-    /// BEFORE the memory does.
+    /// BEFORE the memory does. A served request fair shedding spares
+    /// (`fair_shed`) passes up to a quarter over the line.
     pub(crate) fn admit_write_memory(&self, reserved_bytes: u64) -> Result<(), WriteRefusal> {
-        let line = self.rss_shed_mb();
-        if line > 0 && crate::history::memory_pressure_mb(self.rss_mb(), reserved_bytes) > line {
+        if let Some((pressure, line)) = self.over_shed_line(reserved_bytes)
+            && (pressure > fair_shed::hard_line(line)
+                || park::verdict() != Some(fair_shed::Verdict::Spared))
+        {
             self.inner.shed_total.fetch_add(1, Ordering::Relaxed);
             self.inner.shed_rss.fetch_add(1, Ordering::Relaxed);
             return Err(WriteRefusal::MemoryPressure);
         }
         Ok(())
+    }
+
+    /// Fair shedding: whether a served request its project's verdict blames
+    /// is refused, sampled RSS plus `reserved_bytes` being over the shed
+    /// line (counted when it is).
+    pub(crate) fn shed_blamed(&self, reserved_bytes: u64) -> bool {
+        let shed = self.over_shed_line(reserved_bytes).is_some()
+            && park::verdict() == Some(fair_shed::Verdict::Blamed);
+        if shed {
+            self.inner.shed_blamed.fetch_add(1, Ordering::Relaxed);
+        }
+        shed
+    }
+
+    /// The pressure (sampled RSS plus `reserved_bytes`, MiB) and the line,
+    /// when a shed line is set and the pressure is over it.
+    fn over_shed_line(&self, reserved_bytes: u64) -> Option<(u64, u64)> {
+        let line = self.rss_shed_mb();
+        let pressure = crate::history::memory_pressure_mb(self.rss_mb(), reserved_bytes);
+        (line > 0 && pressure > line).then_some((pressure, line))
     }
 
     pub(crate) fn max_inflight(&self) -> i64 {
@@ -581,14 +625,7 @@ impl AdmissionController {
             max_inflight: i.max_inflight.load(ord),
             per_stream_cap: i.per_stream_cap,
             streams_tracked: i.streams.lock().unwrap().len(),
-            shed: ShedSnapshot {
-                total: i.shed_total.load(ord),
-                inflight: i.shed_inflight.load(ord),
-                survival: i.shed_survival.load(ord),
-                rss: i.shed_rss.load(ord),
-                stream: i.shed_stream.load(ord),
-                wedge: i.shed_wedge.load(ord),
-            },
+            shed: i.shed_snapshot(),
             rss_mb: i.rss_mb.load(ord),
             rss_shed_mb: i.rss_shed_mb,
             project_memory_pressure_bytes: i.project_memory_pressure_bytes.load(ord),

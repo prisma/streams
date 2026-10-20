@@ -1496,6 +1496,8 @@ Start with:
 
 Add weighted deficit round-robin inside shard committers only if noisy-neighbor testing proves that projects within limits can still starve each other.
 
+**Fair shedding over the RSS line** (public-beta Layer B, lead decision of 2026-10-20; edge change #NEW-fairshed-1; `src/admission/fair_shed.rs`). On a cell shared k ways each verified request is counted at project admission, admitted or refused by its project's quotas, in its project's and the cell's offered requests of the last 5-10 s (one window in the project's tracker entry, one for the instance; no scan, no new map). Over the RSS shed line a project carrying more than 1/k of them is refused `429 project_memory_pressure` on every request, while an append of any other project passes the RSS gate up to the line x 5/4. Past that hard line, or when no project is over its share (a flood spread over many projects), every append is shed as before. A dedicated cell (k = 1) is unchanged.
+
 ---
 
 ## 18. Implementation stages

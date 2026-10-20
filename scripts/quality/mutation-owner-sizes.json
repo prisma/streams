@@ -4,6 +4,7 @@
   "measured_on": "2026-10-17",
   "owners": {
     "admission_body": 9,
+    "admission_fair_shed": 34,
     "admission_limits": 27,
     "admission_park": 18,
     "admission_read_memory": 85,
@@ -106,6 +107,7 @@
     "queue_settle": 34,
     "quota": 21,
     "quota_append_charge": 12,
+    "quota_offered": 1,
     "quota_parked": 22,
     "quota_pin": 21,
     "quota_pressure": 34,

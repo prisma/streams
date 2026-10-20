@@ -134,6 +134,15 @@ Notes:
   `{"messages": []}` at its deadline. Pull with a `max` that takes what
   you can process, and settle leases promptly. Source: edge change #175;
   `src/quota/parked.rs`, `src/application/consumer/pull_wait.rs`.
+- **A heavy project is shed first.** When the server is over its memory
+  line, a project that sent more than 1/8 of the requests the server
+  received in the last 5-10 s (counting its requests its own limits
+  refused) gets `429 project_memory_pressure`,
+  `Retry-After: 2`, on every request until the server is back under the
+  line. Other projects' appends are still served, unless memory reaches
+  a quarter over the line or no project sends more than its share; then
+  every append gets `429 rate_limited`, `Retry-After: 2`, as before.
+  Source: edge change #NEW-fairshed-1; `src/admission/fair_shed.rs`.
 - **Self-serve.** A workspace on the beta's allow-list creates at most 5
   projects a day. It holds as many active projects as its allow-list
   entry allows, or else the cell's workspace cap (1 unless the operator
@@ -199,7 +208,7 @@ is `docs/refactor/WIRE-MATRIX.md` §0 and §2.
 | `project_rate_limit` | The project's request rate, append or read byte rate, or storage-work budget is spent | true | yes |
 | `project_concurrency_limit` | 64 requests in flight, or 150 live subscriptions | true | no |
 | `queued_bytes` | 64 MiB of the project's appends wait to be stored | true | no |
-| `project_memory_pressure` | The project's requests hold 32 MiB | true | 1 |
+| `project_memory_pressure` | The project's requests hold 32 MiB (`Retry-After: 1`); or the server is over its memory line and the project sends more than its share of the server's requests (`Retry-After: 2`) | true | 1 or 2 |
 | `rate_limited` | The server or the stream is at capacity | true | when the server gives one |
 | `stream_limit` | The project holds its maximum number of streams | false | no |
 | `stored_bytes_limit` | The project stores its stored-bytes limit; `details` `{dimension, limit, stored}` | false | no |
