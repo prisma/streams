@@ -33,11 +33,12 @@ use std::sync::{Mutex, PoisonError};
 /// previous epoch's, a window of 5 to 10 s.
 pub(crate) const EPOCH_MS: i64 = 5_000;
 
-/// The pressure (MiB) up to which an append fair shedding spares passes
-/// the RSS write gate over `line_mb`: a quarter over it. Past it every
-/// append is shed, the instance-wide backstop.
-pub(crate) fn hard_line(line_mb: u64) -> u64 {
-    line_mb.saturating_add(line_mb / 4)
+/// How far over `limit` (the RSS shed line in MiB, or the in-flight cap in
+/// active requests) an append fair shedding spares still passes its gate:
+/// a quarter over it. Past it every append is shed, the instance-wide
+/// backstop.
+pub(crate) fn hard_line(limit: u64) -> u64 {
+    limit.saturating_add(limit / 4)
 }
 
 /// A count over the current epoch and the one before it.

@@ -138,3 +138,94 @@ async fn over_the_shed_line_the_project_over_its_share_is_refused_before_its_nei
     );
     engine_shutdown(&cell.state).await;
 }
+
+/// The instance in-flight cap the in-flight leg sets (`ADMIT_MAX_INFLIGHT`).
+const CAP: i64 = 8;
+
+/// On a cell shared 8 ways, at the in-flight write cap (8; the cell's other
+/// slots held, so each request is the ninth): the flooder (project 0, 120
+/// appends of the cell's last ones) is refused `429 rate_limited`,
+/// Retry-After 1, on its appends, reads and listings, while the compliant
+/// project 1 is served each append, exactly stored, and its reads; up to cap
+/// x 5/4 (10 active) the compliant project is still served, past it every
+/// append is refused `429 rate_limited` as before; under the cap both are
+/// served again. Before: the compliant project's first append at the cap was
+/// refused with the flooder's, and the flooder's reads were served.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn at_the_inflight_cap_the_project_over_its_share_is_refused_before_its_neighbour() {
+    let mut spec = CellSpec::open(2);
+    spec.cli = |cli| cli.project_share_k = 8;
+    let cell = open_cell(spec).await;
+    for i in 0..2 {
+        let created = cell.call(i, "PUT", "/v1/streams/orders", CREATE).await;
+        assert_eq!(created.0, 201);
+    }
+    for n in 0..FLOOD {
+        assert_eq!(append(&cell, 0, n).await.0, 200, "under the cap");
+    }
+    let admission = &cell.state.admission;
+    admission.set_max_inflight(CAP);
+    admission.add_inflight_for_test(CAP);
+    for n in 0..ROUNDS {
+        let served = append(&cell, 1, n).await;
+        assert_eq!(
+            served,
+            (200, None, None),
+            "the compliant project, round {n}"
+        );
+        let flood = append(&cell, 0, FLOOD + n).await;
+        assert_eq!(flood, refused("rate_limited", "1"), "round {n}");
+    }
+    assert_eq!(stored(&cell, 1).await.len(), ROUNDS, "its reads are served");
+    for path in ["/v1/streams/orders/records", "/v1/streams"] {
+        let (status, headers, body) = cell.call(0, "GET", path, b"").await;
+        let answer = (
+            status,
+            error_code(&body),
+            headers.get("retry-after").cloned(),
+        );
+        assert_eq!(answer, refused("rate_limited", "1"), "{path}");
+    }
+    admission.add_inflight_for_test(CAP / 4 - 1);
+    assert_eq!(
+        append(&cell, 1, ROUNDS).await,
+        (200, None, None),
+        "at cap x 5/4"
+    );
+    admission.add_inflight_for_test(1);
+    assert_eq!(
+        append(&cell, 1, 99).await,
+        refused("rate_limited", "1"),
+        "past it"
+    );
+    assert_eq!(append(&cell, 0, 99).await, refused("rate_limited", "1"));
+    let shed = admission.snapshot().shed;
+    assert_eq!(
+        (shed.blamed_inflight, shed.blamed),
+        (8, 0),
+        "the flooder's refusals at entry"
+    );
+    admission.add_inflight_for_test(-CAP - CAP / 4);
+    assert_eq!(
+        append(&cell, 0, FLOOD + ROUNDS).await.0,
+        200,
+        "under the cap"
+    );
+    assert_eq!(append(&cell, 1, ROUNDS + 1).await.0, 200, "under the cap");
+    let flooder: Vec<u64> = (0..=FLOOD + ROUNDS)
+        .filter(|n| *n < FLOOD || *n == FLOOD + ROUNDS)
+        .map(|n| u64::try_from(n).unwrap())
+        .collect();
+    assert_eq!(
+        stored(&cell, 0).await,
+        flooder,
+        "the flooder's refused appends stored nothing"
+    );
+    let compliant: Vec<u64> = (0..=u64::try_from(ROUNDS).unwrap() + 1).collect();
+    assert_eq!(
+        stored(&cell, 1).await,
+        compliant,
+        "every compliant append stored once"
+    );
+    engine_shutdown(&cell.state).await;
+}

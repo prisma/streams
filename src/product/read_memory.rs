@@ -50,6 +50,7 @@ use super::{
     classify_route, parse_query, perr, project_admission, project_memory_gate,
     quota_refusal_response, strip_verb,
 };
+use crate::admission::WriteRefusal;
 use crate::admission::body::BodyRefusal;
 use crate::admission::read_memory::{ReadHold, ReadRefusal};
 use crate::application::consumer::PULL_COVERAGE_BYTES;
@@ -308,28 +309,34 @@ async fn shed_before_body(
     Some(super::append_error::render_product_append_error(failure))
 }
 
-/// Fair shedding (`admission::fair_shed`): over the RSS shed line, a
-/// request of a project over its share of the cell's load is refused 429
-/// `project_memory_pressure`, retryable after 2 s as the shed's appends
-/// are, tagged with the project.
+/// Fair shedding (`admission::fair_shed`): a request of a project over its
+/// share of the cell's requests is refused, tagged with the project, over
+/// the RSS shed line 429 `project_memory_pressure`, retryable after 2 s as
+/// the shed's appends are, and at the in-flight cap the gate's own 429
+/// `rate_limited`, retryable after 1 s.
 fn blamed_refusal(state: &AppState, principal: Option<&RequestPrincipal>) -> Option<Response> {
     let project = &principal?.project_id;
     let reserved = state.runtime.history.budget.reserved_bytes();
-    if !state.admission.shed_blamed(reserved) {
-        return None;
-    }
-    let mut refusal = perr(
-        StatusCode::TOO_MANY_REQUESTS,
-        "project_memory_pressure",
-        "the instance is over its memory line and this project carries more than its share of the cell's load; retry",
-        None,
-        true,
-    );
+    let (code, message, retry) = match state.admission.shed_blamed(reserved)? {
+        WriteRefusal::MemoryPressure => (
+            "project_memory_pressure",
+            "the instance is over its memory line and this project carries more than its share of the cell's load; retry",
+            "2",
+        ),
+        WriteRefusal::Overloaded => (
+            "rate_limited",
+            "the instance is at its admission capacity and this project sends more than its share of the cell's requests; retry",
+            "1",
+        ),
+    };
+    let mut refusal = perr(StatusCode::TOO_MANY_REQUESTS, code, message, None, true);
     refusal
         .headers_mut()
-        .insert("retry-after", HeaderValue::from_static("2"));
-    let tagged = crate::audit::tag(refusal, "project_memory_pressure");
-    Some(crate::audit::tag_project(tagged, project))
+        .insert("retry-after", HeaderValue::from_static(retry));
+    Some(crate::audit::tag_project(
+        crate::audit::tag(refusal, code),
+        project,
+    ))
 }
 
 /// A body that was not buffered: 413 `body_too_large` past the body

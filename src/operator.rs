@@ -114,6 +114,7 @@ pub(crate) async fn data(
         "rss_shed_mb": adm.rss_shed_mb,
         "admit_shed_rss": adm.shed.rss,
         "admit_shed_rss_blamed": adm.shed.blamed,
+        "admit_shed_inflight_blamed": adm.shed.blamed_inflight,
         "admit_shed_inflight": adm.shed.inflight,
         "admit_shed_survival": adm.shed.survival,
         "maintenance_backpressure": state.admission.maintenance_stats_json(),

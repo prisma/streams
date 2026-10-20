@@ -98,6 +98,8 @@ pub(crate) struct ShedSnapshot {
     /// Requests of a project over its share refused over the shed line
     /// (fair shedding; not in `total`, which counts instance-wide sheds).
     pub blamed: u64,
+    /// The same at the in-flight cap.
+    pub blamed_inflight: u64,
 }
 
 /// An immutable reading of the controller for operator surfaces.
@@ -157,6 +159,7 @@ struct Inner {
     shed_stream: AtomicU64,
     shed_wedge: AtomicU64,
     shed_blamed: AtomicU64,
+    shed_blamed_inflight: AtomicU64,
     subscriptions: SubscriptionCapacity,
     sse_connections: AtomicU64,
     maintenance: GlobalLatch,
@@ -182,6 +185,7 @@ impl Inner {
             stream: self.shed_stream.load(ord),
             wedge: self.shed_wedge.load(ord),
             blamed: self.shed_blamed.load(ord),
+            blamed_inflight: self.shed_blamed_inflight.load(ord),
         }
     }
 }
@@ -284,6 +288,7 @@ impl AdmissionController {
                 shed_stream: AtomicU64::new(0),
                 shed_wedge: AtomicU64::new(0),
                 shed_blamed: AtomicU64::new(0),
+                shed_blamed_inflight: AtomicU64::new(0),
                 subscriptions: knobs.subscriptions,
                 sse_connections: AtomicU64::new(0),
                 maintenance: GlobalLatch::new(),
@@ -361,10 +366,14 @@ impl AdmissionController {
     /// The ordinary in-flight gate for WRITES, after authentication
     /// (Round-13). Reads are never shed here (R24-B: shedding reads
     /// hides the instance from its own operators), and requests parked
-    /// in a wait are not writes in flight (shared cells M1).
+    /// in a wait are not writes in flight (shared cells M1). A served
+    /// request fair shedding spares (`fair_shed`) passes up to a quarter
+    /// over the cap.
     pub(crate) fn admit_write_inflight(&self) -> Result<(), WriteRefusal> {
-        let cap = self.max_inflight();
-        if cap > 0 && self.active() > cap {
+        if let Some((active, cap)) = self.over_inflight_cap()
+            && (active > fair_shed::hard_line(cap)
+                || park::verdict() != Some(fair_shed::Verdict::Spared))
+        {
             self.inner.shed_total.fetch_add(1, Ordering::Relaxed);
             self.inner.shed_inflight.fetch_add(1, Ordering::Relaxed);
             return Err(WriteRefusal::Overloaded);
@@ -389,15 +398,30 @@ impl AdmissionController {
     }
 
     /// Fair shedding: whether a served request its project's verdict blames
-    /// is refused, sampled RSS plus `reserved_bytes` being over the shed
-    /// line (counted when it is).
-    pub(crate) fn shed_blamed(&self, reserved_bytes: u64) -> bool {
-        let shed = self.over_shed_line(reserved_bytes).is_some()
-            && park::verdict() == Some(fair_shed::Verdict::Blamed);
-        if shed {
-            self.inner.shed_blamed.fetch_add(1, Ordering::Relaxed);
+    /// is refused, and for which pressure (counted when it is): sampled RSS
+    /// plus `reserved_bytes` over the shed line first, then the active
+    /// requests over the in-flight cap.
+    pub(crate) fn shed_blamed(&self, reserved_bytes: u64) -> Option<WriteRefusal> {
+        if park::verdict() != Some(fair_shed::Verdict::Blamed) {
+            return None;
         }
-        shed
+        if self.over_shed_line(reserved_bytes).is_some() {
+            self.inner.shed_blamed.fetch_add(1, Ordering::Relaxed);
+            return Some(WriteRefusal::MemoryPressure);
+        }
+        self.over_inflight_cap()?;
+        self.inner
+            .shed_blamed_inflight
+            .fetch_add(1, Ordering::Relaxed);
+        Some(WriteRefusal::Overloaded)
+    }
+
+    /// The active requests (in flight minus parked) and the cap, when an
+    /// in-flight cap is set and they are over it.
+    fn over_inflight_cap(&self) -> Option<(u64, u64)> {
+        let cap = u64::try_from(self.max_inflight()).unwrap_or(0);
+        let active = u64::try_from(self.active()).unwrap_or(0);
+        (cap > 0 && active > cap).then_some((active, cap))
     }
 
     /// The pressure (sampled RSS plus `reserved_bytes`, MiB) and the line,

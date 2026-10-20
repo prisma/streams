@@ -3599,6 +3599,17 @@
     "scenarios": []
   },
   {
+    "name": "at_the_inflight_cap_the_project_over_its_share_is_refused_before_its_neighbour",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "466cf44e5068c56d06bfe35b1c1347d93df0a4b2fb923e2114d6bc12f0bc8bea",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fair_shed.rs",
+    "scenarios": []
+  },
+  {
     "name": "audit_tags_distinguish_caller_failures_from_cell_failures",
     "attributes": [
       "#[test]"

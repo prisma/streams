@@ -142,7 +142,11 @@ Notes:
   line. Other projects' appends are still served, unless memory reaches
   a quarter over the line or no project sends more than its share; then
   every append gets `429 rate_limited`, `Retry-After: 2`, as before.
-  Source: edge change #NEW-fairshed-1; `src/admission/fair_shed.rs`.
+  The server's limit on requests in flight works the same way: while it
+  is reached, such a project gets `429 rate_limited`, `Retry-After: 1`,
+  on every request, and other projects' appends are served up to a
+  quarter over the limit. Source: edge changes #NEW-fairshed-1 and
+  #NEW-fairshed-2; `src/admission/fair_shed.rs`.
 - **Self-serve.** A workspace on the beta's allow-list creates at most 5
   projects a day. It holds as many active projects as its allow-list
   entry allows, or else the cell's workspace cap (1 unless the operator
