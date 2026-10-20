@@ -1,0 +1,126 @@
+name: layer-b
+
+# Layer B on a native x86_64 host (the lead's decision of 2026-10-20 13:00,
+# under the owner's delegation of 2026-10-17). The rig runs on the owner's
+# arm64 Mac under Rosetta, which inflates the cell's CPU about 2.5x; this
+# job runs the same rig on one of GitHub's ubuntu-24.04 x86_64 runners:
+# the cell in a docker container at 1 vCPU and 1 GiB as Compute runs it,
+# s3lite at 20 ms and the driver on the host (bench/k2cost/run-shared.sh).
+#
+#   gh workflow run layer-b.yml -f ref=<sha>                 # Layer B, ~3 h
+#   gh workflow run layer-b.yml -f ref=<sha> -f manifest=layer-b-tiny.json
+#
+# What it proves: Layer B's legs on native CPU for that commit. It is not a
+# certification arm: its release is a local staging (cut-release.sh
+# --local: the cut's own build, no CI verdict, no upload, no
+# binaries.json, refused by deploy-release.sh), and rc-certify reads none of
+# it. It is not a gate either: it runs only when dispatched (never on a
+# push, a pull request or a schedule), scripts/dev/ci-status.sh reads only
+# ci.yml, rust-quality.yml and workflow-lint.yml, and
+# scripts/required-checks.sh only push runs, so it changes nothing CI
+# requires (scripts/quality/test_layer_b_workflow.py holds it to that).
+#
+# The owner's raw-evidence hold: the manifest, the scrape and every log
+# stay on the runner. The job uploads no artifact, uses no cache and reads
+# no secret; its log carries only the summary bench/k2cost/
+# layer_b_summary.py prints (each bar, the RSS line, the driver pools, the
+# verdict), or, when the rig stops before its verdict, the tail of the rig's
+# own output.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit, branch or tag to build and run (default: the dispatched ref)"
+        required: false
+        default: ""
+      manifest:
+        description: "layer-b.json is Layer B (time scale 1). layer-b-tiny.json is a ~20 min smoke of the rig with 2-minute idle windows, never evidence"
+        type: choice
+        options: [layer-b.json, layer-b-tiny.json]
+        default: layer-b.json
+
+# The token reads the repository and nothing else.
+# scripts/quality/test_workflow_permissions.py holds every workflow to it.
+permissions:
+  contents: read
+
+jobs:
+  layer-b:
+    runs-on: ubuntu-24.04
+    # The release build (~30 min on 4 vCPU), then the rig: 15 min idle,
+    # 70 min of load, usage (at most 10 min), the audit, 15 min idle.
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/rust-toolchain
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      # cut-release.sh builds with `cargo zigbuild` for x86_64-musl: the
+      # musl target, zig 0.16.0 (PyPI's ziglang wheel, hash-pinned) and
+      # cargo-zigbuild 0.23.0, the versions the owner's cuts use.
+      - name: The x86_64-musl target, zig and cargo-zigbuild
+        run: |
+          set -euo pipefail
+          toolchain=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')
+          rustup target add x86_64-unknown-linux-musl --toolchain "$toolchain"
+          python3 -m venv "$RUNNER_TEMP/zig"
+          echo "ziglang==0.16.0 --hash=sha256:9fcda73f62b851dd72a54b710ad40a209896db14cfb13649e62191243556342b" > "$RUNNER_TEMP/zig-requirements.txt"
+          "$RUNNER_TEMP/zig/bin/pip" install --quiet --require-hashes --only-binary :all: -r "$RUNNER_TEMP/zig-requirements.txt"
+          "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
+          cargo install --quiet --locked cargo-zigbuild --version 0.23.0
+      # The cut's build, staged locally. The cells file only satisfies
+      # release.ts (a scratch stage); run-shared.sh writes the rig's own
+      # deploy/cells/scratch.env over it in its staged copy.
+      - name: Stage the release locally (cut-release.sh --local)
+        timeout-minutes: 90
+        run: |
+          set -euo pipefail
+          zig version
+          mkdir -p "$RUNNER_TEMP/cells"
+          printf '%s\n' CELL_STAGE=scratch CELL_ID=cell_rig > "$RUNNER_TEMP/cells/scratch.env"
+          if ! scripts/cut-release.sh HEAD "layer-b-ci-$GITHUB_RUN_ID" --cells "$RUNNER_TEMP/cells" --local "$RUNNER_TEMP/release" > "$RUNNER_TEMP/cut.log" 2>&1; then
+            tail -n 60 "$RUNNER_TEMP/cut.log"
+            exit 1
+          fi
+          tail -n 1 "$RUNNER_TEMP/cut.log"
+      # The driver keeps up to 128 keep-alive sockets per class, and the
+      # cell answers through docker's published port: widen the ephemeral
+      # ports and let TIME_WAIT sockets be reused, so the host never runs
+      # out of ports (the first Layer B run's EADDRNOTAVAIL on macOS).
+      - name: Host limits for the driver
+        run: |
+          set -euo pipefail
+          sudo sysctl -q -w net.ipv4.ip_local_port_range="1024 65535"
+          sudo sysctl -q -w net.ipv4.tcp_tw_reuse=1
+          sudo sysctl -q -w net.core.somaxconn=4096
+          echo "host: $(nproc) vCPU, $(free -m | awk '/^Mem:/ {print $2}') MiB, ports $(sysctl -n net.ipv4.ip_local_port_range | tr -s '\t ' '-'), nofile hard $(ulimit -Hn), $(uname -m)"
+      # s3lite listens on the docker bridge's gateway, which the container
+      # reaches as host.docker.internal (run-shared.sh's header). The
+      # summary is the step's verdict: exit 0 PASS, 1 FAIL, 2 no verdict.
+      - name: Layer B on the rig (the manifest and the logs stay on the runner)
+        timeout-minutes: 180
+        env:
+          MANIFEST: ${{ inputs.manifest }}
+        run: |
+          set -euo pipefail
+          ulimit -n "$(ulimit -Hn)"
+          echo "nofile $(ulimit -n)"
+          export K2_HOME="$RUNNER_TEMP/k2"
+          S3_BIND=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
+          export S3_BIND
+          args=(--release "$RUNNER_TEMP/release")
+          if [ "$MANIFEST" != layer-b.json ]; then
+            export RIG_IDLE_SECS=120 RIG_Q0_IDLE_SECS=120
+            args+=(--manifest "bench/k2cost/tenants/$MANIFEST")
+            echo "smoke: $MANIFEST with 120 s idle windows, a check of the rig and never Layer B evidence"
+          fi
+          set +e
+          bench/k2cost/run-shared.sh "${args[@]}" > "$RUNNER_TEMP/rig.log" 2>&1
+          echo "run-shared.sh exited $?"
+          set -e
+          python3 bench/k2cost/layer_b_summary.py --results "$K2_HOME/results" --rig-log "$RUNNER_TEMP/rig.log"

@@ -665,3 +665,32 @@ release's `bin/s3lite`; elsewhere this checkout's `target/release/s3lite`
 (or `--s3lite PATH`). `--canary` needs the solo LiveFeed canary (triage
 B9) and refuses until it exists.
 
+
+### Layer B on a native x86_64 runner (`.github/workflows/layer-b.yml`)
+
+```bash
+gh workflow run layer-b.yml -f ref=<sha>                               # Layer B, about 3 h
+gh workflow run layer-b.yml -f ref=<sha> -f manifest=layer-b-tiny.json # a ~20 min smoke of the rig, never evidence
+```
+
+On the owner's arm64 Mac the rig's container runs under Rosetta, which
+inflates the cell's CPU about 2.5x (mem2, 2026-10-20). This manually
+dispatched job (the lead's decision of 2026-10-20 13:00) runs the same rig
+on one of GitHub's ubuntu-24.04 x86_64 runners (4 vCPU): it builds the
+commit as a cut does (`scripts/cut-release.sh --local`: the same `cargo
+zigbuild` x86_64-musl binaries, frozen install and bundled entry, but no
+CI verdict, no upload and no `binaries.json`, with a `NOT-A-RELEASE` file
+that `deploy-release.sh` refuses), widens the host's ephemeral ports and
+raises `ulimit -n`, runs `run-shared.sh` with the committed `layer-b.json`
+at time scale 1 (s3lite on the docker bridge's gateway), and prints only
+`layer_b_summary.py`'s lines: each bar with its numbers, the RSS line
+(peak, the plateau over the load's last 30 min, RSS and all admission
+sheds, the container's cgroup peak, boots), the driver pools and the
+verdict. Nothing is uploaded: the manifest, the scrape and the logs stay on
+the runner (the owner's raw-evidence hold). It proves Layer B's legs on
+native CPU for that commit; it is not a certification arm (the release is
+a local staging, which `rc-certify.sh` never reads) and not a gate (it runs
+only when dispatched; `ci-status.sh` and `required-checks.sh` read push
+runs of other workflows). The driver shares the runner's 4 vCPU with the
+cell's 1, so read the driver-pools fact and `harness_bound` before reading
+a victim or probes FAIL as the cell's.

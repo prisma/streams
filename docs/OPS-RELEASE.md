@@ -339,6 +339,19 @@ staging of a release `release.ts` staged, both ways, through every check
 before the feeds download. The re-staged rig has not yet booted a cell in
 its container; its first run is this rule's pre-cut rehearsal.
 
+Native-CPU Layer B evidence (the lead's decision of 2026-10-20 13:00):
+`gh workflow run layer-b.yml -f ref=<sha>` runs this rig on a GitHub
+ubuntu-24.04 x86_64 runner, on a release `scripts/cut-release.sh --local`
+stages there (the cut's own build; no CI verdict, no upload, no
+`binaries.json`, and a `NOT-A-RELEASE` file `deploy-release.sh` refuses),
+with the committed `layer-b.json` at time scale 1, and prints only the
+verdict, each bar's numbers, the RSS summary and the driver pools; the
+manifest and the logs stay on the runner. It answers what the Rosetta rig
+cannot (the cell's CPU without emulation). It is neither this rule's
+certifying run nor a rehearsal `rc-certify.sh` accepts, and no gate:
+the workflow runs only when dispatched (bench/k2cost/README.md, "Layer B
+on a native x86_64 runner").
+
 Waived for a single-cell RC: the script prints each waiver, and the
 certification manifest and the tag record them. They are the capacity
 campaign as product evidence (post-split scaling needs a fleet; the
