@@ -28,6 +28,16 @@ The workspace lock contained neither banned package nor `openssl-sys`.
   existing requirements, and no manifest changed. The separate lockfiles of
   `bench/probe` and `bench/awsbench` are not part of this workspace and were
   not changed.
+- On 21 October 2026, updated the locked transitive `rustls-webpki` from
+  0.103.15 to 0.103.16 (RUSTSEC-2026-0382), and `webpki-roots` and
+  `webpki-root-certs` from 1.0.8 to 1.0.10 (RUSTSEC-2026-0381 and -0383), so
+  certificate paths through the distrusted emSign intermediates are rejected
+  and the bundled roots no longer include `emSign ECC Root CA - G3`. Each
+  update stays within the dependents' existing requirements and no manifest
+  changed. `deny.toml`'s two version-pinned `CDLA-Permissive-2.0` license
+  exceptions move from 1.0.8 to 1.0.10 with them (same crates, same license);
+  nothing else in the gate's configuration changed. The separate lockfiles of
+  `bench/probe` and `bench/awsbench` were not changed.
 - `bincode` 1.3.3, through pinned SlateDB → foyer-common 0.22.3:
   [RUSTSEC-2025-0141](https://rustsec.org/advisories/RUSTSEC-2025-0141) reports
   discontinued maintenance and no safe upgrade. Retain this exact inherited

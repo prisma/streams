@@ -19,10 +19,10 @@ allow = ["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.
 
 # Mozilla certificate data embedded by rustls; preserve the packages' notices.
 [[licenses.exceptions]]
-crate = "webpki-roots@1.0.8"
+crate = "webpki-roots@1.0.10"
 allow = ["CDLA-Permissive-2.0"]
 [[licenses.exceptions]]
-crate = "webpki-root-certs@1.0.8"
+crate = "webpki-root-certs@1.0.10"
 allow = ["CDLA-Permissive-2.0"]
 
 # The pinned test-only libFuzzer runtime includes NCSA-licensed LLVM code.
