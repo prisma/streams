@@ -302,6 +302,23 @@ class LayerB(unittest.TestCase):
                 ex = m["bars"]["billing: usage = ledger for every project"]["value"]["examples"]
                 self.assertEqual([e["project"] for e in ex], ["proj_0500"])
 
+    def test_billing_names_the_reason_classes_of_the_unresolved_streams_where_the_summary_cuts_the_value(self):
+        # The summary prints the value as sorted JSON cut at 300 characters:
+        # the classes must come before the examples. 2 + 1 streams were
+        # unresolved, and a project with no resolution counts as one.
+        w = self.w
+        w.ledgers["proj_0500"]["totals"]["outcome_unknown_records"] = 3
+        w.usage["proj_0500"]["meters"]["ingestRecords"] = 100
+        w.audit["proj_0500"]["resolution"] = {
+            "unknown_records": 3, "committed_records": 0, "reasons": {"429 project_rate_limit": 2, "404 stream_not_found": 1},
+            "unresolved": [{"stream": "a", "reason": "x"}, {"stream": "b", "reason": "x"}, {"stream": "c", "reason": "y"}]}
+        v = self.w.judge()["bars"]["billing: usage = ledger for every project"]["value"]
+        self.assertEqual(v["by_reason"], {"404 stream_not_found": 1, "429 project_rate_limit": 2})
+        self.assertLess(json.dumps(v, sort_keys=True).index('"by_reason"'), json.dumps(v, sort_keys=True).index('"examples"'))
+        w.audit["proj_0500"].pop("resolution")
+        v = self.w.judge()["bars"]["billing: usage = ledger for every project"]["value"]
+        self.assertEqual(v["by_reason"], {"no read-back resolution": 1})
+
     def test_billing_counts_the_cut_short_pages_the_server_billed_when_it_rendered_them(self):
         # Native Layer B on 06b89311: H9b's project read one page whole and
         # three pages the drain floor cut short; the server metered all four

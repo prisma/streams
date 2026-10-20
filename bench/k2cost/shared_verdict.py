@@ -449,6 +449,7 @@ def leg_billing(r: Run, bars: dict) -> bool:
     the delivered pages plus those. A cut page it could not match
     (`cut_short_unresolved`) leaves the project differing."""
     bad = []
+    by_reason: dict = {}
     res_projects = res_unknown = res_committed = 0
     for p, lg in r.ledgers.items():
         u = r.usage.get(p) or {}
@@ -461,9 +462,17 @@ def leg_billing(r: Run, bars: dict) -> bool:
         if unknown:
             if res is None:
                 unresolved = ["no read-back resolution in audit.json"]
+                by_reason["no read-back resolution"] = by_reason.get("no read-back resolution", 0) + 1
             elif int(res.get("unknown_records") or 0) != unknown or res.get("unresolved"):
                 unresolved = list(res.get("unresolved") or []) or [
                     f"resolution covers {res.get('unknown_records')} of {unknown} outcome-unknown records"]
+                classes = res.get("reasons") or {}
+                if not res.get("unresolved"):
+                    classes = {"resolution short of the ledger's unknowns": 1}
+                elif not classes:
+                    classes = {"unclassified": len(res["unresolved"])}
+                for c, n in classes.items():
+                    by_reason[c] = by_reason.get(c, 0) + int(n)
             else:
                 acked += int(res.get("committed_records") or 0)
                 res_projects += 1
@@ -482,6 +491,9 @@ def leg_billing(r: Run, bars: dict) -> bool:
     projects = int(r.run.get("projects") or 0)
     return bar(bars, "billing: usage = ledger for every project", {
         "projects": len(r.ledgers), "differ": len(bad), "examples": bad[:5],
+        # Sorted before "examples", so the summary's cut value keeps the
+        # classes of the streams the read-back could not resolve.
+        **({"by_reason": dict(sorted(by_reason.items()))} if by_reason else {}),
         "resolved": {"projects": res_projects, "unknown_records": res_unknown, "committed_records": res_committed}},
         "all", projects > 0 and len(r.ledgers) == projects and not bad)
 
