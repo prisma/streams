@@ -122,12 +122,12 @@ Notes:
   you need them. Source: edge changes #143 and #162;
   `src/quota/parked.rs`, `src/store_timing.rs`.
 - **Empty consumer pulls pay for what they read.** Before it leases, a
-  pull reads up to 4 MiB of the stream from the consumer's cursor. A pull
-  that leases nothing (every record before it is leased to another pull,
-  or blocked behind its key's lease) pays those bytes from the read-byte
-  rate, as a pull that delivers pays for its batch. At 3,750,000 bytes a
-  second that is about one empty pull a second over 3 MiB of leased
-  records. While the project is in debt, its pulls, reads and scans are
+  pull reads up to 1 MiB of the stream from the consumer's cursor on a
+  beta cell (4 MiB on a dedicated one). A pull that leases nothing (every
+  record before it is leased to another pull, or blocked behind its key's
+  lease) pays those bytes from the read-byte rate, as a pull that
+  delivers pays for its batch. At 3,750,000 bytes a second that is about
+  three empty pulls a second over 1 MiB of leased records. While the project is in debt, its pulls, reads and scans are
   refused `429 project_rate_limit` with a `Retry-After` of the seconds
   until the debt clears, and a pull waiting with `waitMs` does not look
   again until the debt clears: new records reach it later, or it answers
@@ -174,6 +174,7 @@ Notes:
 | Records in one `records:batch` | 10,000 | `400 batch_too_large` |
 | A body larger than the stream's own rate bucket | depends on the stream | `413 payload_too_large`, not retryable, with `details` `{dimension, capacity, requested}` |
 | A records read or long-poll without `maxBytes` | a page of at most 1 MiB on a beta cell (8 MiB on a dedicated one; `maxBytes` up to 8 MiB stands) | the next page's cursor, as for any page |
+| A consumer pull | leases only among the records within 1 MiB of the consumer's cursor on a beta cell (4 MiB on a dedicated one), up to `max`; a pull before the last batch is settled may answer empty | settle the batch, then pull again: the next pull continues at the next record |
 
 On a bytes stream the whole body is one record, so a bytes append is at
 most 131,072 bytes. A JSON record is measured as stored: the client's
@@ -181,7 +182,8 @@ text with the whitespace outside strings removed. The body limit is
 stored with the cell when it is created. Source:
 `deploy/profiles/shared-cell.env` (`MAX_REQUEST_BODY_BYTES`),
 `src/config/cli.rs` (`MAX_RECORD_PAYLOAD_BYTES`),
-`src/product/append_body.rs` (`MAX_BATCH_RECORDS`).
+`src/product/append_body.rs` (`MAX_BATCH_RECORDS`), and for pulls edge
+change #NEW-pullcov-1 (`src/product/read_memory.rs`, `pull_coverage`).
 
 ## Error answers
 

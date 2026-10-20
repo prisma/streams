@@ -396,3 +396,40 @@ async fn the_shared_cell_line_admits_four_default_reads_of_one_project_at_once()
     );
     drop(held);
 }
+
+/// A pull's walk on a shared cell: its hold shrinks to what the walk read,
+/// never grows by it, and the next walk takes back what the shrink
+/// released when it fits in both ledgers, or walks with what it holds when
+/// it does not. A rendered hold, or one no admission reserved, gives no
+/// walk budget and never shrinks.
+#[tokio::test]
+async fn a_walks_hold_shrinks_to_what_it_read_and_the_next_walk_takes_it_back_if_it_fits() {
+    let ctl = ctl(4);
+    let registry = QuotaRegistry::default();
+    let id = project(&registry);
+    let entry = registry.pressure_handle(&id).unwrap();
+    let ledgers = || (ctl.read_memory().0, entry.estimated_pressure_bytes());
+    let hold = ReadHold::reserve(&ctl, registry.read_bytes(&id), 0, 512 * KIB)
+        .await
+        .unwrap();
+    assert_eq!(hold.rewalk(), Some(512 * KIB), "the first walk");
+    hold.shrink(600 * KIB);
+    assert_eq!(ledgers(), (512 * KIB, 512 * KIB), "a walk past its budget");
+    hold.shrink(100 * KIB);
+    assert_eq!(ledgers(), (100 * KIB, 100 * KIB), "shrunk to the walk");
+    let other = ReadHold::reserve(&ctl, None, 0, 700 * KIB).await.unwrap();
+    assert_eq!(hold.rewalk(), Some(100 * KIB), "no room for the rest");
+    assert_eq!(ledgers(), (800 * KIB, 100 * KIB));
+    drop(other);
+    assert_eq!(hold.rewalk(), Some(512 * KIB), "taken back");
+    assert_eq!(ledgers(), (512 * KIB, 512 * KIB));
+    hold.settle(1_000);
+    hold.shrink(10);
+    assert_eq!(
+        (hold.rewalk(), ledgers()),
+        (None, (1_000, 1_000)),
+        "rendered"
+    );
+    let unreserved = ReadHold::unreserved(&ctl, None);
+    assert_eq!(unreserved.rewalk(), None, "no admission reserved it");
+}

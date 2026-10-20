@@ -363,6 +363,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::pull_coverage",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Pull-coverage DST (pullcov lane, lead decision of 2026-10-21): on a cell shared k ways a consumer pull reserves and walks 1 MiB, holds only the bytes its walk read until its batch renders, and a pull that covers less than its backlog answers what it leased while the next pull after its settle continues at the next record; the compiler and the DST suite exercise the module.",
+      "syntax": "path = \"tests/pull_coverage.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::shared_cell_lifecycle",
       "path": "src/dst/dst_tests.rs",
       "reason": "The shared-cell lifecycle scenarios (shared-cells PLAN section 4.1, A5 and A6): suspension, revocation, transfer, feed omission, a forced split, delete and recreate and a key rotation aimed at one project leave every neighbour's view byte-identical, and per-project state returns to its baseline when projects go idle; compiler and the full DST suite exercise the module.",

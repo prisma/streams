@@ -361,8 +361,10 @@ impl DeliveryRecords {
 }
 
 /// The records one walk of one lineage segment reads from the consumer's
-/// cursor before it leases: what a pull's admission reserves for it
-/// (`product::read_memory`), held while the walk runs.
+/// cursor before it leases on a dedicated cell: what a pull's admission
+/// reserves for it (`product::read_memory`; a shared cell's pull reserves
+/// 1 MiB), held while the walk runs. A walk reads what its pull reserved
+/// (`admission::park::walk_budget`), this outside a served request.
 pub(crate) const PULL_COVERAGE_BYTES: usize = 4 << 20;
 
 struct DeliveryCoverage {
@@ -398,6 +400,9 @@ async fn read_coverage(
         }
     };
     state.keys.put(identity, skey.clone(), epoch);
+    let walk = crate::admission::park::walk_budget()
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .unwrap_or(PULL_COVERAGE_BYTES);
     let cursor = engine
         .queue_cursor(identity, cname, cgen)
         .await
@@ -417,7 +422,7 @@ async fn read_coverage(
         engine,
         cursor,
         None,
-        PULL_COVERAGE_BYTES,
+        walk,
         crate::shard::Deliver::Durable,
     )
     .await

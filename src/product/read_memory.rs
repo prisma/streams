@@ -13,9 +13,11 @@
 //! (`product_read`, `product_scan`): an unparseable `maxBytes` reserves
 //! the cap and is refused 400 by the route, as before. A pull, which also
 //! passes the write gate, reserves what one walk of its lineage reads
-//! before it leases (`PULL_COVERAGE_BYTES`), once its body is buffered, so
-//! its own reservation never weighs on its own body (landing call C1); its
-//! batch replaces the reservation when it renders. Its project's memory
+//! before it leases (`PULL_COVERAGE_BYTES`; on a shared cell the shared
+//! cell's 1 MiB page), once its body is buffered, so its own reservation
+//! never weighs on its own body (landing call C1); on a shared cell the
+//! reservation shrinks to what its walk read, and its batch replaces it
+//! when it renders. Its project's memory
 //! line makes it wait, then refuses it (429 `project_memory_pressure`, as
 //! a write's); the instance's read memory makes it wait, then refuses it
 //! (503 `read_memory_busy`). Both are retryable after 1 s.
@@ -276,7 +278,7 @@ pub(crate) async fn body(
     )
     .await
     .map_err(|refusal| Box::new(body_refusal(refusal, principal)))?;
-    if let Some(coverage) = pull_coverage(method, path)
+    if let Some(coverage) = pull_coverage(state.config.cli.project_share_k, method, path)
         && let Some(refusal) = reserve(state, project_of(principal), coverage).await
     {
         return Err(Box::new(refusal));
@@ -356,13 +358,19 @@ fn body_refusal(refusal: BodyRefusal, principal: Option<&RequestPrincipal>) -> R
 }
 
 /// The coverage a consumer pull on the route `path` reserves once its body
-/// is buffered: `None` for every other request.
-fn pull_coverage(method: &Method, path: &str) -> Option<u64> {
+/// is buffered, on a cell of `share_k` projects: the shared cell's page,
+/// 1 MiB, when k > 1 (the pullcov lane, edge change #NEW-pullcov-1), else
+/// `PULL_COVERAGE_BYTES`; its walk reads what it reserved
+/// (`admission::park::walk_budget`). `None` for every other request.
+fn pull_coverage(share_k: u64, method: &Method, path: &str) -> Option<u64> {
     let route = classify_route(path).ok()?;
+    let coverage = if share_k > 1 {
+        SHARED_CELL_PAGE_BYTES
+    } else {
+        PULL_COVERAGE_BYTES
+    };
     match (method == Method::POST, route, strip_verb(path).1) {
-        (true, ProductRoute::Consumer { .. }, Some("pull")) => {
-            u64::try_from(PULL_COVERAGE_BYTES).ok()
-        }
+        (true, ProductRoute::Consumer { .. }, Some("pull")) => u64::try_from(coverage).ok(),
         _ => None,
     }
 }

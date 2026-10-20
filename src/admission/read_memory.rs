@@ -336,6 +336,32 @@ impl ReadHold {
         }
     }
 
+    /// A consumer pull's walk is about to read under this hold: take back,
+    /// without waiting, what an earlier walk's `shrink` released, when it
+    /// fits in both ledgers. The bytes the walk may read: what the hold
+    /// holds then (a walk always reads its first record). `None` for a
+    /// rendered hold or one no admission reserved.
+    pub(crate) fn rewalk(&self) -> Option<u64> {
+        if self.rendered.load(Ordering::Relaxed) || self.budget == 0 {
+            return None;
+        }
+        let short = self.budget.saturating_sub(self.bytes());
+        let line = self.ctl.project_memory_pressure_bytes();
+        let memory = &self.ctl.inner.read_memory;
+        if Self::take(memory, self.project.as_ref(), line, short).is_ok() {
+            self.bytes.fetch_add(short, Ordering::Relaxed);
+        }
+        Some(self.bytes())
+    }
+
+    /// A walk read `bytes` under this hold: an unrendered hold holding more
+    /// shrinks to them until its page renders or its request waits.
+    pub(crate) fn shrink(&self, bytes: u64) {
+        if !self.rendered.load(Ordering::Relaxed) {
+            self.resize(bytes.min(self.bytes()));
+        }
+    }
+
     /// The request waits for data: nothing is materialized while it waits,
     /// so an unrendered reservation is released.
     pub(crate) fn unreserve(&self) {

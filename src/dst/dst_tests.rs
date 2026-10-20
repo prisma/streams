@@ -339,6 +339,8 @@ mod read_page_limits;
 #[path = "tests/read_page_assembly.rs"]
 mod read_page_assembly;
 
+#[path = "tests/pull_coverage.rs"]
+mod pull_coverage;
 #[path = "tests/read_memory.rs"]
 mod read_memory;
 #[path = "tests/read_memory_wakes.rs"]

@@ -99,21 +99,21 @@ OWNERS = (
     # legs: an empty pull pays its coverage, and a parked pull of a project
     # in read debt does not walk again.
     owner('admission_read_memory', 'src/admission/read_memory.rs',
-          'admission:: dst_tests::read_memory::'),
+          'admission:: dst_tests::read_memory:: dst_tests::pull_coverage::'),
     owner('admission_park', 'src/admission/park.rs',
           'admission:: dst_tests::parked_waits:: dst_tests::read_memory:: '
           'dst_tests::shared_cell_hostile::a_create_pays_for_its_registry_writes '
           'dst_tests::shared_cell_hostile::a_listing_pays_for_the_descriptors_it_reads '
           'dst_tests::quota_stream_seed:: '
           'dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull '
-          'dst_tests::fair_shed::'),
+          'dst_tests::fair_shed:: dst_tests::pull_coverage::'),
     owner('product_read_memory', 'src/product/read_memory.rs',
           'product::read_memory:: dst_tests::read_memory:: dst_tests::shared_cell_capacity:: '
           'dst_tests::read_memory_wakes::a_shared_cells_default_page_reserves_one_mib '
           'dst_tests::shared_cell_hostile::a_create_pays_for_its_registry_writes '
           'dst_tests::shared_cell_hostile::a_listing_pays_for_the_descriptors_it_reads '
           'dst_tests::shared_cell_hostile::an_append_over_the_shed_line_is_refused '
-          'dst_tests::fair_shed::'),
+          'dst_tests::fair_shed:: dst_tests::pull_coverage::'),
     # Fair shedding over the RSS line (fairshed lane, lead decision of
     # 2026-10-20 under the owner's delegation of 2026-10-17): the blame
     # windows and verdicts, and the leg that sheds the flooder first.
@@ -311,7 +311,8 @@ OWNERS = (
           'application::consumer:: dst_tests::consumer_product:: dst_tests::consumer_dlq:: '
           'dst_tests::consumer_runs:: dst_tests::consumer_atomicity:: dst_tests::consumer_generations:: '
           'dst_tests::shared_cell_capacity::a_poisoning_settle_reads_only_what_its_project_can_hold '
-          'dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull'),
+          'dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull '
+          'dst_tests::pull_coverage::'),
     owner('sse_source', 'src/sse/source.rs', 'sse:: livefeed_engine_retired'),
     owner('sse_source_tests', 'src/sse/source/tests.rs', 'sse::'),
     owner('sse_source_spans', 'src/sse/source/spans.rs', 'sse::'),

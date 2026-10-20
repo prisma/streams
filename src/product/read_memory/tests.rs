@@ -2,7 +2,7 @@
 
 use axum::http::Method;
 
-use super::{appends, carries_body, query_on_cell};
+use super::{appends, carries_body, pull_coverage, query_on_cell};
 
 /// A shared cell's projects (`PROJECT_SHARE_K`).
 const SHARED: u64 = 8;
@@ -84,4 +84,21 @@ fn only_a_post_or_a_put_carries_a_body() {
     ] {
         assert!(!carries_body(&method), "{method}");
     }
+}
+
+/// A consumer pull reserves the shared cell's 1 MiB page on a shared cell
+/// and a dedicated cell's 4 MiB coverage on a dedicated one; no other
+/// request reserves a coverage.
+#[test]
+fn a_pull_reserves_one_mib_on_a_shared_cell_and_four_on_a_dedicated_one() {
+    let (post, pull) = (&Method::POST, "orders/consumers/g:pull");
+    assert_eq!(pull_coverage(SHARED, post, pull), Some(1 << 20));
+    assert_eq!(pull_coverage(2, post, pull), Some(1 << 20), "two projects");
+    assert_eq!(pull_coverage(1, post, pull), Some(4 << 20), "dedicated");
+    assert_eq!(pull_coverage(1, &Method::GET, pull), None);
+    assert_eq!(
+        pull_coverage(SHARED, post, "orders/consumers/g:settle"),
+        None
+    );
+    assert_eq!(pull_coverage(SHARED, post, "orders/records"), None);
 }

@@ -2319,6 +2319,31 @@
     "scenarios": []
   },
   {
+    "name": "a_shared_cells_pull_leases_what_one_mib_covers_and_the_next_continues_after_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "371322dc7cca75f9e4a319551fbf0c1c03079068895560b2034514f236eeea35",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/pull_coverage.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_shared_cells_pulls_reserve_one_mib_and_hold_what_their_walks_read",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "927fce9f6836f498f43ffd2e2a192ff39917194e691482f32ae66319c0cfa311",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::park_pull_before_receive(Q);",
+      "crate::failpoints::release_pull_before_receive(Q);"
+    ],
+    "file": "src/dst/tests/pull_coverage.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_signed_month_is_refused_on_both_usage_routes",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

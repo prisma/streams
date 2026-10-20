@@ -35,10 +35,12 @@
 //! notes its coverage (`note_coverage`), and when a walk leased nothing
 //! the pull's wait has the bound project pay what was noted from its
 //! read-byte bucket, debt allowed (`pay_coverage`), and, woken, waits
-//! parked while the project is in read debt (`out_of_read_debt`).
+//! parked while the project is in read debt (`out_of_read_debt`). A walk
+//! reads what the pull's admission reserved (`walk_budget`), and on a
+//! shared cell the pull's read hold shrinks to what the walk read.
 
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use axum::response::Response;
@@ -65,6 +67,9 @@ struct Request {
     coverage: AtomicU64,
     /// What fair shedding made of it (`judge_load`).
     verdict: OnceLock<Verdict>,
+    /// Whether its cell is shared (`judge_load`): a pull's walk then holds
+    /// only what it read (`note_coverage`).
+    shared: AtomicBool,
 }
 
 impl Drop for Request {
@@ -90,6 +95,7 @@ impl InflightTicket {
             weight: AtomicU64::new(0),
             coverage: AtomicU64::new(0),
             verdict: OnceLock::new(),
+            shared: AtomicBool::new(false),
         };
         let response = REQUEST.scope(request, handler).await;
         match Arc::into_inner(read).and_then(OnceLock::into_inner) {
@@ -118,9 +124,12 @@ pub(crate) fn bind_principal(quotas: &QuotaRegistry, principal: Option<&RequestP
 /// Judge the served request by its bound project's share of the cell's
 /// offered requests, on a cell shared `share_k` ways, once, and keep the
 /// verdict for the request's gates (`verdict`). A request with no bound
-/// project, or outside a served request, has none.
+/// project, or outside a served request, has none. The request also keeps
+/// whether its cell is shared (k > 1), which a pull's walk holds by
+/// (`note_coverage`).
 pub(crate) fn judge_load(share_k: u64) {
     let _judged = REQUEST.try_with(|request| {
+        request.shared.store(share_k > 1, Ordering::Relaxed);
         let share = request.share.get()?;
         Some(
             *request
@@ -149,14 +158,32 @@ pub(crate) fn charge_store_weight(weight: u64) {
 }
 
 /// Note `bytes` a consumer pull's walk read before it leased, which the
-/// served request pays if the walk leased nothing (`pay_coverage`);
-/// nothing outside one.
+/// served request pays if the walk leased nothing (`pay_coverage`); on a
+/// shared cell its read hold shrinks to them until its batch renders or it
+/// waits (`ReadHold::shrink`). Nothing outside one.
 pub(crate) fn note_coverage(bytes: u64) {
     REQUEST
         .try_with(|request| {
             request.coverage.fetch_add(bytes, Ordering::Relaxed);
+            if request.shared.load(Ordering::Relaxed)
+                && let Some(hold) = request.read.get()
+            {
+                hold.shrink(bytes);
+            }
         })
         .unwrap_or(());
+}
+
+/// The bytes a consumer pull's walk may read in the served request: what
+/// its admission reserved, taken again first as far as room allows after
+/// an earlier walk shrank it (`ReadHold::rewalk`). `None` outside a served
+/// request or without a reserved hold: the walk reads its full coverage,
+/// as before.
+pub(crate) fn walk_budget() -> Option<u64> {
+    REQUEST
+        .try_with(|request| request.read.get().and_then(ReadHold::rewalk))
+        .ok()
+        .flatten()
 }
 
 /// The served request's walk leased nothing: its bound project pays the
