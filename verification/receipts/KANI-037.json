@@ -6,9 +6,9 @@
       "covers_satisfied": 5,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "d424e74ee357eb71ea6a6e731e23e63222b1683a7b6cfb748f952ed733f2dbec",
+      "log_sha256": "611165e7be68885ba2ea65155ae4f7e5db4ea0a87fc7e9b118f1a590fbe29ff3",
       "role": "baseline",
-      "seconds": 145.0,
+      "seconds": 67.5,
       "verdict": "pass"
     },
     {
@@ -20,7 +20,7 @@
         "\"a known hash conflict at the remembered sequence is refused\"",
         "\"a duplicate is answered, not admitted or refused\""
       ],
-      "log_sha256": "2f5603c42b89eb023ab0b28777144be684447de35922994e5e52f4bc19ad7ded",
+      "log_sha256": "1b3aeabc2662fdf85a422f42f2117a78afea98b262b5a29ee85615fef79847aa",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
@@ -28,7 +28,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 43.5,
+      "seconds": 125.3,
       "verdict": "fail"
     },
     {
@@ -39,7 +39,7 @@
       "failed_checks": [
         "\"a known hash conflict at the remembered sequence is refused\""
       ],
-      "log_sha256": "fee53691fb4977b6891931e609e81b101be260b354e208779af5ee4653fda9ba",
+      "log_sha256": "fc24b5fb8da9bafbca88480c3537d8df64019ca95284516163e34a7e554fd56a",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
@@ -47,7 +47,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 113.5,
+      "seconds": 77.6,
       "verdict": "fail"
     },
     {
@@ -58,7 +58,7 @@
       "failed_checks": [
         "\"a duplicate is answered, not admitted or refused\""
       ],
-      "log_sha256": "80685c252c1cbc7ee5a618f2b3f6090696ea7729d02ed4d1f7bfbbb8461754aa",
+      "log_sha256": "da1dbdf19cbfbe8a8b5bc0f93ca298317ee819a01bd69e02832622703c397216",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
@@ -66,7 +66,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 151.7,
+      "seconds": 77.4,
       "verdict": "fail"
     }
   ],
@@ -79,7 +79,7 @@
       "ASM-PRODUCER-ROW": "bf02f39f80c7bc9a81911b57a7923e77dfc913a0720422f22701974a94ab335c"
     },
     "files": {
-      "Cargo.lock": "ab78fbe410e25b260785c0a02805645f0e39c743c35b77bff087974145f1987a",
+      "Cargo.lock": "150b6d9e2c41c4dd9d114fb055ff4bbb1c8e3a31241818fe22dd70350869c271",
       "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
@@ -112,10 +112,10 @@
       }
     }
   },
-  "inputs_sha256": "bcb28b21bb6377efb810a760bd9ebcd10b123216b02fe8b34352a1eff1df5eea",
+  "inputs_sha256": "3b90a34c4c164b96ff8887d3512c8c06d3db14011d835bb684e3d8dafb9d5268",
   "run_on": {
     "dirty_tree": false,
-    "revision": "7813e3083e01ee5b14e5a79d187970e3303bf76d"
+    "revision": "955316d5cc7c88b8d2042b95f137c3ef05f1b266"
   },
   "schema": 2,
   "tools": {

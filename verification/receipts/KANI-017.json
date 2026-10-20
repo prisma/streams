@@ -6,9 +6,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "242c3fb6e5ceb61a0337cf5f09ad37cd52f7f7c8f0bf591431467365a9fd45cb",
+      "log_sha256": "41d2a1f4aea88f5d2e608c4fa2b40b384b6e419b57b3ad2a5cef173679808ddd",
       "role": "baseline",
-      "seconds": 46.8,
+      "seconds": 51.1,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "5b99c112778aefb0bbccc2ca114aa898eabb8312337da3edb64b1bec7cd73408",
+      "log_sha256": "530c8887054737974ab9d3388cdf7078f892ef37496d217c5d8d04d6b1287f6e",
       "role": "baseline",
-      "seconds": 122.3,
+      "seconds": 96.1,
       "verdict": "pass"
     },
     {
@@ -28,9 +28,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "198f49414fac57a2d624ccf303d57ffeeaee45f84e62a5b489e0a0fbf7fca482",
+      "log_sha256": "a77f31d0d9a2ce0044161707ee6b33cc70dc2e28762c99147f62bb99930c51e3",
       "role": "baseline",
-      "seconds": 49.3,
+      "seconds": 48.5,
       "verdict": "pass"
     },
     {
@@ -39,9 +39,9 @@
       "covers_satisfied": 1,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "2c11e2066ff55a11f4ac77485ce5089b207766637d49b705b72bf41e31a8dda2",
+      "log_sha256": "6f2712ae56e5b0c39bc286678f5c3e60224e2e4dae0f8e5b1090050c91f2dce2",
       "role": "baseline",
-      "seconds": 73.9,
+      "seconds": 75.6,
       "verdict": "pass"
     },
     {
@@ -52,7 +52,7 @@
       "failed_checks": [
         "\"an admitted page carries its key's offset\""
       ],
-      "log_sha256": "37059b8c0d31ee364c38f736d96407a0e1bce79467b2a8abf6405e7cbedff4d7",
+      "log_sha256": "67965e3fcfbb17f993db1a1fd3578b266bb56bead1c610ce9912a207fddb000b",
       "mutated": {
         "src/crypto_page/header.rs": {
           "baseline": "d7b9d22f2c182a39a15e68b4d3e428424d962b7ad4d4c2bdb656158e2afc4df3",
@@ -60,7 +60,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 48.7,
+      "seconds": 49.7,
       "verdict": "fail"
     },
     {
@@ -71,7 +71,7 @@
       "failed_checks": [
         "\"an admitted row's key is its stream's prefix and one offset\""
       ],
-      "log_sha256": "3fb3573cc5189347aeaaa6e66aa7201bfe90c77f3948e8112fc85c19e6a44b3c",
+      "log_sha256": "0fc20383a175c905f4c3fbec9d48172570047528f94a04ad16ee28aa3044c1b5",
       "mutated": {
         "src/crypto_page/header.rs": {
           "baseline": "d7b9d22f2c182a39a15e68b4d3e428424d962b7ad4d4c2bdb656158e2afc4df3",
@@ -79,7 +79,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 48.2,
+      "seconds": 49.8,
       "verdict": "fail"
     },
     {
@@ -90,7 +90,7 @@
       "failed_checks": [
         "\"an admitted row is exactly one whole page with its tag\""
       ],
-      "log_sha256": "35868f31c61e6245d9be5c1314487f9651ed22b5032f6ee158459ca10b1a1968",
+      "log_sha256": "a5fb2b3803f11393b8cdcf4a6ee304827a2df09ed151953c59726ba19e67cd70",
       "mutated": {
         "src/crypto_page/header.rs": {
           "baseline": "d7b9d22f2c182a39a15e68b4d3e428424d962b7ad4d4c2bdb656158e2afc4df3",
@@ -98,7 +98,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 76.4,
+      "seconds": 48.6,
       "verdict": "fail"
     },
     {
@@ -109,7 +109,7 @@
       "failed_checks": [
         "\"an admitted page holds 1 to 4,096 records\""
       ],
-      "log_sha256": "691d20c61744afe8ccd15925825b11cd950d2ef4803dfd5363ed1089f946d407",
+      "log_sha256": "e15f6c571d7f602a3180c2facfdfba1160012ac88a476a84fcadb5b1cac78ca3",
       "mutated": {
         "src/crypto_page/header.rs": {
           "baseline": "d7b9d22f2c182a39a15e68b4d3e428424d962b7ad4d4c2bdb656158e2afc4df3",
@@ -117,7 +117,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 73.6,
+      "seconds": 73.7,
       "verdict": "fail"
     },
     {
@@ -128,7 +128,7 @@
       "failed_checks": [
         "\"an admitted page carries its key's offset\""
       ],
-      "log_sha256": "0e676510e95f7b867d514f17ddad74fb05b58fbd49faf9f0e56e396370063e9f",
+      "log_sha256": "961c3f1e458039c2cad31e8a492784afd0e14c3dddbac9de098c748565e3772b",
       "mutated": {
         "src/crypto_page/header.rs": {
           "baseline": "d7b9d22f2c182a39a15e68b4d3e428424d962b7ad4d4c2bdb656158e2afc4df3",
@@ -136,7 +136,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 80.4,
+      "seconds": 47.6,
       "verdict": "fail"
     },
     {
@@ -147,7 +147,7 @@
       "failed_checks": [
         "\"an admitted page carries its key's offset\""
       ],
-      "log_sha256": "029aa43c651a93f91d75ca8e68d9785803038d66bde9d5e77f0ed1657280fb4b",
+      "log_sha256": "0fde8a72d83bd93f37a34967a7fcec42eeb60f6b313743c86a10243395560e0e",
       "mutated": {
         "src/crypto_page.rs": {
           "baseline": "b12dfa9f14e5a86582978415d2dde34ebf75748775e2141af11d5d1586aac458",
@@ -155,7 +155,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 49.2,
+      "seconds": 80.5,
       "verdict": "fail"
     }
   ],
@@ -167,7 +167,7 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "ab78fbe410e25b260785c0a02805645f0e39c743c35b77bff087974145f1987a",
+      "Cargo.lock": "150b6d9e2c41c4dd9d114fb055ff4bbb1c8e3a31241818fe22dd70350869c271",
       "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
@@ -205,10 +205,10 @@
       }
     }
   },
-  "inputs_sha256": "9dd97aaa236814ce9520e7a119230cd0e704e6a41066352562a15a9978a77405",
+  "inputs_sha256": "30c06e1df3ee9e6698f2e338e39b27d483273199b8bddfa0a763e4da763b6ea2",
   "run_on": {
     "dirty_tree": false,
-    "revision": "7813e3083e01ee5b14e5a79d187970e3303bf76d"
+    "revision": "955316d5cc7c88b8d2042b95f137c3ef05f1b266"
   },
   "schema": 2,
   "tools": {

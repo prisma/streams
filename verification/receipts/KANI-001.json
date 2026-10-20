@@ -6,18 +6,18 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "ab1fc8eda7e59d308979101bdd56453cd0be6630517f58531ccf7a6ef5779be0",
+      "log_sha256": "205e1ac7d02d63a20165ed23565ea665224029997c8ee2a14e2c4883acd297c7",
       "role": "baseline",
-      "seconds": 513.9,
+      "seconds": 538.5,
       "verdict": "pass"
     },
     {
       "check": "KANI-001/canonical-digits",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "3e39188ce9e52e218aa311f0c0efa069ec7bfa40fe517f9d533cff34b291c1fa",
+      "log_sha256": "4cb921d2d669c938a97305396788b1b1ea8014756f9d1dbcca3259ffafe29bb9",
       "role": "baseline",
-      "seconds": 351.6,
+      "seconds": 376.2,
       "verdict": "pass"
     },
     {
@@ -28,7 +28,7 @@
       "failed_checks": [
         "\"epoch and next survive the round trip\""
       ],
-      "log_sha256": "2fd72b788bf40856fa87d8c3dc3a55ea7c343fb29063b8816accef5ff92f2667",
+      "log_sha256": "dfd618045ee1dc315f056b382361fe45f156f296050216dda2ca4a1b4b6bd650",
       "mutated": {
         "src/offsets.rs": {
           "baseline": "7f5bfa2ef61b991c1919aea7b51a9d587c7117f3c53f2184f4916a3ba54fd43c",
@@ -36,7 +36,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 518.4,
+      "seconds": 516.1,
       "verdict": "fail"
     }
   ],
@@ -49,7 +49,7 @@
       "ASM-OFFSET-DOMAIN": "aef34325e54b8193d77cf768b07426056852471934347bda2d6476cdd90cc297"
     },
     "files": {
-      "Cargo.lock": "ab78fbe410e25b260785c0a02805645f0e39c743c35b77bff087974145f1987a",
+      "Cargo.lock": "150b6d9e2c41c4dd9d114fb055ff4bbb1c8e3a31241818fe22dd70350869c271",
       "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
@@ -80,10 +80,10 @@
       }
     }
   },
-  "inputs_sha256": "bdca93a3bff763b0a107519ba7427b07da006ae326fd5f58b05443a62190c3ac",
+  "inputs_sha256": "433de7fa4c83bc188d78546a40c4fbcffb350d28501ece6fd6cca4df3840c074",
   "run_on": {
     "dirty_tree": false,
-    "revision": "7813e3083e01ee5b14e5a79d187970e3303bf76d"
+    "revision": "955316d5cc7c88b8d2042b95f137c3ef05f1b266"
   },
   "schema": 2,
   "tools": {

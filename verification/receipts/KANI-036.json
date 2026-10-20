@@ -6,9 +6,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "b32bdc271cd22e846a75a95581f0a36f634f67a2de872899ffc34b9e09afecf8",
+      "log_sha256": "5ae4ff90853d2c59dfa6e7c7d83c78a0b89d48cce80ab3480b46b33c100eb2af",
       "role": "baseline",
-      "seconds": 79.0,
+      "seconds": 44.9,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"a lower epoch is stale, whatever the sequence, hashes or closure\""
       ],
-      "log_sha256": "03915a48b1150fde2f8c7966b6fc3dfedbac4f756292b02fb35d063c61fbe96c",
+      "log_sha256": "377062ee19331aa747841f88288f718668ebb2584f34b46a6a95eb7a7299f3f8",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 81.8,
+      "seconds": 108.8,
       "verdict": "fail"
     },
     {
@@ -38,7 +38,7 @@
       "failed_checks": [
         "\"a new epoch must start at sequence 0\""
       ],
-      "log_sha256": "76ae5ecbced45be06c9b431c2070ab84309b6a2ee68b3271e1cda51618afe441",
+      "log_sha256": "23343816422f02b6c4a0286bc7d9f2ffadd4f6fe1bb0cda24c3e4d552192316d",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
@@ -46,7 +46,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 113.6,
+      "seconds": 156.4,
       "verdict": "fail"
     }
   ],
@@ -59,7 +59,7 @@
       "ASM-PRODUCER-ROW": "bf02f39f80c7bc9a81911b57a7923e77dfc913a0720422f22701974a94ab335c"
     },
     "files": {
-      "Cargo.lock": "ab78fbe410e25b260785c0a02805645f0e39c743c35b77bff087974145f1987a",
+      "Cargo.lock": "150b6d9e2c41c4dd9d114fb055ff4bbb1c8e3a31241818fe22dd70350869c271",
       "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
@@ -91,10 +91,10 @@
       }
     }
   },
-  "inputs_sha256": "e07af5d26bea68f82005560e6e77adab0e8320837f54e40ae0a0d96aed884e57",
+  "inputs_sha256": "d428362d28116c2d62e1f35a9cad8dbab796ab5fdf3ce5871f75ebb041195ef7",
   "run_on": {
     "dirty_tree": false,
-    "revision": "7813e3083e01ee5b14e5a79d187970e3303bf76d"
+    "revision": "955316d5cc7c88b8d2042b95f137c3ef05f1b266"
   },
   "schema": 2,
   "tools": {

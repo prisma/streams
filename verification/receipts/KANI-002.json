@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "affa9f54c2a6fbf1ff99c33dfc4c22a4ff471d6c1595a9da19b253fa5c4d2f6a",
+      "log_sha256": "5fae2dd97db9a04200d3cfbc22f372d1324b0eebc2784a1996534c7ea34dace5",
       "role": "baseline",
-      "seconds": 528.1,
+      "seconds": 522.0,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"a token resumes at the next it was issued for\""
       ],
-      "log_sha256": "0220b3b6b7c64f359686367364fc3054ca57782ef6579fc7bf6f4053533e43c5",
+      "log_sha256": "77517a612db66c5e081e2d82e5c5c6caadc48348122f4dffb8112f7be9ff6355",
       "mutated": {
         "src/offsets.rs": {
           "baseline": "7f5bfa2ef61b991c1919aea7b51a9d587c7117f3c53f2184f4916a3ba54fd43c",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 528.7,
+      "seconds": 519.9,
       "verdict": "fail"
     }
   ],
@@ -40,7 +40,7 @@
       "ASM-OFFSET-DOMAIN": "aef34325e54b8193d77cf768b07426056852471934347bda2d6476cdd90cc297"
     },
     "files": {
-      "Cargo.lock": "ab78fbe410e25b260785c0a02805645f0e39c743c35b77bff087974145f1987a",
+      "Cargo.lock": "150b6d9e2c41c4dd9d114fb055ff4bbb1c8e3a31241818fe22dd70350869c271",
       "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
@@ -72,10 +72,10 @@
       }
     }
   },
-  "inputs_sha256": "d813ed062d72304cade759afe9e3711d341735bdd5a1bf5bbb818ba4517dd36b",
+  "inputs_sha256": "f6584eda1f9d88d0a6ad7c1f3571e63f76eeadc8c155bbd643351e7e7308a112",
   "run_on": {
     "dirty_tree": false,
-    "revision": "7813e3083e01ee5b14e5a79d187970e3303bf76d"
+    "revision": "955316d5cc7c88b8d2042b95f137c3ef05f1b266"
   },
   "schema": 2,
   "tools": {
