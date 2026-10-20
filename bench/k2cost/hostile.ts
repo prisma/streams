@@ -48,7 +48,7 @@ import { readFileSync } from "node:fs";
 import { connect as netConnect, type Socket } from "node:net";
 import { join } from "node:path";
 import { connect as tlsConnect } from "node:tls";
-import { Http, Meter, Rng, type Resp, encName, errCode, round3, sleep, streamName, utf8 } from "./common.ts";
+import { Http, Meter, Rng, type Resp, backoffMs, encName, errCode, round3, sleep, streamName, utf8 } from "./common.ts";
 import { countOracle } from "./oracle.ts";
 import type { Ctx } from "./produce.ts";
 import type { LegSpec, Project } from "./tenant-plan.ts";
@@ -177,6 +177,47 @@ interface Stalled {
   complete: boolean;
   records: number;
   error: string | null;
+  /** A 200 cut short: whether the same page read again was the cut one. */
+  cut_resolved?: boolean;
+}
+
+/** How long H9b keeps reading a cut-short page again while the cell
+ * refuses it with a 429 or 503 (the project's read debt, the instance's
+ * read memory). */
+const CUT_AGAIN_MS = 60_000;
+
+/** A 200 the server cut short was metered whole when it rendered
+ * (docs/OBSERVABILITY-BILLING.md §7.1), so its page is billed though it
+ * was never delivered. Reads the same page again (the same cursor answers
+ * the same page, edge #107) and, when the answer is the cut page's own
+ * (its content-length, and every byte that came before the cut), counts
+ * the page as billed (cut_short_records/_payload_bytes) and the read
+ * again as delivered. Any other answer, or none within CUT_AGAIN_MS,
+ * leaves it unresolved (cut_short_unresolved), and the project's usage
+ * differs from its ledger. The reads again go on a meter of their own,
+ * so H9b's answers stay its readers'. */
+async function readCutAgain(ctx: Ctx, name: string, path: string, raw: Buffer): Promise<boolean> {
+  const end = raw.indexOf("\r\n\r\n");
+  const length = Number(/\r\ncontent-length:\s*(\d+)/i.exec(raw.subarray(0, end).toString("latin1"))?.[1] ?? NaN);
+  const before = raw.subarray(end + 4);
+  const http = new Http(ctx.http.base, ctx.http.hdrs, new Meter(), ctx.http.pool);
+  const deadline = Date.now() + CUT_AGAIN_MS;
+  let r = await http.call("GET", path);
+  while ((r.status === 429 || r.status === 503) && Date.now() < deadline) {
+    await sleep(backoffMs(r));
+    r = await http.call("GET", path);
+  }
+  let page: { records: number; bytes: number } | null = null;
+  if (r.status === 200) page = deliver(ctx, name, r.body);
+  const same = page !== null && Number.isFinite(length) && r.body.byteLength === length
+    && Buffer.from(r.body.subarray(0, before.length)).equals(before);
+  if (!same || !page) {
+    ctx.meter.add("cut_short_unresolved");
+    return false;
+  }
+  ctx.meter.add("cut_short_records", page.records);
+  ctx.meter.add("cut_short_payload_bytes", page.bytes);
+  return true;
 }
 
 /** The body of a raw response: content-length or chunked framing; null
@@ -278,12 +319,14 @@ export async function h9b(ctx: Ctx, signal: AbortSignal): Promise<Record<string,
   const results = await Promise.all(Array.from({ length: readers }, async (_, i) => {
     const name = names[i % names.length]!;
     ctx.meter.add("requests");
-    const { s, raw } = await stalledRead(base, `/v1/streams/${encName(name)}/records?cursor=beginning&maxBytes=${maxBytes}`, headers, holdMs, signal);
+    const path = `/v1/streams/${encName(name)}/records?cursor=beginning&maxBytes=${maxBytes}`;
+    const { s, raw } = await stalledRead(base, path, headers, holdMs, signal);
     ctx.meter.status(s.status ? String(s.status) : "err");
     ctx.meter.add("wire_bytes_down", s.bytes_total);
     const { body } = bodyOf(raw);
     if (s.status >= 400 && body) ctx.meter.errorCode(`${s.status}:${errCode({ status: s.status, headers: null, body, ms: 0 }) || "-"}`);
     if (s.status === 200 && body) s.records = deliver(ctx, name, body).records;
+    if (s.status === 200 && !body) s.cut_resolved = await readCutAgain(ctx, name, path, raw);
     return s;
   }));
   const statuses: Record<string, number> = {};
@@ -294,6 +337,8 @@ export async function h9b(ctx: Ctx, signal: AbortSignal): Promise<Record<string,
       reset_during_hold: results.filter((r) => r.reset_during_hold).length,
       closed_during_hold: results.filter((r) => r.closed_during_hold).length,
       cut_short: results.filter((r) => r.status === 200 && !r.complete).length,
+      cut_short_resolved: results.filter((r) => r.cut_resolved === true).length,
+      cut_short_unresolved: results.filter((r) => r.cut_resolved === false).length,
       bytes_before_resume: results.reduce((a, r) => a + r.bytes_before_resume, 0),
       bytes_total: results.reduce((a, r) => a + r.bytes_total, 0),
       errors: results.filter((r) => r.error).map((r) => r.error).slice(0, 5),

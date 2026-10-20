@@ -302,6 +302,34 @@ class LayerB(unittest.TestCase):
                 ex = m["bars"]["billing: usage = ledger for every project"]["value"]["examples"]
                 self.assertEqual([e["project"] for e in ex], ["proj_0500"])
 
+    def test_billing_counts_the_cut_short_pages_the_server_billed_when_it_rendered_them(self):
+        # Native Layer B on 06b89311: H9b's project read one page whole and
+        # three pages the drain floor cut short; the server metered all four
+        # when it rendered them (OBSERVABILITY-BILLING §7.1). H9b read each
+        # cut page again (delivered) and found the cut one (billed).
+        def cut(w, pages=3, unresolved=0):
+            t = w.ledgers["proj_0500"]["totals"]
+            m = w.usage["proj_0500"]["meters"]
+            t.update(cut_short_records=512 * pages, cut_short_payload_bytes=8_000_000 * pages, cut_short_unresolved=unresolved)
+            m.update(readRecords=int(t["delivered_records"]) + 512 * pages,
+                     readPayloadBytes=int(t["delivered_payload_bytes"]) + 8_000_000 * pages)
+        cut(self.w)
+        m = self.w.judge()
+        self.assertEqual(self.failing(m), [])
+        pristine = copy.deepcopy(self.w.__dict__)
+        cases = {
+            # A cut page H9b could not match to a page read again is reported, never forgiven.
+            "an unresolved cut page": lambda w: cut(w, unresolved=1),
+            # The meter billed a fourth cut page the ledger does not hold.
+            "a meter over the cut pages": lambda w: (cut(w), w.ledgers["proj_0500"]["totals"].update(cut_short_records=1024)),
+        }
+        for name, edit in cases.items():
+            with self.subTest(name):
+                self.w.__dict__.update(copy.deepcopy(pristine))
+                m = self.mutated(edit, "billing")
+                ex = m["bars"]["billing: usage = ledger for every project"]["value"]["examples"]
+                self.assertEqual([e["project"] for e in ex], ["proj_0500"])
+
     def test_quiet_names_apart_from_never_held_ones_fail_h11t_and_are_not_known_red(self):
         # The owner's round-3 call 9 (a): quiet versus never is a bar like
         # any other, no longer red by construction.

@@ -434,7 +434,15 @@ def leg_billing(r: Run, bars: dict) -> bool:
     the acked ones, each bounded by the unknown records sent there), and
     the ingest expectation is the acked records plus those. A resolution
     that is missing, short of the ledger's unknowns or names an unresolved
-    stream leaves the project differing."""
+    stream leaves the project differing.
+
+    The server meters a read page when it renders it (OBSERVABILITY-BILLING
+    §7.1), so a page the drain floor (edge #107) cut short is billed though
+    it was never delivered. H9b reads each such page again from the same
+    cursor and, when the answer is the cut page's own, counts it as billed
+    (`cut_short_records`/`cut_short_payload_bytes`); the read expectation is
+    the delivered pages plus those. A cut page it could not match
+    (`cut_short_unresolved`) leaves the project differing."""
     bad = []
     res_projects = res_unknown = res_committed = 0
     for p, lg in r.ledgers.items():
@@ -456,11 +464,16 @@ def leg_billing(r: Run, bars: dict) -> bool:
                 res_projects += 1
                 res_unknown += unknown
                 res_committed += int(res.get("committed_records") or 0)
-        want = (acked, int(t.get("delivered_payload_bytes") or 0), int(t.get("delivered_records") or 0))
+        cut_unresolved = int(t.get("cut_short_unresolved") or 0)
+        if cut_unresolved:
+            unresolved = (unresolved or []) + [f"{cut_unresolved} cut-short page(s) not matched by a read again"]
+        want = (acked, int(t.get("delivered_payload_bytes") or 0) + int(t.get("cut_short_payload_bytes") or 0),
+                int(t.get("delivered_records") or 0) + int(t.get("cut_short_records") or 0))
         got = (m.get("ingestRecords"), m.get("readPayloadBytes"), m.get("readRecords"))
         if not u.get("settled") or unresolved or tuple(int(x) if x is not None else None for x in got) != want:
             bad.append({"project": p, "settled": u.get("settled"), "ledger": want, "meters": got,
-                        **({"outcome_unknown_records": unknown, "resolution": res, "unresolved": unresolved} if unknown else {})})
+                        **({"outcome_unknown_records": unknown, "resolution": res} if unknown else {}),
+                        **({"unresolved": unresolved} if unresolved else {})})
     projects = int(r.run.get("projects") or 0)
     return bar(bars, "billing: usage = ledger for every project", {
         "projects": len(r.ledgers), "differ": len(bad), "examples": bad[:5],

@@ -298,7 +298,53 @@ test("H9b reports a stalled reader whose body the server cut short, and counts n
   };
   const r = (await h9b(ctx, AbortSignal.timeout(5000))).h9b as Record<string, unknown>;
   srv.close();
-  expect([r.statuses, r.cut_short, meter.tot.get("delivered_records")]).toEqual([{ "200": 2 }, 2, 0]);
+  // The page read again is cut short too: neither cut page is resolved.
+  expect([r.statuses, r.cut_short, meter.tot.get("delivered_records"), meter.tot.get("cut_short_records"), meter.tot.get("cut_short_unresolved")])
+    .toEqual([{ "200": 2 }, 2, 0, 0, 2]);
+});
+
+// The server meters a page when it renders it (docs/OBSERVABILITY-BILLING.md
+// §7.1), so a page the drain floor (edge #107) cut short is billed whole:
+// H9b reads it again from the same cursor and counts the page as billed
+// (cut_short_records/_payload_bytes) when the answer is the cut page's
+// own (its content-length, and the bytes that came before the cut), and
+// the read again as delivered. Any other answer leaves the page unresolved.
+function cutThenWhole(cut: number, whole: string, again: string) {
+  let n = 0;
+  const head = (b: string) => `HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: ${Buffer.byteLength(b)}\r\nconnection: close\r\n\r\n`;
+  return createServer((s) => s.once("data", () => (n++ < cut ? s.end(head(whole) + whole.slice(0, 9)) : s.end(head(again) + again))));
+}
+async function h9bAgainst(srv: ReturnType<typeof createServer>): Promise<{ r: Record<string, unknown>; meter: Meter }> {
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+  const port = (srv.address() as { port: number }).port;
+  const meter = new Meter();
+  const ctx = {
+    http: new Http(`http://127.0.0.1:${port}`, new HeaderSource(undefined, { authorization: "Bearer t" }), meter), meter,
+    o: new Opts(new Map([["readers", "2"], ["hold-secs", "0.1"]])), prefix: "t/", streams: 1, seed: 1, duration: 1,
+    owner: ownerOf("x", "proj_x"),
+  };
+  const r = (await h9b(ctx, AbortSignal.timeout(5000))).h9b as Record<string, unknown>;
+  srv.close();
+  return { r, meter };
+}
+
+test("H9b counts a cut-short page as billed once the same page read again matches it, and the read again as delivered", async () => {
+  const page = '[{"o":"a1"},{"o":"b22"},{"o":"c333"}]';
+  const { r, meter } = await h9bAgainst(cutThenWhole(2, page, page));
+  const bytes = Buffer.byteLength(page) - 2 - 2;
+  expect([r.cut_short, r.cut_short_resolved, r.cut_short_unresolved]).toEqual([2, 2, 0]);
+  expect(["cut_short_records", "cut_short_payload_bytes", "cut_short_unresolved", "delivered_records", "delivered_payload_bytes"].map((k) => meter.tot.get(k)))
+    .toEqual([6, 2 * bytes, 0, 6, 2 * bytes]);
+});
+
+test("H9b leaves a cut-short page unresolved when the page read again is not the one that was cut", async () => {
+  const page = '[{"o":"a1"},{"o":"b22"},{"o":"c333"}]';
+  // Same length, other bytes before the cut; then a longer page.
+  for (const again of ['[{"o":"x1"},{"o":"b22"},{"o":"c333"}]', '[{"o":"a1"},{"o":"b22"},{"o":"c333"},{"o":"d"}]']) {
+    const { r, meter } = await h9bAgainst(cutThenWhole(2, page, again));
+    expect([r.cut_short, r.cut_short_resolved, r.cut_short_unresolved]).toEqual([2, 0, 2]);
+    expect(["cut_short_records", "cut_short_unresolved", "delivered_records"].map((k) => meter.tot.get(k))).toEqual([0, 2, again.split("{").length - 1 === 3 ? 6 : 8]);
+  }
 });
 
 test("H9b's readers by answer: a refusal with a code is typed; an untyped one, a body cut short and no answer are other", async () => {
