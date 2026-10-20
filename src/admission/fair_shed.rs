@@ -1,6 +1,6 @@
 //! Fair shedding (public-beta week 2026-10-17, the lead's decision of
 //! 2026-10-20 20:00 under the owner's delegation; edge change
-//! #NEW-fairshed-1): over the RSS shed line, the projects that carry more
+//! #184): over the RSS shed line, the projects that carry more
 //! than their share of the cell's load are refused before any other.
 //!
 //! The blame signal is a project's share of the verified requests the cell

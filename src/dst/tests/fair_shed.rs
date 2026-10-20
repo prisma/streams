@@ -1,5 +1,5 @@
 //! Fair shedding over the RSS shed line (public-beta week 2026-10-17, the
-//! lead's decision of 2026-10-20 20:00, edge change #NEW-fairshed-1): on a
+//! lead's decision of 2026-10-20 20:00, edge change #184): on a
 //! cell shared k ways, the project that sends more than 1/k of the verified
 //! requests the cell was recently offered is refused first, and a project within its
 //! share keeps its appends while the instance is at most a quarter over the
