@@ -720,6 +720,41 @@ export function sdkBackoffMs(r: Resp): number {
   return (Number.isFinite(ra) ? Math.max(0, Math.min(ra, 5)) : 1) * 1000;
 }
 
+/** How long a whole-stream read (the audit's, the read-back's) keeps
+ * asking a cell that refuses or fails it, and how long it waits between
+ * asks. The budget runs from a stream's first failed read since its last
+ * good page (a read that is moving is never cut short); only after it does
+ * the read report why it failed. A hostile project's streams are read at
+ * the cell's read quota for it, so this is the read's patience. */
+export interface ReadBack {
+  budgetMs: number;
+  delayMs: (r: Resp, failed: number) => number;
+}
+
+/** Ten minutes; the cell's retry-after when it names one (up to 30 s),
+ * else 1 s doubling to 15 s. */
+export const READ_BACK: ReadBack = {
+  budgetMs: 600_000,
+  delayMs(r, failed) {
+    const ra = Number(r.headers?.get("retry-after"));
+    const asked = Number.isFinite(ra) && ra > 0 ? Math.min(ra, 30) * 1000 : 0;
+    return Math.max(asked, Math.min(15_000, 1000 * 2 ** Math.min(failed - 1, 4)));
+  },
+};
+
+/** The class of a failed read: its status and error code, or how the
+ * transport failed. */
+export function failureClass(r: Resp): string {
+  return r.status === 0 ? `transport ${(r.error ?? "").split(":", 1)[0] || "failed"}` : `${r.status} ${errCode(r) || "-"}`;
+}
+
+/** A refused read the cell will answer the same again: a 4xx other than
+ * 408 and 429. Everything else (408, 429, 5xx, a transport failure) is
+ * asked again within the budget. */
+export function readRefused(r: Resp): boolean {
+  return r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429;
+}
+
 /** Seconds to wait after a 429/503, from retry-after (1..5 s). */
 export function backoffMs(r: Resp): number {
   const ra = Number(r.headers?.get("retry-after") ?? "1");

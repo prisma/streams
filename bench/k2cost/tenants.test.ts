@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { DEFAULT_PROFILES } from "../../deploy/cell-admin/commands.ts";
 import { type Ceilings, cellSizing, readProfiles } from "../../deploy/cell-admin/profile.ts";
 import { FREE_TIER_REQUESTS_PER_SEC } from "../../deploy/issuer/projects.ts";
-import { Opts } from "./common.ts";
+import { Opts, type ReadBack } from "./common.ts";
 import { PayloadGen } from "./corpus.ts";
 import { FakeCell } from "./fake-cell.ts";
 import { ownerOf } from "./oracle.ts";
@@ -440,3 +440,46 @@ test("an append answered 408 that the server wrote is resolved by read-back: the
     reasons: { "404 stream_not_found": 1 }, retried: {},
   });
 }, 30_000);
+
+test("the audit asks again for a cell that rate-limits its reads, as it does a hostile project's own streams, and names why an audit fails", async () => {
+  // The h2/h7 shape: a hostile project at a read quota, whose streams hold
+  // records the cell wrote and answered 408 (outcome unknown), read back
+  // while the cell refuses its reads (429 project_rate_limit, past the old
+  // 50 failed reads a stream).
+  const m: Manifest = {
+    name: "ratelimited", seed: 14, duration: 2.5, classes: [
+      { class: "h2", count: 1, role: "hostile", streams: 2, phases: [
+        { mode: "setup", at: 0 },
+        { mode: "produce", at: 0.3, secs: 1.5, args: { rate: 40, "record-bytes": 512 } },
+      ] },
+    ],
+  };
+  const plan = expand(m, "sha");
+  const p = plan.projects[0]!;
+  const mapFile = join(dir, "tokens-ratelimited.json");
+  writeFileSync(mapFile, JSON.stringify([{ project: p.id, token: `tok-${p.id}` }]));
+  cell.tokens.set(`tok-${p.id}`, p.id);
+  setTimeout(() => cell.commitThenAnswer(p.id, 3, 408, "append_failed"), 700);
+  const out = join(dir, "run-ratelimited");
+  expect((await run(plan, cell.base, mapFile, out, 1)).phases_failed).toEqual([]);
+  const produced = json(join(out, "projects", p.id, "phase-1.ledger.json"));
+  expect(produced.failed_requests).toBe(3);
+  const audited = async (rb: ReadBack) => ((await auditAll(plan, cell.base, mapFile, out, new Opts(new Map()), rb)).projects as Record<string, any>)[p.id].prefixes["t/"];
+  const fast = (budgetMs: number): ReadBack => ({ budgetMs, delayMs: () => 1 });
+  // 104 refusals across the two streams: each stream is refused past 50.
+  cell.refuse(p.id, 104, 429, "project_rate_limit", 0);
+  const a = await audited(fast(30_000));
+  expect([a.ok, a.error ?? null, a.causes, a.read_records, a.blocks_missing]).toEqual([true, null, [], produced.acked_records + 3, 0]);
+  // A cell that refuses for longer than the budget fails the audit, and says why.
+  cell.refuse(p.id, 100_000, 429, "project_rate_limit", 0);
+  const b = await audited(fast(100));
+  expect([b.ok, b.causes]).toEqual([false, [{ cause: "read_failed 429 project_rate_limit", detail: expect.stringMatching(/^audit t\/0000\d: \d+ failed reads over 0\.\ds, last 429 project_rate_limit$/) }]]);
+  cell.refusals.delete(p.id);
+  // An unexpected record is named with its count, and still fails (and
+  // the read count no longer equals the replay's).
+  cell.plant(p.id, "t/00000", new PayloadGen("oracle", 512, 5, 3, ownerOf("ratelimited:14", p.id)).json());
+  const c = await audited(fast(30_000));
+  expect([c.ok, c.causes.map((x: any) => [x.cause, x.detail.split(" (")[0]])]).toEqual([
+    false, [["unexpected_records", "1"], ["record_count", `read ${produced.acked_records + 4} + missing 0 != expected ${produced.acked_records + 3}`]],
+  ]);
+}, 60_000);

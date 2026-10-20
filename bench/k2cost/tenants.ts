@@ -34,10 +34,10 @@
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  Counters, HeaderSource, Hist, Http, Meter, Opts, Reporter, ensureHttpHeadroom, installSignals, parseFlags, pool, round3,
+  Counters, HeaderSource, Hist, Http, Meter, Opts, READ_BACK, type ReadBack, Reporter, ensureHttpHeadroom, installSignals, parseFlags, pool, round3,
   sleep, stop,
 } from "./common.ts";
-import { audit } from "./audit.ts";
+import { AuditReadError, audit } from "./audit.ts";
 import { Pools } from "./conn-pool.ts";
 import { churn } from "./churn.ts";
 import { group, subs, tail, walk } from "./consume.ts";
@@ -553,7 +553,7 @@ export function heldNames(out: string, p: Project, prefix: string): Set<string> 
  * ledgers (audit.ts), one audit per stream prefix, reading the names its
  * setup created; and its outcome-unknown appends resolved by read-back
  * (resolve.ts), as `resolution`. */
-export async function auditAll(plan: Plan, base: string, tokenMap: string, out: string, o: Opts): Promise<Record<string, unknown>> {
+export async function auditAll(plan: Plan, base: string, tokenMap: string, out: string, o: Opts, rb: ReadBack = READ_BACK): Promise<Record<string, unknown>> {
   const tokens = new TokenMap(tokenMap);
   const projects: Record<string, unknown> = {};
   const audited = new Map<string, { ledgers: Array<Record<string, unknown>>; read: Map<string, number> }>();
@@ -584,12 +584,13 @@ export async function auditAll(plan: Plan, base: string, tokenMap: string, out: 
         seed: p.seed, duration: 0, owner: p.owner,
       };
       try {
-        const v = (await audit(ctx, stop.signal, heldNames(out, p, prefix))).verify as Record<string, unknown>;
+        const v = (await audit(ctx, stop.signal, heldNames(out, p, prefix), rb)).verify as Record<string, unknown>;
         const { per_stream: ps, ...rest } = v;
         for (const c of (ps ?? []) as Array<{ name: string; pages: number; read_records: number }>) if (c.pages > 0) read.set(c.name, c.read_records);
         checks[prefix] = { ...rest, oracle: Object.fromEntries(["ok", "foreign", "bad_mac", "unmarked"].map((k) => [k, meter.tot.get(`oracle_${k}`)])) };
       } catch (err) {
-        checks[prefix] = { ok: false, error: (err as Error).message };
+        const cause = err instanceof AuditReadError ? `read_failed ${err.cls}` : "error";
+        checks[prefix] = { ok: false, error: (err as Error).message, causes: [{ cause, detail: (err as Error).message }] };
       }
     }
     // The ledgers of the appends answered with an unknown outcome, settled
@@ -612,7 +613,7 @@ export async function auditAll(plan: Plan, base: string, tokenMap: string, out: 
     const p = plan.projects[i]!;
     const a = audited.get(p.id);
     if (!a) return;
-    const resolution = await resolve(new Http(base, new ProjectHeaders(tokens, p.id, p.recordKey), new Meter()), a.ledgers, a.read);
+    const resolution = await resolve(new Http(base, new ProjectHeaders(tokens, p.id, p.recordKey), new Meter()), a.ledgers, a.read, rb);
     if (resolution) projects[p.id] = { ...(projects[p.id] ?? { class: p.cls.class, prefixes: {} }), resolution };
   }, stop.signal);
   const doc = { t_ms: Date.now(), manifest: plan.manifest.name, projects };

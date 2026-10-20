@@ -25,17 +25,23 @@
 // and every record read back is also checked against that owner
 // (oracle.ts), so a foreign record is counted as a leak, not only as an
 // unexpected record.
+// A read the cell refuses or fails (429, 503, a 5xx, a transport failure) is
+// asked again, as the read-back does (common.ts READ_BACK), for ten minutes
+// since the last good page: a hostile project's streams are read at its read
+// quota, and a stream of large records takes minutes. A stream that cannot
+// be read in that time fails the audit with the class of its last answer
+// (AuditReadError); the 4xx a cell answers the same again fails it at once.
+// Every failed audit says why in `causes` (a class and its counts).
 // Reads are counted like walk's (delivered records and payload bytes,
 // read latency per page), so the rig's meter checks apply unchanged.
 
 import { readFileSync } from "node:fs";
-import { Rng, Zipf, backoffMs, encName, pool, productHeader, sleep, streamName, type StreamTally } from "./common.ts";
+import { READ_BACK, Rng, Zipf, encName, failureClass, pool, productHeader, readRefused, sleep, streamName, type ReadBack, type StreamTally } from "./common.ts";
 import { PayloadGen, payloadKind } from "./corpus.ts";
 import { countOracle, type Owner } from "./oracle.ts";
 import type { Ctx } from "./produce.ts";
 
 const MAX_PAGE = 8 << 20;
-const MAX_FAILURES = 50;
 
 /** One record's identity: the first 64 bits of its SHA-256 and its length. */
 function digest(rec: Uint8Array | string): string {
@@ -260,21 +266,39 @@ function unread(name: string): StreamCheck {
   };
 }
 
-async function auditStream(ctx: Ctx, name: string, plan: StreamPlan, maxBytes: number | undefined): Promise<StreamCheck> {
+/** A stream the audit could not read; `cls` is the class of the last
+ * answer ("429 project_rate_limit", "transport timeout", ...). */
+export class AuditReadError extends Error {
+  constructor(name: string, reason: string, readonly cls: string) {
+    super(`audit ${name}: ${reason}`);
+  }
+}
+
+async function auditStream(
+  ctx: Ctx, name: string, plan: StreamPlan, maxBytes: number | undefined, rb: ReadBack, signal: AbortSignal,
+): Promise<StreamCheck> {
   const { http, meter } = ctx;
   const c = unread(name);
   const m = new Matcher(plan, c);
   let cursor = "beginning";
   let failures = 0;
+  let since = 0;
   for (;;) {
     const q = new URLSearchParams({ cursor });
     if (maxBytes) q.set("maxBytes", String(Math.min(MAX_PAGE, Math.max(4096, maxBytes))));
     const r = await http.call("GET", `/v1/streams/${encName(name)}/records?${q}`, { timeoutMs: 120_000 });
     if (r.status !== 200 && r.status !== 204) {
-      if (++failures > MAX_FAILURES) throw new Error(`audit ${name}: ${failures} failed reads, last ${r.status}`);
-      await sleep(backoffMs(r));
+      const cls = failureClass(r);
+      if (readRefused(r)) throw new AuditReadError(name, `${cls}: refused, not retryable`, cls);
+      if (++failures === 1) since = performance.now();
+      const spent = performance.now() - since;
+      if (spent >= rb.budgetMs || signal.aborted) {
+        throw new AuditReadError(name, `${failures} failed reads over ${(spent / 1000).toFixed(1)}s, last ${cls}`, cls);
+      }
+      await sleep(rb.delayMs(r, failures), signal);
       continue;
     }
+    failures = 0;
     meter.readMs(r.ms);
     c.pages++;
     const recs = r.status === 200 ? splitArray(r.body) : [];
@@ -307,12 +331,39 @@ async function auditStream(ctx: Ctx, name: string, plan: StreamPlan, maxBytes: n
   return c;
 }
 
+/** Why an audit fails: one entry per rule it broke, with its counts and
+ * the first examples. Empty exactly when the audit passes. A stream the
+ * producer sent a record to that fails (`failed` requests) may be
+ * missing, a block the server wrote but answered with an unknown outcome
+ * is read back as an ordinary block, and nothing else is forgiven. */
+export function failedBecause(
+  checks: Array<StreamCheck | undefined>,
+  t: { aborted: boolean; failed: number; missing: number; expected: number },
+): Array<{ cause: string; detail: string }> {
+  const out: Array<{ cause: string; detail: string }> = [];
+  const read = checks.filter((c): c is StreamCheck => !!c);
+  const sum = (k: keyof StreamCheck) => read.reduce((a, c) => a + (c[k] as number), 0);
+  if (t.aborted) out.push({ cause: "aborted", detail: "the audit was cancelled before it finished" });
+  if (read.length !== checks.length) out.push({ cause: "unread_streams", detail: `${checks.length - read.length} streams were not read` });
+  for (const k of ["unexpected_records", "mismatched_records", "incomplete_blocks", "offset_errors"] as const) {
+    const n = sum(k);
+    if (!n) continue;
+    const ex = read.flatMap((c) => c.examples.map((e) => `${c.name}: ${e}`)).slice(0, 2);
+    out.push({ cause: k, detail: `${n} (${ex.join("; ")})` });
+  }
+  if (t.missing > t.failed) out.push({ cause: "missing_blocks", detail: `${t.missing} requests never read back, over ${t.failed} failed requests` });
+  if (sum("read_records") + sum("records_missing") !== t.expected) {
+    out.push({ cause: "record_count", detail: `read ${sum("read_records")} + missing ${sum("records_missing")} != expected ${t.expected}` });
+  }
+  return out;
+}
+
 /** audit mode. `held`, when given, names the streams the project's setup
  * recorded as created (tenants.ts): only those are read, and any name a
  * ledger acked records to, so a name setup could not create (a stream
  * limit) is not read as a 404 fifty times. A name not read counts every
  * block sent to it as missing, so every request to it must have failed. */
-export async function audit(ctx: Ctx, signal: AbortSignal, held?: ReadonlySet<string>): Promise<Record<string, unknown>> {
+export async function audit(ctx: Ctx, signal: AbortSignal, held?: ReadonlySet<string>, rb: ReadBack = READ_BACK): Promise<Record<string, unknown>> {
   const files = (ctx.o.str("expect") ?? "").split(",").filter(Boolean);
   if (!files.length) throw new Error("audit needs --expect a.ledger.json[,b...]");
   const plans = new Map<string, StreamPlan>();
@@ -330,7 +381,8 @@ export async function audit(ctx: Ctx, signal: AbortSignal, held?: ReadonlySet<st
   }
   const replayS = (performance.now() - t0) / 1000;
   if (replayErrors.length) {
-    return { verify: { ok: false, stage: "replay", replay_errors: replayErrors.slice(0, 10) } };
+    const causes = [{ cause: "replay_mismatch", detail: `${replayErrors.length} streams: ${replayErrors[0]}` }];
+    return { verify: { ok: false, stage: "replay", replay_errors: replayErrors.slice(0, 10), causes } };
   }
   const all = Array.from({ length: ctx.streams }, (_, i) => streamName(ctx.prefix, i));
   for (const n of plans.keys()) if (!all.includes(n)) throw new Error(`audit: ${n} was produced but is not in --streams/--prefix`);
@@ -340,7 +392,7 @@ export async function audit(ctx: Ctx, signal: AbortSignal, held?: ReadonlySet<st
   const checks: StreamCheck[] = new Array(names.length);
   const empty: StreamPlan = { digests: [], blocks: [], first: new Map(), bytes: 0 };
   await pool(names.length, ctx.o.int("parallel", 4), async (i) => {
-    checks[i] = await auditStream(ctx, names[i]!, plans.get(names[i]!) ?? empty, maxBytes);
+    checks[i] = await auditStream(ctx, names[i]!, plans.get(names[i]!) ?? empty, maxBytes, rb, signal);
   }, signal);
   for (const n of notCreated) {
     const c = unread(n);
@@ -352,12 +404,12 @@ export async function audit(ctx: Ctx, signal: AbortSignal, held?: ReadonlySet<st
   const expected = [...plans.values()].reduce((a, p) => a + p.digests.length, 0);
   const blocks = [...plans.values()].reduce((a, p) => a + p.blocks.length, 0);
   const missing = sum("blocks_missing");
-  const ok = !signal.aborted && checks.every(Boolean) && sum("unexpected_records") === 0 && sum("mismatched_records") === 0 &&
-    sum("incomplete_blocks") === 0 && sum("offset_errors") === 0 && missing <= failed &&
-    sum("read_records") + sum("records_missing") === expected;
+  const causes = failedBecause(checks, { aborted: signal.aborted, failed, missing, expected });
+  const ok = causes.length === 0;
   return {
     verify: {
       ok,
+      causes,
       ledgers: files,
       sent_requests: sent,
       failed_requests: failed,

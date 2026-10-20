@@ -319,6 +319,34 @@ class LayerB(unittest.TestCase):
         v = self.w.judge()["bars"]["billing: usage = ledger for every project"]["value"]
         self.assertEqual(v["by_reason"], {"no read-back resolution": 1})
 
+    def test_a_failed_audit_names_its_cause_where_the_summary_cuts_the_value(self):
+        # Native Layer B on 6aab705a: two hostile projects' audits failed and
+        # the printed value named only them. Each failed audit carries its
+        # `causes` (audit.ts failedBecause); the value counts the projects per
+        # cause class ahead of "failed" and gives each project's first detail.
+        bar = "leaks: every producing project's audit passes"
+        w = self.w
+        w.audit["proj_0010"]["prefixes"]["t/"].update(ok=False, error="audit t/00000: 51 failed reads, last 429 project_rate_limit", causes=[
+            {"cause": "read_failed 429 project_rate_limit", "detail": "audit t/00000: 51 failed reads, last 429 project_rate_limit"}])
+        w.audit["proj_0020"]["prefixes"]["t/"].update(ok=False, causes=[
+            {"cause": "unexpected_records", "detail": "3 (t/00001: record 4: abc starts no unread request)"},
+            {"cause": "record_count", "detail": "read 9 + missing 0 != expected 8"}])
+        w.audit["proj_0030"]["prefixes"]["t/"].update(ok=False)  # an audit.json of an older run: no causes
+        m = w.judge()
+        self.assertEqual(self.failing(m), ["leaks"])
+        v = m["bars"][bar]["value"]
+        self.assertEqual(v["by_cause"], {"read_failed 429 project_rate_limit": 1, "record_count": 1, "unexpected_records": 1,
+                                         "unrecorded": 1})
+        self.assertEqual(v["failed"], ["proj_0010", "proj_0020", "proj_0030"])
+        self.assertEqual(v["detail"]["proj_0020"], "unexpected_records: 3 (t/00001: record 4: abc starts no unread request)")
+        shown = json.dumps(v, sort_keys=True)
+        self.assertLess(shown.index('"by_cause"'), shown.index('"failed"'))
+        self.assertLess(shown.index('"detail"'), shown.index('"failed"'))
+        # A passing audit's value is what it was.
+        for p in ("proj_0010", "proj_0020", "proj_0030"):
+            w.audit[p]["prefixes"]["t/"].update(ok=True)
+        self.assertEqual(sorted(self.w.judge()["bars"][bar]["value"]), ["audited", "failed", "unaudited"])
+
     def test_billing_counts_the_cut_short_pages_the_server_billed_when_it_rendered_them(self):
         # Native Layer B on 06b89311: H9b's project read one page whole and
         # three pages the drain floor cut short; the server metered all four

@@ -12,27 +12,9 @@
 // reported unresolved, never forgiven (shared_verdict.py leg_billing).
 
 import { splitArray } from "./audit.ts";
-import { type Http, type Resp, type StreamTally, encName, errCode, productHeader, sleep } from "./common.ts";
+import { type Http, READ_BACK, type ReadBack, type StreamTally, encName, failureClass, productHeader, readRefused, sleep } from "./common.ts";
 
-/** How long the read-back keeps asking a cell that refuses or fails it,
- * and how long it waits between asks. The budget runs from a stream's
- * first failed read since its last good page (a read that is moving is
- * never cut short); only after it does a stream report unresolved. */
-export interface ReadBack {
-  budgetMs: number;
-  delayMs: (r: Resp, failed: number) => number;
-}
-
-/** Ten minutes; the cell's retry-after when it names one (up to 30 s),
- * else 1 s doubling to 15 s. */
-export const READ_BACK: ReadBack = {
-  budgetMs: 600_000,
-  delayMs(r, failed) {
-    const ra = Number(r.headers?.get("retry-after"));
-    const asked = Number.isFinite(ra) && ra > 0 ? Math.min(ra, 30) * 1000 : 0;
-    return Math.max(asked, Math.min(15_000, 1000 * 2 ** Math.min(failed - 1, 4)));
-  },
-};
+export { READ_BACK, type ReadBack };
 
 export interface Resolution {
   /** Streams that were sent outcome-unknown records. */
@@ -80,12 +62,6 @@ export function owed(ledgers: Array<Record<string, unknown>>): Map<string, Owed>
   return m;
 }
 
-/** The class of a failed read: its status and error code, or how the
- * transport failed. */
-function failureClass(r: Resp): string {
-  return r.status === 0 ? `transport ${(r.error ?? "").split(":", 1)[0] || "failed"}` : `${r.status} ${errCode(r) || "-"}`;
-}
-
 /** The records a JSON stream holds, read from the beginning in the cell's
  * pages (the cursor each page returns), or why they could not be counted.
  * A refused or failed read (408, 429, 5xx, a transport failure, a page
@@ -116,7 +92,7 @@ export async function storedRecords(http: Http, stream: string, rb: ReadBack = R
       continue;
     }
     const cls = stalled ? "stalled page" : failureClass(r);
-    if (!stalled && r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429) return { reason: `${cls}: refused, not retryable`, cls };
+    if (!stalled && readRefused(r)) return { reason: `${cls}: refused, not retryable`, cls };
     if (++failed === 1) since = performance.now();
     const spent = performance.now() - since;
     if (spent >= rb.budgetMs) return { reason: `${failed} failed reads over ${(spent / 1000).toFixed(1)}s, last ${cls}`, cls };

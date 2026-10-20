@@ -44,6 +44,8 @@ interface Refusal {
   left: number;
   status: number;
   code: string | null;
+  /** The retry-after header seconds, when set. */
+  retryAfter?: number;
 }
 
 function cursorOf(offset: number): string {
@@ -137,8 +139,8 @@ export class FakeCell {
     const at = this.slots.get(k);
     if (at === undefined || performance.now() - at >= this.slotTtlMs) this.slots.set(k, performance.now());
   }
-  refuse(project: string, n: number, status: number, code: string | null): void {
-    this.refusals.set(project, { left: n, status, code });
+  refuse(project: string, n: number, status: number, code: string | null, retryAfter?: number): void {
+    this.refusals.set(project, { left: n, status, code, retryAfter });
   }
   commitThenAnswer(project: string, n: number, status: number, code: string | null): void {
     this.committedRefusals.set(project, { left: n, status, code });
@@ -248,6 +250,9 @@ export class FakeCell {
     const refusal = this.refusals.get(project);
     if (refusal && refusal.left > 0) {
       refusal.left--;
+      if (refusal.code && refusal.retryAfter !== undefined) {
+        return json(refusal.status, { error: { code: refusal.code, message: refusal.code } }, { "retry-after": String(refusal.retryAfter) });
+      }
       return refusal.code ? error(refusal.status, refusal.code) : new Response("upstream gone", { status: refusal.status });
     }
     const usage = /^\/v1\/projects\/([^/]+)\/usage$/.exec(path);

@@ -261,8 +261,33 @@ def leg_leaks(r: Run, bars: dict) -> bool:
     leaks = sum(oracle.values()) + audit_oracle
     ok = bar(bars, "leaks: foreign, bad-MAC and unmarked records delivered", {"reads": oracle, "audit": audit_oracle}, LEAKS_MAX, leaks <= LEAKS_MAX)
     ok &= bar(bars, "leaks: every producing project's audit passes", {"failed": audit_bad[:10], "unaudited": unaudited[:10],
-              "audited": len(r.audit)}, "all", bool(producers) and not audit_bad and not unaudited)
+              "audited": len(r.audit), **audit_causes(r, audit_bad)}, "all", bool(producers) and not audit_bad and not unaudited)
     return ok
+
+
+def audit_causes(r: Run, failed: list) -> dict:
+    """Why each failed audit failed (audit.json prefixes' `causes`, written
+    by audit.ts failedBecause or by auditAll for a stream it could not read):
+    `by_cause` counts the projects per cause class and `detail` gives the
+    first cause of the first three projects. Sorted JSON puts both before
+    "failed", so the summary's cut value keeps them. Nothing on a pass; an
+    audit.json that records no cause counts as "unrecorded"."""
+    by_cause: dict = {}
+    detail: dict = {}
+    for p in failed:
+        seen = set()
+        for c in r.audit[p].get("prefixes", {}).values():
+            if c.get("ok"):
+                continue
+            causes = c.get("causes") or [{"cause": "unrecorded", "detail": str(c.get("error") or "no cause in audit.json")}]
+            for x in causes:
+                seen.add(x["cause"])
+                detail.setdefault(p, f"{x['cause']}: {x.get('detail', '')}"[:110])
+        for k in seen:
+            by_cause[k] = by_cause.get(k, 0) + 1
+    if not failed:
+        return {}
+    return {"by_cause": dict(sorted(by_cause.items())), "detail": dict(list(detail.items())[:3])}
 
 
 def leg_probes(r: Run, bars: dict) -> bool:
