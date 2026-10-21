@@ -27,11 +27,8 @@ use internal::DescriptorReadAnswer;
 /// customer stream name, on either surface.
 pub(crate) use crate::tenant::RESERVED_ROOT;
 
-/// Stable product error shape (spec Stage 8 §11).
-#[expect(
-    clippy::unwrap_used,
-    reason = "perr; the response builder holds a fixed status and literal ASCII header values, so building it cannot fail; mapping a builder error into a substitute response would report a wire status the handler never decided"
-)]
+/// Stable product error shape (spec Stage 8 §11), its body written by
+/// `error_body`.
 pub(crate) fn perr(
     status: StatusCode,
     code: &str,
@@ -39,20 +36,16 @@ pub(crate) fn perr(
     details: Option<serde_json::Value>,
     retryable: bool,
 ) -> Response {
-    let mut e = json!({
-        "code": code,
-        "message": message,
-        "retryable": retryable,
-    });
-    if let Some(d) = details {
-        e["details"] = d;
-    }
-    Response::builder()
-        .status(status)
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::CACHE_CONTROL, "no-store")
-        .body(Body::from(json!({ "error": e }).to_string()))
-        .unwrap()
+    let body = error_body::error_body(code, message, details, retryable);
+    let mut resp = Response::new(Body::from(body));
+    *resp.status_mut() = status;
+    let headers = resp.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
 }
 
 /// A PRODUCT-ADDRESSABLE stream name (WP-03/PR 5): the structural
@@ -811,9 +804,8 @@ fn quota_refusal_response(refusal: &crate::quota::QuotaRefusal) -> Response {
                 None,
                 true,
             );
-            if let Ok(v) = axum::http::HeaderValue::from_str(&retry_after_secs.to_string()) {
-                r.headers_mut().insert("retry-after", v);
-            }
+            r.headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from(*retry_after_secs));
             r
         }
         crate::quota::QuotaRefusal::Concurrency => perr(
@@ -3643,6 +3635,7 @@ mod append_error;
 use append_error::render_product_append_error;
 mod consumer_pull;
 use consumer_pull::product_consumer_pull;
+mod error_body;
 mod internal;
 mod operation;
 pub(crate) use operation::{ProductOperation, VERBS};

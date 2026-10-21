@@ -2907,13 +2907,6 @@
     },
     {
       "category": "macro-dsl",
-      "count": 2,
-      "owner": "crate::perr",
-      "path": "src/product.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
       "count": 3,
       "owner": "crate::product_list",
       "path": "src/product.rs",
