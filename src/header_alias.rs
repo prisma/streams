@@ -116,13 +116,15 @@ fn conflict(alias: &str, prisma: &str) -> Response {
 /// The headers every response leaves the router with: `nosniff`, the
 /// server-origin marker (an answer without it never reached a server, see
 /// `crate::http::router`), and the `Streams-` form of each `Prisma-` one.
+/// It runs on every answer, refusals included, so the common names cost no
+/// parsing or allocation (`twin`, `expose_mirrors`).
 pub(crate) fn stamp(headers: &mut HeaderMap, origin_marker: &str) {
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
     if let Ok(marker) = HeaderValue::from_str(origin_marker) {
-        headers.insert("prisma-streams-origin", marker);
+        headers.insert(HeaderName::from_static("prisma-streams-origin"), marker);
     }
     mirror(headers);
     expose_mirrors(headers);
@@ -140,17 +142,35 @@ fn streams_name(header: &str) -> Option<String> {
     })
 }
 
+/// `streams_name` as a header name: the names the server sends are
+/// spelled out, any other is derived.
+fn twin(name: &HeaderName) -> Option<HeaderName> {
+    let known = match name.as_str() {
+        "prisma-streams-origin" => "streams-origin",
+        "prisma-next-cursor" => "streams-next-cursor",
+        "prisma-up-to-date" => "streams-up-to-date",
+        "prisma-sealed" => "streams-sealed",
+        "prisma-next-scan-cursor" => "streams-next-scan-cursor",
+        "prisma-scan-complete" => "streams-scan-complete",
+        "prisma-routing-key" => "streams-routing-key",
+        "prisma-durable-cursor" => "streams-durable-cursor",
+        "prisma-pending-from" => "streams-pending-from",
+        "prisma-consumer-version" => "streams-consumer-version",
+        "prisma-error-code" => "streams-error-code",
+        other => return HeaderName::try_from(streams_name(other)?).ok(),
+    };
+    Some(HeaderName::from_static(known))
+}
+
 /// Each `prisma-<rest>` header is also sent under its `streams_name`, with
 /// the same values in the same order (replacing any values there).
 fn mirror(headers: &mut HeaderMap) {
-    let mirrored: Vec<(HeaderName, Vec<HeaderValue>)> = headers
+    let twins: Vec<(HeaderName, HeaderName)> = headers
         .keys()
-        .filter_map(|name| {
-            let twin = HeaderName::try_from(streams_name(name.as_str())?).ok()?;
-            Some((twin, headers.get_all(name).iter().cloned().collect()))
-        })
+        .filter_map(|name| Some((name.clone(), twin(name)?)))
         .collect();
-    for (twin, values) in mirrored {
+    for (name, twin) in twins {
+        let values: Vec<HeaderValue> = headers.get_all(&name).iter().cloned().collect();
         headers.remove(&twin);
         for value in values {
             headers.append(twin.clone(), value);
@@ -158,7 +178,24 @@ fn mirror(headers: &mut HeaderMap) {
     }
 }
 
-/// An expose list that names a `prisma-` header names its `streams_name` too.
+/// The headers every product answer exposes to a browser
+/// (`crate::product::with_product_cors`).
+pub(crate) const PRODUCT_EXPOSE_HEADERS: &str = "content-type, retry-after, prisma-next-cursor, \
+     prisma-up-to-date, prisma-sealed, prisma-next-scan-cursor, prisma-scan-complete, \
+     prisma-routing-key, prisma-durable-cursor, prisma-pending-from, prisma-consumer-version";
+
+/// `PRODUCT_EXPOSE_HEADERS` as `expose_mirrors` extends it, spelled out
+/// because every product answer is stamped with it.
+const PRODUCT_EXPOSE_MIRRORED: &str = "content-type, retry-after, prisma-next-cursor, \
+     prisma-up-to-date, prisma-sealed, prisma-next-scan-cursor, prisma-scan-complete, \
+     prisma-routing-key, prisma-durable-cursor, prisma-pending-from, prisma-consumer-version, \
+     streams-next-cursor, streams-up-to-date, streams-sealed, streams-next-scan-cursor, \
+     streams-scan-complete, streams-routing-key, streams-durable-cursor, \
+     streams-pending-from, streams-consumer-version";
+
+/// An expose list that names a `prisma-` header names its `streams_name`
+/// too (`extended`); the product surface's own list is extended to the
+/// list spelled out for it.
 fn expose_mirrors(headers: &mut HeaderMap) {
     let Some(exposed) = headers
         .get(header::ACCESS_CONTROL_EXPOSE_HEADERS)
@@ -166,20 +203,51 @@ fn expose_mirrors(headers: &mut HeaderMap) {
     else {
         return;
     };
-    let listed: Vec<String> = exposed
-        .split(',')
-        .map(|name| name.trim().to_ascii_lowercase())
-        .collect();
-    let mut extended = exposed.to_string();
+    let value = if exposed == PRODUCT_EXPOSE_HEADERS {
+        HeaderValue::from_static(PRODUCT_EXPOSE_MIRRORED)
+    } else {
+        let Some(Ok(value)) = extended(exposed).map(HeaderValue::try_from) else {
+            return;
+        };
+        value
+    };
+    headers.insert(header::ACCESS_CONTROL_EXPOSE_HEADERS, value);
+}
+
+/// `exposed` followed by the lower-case `streams_name` of each `prisma-`
+/// name it lists whose twin it does not list (once per listing), or None
+/// when there is nothing to add.
+fn extended(exposed: &str) -> Option<String> {
+    let listed: Vec<&str> = exposed.split(',').map(str::trim).collect();
+    let mut extended = String::new();
     for name in &listed {
-        if let Some(twin) = streams_name(name)
-            && !listed.contains(&twin)
-        {
-            extended.push_str(", ");
-            extended.push_str(&twin);
+        let Some(rest) = strip_prefix_ignore_case(name, "prisma-") else {
+            continue;
+        };
+        let prefix = if strip_prefix_ignore_case(rest, "streams-").is_some() {
+            ""
+        } else {
+            "streams-"
+        };
+        let names_twin = |other: &&str| {
+            strip_prefix_ignore_case(other, prefix).is_some_and(|r| r.eq_ignore_ascii_case(rest))
+        };
+        if listed.iter().any(names_twin) {
+            continue;
         }
+        if extended.is_empty() {
+            extended.push_str(exposed);
+        }
+        extended.push_str(", ");
+        extended.push_str(prefix);
+        extended.extend(rest.chars().map(|c| c.to_ascii_lowercase()));
     }
-    if let Ok(value) = HeaderValue::from_str(&extended) {
-        headers.insert(header::ACCESS_CONTROL_EXPOSE_HEADERS, value);
-    }
+    (!extended.is_empty()).then_some(extended)
+}
+
+/// `text` without `prefix`, compared ignoring ASCII case.
+fn strip_prefix_ignore_case<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = text.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix)
+        .then_some(&text[prefix.len()..])
 }

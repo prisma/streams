@@ -2,9 +2,10 @@
 //! the `Streams-<Name>` form of every `Prisma-<Name>` response header.
 #![cfg(test)]
 use super::{
-    REQUEST_ALIASES, allow_aliases, conflict, expose_mirrors, fold, mirror, stamp, streams_name,
+    PRODUCT_EXPOSE_HEADERS, PRODUCT_EXPOSE_MIRRORED, REQUEST_ALIASES, allow_aliases, conflict,
+    expose_mirrors, extended, fold, mirror, stamp, streams_name, twin,
 };
-use axum::http::{HeaderMap, HeaderValue};
+use axum::http::{HeaderMap, HeaderName, HeaderValue};
 
 fn map(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
     let mut headers = HeaderMap::new();
@@ -243,4 +244,100 @@ fn a_prisma_streams_header_takes_the_streams_prefix_once() {
         ["prisma-streams-data, streams-data"]
     );
     assert_eq!(headers.len(), 3);
+}
+
+/// Every name `twin` spells out is the name `streams_name` derives, and an
+/// unlisted one is derived.
+#[test]
+fn the_spelled_out_twins_are_the_derived_names() {
+    for name in [
+        "prisma-streams-origin",
+        "prisma-next-cursor",
+        "prisma-up-to-date",
+        "prisma-sealed",
+        "prisma-next-scan-cursor",
+        "prisma-scan-complete",
+        "prisma-routing-key",
+        "prisma-durable-cursor",
+        "prisma-pending-from",
+        "prisma-consumer-version",
+        "prisma-error-code",
+        "prisma-unlisted",
+        "prisma-streams-unlisted",
+    ] {
+        let derived = streams_name(name).unwrap();
+        let spelled = twin(&HeaderName::from_static(name)).unwrap();
+        assert_eq!(spelled.as_str(), derived, "{name}");
+    }
+    assert_eq!(twin(&HeaderName::from_static("streams-origin")), None);
+    assert_eq!(twin(&HeaderName::from_static("content-type")), None);
+}
+
+/// The expose-list extension before it was made allocation-free, kept as
+/// the reference the new one must answer exactly as.
+fn reference_expose_mirrors(headers: &mut HeaderMap) {
+    let Some(exposed) = headers
+        .get("access-control-expose-headers")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return;
+    };
+    let listed: Vec<String> = exposed
+        .split(',')
+        .map(|name| name.trim().to_ascii_lowercase())
+        .collect();
+    let mut extended = exposed.to_string();
+    for name in &listed {
+        if let Some(twin) = streams_name(name)
+            && !listed.contains(&twin)
+        {
+            extended.push_str(", ");
+            extended.push_str(&twin);
+        }
+    }
+    if let Ok(value) = HeaderValue::from_str(&extended) {
+        headers.insert("access-control-expose-headers", value);
+    }
+}
+
+/// The product surface's expose list, and lists in mixed case, with
+/// duplicates, twins already named, a `prisma-streams-` name, padding and
+/// empty items, are extended byte for byte as the reference extends them.
+#[test]
+fn an_expose_list_is_extended_exactly_as_the_reference_extends_it() {
+    let product = crate::product::with_product_cors(axum::response::Response::default());
+    let product = product.headers()["access-control-expose-headers"]
+        .to_str()
+        .ok();
+    assert_eq!(product, Some(PRODUCT_EXPOSE_HEADERS));
+    assert_eq!(
+        extended(PRODUCT_EXPOSE_HEADERS).as_deref(),
+        Some(PRODUCT_EXPOSE_MIRRORED),
+        "the spelled-out list is the derived one"
+    );
+    for list in [
+        PRODUCT_EXPOSE_HEADERS,
+        PRODUCT_EXPOSE_MIRRORED,
+        "*",
+        "",
+        "content-type",
+        "Prisma-Next-Cursor",
+        "PRISMA-SEALED, Streams-Sealed",
+        "prisma-sealed,prisma-sealed",
+        "prisma-sealed, streams-sealed, prisma-sealed",
+        " prisma-up-to-date ,, prisma-streams-origin,streams-origin",
+        "prisma-, prisma-streams-, prisma-x",
+        "prisma-Streams-Data, prisma-streamsx",
+        "retry-after, prisma-a, prisma-b, streams-a",
+    ] {
+        let mut ours = map(&[]);
+        ours.insert(
+            "access-control-expose-headers",
+            HeaderValue::from_str(list).unwrap(),
+        );
+        let mut reference = ours.clone();
+        expose_mirrors(&mut ours);
+        reference_expose_mirrors(&mut reference);
+        assert_eq!(ours, reference, "{list:?}");
+    }
 }

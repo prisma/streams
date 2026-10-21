@@ -943,15 +943,8 @@ pub(crate) fn with_product_cors(mut resp: Response) -> Response {
     if !h.contains_key("access-control-allow-origin") {
         h.insert("access-control-allow-origin", HeaderValue::from_static("*"));
     }
-    h.insert(
-        "access-control-expose-headers",
-        HeaderValue::from_static(
-            "content-type, retry-after, prisma-next-cursor, prisma-up-to-date, \
-             prisma-sealed, prisma-next-scan-cursor, prisma-scan-complete, \
-             prisma-routing-key, prisma-durable-cursor, prisma-pending-from, \
-             prisma-consumer-version",
-        ),
-    );
+    let exposed = HeaderValue::from_static(crate::header_alias::PRODUCT_EXPOSE_HEADERS);
+    h.insert("access-control-expose-headers", exposed);
     resp
 }
 
