@@ -144,19 +144,28 @@ struct Hold {
     /// itself: opening the new owner also writes to the held class, so the
     /// handoff can never happen and the gate is never released.
     max_parked: u64,
-    /// Only paths under this prefix park (one DB's WAL directory, say), so
-    /// writes of other DBs on the same store cannot take the parked slots.
-    under: Option<String>,
+    /// Only these paths park, so writes of other DBs on the same store
+    /// cannot take the parked slots; `None` parks every path.
+    paths: Option<HoldPaths>,
+}
+
+/// The paths a [`Hold`] parks.
+#[derive(Debug)]
+enum HoldPaths {
+    /// Under this prefix: one DB's WAL directory, say.
+    Under(String),
+    /// Containing this segment: every shard's history2 tables, say.
+    Containing(String),
 }
 
 impl Hold {
     fn parks(&self, op: StoreOp, class: ObjClass, path: &str) -> bool {
         self.op == op
             && self.class == class
-            && self
-                .under
-                .as_deref()
-                .is_none_or(|under| path.starts_with(under))
+            && self.paths.as_ref().is_none_or(|paths| match paths {
+                HoldPaths::Under(prefix) => path.starts_with(prefix.as_str()),
+                HoldPaths::Containing(segment) => path.contains(segment.as_str()),
+            })
     }
 }
 
@@ -389,14 +398,31 @@ impl FaultStore {
         under: &str,
         max_parked: u64,
     ) -> Arc<AtomicU64> {
-        self.hold(op, class, Some(under.to_string()), max_parked)
+        self.hold(
+            op,
+            class,
+            Some(HoldPaths::Under(under.to_string())),
+            max_parked,
+        )
+    }
+
+    /// [`hold_class`](Self::hold_class) for paths containing `segment` only.
+    pub(crate) fn hold_class_containing(
+        &self,
+        op: StoreOp,
+        class: ObjClass,
+        segment: &str,
+        max_parked: u64,
+    ) -> Arc<AtomicU64> {
+        let paths = HoldPaths::Containing(segment.to_string());
+        self.hold(op, class, Some(paths), max_parked)
     }
 
     fn hold(
         &self,
         op: StoreOp,
         class: ObjClass,
-        under: Option<String>,
+        paths: Option<HoldPaths>,
         max_parked: u64,
     ) -> Arc<AtomicU64> {
         let engaged = Arc::new(AtomicU64::new(0));
@@ -406,7 +432,7 @@ impl FaultStore {
             gate: Arc::new(tokio::sync::Semaphore::new(0)),
             engaged: engaged.clone(),
             max_parked,
-            under,
+            paths,
         });
         engaged
     }

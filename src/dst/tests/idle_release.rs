@@ -56,7 +56,13 @@ async fn records(addr: std::net::SocketAddr) -> Vec<Vec<u8>> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_idle_instance_releases_its_caches_and_the_next_read_refills_them() {
-    let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
+    let store = FaultStore::new(mem(), 7, FaultProfile::clean());
+    let rig = http_rig_build(
+        store.clone(),
+        RigRuntime::first(),
+        HttpRigOptions::default(),
+    )
+    .await;
     let (state, addr, clock) = (rig.state.clone(), rig.addr, rig.clock.clone());
     let ct = [("content-type", "application/json")];
     for stream in ["idle-a", "idle-b"] {
@@ -86,6 +92,17 @@ async fn an_idle_instance_releases_its_caches_and_the_next_read_refills_them() {
         0,
         "the absorber installed postings"
     );
+    // The history partitions' compactors run on real time, not the manual
+    // clock: one that writes a table between the release and the reading
+    // below caches its index (48 bytes) in the new generation, as idle.rs
+    // allows (`REFILL_FLOOR`). History tables are written only once the
+    // release is read; the release's own flush writes shard tables.
+    store.hold_class_containing(
+        StoreOp::Put,
+        ObjClass::Sst,
+        "/history2/compacted/",
+        u64::MAX,
+    );
 
     crate::bootstrap::idle::start(&state, &rig.tasks);
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -106,6 +123,7 @@ async fn an_idle_instance_releases_its_caches_and_the_next_read_refills_them() {
     assert_eq!(runtime.telemetry.cache.releases(), 1);
     assert_eq!(runtime.history.cache.inserted_bytes(), 0);
     assert_eq!(runtime.postings.stats()["entries"], 0);
+    store.release_hold();
 
     assert_eq!(records(addr).await, before, "a read after the release");
     tick(&clock, 58).await;
