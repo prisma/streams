@@ -133,3 +133,21 @@ fn raw_position_tokens_and_fork_refusals_are_exact() {
     );
 }
 use super::*;
+
+/// The size of the future an `async fn` returns, from its type alone.
+fn future_size<A, B, C, D, E, F: std::future::Future>(_: fn(A, B, C, D, E) -> F) -> usize {
+    std::mem::size_of::<F>()
+}
+
+/// Every product request, refused ones included, allocates the product
+/// entry's future: the handlers' own state (about 20 KiB) is boxed only by
+/// a request that reaches them, so a refusal flood allocates and moves
+/// a small future. Before: 21,008 bytes in a release build.
+#[test]
+fn the_product_entrys_future_is_small_until_a_handler_runs() {
+    let size = future_size(super::product_entry_axum_inner);
+    assert!(
+        size <= 4096,
+        "product_entry_axum_inner future: {size} bytes"
+    );
+}

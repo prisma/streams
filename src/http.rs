@@ -1821,17 +1821,17 @@ pub(crate) async fn product_entry_axum_inner(
         Ok(b) => b,
         Err(r) => return crate::product::with_product_cors(*r),
     };
-    // Round-13: this surface's queued/committer accounting takes over
-    // beyond this point (product_append charges queued bytes) — the
-    // buffering charge ends here, no transient double charge.
+    // Round-13: product_append's queued accounting takes over here (it
+    // charges queued bytes): the buffering charge ends, no double charge.
     drop(_body_charge);
-    // §10.4: fill the VERIFIED principal's project into any tagged
-    // denial the handlers produced (fill-only-if-absent), so classifier
-    // sites never need identity plumbing of their own.
+    // §10.4: the VERIFIED principal's project fills any tagged denial the
+    // handlers produced (fill-only-if-absent): no identity plumbing there.
     let proj = principal.map(|p| p.project_id.clone());
-    let mut resp =
-        crate::product::product_entry(state, name, method, headers, query, body, authorization)
-            .await;
+    // Boxed: the handlers' ~20 KiB of state is allocated only by a request
+    // that gets this far, so every refusal above moves a small future.
+    let entry =
+        crate::product::product_entry(state, name, method, headers, query, body, authorization);
+    let mut resp = Box::pin(entry).await;
     if let Some(p) = proj {
         resp = crate::audit::tag_project(resp, &p);
     }
