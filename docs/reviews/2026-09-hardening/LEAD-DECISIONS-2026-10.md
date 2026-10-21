@@ -362,3 +362,50 @@ Round 5 leftovers (owner-calls-5.txt, never put on a page):
   timeout 600 -> 900 s (scripts/quality/mutation_driver.py): CI's 4-vCPU runners build
   an owner's baseline in 454-635 s, so the last mutants of a long shard ended TIMEOUT
   at 600 s though caught locally; the 90 s test timeout is unchanged.
+- 2026-10-21 06:30. PROCESS SLIP (lead): 280d2978 (documentation only: the full decision
+  log in the repo + README row) was pushed although its gate ended GATEFAIL-quality,
+  because the command chained the push after printing the verdict instead of checking
+  it. The failure is unrelated to the commit: cargo deny reports new advisories
+  RUSTSEC-2026-0381/-0382/-0383 (distrusted certificate intermediates in rustls-webpki
+  and bundled root certificates), which fail every commit's gate and CI from today.
+  Fix forward: bump the affected crates, re-record all 25 receipts (Cargo.lock feeds
+  them), gate, Linux, push. From now on the lead pushes only in a separate command
+  after reading GATEDONE.
+- 2026-10-21 09:00. [gate configuration, delegated] deny.toml's two pinned license
+  exceptions for webpki-roots / webpki-root-certs move 1.0.8 -> 1.0.10 with the
+  RUSTSEC-2026-0381/-0382/-0383 bump (same crates, same license, still pinned to one
+  version). bench/probe and bench/awsbench lockfiles (outside the gate's cargo deny)
+  still carry the old versions: left for a separate lock-only commit; the always-on
+  observatory probes are not redeployed.
+- 2026-10-21 10:00. pullcov (pullcov-report.md): 1 MiB pull coverage on shared cells
+  removes compliant read_memory_busy (9,548 -> 0; 7,660 -> 49) but on the emulated rig
+  raised RSS peak (602 -> 690, 573 -> 611 MB) and sheds. Not landed on that evidence:
+  pushed to a temporary branch lab/pullcov for a native x86 Layer B (GitHub workflow),
+  landed only if native peak RSS and compliant refusals are no worse than f6079cb3's
+  final run; the branch is deleted after.
+- 2026-10-21 12:30. pullcov NOT landed. Native Layer B on its tip (run 39529164222,
+  layerb-native-pullcov.txt) vs f6079cb3's final run: RSS sheds 334 k vs 29.6 k, peak
+  624 vs 586 MB, container 772 vs 741 MB (over the ~750 MB kill line), victim append p99
+  8.5 vs 6.5 s; better: compliant read_memory_busy gone, victim read p99 0.26 vs 1.7 s.
+  The read-memory gate was holding load back; removing that brake moves the pressure
+  into RSS. Kept as refs/keep/wk-pullcov (6b88d0f0) for a later design that bounds RSS
+  first; lab/pullcov deleted.
+- 2026-10-21 13:00. Idle-host Gate S confirmation started (Stage 8 1,000-stream point,
+  S10 beta shape, a 2-3 h stretch of the 300 B soak): no other heavy work on the Mac
+  while it runs, so its points count (not VOID). The result goes into gate-s-report.md
+  and the handover page; the layout 6 decision stays the owner's.
+- 2026-10-21 19:30. Idle-host Gate S confirmation (gate-s-report.md, final section):
+  both stop rules fire on VALID points (Stage 8 1,000 streams shard tier 0.234; S10
+  beta shape 1.140; 0 self-freezes); the soak stretch was VOID (desktop load) but
+  matches the 6 h soak within 1.3%. "Beta on layout 5, layout 6 paused" stands; the
+  first engineering if layout 6 resumes is call 10's compactor levers.
+- 2026-10-22 03:00. refusal-cost lane NOT landed. It cut per-refusal CPU 23-39% with
+  byte-identical answers, but the native Layer B (run 39634068550,
+  layerb-native-refusal.txt) was worse than f6079cb3's final run: RSS sheds 81.6 k vs
+  29.6 k, peak 629 vs 586 MB, container 756 vs 741 MB, victim append p99 8.2 vs 6.5 s.
+  Layer B's hostile clients retry in a closed loop, so cheaper refusals bring more
+  requests. Kept as refs/keep/wk-refusal; lab/refusal deleted. The lead's
+  recommendation for the owner: cut hostile request VOLUME (e.g. an escalating hold
+  on repeated 429s for a project that ignores Retry-After), a client-visible change
+  that should be designed with the owner rather than tuned unsupervised in the week's
+  last two days. Engineering stops here; slate stays at the green feba595e.
