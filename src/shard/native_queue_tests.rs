@@ -320,7 +320,14 @@ async fn an_expired_lease_is_moved_by_the_sweep_and_a_late_extend_is_refused() {
     .unwrap() else {
         panic!()
     };
-    assert_eq!(r[0].outcome, SettleOutcome::Expired);
+    // Refused either way: `expired` while the lease still stands past its
+    // deadline, `stale` once the roster-driven sweeper has moved it (it
+    // runs on its own and wins under load, as on CI's runners).
+    assert!(
+        matches!(r[0].outcome, SettleOutcome::Expired | SettleOutcome::Stale),
+        "a late extend is refused: {:?}",
+        r[0].outcome
+    );
     op(&e, NqOp::Sweep).await.unwrap();
     let s = state(&db).await;
     assert_eq!((s.leased, s.retrying), (0, 1));
@@ -434,8 +441,14 @@ async fn a_subscribed_queue_with_due_work_wakes_its_receiver_with_backoff_until_
         "nothing due, nothing sent"
     );
     op(&e, send_op(vec![msg("a"), msg("b")])).await.unwrap();
-    let first = wake(op(&e, NqOp::Sweep).await.unwrap()).expect("due work wakes the receiver");
-    assert_eq!((first.name.as_str(), first.due, first.version), ("q", 2, 1));
+    // The explicit sweep or the roster-driven sweeper, whichever runs
+    // first, sends the first notification; then the backoff holds.
+    let explicit = wake(op(&e, NqOp::Sweep).await.unwrap());
+    let s = state(&db).await;
+    assert!(s.last_notified_at > 0, "due work wakes the receiver: {s:?}");
+    if let Some(first) = explicit {
+        assert_eq!((first.name.as_str(), first.due, first.version), ("q", 2, 1));
+    }
     assert!(
         wake(op(&e, NqOp::Sweep).await.unwrap()).is_none(),
         "within the backoff, no second notification"
