@@ -21,6 +21,10 @@
  *   for await (const rec of orders.subscribe({ routingKey })) { ... }
  */
 
+import { Queue, type QueueOptions } from "./queue.js";
+import { subtle, webCrypto } from "./webcrypto.js";
+export * from "./queue.js";
+
 // ---------------------------------------------------------------------
 // Options and wire types
 
@@ -1378,6 +1382,14 @@ export class StreamsClient {
     return new Stream<T>(this.ctx, name, options.encryptionKey);
   }
 
+  /** A native queue's handle (queue.ts). `encryptionKey`, the stream key, is needed to create, send, claim
+   * and read bodies; a send without `dedupKey` is never sent again after a lost answer (a second copy). */
+  queue<T = unknown>(name: string, options: QueueOptions<T> = {}): Queue<T> {
+    const key = options.encryptionKey === undefined ? undefined : presentedKey(options.encryptionKey);
+    return new Queue<T>((method, path, headers, body, signal, once = false) => req(this.ctx, method, path,
+      headers, body, signal, !once, undefined, once ? plainAppendReplays : undefined), name, options, key);
+  }
+
   async createStream<T = unknown>(
     name: string,
     options: CreateStreamOptions,
@@ -2258,36 +2270,6 @@ export class Consumer<T> {
 // `src/touch_keys.rs` for the key layouts, `src/crypto.rs` for the
 // signature chain. Changing either side alone silently stops matching,
 // so the smoke test derives a key here and asserts the server agrees.
-
-let cryptoCache: Crypto | undefined;
-async function webCrypto(): Promise<Crypto> {
-  if (cryptoCache) return cryptoCache;
-  const c = (globalThis as { crypto?: Crypto }).crypto;
-  if (c?.subtle) return (cryptoCache = c);
-  // Node 18 — the engines floor — ships WebCrypto only at
-  // node:crypto.webcrypto; the GLOBAL landed in Node 19. This branch
-  // is dead code wherever globalThis.crypto exists (browsers, Bun,
-  // Deno, Node 19+), so bundlers never execute the import.
-  try {
-    // Variable specifier: the package ships without Node types, and a
-    // literal import would make TS (and bundlers) try to resolve a
-    // module that only exists at runtime on Node.
-    const spec = "node:crypto";
-    const nc = (await import(/* @vite-ignore */ spec)) as {
-      webcrypto?: Crypto;
-    };
-    if (nc.webcrypto?.subtle) return (cryptoCache = nc.webcrypto);
-  } catch {
-    // no node:crypto either — fall through to the error
-  }
-  throw new Error(
-    "WebCrypto is required to derive watch URLs and generate keys (Node 18+, or a browser over HTTPS)",
-  );
-}
-
-async function subtle(): Promise<SubtleCrypto> {
-  return (await webCrypto()).subtle;
-}
 
 /**
  * A new stream encryption key: 32 random bytes from WebCrypto, as 43
