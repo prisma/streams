@@ -44,6 +44,7 @@ mod http;
 mod loom_check;
 #[cfg(test)]
 mod mt_lint;
+mod native_queue;
 mod offsets;
 mod operator;
 mod ops;

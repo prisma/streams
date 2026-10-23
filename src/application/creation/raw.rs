@@ -42,6 +42,16 @@ impl CreationService {
             },
         )
         .await?;
+        // A queue is reached only through `/v1/queues` (edge change #186).
+        if let Some(fc) = &prepared.context
+            && crate::native_queue::is_queue_kind(&fc.source_desc.content_type)
+        {
+            return Err(CreationError::new(
+                CreationFailure::Conflict,
+                "queue_via_queue_routes",
+                "a queue cannot be forked; use the /v1/queues routes",
+            ));
+        }
         let content_type = prepared.content_type;
         let ttl_secs = prepared.ttl_secs;
         let fork_ctx = prepared.context;

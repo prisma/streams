@@ -466,6 +466,17 @@
     "scenarios": []
   },
   {
+    "name": "a_deleted_queue_is_fenced_then_gone_without_rows",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "cc8bf4c7a86d9ac046c26e3ee4a4112c8d776a830d3820122e4c960cfde6dda7",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_product.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_dirty_row_of_a_replaced_incarnation_still_closes_at_its_expiry",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -599,6 +610,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/sse_delivery.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_failed_message_is_listed_and_redriven",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7868d627f1e36670a1c95babc11a462d79acc4e4a2b4957481e33c50d179e6ce",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_product.rs",
     "scenarios": []
   },
   {
@@ -2251,6 +2273,17 @@
     "scenarios": []
   },
   {
+    "name": "a_sent_message_is_claimed_decrypted_and_acked",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c474bcaea94f80a66350826d5cf2888ad76a162e51377d8e2fd41fa65143a609",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_product.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_served_page_is_debited_and_held_until_its_body_ends",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -3684,6 +3717,17 @@
     ]
   },
   {
+    "name": "bytes_come_back_as_padded_base64_and_the_list_names_the_queue",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "04d3d56b0d786c4edbf27cb4a4eb7afce55e7b82e01716fd024d61bf8aa994af",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_product.rs",
+    "scenarios": []
+  },
+  {
     "name": "cancelled_final_preserves_claim_and_only_definitive_retry_releases_it",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -4132,6 +4176,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_routes.rs",
+    "scenarios": []
+  },
+  {
+    "name": "dedup_answers_the_original_and_refusals_are_exact",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "f81ba3d39b2ae45abc4f6f98778da161ba7326ce07c4f057e1c84c30431319d8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_product.rs",
     "scenarios": []
   },
   {
@@ -6473,6 +6528,28 @@
     "scenarios": []
   },
   {
+    "name": "pause_holds_claims_and_a_parked_claim_takes_a_late_message",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "3cbe2f546bd17647fa85b1b738068a280637518a0a93ce5b554fe3c6d53caa96",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_product.rs",
+    "scenarios": []
+  },
+  {
+    "name": "peek_cancel_republish_and_discard_act_on_the_named_messages",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9579e8bb9d6200ac28f9106cb999041331f21b62ff009a4f8ed6daaedb411ca3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_product.rs",
+    "scenarios": []
+  },
+  {
     "name": "pending_summary_clears_on_shard_close",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -7059,6 +7136,17 @@
     "scenarios": [
       "QUE-011"
     ]
+  },
+  {
+    "name": "queue_streams_are_refused_on_the_stream_surfaces",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "cf0aaba06c60a760428c6ede7fbf52bc537ff4a833167f6f5b57901515e22e46",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_product.rs",
+    "scenarios": []
   },
   {
     "name": "queued_append_bytes_charge_and_release",
@@ -7955,6 +8043,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/runtime_retirement.rs",
+    "scenarios": []
+  },
+  {
+    "name": "retry_and_an_expired_lease_redeliver_with_the_next_attempt",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "bc7f2dff3edaf97c9bb69f2e1afe0a2e9a77fd7b51df128fea217b96da4374ae",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_product.rs",
     "scenarios": []
   },
   {

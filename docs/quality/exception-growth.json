@@ -543,19 +543,6 @@
     },
     {
       "path": "src/shard.rs",
-      "owner": "crate::CommitOp",
-      "scope": "enum",
-      "lint": "clippy::large_enum_variant",
-      "metrics": {
-        "nested_items": 34,
-        "scope_lines": 39,
-        "syntax_facts": 52
-      },
-      "rationale": "The committer's billing close and retention flag each carry the reply their submitter awaits (BillingReply): answered once the op's group is durable, or refused when the shard drops the op unapplied, never silently (the lost close's exact fix, NEXT-WORK section 2).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-01 for the lost close's exact fix (\"I approve all of these\")"
-    },
-    {
-      "path": "src/shard.rs",
       "owner": "crate::ShardEngine::start",
       "scope": "function",
       "lint": "clippy::cast_possible_truncation",
@@ -623,10 +610,11 @@
         "scope_lines": 289,
         "syntax_facts": 589,
         "unwrap_site:ordinary-call::2a637e05f6f92bc6": 1,
-        "unwrap_site:path::2d6401022ffa52ab": 2
+        "unwrap_site:path::2d6401022ffa52ab": 2,
+        "unwrap_site:path::fe536fa755a0589a": 1
       },
-      "rationale": "The engine initializes the writer epoch that binds a provisional continuation to its owner incarnation (55881d7a).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+      "rationale": "The engine initializes the writer epoch that binds a provisional continuation to its owner incarnation (55881d7a). The CommitOp enum moved to src/shard/commit_op.rs (native queues, 2026-10-23), so one unwrap site's resolved path changed spelling: the same call, a new fingerprint.",
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge; fingerprint updated by the lead under the owner's delegation of 2026-10-23"
     },
     {
       "path": "src/shard/transaction/append.rs",
@@ -841,6 +829,140 @@
       },
       "rationale": "The harness includes src/quota/bucket.rs verbatim; it grew with the request bucket's burst floor (the floor field, the floored constructor that full now calls, the refill cap at max(rate, floor), and the floor's assertions in its own test), so a project's request bucket holds max(requests_per_sec, 50) tokens while QuotaRegistry::admit's frozen scopes stay unchanged (edge change #162).",
       "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-15 with the round-5 public-beta calls (\"accept all recommended\"; OWNER-DECISIONS-6 call 1: the burst floor built in src/quota/bucket.rs, its by-path include's growth an approved exception-growth row); these are the gate's after-values"
+    },
+    {
+      "path": "src/shard.rs",
+      "owner": "crate::ShardEngine::committer_loop",
+      "scope": "function",
+      "lint": "clippy::let_underscore_must_use",
+      "metrics": {
+        "scope_lines": 83
+      },
+      "rationale": "A closing engine refuses queued native-queue operations as it refuses every other queued operation.",
+      "approver": "Lead (Claude Opus 5.5), under the owner's delegation of 2026-10-23 (\"implement this full feature ... in the next 24 hours. Don't wait for my input\"), recorded for the owner's review in docs/reviews/2026-09-hardening/README.md Owner decisions"
+    },
+    {
+      "path": "src/shard.rs",
+      "owner": "crate::ShardEngine::committer_loop",
+      "scope": "function",
+      "lint": "clippy::excessive_nesting",
+      "metrics": {
+        "scope_lines": 83
+      },
+      "rationale": "A closing engine refuses queued native-queue operations as it refuses every other queued operation.",
+      "approver": "Lead (Claude Opus 5.5), under the owner's delegation of 2026-10-23 (\"implement this full feature ... in the next 24 hours. Don't wait for my input\"), recorded for the owner's review in docs/reviews/2026-09-hardening/README.md Owner decisions"
+    },
+    {
+      "path": "src/shard.rs",
+      "owner": "crate::ShardEngine::dispatch_durable",
+      "scope": "function",
+      "lint": "clippy::let_underscore_must_use",
+      "metrics": {
+        "scope_lines": 58,
+        "syntax_facts": 114
+      },
+      "rationale": "Durable dispatch releases the group's native-queue replies after the WAL upload that made them durable, as it does appends' and consumer-queue replies.",
+      "approver": "Lead (Claude Opus 5.5), under the owner's delegation of 2026-10-23 (\"implement this full feature ... in the next 24 hours. Don't wait for my input\"), recorded for the owner's review in docs/reviews/2026-09-hardening/README.md Owner decisions"
+    },
+    {
+      "path": "src/shard.rs",
+      "owner": "crate::ShardEngine::dispatch_durable",
+      "scope": "function",
+      "lint": "clippy::unwrap_used",
+      "metrics": {
+        "scope_lines": 58,
+        "syntax_facts": 114,
+        "unwrap_site:path::0f7578c77a023fec": 3,
+        "unwrap_site:path::3311b7b0ec5c14cf": 2,
+        "unwrap_site:path::88146de10b177ee7": 16
+      },
+      "rationale": "Durable dispatch releases the group's native-queue replies after the WAL upload that made them durable, as it does appends' and consumer-queue replies.",
+      "approver": "Lead (Claude Opus 5.5), under the owner's delegation of 2026-10-23 (\"implement this full feature ... in the next 24 hours. Don't wait for my input\"), recorded for the owner's review in docs/reviews/2026-09-hardening/README.md Owner decisions"
+    },
+    {
+      "path": "src/shard.rs",
+      "owner": "crate::ShardEngine::dispatch_durable",
+      "scope": "function",
+      "lint": "clippy::cast_possible_truncation",
+      "metrics": {
+        "scope_lines": 58,
+        "syntax_facts": 114
+      },
+      "rationale": "Durable dispatch releases the group's native-queue replies after the WAL upload that made them durable, as it does appends' and consumer-queue replies.",
+      "approver": "Lead (Claude Opus 5.5), under the owner's delegation of 2026-10-23 (\"implement this full feature ... in the next 24 hours. Don't wait for my input\"), recorded for the owner's review in docs/reviews/2026-09-hardening/README.md Owner decisions"
+    },
+    {
+      "path": "src/shard.rs",
+      "owner": "crate::ShardEngine::dispatch_durable",
+      "scope": "function",
+      "lint": "clippy::excessive_nesting",
+      "metrics": {
+        "scope_lines": 58,
+        "syntax_facts": 114
+      },
+      "rationale": "Durable dispatch releases the group's native-queue replies after the WAL upload that made them durable, as it does appends' and consumer-queue replies.",
+      "approver": "Lead (Claude Opus 5.5), under the owner's delegation of 2026-10-23 (\"implement this full feature ... in the next 24 hours. Don't wait for my input\"), recorded for the owner's review in docs/reviews/2026-09-hardening/README.md Owner decisions"
+    },
+    {
+      "path": "src/shard/commit_op.rs",
+      "owner": "crate::CommitOp",
+      "scope": "enum",
+      "lint": "clippy::large_enum_variant",
+      "metrics": {
+        "nested_items": 38,
+        "scope_lines": 44,
+        "syntax_facts": 59
+      },
+      "rationale": "The committer gains the native-queue operation (docs/QUEUES-DESIGN.md §5-§8): one variant carrying the queue op and its reply, serialized with appends so queue writes share the group's WriteBatch and WAL upload. The enum moved to src/shard/commit_op.rs to give src/shard.rs the headroom.",
+      "approver": "Lead (Claude Opus 5.5), under the owner's delegation of 2026-10-23 (\"implement this full feature ... in the next 24 hours. Don't wait for my input\"), recorded for the owner's review in docs/reviews/2026-09-hardening/README.md Owner decisions"
+    },
+    {
+      "path": "src/shard/commit_plan.rs",
+      "owner": "crate::DurableEffects::reply",
+      "scope": "function",
+      "lint": "clippy::let_underscore_must_use",
+      "metrics": {
+        "scope_lines": 11,
+        "syntax_facts": 18
+      },
+      "rationale": "Native-queue replies are released on the same durable barrier as appends and consumer-queue replies (G1): one more reply list, sent like the others.",
+      "approver": "Lead (Claude Opus 5.5), under the owner's delegation of 2026-10-23 (\"implement this full feature ... in the next 24 hours. Don't wait for my input\"), recorded for the owner's review in docs/reviews/2026-09-hardening/README.md Owner decisions"
+    },
+    {
+      "path": "src/shard/commit_plan.rs",
+      "owner": "crate::DurableEffects::reject",
+      "scope": "function",
+      "lint": "clippy::let_underscore_must_use",
+      "metrics": {
+        "scope_lines": 17,
+        "syntax_facts": 40
+      },
+      "rationale": "A refused group refuses its native-queue replies with the same error as its other replies.",
+      "approver": "Lead (Claude Opus 5.5), under the owner's delegation of 2026-10-23 (\"implement this full feature ... in the next 24 hours. Don't wait for my input\"), recorded for the owner's review in docs/reviews/2026-09-hardening/README.md Owner decisions"
+    },
+    {
+      "path": "src/shard/commit_plan.rs",
+      "owner": "crate::DurableEffects::reject",
+      "scope": "function",
+      "lint": "clippy::needless_pass_by_value",
+      "metrics": {
+        "scope_lines": 17,
+        "syntax_facts": 40
+      },
+      "rationale": "A refused group refuses its native-queue replies with the same error as its other replies.",
+      "approver": "Lead (Claude Opus 5.5), under the owner's delegation of 2026-10-23 (\"implement this full feature ... in the next 24 hours. Don't wait for my input\"), recorded for the owner's review in docs/reviews/2026-09-hardening/README.md Owner decisions"
+    },
+    {
+      "path": "src/shard/transaction/mod.rs",
+      "owner": "crate::CommitTransaction < 'a >::stage",
+      "scope": "function",
+      "lint": "clippy::match_same_arms",
+      "metrics": {
+        "scope_lines": 53,
+        "syntax_facts": 139
+      },
+      "rationale": "The stage dispatch routes the native-queue operation to its handler, beside the consumer-queue arm.",
+      "approver": "Lead (Claude Opus 5.5), under the owner's delegation of 2026-10-23 (\"implement this full feature ... in the next 24 hours. Don't wait for my input\"), recorded for the owner's review in docs/reviews/2026-09-hardening/README.md Owner decisions"
     }
   ],
   "schema": 1

@@ -168,6 +168,9 @@ mod producer_protocol;
 #[path = "tests/product_lifecycle.rs"]
 mod product_lifecycle;
 
+#[path = "tests/queue_product.rs"]
+mod queue_product;
+
 #[path = "tests/quota_enforcement.rs"]
 mod quota_enforcement;
 

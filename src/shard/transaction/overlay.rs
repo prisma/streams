@@ -11,6 +11,8 @@ pub(super) struct QueueOverlay {
     pub state: Option<crate::queue::QueueState>,
     // mt-lint: allow(name-keyed-map): consumer names are scoped by the transaction's tenant-qualified stream hash
     pub configs: HashMap<String, crate::queue::ConsumerRecord>,
+    /// The native queue's rows staged by this group (§5).
+    pub native: Option<super::native_queue::stage::NativeStage>,
 }
 #[derive(Default)]
 pub(super) struct BillingOverlay {

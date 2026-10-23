@@ -36,6 +36,7 @@ pub(super) type RingPublication = (Arc<StreamHandle>, RingBatch);
 pub(super) struct DurableEffects {
     pub acks: Vec<ReplyEffect<AppendAck, AppendErr>>,
     pub queue_acks: Vec<ReplyEffect<crate::queue::QueueOut, String>>,
+    pub native_acks: Vec<ReplyEffect<crate::native_queue::NqOut, crate::native_queue::NqRefusal>>,
     pub tails: Vec<(Arc<StreamHandle>, TailFields)>,
     pub ring_pub: Vec<RingPublication>,
     pub signals: Vec<AbsorbSignal>,
@@ -59,6 +60,9 @@ impl DurableEffects {
         for (reply, result) in self.queue_acks {
             let _ = reply.send(result);
         }
+        for (reply, result) in self.native_acks {
+            let _ = reply.send(result);
+        }
     }
     #[expect(
         clippy::let_underscore_must_use,
@@ -78,6 +82,11 @@ impl DurableEffects {
         }
         for (reply, _) in self.queue_acks {
             let _ = reply.send(Err(queue_error.clone()));
+        }
+        for (reply, _) in self.native_acks {
+            let _ = reply.send(Err(crate::native_queue::NqRefusal::Internal(
+                queue_error.clone(),
+            )));
         }
     }
 }

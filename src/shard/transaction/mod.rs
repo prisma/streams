@@ -12,6 +12,7 @@ mod append;
 mod billing;
 mod finalize;
 mod maintenance;
+mod native_queue;
 mod overlay;
 mod prepare;
 mod publish;
@@ -142,6 +143,7 @@ impl<'a> CommitTransaction<'a> {
             CommitOp::SealFence(r) => r.hash,
             CommitOp::Absorbed { hash, .. } => *hash,
             CommitOp::Queue { hash, .. } => *hash,
+            CommitOp::NativeQueue { hash, .. } => *hash,
             CommitOp::TrimStep { hash } => *hash,
             CommitOp::UsageAck { hash, .. } => *hash,
             CommitOp::BillingClose { hash, .. } => *hash,
@@ -166,6 +168,9 @@ impl<'a> CommitTransaction<'a> {
             CommitOp::Close(req) => self.close(&mut local, hash, req).await,
             CommitOp::SealFence(req) => self.fence(&mut local, hash, req).await,
             CommitOp::Queue { op, resp, .. } => self.queue(&mut local, hash, op, resp).await,
+            CommitOp::NativeQueue { op, resp, .. } => {
+                self.native_queue(&mut local, hash, op, resp).await
+            }
             CommitOp::UsageAck {
                 scope,
                 month_final_keys,

@@ -17,6 +17,7 @@ const JOB_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) enum Kind {
     Topology,
     Ttl,
+    QueueDelete,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Key {
@@ -76,6 +77,8 @@ pub(crate) enum Action {
         stream: TenantStreamRef,
         epoch: String,
     },
+    /// A deleting queue's cleanup (`queues::QueueDeletion`).
+    QueueDelete(Box<super::queues::QueueDeletion>),
     #[cfg(test)]
     Held(futures_util::future::BoxFuture<'static, Result<(), WorkError>>),
 }
@@ -93,6 +96,7 @@ impl Action {
                 super::topology::resume_fenced(&service, &stream, &epoch).await;
                 Ok(())
             }
+            Self::QueueDelete(deletion) => deletion.run().await,
             #[cfg(test)]
             Self::Held(future) => future.await,
         }

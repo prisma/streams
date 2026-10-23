@@ -1165,7 +1165,11 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
             "/v1/projects/{project}/usage",
             axum::routing::get(project_usage_axum).options(product_preflight),
         )
-        .route("/v1/stream/{*name}", any(stream_entry))
+        .route(
+            "/v1/stream/{*name}",
+            crate::product::queues::guard_raw(&state, any(stream_entry)),
+        )
+        .merge(crate::product::queues::routes())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             track_inflight,
@@ -1790,26 +1794,11 @@ pub(crate) async fn product_entry_axum_inner(
     {
         return crate::product::with_product_cors(r);
     }
-    // System namespace guard (docs/OBSERVABILITY-BILLING.md §8/§15) —
-    // same rule as the raw surface: the leading `_` segment belongs to
-    // the telemetry planes and no customer credential reaches it. After
-    // auth, before body buffering. Note: usage LOOKUP endpoints live on
-    // this surface under `{name}/usage`, which is a sub-resource of a
-    // CUSTOMER stream — unaffected by this guard.
-    if crate::billing::is_reserved_stream(&name) {
-        let mut r = crate::audit::tag(
-            crate::product::perr(
-                StatusCode::FORBIDDEN,
-                "reserved_stream",
-                "names beginning with '_' are reserved for the system",
-                None,
-                false,
-            ),
-            "reserved_stream",
-        );
-        if let Some(p) = principal {
-            r = crate::audit::tag_project(r, &p.project_id);
-        }
+    // The system namespace (docs/OBSERVABILITY-BILLING.md §8/§15, same rule
+    // as the raw surface) and queue streams (edge change #186): after auth,
+    // before body buffering.
+    let refusal = crate::product::queues::stream_refusal(&state, principal, &method, &name);
+    if let Some(r) = refusal.await {
         return crate::product::with_product_cors(r);
     }
     // Only mutations consume a body, and a pull reserves its coverage only

@@ -395,6 +395,174 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::queue_product",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Native queue scenarios over real HTTP rigs (docs/QUEUES-DESIGN.md section 11, edge change #186): create, send, claim with the body decrypted and ack deleting the page and rows; retry and lease-expiry redelivery; dedup and the exact send refusals; the failed view and redrive; pause, peek, cancel, republish, discard and a parked claim; delete fencing sends and leaving no queue row; and queue streams refused on the stream surfaces; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/queue_product.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::q_key",
+      "path": "src/dst/tests/queue_product.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes (docs/QUEUES-DESIGN.md section 11, edge change #186); serde macro output is compiled and asserted by the queue DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::claim_one",
+      "path": "src/dst/tests/queue_product.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes (docs/QUEUES-DESIGN.md section 11, edge change #186); serde macro output is compiled and asserted by the queue DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::settle",
+      "path": "src/dst/tests/queue_product.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes (docs/QUEUES-DESIGN.md section 11, edge change #186); serde macro output is compiled and asserted by the queue DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 4,
+      "owner": "crate::a_sent_message_is_claimed_decrypted_and_acked",
+      "path": "src/dst/tests/queue_product.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes (docs/QUEUES-DESIGN.md section 11, edge change #186); serde macro output is compiled and asserted by the queue DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::bytes_come_back_as_padded_base64_and_the_list_names_the_queue",
+      "path": "src/dst/tests/queue_product.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes (docs/QUEUES-DESIGN.md section 11, edge change #186); serde macro output is compiled and asserted by the queue DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::retry_and_an_expired_lease_redeliver_with_the_next_attempt",
+      "path": "src/dst/tests/queue_product.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes (docs/QUEUES-DESIGN.md section 11, edge change #186); serde macro output is compiled and asserted by the queue DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 7,
+      "owner": "crate::dedup_answers_the_original_and_refusals_are_exact",
+      "path": "src/dst/tests/queue_product.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes (docs/QUEUES-DESIGN.md section 11, edge change #186); serde macro output is compiled and asserted by the queue DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::a_failed_message_is_listed_and_redriven",
+      "path": "src/dst/tests/queue_product.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes (docs/QUEUES-DESIGN.md section 11, edge change #186); serde macro output is compiled and asserted by the queue DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 6,
+      "owner": "crate::peek_cancel_republish_and_discard_act_on_the_named_messages",
+      "path": "src/dst/tests/queue_product.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes (docs/QUEUES-DESIGN.md section 11, edge change #186); serde macro output is compiled and asserted by the queue DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 4,
+      "owner": "crate::pause_holds_claims_and_a_parked_claim_takes_a_late_message",
+      "path": "src/dst/tests/queue_product.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes (docs/QUEUES-DESIGN.md section 11, edge change #186); serde macro output is compiled and asserted by the queue DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::pause_holds_claims_and_a_parked_claim_takes_a_late_message",
+      "path": "src/dst/tests/queue_product.rs",
+      "reason": "A parked claim and the send that wakes it run concurrently in one test task, so the claim is waiting when the message arrives; the compiler checks the join's expansion and both futures borrow the test's rig.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::a_deleted_queue_is_fenced_then_gone_without_rows",
+      "path": "src/dst/tests/queue_product.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes (docs/QUEUES-DESIGN.md section 11, edge change #186); serde macro output is compiled and asserted by the queue DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 6,
+      "owner": "crate::queue_streams_are_refused_on_the_stream_surfaces",
+      "path": "src/dst/tests/queue_product.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes (docs/QUEUES-DESIGN.md section 11, edge change #186); serde macro output is compiled and asserted by the queue DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::list",
+      "path": "src/product/queues.rs",
+      "reason": "The queue routes' JSON answer documents (docs/QUEUES-DESIGN.md section 11, WIRE-MATRIX section 2.23, edge change #186); serde macro output, pinned by the queue_product DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::queue",
+      "path": "src/product/queues/handlers.rs",
+      "reason": "The queue routes' JSON answer documents (docs/QUEUES-DESIGN.md section 11, WIRE-MATRIX section 2.23, edge change #186); serde macro output, pinned by the queue_product DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::create",
+      "path": "src/product/queues/handlers.rs",
+      "reason": "The queue routes' JSON answer documents (docs/QUEUES-DESIGN.md section 11, WIRE-MATRIX section 2.23, edge change #186); serde macro output, pinned by the queue_product DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::stats",
+      "path": "src/product/queues/handlers.rs",
+      "reason": "The queue routes' JSON answer documents (docs/QUEUES-DESIGN.md section 11, WIRE-MATRIX section 2.23, edge change #186); serde macro output, pinned by the queue_product DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::send",
+      "path": "src/product/queues/handlers.rs",
+      "reason": "The queue routes' JSON answer documents (docs/QUEUES-DESIGN.md section 11, WIRE-MATRIX section 2.23, edge change #186); serde macro output, pinned by the queue_product DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::verb_call",
+      "path": "src/product/queues/handlers.rs",
+      "reason": "The queue routes' JSON answer documents (docs/QUEUES-DESIGN.md section 11, WIRE-MATRIX section 2.23, edge change #186); serde macro output, pinned by the queue_product DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::republish",
+      "path": "src/product/queues/handlers.rs",
+      "reason": "The queue routes' JSON answer documents (docs/QUEUES-DESIGN.md section 11, WIRE-MATRIX section 2.23, edge change #186); serde macro output, pinned by the queue_product DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::billing_closure_debts",
       "path": "src/dst/dst_tests.rs",
       "reason": "Closure-debt scenarios for replaced incarnations (NEXT-WORK section 2): raw and product recreation, month crossing, crashes at each handoff boundary, a CAS lost to a TTL renewal, split incarnations and fork retention, over real HTTP rigs and the production billing sweep; compiler and the full DST suite exercise the module.",
@@ -3399,6 +3567,134 @@
       "path": "src/dst/dst_tests.rs",
       "reason": "Product descriptor-read classification (item 3, edge change #64): every product handler that reads its own descriptor answers a store failure with a retryable 503 and a corrupt descriptor with a 500 that is not retryable; compiled and executed with DST.",
       "syntax": "path = \"tests/product_descriptor_reads.rs\""
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/native_queue/tests.rs",
+      "reason": "Native-queue module importing its parent's items with super::*, compiler checked; counted so no further glob is admitted.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::ROOT",
+      "path": "src/native_queue/wakeup.rs",
+      "reason": "Process-wide wake-up secret root (§9.2), installed once by the HTTP layer from its server-held key; read-only after install; no per-runtime state.",
+      "syntax": "std :: sync :: OnceLock < [u8 ; 32] >"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/native_queue/wakeup.rs",
+      "reason": "Native-queue module importing its parent's items with super::*, compiler checked; counted so no further glob is admitted.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/commit_op.rs",
+      "reason": "Native-queue module importing its parent's items with super::*, compiler checked; counted so no further glob is admitted.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/native_queue_tests.rs",
+      "reason": "Native-queue module importing its parent's items with super::*, compiler checked; counted so no further glob is admitted.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/queue_maintenance.rs",
+      "reason": "Native-queue module importing its parent's items with super::*, compiler checked; counted so no further glob is admitted.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::PASS_PERMIT",
+      "path": "src/shard/queue_maintenance.rs",
+      "reason": "One native-queue collection pass at a time per instance (§8.2): SlateDB budgets each database's compactor alone, so every shard's queue passes share this one permit.",
+      "syntax": "tokio :: sync :: Semaphore"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::ShardEngine::queue_tick",
+      "path": "src/shard/queue_maintenance.rs",
+      "reason": "Native-queue maintenance tick: tokio::select between the engine's close signal and the interval, as every engine loop does.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::ShardEngine::notify",
+      "path": "src/shard/queue_maintenance.rs",
+      "reason": "Native-queue wake-up notification (docs/QUEUES-DESIGN.md §9.2): one detached, bounded HTTPS POST (2 s timeout, no redirects, pinned public address) per notification the sweep decided; a hint, never a delivery, so a lost task costs latency only and holds no engine state.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction/native_queue/admin.rs",
+      "reason": "Native-queue module importing its parent's items with super::*, compiler checked; counted so no further glob is admitted.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction/native_queue/claim.rs",
+      "reason": "Native-queue module importing its parent's items with super::*, compiler checked; counted so no further glob is admitted.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction/native_queue/deliveries.rs",
+      "reason": "Native-queue module importing its parent's items with super::*, compiler checked; counted so no further glob is admitted.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction/native_queue/mod.rs",
+      "reason": "Native-queue module importing its parent's items with super::*, compiler checked; counted so no further glob is admitted.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction/native_queue/send.rs",
+      "reason": "Native-queue module importing its parent's items with super::*, compiler checked; counted so no further glob is admitted.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction/native_queue/settle.rs",
+      "reason": "Native-queue module importing its parent's items with super::*, compiler checked; counted so no further glob is admitted.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction/native_queue/sweep.rs",
+      "reason": "Native-queue module importing its parent's items with super::*, compiler checked; counted so no further glob is admitted.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
     }
   ]
 }

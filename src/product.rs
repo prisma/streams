@@ -1293,10 +1293,8 @@ pub(crate) async fn product_entry(
 use crate::application::names::split_subresource;
 
 fn product_key(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get("prisma-encryption-key")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string)
+    let key = headers.get("prisma-encryption-key")?;
+    key.to_str().ok().map(str::to_string)
 }
 
 #[expect(
@@ -3653,6 +3651,7 @@ use consumer_pull::product_consumer_pull;
 mod internal;
 mod operation;
 pub(crate) use operation::{ProductOperation, VERBS};
+pub(crate) mod queues;
 mod read_cursor;
 pub(crate) mod read_memory;
 mod scan;

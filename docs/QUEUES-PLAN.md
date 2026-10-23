@@ -185,3 +185,35 @@ acceptance are the owner's).
 - **Pilot**: `cp-plain-support-sync` beside the old queue for a week; every
   message the old queue processed is processed by the new one (by business
   id), none lost, failures match, p99 send-to-start within the old queue's.
+
+## 5. First build: what it implements and where it departs (2026-10-23)
+
+The first build was compressed into one day at the owner's instruction
+("implement this full feature and run the pricing experiment in the next 24
+hours"). It implements the first release's behaviour; these points depart
+from the design text or are not yet built, each to be closed or ratified:
+
+- **Persisted queue kind**: the stream descriptor's `kind: queue`, not a tail
+  flag. Queue mode needs no tail bit: every queue batch keeps `absorbed =
+  next` and never raises `trim_safe_to`, so the dirty index, absorber,
+  repair, backpressure and trim consumers never see a queue (§5.6's
+  invariants hold by construction; D19 resolved without a format change).
+- **Retirement and deletion coincide** for every per-message path (ack,
+  discard, cancel, expiry, failure expiry): the deleting batch is bounded by
+  the operation, records the debt and needs no retired index `X`.
+- **Hard lifetime by caps**: no separate hard-expiry cursor `H`; leases are
+  capped at `hardExpiresAt`, a cycle's retries at its deadline and failure
+  retention at `hardExpiresAt`, so nothing outlives it.
+- **Error text** is not stored yet; settles keep codes only.
+- **Collection** runs in the shard engine (`src/shard/queue_maintenance.rs`):
+  a pass starts at 256 MiB of debt, at 16 MiB once the oldest debt is 15
+  minutes old, or at any debt after 2 hours; one pass per instance; debt is
+  cleared only after every superseded SST except the D22 residual is gone.
+  The SlateDB fix that removes the residual is upstream as
+  slatedb/slatedb#2190.
+- **Wake-up notifications** are sent by the shard's sweeper; the secret root
+  is installed by the HTTP layer.
+- **Not yet built**: queue-operation billing (D14 metering), capacity
+  reservations (D21: admission budgets are enforced, shard reservations are
+  not), the settle bucket (D11), named and ordered groups (as planned), and
+  the TLA+/Kani obligations of §4.

@@ -42,6 +42,7 @@ impl CommitHandoff {
         } else if let Some(last) = self.pending.last_mut() {
             last.effects.acks.append(&mut effects.acks);
             last.effects.queue_acks.append(&mut effects.queue_acks);
+            last.effects.native_acks.append(&mut effects.native_acks);
             Attachment::Pending
         } else {
             // The committer serializes writes/overlays. With the dispatch
