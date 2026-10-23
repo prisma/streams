@@ -511,6 +511,10 @@ export async function runReplay(o, log = (s) => process.stderr.write(`${s}\n`)) 
     if (drain.state === 'timeout') {
       const st = await serverStats();
       drain.due_or_leased = st.every((s) => s && s.due === 0 && s.leased === 0) ? 'none' : 'some';
+      // The server's `due` includes scheduled messages (the Stripe queue's
+      // 80-minute deliverAt spread outlasts any drain); only a delivery
+      // still leased at the deadline says the drain did not finish.
+      drain.leased = st.every((s) => s && s.leased === 0) ? 'none' : 'some';
     }
   }
 
@@ -548,7 +552,9 @@ export function verify(qs, finalStats, ctx) {
       checks.server_stats = false;
       reasons.push(`${q.name}: no server stats`);
     } else {
-      const nonterminal = s.due + s.scheduled + s.leased + (s.retrying ?? 0);
+      // The server's `due` counts scheduled messages too and reports
+      // `scheduled` as null; the sum of non-terminal messages is the same.
+      const nonterminal = s.due + (s.scheduled ?? 0) + s.leased + (s.retrying ?? 0);
       totals.server_nonterminal += nonterminal;
       // Messages whose send outcome is unknown may or may not be held.
       const lost = pending - nonterminal;
@@ -579,7 +585,7 @@ export function verify(qs, finalStats, ctx) {
     return row;
   });
   if (ctx.errors.count > 0) reasons.push(`${ctx.errors.count} unexpected errors`);
-  if (ctx.drain.state === 'timeout' && ctx.drain.due_or_leased !== 'none') reasons.push('drain timed out with due or leased messages');
+  if (ctx.drain.state === 'timeout' && ctx.drain.leased !== 'none') reasons.push('drain timed out with leased messages');
   const o = ctx.o;
   return {
     ok: reasons.length === 0,
