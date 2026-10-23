@@ -1,0 +1,27 @@
+{
+  "name": "control-plane-queues-2026-10",
+  "source": "Queue usage review of 2026-10-07 (https://prisma-queue-usage-review.sorenbs.chatgpt.site/): Cloudflare queueMessageOperationsAdaptiveGroups, the seven UTC days 2026-09-30 to 2026-10-06, production primary queues",
+  "measured_days": 7,
+  "month_days": 30,
+  "week_totals": { "writes": 5307783, "reads": 5388062 },
+  "queues": [
+    { "name": "cp-stripe-usage-records-sync", "writes_7d": 2945350, "peak_hour": 33752, "avg_bytes": 161, "max_attempts": 11, "retry_delay_s": 30, "concurrency": 15, "dlq_writes_7d": 0, "delay": "80-minute spread per two-hour pass", "producer_batch": 100 },
+    { "name": "cp-spend-limit-usage-records-sync", "writes_7d": 411055, "peak_hour": 4692, "avg_bytes": 161, "max_attempts": 11, "retry_delay_s": 30, "concurrency": 15, "dlq_writes_7d": 0, "delay": "none", "producer_batch": 100 },
+    { "name": "cp-offer-limit-enforce", "writes_7d": 442741, "peak_hour": 3674, "avg_bytes": 115, "max_attempts": 3, "retry_delay_s": 120, "concurrency": 30, "dlq_writes_7d": 3, "delay": "10 s from Console producers", "producer_batch": 100 },
+    { "name": "cp-spend-limit-enforce", "writes_7d": 67840, "peak_hour": 890, "avg_bytes": 43, "max_attempts": 6, "retry_delay_s": 0, "concurrency": null, "dlq_writes_7d": 0, "delay": "none", "producer_batch": 100 },
+    { "name": "cp-vercel-usage-sync", "writes_7d": 620128, "peak_hour": 9933, "avg_bytes": 154, "max_attempts": 11, "retry_delay_s": 30, "concurrency": 5, "dlq_writes_7d": 0, "delay": "2 minutes", "producer_batch": 100 },
+    { "name": "mkp-vercel-send-billing-data", "writes_7d": 619630, "peak_hour": 9540, "avg_bytes": 423, "max_attempts": 4, "retry_delay_s": 0, "concurrency": null, "dlq_writes_7d": 0, "delay": "none", "producer_batch": 1 },
+    { "name": "cp-notification-controller", "writes_7d": 137626, "peak_hour": 17618, "avg_bytes": 68, "max_attempts": 11, "retry_delay_s": 30, "concurrency": 10, "dlq_writes_7d": 0, "delay": "none", "producer_batch": 100 },
+    { "name": "cp-notification-channel-email", "writes_7d": 13323, "peak_hour": 912, "avg_bytes": 122, "max_attempts": 11, "retry_delay_s": 30, "concurrency": 10, "dlq_writes_7d": 0, "delay": "none", "producer_batch": 1 },
+    { "name": "cp-workspace-dunning", "writes_7d": 5695, "peak_hour": 955, "avg_bytes": 231, "max_attempts": 11, "retry_delay_s": 120, "concurrency": null, "dlq_writes_7d": 0, "delay": "none", "producer_batch": 1 },
+    { "name": "cp-tenant-manager-sync", "writes_7d": 2019, "peak_hour": 252, "avg_bytes": 127, "max_attempts": 6, "retry_delay_s": 10, "concurrency": null, "dlq_writes_7d": 1, "delay": "none", "producer_batch": 1 },
+    { "name": "cp-register-user-tracking", "writes_7d": 2996, "peak_hour": 98, "avg_bytes": 176, "max_attempts": 6, "retry_delay_s": 10, "concurrency": null, "dlq_writes_7d": 0, "delay": "none", "producer_batch": 1 },
+    { "name": "cp-plain-support-sync", "writes_7d": 352, "peak_hour": 105, "avg_bytes": 43, "max_attempts": 6, "retry_delay_s": 10, "concurrency": null, "dlq_writes_7d": 0, "delay": "none", "producer_batch": 1 },
+    { "name": "cp-ppg-operations", "writes_7d": 164, "peak_hour": 6, "avg_bytes": 92, "max_attempts": 6, "retry_delay_s": 10, "concurrency": null, "dlq_writes_7d": 0, "delay": "none", "producer_batch": 1 },
+    { "name": "ppg-events-shared", "writes_7d": 3518, "peak_hour": 559, "avg_bytes": 224, "max_attempts": 4, "retry_delay_s": 0, "concurrency": null, "dlq_writes_7d": 0, "delay": "none", "producer_batch": 1 },
+    { "name": "cp-composer-setup-pr", "writes_7d": 90, "peak_hour": 14, "avg_bytes": 117, "max_attempts": 4, "retry_delay_s": 30, "concurrency": null, "dlq_writes_7d": 0, "delay": "none", "producer_batch": 1 },
+    { "name": "cp-usage-measurement", "writes_7d": 0, "peak_hour": 0, "avg_bytes": 0, "max_attempts": 6, "retry_delay_s": 30, "concurrency": 5, "dlq_writes_7d": 0, "delay": "none", "producer_batch": 1 },
+    { "name": "mkp-vercel-limit-enforce", "writes_7d": 456, "peak_hour": 13, "avg_bytes": 68, "max_attempts": 4, "retry_delay_s": 0, "concurrency": null, "dlq_writes_7d": 0, "delay": "none", "producer_batch": 1 },
+    { "name": "mkp-vercel-submit-invoice", "writes_7d": 34800, "peak_hour": 6162, "avg_bytes": 181, "max_attempts": 6, "retry_delay_s": 10, "concurrency": null, "dlq_writes_7d": 12714, "reads_7d": 98354, "delay": "5 s and 60 s continuations", "producer_batch": 1 }
+  ]
+}

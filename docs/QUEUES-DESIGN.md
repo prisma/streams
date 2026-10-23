@@ -1,16 +1,21 @@
 # Native queues in Prisma Streams — design for review
 
-Status: **proposal, revision 6, 2026-10-23, for the owner's review before any
-implementation.** Revisions 1-5 built the delivery, failure and lifetime
-models through two Fable 5.1 reviews and two colleague reviews. Fable's
-review of revision 5 found the storage plan unsound: "never absorbed" is a
-state six subsystems act on, and the shard-log compactor service it relied
-on does not exist. The owner chose to keep queue data in the shard database
-with an explicit collection mechanism (option (a)), and set its requirements:
-a persisted queue storage kind, durable reclamation debt, compaction
-scheduled by amount and age, and verified physical garbage collection on a
-quiet shard, all proven by Q0 before Q1 starts. Revision 6 is that design.
-§15 maps every review point. Nothing here is built. Every client-visible
+Status: **revision 8, 2026-10-23. The architecture and the Q0-first sequence
+are approved; Q0 ([QUEUES-PLAN.md](QUEUES-PLAN.md) §2) is the first
+implementation package.** Revision 8 folds in Fable 5.1's review of revision 7
+(the SlateDB primitives of a collection pass, a quiet-shard GC completion rule,
+timer service through the billing sweep's rotation, a trigger floor, the
+pass-duration bound and the queues-per-shard arithmetic) and the pricing goal
+([QUEUES-PRICING-BENCHMARK.md](QUEUES-PRICING-BENCHMARK.md)). Revisions 1-5
+built the delivery, failure and lifetime models through Fable 5.1 and
+colleague reviews. Revision 6 kept queue data in the shard database under an
+explicit queue storage mode, with durable reclamation debt, compaction
+scheduled by amount and age, and verified physical collection on a quiet
+shard, all proven by Q0 before Q1 starts. Revision 7 specifies the
+transitions a review of revision 6 found open: retirement into collection
+(a coverage rule), auxiliary-row lifetimes, failure into redrive, active
+queues into deletion, drains into later wake-ups, timers with no debt, and
+capacity reservations. §15 maps every review point. Every client-visible
 change becomes an edge record when it lands.
 
 ## 1. What we are building and why
@@ -33,17 +38,12 @@ Prisma Streams already has the hard part. Consumer groups lease, acknowledge,
 retry, extend and dead-letter records, and every append, pull and settle is
 acknowledged only after it is durable on object storage
 (`src/shard/commit_plan.rs`, `DurableEffects`). What the current groups lack
-is a queue's delivery model:
-
-| Today | A queue needs |
-|---|---|
-| Every group is per-key FIFO; records without a routing key share one lane | Unordered competing consumers |
-| A retry keeps the record leased, its key blocked and the cursor pinned | A retry frees the delivery and schedules it |
-| A pull sees a 4 MiB window above the cursor and stops at a sealed segment with backlog | A claim finds due work wherever it is |
-| No per-message delayed availability | `deliverAt` / `delay` on send |
-| Dead letters only on exhausted attempts, copied to another stream with the stream key | Failure as a durable, keyless state with recovery |
-| No redrive, pause, stats, cancellation or listing | All of these |
-| A sequential iterator, and no way to wake a sleeping worker | A worker runner, and a wake-up path for serverless workers |
+is a queue's delivery model: unordered competing consumers, retries that
+free and reschedule the delivery, claims that find due work wherever it is,
+scheduled messages, failure as durable keyless state with recovery, redrive,
+pause, stats, cancellation, a worker runner, and a wake-up path for
+serverless workers. Today's groups are per-key FIFO, pin the cursor on retry,
+see a 4 MiB window, and dead-letter only by copying with the stream key.
 
 ## 2. Scope and boundaries
 
@@ -181,9 +181,9 @@ whole send → claim → ack → reclaim cycle in Q0 and published (first target
 
 | State | Meaning |
 |---|---|
-| group row | `{generation, config, paused, lastClaimAt, lastNotifiedAt, notifyBackoffMs}` |
+| group row | `{generation, config, paused, lastUsefulClaimAt, lastNotifiedAt, notifyBackoffMs}` |
 | group cursor `C` = `(time, msgId)` | every `A` entry at or below `C` has been taken or skipped |
-| delivery row per **open** delivery | `{state: leased \| retrying \| failed, cycle, attempts, releases, leaseGen, leaseDeadline, firstDeliveredAt, failureExpiresAt?, errorCode}` |
+| delivery row per **open** delivery | `{state: leased \| retrying \| failed, cycle, cycleDeadline, attempts, releases, leaseGen, leaseDeadline, firstDeliveredAt, failureExpiresAt?, errorCode}` |
 | lease index `L` `(leaseDeadline, msgId)` | leased deliveries |
 | retry index `R` `(availableAt, msgId)` | retrying deliveries |
 | failure index `F` `(failedAt, msgId)` | failed deliveries, for listing |
@@ -207,7 +207,11 @@ project's memory line (about 100 B an entry).
 
 All queue times come from one **queue clock**: `t = max(now_ms(), q.clock)`,
 where `q.clock` lives in the queue's **state row** and is written in every
-queue batch that reads it (send, claim, settle, sweep). It is not kept in
+queue batch that changes queue state (a send, a claim that leases, a settle, a
+sweep step that moves something). **An empty claim or an idle sweep step
+writes nothing**: the cursor invariant below needs the clock only where
+state changes, and an idle consumer must cost no object-store writes (the
+pricing benchmark's idle run). It is not kept in
 `fields.ts`: the tail row is persisted only when its listed fields change, and
 `ts` is not among them (`src/shard/transaction/finalize.rs:91-98`). Clock
 reads, id allocation and cursor advances happen in the committer's serialized
@@ -251,7 +255,7 @@ defined by **invariants with guarded consumers**, not by a single field:
 5. **Queue retirement is the only authority that deletes queue pages.**
 
 Each consumer of the absorption state is guarded by the kind and covered by a
-named test (§13):
+named test ([QUEUES-PLAN.md](QUEUES-PLAN.md) §4):
 
 | Consumer | Queue-mode behaviour |
 |---|---|
@@ -260,7 +264,7 @@ named test (§13):
 | maintenance ledger and stall latch (`src/shard.rs:388-420`, `maintenance_row.rs`, `src/backpressure.rs:150-180,343-350`, cell-watch lag rule) | queue bytes are excluded from unabsorbed bytes and from progress |
 | restart tail repair (`src/shard.rs:401-405`, `src/shard/record.rs:258-291`) | a queue tail is never a repair candidate |
 | frame reconciliation (`finalize.rs:80-88`) | queue deletes are counted on the queue's own ledger side |
-| billing residency (`src/billing.rs:1678-1686`) and idle release (`src/bootstrap/idle.rs:30`) | read queue reclamation debt (§8.2) instead of absorption debt |
+| billing sweep residency (`probe_debt`, `src/billing.rs:1676-1686`) | counts queue reclamation debt and the roster's earliest deadline (§6.8) instead of absorption debt; idle release only drops caches and is unaffected |
 | stream read and trim paths | refuse queue streams |
 
 ### 5.7 Per-shard queue bytes
@@ -268,13 +272,33 @@ named test (§13):
 Queue pages stay in the shard database, so a shard holds the live and
 awaiting-reclamation bytes of its queues. A **per-shard queue-bytes bound**,
 set from Q0's compaction working set at the `compute-1g` posture, caps it.
-It is **fair per project**: when the shard nears the bound, sends from a
-project holding more than its share (1/k of the bound, as #184 shares memory)
-are refused `429 queue_full` first, so one tenant inside its own budget cannot
-block the others. Splitting a shard by key range (SPEC D3) is not implemented
-(`src/scaler3/controller.rs:114-135`); it is the prerequisite for raising the
-bound, and default admission budgets (§6.6) are sized so a shard's queues fit
-it until then.
+
+**Capacity is reserved, not shared after the fact.** Refusing a heavy
+project's next send frees none of the data it already holds, so fairness at
+send time cannot protect a newcomer. Instead, creating a queue **reserves**
+its admission budget (§6.6: `maxQueuedBytes` plus the dedup budget, §8.4)
+against its shard's bound, in the committer, and creation is refused (`429
+queue_capacity`, not retryable; the caller may choose smaller budgets) when
+the reservations would exceed the bound. A queue never holds more than its
+reservation, so every admitted queue can always reach its budget whatever its
+neighbours do. There is no borrowing in the first release; overcommitting
+reservations (with a fairness rule for the borrowed part) is a later owner
+decision once Q0 and the pilot show real occupancy. Splitting a shard by key
+range (SPEC D3) is not implemented (`src/scaler3/controller.rs:114-135`); it
+is the prerequisite for more reserved capacity per shard (D21).
+
+**The arithmetic is a cap on queues per shard.** With the defaults (256 MiB
+of messages plus about 100 MiB of dedup entries), queues per shard =
+`floor(B ÷ 356 MiB)`: 5 at a 2 GiB bound, 22 at 8 GiB. The bound `B` is
+physical (live plus awaiting reclamation, about 2-3× the reservation within
+the completion deadline) and is itself limited by how long a collection pass
+may run (§8.2), so Q0 sets it. The control plane alone has 18 queues, and a
+caller cannot choose its shard (placement is by storage hash over a fixed
+prefix code, `src/registry.rs:1332-1340`). The recommendation (D21) is
+smaller default budgets with an opt-up at creation, decided with Q0's numbers;
+the reservation is a ledger row written in the creation batch the committer
+already runs (`src/application/creation/initialization.rs`), carried by
+whole-prefix moves, and re-reserved when a budget is updated (§11).
 
 ## 6. Delivery
 
@@ -284,12 +308,15 @@ it until then.
 
 **In the committer (keyless):** take due entries (`availableAt ≤ t`) in
 order from `A` past `C` and from `R`, within `maxInFlight` and `rate`,
-skipping cancelled, retired and expired messages, until `max` or `maxBytes`
+skipping cancelled and retired messages and entries past their **cycle
+deadline** (§6.3: an untaken `A` entry's is `retentionEnd`; an `R` entry's is
+its cycle's), until `max` or `maxBytes`
 (by metadata `bytes`; default 1 MiB, at most 8 MiB; one message always
 allowed); reserve read memory for exactly that total (429
 `project_memory_pressure` if refused); lease exactly that set (row `leased`,
 `attempts += 1`, `leaseGen += 1`, deadline, `L` entry, `open += 1` for newly
-taken messages, `C` advanced, `lastClaimAt = t`).
+taken messages, `C` advanced; `lastUsefulClaimAt = t` when at least one
+message was leased).
 
 **After the commit is durable (with the key):** read each leased envelope by a
 **point get** of its page key (`shard_page_key(hash, offset)`), never a window
@@ -329,11 +356,19 @@ settle is `stale` and changes nothing.**
 ### 6.3 Retry policy
 
 `maxAttempts` (default 5) and `backoff {initialMs: 1000, maxMs: 43_200_000,
-multiplier: 2, jitter: "full"}`. Policy backoff is clamped to `retentionEnd`.
-**An explicit delay is never shortened**: if `t + delayMs` passes
-`retentionEnd`, the delivery fails now with `cause: retention`. Exhausted
-attempts, or a failure after `retentionEnd`, move it to `failed`. Nothing
-outlives `hardExpiresAt`.
+multiplier: 2, jitter: "full"}`.
+
+Each delivery cycle has a **cycle deadline**, stored on the delivery row: the
+first cycle's is `retentionEnd`; a redriven cycle's is `hardExpiresAt` (§7.3).
+One rule then governs retries, `R` claims and lease expiry alike:
+
+- Policy backoff is clamped to the cycle deadline.
+- **An explicit delay is never shortened**: if `t + delayMs` passes the cycle
+  deadline, the delivery fails now with `cause: retention`.
+- Exhausted attempts, or a failure after the cycle deadline, move the
+  delivery to `failed`.
+- A running lease may be extended up to `hardExpiresAt`, and nothing outlives
+  `hardExpiresAt`.
 
 ### 6.4 Ordering
 
@@ -356,19 +391,30 @@ groups stay untouched until then (D2).
   (`max(rate, 50)`, #162). A settle request whose tokens are mostly stale or
   invalid is charged to the main bucket. Under the RSS shed (#184) settles
   follow the append rules. Both are edge changes.
-- **Request rate** ≈ throughput / batch size (claims) + throughput /
-  messages per coalesced settle (settles) + in-flight / (lease / 2)
-  (extends); worker fleets need a tier sized by it (D10).
+- **Request rate** has a producer and a consumer term, sized separately
+  (D10). Producers: sends ÷ messages per send (singletons make one request a
+  message; `sendBatch` divides it). Consumers: throughput ÷ claim batch +
+  throughput ÷ messages per coalesced settle + in-flight ÷ (lease ÷ 2) for
+  extends. At 1,000 messages a second with 100-message claims and settles,
+  consumers make about 20 requests a second before extends, while singleton
+  producers make 1,000.
 
 ### 6.6 Admission budget
 
-Each queue may hold at most `maxQueuedBytes` (default 256 MiB, sized with the
-per-shard bound, §5.7) and `maxQueuedMessages` (default 1 million) of live,
-undone messages; messages held only by failed deliveries do not count. A send
-beyond it is refused `429 queue_full`, retryable, with the budget and its use.
-A queue nobody consumes is freed by the sweep as messages pass `retentionEnd`.
-Sends are also admitted against the project's stored-bytes cap (#158) and the
-per-shard bound (§5.7).
+Each queue may hold at most `maxQueuedBytes` (default 256 MiB) and
+`maxQueuedMessages` (default 1 million) of live, undone messages; messages
+held only by failed deliveries do not count. The budget is reserved against
+the shard at creation (§5.7). A send beyond it is refused `429 queue_full`,
+retryable, with the budget and its use. A queue nobody consumes is freed by
+the sweep as messages pass `retentionEnd`. Sends are also admitted against the
+project's stored-bytes cap (#158).
+
+**Redrive re-enters the budget.** A failed message does not count; redriving
+makes it undone again, so redrive reserves its count and bytes in the same
+batch (the payload is already stored and is not charged twice). A redrive
+that does not fit leaves the delivery failed and reports `capacity`;
+`redrive({all, limit})` stops at the first message that does not fit and
+returns `{redriven, remaining, stoppedAt: "capacity"}`.
 
 ### 6.7 Pause, cancel, peek
 
@@ -393,7 +439,8 @@ tasks, each in bounded batches (at most 256 entries a step):
 3. **Failure expiry**: heads of `E` with `failureExpiresAt ≤ t` are discarded.
 4. **Hard expiry**: a cursor `H` walks `A`; a live entry with `hardExpiresAt
    ≤ t` has every open delivery ended (leases fenced), counted, and retires.
-5. **Dedup expiry**: dedup entries past their window are deleted.
+5. **Dedup expiry**: dedup entries past their window are deleted, and the
+   deletion adds collection debt like any other (§8.2).
 6. **Deletion** of retired messages and **reclamation debt** upkeep (§8.2).
 7. **Wake-up notification** (§9.2).
 
@@ -402,9 +449,26 @@ row per queue with pending work, `DIRTY_SENTINEL ‖ 'Q' ‖ hash → next
 deadline`, written in the same batch as the change that sets the deadline and
 deleted when nothing is pending. A new owner reads the roster at open in
 bounded pages (within the 180 s open deadline), builds a per-shard timer heap,
-and each queue's sweep resumes from its durable cursors. A queue nobody
-touches still expires, deletes and collects. Roster keys are not hash-first,
-which a future key-range split must handle. Roster rows are counted in §8.3.
+and each queue's sweep resumes from its durable cursors. Roster keys are not
+hash-first, which a future key-range split must handle. Roster rows are
+counted in §8.3.
+
+**Timers are a maintenance obligation of their own.** A queue can have a
+scheduled message, a retry, a lease deadline or a dedup expiry with zero
+reclamation debt. What actually closes a shard today: fleet eviction or a
+move, shutdown, and the billing sweep evicting engines it opened itself
+(`src/sharddir/holdoff.rs:36-39`, `src/billing.rs:1543-1578`); a shard a
+customer request opened is never closed by the sweep. The sweep runs every
+300 s, discovers at most 8 shards a tick, and keeps at most 2 debt-holding
+engines for 4 ticks before rotating them out. So:
+
+- `probe_debt` (`src/billing.rs:1676-1686`) adds the roster's earliest due
+  deadline to `Debt`, so a closed shard with due queue work is opened by the
+  sweep like one with billing debt.
+- **Service bound**: on a resident shard a deadline is served within 1 s; on
+  a closed one within one sweep rotation, `ceil(owned shards ÷ 8) × 300 s`
+  plus the open time. Q0 measures it. (Keeping every shard with a pending
+  deadline resident would break the sweep's two-engine budget.)
 
 ## 7. Failure and recovery
 
@@ -435,9 +499,11 @@ dead-letter stream to configure. An operator `discard` is counted and audited.
 
 - **Redrive** (default): `redrive(msgIds | {all, limit})` starts a new cycle in
   the failed group only: `cycle += 1`, `attempts = 0`, `releases = 0`, due now,
-  oldest first; its `E` entry is deleted, so the redriven delivery is bounded
-  only by `hardExpiresAt`, and a new failure sets `failureExpiresAt` afresh.
-  The message id is unchanged. Redrive is keyless.
+  oldest first. Its `E` entry is deleted and its cycle deadline becomes
+  `hardExpiresAt` (§6.3), so the redriven cycle can be claimed and retried
+  until then, and a new failure sets `failureExpiresAt` afresh. It reserves
+  admission budget first (§6.6). The message id is unchanged. Redrive is
+  keyless, and refused while the queue is deleting (§8.2).
 - **Republish** (deliberate): reads the failed message with the key and sends
   a **new** message, new id and lifetime, `lineage.republishedFrom` and the
   original `originId`; it neither checks nor writes the dedup index. The first
@@ -469,13 +535,11 @@ hard-expiry cursor `H`, a final ack, discard, failure expiry or cancel) tests
 and sets it in its own batch, so no message retires twice, including across a
 restart or move. The retiring batch also:
 
-- removes the message's live bytes and row charges from the stored-bytes gauge
-  and the admission budget (billing stops here), and writes the usage-ledger
-  entry;
-- adds the message to the retired index `X`;
-- updates the queue's **reclamation debt** row: `{pendingBytes,
-  oldestRetiredAt, generation}`, where `generation` rises with every
-  retirement, and the shard's queue roster.
+- removes the message-owned live bytes and row charges from the stored-bytes
+  gauge and the admission budget (billing for the message stops here; §8.3
+  lists what is not message-owned), and writes the usage-ledger entry;
+- adds the message to the retired index `X` with its retirement time, and
+  sets the shard's queue roster.
 
 `G` walks `A` up to the minimum group cursor, retiring `open = 0` messages and
 stepping over the rest; a message stepped over retires when its last open
@@ -486,7 +550,14 @@ the metadata row, the `A` entry, the key-index entry and the `X` entry, in
 bounded batches under the global trim budget (READINESS H5, R8). Deletes are
 idempotent. `GET …/messages/{id}` answers `404 reclaimed` from the retired
 state or the missing metadata row, never from page presence (the tail ring
-may still hold a deleted page).
+may still hold a deleted page). **The deleting batch creates the collection
+debt**, not the retirement: it adds the deleted bytes to the queue's
+**deletion debt** row `{pendingBytes, oldestDeletedAt, generation}`, where
+`generation` rises with every deleting batch. The debt row is a hot row by
+design: nearly every claim and settle deletes something and updates it. Every other substantive
+deletion (dedup expiry, failure detail, delivery rows, queue delete) adds to
+the same debt the same way, so no tombstone is ever written without a
+collection obligation.
 
 **3. Compaction (physical rewrite).** Deleted keys still occupy SSTs until a
 compaction drops their tombstones together with the versions they suppress.
@@ -497,47 +568,120 @@ enough L0 files or similar runs accumulate, and drops tombstones only when
 writing the last run, so a quiet shard never collects. The design adds a
 **queue collection scheduler** per shard:
 
-- **Trigger by amount or age**: collect when a shard's pending queue bytes
-  pass a threshold or garbage fraction (efficient under load), or when its
-  oldest debt passes a **collection deadline** (progress when quiet). Ratio
-  alone misses old garbage in a large database; a blind periodic rewrite
-  wastes work.
-- **Generations**: a pass records the debt generation it started from and, on
-  completion, clears debt only up to that generation, so retirements during a
-  pass are never erased.
+- **Trigger by amount or age, with a floor**: start a pass when a shard's
+  pending bytes pass a threshold or garbage fraction (efficient under load),
+  or when its oldest outstanding work reaches the **launch age** *and* the
+  pending bytes reach a minimum pass size (progress when quiet). Below that
+  minimum the age trigger waits up to a maximum interval of hours: every claim
+  and settle deletes something, so without the floor a shard with a trickle of
+  queue traffic would rewrite its bottom run every launch age (96 times a day
+  at one message a minute). Passes a day and bytes a pass are Q0 measurements
+  that feed the unit cost.
+- **Launch age and completion deadline are different numbers.** The
+  completion deadline (target 60 minutes from retirement) bounds when the
+  objects must be gone; the launch age must leave room for deletion, flush,
+  compaction, checkpoint protection and GC inside it. Q0 measures a pass's
+  duration and sets the launch age to `deadline − p99 pass duration − margin`
+  (first estimate 15 minutes).
+- **Coverage rule.** A pass covers a defined set of work, and the deletions
+  that implement it, before it clears anything:
+  1. choose a cutoff `T`: the pass covers every `X` entry retired at or
+     before `T` and every deletion already in the debt;
+  2. wait until the deletion sweep has removed every `X` entry at or before
+     `T` (their deleting batches raise the generation);
+  3. only then capture the debt generation `g` and its pending bytes, so `g`
+     includes every covered deletion;
+  4. flush the **memtable**, `flush_with_options(FlushType::MemTable)` as the
+     ticker does (`src/shard.rs:1583-1590`; `Db::flush()` flushes only the WAL
+     when the WAL is on, `slatedb/src/db.rs:1779-1789`), and read the boundary
+     from `Db::manifest()` when it returns;
+  5. submit one spec through `Admin::submit_compaction` (`admin.rs:195-209`):
+     `CompactionSpec::for_segment(root, every boundary L0 in tree order plus
+     every sorted run, destination = the lowest run id)`
+     (`compactor_state.rs:140-146`). Tombstones drop only when the destination
+     is the tree's last run (`compaction_worker.rs:478-484`,
+     `retention_iterator.rs:192-200`) and no version is newer than the
+     snapshot floor, which is the last flushed sequence when no snapshot,
+     transaction, reader or checkpoint is held, as on the shard log.
+     Submission checks only destination collisions, so a pass first reads
+     `read_compactor_state_view`, waits out an overlapping scheduler job, and
+     retries on `InvalidCompaction`;
+  6. clear debt up to `g` only when stage 4 completes for that compaction,
+     checked by a HEAD per superseded SST, never a LIST.
+  Work captured later stays outstanding for the next pass, and a pass is not
+  complete until stage 4, so residency (below) holds until then.
+- **A pass must finish before writers stall.** `compactor_max_concurrent` is
+  1 (`src/config/cli.rs:530`) and a pass occupies that slot; under appends a
+  flush makes an L0 file about every 5 s and the flush stalls at
+  `l0_max_ssts` = 32 (`cli.rs:528`). A pass therefore has about `(32 − L0s it
+  names) × 5 s` before appends block, which bounds the bottom run a pass may
+  rewrite (about 4.5 GB at 30 MB/s) and so the per-shard bound (§5.7). Raising
+  compaction concurrency is a performance decision for the owner. Q0 measures
+  pass duration against L0 count and gates on zero L0 stalls.
 - **Plan that reaches L0**: `CompactionRequest::Full` and `FullSegment`
-  exclude L0 at the pinned SlateDB (`compactor.rs:165`, so writers are not
+  exclude L0 at the pinned SlateDB (`compactor.rs:165, 226-243`, so writers are not
   stalled), so "flush, then request Full" does not collect tombstones still
   in L0. The plan is a staged explicit compaction (`CompactionRequest::Spec`):
   merge the deletion-bearing L0 SSTs into a sorted run, then rewrite through
   the bottom run. Q0 chooses and validates it under concurrent writes.
-- **Process-wide budget**: collection runs under one instance-wide
-  maintenance budget for concurrent compaction jobs, memory and object-store
-  I/O, never per database alone.
-- **Residency**: outstanding queue debt keeps or wakes the shard's owner (idle
-  release and billing residency read it, §5.6), since queues no longer
-  contribute absorption debt.
+- **One pass at a time per instance**: SlateDB's compactor and GC run per
+  database, so the application can budget only its own submissions; queue
+  passes take an instance-wide permit, and the size-tiered schedulers of the
+  other databases run as today.
+- **Residency**: outstanding queue debt and roster deadlines are debt to the
+  billing sweep (§6.8). A shard the sweep opened is evicted after its quantum
+  whatever its debt, and the compactor resumes a submitted pass when the
+  shard reopens (`compactor_state_protocols.rs`), so the 60-minute completion
+  target holds for resident shards; on a rotated shard collection completes
+  within its rotations.
 
 **4. Garbage collection (physical deletion of objects).** At the pinned
-SlateDB a compacted SST is deletable only after the minimum of the age
-threshold, the compaction low watermark and the newest L0 time
-(`garbage_collector/compacted_gc.rs:231`), and only when no manifest or
-checkpoint references it. On a quiet shard a stalled watermark can block
-deletion however often GC runs. **Making that watermark advance on a quiet
-shard is in scope**, and may need a targeted engine or dependency change;
-checkpoint and recovery protections stay intact. The acceptance test observes
-obsolete objects disappearing from the bucket after traffic stops.
+SlateDB a compacted SST is deleted only when it is older than the cutoff
+`min(min_age, compaction low watermark, newest L0 time)`
+(`garbage_collector/compacted_gc.rs:243-249`) and unreferenced. With L0
+empty, which a pass leaves it, "newest L0 time" falls back to the newest L0
+the pass itself consumed (`:184-200`), and that SST fails the strict `<`
+until a later flush, which on a quiet shard never comes (the ticker flushes
+only when appends changed, `src/shard.rs:1575-1590`). The low watermark also
+waits for any long scheduler job that overlaps the pass. **Completion rule
+(D22):** stage 4 is complete when every superseded SST is gone except the one
+named by `last_compacted_l0_sst_view_id`, a residual of at most one L0 file
+(8 MiB) inside Q0's 64 MiB allowance; the alternative, a one-line SlateDB
+patch (`<=` in the empty-L0 branch), would stale every formal receipt and is
+the owner's to choose only if Q0 shows the residual matters. GC runs on the
+owner with the real intervals (`GC_QUIET_INTERVAL` 600 s,
+`src/config/model.rs:127`; compacted `min_age` 300 s), so a pass completes
+about 15 minutes after its compaction; checkpoint and recovery protections
+are unchanged.
+
+**The last rows.** Deleting a queue's last rows (state, group, roster, debt,
+reservation) itself creates debt. A shard-level debt row survives every
+queue: the batch that clears a queue's final debt deletes that queue's debt
+row and releases its reservation, and the shard row records the residual for
+the next pass.
 
 **Queue delete.** Deleting a queue is a queue-specific lifecycle, not only a
-registry tombstone (`src/application/creation/deletion.rs`): the delete first
-cancels and retires every message and deletes the dedup entries in bounded
-batches, with the queue's roster row and debt keyed by storage hash, not
-registry name, then writes the tombstone. Cleanup and collection continue
-after the tombstone, after restarts and moves, until the queue's rows are
-gone; the billing close happens at retirement. This answers READINESS
-TLA-019-F3 for queues: no history rows exist, forks are refused, billing
-closes at retirement, deletes are bounded and resumable, and quiet-shard
-collection is stage 4.
+registry tombstone (`src/application/creation/deletion.rs`):
+
+1. The first serialized transition persists **`deleting`** on the queue's
+   state row for that incarnation, with the delete intent and a cleanup
+   cursor. From then on sends and redrives are refused (409
+   `queue_deleting`), claims return 409 `queue_deleting`, every open lease is
+   fenced (`leaseGen += 1`, so settles answer `stale`), and the reservation
+   (§5.7) stays held until the queue's debt clears (step 4).
+2. The sweep cancels and retires every message, deletes delivery rows, dedup
+   entries and failure detail in bounded, resumable batches; each batch adds
+   to the deletion debt. A restart or move resumes from the cursor.
+3. When nothing live remains, the registry tombstone is written, conditional
+   on the same incarnation (a recreated queue under the same name is a new
+   incarnation and is untouched).
+4. The roster row and the debt are keyed by storage hash, not name, so
+   collection (stages 3 and 4) continues after the tombstone; the reservation
+   is released when the debt clears.
+
+This answers READINESS TLA-019-F3 for queues: no history rows exist, forks are
+refused, billing closes at retirement, deletes are bounded and resumable, and
+quiet-shard collection is stage 4.
 
 **Escalation if shared compaction is too costly.** If Q0 shows queue
 collection rewriting too much unrelated live data, or missing its deadline
@@ -552,14 +696,26 @@ authoritative queue state, with the same scheduling and GC requirements.
 
 Three quantities are kept apart:
 
-- **Live bytes** (billed): record bytes plus a fixed charge for every row
-  family (metadata, `A`, `L`, `R`, `F`, `E`, `X`, key index, dedup, delivery
-  rows, failure detail, roster and debt rows), added when written and removed
-  at retirement.
-- **Bytes awaiting reclamation**: the debt rows' `pendingBytes`, reported per
-  queue and shard; the platform's cost, bounded by the collection deadline.
+- **Live bytes**: what exists and is counted against capacity.
+- **Bytes awaiting reclamation**: retired-but-undeleted (`X`) plus deletion
+  debt, reported per queue and shard; the platform's cost, bounded by the
+  completion deadline.
 - **Physical storage**: the shard database's object-store size, reported on
   `/operator/data.json`.
+
+Live bytes are accounted **by the lifetime of the state**, not all at message
+retirement:
+
+| State | Accounting and cleanup |
+|---|---|
+| message payload and message-owned rows (metadata, `A`, key index, delivery rows and indexes, failure detail) | counted from write; removed from live at the message's retirement; deletion creates debt |
+| dedup entries | counted from write against the queue's dedup budget (§8.4) and the stored-bytes cap until their own deletion at the window's end, whether or not the message is done; deletion creates debt |
+| queue-wide rows (state, group, roster, debt rows) | a fixed charge per queue for the queue's life |
+| `X` and collection bookkeeping | platform overhead, bounded by the completion deadline, not billed |
+
+Billing for a completed message stops at its retirement; independently
+retained dedup state is still accounted while it exists (whether its price is
+bundled is a product decision, D14).
 
 Retirement-time decrements are a new ledger path: `owned_frame_bytes_current`
 today only rises and is zeroed at close
@@ -575,6 +731,15 @@ A `dedupKey` seen within the dedup window (default 24 h, maximum 7 days,
 never above retention) returns the original id with `duplicate: true`, even
 when that message is already done and reclaimed. Entries are swept at the end
 of their window (§6.8) and deleted with the queue. Republish bypasses dedup.
+
+Dedup entries outlive their messages, so they have their own budget:
+`maxDedupEntries` per queue (default 1 million, about 100 MiB), reserved
+against the shard with the admission budget (§5.7). A send with a new
+`dedupKey` beyond it is refused `429 dedup_full`, retryable; entries are
+never evicted early, which would silently weaken dedup. The window and the
+send rate set the need: 1,000 unique keys a second with a 24-hour window is
+86.4 million entries, so such a queue needs a shorter window or a larger
+reserved budget.
 
 ### 8.5 Named groups (later)
 
@@ -653,14 +818,25 @@ acknowledgement.
    not the runtime, carry durability.
 
 **Re-arming and backoff, from durable state.** The group row holds
-`lastClaimAt` (set by every claim), `lastNotifiedAt` and `notifyBackoffMs`.
-The sweep notifies when the group has due work and no claim since the last
-notification plus the backoff. A notification that gets no claim afterwards,
-acknowledged or not, doubles the backoff (1 s → 60 s); a claim resets it. At
-most one notification is in flight per subscription, at most one per backoff
-interval, and at most 10 a second per project. The fan-out a receiver starts
-is its own choice, bounded by `maxInFlight`. A restart or move re-arms from
-the rows. A lost notification costs latency only.
+`lastUsefulClaimAt` (set only by a claim that leased at least one message;
+empty polls, paused answers and rate-blocked claims do not count),
+`lastNotifiedAt` and `notifyBackoffMs`. The sweep notifies when
+
+```text
+claimable work remains (due, not paused, within maxInFlight)
+AND now ≥ max(lastUsefulClaimAt, lastNotifiedAt) + notifyBackoffMs
+AND the project's notification budget admits it
+```
+
+A notification the project budget refuses does not update `lastNotifiedAt`.
+So a useful claim suppresses notifications only for one backoff interval: a
+receiver that drains for its budget and exits with backlog is woken again
+with no external request. A notification followed by no useful claim within
+the interval, acknowledged or not, doubles the backoff (1 s → 60 s); a useful
+claim resets it to 1 s. At most one notification is in flight per
+subscription and at most 10 a second per project. The fan-out a receiver
+starts is its own choice, bounded by `maxInFlight`. A restart or move re-arms
+from the rows. A lost notification costs latency only.
 
 **Secret custody.** The signing secret is `HMAC(cell wake key version k,
 project ‖ subscriptionId ‖ rotation)`, returned once at creation or rotation;
@@ -689,7 +865,8 @@ worker** is the pilot's simplest option, with its idle cost stated.
 - The group's `GET`: `due`, `scheduled`, `leased`, `retrying`, `failed`,
   `oldestDueAgeMs`, `oldestFailedAgeMs`, `nextAvailableAt`, `paused`,
   `retentionGap`, hard-expired, admission budget use, wake-up health
-  (`lastNotifiedAt`, backoff, failures, `lastClaimAt`), counters.
+  (`lastNotifiedAt`, backoff, failures, `lastUsefulClaimAt`), dedup budget use,
+  counters.
 - `/operator/data.json`: per-project queue totals, oldest-due age, failed
   counts, gaps, per-shard queue live bytes, bytes awaiting reclamation, oldest
   debt age, physical size, sweep lag, collection passes; cell-watch rules for
@@ -724,8 +901,9 @@ peek, dead-letter view; with the key). Clamps, published: `leaseMs` 1 s to
 
 | Requirement | Scope |
 |---|---|
-| Feasibility | Q0 passes every gate in §16 before Q1 starts |
-| Storage | queue storage mode with guarded consumers, the four-stage reclamation lifecycle with quiet-shard collection, accounting of the three quantities, per-shard fair bound, queue delete lifecycle |
+| Feasibility | Q0 passes every gate of [QUEUES-PLAN.md](QUEUES-PLAN.md) §2 before Q1 starts |
+| Cost | the pricing benchmark reports MET: fully loaded cost at most 20% of the Cloudflare bill for the control-plane month ([QUEUES-PRICING-BENCHMARK.md](QUEUES-PRICING-BENCHMARK.md)) |
+| Storage | queue storage mode with guarded consumers, the four-stage reclamation lifecycle with quiet-shard collection, accounting by lifetime, reservations, queue delete lifecycle with the `deleting` fence |
 | Delivery | the `default` group, unordered, queue clock, fenced leases, settles, retry with backoff, scheduled availability, claim byte limits |
 | Recovery | durable failed deliveries, dead-letter view, redrive, republish, discard |
 | Time | fixed retention, the maintenance sweep and queue roster, admission budget |
@@ -739,55 +917,18 @@ queue's traffic (not replay), or an explicit history-retention feature;
 updatable retention; shared `limiters`; republish across keys; an in-memory
 local fake; generic HTTPS push.
 
-| Workload | First release? | Settings |
-|---|---|---|
-| Plain support sync (pilot) | yes | defaults |
-| Offer and spend-limit enforcement | yes | dedup key per (workspace, hour) |
-| Stripe and spend-limit usage sync | yes | `maxAttempts 11`, backoff 30 s..12 h; `rate`; spread by `deliverAt` |
-| Vercel usage sync → billing data | yes | `delay 2m`; billing data as a downstream queue |
-| Notification → email | yes | `maxInFlight`/`rate` matched to Brevo |
-| ppg-events-shared | yes | external producer with `queues.send` |
-| Invoice submission | yes | self-continuations via `deliverAt`; the reconciler stays |
-| Credential cleanup | yes | `deliverAt` per request |
-| Console Worker consumers | where handlers fit the Worker drain budget | wake-up handler; others on a Compute worker |
-| Dunning, tenant-manager sync, Bloom turns | after Q6 | ordered |
+**Workloads.** First release: plain support sync (the pilot), offer and
+spend-limit enforcement (dedup per workspace and hour), Stripe and spend-limit
+usage sync (`maxAttempts 11`, backoff 30 s..12 h, `rate`, spread by
+`deliverAt`), Vercel usage sync and billing data, notification email (matched
+to Brevo), ppg-events-shared, invoice submission and credential cleanup (both
+via `deliverAt`), and the Console's Worker consumers whose handlers fit the
+Worker drain budget. After Q6: dunning, tenant-manager sync and Bloom turns.
 
 ## 13. Verification
 
-- **TLA+**, two models within CI's formal budget (bound today: TLA-002 at
-  40-50 min). **`QueueDelivery`**: queue clock with clock steps and moves,
-  availability index, cursor, delivery rows and indexes, fencing and replayed
-  settles, bounded release, the sweep's expiry tasks, failure, redrive,
-  republish, cancel, pause, crash/restart. **`QueueReclamation`**: retirement
-  by every path with restarts between retirement, deletion and collection;
-  debt generations with retirements during a pass; queue delete across a
-  restart; group creation (§8.5). Invariants: no message lost; no send at or
-  below a cursor; a replayed settle changes nothing; nothing outlives
-  `hardExpiresAt`; no message retires twice and accounting moves exactly
-  once; nothing open or ahead of a cursor is deleted; every retired message is
-  eventually deleted and its debt eventually cleared; a pass never clears a
-  newer generation; ready work is claimable while `maxInFlight` allows.
-- **Kani**: codecs (big-endian order), the id order, lease tokens with group
-  generation, backoff and lifetime arithmetic, the tail flag decoder.
-- **DSTs**: the colleague's evidence lists (recoverable failure without keys,
-  delayed backlog not hiding ready work, rollover, replayed settles, a noisy
-  queue not stopping other tenants, an unconsumed queue freeing its budget,
-  hard expiry fencing a long-extended lease, explicit retry past retention,
-  dedup expiry on a quiet queue, wake-up re-arm after drain, restart and move)
-  and the storage-mode guards: **an absorber tick gathers nothing from a
-  queue; a queue tail is never a repair candidate; queue traffic does not mask
-  a stalled absorber; a cold queue shard is not absorption debt; a deleted
-  queue's rows are gone after restart and move; a queue roster resumes the
-  sweep on a new owner; double-retirement attempts move accounting once.**
-  Plus clock steps, mixed-success batches, crash windows, claim read
-  failures, release loops, the per-shard fair bound and egress refusals.
-- **SDK**: runner and wake-up handler against the real server; Workers in CI,
-  including a drain that outlasts the acknowledgement.
-- **Layer B queue arm**: queue workers, a poison tenant, a send flood and a
-  collection pass under the shared-cell bars.
-- **Pilot**: `cp-plain-support-sync` beside the old queue for a week; every
-  message the old queue processed is processed by the new one (by business
-  id), none lost, failures match, p99 send-to-start within the old queue's.
+The verification plan (TLA+, Kani, DSTs, SDK, Layer B, pilot) is in
+[QUEUES-PLAN.md](QUEUES-PLAN.md) §4.
 
 ## 14. Decisions for the owner (each with a recommendation)
 
@@ -801,115 +942,30 @@ local fake; generic HTTPS push.
 | D6 | Execution | SDK runner plus wake-up notifications (fast acknowledgement, bounded drain); kept-awake pilot worker |
 | D7 | Retention | 4 days default, 14 maximum, fixed at creation; expired untaken messages are counted gaps |
 | D8 | Reclamation | Retirement, deletion, scheduled compaction and verified quiet-shard GC (§8.2), required before production queues |
-| D9 | Admission budget | 256 MiB / 1 million undone messages per queue by default, within the per-shard fair bound |
-| D10 | Request tier | A per-project queue tier sized by the §6.5 formula |
+| D9 | Admission budget | 256 MiB / 1 million undone messages and 1 million dedup entries per queue by default, reserved against the shard at creation |
+| D10 | Request tier | Producer and consumer request budgets sized separately by the §6.5 formula |
 | D11 | Overload | A separate settle bucket; #184's append rules |
 | D12 | Batches | Atomic ≤ 1,000 messages within the body limit |
 | D13 | Dedup | 24 h default, 7 days maximum, never above retention |
-| D14 | Billing | Meter queue operations as today; live bytes billed, reclamation debt not |
+| D14 | Billing | Cloudflare parity: $0.40 per million logical operations per message per 64 KB (send a write, each delivery a read, ack or discard a delete), one million a month included; empty claims free; bandwidth and standard retention included; live bytes count against capacity (a message's until retirement, dedup entries until their window ends) |
 | D15 | Sequencing | Q0 gates Q1; the first release gates the beta if queues are a beta requirement |
 | D16 | Wake-up egress | §9.2 egress policy with a versioned derived secret |
 | D17 | Queue storage | Queue pages in the shard database, never absorbed, under queue storage mode |
 | D18 | Groups | Only `default` first; named groups under §8.5 |
 | D19 | Tail format | A queue storage flag bit in the tail; the first binary writing it is a one-way upgrade for cells with queues (or a `LAYOUT_VERSION` bump, if the owner prefers) |
 | D20 | Collection | The compaction trigger in the shared shard database; segments, then a separate queue database, only if Q0 shows shared compaction too costly |
+| D21 | Shard capacity | Reserve each queue's budgets at creation, no overcommit; smaller defaults with an opt-up, sized from Q0's per-shard bound; overcommit with a borrowing rule later |
+| D22 | Quiet-shard GC completion | Accept one residual L0 file per shard; a SlateDB patch only if Q0 shows it matters |
 
 ## 15. Review responses
 
-### 15.1 Fable 5.1 review of revision 5 and the owner's direction (2026-10-23)
-
-Fable's verdict was "revise"; its code claims hold (checked: no compactor
-binary in `src/bin/`, the embedded compactor at `src/config/validation.rs:26`,
-the repair trigger at `src/shard.rs:404`, `Full` excluding L0, the GC
-watermark minimum). The owner chose option (a) and set its requirements.
-
-| Point | Revision 6 |
-|---|---|
-| B1 "never absorbed" is acted on by six subsystems | queue storage mode: five invariants and a guarded-consumer table (§5.6); `absorbed = next` only as a projection (owner) |
-| B2 no compactor service; no quiet-shard collection | the four-stage lifecycle with scheduler, L0-reaching plan and GC progress in scope (§8.2); SPEC D17 noted stale |
-| Owner: durable debt, generations, amount-and-age trigger, process-wide budget, residency | §8.2 stage 3 |
-| Owner: `Full` excludes L0; GC watermark on quiet shards | §8.2 stages 3 and 4 |
-| Owner: absorber-progress masking; read-path boundary; explicit storage kind | §5.6 invariants 2 and 4; D19 |
-| Owner: escalation path | segments, then a separate queue database with all state (§8.2); D20 |
-| H1 queue delete leaks | queue delete lifecycle (§8.2) |
-| H2 double retirement | monotone retired bit tested by every path (§8.2) |
-| H3 discovery after restart or move | queue roster and timer heap (§6.8) |
-| H4 re-arm backoff and durable inputs | group-row fields, notified-without-claim backoff, budgets (§9.2) |
-| H5 per-shard bound blast radius | per-project fair bound; split as prerequisite; smaller defaults (§5.7, §6.6) |
-| H6 failure clock through redrive | redrive deletes `E`; a new failure restarts it (§7.1, §7.3) |
-| M1 queue clock not persisted | clock in the queue state row (§5.5) |
-| M2 wrong D17/D3 citations | corrected (§5.6, §5.7, §8.2) |
-| M3 cancel rows | group-scoped cancels moved to §8.5 |
-| M4 point gets; 404 from metadata | §6.1, §8.2 |
-| M5 new ledger path | §8.3 |
-| M6 Compute `waitUntil` unverified | verified in Q4, keep-awake fallback (§9.2) |
-| M7 freshness, IPv6, TLS, rotation signing | §9.2 |
-| M8 Q0 thresholds | §16, with the owner's adjustments |
-| M9 dedup after reclamation and on delete | §8.4 |
-| L1-L5 | extend while paused (§6.2); name collision (§4); test names (§13); framing range (§5.1); `E` deleted on ack (§6.2) |
-
-### 15.2 Earlier reviews
-
-The colleague's reviews of revisions 2 and 4 are taken except where narrowed:
-a settle bucket instead of a shedding exemption (a full exemption would let
-junk settles flood); no payload push in the first release (keyless wake-up
-notifications are the execution path); ordered groups after the first release
-(§6.4 shows they need more design); one scheduling owner per queue. Fable's
-reviews of revisions 1 and 3 stay answered as recorded in revision 4
-(`git show a768e650:docs/QUEUES-DESIGN.md`), except that queue pages are no
-longer absorbed, so history-row deletes are gone.
+Every review point of revisions 1-6, what each revision took, and the few
+points declined or narrowed with their reasons, are in
+[QUEUES-DESIGN-REVIEWS.md](QUEUES-DESIGN-REVIEWS.md).
 
 ## 16. Plan and size
 
-**Q0 storage feasibility (gate for Q1).** An isolated experiment revision,
-never production, built at the pinned SlateDB: queue storage mode, one-message
-pages, metadata and index rows, the four-stage lifecycle with the collection
-scheduler and GC progress, run at `MEMPROFILE_CERT=compute-1g`, **beside
-substantial stable Streams data in the same shard**. Cases:
-
-| Case | Establishes |
-|---|---|
-| a few sends and retirements below the ordinary compaction thresholds, then silence | collection does not depend on later traffic |
-| a large queue drains completely; separately, to one live message | empty and nearly empty queues reclaim without losing live work |
-| queue delete, then restart or ownership move | cleanup is found without a registry entry |
-| retirements during a collection pass | a pass never erases newer debt |
-| queue churn beside stable shard data, up to the per-shard bound | rewrite amplification and co-tenant interference |
-| everything at `compute-1g` | memory, latency and maintenance progress fit the posture |
-
-Gates (any failure stops Q1 and reopens §5 and §8):
-
-| Measure | Pass |
-|---|---|
-| Physical convergence after silence | physical size ≤ expected baseline (live data, metadata, recovery overhead) + a residual allowance of 64 MiB per shard, and ≤ 1.25× live for live data over 1 GiB, within the collection deadline (target 60 min, kept only if discovery, scheduling, rewrite, checkpoint protection, GC cadence and deletion all fit), with no new periodic LIST |
-| Unit cost | object-store requests and bytes per million completed messages (send → reclaim) at 10, 100 and 1,000 msg/s, plus fixed idle maintenance cost per shard, reported and within the pricing hypothesis |
-| Stored overhead | ≤ 600 B per message at 100 B bodies; ≤ 1.5× at 1 KiB; ≤ 1.1× at 64 KiB |
-| Steady churn | shard size ≤ 2 × (live backlog + 1 h of churn) at 1,000 msg/s over 2 h, 50 queues |
-| Latency during collection | p99 send and claim ≤ 150 ms; the co-tenant's append p99 within 10% of baseline; no backpressure |
-| Memory | RSS under the shed line throughout, including the largest compaction |
-| Failed backlog | 1 million hard-expiring deliveries cleaned within 2 h under the trim budget while serving 1,000 msg/s |
-| Cold open | 10 million queue rows open in ≤ 30 s, no tail repair, roster resumes |
-| Per-shard bound | set from the measured working set, with the fair-share rule |
-
-| Package | Contents | Estimate |
-|---|---|---|
-| Q0 Storage feasibility | the experiment and gates above, including the L0-reaching compaction plan and quiet-shard GC progress | 8-12 days |
-| Q1 Engine | queue storage mode and every guarded consumer, the tail flag, queue clock, pages and rows, cursor, delivery rows and indexes, ready cache, claim, settle, backoff and retention rules, `maxInFlight`, `rate`, pause, settle bucket | 22-30 days |
-| Q2 Queue resource | `kind: queue` and refusals, routes for `default`, scopes and clamps, dedup, scheduled messages, failed view, redrive, republish, discard, cancel, peek, audit, admission budget, per-shard fair bound | 9-13 days |
-| Q3 Sweep and reclamation | the sweep and queue roster, gaps and lifetimes, retirement, deletion, the collection scheduler, GC progress, queue delete lifecycle, accounting of the three quantities | 18-26 days |
-| Q4 Execution | SDK API and runner, wake-up subscriptions (secrets, egress, re-arming), the bounded-drain handler for Compute and Workers, Workers CI | 12-16 days |
-| Q5 Verification | the two TLA models, Kani, DSTs, Layer B arm, pilot | 13-20 days |
-| Q6 Ordered and named groups (after) | design §6.4, then build; §8.5; stream consumers onto the engine | after design |
-
-**First release (Q0-Q5): about 82-117 engineering days**, before workload
-migration, plus any SlateDB change Q0 finds necessary for quiet-shard GC.
-Q1 starts only when Q0 passes. Then Q1 → Q2 → Q3, with Q4 against Q2's
-routes and Q5 alongside.
-
-Costs to plan for: edits to `src/shard/transaction/append.rs`, the absorber,
-the tail codec and the shard transaction core stale formal receipts (about
-150 min serial per round); new key families go in new modules because
-`src/queue.rs` and `src/product_cursor.rs` are by-path includes; routes live in
-`src/product/queues/` because `src/product.rs` has no headroom; mutants run at
-about 5 minutes each with a per-push cap, so each package lands in several
-pushes. SPEC D17 and D23 describe a compactor service and maintenance-free
-shard logs that the tree does not have; correcting SPEC is a separate change.
+The packages Q0-Q6, their sizes and order, and Q0's experiment and gates
+are in [QUEUES-PLAN.md](QUEUES-PLAN.md). The first release (Q0-Q5) is about
+85-118 engineering days before workload migration, and Q1 starts only when
+Q0 passes.
