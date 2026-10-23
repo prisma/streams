@@ -86,7 +86,7 @@ impl super::super::CommitTransaction<'_> {
         let mut it = self
             .engine
             .db
-            .scan(from.clone()..to.clone())
+            .scan_with_options(from.clone()..to.clone(), &queue_scan_options())
             .await
             .map_err(|e| e.to_string())?;
         while merged.len() < want {
@@ -115,6 +115,17 @@ impl super::super::CommitTransaction<'_> {
             self.extra_writes = true;
             st.state_dirty = false;
         }
+    }
+}
+
+/// Queue scans cache the blocks they read (pricing benchmark, 2026-10-24):
+/// a claim and a sweep scan the same small index families again and again,
+/// and SlateDB's default scan reads every sorted run's block from the
+/// bucket each time (1M extra GETs in a 90-minute 1x run).
+pub(super) fn queue_scan_options() -> slatedb::config::ScanOptions {
+    slatedb::config::ScanOptions {
+        cache_blocks: true,
+        ..slatedb::config::ScanOptions::default()
     }
 }
 

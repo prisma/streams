@@ -89,7 +89,14 @@ impl ShardEngine {
     async fn queue_roster(&self) -> Result<Vec<([u8; 16], i64)>, String> {
         let mut it = self
             .db
-            .scan_prefix(&keys::ROSTER_PREFIX[..], ..)
+            .scan_prefix_with_options(
+                &keys::ROSTER_PREFIX[..],
+                ..,
+                &slatedb::config::ScanOptions {
+                    cache_blocks: true,
+                    ..slatedb::config::ScanOptions::default()
+                },
+            )
             .await
             .map_err(|e| e.to_string())?;
         let mut out = Vec::new();
