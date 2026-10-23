@@ -150,7 +150,10 @@ design's deadline; a run that fails a check is void.
 **Output.** `costs.json` with the three monthly costs and every term behind
 them; `python3 bench/queues-cost/cf_bill.py --measured costs.json` prints the
 margin and **goal MET or NOT MET** (fully loaded at 1× ≤ $5.41, and per-million
-cost at 10× and 100× ≤ the ceiling).
+cost at 10× and 100× ≤ the ceiling), or VOID for a run that failed a check.
+The local rig that produces it (replay, instruments, pricing, A/B
+orchestration) is `bench/queues-cost/run-ab.sh`; its README says how to run
+each row of the table above.
 
 ## 7. Estimate before building
 

@@ -1,0 +1,6 @@
+{
+  "private": true,
+  "type": "module",
+  "description": "Queue cost benchmark rig; no dependencies. main lets `node --test bench/queues-cost/` run every test.",
+  "main": "tests.mjs"
+}

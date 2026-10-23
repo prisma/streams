@@ -15,7 +15,10 @@ Usage:
 
 costs.json (the benchmark's output, §6 of docs/QUEUES-PRICING-BENCHMARK.md):
   {"month_usd": {"fully_loaded": float, "marginal": float,
-                 "standalone": float}}
+                 "standalone": float | null}, "void": bool, ...}
+written by bench/queues-cost/collect.mjs price; standalone is null when no
+standalone pair was run, and a void run (a failed correctness check) gets
+no verdict.
 """
 import argparse
 import json
@@ -82,10 +85,16 @@ def main():
           f"${ceiling / writes * 1e6:.3f} per million messages")
     if a.measured:
         with open(a.measured) as fh:
-            m = json.load(fh)["month_usd"]
+            costs = json.load(fh)
+        m = costs["month_usd"]
+        # A run that failed a correctness check is void (§6): no verdict.
         verdict = "MET" if m["fully_loaded"] <= ceiling else "NOT MET"
+        if costs.get("void"):
+            verdict = "VOID (" + "; ".join(costs.get("void_reasons", [])) + ")"
+        standalone = ("n/a" if m.get("standalone") is None
+                      else f"${m['standalone']:,.2f}")
         print(f"measured fully loaded ${m['fully_loaded']:,.2f} "
-              f"(marginal ${m['marginal']:,.2f}, standalone ${m['standalone']:,.2f}); "
+              f"(marginal ${m['marginal']:,.2f}, standalone {standalone}); "
               f"margin {1 - m['fully_loaded'] / bill:.1%}: goal {verdict}")
 
 
