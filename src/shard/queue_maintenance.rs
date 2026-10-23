@@ -19,8 +19,13 @@ const FORCE_BYTES: u64 = 256 << 20;
 const MIN_PASS_BYTES: u64 = 16 << 20;
 /// Launch age: how old the oldest debt may get before a pass starts.
 const LAUNCH_AGE_MS: i64 = 15 * 60_000;
-/// The longest any debt waits for a pass, however small.
-const MAX_INTERVAL_MS: i64 = 2 * crate::native_queue::HOUR_MS;
+/// The longest any debt waits for a pass, however small (Fable code
+/// review H5: a pass rewrites every run of the shard, so small debt waits
+/// for a day rather than costing a full rewrite every two hours).
+const MAX_INTERVAL_MS: i64 = 24 * crate::native_queue::HOUR_MS;
+/// Below the size trigger, the age trigger also needs debt worth this
+/// fraction (1/RELATIVE_DENOM) of the shard's compacted bytes.
+const RELATIVE_DENOM: u64 = 20;
 /// How long a pass waits for its compaction, and for GC afterwards.
 const COMPACTION_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 const GC_WAIT: std::time::Duration = std::time::Duration::from_secs(45 * 60);
@@ -159,11 +164,12 @@ impl ShardEngine {
         let total: u64 = captured.iter().map(|c| c.0.bytes).sum();
         let oldest = captured.iter().map(|c| c.1).min();
         let now = now_ms();
+        let floor = MIN_PASS_BYTES.max(self.compacted_bytes() / RELATIVE_DENOM);
         let due = match oldest {
             None => false,
             Some(oldest) => {
                 total >= FORCE_BYTES
-                    || (total >= MIN_PASS_BYTES && now - oldest >= LAUNCH_AGE_MS)
+                    || (total >= floor && now - oldest >= LAUNCH_AGE_MS)
                     || now - oldest >= MAX_INTERVAL_MS
             }
         };
@@ -179,10 +185,13 @@ impl ShardEngine {
             let op = NqOp::ClearDebt {
                 generation: c.generation,
                 bytes: c.bytes,
+                captured_at: now,
             };
-            self.submit_native_queue(c.hash, op)
-                .await
-                .map_err(|e| format!("{e:?}"))?;
+            // A queue deleted meanwhile has no debt left to clear.
+            match self.submit_native_queue(c.hash, op).await {
+                Ok(_) | Err(crate::native_queue::NqRefusal::NotFound) => {}
+                Err(e) => return Err(format!("{e:?}")),
+            }
         }
         tracing::info!(
             shard = %self.prefix,
@@ -222,6 +231,16 @@ impl ShardEngine {
             }
         }
         Ok(out)
+    }
+
+    /// The shard log's compacted bytes, from its manifest.
+    fn compacted_bytes(&self) -> u64 {
+        self.db
+            .manifest()
+            .compacted()
+            .iter()
+            .map(|run| run.estimate_size())
+            .sum()
     }
 
     fn queue_admin(&self) -> slatedb::admin::Admin {

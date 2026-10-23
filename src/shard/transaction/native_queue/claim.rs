@@ -77,7 +77,12 @@ impl CommitTransaction<'_> {
         }
         if !out.is_empty() {
             st.state.last_useful_claim_at = t;
-            st.state.notify_backoff_ms = 0;
+            st.state.notify_backoff_ms = 1_000;
+        }
+        // A claim that moved the cursor past expired or cancelled entries
+        // changed state even if it leased nothing; it advances the clock
+        // so no later send can sort below the cursor (§5.5).
+        if st.state_dirty || !out.is_empty() {
             Self::nq_tick(st, t);
         }
         Ok(NqOut::Claimed {

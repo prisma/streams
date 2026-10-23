@@ -83,14 +83,19 @@ impl QueueService {
             key_version: 0,
         };
         match self.op(t, op).await? {
-            NqOut::Sent(results) => Ok(results),
+            NqOut::Sent(results) => {
+                crate::native_queue::wake(&t.hash);
+                Ok(results)
+            }
             other => Err(unexpected(&other)),
         }
     }
 
-    /// Claim from the default group; with nothing due, re-claim on a
-    /// backoff of 200 ms doubling to 1 s until `waitMs` (an empty claim
-    /// writes nothing, so a parked claim costs no store writes).
+    /// Claim from the default group; with nothing due, park on the
+    /// queue's waiter until a send or settle in this process wakes it, at
+    /// most 5 s at a time for work that falls due by time, until `waitMs`
+    /// (an empty claim writes nothing, so a parked claim costs no store
+    /// writes).
     pub(crate) async fn claim(
         &self,
         t: &QueueTarget,
@@ -100,8 +105,12 @@ impl QueueService {
         let op = self.claim_op(t, &input).await?;
         let wait = input.wait_ms.unwrap_or(0).clamp(0, MAX_WAIT_MS);
         let deadline = tokio::time::Instant::now() + Duration::from_millis(wait.unsigned_abs());
-        let mut pause = Duration::from_millis(200);
+        let waiter = crate::native_queue::waiter(&t.hash);
         loop {
+            // Registered before the claim, so a send between the claim and
+            // the wait is not missed.
+            let mut woken = std::pin::pin!(waiter.notified());
+            woken.as_mut().enable();
             let (deliveries, paused) = match self.op(t, op.clone_claim()).await? {
                 NqOut::Claimed { deliveries, paused } => (deliveries, paused),
                 other => return Err(unexpected(&other)),
@@ -111,8 +120,11 @@ impl QueueService {
                 let messages = self.leased_messages(t, key, &deliveries).await?;
                 return Ok(Claimed { messages, paused });
             }
-            tokio::time::sleep(pause.min(deadline - now)).await;
-            pause = (pause * 2).min(Duration::from_secs(1));
+            let nap = Duration::from_secs(5).min(deadline - now);
+            if tokio::time::timeout(nap, woken).await.is_ok() {
+                // Let the waking commit's other parked claims race fairly.
+                tokio::task::yield_now().await;
+            }
         }
     }
 
@@ -200,7 +212,10 @@ impl QueueService {
         let results = if items.is_empty() {
             Vec::new()
         } else {
-            match self.op(t, NqOp::Settle { items }).await? {
+            let settled = self.op(t, NqOp::Settle { items }).await?;
+            // A retry or release makes work claimable again.
+            crate::native_queue::wake(&t.hash);
+            match settled {
                 NqOut::Settled(results) => results,
                 other => return Err(unexpected(&other)),
             }

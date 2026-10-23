@@ -260,6 +260,7 @@ pub(crate) enum NqOp {
     ClearDebt {
         generation: u64,
         bytes: u64,
+        captured_at: i64,
     },
     SetWakeup {
         url: Option<String>,
@@ -417,4 +418,35 @@ pub(crate) fn backoff_ms(b: &Backoff, attempts: u32, rand: u64) -> i64 {
     let capped = u128::try_from(base.min(b.max_ms).max(0)).unwrap_or(0);
     let scaled = capped * u128::from(rand.min(JITTER_SCALE)) / u128::from(JITTER_SCALE);
     i64::try_from(scaled).unwrap_or(i64::MAX)
+}
+
+/// Parked claims of a queue in this process (§6.1): a send, redrive or
+/// settle that makes work claimable wakes them, so a long-poll claim waits
+/// on its queue instead of polling the committer.
+static WAITERS: std::sync::Mutex<
+    std::collections::BTreeMap<[u8; 16], std::sync::Weak<tokio::sync::Notify>>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// The queue's waiter, shared by every claim parked on it.
+pub(crate) fn waiter(hash: &[u8; 16]) -> std::sync::Arc<tokio::sync::Notify> {
+    let mut map = WAITERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(live) = map.get(hash).and_then(std::sync::Weak::upgrade) {
+        return live;
+    }
+    map.retain(|_, w| w.strong_count() > 0);
+    let fresh = std::sync::Arc::new(tokio::sync::Notify::new());
+    map.insert(*hash, std::sync::Arc::downgrade(&fresh));
+    fresh
+}
+
+/// Wake every claim parked on the queue.
+pub(crate) fn wake(hash: &[u8; 16]) {
+    let map = WAITERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(live) = map.get(hash).and_then(std::sync::Weak::upgrade) {
+        live.notify_waiters();
+    }
 }

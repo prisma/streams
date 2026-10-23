@@ -704,3 +704,23 @@ async fn a_claim_respects_bytes_in_flight_and_pause() {
     }
     assert!(state(&db).await.paused);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sweep_with_nothing_due_parks_the_roster_at_the_next_deadline() {
+    let (e, db, _absorb) = engine("nq-roster").await;
+    create(&e, QueueConfig::default()).await;
+    op(&e, send_op(vec![msg("a")])).await.unwrap();
+    op(&e, NqOp::Sweep).await.unwrap();
+    let raw = db
+        .get(keys::roster(&HASH))
+        .await
+        .unwrap()
+        .expect("a queue with a message is on the roster");
+    let at = i64::from_be_bytes(raw[..8].try_into().unwrap());
+    // The only deadline is the untaken message's retention end (4 days):
+    // the sweeper must not look at this queue again every second.
+    assert!(
+        at > now_ms() + 3 * crate::native_queue::DAY_MS,
+        "roster deadline {at} is not the retention end"
+    );
+}

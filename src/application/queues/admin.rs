@@ -106,7 +106,9 @@ impl QueueService {
             all: input.all,
             limit: input.limit.unwrap_or(MAX_PAGE).clamp(1, MAX_PAGE),
         };
-        match self.op(t, op).await? {
+        let out = self.op(t, op).await?;
+        crate::native_queue::wake(&t.hash);
+        match out {
             NqOut::Redriven {
                 redriven,
                 remaining,

@@ -54,7 +54,7 @@ impl CommitTransaction<'_> {
             _ => RosterHint::Changed,
         };
         if st.exists && (changed || matches!(hint, RosterHint::Swept(_))) {
-            self.nq_roster(&hash, &st, &hint, t);
+            self.nq_roster(&hash, &st, &hint, t).await;
         }
         local.queue.native = Some(st);
         self.effects.native_acks.push((resp, out));
@@ -119,12 +119,20 @@ impl CommitTransaction<'_> {
             NqOp::Peek { after, limit } => self.nq_peek(hash, st, after, limit).await,
             NqOp::Message { offset } => self.nq_message(hash, st, offset).await,
             NqOp::Sweep => self.nq_sweep(hash, st, t).await,
-            NqOp::ClearDebt { generation, bytes } => {
+            NqOp::ClearDebt {
+                generation,
+                bytes,
+                captured_at,
+            } => {
                 if st.state.debt_generation == generation {
                     st.state.debt_bytes = 0;
                     st.state.debt_oldest_at = 0;
                 } else {
+                    // Debt recorded after the capture stays, aged from no
+                    // earlier than the capture: the pass covered everything
+                    // older.
                     st.state.debt_bytes = st.state.debt_bytes.saturating_sub(bytes);
+                    st.state.debt_oldest_at = st.state.debt_oldest_at.max(captured_at);
                 }
                 st.state_dirty = true;
                 Ok(NqOut::Count(st.state.debt_bytes))
@@ -166,7 +174,28 @@ impl CommitTransaction<'_> {
     /// find it after a restart or move. Its value is when the sweep should
     /// look next: now after any change, the computed next deadline after a
     /// sweep (an hour out when only debt remains).
-    fn nq_roster(&mut self, hash: &[u8; 16], st: &NativeStage, hint: &RosterHint, t: i64) {
+    async fn nq_roster(&mut self, hash: &[u8; 16], st: &NativeStage, hint: &RosterHint, t: i64) {
+        let target = Self::nq_roster_target(st, hint, t);
+        if matches!(hint, RosterHint::Swept(_)) {
+            // A sweep that moved nothing writes only a changed deadline.
+            let stored = self.engine.db.get(keys::roster(hash)).await.ok().flatten();
+            let stored = stored
+                .and_then(|v| <[u8; 8]>::try_from(&v[..]).ok())
+                .map(i64::from_be_bytes);
+            if stored == target {
+                return;
+            }
+        }
+        match target {
+            Some(at) => self.batch.put(keys::roster(hash), at.to_be_bytes()),
+            None => self.batch.delete(keys::roster(hash)),
+        }
+        self.extra_writes = true;
+    }
+
+    /// When the sweep should look next, or `None` when the queue has
+    /// nothing time moves on and no debt.
+    fn nq_roster_target(st: &NativeStage, hint: &RosterHint, t: i64) -> Option<i64> {
         let s = &st.state;
         let pending = s.queued_messages > 0
             || s.leased > 0
@@ -174,18 +203,13 @@ impl CommitTransaction<'_> {
             || s.failed > 0
             || s.dedup_entries > 0
             || s.deleting;
-        if pending || s.debt_bytes > 0 {
-            let at = match *hint {
-                // Work already due waits for a claim, not the sweep: look
-                // again in a minute rather than every second.
-                RosterHint::Swept(Some(next)) if next <= t => t + 60_000,
-                RosterHint::Swept(Some(next)) => next,
-                RosterHint::Swept(None) => t + crate::native_queue::HOUR_MS,
-                RosterHint::Changed => t,
-            };
-            self.batch.put(keys::roster(hash), at.to_be_bytes());
-        } else {
-            self.batch.delete(keys::roster(hash));
-        }
+        (pending || s.debt_bytes > 0).then_some(match *hint {
+            // Work already due waits for a claim, not the sweep: look
+            // again in a minute rather than every second.
+            RosterHint::Swept(Some(next)) if next <= t => t + 60_000,
+            RosterHint::Swept(Some(next)) => next,
+            RosterHint::Swept(None) => t + crate::native_queue::HOUR_MS,
+            RosterHint::Changed => t,
+        })
     }
 }

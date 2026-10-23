@@ -93,6 +93,12 @@ pub(crate) fn guard_raw(
     state: &Arc<AppState>,
     route: MethodRouter<Arc<AppState>>,
 ) -> MethodRouter<Arc<AppState>> {
+    // Built once at boot: the shard sweepers sign wake-up notifications
+    // with this deployment's root from the first moment, not from the first
+    // queue request after a restart (Fable code review H3).
+    if let Some(root) = state.catalog_cursor_key {
+        crate::native_queue::wakeup::install_root(root);
+    }
     route.layer(axum::middleware::from_fn_with_state(
         state.clone(),
         raw_guard,

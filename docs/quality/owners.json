@@ -3695,6 +3695,22 @@
       "path": "src/shard/transaction/native_queue/sweep.rs",
       "reason": "Native-queue module importing its parent's items with super::*, compiler checked; counted so no further glob is admitted.",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::WAITERS",
+      "path": "src/native_queue/mod.rs",
+      "reason": "Process-wide parked-claim waiters per queue (§6.1): a send, settle or redrive in this process wakes the queue's long-poll claims; weak entries pruned on insert, so it holds no queue state and no memory past its waiters.",
+      "syntax": "std :: sync :: Mutex < std :: collections :: BTreeMap < [u8 ; 16] , std :: sync :: Weak < tokio :: sync :: Notify > > , >"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::QueueService::claim",
+      "path": "src/application/queues/delivery.rs",
+      "reason": "A long-poll claim pins its waiter's Notified future so it can be enabled before the claim, as tokio's Notify requires to not miss a wake.",
+      "syntax": "std::pin::pin"
     }
   ]
 }

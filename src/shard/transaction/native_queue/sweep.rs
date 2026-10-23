@@ -16,12 +16,17 @@ impl CommitTransaction<'_> {
         st: &mut NativeStage,
         t: i64,
     ) -> NqResult {
-        let mut moved = 0usize;
-        moved += self.nq_sweep_leases(&hash, st, t).await?;
-        moved += self.nq_sweep_retries(&hash, st, t).await?;
-        moved += self.nq_sweep_untaken(&hash, st, t).await?;
-        moved += self.nq_sweep_failures(&hash, st, t).await?;
-        moved += self.nq_sweep_dedup(&hash, st, t).await?;
+        let steps = [
+            self.nq_sweep_leases(&hash, st, t).await?,
+            self.nq_sweep_retries(&hash, st, t).await?,
+            self.nq_sweep_untaken(&hash, st, t).await?,
+            self.nq_sweep_failures(&hash, st, t).await?,
+            self.nq_sweep_dedup(&hash, st, t).await?,
+        ];
+        let moved: usize = steps.iter().sum();
+        // A step that filled its budget has more due now: look again in a
+        // second rather than at the next deadline.
+        let more_due = steps.iter().any(|n| *n >= SWEEP_STEP);
         if moved > 0 {
             Self::nq_tick(st, t);
         }
@@ -29,6 +34,9 @@ impl CommitTransaction<'_> {
         let wake = self.nq_wake(&hash, st, t).await?;
         if let Some(at) = Self::nq_next_notify(st) {
             next = Some(next.map_or(at, |n| n.min(at)));
+        }
+        if more_due {
+            next = Some(t + 1_000);
         }
         Ok(NqOut::Swept {
             next_deadline: next,
