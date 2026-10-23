@@ -1,378 +1,499 @@
 # Native queues in Prisma Streams — design for review
 
-Status: **proposal, revision 2, 2026-10-23, for the owner's review before any
-implementation.** Written by the lead from the queue usage review of
-7 October 2026 (the control plane's 18 Cloudflare queues and its database
-work queues) and a read-only inventory of `slate` at 86d7476d. Revision 2
-answers an adversarial review by Fable 5.1 (two blockers, seven high and
-nine medium findings; §14 lists each and where it is answered). Nothing here
-is built. Every client-visible change becomes an edge record when it lands.
+Status: **proposal, revision 4, 2026-10-23, for the owner's review before any
+implementation.** Revision 1 drew on the queue usage review of 7 October 2026
+and a read-only inventory of `slate` at 86d7476d. Revision 2 answered an
+adversarial review by Fable 5.1. Revision 3 adopted a colleague's review,
+which approved the direction and asked for four architectural changes.
+Revision 4 folds in Fable 5.1's final review of revision 3. §15 says what
+was taken from each review, what was declined, and why. Nothing here is
+built. Every client-visible change becomes an edge record when it lands.
 
 ## 1. What we are building and why
 
-The control plane runs 18 Cloudflare queue workloads (about 758,000 writes a
-day, 8.8 a second on average, 62,904 in the busiest hour, cron bursts much
-faster) and several database work queues (Bloom turns and drafts, Vercel
-credential cleanup, the usage outbox). The review concludes that a retained
-stream with durable, work-sharing consumer groups can serve them all, if each
-group keeps per-delivery state: claims, fenced leases, independent
-acknowledgement, scheduled retry, renewal, terminal failure, dead letters,
-inspect and redrive.
+Prisma Streams can give applications reliable background work beside their
+data: send a message, have it run, retry it on failure, inspect and redrive
+what failed. Prisma's control plane is the first proving ground. It runs 18
+Cloudflare queue workloads (about 758,000 writes a day, 8.8 a second on
+average, 62,904 in the busiest hour, cron bursts much faster) and several
+database work queues.
 
-Prisma Streams already has most of the durable machinery. Consumer groups
-lease, acknowledge, retry, extend and dead-letter records, and their state
-commits on the same object-store watermark as appends
-(`src/shard/commit_plan.rs`), so a pull, a settle and an append share one
-failure boundary. What it lacks is the delivery model a queue needs:
+**The case is platform capability, not cost.** At Cloudflare's published
+price ($0.40 per million operations, about three per message) the control
+plane's queue operations cost roughly $27 a month. Native queues are worth
+building because they make Prisma a place where an app stores data, runs code
+and schedules reliable work under one operating model, not because they
+replace that bill.
+
+Prisma Streams already has the hard part. Consumer groups lease, acknowledge,
+retry, extend and dead-letter records, and every append, pull and settle is
+acknowledged only after it is durable on object storage
+(`src/shard/commit_plan.rs`, `DurableEffects`). What the current groups lack
+is a queue's delivery model:
 
 | Today | A queue needs |
 |---|---|
-| Every group is per-key FIFO; records without a routing key share one lane, so an un-keyed group has one batch in flight | Unordered competing consumers by default; per-key order only when asked for |
-| A retry with a delay keeps the record leased and its key blocked, and pins the cursor | A retry frees the delivery and schedules it; later work proceeds |
-| A pull sees a 4 MiB / ~4,100-record window above the cursor | A claim finds due work wherever it is |
-| No per-message delayed availability | `deliverAt` / `delay` on send, surviving restarts, never blocking ready work |
-| Dead-lettering only on exhausted attempts; with no DLQ an exhausted record is silently dropped | Explicit fail now, an explicit discard policy, never a silent drop |
-| The DLQ copy loses enqueue time and failure reason; no redrive | Envelope with identity, times, attempts, last error; durable redrive with lineage |
-| No pause, no stats beyond `backlog`, no cancellation, no listing | Pause/resume, stats (ready, scheduled, leased, oldest ages, DLQ depth), cancel by id |
-| Producer dedup by producer id + sequence (client keeps state) | A message-level dedup key with a time window |
-| The SDK has a sequential iterator | A concurrent worker runner with outcomes, backoff, auto-extend, graceful stop; Workers support |
+| Every group is per-key FIFO; records without a routing key share one lane | Unordered competing consumers |
+| A retry keeps the record leased, its key blocked and the cursor pinned | A retry frees the delivery and schedules it |
+| A pull sees a 4 MiB window above the cursor and stops at a sealed segment with backlog | A claim finds due work wherever it is |
+| No per-message delayed availability | `deliverAt` / `delay` on send |
+| Dead letters only on exhausted attempts, copied to another stream with the stream key | Failure as a durable, keyless state with recovery |
+| No redrive, pause, stats, cancellation or listing | All of these |
+| A sequential iterator, and no way to wake a sleeping worker | A worker runner, and a wake-up path for serverless workers |
 
-This design adds queues as a **mode of the existing engine**, not a second
-engine: a queue is a stream whose records are message envelopes, consumed by
-groups whose delivery state is a pending set instead of a FIFO cursor.
+## 2. Scope and boundaries
 
-## 2. Principles
+**What queues replace:** delivery and retry machinery: claiming work,
+leases, retries with backoff, scheduled availability, failure handling and
+redrive.
 
-1. **One durability boundary.** A send, a claim, a settle, a dead-letter
-   transfer and a redrive return only after their effect is on object storage
-   (G1). Message records and group state are in the same shard log and WAL.
-2. **At-least-once, stated plainly.** A handler can run more than once.
-   Leases are fenced so a stale worker cannot complete someone else's
-   delivery, but no queue makes a provider call exactly once. The queue
-   supplies the identity (message id, attempt, original time) that domain
-   idempotency needs.
-3. **No head-of-line blocking unless ordering is requested.**
-4. **Nothing disappears silently.** Failed, exhausted, expired and cancelled
-   messages are dead-lettered or counted under an explicit policy. A group
-   behind retention reports the gap.
-5. **The server can manage delivery without the stream key.** Everything the
-   dispatcher, expiry and stats need lives in a small metadata row per
-   message, written atomically with the message, holding only metadata of the
-   kind G8 already admits. Bodies, headers and error texts stay encrypted.
-6. **Bounded server memory.** Disk is the truth; memory holds a bounded
-   working set per group, charged to the project's memory line.
+**What queues do not replace:**
 
-## 3. Concepts
+- **Atomicity with a business database.** Committing state in Postgres and
+  sending a message are two operations, and a send inside a Postgres
+  transaction is not part of it. A crash between them leaves one without the
+  other, in either order. Applications that need both keep a transactional
+  outbox or a reconciler. The control plane's usage outbox, invoice
+  reconciler and sweeps stay.
+- **Exactly-once effects.** Delivery is at-least-once. Lease fencing protects
+  queue state; it cannot stop an old handler from finishing an external call
+  after its lease expired. Domain idempotency stays the application's job;
+  the queue gives it a stable identity (§4).
+- **Workflow state.** Bloom's admission limits, the email domain claim and
+  the setup-attempt ownership stay in their databases. Queues carry their
+  work items.
+- **History.** A queue is not a log. It keeps a message until every group is
+  done with it or it expires, and then reclaims it (§8). Workloads that need
+  replay use a stream.
+
+## 3. Principles
+
+1. **One durability boundary.** Every queue operation is acknowledged only
+   after its effect is durable on object storage, in the same shard log as
+   the messages (G1).
+2. **At-least-once, stated plainly** (§2).
+3. **Ready work is never hidden** by scheduled work, older messages, segment
+   boundaries, clocks or caches. Ordering, when requested, is the only thing
+   that may hold a message back, and only behind earlier messages of its own
+   key.
+4. **Nothing disappears silently.** Failed deliveries stay recoverable for a
+   stated period; expired and discarded messages are counted and reported.
+5. **The server manages delivery without the stream key.** Scheduling, expiry,
+   failure and reclamation use plaintext metadata only (times, counts, sizes,
+   MAC'd tags, server error codes). The key is needed only to read or write
+   message bodies and error text.
+6. **Every byte of new state is bounded and accounted.**
+
+## 4. Concepts and identities
 
 - **Queue**: a stream created with `kind: "queue"`. Its records are message
-  envelopes written by the server. It has a retention policy and a
-  dead-letter policy, and keeps the stream's encryption, quotas, stored-bytes
-  cap and billing. It is readable as a stream (replay, audit, SSE).
-- **Message**: one envelope record plus its metadata row. Its id is
-  `msg_<base32(epoch, segment, offset)>`: offsets are segment-local, so the
-  segment is part of the identity. The id is stable across retries.
-- **Group**: a named consumer of a queue. Members of one group compete;
-  separate groups each see every message. Every queue gets a group named
-  `default`.
-- **Delivery**: one message's state within one group: ready, scheduled,
-  leased, or done.
-- **Dead-letter queue (DLQ)**: a queue that receives failed deliveries, with
-  fixed rules (§5.5).
+  envelopes the server writes. It has retention, an admission budget and a
+  failure-retention period, and keeps the stream's encryption, quotas and
+  billing. In the first release a queue is reached only through `/v1/queues`:
+  stream reads, raw appends and forks of a queue are refused (409
+  `queue_via_queue_routes`), because reclamation leaves gaps a stream reader
+  does not expect.
+- **Group**: a named consumer of a queue. Members compete; separate groups
+  each see every message. Every queue has a group named `default`, and the
+  first release exercises that path. Groups stay in the data model.
+- **Message id** `msg_<base32(incarnation, segment, offset)>`: stable for the
+  message's life, across every retry and every redrive. Every route checks
+  that the id's incarnation is the queue's current one (404 otherwise).
+- **Delivery**: one message's state in one group. **Delivery id**
+  `(group, msgId, cycle)`, where `cycle` starts at 1 and rises by one on each
+  redrive. A **lease** within a delivery has a lease generation that fences
+  stale workers.
+- **Origin id** `originId`: the message id a republish chain started from
+  (§7.3). Applications use their own business id (for example
+  `notificationId`) or `originId` as the provider idempotency key; neither
+  changes across retries, redrives or republishes.
 
-## 4. Message envelope and metadata row
+## 5. Storage model
 
-**Envelope** (the encrypted record value, written by the server):
+All new state lives in the queue's owning shard log, in new key families
+under the stream's storage hash, written by the shard committer and durable
+on the same watermark as appends. Index keys are encoded big-endian, so key
+order is numeric order.
+
+### 5.1 Message record and metadata row
+
+The **envelope** is the encrypted record value:
 
 ```json
 {
   "id": "msg_01h9…",
   "deliverAt": 1792600120000,
   "key": "workspace_123",
-  "dedupKey": "stripe-usage:ws_123:2026-10-22",
+  "dedupKey": "notification:ntf_77",
   "contentType": "application/json",
-  "headers": { "schema": "stripe-usage.v2", "traceparent": "00-…" },
-  "lineage": { "redriveOf": "msg_01h7…" },
-  "body": { "workspaceId": "ws_123", "date": "2026-10-22" }
+  "headers": { "schema": "email.v2", "traceparent": "00-…" },
+  "lineage": { "originId": "msg_01h9…" },
+  "body": { "notificationId": "ntf_77" }
 }
 ```
 
-- The envelope has no version field: the stored format is versioned by
-  `LAYOUT_VERSION` only, as for every other stored format.
-- **Enqueue time** is the record's page commit timestamp, assigned by the
-  committer, monotone per segment. It is served as `enqueuedAt` (today
-  `PlainRec` drops it; the read path changes to keep it), and retention ages
-  by it. Redrive carries the original in `lineage.originalEnqueuedAt`.
-- `body` is JSON, or `bodyBase64` for bytes. The whole envelope must fit the
-  131,072 B record limit; the server refuses an oversized message with 413 and
-  states the envelope's share. `headers`: at most 16 entries, 4 KiB, strings.
-- Clients never write envelopes: a raw `records` append to a queue is refused
-  (409 `queue_append_via_messages`).
+- `body` is JSON, or `bodyBase64` for bytes. `headers`: at most 16 entries
+  and 4 KiB, strings only. The envelope has no version field: it is versioned
+  by `LAYOUT_VERSION`, like every stored format.
+- **One message, one page.** A queue send stores each message as its own page
+  (`src/crypto_page.rs` otherwise packs up to 4,096 records of one append
+  into one page). A page is the unit reclamation can delete, so this makes a
+  message deletable on its own. It costs about 70 B of page framing per
+  message and gives up compression across messages of one batch. A batch is
+  still one atomic WriteBatch.
+- `enqueuedAt` is the queue clock at the send (§5.5). It is served with every
+  message.
+- The envelope must fit the 131,072 B record limit (413 otherwise, stating the
+  envelope's share). Failure adds nothing to it (§7.1), so an accepted message
+  never outgrows its storage.
+- Clients never write envelopes.
 
-**Metadata row** (plaintext, written in the same WriteBatch as the record):
-`{deliverAt?, keyTag?, dedupTag?}` keyed by message id, where `keyTag` and
-`dedupTag` are HMACs of the key and dedup key under the stream key (as lease
-tokens are MAC'd today, `src/product_cursor.rs`). A delivery time and two
-opaque tags are metadata of the kind G8 already allows (routing keys are
-visible today); they let the dispatcher, the ordering index, expiry and
-dedup work without the stream key.
+The **metadata row**, written in the same WriteBatch as the record, holds
+`{availableAt, retentionEnd, bytes, open, cancelled, keyTag?, dedupTag?}`:
+`availableAt = max(enqueuedAt, deliverAt)`; `retentionEnd = availableAt +
+maxAge`; `bytes` the record size; `open` the number of open deliveries across
+all groups (§8.2); `cancelled` a queue-wide cancel (§6.7); the tags HMACs
+under the stream key. These are metadata G8 already admits (routing keys are
+visible today).
 
-**Appends.** A queue's records all use the stream's empty routing lane; the
-per-message `key` lives only in the envelope and the metadata row. A batch is
-therefore one append in one lane, as today, plus N metadata rows in the same
-WriteBatch. This changes `src/shard/transaction/append.rs` (a formal-receipt
-input) but needs no multi-key page cutting.
+### 5.2 The availability index: one scheduling order for the whole queue
 
-## 5. Delivery model
+Each send also inserts **one entry per message** into the queue's
+**availability index** `A`, keyed `(availableAt, msgId)`, in the same
+WriteBatch. `A` is queue-wide: it is keyed by the queue, not by lineage
+segment, so segment rollover is a storage matter and never a scheduling
+barrier. Message ids order as `(incarnation, segment, offset)`, and a
+successor segment always has a higher number, so ids order exactly as sends
+commit (a Kani proof in Q5).
 
-### 5.1 Group state
+**One scheduling owner per queue.** A queue writes one physical lane (the
+empty routing key), so one shard owns it and its indexes. The scaler cannot
+split a single-key workload (`src/scaler3.rs`, hot-key detection), so a queue
+has a per-queue throughput ceiling, to be measured in Q5 and published (the
+first target is 1,000 messages a second per queue; the control plane's busiest
+hour averages 17.5). A shard move carries the queue with its state.
 
-Per group and per lineage segment (offsets are segment-local; a claim merges
-segments oldest-first as `pull` does today), in new shard-log key families:
+### 5.3 Group state
+
+Per group:
 
 | State | Meaning |
 |---|---|
-| dispatch cursor `D` | every offset below `D` has been dispatched into the pending set once |
-| pending row per message | `{state, availableAt, attempts, leaseGen, leaseDeadline, firstDeliveredAt, errorCode?}`; `errorCode` is a server enum (`handler_failed`, `lease_expired`, `invalid_payload`, `cancelled`, …), never tenant text |
-| due index `(availableAt, msgId)` | ready and scheduled deliveries in claim order |
-| key index `(keyTag, offset)` (ordered groups) | the lowest pending offset per key |
-| last error (encrypted) | the worker's error text, encrypted under the stream key, at most 1 KiB, written by the settle that failed; read only to build the DLQ envelope |
-| low-water mark `L = min(D, lowest pending offset)` | what reclamation must not remove for this group |
-| counters | ready, scheduled, leased, done, dead-lettered, discarded, expired, cancelled; delivered, acked, retried, failed, stale |
+| group cursor `C` = `(time, msgId)` | every `A` entry at or below `C` has been taken or skipped by this group |
+| delivery row per **open** delivery | `{state: leased \| retrying \| failed, cycle, attempts, releases, leaseGen, leaseDeadline, firstDeliveredAt, firstFailedAt?, errorCode}` |
+| lease index `L` `(leaseDeadline, msgId)` | this group's leased deliveries |
+| retry index `R` `(availableAt, msgId)` | this group's retrying deliveries |
+| failure index `F` `(failedAt, msgId)` | this group's failed deliveries |
+| cancel rows | group-scoped cancels of messages ahead of `C` |
+| failure detail (encrypted) | the worker's error text, ≤ 1 KiB, when a settle carried text and the key (§6.2) |
+| counters | delivered, acked, retried, failed, expired, cancelled, discarded, redriven, stale settles |
 
-A dispatched message enters the pending set as `ready` (no `deliverAt`, or
-due) or `scheduled`. `D` then moves on: scheduled and retried messages never
-hold it back, so the old 4 MiB window disappears. Done deliveries are deleted.
+A delivery that is neither leased, retrying nor failed has no row: it is
+ahead of `C` (not yet taken) or done. Group state is proportional to work in
+flight, in retry and in failure, not to the backlog. There is no `maxPending`
+and no dispatch window.
 
-**Working set.** The committer keeps, per group, an in-memory **ready heap**
-of at most `maxInFlight + 1,024` due entries, refilled from the due index in
-`availableAt` order and from new records past `D`. Claims are served from the
-heap in commit order, so concurrent claims never fight over the same
-candidates and never scan the index inside the committer. Disk is the truth;
-the heap is rebuilt on open. The heap is charged to the project's memory line
-(about 100 B per entry).
+### 5.4 Bounded memory
 
-**Caps.** `maxPending` per group (default 1,000,000): when reached, the
-dispatcher stops advancing `D`, so further messages wait as un-dispatched
-records (their `deliverAt` honoured when dispatched); sends are never refused
-for it, and stats report `dispatchHeld`.
+The committer keeps, per active group, a **ready cache** of at most
+`maxInFlight + 1,024` due entries, refilled from `A` past `C` and from `R`,
+both in `availableAt` order. The cache is never the truth: when it runs dry
+the next claim refills it from the indexes, and it is rebuilt from them after
+a restart, an ownership change or a refused commit. It is charged to the
+project's memory line (about 100 B an entry).
 
-### 5.2 Claim
+### 5.5 The queue clock
 
-`claim(group, max, leaseMs, waitMs)` takes up to `max` deliveries from the
-heap whose `availableAt ≤ now`, subject to ordering (§5.6) and `maxInFlight`
-(§5.7). For each: `attempts += 1`, `leaseGen += 1`, `leaseDeadline = now +
-leaseMs`, `firstDeliveredAt` set once; it returns the envelope, `attempt`,
-`enqueuedAt` and a fenced lease token. If nothing is due and `waitMs > 0`, the
-claim parks until a new record, a settle, a lease expiry or **the next
-`availableAt`** (a timed wake; `pull_wait.rs` gains a timer), up to 25 s. A
-claim reply is released only after its lease rows are durable.
+All queue times come from one **queue clock** in the owning committer: `t =
+max(now_ms(), fields.ts)`, and every queue operation that reads the clock
+(send, claim, settle, sweep) writes `fields.ts = t` in its WriteBatch. So:
 
-**Expired leases.** A lease found past its deadline is not re-claimed at once:
-it counts as a failed attempt (`errorCode: lease_expired`) and is rescheduled
-at `now + backoff(attempts)`, so a crashed worker's leases come back on the
-group's backoff, not as an instant flood.
+- `fields.ts` is durable and monotone across restarts, NTP steps and shard
+  moves, and `C.time ≤ fields.ts` always: a claim can take an entry only when
+  `availableAt ≤ t`, and writes `t` as `fields.ts` in the same batch.
+- A send commits at `enqueuedAt = t ≥ fields.ts ≥ C.time`, and its id is above
+  every taken id at that time, so **a new message never sorts at or below a
+  group's cursor.** This is the invariant the TLA model checks, with clock
+  steps both ways and shard moves.
+- Queue routes ignore and refuse the `stream-timestamp` hint (400), which
+  could otherwise push `fields.ts` into the future.
+- A host whose clock is behind sees time stand still until it catches up
+  (deadlines and schedules stretch by the gap); one ahead makes scheduled
+  messages due and leases expire early by the gap. Lease handoff already
+  assumes clocks within 5 s; RUNBOOK states the same bound for queues.
 
-**Read memory.** A claim reserves `min(max, 8) × 128 KiB` (at most 1 MiB)
-under the project's memory line before reading envelopes, settled to the bytes
-actually read, replacing the pull's fixed 4 MiB coverage.
+## 6. Delivery
 
-### 5.3 Settle
+### 6.1 Claim
 
-One settle request carries any mix of operations, each by lease token:
+`claim(group, max, maxBytes, leaseMs, waitMs)` runs in two steps.
+
+**In the committer (keyless):**
+
+1. Take due entries (`availableAt ≤ t`) in `availableAt` order from the
+   merge of `A` past `C` and of `R`, within `maxInFlight` and the group's
+   `rate`, skipping cancelled messages; stop at `max` or when the next
+   message's metadata `bytes` would pass `maxBytes` (default 1 MiB, at most
+   8 MiB; one message is always allowed).
+2. Reserve read memory for exactly that total under the project's memory
+   line; if the reservation is refused, claim nothing (429
+   `project_memory_pressure`).
+3. Lease exactly that set: delivery row to `leased`, `attempts += 1`,
+   `leaseGen += 1`, `leaseDeadline = t + leaseMs`, entry in `L`; `open += 1`
+   on each newly taken message; advance `C` past `A` entries taken or
+   skipped.
+
+**After the commit is durable (with the key, outside the committer):** read
+the leased envelopes and return them. A read that fails releases those
+deliveries server-side with the attempt given back (not counted against the
+worker's releases, §6.2) and answers 503, retryable.
+
+If nothing is due and `waitMs > 0`, the claim parks until a send, a settle, a
+lease deadline or the group's next `availableAt` (a timed wake), up to 25 s.
+
+**Expired leases.** Each claim and settle first moves up to 64 entries from
+the head of `L` whose deadline has passed, and a timer at `min(L)` wakes the
+sweep when the group is idle. An expired lease counts as a failed attempt
+(`errorCode: lease_expired`): `leaseGen += 1`, moved to `R` at `t +
+backoff(attempts)`. A crashed worker's leases come back on the backoff, not
+as a flood.
+
+### 6.2 Settle
+
+One settle carries any mix of operations, each by lease token. **Every
+operation except `extend` ends the lease: it sets `leaseGen += 1`, so a
+replayed settle with the same token is `stale` and changes nothing.** The
+schedule never moves twice and attempts are never adjusted twice.
 
 | Operation | Effect |
 |---|---|
-| `ack` | done; pending row deleted |
-| `retry {delayMs?, error?}` | lease released; scheduled at `now + delay` (given, or the backoff policy); does not block other messages |
-| `extend {leaseMs}` | deadline moved to `now + leaseMs`; refused as `expired` if the deadline passed |
-| `fail {code?, error?}` | terminal now: dead-lettered, or discarded under a discard policy |
-| `release` | lease released, ready again at once; **the attempt is given back** (`attempts -= 1`), for graceful shutdown |
+| `ack` | delivery done: row deleted, `open -= 1` |
+| `retry {delayMs?, code?, error?}` | to `retrying` in `R` at `t + delay` (given, or the policy, §6.3) |
+| `extend {leaseMs}` | deadline to `t + leaseMs`; refused `expired` once the deadline has passed |
+| `fail {code?, error?}` | to `failed` now (§7.1) |
+| `release {notStarted: true}` | back to `R` due at `t + 1 s`, the attempt given back, `releases += 1`; **only for a message whose handler never started** |
 
-- A token whose `leaseGen` no longer matches is `stale` and changes nothing,
-  so settles are safe to replay.
-- **Fencing.** An extend after the deadline is refused. An ack after the
-  deadline is accepted while the delivery has not been rescheduled or
-  re-claimed (the work happened); after that the token is stale. Today an
-  extend is honoured after the deadline; queues tighten that.
-- Reply: per-token outcomes and the group's counters.
+- **Late settles.** `ack`, `retry` and `fail` after the deadline are accepted
+  while the sweep has not yet moved the lease (at most about a second), and
+  the reply marks them `acceptedLate`. Afterwards the token is stale.
+- **Release is bounded.** The third consecutive release of a delivery
+  without a started attempt is treated as a `retry`: the attempt counts and
+  backoff applies. A worker cannot loop a message for free.
+- **Graceful stop.** Work whose handler started and is then aborted is
+  settled as `retry` (the attempt counts): a started handler may already have
+  had an external effect. Only never-started work uses `release`.
+- **Error text.** A keyless settle carries only a `code` (at most 64
+  characters of `[a-z0-9_.-]`, stored plaintext). Error text (≤ 1 KiB) needs
+  the stream key on the settle, as a claim does; the server encrypts it into
+  the failure detail. The SDK sends the key with settles that carry text.
+- The reply lists each token's outcome and the group's counters.
 
-### 5.4 Retry policy
+### 6.3 Retry policy
 
-Per group: `maxAttempts` (default 5; the API counts total attempts, not
-"retries after the first") and `backoff {initialMs: 1000, maxMs: 43_200_000,
-multiplier: 2, jitter: "full"}`. An explicit `retry.delayMs` (the SDK maps a
-`retryAfterSeconds` to it) overrides the policy. When `attempts` reaches
-`maxAttempts`, the next failure (retry, fail or expired lease) is terminal.
+Per group: `maxAttempts` (default 5; the API counts total attempts) and
+`backoff {initialMs: 1000, maxMs: 43_200_000, multiplier: 2, jitter: "full"}`.
+An explicit `retry.delayMs` (the SDK maps `retryAfterSeconds` to it) overrides
+the policy. **A retry is never scheduled past the message's `retentionEnd`:**
+its time is clamped to it, and a retrying delivery due at or before
+`retentionEnd` is always attempted. When `attempts` reaches `maxAttempts`, or
+an attempt fails after `retentionEnd`, the delivery moves to `failed`
+(`cause: exhausted` or `retention`).
 
-### 5.5 Terminal disposition and dead letters
+### 6.4 Ordering
 
-Each queue has `deadLetter: {queue: "<name>-dlq"}` (default, created with the
-queue in the same project with the same encryption key) or `deadLetter:
-"discard"` (explicit; every discard counted). There is no silent drop.
+**First release: unordered** (`ordering: "none"`, the default). Deliveries
+are independent; nothing but `maxInFlight` and `rate` limits concurrency. The
+first-release pilots are therefore unordered queues only; the workloads that
+need order (Bloom turns, dunning, tenant-manager sync) wait for Q6.
 
-**A DLQ's own rules:** `deadLetter: "discard"` is fixed (no DLQ of a DLQ); its
-`default` group is the redrive group; retention defaults to 14 days and
-expiry there discards with a count.
+**Ordered groups (`ordering: "key"`) follow as Q6**, once their semantics,
+specified here, are implemented and tested:
 
-**Transfer.** A terminal failure appends to the DLQ an envelope with the
-original body byte-identical and:
+- Eligibility: a message is eligible in the group only when every earlier
+  message of its key (in id order, which is commit order across segments) is
+  done in that group. A key's scheduled, retrying or **failed** head blocks
+  its key and only its key; a failed head blocks it until it is redriven and
+  acknowledged, discarded or its failure retention ends. Stats report
+  `keysBlockedByFailed`.
+- Index: a queue-wide **key index** `(keyTag, msgId)` written at send, and per
+  group a **key-head table** naming each key's current head, one row per key
+  with work in the group, deleted when the key drains. The ready cache holds
+  **eligible heads only**, so thousands of blocked followers of one key cannot
+  crowd out another key.
+- Messages without a key are unordered even in a key group.
+- Today's stream consumer groups (per-key FIFO, `/v1/streams/{name}/consumers`)
+  are untouched by the first release. Once ordered queue groups are proven,
+  they move onto this engine and the old `c/l/x` rows are retired with a
+  `LAYOUT_VERSION` bump (decision D2).
 
-```json
-"lineage": {
-  "deadLetteredFrom": { "queue": "cp-email", "group": "default",
-                         "messageId": "msg_01h7…" },
-  "originalEnqueuedAt": 1792600000123,
-  "attempts": 11, "firstDeliveredAt": 1792600001000,
-  "failedAt": 1792640000000,
-  "lastError": { "code": "handler_failed", "message": "Brevo 504" },
-  "cause": "exhausted"
-}
-```
-
-The DLQ append is durable first, under the deterministic producer id
-`dlq:{group}:{messageId}` (a repeat is detected), and only then is the source
-delivery completed. **DLQ and redrive appends bypass the dedup index**: their
-producer id is their idempotency.
-
-**The transfer needs the stream key** (the body is decrypted and re-encrypted
-under the DLQ stream's segment keys; ciphertext cannot be moved). So a
-terminal delivery is first marked `deadLettering` keylessly and copied by the
-next request of that group that carries the key (claim, peek, settle, stats
-with key). Stats show `deadLetteringPending`. If no keyed request arrives
-before the record is physically reclaimed, the message is counted
-`lost_unclaimed` (§7, decision D4).
-
-### 5.6 Ordering
-
-`ordering: "none"` (default for queues) or `ordering: "key"`.
-
-- `none`: deliveries are independent.
-- `key`: only the **lowest pending offset of a key is claimable, whatever its
-  state**. A scheduled head (a future `deliverAt`, or a retry) blocks its key
-  until it is done; that is what per-key order means, and stats count
-  `keysBlockedByScheduled`. Messages without a key are unordered, not one
-  shared lane. This serves Bloom's one execution per slot and per-tenant
-  command order.
-
-### 5.7 Concurrency and pacing
+### 6.5 Concurrency, pacing and overload
 
 - `maxInFlight` per group (default 1,000, maximum 10,000).
-- `rate {perSecond, burst}` per group (optional): a token bucket on claims for
-  provider pacing. Shared budgets across groups are a later `limiters`
+- `rate {perSecond, burst}` per group, optional: a token bucket on claims, for
+  provider pacing. Shared budgets across queues are a later `limiters`
   resource.
-- Every claim and settle is one project request; a worker fleet needs a
-  request tier sized to it (§10, decision D11).
+- **Settles and extends have their own bucket.** Today a project has one
+  request bucket (`max(rate, 50)` tokens, #162). Queue settles and extends
+  draw instead from a **settle bucket** at half the project's request rate
+  (burst floor 25), so a send or claim flood cannot starve lease maintenance
+  and the free tier's main bucket is not cut. A settle request in which more
+  than half the tokens are stale or invalid is charged to the main bucket, so
+  junk settles buy nothing. Under the RSS shed (#184) settles follow the
+  append rules: a blamed project's settles are refused like its other
+  requests; an unblamed project's settles are spared up to the hard line.
+  Both are edge changes with their own records.
+- **Request rate.** A worker makes about `claims + settles + extends` requests
+  a second: claims ≈ throughput / batch size, settles ≈ throughput / messages
+  per coalesced settle, extends ≈ in-flight / (lease / 2) for long handlers.
+  Projects running worker fleets need a request tier sized by that formula
+  (decision D10).
 
-### 5.8 Pause, cancel, inspect
+### 6.6 Admission budget
 
-- `pause` / `resume` a group: a paused group's claims return empty at once;
+Each queue has an **admission budget**: at most `maxQueuedBytes` (default
+1 GiB of record bytes) and `maxQueuedMessages` (default 10 million) of
+retained messages not yet done by every group. Messages held only by failed
+deliveries do not count: failures have their own bound (§7.1). A send that
+would exceed the budget is refused `429 queue_full`, retryable, with the
+budget, its use and the group holding the most of it. Sends are never
+silently held. A group that stops consuming fills the budget within its
+backlog's reach, and its messages expire at `retentionEnd` (§8.1), which frees
+it; the stats and the 429 name it so an operator can pause or delete it.
+
+Queue sends are also admitted against the project's stored-bytes cap (#158),
+like appends; the cap counts record bytes and the row charges of §8.3.
+
+### 6.7 Pause, cancel, peek
+
+- **Pause / resume** a group: a paused group's claims return empty at once;
   sends continue; granted leases run out. Durable, shown in stats.
-- `cancel(messageIds, group?)`: completes the delivery in one group or all.
-  A message not yet dispatched gets a `cancelled` row that the dispatcher
-  honours and deletes when `D` passes it. A leased holder sees `stale`.
-  Recorded in counters and the audit journal.
-- `peek(group, state?, limit, after)`: lists pending deliveries with envelope
-  and state, without leasing. Scope `queues.inspect`.
+- **Cancel** `(msgIds, group?)`: done without processing, counted, audited.
+  Without a group, the metadata row's `cancelled` flag is set, every group
+  (present or created later) skips the message, and open deliveries end
+  (holders see `stale`). With a group, a cancel row in that group makes its
+  claim skip the message when `C` reaches it (deleted then, or at
+  `retentionEnd`); a leased holder sees `stale`.
+- **Peek**: lists open deliveries and the next due entries with envelope and
+  state, paginated by an opaque cursor, without leasing. Needs the key; scope
+  `queues.inspect`.
 
-### 5.9 Redrive
+## 7. Failure and recovery
 
-`redrive(dlq, messageIds | {all, limit}, to?)`:
+### 7.1 Failed deliveries are durable state, not copies
 
-1. Append to the source queue (or `to`, which must share the DLQ's encryption
-   key; scope `queues.manage` on both) a new message with the original body,
-   headers, key and dedup key, `lineage.redriveOf`, `originalEnqueuedAt` and
-   the attempt history, under the producer id `redrive:{dlq}:{dlqMessageId}`
-   and **bypassing the dedup index**.
-2. Then complete the DLQ message in the DLQ's `default` group.
+A terminal failure (explicit `fail`, exhausted attempts, or an attempt after
+`retentionEnd`) moves the delivery to **`failed`** in its group: a keyless
+state change in the committer, durable like any other settle. The original
+encrypted record stays where it is; nothing is copied. The failed row records
+the cause, code, attempts, cycle, `firstDeliveredAt`, `firstFailedAt`,
+`failedAt` and `failureExpiresAt`; the failure detail holds error text if a
+keyed settle supplied it.
 
-Every redrive, cancel, pause, resume and purge is written to `_audit_events`.
+- Failure needs no stream key, no second append and no transfer saga. A
+  delivery that fails while no worker is running and after the owning server
+  restarted is still recorded and recoverable.
+- Failure adds no bytes to the envelope, so a message accepted at the size
+  limit can always fail.
+- **Failure retention** (default 14 days, maximum 30) runs from the
+  delivery's **first** failure, `firstFailedAt`, and a redrive does not renew
+  it. At its end the delivery is discarded and counted, whatever its state.
+  So every message has a **hard lifetime** of at most `retentionEnd +
+  failureRetention` (44 days at the maxima), after which all of its rows go.
 
-### 5.10 Clock
+### 7.2 The dead-letter view
 
-Lease deadlines and due times use the owning server's clock. A shard move to a
-host whose clock differs by Δ shifts every deadline and due time by Δ; the
-design tolerates Δ up to the 5 s already assumed by lease handoff and states
-it in RUNBOOK. Due times are absolute, so restarts do not lose schedules.
+`deadLetters(group)` lists a group's failed deliveries: envelope (with the
+key), cause, code, error text (with the key), attempts, cycle, first delivery
+and failure times, and expiry. The product surface keeps the word "dead
+letter"; there is no separate dead-letter stream and no `deadLetter`
+configuration to forget. `discard` is an explicit operator action on failed
+deliveries, counted and audited.
 
-## 6. Producer side
+### 7.3 Redrive and republish
 
-- `send(body, {deliverAt | delayMs, key, dedupKey, headers, contentType})` →
-  `{id, enqueuedAt, deliverAt, duplicate}`.
-- `sendBatch([...])`: up to 1,000 messages or 8 MiB, **atomic** (G4), each
-  message with its own `key`, `dedupKey` and `deliverAt` (they live in the
-  envelope and metadata rows, §4). Safe to retry as a whole with dedup keys.
-- **`deliverAt` horizon:** at most `retention.maxAge` ahead of now (refused
-  400 beyond it); a scheduled message ages from `max(enqueuedAt, deliverAt)`,
-  so it is never expired before it is due (decision D3).
-- **Dedup:** a `dedupKey` seen in the same queue within the dedup window
-  (default 24 h, maximum 7 days, never longer than retention) returns the
-  original id with `duplicate: true` and stores nothing. The index is
-  `dedupTag → (msgId, expiresAt)` plus an expiry-ordered index swept by sends,
-  so it stays bounded by the window. Dedup keys ≤ 512 bytes.
-- Producer id/epoch/sequence stays available. Internal producer rows
-  (`dlq:`, `redrive:`) get a TTL equal to the DLQ's retention instead of
-  living forever.
-- Every existing send guard applies: quotas, the stored-bytes cap, fair
-  shedding, and the 503/429 answers the SDK rides through.
+- **Redrive** (default): `redrive(group, msgIds | {all, limit})` starts a new
+  delivery cycle **in the failed group only**: `cycle += 1`, `attempts = 0`,
+  `releases = 0`, the delivery moves to `R` as due now. With `all`, oldest
+  `failedAt` first. The message id is unchanged, so domain idempotency keys
+  keyed on it stay valid, and other groups that already succeeded are not run
+  again. Redrive is a keyless state change.
+- **Republish** (deliberate): `republish(msgIds, {to?})` reads the failed
+  message with the key and sends a **new** message, with a new id,
+  `lineage.republishedFrom` and the original `originId`, which every group of
+  the target queue receives. The new envelope keeps the original `dedupKey`
+  for the record, but republish neither checks nor writes the dedup index,
+  which keeps pointing at the original id. The first release republishes only
+  within the same queue or to a queue of the same project and key.
+- Every redrive, republish, cancel, discard, pause, resume and purge is written
+  to the project's audit journal with the credential and counts.
 
-## 7. Retention, expiry and reclamation
+## 8. Retention, reclamation and accounting
 
-- `retention {maxAge, maxBytes}` per queue; default `maxAge` 4 days (the
-  Cloudflare baseline), maximum 14 days.
-- **Expiry is keyless.** A delivery whose message aged past `maxAge` (from
-  `max(enqueuedAt, deliverAt)`) is marked `expired` in that group without the
-  key, counted, and listed in the group's `retentionGap`; its DLQ copy is
-  made lazily by the group's next keyed request (§5.5).
-- A group created after messages aged out, or whose `D` is below the retained
-  start, reports `retentionGap {from, to, count}` in stats and in its next
-  claim reply. Nothing is skipped silently.
-- **Reclamation is required before production queues.** Logically expired
-  records still occupy storage, count against the project's stored-bytes cap
-  (#158) and are billed; at the control plane's 139 MB a day a project hits
-  the 10 GiB beta cap in about 74 days and its sends are then refused. Queue
-  segments are therefore reclaimed: a queue's lineage segment is rolled over
-  daily, and a sealed segment whose records are past retention and below
-  every group's `L` is deleted whole (its objects removed, its gauges
-  released). This is a narrower, earlier piece of layout 6 stage 3b's
-  reclamation, built for queues in Q3 (decision D5).
+### 8.1 Retention
 
-## 8. Telemetry
+- `retention.maxAge` per queue: default 4 days (the Cloudflare baseline),
+  maximum 14 days, measured from `availableAt` (so a message scheduled ahead
+  is never expired before it is due). `deliverAt` may be at most `maxAge`
+  ahead of now (400 beyond it).
+- **Expiry is keyless and costs no rows.** When a group's cursor meets an
+  entry past `retentionEnd`, the group skips it and adds it to its
+  `retentionGap {from, to, count}` (counted, reported, and alerting when
+  non-zero). A message that was attempted and is retrying is never skipped
+  this way: §6.3 schedules its last attempt inside retention, and its failure
+  becomes a failed delivery. A group that does not consume within `maxAge`
+  therefore loses the messages it did not take, counted; Cloudflare queues
+  behave the same.
+- A group created with `start: earliest` begins at the oldest retained
+  message; with `start: now` at the queue clock.
 
-- A group's `GET` returns `ready`, `scheduled`, `leased`, `pending`,
-  `oldestReadyAgeMs`, `oldestPendingAgeMs`, `nextScheduledAt`, `paused`,
-  `dispatchHeld`, `deadLetteringPending`, `keysBlockedByScheduled`,
-  `retentionGap`, and rolling counters.
-- A queue's `GET` returns its groups' stats and the DLQ depth.
-- `/operator/data.json` gains per-project queue totals and the worst
-  oldest-ready age; the cell watch gains rules for DLQ growth and old ready
-  work, calibrated after the pilot.
-- Usage: queue operations metered as today, plus read and stored bytes.
+### 8.2 Reclamation (required before any production queue)
 
-## 9. HTTP surface
+Without reclamation every message stays in storage, counts against the
+project's stored-bytes cap (#158) and is billed. Streams share shard-log and
+history storage, so a queue does not own deletable objects: reclamation
+deletes **rows**, and SlateDB garbage collection then frees the files.
 
-New product routes under `/v1/queues`; the stream read routes also work on a
-queue. Header names use the `Streams-` form the Compute edge passes.
+- **Retired:** a message is retired when every group has taken or skipped it
+  (each group's `C` is past it) and no group has an open delivery (`open =
+  0`); or when it is cancelled queue-wide; or when its hard lifetime has
+  ended. A queue keeps nothing for replay (§2).
+- **What is deleted:** the message's page (in the shard log or, once absorbed,
+  its history-partition row; one message per page, §5.1), its metadata row,
+  its `A` entry, its key-index entry, and its dedup entry once the dedup
+  window has passed (§11).
+- **Cursor and refcount:** a per-queue reclamation cursor `G` walks `A` in
+  order up to the minimum of the groups' cursors, deleting messages with
+  `open = 0` and stepping over the rest. A message stepped over is deleted
+  later by whichever operation brings its `open` to 0 (ack, discard, failure
+  expiry, cancel), in that operation's own WriteBatch, because the operation
+  can see the message is behind `G`. There is no list of held messages, and
+  the hard lifetime bounds how long any message is held.
+- **Progress and budget:** `G` is durable, so a crash resumes where it
+  stopped; deletes run in bounded batches under the global trim and GC budget
+  (READINESS H5 and R8), never one unbounded batch.
+- **Closing TLA-019-F3 for queues.** READINESS lists physical reclamation as
+  open: row deletes, history-row deletes, bounded batches, GC convergence on
+  quiet partitions (H14, TLA-019-F2), fork references, and billing closes.
+  For queues, Q3 builds the shard-log and history-row deletes and the bounded
+  batches; forks of queues are refused (§4), so no fork can reference a
+  reclaimed page; the stored-bytes decrement and the usage-ledger entry are
+  written in the deleting batch, so billing closes with the delete; and Q3
+  closes GC convergence or works around it (a compaction nudge after a
+  reclamation batch on a quiet partition).
 
-| Route | Purpose |
-|---|---|
-| `PUT /v1/queues/{name}` · `GET` · `DELETE` | create/update (`retention`, `deadLetter`, `dedupWindowMs`, default group config) · config and stats · delete |
-| `GET /v1/queues` | list the project's queues |
-| `POST /v1/queues/{name}/messages` · `messages:batch` | send |
-| `GET /v1/queues/{name}/messages/{id}` | envelope and per-group delivery state |
-| `PUT …/groups/{group}` · `GET` · `DELETE` | group config (`ordering`, `maxAttempts`, `backoff`, `leaseMs`, `maxBatch`, `maxInFlight`, `maxPending`, `rate`, `start: earliest \| now`); all but `ordering` updatable in place |
-| `POST …/groups/{group}:claim` · `:settle` | claim; ack / retry / extend / fail / release |
-| `POST …/groups/{group}:pause` · `:resume` · `:cancel` | operator actions |
-| `GET …/groups/{group}/pending` | peek (`queues.inspect`) |
-| `POST /v1/queues/{dlq}:redrive` | redrive |
+### 8.3 Accounting
 
-New scopes: `queues.send`, `queues.consume`, `queues.manage`,
-`queues.inspect`; the issuer's grants and `cell-admin` learn them.
+The stored-bytes gauge counts, per queue, record bytes plus a fixed per-row
+charge for every new row family (metadata, `A`, `L`, `R`, `F`, key index,
+dedup, delivery rows, cancel rows, failure detail), added in the batch that
+writes a row and removed in the batch that deletes it. Capacity planning uses
+about 300 B of rows per message plus about 150 B per open delivery, measured
+and published with Q3. Because a queue reclaims what is done, its stored bytes
+follow its backlog and failures, not its throughput.
 
-Today's consumer routes (`/v1/streams/{name}/consumers/{c}:pull` and
-`:settle`) become groups with `ordering: "key"` over the same engine
-(decision D2).
+## 9. Execution: workers and wake-up
 
-## 10. SDK
+### 9.1 The worker runner (SDK)
 
 ```ts
 import { StreamsClient, RetryLater } from "@prisma/streams";
@@ -381,164 +502,318 @@ const client = await StreamsClient.connect({ issuerUrl, credential });
 const emails = client.queue<EmailJob>("cp-notification-channel-email");
 
 await emails.send({ notificationId }, { dedupKey: notificationId, delay: "2m" });
-await emails.sendBatch(jobs.map((j) => ({ body: j, key: j.workspaceId })));
+await emails.sendBatch(jobs.map((j) => ({ body: j })));
 
 const worker = emails.process(
   async (msg, { signal }) => {
-    await deliver(msg.body, { idempotencyKey: msg.id, signal });
-    // return → ack
-    // throw new RetryLater({ after: "30s" }) → retry with that delay
-    // throw any other error → retry with the group's backoff
-    // return msg.fail("unsubscribed") → dead-letter now
-    // return msg.discard() → done, counted as discarded
+    // Domain idempotency: the business id, stable across retries, redrives
+    // and republishes.
+    await brevo.send(msg.body, { idempotencyKey: msg.body.notificationId, signal });
+    // return → ack · throw new RetryLater({ after: "30s" }) → retry
+    // throw any other error → retry with backoff
+    // return msg.fail("unsubscribed") · return msg.discard()
   },
-  { group: "default", concurrency: 10, lease: "5m", autoExtend: true },
+  { concurrency: 10, lease: "5m", autoExtend: true },
 );
-await worker.stop(); // stop claiming, finish in-flight, release the rest
-
-await emails.stats();
-await emails.deadLetters().redrive({ all: true, limit: 100 });
+await worker.stop();
 ```
 
-- **Runner.** Keeps up to `concurrency` handlers running; claims `min(free
-  slots, maxBatch)` with long-poll; coalesces settles for up to 250 ms into
-  one request (a crash inside that window means those messages are
-  redelivered: at-least-once); extends leases at half their length while a
-  handler runs. If an extend comes back `expired` or `stale`, the runner fires
-  the handler's `AbortSignal`, still sends the ack when the handler finishes
-  (accepted if the delivery was not yet rescheduled), and reports the outcome.
-  `stop()` stops claiming, waits for in-flight handlers up to a deadline, then
-  releases the rest without spending their attempts.
-- **Requests.** A runner at concurrency 10 makes about 4-6 requests a second
-  under load (claims plus coalesced settles). The beta's self-serve 10/s tier
-  fits one or two runners; queue-heavy projects need a larger tier (D11).
-- **Typed messages.** `client.queue<T>(name, { parse })` validates each body;
-  a body that fails is failed with `code: "invalid_payload"`.
-- **Runtimes.** Node, Bun, Deno and Compute run the runner. **Cloudflare
-  Workers** can send, and can consume with `claimBatch()` / `settle()` from a
-  cron trigger (one-minute granularity) or a Durable Object alarm; Workers
-  join SDK CI. A Worker cannot host a long-lived runner, so the Console's
-  fifteen Worker consumers need push delivery (D9) before they migrate.
-- **Local development.** `createLocalQueue()` gives an in-memory
-  implementation of the same API with recorded calls, held to the same
-  contract tests as the server; the repo's local server runs the real thing.
-  A client without configuration throws at construction in production.
-- **Telemetry hooks.** `onMessage`, `onSettle` with id, attempt, outcome and
-  duration, for OpenTelemetry or Sentry.
+- Claims `min(free slots, maxBatch)` with long-poll and `maxBytes`; settles as
+  handlers finish, coalescing within 250 ms (a crash in that window
+  redelivers: at-least-once); extends at half the lease while a handler runs.
+  An extend answered `expired` or `stale` fires the handler's `AbortSignal`;
+  the runner still settles when the handler returns. `stop()` stops claiming,
+  waits for started handlers up to a deadline (settling them as `retry` if
+  aborted), and `release`s never-started work.
+- Typed messages via `client.queue<T>(name, { parse })`. A body that fails
+  validation is retried with backoff by default, since a deploy window with a
+  schema mismatch would otherwise dead-letter every message; `onInvalid:
+  "fail"` makes it a failure with `code: invalid_payload`.
+- Telemetry hooks `onMessage` and `onSettle` (id, attempt, outcome,
+  duration) for OpenTelemetry or Sentry.
+- A client without configuration throws at construction in production.
+- Runs on Node, Bun, Deno and Prisma Compute.
 
-## 11. How the control plane's workloads map
+### 9.2 Wake-up notifications (first release)
 
-| Workload | Queue settings |
+A sleeping process cannot claim, and a Cloudflare Worker cannot host a
+long-lived loop. Push delivery of decrypted batches would need the key on the
+server. Instead, a group can have a **wake-up subscription**:
+
+1. The scheduler notices that the group has due work and no claim within the
+   last `idleMs` (default 1 s).
+2. It POSTs a small **signed notification** to the subscription's URL:
+   `{queue, group, due, oldestDueAgeMs, nonce, sentAt}`, signed with HMAC.
+   No message content, no key.
+3. The receiver (a Compute app or a Worker's `fetch` handler) verifies the
+   signature and the freshness of `sentAt`, then claims and processes with its
+   own credential and key through the ordinary claim/settle protocol, for as
+   long as its runtime allows, settling or releasing before it returns.
+4. **Coalescing and recovery:** at most one notification is in flight per
+   subscription; while due work remains and no claims arrive, the scheduler
+   repeats with backoff (1 s → 60 s); failures are counted and visible; a
+   notification is a hint, never a delivery, so losing one costs latency
+   only. The `due` count lets a receiver fan out.
+
+**Secret custody.** The signing secret is not stored: it is derived as
+`HMAC(cell wake key, project ‖ subscriptionId ‖ rotation)`, returned once
+when the subscription is created or rotated. The cell wake key is a new cell
+secret under the existing secrets custody and rotation process.
+
+**Egress policy.** Notifications go only to `https` URLs on port 443 whose
+names resolve to public addresses: the server resolves once, pins the address
+for the request, and refuses loopback, private, link-local, CGNAT, metadata
+and the cell's own addresses. No redirects, a 2 s timeout, a request body of
+at most 1 KiB, the response body ignored, one in flight per subscription, a
+per-project notification budget, and every subscription change audited.
+
+The SDK provides `emails.handleWakeup(request, handler, options)` for Compute
+and Workers, which verifies, drains within a time budget and returns. This
+gives Prisma Compute apps queue-triggered execution and lets the Console's
+Worker consumers migrate in the first release. A Worker can also drain from a
+cron trigger (one-minute granularity). A **kept-awake Compute worker** (the
+plain runner under `KeepAwakeGuard`) is the pilot's simpler option, with its
+idle cost stated.
+
+## 10. Telemetry
+
+- A group's `GET`: `due`, `scheduled`, `leased`, `retrying`, `failed`,
+  `oldestDueAgeMs`, `oldestFailedAgeMs`, `nextAvailableAt`, `paused`,
+  `retentionGap`, admission budget use, `keysBlockedByFailed` (Q6), wake-up
+  subscription health, and rolling counters.
+- `/operator/data.json`: per-project queue totals, worst oldest-due age,
+  failed counts, retention gaps; cell-watch rules for failed growth, old due
+  work approaching `maxAge` and non-zero gaps, calibrated after the pilot.
+- Usage: queue operations metered as today, plus read and stored bytes.
+
+## 11. HTTP surface
+
+| Route | Purpose |
 |---|---|
-| Stripe and spend-limit usage sync | unordered; `maxAttempts 11`, backoff 30 s..12 h; `rate` for Stripe; the 80-minute spread via per-message `deliverAt` |
-| Offer and spend-limit enforcement | unordered; dedup key per (workspace, hour); DLQ by default (spend limit has none today) |
-| Vercel usage sync → billing data | unordered; `delay 2m`; billing data as a downstream queue fed by the usage handler |
-| Notification controller → email | two queues; email `concurrency` matched to Brevo; the domain claim stays |
-| Dunning, tenant-manager sync | `ordering: key` by workspace or tenant where the business rule needs order |
-| ppg-events-shared | external producer with a `queues.send` credential; tolerant parse; a DLQ group that marks provisioning failed |
-| Invoice submission | unordered; self-continuations via `deliverAt`; the reconciler stays |
-| Bloom turns | `ordering: key` by slot, `lease 15m` + auto-extend, `cancel` by id; draft admission stays in Bloom |
-| Credential cleanup | `deliverAt` per request (within the horizon, D3); the request row keeps per-key results |
+| `PUT /v1/queues/{name}` · `GET` · `DELETE` | create/update (`retention`, `failureRetention`, admission budget, dedup window) · config and stats · delete (the stream delete saga) |
+| `GET /v1/queues` | list |
+| `POST /v1/queues/{name}/messages` · `messages:batch` | send (batch: atomic, ≤ 1,000 messages and within the request body limit, per-message `key`, `dedupKey`, `deliverAt`) |
+| `GET /v1/queues/{name}/messages/{id}` | envelope and per-group delivery state (needs the key; 404 `reclaimed` once reclaimed) |
+| `PUT …/groups/{group}` · `GET` · `DELETE` | group config (`maxAttempts`, `backoff`, `leaseMs`, `maxBatch`, `maxInFlight`, `rate`, `start: earliest \| now`, wake-up subscription), updatable in place |
+| `POST …/groups/{group}:claim` · `:settle` | claim; ack / retry / extend / fail / release |
+| `POST …/groups/{group}:pause` · `:resume` · `:cancel` · `POST /v1/queues/{name}:cancel` | operator actions; group-scoped and queue-wide cancel |
+| `GET …/groups/{group}/failed` · `POST …:redrive` · `:discard` | dead-letter view (paginated) and recovery |
+| `POST /v1/queues/{name}:republish` | republish failed messages as new ones |
+| `GET …/groups/{group}/pending` | peek (paginated) |
 
-Pilot: `cp-plain-support-sync` (low volume, replay-safe), then enforcement,
-then billing; Bloom last.
+Header names use the `Streams-` form the Compute edge passes. Scopes:
+`queues.send` (send), `queues.consume` (claim, settle, wake-up handler),
+`queues.manage` (queue and group config, pause, cancel, redrive, republish,
+discard, delete), `queues.inspect` (get, peek, dead-letter view; with the
+key). Every server-side value is clamped and the clamps published: `leaseMs`
+1 s to 12 h, `waitMs` ≤ 25 s, `max` ≤ 1,000, `maxAttempts` 1 to 100,
+`backoff.maxMs` ≤ 12 h.
 
-## 12. Correctness and verification
+**Dedup:** a `dedupKey` seen within the queue's dedup window (default 24 h,
+maximum 7 days, never above retention) returns the original id with
+`duplicate: true`. The index (`dedupTag → msgId`, plus an expiry-ordered
+index swept by sends) outlives a reclaimed message until its window ends,
+then goes with it. Republish bypasses it.
 
-- **TLA+ `QueueDelivery`**: dispatch cursor, pending set, due index, ready
-  heap, leases with fencing, scheduled and expired-lease retry, fail and the
-  lazy DLQ saga, redrive, keyless expiry, cancel before and after dispatch,
-  pause, crash/restart, segment reclamation. Invariants: every appended
-  message is, in each group, pending, done, dead-lettered, discarded,
-  expired, cancelled or counted `lost_unclaimed`; a stale leaseholder cannot
-  change a delivery; DLQ and redrive appends happen at most once per source
-  delivery; **a redriven message is stored at least once**; in a `key` group
-  only a key's lowest pending offset is ever leased; reclamation never removes
-  a record at or above any group's `L`. Liveness: under fair claims a ready
-  delivery is eventually leased; a scheduled delivery becomes ready at its
-  time.
-- **Kani**: envelope and metadata-row codecs, key-family codecs, lease token,
-  backoff arithmetic, due-index ordering.
-- **DSTs**: mixed-success batches, crash mid-batch and inside the settle
-  coalescing window, lease expiry with backoff, scheduled work across
-  restart, no head-of-line blocking, key order with scheduled heads, DLQ and
-  redrive crash windows, redrive of a message with a live dedup key, keyless
-  expiry then lazy DLQ copy, gap reporting, cancel before dispatch, pause,
-  `maxInFlight`/`maxPending`/`rate`, segment reclamation against `L`,
-  multi-tenant isolation of queues and DLQs.
-- **SDK**: runner tests against the real server, Workers in CI, the local
-  fake under the same contract tests.
+## 12. First release, and what follows
+
+**First release (the beta gate, if queues gate the beta):**
+
+| Requirement | Scope |
+|---|---|
+| Shared engine | existing persistence, durability, authorization, tenancy |
+| Delivery | unordered groups, queue clock, fenced leases, ack, retry with backoff, scheduled availability, claim byte limits |
+| Recovery | durable failed deliveries, dead-letter view, group-targeted redrive, republish, discard |
+| Storage | retention with gap reporting, row reclamation with GC convergence, accounting of every new row family, admission budget |
+| Runtime | SDK runner, wake-up notifications with SDK handler for Compute and Workers, kept-awake pilot option |
+| Operations | pause/resume, cancel, stats, audit, cell-watch rules |
+| Validation | the evidence list in §13, then the low-risk pilot |
+
+**Later:** ordered groups (Q6) and moving stream consumer groups onto the
+engine; reading a queue as a stream; `limiters` shared across queues;
+republish across encryption keys; an in-memory local fake
+(`createLocalQueue()`); generic HTTPS push of payloads.
+
+**How the control plane's workloads map:**
+
+| Workload | First release? | Settings |
+|---|---|---|
+| Plain support sync (pilot) | yes | unordered, defaults |
+| Offer and spend-limit enforcement | yes | unordered; dedup key per (workspace, hour) |
+| Stripe and spend-limit usage sync | yes | `maxAttempts 11`, backoff 30 s..12 h; `rate` for Stripe; spread by `deliverAt` |
+| Vercel usage sync → billing data | yes | `delay 2m`; billing data as a downstream queue |
+| Notification → email | yes | email `maxInFlight`/`rate` matched to Brevo; the domain claim stays |
+| ppg-events-shared | yes | external producer with `queues.send`; tolerant parse |
+| Invoice submission | yes | self-continuations via `deliverAt`; the reconciler stays |
+| Credential cleanup | yes | `deliverAt` per request within the horizon |
+| Dunning, tenant-manager sync | after Q6 | `ordering: key` by workspace or tenant |
+| Bloom turns | after Q6 | `ordering: key` by slot, `lease 15m` + auto-extend, `cancel` by id |
+
+## 13. Verification
+
+- **TLA+**, as two models so each stays within CI's formal budget (today's
+  bound is TLA-002 at 40-50 min): **`QueueDelivery`** (queue clock with clock
+  steps and shard moves, availability index, group cursor, delivery rows,
+  lease, retry and failure indexes, fencing and replayed settles, bounded
+  release, expiry and gaps, failure, redrive, republish, cancel queue-wide
+  and per group, pause, crash/restart) and **`QueueReclamation`** (the
+  reclamation cursor, refcounts, hard lifetime, deletes racing settles).
+  Invariants: every sent message is, in every group, ahead of `C`, open,
+  done, cancelled, in a counted gap or discarded, never lost; no send lands at
+  or below a group's cursor; a stale or replayed settle changes nothing;
+  reclamation never deletes a message with an open delivery or ahead of any
+  group's cursor; a redrive reruns only its group; ready work is claimable
+  while `maxInFlight` allows, whatever is scheduled. Ordered groups (Q6) add:
+  only eligible key heads are leased.
+- **Kani**: envelope, metadata-row and index codecs (big-endian order), the
+  message-id order across segments, lease tokens, backoff and retention
+  clamps.
+- **DSTs**, including the colleague's evidence list as named scenarios:
+  failed work stays recoverable after every server-held key is gone; a deep
+  delayed backlog cannot hide ready work; segment rollover does not change
+  delivery; redrive does not rerun successful groups; replayed settles change
+  nothing; a noisy queue does not stop other tenants (shared-cell harness).
+  Plus: a clock step back and forward and a shard move to a skewed host lose
+  nothing; mixed-success batches; crashes mid-batch and inside the settle
+  coalescing window; lease expiry with backoff; claim read failure; release
+  loops; cancel queue-wide before a group exists; admission budget with a
+  dead group; reclamation racing acks and redrives; wake-up coalescing,
+  recovery and the egress refusals.
+- **SDK**: runner and wake-up handler against the real server; Workers in CI.
 - **Layer B queue arm**: queue workers, a poison-message tenant and a send
-  flood in the shared-cell harness, under the same bars as streams.
+  flood under the shared-cell bars, and the per-queue throughput ceiling.
 - **Pilot**: `cp-plain-support-sync` on the scratch cell for a week beside the
-  old queue.
+  old queue. Bar to proceed: every message the old queue processed is
+  processed by the new one (compared by business id), none lost, failures
+  match, and p99 send-to-start latency within the old queue's. Then
+  enforcement, then billing.
 
-## 13. Decisions for the owner (each with a recommendation)
+## 14. Decisions for the owner (each with a recommendation)
 
 | # | Decision | Recommendation |
 |---|---|---|
-| D1 | Resource shape | `/v1/queues/{name}` over streams of kind `queue` |
-| D2 | One engine | Move today's consumer groups onto the pending model (`ordering: key`) in the same release, with a `LAYOUT_VERSION` bump that deletes the old `c/l/x` rows' decoder (no users; one engine to verify). Reconcile the bump with the paused layout 6 work |
-| D3 | `deliverAt` horizon | At most `retention.maxAge` ahead; age scheduled messages from `max(enqueuedAt, deliverAt)` |
-| D4 | Expiry when a group is idle | Keyless expiry with a lazy, keyed DLQ copy; a copy that never happens before reclamation is counted `lost_unclaimed` and alerted, not silent |
-| D5 | Reclamation | Build queue segment reclamation in Q3, **required before any production queue** (logically expired bytes otherwise fill the stored-bytes cap in ~74 days at control-plane volume) |
-| D6 | Default dead-letter policy | Auto-create `<name>-dlq`; a DLQ discards on failure and has no DLQ of its own |
-| D7 | Batch semantics | Atomic batches ≤ 1,000 messages / 8 MiB, keys per message via the envelope and metadata row |
-| D8 | Dedup | 24 h default window, 7 days maximum, never above retention; DLQ and redrive appends bypass it |
-| D9 | Workers consumers | v1: send from Workers, consume via cron or Durable Object alarm; **push delivery** (signed batches POSTed to an HTTPS endpoint, settled by the response) in phase 2, before the Console's Worker consumers migrate |
-| D10 | Shared provider budgets | Phase 2 `limiters`; v1 has per-group `rate` |
-| D11 | Request tier for worker fleets | A `queues` tier per project (e.g. 100 req/s) set by `cell-admin`, priced like other requests |
-| D12 | Caps and memory | `maxInFlight` 1,000 (max 10,000), `maxPending` 1,000,000 per group, ready heap ≤ `maxInFlight + 1,024` entries charged to the project memory line |
-| D13 | Billing | Meter queue operations as today; no separate queue price in the beta |
-| D14 | Sequencing | Build queues before the beta opens, as asked; the beta's other open items proceed in parallel |
+| D1 | Resource shape | `/v1/queues/{name}` over streams of kind `queue`, reachable only through queue routes in the first release |
+| D2 | Stream consumer groups | Unchanged in the first release; moved onto this engine with ordered groups (Q6), retiring the old rows by a `LAYOUT_VERSION` bump |
+| D3 | Failure model | Durable failed-delivery state referencing the original record; dead-letter view; no DLQ stream |
+| D4 | Failure retention | 14 days default, 30 maximum, from the first failure, not renewed by redrive |
+| D5 | Redrive | Group-targeted redrive by default (same message id, new cycle); republish as a separate operation |
+| D6 | Execution in the first release | SDK runner plus keyless signed wake-up notifications for Compute and Workers; kept-awake worker for the pilot |
+| D7 | Retention | 4 days default, 14 maximum, from `availableAt`; untaken expired messages become counted gaps; `deliverAt` horizon = `maxAge` |
+| D8 | Reclamation | Reclaim each message when every group is done with it; one message per page; required before production queues |
+| D9 | Admission budget | 1 GiB / 10 million undone messages per queue by default, `429 queue_full` beyond |
+| D10 | Request tier for worker fleets | A per-project queue tier set by `cell-admin`, sized by the §6.5 formula |
+| D11 | Overload | A separate settle bucket at half the request rate; settles follow #184's append rules |
+| D12 | Batch semantics | Atomic ≤ 1,000 messages within the body limit, per-message keys via envelope and metadata row |
+| D13 | Dedup | 24 h default, 7 days maximum, never above retention; republish bypasses |
+| D14 | Billing | Meter queue operations as today; no separate queue price in the beta |
+| D15 | Sequencing | The first release in §12 gates the beta if queues are a beta requirement; ordered groups and the rest follow |
+| D16 | Wake-up egress | Tenant-supplied HTTPS URLs under the §9.2 egress policy, with a derived signing secret |
 
-## 14. Review findings and where they are answered
+## 15. Review responses
 
-| Finding (Fable 5.1, 2026-10-23) | Answer |
+### 15.1 Colleague review (2026-10-23): taken
+
+| Point | Where |
 |---|---|
-| B1 DLQ/expiry need the stream key; an idle group cannot be dead-lettered | §5.5 lazy keyed copy, §7 keyless expiry, D4 |
-| B2 redrive through the dedup index drops the message | §5.5, §5.9, §6: DLQ and redrive bypass dedup; TLA invariant |
-| H1 `deliverAt` past retention | §6 horizon, §7 aging from `max(enqueuedAt, deliverAt)`, D3 |
-| H2 expired bytes fill the stored-bytes cap | §7 reclamation required, D5 |
-| H3 claim contention, memory, caps | §5.1 ready heap and caps, §5.2, D12 |
-| H4 per-message keys in an atomic batch | §4 single lane + metadata rows, D7 |
-| H5 key order broken by `deliverAt` | §5.6 lowest pending offset only |
-| H6 expired leases bypass backoff | §5.2 expired-lease rescheduling |
-| H7 tenant text in plaintext rows | §4 MAC'd tags, §5.1 error codes + encrypted error text |
-| M1 message id without segment | §3 id, §5.1 per-segment state |
-| M2 cancel before dispatch | §5.8 cancelled row |
-| M3 DLQ recursion | §5.5 DLQ rules |
-| M4 unbounded internal rows | §6 dedup expiry index, internal producer TTL |
-| M5 layout bump | §4 no envelope version, D2 bump |
-| M6 request and memory quotas for workers | §5.2 claim reservation, §10 request figures, D11 |
-| M7 runner races | §5.3 `release` gives the attempt back, §10 runner |
-| M8 two enqueue times | §4 page commit timestamp served and used |
-| M9 clock | §5.10 |
-| Lows (crypto wording, cron granularity, timed wake, redrive target key) | §7, §10, §5.2, §5.9 |
-| Estimate 1.6-2× | §15 |
+| Failed deliveries durable without a later keyed request | §7.1: keyless `failed` state referencing the original record; D3, D4 |
+| Accepted messages stay representable after failure | §5.1, §7.1: failure adds nothing to the envelope |
+| `maxPending` hides ready work | removed; group state holds only open deliveries (§5.3); separate memory cache, in-flight and admission limits (§5.4, §6.5, §6.6) |
+| Segment walk stops at sealed backlog; daily rollover | queue-wide availability index, one scheduling owner per queue; rollover is storage only (§5.2) |
+| Ordered heap crowded by blocked followers | eligible key heads only (§6.4) |
+| Redrive reruns successful groups | group-targeted redrive, republish separate (§7.3); D5 |
+| Stable execution identity | message id stable across redrive; `originId` across republish; the example uses `notificationId` (§4, §9.1) |
+| A usable execution path in the first release | runner plus keyless wake-up notifications (§9.2); D6 |
+| Concrete reclamation design | §8.2, §8.3; D8 |
+| Replayed settles | every terminal or rescheduling operation ends the lease (§6.2) |
+| Graceful shutdown refunds | only never-started work, and bounded (§6.2, §9.1) |
+| Claim memory | sized from metadata and reserved before leasing (§6.1) |
+| Request sizing | formula instead of a single figure (§6.5) |
+| Overload | a separate settle bucket (§6.5); D11 |
+| Hot-queue scaling | one owner per queue, stated ceiling to measure (§5.2) |
+| Postgres and workflow boundary | §2 |
+| First-release scope and evidence list | §12, §13 |
+| Business case | §1 |
 
-## 15. Plan and size
+### 15.2 Colleague review: declined or narrowed, with reasons
+
+- **"Exempt settles from shedding": narrowed to a separate settle bucket.**
+  A full exemption would let a project send unlimited cheap settles with
+  invalid tokens; a separate bucket, charged back to the main one when tokens
+  are junk, keeps lease maintenance moving without opening that door, and a
+  project blamed for memory pressure is still refused (§6.5).
+- **Generic HTTPS push of decrypted payloads: not in the first release.** The
+  review lists it as optional once a complete execution path exists; keyless
+  wake-up notifications are that path and keep plaintext off the server.
+- **Ordered groups: specified now, built after the first release (Q6).** The
+  review suggests adding per-key ordering once its cross-segment semantics are
+  specified and tested; §6.4 specifies them, and building them second keeps
+  the first release's proof smaller. The pilots that need order wait for Q6
+  (§12), and moving today's stream consumers (D2) moves with them.
+- **"One logical scheduling owner per queue/group" was offered as an option;
+  taken per queue**, because the availability index is queue-wide and every
+  group reads it.
+
+### 15.3 Fable 5.1 final review of revision 3 (2026-10-23)
+
+Verdict "revise", with two blockers. Every finding is taken:
+
+| Finding | Revision 4 |
+|---|---|
+| B1 a cursor can rise above the commit clock; a send lands below it and is lost | queue clock: claims advance `fields.ts`, the invariant `C.time ≤ fields.ts`, big-endian keys, `stream-timestamp` refused, clock section restored (§5.5) |
+| B2 the deletable unit is a page, not a message | one message per page; history-row deletes, forks refused, billing closes in the deleting batch (§5.1, §8.2) |
+| H1 held list unbounded or blocking | refcount `open` in the metadata row, deletion by the releasing operation, hard lifetime (§8.2, §7.1) |
+| H2 wake-up secret custody and SSRF | derived secret, egress policy (§9.2); D16 |
+| H3 leasing before reading | sized from metadata, reserved, leased exactly, read after commit, server release on read failure (§6.1) |
+| H4 expiry rows per group fill storage and the budget | expiry as counted gaps, failures outside the budget, `start` rules (§8.1, §6.6) |
+| H5 reserved quarter undefined against #162 and reverses #184 | separate settle bucket; #184's rules (§6.5); D11 |
+| H6 no finder for expired leases | lease index `L`, bounded sweep, timer (§5.3, §6.1) |
+| M1 release loops | bounded release (§6.2) |
+| M2 late settles | `acceptedLate`, window bounded by the sweep (§6.2) |
+| M3 stored-bytes admission | sends admitted against #158 (§6.6) |
+| M4 cache rebuild | §5.4 |
+| M5 timestamp hint | refused (§5.5) |
+| M6 republish dedup, redrive order | §7.3 |
+| M7 retries past retention | clamped (§6.3) |
+| M8 failed heads block keys | stated, `keysBlockedByFailed` (§6.4) |
+| M9 size | two TLA models (§13), estimate raised (§16) |
+| M10 revision-2 content dropped | restored: clock, envelope version, body/header limits, `sendBatch`, `discard()`, pagination, hooks, cron, config throws, workload map; the local fake listed as later |
+| M11 keyless error text | codes keyless, text needs the key (§6.2) |
+| M12 queue-wide cancel | metadata-row flag honoured by every group (§6.7) |
+| L1-L9 | figures removed or sourced; incarnation-bound ids (§4); clamps and scopes (§11); invalid payload retried by default (§9.1); Kani order proof (§13); Postgres transactions (§2); pilot bar (§13) |
+
+The review found no colleague request dropped silently, and called the
+§15.2 declines sound apart from the overload mechanism, now replaced.
+
+### 15.4 Fable 5.1 review of revision 1 (2026-10-23)
+
+Its findings stay answered: B1 keyless failure (the failed-delivery state);
+B2 redrive through dedup (redrive appends nothing; republish bypasses dedup);
+H1 horizon; H2 reclamation; H3 claim contention (cache and indexes); H4 one
+lane with per-message metadata; H5 key order (§6.4); H6 expired-lease backoff;
+H7 no tenant text in plaintext rows (codes only, text encrypted); and the
+medium ones (segment-aware ids, cancel before taking, no DLQ recursion since
+there is no DLQ stream, bounded internal rows, no envelope version, per-claim
+memory and request quotas, settle races, one enqueue time, clock tolerance).
+
+## 16. Plan and size
 
 | Package | Contents | Estimate |
 |---|---|---|
-| Q1 Delivery engine | pending set, dispatch cursor, due index, ready heap, claim/settle (ack, retry, extend, fail, release), backoff incl. expired leases, both orderings, `maxInFlight`, `maxPending`, `rate`, pause, timed park wake, fencing; consumer routes moved onto it; layout bump | 15-22 days |
-| Q2 Queue resource | `kind: queue`, envelope and metadata rows in the append path, `/v1/queues` routes, scopes, dedup index, scheduled messages, lazy DLQ saga, cancel, peek, redrive, audit, `enqueuedAt` served | 10-15 days |
-| Q3 Retention and reclamation | keyless expiry, gap reporting, DLQ rules, daily segment rollover and whole-segment reclamation | 8-12 days |
-| Q4 SDK | queue API, runner, outcomes, auto-extend with abort, typed parse, local fake, Workers CI, hooks | 6-9 days |
-| Q5 Verification | TLA `QueueDelivery`, Kani codecs, DST suite, Layer B queue arm, pilot | 10-15 days |
-| Phase 2 | push delivery, `limiters` | 8-14 days |
+| Q1 Engine | queue clock, one-message pages, metadata rows and availability index in the append path, group cursor, delivery rows, lease/retry/failure indexes and sweep, ready cache, two-step claim with byte reservation, settle state machine with lease-ending operations and bounded release, backoff and retention clamps, `maxInFlight`, `rate`, pause, timed park wake, settle bucket | 20-28 days |
+| Q2 Queue resource | `kind: queue` and the refusals, envelope, `/v1/queues` routes, scopes and clamps, dedup, scheduled messages, failed view, redrive, republish, discard, cancel (both scopes), peek, audit, admission budget | 10-14 days |
+| Q3 Retention and reclamation | gap expiry, failure retention and hard lifetime, reclamation cursor and refcount deletes, shard-log and history-row deletes, bounded batches, GC convergence on quiet partitions, accounting of every row family | 15-22 days |
+| Q4 Execution | SDK queue API and runner, typed parse, hooks, wake-up subscriptions (scheduler, derived secrets, egress policy, coalescing), SDK wake-up handler for Compute and Workers, Workers CI | 12-16 days |
+| Q5 Verification | TLA `QueueDelivery` and `QueueReclamation`, Kani, DST suite incl. the evidence list, Layer B queue arm and ceiling, pilot | 13-20 days |
+| Q6 Ordered groups (after) | key index, key-head table, eligible-head cache; stream consumers moved onto the engine; layout bump | 10-14 days |
 
-**Q1-Q5: about 50-73 engineering days** (revision 1 said 28-42; the review's
-1.6-2× was right once the heap, the append-path change, the layout bump,
-reclamation and a larger formal model are counted). Order: Q1 → Q2 → Q3, with
-Q4 against Q2's routes and Q5 alongside. Each package lands red-first with its
-edge records and gates.
+**First release (Q1-Q5): about 70-100 engineering days**, before workload
+migration. Q6 and the later items follow. Order: Q1 → Q2 → Q3, with Q4
+against Q2's routes and Q5 alongside.
 
 Costs to plan for: edits to `src/shard/transaction/append.rs` and the shard
-transaction core stale formal receipts (about 150 min serial per round);
-`src/queue.rs` and `src/product_cursor.rs` are by-path includes, so new key
-families and token fields go in new modules; `src/product.rs` has no
-headroom, so routes live in `src/product/queues/`; the frozen exception
-scopes in `receive`, `settle` and the dispatcher are replaced, not grown;
-mutants at about 5 minutes each with the per-push cap mean several pushes per
-package.
+transaction core stale formal receipts (about 150 min serial per round); new
+key families go in new modules because `src/queue.rs` and
+`src/product_cursor.rs` are by-path includes; routes live in
+`src/product/queues/` because `src/product.rs` has no headroom; mutants run at
+about 5 minutes each with a per-push cap, so each package lands in several
+pushes.
