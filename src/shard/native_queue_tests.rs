@@ -9,7 +9,13 @@ use crate::native_queue::{
     keys,
 };
 
+mod budgets;
+mod sweeps;
+
 const HASH: [u8; 16] = [9; 16];
+/// How long a test waits for a committer reply: one that never comes fails
+/// the test instead of hanging it.
+const REPLY_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The engine, its database, and the absorber receiver the test must keep:
 /// a dropped receiver closes the engine.
@@ -30,7 +36,54 @@ async fn engine(name: &str) -> (Arc<ShardEngine>, Arc<Db>, mpsc::Receiver<Absorb
 }
 
 async fn op(e: &ShardEngine, op: NqOp) -> Result<NqOut, NqRefusal> {
-    e.submit_native_queue(HASH, op).await
+    tokio::time::timeout(REPLY_WITHIN, e.submit_native_queue(HASH, op))
+        .await
+        .expect("the committer never answered")
+}
+
+/// A created queue whose clock is pinned a day ahead of the wall clock:
+/// every later operation runs at exactly the clock the test sets, and the
+/// roster-driven sweeper, which reads the wall clock, never finds it due.
+/// Returns the engine, its database, the absorber receiver and the clock.
+async fn clocked(
+    name: &str,
+    cfg: QueueConfig,
+) -> (Arc<ShardEngine>, Arc<Db>, mpsc::Receiver<AbsorbSignal>, i64) {
+    let (e, db, absorb) = engine(name).await;
+    create(&e, cfg).await;
+    let c = now_ms() + crate::native_queue::DAY_MS;
+    set_clock(&db, c).await;
+    (e, db, absorb, c)
+}
+
+/// Rewrite the stored state row; the next operation loads it.
+async fn edit_state(db: &Db, edit: impl FnOnce(&mut StateRow)) {
+    let mut s = state(db).await;
+    edit(&mut s);
+    db.put(keys::state(&HASH), s.encode()).await.unwrap();
+}
+
+async fn set_clock(db: &Db, at: i64) {
+    edit_state(db, |s| s.clock = at).await;
+}
+
+/// The queue's roster deadline, if it is on the roster.
+async fn roster(db: &Db) -> Option<i64> {
+    db.get(keys::roster(&HASH))
+        .await
+        .unwrap()
+        .map(|v| i64::from_be_bytes(v[..8].try_into().unwrap()))
+}
+
+/// A sweep's next deadline and wake-up.
+async fn swept(e: &ShardEngine) -> (Option<i64>, Option<crate::native_queue::WakeRequest>) {
+    match op(e, NqOp::Sweep).await.unwrap() {
+        NqOut::Swept {
+            next_deadline,
+            wake,
+        } => (next_deadline, wake),
+        other => panic!("sweep answered {other:?}"),
+    }
 }
 
 fn msg(body: &str) -> SendMessage {

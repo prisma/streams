@@ -28,7 +28,7 @@ const MAX_INTERVAL_MS: i64 = 24 * crate::native_queue::HOUR_MS;
 const RELATIVE_DENOM: u64 = 20;
 /// How long a pass waits for its compaction, and for GC afterwards.
 const COMPACTION_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
-const GC_WAIT: std::time::Duration = std::time::Duration::from_secs(45 * 60);
+const GC_WAIT: std::time::Duration = std::time::Duration::from_mins(45);
 /// Roster entries read per tick.
 const ROSTER_PAGE: usize = 4_096;
 
@@ -43,6 +43,21 @@ struct Captured {
     generation: u64,
     bytes: u64,
 }
+
+/// Whether captured debt calls for a pass (§8.2 trigger): `total` bytes
+/// whose oldest was recorded at `oldest`, on a shard log of `compacted`
+/// compacted bytes, at `now`.
+fn pass_due(total: u64, oldest: Option<i64>, now: i64, compacted: u64) -> bool {
+    let floor = MIN_PASS_BYTES.max(compacted / RELATIVE_DENOM);
+    oldest.is_some_and(|oldest| {
+        total >= FORCE_BYTES
+            || (total >= floor && now - oldest >= LAUNCH_AGE_MS)
+            || now - oldest >= MAX_INTERVAL_MS
+    })
+}
+
+#[cfg(test)]
+mod native_queue_collector_tests;
 
 impl ShardEngine {
     pub(super) fn spawn_queue_maintenance(self: &Arc<Self>) {
@@ -168,16 +183,7 @@ impl ShardEngine {
         let total: u64 = captured.iter().map(|c| c.0.bytes).sum();
         let oldest = captured.iter().map(|c| c.1).min();
         let now = now_ms();
-        let floor = MIN_PASS_BYTES.max(self.compacted_bytes() / RELATIVE_DENOM);
-        let due = match oldest {
-            None => false,
-            Some(oldest) => {
-                total >= FORCE_BYTES
-                    || (total >= floor && now - oldest >= LAUNCH_AGE_MS)
-                    || now - oldest >= MAX_INTERVAL_MS
-            }
-        };
-        if !due {
+        if !pass_due(total, oldest, now, self.compacted_bytes()) {
             return Ok(());
         }
         let _permit = PASS_PERMIT.acquire().await.map_err(|e| e.to_string())?;
@@ -315,19 +321,38 @@ impl ShardEngine {
         admin: &slatedb::admin::Admin,
         compaction: &slatedb::compactor::Compaction,
     ) -> bool {
-        let id = compaction.id();
-        use slatedb::compactor::CompactionStatus;
-        let deadline = std::time::Instant::now() + COMPACTION_WAIT;
-        while std::time::Instant::now() < deadline {
+        let poll = Self::poll_compaction(admin, compaction);
+        tokio::time::timeout(COMPACTION_WAIT, poll)
+            .await
+            .unwrap_or(false)
+    }
+
+    /// Read the compaction every half second until it finishes.
+    async fn poll_compaction(
+        admin: &slatedb::admin::Admin,
+        compaction: &slatedb::compactor::Compaction,
+    ) -> bool {
+        loop {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            match admin.read_compaction(id, None).await {
-                Ok(Some(c)) if c.status() == CompactionStatus::Completed => return true,
-                Ok(None) => return true,
-                Ok(Some(c)) if c.status() == CompactionStatus::Failed => return false,
-                _ => {}
+            if let Some(completed) = Self::compaction_outcome(admin, compaction).await {
+                return completed;
             }
         }
-        false
+    }
+
+    /// A finished compaction's outcome (a record already trimmed away
+    /// finished), or `None` while it runs or cannot be read.
+    async fn compaction_outcome(
+        admin: &slatedb::admin::Admin,
+        compaction: &slatedb::compactor::Compaction,
+    ) -> Option<bool> {
+        use slatedb::compactor::CompactionStatus;
+        match admin.read_compaction(compaction.id(), None).await {
+            Ok(Some(c)) if c.status() == CompactionStatus::Completed => Some(true),
+            Ok(None) => Some(true),
+            Ok(Some(c)) if c.status() == CompactionStatus::Failed => Some(false),
+            _ => None,
+        }
     }
 
     /// Superseded SSTs still in the bucket, the residual excepted.

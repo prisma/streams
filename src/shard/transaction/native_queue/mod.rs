@@ -153,9 +153,7 @@ impl CommitTransaction<'_> {
     /// Advance the queue clock to `t` (§5.5); called by every operation
     /// that changes queue state, never by one that only reads.
     pub(super) fn nq_tick(st: &mut NativeStage, t: i64) {
-        if t > st.state.clock {
-            st.state.clock = t;
-        }
+        st.state.clock = st.state.clock.max(t);
         st.state_dirty = true;
     }
 
