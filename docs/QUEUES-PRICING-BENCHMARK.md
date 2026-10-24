@@ -1,6 +1,6 @@
 # Native queues — pricing goal and cost benchmark
 
-Status: **benchmark definition, 2026-10-23.** It sets the price goal for
+Status: **benchmark definition, 2026-10-23; first results 2026-10-24 (§9): goal not met yet.** It sets the price goal for
 native queues ([QUEUES-DESIGN.md](QUEUES-DESIGN.md)), builds a scenario from
 Prisma's own queue traffic, prices that scenario on Cloudflare Queues, and
 defines how we measure our cost of running the same scenario. Q0 runs a
@@ -202,3 +202,50 @@ term decides it. Prices as in §6, 30-day month, 1×.
   service, before any pricing decision or production migration.
 - Performance and cost acceptance stays with the owner (AGENTS.md, standing
   holds): the benchmark reports MET or NOT MET; the owner accepts it.
+
+## 9. Results of the first build (2026-10-23/24)
+
+Local costab rig (s3lite at 25 ms per operation, the soak7 server posture,
+an awsbench baseline co-tenant), owner prices, 30-day month. Arm A is the
+baseline alone; arm B adds the queue replay. Runs were shortened from §6's
+plan to fit the day the owner gave the build: no 48-hour 1x run, no
+month-start invoice burst, no idle or standalone run.
+
+| Run | Server | Shape | Fully loaded | Marginal | Ceiling | Verdict |
+|---|---|---|---:|---:|---:|---|
+| q1x | 393f72f9 | 1x day profile, 60 min warm-up, 90 min measured | $72.34 | $59.43 | $5.41 | not met (void by the rig's drain rule; nothing lost) |
+| q1x-b | 3b3eb559 | 1x, 30 + 60 min | **$36.54** | **$16.91** | $5.41 | **not met** (valid; 53,656 sent, 0 lost) |
+| q10x | 3b3eb559 | 10x busiest-hour profile, 30 + 60 min | **$185.75** | **$119.93** | $54.83 | **not met** (void by in-flight leases at the drain deadline; 0 lost) |
+
+Per million messages: Cloudflare $1.19-1.21; the ceiling $0.24; ours
+$1.61 fully loaded and $0.74 marginal at 1x, $0.82 fully loaded and $0.53
+marginal at 10x. At 10x we already undercut Cloudflare (a 32% margin) but
+miss the 80% goal by about 2.2x on marginal cost.
+
+What the runs showed:
+
+- **Reads dominated the first run.** Queue scans used SlateDB's default
+  `cache_blocks: false`, so every claim and sweep fetched every sorted
+  run's block from the bucket: 1M extra SST GETs in 90 minutes, $180 a
+  month. Caching scan blocks (3b3eb559) cut Class B from $179.89 to $1.72
+  at 1x.
+- **At 10x the reads are message pages.** Scheduled messages (the Stripe
+  queue's 80-minute spread) age out of the memtable and L0 into sorted
+  runs, whose data blocks the 64 MiB shared cache does not keep under load:
+  about 0.5 SST GET per message, $0.20 per million.
+- **Writes are WAL uploads.** Queue commits that the baseline's uploads do
+  not cover add about 1.1 PUT/s at 1x and 3.9 PUT/s at 10x: $0.165 per
+  million at 10x.
+- **Bytes into Tigris** (WAL, L0 flushes, compaction rewrite) are about
+  6.4 KB per message at 10x, $0.064 per million; **CPU** $0.084 per
+  million.
+- **CPU and memory are noisy between arms** (at 1x the baseline-only arm
+  used more CPU than the queue arm), so the floor share, which follows them,
+  is the least certain term.
+
+Levers, in expected order of effect: keep queue pages hot (a queue-page
+cache or a claim that reads a run of adjacent pages in one range read); a
+queue commit window so queue writes share WAL uploads; fewer and smaller
+rows per message (the state row is JSON rewritten per operation); and
+fewer compaction rewrites. The next measurement should repeat q10x with
+each lever, and run the full 48-hour 1x pair before any pricing decision.
