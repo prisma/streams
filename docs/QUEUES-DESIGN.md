@@ -636,9 +636,17 @@ writing the last run, so a quiet shard never collects. The design adds a
      `retention_iterator.rs:192-200`) and no version is newer than the
      snapshot floor, which is the last flushed sequence when no snapshot,
      transaction, reader or checkpoint is held, as on the shard log.
-     Submission checks only destination collisions, so a pass first reads
-     `read_compactor_state_view`, waits out an overlapping scheduler job, and
-     retries on `InvalidCompaction`;
+     An Admin submission is not checked against live jobs at all (only the
+     scheduler's own proposals are, `compactor_state.rs:1029-1041`), and a
+     submitted spec that shares its destination with a running job panics
+     the compaction worker (`compactor_executor.rs:893`; the 100x capacity
+     run of 2026-10-24 closed a shard 66 times that way). So a pass submits
+     only into a compactor that holds no live job (read from the stored
+     compactor state every 250 ms, up to 60 s, the spec built from that
+     stored manifest), submits once, and on a refusal, a failure or a
+     timeout returns and starts over at the next tick; a job the scheduler
+     starts between that read and the submission can still collide until
+     SlateDB rejects such a submission (an upstream fix is drafted);
   6. clear debt up to `g` only when stage 4 completes for that compaction,
      checked by a HEAD per superseded SST, never a LIST.
   Work captured later stays outstanding for the next pass, and a pass is not
