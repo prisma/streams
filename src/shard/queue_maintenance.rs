@@ -48,6 +48,14 @@ struct Captured {
     bytes: u64,
 }
 
+/// The debt a due pass covers: every queue's share, their total, and when
+/// it was captured.
+struct DueDebt {
+    captured: Vec<Captured>,
+    total: u64,
+    at: i64,
+}
+
 /// Whether captured debt calls for a pass (§8.2 trigger): `total` bytes
 /// whose oldest was recorded at `oldest`, on a shard log of `compacted`
 /// compacted bytes, at `now`.
@@ -208,25 +216,29 @@ impl ShardEngine {
         }
     }
 
-    /// Start a pass when the debt calls for one (§8.2 trigger).
+    /// Start a pass when the debt calls for one (§8.2 trigger). The debt is
+    /// captured again once the pass holds the instance's permit: a pass that
+    /// waited out another collects what is left then, and nothing when the
+    /// other cleared it, so it never rewrites the run that pass just wrote
+    /// and then waits on garbage collection for it.
     async fn maybe_collect(&self) -> Result<(), String> {
-        let captured = self.capture_debt().await?;
-        let total: u64 = captured.iter().map(|c| c.0.bytes).sum();
-        let oldest = captured.iter().map(|c| c.1).min();
-        let now = now_ms();
-        if !pass_due(total, oldest, now, self.compacted_bytes()) {
+        if self.due_debt().await?.is_none() {
             return Ok(());
         }
         let _permit = PASS_PERMIT.acquire().await.map_err(|e| e.to_string())?;
+        let Some(due) = self.due_debt().await? else {
+            return Ok(());
+        };
         let started = std::time::Instant::now();
         let superseded = self.compact_everything().await?;
         let compacted_secs = started.elapsed().as_secs_f64();
         self.await_collection(&superseded).await?;
-        for (c, _) in &captured {
+        let (captured, total) = (due.captured, due.total);
+        for c in &captured {
             let op = NqOp::ClearDebt {
                 generation: c.generation,
                 bytes: c.bytes,
-                captured_at: now,
+                captured_at: due.at,
             };
             // A queue deleted meanwhile has no debt left to clear.
             match self.submit_native_queue(c.hash, op).await {
@@ -244,6 +256,23 @@ impl ShardEngine {
             "queue collection pass complete"
         );
         Ok(())
+    }
+
+    /// The roster's debt now when it calls for a pass (§8.2 trigger).
+    async fn due_debt(&self) -> Result<Option<DueDebt>, String> {
+        let captured = self.capture_debt().await?;
+        let total: u64 = captured.iter().map(|c| c.0.bytes).sum();
+        let oldest = captured.iter().map(|c| c.1).min();
+        let at = now_ms();
+        if !pass_due(total, oldest, at, self.compacted_bytes()) {
+            return Ok(None);
+        }
+        let captured = captured.into_iter().map(|(c, _)| c).collect();
+        Ok(Some(DueDebt {
+            captured,
+            total,
+            at,
+        }))
     }
 
     /// Every roster queue's debt now, with its oldest debt time. Captured

@@ -318,8 +318,14 @@ async fn native_queue_collection_of_due_debt_compacts_the_log_and_clears_the_deb
     // writes one L0 SST: its compaction supersedes only the residual the
     // manifest keeps (D22), and the pass has no garbage to wait for.
     indebted(&r, hash, 256 * MIB).await;
-    let pass = tokio::time::timeout(STEP_WITHIN, r.engine.maybe_collect());
-    assert_eq!(pass.await, Ok(Ok(())));
+    // Two passes at once, as when the engine's own collector loop ticks beside
+    // this call (the mutation baseline on CI, 2026-10-24). They share the
+    // instance's permit, and the one that waits captures the debt again under
+    // it and finds none left; capturing only before the wait, it rewrote the
+    // first pass's sorted run and waited 30 s for GC to delete it.
+    let both = futures_util::future::join(r.engine.maybe_collect(), r.engine.maybe_collect());
+    let passes = tokio::time::timeout(STEP_WITHIN, both).await;
+    assert_eq!(passes, Ok((Ok(()), Ok(()))));
     let s = stored(&r, hash).await;
     assert_eq!(
         (s.debt_bytes, s.debt_oldest_at),
