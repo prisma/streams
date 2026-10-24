@@ -7,6 +7,19 @@
 //! entries and hash tables are freed together when its last reader lets go.
 //! foyer's own `clear()` would not do: it keeps the tables' capacity and its
 //! usage counter, so a cleared cache believes it is still full.
+//!
+//! Every entry is stored clamped: copied into an allocation of exactly its
+//! size. A data block or index a read missed is a slice of the GET reply
+//! (the shard databases have no compression codec): of hyper's connection
+//! read buffer, 8 KiB up to 408 KiB, when the body arrived in one frame,
+//! and of one reply shared by every block of a multi-block scan read. Held
+//! in the cache, the slice would keep that whole buffer alive. A block a
+//! write cached carries its builder's `Vec` slack. `insert` clamps as
+//! slatedb's `SplitCache` does; clamping the loaded entry of a `fetch_*`
+//! goes beyond slatedb's default (`SplitCache` passes loaders through and
+//! `FoyerCache` clamps nothing). Filters and stats are already owned
+//! copies, so their clamp is one more copy. Clamping an index re-verifies
+//! its flatbuffer, which cannot fail for bytes already verified once.
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
@@ -14,6 +27,12 @@ use slatedb::db_cache::foyer::{FoyerCache, FoyerCacheOptions};
 use slatedb::db_cache::{CacheLoader, CachedEntry, CachedKey, DbCache};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// `loader`, with the entry it loads clamped before the cache keeps it. A
+/// load error passes through unchanged.
+fn clamped(loader: CacheLoader) -> CacheLoader {
+    Box::new(move || Box::pin(async move { loader().await.map(|e| e.clamp_allocated_size()) }))
+}
 
 /// A SlateDB block cache held as a replaceable generation of a foyer cache.
 /// Every database that shares it shares the generation in force.
@@ -104,8 +123,12 @@ impl DbCache for BlockCache {
 
     async fn insert(&self, key: CachedKey, value: CachedEntry) {
         let generation = self.current.load_full();
+        // Clamping copies the bytes, so the entry's size is unchanged.
         let bytes = value.size() as u64;
-        generation.cache.insert(key, value).await;
+        generation
+            .cache
+            .insert(key, value.clamp_allocated_size())
+            .await;
         generation.inserted.fetch_add(bytes, Ordering::Relaxed);
     }
 
@@ -127,7 +150,7 @@ impl DbCache for BlockCache {
         self.current
             .load_full()
             .cache
-            .fetch_block(key, loader)
+            .fetch_block(key, clamped(loader))
             .await
     }
 
@@ -139,7 +162,7 @@ impl DbCache for BlockCache {
         self.current
             .load_full()
             .cache
-            .fetch_index(key, loader)
+            .fetch_index(key, clamped(loader))
             .await
     }
 
@@ -151,7 +174,7 @@ impl DbCache for BlockCache {
         self.current
             .load_full()
             .cache
-            .fetch_filter(key, loader)
+            .fetch_filter(key, clamped(loader))
             .await
     }
 
@@ -163,7 +186,7 @@ impl DbCache for BlockCache {
         self.current
             .load_full()
             .cache
-            .fetch_stats(key, loader)
+            .fetch_stats(key, clamped(loader))
             .await
     }
 }
