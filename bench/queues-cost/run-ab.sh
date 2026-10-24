@@ -24,6 +24,10 @@
 #   SCALE [1]  COMPRESS [1]  PROFILE [day]  START_HOUR [0]  REPLAY_ARGS []
 #   BASELINE [1; 0 in standalone]  BASELINE_STREAMS [20]
 #   BASELINE_INTERVAL_MS [500]  BASELINE_BATCH [10]  BASELINE_RECORD_BYTES [1024]
+#   BASELINE_PREFIX [base-] the baseline streams' names: the same in every
+#     arm and run, so they hash to the same shards (a shard's WAL flushes
+#     depend on which appenders it holds; arms are isolated by PATH_PREFIX
+#     and a fresh s3lite, not by stream names)
 #   S3LITE_BIN [target/release/s3lite, else bench/costab/bin/s3lite-ab]
 #   AWSBENCH_BIN [bench/costab/bin/awsbench-ab]  S3LITE_LATENCY_MS [25]
 #   S3_PORT [9500]  SRV_PORT [8090]  SERVER_ENV_EXTRA ["K=V ..."]
@@ -57,6 +61,7 @@ BASELINE_STREAMS=${BASELINE_STREAMS:-20}
 BASELINE_INTERVAL_MS=${BASELINE_INTERVAL_MS:-500}
 BASELINE_BATCH=${BASELINE_BATCH:-10}
 BASELINE_RECORD_BYTES=${BASELINE_RECORD_BYTES:-1024}
+BASELINE_PREFIX=${BASELINE_PREFIX:-base-}
 if [ -z "${S3LITE_BIN:-}" ]; then
   if [ -x "$ROOT/target/release/s3lite" ]; then S3LITE_BIN=$ROOT/target/release/s3lite
   else S3LITE_BIN=$ROOT/bench/costab/bin/s3lite-ab; fi
@@ -196,7 +201,7 @@ run_arm() { # arm baseline(0|1) load(none|replay|idle)
         BENCH_WIDE_SECS=$((total + DRAIN_S + 120)) BENCH_WIDE_APPEND_INTERVAL_MS="$BASELINE_INTERVAL_MS" \
         BENCH_WIDE_SCAN_RPS=0 BENCH_WIDE_SETUP_CONC=8 \
         BENCH_BATCH="$BASELINE_BATCH" BENCH_RECORD_BYTES="$BASELINE_RECORD_BYTES" \
-        BENCH_STREAM="b$LABEL$arm-" BENCH_OUT="$dir/baseline.jsonl" \
+        BENCH_STREAM="$BASELINE_PREFIX" BENCH_OUT="$dir/baseline.jsonl" \
         "$AWSBENCH_BIN" ) > "$dir/baseline.log" 2>&1 < /dev/null &
     PID_GEN=$!
     for _ in $(seq 1 120); do

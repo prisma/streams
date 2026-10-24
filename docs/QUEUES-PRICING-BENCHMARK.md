@@ -127,7 +127,12 @@ storage $0.02 per GiB-month) as a sensitivity.
 **Reference cell.** The `shared-cell` profile on `compute-1g` instances, with
 the baseline tenant mix of the shared-cell certification (Layer B's compliant
 tenants) driving the shard's commit pump at 60% of its flush capacity. The
-baseline is fixed before the run and identical across arms.
+baseline is fixed before the run and identical across arms, down to its
+streams' names (`run-ab.sh` `BASELINE_PREFIX`, the same in every arm and
+run): a stream's name decides its shard, and a shard's WAL flushes depend
+on which appenders it holds, so differently named baselines priced Class A
+at the luck of their placement (four arm A runs of one configuration:
+94.5k-117.6k WAL PUTs an hour).
 
 **Runs.**
 
