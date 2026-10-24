@@ -99,3 +99,15 @@ fn configuration_clamps_are_enforced() {
         "the dedup window may not exceed retention"
     );
 }
+
+#[test]
+fn queue_scans_cache_their_blocks() {
+    // A queue scan that does not cache re-reads every sorted run's block
+    // from the bucket on every claim and sweep (the first 1x pricing run:
+    // 1M extra GETs in 90 minutes).
+    assert!(scan_options().cache_blocks);
+    assert!(matches!(
+        scan_options().order,
+        slatedb::IterationOrder::Ascending
+    ));
+}

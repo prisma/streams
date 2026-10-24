@@ -92,10 +92,7 @@ impl ShardEngine {
             .scan_prefix_with_options(
                 &keys::ROSTER_PREFIX[..],
                 ..,
-                &slatedb::config::ScanOptions {
-                    cache_blocks: true,
-                    ..slatedb::config::ScanOptions::default()
-                },
+                &crate::native_queue::scan_options(),
             )
             .await
             .map_err(|e| e.to_string())?;

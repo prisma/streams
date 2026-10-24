@@ -402,6 +402,17 @@ pub(crate) struct WakeRequest {
     pub oldest_due_age_ms: i64,
 }
 
+/// Queue scans cache the blocks they read (pricing benchmark, 2026-10-24):
+/// a claim and a sweep scan the same small index families again and again,
+/// and SlateDB's default scan reads every sorted run's block from the
+/// bucket each time (1M extra GETs in a 90-minute 1x run, $180 a month).
+pub(crate) fn scan_options() -> slatedb::config::ScanOptions {
+    slatedb::config::ScanOptions {
+        cache_blocks: true,
+        ..slatedb::config::ScanOptions::default()
+    }
+}
+
 /// Jitter denominator: `rand` is a fraction in millionths.
 pub(crate) const JITTER_SCALE: u64 = 1_000_000;
 

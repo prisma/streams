@@ -360,13 +360,20 @@ async fn a_deleted_queue_leaves_no_row_and_no_page() {
         op(&e, send_op(vec![msg("late")])).await.unwrap_err(),
         NqRefusal::Deleting
     );
-    loop {
+    // 20 messages own about 100 rows: 7 a step finishes well inside 100
+    // steps, and a step that never finishes fails instead of hanging.
+    let mut done = false;
+    for _ in 0..100 {
         match op(&e, NqOp::DeleteStep { max_rows: 7 }).await.unwrap() {
             NqOut::DeleteStepped { remaining: true } => {}
-            NqOut::DeleteStepped { remaining: false } => break,
+            NqOut::DeleteStepped { remaining: false } => {
+                done = true;
+                break;
+            }
             other => panic!("{other:?}"),
         }
     }
+    assert!(done, "the delete never finished");
     let mut prefix = HASH.to_vec();
     prefix.push(keys::TAG);
     let mut rows = db.scan_prefix(&prefix[..], ..).await.unwrap();
@@ -567,13 +574,15 @@ async fn release_gives_the_attempt_back_twice_then_counts_and_extend_moves_the_d
         (1, 1),
         "the third release counts as a retry"
     );
-    let d = loop {
-        let d = claim(&e, 1).await;
+    let mut d = Vec::new();
+    for _ in 0..50 {
+        d = claim(&e, 1).await;
         if !d.is_empty() {
-            break d;
+            break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    };
+    }
+    assert!(!d.is_empty(), "the retried message never came back");
     assert_eq!(d[0].attempt, 2);
     let before = d[0].lease_deadline;
     let NqOut::Settled(r) = op(
