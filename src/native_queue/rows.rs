@@ -1,9 +1,39 @@
-//! Row codecs (docs/QUEUES-DESIGN.md §5.1-§5.3, §8.2). The state row is
-//! JSON (one per queue, read once per group); the per-message rows are
-//! fixed-width little-endian so a message's rows stay small.
+//! Row codecs (docs/QUEUES-DESIGN.md §5.1-§5.3, §8.2). Every row is
+//! little-endian with fixed-width fields, so a message's rows stay small
+//! and the state row (one per queue, rewritten by every group that changes
+//! the queue) costs no JSON.
+//!
+//! The state row, in order: version u32 (`STATE_ROW_VERSION`, the only one
+//! decoded); cfg: retention_ms, failure_retention_ms i64, max_queued_bytes,
+//! max_queued_messages u64, dedup_window_ms i64, max_dedup_entries u64,
+//! group.max_attempts u32, backoff.initial_ms, backoff.max_ms i64,
+//! backoff.multiplier u32, group.lease_ms i64, group.max_in_flight,
+//! group.max_batch u32; clock, cursor_at i64, cursor_off u64; a flags byte
+//! (bit 0 cursor_started, 1 paused, 2 deleting, 3 roster_at present,
+//! 4 wakeup_url present, others zero); queued_messages, queued_bytes,
+//! leased, retrying, failed, dedup_entries, gap_count u64; the 11 counters
+//! u64 in struct order; debt_bytes u64, debt_oldest_at i64,
+//! debt_generation u64; wakeup_url (u32 length + UTF-8) when present;
+//! wakeup_name (u32 length + UTF-8); wakeup_version u32;
+//! last_useful_claim_at, last_notified_at, notify_backoff_ms i64; jitter
+//! u64; floors avail, leases, retries, fail_expiry, dedup_expiry,
+//! retry_cycle i64; roster_at i64 when present.
 use serde::{Deserialize, Serialize};
 
-use super::QueueConfig;
+use super::{Backoff, GroupConfig, QueueConfig};
+
+/// The state row's layout version: the first four bytes of every state
+/// row, and the only one `StateRow::decode` accepts.
+pub(crate) const STATE_ROW_VERSION: u32 = 3;
+/// The state row's length without its variable parts (the wake-up URL and
+/// name bytes, the URL's length, `roster_at`).
+const STATE_ROW_FIXED: usize = 373;
+const FLAG_CURSOR_STARTED: u8 = 1;
+const FLAG_PAUSED: u8 = 1 << 1;
+const FLAG_DELETING: u8 = 1 << 2;
+const FLAG_ROSTER: u8 = 1 << 3;
+const FLAG_WAKEUP_URL: u8 = 1 << 4;
+const FLAGS_KNOWN: u8 = (1 << 5) - 1;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,15 +51,47 @@ pub(crate) struct Counters {
     pub duplicates: u64,
 }
 
-/// The state row layout this build writes and the only one it reads.
-pub(crate) const STATE_ROW_VERSION: u32 = 2;
+impl Counters {
+    fn put(&self, v: &mut Vec<u8>) {
+        v.extend_from_slice(
+            [
+                self.sent,
+                self.delivered,
+                self.acked,
+                self.retried,
+                self.failed,
+                self.expired,
+                self.discarded,
+                self.cancelled,
+                self.redriven,
+                self.stale,
+                self.duplicates,
+            ]
+            .map(u64::to_le_bytes)
+            .as_flattened(),
+        );
+    }
+    fn read(r: &mut Reader<'_>) -> Result<Self, String> {
+        Ok(Self {
+            sent: r.u64()?,
+            delivered: r.u64()?,
+            acked: r.u64()?,
+            retried: r.u64()?,
+            failed: r.u64()?,
+            expired: r.u64()?,
+            discarded: r.u64()?,
+            cancelled: r.u64()?,
+            redriven: r.u64()?,
+            stale: r.u64()?,
+            duplicates: r.u64()?,
+        })
+    }
+}
 
 /// The queue's state row (§5.3, §5.5, §8.2): one per queue, written by
 /// every batch that changes queue state.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct StateRow {
-    pub v: u32,
     pub cfg: QueueConfig,
     /// The queue clock (§5.5): monotone, written with every state change.
     pub clock: i64,
@@ -79,8 +141,7 @@ pub(crate) struct StateRow {
 /// Every put lowers a floor (`NativeStage::put`); a scan may raise it to
 /// the first live entry it found, written in the batch whose deletes
 /// justified it; deletes never touch it, as a low floor is only slower.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Floors {
     pub avail: i64,
     pub leases: i64,
@@ -121,23 +182,186 @@ impl Floors {
             _ => None,
         }
     }
+
+    fn put(&self, v: &mut Vec<u8>) {
+        v.extend_from_slice(
+            [
+                self.avail,
+                self.leases,
+                self.retries,
+                self.fail_expiry,
+                self.dedup_expiry,
+                self.retry_cycle,
+            ]
+            .map(i64::to_le_bytes)
+            .as_flattened(),
+        );
+    }
+    fn read(r: &mut Reader<'_>) -> Result<Self, String> {
+        Ok(Self {
+            avail: r.i64()?,
+            leases: r.i64()?,
+            retries: r.i64()?,
+            fail_expiry: r.i64()?,
+            dedup_expiry: r.i64()?,
+            retry_cycle: r.i64()?,
+        })
+    }
 }
 
 impl StateRow {
+    /// The row in the module's layout, `STATE_ROW_VERSION` first.
     pub(crate) fn encode(&self) -> Vec<u8> {
-        serde_json::to_vec(self).unwrap_or_default()
-    }
-    /// A stored state row of this build's layout; any other version is
-    /// refused (one layout, no legacy decoders).
-    pub(crate) fn decode(raw: &[u8]) -> Result<Self, String> {
-        let row: Self = serde_json::from_slice(raw).map_err(|e| format!("queue state row: {e}"))?;
-        if row.v != STATE_ROW_VERSION {
-            return Err(format!(
-                "queue state row: version {} is not {STATE_ROW_VERSION}",
-                row.v
-            ));
+        let url = self.wakeup_url.as_deref();
+        let mut v = Vec::with_capacity(
+            STATE_ROW_FIXED
+                + url.map_or(0, |u| 4 + u.len())
+                + self.wakeup_name.len()
+                + self.roster_at.map_or(0, |_| 8),
+        );
+        v.extend_from_slice(&STATE_ROW_VERSION.to_le_bytes());
+        put_config(&mut v, &self.cfg);
+        v.extend_from_slice(
+            [
+                self.clock.to_le_bytes(),
+                self.cursor_at.to_le_bytes(),
+                self.cursor_off.to_le_bytes(),
+            ]
+            .as_flattened(),
+        );
+        v.push(self.flags());
+        v.extend_from_slice(
+            [
+                self.queued_messages,
+                self.queued_bytes,
+                self.leased,
+                self.retrying,
+                self.failed,
+                self.dedup_entries,
+                self.gap_count,
+            ]
+            .map(u64::to_le_bytes)
+            .as_flattened(),
+        );
+        self.counters.put(&mut v);
+        v.extend_from_slice(
+            [
+                self.debt_bytes.to_le_bytes(),
+                self.debt_oldest_at.to_le_bytes(),
+                self.debt_generation.to_le_bytes(),
+            ]
+            .as_flattened(),
+        );
+        if let Some(url) = url {
+            put_str(&mut v, url);
         }
-        Ok(row)
+        put_str(&mut v, &self.wakeup_name);
+        v.extend_from_slice(&self.wakeup_version.to_le_bytes());
+        v.extend_from_slice(
+            [
+                self.last_useful_claim_at.to_le_bytes(),
+                self.last_notified_at.to_le_bytes(),
+                self.notify_backoff_ms.to_le_bytes(),
+                self.jitter.to_le_bytes(),
+            ]
+            .as_flattened(),
+        );
+        self.floors.put(&mut v);
+        if let Some(at) = self.roster_at {
+            v.extend_from_slice(&at.to_le_bytes());
+        }
+        v
+    }
+
+    fn flags(&self) -> u8 {
+        let mut flags = 0;
+        for (set, bit) in [
+            (self.cursor_started, FLAG_CURSOR_STARTED),
+            (self.paused, FLAG_PAUSED),
+            (self.deleting, FLAG_DELETING),
+            (self.roster_at.is_some(), FLAG_ROSTER),
+            (self.wakeup_url.is_some(), FLAG_WAKEUP_URL),
+        ] {
+            if set {
+                flags |= bit;
+            }
+        }
+        flags
+    }
+
+    /// A row of `STATE_ROW_VERSION`, exactly as long as its layout.
+    pub(crate) fn decode(raw: &[u8]) -> Result<Self, String> {
+        let mut r = Reader::new(raw);
+        let version = r.u32()?;
+        if version != STATE_ROW_VERSION {
+            return Err(format!("queue state row: version {version}"));
+        }
+        let cfg = read_config(&mut r)?;
+        let clock = r.i64()?;
+        let cursor_at = r.i64()?;
+        let cursor_off = r.u64()?;
+        let flags = r.u8()?;
+        if flags & !FLAGS_KNOWN != 0 {
+            return Err(format!("queue state row: flags {flags:#04x}"));
+        }
+        let queued_messages = r.u64()?;
+        let queued_bytes = r.u64()?;
+        let leased = r.u64()?;
+        let retrying = r.u64()?;
+        let failed = r.u64()?;
+        let dedup_entries = r.u64()?;
+        let gap_count = r.u64()?;
+        let counters = Counters::read(&mut r)?;
+        let debt_bytes = r.u64()?;
+        let debt_oldest_at = r.i64()?;
+        let debt_generation = r.u64()?;
+        let wakeup_url = if flags & FLAG_WAKEUP_URL != 0 {
+            Some(r.string()?)
+        } else {
+            None
+        };
+        let wakeup_name = r.string()?;
+        let wakeup_version = r.u32()?;
+        let last_useful_claim_at = r.i64()?;
+        let last_notified_at = r.i64()?;
+        let notify_backoff_ms = r.i64()?;
+        let jitter = r.u64()?;
+        let floors = Floors::read(&mut r)?;
+        let roster_at = if flags & FLAG_ROSTER != 0 {
+            Some(r.i64()?)
+        } else {
+            None
+        };
+        r.end()?;
+        Ok(Self {
+            cfg,
+            clock,
+            cursor_at,
+            cursor_off,
+            cursor_started: flags & FLAG_CURSOR_STARTED != 0,
+            paused: flags & FLAG_PAUSED != 0,
+            deleting: flags & FLAG_DELETING != 0,
+            queued_messages,
+            queued_bytes,
+            leased,
+            retrying,
+            failed,
+            dedup_entries,
+            gap_count,
+            counters,
+            debt_bytes,
+            debt_oldest_at,
+            debt_generation,
+            wakeup_url,
+            wakeup_name,
+            wakeup_version,
+            last_useful_claim_at,
+            last_notified_at,
+            notify_backoff_ms,
+            jitter,
+            floors,
+            roster_at,
+        })
     }
     /// Next jitter sample in millionths (xorshift; the state row carries
     /// its state).
@@ -149,6 +373,79 @@ impl StateRow {
         self.jitter = x;
         x % super::JITTER_SCALE
     }
+}
+
+/// The queue configuration's 88 bytes of the state row.
+fn put_config(v: &mut Vec<u8>, c: &QueueConfig) {
+    let g = &c.group;
+    v.extend_from_slice(
+        [
+            c.retention_ms.to_le_bytes(),
+            c.failure_retention_ms.to_le_bytes(),
+            c.max_queued_bytes.to_le_bytes(),
+            c.max_queued_messages.to_le_bytes(),
+            c.dedup_window_ms.to_le_bytes(),
+            c.max_dedup_entries.to_le_bytes(),
+        ]
+        .as_flattened(),
+    );
+    v.extend_from_slice(&g.max_attempts.to_le_bytes());
+    v.extend_from_slice(
+        [
+            g.backoff.initial_ms.to_le_bytes(),
+            g.backoff.max_ms.to_le_bytes(),
+        ]
+        .as_flattened(),
+    );
+    v.extend_from_slice(&g.backoff.multiplier.to_le_bytes());
+    v.extend_from_slice(&g.lease_ms.to_le_bytes());
+    v.extend_from_slice(
+        [g.max_in_flight, g.max_batch]
+            .map(u32::to_le_bytes)
+            .as_flattened(),
+    );
+}
+
+fn read_config(r: &mut Reader<'_>) -> Result<QueueConfig, String> {
+    let retention_ms = r.i64()?;
+    let failure_retention_ms = r.i64()?;
+    let max_queued_bytes = r.u64()?;
+    let max_queued_messages = r.u64()?;
+    let dedup_window_ms = r.i64()?;
+    let max_dedup_entries = r.u64()?;
+    let max_attempts = r.u32()?;
+    let initial_ms = r.i64()?;
+    let max_ms = r.i64()?;
+    let multiplier = r.u32()?;
+    let lease_ms = r.i64()?;
+    let max_in_flight = r.u32()?;
+    let max_batch = r.u32()?;
+    Ok(QueueConfig {
+        retention_ms,
+        failure_retention_ms,
+        max_queued_bytes,
+        max_queued_messages,
+        dedup_window_ms,
+        max_dedup_entries,
+        group: GroupConfig {
+            max_attempts,
+            backoff: Backoff {
+                initial_ms,
+                max_ms,
+                multiplier,
+            },
+            lease_ms,
+            max_in_flight,
+            max_batch,
+        },
+    })
+}
+
+/// A u32 length and the string's bytes (a wake-up URL or queue name is far
+/// below 4 GiB: the request that set it was bounded).
+fn put_str(v: &mut Vec<u8>, s: &str) {
+    v.extend_from_slice(&u32::try_from(s.len()).unwrap_or(u32::MAX).to_le_bytes());
+    v.extend_from_slice(s.as_bytes());
 }
 
 /// An availability entry's value (§5.2): the message's metadata as sent
@@ -403,6 +700,11 @@ impl<'a> Reader<'a> {
         Ok(i64::from_le_bytes(
             self.bytes(8)?.try_into().map_err(|_| "queue row")?,
         ))
+    }
+    /// A u32 length and that many bytes of UTF-8.
+    fn string(&mut self) -> Result<String, String> {
+        let len = usize::try_from(self.u32()?).map_err(|_| "queue row: length")?;
+        String::from_utf8(self.bytes(len)?.to_vec()).map_err(|_| "queue row: not UTF-8".to_owned())
     }
     fn tag(&mut self) -> Result<[u8; 16], String> {
         self.bytes(16)?

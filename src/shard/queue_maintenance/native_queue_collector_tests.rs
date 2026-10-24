@@ -12,7 +12,7 @@ use slatedb::compactor::{CompactionSpec, SourceId};
 use tokio::sync::mpsc;
 
 use super::pass_due;
-use crate::native_queue::rows::{STATE_ROW_VERSION, StateRow};
+use crate::native_queue::rows::StateRow;
 use crate::native_queue::{NqOp, QueueConfig, keys};
 use crate::shard::{AbsorbSignal, ShardConfig, ShardEngine};
 
@@ -116,7 +116,6 @@ async fn native_queue_collection_captures_every_roster_queue_with_debt_and_only_
     let oldest = crate::shard::now_ms();
     for (tag, debt) in [(1u8, 300u64), (2, 0)] {
         let s = StateRow {
-            v: STATE_ROW_VERSION,
             debt_bytes: debt,
             debt_generation: 7,
             debt_oldest_at: oldest,
