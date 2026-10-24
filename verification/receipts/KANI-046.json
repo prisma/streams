@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "904c2cc0a4feb16920f6a4d11b2ca754820f5a27fba7bf98a4ea7e71feae877e",
+      "log_sha256": "86b397f1116cab69c0c14bc9f1c39f9f7d1947b7954b38aee969d1264651439f",
       "role": "baseline",
-      "seconds": 40.9,
+      "seconds": 102.7,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "4bb02b08b256df1b8b3b74010342bf61bcaaa5a688e6a612a11920f72322a97d",
+      "log_sha256": "a47af67db09ee8ef42e9ea35dfc649e1b57b71cacbfdf790f5c848228f741dc3",
       "role": "baseline",
-      "seconds": 80.6,
+      "seconds": 43.2,
       "verdict": "pass"
     },
     {
@@ -30,15 +30,15 @@
       "failed_checks": [
         "\"a trim never passes the safe boundary\""
       ],
-      "log_sha256": "a432234383e9b73b12ecb8b759bddeb3dd7cb8cfa17ff9dc0af3e6dfc0a51a7a",
+      "log_sha256": "39404f246e5144dbc650af60089bcd8bc3f40eb5a7c1fc284db04234a112a683",
       "mutated": {
         "src/shard/commit_plan.rs": {
-          "baseline": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
-          "control": "1e0d51accd377a5e1f9039cdf4c8082427f8cfa2ea018198a4701a87d4872823"
+          "baseline": "037169c780e6ab286f0ddd33d318057c176d006d4bafb1a85f30383f39d78c0b",
+          "control": "1384308ef40d850249647301927415b6fdf2411a918931ae7a33db90b7335afe"
         }
       },
       "role": "negative-control",
-      "seconds": 69.3,
+      "seconds": 143.6,
       "verdict": "fail"
     },
     {
@@ -49,15 +49,15 @@
       "failed_checks": [
         "\"a trim never moves backwards\""
       ],
-      "log_sha256": "89ba106c2ca247705adbfb4d51e495219c0f0a649f4972cca09244f46e70b779",
+      "log_sha256": "6bc4dcc3df3f2fdbf7048b4f573b3d590c15e972fe693130109f8c5df90b9aec",
       "mutated": {
         "src/shard/commit_plan.rs": {
-          "baseline": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
-          "control": "ca0bc2ca22bf505071bf6e659940c0b590881429a4518243d2e1c221548ecdf4"
+          "baseline": "037169c780e6ab286f0ddd33d318057c176d006d4bafb1a85f30383f39d78c0b",
+          "control": "541fe0dd235b48eb25779b2ed6a1f456bba4032a4138d59a34a1862f167679cd"
         }
       },
       "role": "negative-control",
-      "seconds": 76.1,
+      "seconds": 170.4,
       "verdict": "fail"
     },
     {
@@ -68,15 +68,15 @@
       "failed_checks": [
         "\"the boundary moves forward within the log\""
       ],
-      "log_sha256": "4b25ed8aa61f40835d92f0e11c09cef81bda26ca0c177b0abe02a72d85f42001",
+      "log_sha256": "8c913dea1d8e837b38e1a2044a17148e6b90fb4c08eae48a188ec945c9e64e8d",
       "mutated": {
         "src/shard/commit_plan.rs": {
-          "baseline": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
-          "control": "8cb10ad9ff67a525971b1d117746cdbd976d11f8107e9869c2fab11315aa17d7"
+          "baseline": "037169c780e6ab286f0ddd33d318057c176d006d4bafb1a85f30383f39d78c0b",
+          "control": "7c8559931101c881ec32395703be12cda90a9c505fd8d7dffcba9dd72a1855f9"
         }
       },
       "role": "negative-control",
-      "seconds": 74.9,
+      "seconds": 252.3,
       "verdict": "fail"
     }
   ],
@@ -88,12 +88,12 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "150b6d9e2c41c4dd9d114fb055ff4bbb1c8e3a31241818fe22dd70350869c271",
+      "Cargo.lock": "2290fd7e52bc46b54f79d60cc98fad4addccb2ff5ff8870556f9d25e728109cd",
       "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
-      "src/shard/commit_plan.rs": "362d7741f5172df06db6a5646569beea6bb229c451c1d624bee41fb01a533169",
+      "src/shard/commit_plan.rs": "037169c780e6ab286f0ddd33d318057c176d006d4bafb1a85f30383f39d78c0b",
       "src/shard/commit_plan/proofs.rs": "e36f40866891e8314a9d4dd4837936484ad4d3a66b945b5c8a0f4329b26e249c",
       "src/shard/transaction/maintenance.rs": "fb46b7e2476ff0b31d11c69e65e819625496f0236e1115e69261f1d16a8200dc",
       "verification/kani/controls/KANI-046-boundary-past-the-log.patch": "236fd88b2a80b24c4c9f9e9cc5060438f242b7a412ea4fa4a3a3bc8f6a9e4ce5",
@@ -122,10 +122,10 @@
       }
     }
   },
-  "inputs_sha256": "36a348e5ebd75b1c816e4bcae0c8a9655d9e988fd5f9c8a2a0bbe44f4ca781af",
+  "inputs_sha256": "6f04d931f8b43d620f31b7a41f2825dc0e93ca6bba6904b057d9eb5958dba75e",
   "run_on": {
     "dirty_tree": false,
-    "revision": "955316d5cc7c88b8d2042b95f137c3ef05f1b266"
+    "revision": "5d84f29623835e9e217642f0cc25e01990b4df00"
   },
   "schema": 2,
   "tools": {
