@@ -21,6 +21,9 @@ pub(crate) struct Counters {
     pub duplicates: u64,
 }
 
+/// The state row layout this build writes and the only one it reads.
+pub(crate) const STATE_ROW_VERSION: u32 = 2;
+
 /// The queue's state row (§5.3, §5.5, §8.2): one per queue, written by
 /// every batch that changes queue state.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,8 +127,17 @@ impl StateRow {
     pub(crate) fn encode(&self) -> Vec<u8> {
         serde_json::to_vec(self).unwrap_or_default()
     }
+    /// A stored state row of this build's layout; any other version is
+    /// refused (one layout, no legacy decoders).
     pub(crate) fn decode(raw: &[u8]) -> Result<Self, String> {
-        serde_json::from_slice(raw).map_err(|e| format!("queue state row: {e}"))
+        let row: Self = serde_json::from_slice(raw).map_err(|e| format!("queue state row: {e}"))?;
+        if row.v != STATE_ROW_VERSION {
+            return Err(format!(
+                "queue state row: version {} is not {STATE_ROW_VERSION}",
+                row.v
+            ));
+        }
+        Ok(row)
     }
     /// Next jitter sample in millionths (xorshift; the state row carries
     /// its state).

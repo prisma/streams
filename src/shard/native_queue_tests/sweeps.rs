@@ -249,6 +249,72 @@ async fn has(db: &slatedb::Db, key: Vec<u8>) -> bool {
     db.get(key).await.unwrap().is_some()
 }
 
+/// Each failed message's offset and failure cause, in offset order.
+async fn failures(e: &super::ShardEngine) -> Vec<(u64, &'static str)> {
+    let list = NqOp::ListFailed {
+        after: None,
+        limit: 10,
+    };
+    let NqOut::Deliveries { items, .. } = op(e, list).await.unwrap() else {
+        panic!("a listing answered otherwise")
+    };
+    let cause = |v: &crate::native_queue::DeliveryView| v.failure.as_ref().map(|f| f.cause);
+    items
+        .iter()
+        .map(|v| (v.offset, cause(v).unwrap_or("none")))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_retry_due_at_its_cycle_deadline_fails_in_a_sweep_at_that_millisecond() {
+    let (e, db, _absorb, c) = clocked("nq-retry-due-at-cycle", QueueConfig::default()).await;
+    op(&e, send_op(vec![msg("a")])).await.unwrap();
+    let d = claim(&e, 1).await;
+    let at_deadline = SettleKind::Retry {
+        delay_ms: Some(RETENTION),
+    };
+    op(&e, settle(vec![(0, d[0].lease_gen, at_deadline)]))
+        .await
+        .unwrap();
+    let f = state(&db).await.floors;
+    assert_eq!(
+        (f.retries, f.retry_cycle),
+        (c + RETENTION, c + RETENTION),
+        "due exactly at its cycle deadline"
+    );
+    set_clock(&db, c + RETENTION).await;
+    swept(&e).await;
+    let s = state(&db).await;
+    assert_eq!(
+        (s.retrying, s.failed, s.floors.retry_cycle),
+        (0, 1, i64::MAX)
+    );
+    assert_eq!(failures(&e).await, vec![(0, "retention")]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sweep_that_runs_after_a_retrys_cycle_deadline_still_fails_it() {
+    let (e, db, _absorb, c) = clocked("nq-retry-late-sweep", QueueConfig::default()).await;
+    op(&e, send_op(vec![msg("a")])).await.unwrap();
+    let d = claim(&e, 1).await;
+    let later = SettleKind::Retry {
+        delay_ms: Some(HOUR_MS),
+    };
+    op(&e, settle(vec![(0, d[0].lease_gen, later)]))
+        .await
+        .unwrap();
+    assert_eq!(state(&db).await.floors.retry_cycle, c + RETENTION);
+    // The sweeper comes five seconds late (a restart, a busy shard).
+    set_clock(&db, c + RETENTION + 5_000).await;
+    swept(&e).await;
+    let s = state(&db).await;
+    assert_eq!(
+        (s.retrying, s.failed, s.floors.retry_cycle),
+        (0, 1, i64::MAX)
+    );
+    assert_eq!(failures(&e).await, vec![(0, "retention")]);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sweep_that_fills_its_step_looks_again_in_a_second() {
     let mut cfg = QueueConfig::default();

@@ -213,6 +213,49 @@ async fn a_claim_takes_due_retries_within_the_byte_limit_and_never_early_ones() 
     assert!(offsets(op(&e, take(1 << 20)).await.unwrap()).is_empty());
 }
 
+/// The offsets a claim of up to ten messages within `max_bytes` leases.
+async fn claim_within(e: &super::ShardEngine, max_bytes: u64) -> Vec<u64> {
+    let take = NqOp::Claim {
+        max: 10,
+        max_bytes,
+        lease_ms: 30_000,
+    };
+    match op(e, take).await.unwrap() {
+        NqOut::Claimed { deliveries, .. } => deliveries.iter().map(|v| v.offset).collect(),
+        other => panic!("claim answered {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claim_leases_a_first_untaken_message_larger_than_its_byte_limit_alone() {
+    let (e, _db, _absorb, _c) = clocked("nq-claim-first-big", QueueConfig::default()).await;
+    let body = |n: usize| msg(&"x".repeat(n));
+    op(&e, send_op(vec![body(300), body(1)])).await.unwrap();
+    assert_eq!(
+        claim_within(&e, 200).await,
+        vec![0],
+        "one message is always leased, and it fills the limit"
+    );
+    assert_eq!(claim_within(&e, 200).await, vec![1]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claim_of_untaken_messages_fills_its_byte_limit_exactly_and_no_further() {
+    let (e, _db, _absorb, _c) = clocked("nq-claim-new-bytes", QueueConfig::default()).await;
+    let body = |n: usize| msg(&"x".repeat(n));
+    let sizes = [100, 100, 100, 99, 2];
+    op(&e, send_op(sizes.into_iter().map(body).collect()))
+        .await
+        .unwrap();
+    assert_eq!(claim_within(&e, 200).await, vec![0, 1], "exactly the limit");
+    assert_eq!(
+        claim_within(&e, 200).await,
+        vec![2, 3],
+        "199 bytes; the third would pass the limit by one"
+    );
+    assert_eq!(claim_within(&e, 200).await, vec![4], "the cursor stayed");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_marks_the_message_taken_and_skips_one_past_its_retention_end() {
     let (e, db, _absorb, c) = clocked("nq-claim-meta", QueueConfig::default()).await;

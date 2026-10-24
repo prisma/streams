@@ -176,26 +176,20 @@ impl CommitTransaction<'_> {
     /// the roster row is needed.
     fn nq_roster(&mut self, hash: &[u8; 16], st: &mut NativeStage, by: RosterBy, t: i64) {
         let stored = st.state.roster_at;
-        let write = match by {
-            RosterBy::Sweep(target) => stored != target,
-            RosterBy::Op => match (stored, Self::nq_roster_target(st, t, None)) {
-                (None, None) => false,
-                (Some(at), Some(new)) => new < at,
-                _ => true,
-            },
-        };
-        let target = match by {
+        let desired = match by {
             RosterBy::Sweep(target) => target,
-            RosterBy::Op => Self::nq_roster_target(st, t, None),
+            RosterBy::Op => {
+                Self::nq_roster_target(st, t, None).map(|new| stored.map_or(new, |at| at.min(new)))
+            }
         };
-        if !write {
+        if desired == stored {
             return;
         }
-        match target {
+        match desired {
             Some(at) => self.batch.put(keys::roster(hash), at.to_be_bytes()),
             None => self.batch.delete(keys::roster(hash)),
         }
-        st.state.roster_at = target;
+        st.state.roster_at = desired;
         st.state_dirty = true;
         self.extra_writes = true;
     }

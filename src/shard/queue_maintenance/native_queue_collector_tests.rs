@@ -12,8 +12,8 @@ use slatedb::compactor::{CompactionSpec, SourceId};
 use tokio::sync::mpsc;
 
 use super::pass_due;
-use crate::native_queue::keys;
-use crate::native_queue::rows::StateRow;
+use crate::native_queue::rows::{STATE_ROW_VERSION, StateRow};
+use crate::native_queue::{NqOp, QueueConfig, keys};
 use crate::shard::{AbsorbSignal, ShardConfig, ShardEngine};
 
 const MIB: u64 = 1 << 20;
@@ -116,6 +116,7 @@ async fn native_queue_collection_captures_every_roster_queue_with_debt_and_only_
     let oldest = crate::shard::now_ms();
     for (tag, debt) in [(1u8, 300u64), (2, 0)] {
         let s = StateRow {
+            v: STATE_ROW_VERSION,
             debt_bytes: debt,
             debt_generation: 7,
             debt_oldest_at: oldest,
@@ -252,6 +253,76 @@ async fn native_queue_collection_waits_for_a_compaction_no_compactor_has_taken()
         waiting.await.is_err(),
         "a submitted compaction is waited for"
     );
+}
+
+/// The queue's stored state row.
+async fn stored(r: &Rig, hash: [u8; 16]) -> StateRow {
+    let raw = r.db.get(keys::state(&hash)).await.unwrap();
+    StateRow::decode(&raw.expect("a state row")).unwrap()
+}
+
+/// A queue created through the engine with `debt` bytes of deletion debt
+/// recorded now (generation 1), which a state change puts on the roster.
+/// Returns its stored state row.
+async fn indebted(r: &Rig, hash: [u8; 16], debt: u64) -> StateRow {
+    let create = NqOp::Create {
+        cfg: QueueConfig::default(),
+    };
+    r.engine.submit_native_queue(hash, create).await.unwrap();
+    let mut s = stored(r, hash).await;
+    s.debt_bytes = debt;
+    s.debt_generation = 1;
+    s.debt_oldest_at = crate::shard::now_ms();
+    r.db.put(keys::state(&hash), s.encode()).await.unwrap();
+    let change = NqOp::Pause { paused: false };
+    r.engine.submit_native_queue(hash, change).await.unwrap();
+    let roster = r.db.get(keys::roster(&hash)).await.unwrap();
+    assert!(roster.is_some(), "debt puts the queue on the roster");
+    stored(r, hash).await
+}
+
+/// The shard log's manifest as the collector's admin reads it.
+async fn manifest(r: &Rig) -> slatedb::VersionedManifest {
+    let manifest = r.engine.queue_admin().read_manifest(None).await;
+    manifest.unwrap().expect("a manifest")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_queue_collection_leaves_debt_that_is_not_due_and_compacts_nothing() {
+    let every = compactor_every(Duration::from_millis(100));
+    let r = rig("t/nqc-not-due", Some(every)).await;
+    // Small and young: neither the size trigger nor the age trigger.
+    let before = indebted(&r, [5; 16], MIB).await;
+    let pass = tokio::time::timeout(Duration::from_secs(5), r.engine.maybe_collect());
+    assert_eq!(pass.await, Ok(Ok(())), "a pass that is not due returns");
+    assert_eq!(stored(&r, [5; 16]).await, before, "the debt is untouched");
+    let m = manifest(&r).await;
+    assert!(m.l0().is_empty(), "nothing was flushed");
+    assert!(m.compacted().is_empty(), "nothing was compacted");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_queue_collection_of_due_debt_compacts_the_log_and_clears_the_debt_it_captured() {
+    let every = compactor_every(Duration::from_millis(100));
+    let r = rig("t/nqc-due", Some(every)).await;
+    let hash = [6; 16];
+    // The size trigger. The log is the memtable alone, so the pass's flush
+    // writes one L0 SST: its compaction supersedes only the residual the
+    // manifest keeps (D22), and the pass has no garbage to wait for.
+    indebted(&r, hash, 256 * MIB).await;
+    let pass = tokio::time::timeout(STEP_WITHIN, r.engine.maybe_collect());
+    assert_eq!(pass.await, Ok(Ok(())));
+    let s = stored(&r, hash).await;
+    assert_eq!(
+        (s.debt_bytes, s.debt_oldest_at),
+        (0, 0),
+        "the debt is cleared"
+    );
+    let roster = r.db.get(keys::roster(&hash)).await.unwrap();
+    assert!(roster.is_none(), "nothing pending: off the roster");
+    let m = manifest(&r).await;
+    assert!(m.l0().is_empty(), "the flushed L0 SST was compacted");
+    assert_eq!(m.compacted().len(), 1, "into one sorted run");
 }
 
 fn missing_run() -> CompactionSpec {

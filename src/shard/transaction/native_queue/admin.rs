@@ -3,7 +3,7 @@
 use super::deliveries::view;
 use super::stage::{NativeStage, family_range};
 use super::*;
-use crate::native_queue::rows::{DState, MetaRow, StateRow};
+use crate::native_queue::rows::{DState, MetaRow, STATE_ROW_VERSION, StateRow};
 use crate::native_queue::{DeliveryView, GroupConfig, QueueConfig};
 
 /// Every row family a queue owns, deleted family by family (§8.2).
@@ -44,7 +44,7 @@ impl CommitTransaction<'_> {
         }
         let seed = u64::from_le_bytes(hash[..8].try_into().unwrap_or([7u8; 8]));
         st.state = StateRow {
-            v: 2,
+            v: STATE_ROW_VERSION,
             cfg: cfg.clone(),
             jitter: seed | 1,
             ..StateRow::default()

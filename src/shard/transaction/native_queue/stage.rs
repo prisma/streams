@@ -27,11 +27,12 @@ impl NativeStage {
         if key.get(16) != Some(&keys::TAG) {
             return;
         }
-        if let Some(floor) = self.state.floors.of(fam)
-            && at < *floor
-        {
-            *floor = at;
-            self.state_dirty = true;
+        if let Some(floor) = self.state.floors.of(fam) {
+            let lowered = (*floor).min(at);
+            if lowered != *floor {
+                *floor = lowered;
+                self.state_dirty = true;
+            }
         }
     }
 

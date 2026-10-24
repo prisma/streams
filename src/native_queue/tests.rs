@@ -1,6 +1,6 @@
 //! Codec and arithmetic tests for the native queue vocabulary.
 use super::keys::{lease_token, message_id, parse_lease_token, parse_message_id};
-use super::rows::{Cause, DState, DeliveryRow, MetaRow, StateRow};
+use super::rows::{Cause, DState, DeliveryRow, MetaRow, STATE_ROW_VERSION, StateRow};
 use super::*;
 
 #[test]
@@ -57,11 +57,33 @@ fn rows_round_trip_exactly() {
     truncated.pop();
     assert!(DeliveryRow::decode(&truncated).is_err());
     let st = StateRow {
-        v: 1,
+        v: STATE_ROW_VERSION,
         clock: 77,
         ..StateRow::default()
     };
     assert_eq!(StateRow::decode(&st.encode()).unwrap(), st);
+}
+
+#[test]
+fn a_state_row_of_another_layout_version_is_refused() {
+    assert_eq!(STATE_ROW_VERSION, 2);
+    let row = |v: u32| {
+        StateRow {
+            v,
+            clock: 5,
+            ..StateRow::default()
+        }
+        .encode()
+    };
+    assert_eq!(
+        StateRow::decode(&row(2)).map(|s| (s.v, s.clock)),
+        Ok((2, 5))
+    );
+    assert_eq!(
+        StateRow::decode(&row(1)),
+        Err("queue state row: version 1 is not 2".to_owned())
+    );
+    assert!(StateRow::decode(&row(3)).is_err());
 }
 
 #[test]
