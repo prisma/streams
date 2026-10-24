@@ -169,7 +169,9 @@ class DryRun(unittest.TestCase):
         self.assertEqual(env["INITIAL_SHARDS"], "1")
         self.assertEqual(env["SHARED_CACHE_BYTES"], "33554432")
         self.assertEqual(env["HISTORY_CACHE_BYTES"], "16777216")
-        for k in FLEET_KEYS + ("TAIL_RING_BYTES", "INSTANCE_NAME"):
+        # The shared-cell profile carries the tail ring (8 MiB, 4f048b12).
+        self.assertEqual(env["TAIL_RING_BYTES"], layered["TAIL_RING_BYTES"])
+        for k in FLEET_KEYS + ("INSTANCE_NAME",):
             self.assertNotIn(k, env)
         for k in ENGINE_PINS:
             if k not in layered:
