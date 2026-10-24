@@ -44,7 +44,7 @@ impl CommitTransaction<'_> {
         }
         let seed = u64::from_le_bytes(hash[..8].try_into().unwrap_or([7u8; 8]));
         st.state = StateRow {
-            v: 1,
+            v: 2,
             cfg: cfg.clone(),
             jitter: seed | 1,
             ..StateRow::default()

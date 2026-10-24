@@ -4,7 +4,7 @@
 //! retention into the gap, failed messages past their failure expiry
 //! deleted, and dedup entries past their window deleted. It writes only
 //! when something moved.
-use super::stage::{NativeStage, family_range};
+use super::stage::{NativeStage, key_time};
 use super::*;
 use crate::native_queue::SWEEP_STEP;
 use crate::native_queue::rows::{Cause, DState, decode_dedup};
@@ -30,16 +30,10 @@ impl CommitTransaction<'_> {
         if moved > 0 {
             Self::nq_tick(st, t);
         }
-        let mut next = self.nq_next_deadline(&hash, st).await?;
+        self.nq_refresh_floors(&hash, st).await?;
         let wake = self.nq_wake(&hash, st, t).await?;
-        if let Some(at) = Self::nq_next_notify(st) {
-            next = Some(next.map_or(at, |n| n.min(at)));
-        }
-        if more_due {
-            next = Some(t + 1_000);
-        }
         Ok(NqOut::Swept {
-            next_deadline: next,
+            next_deadline: Self::nq_roster_target(st, t, Some(more_due)),
             wake,
         })
     }
@@ -48,13 +42,13 @@ impl CommitTransaction<'_> {
     async fn nq_due(
         &self,
         hash: &[u8; 16],
-        st: &NativeStage,
+        st: &mut NativeStage,
         fam: u8,
         t: i64,
     ) -> Result<Vec<(i64, u64)>, NqRefusal> {
         let prefix = keys::family(hash, fam).len();
         let rows = self
-            .nq_scan(st, family_range(hash, fam), SWEEP_STEP)
+            .nq_index_scan(hash, st, fam, SWEEP_STEP)
             .await
             .map_err(NqRefusal::Internal)?;
         Ok(rows
@@ -96,23 +90,46 @@ impl CommitTransaction<'_> {
         Ok(due.len())
     }
 
-    /// A retry still waiting at its cycle deadline fails (§6.3).
+    /// A retry still waiting at its cycle deadline fails (§6.3). The
+    /// step runs only once the earliest cycle deadline has come, and then
+    /// recomputes that floor from what it inspected: every due retry it
+    /// read, and a lower bound for the rest (a retry's cycle deadline is
+    /// never before its due time).
     async fn nq_sweep_retries(
         &mut self,
         hash: &[u8; 16],
         st: &mut NativeStage,
         t: i64,
     ) -> Result<usize, NqRefusal> {
-        let due = self.nq_due(hash, st, keys::RETRIES, t).await?;
+        if st.state.floors.retry_cycle > t {
+            return Ok(0);
+        }
+        let prefix = keys::family(hash, keys::RETRIES).len();
+        let rows = self
+            .nq_index_scan(hash, st, keys::RETRIES, SWEEP_STEP)
+            .await
+            .map_err(NqRefusal::Internal)?;
+        let full = rows.len() >= SWEEP_STEP;
+        let mut floor = i64::MAX;
         let mut moved = 0;
-        for (_, off) in due {
+        for (at, off) in rows
+            .iter()
+            .filter_map(|(k, _)| keys::decode_time_key(prefix, k))
+        {
+            if at > t {
+                floor = floor.min(at);
+                break;
+            }
             let (Some(meta), Some(mut row)) = (
                 self.nq_meta(hash, st, off).await?,
                 self.nq_delivery(hash, st, off).await?,
             ) else {
                 continue;
             };
-            if row.state == DState::Retrying && t >= row.cycle_deadline {
+            if row.state != DState::Retrying {
+                continue;
+            }
+            if t >= row.cycle_deadline {
                 self.nq_unindex(hash, st, off, &row);
                 self.nq_fail(
                     hash,
@@ -121,8 +138,15 @@ impl CommitTransaction<'_> {
                     (Cause::Retention, None, t),
                 );
                 moved += 1;
+            } else {
+                floor = floor.min(row.cycle_deadline);
+            }
+            if full {
+                // Retries past the page are due no earlier than this one.
+                floor = floor.min(at);
             }
         }
+        st.state.floors.retry_cycle = floor;
         Ok(moved)
     }
 
@@ -136,20 +160,9 @@ impl CommitTransaction<'_> {
         t: i64,
     ) -> Result<usize, NqRefusal> {
         let horizon = t - st.state.cfg.retention_ms;
-        let s = &st.state;
-        let range = if s.cursor_started {
-            super::stage::time_range_from(
-                hash,
-                keys::AVAIL,
-                s.cursor_at,
-                s.cursor_off.saturating_add(1),
-            )
-        } else {
-            family_range(hash, keys::AVAIL)
-        };
         let prefix = keys::family(hash, keys::AVAIL).len();
         let rows = self
-            .nq_scan(st, range, SWEEP_STEP)
+            .nq_index_scan(hash, st, keys::AVAIL, SWEEP_STEP)
             .await
             .map_err(NqRefusal::Internal)?;
         let mut moved = 0;
@@ -203,7 +216,7 @@ impl CommitTransaction<'_> {
     ) -> Result<usize, NqRefusal> {
         let prefix = keys::family(hash, keys::DEDUP_EXPIRY).len();
         let rows = self
-            .nq_scan(st, family_range(hash, keys::DEDUP_EXPIRY), SWEEP_STEP)
+            .nq_index_scan(hash, st, keys::DEDUP_EXPIRY, SWEEP_STEP)
             .await
             .map_err(NqRefusal::Internal)?;
         let mut moved = 0;
@@ -280,7 +293,7 @@ impl CommitTransaction<'_> {
     }
 
     /// When the next notification may go, if a subscription exists.
-    fn nq_next_notify(st: &NativeStage) -> Option<i64> {
+    pub(super) fn nq_next_notify(st: &NativeStage) -> Option<i64> {
         let s = &st.state;
         (s.wakeup_url.is_some() && s.queued_messages > 0).then(|| {
             s.last_useful_claim_at.max(s.last_notified_at) + s.notify_backoff_ms.max(1_000)
@@ -291,107 +304,42 @@ impl CommitTransaction<'_> {
     async fn nq_oldest_due(
         &self,
         hash: &[u8; 16],
-        st: &NativeStage,
+        st: &mut NativeStage,
         t: i64,
     ) -> Result<Option<i64>, NqRefusal> {
-        let s = &st.state;
-        let a_range = if s.cursor_started {
-            super::stage::time_range_from(
-                hash,
-                keys::AVAIL,
-                s.cursor_at,
-                s.cursor_off.saturating_add(1),
-            )
-        } else {
-            family_range(hash, keys::AVAIL)
-        };
-        let a_prefix = keys::family(hash, keys::AVAIL).len();
-        let a = self
-            .nq_scan(st, a_range, 1)
-            .await
-            .map_err(NqRefusal::Internal)?;
-        let a_due = a
-            .first()
-            .and_then(|(k, _)| keys::decode_time_key(a_prefix, k))
-            .map(|x| x.0);
-        let r_due = self.nq_head_time(hash, st, keys::RETRIES).await?;
-        Ok([a_due, r_due]
-            .into_iter()
-            .flatten()
-            .filter(|at| *at <= t)
-            .min())
-    }
-
-    /// The earliest time the sweep has work again, if any.
-    async fn nq_next_deadline(
-        &self,
-        hash: &[u8; 16],
-        st: &NativeStage,
-    ) -> Result<Option<i64>, NqRefusal> {
-        let mut next: Option<i64> = None;
-        for fam in [
-            keys::LEASES,
-            keys::RETRIES,
-            keys::FAIL_EXPIRY,
-            keys::DEDUP_EXPIRY,
-        ] {
-            if let Some(at) = self.nq_head_time(hash, st, fam).await? {
-                next = Some(next.map_or(at, |n: i64| n.min(at)));
+        let mut oldest: Option<i64> = None;
+        for fam in [keys::AVAIL, keys::RETRIES] {
+            let head = self
+                .nq_index_scan(hash, st, fam, 1)
+                .await
+                .map_err(NqRefusal::Internal)?;
+            if let Some(at) = head.first().and_then(|(k, _)| key_time(k))
+                && at <= t
+            {
+                oldest = Some(oldest.map_or(at, |o| o.min(at)));
             }
         }
-        if let Some(exp) = self.nq_untaken_expiry(hash, st).await? {
-            next = Some(next.map_or(exp, |n| n.min(exp)));
-        }
-        Ok(next)
+        Ok(oldest)
     }
 
-    /// The time of a time-ordered family's first entry.
-    async fn nq_head_time(
+    /// Raise every deadline family's floor to its first live entry, past
+    /// what this sweep deleted, so the roster parks at the true next
+    /// deadline (`CommitTransaction::nq_roster_target`).
+    async fn nq_refresh_floors(
         &self,
         hash: &[u8; 16],
-        st: &NativeStage,
-        fam: u8,
-    ) -> Result<Option<i64>, NqRefusal> {
-        let prefix = keys::family(hash, fam).len();
-        let rows = self
-            .nq_scan(st, family_range(hash, fam), 1)
-            .await
-            .map_err(NqRefusal::Internal)?;
-        Ok(rows
-            .first()
-            .and_then(|(k, _)| k.get(prefix..prefix + 8))
-            .and_then(|b| <[u8; 8]>::try_from(b).ok())
-            .map(|b| i64::try_from(u64::from_be_bytes(b)).unwrap_or(i64::MAX)))
-    }
-
-    /// When the first untaken message expires at retention.
-    async fn nq_untaken_expiry(
-        &self,
-        hash: &[u8; 16],
-        st: &NativeStage,
-    ) -> Result<Option<i64>, NqRefusal> {
-        let s = &st.state;
-        if s.queued_messages == 0 {
-            return Ok(None);
+        st: &mut NativeStage,
+    ) -> Result<(), NqRefusal> {
+        for fam in [
+            keys::LEASES,
+            keys::FAIL_EXPIRY,
+            keys::DEDUP_EXPIRY,
+            keys::AVAIL,
+        ] {
+            self.nq_index_scan(hash, st, fam, 1)
+                .await
+                .map_err(NqRefusal::Internal)?;
         }
-        let range = if s.cursor_started {
-            super::stage::time_range_from(
-                hash,
-                keys::AVAIL,
-                s.cursor_at,
-                s.cursor_off.saturating_add(1),
-            )
-        } else {
-            family_range(hash, keys::AVAIL)
-        };
-        let prefix = keys::family(hash, keys::AVAIL).len();
-        let rows = self
-            .nq_scan(st, range, 1)
-            .await
-            .map_err(NqRefusal::Internal)?;
-        Ok(rows
-            .first()
-            .and_then(|(k, _)| keys::decode_time_key(prefix, k))
-            .map(|(at, _)| at + s.cfg.retention_ms))
+        Ok(())
     }
 }

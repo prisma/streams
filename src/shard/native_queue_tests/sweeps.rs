@@ -28,7 +28,11 @@ fn clear_counts(s: &mut StateRow) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_roster_holds_a_queue_while_any_one_count_or_its_debt_is_pending() {
     let (e, db, _absorb, c) = clocked("nq-roster-counts", QueueConfig::default()).await;
-    assert_eq!(roster(&db).await, None, "a new empty queue is off the roster");
+    assert_eq!(
+        roster(&db).await,
+        None,
+        "a new empty queue is off the roster"
+    );
     let cases: [Pending; 7] = [
         ("queued", |s| s.queued_messages = 1),
         ("leased", |s| s.leased = 1),
@@ -48,7 +52,13 @@ async fn the_roster_holds_a_queue_while_any_one_count_or_its_debt_is_pending() {
             NqOp::Pause { paused: false }
         };
         op(&e, change).await.unwrap();
-        assert_eq!(roster(&db).await, Some(c), "{what} alone keeps the queue");
+        // No deadline floor accounts for a count set by hand: the queue is
+        // looked at within the hour.
+        assert_eq!(
+            roster(&db).await,
+            Some(c + HOUR_MS),
+            "{what} alone keeps the queue"
+        );
         edit_state(&db, clear_counts).await;
         op(&e, NqOp::Pause { paused: false }).await.unwrap();
         assert_eq!(roster(&db).await, None, "nothing pending after {what}");
@@ -72,7 +82,11 @@ async fn a_sweep_that_moves_nothing_leaves_the_state_row_untouched() {
 async fn a_sweep_reports_the_exact_next_deadline_and_parks_the_roster_there() {
     let (e, db, _absorb, c) = clocked("nq-next-deadline", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
-    assert_eq!(swept(&e).await.0, Some(c + RETENTION), "untaken: retention end");
+    assert_eq!(
+        swept(&e).await.0,
+        Some(c + RETENTION),
+        "untaken: retention end"
+    );
     assert_eq!(roster(&db).await, Some(c + RETENTION));
     op(&e, NqOp::Get).await.unwrap();
     assert_eq!(
@@ -81,12 +95,16 @@ async fn a_sweep_reports_the_exact_next_deadline_and_parks_the_roster_there() {
         "a read leaves the roster where the sweep parked it"
     );
     let d = claim(&e, 1).await;
-    assert_eq!(swept(&e).await.0, Some(c + 30_000), "leased: lease deadline");
+    assert_eq!(
+        swept(&e).await.0,
+        Some(c + 30_000),
+        "leased: lease deadline"
+    );
     op(&e, settle(vec![(0, d[0].lease_gen, SettleKind::Ack)]))
         .await
         .unwrap();
     // Only debt remains: nothing time moves, so the roster looks in an hour.
-    assert_eq!(swept(&e).await.0, None);
+    assert_eq!(swept(&e).await.0, Some(c + HOUR_MS));
     assert_eq!(roster(&db).await, Some(c + HOUR_MS));
 }
 
@@ -111,8 +129,9 @@ async fn a_subscribed_queue_with_nothing_due_looks_again_in_a_minute() {
     let (next, wake) = swept(&e).await;
     assert!(wake.is_none(), "nothing due, nothing sent");
     // Never notified and never claimed: a notification may go from the
-    // epoch's first second on, which is long past.
-    assert_eq!(next, Some(1_000));
+    // epoch's first second on, which is long past; with nothing claimable
+    // it waits a minute.
+    assert_eq!(next, Some(c + 60_000));
     assert_eq!(roster(&db).await, Some(c + 60_000));
 }
 
@@ -142,7 +161,10 @@ async fn a_wake_up_fires_at_its_backoff_exactly_and_doubles_it_while_unanswered(
     let w = swept(&e).await.1.expect("at the backoff exactly, again");
     assert_eq!(w.oldest_due_age_ms, 1_500);
     let s = state(&db).await;
-    assert_eq!((s.last_notified_at, s.notify_backoff_ms), (c + 1_500, 2_000));
+    assert_eq!(
+        (s.last_notified_at, s.notify_backoff_ms),
+        (c + 1_500, 2_000)
+    );
     // A useful claim in the notification's millisecond answers it: the
     // next one waits the base second again.
     assert_eq!(claim(&e, 1).await.len(), 1);
@@ -162,7 +184,11 @@ async fn an_untaken_message_enters_the_gap_at_its_retention_end_exactly() {
     assert_eq!(swept(&e).await.0, Some(c + RETENTION));
     assert_eq!(state(&db).await.gap_count, 0, "a millisecond early: kept");
     set_clock(&db, c + RETENTION).await;
-    assert_eq!(swept(&e).await.0, None, "only debt is left");
+    assert_eq!(
+        swept(&e).await.0,
+        Some(c + RETENTION + HOUR_MS),
+        "only debt is left"
+    );
     let s = state(&db).await;
     assert_eq!(
         (s.gap_count, s.counters.expired, s.queued_messages),
@@ -185,7 +211,11 @@ async fn a_failed_message_is_discarded_at_its_failure_expiry_exactly() {
     assert_eq!(swept(&e).await.0, Some(expiry));
     assert_eq!(state(&db).await.failed, 1, "a millisecond early: kept");
     set_clock(&db, expiry).await;
-    assert_eq!(swept(&e).await.0, None);
+    assert_eq!(
+        swept(&e).await.0,
+        Some(expiry + HOUR_MS),
+        "only debt is left"
+    );
     let s = state(&db).await;
     assert_eq!((s.failed, s.counters.discarded), (0, 1));
     let meta = keys::by_offset(&HASH, keys::META, 0);

@@ -453,6 +453,24 @@ and each queue's sweep resumes from its durable cursors. Roster keys are not
 hash-first, which a future key-range split must handle. Roster rows are
 counted in §8.3.
 
+**Index floors.** Every lease, retry and failure is put and later deleted,
+so the time-ordered indexes (`A`, `L`, `R`, `E`, the dedup expiries) carry
+one tombstone per delivery until a compaction reaches the last sorted run,
+and a scan from an index's start walks all of them. The state row therefore
+keeps, per index, a floor: a lower bound on the time of its first live
+entry (for `A`, of its first live entry past the cursor), plus the earliest
+cycle deadline among retries. Every put lowers a floor in the batch that
+holds the entry; a scan starts at the floor and may raise it to the first
+live entry it found, in the batch whose deletes justified it; deletes leave
+it low, which is only slower. The roster's deadline is computed from the
+floors alone: the earliest lease expiry, retry cycle deadline, failure
+expiry, dedup expiry, untaken retention end and wake-up, or an hour out
+when none applies. An operation only brings the roster forward; a sweep
+sets it. A due retry or a wake-up with nothing claimable waits for a claim,
+not for the sweep, so after a sweep those terms look again a minute on.
+An active queue is thus swept when something can be due (about once per
+lease duration under load), not after every operation.
+
 **Timers are a maintenance obligation of their own.** A queue can have a
 scheduled message, a retry, a lease deadline or a dedup expiry with zero
 reclamation debt. What actually closes a shard today: fleet eviction or a

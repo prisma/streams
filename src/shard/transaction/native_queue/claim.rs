@@ -4,7 +4,7 @@
 //! untaken message past its retention end is skipped into the retention
 //! gap and deleted (§8.1). An empty claim writes nothing.
 use super::deliveries::view;
-use super::stage::{NativeStage, family_range, time_range_from};
+use super::stage::NativeStage;
 use super::*;
 use crate::native_queue::DeliveryView;
 use crate::native_queue::rows::{Cause, DState, DeliveryRow};
@@ -91,48 +91,28 @@ impl CommitTransaction<'_> {
         })
     }
 
-    /// Due entries of both sources, merged in (time, offset) order.
+    /// Due entries of both sources, merged in (time, offset) order, each
+    /// read from its floor (the availability index from the cursor).
     async fn nq_candidates(
         &self,
         hash: &[u8; 16],
-        st: &NativeStage,
+        st: &mut NativeStage,
         max: usize,
         t: i64,
     ) -> Result<Vec<Candidate>, NqRefusal> {
         let want = max.saturating_mul(2).saturating_add(16);
-        let s = &st.state;
-        let a_range = if s.cursor_started {
-            time_range_from(
-                hash,
-                keys::AVAIL,
-                s.cursor_at,
-                s.cursor_off.saturating_add(1),
-            )
-        } else {
-            family_range(hash, keys::AVAIL)
-        };
-        let a_prefix = keys::family(hash, keys::AVAIL).len();
-        let r_prefix = keys::family(hash, keys::RETRIES).len();
         let mut out: Vec<Candidate> = Vec::new();
-        for (k, _) in self
-            .nq_scan(st, a_range, want)
-            .await
-            .map_err(NqRefusal::Internal)?
-        {
-            match keys::decode_time_key(a_prefix, &k) {
-                Some((at, off)) if at <= t => out.push((at, off, false)),
-                _ => break,
-            }
-        }
-        let r_range = family_range(hash, keys::RETRIES);
-        for (k, _) in self
-            .nq_scan(st, r_range, want)
-            .await
-            .map_err(NqRefusal::Internal)?
-        {
-            match keys::decode_time_key(r_prefix, &k) {
-                Some((at, off)) if at <= t => out.push((at, off, true)),
-                _ => break,
+        for (fam, from_retry) in [(keys::AVAIL, false), (keys::RETRIES, true)] {
+            let prefix = keys::family(hash, fam).len();
+            for (k, _) in self
+                .nq_index_scan(hash, st, fam, want)
+                .await
+                .map_err(NqRefusal::Internal)?
+            {
+                match keys::decode_time_key(prefix, &k) {
+                    Some((at, off)) if at <= t => out.push((at, off, from_retry)),
+                    _ => break,
+                }
             }
         }
         out.sort_unstable();

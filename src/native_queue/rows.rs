@@ -62,6 +62,62 @@ pub(crate) struct StateRow {
     pub notify_backoff_ms: i64,
     /// The rng state for backoff jitter (deterministic per queue).
     pub jitter: u64,
+    /// Where each time-ordered index's live entries begin (scans start
+    /// here, past the dead keys before it).
+    pub floors: Floors,
+    /// The roster value this row's batch last wrote (`None`: off the
+    /// roster).
+    pub roster_at: Option<i64>,
+}
+
+/// Lower bounds on the time of each time-ordered index's first live entry
+/// (`i64::MAX`: no live entry). Invariant F: every live entry of a family
+/// has time >= its floor (for `avail`, every live entry past the cursor).
+/// Every put lowers a floor (`NativeStage::put`); a scan may raise it to
+/// the first live entry it found, written in the batch whose deletes
+/// justified it; deletes never touch it, as a low floor is only slower.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Floors {
+    pub avail: i64,
+    pub leases: i64,
+    pub retries: i64,
+    pub fail_expiry: i64,
+    pub dedup_expiry: i64,
+    /// The earliest cycle deadline among retry entries: the retry step of
+    /// the sweep has work only there (§6.3).
+    pub retry_cycle: i64,
+}
+
+impl Default for Floors {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
+impl Floors {
+    /// A new queue's floors: every index is empty.
+    pub(crate) const EMPTY: Self = Self {
+        avail: i64::MAX,
+        leases: i64::MAX,
+        retries: i64::MAX,
+        fail_expiry: i64::MAX,
+        dedup_expiry: i64::MAX,
+        retry_cycle: i64::MAX,
+    };
+
+    /// The floor of a time-ordered family, if it has one.
+    pub(crate) fn of(&mut self, fam: u8) -> Option<&mut i64> {
+        use super::keys;
+        match fam {
+            keys::AVAIL => Some(&mut self.avail),
+            keys::LEASES => Some(&mut self.leases),
+            keys::RETRIES => Some(&mut self.retries),
+            keys::FAIL_EXPIRY => Some(&mut self.fail_expiry),
+            keys::DEDUP_EXPIRY => Some(&mut self.dedup_expiry),
+            _ => None,
+        }
+    }
 }
 
 impl StateRow {

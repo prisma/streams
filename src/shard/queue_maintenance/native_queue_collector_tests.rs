@@ -74,7 +74,10 @@ fn compactor_every(poll: Duration) -> slatedb::config::Settings {
 }
 
 /// Submit once the compactor has created its compactions file.
-async fn submit(admin: &slatedb::admin::Admin, spec: &CompactionSpec) -> slatedb::compactor::Compaction {
+async fn submit(
+    admin: &slatedb::admin::Admin,
+    spec: &CompactionSpec,
+) -> slatedb::compactor::Compaction {
     for _ in 0..100 {
         if let Ok(c) = admin.submit_compaction(spec.clone()).await {
             return c;
@@ -99,7 +102,12 @@ fn native_queue_collection_starts_on_size_or_age_and_never_without_debt() {
     assert!(!pass_due(1, Some(now - 24 * HOUR + 1), now, 0));
     // The age trigger's floor rises to a twentieth of the compacted log.
     assert!(pass_due(100 * MIB, Some(now - 20 * MIN), now, 1_024 * MIB));
-    assert!(!pass_due(100 * MIB, Some(now - 20 * MIN), now, 20_480 * MIB));
+    assert!(!pass_due(
+        100 * MIB,
+        Some(now - 20 * MIN),
+        now,
+        20_480 * MIB
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -164,24 +172,31 @@ async fn native_queue_collection_waits_until_every_superseded_sst_but_the_residu
     let done = tokio::time::timeout(STEP_WITHIN, e.await_collection(&gone));
     assert_eq!(done.await.unwrap(), Ok(()), "nothing left: done at once");
     let present = tokio::time::timeout(Duration::from_secs(1), e.await_collection(&kept));
-    assert!(present.await.is_err(), "an SST still present keeps it waiting");
+    assert!(
+        present.await.is_err(),
+        "an SST still present keeps it waiting"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn native_queue_collection_compacts_every_l0_into_the_last_run_and_names_what_it_superseded() {
-    let r = rig("t/nqc-compact", Some(compactor_every(Duration::from_millis(100)))).await;
+async fn native_queue_collection_compacts_every_l0_into_the_last_run_and_names_what_it_superseded()
+{
+    let r = rig(
+        "t/nqc-compact",
+        Some(compactor_every(Duration::from_millis(100))),
+    )
+    .await;
     r.db.put(b"k", b"v").await.unwrap();
     let memtable = slatedb::config::FlushOptions {
         flush_type: slatedb::config::FlushType::MemTable,
     };
     r.db.flush_with_options(memtable).await.unwrap();
-    let l0: Vec<String> = r
-        .db
-        .manifest()
-        .l0()
-        .iter()
-        .map(|v| v.sst.id.unwrap_compacted_id().to_string())
-        .collect();
+    let l0: Vec<String> =
+        r.db.manifest()
+            .l0()
+            .iter()
+            .map(|v| v.sst.id.unwrap_compacted_id().to_string())
+            .collect();
     assert!(!l0.is_empty(), "the flush wrote an L0 SST");
     let pass = tokio::time::timeout(STEP_WITHIN, r.engine.compact_everything());
     let superseded = pass.await.unwrap().unwrap();
@@ -195,8 +210,13 @@ async fn native_queue_collection_compacts_every_l0_into_the_last_run_and_names_w
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn native_queue_collection_reads_a_failed_compaction_as_failed_and_a_trimmed_one_as_finished() {
-    let busy = rig("t/nqc-busy", Some(compactor_every(Duration::from_millis(100)))).await;
+async fn native_queue_collection_reads_a_failed_compaction_as_failed_and_a_trimmed_one_as_finished()
+{
+    let busy = rig(
+        "t/nqc-busy",
+        Some(compactor_every(Duration::from_millis(100))),
+    )
+    .await;
     let admin = busy.engine.queue_admin();
     // A spec naming a run that does not exist: the coordinator fails it.
     let failed = submit(&admin, &missing_run()).await;
@@ -228,7 +248,10 @@ async fn native_queue_collection_waits_for_a_compaction_no_compactor_has_taken()
     let queued = submit(&admin, &missing_run()).await;
     let waiting = ShardEngine::await_compaction(&admin, &queued);
     let waiting = tokio::time::timeout(Duration::from_millis(1_500), waiting);
-    assert!(waiting.await.is_err(), "a submitted compaction is waited for");
+    assert!(
+        waiting.await.is_err(),
+        "a submitted compaction is waited for"
+    );
 }
 
 fn missing_run() -> CompactionSpec {

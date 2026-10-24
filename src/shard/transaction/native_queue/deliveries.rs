@@ -134,6 +134,10 @@ impl CommitTransaction<'_> {
         row.state = DState::Retrying;
         row.lease_gen = row.lease_gen.wrapping_add(1);
         row.due_at = due;
+        if row.cycle_deadline < st.state.floors.retry_cycle {
+            st.state.floors.retry_cycle = row.cycle_deadline;
+            st.state_dirty = true;
+        }
         self.nq_put(
             st,
             keys::by_time(hash, keys::RETRIES, due, offset),

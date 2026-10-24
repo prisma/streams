@@ -10,6 +10,7 @@ use crate::native_queue::{
 };
 
 mod budgets;
+mod floors;
 mod sweeps;
 
 const HASH: [u8; 16] = [9; 16];

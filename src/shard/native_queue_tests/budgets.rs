@@ -2,9 +2,7 @@
 //! queue whose clock the test sets: each limit is probed at its exact
 //! boundary and each count and stored row is asserted by value.
 #![cfg(test)]
-use super::{
-    HASH, claim, clocked, create, engine, msg, op, send_op, set_clock, settle, state,
-};
+use super::{HASH, claim, clocked, create, engine, msg, op, send_op, set_clock, settle, state};
 use crate::native_queue::rows::{DState, DeliveryRow, MetaRow};
 use crate::native_queue::{
     DAY_MS, HOUR_MS, NqOp, NqOut, NqRefusal, QueueConfig, SendMessage, SettleKind, keys,
@@ -106,9 +104,15 @@ async fn a_send_fills_the_dedup_budget_and_schedules_up_to_retention_exactly() {
     let NqOut::Sent(sent) = op(&e, send_op(vec![at(c + RETENTION)])).await.unwrap() else {
         panic!()
     };
-    assert_eq!(sent[0].available_at, c + RETENTION, "retention away is allowed");
     assert_eq!(
-        op(&e, send_op(vec![at(c + RETENTION + 1)])).await.unwrap_err(),
+        sent[0].available_at,
+        c + RETENTION,
+        "retention away is allowed"
+    );
+    assert_eq!(
+        op(&e, send_op(vec![at(c + RETENTION + 1)]))
+            .await
+            .unwrap_err(),
         NqRefusal::DeliverAtBeyondRetention
     );
 }
@@ -123,7 +127,11 @@ async fn a_redrive_reserves_a_message_slot_and_stops_at_a_full_queue() {
     op(&e, send_op(vec![msg("a"), msg("b")])).await.unwrap();
     fail_claimed(&e, 2).await;
     op(&e, send_op(vec![msg("c")])).await.unwrap();
-    assert_eq!(redrive(&e, 0).await, (1, 1, false), "the second slot is free");
+    assert_eq!(
+        redrive(&e, 0).await,
+        (1, 1, false),
+        "the second slot is free"
+    );
     assert_eq!(state(&db).await.queued_messages, 2);
     assert_eq!(redrive(&e, 1).await, (0, 1, true), "a full queue refuses");
     assert_eq!(state(&db).await.counters.redriven, 1);
@@ -244,7 +252,12 @@ async fn settles_discard_and_retry_up_to_the_cycle_deadline_exactly() {
     .unwrap();
     let s = state(&db).await;
     assert_eq!(
-        (s.counters.discarded, s.counters.retried, s.retrying, s.failed),
+        (
+            s.counters.discarded,
+            s.counters.retried,
+            s.retrying,
+            s.failed
+        ),
         (1, 1, 1, 0),
         "a retry due at the cycle deadline is still a retry"
     );

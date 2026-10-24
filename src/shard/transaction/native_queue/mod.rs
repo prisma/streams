@@ -17,11 +17,12 @@ use stage::NativeStage;
 
 pub(super) type NativeReply = oneshot::Sender<NqResult>;
 
-/// What an operation tells the roster: it changed something (sweep soon),
-/// or it was a sweep that computed the next deadline.
-enum RosterHint {
-    Changed,
-    Swept(Option<i64>),
+/// Who sets the roster: a sweep, with the deadline it computed, or any
+/// other operation, which only brings it forward or takes it off.
+#[derive(Clone, Copy)]
+enum RosterBy {
+    Op,
+    Sweep(Option<i64>),
 }
 
 impl CommitTransaction<'_> {
@@ -44,18 +45,16 @@ impl CommitTransaction<'_> {
                 }
             },
         };
-        let rows_before = st.rows.len();
         let t = now_ms().max(st.state.clock);
         let out = self.nq_dispatch(local, hash, &mut st, op).await;
-        let changed = st.state_dirty || st.rows.len() != rows_before;
-        self.nq_flush_state(&hash, &mut st);
-        let hint = match &out {
-            Ok(NqOut::Swept { next_deadline, .. }) => RosterHint::Swept(*next_deadline),
-            _ => RosterHint::Changed,
-        };
-        if st.exists && (changed || matches!(hint, RosterHint::Swept(_))) {
-            self.nq_roster(&hash, &st, &hint, t).await;
+        if st.exists {
+            let by = match &out {
+                Ok(NqOut::Swept { next_deadline, .. }) => RosterBy::Sweep(*next_deadline),
+                _ => RosterBy::Op,
+            };
+            self.nq_roster(&hash, &mut st, by, t);
         }
+        self.nq_flush_state(&hash, &mut st);
         local.queue.native = Some(st);
         self.effects.native_acks.push((resp, out));
     }
@@ -170,30 +169,47 @@ impl CommitTransaction<'_> {
     /// The queue's roster row (§6.8): present while it has work that time
     /// alone moves on or debt to collect, so the sweep and the collector
     /// find it after a restart or move. Its value is when the sweep should
-    /// look next: now after any change, the computed next deadline after a
-    /// sweep (an hour out when only debt remains).
-    async fn nq_roster(&mut self, hash: &[u8; 16], st: &NativeStage, hint: &RosterHint, t: i64) {
-        let target = Self::nq_roster_target(st, hint, t);
-        if matches!(hint, RosterHint::Swept(_)) {
-            // A sweep that moved nothing writes only a changed deadline.
-            let stored = self.engine.db.get(keys::roster(hash)).await.ok().flatten();
-            let stored = stored
-                .and_then(|v| <[u8; 8]>::try_from(&v[..]).ok())
-                .map(i64::from_be_bytes);
-            if stored == target {
-                return;
-            }
+    /// look next. A sweep sets it to the deadline it computed; any other
+    /// operation only brings it forward (a new earlier deadline), takes
+    /// the queue off when nothing is pending, or puts it on. The state row
+    /// records the value (`roster_at`) in the same batch, so no read of
+    /// the roster row is needed.
+    fn nq_roster(&mut self, hash: &[u8; 16], st: &mut NativeStage, by: RosterBy, t: i64) {
+        let stored = st.state.roster_at;
+        let write = match by {
+            RosterBy::Sweep(target) => stored != target,
+            RosterBy::Op => match (stored, Self::nq_roster_target(st, t, None)) {
+                (None, None) => false,
+                (Some(at), Some(new)) => new < at,
+                _ => true,
+            },
+        };
+        let target = match by {
+            RosterBy::Sweep(target) => target,
+            RosterBy::Op => Self::nq_roster_target(st, t, None),
+        };
+        if !write {
+            return;
         }
         match target {
             Some(at) => self.batch.put(keys::roster(hash), at.to_be_bytes()),
             None => self.batch.delete(keys::roster(hash)),
         }
+        st.state.roster_at = target;
+        st.state_dirty = true;
         self.extra_writes = true;
     }
 
-    /// When the sweep should look next, or `None` when the queue has
-    /// nothing time moves on and no debt.
-    fn nq_roster_target(st: &NativeStage, hint: &RosterHint, t: i64) -> Option<i64> {
+    /// When the sweep should look next, from the state row alone (no
+    /// scans): the earliest of the deadline floors (lease expiry, a retry's
+    /// cycle deadline, failure expiry, dedup expiry), the first untaken
+    /// message's retention end and the next wake-up, or an hour out when
+    /// none applies (only debt, or counts no floor accounts for); `None` when the queue has nothing pending and no
+    /// debt. `sweep` is set when a sweep computes it: `Some(true)` when a
+    /// step filled its budget (look again in a second), and a term already
+    /// due that only a claim moves (due retries past the sweep's page, a
+    /// wake-up with nothing claimable) waits a minute rather than a second.
+    pub(super) fn nq_roster_target(st: &NativeStage, t: i64, sweep: Option<bool>) -> Option<i64> {
         let s = &st.state;
         let pending = s.queued_messages > 0
             || s.leased > 0
@@ -201,13 +217,41 @@ impl CommitTransaction<'_> {
             || s.failed > 0
             || s.dedup_entries > 0
             || s.deleting;
-        (pending || s.debt_bytes > 0).then_some(match *hint {
-            // Work already due waits for a claim, not the sweep: look
-            // again in a minute rather than every second.
-            RosterHint::Swept(Some(next)) if next <= t => t + 60_000,
-            RosterHint::Swept(Some(next)) => next,
-            RosterHint::Swept(None) => t + crate::native_queue::HOUR_MS,
-            RosterHint::Changed => t,
-        })
+        if !pending && s.debt_bytes == 0 {
+            return None;
+        }
+        if sweep == Some(true) {
+            return Some(t + 1_000);
+        }
+        let f = &s.floors;
+        let untaken = (f.avail != i64::MAX).then(|| {
+            let from = if s.cursor_started {
+                f.avail.max(s.cursor_at)
+            } else {
+                f.avail
+            };
+            from.saturating_add(s.cfg.retention_ms)
+        });
+        let parked = |at: i64| {
+            if sweep.is_some() && at <= t {
+                t + 60_000
+            } else {
+                at
+            }
+        };
+        let terms = [
+            Some(f.leases),
+            Some(parked(f.retry_cycle)),
+            Some(f.fail_expiry),
+            Some(f.dedup_expiry),
+            untaken,
+            Self::nq_next_notify(st).map(parked),
+        ];
+        let next = terms
+            .into_iter()
+            .flatten()
+            .filter(|at| *at != i64::MAX)
+            .min();
+        Some(next.unwrap_or(t + crate::native_queue::HOUR_MS))
     }
 }

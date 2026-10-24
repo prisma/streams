@@ -17,6 +17,33 @@ pub(in crate::shard::transaction) struct NativeStage {
 }
 
 impl NativeStage {
+    /// Invariant F on insert: a put into a time-ordered family lowers its
+    /// floor to the entry's time, and the state row carries it in the same
+    /// batch as the entry.
+    fn lower_floor(&mut self, key: &[u8]) {
+        let (Some(&fam), Some(at)) = (key.get(17), key_time(key)) else {
+            return;
+        };
+        if key.get(16) != Some(&keys::TAG) {
+            return;
+        }
+        if let Some(floor) = self.state.floors.of(fam)
+            && at < *floor
+        {
+            *floor = at;
+            self.state_dirty = true;
+        }
+    }
+
+    /// Raise a family's floor to the first live entry a scan from the
+    /// floor found (`i64::MAX` when it found none). Not a state change on
+    /// its own: it rides the batch only if the state row is written.
+    pub(in crate::shard::transaction) fn raise_floor(&mut self, fam: u8, first: Option<i64>) {
+        if let Some(floor) = self.state.floors.of(fam) {
+            *floor = (*floor).max(first.unwrap_or(i64::MAX));
+        }
+    }
+
     pub(in crate::shard::transaction) fn absent() -> Self {
         Self {
             state: StateRow::default(),
@@ -42,6 +69,7 @@ impl super::super::CommitTransaction<'_> {
     }
 
     pub(super) fn nq_put(&mut self, st: &mut NativeStage, key: Vec<u8>, value: Vec<u8>) {
+        st.lower_floor(&key);
         self.batch.put(&key, &value);
         st.rows.insert(key, Some(value));
         self.extra_writes = true;
@@ -108,6 +136,29 @@ impl super::super::CommitTransaction<'_> {
             .collect())
     }
 
+    /// Up to `limit` live entries of a time-ordered family, from its floor
+    /// (for `avail`, from the later of the floor and the cursor), raising
+    /// the floor to the first entry found.
+    pub(super) async fn nq_index_scan(
+        &self,
+        hash: &[u8; 16],
+        st: &mut NativeStage,
+        fam: u8,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+        let Some((mut from, to)) = floor_range(hash, fam, st) else {
+            return Ok(Vec::new());
+        };
+        let s = &st.state;
+        if fam == keys::AVAIL && s.cursor_started {
+            let cursor = keys::by_time(hash, fam, s.cursor_at, s.cursor_off.saturating_add(1));
+            from = from.max(cursor);
+        }
+        let rows = self.nq_scan(st, (from, to), limit).await?;
+        st.raise_floor(fam, rows.first().and_then(|(k, _)| key_time(k)));
+        Ok(rows)
+    }
+
     /// Writes the state row if anything changed it.
     pub(super) fn nq_flush_state(&mut self, hash: &[u8; 16], st: &mut NativeStage) {
         if st.state_dirty {
@@ -117,6 +168,13 @@ impl super::super::CommitTransaction<'_> {
             st.state_dirty = false;
         }
     }
+}
+
+/// The time of a time-ordered index key (bytes 18..26 under
+/// `hash ‖ 'Q' ‖ family`).
+pub(super) fn key_time(key: &[u8]) -> Option<i64> {
+    let at = <[u8; 8]>::try_from(key.get(18..26)?).ok()?;
+    i64::try_from(u64::from_be_bytes(at)).ok()
 }
 
 /// The key range of one row family.
@@ -129,15 +187,18 @@ pub(super) fn family_range(hash: &[u8; 16], fam: u8) -> (Vec<u8>, Vec<u8>) {
     (from, to)
 }
 
-/// The key range of a time-ordered family from `(at, offset)` on.
-pub(super) fn time_range_from(
+/// The key range of a time-ordered family from its floor on: every live
+/// entry by invariant F. `None` when the floor says the family is empty.
+pub(super) fn floor_range(
     hash: &[u8; 16],
     fam: u8,
-    at: i64,
-    offset: u64,
-) -> (Vec<u8>, Vec<u8>) {
-    (
-        keys::by_time(hash, fam, at, offset),
-        family_range(hash, fam).1,
-    )
+    st: &mut NativeStage,
+) -> Option<(Vec<u8>, Vec<u8>)> {
+    let floor = *st.state.floors.of(fam)?;
+    if floor == i64::MAX {
+        return None;
+    }
+    let mut from = keys::family(hash, fam);
+    from.extend_from_slice(&u64::try_from(floor).unwrap_or(0).to_be_bytes());
+    Some((from, family_range(hash, fam).1))
 }
