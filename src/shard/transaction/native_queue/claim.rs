@@ -3,6 +3,11 @@
 //! cursor and the retry index, within `maxInFlight` and the byte limit. An
 //! untaken message past its retention end is skipped into the retention
 //! gap and deleted (§8.1). An empty claim writes nothing.
+//!
+//! A family whose floor is past the claim's clock has nothing due
+//! (invariant F) and is not read. A read stops at the first entry past the
+//! clock, and the claim then raises each family's floor to the first entry
+//! it left: the first due one it did not consume, else that later entry.
 use super::deliveries::view;
 use super::stage::NativeStage;
 use super::*;
@@ -12,6 +17,49 @@ use crate::native_queue::rows::{Cause, DState, DeliveryRow, decode_avail};
 /// A due candidate: (due time, offset, its availability entry's value, or
 /// `None` from the retry index).
 type Candidate = (i64, u64, Option<Vec<u8>>);
+
+/// The families a claim reads, in the order of [`family_of`].
+const FAMILIES: [u8; 2] = [keys::AVAIL, keys::RETRIES];
+
+/// The index into [`FAMILIES`] of a candidate's family.
+fn family_of(c: &Candidate) -> usize {
+    usize::from(c.2.is_none())
+}
+
+/// Whether the claim consumed a candidate, so that no later read of its
+/// family finds it: the cursor passed an availability entry, or a retry
+/// entry was deleted.
+fn consumed(hash: &[u8; 16], st: &NativeStage, c: &Candidate) -> bool {
+    let (at, off, entry) = c;
+    if entry.is_some() {
+        let s = &st.state;
+        return s.cursor_started && (*at, *off) <= (s.cursor_at, s.cursor_off);
+    }
+    st.rows.get(&keys::by_time(hash, keys::RETRIES, *at, *off)) == Some(&None)
+}
+
+/// Raise each family's floor to the first entry the claim left (invariant
+/// F holds: every live entry of the family is at or past it): its first
+/// due candidate not consumed, else `next`, the first entry its read found
+/// past the clock (`None`: unknown, no raise).
+fn raise_floors(
+    hash: &[u8; 16],
+    st: &mut NativeStage,
+    candidates: &[Candidate],
+    next: [Option<i64>; 2],
+) {
+    let mut left = [None; 2];
+    for c in candidates {
+        if !consumed(hash, st, c) {
+            left[family_of(c)].get_or_insert(c.0);
+        }
+    }
+    for (fam, (left, next)) in FAMILIES.into_iter().zip(left.into_iter().zip(next)) {
+        if let Some(at) = left.or(next) {
+            st.raise_floor(fam, Some(at));
+        }
+    }
+}
 
 struct ClaimBudget {
     max: usize,
@@ -50,7 +98,7 @@ impl CommitTransaction<'_> {
                 paused: false,
             });
         }
-        let candidates = self.nq_candidates(&hash, st, max, t).await?;
+        let (candidates, next) = self.nq_candidates(&hash, st, max, t).await?;
         let mut budget = ClaimBudget {
             max,
             max_bytes,
@@ -59,13 +107,13 @@ impl CommitTransaction<'_> {
             t,
         };
         let mut out: Vec<DeliveryView> = Vec::new();
-        for (due, offset, entry) in candidates {
+        for (due, offset, entry) in &candidates {
             if out.len() >= budget.max {
                 break;
             }
             let leased = match entry {
-                None => self.nq_claim_retry(&hash, st, offset, &mut budget).await?,
-                Some(entry) => self.nq_claim_new(&hash, st, (due, offset, &entry), &mut budget)?,
+                None => self.nq_claim_retry(&hash, st, *offset, &mut budget).await?,
+                Some(entry) => self.nq_claim_new(&hash, st, (*due, *offset, entry), &mut budget)?,
             };
             if let Some(v) = leased {
                 out.push(v);
@@ -74,6 +122,7 @@ impl CommitTransaction<'_> {
                 break;
             }
         }
+        raise_floors(&hash, st, &candidates, next);
         if !out.is_empty() {
             st.state.last_useful_claim_at = t;
             st.state.notify_backoff_ms = 1_000;
@@ -91,22 +140,29 @@ impl CommitTransaction<'_> {
     }
 
     /// Due entries of both sources, merged in (time, offset) order, each
-    /// read from its floor (the availability index from the cursor).
+    /// read from its floor (the availability index from the cursor), with
+    /// each family's first entry past `t` as [`Self::nq_due_scan`] found it
+    /// (`None` for a family not read).
     async fn nq_candidates(
         &self,
         hash: &[u8; 16],
         st: &mut NativeStage,
         max: usize,
         t: i64,
-    ) -> Result<Vec<Candidate>, NqRefusal> {
+    ) -> Result<(Vec<Candidate>, [Option<i64>; 2]), NqRefusal> {
         let want = max.saturating_mul(2).saturating_add(16);
         let mut out: Vec<Candidate> = Vec::new();
-        for fam in [keys::AVAIL, keys::RETRIES] {
+        let mut next = [None; 2];
+        for (fam, found) in FAMILIES.into_iter().zip(&mut next) {
+            if st.state.floors.of(fam).is_some_and(|floor| *floor > t) {
+                continue;
+            }
             let prefix = keys::family(hash, fam).len();
-            let rows = self
-                .nq_index_scan(hash, st, fam, want)
+            let (rows, after) = self
+                .nq_due_scan(hash, st, fam, (want, t))
                 .await
                 .map_err(NqRefusal::Internal)?;
+            *found = after;
             let due = rows.into_iter().map_while(|(k, v)| {
                 let (at, off) = keys::decode_time_key(prefix, &k)?;
                 (at <= t).then(|| (at, off, (fam == keys::AVAIL).then_some(v)))
@@ -114,7 +170,7 @@ impl CommitTransaction<'_> {
             out.extend(due);
         }
         out.sort_unstable_by_key(|c| (c.0, c.1));
-        Ok(out)
+        Ok((out, next))
     }
 
     /// Lease an untaken message from its availability entry, which holds

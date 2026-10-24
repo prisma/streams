@@ -3,6 +3,7 @@
 //! is written (read-your-writes inside the group). Rows not staged are read
 //! from the shard log, which already holds every earlier group's write.
 use std::collections::BTreeMap;
+use std::ops::Bound;
 
 use crate::native_queue::keys;
 use crate::native_queue::rows::StateRow;
@@ -147,17 +148,82 @@ impl super::super::CommitTransaction<'_> {
         fam: u8,
         limit: usize,
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
-        let Some((mut from, to)) = floor_range(hash, fam, st) else {
+        let Some(range) = index_range(hash, fam, st) else {
             return Ok(Vec::new());
         };
-        let s = &st.state;
-        if fam == keys::AVAIL && s.cursor_started {
-            let cursor = keys::by_time(hash, fam, s.cursor_at, s.cursor_off.saturating_add(1));
-            from = from.max(cursor);
-        }
-        let rows = self.nq_scan(st, (from, to), limit).await?;
+        let rows = self.nq_scan(st, range, limit).await?;
         st.raise_floor(fam, rows.first().and_then(|(k, _)| key_time(k)));
         Ok(rows)
+    }
+
+    /// For a claim at `t`: the live entries of a time-ordered family, read
+    /// from where [`Self::nq_index_scan`] starts through its first live entry
+    /// past `t` or at most `limit` stored rows (plus one per row the group
+    /// staged in range, so its deletes cannot starve the read), with the
+    /// time of the first entry past `t` among them: `i64::MAX` when the
+    /// read reached the family's end without one, `None` when it stopped at
+    /// the limit first. No stored row past that entry is read, and a staged
+    /// row past the last stored row read is left out, so the rows are every
+    /// live entry of a prefix of the family. Raises no floor: only the
+    /// caller knows which entries it consumed.
+    pub(super) async fn nq_due_scan(
+        &self,
+        hash: &[u8; 16],
+        st: &mut NativeStage,
+        fam: u8,
+        read: (usize, i64),
+    ) -> Result<(Vec<(Vec<u8>, Vec<u8>)>, Option<i64>), String> {
+        let (limit, t) = read;
+        let Some((from, to)) = index_range(hash, fam, st) else {
+            return Ok((Vec::new(), Some(i64::MAX)));
+        };
+        let want = limit.saturating_add(st.rows.range(from.clone()..to.clone()).count());
+        let mut it = self
+            .engine
+            .db
+            .scan_with_options(
+                from.clone()..to.clone(),
+                &crate::native_queue::scan_options(),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut merged: BTreeMap<Vec<u8>, Option<Vec<u8>>> = BTreeMap::new();
+        let mut ended = false;
+        for _ in 0..want {
+            let Some(kv) = it.next().await.map_err(|e| e.to_string())? else {
+                ended = true;
+                break;
+            };
+            let key = kv.key.to_vec();
+            // A row the group deleted does not end the read.
+            let past = key_time(&key).is_some_and(|at| at > t) && st.rows.get(&key) != Some(&None);
+            merged.insert(key, Some(kv.value.to_vec()));
+            if past {
+                break;
+            }
+        }
+        let end = if ended {
+            Bound::Excluded(to)
+        } else {
+            merged
+                .keys()
+                .next_back()
+                .map_or(Bound::Excluded(from.clone()), |k| {
+                    Bound::Included(k.clone())
+                })
+        };
+        for (k, v) in st.rows.range((Bound::Included(from), end)) {
+            merged.insert(k.clone(), v.clone());
+        }
+        let rows: Vec<_> = merged
+            .into_iter()
+            .filter_map(|(k, v)| v.map(|v| (k, v)))
+            .collect();
+        let next = rows
+            .iter()
+            .filter_map(|(k, _)| key_time(k))
+            .find(|at| *at > t);
+        Ok((rows, next.or(ended.then_some(i64::MAX))))
     }
 
     /// Writes the state row if anything changed it.
@@ -202,4 +268,16 @@ pub(super) fn floor_range(
     let mut from = keys::family(hash, fam);
     from.extend_from_slice(&u64::try_from(floor).unwrap_or(0).to_be_bytes());
     Some((from, family_range(hash, fam).1))
+}
+
+/// The key range an index scan reads: [`floor_range`], for `avail` from
+/// the later of the floor and the cursor.
+fn index_range(hash: &[u8; 16], fam: u8, st: &mut NativeStage) -> Option<(Vec<u8>, Vec<u8>)> {
+    let (mut from, to) = floor_range(hash, fam, st)?;
+    let s = &st.state;
+    if fam == keys::AVAIL && s.cursor_started {
+        let cursor = keys::by_time(hash, fam, s.cursor_at, s.cursor_off.saturating_add(1));
+        from = from.max(cursor);
+    }
+    Some((from, to))
 }

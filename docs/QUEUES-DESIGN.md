@@ -472,14 +472,19 @@ entry (for `A`, of its first live entry past the cursor), plus the earliest
 cycle deadline among retries. Every put lowers a floor in the batch that
 holds the entry; a scan starts at the floor and may raise it to the first
 live entry it found, in the batch whose deletes justified it; deletes leave
-it low, which is only slower. The roster's deadline is computed from the
-floors alone: the earliest lease expiry, retry cycle deadline, failure
-expiry, dedup expiry, untaken retention end and wake-up, or an hour out
-when none applies. An operation only brings the roster forward; a sweep
-sets it. A due retry or a wake-up with nothing claimable waits for a claim,
-not for the sweep, so after a sweep those terms look again a minute on.
-An active queue is thus swept when something can be due (about once per
-lease duration under load), not after every operation.
+it low, which is only slower. A claim does not read `A` or `R` while that
+index's floor is past the claim's clock, reads it only up to its first live
+entry past the clock, and then raises its floor to the first entry it left:
+the first due entry it did not take, else that later entry (the index's end
+when there is none). The rest of a herd of claims then reads nothing until
+a put lowers the floor or the clock reaches it. The roster's deadline is
+computed from the floors alone: the earliest lease expiry, retry cycle
+deadline, failure expiry, dedup expiry, untaken retention end and wake-up,
+or an hour out when none applies. An operation only brings the roster
+forward; a sweep sets it. A due retry or a wake-up with nothing claimable
+waits for a claim, not for the sweep, so after a sweep those terms look
+again a minute on. An active queue is thus swept when something can be due
+(about once per lease duration under load), not after every operation.
 
 **Timers are a maintenance obligation of their own.** A queue can have a
 scheduled message, a retry, a lease deadline or a dedup expiry with zero
