@@ -68,8 +68,9 @@ describe("the shared-cell profile", () => {
         "PROJECT_MEMORY_PRESSURE_BYTES",
         "MAX_REQUEST_BODY_BYTES",
         "MAX_UNABSORBED_BYTES_PER_SHARD",
+        "TAIL_RING_BYTES",
       ].map((n) => env.get(n)),
-    ).toEqual(["8388608", "33554432", "8388608", "268435456"]);
+    ).toEqual(["8388608", "33554432", "8388608", "268435456", "8388608"]);
   });
 
   test("its shard line is the binary's default, and k projects at their memory lines just reach it", () => {

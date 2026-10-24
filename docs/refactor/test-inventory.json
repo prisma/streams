@@ -9201,6 +9201,17 @@
     "scenarios": []
   },
   {
+    "name": "the_shared_cell_ring_serves_a_woken_read_without_a_store_get",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "9b3df67beaabf613e67b1bd5b71e8eaacfba8d2b5c388a2155435fd8401635d6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_ring.rs",
+    "scenarios": []
+  },
+  {
     "name": "the_survival_refusal_covers_reads_and_the_product_surface_at_the_default_caps",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

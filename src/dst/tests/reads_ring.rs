@@ -1,9 +1,12 @@
 //! Reads ring.
 
 use super::fixture_storage::{
-    absorb_through, append_sized, mem, open_engine, open_engine_cfg, sized, skey,
+    absorb_through, append_sized, eventually, mem, open_engine, open_engine_cfg,
+    open_engine_with_settings, sized, skey,
 };
-use crate::dst::{FaultPlan, FaultStore, OpLog, Outcome, Workload, drain_observed};
+use crate::dst::{
+    FaultPlan, FaultStore, ObjClass, OpLog, Outcome, StoreOp, Workload, drain_observed,
+};
 use object_store::ObjectStore;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -594,4 +597,113 @@ async fn o3_retained_ring_coverage_skips_only_the_redundant_marker() {
     assert!(page.completed);
     assert_eq!(page.last, Some(3));
     engine.begin_close();
+}
+
+/// The stream a woken read follows, and a neighbour above it in the key
+/// space: a shared cell's one shard holds every project's streams.
+const STREAM: [u8; 16] = [0x5c; 16];
+const NEIGHBOUR: [u8; 16] = [0xf0; 16];
+
+/// A shard whose older data sits in a sorted run, as its compactor leaves
+/// it: eight 1 KiB records of each stream over four memtable flushes, the
+/// four L0 tables compacted into one run (compaction output caches no data
+/// block, so a scan reads the run's blocks from the store).
+async fn compacted_shard(
+    tail_ring_bytes: usize,
+) -> (Arc<FaultStore>, Arc<crate::shard::ShardEngine>) {
+    use std::time::Duration;
+    let store = FaultStore::uniform(mem(), 61, FaultPlan::CLEAN);
+    let compactor = slatedb::config::CompactorOptions {
+        poll_interval: Duration::from_millis(100),
+        commit_compacted_interval: Duration::from_millis(100),
+        worker: Some(slatedb::config::CompactionWorkerOptions {
+            compactions_poll_interval: Duration::from_millis(100),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let settings = slatedb::config::Settings {
+        flush_interval: Some(Duration::from_millis(5)),
+        manifest_poll_interval: Duration::from_millis(50),
+        compactor_options: Some(compactor),
+        ..Default::default()
+    };
+    let cfg = crate::shard::ShardConfig {
+        tail_ring_bytes,
+        ..Default::default()
+    };
+    let engine = open_engine_with_settings(store.clone(), "ring-sorted-run", cfg, settings).await;
+    let key = skey();
+    for _ in 0..4 {
+        for hash in [STREAM, STREAM, NEIGHBOUR, NEIGHBOUR] {
+            append_sized(&engine, hash, &key, "", 1024).await;
+        }
+        let flush = slatedb::config::FlushOptions {
+            flush_type: slatedb::config::FlushType::MemTable,
+        };
+        engine.db.flush_with_options(flush).await.expect("flush");
+    }
+    eventually("the L0 tables compact into a sorted run", || {
+        !engine.db.manifest().compacted().is_empty()
+    })
+    .await;
+    (store, engine)
+}
+
+/// A long-poll wake on the compacted shard's stream: the waiter is armed,
+/// one record is appended, and the woken read takes its 1 MiB page from
+/// the tail it waited at. Returns the offsets it served and the GETs of
+/// table objects it issued.
+async fn woken_read_table_gets(tail_ring_bytes: usize) -> (Vec<u64>, u64) {
+    let (store, engine) = compacted_shard(tail_ring_bytes).await;
+    let key = skey();
+    let handle = engine.stream_handle(STREAM).await.expect("handle");
+    let tail = handle.state.lock().unwrap().durable.next;
+    let woken = handle.notify.notified();
+    append_sized(&engine, STREAM, &key, "", 1024).await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), woken)
+        .await
+        .expect("the append wakes the waiter");
+    let before = store.count(StoreOp::Get, ObjClass::Sst);
+    let page = crate::http::read_merged(
+        &key,
+        &STREAM,
+        &handle,
+        &engine,
+        tail,
+        None,
+        1 << 20,
+        crate::shard::Deliver::Durable,
+    )
+    .await
+    .expect("woken read");
+    let gets = store.count(StoreOp::Get, ObjClass::Sst) - before;
+    engine.begin_close();
+    (page.recs.iter().map(|r| r.off).collect(), gets)
+}
+
+/// The shared-cell profile's tail ring (the cost report of 2026-10-24,
+/// lever 6): a long-poll woken on a stream whose older data sits in a
+/// sorted run takes the appended record from the ring and fetches no
+/// table object. The control, the ring off (the binary's default), scans
+/// the shard log, whose merge reads the sorted run's block from the store
+/// although the record is in the memtable. The ring is the one the profile
+/// gives, parsed as a deploy layers compute-1g.env and shared-cell.env.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_shared_cell_ring_serves_a_woken_read_without_a_store_get() {
+    let profile =
+        crate::config::shared_cell_profile(&[("SLATE_S3_ENDPOINT", "http://127.0.0.1:1")]);
+    let ring = profile.cli.tail_ring_bytes;
+    let (off, off_gets) = woken_read_table_gets(0).await;
+    assert_eq!(off, vec![8]);
+    assert!(
+        off_gets >= 1,
+        "control: with the ring off the woken read must reach the sorted run"
+    );
+    assert_eq!(
+        woken_read_table_gets(ring).await,
+        (vec![8], 0),
+        "with the shared-cell profile's ring of {ring} bytes the woken read is served from \
+         memory; the ring off issued {off_gets} GETs"
+    );
 }

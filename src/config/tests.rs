@@ -84,7 +84,7 @@ pub(super) fn load_with(entries: &[(&str, &str)]) -> ServerConfig {
 /// The shared-cell profile as a deploy layers it: compute-1g.env, then
 /// shared-cell.env (later wins), then the per-cell values the deploy
 /// sets; clap's names go on argv, the rest into the environment.
-pub(super) fn shared_cell_profile(per_cell: &[(&str, &str)]) -> ServerConfig {
+pub(crate) fn shared_cell_profile(per_cell: &[(&str, &str)]) -> ServerConfig {
     let mut env = std::collections::BTreeMap::new();
     let files = [
         include_str!("../../deploy/profiles/compute-1g.env"),
@@ -935,7 +935,8 @@ fn process_environment_smoke_test() {
 /// deploys (compute-1g.env under shared-cell.env, `shared_cell_profile`),
 /// not on the binary's defaults: a change that raises any of them, in
 /// either file or in a default the files leave alone, fails here and goes
-/// back to the owner with the new sum.
+/// back to the owner with the new sum. The tail ring of each shard counts
+/// with them since the profile set one (the cost report's lever 6).
 #[test]
 fn the_shared_cells_instance_bounds_stay_within_the_sum_the_owner_accepted() {
     const ACCEPTED: u64 = 603_499_008;
@@ -943,14 +944,15 @@ fn the_shared_cells_instance_bounds_stay_within_the_sum_the_owner_accepted() {
     let c = shared_cell_profile(&[("SLATE_S3_ENDPOINT", "http://127.0.0.1:1")]);
     let mib = 1u64 << 20;
     let fixed = shipped_fixed_memory_budget_bytes(&c);
+    let rings = (c.cli.tail_ring_bytes * c.cli.initial_shards.expect("a shard count")) as u64;
     let read_memory = c.cli.admit_rss_shed_mb * mib / 4;
     let livefeed = c.sse.feed_total_bytes;
     let connections = c.cli.sse_max_connections * 44_000;
-    let sum = fixed + read_memory + livefeed + connections;
+    let sum = fixed + rings + read_memory + livefeed + connections;
     assert!(
         sum <= ACCEPTED,
-        "fixed {fixed} + read memory {read_memory} + LiveFeed {livefeed} + connections \
-         {connections} = {sum} > the {ACCEPTED} bytes the owner accepted"
+        "fixed {fixed} + rings {rings} + read memory {read_memory} + LiveFeed {livefeed} + \
+         connections {connections} = {sum} > the {ACCEPTED} bytes the owner accepted"
     );
 }
 
@@ -961,19 +963,21 @@ fn the_shared_cells_instance_bounds_stay_within_the_sum_the_owner_accepted() {
 /// MiB). Everything else the load holds, at that load's p90 with 32 + 16 +
 /// 16 MiB, measured 359 MiB, 225 MiB of it not cache. The plateau that model
 /// gives for the profile's caches must leave 100 MiB under the shed line.
+/// The tail ring, measured off, is a byte budget evicted in order as the
+/// caches are, so it is modelled as one more cache.
 #[test]
 fn the_shared_cells_load_working_set_leaves_room_under_the_shed_line() {
     const NOT_CACHE_MIB: u64 = 225;
     const HEADROOM_MIB: u64 = 100;
     let c = shared_cell_profile(&[("SLATE_S3_ENDPOINT", "http://127.0.0.1:1")]);
     let mib = 1u64 << 20;
-    let caches =
-        c.cli.shared_cache_bytes + (c.history.cache_bytes + c.billing.telemetry_cache_bytes) as u64;
+    let caches = c.cli.shared_cache_bytes
+        + (c.history.cache_bytes + c.billing.telemetry_cache_bytes + c.cli.tail_ring_bytes) as u64;
     let plateau = NOT_CACHE_MIB + caches * 21 / 10 / mib;
     assert!(
         plateau + HEADROOM_MIB <= c.cli.admit_rss_shed_mb,
-        "caches of {} MiB give a {plateau} MiB plateau, which leaves less than {HEADROOM_MIB} MiB \
-         under the {} MB shed line",
+        "caches and ring of {} MiB give a {plateau} MiB plateau, which leaves less than \
+         {HEADROOM_MIB} MiB under the {} MB shed line",
         caches / mib,
         c.cli.admit_rss_shed_mb
     );
