@@ -31,16 +31,22 @@ Subcommands (run-local.sh drives all of them):
             the telemetry system streams append, absorb and compact on a
             ~60 s rhythm, so a deferred tail ends when it reaches that floor.
   snapshot  the exact ledger at one moment: <run>/s3lite-<label>.json and
-            <run>/store-<label>.json.
+            <run>/store-<label>.json (each server's /v1/debug/store, and
+            its /v1/debug/timings pump and tail-ring counters per shard).
   usage     the product meters after the drain: polls
             GET /v1/projects/{project}/usage on the rollup instance until
             it settles, then writes <run>/usage.json (plus every server's
             full /v1/debug/usage).
-  posture   <run>/posture.json: binary sha256s, git commit, every server's
-            environment with secrets redacted, build identity, startup
-            summary.
+  posture   <run>/posture.json: the binaries run (path, sha256), the
+            worktree's git HEAD, the commit the servers are held to
+            (--expect-commit: K2_SERVER_COMMIT or the HEAD) against the
+            git_commit each reports, every server's environment with
+            secrets redacted, build identity, startup summary. Exit 3 when
+            a server reports another commit than the expected one.
   envfile   stdin KEY=VALUE lines (later wins, "-KEY" removes) to stdout
             as shell-safe KEY='value' lines; the rig's posture writer.
+  showenv   one envfile's lines, secrets redacted as posture.json redacts
+            them (run-local.sh --dry-run).
 
 Debug routes are gated by the deployment bearer (AUTH_TOKEN; src/http/debug.rs):
 --auth-file holds the "authorization: Bearer ..." header line. Product
@@ -137,6 +143,16 @@ def append_mark(run: str, name: str, **extra) -> None:
 
 def shape_store(body: dict) -> dict:
     return {k: v for k, v in body.items() if k != "slow"}
+
+
+def shape_timings(body):
+    """/v1/debug/timings per shard: the cumulative pump counters (flushes =
+    WAL PUTs the pump issued; barrier_acked, flushed reqs/records/bytes)
+    and the tail ring's; the recent group samples are dropped."""
+    if not isinstance(body, dict):
+        return None
+    return {shard: {k: v[k] for k in ("pump", "tail_ring") if k in v}
+            for shard, v in body.items() if isinstance(v, dict)}
 
 
 def shape_usage(body: dict) -> dict:
@@ -406,9 +422,11 @@ def cmd_snapshot(args) -> int:
     for name, url in parse_servers(args.servers):
         _, store, serr = get_json(f"{url}/v1/debug/store?window=10", auth)
         _, load, lerr = get_json(f"{url}/v1/debug/load", auth)
+        _, timings, terr = get_json(f"{url}/v1/debug/timings", auth)
         servers[name] = {
             "store": shape_store(store) if store and not serr else None,
             "boot_id": (load or {}).get("boot_id") if not lerr else None,
+            "timings": shape_timings(timings) if not terr else None,
             "error": serr or lerr,
         }
     procs = proc_stats(args.pids)
@@ -628,6 +646,25 @@ def tool_version(cmd: list[str]) -> str | None:
         return None
 
 
+def commit_verdict(head: str, expected: str, source: str, commits: list) -> dict:
+    """The git_commit every server reports (build.rs embeds its build tree's
+    HEAD) against the commit the run claims to measure: K2_SERVER_COMMIT (a
+    binary built elsewhere; 7-40 hex digits, a prefix) or the worktree HEAD.
+    A server that reported none matches neither."""
+    reported = list(commits)
+
+    def same(c, want: str) -> bool:
+        return bool(c) and bool(want) and (c == want or (len(want) >= 7 and c.startswith(want)))
+
+    return {"expected": expected, "source": source, "reported": reported,
+            "matches_expected": bool(reported) and all(same(c, expected) for c in reported),
+            "matches_head": bool(reported) and all(c == head for c in reported)}
+
+
+def binary_facts(path: str | None) -> dict | None:
+    return {"path": path, "sha256": sha256_file(path)} if path else None
+
+
 def cmd_posture(args) -> int:
     root = args.root
     git = lambda *a: subprocess.run(["git", "-C", root, *a], capture_output=True, text=True).stdout.strip()  # noqa: E731
@@ -652,17 +689,26 @@ def cmd_posture(args) -> int:
             "startup_summary": startup_summary(os.path.join(args.run, f"server-{n}.log")),
             "load_error": err,
         }
-    commits = {s["git_commit"] for s in servers.values()}
-    bins = {b: sha256_file(os.path.join(root, "target", "release", b)) for b in ("streams-slate", "s3lite", "pilot")}
+    release = os.path.join(root, "target", "release")
+    bins = {"streams-slate": binary_facts(args.server_bin or os.path.join(release, "streams-slate")),
+            "s3lite": binary_facts(args.s3lite_bin or os.path.join(release, "s3lite")),
+            "pilot": binary_facts(args.pilot_bin)}
+    verdict = commit_verdict(head, args.expect_commit or head, args.expect_source,
+                             [s["git_commit"] for s in servers.values()])
     with open(os.path.join(args.run, "point.env"), encoding="utf-8") as f:
         point_src = f.read()
     doc = {
         "t_ms": now_ms(),
         "point": args.point,
         "point_file": point_src,
+        "posture": args.posture,
+        "port_base": args.port_base,
         "git": {"head": head, "dirty_paths": dirty},
-        "binary_commit_matches_head": commits == {head},
-        "binaries_sha256": bins,
+        "server_commit": verdict,
+        "commit_mismatch_allowed": args.allow_mismatch,
+        "binary_commit_matches_head": verdict["matches_head"],
+        "binaries": bins,
+        "binaries_sha256": {b: (f or {}).get("sha256") for b, f in bins.items()},
         "k2gen_sha256": sha256_file(os.path.join(root, "bench", "k2cost", "k2gen.ts")),
         "k2gen_sources_sha256": {f: sha256_file(os.path.join(root, "bench", "k2cost", f))
                                  for f in ("common.ts", "produce.ts", "consume.ts", "churn.ts", "corpus.ts")},
@@ -680,11 +726,17 @@ def cmd_posture(args) -> int:
     }
     with open(os.path.join(args.run, "posture.json"), "w", encoding="utf-8") as f:
         json.dump(doc, f, indent=1, sort_keys=True)
-    if not doc["binary_commit_matches_head"]:
+    if not verdict["matches_expected"]:
         # §6: refuse a run whose binary was not built from the measured commit.
-        print(f"[posture] REFUSED: server git_commit {sorted(c or '?' for c in commits)} != worktree HEAD {head[:12]}",
-              flush=True)
+        print(f"[posture] REFUSED: server git_commit {sorted(c or '?' for c in verdict['reported'])} != "
+              f"{verdict['expected'][:12]} ({verdict['source']})", flush=True)
         return 3
+    return 0
+
+
+def cmd_showenv(args) -> int:
+    for k, v in parse_envfile(args.file).items():
+        print(f"  {k}=" + redact(k, v).replace(args.secrets_dir, "<secrets>"))
     return 0
 
 
@@ -753,12 +805,25 @@ def main() -> int:
     p.add_argument("--latency-ms", required=True)
     p.add_argument("--bucket", required=True)
     p.add_argument("--project", required=True)
+    p.add_argument("--posture", default="k2", help="run-local.sh's POSTURE: k2 or launch")
+    p.add_argument("--port-base", type=int, default=None, help="run-local.sh's K2_PORT_BASE")
+    p.add_argument("--server-bin", default=None, help="the streams-slate run (default ROOT/target/release/)")
+    p.add_argument("--s3lite-bin", default=None, help="the s3lite run (default ROOT/target/release/)")
+    p.add_argument("--pilot-bin", default=None, help="the pilot LB run, if any")
+    p.add_argument("--expect-commit", default=None, help="the commit the servers must report (default: HEAD)")
+    p.add_argument("--expect-source", default="worktree HEAD", help="where --expect-commit came from")
+    p.add_argument("--allow-mismatch", action="store_true",
+                   help="K2_ALLOW_COMMIT_MISMATCH=1: the rig runs a mismatched point (recorded; price.py voids it)")
     sub.add_parser("envfile")
+    p = sub.add_parser("showenv")
+    p.add_argument("file")
+    p.add_argument("--secrets-dir", required=True, help="the secrets directory, printed as <secrets>")
     args = ap.parse_args()
     if args.cmd == "loop":
         Loop(args).run_forever()
         return 0
-    return {"snapshot": cmd_snapshot, "usage": cmd_usage, "posture": cmd_posture, "envfile": cmd_envfile}[args.cmd](args)
+    return {"snapshot": cmd_snapshot, "usage": cmd_usage, "posture": cmd_posture, "envfile": cmd_envfile,
+            "showenv": cmd_showenv}[args.cmd](args)
 
 
 if __name__ == "__main__":

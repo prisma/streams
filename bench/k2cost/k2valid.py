@@ -179,7 +179,23 @@ def validity(scrape: list, spans: dict, restarts: bool, usage: dict, eff: dict, 
     if quiesce_point or timeouts:
         check("quiescence reached (no quiesce_timeout)", not timeouts,
               [m.get("id", "load_end") for m in timeouts])
-    check("server binaries built from the worktree HEAD (posture)", posture.get("binary_commit_matches_head") is True,
-          {"head": (posture.get("git") or {}).get("head"),
-           "servers": {k: v.get("git_commit") for k, v in (posture.get("servers") or {}).items()}})
+    detail = {"head": (posture.get("git") or {}).get("head"),
+              "servers": {k: v.get("git_commit") for k, v in (posture.get("servers") or {}).items()}}
+    sc = posture.get("server_commit")
+    if sc:
+        check("server binaries built from the declared commit (posture)", posture_ok(posture),
+              {"expected": sc.get("expected"), "source": sc.get("source"), **detail,
+               "server_sha256": (posture.get("binaries_sha256") or {}).get("streams-slate")})
+    else:  # a posture.json from before K2_SERVER_COMMIT
+        check("server binaries built from the worktree HEAD (posture)", posture_ok(posture), detail)
     return {"valid": all(c["ok"] for c in checks), "checks": checks, "spans_ms": spans}
+
+
+def posture_ok(posture: dict) -> bool:
+    """The servers reported the commit the run claims: K2_SERVER_COMMIT or the
+    worktree HEAD (posture.json's server_commit), else, for a run from before
+    that record, the worktree HEAD."""
+    sc = posture.get("server_commit")
+    if sc:
+        return sc.get("matches_expected") is True
+    return posture.get("binary_commit_matches_head") is True

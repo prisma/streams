@@ -15,7 +15,8 @@ ratchet here is 1,000 lines per file; the s3lite census it reads (C2) is
 | `run-local.sh <point-file>` | one point in the release posture, from boot to `summary.json` |
 | `scrape.py` | the instruments: `loop` (with `--operator`, also `/operator/data.json`), `snapshot`, `usage`, `posture`, `envfile` |
 | `price.py [run-dir] [--baseline run-dir]` | Tigris pricing, the §4.3 allocation, K2 revenue, per-GiB costs and margins, W(r), calibration, validity; with `k2cells.py` (cell pricing and allocation), `k2store.py` (stored bytes, k, the a/b/c fit, U) and `k2valid.py` (§8 checks) |
-| `points/*.env` | one tiny smoke point and one full-scale point per design run (L0, L1, L2, L3, L5, L6, L7) |
+| `points/*.env` | one tiny smoke point and one full-scale point per design run (L0, L1, L2, L3, L5, L6, L7); the screening points `SCR-S`, `SCR-M` and `SCR-IDLE` on the launch posture (below) |
+| `counts.py RUN` / `counts.py --compare REF CAND` | a run's screening counts per window (requests by cell and class, bytes PUT and GET, pump WAL flushes, ring hits, CPU seconds) to `counts.json`, and two runs side by side (below) |
 | `oracle.ts` | the shared-cell leak oracle: a `--payload oracle` record names its project and carries a MAC under that project's harness key, which the server never sees. Every read path (pages, long-polls, SSE, pulls, churn's read-back, the audit) counts each record it is delivered as `oracle_ok`, `oracle_foreign` (another project's record: a leak), `oracle_bad_mac` (corruption) or `oracle_unmarked`. Only a generator that names an owner writes it (`tenants.ts`) |
 | `tenants.ts` (+ `tenant-plan.ts`, `tenants/*.json`) | the shared-cell harness's multi-project driver: a tenants manifest of classes, counts, quotas and phases, every project on k2gen's own modes under its own token (below) |
 | `resolve.ts` | the read-back `tenants.ts audit` runs for appends answered with an unknown outcome (`common.ts` `appendOutcomeUnknown`; `produce` and `churn` count them per stream as `unknown_records`): each stream they went to is counted from the beginning (or by the audit's own read), and the records past the acked ones, between 0 and the unknown ones, are written; a stream that is gone, a bytes stream or a count out of bounds is reported unresolved (`audit.json` `resolution`) |
@@ -35,12 +36,32 @@ bench/k2cost/run-local.sh bench/k2cost/points/L1-tiny.env      # about 2-7 min
 WAL_GAP=500 LAT=40 bench/k2cost/run-local.sh bench/k2cost/points/L1-full.env
 ```
 
-Run full points in the background, one at a time, never during a gate,
-the suite or a mutation leg (AGENTS.md §1). The rig uses ports 9580-9584:
-emulator 9580, s3lite 9581, streams-1 9582, streams-2 9583, pilot LB 9584.
-It refuses to start if one is taken. Results go to
-`$K2_HOME/results/<point>-<UTC stamp>/`, with `K2_HOME` defaulting to `~/.streams-k2`. The rig
-never writes them inside the repository.
+Run full points in the background, never during a gate, the suite or a
+mutation leg (AGENTS.md §1). The rig uses five ports from `K2_PORT_BASE`
+(9580): emulator BASE, s3lite BASE+1, streams-1 BASE+2, streams-2 BASE+3,
+pilot LB BASE+4. It refuses to start if one is taken; points on distinct
+bases run at once (a screening pair). Results go to
+`$K2_HOME/results/<point>[-<K2_RUN_TAG>]-<UTC stamp>/`, with `K2_HOME`
+defaulting to `~/.streams-k2`. The rig never writes them inside the
+repository. `run-local.sh <point> --dry-run` prints the ports, the
+binaries, the commit the servers are held to and each server's
+environment (secrets redacted) and starts nothing.
+
+The caller's environment picks what runs (never the point file):
+
+| Variable | Meaning (default) |
+|---|---|
+| `K2_PORT_BASE` | the first of the five ports (9580) |
+| `K2_SERVER_BIN`, `K2_S3LITE_BIN`, `K2_PILOT_BIN` | the binaries (`target/release/{streams-slate,s3lite,pilot}`; pilot only with `SERVERS=2`), recorded with their sha256 in `posture.json` `binaries` |
+| `K2_SERVER_COMMIT` | the commit the servers must report on `/v1/debug/load` (`git_commit`, which `build.rs` embeds: the build tree's HEAD), 7-40 hex digits, for a binary built from another commit than the worktree HEAD (the default). `posture.json` `server_commit` records the expected commit, where it came from and what each server reported; the rig refuses a mismatch and price.py voids it |
+| `K2_RUN_TAG` | a word in the results directory's name (`ref`, `cand`): two runs of one point started in the same second |
+
+A screening pair runs one point on two binaries (each arm's
+`K2_SERVER_BIN` and `K2_SERVER_COMMIT`), or on one binary with two
+`SERVER_ENV_EXTRA`s, at the same time on two port bases with two
+`K2_RUN_TAG`s, from one checkout (so both arms run the same harness and
+s3lite), and is read with `counts.py --compare REF CAND`, which also
+prints the server environment keys that differ between the arms.
 
 ### Point files
 
@@ -55,7 +76,8 @@ sets plainly wins over the environment.
 |---|---|
 | `S3LITE_LATENCY_MS` | injected s3lite latency per request, a fixed RTT stand-in (20) |
 | `SERVERS` | 1 = T-single (`FLEET_MAX=1`, no LB); 2 = T-launch locally (fleet of 2, `FLEET_MIN=2 FLEET_MAX=2`, pilot LB, `desired.json` seeded to 2) |
-| `SERVER_ENV_EXTRA` | space-separated `KEY=VALUE` overrides of the pinned posture; `-KEY` removes a key |
+| `POSTURE` | `k2` (the default): §6's pinned posture (below). `launch`: the launch cell, `deploy/profiles/compute-1g.env` then `shared-cell.env` as `deploy/composer/streams/env.ts` layers them (one shard, fleet off, ring off, 32/16 MiB caches; `KEEP_AWAKE`, the wrapper's, dropped), with the rig's store, feed files, `REGION=local`, billing identity and `AUTH_TOKEN`; no engine pins, no fleet names, `INSTANCE_NAME` at its default; `SERVERS=1` only |
+| `SERVER_ENV_EXTRA` | space-separated `KEY=VALUE` overrides of the posture; `-KEY` removes a key |
 | `PHASES` | one k2gen invocation per line, without `--base/--headers-file/--out/--ledger` (the rig appends them). Three lines are run by the rig itself: `idle SECS` (scrape only, a baseline), `restart` (graceful stop and start of every server on the same bucket, for cold reads) and `quiesce` (wait for quiescence now, so earlier phases' deferred work is priced as produce there and not in the phases that follow). A line ending in `&` runs in the background until the next foreground line ends. |
 | `QUIESCE` | 1 = wait for quiescence (below) after the last phase and snapshot `quiesced`; the deferred window ends there (0) |
 | `IDLE_SECS` | idle tail after the phases or quiescence (0). After a `quiesced` snapshot it is priced as floor and is the point's own per-cell baseline |
@@ -68,6 +90,22 @@ sets plainly wins over the environment.
 Tiny points stay under 50 req/s, 3 minutes of load and 50 MB. Full
 points follow design §9.1. L6 (c) with billing off is untested in the
 release posture.
+
+The rig sets its own defaults (`QUIESCE_*`, `IDLE_SECS`, `USAGE_WAIT_SECS`,
+`SCRAPE_SECS`, `S3LITE_LATENCY_MS`, `SERVERS`, `POSTURE`, `QUIESCE`)
+before it sources the point, so `${IDLE_SECS:-900}` in a point yields the
+caller's value or the rig's default (0), never 900: a point that needs its
+own value for one of them sets it plainly, as the screening points do.
+
+The screening points run the launch posture for about 20-25 minutes each
+(`SCR_SMOKE=1` shortens them to 4-6 minutes); each file's header names
+the windows and cells that carry its verdict:
+
+| Point | Load | Read with |
+|---|---|---|
+| `SCR-S` | Fable's profile S (2026-10-24 report §4.1): 20 streams of 1 KiB JSON singles at 2 req/s, a long-poll tail per stream, one group (pull 10, settle each; pulls wait 20 s, as the SDK's) on the 5 streams that take a quarter of the appends; 840 s, a short quiescence, 60 s idle | `to_quiesced`: `shard/sst/get` (ring, E2), `shard/wal/put` and `pump_flushes`, `put_bytes` |
+| `SCR-M` | a quarter slice of profile M: 10 streams, 100 x 1 KiB JSON per request under 64 routing keys at `M_RATE` (3) req/s, two groups (pull 100, settle each), a long-poll tail per stream on key k0; 780 s, a short quiescence, 60 s idle; `PROJECT_SHARE_K=1 PROJECT_MEMORY_PRESSURE_BYTES=268435456`, since at k = 8 one project may append only 257,500 B/s and its 20 pulls hold the 32 MiB memory line (429 `project_memory_pressure`) | `to_quiesced`: `shard/sst/get` (E2), `hist/sst/put` and the deferred `put_bytes` (history fan-in), `shard/wal/put` |
+| `SCR-IDLE` | a 30 s burst over 4 streams, 120 s to settle, then 1200 s of idle cell | `phase 4` per hour: `shard/wal/put`, `pump_flushes`, `shard/sst/put`, `shard/manifest/put`, telemetry cells (the `_ops_metrics` cadence) |
 
 `$RUN` in a phase line (written `\$RUN` inside the double-quoted
 `PHASES`) is the point's results directory: the rig expands it when it
@@ -92,10 +130,11 @@ Two product rules shape the read and queue points:
    one cell (`cell-k2`) and one customer project (`proj-k2` in `ws-k2`). It mints a
    credential with every scope (`streams.*`, `streams.usage.read` included)
    **before** boot, so the cells' first feed snapshot carries the grant.
-2. It starts a fresh `target/release/s3lite` with the point's latency, and uses a fresh bucket
-   `k2-<stamp>`, `PATH_PREFIX=k2data` and `FLEET_PREFIX=k2fleet`.
-3. It starts `SERVERS` cells of `target/release/streams-slate` under `env -i`, so the
-   server sees exactly the posture file and nothing from the caller's shell:
+2. It starts a fresh s3lite (`K2_S3LITE_BIN`) with the point's latency, and uses a fresh bucket
+   `k2-<stamp>`, `PATH_PREFIX=k2data` and (`POSTURE=k2`) `FLEET_PREFIX=k2fleet`.
+3. It starts `SERVERS` cells of streams-slate (`K2_SERVER_BIN`) under `env -i`, so the
+   server sees exactly the posture file and nothing from the caller's shell.
+   `POSTURE=launch` is described above; `POSTURE=k2`:
    - `deploy/profiles/compute-1g.env` verbatim;
    - the §6 engine posture `WAL_GROUP_COMMIT=1 FLUSH_INTERVAL_MS=25
      WAL_POST_ACK_GATHER_MS=6 FRAME_COMPRESS=1 ABSORB_BYTES=4194304
@@ -117,12 +156,12 @@ Two product rules shape the read and queue points:
      (see below);
    - finally the point's `SERVER_ENV_EXTRA`.
 4. It writes `posture.json` (and refuses the point when a server's
-   `git_commit` is not the worktree HEAD), starts `scrape.py loop`,
+   `git_commit` is not `K2_SERVER_COMMIT`, or the worktree HEAD without it), starts `scrape.py loop`,
    snapshots the exact ledgers (`s3lite-start.json`, `store-start.json`)
    and runs the phases. It then snapshots `loadend`, waits for quiescence
    (`QUIESCE=1`) and snapshots `quiesced`, then idles `IDLE_SECS`. After
    that it snapshots `end`, reads the meters (`usage.json`) and runs
-   `price.py` (with `--baseline $K2_BASELINE` when set).
+   `price.py` (with `--baseline $K2_BASELINE` when set) and `counts.py`.
 5. It kills everything it started, including on Ctrl-C, and deletes the
    secrets directory.
 
@@ -173,12 +212,13 @@ non-fleet shard default is 1, hence the explicit `INITIAL_SHARDS=4`.
 
 | File | Content |
 |---|---|
-| `posture.json` | binary sha256s, `k2gen.ts` sha256, worktree HEAD and dirty paths, each server's redacted env, `git_commit`, `boot_id`, `compactor_profile`, the startup "effective configuration" summary, and the prices used |
+| `posture.json` | `posture` and `port_base`, the binaries run (`binaries`: path and sha256; `binaries_sha256`), `k2gen.ts` sha256, worktree HEAD and dirty paths, `server_commit` (the expected commit, its source, what each server reported, `matches_expected`, `matches_head`) and `commit_mismatch_allowed`, each server's redacted env, `git_commit`, `boot_id`, `compactor_profile`, the startup "effective configuration" summary, and the prices used |
 | `marks.jsonl` | `load_start`, `phase_start`/`phase_end` (index, mode, args, rc), `quiesce_request` (a `quiesce` phase), `load_end` (with `quiesce`: the point's QUIESCE), `quiesced` or `quiesce_timeout` (each with the request's `id`: `load_end` or `phase-<i>`), `end` |
 | `scrape.jsonl` | every 10 s: `store` (debug/store minus the slow list: `totals`, the `?window=10` ring, gauges), `load` (debug/load), `usage` (debug/usage aggregates; the per-stream list summed, plus `frame_bytes_by_stream` up to 256 streams: the gauge series), `s3lite` (stats2 + stats); plus `event` lines (`boot_change`, `counter_reset`, `s3lite_reset`) and `quiescence` |
 | `s3lite-{start,loadend,quiesced,end}.json` | the exact physical ledger (stats2 cells by tier/kind/op/status, `live_objects`, `live_bytes` when present, stats v1) |
-| `store-{start,loadend,quiesced,end}.json` | each server's `/v1/debug/store` at the same moments, and `procs`: CPU seconds and RSS of every server and the router (`ps`) |
+| `store-{start,loadend,quiesced,end}.json` | each server's `/v1/debug/store` and `/v1/debug/timings` per shard (`pump`: WAL `flushes`, `barrier_acked`, flushed requests, records and bytes; `tail_ring`: hits, misses, evictions) at the same moments, and `procs`: CPU seconds and RSS of every server and the router (`ps`) |
 | `boundaries.jsonl` | the same pair at every phase start and end (and just before a `restart` stops the servers), one line each |
+| `counts.json` | counts.py's windows (`load`, `deferred`, `to_quiesced`, `tail`, `total`, one per phase group): `class_a`, `class_b`, `free`, `put_bytes`, `get_bytes`, `pump_flushes`, `pump_flushed_reqs`, `ring_hits`, `ring_misses`, `cpu_s` and every cell's count by status; the server's commit and sha256, the validity verdict and streams-1's redacted env |
 | `phase-<i>.jsonl`, `phase-<i>.ledger.json`, `phase-<i>.log` | k2gen windows, exact totals and console |
 | `usage.json` | the project usage (raw and `effective`), settle status, poll count, each live customer stream's `usage/current` (`streams_current`), and every server's full `/v1/debug/usage` |
 | `summary.json` | price.py's result (below) |

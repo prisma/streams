@@ -45,7 +45,7 @@ from collections import defaultdict
 from k2cells import (BUCKETS, CLASS_USD, CONSUME_MODES, DEC, GIB, K2, MONTH_SECS, allocate,
                      baseline_rates, cell_delta, jsonl, load, price_cells, sum_buckets)
 from k2store import storage
-from k2valid import validity
+from k2valid import posture_ok, validity
 
 MEM_GIB = 1.0  # deploy/profiles/compute-1g.env: every instance provisions 1 GiB
 D1_MEM_USD_GIB_H = 0.006
@@ -572,7 +572,7 @@ def price_run(run: str, ext_baseline: dict | None = None) -> dict:
     for g in groups:
         g.pop("cells_delta", None)
     return {
-        "run": run, "point": posture.get("point"), "posture_ok": posture.get("binary_commit_matches_head"),
+        "run": run, "point": posture.get("point"), "posture_ok": posture_ok(posture),
         "windows": {k: {"secs": v["secs"], **v["totals"], "by_tier": v["by_tier"], "by_op": v["by_op"],
                         "multipart_creates_rebilled": v["multipart_creates_rebilled"],
                         **({"alloc": v["alloc"]} if "alloc" in v else {})} for k, v in windows.items()},

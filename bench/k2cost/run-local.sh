@@ -2,35 +2,61 @@
 # K2 cost experiment: one local measurement point in the release posture
 # (target/k2-design.md §6, §8, §9.1).
 #
-#   bench/k2cost/run-local.sh bench/k2cost/points/L1-tiny.env
+#   bench/k2cost/run-local.sh bench/k2cost/points/L1-tiny.env [--dry-run]
 #
 # Per point: the platform emulator (keys, policies, grants, the workload
 # JWT and a data-plane credential), a FRESH s3lite with the point's
-# latency and a fresh bucket, SERVERS cells of target/release/streams-slate
-# (enforce + workload fleet auth + STREAMS_RELEASE_POSTURE=1 + required
-# billing, ROLLUP=1 on streams-1 only), a pilot LB when SERVERS=2, the
-# scrape loop, the point's PHASES, optional quiescence, the usage read
-# and price.py. Everything it starts is killed on exit.
+# latency and a fresh bucket, SERVERS cells of streams-slate (enforce +
+# STREAMS_RELEASE_POSTURE=1 + required billing, ROLLUP=1 on streams-1
+# only), a pilot LB when SERVERS=2, the scrape loop, the point's PHASES,
+# optional quiescence, the usage read, price.py and counts.py. Everything
+# it starts is killed on exit. --dry-run prints the ports, the binaries,
+# the commit the servers are held to and each server's environment
+# (secrets redacted), and starts nothing.
 #
-# Results: $K2_HOME/results/<point>-<UTC stamp>/ (K2_HOME defaults to
-# ~/.streams-k2). Secrets (the deployment bearer, the credential secret,
-# the stream key, the headers file) live in a private directory under
-# $K2_HOME/secrets/ that is removed at exit; nothing secret is written to
-# the results directory.
+# Results: $K2_HOME/results/<point>[-<K2_RUN_TAG>]-<UTC stamp>/ (K2_HOME
+# defaults to ~/.streams-k2). Secrets (the deployment bearer, the
+# credential secret, the stream key, the headers file) live in a private
+# directory under $K2_HOME/secrets/ that is removed at exit; nothing
+# secret is written to the results directory.
 #
-# Point file (shell, sourced): S3LITE_LATENCY_MS, SERVERS (1|2),
-# SERVER_ENV_EXTRA ("KEY=VALUE ..."; "-KEY" removes KEY from the pinned
-# posture), PHASES (one k2gen invocation per line; the rig appends
-# --base/--headers-file/--out/--ledger), QUIESCE (1 = wait for §8
+# Point file (shell, sourced): S3LITE_LATENCY_MS, SERVERS (1|2), POSTURE
+# (k2 | launch, below), SERVER_ENV_EXTRA ("KEY=VALUE ..."; "-KEY" removes
+# KEY from the posture), PHASES (one k2gen invocation per line; the rig
+# appends --base/--headers-file/--out/--ledger), QUIESCE (1 = wait for §8
 # quiescence after the last phase), IDLE_SECS. Optional: POINT_NAME,
 # QUIESCE_MIN_SECS (1800), QUIESCE_MAX_SECS (10800), QUIESCE_WINDOW_SECS
 # (300; three such windows of equal heavy-PUT counts end the tail),
 # USAGE_WAIT_SECS (330), SCRAPE_SECS (10). Every one of them, and anything
 # a point reads as ${VAR:-default}, can come from the caller's environment.
-# K2_BASELINE (a priced run directory, e.g. an L6 idle point) is passed to
-# price.py --baseline: its per-cell idle floor rates. K2_ALLOW_COMMIT_MISMATCH=1
-# runs although the servers' git_commit differs from the worktree HEAD
-# (price.py voids such a point all the same).
+#
+# POSTURE=k2 (the default) is §6's: compute-1g.env, the pinned engine knobs
+# and INITIAL_SHARDS=4, the fleet prefix with workload fleet auth.
+# POSTURE=launch is the launch cell's: deploy/profiles/compute-1g.env then
+# shared-cell.env, layered as deploy/composer/streams/env.ts does (one
+# shard, fleet off, ring off, the shared cell's caches; KEEP_AWAKE, the
+# wrapper's, dropped), with the rig's store, feeds, keys and identity; one
+# server only.
+#
+# The caller's environment (never the point file):
+#   K2_PORT_BASE (9580)  every port: emulator BASE, s3lite BASE+1,
+#       streams-1 BASE+2, streams-2 BASE+3, pilot LB BASE+4. Points on
+#       distinct bases run at once (the rig refuses a port in use).
+#   K2_SERVER_BIN, K2_S3LITE_BIN, K2_PILOT_BIN  the binaries (default
+#       target/release/{streams-slate,s3lite,pilot}; pilot only when
+#       SERVERS=2), recorded with their sha256 in posture.json.
+#   K2_SERVER_COMMIT  the commit the servers must report (/v1/debug/load
+#       git_commit, which build.rs embeds; 7-40 hex digits, a prefix of
+#       it), for a binary built from another commit than the worktree
+#       HEAD (the default). The rig refuses a server that reports another
+#       commit, and price.py voids the point.
+#   K2_ALLOW_COMMIT_MISMATCH=1  run although the servers' git_commit is
+#       not the expected one (price.py voids such a point all the same).
+#   K2_RUN_TAG  a word appended to the results directory's point name
+#       (two runs of one point started in the same second, e.g. a
+#       screening pair: ref and cand).
+#   K2_BASELINE  a priced run directory (e.g. an L6 idle point), passed to
+#       price.py --baseline: its per-cell idle floor rates.
 #
 # With QUIESCE=1 the deferred window ends at the `quiesced` snapshot; the
 # IDLE_SECS that follow are an idle tail (quiesced -> end) that price.py
@@ -49,12 +75,17 @@
 # A k2gen line ending in "&" runs in the background: the next line starts
 # at once and the group ends when its last foreground line ends (all of
 # the group's background phases are waited for).
-#
-# Ports 9580-9584 only. One point at a time per machine.
 set -euo pipefail
 
-POINT=${1:?usage: run-local.sh <point-file>}
-[ -f "$POINT" ] || { echo "run-local: no such point file: $POINT" >&2; exit 2; }
+die() { local rc=$1; shift; echo "run-local: $*" >&2; exit "$rc"; }
+POINT=${1:?usage: run-local.sh <point-file> [--dry-run]}
+DRY_RUN=0
+case "${2:-}" in
+  '') ;;
+  --dry-run) DRY_RUN=1 ;;
+  *) die 2 "unknown argument $2 (usage: run-local.sh <point-file> [--dry-run])" ;;
+esac
+[ -f "$POINT" ] || die 2 "no such point file: $POINT"
 POINT=$(cd "$(dirname "$POINT")" && pwd)/$(basename "$POINT")
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
@@ -63,10 +94,14 @@ cd "$ROOT"
 . "$ROOT/scripts/lib/python.sh"
 
 K2_HOME=${K2_HOME:-$HOME/.streams-k2}
-EMU_PORT=9580
-S3_PORT=9581
-SRV_BASE_PORT=9582 # streams-1 = 9582, streams-2 = 9583
-LB_PORT=9584
+K2_PORT_BASE=${K2_PORT_BASE:-9580}
+case "$K2_PORT_BASE" in *[!0-9]*) die 2 "K2_PORT_BASE must be a number, not $K2_PORT_BASE" ;; esac
+[ "$K2_PORT_BASE" -ge 1024 ] && [ "$K2_PORT_BASE" -le 65531 ] \
+  || die 2 "K2_PORT_BASE $K2_PORT_BASE: the rig takes BASE..BASE+4, within 1024..65535"
+EMU_PORT=$K2_PORT_BASE
+S3_PORT=$((K2_PORT_BASE + 1))
+SRV_BASE_PORT=$((K2_PORT_BASE + 2)) # streams-1 = BASE+2, streams-2 = BASE+3
+LB_PORT=$((K2_PORT_BASE + 4))
 EMU=http://127.0.0.1:$EMU_PORT
 S3=http://127.0.0.1:$S3_PORT
 CUSTOMER_PROJECT=proj-k2
@@ -78,6 +113,7 @@ CELL=cell-k2
 # file, so ${VAR:-default} in a point can be overridden per run.
 S3LITE_LATENCY_MS=${S3LITE_LATENCY_MS:-20}
 SERVERS=${SERVERS:-1}
+POSTURE=${POSTURE:-k2}
 SERVER_ENV_EXTRA=${SERVER_ENV_EXTRA:-}
 PHASES=${PHASES:-}
 QUIESCE=${QUIESCE:-0}
@@ -91,31 +127,64 @@ POINT_NAME=${POINT_NAME:-}
 # shellcheck source=/dev/null
 . "$POINT"
 [ -n "$POINT_NAME" ] || POINT_NAME=$(basename "$POINT" .env)
-case "$SERVERS" in 1|2) ;; *) echo "run-local: SERVERS must be 1 or 2" >&2; exit 2 ;; esac
+case "$SERVERS" in 1|2) ;; *) die 2 "SERVERS must be 1 or 2" ;; esac
+case "$POSTURE" in k2|launch) ;; *) die 2 "POSTURE must be k2 or launch, not $POSTURE" ;; esac
+[ "$POSTURE" = k2 ] || [ "$SERVERS" = 1 ] \
+  || die 2 "POSTURE=launch is one server (the launch cell runs no fleet), not SERVERS=$SERVERS"
+K2_RUN_TAG=${K2_RUN_TAG:-}
+case "$K2_RUN_TAG" in *[!A-Za-z0-9._-]*) die 2 "K2_RUN_TAG must be letters, digits, '.', '_' or '-': $K2_RUN_TAG" ;; esac
 
-for bin in streams-slate s3lite pilot; do
-  [ -x "$ROOT/target/release/$bin" ] || {
-    echo "run-local: target/release/$bin missing; build it with" \
-      "nice -n 19 cargo build --locked --release --bin streams-slate --bin s3lite --bin pilot" >&2
-    exit 2
-  }
-done
-for port in $EMU_PORT $S3_PORT $SRV_BASE_PORT $((SRV_BASE_PORT + 1)) $LB_PORT; do
-  if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
-    echo "run-local: port $port is in use (another point running?)" >&2
-    exit 2
+# ---- binaries and the commit the servers are held to --------------------
+# bin_path VAR NAME: $VAR's file, absolute, or target/release/NAME.
+bin_path() {
+  local var=$1 name=$2 path
+  path=${!var:-}
+  if [ -z "$path" ]; then
+    [ -x "$ROOT/target/release/$name" ] || die 2 "target/release/$name missing; build it with" \
+      "nice -n 19 cargo build --locked --release --bin streams-slate --bin s3lite --bin pilot, or set $var"
+    echo "$ROOT/target/release/$name"
+    return
   fi
-done
+  [ -f "$path" ] && [ -x "$path" ] || die 2 "$var=$path is not an executable file"
+  echo "$(cd "$(dirname "$path")" && pwd)/$(basename "$path")"
+}
+SERVER_BIN=$(bin_path K2_SERVER_BIN streams-slate) || exit 2
+S3LITE_BIN=$(bin_path K2_S3LITE_BIN s3lite) || exit 2
+PILOT_BIN=
+[ "$SERVERS" = 1 ] || PILOT_BIN=$(bin_path K2_PILOT_BIN pilot) || exit 2
+HEAD_COMMIT=$(git -C "$ROOT" rev-parse HEAD)
+if [ -n "${K2_SERVER_COMMIT:-}" ]; then
+  [[ "$K2_SERVER_COMMIT" =~ ^[0-9a-f]{7,40}$ ]] \
+    || die 2 "K2_SERVER_COMMIT must be 7-40 lowercase hex digits (a commit the binary reports), not $K2_SERVER_COMMIT"
+  EXPECT_COMMIT=$K2_SERVER_COMMIT
+  EXPECT_SOURCE=K2_SERVER_COMMIT
+else
+  EXPECT_COMMIT=$HEAD_COMMIT
+  EXPECT_SOURCE="worktree HEAD"
+fi
+sha256_of() { python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"; }
+
+if [ "$DRY_RUN" = 0 ]; then
+  for port in $EMU_PORT $S3_PORT $SRV_BASE_PORT $((SRV_BASE_PORT + 1)) $LB_PORT; do
+    if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+      die 2 "port $port is in use (another point running? K2_PORT_BASE moves every port)"
+    fi
+  done
+fi
 
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-RUN=$K2_HOME/results/$POINT_NAME-$STAMP
-SECRETS=$K2_HOME/secrets/$POINT_NAME-$STAMP
-mkdir -p "$RUN" "$SECRETS/feeds"
-chmod 700 "$K2_HOME/secrets" "$SECRETS"
-cp "$POINT" "$RUN/point.env"
+RUN_NAME=$POINT_NAME${K2_RUN_TAG:+-$K2_RUN_TAG}-$STAMP
+RUN=$K2_HOME/results/$RUN_NAME
+SECRETS=$K2_HOME/secrets/$RUN_NAME
+mkdir -p "$K2_HOME/results" "$K2_HOME/secrets"
+chmod 700 "$K2_HOME/secrets"
+# mkdir, not -p: a second run of the same name in the same second fails
+# here, before the trap that would remove the first one's secrets.
+mkdir -m 700 "$SECRETS" 2>/dev/null \
+  || die 2 "$SECRETS exists: another run of $POINT_NAME started this second (set K2_RUN_TAG)"
+mkdir "$SECRETS/feeds"
 BUCKET=k2-$(echo "$STAMP" | tr 'A-Z' 'a-z')
 MARKS=$RUN/marks.jsonl
-: > "$MARKS"
 log() { echo "[k2 $(date -u +%H:%M:%S)] $*"; }
 now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
 mark() { # name [extra JSON members]
@@ -148,7 +217,7 @@ cleanup() {
   stop_pid "$PIDS_EMU" 5
   wait 2>/dev/null
   rm -rf "$SECRETS"
-  log "torn down (exit $rc); results in $RUN"
+  [ "$DRY_RUN" = 1 ] || log "torn down (exit $rc); results in $RUN"
   exit $rc
 }
 trap cleanup EXIT
@@ -163,8 +232,129 @@ python3 -c 'import secrets; print(secrets.token_hex(24))' > "$SECRETS/auth_token
 printf 'authorization: Bearer %s\n' "$(cat "$SECRETS/auth_token")" > "$SECRETS/debug.hdr"
 umask 022
 
+# ---- server posture -----------------------------------------------------
+# POSTURE=k2, in order: compute-1g.env, the pinned engine posture (§6), the
+# store, topology, the release posture. POSTURE=launch: compute-1g.env then
+# shared-cell.env as deploy/composer/streams/env.ts layers them (KEEP_AWAKE
+# is the wrapper's, never the binary's), the store, the feeds and the
+# cell's identity, where a deploy's cells file and secrets put them. Then
+# the point's SERVER_ENV_EXTRA ("-KEY" removes KEY).
+PROFILE_ENV=$ROOT/deploy/profiles/compute-1g.env
+SHARED_CELL_ENV=$ROOT/deploy/profiles/shared-cell.env
+ENGINE_ENV="WAL_GROUP_COMMIT=1 FLUSH_INTERVAL_MS=25 WAL_POST_ACK_GATHER_MS=6 FRAME_COMPRESS=1
+ABSORB_BYTES=4194304 ABSORB_AGE_SECS=60 TRIM_PER_OP=65536 TRIM_GLOBAL_BUDGET=65536
+ADMIT_MAX_INFLIGHT=512 ADMIT_MAX_INFLIGHT_PER_STREAM=256
+LIMIT_BYTES_PER_SEC=5000000 LIMIT_REQS_PER_SEC=1000 LIMIT_RECS_PER_SEC=5000 INITIAL_SHARDS=4"
+store_env() {
+  echo "SLATE_S3_ENDPOINT=$S3"
+  echo "SLATE_S3_BUCKET=$BUCKET"
+  echo "SLATE_S3_REGION=local"
+  echo "SLATE_S3_ACCESS_KEY_ID=test"
+  echo "SLATE_S3_SECRET_ACCESS_KEY=test"
+  echo "PATH_PREFIX=k2data"
+}
+feeds_env() { # the emulator's feed files
+  echo "STREAMS_AUTH_ISSUER=https://auth.prisma.io"
+  echo "STREAMS_AUTH_KEYS_FILE=$SECRETS/feeds/keys.json"
+  echo "STREAMS_AUTH_POLICY_FILE=$SECRETS/feeds/policies.json"
+  echo "STREAMS_AUTH_GRANTS_FILE=$SECRETS/feeds/grants.json"
+}
+identity_env() { # the billing identity
+  echo "USAGE_STREAM_KEY=$(cat "$SECRETS/usage_key")"
+  echo "ACCOUNT_ID=acct-k2cost"
+  echo "PROJECT_ID=proj-k2cost-deploy"
+  echo "CELL_ID=$CELL"
+}
+k2_env() { # ordinal
+  local n=$1 port=$((SRV_BASE_PORT + $1 - 1))
+  local rollup=0
+  [ "$n" = 1 ] && rollup=1
+  grep -E '^[A-Z][A-Z0-9_]*=' "$PROFILE_ENV"
+  for kv in $ENGINE_ENV; do echo "$kv"; done
+  store_env
+  echo "FLEET_PREFIX=k2fleet"
+  echo "INSTANCE_NAME=streams-$n"
+  if [ "$SERVERS" = 1 ]; then
+    echo "FLEET_MAX=1"
+  else
+    echo "FLEET_MAX=2"
+    echo "FLEET_MIN=2"
+    echo "SELF_URL=http://127.0.0.1:$port"
+    echo "FLEET_ALLOW_HTTP_PEERS=1"
+  fi
+  echo "STREAMS_AUTH_MODE=enforce"
+  feeds_env
+  echo "FLEET_AUTH_MODE=workload"
+  echo "WORKLOAD_TOKEN_FILE=$SECRETS/feeds/workload.jwt"
+  echo "STREAMS_RELEASE_POSTURE=1"
+  echo "BILLING_MODE=required"
+  identity_env
+  echo "ROLLUP=$rollup"
+  echo "AUTH_TOKEN=$(cat "$SECRETS/auth_token")"
+}
+launch_env() { # the one server of a launch cell
+  grep -h -E '^[A-Z][A-Z0-9_]*=' "$PROFILE_ENV" "$SHARED_CELL_ENV"
+  echo "-KEEP_AWAKE"
+  store_env
+  echo "REGION=local"
+  feeds_env
+  identity_env
+  echo "AUTH_TOKEN=$(cat "$SECRETS/auth_token")"
+}
+server_env_file() { # ordinal -> writes $SECRETS/server-N.env (KEY='value' lines)
+  local n=$1 out=$SECRETS/server-$1.env
+  {
+    if [ "$POSTURE" = launch ]; then launch_env; else k2_env "$n"; fi
+    for kv in $SERVER_ENV_EXTRA; do echo "$kv"; done
+  } | python3 "$HERE/scrape.py" envfile > "$out"
+  chmod 600 "$out"
+}
+start_server() { # ordinal
+  local n=$1 port=$((SRV_BASE_PORT + $1 - 1))
+  # env -i: the server sees exactly the posture file, nothing from this
+  # shell; the values never appear on a command line.
+  env -i PATH=/usr/bin:/bin HOME="$HOME" /bin/bash -c \
+    'set -a; . "$1"; set +a; exec "$2" --listen "$3"' _ \
+    "$SECRETS/server-$n.env" "$SERVER_BIN" "127.0.0.1:$port" \
+    >> "$RUN/server-$n.log" 2>&1 < /dev/null &
+  SRV_PIDS[$n]=$!
+}
+wait_ready() { # ordinal
+  local n=$1 port=$((SRV_BASE_PORT + $1 - 1)) i
+  for i in $(seq 1 300); do
+    curl -sf -o /dev/null "http://127.0.0.1:$port/readyz" && return 0
+    kill -0 "${SRV_PIDS[$n]}" 2>/dev/null || { echo "run-local: streams-$n exited; tail of its log:" >&2; tail -20 "$RUN/server-$n.log" >&2; return 1; }
+    sleep 0.5
+  done
+  echo "run-local: streams-$n not ready after 150 s" >&2
+  return 1
+}
+
+# ---- dry run: what the point would run, nothing started ---------------------
+if [ "$DRY_RUN" = 1 ]; then
+  echo "DRY_RUN point: $POINT_NAME ($POINT)"
+  echo "DRY_RUN posture: $POSTURE ($SERVERS server$([ "$SERVERS" = 1 ] || echo s))"
+  echo "DRY_RUN results: $RUN"
+  echo "DRY_RUN ports: emulator $EMU_PORT s3lite $S3_PORT streams-1 $SRV_BASE_PORT" \
+    "streams-2 $((SRV_BASE_PORT + 1)) lb $LB_PORT"
+  echo "DRY_RUN server binary: $SERVER_BIN sha256 $(sha256_of "$SERVER_BIN")"
+  echo "DRY_RUN s3lite binary: $S3LITE_BIN sha256 $(sha256_of "$S3LITE_BIN")"
+  echo "DRY_RUN pilot binary: ${PILOT_BIN:-unused (1 server)}"
+  echo "DRY_RUN server commit: $EXPECT_COMMIT ($EXPECT_SOURCE)"
+  for n in $(seq 1 "$SERVERS"); do
+    server_env_file "$n"
+    echo "DRY_RUN server-$n.env:"
+    python3 "$HERE/scrape.py" showenv "$SECRETS/server-$n.env" --secrets-dir "$SECRETS"
+  done
+  exit 0
+fi
+mkdir "$RUN" || die 2 "$RUN exists"
+cp "$POINT" "$RUN/point.env"
+: > "$MARKS"
+
 # ---- platform emulator --------------------------------------------------
-log "point $POINT_NAME -> $RUN"
+log "point $POINT_NAME -> $RUN ($POSTURE posture, ports $EMU_PORT-$LB_PORT, server $SERVER_BIN," \
+  "expected commit $EXPECT_COMMIT from $EXPECT_SOURCE)"
 node platform-demo/src/emulator.mjs --port $EMU_PORT \
   --cells "$CELL=$SECRETS/feeds" \
   --fixture "$CUSTOMER_PROJECT:$CUSTOMER_WORKSPACE:$CELL" \
@@ -172,7 +362,7 @@ node platform-demo/src/emulator.mjs --port $EMU_PORT \
 PIDS_EMU=$!
 
 # ---- fresh s3lite -------------------------------------------------------
-"$ROOT/target/release/s3lite" --listen 127.0.0.1:$S3_PORT \
+"$S3LITE_BIN" --listen 127.0.0.1:$S3_PORT \
   --latency-ms "$S3LITE_LATENCY_MS" > "$RUN/s3lite.log" 2>&1 < /dev/null &
 PID_S3=$!
 for i in $(seq 1 50); do
@@ -217,77 +407,6 @@ mint_headers || { echo "run-local: token exchange failed" >&2; exit 1; }
 ) < /dev/null &
 PID_REFRESH=$!
 
-# ---- server posture -----------------------------------------------------
-# Order: profile, pinned engine posture (§6), topology, release posture,
-# then the point's SERVER_ENV_EXTRA ("-KEY" removes KEY).
-PROFILE_ENV=$ROOT/deploy/profiles/compute-1g.env
-ENGINE_ENV="WAL_GROUP_COMMIT=1 FLUSH_INTERVAL_MS=25 WAL_POST_ACK_GATHER_MS=6 FRAME_COMPRESS=1
-ABSORB_BYTES=4194304 ABSORB_AGE_SECS=60 TRIM_PER_OP=65536 TRIM_GLOBAL_BUDGET=65536
-ADMIT_MAX_INFLIGHT=512 ADMIT_MAX_INFLIGHT_PER_STREAM=256
-LIMIT_BYTES_PER_SEC=5000000 LIMIT_REQS_PER_SEC=1000 LIMIT_RECS_PER_SEC=5000 INITIAL_SHARDS=4"
-server_env_file() { # ordinal -> writes $SECRETS/server-N.env (KEY='value' lines)
-  local n=$1 port=$((SRV_BASE_PORT + $1 - 1)) out=$SECRETS/server-$1.env
-  local rollup=0
-  [ "$n" = 1 ] && rollup=1
-  {
-    grep -E '^[A-Z][A-Z0-9_]*=' "$PROFILE_ENV"
-    for kv in $ENGINE_ENV; do echo "$kv"; done
-    echo "SLATE_S3_ENDPOINT=$S3"
-    echo "SLATE_S3_BUCKET=$BUCKET"
-    echo "SLATE_S3_REGION=local"
-    echo "SLATE_S3_ACCESS_KEY_ID=test"
-    echo "SLATE_S3_SECRET_ACCESS_KEY=test"
-    echo "PATH_PREFIX=k2data"
-    echo "FLEET_PREFIX=k2fleet"
-    echo "INSTANCE_NAME=streams-$n"
-    if [ "$SERVERS" = 1 ]; then
-      echo "FLEET_MAX=1"
-    else
-      echo "FLEET_MAX=2"
-      echo "FLEET_MIN=2"
-      echo "SELF_URL=http://127.0.0.1:$port"
-      echo "FLEET_ALLOW_HTTP_PEERS=1"
-    fi
-    echo "STREAMS_AUTH_MODE=enforce"
-    echo "STREAMS_AUTH_ISSUER=https://auth.prisma.io"
-    echo "STREAMS_AUTH_KEYS_FILE=$SECRETS/feeds/keys.json"
-    echo "STREAMS_AUTH_POLICY_FILE=$SECRETS/feeds/policies.json"
-    echo "STREAMS_AUTH_GRANTS_FILE=$SECRETS/feeds/grants.json"
-    echo "FLEET_AUTH_MODE=workload"
-    echo "WORKLOAD_TOKEN_FILE=$SECRETS/feeds/workload.jwt"
-    echo "STREAMS_RELEASE_POSTURE=1"
-    echo "BILLING_MODE=required"
-    echo "USAGE_STREAM_KEY=$(cat "$SECRETS/usage_key")"
-    echo "ACCOUNT_ID=acct-k2cost"
-    echo "PROJECT_ID=proj-k2cost-deploy"
-    echo "CELL_ID=$CELL"
-    echo "ROLLUP=$rollup"
-    echo "AUTH_TOKEN=$(cat "$SECRETS/auth_token")"
-    for kv in $SERVER_ENV_EXTRA; do echo "$kv"; done
-  } | python3 "$HERE/scrape.py" envfile > "$out"
-  chmod 600 "$out"
-}
-start_server() { # ordinal
-  local n=$1 port=$((SRV_BASE_PORT + $1 - 1))
-  # env -i: the server sees exactly the posture file, nothing from this
-  # shell; the values never appear on a command line.
-  env -i PATH=/usr/bin:/bin HOME="$HOME" /bin/bash -c \
-    'set -a; . "$1"; set +a; exec "$2" --listen "$3"' _ \
-    "$SECRETS/server-$n.env" "$ROOT/target/release/streams-slate" "127.0.0.1:$port" \
-    >> "$RUN/server-$n.log" 2>&1 < /dev/null &
-  SRV_PIDS[$n]=$!
-}
-wait_ready() { # ordinal
-  local n=$1 port=$((SRV_BASE_PORT + $1 - 1)) i
-  for i in $(seq 1 300); do
-    curl -sf -o /dev/null "http://127.0.0.1:$port/readyz" && return 0
-    kill -0 "${SRV_PIDS[$n]}" 2>/dev/null || { echo "run-local: streams-$n exited; tail of its log:" >&2; tail -20 "$RUN/server-$n.log" >&2; return 1; }
-    sleep 0.5
-  done
-  echo "run-local: streams-$n not ready after 150 s" >&2
-  return 1
-}
-
 if [ "$SERVERS" = 2 ]; then
   # Seed desired=2 before boot so both ordinals serve from the first
   # request (bench/fleet/local-fanout.sh). One PUT, before the ledger window.
@@ -308,7 +427,7 @@ if [ "$SERVERS" = 2 ]; then
     S3_ENDPOINT="$S3" S3_BUCKET="$BUCKET" S3_REGION=local \
     S3_ACCESS_KEY_ID=test S3_SECRET_ACCESS_KEY=test \
     FLEET_PREFIX=k2fleet DATA_PREFIX=k2data ROUTER_NAME=router-k2 PORT=$LB_PORT \
-    "$ROOT/target/release/pilot" > "$RUN/lb.log" 2>&1 < /dev/null &
+    "$PILOT_BIN" > "$RUN/lb.log" 2>&1 < /dev/null &
   PID_LB=$!
   for i in $(seq 1 50); do
     curl -sf -o /dev/null "http://127.0.0.1:$LB_PORT/stats" && break
@@ -320,11 +439,17 @@ log "cell up: $SERVERS server(s), base $BASE, s3lite latency ${S3LITE_LATENCY_MS
 
 SCRAPE_COMMON=(--run "$RUN" --servers "$SERVER_SPECS" --s3lite "$S3" --auth-file "$SECRETS/debug.hdr")
 prc=0
+ALLOW_MISMATCH=()
+[ "${K2_ALLOW_COMMIT_MISMATCH:-0}" != 1 ] || ALLOW_MISMATCH=(--allow-mismatch)
 python3 "$HERE/scrape.py" posture "${SCRAPE_COMMON[@]}" --root "$ROOT" \
   --env-dir "$SECRETS" --point "$POINT_NAME" --base "$BASE" \
-  --latency-ms "$S3LITE_LATENCY_MS" --bucket "$BUCKET" --project "$CUSTOMER_PROJECT" || prc=$?
+  --latency-ms "$S3LITE_LATENCY_MS" --bucket "$BUCKET" --project "$CUSTOMER_PROJECT" \
+  --posture "$POSTURE" --port-base "$K2_PORT_BASE" --server-bin "$SERVER_BIN" --s3lite-bin "$S3LITE_BIN" \
+  --pilot-bin "$PILOT_BIN" --expect-commit "$EXPECT_COMMIT" --expect-source "$EXPECT_SOURCE" \
+  ${ALLOW_MISMATCH[@]+"${ALLOW_MISMATCH[@]}"} || prc=$?
 if [ $prc != 0 ] && [ "${K2_ALLOW_COMMIT_MISMATCH:-0}" != 1 ]; then
-  echo "run-local: refusing the point (posture.json; set K2_ALLOW_COMMIT_MISMATCH=1 to run it anyway)" >&2
+  echo "run-local: refusing the point (posture.json; set K2_SERVER_COMMIT to the binary's commit," \
+    "or K2_ALLOW_COMMIT_MISMATCH=1 to run it void)" >&2
   exit 2
 fi
 python3 "$HERE/scrape.py" loop "${SCRAPE_COMMON[@]}" --interval "$SCRAPE_SECS" \
@@ -462,4 +587,7 @@ if [ -n "${K2_BASELINE:-}" ]; then
 else
   python3 "$HERE/price.py" "$RUN" || log "price.py failed"
 fi
+# The screening counts (requests by cell, PUT bytes, pump flushes) per
+# window: RUN/counts.json; counts.py --compare REF CAND sets two side by side.
+python3 "$HERE/counts.py" "$RUN" || log "counts.py failed"
 [ $PHASE_FAIL = 0 ] || { log "one or more phases failed: the point is void"; exit 3; }
