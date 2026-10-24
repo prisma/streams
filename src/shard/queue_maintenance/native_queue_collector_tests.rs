@@ -33,6 +33,15 @@ struct Rig {
 /// database at the shard path the collector's admin reads.
 async fn rig(name: &str, settings: Option<slatedb::config::Settings>) -> Rig {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    rig_over(name, settings, store).await
+}
+
+/// An engine over `store`.
+async fn rig_over(
+    name: &str,
+    settings: Option<slatedb::config::Settings>,
+    store: Arc<dyn ObjectStore>,
+) -> Rig {
     let mut builder = Db::builder(name, store.clone());
     if let Some(settings) = settings {
         builder = builder.with_settings(settings);
@@ -326,4 +335,190 @@ async fn native_queue_collection_of_due_debt_compacts_the_log_and_clears_the_deb
 
 fn missing_run() -> CompactionSpec {
     CompactionSpec::new(vec![SourceId::SortedRun(4_242)], 4_242)
+}
+
+/// An in-memory store whose reads of the held tables wait until the test
+/// releases them, so a compaction that reads them stays running. Writes,
+/// manifests and the compactions file are never held.
+#[derive(Debug, Default)]
+struct HeldTables {
+    inner: object_store::memory::InMemory,
+    held: std::sync::Mutex<Vec<String>>,
+}
+
+impl HeldTables {
+    fn hold(&self, tables: Vec<String>) {
+        *self.held.lock().unwrap() = tables;
+    }
+
+    fn release(&self) {
+        self.held.lock().unwrap().clear();
+    }
+
+    fn holds(&self, path: &object_store::path::Path) -> bool {
+        let held = self.held.lock().unwrap();
+        held.iter()
+            .any(|table| path.as_ref().contains(table.as_str()))
+    }
+}
+
+impl std::fmt::Display for HeldTables {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HeldTables")
+    }
+}
+
+#[async_trait::async_trait]
+impl ObjectStore for HeldTables {
+    async fn put_opts(
+        &self,
+        path: &object_store::path::Path,
+        payload: object_store::PutPayload,
+        opts: object_store::PutOptions,
+    ) -> object_store::Result<object_store::PutResult> {
+        self.inner.put_opts(path, payload, opts).await
+    }
+    async fn put_multipart_opts(
+        &self,
+        path: &object_store::path::Path,
+        opts: object_store::PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+        self.inner.put_multipart_opts(path, opts).await
+    }
+    async fn get_opts(
+        &self,
+        path: &object_store::path::Path,
+        opts: object_store::GetOptions,
+    ) -> object_store::Result<object_store::GetResult> {
+        while self.holds(path) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        self.inner.get_opts(path, opts).await
+    }
+    fn delete_stream(
+        &self,
+        paths: futures_util::stream::BoxStream<
+            'static,
+            object_store::Result<object_store::path::Path>,
+        >,
+    ) -> futures_util::stream::BoxStream<'static, object_store::Result<object_store::path::Path>>
+    {
+        self.inner.delete_stream(paths)
+    }
+    fn list(
+        &self,
+        prefix: Option<&object_store::path::Path>,
+    ) -> futures_util::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+    {
+        self.inner.list(prefix)
+    }
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<&object_store::path::Path>,
+    ) -> object_store::Result<object_store::ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+    async fn copy_opts(
+        &self,
+        from: &object_store::path::Path,
+        to: &object_store::path::Path,
+        opts: object_store::CopyOptions,
+    ) -> object_store::Result<()> {
+        self.inner.copy_opts(from, to, opts).await
+    }
+}
+
+/// Flush `key` into an L0 table and compact that table alone into the
+/// fresh sorted run `run`.
+async fn flushed_into_run(r: &Rig, admin: &slatedb::admin::Admin, key: &[u8], run: u32) {
+    r.db.put(key, b"v").await.unwrap();
+    let memtable = slatedb::config::FlushOptions {
+        flush_type: slatedb::config::FlushType::MemTable,
+    };
+    r.db.flush_with_options(memtable).await.unwrap();
+    let l0 =
+        r.db.manifest()
+            .l0()
+            .iter()
+            .map(|v| v.id)
+            .collect::<Vec<_>>();
+    assert_eq!(l0.len(), 1, "one flushed L0 table");
+    let spec = CompactionSpec::new(vec![SourceId::SstView(l0[0])], run);
+    let compaction = submit(admin, &spec).await;
+    let done = ShardEngine::await_compaction(admin, &compaction);
+    assert_eq!(tokio::time::timeout(STEP_WITHIN, done).await, Ok(true));
+}
+
+/// The ids of the compactions the shard's compactions file holds live.
+async fn live_compactions(admin: &slatedb::admin::Admin) -> Vec<String> {
+    let compactions = admin.read_compactions(None).await.unwrap();
+    let compactions = compactions.expect("a compactions file");
+    let live = compactions.recent_compactions().filter(|c| c.active());
+    live.map(|c| c.id().to_string()).collect()
+}
+
+/// The incident of 2026-10-24 (100x queue capacity run, shard 10): a regular
+/// sorted-run compaction into the last run is running when the collector
+/// passes. The pass's spec (every L0 table and every run into the last run)
+/// passes SlateDB's validation, which checks no other job's destination, and
+/// the worker's executor asserts that no running job writes the same run: the
+/// compaction worker panics and the shard log closes. The pass must wait the
+/// regular job out and then compact everything into the last run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_queue_collection_waits_out_a_compaction_into_the_last_run_before_it_submits() {
+    let store = Arc::new(HeldTables::default());
+    let every = Some(compactor_every(Duration::from_millis(100)));
+    let r = rig_over("t/nqc-last-run", every, store.clone()).await;
+    let admin = r.engine.queue_admin();
+    // Two sorted runs: SR 0 (the last run) and SR 1.
+    flushed_into_run(&r, &admin, b"a", 0).await;
+    flushed_into_run(&r, &admin, b"b", 1).await;
+    let runs = manifest(&r).await.compacted().clone();
+    assert_eq!(runs.iter().map(|run| run.id).collect::<Vec<_>>(), [1, 0]);
+    // The size-tiered shape [SR 1, SR 0] -> SR 0, held mid-read.
+    let tables = runs.iter().flat_map(|run| run.sst_views().iter());
+    store.hold(
+        tables
+            .map(|v| v.sst.id.unwrap_compacted_id().to_string())
+            .collect(),
+    );
+    let both = vec![SourceId::SortedRun(1), SourceId::SortedRun(0)];
+    let regular = submit(&admin, &CompactionSpec::new(both, 0)).await;
+    let running = async {
+        while admin
+            .read_compaction(regular.id(), None)
+            .await
+            .unwrap()
+            .map(|c| c.status())
+            != Some(slatedb::compactor::CompactionStatus::Running)
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    tokio::time::timeout(STEP_WITHIN, running).await.unwrap();
+    // The pass runs while the regular job does: twenty compactor polls and
+    // worker polls later the shard log is open and the regular job is the
+    // only live one. Released, the regular job finishes and the pass
+    // compacts everything into the last run.
+    r.db.put(b"c", b"v").await.unwrap();
+    let meanwhile = async {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let probe = r.db.put(b"probe", b"v").await;
+        probe.expect("the shard log stays open while the pass waits");
+        assert_eq!(live_compactions(&admin).await, [regular.id().to_string()]);
+        store.release();
+    };
+    let both = futures_util::future::join(r.engine.compact_everything(), meanwhile);
+    let (pass, ()) = tokio::time::timeout(STEP_WITHIN, both).await.unwrap();
+    let superseded = pass.unwrap();
+    assert!(!superseded.is_empty(), "the pass names what it superseded");
+    let m = manifest(&r).await;
+    assert!(m.l0().is_empty(), "every L0 table was compacted");
+    let runs: Vec<u32> = m.compacted().iter().map(|run| run.id).collect();
+    assert_eq!(runs, [0], "into the last run");
+    assert!(live_compactions(&admin).await.is_empty());
+    for key in [&b"a"[..], b"b", b"c", b"probe"] {
+        let value = r.db.get(key).await.unwrap();
+        assert_eq!(value.as_deref(), Some(&b"v"[..]), "{key:?} kept");
+    }
 }

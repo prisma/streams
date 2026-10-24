@@ -26,6 +26,10 @@ const MAX_INTERVAL_MS: i64 = 24 * crate::native_queue::HOUR_MS;
 /// Below the size trigger, the age trigger also needs debt worth this
 /// fraction (1/RELATIVE_DENOM) of the shard's compacted bytes.
 const RELATIVE_DENOM: u64 = 20;
+/// How long a pass waits for the compactor to hold no live job before it
+/// defers to the next tick, and how often it looks.
+const QUIET_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+const QUIET_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 /// How long a pass waits for its compaction, and for GC afterwards.
 const COMPACTION_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 const GC_WAIT: std::time::Duration = std::time::Duration::from_mins(45);
@@ -54,6 +58,33 @@ fn pass_due(total: u64, oldest: Option<i64>, now: i64, compacted: u64) -> bool {
             || (total >= floor && now - oldest >= LAUNCH_AGE_MS)
             || now - oldest >= MAX_INTERVAL_MS
     })
+}
+
+/// Whether the compactor holds no live job. A database whose compactor has
+/// not yet written its compactions file is not quiet: nothing would take a
+/// submission.
+fn quiet(view: &slatedb::compactor::CompactorStateView) -> bool {
+    view.compactions()
+        .is_some_and(|file| !file.recent_compactions().any(|c| c.active()))
+}
+
+/// The coverage rule's sources in `manifest`: every L0 view in tree order,
+/// then every sorted run; and the SST ids they supersede.
+fn everything(
+    manifest: &slatedb::VersionedManifest,
+) -> (Vec<slatedb::compactor::SourceId>, Vec<String>) {
+    use slatedb::compactor::SourceId;
+    let l0 = manifest.l0().iter();
+    let mut sources: Vec<SourceId> = l0.clone().map(|v| SourceId::SstView(v.id)).collect();
+    let mut superseded: Vec<String> = l0
+        .map(|v| v.sst.id.unwrap_compacted_id().to_string())
+        .collect();
+    for run in manifest.compacted() {
+        sources.push(SourceId::SortedRun(run.id));
+        let tables = run.sst_views().iter();
+        superseded.extend(tables.map(|v| v.sst.id.unwrap_compacted_id().to_string()));
+    }
+    (sources, superseded)
 }
 
 #[cfg(test)]
@@ -262,10 +293,15 @@ impl ShardEngine {
     }
 
     /// Steps 4-5 of the coverage rule: flush the memtable so every captured
-    /// deletion is in an SST, then compact every L0 view and every sorted
-    /// run into the last run. Returns the superseded SST ids.
+    /// deletion is in an SST, wait until the compactor holds no live job,
+    /// then compact every L0 view and every sorted run of the manifest it
+    /// read into the last run. Returns the superseded SST ids. A pass whose
+    /// compactor stays busy, whose spec is refused, or whose compaction
+    /// fails or outlasts its wait returns an error, and the next tick starts
+    /// over: a pass submits one spec, and never beside a live job, its own
+    /// earlier one included.
     async fn compact_everything(&self) -> Result<Vec<String>, String> {
-        use slatedb::compactor::{CompactionSpec, SourceId};
+        use slatedb::compactor::CompactionSpec;
         use slatedb::config::{FlushOptions, FlushType};
         self.db
             .flush_with_options(FlushOptions {
@@ -274,46 +310,50 @@ impl ShardEngine {
             .await
             .map_err(|e| e.to_string())?;
         let admin = self.queue_admin();
-        for attempt in 0..5u32 {
-            let manifest = self.db.manifest();
-            let mut sources: Vec<SourceId> = manifest
-                .l0()
-                .iter()
-                .map(|v| SourceId::SstView(v.id))
-                .collect();
-            let mut superseded: Vec<String> = manifest
-                .l0()
-                .iter()
-                .map(|v| v.sst.id.unwrap_compacted_id().to_string())
-                .collect();
-            for run in manifest.compacted() {
-                sources.push(SourceId::SortedRun(run.id));
-                superseded.extend(
-                    run.sst_views()
-                        .iter()
-                        .map(|v| v.sst.id.unwrap_compacted_id().to_string()),
-                );
-            }
-            if sources.is_empty() {
-                return Ok(superseded);
-            }
-            let destination = manifest.compacted().last().map_or(0, |run| run.id);
-            let compaction = match admin
-                .submit_compaction(CompactionSpec::new(sources, destination))
-                .await
-            {
-                Ok(c) => c,
-                Err(error) => {
-                    tracing::debug!(shard = %self.prefix, attempt, "queue pass spec refused: {error}");
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    continue;
-                }
-            };
-            if Self::await_compaction(&admin, &compaction).await {
-                return Ok(superseded);
-            }
+        let quiet = Self::await_quiet(&admin).await;
+        let view = quiet.ok_or("the compactor held a live job throughout the wait")?;
+        let (sources, superseded) = everything(view.manifest());
+        if sources.is_empty() {
+            return Ok(superseded);
+        }
+        let destination = view.manifest().compacted().last().map_or(0, |run| run.id);
+        let compaction = admin
+            .submit_compaction(CompactionSpec::new(sources, destination))
+            .await
+            .map_err(|error| format!("queue pass spec refused: {error}"))?;
+        if Self::await_compaction(&admin, &compaction).await {
+            return Ok(superseded);
         }
         Err("the collection compaction did not complete".to_owned())
+    }
+
+    /// The compactor's state (its compactions file, then the manifest) once
+    /// no job is live in it: none submitted, scheduled, running or awaiting
+    /// its commit; `None` when one stayed live for `QUIET_WAIT`. SlateDB
+    /// checks a submitted spec against no other job's sources or
+    /// destination, and its worker asserts that no two running jobs write
+    /// one run: a pass beside a regular compaction into the last run
+    /// panicked the compaction worker and closed the shard log on every
+    /// reopen (100x run of 2026-10-24). A job the compactor schedules
+    /// between this read and the submission still conflicts; only the
+    /// compactor's own validation can exclude that.
+    async fn await_quiet(
+        admin: &slatedb::admin::Admin,
+    ) -> Option<slatedb::compactor::CompactorStateView> {
+        let poll = Self::poll_quiet(admin);
+        tokio::time::timeout(QUIET_WAIT, poll).await.ok()
+    }
+
+    /// Read the compactor's state every `QUIET_POLL` until it is quiet.
+    async fn poll_quiet(admin: &slatedb::admin::Admin) -> slatedb::compactor::CompactorStateView {
+        loop {
+            if let Ok(view) = admin.read_compactor_state_view().await
+                && quiet(&view)
+            {
+                return view;
+            }
+            tokio::time::sleep(QUIET_POLL).await;
+        }
     }
 
     /// Whether the submitted compaction completed within the wait.
