@@ -139,6 +139,64 @@ pub(super) fn page_scan_opts(max_bytes: usize, durability: DurabilityLevel) -> S
     }
 }
 
+/// The page scan of a live window (`live_window`): `page_scan_opts`, and the
+/// blocks it fetches stay in the shard's block cache, each counted at its
+/// own size (`BlockCache` stores a copy of each). A flush caches its L0's
+/// data blocks but compaction caches none of its output's, so without this
+/// every read of a window GETs a block of each sorted run it seeks, however
+/// often the same window is read; with it the next read of those blocks
+/// GETs nothing.
+pub(super) fn live_scan_opts(max_bytes: usize, durability: DurabilityLevel) -> ScanOptions {
+    ScanOptions {
+        cache_blocks: true,
+        ..page_scan_opts(max_bytes, durability)
+    }
+}
+
+/// The most stored bytes a live window may reach: a woken tail read's
+/// budget (`TAIL_MAX_BYTES`, 1 MiB by default).
+pub(super) const LIVE_SCAN_BYTES: u64 = 1 << 20;
+
+/// Whether a read of `[from, to)` is a live window, given its stream's
+/// durable tail: the pages its scan can reach, from `from` to the end of
+/// its key range (`page_scan_bound(to)`) or the durable head `next`
+/// (whichever is first, but never before `to`), hold at most
+/// `LIVE_SCAN_BYTES` at the stream's average unabsorbed page bytes per
+/// offset (`unabsorbed_bytes` over `[absorbed, next)`). A scan fetches only
+/// blocks of its key range, so a live window's puts about that much of its
+/// stream's pages in the cache, and the blocks at either end of the range
+/// in each table it seeks. A tail, an SSE wake, a consumer pull and a
+/// reader a little behind read such windows, and read them again; a
+/// catch-up through a stream's unabsorbed backlog does not, so its blocks
+/// stay out of the cache.
+pub(super) fn live_window(tail: &super::TailFields, from: u64, to: u64) -> bool {
+    let reach = page_scan_bound(to)
+        .min(tail.next.max(to))
+        .saturating_sub(from);
+    let offsets = tail.next.saturating_sub(tail.absorbed);
+    u128::from(reach).saturating_mul(u128::from(tail.unabsorbed_bytes))
+        <= u128::from(LIVE_SCAN_BYTES).saturating_mul(u128::from(offsets))
+}
+
+/// The scan options of a read of `window` of `handle`'s stream at
+/// `durability`: a live window's, or the uncached page scan's when the
+/// window is not live or the stream's state is poisoned.
+fn read_scan_opts(
+    handle: &StreamHandle,
+    window: super::RingScan,
+    durability: DurabilityLevel,
+) -> ScanOptions {
+    let live = handle
+        .state
+        .lock()
+        .is_ok_and(|state| live_window(&state.durable, window.from, window.to));
+    if live {
+        live_scan_opts(window.max_bytes, durability)
+    } else {
+        page_scan_opts(window.max_bytes, durability)
+    }
+}
+
 /// Range-bounded frame read: scans `[scan_from, scan_to)` regardless of the
 /// durable frontier. Offsets below the frontier are dense, so disjoint
 /// ranges partition the log exactly — the absorber issues several of these
@@ -146,7 +204,8 @@ pub(super) fn page_scan_opts(max_bytes: usize, durability: DurabilityLevel) -> S
 /// loop absorbed ~10k rec/s against a 150k rec/s ingest; bench 2026-07-14).
 /// The absorber's windows start and end on page edges (the absorbed
 /// boundary and the durable frontier are both page edges), so each slice it
-/// receives is a whole page.
+/// receives is a whole page. The absorber reads each range once, so its
+/// scan caches nothing (`page_scan_opts`).
 pub(crate) async fn read_frames_range(
     engine: &ShardEngine,
     handle: &StreamHandle,
@@ -168,24 +227,26 @@ pub(crate) async fn read_frames_range(
     if let Some(hit) = engine.ring_read(handle, window, None) {
         return Ok(hit);
     }
+    let uncached = page_scan_opts(max_bytes, DurabilityLevel::Remote);
     engine
-        .scan_pages(handle.hash, window, None, DurabilityLevel::Remote)
+        .scan_pages(handle.hash, window, None, &uncached)
         .await
 }
 
 impl ShardEngine {
-    /// The canonical page scan of `window` at `durability`: every page that
-    /// holds a record of `[from, to)`, sliced to the window, until the
-    /// stored page bytes reach `max_bytes` (the page that reaches them is
-    /// kept, so the first page always fits). A page of another routing key
-    /// than `key_filter` is inspected and skipped without decrypting; its
-    /// records still count as consumed progress.
+    /// The canonical page scan of `window` with `opts` (its visibility,
+    /// read-ahead and caching): every page that holds a record of
+    /// `[from, to)`, sliced to the window, until the stored page bytes reach
+    /// `max_bytes` (the page that reaches them is kept, so the first page
+    /// always fits). A page of another routing key than `key_filter` is
+    /// inspected and skipped without decrypting; its records still count as
+    /// consumed progress.
     pub(super) async fn scan_pages(
         &self,
         hash: [u8; 16],
         window: super::RingScan,
         key_filter: Option<&str>,
-        durability: DurabilityLevel,
+        opts: &ScanOptions,
     ) -> Result<FrameReadResult, RangeReadError> {
         let super::RingScan {
             from,
@@ -198,10 +259,7 @@ impl ShardEngine {
         }
         let prefix = shard_page_prefix(&hash);
         let range = shard_page_key(&hash, from)..shard_page_key(&hash, page_scan_bound(to));
-        let mut iter = self
-            .db
-            .scan_with_options(range, &page_scan_opts(max_bytes, durability))
-            .await?;
+        let mut iter = self.db.scan_with_options(range, opts).await?;
         let mut total = 0usize;
         while let Some(kv) = iter.next().await? {
             let page = CheckedPage::from_row(&kv.key, &prefix, kv.value)
@@ -224,10 +282,12 @@ impl ShardEngine {
 
     /// `window` as a read at `deliver` sees it. DURABLE reads try the ring
     /// first: it holds only durable pages, so an Applied read chasing the
-    /// just-applied suffix scans (the suffix is memtable-resident, so the
-    /// scan costs no store round-trip). Filtered reads use the keyed ring
-    /// read (#272): page headers are plaintext, so the lane filter runs on
-    /// the ring copy and the consumed offset still covers non-matching pages.
+    /// just-applied suffix scans. Filtered reads use the keyed ring read
+    /// (#272): page headers are plaintext, so the lane filter runs on the
+    /// ring copy and the consumed offset still covers non-matching pages.
+    /// The scan seeks every L0 and sorted run overlapping the window and
+    /// GETs each block of them the block cache lacks; a live window keeps
+    /// what it fetched there (`read_scan_opts`).
     async fn read_window(
         &self,
         handle: &StreamHandle,
@@ -243,8 +303,9 @@ impl ShardEngine {
         {
             return Ok(hit);
         }
+        let opts = read_scan_opts(handle, window, deliver.durability());
         Ok(self
-            .scan_pages(handle.hash, window, key_filter, deliver.durability())
+            .scan_pages(handle.hash, window, key_filter, &opts)
             .await?)
     }
 }

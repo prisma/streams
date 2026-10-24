@@ -840,10 +840,9 @@ async fn scans_at_the_top_of_the_offset_space_are_exact() {
             to,
             max_bytes: usize::MAX,
         };
-        let got = engine
-            .scan_pages(HASH, window, None, slatedb::config::DurabilityLevel::Memory)
-            .await
-            .unwrap();
+        let opts =
+            super::record::page_scan_opts(usize::MAX, slatedb::config::DurabilityLevel::Memory);
+        let got = engine.scan_pages(HASH, window, None, &opts).await.unwrap();
         let served: Vec<u64> = served(&got).iter().map(|(offset, _)| *offset).collect();
         assert_eq!(
             served,
