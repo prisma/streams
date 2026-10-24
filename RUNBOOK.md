@@ -138,7 +138,7 @@ which `FLUSH_INTERVAL_MS` set before:
 | `OUTBOX_SWEEP_SECS` | 300 | owned-shard outbox sweep + billing tombstone walk cadence |
 | `FORK_DEBT_SWEEP_SECS` | 300 | pause between fork-debt reconciler circles (releases source references deleted forks still owe; a backlog, and the one-time backfill, drain back to back); alert `fork_debt_stale` fires after 3 periods (§8) |
 | `MONTH_CLOSE_GRACE_MS` | 86400000 | wait after a month boundary before closing it |
-| `METRICS_INTERVAL_SECS` | 15 | `_ops_metrics` snapshot cadence |
+| `METRICS_INTERVAL_SECS` | 60 | `_ops_metrics` point cadence, checked by the drain round (64 s at the 8 s default). The alert rules keep their own 15 s cadence (16 s on the drain round) on a snapshot of their own, which `/operator/data.json` serves and the ledger does not store. 15 before the cost report of 2026-10-24 (edge change #187) |
 | `ALERT_USAGE_OUTBOX_DIRTY` | 1000 | unacked usage snapshots that open the outbox-lag alert |
 | `ABSORB_GLOBAL_BUDGET_BYTES` | 100859904 | active PROCESS-WIDE absorber gather budget; every gather reserves (estimate x build multiplier) BEFORE reading pages. The default is one worst-page build at the 32 MiB body ceiling, (32 MiB + 64 KiB) x 3; a smaller value is raised to that build for the server's own ceiling |
 | `ABSORB_GLOBAL_GATHERS` | 1 | active concurrent-gather ceiling, process-wide and further bounded by the byte budget. 2 until 2026-09-29; a gather reserves its adaptive estimate (about 12 MiB at the floor), so at 2 slots two gathers did run at once. Do not raise it on a 1 GiB instance (4 slots were OOM-killed, docs/CHAOS-CAMPAIGN.md CHAOS-5) |
@@ -673,8 +673,9 @@ load/RSS, admission (instance cap, per-stream cap, shed counters, RSS shed
 threshold), fleet heartbeat table (freshness judged against the serving
 instance's clock, not the browser's), and the per-op object-store latency
 table with the O14a sentinels. `/operator/data.json` is the same payload as
-JSON, plus `ops` (the last telemetry tick's `_ops_metrics` snapshot, cached:
-reading it drains no peak) and `feeds` (the auth feeds' ages, as on
+JSON, plus `ops` (the telemetry loop's last snapshot, at most 16 s old:
+the alert rules' or an `_ops_metrics` point's, cached, so reading it drains
+no peak) and `feeds` (the auth feeds' ages, as on
 `/health`); `/operator/runbook` serves this document (compiled into the
 binary).
 

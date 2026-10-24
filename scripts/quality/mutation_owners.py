@@ -390,8 +390,8 @@ OWNERS = (
     owner('billing_walk', 'src/billing/walk.rs',
           'dst_tests::billing_walk_custody:: dst_tests::billing_closure_owners:: dst_tests::runtime_sweep::'),
     owner('billing_telemetry_loop', 'src/billing/telemetry_loop.rs',
-          'billing::sweep_custody:: dst_tests::billing_controller:: dst_tests::billing_readiness:: '
-          'dst_tests::runtime_sweep:: dst_tests::fence_yield::'),
+          'billing::sweep_custody:: billing::telemetry_loop:: dst_tests::billing_controller:: '
+          'dst_tests::billing_readiness:: dst_tests::runtime_sweep:: dst_tests::fence_yield::'),
     # A superseded boot's read window: handed off at its stop, imported by
     # the spool's next holder (src/billing.rs has no line headroom).
     owner('billing_read_handoff', 'src/billing/read_handoff.rs', 'dst_tests::fence_yield::'),

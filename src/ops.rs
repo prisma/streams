@@ -387,6 +387,24 @@ pub(crate) struct OpsSnapshot {
     pub gauges: std::collections::BTreeMap<String, u64>,
 }
 
+/// The gauges `collect_snapshot` drains: each is the peak since the
+/// previous collection.
+const PEAK_SINCE_SCRAPE: [&str; 2] = ["history_flush_wait_ms_max", "rss_peak_since_scrape_mb"];
+
+impl OpsSnapshot {
+    /// Raises each peak-since-scrape gauge to `earlier`'s, a snapshot
+    /// collected after the last stored point and not stored itself (the
+    /// alert rules' own), so the next stored point carries every peak.
+    pub(crate) fn carry_peaks(&mut self, earlier: &OpsSnapshot) {
+        for name in PEAK_SINCE_SCRAPE {
+            if let Some(&peak) = earlier.gauges.get(name) {
+                let gauge = self.gauges.entry(name.to_string()).or_insert(0);
+                *gauge = (*gauge).max(peak);
+            }
+        }
+    }
+}
+
 /// Peak sampled RSS (MB) since the last ops scrape — fed by the 250 ms
 /// process sampler, drained (swap 0) by each snapshot, so a spike
 /// between snapshots is never invisible.
@@ -601,7 +619,7 @@ pub(crate) fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) ->
 }
 
 /// Emit one snapshot to `_ops_metrics` at once, as the rigs do; the
-/// telemetry task emits one every METRICS_INTERVAL_SECS, default 15
+/// telemetry task emits one every METRICS_INTERVAL_SECS, default 60
 /// (§11.2), and sends a refused one again (`MetricsEmission`).
 #[cfg(test)]
 pub(crate) async fn emit_metrics_once(

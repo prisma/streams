@@ -16,6 +16,12 @@ use std::time::Duration;
 /// says.
 const TERMINAL_ROUND_MAX: Duration = Duration::from_secs(5);
 
+/// How often the alert rules run (OBSERVABILITY-BILLING §13.2): every 15 s,
+/// at the first drain round that reaches it (16 s at the default 8 s
+/// cadence), whatever `METRICS_INTERVAL_SECS` says. A round that runs them
+/// with no `_ops_metrics` point due takes a snapshot for them alone.
+const ALERT_EVALUATION_INTERVAL: Duration = Duration::from_secs(15);
+
 /// The drainer task: every TELEMETRY_DRAIN_SECS (default 8), one drain
 /// round. Errors log and retry — the durable outbox holds the truth.
 pub(crate) fn spawn_telemetry(
@@ -63,11 +69,9 @@ pub(crate) fn spawn_telemetry(
         }
     }
     let cadence = Duration::from_secs(state.config.billing.telemetry_drain_secs.max(1));
-    let mut metrics = MetricsEmission {
-        every: Duration::from_secs(state.config.billing.metrics_interval_secs),
-        last: None,
-        refused: None,
-    };
+    let mut metrics = MetricsEmission::new(Duration::from_secs(
+        state.config.billing.metrics_interval_secs,
+    ));
     if let Err(rejected) = tasks.spawn(
         "telemetry-drain",
         crate::tasks::Policy::Critical,
@@ -110,7 +114,7 @@ pub(crate) fn spawn_telemetry(
 }
 
 /// The drain loop's `_ops_metrics` emission: a point every
-/// `METRICS_INTERVAL_SECS` (default 15), and the newest point the ledger
+/// `METRICS_INTERVAL_SECS` (default 60), and the newest point the ledger
 /// refused, kept and sent again at the next drain round (the owner's
 /// round-6 call 16: a shed while an instance drains lost the point). The
 /// kept point and a new one go as one batch, oldest first; a refused batch
@@ -118,27 +122,54 @@ pub(crate) fn spawn_telemetry(
 /// lasts past the next point. An append whose outcome was unknown may
 /// have been written: sending it again stores the point twice, which the
 /// rollup's raw tier keys by instance and time.
+///
+/// The alert rules run on every snapshot, and on one of their own every
+/// `ALERT_EVALUATION_INTERVAL` between points; that snapshot is cached for
+/// `/operator/data.json` as a point is, and not stored. Its collection
+/// drained the peak gauges, so it hands them to the next snapshot.
 struct MetricsEmission {
     every: Duration,
+    /// When the last point was taken.
     last: Option<crate::runtime::MonotonicNow>,
+    /// When the alert rules last ran.
+    evaluated: Option<crate::runtime::MonotonicNow>,
+    /// The newest snapshot taken for the alert rules alone since the last
+    /// point, holding the peaks drained since then.
+    unsent: Option<Arc<crate::ops::OpsSnapshot>>,
     refused: Option<crate::ops::OpsSnapshot>,
 }
 
+/// What a drain round takes a snapshot for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Due {
+    /// A point for `_ops_metrics`; the alert rules read it too.
+    Point,
+    /// The alert rules alone.
+    Alerts,
+}
+
 impl MetricsEmission {
+    fn new(every: Duration) -> Self {
+        Self {
+            every,
+            last: None,
+            evaluated: None,
+            unsent: None,
+            refused: None,
+        }
+    }
+
     async fn round(&mut self, state: &Arc<crate::http::AppState>) {
-        let now = state.runtime.clock.monotonic();
         let mut batch: Vec<crate::ops::OpsSnapshot> = self.refused.take().into_iter().collect();
-        if self
-            .last
-            .is_none_or(|previous| now.since(previous) >= self.every)
-        {
-            self.last = Some(now);
-            let point = Arc::new(crate::ops::collect_snapshot(state));
+        let now = state.runtime.clock.monotonic();
+        if let Some((snapshot, due)) = self.take(now, || crate::ops::collect_snapshot(state)) {
             // Cached for /operator/data.json before the append (#159), so
             // the operator surface keeps it while this append is shed.
-            state.runtime.ops.remember(Arc::clone(&point));
-            crate::ops::evaluate_alerts(state, &point).await;
-            batch.push(Arc::unwrap_or_clone(point));
+            state.runtime.ops.remember(Arc::clone(&snapshot));
+            crate::ops::evaluate_alerts(state, &snapshot).await;
+            if due == Due::Point {
+                batch.push(Arc::unwrap_or_clone(snapshot));
+            }
         }
         if batch.is_empty() {
             return;
@@ -147,6 +178,45 @@ impl MetricsEmission {
             tracing::warn!("ops metrics emit: {e}; the newest point is sent again next round");
             self.refused = batch.pop();
         }
+    }
+
+    /// The round's snapshot, when a point or the alert rules are due,
+    /// carrying the peaks of the unsent snapshots taken since the last
+    /// point; one taken for the alert rules alone is kept as the unsent.
+    fn take(
+        &mut self,
+        now: crate::runtime::MonotonicNow,
+        collect: impl FnOnce() -> crate::ops::OpsSnapshot,
+    ) -> Option<(Arc<crate::ops::OpsSnapshot>, Due)> {
+        let due = self.due(now)?;
+        let mut snapshot = collect();
+        if let Some(unsent) = self.unsent.take() {
+            snapshot.carry_peaks(&unsent);
+        }
+        let snapshot = Arc::new(snapshot);
+        if due == Due::Alerts {
+            self.unsent = Some(Arc::clone(&snapshot));
+        }
+        Some((snapshot, due))
+    }
+
+    /// What the round at `now` takes a snapshot for, if anything: a point
+    /// once `every` has passed since the last, else the alert rules once
+    /// `ALERT_EVALUATION_INTERVAL` has passed since they last ran.
+    fn due(&mut self, now: crate::runtime::MonotonicNow) -> Option<Due> {
+        let passed = |since: Option<crate::runtime::MonotonicNow>, every: Duration| {
+            since.is_none_or(|previous| now.since(previous) >= every)
+        };
+        let due = if passed(self.last, self.every) {
+            self.last = Some(now);
+            Due::Point
+        } else if passed(self.evaluated, ALERT_EVALUATION_INTERVAL) {
+            Due::Alerts
+        } else {
+            return None;
+        };
+        self.evaluated = Some(now);
+        Some(due)
     }
 }
 
@@ -189,5 +259,121 @@ async fn hand_off(state: &Arc<crate::http::AppState>) {
         Ok(Ok(count)) => tracing::warn!("read usage at shutdown: {count} batches handed off"),
         Ok(Err(e)) => tracing::warn!("read usage at shutdown not handed off: {e}"),
         Err(_elapsed) => tracing::warn!("read usage handoff did not finish inside {HANDOFF_MAX:?}"),
+    }
+}
+
+#[cfg(test)]
+mod emission_tests {
+    use super::{Due, MetricsEmission};
+    use crate::runtime::{Clock, ManualClock};
+    use std::time::Duration;
+
+    /// A collected snapshot with the two peak gauges and the plain RSS gauge.
+    fn collected(rss_peak: u64, flush_wait: u64) -> crate::ops::OpsSnapshot {
+        let gauges = [
+            ("rss_peak_since_scrape_mb", rss_peak),
+            ("history_flush_wait_ms_max", flush_wait),
+            ("rss_mb", rss_peak),
+        ];
+        crate::ops::OpsSnapshot {
+            v: 1,
+            ts_ms: 0,
+            cell: String::new(),
+            region: String::new(),
+            instance: String::new(),
+            role: "server".into(),
+            counters: std::collections::BTreeMap::new(),
+            gauges: gauges.map(|(k, v)| (k.to_string(), v)).into(),
+        }
+    }
+
+    /// Ten minutes of drain rounds every `cadence` seconds with a point due
+    /// every `metrics` seconds: the seconds of the points, and of every
+    /// snapshot the alert rules read (the points' and their own).
+    fn ten_minutes(metrics: u64, cadence: u64) -> (Vec<u64>, Vec<u64>) {
+        let clock = ManualClock::at(0);
+        let mut emission = MetricsEmission::new(Duration::from_secs(metrics));
+        let (mut points, mut evaluated) = (Vec::new(), Vec::new());
+        for at in (0..=600).step_by(usize::try_from(cadence).unwrap()) {
+            let due = emission.take(clock.monotonic(), || collected(0, 0));
+            clock.advance_monotonic(Duration::from_secs(cadence));
+            let Some((_, due)) = due else { continue };
+            evaluated.push(at);
+            if due == Due::Point {
+                points.push(at);
+            }
+        }
+        (points, evaluated)
+    }
+
+    fn every(step: u64, last: u64) -> Vec<u64> {
+        (0..=last).step_by(usize::try_from(step).unwrap()).collect()
+    }
+
+    /// At the defaults (a round every 8 s) the alert rules run every 16 s,
+    /// 38 times in ten minutes, as they did when every 15 s snapshot was a
+    /// point, and every fourth of those snapshots is a point, 64 s apart:
+    /// 10 points. Rounds every 5 s land on both cadences exactly: a point
+    /// every 60 s, the rules every 15 s.
+    #[test]
+    fn default_rounds_take_a_point_a_minute_and_run_the_alerts_every_16_s() {
+        let defaults = crate::config::BillingConfig::default();
+        let (points, evaluated) = ten_minutes(
+            defaults.metrics_interval_secs,
+            defaults.telemetry_drain_secs,
+        );
+        assert_eq!(points, every(64, 576), "a point every 64 s");
+        assert_eq!(evaluated, every(16, 592), "the alert rules every 16 s");
+        let (points, evaluated) = ten_minutes(defaults.metrics_interval_secs, 5);
+        assert_eq!(points, every(60, 600), "a point once 60 s have passed");
+        assert_eq!(evaluated, every(15, 600), "the rules once 15 s have passed");
+    }
+
+    /// One round 16 s after the last: what it took the snapshot for, and the
+    /// snapshot's peak RSS, peak flush wait and RSS gauges.
+    fn round(
+        emission: &mut MetricsEmission,
+        clock: &ManualClock,
+        snapshot: crate::ops::OpsSnapshot,
+    ) -> (Due, [u64; 3]) {
+        let (taken, due) = emission.take(clock.monotonic(), || snapshot).unwrap();
+        clock.advance_monotonic(Duration::from_secs(16));
+        let gauge = |name: &str| taken.gauges[name];
+        let names = [
+            "rss_peak_since_scrape_mb",
+            "history_flush_wait_ms_max",
+            "rss_mb",
+        ];
+        (due, names.map(gauge))
+    }
+
+    /// A snapshot taken for the alert rules alone is not stored, but its
+    /// collection drained the peak gauges: each later snapshot carries the
+    /// largest of each since the last point, the next point included, and
+    /// the snapshot after that point starts afresh. Other gauges are as
+    /// collected.
+    #[test]
+    fn the_next_point_carries_the_peaks_the_alert_snapshots_drained() {
+        let clock = ManualClock::at(0);
+        let mut emission = MetricsEmission::new(Duration::from_secs(60));
+        let mut rounds = Vec::new();
+        for (rss_peak, flush_wait) in [(100, 1), (700, 2), (300, 9), (200, 4), (150, 3), (120, 5)] {
+            rounds.push(round(
+                &mut emission,
+                &clock,
+                collected(rss_peak, flush_wait),
+            ));
+        }
+        assert_eq!(
+            rounds,
+            [
+                (Due::Point, [100, 1, 100]),
+                (Due::Alerts, [700, 2, 700]),
+                (Due::Alerts, [700, 9, 300]),
+                (Due::Alerts, [700, 9, 200]),
+                (Due::Point, [700, 9, 150]),
+                (Due::Alerts, [120, 5, 120]),
+            ]
+        );
     }
 }

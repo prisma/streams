@@ -1,9 +1,11 @@
 //! Runtime-local denial/ops journals, alerts and HTTP body ceilings.
-use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig_build};
+use super::fixture_http::{HttpRig, HttpRigOptions, engine_shutdown, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
+use crate::dst::{FaultPlan, FaultStore, ObjClass, StoreOp};
 use std::sync::Arc;
+use std::time::Duration;
 
 async fn journal(state: &Arc<crate::http::AppState>, stream: &str) -> Vec<serde_json::Value> {
     let key = state.billing.usage_key().unwrap();
@@ -285,4 +287,146 @@ async fn r10_a_metrics_batch_reaches_the_ops_metrics_journal_in_order() {
         "the journal holds the batch's points, in order"
     );
     engine_shutdown(&rig.state).await;
+}
+
+/// The points `_ops_metrics` holds, oldest first.
+async fn ops_metrics_points(state: &Arc<crate::http::AppState>) -> Vec<crate::ops::OpsSnapshot> {
+    let key = state.billing.usage_key().unwrap();
+    let read = crate::billing::system_read(state, crate::billing::OPS_METRICS_STREAM, &key, None);
+    match read.await.unwrap() {
+        Some((body, _)) if !body.is_empty() => serde_json::from_slice(&body).unwrap(),
+        _ => Vec::new(),
+    }
+}
+
+/// Idles the rig for `secs` seconds of the paused tokio clock, moving its
+/// manual clock along a second at a time: the drain loop ticks on tokio's
+/// timer and measures its cadences on the runtime clock, so both must pass.
+async fn idle_seconds(rig: &HttpRig, secs: u64) {
+    for _ in 0..secs {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        rig.clock.advance(Duration::from_secs(1));
+    }
+}
+
+/// The store's PUTs so far: (WAL objects, every class).
+fn puts(store: &FaultStore) -> (u64, u64) {
+    let classes = [ObjClass::Manifest, ObjClass::Sst, ObjClass::Other];
+    let wal = store.count(StoreOp::Put, ObjClass::Wal);
+    let rest: u64 = classes.map(|c| store.count(StoreOp::Put, c)).iter().sum();
+    (wal, wal + rest)
+}
+
+/// Stops a rig that ran on the paused clock. The engines' close completes
+/// on work that clock does not drive, so the teardown's deadlines run on
+/// the real clock.
+async fn stop_paused_rig(rig: HttpRig) {
+    tokio::time::resume();
+    rig.shutdown().await;
+}
+
+/// The idle cost of the ops snapshot (the cost report of 2026-10-24, lever
+/// 5): on an otherwise idle cell each `_ops_metrics` point is an append,
+/// which on this rig costs about 8 PUTs (2 of them WAL objects, the rest
+/// SSTs, manifests and other objects). At the defaults (a point every 60 s, checked by the
+/// 8 s drain round) an idle server stores a point at 0 s, 64 s, ... 576 s:
+/// exactly 10 in ten minutes, not the 38 of a 15 s cadence (one every
+/// 16 s). Between 10 s and 600 s this rig measured 22 WAL PUTs and 116
+/// PUTs in all at 60 s, against 78 and 340 at 15 s.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn an_idle_server_stores_one_ops_metrics_point_a_minute() {
+    let store = FaultStore::uniform(mem(), 1601, FaultPlan::CLEAN);
+    let data: Arc<dyn object_store::ObjectStore> = store.clone();
+    let rig = http_rig_build(data, RigRuntime::first(), HttpRigOptions::default()).await;
+    crate::billing::spawn_telemetry(rig.state.clone(), &rig.tasks);
+    idle_seconds(&rig, 10).await; // past the first round's writes
+    let (wal_before, all_before) = puts(&store);
+    idle_seconds(&rig, 590).await;
+    let points = ops_metrics_points(&rig.state).await.len();
+    assert_eq!(
+        points, 10,
+        "ten idle minutes store one point a minute (0 s, 64 s, ... 576 s), not one every 16 s"
+    );
+    let (wal, all) = puts(&store);
+    let idle = (wal - wal_before, all - all_before);
+    assert!(
+        idle.0 <= 30 && idle.1 <= 160,
+        "the idle window's (WAL, all) PUTs: {idle:?}"
+    );
+    stop_paused_rig(rig).await;
+}
+
+/// Alert latency is the 15 s cadence's, not the minute's: between points
+/// the alert rules run every 16 s (at the default 8 s drain cadence) on a
+/// snapshot of their own, cached for `/operator/data.json` and not stored.
+/// An ops event dropped at the queue cap after the 16 s round opens
+/// `ops_event_drops` at the 32 s round, not at the 24 s round (which runs
+/// no rules) nor at the next point (64 s), while `_ops_metrics` still holds
+/// the first point alone; the 64 s point then carries the drop.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn alerts_run_every_16_s_between_minute_points() {
+    let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
+    let state = rig.state.clone();
+    crate::billing::spawn_telemetry(state.clone(), &rig.tasks);
+    let drops = |s: &crate::ops::OpsSnapshot| s.counters["ops_events_dropped_total"];
+    let alerted = || {
+        let open = state.runtime.ops.open_alerts();
+        open.iter()
+            .any(|alert| alert.fingerprint == "ops_event_drops")
+    };
+    idle_seconds(&rig, 20).await; // rounds at 0 s (a point), 8 s, 16 s (the rules)
+    let mut flood = 0;
+    while state.runtime.ops.dropped() == 0 {
+        let event = crate::ops::OpsEvent::new("flood", format!("flood-{flood}"));
+        state.runtime.ops.emit(event);
+        flood += 1;
+    }
+    idle_seconds(&rig, 5).await; // the 24 s round drains events and runs no rules
+    assert!(!alerted(), "the 24 s round runs no alert rules");
+    idle_seconds(&rig, 8).await;
+    assert!(alerted(), "the drop opens its alert at the 32 s round");
+    let cached = state.runtime.ops.last_snapshot().unwrap();
+    assert_eq!(drops(&cached), 1, "the rules' snapshot is the one cached");
+    for drained in ["rss_peak_since_scrape_mb", "history_flush_wait_ms_max"] {
+        assert!(
+            cached.gauges.contains_key(drained),
+            "{drained} is collected"
+        );
+    }
+    let stored =
+        |points: Vec<crate::ops::OpsSnapshot>| points.iter().map(drops).collect::<Vec<_>>();
+    assert_eq!(
+        stored(ops_metrics_points(&state).await),
+        [0],
+        "and not stored"
+    );
+    idle_seconds(&rig, 32).await; // the 64 s round takes the second point
+    assert_eq!(stored(ops_metrics_points(&state).await), [0, 1]);
+    stop_paused_rig(rig).await;
+}
+
+/// `carry_peaks` raises the two gauges a collection drains to the larger
+/// of the two snapshots' (adding one the later snapshot lacks) and leaves
+/// every other gauge as the later snapshot collected it.
+#[test]
+fn carry_peaks_raises_only_the_drained_peak_gauges() {
+    let snapshot = |gauges: &[(&str, u64)]| crate::ops::OpsSnapshot {
+        v: 1,
+        ts_ms: 0,
+        cell: String::new(),
+        region: String::new(),
+        instance: String::new(),
+        role: "server".into(),
+        counters: std::collections::BTreeMap::new(),
+        gauges: gauges.iter().map(|(k, v)| ((*k).to_string(), *v)).collect(),
+    };
+    let (peak, wait) = ("rss_peak_since_scrape_mb", "history_flush_wait_ms_max");
+    let earlier = snapshot(&[(peak, 900), (wait, 40), ("rss_mb", 900)]);
+    let mut later = snapshot(&[(peak, 300), (wait, 70), ("rss_mb", 300)]);
+    later.carry_peaks(&earlier);
+    let raised = snapshot(&[(peak, 900), (wait, 70), ("rss_mb", 300)]);
+    assert_eq!(later.gauges, raised.gauges);
+    let mut bare = snapshot(&[]);
+    bare.carry_peaks(&earlier);
+    assert_eq!(bare.gauges, snapshot(&[(peak, 900), (wait, 40)]).gauges);
 }

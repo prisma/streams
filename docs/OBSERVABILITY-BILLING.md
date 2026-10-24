@@ -713,7 +713,7 @@ The live plane is for immediate diagnosis, not historical truth.
 
 ### 11.2 `_ops_metrics`
 
-Every active instance emits a low-cardinality snapshot every 15 seconds, or earlier on a size threshold.
+Every active instance emits a low-cardinality snapshot every 60 seconds (`METRICS_INTERVAL_SECS`, checked by the drain round: 64 s at its 8 s default), or earlier on a size threshold. Until edge change #187 the cadence was 15 seconds; on an otherwise idle cell each point is an append, so a WAL object and its flush, manifest and compaction writes: at 15 s about 1,300 Class A requests an hour, $3.5 of a shared cell's $14.8 monthly floor (the cost report of 2026-10-24, §5.3). The alert evaluator keeps its own 15-second cadence (§13.2) on a snapshot of its own, which `/operator/data.json` serves and this ledger does not store; that collection's peak-since-scrape gauges (`rss_peak_since_scrape_mb`, `history_flush_wait_ms_max`) are carried to the next stored snapshot, so a stored point still holds every peak since the previous one.
 
 A snapshot the ledger refuses (a shed write while the instance drains, a store error) is kept and sent again at the next drain round (`TELEMETRY_DRAIN_SECS`, 8 s), together with the next snapshot when one is due, oldest first. Only the newest refused snapshot is kept, so a refusal loses a snapshot only when it lasts past the next one; a resent snapshot whose first append's outcome was unknown may be stored twice (edge change #164).
 
@@ -964,7 +964,7 @@ A dedicated SlateDB rollup store consumes `_ops_metrics` and `_ops_events`.
 Retention tiers:
 
 ```text
-raw 15-second points:     7 days
+raw 60-second points:     7 days
 1-minute rollups:         30 days
 5-minute rollups:         180 days
 1-hour rollups:           24 months
@@ -981,7 +981,7 @@ finalized monthly usage:  accounting retention policy, default 7 years
 
 ### 13.2 Alert evaluator
 
-Evaluate every 15 seconds to 1 minute depending on the alert.
+Evaluate every 15 seconds to 1 minute depending on the alert. The in-process rules run every 15 seconds (16 s on the 8 s drain round), on every stored `_ops_metrics` snapshot and on a snapshot of their own between them, so their latency does not follow the 60-second metrics cadence (§11.2).
 
 Initial alert rules:
 
@@ -1096,7 +1096,8 @@ The telemetry design must not recreate the per-stream request tax removed by his
 usage drain:              8 s (TELEMETRY_DRAIN_SECS): one _usage append per round with content
 read usage batches:       10 s active, sealed at the next drain round (16-18 s); early at 64 KiB of rows
 segment snapshot drain:   included in the same instance usage batch
-ops metrics snapshots:    15 s
+ops metrics snapshots:    60 s (64 s on the drain round; 15 s before edge change #187)
+alert evaluation:         15 s (16 s on the drain round), no _ops_metrics append of its own
 usage rollup flush:       1–5 s, batched across rows
 ops rollup flush:         5–15 s, batched
 monthly JSON artifact:    once per active stream per month
@@ -1108,7 +1109,7 @@ Initial acceptance budgets:
 
 ```text
 _usage appends             <= 360 per active instance-hour
-_ops_metrics appends       <= 240 per active instance-hour
+_ops_metrics appends       <= 60 per active instance-hour
 per-stream PUTs per tick   = 0
 LIST requests steady state = 0
 monthly stream artifacts   <= 1 PUT per active stream-month

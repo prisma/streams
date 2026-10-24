@@ -965,7 +965,7 @@ async fn an_unreadable_ops_checkpoint_fails_the_step_instead_of_restarting_the_l
 
 /// The owner's round-6 call 16: a metrics point the ledger refuses (here a
 /// shed write, as in Q0's drain window) is sent again at the next drain
-/// round, 8 s on and before the next point is due at 15 s, not lost.
+/// round, 8 s on and before the next point is due at 60 s, not lost.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_refused_metrics_point_is_sent_again_at_the_next_drain_round() {
     let _clock = crate::billing::billing_clock_lock().read().await;

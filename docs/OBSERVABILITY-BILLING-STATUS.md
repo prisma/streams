@@ -123,7 +123,7 @@ billing-off arm proved.
 
 ### Instrumentation landed
 
-Ops snapshot (`_ops_metrics`, 15 s): `history_l0_ssts_max`,
+Ops snapshot (`_ops_metrics`, 60 s; 15 s before edge change #187): `history_l0_ssts_max`,
 `history_l0_bytes_total`, `history_compacted_runs_max`,
 `history_partitions_open`, `history_flush_wait_ms_max`
 (peak-since-scrape), `gather_last_{reserved,actual,read_ms,write_ms,flush_ms}`,

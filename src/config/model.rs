@@ -271,7 +271,8 @@ pub struct BillingConfig {
     /// round a graceful stop runs; keep it below the 10 s supervisor
     /// grace, above it the supervisor's abort is the bound.
     pub telemetry_drain_secs: u64,
-    /// METRICS_INTERVAL_SECS, default 15.
+    /// METRICS_INTERVAL_SECS, default 60: one `_ops_metrics` point a minute
+    /// (the alert rules keep their own 15 s cadence).
     pub metrics_interval_secs: u64,
     /// MONTH_CLOSE_GRACE_MS, default 86_400_000 (24 h).
     pub month_close_grace_ms: i64,
@@ -499,7 +500,7 @@ impl Default for BillingConfig {
         Self {
             outbox_sweep_secs: 300,
             telemetry_drain_secs: 8,
-            metrics_interval_secs: 15,
+            metrics_interval_secs: 60,
             month_close_grace_ms: 24 * 3_600_000,
             telemetry_cache_bytes: 16 * 1024 * 1024,
             sweep_discovery_max: 8,

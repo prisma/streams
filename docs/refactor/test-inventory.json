@@ -3053,6 +3053,17 @@
     "scenarios": []
   },
   {
+    "name": "alerts_run_every_16_s_between_minute_points",
+    "attributes": [
+      "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
+    ],
+    "function_sha256": "6ef91427259ccc007fbd2e4d4be37596153d2a880487c5a875f851c2d58bc30a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/runtime_journals.rs",
+    "scenarios": []
+  },
+  {
     "name": "ambiguous_commit_survives_handoff_and_dedupes",
     "attributes": [
       "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
@@ -3363,6 +3374,19 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fence_yield.rs",
+    "scenarios": []
+  },
+  {
+    "name": "an_idle_server_stores_one_ops_metrics_point_a_minute",
+    "attributes": [
+      "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
+    ],
+    "function_sha256": "bd7dc8954ee8029d113307bbd0c600f04e150eb160aff5031cd334484bfbc834",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(mem(), 1601, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/tests/runtime_journals.rs",
     "scenarios": []
   },
   {
@@ -3736,6 +3760,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/seal_cancellation.rs",
+    "scenarios": []
+  },
+  {
+    "name": "carry_peaks_raises_only_the_drained_peak_gauges",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "d0730f08de7dbea59c6f64401cc18aa8dc2cb846832e0a5a3eddd9d8d30e6185",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/runtime_journals.rs",
     "scenarios": []
   },
   {
