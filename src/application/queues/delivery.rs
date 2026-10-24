@@ -170,7 +170,11 @@ impl QueueService {
         };
         let mut messages = Vec::with_capacity(deliveries.len());
         for view in deliveries {
-            match envelope::read(t, key, view.offset).await {
+            let read = match &view.page {
+                Some(raw) => envelope::open(t, key, view.offset, raw.clone()).map(Some),
+                None => envelope::read(t, key, view.offset).await,
+            };
+            match read {
                 Ok(Some(env)) => messages.push(envelope::message(t, view, env, shown)),
                 Ok(None) => {}
                 Err(error) => {

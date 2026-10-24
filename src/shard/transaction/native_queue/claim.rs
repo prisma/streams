@@ -7,10 +7,11 @@ use super::deliveries::view;
 use super::stage::NativeStage;
 use super::*;
 use crate::native_queue::DeliveryView;
-use crate::native_queue::rows::{Cause, DState, DeliveryRow};
+use crate::native_queue::rows::{Cause, DState, DeliveryRow, decode_avail};
 
-/// A due candidate: (due time, offset, from the retry index).
-type Candidate = (i64, u64, bool);
+/// A due candidate: (due time, offset, its availability entry's value, or
+/// `None` from the retry index).
+type Candidate = (i64, u64, Option<Vec<u8>>);
 
 struct ClaimBudget {
     max: usize,
@@ -58,15 +59,13 @@ impl CommitTransaction<'_> {
             t,
         };
         let mut out: Vec<DeliveryView> = Vec::new();
-        for (due, offset, from_retry) in candidates {
+        for (due, offset, entry) in candidates {
             if out.len() >= budget.max {
                 break;
             }
-            let leased = if from_retry {
-                self.nq_claim_retry(&hash, st, offset, &mut budget).await?
-            } else {
-                self.nq_claim_new(&hash, st, (due, offset), &mut budget)
-                    .await?
+            let leased = match entry {
+                None => self.nq_claim_retry(&hash, st, offset, &mut budget).await?,
+                Some(entry) => self.nq_claim_new(&hash, st, (due, offset, &entry), &mut budget)?,
             };
             if let Some(v) = leased {
                 out.push(v);
@@ -102,37 +101,36 @@ impl CommitTransaction<'_> {
     ) -> Result<Vec<Candidate>, NqRefusal> {
         let want = max.saturating_mul(2).saturating_add(16);
         let mut out: Vec<Candidate> = Vec::new();
-        for (fam, from_retry) in [(keys::AVAIL, false), (keys::RETRIES, true)] {
+        for fam in [keys::AVAIL, keys::RETRIES] {
             let prefix = keys::family(hash, fam).len();
-            for (k, _) in self
+            let rows = self
                 .nq_index_scan(hash, st, fam, want)
                 .await
-                .map_err(NqRefusal::Internal)?
-            {
-                match keys::decode_time_key(prefix, &k) {
-                    Some((at, off)) if at <= t => out.push((at, off, from_retry)),
-                    _ => break,
-                }
-            }
+                .map_err(NqRefusal::Internal)?;
+            let due = rows.into_iter().map_while(|(k, v)| {
+                let (at, off) = keys::decode_time_key(prefix, &k)?;
+                (at <= t).then(|| (at, off, (fam == keys::AVAIL).then_some(v)))
+            });
+            out.extend(due);
         }
-        out.sort_unstable();
+        out.sort_unstable_by_key(|c| (c.0, c.1));
         Ok(out)
     }
 
-    async fn nq_claim_new(
+    /// Lease an untaken message from its availability entry, which holds
+    /// its metadata as sent (an untaken message's metadata row never
+    /// changes, and a cancel deletes the entry) and maybe its page.
+    fn nq_claim_new(
         &mut self,
         hash: &[u8; 16],
         st: &mut NativeStage,
-        at: (i64, u64),
+        at: (i64, u64, &[u8]),
         budget: &mut ClaimBudget,
     ) -> Result<Option<DeliveryView>, NqRefusal> {
-        let (due, offset) = at;
+        let (due, offset, entry) = at;
         let t = budget.t;
-        let meta = self.nq_meta(hash, st, offset).await?;
-        let fits = meta.as_ref().is_none_or(|m| {
-            budget.bytes == 0 || budget.bytes + u64::from(m.bytes) <= budget.max_bytes
-        });
-        if !fits {
+        let (mut meta, page) = decode_avail(entry).map_err(NqRefusal::Internal)?;
+        if budget.bytes > 0 && budget.bytes + u64::from(meta.bytes) > budget.max_bytes {
             // Not taken: the cursor stays before it.
             budget.max = 0;
             return Ok(None);
@@ -141,12 +139,6 @@ impl CommitTransaction<'_> {
         st.state.cursor_off = offset;
         st.state.cursor_started = true;
         st.state_dirty = true;
-        let Some(mut meta) = meta else {
-            return Ok(None);
-        };
-        if meta.cancelled {
-            return Ok(None);
-        }
         if meta.retention_end <= t {
             st.state.gap_count += 1;
             st.state.counters.expired += 1;
@@ -174,7 +166,9 @@ impl CommitTransaction<'_> {
         };
         let until = budget.lease_until.min(meta.hard_expires_at);
         self.nq_lease(hash, st, (offset, &mut row), until);
-        Ok(Some(view(offset, &meta, Some(&row))))
+        let mut leased = view(offset, &meta, Some(&row));
+        leased.page = (!page.is_empty()).then(|| bytes::Bytes::copy_from_slice(page));
+        Ok(Some(leased))
     }
 
     async fn nq_claim_retry(

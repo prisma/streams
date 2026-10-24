@@ -269,14 +269,24 @@ pub(super) async fn read(
     key: &QueueKey,
     offset: u64,
 ) -> Result<Option<Envelope>, String> {
-    use crate::crypto_page::{CheckedPage, PageCipher, PageDecoder};
     let raw = t
         .engine
         .db
         .get(crate::crypto_page::shard_page_key(&t.hash, offset))
         .await
         .map_err(|e| e.to_string())?;
-    let Some(raw) = raw else { return Ok(None) };
+    raw.map(|raw| open(t, key, offset, raw)).transpose()
+}
+
+/// The envelope in the sealed page of the message at `offset`, as stored
+/// under its page key or carried inline by its availability entry.
+pub(super) fn open(
+    t: &QueueTarget,
+    key: &QueueKey,
+    offset: u64,
+    raw: bytes::Bytes,
+) -> Result<Envelope, String> {
+    use crate::crypto_page::{CheckedPage, PageCipher, PageDecoder};
     let page = CheckedPage::admit(raw, offset).map_err(|e| format!("queue page: {e:?}"))?;
     let cipher = PageCipher::new(&key.subkey, &t.hash);
     let opened = cipher
@@ -284,7 +294,5 @@ pub(super) async fn read(
         .map_err(|e| format!("queue page: {e:?}"))?
         .ok_or("queue page over its limit")?;
     let record = opened.records().next().ok_or("empty queue page")?;
-    serde_json::from_slice(record.payload)
-        .map(Some)
-        .map_err(|e| format!("queue envelope: {e}"))
+    serde_json::from_slice(record.payload).map_err(|e| format!("queue envelope: {e}"))
 }

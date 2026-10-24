@@ -4,7 +4,7 @@
 //! (`absorbed = next`, §5.6), so no absorption consumer ever sees a queue.
 use super::stage::NativeStage;
 use super::*;
-use crate::native_queue::rows::{MetaRow, decode_dedup, encode_dedup};
+use crate::native_queue::rows::{MetaRow, decode_dedup, encode_avail, encode_dedup};
 use crate::native_queue::{SendMessage, SendResult};
 
 type SendArgs = (Vec<SendMessage>, [u8; 32], u32, i64);
@@ -115,6 +115,12 @@ impl CommitTransaction<'_> {
             .cipher(subkey, &hash)
             .seal_request(&lane, offset, &record)
             .map_err(|e| NqRefusal::Internal(format!("page seal refused: {e:?}")))?;
+        let inline = match pages.as_slice() {
+            [page] if page.bytes.len() <= crate::native_queue::INLINE_PAGE_MAX => {
+                page.bytes.clone()
+            }
+            _ => Vec::new(),
+        };
         for page in pages {
             self.batch.put(
                 crate::crypto_page::shard_page_key(&hash, page.last),
@@ -143,7 +149,7 @@ impl CommitTransaction<'_> {
         self.nq_put(
             st,
             keys::by_time(&hash, keys::AVAIL, available_at, offset),
-            Vec::new(),
+            encode_avail(&meta, &inline),
         );
         if let Some(tag) = &m.dedup_tag {
             let expires = t + cfg.dedup_window_ms;

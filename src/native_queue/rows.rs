@@ -139,6 +139,27 @@ impl StateRow {
     }
 }
 
+/// An availability entry's value (§5.2): the message's metadata as sent
+/// (everything a claim of an untaken message needs) and, when it is at
+/// most `INLINE_PAGE_MAX` long, its sealed page.
+pub(crate) fn encode_avail(meta: &MetaRow, page: &[u8]) -> Vec<u8> {
+    let meta = meta.encode();
+    let mut v = Vec::with_capacity(1 + meta.len() + page.len());
+    v.push(u8::try_from(meta.len()).unwrap_or(u8::MAX));
+    v.extend_from_slice(&meta);
+    v.extend_from_slice(page);
+    v
+}
+
+/// The metadata and the inline page (empty when not inline) of an
+/// availability entry's value.
+pub(crate) fn decode_avail(raw: &[u8]) -> Result<(MetaRow, &[u8]), String> {
+    let (&len, rest) = raw.split_first().ok_or("empty availability entry")?;
+    let at = usize::from(len).min(rest.len());
+    let (meta, page) = rest.split_at(at);
+    Ok((MetaRow::decode(meta)?, page))
+}
+
 /// The per-message metadata row (§5.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MetaRow {

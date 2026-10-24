@@ -40,6 +40,9 @@ pub(crate) const MAX_ATTEMPTS: u32 = 100;
 pub(crate) const FREE_RELEASES: u8 = 2;
 /// Entries the sweep moves in one step (§6.8).
 pub(crate) const SWEEP_STEP: usize = 256;
+/// A sealed page at most this long also rides in the message's
+/// availability entry, so a claim returns it without a page read (§6.1).
+pub(crate) const INLINE_PAGE_MAX: usize = 2_048;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -290,6 +293,10 @@ pub(crate) struct DeliveryView {
     pub available_at: i64,
     pub lease_deadline: i64,
     pub failure: Option<FailureView>,
+    /// The sealed page, when the claim read it from the availability
+    /// entry; `None`: read it by its page key.
+    #[serde(skip)]
+    pub page: Option<bytes::Bytes>,
 }
 
 #[derive(Debug, Clone, Serialize)]

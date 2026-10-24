@@ -170,6 +170,15 @@ rollover is a storage matter, never a scheduling barrier. Ids order as
 in Q5). With `maxAge` and `failureRetention` fixed per queue, `A`'s order is
 also the order of `retentionEnd` and `hardExpiresAt`.
 
+An entry's value carries what a claim of the untaken message needs: its
+metadata as sent (an untaken message's metadata row never changes, and a
+cancel deletes the entry) and, when the sealed page is at most 2 KiB, the
+page itself (`INLINE_PAGE_MAX`). Entries due together are adjacent in `A`,
+so a claim of new messages reads them in the blocks its scan of `A` already
+reads, with no point get of a metadata row or a page; a scheduled message
+claimed an hour after its send would otherwise cost two cold reads. The
+inline copy is deleted with the entry when the message retires.
+
 **One scheduling owner per queue.** A queue writes one physical lane, so one
 shard owns it. The scaler cannot split a single-key workload
 (`src/scaler3.rs`), so a queue has a per-queue ceiling, measured over the
@@ -318,9 +327,10 @@ allowed); reserve read memory for exactly that total (429
 taken messages, `C` advanced; `lastUsefulClaimAt = t` when at least one
 message was leased).
 
-**After the commit is durable (with the key):** read each leased envelope by a
-**point get** of its page key (`shard_page_key(hash, offset)`), never a window
-scan, which assumes dense offsets. A failed read releases those deliveries
+**After the commit is durable (with the key):** open each leased envelope
+from the page its `A` entry carried (§5.2), or else read it by a **point
+get** of its page key (`shard_page_key(hash, offset)`), never a window scan,
+which assumes dense offsets. A failed read releases those deliveries
 server-side with the attempt given back and answers 503, retryable.
 
 With nothing due and `waitMs > 0`, the claim parks until a send, settle, lease

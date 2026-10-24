@@ -7,7 +7,7 @@
 use super::stage::{NativeStage, key_time};
 use super::*;
 use crate::native_queue::SWEEP_STEP;
-use crate::native_queue::rows::{Cause, DState, decode_dedup};
+use crate::native_queue::rows::{Cause, DState, decode_avail, decode_dedup};
 
 impl CommitTransaction<'_> {
     pub(super) async fn nq_sweep(
@@ -166,7 +166,7 @@ impl CommitTransaction<'_> {
             .await
             .map_err(NqRefusal::Internal)?;
         let mut moved = 0;
-        for (k, _) in rows {
+        for (k, v) in rows {
             let Some((at, off)) = keys::decode_time_key(prefix, &k) else {
                 break;
             };
@@ -176,11 +176,10 @@ impl CommitTransaction<'_> {
             st.state.cursor_at = at;
             st.state.cursor_off = off;
             st.state.cursor_started = true;
-            if let Some(meta) = self.nq_meta(hash, st, off).await? {
-                st.state.gap_count += 1;
-                st.state.counters.expired += 1;
-                self.nq_delete_message(hash, st, (off, &meta), (!meta.cancelled, t));
-            }
+            let (meta, _) = decode_avail(&v).map_err(NqRefusal::Internal)?;
+            st.state.gap_count += 1;
+            st.state.counters.expired += 1;
+            self.nq_delete_message(hash, st, (off, &meta), (true, t));
             moved += 1;
         }
         Ok(moved)
