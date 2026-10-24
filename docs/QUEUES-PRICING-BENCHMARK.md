@@ -254,3 +254,63 @@ queue commit window so queue writes share WAL uploads; fewer and smaller
 rows per message (the state row is JSON rewritten per operation); and
 fewer compaction rewrites. The next measurement should repeat q10x with
 each lever, and run the full 48-hour 1x pair before any pricing decision.
+
+## 10. Results after the first cost levers (2026-10-24)
+
+Same rig, owner prices and 30 + 60 min protocol, with arm A rerun at the
+same baseline placement as its arm B (`BASELINE_PREFIX`, section 6; the
+earlier runs' arm A were placed differently, so their Class A carried
++-$25-30 a month of placement noise at 10x).
+
+| Run | Server | Fully loaded | Marginal | Ceiling | Class A | Class B | Transfer | CPU | Floor share |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| q10x (before) | 3b3eb559 | $185.75 | $119.93 | $54.83 | $37.52 | $46.47 | $14.62 | $19.10 | $65.82 (cpu 69%) |
+| r1 10x | 2ea30631 | $128.79 | $101.29 | $54.83 | $58.52 | $11.67 | $21.17 | $7.98 | $27.50 (cpu 29%, mem 25%) |
+| q1x-b (before) | 3b3eb559 | $36.54 | $16.91 | $5.41 | $10.67 | $1.72 | $0.70 | $3.19 | $19.63 (mem 21%) |
+| r2 1x | 2ea30631 | $33.80 | $25.01 | $5.41 | $21.73 | $1.22 | $0.87 | $0.87 | $8.79 (mem 9%) |
+
+2ea30631 carries two levers: index floors with a roster deadline computed
+from them (a queue is swept when something can be due; scans skip
+tombstones), and the availability entry carrying the metadata and a sealed
+page up to 2 KiB (a claim of a new message reads neither). Every term but
+Class A fell: at 10x the marginal without Class A went from $82.41 to
+$42.77; queue CPU is flat over the run instead of rising. Both 10x arms are
+VOID only by the drain rule (in-flight leases at the deadline); none lost a
+message.
+
+Screening of the next levers (10x, 10 + 20 min, one shared arm A, all arms
+at once on separate ports; read the deltas, not the absolutes):
+
+| Binary | Marginal | Moved |
+|---|---:|---|
+| reference 2ea30631 | $115.69 | |
+| block cache clamps its entries | $116.04 | memory 181 -> 141 MB (share 28.1% -> 21.9%) |
+| binary state row | $111.86 | transfer $18.86 -> $15.36 |
+| claims skip indexes whose floor is in the future | $112.50 | CPU $7.54 -> $4.06 (share 27.3% -> 14.7%) |
+
+All three landed. Applied to r1, the 10x marginal is about $85 (floor share
+~$19 = memory ~20%; CPU ~$4.3; transfer ~$17.7) and the 1x about $23.
+
+**Class A is now the term between us and the goal.** A shard's WAL is
+uploaded once per ~101 ms pump window that holds any written group; at 10x
+queue groups fill every window of all four shards (~137k PUTs an hour), so
+the queue's Class A marginal is the cap minus the baseline's own windows,
+not a function of how much the queue writes. Without Class A the 10x
+marginal is ~$27 against a $54.83 ceiling and the 1x ~$1.3 against $5.41.
+The one lever on it is a queue commit window: a group holding only queue
+writes waits up to a few hundred ms for the next baseline flush instead of
+opening its own window. It is client-visible (queue send and settle
+latency rises by up to the window) and runs against the 2026-10-07
+write-tier ruling, so it is the owner's decision. In a busy shared cell,
+where the baseline already fills most windows, the queue's Class A falls
+toward zero without it.
+
+Host capacity (queue load only, peak profile, one server on the M1 Ultra,
+2ea30631): 20x 0.20 cores / 210 MB, 40x 0.26 / 273 MB, 80x 0.34 / 301 MB
+(5-minute steps); with 256 sends in flight, 160x kept up (2,794 messages/s
+sent, 0.43 cores, send p99 1.6 s) but reached 519 MB RSS in 8 minutes;
+320x and 640x did not keep up (sends plateau at ~2,700/s, p99 3-6 s) with
+CPU still at 0.46-0.58 cores. The ceiling is memory and the commit path,
+not CPU: by extrapolation about 100x sustained under the 500 MB shed line
+(not yet measured: the 25-minute 100x run was lost to a full disk), 160x
+for minutes.
