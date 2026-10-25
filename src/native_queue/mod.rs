@@ -409,13 +409,28 @@ pub(crate) struct WakeRequest {
     pub oldest_due_age_ms: i64,
 }
 
+/// Block fetches a queue scan keeps in flight ahead of where it reads.
+pub(crate) const SCAN_FETCHES: usize = 16;
+
 /// Queue scans cache the blocks they read (pricing benchmark, 2026-10-24):
 /// a claim and a sweep scan the same small index families again and again,
 /// and SlateDB's default scan reads every sorted run's block from the
 /// bucket each time (1M extra GETs in a 90-minute 1x run, $180 a month).
+///
+/// They also keep [`SCAN_FETCHES`] one-block fetches in flight ahead of
+/// where they read (pricing benchmark section 11, 2026-10-25). The
+/// committer runs a shard's queue operations one at a time, and with one
+/// fetch a claim walking a backlog that has left the memtable read each
+/// 4 KiB block of the availability index in its own round trip, holding
+/// every operation of the shard for it: one queue drained at about 210
+/// messages a second. The block cache joins concurrent loads of a block,
+/// so the claims that follow find the blocks their predecessors' walks
+/// started, read or in flight, and a sweep walking settled-lease
+/// tombstones waits for one round trip per sixteen blocks.
 pub(crate) fn scan_options() -> slatedb::config::ScanOptions {
     slatedb::config::ScanOptions {
         cache_blocks: true,
+        max_fetch_tasks: SCAN_FETCHES,
         ..slatedb::config::ScanOptions::default()
     }
 }

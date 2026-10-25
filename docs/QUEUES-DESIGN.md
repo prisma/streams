@@ -325,7 +325,11 @@ allowed); reserve read memory for exactly that total (429
 `project_memory_pressure` if refused); lease exactly that set (row `leased`,
 `attempts += 1`, `leaseGen += 1`, deadline, `L` entry, `open += 1` for newly
 taken messages, `C` advanced; `lastUsefulClaimAt = t` when at least one
-message was leased).
+message was leased). The committer runs a shard's operations one at a
+time, so a claim must not wait for storage block by block: its walk of `A`
+keeps sixteen block fetches in flight ahead of it, and the claims that
+follow find their blocks read or in flight ([pricing benchmark
+§11](QUEUES-PRICING-BENCHMARK.md)).
 
 **After the commit is durable (with the key):** open each leased envelope
 from the page its `A` entry carried (§5.2), or else read it by a **point

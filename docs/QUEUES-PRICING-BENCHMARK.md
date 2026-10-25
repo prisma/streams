@@ -387,3 +387,38 @@ side's terms (claims, settles, page reads) therefore cover ~75% of the sent
 messages; scaled to all of them, the per-million figure is ~$0.16-0.17.
 A single shard (INITIAL_SHARDS=1) saturated at 589 messages/s with 1.8 s
 sends, so its lower Class A is not a like-for-like comparison.
+
+**The single-queue consume ceiling, found and lifted (2026-10-25).** The
+ceiling was the shard committer waiting for the availability index one block
+at a time. The committer runs a shard's queue operations one after another
+and awaits their reads inside the commit group; a claim walks the index from
+the group cursor (2 x max + 16 stored rows), and once the due backlog has
+left the memtable (compacted runs, or L0 blocks evicted) that walk fetched
+each 4 KiB block in its own GET (`scan_options()` used SlateDB's default of
+one fetch at a time). A 10-message claim advances the cursor about two blocks
+(entries of ~700 B carry the inline page), so each claim cost one or two
+object-store round trips of the whole shard: about 40 blocks a second at
+25 ms, ~210 messages a second, whatever the workers, consumer loops or
+handler time, at ~0.1-0.3 cores.
+
+Evidence, one queue (the Stripe sync) at 100x on one 4-shard instance with
+its deliverAt spread compressed so a deep due backlog forms in minutes
+(`~/.streams-k2/queues-bench/hotq.sh`, runs under `hotq/`): the hot shard's
+committer was 92-105% busy (`/v1/debug/timings`: ~8 groups a second, ~8 ms
+of committer time per operation) while the process used ~10% of a core and
+`sample` found every thread parked; per-operation instrumentation (a local,
+uncommitted build) put ~90% of the hot committer in claims and ~93% of claim
+time in the availability walk, 16-17 ms a scan (~0.5 ms per row walked) in
+the deep-backlog phase, against ~0.3 ms for a settle and ~0.05 ms for a point
+get. The same walk made a sweep over settled-lease tombstones hold the
+committer for 0.4-3 s.
+
+The fix keeps 16 one-block fetches in flight ahead of every queue scan
+(`SCAN_FETCHES`). The block cache joins concurrent loads of a block, so the
+claims that follow find the blocks their predecessors' walks started, read or
+in flight; the committer waits for a round trip only where the walk outpaces
+16 blocks (~3,500 entries a second at 25 ms). Same scenario, 600 s, before and
+after: at 363 s the hot committer was 76% and 8% busy, an availability scan
+took 16.5 and 0.5 ms, a sweep 2.3 s and 38 ms, and the drain fell behind the
+due rate (340/s against 377/s) and kept up with it (374/s), at 12.0% and
+13.1% of a core.

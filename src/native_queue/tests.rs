@@ -248,4 +248,16 @@ fn queue_scans_cache_their_blocks() {
         scan_options().order,
         slatedb::IterationOrder::Ascending
     ));
+    // Sixteen one-block fetches ahead of a claim's walk keep about 3,500
+    // availability entries a second coming at a 25 ms round trip; one
+    // fetch held a queue to about 210 (pricing benchmark section 11).
+    // Blocks, not runs of them: the cache joins concurrent loads of one
+    // block only.
+    assert_eq!(
+        (
+            scan_options().max_fetch_tasks,
+            scan_options().read_ahead_bytes
+        ),
+        (16, 1)
+    );
 }
