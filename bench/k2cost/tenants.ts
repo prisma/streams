@@ -295,7 +295,9 @@ export const LEGS: Record<string, Leg> = { ...HOSTILE_LEGS };
  * cell's per-project in-flight ceiling (ADMIT_MAX_INFLIGHT 512 / k 8 = 64),
  * so a class at its ceilings can still be refused for in-flight, and the
  * manifest's widest burst (h9's 64 readers) never waits; 37 classes at
- * 128 hold at most 4,736 sockets, a third of macOS's 16,383 ports. */
+ * 128 hold at most 4,736 sockets, a third of macOS's 16,383 ports. A
+ * class's manifest `pool` replaces it for that class: a packing class of
+ * hundreds of projects holds a long-poll (and pulls) per project at once. */
 export const CLASS_POOL_SOCKETS = 128;
 
 export interface RunEnv {
@@ -327,7 +329,7 @@ async function runPhase(env: RunEnv, p: Project, i: number, ph: PhaseSpec): Prom
   const flags = phaseFlags(p, ph);
   const o = new Opts(flags);
   const ctx: Ctx = {
-    http: new Http(env.base, env.headers.get(p.id)!, meter, env.pools.get(p.cls.class)), meter, o, prefix: flags.get("prefix")!,
+    http: new Http(env.base, env.headers.get(p.id)!, meter, env.pools.get(p.cls.class, p.cls.pool)), meter, o, prefix: flags.get("prefix")!,
     streams: Number(flags.get("streams")), seed: p.seed + i * 7919, duration: (endMs - startMs) / 1000, owner: p.owner,
   };
   const rep = new Reporter(ph.mode, meter, undefined, undefined, 10, o.asObject(), undefined);

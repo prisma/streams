@@ -9,6 +9,7 @@
 //       [--ttl 43200] [--every 28800] [--upload s3://BUCKET/KEY --s3-endpoint URL --s3-creds FILE]
 //   bun bench/k2cost/tenants-admit.ts publish --state DIR --s3-endpoint URL --s3-creds FILE
 //       --upload s3://BUCKET/KEY
+//   bun bench/k2cost/tenants-admit.ts feeds --state DIR --out FEEDS_DIR
 //
 // admit runs cell-admin's own CLI (deploy/cell-admin/cell-admin.ts main):
 // `init` when DIR holds no cell yet (with the ids given), then `admit`
@@ -30,13 +31,20 @@
 //
 // publish uploads the state's feeds-bundle.json the same way: for a rig
 // whose cell's wrapper polls FEEDS_S3_KEY (run-shared.sh).
+//
+// feeds writes the bundle's three feeds into FEEDS_DIR as keys.json,
+// policies.json and grants.json, each atomically, as deploy/app-server
+// materializes them from the bundle (feeds.ts `materialize`): for a rig
+// that runs the binary natively, with no wrapper, and points its
+// STREAMS_AUTH_{KEYS,POLICY,GRANTS}_FILE there (run-local.sh's tenants
+// mode). Rerun it after an admission to publish that admission.
 
 import { S3Client } from "bun";
-import { readFileSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { main as cellAdmin } from "../../deploy/cell-admin/cell-admin.ts";
 import { loadChecked } from "../../deploy/cell-admin/publish.ts";
-import { type CellState, STATE_FILE, writeDurable } from "../../deploy/cell-admin/state.ts";
+import { BUNDLE_FILE, type CellState, STATE_FILE, writeDurable } from "../../deploy/cell-admin/state.ts";
 import { DirStore } from "../../deploy/cell-admin/store.ts";
 import { cellSigningKey, customerClaims, signJwt } from "../../deploy/cell-admin/tokens.ts";
 import { Opts, installSignals, parseFlags, sleep, stop } from "./common.ts";
@@ -161,14 +169,36 @@ export async function tokens(plan: Plan, o: Opts, say: Say, signal: AbortSignal)
   return rounds;
 }
 
+// ---------------------------------------------------------------- feeds
+
+/** The feeds a bundle carries, by the file each one is materialized to. */
+export const FEED_NAMES = ["keys", "policies", "grants"] as const;
+
+/** The state's bundle as three feed files in `outDir`, each replaced
+ * atomically (tmp + rename), refused before any is written when the bundle
+ * lacks one; the keys feed's version. */
+export function writeFeeds(stateDir: string, outDir: string): number {
+  const bundle = JSON.parse(readFileSync(join(resolve(stateDir), BUNDLE_FILE), "utf8")) as Record<string, unknown>;
+  const missing = FEED_NAMES.filter((f) => typeof bundle[f] !== "object" || bundle[f] === null);
+  if (missing.length) throw new Error(`${stateDir}'s ${BUNDLE_FILE} has no ${missing.join(", ")} feed`);
+  mkdirSync(outDir, { recursive: true });
+  for (const name of FEED_NAMES) {
+    const path = join(outDir, `${name}.json`);
+    writeFileSync(`${path}.tmp`, JSON.stringify(bundle[name]));
+    renameSync(`${path}.tmp`, path);
+  }
+  return (bundle.keys as { feed_version: number }).feed_version;
+}
+
 // ---------------------------------------------------------------- main
 
-const USAGE = `usage: tenants-admit.ts <admit|tokens|publish> [flags]
+const USAGE = `usage: tenants-admit.ts <admit|tokens|publish|feeds> [flags]
   admit    --manifest M --state DIR --key-file K [--cell-id C --deployment-project P --account A
            [--issuer URL] [--profile F,F]]
   tokens   --manifest M --state DIR --key-file K --out MAP [--ttl ${TOKEN_TTL_SECS}] [--every ${REFRESH_SECS}]
            [--upload s3://BUCKET/KEY --s3-endpoint URL --s3-creds FILE]
   publish  --state DIR --upload s3://BUCKET/KEY --s3-endpoint URL --s3-creds FILE
+  feeds    --state DIR --out FEEDS_DIR
 `;
 
 export async function main(argv: string[], say: Say = (l) => console.log(l)): Promise<number> {
@@ -177,6 +207,7 @@ export async function main(argv: string[], say: Say = (l) => console.log(l)): Pr
   const o = new Opts(flags);
   const need: Record<string, string[]> = {
     admit: ["manifest", "state", "key-file"], tokens: ["manifest", "state", "key-file", "out"], publish: ["state", "upload"],
+    feeds: ["state", "out"],
   };
   if (!need[cmd] || positional.length > 1 || need[cmd]!.some((k) => !o.has(k))) {
     process.stderr.write(USAGE);
@@ -187,6 +218,11 @@ export async function main(argv: string[], say: Say = (l) => console.log(l)): Pr
     const bundle = readFileSync(join(resolve(o.str("state")!), "feeds-bundle.json"), "utf8");
     await putVerified(up, bundle);
     say(`published feed_version ${JSON.parse(bundle).keys.feed_version} to ${up.key}`);
+    return 0;
+  }
+  if (cmd === "feeds") {
+    const out = resolve(o.str("out")!);
+    say(`feeds ${out}: feed_version ${writeFeeds(o.str("state")!, out)}`);
     return 0;
   }
   const { manifest, sha256 } = readManifest(o.str("manifest")!);

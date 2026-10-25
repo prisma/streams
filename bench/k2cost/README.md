@@ -25,7 +25,8 @@ ratchet here is 1,000 lines per file; the s3lite census it reads (C2) is
 | `shared_verdict.py` (+ `test_shared_verdict.py`) | the Q5 arms' bars and the arm manifest the single-cell RC gate reads (below) |
 | `layer_b_summary.py` (+ `test_layer_b_summary.py`) | a Layer B run's public summary (each bar, the RSS line, the driver pools, the verdict) for the `layer-b` workflow, whose raw evidence stays on its runner (below) |
 | `run-shared.sh` (+ `../docker/Dockerfile.rig`, `test_run_shared.py`) | the Layer B rig: one shared cell from a release directory in a linux/amd64 container at 1 vCPU / 1 GiB, s3lite at 20 ms, a tenants manifest, the verdict (below) |
-| `tenants-admit.ts` | the manifest's projects onto a cell-admin cell (its own CLI's `init` and `admit`, each with its class's quota set), the token map (12 h tokens, re-minted every 8 h, optionally uploaded), and the bundle's publication |
+| `tenants-admit.ts` | the manifest's projects onto a cell-admin cell (its own CLI's `init` and `admit`, each with its class's quota set), the token map (12 h tokens, re-minted every 8 h, optionally uploaded), the bundle's publication, and its three feed files for a natively run cell (`feeds`) |
+| `packing.py price RUN` / `packing.py curve RUN...` (+ `points/PACK-{T,S}.env`, `tenants/pack-*.json`) | the packing measurement: N tenants of one profile on one launch cell, the instance's month and each tenant's share at the owner's prices against the K2 bill, the cell's limits, and the steps side by side (below) |
 | `fake-cell.ts`, `*.test.ts` | the harness's tests, against a product-surface fake: `bun test ./bench/k2cost` |
 
 ## Running a point
@@ -471,6 +472,80 @@ does, is void.
   debug routes and s3lite's stats routes, which make no store
   requests. The usage poll runs after the `end` snapshot, so it is
   outside every priced window.
+
+## Packing (N tenants of one profile on one launch cell)
+
+The question (owner, 2026-10-25): what does a tenant cost when an
+instance carries as many tenants of its profile as it can hold? One
+instance's fixed costs (the 1 GiB, the store's idle polls and system
+writes, and the WAL: one PUT per ~101 ms pump window that holds any write,
+about 9.5 a second per shard when written often) are shared by its
+tenants, so the cost per tenant falls with N until a limit of the cell
+binds. A packing step runs N projects of one of Fable's profiles (the
+streams-cost report of 2026-10-24, section 4.1) on one launch cell, each a
+separate project with its own token, admitted as a shared cell admits
+them, and prices the instance's whole month from a 20-minute steady
+window.
+
+The rig is `run-local.sh`'s tenants mode (a point that sets
+`TENANTS_MANIFEST`): the launch posture exactly as SCR-* runs it
+(`compute-1g.env` + `shared-cell.env`), but no platform emulator: the
+manifest's projects go through cell-admin (`tenants-admit.ts admit` on the
+two profiles, so each project's quotas are the cell's ceilings at k = 8),
+12 h tokens (`tokens`) and the bundle's feed files (`feeds`), and its
+traffic is `tenants.ts run` (one driver for every project, each with its
+own token and record key, its records the oracle's). The phase line
+`tenants` snapshots the store, the pump and the server's CPU and RSS at
+each manifest period's edges, so `counts.py` has a `period steady`
+window; the scrape also reads `/operator/data.json` (the parked waits).
+After the run the rig reads every project's meters (`tenants.ts usage`),
+audits every produced stream (`tenants.ts audit`) and prices the step
+(`packing.py price`).
+
+| Point | Steps (`PACK_N`) | Per project | Holds per project |
+|---|---|---|---|
+| `points/PACK-T.env` (`tenants/pack-t-NNNN.json`) | 1, 100, 400, 1,000 (cell-admin's default `--max-projects`, the scale Layer B certifies) | T: 3 streams, 200 appends a day of 400 B JSON singles, one long-poll tail always connected | 1 parked wait |
+| `points/PACK-S.env` (`tenants/pack-s-NNNN.json`) | 1, 5, 10, 20, 30, 46 (46 x 25 = 1,150 of the live pool's 1,200) | S: 20 streams, 2 appends a second of 1 KiB JSON singles, a long-poll tail per stream, one consumer group (pull 10, settle each) on 5 of them | 25 parked waits (20 tails, a pull loop per group stream) |
+
+Each step: admission, the manifest's 1,640 s (setup 0-120 s, the load from
+180 s, `steady` 360-1,560 s), a short quiescence, 60 s of idle tail, the
+usage read and the audit: about 40 minutes. `TOKIO_WORKERS=2` is what the
+binary runs on a 1-vCPU instance. A manifest class's `pool` sizes its
+driver pool so every wait is offered to the cell at once (the default 128
+would hold the rest in the driver). `PACK_SMOKE=1` runs a step at time
+scale 0.15 (about 4 minutes of run) to check a setup.
+
+```bash
+cd ~/code/streams                       # a checkout with this rig
+export K2_HOME=$HOME/.streams-k2/streams-bench
+S3=~/.streams-k2/queues-bench/bin/s3lite-5d84f296
+BIN=~/.streams-k2/queues-bench/bin/streams-slate-<sha8>; SHA=<sha8>
+PACK_N=100 K2_PORT_BASE=9770 K2_SERVER_BIN=$BIN K2_SERVER_COMMIT=$SHA K2_S3LITE_BIN=$S3 \
+  bench/k2cost/run-local.sh bench/k2cost/points/PACK-T.env > $K2_HOME/console/PACK-T-0100.log 2>&1
+python3 bench/k2cost/packing.py curve $K2_HOME/results/PACK-T-*-<stamp>... --out pack-t.json
+```
+
+Steps on distinct port bases run at once (their counts do not move with
+host load; their CPU and RSS are indicative, as every Mac number is).
+
+`packing.py price RUN` (`RUN/packing.json`): the instance's month at the
+owner's prices from `period steady` (Class A and B as `k2cells` classes
+them, PUT bytes as transfer in, the live bytes' growth held half a month,
+the server's CPU seconds, the provisioned 1 GiB, the bytes delivered as
+egress; no floor share: the instance carries only these tenants), the same
+with Class A and B at half, each per tenant; a tenant's K2 bill from the
+customer's bytes in the window (T keeps everything, S 7 days) and its 20%
+ceiling; the WAL PUTs a second and the pump's fill of its ~9.9 a second
+cap; and each limit's use: projects of 1,000, parked waits of the live
+pool (`SSE_MAX_CONNECTIONS`, 1,200), vCPU of 1 (`--cpu-factor 2` for
+F5's field factor), RSS of the shed line (500 MB), requests and append
+bytes a second of the cell's envelope. A step is VOID when a compliant
+tenant was refused, the cell shed in the window, an audit failed, a
+project's meters did not settle, the window is missing or the server is
+not the declared commit. `packing.py curve RUN...`: the steps side by
+side, a line through the instance's month (its fixed part and the cost of
+each added tenant), the N at which each limit's use reaches 1 along a
+line through the steps, and the cost per tenant at the first of them.
 
 ## Shared-cell tenants (the Q5 harness)
 

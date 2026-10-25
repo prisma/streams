@@ -70,6 +70,25 @@
 #               last phase): the earlier phases' deferred work (absorption,
 #               compaction, GC) lands here and is priced as produce, not in
 #               the phases that follow
+#   tenants [--time-scale F]   (tenants mode, below) the manifest's run:
+#               tenants.ts run under the projects' tokens, with a boundary
+#               snapshot and a period_start/period_end mark at each of the
+#               manifest's period edges (counts.py's "period NAME" windows)
+#
+# Tenants mode (the packing measurement, README "Packing"): a point that
+# sets TENANTS_MANIFEST (a tenants manifest, tenant-plan.ts; relative to the
+# checkout's root) runs on POSTURE=launch with no platform emulator. Its
+# projects are admitted as a shared cell admits them: cell-admin's cell on
+# the two launch profiles (tenants-admit.ts admit: every project with its
+# class's quota set, the cell's ceilings otherwise, and the canary), 12 h
+# tokens (tenants-admit.ts tokens) and the bundle's three feed files, which
+# the server reads (tenants-admit.ts feeds). Its PHASES take idle, restart,
+# quiesce and tenants lines only (its traffic is the manifest's); the scrape
+# also reads /operator/data.json (the parked waits). After the end
+# snapshot: tenants.ts usage and audit, counts.py and packing.py price,
+# not price.py (which prices one project's k2gen ledgers). A point must not
+# move the profiles' sizing keys in SERVER_ENV_EXTRA: cell-admin derives
+# the quotas it publishes from the profiles alone.
 # "$RUN" in a phase line (written \$RUN in the point's PHASES) is the
 # results directory, e.g. walk ... --expect \$RUN/phase-3.ledger.json.
 # A k2gen line ending in "&" runs in the background: the next line starts
@@ -107,6 +126,8 @@ S3=http://127.0.0.1:$S3_PORT
 CUSTOMER_PROJECT=proj-k2
 CUSTOMER_WORKSPACE=ws-k2
 CELL=cell-k2
+DEPLOY_PROJECT=proj-k2cost-deploy
+ACCOUNT=acct-k2cost
 
 # ---- point --------------------------------------------------------------
 # Defaults; a value from the caller's environment survives into the point
@@ -124,6 +145,7 @@ QUIESCE_WINDOW_SECS=${QUIESCE_WINDOW_SECS:-300}
 USAGE_WAIT_SECS=${USAGE_WAIT_SECS:-330}
 SCRAPE_SECS=${SCRAPE_SECS:-10}
 POINT_NAME=${POINT_NAME:-}
+TENANTS_MANIFEST=${TENANTS_MANIFEST:-}
 # shellcheck source=/dev/null
 . "$POINT"
 [ -n "$POINT_NAME" ] || POINT_NAME=$(basename "$POINT" .env)
@@ -131,6 +153,31 @@ case "$SERVERS" in 1|2) ;; *) die 2 "SERVERS must be 1 or 2" ;; esac
 case "$POSTURE" in k2|launch) ;; *) die 2 "POSTURE must be k2 or launch, not $POSTURE" ;; esac
 [ "$POSTURE" = k2 ] || [ "$SERVERS" = 1 ] \
   || die 2 "POSTURE=launch is one server (the launch cell runs no fleet), not SERVERS=$SERVERS"
+TENANTS=0
+if [ -n "$TENANTS_MANIFEST" ]; then
+  TENANTS=1
+  [ "$POSTURE" = launch ] \
+    || die 2 "TENANTS_MANIFEST runs on POSTURE=launch: cell-admin admits its projects onto a shared cell"
+  case "$TENANTS_MANIFEST" in /*) ;; *) TENANTS_MANIFEST=$ROOT/$TENANTS_MANIFEST ;; esac
+  [ -f "$TENANTS_MANIFEST" ] || die 2 "no tenants manifest $TENANTS_MANIFEST"
+  CUSTOMER_PROJECT=tenants
+fi
+# A tenants point's traffic is its manifest's: the rig's own lines only. A
+# tenants line runs in the foreground (its period snapshots are timed from it).
+while IFS= read -r line; do
+  line=$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+  case "$line" in ''|\#*) continue ;; esac
+  mode=${line%%[[:space:]&]*}
+  case "$mode" in
+    idle|restart|quiesce) ;;
+    tenants)
+      [ "$TENANTS" = 1 ] || die 2 "a tenants phase needs TENANTS_MANIFEST (the manifest whose projects the rig admits)"
+      case "$line" in *'&') die 2 "a tenants phase runs in the foreground, not \"$line\"" ;; esac
+      ;;
+    *) [ "$TENANTS" = 0 ] \
+         || die 2 "phase \"$line\": a tenants point runs idle, restart, quiesce and tenants lines only (its traffic is the manifest's)" ;;
+  esac
+done <<< "$PHASES"
 K2_RUN_TAG=${K2_RUN_TAG:-}
 case "$K2_RUN_TAG" in *[!A-Za-z0-9._-]*) die 2 "K2_RUN_TAG must be letters, digits, '.', '_' or '-': $K2_RUN_TAG" ;; esac
 
@@ -259,10 +306,10 @@ feeds_env() { # the emulator's feed files
   echo "STREAMS_AUTH_POLICY_FILE=$SECRETS/feeds/policies.json"
   echo "STREAMS_AUTH_GRANTS_FILE=$SECRETS/feeds/grants.json"
 }
-identity_env() { # the billing identity
+identity_env() { # the billing identity (cell-admin's init takes the same ids in tenants mode)
   echo "USAGE_STREAM_KEY=$(cat "$SECRETS/usage_key")"
-  echo "ACCOUNT_ID=acct-k2cost"
-  echo "PROJECT_ID=proj-k2cost-deploy"
+  echo "ACCOUNT_ID=$ACCOUNT"
+  echo "PROJECT_ID=$DEPLOY_PROJECT"
   echo "CELL_ID=$CELL"
 }
 k2_env() { # ordinal
@@ -341,6 +388,13 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "DRY_RUN s3lite binary: $S3LITE_BIN sha256 $(sha256_of "$S3LITE_BIN")"
   echo "DRY_RUN pilot binary: ${PILOT_BIN:-unused (1 server)}"
   echo "DRY_RUN server commit: $EXPECT_COMMIT ($EXPECT_SOURCE)"
+  if [ "$TENANTS" = 1 ]; then
+    echo "DRY_RUN tenants: $TENANTS_MANIFEST ($(python3 -c 'import json, sys
+m = json.load(open(sys.argv[1]))
+print("manifest %s, %d projects, periods %s" % (m["name"], sum(c["count"] for c in m["classes"]),
+                                               json.dumps(m.get("periods") or {}, sort_keys=True)))' \
+      "$TENANTS_MANIFEST")); cell $CELL, deployment project $DEPLOY_PROJECT, account $ACCOUNT"
+  fi
   for n in $(seq 1 "$SERVERS"); do
     server_env_file "$n"
     echo "DRY_RUN server-$n.env:"
@@ -352,60 +406,85 @@ mkdir "$RUN" || die 2 "$RUN exists"
 cp "$POINT" "$RUN/point.env"
 : > "$MARKS"
 
-# ---- platform emulator --------------------------------------------------
 log "point $POINT_NAME -> $RUN ($POSTURE posture, ports $EMU_PORT-$LB_PORT, server $SERVER_BIN," \
   "expected commit $EXPECT_COMMIT from $EXPECT_SOURCE)"
-node platform-demo/src/emulator.mjs --port $EMU_PORT \
-  --cells "$CELL=$SECRETS/feeds" \
-  --fixture "$CUSTOMER_PROJECT:$CUSTOMER_WORKSPACE:$CELL" \
-  > "$RUN/emulator.log" 2>&1 < /dev/null &
-PIDS_EMU=$!
 
 # ---- fresh s3lite -------------------------------------------------------
 "$S3LITE_BIN" --listen 127.0.0.1:$S3_PORT \
   --latency-ms "$S3LITE_LATENCY_MS" > "$RUN/s3lite.log" 2>&1 < /dev/null &
 PID_S3=$!
-for i in $(seq 1 50); do
-  curl -sf -o /dev/null "$EMU/admin/placement" && curl -sf -o /dev/null "$S3/_s3lite/stats" && break
-  sleep 0.2
-done
-curl -sf -o /dev/null "$EMU/admin/placement" || { echo "run-local: emulator did not start" >&2; exit 1; }
-curl -sf -o /dev/null "$S3/_s3lite/stats" || { echo "run-local: s3lite did not start" >&2; exit 1; }
 
-# The data-plane credential exists BEFORE the cells boot, so their boot
-# snapshot carries the grant. Every scope the product defines: the
-# generator creates, appends, reads, pulls/settles consumer groups,
-# deletes streams and reads project usage.
-SCOPES='["streams.metadata.read","streams.records.read","streams.records.append","streams.create","streams.lifecycle.manage","streams.consumers.pull","streams.consumers.settle","streams.consumers.configure","streams.forks.create","streams.dlq.configure","streams.watches.manage","streams.catalog.read","streams.usage.read"]'
-curl -sf -X POST -H 'content-type: application/json' \
-  -d "{\"displayName\":\"k2gen $POINT_NAME\",\"scopes\":$SCOPES}" \
-  "$EMU/v1/projects/$CUSTOMER_PROJECT/streams/credentials" > "$SECRETS/credential.json"
-umask 077
-jq -r '"authorization: StreamsCredential " + .secret' "$SECRETS/credential.json" > "$SECRETS/exchange.hdr"
-umask 022
-jq '{credential: {id: .credential.id, scopes: .credential.scopes, projectId: .credential.projectId}}' \
-  "$SECRETS/credential.json" > "$RUN/credential.json"
-rm -f "$SECRETS/credential.json"
-HDR=$SECRETS/headers
-mint_headers() { # exchange the credential, then replace the headers file atomically
-  local tok
-  tok=$(curl -sf -X POST -H @"$SECRETS/exchange.hdr" "$EMU/v1/token/streams" | jq -r .accessToken) || return 1
-  [ -n "$tok" ] && [ "$tok" != null ] || return 1
-  (
-    umask 077
-    printf 'authorization: Bearer %s\nstreams-encryption-key: %s\n' "$tok" "$(cat "$SECRETS/stream_key")" \
-      > "$HDR.tmp"
-  )
-  mv -f "$HDR.tmp" "$HDR"
-}
-mint_headers || { echo "run-local: token exchange failed" >&2; exit 1; }
-# Tokens live 600 s (the emulator's exp); the generator re-reads the file.
-(
-  while sleep 240; do
-    mint_headers || echo "[k2] token refresh failed" >&2
+if [ "$TENANTS" = 1 ]; then
+  # ---- the tenants' cell: cell-admin's admission, tokens and feeds ------
+  # The cell's signing key (ed25519, as cell-admin init expects), made by
+  # bun: macOS's /usr/bin/openssl (LibreSSL) has no ed25519.
+  K2_CELL_KEY=$SECRETS/cell.pem bun -e 'require("node:fs").writeFileSync(process.env.K2_CELL_KEY,
+    require("node:crypto").generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "pem" }),
+    { mode: 0o600 })' || die 1 "could not make the cell's signing key"
+  TOKENS=$SECRETS/tokens.json
+  cp "$TENANTS_MANIFEST" "$RUN/tenants-manifest.json"
+  log "admitting $(basename "$TENANTS_MANIFEST")'s projects into $CELL (cell-admin, the launch profiles)"
+  bun "$HERE/tenants-admit.ts" admit --manifest "$TENANTS_MANIFEST" --state "$SECRETS/cell" \
+    --key-file "$SECRETS/cell.pem" --cell-id "$CELL" --deployment-project "$DEPLOY_PROJECT" --account "$ACCOUNT" \
+    --profile "$PROFILE_ENV,$SHARED_CELL_ENV" > "$RUN/admit.log" 2>&1 < /dev/null \
+    || die 1 "admission failed; see $RUN/admit.log"
+  bun "$HERE/tenants-admit.ts" tokens --manifest "$TENANTS_MANIFEST" --state "$SECRETS/cell" \
+    --key-file "$SECRETS/cell.pem" --out "$TOKENS" >> "$RUN/admit.log" 2>&1 < /dev/null \
+    || die 1 "token minting failed; see $RUN/admit.log"
+  bun "$HERE/tenants-admit.ts" feeds --state "$SECRETS/cell" --out "$SECRETS/feeds" >> "$RUN/admit.log" 2>&1 \
+    < /dev/null || die 1 "the feed files failed; see $RUN/admit.log"
+  log "$(grep -E '^admit:' "$RUN/admit.log" | tail -1)"
+  for i in $(seq 1 50); do curl -sf -o /dev/null "$S3/_s3lite/stats" && break; sleep 0.2; done
+  curl -sf -o /dev/null "$S3/_s3lite/stats" || { echo "run-local: s3lite did not start" >&2; exit 1; }
+else
+  # ---- platform emulator ------------------------------------------------
+  node platform-demo/src/emulator.mjs --port $EMU_PORT \
+    --cells "$CELL=$SECRETS/feeds" \
+    --fixture "$CUSTOMER_PROJECT:$CUSTOMER_WORKSPACE:$CELL" \
+    > "$RUN/emulator.log" 2>&1 < /dev/null &
+  PIDS_EMU=$!
+  for i in $(seq 1 50); do
+    curl -sf -o /dev/null "$EMU/admin/placement" && curl -sf -o /dev/null "$S3/_s3lite/stats" && break
+    sleep 0.2
   done
-) < /dev/null &
-PID_REFRESH=$!
+  curl -sf -o /dev/null "$EMU/admin/placement" || { echo "run-local: emulator did not start" >&2; exit 1; }
+  curl -sf -o /dev/null "$S3/_s3lite/stats" || { echo "run-local: s3lite did not start" >&2; exit 1; }
+
+  # The data-plane credential exists BEFORE the cells boot, so their boot
+  # snapshot carries the grant. Every scope the product defines: the
+  # generator creates, appends, reads, pulls/settles consumer groups,
+  # deletes streams and reads project usage.
+  SCOPES='["streams.metadata.read","streams.records.read","streams.records.append","streams.create","streams.lifecycle.manage","streams.consumers.pull","streams.consumers.settle","streams.consumers.configure","streams.forks.create","streams.dlq.configure","streams.watches.manage","streams.catalog.read","streams.usage.read"]'
+  curl -sf -X POST -H 'content-type: application/json' \
+    -d "{\"displayName\":\"k2gen $POINT_NAME\",\"scopes\":$SCOPES}" \
+    "$EMU/v1/projects/$CUSTOMER_PROJECT/streams/credentials" > "$SECRETS/credential.json"
+  umask 077
+  jq -r '"authorization: StreamsCredential " + .secret' "$SECRETS/credential.json" > "$SECRETS/exchange.hdr"
+  umask 022
+  jq '{credential: {id: .credential.id, scopes: .credential.scopes, projectId: .credential.projectId}}' \
+    "$SECRETS/credential.json" > "$RUN/credential.json"
+  rm -f "$SECRETS/credential.json"
+  HDR=$SECRETS/headers
+  mint_headers() { # exchange the credential, then replace the headers file atomically
+    local tok
+    tok=$(curl -sf -X POST -H @"$SECRETS/exchange.hdr" "$EMU/v1/token/streams" | jq -r .accessToken) || return 1
+    [ -n "$tok" ] && [ "$tok" != null ] || return 1
+    (
+      umask 077
+      printf 'authorization: Bearer %s\nstreams-encryption-key: %s\n' "$tok" "$(cat "$SECRETS/stream_key")" \
+        > "$HDR.tmp"
+    )
+    mv -f "$HDR.tmp" "$HDR"
+  }
+  mint_headers || { echo "run-local: token exchange failed" >&2; exit 1; }
+  # Tokens live 600 s (the emulator's exp); the generator re-reads the file.
+  (
+    while sleep 240; do
+      mint_headers || echo "[k2] token refresh failed" >&2
+    done
+  ) < /dev/null &
+  PID_REFRESH=$!
+fi
 
 if [ "$SERVERS" = 2 ]; then
   # Seed desired=2 before boot so both ordinals serve from the first
@@ -452,8 +531,12 @@ if [ $prc != 0 ] && [ "${K2_ALLOW_COMMIT_MISMATCH:-0}" != 1 ]; then
     "or K2_ALLOW_COMMIT_MISMATCH=1 to run it void)" >&2
   exit 2
 fi
+# A tenants point also reads /operator/data.json: the parked waits, which
+# the cell's live pool (SSE_MAX_CONNECTIONS) bounds.
+OPERATOR=()
+[ "$TENANTS" = 0 ] || OPERATOR=(--operator)
 python3 "$HERE/scrape.py" loop "${SCRAPE_COMMON[@]}" --interval "$SCRAPE_SECS" \
-  --quiesce-min-secs "$QUIESCE_MIN_SECS" --quiet-secs "$QUIESCE_WINDOW_SECS" \
+  --quiesce-min-secs "$QUIESCE_MIN_SECS" --quiet-secs "$QUIESCE_WINDOW_SECS" ${OPERATOR[@]+"${OPERATOR[@]}"} \
   > "$RUN/scrape.log" 2>&1 < /dev/null &
 PID_SCRAPE=$!
 sleep 1
@@ -498,6 +581,58 @@ quiesce_wait() {
   log "quiesced ($id) after ${waited} s"
 }
 
+# period_edges SCALE: "SECS start|end NAME" per edge of the manifest's
+# periods, in time order, at most its duration (the run ends there).
+period_edges() {
+  python3 - "$TENANTS_MANIFEST" "$1" <<'PY'
+import json, re, sys
+m = json.load(open(sys.argv[1]))
+scale, end = float(sys.argv[2]), float(m["duration"]) * float(sys.argv[2])
+edges = []
+for name, (a, b) in sorted((m.get("periods") or {}).items()):
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        print(f"run-local: period {name!r} is not one word: not snapshotted", file=sys.stderr)
+        continue
+    edges += [(t * scale, i, kind, name) for i, (t, kind) in enumerate(((a, "start"), (b, "end"))) if t * scale <= end]
+for t, _, kind, name in sorted(edges):
+    print(f"{t:.3f} {kind} {name}")
+PY
+}
+# mark_periods SCALE T0_MS: a boundary snapshot `period-NAME-start|end`
+# and a period_start|period_end mark at each edge, timed from T0_MS (taken
+# just before the tenants run starts its clock, so an edge comes at most
+# about a second early).
+mark_periods() {
+  local t kind name wait_s
+  while read -r t kind name; do
+    wait_s=$(python3 -c 'import sys, time; print(max(0.0, int(sys.argv[1]) / 1000 + float(sys.argv[2]) - time.time()))' "$2" "$t")
+    sleep "$wait_s"
+    boundary "period-$name-$kind" < /dev/null
+    mark "period_$kind" "\"name\":\"$name\""
+  done < <(period_edges "$1")
+}
+# run_tenants [--time-scale F]: the manifest's run under the projects'
+# tokens, its periods snapshotted.
+run_tenants() {
+  local scale=1 t0 pid_marks rc=0
+  case "${1:-}" in
+    '') ;;
+    --time-scale) scale=${2:?tenants --time-scale needs a factor} ;;
+    *) log "tenants: unknown argument $1 (tenants [--time-scale F])"; return 2 ;;
+  esac
+  t0=$(now_ms)
+  mark_periods "$scale" "$t0" &
+  pid_marks=$!
+  PHASE_PIDS+=("$pid_marks")
+  bun "$HERE/tenants.ts" run --manifest "$TENANTS_MANIFEST" --base "$BASE" --token-map "$TOKENS" \
+    --out "$RUN/tenants" --time-scale "$scale" > "$RUN/tenants-run.log" 2>&1 < /dev/null || rc=$?
+  # Every edge is at most the run's duration, so a run that ended has
+  # passed them all; one that failed early leaves the rest unsnapshotted.
+  if [ $rc = 0 ]; then wait "$pid_marks" || true; else stop_pid "$pid_marks" 2; fi
+  log "tenants run: $(tail -1 "$RUN/tenants-run.log")"
+  return $rc
+}
+
 snapshot start
 mark load_start
 set -f # phase lines are split into words, never globbed
@@ -521,6 +656,7 @@ while IFS= read -r line; do
     idle) sleep "${2:?idle needs SECS}" ;;
     restart) restart_servers || rc=$? ;;
     quiesce) quiesce_wait "phase-$i" || true ;; # a timeout voids the point in price.py
+    tenants) run_tenants "${@:2}" || rc=$? ;;
     *)
       eval "set -- $line"
       if [ $bg = 1 ]; then
@@ -577,17 +713,36 @@ snapshot end
 mark end
 
 # ---- meters -------------------------------------------------------------
-python3 "$HERE/scrape.py" usage "${SCRAPE_COMMON[@]}" --rollup "http://127.0.0.1:$SRV_BASE_PORT" \
-  --headers-file "$HDR" --project "$CUSTOMER_PROJECT" --max-wait-secs "$USAGE_WAIT_SECS" \
-  2>&1 | tee -a "$RUN/scrape.log" || true
-stop_pid "$PID_SCRAPE" 5
-PID_SCRAPE=
-if [ -n "${K2_BASELINE:-}" ]; then
-  python3 "$HERE/price.py" "$RUN" --baseline "$K2_BASELINE" || log "price.py failed"
+if [ "$TENANTS" = 1 ]; then
+  # Every project's meters against its ledger, then every produced stream
+  # read back (the oracle's leaks, lost acks): after the end snapshot, so
+  # neither is counted in a window.
+  TARGS=(--manifest "$TENANTS_MANIFEST" --base "$BASE" --token-map "$TOKENS" --out "$RUN/tenants")
+  bun "$HERE/tenants.ts" usage "${TARGS[@]}" --max-wait-secs "$USAGE_WAIT_SECS" > "$RUN/tenants-usage.log" 2>&1 \
+    < /dev/null || log "tenants usage failed; see $RUN/tenants-usage.log"
+  log "tenants usage: $(tail -1 "$RUN/tenants-usage.log")"
+  bun "$HERE/tenants.ts" audit "${TARGS[@]}" > "$RUN/tenants-audit.log" 2>&1 < /dev/null \
+    || log "tenants audit failed; see $RUN/tenants-audit.log"
+  log "tenants audit: $(tail -1 "$RUN/tenants-audit.log")"
+  stop_pid "$PID_SCRAPE" 5
+  PID_SCRAPE=
+  python3 "$HERE/counts.py" "$RUN" > "$RUN/counts.log" 2>&1 || log "counts.py failed; see $RUN/counts.log"
+  # price.py prices one project's k2gen ledgers; packing.py prices the
+  # instance and its tenants (RUN/packing.json).
+  python3 "$HERE/packing.py" price "$RUN" || log "packing.py failed"
 else
-  python3 "$HERE/price.py" "$RUN" || log "price.py failed"
+  python3 "$HERE/scrape.py" usage "${SCRAPE_COMMON[@]}" --rollup "http://127.0.0.1:$SRV_BASE_PORT" \
+    --headers-file "$HDR" --project "$CUSTOMER_PROJECT" --max-wait-secs "$USAGE_WAIT_SECS" \
+    2>&1 | tee -a "$RUN/scrape.log" || true
+  stop_pid "$PID_SCRAPE" 5
+  PID_SCRAPE=
+  if [ -n "${K2_BASELINE:-}" ]; then
+    python3 "$HERE/price.py" "$RUN" --baseline "$K2_BASELINE" || log "price.py failed"
+  else
+    python3 "$HERE/price.py" "$RUN" || log "price.py failed"
+  fi
+  # The screening counts (requests by cell, PUT bytes, pump flushes) per
+  # window: RUN/counts.json; counts.py --compare REF CAND sets two side by side.
+  python3 "$HERE/counts.py" "$RUN" || log "counts.py failed"
 fi
-# The screening counts (requests by cell, PUT bytes, pump flushes) per
-# window: RUN/counts.json; counts.py --compare REF CAND sets two side by side.
-python3 "$HERE/counts.py" "$RUN" || log "counts.py failed"
 [ $PHASE_FAIL = 0 ] || { log "one or more phases failed: the point is void"; exit 3; }

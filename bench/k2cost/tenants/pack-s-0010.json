@@ -1,0 +1,65 @@
+{
+ "name": "pack-s-0010",
+ "seed": 12,
+ "duration": 1640,
+ "comment": "Fable's profile S, small (streams-cost report 2026-10-24, section 4.1), 10 projects on one launch cell (the packing measurement, README 'Packing'): each project 20 streams of 1 KiB JSON singles at 2 appends a second (open-loop Poisson), a long-poll tail on every stream, one consumer group (pull max 10, settle each, 20 s waits) on 5 of the streams, which take a quarter of the appends: 25 parked waits a project (20 tails, a pull loop per group stream). Creates 0.1 s apart (20 x 11 of a project's store budget). Setup 0-120 s, the load 180-1,640 s (projects start spread over 60 s; writers stop 20 s or more before the readers), the verdict window 'steady' 360-1,560 s (20 min). The class pool holds every project's waits at once.",
+ "periods": {
+  "steady": [
+   360,
+   1560
+  ]
+ },
+ "classes": [
+  {
+   "class": "s",
+   "count": 10,
+   "role": "compliant",
+   "streams": 20,
+   "prefix": "s/",
+   "pool": 324,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 120,
+     "args": {
+      "stagger": 0.1
+     }
+    },
+    {
+     "mode": "produce",
+     "at": 180,
+     "spread": 60,
+     "secs": 1380,
+     "args": {
+      "rate": 2,
+      "records": 1,
+      "record-bytes": 1024
+     }
+    },
+    {
+     "mode": "tail",
+     "at": 180,
+     "spread": 60,
+     "args": {
+      "via": "long-poll",
+      "readers": 1
+     }
+    },
+    {
+     "mode": "group",
+     "at": 180,
+     "spread": 60,
+     "args": {
+      "streams": 5,
+      "group": "s-cg",
+      "pull": 10,
+      "consumers": 1,
+      "settle": "every",
+      "wait-ms": 20000
+     }
+    }
+   ]
+  }
+ ]
+}

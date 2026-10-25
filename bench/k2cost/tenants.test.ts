@@ -231,6 +231,53 @@ test("Layer B's noisy period fits the cell's live pool: every SSE connection hel
   }
 });
 
+test("the packing manifests: Fable's T and S at every step, the shape alike, every wait parked and held by the class pool", () => {
+  // README "Packing": N projects of one profile on one launch cell, priced
+  // per tenant from the 20-minute `steady` period (packing.py).
+  const { bounds, ceilings } = cellSizing(readProfiles(DEFAULT_PROFILES));
+  const steps: Record<string, number[]> = { t: [1, 100, 400, 1000], s: [1, 5, 10, 20, 30, 46] };
+  const name = (p: string, n: number) => `pack-${p}-${String(n).padStart(4, "0")}`;
+  const files = readdirSync(join(import.meta.dir, "tenants")).filter((f) => f.startsWith("pack-")).sort();
+  expect(files).toEqual(Object.entries(steps).flatMap(([p, ns]) => ns.map((n) => `${name(p, n)}.json`)).sort());
+  for (const [p, ns] of Object.entries(steps)) {
+    const shapes = new Set<string>();
+    for (const n of ns) {
+      const { manifest: m } = readManifest(join(import.meta.dir, "tenants", `${name(p, n)}.json`));
+      const [c, ...rest] = m.classes;
+      expect([m.name, rest.length, c!.class, c!.count, c!.role, c!.quotas]).toEqual([name(p, n), 0, p, n, "compliant", undefined]);
+      const ph = (mode: string) => c!.phases.find((x) => x.mode === mode)!;
+      const args = (mode: string) => ph(mode).args ?? {};
+      // Fable's profiles (streams-cost report 2026-10-24 section 4.1).
+      if (p === "t") {
+        expect([c!.streams, Math.round(Number(args("produce").rate) * 86_400), args("produce")["record-bytes"], args("tail").streams])
+          .toEqual([3, 200, 400, 1]);
+      } else {
+        expect([c!.streams, args("produce").rate, args("produce")["record-bytes"], args("group").streams, args("group").pull])
+          .toEqual([20, 2, 1024, 5, 10]);
+      }
+      // Each long-poll reader and each pull loop is a parked wait.
+      const tail = ph("tail");
+      const group = c!.phases.find((x) => x.mode === "group");
+      const waits = Number(tail.args?.streams ?? c!.streams) * Number(tail.args?.readers ?? 1)
+        + (group ? Number(group.args?.streams ?? c!.streams) * Number(group.args?.consumers ?? 1) : 0);
+      expect([name(p, n), waits]).toEqual([name(p, n), p === "t" ? 1 : 25]);
+      expect(waits <= ceilings.max_inflight_requests).toBe(true);
+      // The cell parks every wait with room to spare, and the driver's pool
+      // offers them all at once, with room for appends and woken reads.
+      expect([name(p, n), n * waits <= bounds.max_live_subscriptions - 50]).toEqual([name(p, n), true]);
+      expect([name(p, n), (c!.pool ?? 128) >= n * waits + 64]).toEqual([name(p, n), true]);
+      // `steady` is 20 minutes inside every project's produce window, and
+      // writers stop at least 10 s before their readers.
+      const prod = ph("produce");
+      const [a, b] = m.periods!.steady!;
+      expect([b - a, a >= prod.at + (prod.spread ?? 0), b <= prod.at + prod.secs!]).toEqual([1200, true, true]);
+      expect(prod.at + (prod.spread ?? 0) + prod.secs! + 10 <= m.duration).toBe(true);
+      shapes.add(JSON.stringify({ ...c, count: 0, pool: 0, seed: m.seed, duration: m.duration, periods: m.periods }));
+    }
+    expect([p, shapes.size]).toEqual([p, 1]);
+  }
+});
+
 test("the token map is re-read on its period, and soon (not at once) after a 401", async () => {
   const f = join(dir, "map-unit.json");
   writeFileSync(f, JSON.stringify([{ project: "p", token: "one" }]));
@@ -335,6 +382,40 @@ test("a run writes exact per-project ledgers, per-class windows and typed refusa
   expect([a2[app0!.id].prefixes["t/"].ok, a2[app0!.id].prefixes["t/"].unexpected_records, a2[app0!.id].prefixes["t/"].oracle.foreign])
     .toEqual([false, 1, 1]);
   expect(json(join(out, "audit.json")).projects[app1!.id].prefixes["t/"].ok).toBe(true);
+}, 30_000);
+
+test("a class's manifest pool holds every long-poll of its projects at once; the default 128 queues the rest in the driver", async () => {
+  // The packing manifests (tenants/pack-*.json) hold a long-poll per
+  // project of hundreds: every wait holds its socket for the whole wait, so
+  // on the default pool the cell would see 128 of them and the driver the rest.
+  const tail = (n: number, pool?: number): ClassSpec => ({
+    class: pool === undefined ? "narrow" : "wide", count: n, role: "compliant", streams: 1, ...(pool === undefined ? {} : { pool }), phases: [
+      { mode: "setup", at: 0 },
+      { mode: "tail", at: 0.5, secs: 2, args: { via: "long-poll", readers: 1, "wait-ms": 1500 } },
+    ],
+  });
+  const m: Manifest = { name: "pool", seed: 5, duration: 3, classes: [tail(140, 160), tail(140)] };
+  checkManifest(m);
+  const plan = expand(m, "sha");
+  const mapFile = join(dir, "tokens-pool.json");
+  const tokens = plan.projects.map((p) => ({ project: p.id, token: `tok-${p.id}` }));
+  writeFileSync(mapFile, JSON.stringify(tokens));
+  for (const t of tokens) cell.tokens.set(t.token, t.project);
+  const summary = await run(plan, cell.base, mapFile, join(dir, "run-pool"), 1);
+  expect(summary.phases_failed).toEqual([]);
+  const pools = summary.pools as Record<string, { sockets: number; peak_in_use: number; waits: number }>;
+  expect([pools.wide!.sockets, pools.wide!.peak_in_use >= 140, pools.wide!.waits]).toEqual([160, true, 0]);
+  expect([pools.narrow!.sockets, pools.narrow!.peak_in_use, pools.narrow!.waits > 0]).toEqual([128, 128, true]);
+  const bad = (pool: number) => {
+    try {
+      checkManifest({ ...m, classes: [tail(1, pool)] });
+      return "accepted";
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
+  for (const v of [0, 1.5, 8193]) expect(bad(v)).toContain("class wide: pool must be 1..8192 sockets");
+  expect(bad(8192)).toBe("accepted");
 }, 30_000);
 
 test("a subscription refused at connect counts its status and code among the project's typed refusals", async () => {

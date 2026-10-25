@@ -18,10 +18,12 @@ cannot move; price.py's summary.json prices each run on its own.
 
 Windows (from the snapshots run-local.sh takes): load (start -> loadend),
 deferred (loadend -> quiesced), to_quiesced (start -> quiesced), tail
-(quiesced -> end), total (start -> end), and one per phase group
+(quiesced -> end), total (start -> end), one per phase group
 "phases J-I" (the boundary snapshots at its first phase's start and its
-foreground phase's end). A window across a restart has no pump counts
-(the counters start again with the boot).
+foreground phase's end), and one per manifest period "period NAME" (the
+boundary snapshots a tenants phase takes at the period's start and end).
+A window across a restart has no pump counts (the counters start again
+with the boot).
 """
 
 from __future__ import annotations
@@ -68,6 +70,14 @@ def phase_windows(marks: list) -> list:
             out.append((f"phases {first}-{i}" if first != i else f"phase {i}", f"phase-{first}-start", f"phase-{i}-end"))
             first = None
     return out
+
+
+def period_windows(marks: list) -> list:
+    """(name, start label, end label) per manifest period a tenants phase
+    marked (run-local.sh: a `period_start` mark beside each boundary
+    snapshot `period-NAME-start`, and `period-NAME-end`), in mark order."""
+    names = [m.get("name") for m in marks if m.get("mark") == "period_start" and m.get("name")]
+    return [(f"period {n}", f"period-{n}-start", f"period-{n}-end") for n in dict.fromkeys(names)]
 
 
 def counters(servers: dict, section: str, keys: tuple) -> dict:
@@ -125,7 +135,8 @@ def counts(run: str) -> dict:
     q = "quiesced" if "quiesced" in snaps else None
     spans = [("load", "start", "loadend"), ("deferred", "loadend", q), ("to_quiesced", "start", q),
              ("tail", q, "end"), ("total", "start", "end")]
-    spans += phase_windows(jsonl(os.path.join(run, "marks.jsonl")))
+    marks = jsonl(os.path.join(run, "marks.jsonl"))
+    spans += phase_windows(marks) + period_windows(marks)
     windows = {name: {"from": a, "to": b, **window(snaps[a], snaps[b])}
                for name, a, b in spans if a in snaps and b in snaps}
     posture = load(os.path.join(run, "posture.json"), {}) or {}

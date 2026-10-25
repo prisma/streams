@@ -7,6 +7,7 @@
 //    "quota_sets": {"q-hostile": {"requests_per_sec": 20, ...}},
 //    "classes": [{"class": "s0", "count": 8, "role": "compliant",
 //                 "streams": 3, "prefix": "t/", "quotas": "q-hostile"?,
+//                 "pool": 128?,
 //                 "phases": [{"mode": "produce", "at": 600, "secs": 3600,
 //                             "spread": 60, "repeat": false,
 //                             "args": {"rate": 1, "records": 41}}]}],
@@ -18,9 +19,14 @@
 // the run's `duration`. `repeat` reruns a run-to-completion mode until
 // its window ends (never for a mode whose records the audit replays).
 // `quotas` names a quota set the project is admitted with; without one it
-// takes the cell's ceilings (bound / k). Roles: compliant tenants must see
-// no refusal, the victim's latency is judged per period, hostile ones are
-// expected to be refused (typed), idle ones only hold state.
+// takes the cell's ceilings (bound / k). `pool` sizes the class's
+// keep-alive pool (tenants.ts CLASS_POOL_SOCKETS when absent): every
+// long-poll and consumer pull holds a socket for its whole wait, so a
+// class whose projects hold more waits at once than the pool has sockets
+// queues the rest in the driver and never offers them to the cell (the
+// packing manifests, tenants/pack-*.json). Roles: compliant tenants must
+// see no refusal, the victim's latency is judged per period, hostile ones
+// are expected to be refused (typed), idle ones only hold state.
 
 import { createHash, createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -28,6 +34,8 @@ import { MODE_FLAGS } from "./common.ts";
 import { type Owner, ownerOf } from "./oracle.ts";
 
 export const ROLES = ["compliant", "victim", "hostile", "idle"] as const;
+/** The largest keep-alive pool a class may ask for (`pool`). */
+export const MAX_CLASS_POOL = 8192;
 export type Role = (typeof ROLES)[number];
 
 /** The quota fields admit takes (deploy/cell-admin/profile.ts QUOTA_FIELDS). */
@@ -71,6 +79,8 @@ export interface ClassSpec {
   quotas?: string;
   streams?: number;
   prefix?: string;
+  /** Sockets of the class's keep-alive pool (tenants.ts). */
+  pool?: number;
   comment?: string;
   phases: PhaseSpec[];
 }
@@ -178,6 +188,11 @@ export function checkManifest(m: Manifest): void {
     if (!(ROLES as readonly string[]).includes(c.role)) fail(`class ${c.class}: role must be one of ${ROLES.join(", ")}`);
     if (c.quotas !== undefined && !(m.quota_sets ?? {})[c.quotas]) fail(`class ${c.class}: no quota set ${c.quotas}`);
     if (c.streams !== undefined && (!Number.isSafeInteger(c.streams) || c.streams < 1)) fail(`class ${c.class}: streams must be >= 1`);
+    // Half of macOS's 16,383 ephemeral ports: the pool's sockets stay open
+    // for the run, beside every other class's and the scrape's.
+    if (c.pool !== undefined && (!Number.isSafeInteger(c.pool) || c.pool < 1 || c.pool > MAX_CLASS_POOL)) {
+      fail(`class ${c.class}: pool must be 1..${MAX_CLASS_POOL} sockets`);
+    }
     c.phases.forEach((ph, i) => checkPhase(c, ph, i, m.duration));
   }
   for (const [i, leg] of (m.legs ?? []).entries()) {

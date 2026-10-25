@@ -132,13 +132,14 @@ export class ConnPool {
   }
 }
 
-/** Pools by key (a tenants class, or a run-level leg), each `size` sockets. */
+/** Pools by key (a tenants class, or a run-level leg), each `size` sockets
+ * unless its first get() names its own size (a class's manifest `pool`). */
 export class Pools {
   private readonly m = new Map<string, ConnPool>();
   constructor(readonly size: number) {}
-  get(key: string): ConnPool {
+  get(key: string, size = this.size): ConnPool {
     let p = this.m.get(key);
-    if (!p) this.m.set(key, (p = new ConnPool(this.size)));
+    if (!p) this.m.set(key, (p = new ConnPool(size)));
     return p;
   }
   summary(): Record<string, Record<string, number>> {

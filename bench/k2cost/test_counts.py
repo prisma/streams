@@ -120,6 +120,30 @@ class Counts(unittest.TestCase):
         self.assertEqual(c["server"]["expected"], "2e0d1b86")
         self.assertTrue(c["valid"])
 
+    def test_a_tenants_phase_has_a_window_per_manifest_period(self):
+        # run-local.sh's tenants mode snapshots each manifest period's edges
+        # inside the tenants phase (phase 2 here: its setup, then the steady
+        # load the packing verdict reads).
+        import counts
+        run = write_run(self.tmp, "pack", {})
+        edges = {"period-steady-start": "phase-2-start", "period-steady-end": "phase-3-end"}
+        with open(os.path.join(run, "boundaries.jsonl"), "a") as f:
+            for label, like in edges.items():
+                s = snap(like)
+                f.write(json.dumps({"t_ms": s["t_ms"], "label": label, "s3lite": s["s3lite"], "servers": s["servers"],
+                                    "procs": s["procs"]}) + "\n")
+        with open(os.path.join(run, "marks.jsonl"), "a") as f:
+            for m in ({"mark": "period_start", "name": "steady"}, {"mark": "period_end", "name": "steady"},
+                      {"mark": "period_start", "name": "unsnapped"}):
+                f.write(json.dumps({"t": 0, **m}) + "\n")
+        c = counts.counts(run)
+        self.assertEqual(list(c["windows"])[-1], "period steady")
+        p = c["windows"]["period steady"]
+        self.assertEqual((p["from"], p["to"], p["secs"], p["class_a"], p["pump_flushes"], p["cpu_s"]),
+                         ("period-steady-start", "period-steady-end", 50.0, 28, 25, {"streams-1": 2.25}))
+        # A period whose snapshots were never taken (the run ended first) has no window.
+        self.assertNotIn("period unsnapped", c["windows"])
+
     def test_no_pump_counts_across_a_reboot(self):
         import counts
         c = counts.counts(write_run(self.tmp, "ref", {}, reboot_at_end=True))

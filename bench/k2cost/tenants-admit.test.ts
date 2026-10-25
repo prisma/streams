@@ -5,13 +5,13 @@
 // re-mint and upload, and the bundle's publication, against a fake S3.
 // Run with `bun test ./bench/k2cost`.
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { canaryProjectId } from "../../deploy/cell-admin/rules.ts";
 import { cleanup, keyFile, readBundle, readState, scratchDir, verifiedClaims } from "../../deploy/cell-admin/test-rig.ts";
 import { Opts } from "./common.ts";
 import { expand, type Manifest } from "./tenant-plan.ts";
-import { REFRESH_SECS, TOKEN_TTL_SECS, main, tokens } from "./tenants-admit.ts";
+import { REFRESH_SECS, TOKEN_TTL_SECS, main, tokens, writeFeeds } from "./tenants-admit.ts";
 
 /** A fake S3 endpoint: PUT stores, a ranged GET reads back. */
 const objects = new Map<string, Uint8Array>();
@@ -124,4 +124,36 @@ test("tokens writes one verifiable 12 h token per project, re-mints them on its 
     "--s3-endpoint", w.endpoint, "--s3-creds", w.creds);
   expect(pub).toEqual({ code: 0, out: ["published feed_version 7 to cells/cell_t/feeds-bundle.json"] });
   expect(new TextDecoder().decode(objects.get("/feeds/cells/cell_t/feeds-bundle.json"))).toBe(readFileSync(join(w.state, "feeds-bundle.json"), "utf8"));
+}, 30_000);
+
+test("feeds writes the bundle's three feeds as a native cell reads them, and refuses a bundle that lacks one", async () => {
+  // run-local.sh's tenants mode boots the binary with no wrapper: its
+  // STREAMS_AUTH_{KEYS,POLICY,GRANTS}_FILE are these files, as
+  // deploy/app-server's poller would have written them from the bundle.
+  const w = world();
+  await cmd("admit", "--manifest", w.file, "--state", w.state, "--key-file", w.key,
+    "--cell-id", "cell_t", "--deployment-project", "proj_dep", "--account", "acct_sink");
+  const feeds = join(w.root, "feeds");
+  const r = await cmd("feeds", "--state", w.state, "--out", feeds);
+  const bundle = readBundle(w.state);
+  expect(r).toEqual({ code: 0, out: [`feeds ${feeds}: feed_version ${bundle.keys.feed_version}`] });
+  for (const name of ["keys", "policies", "grants"] as const) {
+    expect([name, JSON.parse(readFileSync(join(feeds, `${name}.json`), "utf8"))]).toEqual([name, bundle[name]]);
+    expect(existsSync(join(feeds, `${name}.json.tmp`))).toBe(false);
+  }
+  // Every admitted project is in the policy feed the cell will read, the
+  // canary beside them.
+  const plan = expand(manifest, "");
+  const ids = (JSON.parse(readFileSync(join(feeds, "policies.json"), "utf8")).projects as Array<{ project_id: string }>).map((p) => p.project_id);
+  expect(ids.sort()).toEqual([...plan.projects.map((p) => p.id), canaryProjectId("cell_t")].sort());
+
+  const torn = join(w.root, "torn");
+  const bad = join(w.root, "bad-state");
+  await cmd("admit", "--manifest", w.file, "--state", bad, "--key-file", w.key,
+    "--cell-id", "cell_u", "--deployment-project", "proj_dep", "--account", "acct_sink");
+  const doc = JSON.parse(readFileSync(join(bad, "feeds-bundle.json"), "utf8"));
+  delete doc.grants;
+  writeFileSync(join(bad, "feeds-bundle.json"), JSON.stringify(doc));
+  expect(() => writeFeeds(bad, torn)).toThrow("feeds-bundle.json has no grants feed");
+  expect(existsSync(torn)).toBe(false);
 }, 30_000);

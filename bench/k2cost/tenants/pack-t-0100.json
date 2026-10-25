@@ -1,0 +1,50 @@
+{
+ "name": "pack-t-0100",
+ "seed": 11,
+ "duration": 1640,
+ "comment": "Fable's profile T, tiny/idle (streams-cost report 2026-10-24, section 4.1), 100 projects on one launch cell (the packing measurement, README 'Packing'): each project 3 streams, 200 appends a day of 400 B JSON singles (open-loop Poisson, 0.0023 a second over its 3 streams) and one long-poll tail on its first stream, always connected (one parked wait). Setup 0-120 s, the load 180-1,640 s (projects start spread over 60 s; writers stop 20 s or more before the readers), the verdict window 'steady' 360-1,560 s (20 min). The class pool holds every project's wait at once.",
+ "periods": {
+  "steady": [
+   360,
+   1560
+  ]
+ },
+ "classes": [
+  {
+   "class": "t",
+   "count": 100,
+   "role": "compliant",
+   "streams": 3,
+   "prefix": "t/",
+   "pool": 164,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 120
+    },
+    {
+     "mode": "produce",
+     "at": 180,
+     "spread": 60,
+     "secs": 1380,
+     "args": {
+      "rate": 0.0023148,
+      "records": 1,
+      "record-bytes": 400
+     }
+    },
+    {
+     "mode": "tail",
+     "at": 180,
+     "spread": 60,
+     "args": {
+      "streams": 1,
+      "via": "long-poll",
+      "readers": 1
+     }
+    }
+   ]
+  }
+ ]
+}

@@ -14,6 +14,7 @@ starts a process that listens.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -235,6 +236,66 @@ class DryRun(unittest.TestCase):
         r = self.rig(self.point("PHASES='idle 1'\n"), K2_RUN_TAG="a/b")
         self.assertEqual(r.returncode, 2)
         self.assertIn("K2_RUN_TAG", r.stderr)
+
+    def manifest(self, name: str = "unit-pack", count: int = 3) -> str:
+        path = os.path.join(self.tmp, f"{name}.json")
+        with open(path, "w") as f:
+            json.dump({"name": name, "seed": 1, "duration": 100, "periods": {"steady": [20, 80]},
+                       "classes": [{"class": "t", "count": count, "role": "compliant", "phases": []}]}, f)
+        return path
+
+    def test_a_tenants_point_runs_the_launch_posture_on_cell_admins_ids(self):
+        m = self.manifest()
+        out = self.ok(self.point(f"POINT_NAME=PACK\nPOSTURE=launch\nTENANTS_MANIFEST={m}\nPHASES='idle 1\ntenants'\n"))
+        self.assertEqual(self.line(out, "DRY_RUN tenants:"),
+                         f'{m} (manifest unit-pack, 3 projects, periods {{"steady": [20, 80]}}); cell cell-k2, '
+                         "deployment project proj-k2cost-deploy, account acct-k2cost")
+        env = self.server_env(out, 1)
+        # The ids cell-admin's init is given: its policies name this cell.
+        self.assertEqual((env["CELL_ID"], env["PROJECT_ID"], env["ACCOUNT_ID"]),
+                         ("cell-k2", "proj-k2cost-deploy", "acct-k2cost"))
+        self.assertEqual(env["STREAMS_AUTH_POLICY_FILE"], "<secrets>/feeds/policies.json")
+        self.assertEqual(env["PROJECT_SHARE_K"], profile("shared-cell.env")["PROJECT_SHARE_K"])
+        # A manifest path relative to the checkout is the checkout's.
+        rel = os.path.relpath(m, REPO)
+        out = self.ok(self.point(f"POSTURE=launch\nTENANTS_MANIFEST={rel}\nPHASES='tenants --time-scale 0.5'\n"))
+        self.assertTrue(self.line(out, "DRY_RUN tenants:").startswith(f"{os.path.join(REPO, rel)} (manifest unit-pack"))
+
+    def test_a_tenants_point_takes_the_rigs_own_lines_only(self):
+        m = self.manifest()
+        cases = {
+            f"POSTURE=launch\nTENANTS_MANIFEST={m}\nPHASES='produce --streams 1 --rate 1'\n":
+                "a tenants point runs idle, restart, quiesce and tenants lines only",
+            f"POSTURE=launch\nTENANTS_MANIFEST={m}\nPHASES='tenants &'\n": "a tenants phase runs in the foreground",
+            "POSTURE=launch\nPHASES='tenants'\n": "a tenants phase needs TENANTS_MANIFEST",
+            f"TENANTS_MANIFEST={m}\nPHASES='tenants'\n": "TENANTS_MANIFEST runs on POSTURE=launch",
+            f"POSTURE=launch\nTENANTS_MANIFEST={m}.missing\nPHASES='tenants'\n": "no tenants manifest",
+        }
+        for body, err in cases.items():
+            r = self.rig(self.point(body))
+            self.assertEqual(r.returncode, 2, (body, r.stdout, r.stderr))
+            self.assertIn(err, r.stderr, body)
+
+    def test_the_packing_points_dry_run_every_step(self):
+        steps = {"PACK-T.env": (1, 100, 400, 1000), "PACK-S.env": (1, 5, 10, 20, 30, 46)}
+        for point, ns in steps.items():
+            for n in ns:
+                out = self.ok(os.path.join(HERE, "points", point), PACK_N=str(n))
+                name = f"{point[:-4]}-{n:04d}"
+                self.assertEqual(self.line(out, "DRY_RUN point:").split()[0], name)
+                manifest = os.path.join(HERE, "tenants", f"pack-{point[5].lower()}-{n:04d}.json")
+                self.assertTrue(self.line(out, "DRY_RUN tenants:").startswith(f"{manifest} (manifest pack-"), out)
+                self.assertIn(f"{n} projects", self.line(out, "DRY_RUN tenants:"))
+                env = self.server_env(out, 1)
+                self.assertEqual((env["TOKIO_WORKERS"], env["INITIAL_SHARDS"]), ("2", "1"))
+            r = self.rig(os.path.join(HERE, "points", point))
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("set PACK_N to the tenant count", r.stderr)
+            r = self.rig(os.path.join(HERE, "points", point), PACK_N="7")
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("no tenants manifest", r.stderr)
+        out = self.ok(os.path.join(HERE, "points", "PACK-S.env"), PACK_N="5", PACK_SMOKE="1")
+        self.assertEqual(self.line(out, "DRY_RUN point:").split()[0], "PACK-S-0005-smoke")
 
 
 class Posture(unittest.TestCase):
