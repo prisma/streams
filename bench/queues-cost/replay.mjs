@@ -193,7 +193,7 @@ export async function runReplay(o, log = (s) => process.stderr.write(`${s}\n`)) 
     errors.by_kind[kind] = (errors.by_kind[kind] ?? 0) + 1;
     if (errors.samples.length < 50) errors.samples.push({ t: Date.now(), kind, detail: String(detail).slice(0, 300) });
   };
-  const hist = { send: new Hist(), settle: new Hist(), lag: new Hist(), send_lag: new Hist() };
+  const hist = { send: new Hist(), claim: new Hist(), settle: new Hist(), lag: new Hist(), send_lag: new Hist() };
   const random = S.rng(o.seed);
 
   async function call(method, path, body, { withKey = false, signal } = {}) {
@@ -260,6 +260,7 @@ export async function runReplay(o, log = (s) => process.stderr.write(`${s}\n`)) 
         q.c.empty_claims++;
         continue;
       }
+      hist.claim.add(r.ms);
       settlesInFlight++;
       try {
         await handleBatch(q, msgs, r.bytes);

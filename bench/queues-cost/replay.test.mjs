@@ -48,6 +48,8 @@ test('a compressed day slice replays, settles every fate and verifies clean', as
       assert.equal(q.pending, q.server.due + q.server.scheduled + q.server.leased + q.server.retrying, q.name);
     }
     assert.ok(s.latency_ms.send.n > 0 && s.latency_ms.settle.n > 0);
+    // Every claim that leased something is timed; empty claims park.
+    assert.equal(s.latency_ms.claim.n, s.totals.claims - s.totals.empty_claims);
     // The timeline starts at zero and ends at the summary's totals.
     const tl = readFileSync(o.timeline, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
     assert.ok(tl.length >= 2);
