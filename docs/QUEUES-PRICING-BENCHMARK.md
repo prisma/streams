@@ -422,3 +422,62 @@ after: at 363 s the hot committer was 76% and 8% busy, an availability scan
 took 16.5 and 0.5 ms, a sweep 2.3 s and 38 ms, and the drain fell behind the
 due rate (340/s against 377/s) and kept up with it (374/s), at 12.0% and
 13.1% of a core.
+
+**100x again with the fix (2026-10-25).** Run 2's posture (`TOKIO_WORKERS=2`,
+`ADMIT_RSS_SHED_MB=500`, handler 25-250 ms, 256 sends in flight, 30 + 60 min,
+4 shards, arm A an empty cell; `~/.streams-k2/queues-bench/q100f.sh`).
+
+The first run, on 409acbc8 alone, is void: 16 minutes in, shard 10 (the
+Stripe queue's) panicked in SlateDB's compaction worker (`assertion failed:
+!tasks.values().any(|task| task.destination == dst)`) and closed again on
+every reopen. This is the collector's residual race (its comment in
+`src/shard/queue_maintenance.rs`): a collection pass submitted beside the
+embedded scheduler's own compaction into the last run. None of the three
+825f runs met it. With the drain no longer capped, deletion debt reaches the
+256 MiB force trigger every few minutes, so passes are frequent. The fixes
+are the shard-log compaction guard (prepared, not landed: wiring it grows the
+frozen `bootstrap::run` exception rows, an owner decision) or SlateDB
+slatedb/slatedb#2191 (open). The measured run used an experiment binary,
+409acbc8 plus that guard. The guard refused nothing in it (no pass was
+deferred), so the run measures the fix, not the guard.
+
+The hot queue now keeps up. It delivered 2,184,911 messages, up from
+1,158,197. It ended with 1,393,279 pending, about the ~1.42 M its 80-minute
+deliverAt spread still holds back at the end, so everything due was
+delivered. Over all queues the consumers finished 1,552 messages a second
+(1,732 deliveries) against 1,747 sent; the gap is messages scheduled past the
+window. No errors and nothing lost; the run is void only by the rig's drain
+rule, like every 100x run (leases still out when the drain deadline came). Send p99 324 ms (1,791 before), settle p99
+299 ms (2,186), 0.40 cores (0.32), RSS 312 MB average and 353 MB peak.
+
+| Term (a month at the measured 1,747 messages/s) | Before ($) | After ($) |
+|---|---:|---:|
+| Class A (WAL 107,839 / 139,857 PUTs an hour) | 339.98 | 426.16 |
+| Transfer in | 154.35 | 150.88 |
+| Class B (SST GETs 309k / 463k an hour) | 101.08 | 142.74 |
+| CPU | 14.75 | 18.43 |
+| Egress | 8.75 | 11.83 |
+| 1 GiB instance | 4.64 | 4.64 |
+| Storage | 0.09 | 0.08 |
+| **Total** | **623.63** | **754.76** |
+
+| 100x basis, after the fix | Owner prices | Class A/B at -50% |
+|---|---:|---:|
+| Per million messages sent, busiest hour | $0.167 | $0.104 |
+| Per million deliveries | $0.168 | $0.105 |
+| Per million messages consumed (acked or failed) in the window | $0.188 | $0.117 |
+| Month at the scenario's average 100x volume, WAL as measured | $593 | $345 |
+| Ceiling (80% margin) | $549.05 ($0.241/M) | $549.05 |
+
+The per-million figure lands on the earlier estimate for a full consume
+side ($0.16-0.17). Consumption costs more WAL than the capped run showed: the hot
+shard's committer, no longer stalled, writes every ~101 ms pump window, so
+the four shards upload 139,857 WAL objects an hour, above the 134,000 used
+as the unsaturated cap. At the average volume, every window is still
+written, so the WAL term does not halve with the messages. The average 100x
+month is therefore about $593 against the $549 ceiling: 8% over at owner
+prices, and met with an 87% margin at Class A/B -50%. On the floor-share
+convention: $814 at the peak rate ($0.180/M), $625 at the average volume.
+Per message, the busiest hour stays under the ceiling ($0.167 against
+$0.241). The remaining lever is the one section 10 named: the queue commit
+window, so queue writes share WAL uploads.
