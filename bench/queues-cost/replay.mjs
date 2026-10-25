@@ -42,6 +42,8 @@ const USAGE = `usage: replay.mjs --auth-file F --key-file F [options]
   --send-concurrency N  producer requests in flight (32)
   --max-consumers N     consumer loops per queue at most (64)
   --claim-max N         messages per claim (10)
+  --consumer-batch-s S  the batch cycle a consumer loop is sized for (0.35): loops per
+                        queue = 2 x peak rate x S / claim max (more loops when larger)
   --lease-ms N          (30000)    --wait-ms N  long-poll wait (20000)
   --handler-ms LO,HI    handler latency per batch (50,500)
   --delay-scale X       scale fixed and retry delays; smoke tests only (1)
@@ -56,7 +58,7 @@ export function parseArgs(argv) {
     base: 'http://127.0.0.1:8090', scenario: new URL('scenario.json', HERE).pathname,
     scale: 1, compress: 1, profile: 'day', startHour: 0, burstAtS: 0, invoiceBurst: undefined,
     durationS: 60, drainS: 900, idle: false, only: null, prefix: 'qb-', finalOp: 'retry',
-    sendConcurrency: 32, maxConsumers: 64, claimMax: 10, leaseMs: 30_000, waitMs: 20_000,
+    sendConcurrency: 32, maxConsumers: 64, claimMax: 10, consumerBatchS: 0.35, leaseMs: 30_000, waitMs: 20_000,
     handlerMs: [50, 500], delayScale: 1, seed: 1, progressS: 60, out: 'replay-summary.json',
     timeline: null, dryRun: false, authFile: process.env.QUEUES_AUTH_FILE, keyFile: process.env.QUEUES_KEY_FILE,
   };
@@ -91,6 +93,7 @@ export function parseArgs(argv) {
       case '--send-concurrency': o.sendConcurrency = num(v(), a); break;
       case '--max-consumers': o.maxConsumers = num(v(), a); break;
       case '--claim-max': o.claimMax = num(v(), a); break;
+      case '--consumer-batch-s': o.consumerBatchS = num(v(), a); break;
       case '--lease-ms': o.leaseMs = num(v(), a); break;
       case '--wait-ms': o.waitMs = num(v(), a); break;
       case '--handler-ms': o.handlerMs = v().split(',').map((x) => num(x, a)); break;
@@ -214,7 +217,7 @@ export async function runReplay(o, log = (s) => process.stderr.write(`${s}\n`)) 
   const qs = plan.queues.map((p) => ({
     plan: p, name: o.prefix + p.name, path: `/v1/queues/${encodeURIComponent(o.prefix + p.name)}`,
     model: p.fate, salt: p.index * 0.1, nextSeq: 0, track: new Tracker(), c: newCounts(),
-    loops: S.consumerLoops(p.config, o.scale, { max: o.maxConsumers, claimMax: o.claimMax }),
+    loops: S.consumerLoops(p.config, o.scale, { max: o.maxConsumers, claimMax: o.claimMax, batchSeconds: o.consumerBatchS }),
   }));
 
   // ---- create ------------------------------------------------------------
@@ -594,7 +597,7 @@ export function verify(qs, finalStats, ctx) {
     options: {
       base: o.base, scale: o.scale, compress: o.compress, profile: o.profile, start_hour: o.startHour,
       burst_at_s: o.burstAtS, invoice_burst: ctx.plan.queues.some((q) => q.components.some((c) => c.kind === 'monthStart')),
-      duration_s: o.durationS, drain_s: o.drainS, final_op: o.finalOp, claim_max: o.claimMax,
+      duration_s: o.durationS, drain_s: o.drainS, final_op: o.finalOp, claim_max: o.claimMax, consumer_batch_s: o.consumerBatchS,
       lease_ms: o.leaseMs, wait_ms: o.waitMs, handler_ms: o.handlerMs, delay_scale: o.delayScale,
       seed: o.seed, only: o.only, prefix: o.prefix,
     },
@@ -613,7 +616,7 @@ function dryRun(plan, o, durationMs) {
   const sends = S.expectedSends(plan, durationMs, Math.min(60_000, Math.max(1000, durationMs / 1000)));
   const rows = plan.queues.map((q) => ({
     name: q.name, components: q.components.map((c) => c.kind).join('+') || '-',
-    expected_sends: sends[q.index], loops: S.consumerLoops(q.config, o.scale, { max: o.maxConsumers, claimMax: o.claimMax }),
+    expected_sends: sends[q.index], loops: S.consumerLoops(q.config, o.scale, { max: o.maxConsumers, claimMax: o.claimMax, batchSeconds: o.consumerBatchS }),
     dlq: q.fate.dlq, deliveries: q.fate.deliveries, p_retry: q.fate.pRetry,
   }));
   const total = sends.reduce((a, b) => a + b, 0);

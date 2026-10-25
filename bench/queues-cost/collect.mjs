@@ -267,12 +267,17 @@ function printCosts(c) {
     `costs (30-day month, scale ${c.scale}${c.void ? ', VOID' : ''})`,
     `  fully loaded ${usd(c.month_usd.fully_loaded)}  marginal ${usd(c.month_usd.marginal)}  standalone ${usd(c.month_usd.standalone)}`,
     `  at Tigris list: fully loaded ${usd(c.month_usd_list.fully_loaded)}  marginal ${usd(c.month_usd_list.marginal)}`,
-    `  per million messages (fully loaded): ${usd(c.per_million_messages_usd.fully_loaded)}`,
+    `  per million messages (fully loaded): ${usd(c.per_million_messages_usd.fully_loaded)} over the scenario's month; ` +
+      `${usd(c.per_million_replayed_messages_usd.fully_loaded)} over the messages this run sent`,
     '  marginal terms:',
   ];
   for (const [k, t] of Object.entries(c.terms.marginal)) lines.push(`    ${k.padEnd(12)} ${usd(t.usd).padStart(10)}  ${Math.round(t.quantity).toLocaleString('en-US')} ${t.unit}`);
   const fs = c.terms.floor_share;
   lines.push(`    floor share  ${usd(fs.usd).padStart(10)}  max(cpu ${(fs.cpu_share * 100).toFixed(3)}%, mem ${(fs.mem_share * 100).toFixed(3)}%) of $${fs.floor_usd}`);
+  const ratio = c.replayed_to_scenario;
+  if (ratio !== null && (ratio < 0.9 || ratio > 1.1)) {
+    lines.push(`  NOTE: the run sent ${ratio.toFixed(2)}x the scenario's average rate (a busiest-hour or quiet-hour shape): read per million on the messages it sent; its month is a rate-scaled ${ratio > 1 ? 'peak' : 'quiet'} month, not the scenario's`);
+  }
   for (const r of c.void_reasons) lines.push(`  VOID: ${r}`);
   for (const w of c.warnings) lines.push(`  warning: ${w}`);
   process.stdout.write(`${lines.join('\n')}\n`);

@@ -248,6 +248,11 @@ export function buildCosts({ abMonths, standalone = null, scale, scenario, cell 
   const list = priced(LIST_PRICES);
   const messages = scenarioMessagesMonth(scenario, scale);
   const perM = (usd) => (usd === null ? null : (usd / messages) * 1e6);
+  // A busiest-hour run sends about twice the scenario's average rate: its
+  // cost per message is its month divided by the messages it sent, not by
+  // the scenario's month (which would charge every message twice).
+  const replayed = abMonths.b.messages;
+  const perReplayed = (usd) => (usd === null || !(replayed > 0) ? null : (usd / replayed) * 1e6);
   const round = (x) => (x === null ? null : Math.round(x * 10_000) / 10_000);
   return {
     benchmark: 'docs/QUEUES-PRICING-BENCHMARK.md §6',
@@ -266,10 +271,16 @@ export function buildCosts({ abMonths, standalone = null, scale, scenario, cell 
     },
     messages_month: Math.round(messages),
     messages_month_replayed: Math.round(abMonths.b.messages),
+    replayed_to_scenario: replayed > 0 ? round(replayed / messages) : null,
     per_million_messages_usd: {
       fully_loaded: round(perM(owner.fully_loaded_usd)),
       marginal: round(perM(owner.marginal.usd)),
       standalone: round(perM(owner.standalone_usd)),
+    },
+    per_million_replayed_messages_usd: {
+      fully_loaded: round(perReplayed(owner.fully_loaded_usd)),
+      marginal: round(perReplayed(owner.marginal.usd)),
+      standalone: round(perReplayed(owner.standalone_usd)),
     },
     terms: {
       marginal: owner.marginal.terms,

@@ -134,6 +134,10 @@ test('costs.json: fully loaded is marginal plus the floor share; standalone carr
   close(c.month_usd.standalone, marginal.usd + 95.3, 1e-4, 'standalone');
   assert.equal(c.messages_month, Math.round(22_747_641.43));
   close(c.per_million_messages_usd.fully_loaded, (c.month_usd.fully_loaded / 22_747_641.43) * 1e6, 1e-4, 'per million');
+  // Per million on the messages the run sent (arm B's month), and the ratio to the scenario's month.
+  assert.equal(c.messages_month_replayed, Math.round(b.messages));
+  close(c.per_million_replayed_messages_usd.fully_loaded, (c.month_usd.fully_loaded / b.messages) * 1e6, 1e-3, 'per million sent');
+  close(c.replayed_to_scenario, b.messages / 22_747_641.43, 1e-4, 'replayed ratio');
   assert.ok(c.month_usd_list.marginal > c.month_usd.marginal);
   assert.equal(P.buildCosts({ abMonths: { a, b }, scale: 1, scenario }).month_usd.standalone, null);
   // The marginal class A is B - A: 200 an hour, 144,000 a month.
