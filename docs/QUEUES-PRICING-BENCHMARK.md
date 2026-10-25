@@ -314,3 +314,76 @@ CPU still at 0.46-0.58 cores. The ceiling is memory and the commit path,
 not CPU: by extrapolation about 100x sustained under the 500 MB shed line
 (not yet measured: the 25-minute 100x run was lost to a full disk), 160x
 for minutes.
+
+## 11. 100x on one instance, and the per-message basis (2026-10-25)
+
+**The per-message basis.** The 10x and 100x runs replay the busiest hour,
+1.99x the scenario's average rate (10x: 175 messages/s against 88/s). Their
+rate-scaled month is a peak month, so dividing it by the scenario's month
+(as `collect.mjs` did, and as section 10 compared with the monthly ceiling)
+charges every message about twice for the volume-driven terms. The WAL term
+is not volume-driven: a shard uploads its WAL once per ~101 ms pump window
+that holds any write (about 9.3-9.5 PUTs a second per shard whenever it is
+written, 7.5 when saturated), so it costs the same per hour at the average
+rate as at the peak. Both bases are therefore reported: per million messages
+the run sent (the cost curve), and the month at the scenario's average volume
+bounded between "WAL at the measured rate" and "WAL at the unsaturated cap"
+(the ceiling's basis). `collect.mjs` now prints per million on both the
+scenario's month and the messages the run sent, and flags a run whose rate is
+outside 0.9-1.1x the scenario's average. Two independent recomputations from
+the raw ledgers matched every term to 4 decimals.
+
+**100x, one 4-shard instance, the queue replay alone** (binary 825f327e = slate
+00134047 in code; 30 + 60 min; arm A an empty cell; Mac rig, s3lite at 25 ms).
+Run 1 (20 Tokio workers) and run 2 (`TOKIO_WORKERS=2`, `ADMIT_RSS_SHED_MB=500`,
+the production posture) agree to 1%. Run 2, dedicated instance (arm B's whole
+bill plus a provisioned 1 GiB, $4.64; no floor share, which would charge the
+instance's own WAL writers twice), owner prices:
+
+| Term (a month at the measured 1,747 messages/s) | $ |
+|---|---:|
+| Class A (WAL $291.6, compaction and manifest housekeeping $48.4) | 339.98 |
+| Transfer in | 154.35 |
+| Class B | 101.08 |
+| CPU (0.32 cores) | 14.75 |
+| Egress | 8.75 |
+| 1 GiB instance | 4.64 |
+| Storage | 0.09 |
+| **Total** | **623.63** |
+
+| 100x basis | Owner prices | Class A/B at -50% |
+|---|---:|---:|
+| Per million messages sent, busiest hour | $0.138 | $0.089 |
+| Month at the scenario's average 100x volume (2,275 M messages) | $483-553 | $289-324 |
+| Cloudflare bill for that month | $2,745.26 | $2,745.26 |
+| Ceiling (80% margin) | $549.05 ($0.241/M) | $549.05 |
+| Margin against Cloudflare | 80-82% (at the line) | 88-89% (met) |
+
+With the benchmark's floor-share convention instead: $672 at the peak rate
+($0.148/M), $524-595 at the average volume, $330 at -50%.
+
+WAL batching does improve with load: the queue's WAL PUTs per 1,000 messages
+are 33.8 at 10x (marginal over the baseline) and 17.2 at 100x (queue alone),
+Class A $0.129 and $0.075 per million messages sent.
+
+On the same corrected basis 10x misses at every price: $0.284 per million at
+the busiest hour ($0.207 at -50%) against $0.241, and $97-102 for the average
+month ($70 at -50%) against $54.83. The 1x run's window covered a quiet hour
+(2.6 messages/s against 8.8 on average), so only its fixed WAL term is usable:
+at least $21.7 a month ($10.9 at -50%) against $5.41; 1x needs the 48 h run,
+and the queue commit window is the decision that governs it.
+
+**Does one instance sustain 100x?** Sends, yes: 1,747 messages/s for the
+hour, no errors, no client backlog, 0.32 cores, RSS 325 MB average and 382 MB
+peak with the production worker count (535 MB with 20 workers). Consumption,
+not for this queue mix: the hottest queue (the Stripe sync, 38% of the sends)
+drains at a flat 204-215 messages/s in all three runs, whatever the server's
+workers (20 or 2), the consumer loops (66 or 132) or the client's handler
+time, against its ~630/s send rate, so ~2.4 M messages were due and unclaimed
+at the end; queues below that rate drained. This is a single-queue consume
+ceiling on the server (not CPU: 0.33 cores), to be profiled and fixed before
+100x is claimed for a workload that concentrates in one queue. The consume
+side's terms (claims, settles, page reads) therefore cover ~75% of the sent
+messages; scaled to all of them, the per-million figure is ~$0.16-0.17.
+A single shard (INITIAL_SHARDS=1) saturated at 589 messages/s with 1.8 s
+sends, so its lower Class A is not a like-for-like comparison.
