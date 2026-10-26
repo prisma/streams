@@ -1403,6 +1403,19 @@ declared quotas are live:
 * `max_live_subscriptions` — SSE subscriptions AND capability watch
   waits draw from the same pool.
 
+*Weights (layout 6A package 1; edge change #196).* A policy's quotas may
+carry `request_weight` and `byte_weight` (0 or absent: 1). On a cell shared
+k ways a project's ceiling on the request axes (`requests_per_sec`,
+`max_inflight_requests`, `max_live_subscriptions`, `max_streams`) is
+⌊bound × request_weight ÷ k⌋ and on the byte rates (`append_bytes_per_sec`,
+`read_bytes_per_sec`) ⌊bound × byte_weight ÷ k⌋; `queued_append_bytes`
+stays ⌊bound ÷ k⌋, a committer burst buffer a heavy project's share would
+take past the shard's line. The cell holds each weight to 1..k-1 (a
+higher value is held and warned in the log), so the unit-weight projects keep at least one
+k-th of every bound; k is the cell's weight budget, unit = one default
+project, and weight 1 everywhere is the equal share. A dedicated cell
+ignores weights.
+
 *Stored bytes (r9; edge change #156).* `max_stored_bytes`
 bounds the stored bytes a project may own: its live segments' stored page
 bytes after compression, page headers included (the unit of a stream's

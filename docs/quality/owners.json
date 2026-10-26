@@ -417,6 +417,14 @@
       "syntax": "path = \"tests/queue_overload.rs\""
     },
     {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::weighted_shares",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Weighted per-project shares over real HTTP rigs (layout 6A package 1, DESIGN-6A section 4.2): a weighted project's ceilings beside unit projects', fair shedding by weighted share, the weighted memory line, and a mixed cell of stream and queue tenants under pressure, each asserted on the wire answers and the stored records; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/weighted_shares.rs\""
+    },
+    {
       "category": "macro-dsl",
       "count": 1,
       "owner": "crate::q_key",

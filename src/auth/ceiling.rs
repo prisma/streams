@@ -77,7 +77,7 @@ pub(crate) struct CellCeiling {
     /// The `max_stored_bytes` a 0 or absent feed value takes (0: none).
     stored_default: u64,
     deployment_project: Option<ProjectId>,
-    deployment_account: Option<String>,
+    deployment_account: Option<Box<str>>,
     /// Policies the last published snapshot dropped as reserved.
     reserved_dropped: AtomicU64,
 }
@@ -139,44 +139,70 @@ impl CellCeiling {
     pub(crate) fn reserving(mut self, deployment: &DeploymentIdentity) -> Self {
         // mt-lint: allow(state-tenant-read): read only to refuse it — a policy naming the deployment tenant is dropped (#101); no request adopts this identity
         self.deployment_project = Some(deployment.deployment_tenant().clone());
-        self.deployment_account = (self.share_k > 1).then(|| deployment.account_id().to_string());
+        self.deployment_account = (self.share_k > 1).then(|| deployment.account_id().into());
         self
     }
 
-    /// bound / k on an axis with a shared bound, never below 1; `None` on
-    /// a dedicated cell or an axis without a bound.
-    fn ceiling(&self, bound: u64) -> Option<u64> {
-        (self.share_k > 1 && bound > 0).then(|| (bound / self.share_k).max(1))
+    /// The weight a feed value gives a project on this cell: 0 (not
+    /// configured) is 1, and it is held to 1..=k-1, so the unit-weight
+    /// projects keep at least one k-th of every bound; a dedicated cell's
+    /// is 1.
+    fn weight(&self, feed: u64) -> u64 {
+        feed.clamp(1, self.share_k.saturating_sub(1).max(1))
     }
 
-    fn cap(&self, feed: u64, bound: u64) -> u64 {
-        match self.ceiling(bound) {
+    /// bound x weight / k on an axis with a shared bound, never below 1;
+    /// `None` on a dedicated cell or an axis without a bound.
+    fn ceiling(&self, bound: u64, weight: u64) -> Option<u64> {
+        (self.share_k > 1 && bound > 0).then(|| {
+            let share = u128::from(bound) * u128::from(weight) / u128::from(self.share_k);
+            u64::try_from(share).unwrap_or(u64::MAX).max(1)
+        })
+    }
+
+    fn cap(&self, feed: u64, bound: u64, weight: u64) -> u64 {
+        match self.ceiling(bound, weight) {
             None => feed,
             Some(ceiling) if feed == 0 => ceiling,
             Some(ceiling) => feed.min(ceiling),
         }
     }
 
-    /// A project's effective quotas on this cell. Append records have no
-    /// shared bound of their own; stored bytes have none either, and a 0
-    /// takes the cell's default.
+    /// A project's effective quotas on this cell: its request weight's share
+    /// of the request, in-flight, subscription and stream bounds, its byte
+    /// weight's share of the append and read byte rates, and one k-th of
+    /// the unabsorbed-bytes bound whatever its weights (a committer burst
+    /// buffer: a heavy project's would pass the shard's line). Append
+    /// records have no shared bound of their own; stored bytes have none
+    /// either, and a 0 takes the cell's default. The weights are published
+    /// as the cell holds them.
     pub(crate) fn effective(&self, feed: &ProjectQuotas) -> ProjectQuotas {
         let b = &self.bounds;
+        let rw = self.weight(feed.request_weight);
+        let bw = self.weight(feed.byte_weight);
         ProjectQuotas {
-            requests_per_sec: self.cap(feed.requests_per_sec, b.requests_per_sec),
-            append_bytes_per_sec: self.cap(feed.append_bytes_per_sec, b.append_bytes_per_sec),
+            requests_per_sec: self.cap(feed.requests_per_sec, b.requests_per_sec, rw),
+            append_bytes_per_sec: self.cap(feed.append_bytes_per_sec, b.append_bytes_per_sec, bw),
             append_records_per_sec: feed.append_records_per_sec,
-            read_bytes_per_sec: self.cap(feed.read_bytes_per_sec, b.read_bytes_per_sec),
-            max_inflight_requests: self.cap(feed.max_inflight_requests, b.inflight),
-            max_live_subscriptions: self.cap(feed.max_live_subscriptions, b.subscriptions),
-            max_streams: self.cap(feed.max_streams, b.streams),
-            queued_append_bytes: self.cap(feed.queued_append_bytes, b.queued_append_bytes),
+            read_bytes_per_sec: self.cap(feed.read_bytes_per_sec, b.read_bytes_per_sec, bw),
+            max_inflight_requests: self.cap(feed.max_inflight_requests, b.inflight, rw),
+            max_live_subscriptions: self.cap(feed.max_live_subscriptions, b.subscriptions, rw),
+            max_streams: self.cap(feed.max_streams, b.streams, rw),
+            queued_append_bytes: self.cap(feed.queued_append_bytes, b.queued_append_bytes, 1),
             max_stored_bytes: if feed.max_stored_bytes > 0 {
                 feed.max_stored_bytes
             } else {
                 self.stored_default
             },
+            request_weight: rw,
+            byte_weight: bw,
         }
+    }
+
+    /// Whether `feed` names a weight above the k-1 this cell holds it to.
+    fn clamps(&self, feed: &ProjectQuotas) -> bool {
+        let most = self.share_k.saturating_sub(1).max(1);
+        self.share_k > 1 && (feed.request_weight > most || feed.byte_weight > most)
     }
 
     /// Whether `policy` takes an identity this cell reserves.
@@ -200,7 +226,12 @@ impl CellCeiling {
             }
             !reserved
         });
-        for policy in snapshot.projects.values_mut() {
+        for (project, policy) in &mut snapshot.projects {
+            if self.clamps(&policy.quotas) {
+                tracing::warn!(%project, request_weight = policy.quotas.request_weight,
+                    byte_weight = policy.quotas.byte_weight, k = self.share_k,
+                    "policy feed weight above k - 1; held to k - 1");
+            }
             policy.quotas = self.effective(&policy.quotas);
         }
         (snapshot, dropped)
@@ -249,6 +280,14 @@ mod tests {
         }
     }
 
+    fn weighted_quotas(request_weight: u64, byte_weight: u64) -> ProjectQuotas {
+        ProjectQuotas {
+            request_weight,
+            byte_weight,
+            ..ProjectQuotas::default()
+        }
+    }
+
     /// Every field of `q`, in declaration order.
     fn fields(q: &ProjectQuotas) -> [u64; 8] {
         [
@@ -283,6 +322,74 @@ mod tests {
             [5; 8],
             "below it stands"
         );
+    }
+
+    /// The feed's weights scale a project's share (layout 6A package 1):
+    /// request weight 2 and byte weight 5 at k = 8 take two eighths of the
+    /// request, in-flight, subscription and stream bounds and five eighths
+    /// of the append and read byte rates, and one eighth of the
+    /// unabsorbed-bytes bound whatever the weights; a value set below the
+    /// share stands. Weights 0 and 1 are the unit share; a weight above
+    /// k - 1 is held to 7, and a policy naming one is the one `clamps`
+    /// finds. A dedicated cell ignores weights.
+    #[test]
+    fn weights_scale_a_projects_share_of_each_bound() {
+        let cell = CellCeiling::shared(8, BOUNDS);
+        let weighted = |request_weight, byte_weight, each| {
+            cell.effective(&ProjectQuotas {
+                request_weight,
+                byte_weight,
+                ..quotas(each)
+            })
+        };
+        let m = weighted(2, 5, 0);
+        assert_eq!(
+            fields(&m),
+            [352, 1_287_500, 0, 18_750_000, 128, 300, 16_384, 64 << 20]
+        );
+        assert_eq!((m.request_weight, m.byte_weight), (2, 5), "published");
+        assert_eq!(fields(&weighted(2, 5, 5)), [5; 8], "below it stands");
+        let unit = [176, 257_500, 0, 3_750_000, 64, 150, 8_192, 64 << 20];
+        assert_eq!(fields(&weighted(0, 0, 0)), unit, "0 is the unit");
+        assert_eq!(fields(&weighted(1, 1, 0)), unit, "and so is 1");
+        let held = weighted(9, u64::MAX, 0);
+        assert_eq!(
+            fields(&held),
+            [
+                1_234,
+                1_802_500,
+                0,
+                26_250_000,
+                448,
+                1_050,
+                57_344,
+                64 << 20
+            ],
+            "held to k - 1"
+        );
+        assert_eq!((held.request_weight, held.byte_weight), (7, 7));
+        let heavy = ProjectQuotas {
+            byte_weight: 8,
+            ..ProjectQuotas::default()
+        };
+        let named = [heavy, quotas(0), weighted_quotas(7, 7)].map(|q| cell.clamps(&q));
+        assert_eq!(named, [true, false, false], "only above k - 1 is held");
+        let dedicated = CellCeiling::shared(1, BOUNDS);
+        assert!(
+            !dedicated.clamps(&weighted_quotas(8, 8)),
+            "a dedicated cell holds none"
+        );
+        for dedicated in [CellCeiling::shared(1, BOUNDS), CellCeiling::dedicated()] {
+            let q = dedicated.effective(&ProjectQuotas {
+                request_weight: 4,
+                byte_weight: 4,
+                ..quotas(0)
+            });
+            assert_eq!(
+                (fields(&q), q.request_weight, q.byte_weight),
+                ([0; 8], 1, 1)
+            );
+        }
     }
 
     /// A bound smaller than k still leaves every project one unit, never

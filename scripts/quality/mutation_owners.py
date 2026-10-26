@@ -82,7 +82,8 @@ OWNERS = (
     # Isolation owners outside the critical prefixes (owner decision of
     # 2026-10-08, shared cells Q3(d)): a shared cell's per-project ceiling
     # and reserved identities, and each signing key's one audience.
-    owner('auth_ceiling', 'src/auth/ceiling.rs', 'auth:: dst_tests::shared_cell_hostile::reserved_ids'),
+    owner('auth_ceiling', 'src/auth/ceiling.rs',
+          'auth:: dst_tests::shared_cell_hostile::reserved_ids dst_tests::weighted_shares::'),
     owner('auth_signing_key', 'src/auth/signing_key.rs', 'auth:: auth_feed::'),
     # The verified customer-token cache (mem2 lane): a kept verdict must
     # never let a token pass that verification would refuse (lead decision

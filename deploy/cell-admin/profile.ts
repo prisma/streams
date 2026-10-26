@@ -28,6 +28,8 @@ export const QUOTA_FIELDS = [
   "max_streams",
   "queued_append_bytes",
   "max_stored_bytes",
+  "request_weight",
+  "byte_weight",
 ] as const;
 export type QuotaField = (typeof QUOTA_FIELDS)[number];
 export type Quotas = Record<QuotaField, number>;

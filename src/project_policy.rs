@@ -67,6 +67,17 @@ pub(crate) struct ProjectQuotas {
     /// `PROJECT_STORED_BYTES_DEFAULT` (`auth::ceiling`), at any k.
     #[serde(default)]
     pub max_stored_bytes: u64,
+    /// The project's request weight on a cell shared k ways (layout 6A
+    /// package 1): its ceilings on the request axes are `bound x weight /
+    /// k` (`auth::ceiling`). 0 means "not configured", weight 1, today's
+    /// equal share; the cell holds it to 1..=k-1.
+    #[serde(default)]
+    pub request_weight: u64,
+    /// The project's byte weight: its ceilings on the byte-rate axes
+    /// (appended and read bytes a second) are `bound x weight / k`. 0 is
+    /// weight 1; the cell holds it to 1..=k-1.
+    #[serde(default)]
+    pub byte_weight: u64,
 }
 
 #[derive(Clone, Debug)]

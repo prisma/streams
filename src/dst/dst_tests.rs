@@ -380,3 +380,6 @@ mod fair_shed;
 
 #[path = "tests/queue_overload.rs"]
 mod queue_overload;
+
+#[path = "tests/weighted_shares.rs"]
+mod weighted_shares;

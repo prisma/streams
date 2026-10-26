@@ -178,8 +178,14 @@ export function admittedQuotas(state: CellState, given: readonly string[], store
   for (const q of QUOTA_FIELDS) if (set[q] !== undefined) quotas[q] = set[q];
   for (const q of BOUNDED_FIELDS) if (set[q] === undefined) quotas[q] = state.cell.ceilings[q];
   if (set.max_stored_bytes === undefined) quotas.max_stored_bytes = storedDefault;
+  for (const w of WEIGHT_FIELDS) quotas[w] = 1;
   return quotas;
 }
+
+/// The policy feed's two weights (the server scales a project's ceilings
+/// by them, layout 6A package 1). cell-admin publishes every project at
+/// weight 1, the equal share bound / k, and sets no other.
+export const WEIGHT_FIELDS = ["request_weight", "byte_weight"] as const;
 
 /// The `field=value` quota settings given, each a known field, given once,
 /// at least 1 and at most its ceiling (stored bytes have none).
@@ -192,6 +198,9 @@ export function quotaValues(state: CellState, given: readonly string[]): Partial
     const [, field, raw] = m;
     if (!(QUOTA_FIELDS as readonly string[]).includes(field)) {
       throw new AdminError(`--quota ${field}: not a quota field (${QUOTA_FIELDS.join(", ")})`, 2);
+    }
+    if ((WEIGHT_FIELDS as readonly string[]).includes(field)) {
+      throw new AdminError(`--quota ${field}: a weight is not a quota; every project is admitted at weight 1`, 2);
     }
     if (seen.has(field)) throw new AdminError(`--quota ${field} given twice`, 2);
     seen.add(field);

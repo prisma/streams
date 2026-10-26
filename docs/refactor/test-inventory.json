@@ -2939,6 +2939,17 @@
     "scenarios": []
   },
   {
+    "name": "a_weighted_project_appends_at_its_weighted_ceiling_beside_a_unit_project",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "daff8c3f7568a85cbaa2ca49312f6b7c09534ab42eb1bce80eadcf0b8dea88e2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/weighted_shares.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_woken_cell_refreshes_on_its_first_stale_refusal",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

@@ -40,7 +40,8 @@ afterEach(cleanup);
 /// The quotas a project is admitted with when none is given: each bounded
 /// axis at its ceiling, append records/s 0 (no project limit, as the
 /// server reads it), and the stored bytes at the profile's
-/// PROJECT_STORED_BYTES_DEFAULT (10 GiB), which has no ceiling.
+/// PROJECT_STORED_BYTES_DEFAULT (10 GiB), which has no ceiling, and weight 1
+/// on both weights.
 const CEILINGS = {
   requests_per_sec: 176,
   append_bytes_per_sec: 257500,
@@ -51,6 +52,8 @@ const CEILINGS = {
   max_streams: 8192,
   queued_append_bytes: 67108864,
   max_stored_bytes: 10737418240,
+  request_weight: 1,
+  byte_weight: 1,
 };
 
 /// Nothing cell-admin writes to its store may hold private key material
@@ -320,7 +323,7 @@ for (const kind of STORES) {
         const r = await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "wksp_a",
           "--quota", "max_stored_bytes=21474836480");
         expect([r.code, r.err]).toEqual([0, ""]);
-        expect(r.out).toContain(" queued_append_bytes=67108864 max_stored_bytes=21474836480\n");
+        expect(r.out).toContain(" queued_append_bytes=67108864 max_stored_bytes=21474836480 request_weight=1 byte_weight=1\n");
         const b = customerOnly(readBundle(c.state));
         expect((b.policies.projects as any[]).map((p) => p.quotas)).toEqual([{ ...CEILINGS, max_stored_bytes: 21474836480 }]);
         expect(validateDocument(b.policies, schema("project-policies.schema.json"))).toEqual([]);
@@ -334,6 +337,8 @@ for (const kind of STORES) {
         ["a 0 stored-bytes quota", ["--quota", "max_stored_bytes=0"],
           "--quota max_stored_bytes=0: omit the field to take the cell default"],
         ["an unknown quota", ["--quota", "max_stream=5"], "--quota max_stream: not a quota field"],
+        ["a weight as a quota", ["--quota", "byte_weight=5"],
+          "--quota byte_weight: a weight is not a quota; every project is admitted at weight 1"],
         ["the system project", ["--project", "system"], "project system is reserved on cell cell_sc1"],
         ["the deployment's PROJECT_ID", ["--project", "proj_deploy"], "project proj_deploy is reserved on cell cell_sc1"],
         ["the cell's ACCOUNT_ID as workspace", ["--workspace", "acct_sink"],

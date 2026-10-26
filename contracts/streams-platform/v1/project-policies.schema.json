@@ -43,6 +43,16 @@
                 "type": "integer",
                 "minimum": 0,
                 "description": "Stored bytes the project may own: its live segments' stored page bytes after compression, page headers included (the unit of a stream's usage ownedStoredBytesNow). 0 or absent: the cell's PROJECT_STORED_BYTES_DEFAULT, whose default 0 is no limit (MULTITENANCY §17.3, r9)."
+              },
+              "request_weight": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "The project's request weight on a cell shared k ways (PROJECT_SHARE_K): its ceilings on requests_per_sec, max_inflight_requests, max_live_subscriptions and max_streams are the bound x weight / k. 0 or absent: weight 1, the equal share; the cell holds a weight to 1..k-1 (MULTITENANCY §17.3, layout 6A package 1). Ignored on a dedicated cell (k = 1)."
+              },
+              "byte_weight": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "The project's byte weight on a cell shared k ways: its ceilings on append_bytes_per_sec and read_bytes_per_sec are the bound x weight / k (queued_append_bytes stays at bound / k). 0 or absent: weight 1; held to 1..k-1. Ignored on a dedicated cell."
               }
             }
           }

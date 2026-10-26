@@ -57,7 +57,7 @@ describe("creating a project", () => {
     const by = { userId: "usr_ws_a", email: "owner@ws_a.example.com" };
     const quotas = {
       ...state.cell.ceilings, requests_per_sec: FREE_TIER_REQUESTS_PER_SEC, append_records_per_sec: 0,
-      max_stored_bytes: STORED_DEFAULT,
+      max_stored_bytes: STORED_DEFAULT, request_weight: 1, byte_weight: 1,
     };
     expect(body.project).toEqual({
       id, workspaceId: "ws_a", displayName: "Orders", status: "active", createdAt: state.projects[id].admitted_at,
@@ -198,7 +198,7 @@ describe("creating a project", () => {
     const a = await answer(await m.send("POST", PROJECTS, m.signIn("ws_a"), { displayName: "A" }));
     const b = await answer(await m.send("POST", "/v1/workspaces/ws_b/streams/projects", m.signIn("ws_b"), { displayName: "B" }));
     expect(FREE_TIER_REQUESTS_PER_SEC).toBe(10);
-    const rest = { append_records_per_sec: 0, max_stored_bytes: STORED_DEFAULT };
+    const rest = { append_records_per_sec: 0, max_stored_bytes: STORED_DEFAULT, request_weight: 1, byte_weight: 1 };
     expect([a[0], a[1].project.quotas]).toEqual([201, { ...ceilings, requests_per_sec: 10, ...rest }]);
     expect([b[0], b[1].project.quotas]).toEqual([201, { ...ceilings, requests_per_sec: 50, ...rest }]);
   });
