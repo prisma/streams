@@ -225,6 +225,9 @@ pub(crate) fn failure_response(f: QueueFailure) -> Response {
     if let Some(owner) = f.owner.and_then(|o| o.parse().ok()) {
         r.headers_mut().insert("streams-replay-to", owner);
     }
+    if let Some(secs) = f.retry_after {
+        r.headers_mut().insert("retry-after", secs.into());
+    }
     r
 }
 

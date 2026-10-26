@@ -776,6 +776,7 @@ type ConsumerFences = Mutex<HashMap<([u8; 16], String), u64>>;
 
 mod commit_op;
 pub(crate) use commit_op::CommitOp;
+mod native_queue_submit;
 #[cfg(test)]
 mod native_queue_tests;
 mod queue_maintenance;
@@ -2071,20 +2072,6 @@ impl ShardEngine {
             .map(|v| decode_cursor(&v))
             .transpose()?
             .unwrap_or(0))
-    }
-
-    pub(crate) async fn submit_native_queue(
-        &self,
-        hash: [u8; 16],
-        op: crate::native_queue::NqOp,
-    ) -> crate::native_queue::NqResult {
-        let (tx, rx) = oneshot::channel();
-        let moved = || crate::native_queue::NqRefusal::Internal("shard fenced/moved; retry".into());
-        self.tx
-            .send(CommitOp::NativeQueue { hash, op, resp: tx })
-            .await
-            .map_err(|_| moved())?;
-        rx.await.map_err(|_| moved())?
     }
 
     pub(crate) async fn submit_queue(

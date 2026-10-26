@@ -1658,6 +1658,17 @@
     "scenarios": []
   },
   {
+    "name": "a_queue_operation_on_a_full_committer_is_answered_at_once",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6a3d0b1f61a3d84117661b5de535373b7a73b87a61cd9b1f55b772bbd7d4d780",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_overload.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_queue_write_is_held_to_its_projects_memory_line",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

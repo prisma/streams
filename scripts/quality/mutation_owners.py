@@ -221,6 +221,7 @@ OWNERS = (
     owner('queue_settle', 'src/shard/transaction/queue/settle.rs', 'shard::'),
     owner('commit_op', 'src/shard/commit_op.rs', 'shard::'),
     owner('queue_maintenance', 'src/shard/queue_maintenance.rs', 'native_queue'),
+    owner('nq_submit', 'src/shard/native_queue_submit.rs', 'native_queue queue_overload::'),
     owner('nq_admin', 'src/shard/transaction/native_queue/admin.rs', 'native_queue'),
     owner('nq_claim', 'src/shard/transaction/native_queue/claim.rs', 'native_queue'),
     owner('nq_deliveries', 'src/shard/transaction/native_queue/deliveries.rs', 'native_queue'),

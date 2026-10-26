@@ -4473,6 +4473,21 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Status:** awaiting the owner's ratification.
 - **Check against commit:** written with the change.
 
+### #193 (this record's commit) — A queue request whose shard committer's queue is full is answered at once, 503 `shard_busy` with `Retry-After: 1`, instead of waiting for room while it holds its request
+
+- **Program item:** layout 6A package 1, overload parity (DESIGN-6A §4.1; research-queues §3.1 row "committer submission", rule 5 of §3.2): `ShardEngine::submit_native_queue` waited on `send(..).await` for channel space, holding the request's in-flight place and taking the slots appends need, while an append meets a full queue at once (`try_command`).
+- **Surface:** product.
+- **Endpoint:** every `/v1/queues/{*path}` route that runs a committer operation (create, stats, PATCH, DELETE, send, claim, settle, the verbs and views, one message, the wake-up subscription). Owners: `ShardEngine::try_submit_native_queue` (`src/shard/native_queue_submit.rs`, `try_send`), `QueueService::op` and the delete's `BeginDelete`, `NqRefusal::Busy`, `QueueFailure::retry_after`. Not affected: the shard's own sweeps and collector, a deleting queue's cleanup job, and a claim's release of its leases after a failed page read, which still wait for room (`submit_native_queue`): the give-back is the claim's last act after its claim committed, and refusing it would leave the leases held under an answer that says nothing was written (Fable 5.1 review of package 1, finding 3).
+- **Condition:** the shard's committer queue (`ShardConfig::queue_reqs`, 65,536 commands) holds no free place when the operation is submitted.
+- **Before:** the request waited, without bound, until the committer took a command.
+- **After:** the request is answered at once 503 `shard_busy` (`"the queue's shard is at its committer capacity; nothing was written; retry"`), `retryable: true`, `Retry-After: 1`; nothing was submitted. A claim refused on a later attempt of its wait answers the same. An append meeting the same full queue keeps its own answer (429 `rate_limited`, SPEC 3.4's bounded ingest); the queue answer is 503 because nothing about the project's own rate caused it.
+- **Retry semantics:** retryable after 1 s; nothing was written.
+- **Who is affected:** queue clients of a shard whose committer is 65,536 commands behind (a stalled store or a herd of claims); the appends beside them, which no longer lose their places to waiting queue requests.
+- **Pinning tests:** src/dst/tests/queue_overload.rs::a_queue_operation_on_a_full_committer_is_answered_at_once (`queue_reqs` 2, the committer held after taking one send with two queued: a fourth send answers `(503, "shard_busy", Retry-After 1)` within 1 s; released, the three sends 201; `queuedMessages` 3 exactly). Red before: `left: Err("no answer within 1 s") right: Ok((503, Some("shard_busy"), Some("1")))`.
+- **Risk reason:** low: a refusal only at a full committer queue, where the request used to wait without bound. Reversal: `QueueService::op` back to `submit_native_queue`.
+- **Status:** awaiting the owner's ratification.
+- **Check against commit:** written with the change.
+
 ## Discrepancies
 
 One record has verified=false: its commit did not match the recorded text.

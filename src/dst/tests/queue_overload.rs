@@ -332,3 +332,62 @@ async fn at_the_inflight_cap_queue_sends_and_settles_are_refused_as_appends_are(
     );
     engine_shutdown(&cell.state).await;
 }
+
+/// The committer queue the full-committer leg gives the cell's shard.
+const COMMIT_QUEUE: usize = 2;
+
+/// A queue operation on a shard whose committer queue is full is answered
+/// at once, `503 shard_busy`, Retry-After 1, as an append meets a full
+/// queue at once, instead of waiting for room while holding its request:
+/// with the committer held after taking one send and two more queued, a
+/// fourth send answers within a second, and once the committer is
+/// released the three queued sends are stored, the refused one not.
+/// Before: the fourth send waited for room until the committer moved.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_queue_operation_on_a_full_committer_is_answered_at_once() {
+    let mut spec = CellSpec::open(1);
+    spec.shard.queue_reqs = COMMIT_QUEUE;
+    let cell = open_cell(spec).await;
+    assert_eq!(ask(&cell, 0, "PUT", "/v1/queues/jobs", "").await.0, 201);
+    let sref = crate::tenant::ProjectId::new(&project(0))
+        .unwrap()
+        .stream_ref("jobs");
+    let desc = cell.state.registry.get(&sref).await.unwrap().unwrap();
+    let route = desc.resolve_segment("").shard_route;
+    let engine = cell
+        .state
+        .shards
+        .resolve(&route, crate::shard_directory::Adoption::Internal)
+        .await
+        .unwrap();
+    let held = engine.test_hold_commit().await;
+    let pending = futures_util::future::join_all((0..=COMMIT_QUEUE).map(|n| send(&cell, 0, n)));
+    let probe = async {
+        tokio::time::timeout(std::time::Duration::from_secs(10), full(&engine))
+            .await
+            .expect("the three sends reach the committer");
+        let busy = send(&cell, 0, 99);
+        let busy = tokio::time::timeout(std::time::Duration::from_secs(1), busy).await;
+        drop(held);
+        busy.map_err(|_| "no answer within 1 s")
+    };
+    let (sent, busy) = futures_util::future::join(pending, probe).await;
+    assert_eq!(
+        busy,
+        Ok((503, Some("shard_busy".to_string()), Some("1".to_string())))
+    );
+    assert_eq!(sent, vec![SENT; COMMIT_QUEUE + 1], "the queued sends");
+    assert_eq!(
+        queued(&cell, 0).await,
+        u64::try_from(COMMIT_QUEUE + 1).unwrap(),
+        "the queued sends are stored, the refused one not"
+    );
+    engine_shutdown(&cell.state).await;
+}
+
+/// Until `engine`'s committer queue has no free place.
+async fn full(engine: &crate::shard::ShardEngine) {
+    while engine.committer_slots_free() > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}

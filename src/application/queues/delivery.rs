@@ -182,7 +182,7 @@ impl QueueService {
                         .iter()
                         .map(|d| release(d.offset, d.lease_gen))
                         .collect();
-                    self.op(t, NqOp::Settle { items }).await?;
+                    give_back(t, items).await?;
                     return Err(fail(FailureClass::Unavailable, "claim_read_failed", error));
                 }
             }
@@ -300,6 +300,18 @@ impl ClaimOp {
             lease_ms: self.lease_ms,
         }
     }
+}
+
+/// Release a claim's leases with their attempts given back, waiting for
+/// room in the committer's queue (`ShardEngine::submit_native_queue`): the
+/// claim's last act before it answers, which must not be refused `Busy`
+/// after its claim was committed, or the leases would stay held until they
+/// expire under an answer that says nothing was written.
+async fn give_back(t: &QueueTarget, items: Vec<SettleItem>) -> Result<(), QueueFailure> {
+    t.engine
+        .submit_native_queue(t.hash, NqOp::Settle { items })
+        .await?;
+    Ok(())
 }
 
 fn release(offset: u64, lease_gen: u32) -> SettleItem {

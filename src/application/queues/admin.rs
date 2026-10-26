@@ -302,7 +302,7 @@ impl QueueService {
     pub(crate) async fn delete(&self, t: &QueueTarget) -> Result<(), QueueFailure> {
         match t
             .engine
-            .submit_native_queue(t.hash, NqOp::BeginDelete)
+            .try_submit_native_queue(t.hash, NqOp::BeginDelete)
             .await
         {
             Ok(NqOut::Deleting) | Err(crate::native_queue::NqRefusal::NotFound) => {}

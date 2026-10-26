@@ -61,6 +61,9 @@ pub(crate) struct QueueFailure {
     pub(crate) retryable: bool,
     /// The owning instance when another one owns the queue's shard.
     pub(crate) owner: Option<String>,
+    /// The seconds a client waits before its retry (`Retry-After`), when
+    /// the refusal states one.
+    pub(crate) retry_after: Option<u64>,
 }
 
 pub(crate) fn fail(
@@ -77,6 +80,7 @@ pub(crate) fn fail(
             FailureClass::Exhausted | FailureClass::Unavailable | FailureClass::Internal
         ),
         owner: None,
+        retry_after: None,
     }
 }
 
@@ -110,6 +114,14 @@ impl From<NqRefusal> for QueueFailure {
                 "deliverAt is later than the queue's retention from now",
             ),
             NqRefusal::Reclaimed => fail(C::Missing, "reclaimed", "the message was reclaimed"),
+            NqRefusal::Busy => QueueFailure {
+                retry_after: Some(1),
+                ..fail(
+                    C::Unavailable,
+                    "shard_busy",
+                    "the queue's shard is at its committer capacity; nothing was written; retry",
+                )
+            },
             NqRefusal::Internal(m) => fail(C::Unavailable, "queue_unavailable", m),
         }
     }
@@ -225,8 +237,10 @@ impl QueueService {
         })
     }
 
+    /// Run a request's operation in the queue's committer: refused at once
+    /// (`NqRefusal::Busy`) when the committer's queue is full.
     pub(crate) async fn op(&self, t: &QueueTarget, op: NqOp) -> Result<NqOut, QueueFailure> {
-        Ok(t.engine.submit_native_queue(t.hash, op).await?)
+        Ok(t.engine.try_submit_native_queue(t.hash, op).await?)
     }
 
     /// The request's key for `t`: 403 `wrong_key` unless it is the stream's.

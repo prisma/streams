@@ -345,6 +345,9 @@ pub(crate) enum NqRefusal {
     DedupFull,
     DeliverAtBeyondRetention,
     Reclaimed,
+    /// The shard committer's queue was full: the operation was not
+    /// submitted, so nothing was written (layout 6A package 1).
+    Busy,
     Internal(String),
 }
 
