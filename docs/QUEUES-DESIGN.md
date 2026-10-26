@@ -339,7 +339,14 @@ server-side with the attempt given back and answers 503, retryable.
 
 With nothing due and `waitMs > 0`, the claim parks until a send, settle, lease
 deadline or the next `availableAt`, up to 25 s. A paused group answers at once
-with `paused: true`.
+with `paused: true`. While it waits the request is parked in the live pool
+and its project's share, out of the in-flight write gate's active count
+(edge change #194). A claim that leased messages reserves exactly their
+bytes in the instance's read memory and its project's read bytes before it
+reads them, waiting up to 2 s for room; without room it releases its leases
+with their attempts given back and answers 503 `read_memory_busy` or 429
+`project_memory_pressure`, retryable after 1 s (#195). Its answer holds its
+rendered size until the body ends.
 
 ### 6.2 Settle
 
@@ -404,7 +411,19 @@ groups stay untouched until then (D2).
   half the project's request rate (burst floor 25), beside the main bucket
   (`max(rate, 50)`, #162). A settle request whose tokens are mostly stale or
   invalid is charged to the main bucket. Under the RSS shed (#184) settles
-  follow the append rules. Both are edge changes.
+  follow the append rules. Both are edge changes. The settle bucket is not
+  built yet.
+- **Overload parity** (layout 6A package 1, edge changes #188-#193, built):
+  the pre-auth survival bound covers `/v1/queues`; a verified queue request
+  is bound to fair shedding after project admission, so a project over its
+  share of the cell's requests is refused on every queue route over the RSS
+  shed line and at the in-flight cap; a queue `POST` is refused while its
+  project is over its memory line and every queue body is charged to the
+  project while it is buffered; sends, batches and settles meet the RSS write
+  gate before their bodies and the in-flight write gate once buffered, with
+  the append's spared exceptions; and a request's committer operation is
+  refused at once, 503 `shard_busy`, when the shard committer's queue is
+  full (the sweeps and collector still wait for room).
 - **Request rate** has a producer and a consumer term, sized separately
   (D10). Producers: sends ÷ messages per send (singletons make one request a
   message; `sendBatch` divides it). Consumers: throughput ÷ claim batch +
