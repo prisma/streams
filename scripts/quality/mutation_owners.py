@@ -110,6 +110,7 @@ OWNERS = (
           'dst_tests::fair_shed:: dst_tests::live_wait:: dst_tests::queue_overload::'),
     owner('product_read_memory', 'src/product/read_memory.rs',
           'product::read_memory:: dst_tests::read_memory:: dst_tests::shared_cell_capacity:: '
+          'dst_tests::weighted_shares:: '
           'dst_tests::read_memory_wakes::a_shared_cells_default_page_reserves_one_mib '
           'dst_tests::shared_cell_hostile::a_create_pays_for_its_registry_writes '
           'dst_tests::shared_cell_hostile::a_listing_pays_for_the_descriptors_it_reads '

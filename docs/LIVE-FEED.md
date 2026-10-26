@@ -278,7 +278,7 @@ can push the whole instance to the global RSS shed line.
 
 | Env | Default | Meaning |
 |---|---|---|
-| `PROJECT_MEMORY_PRESSURE_BYTES` | `0` (disabled) | engage watermark per project |
+| `PROJECT_MEMORY_PRESSURE_BYTES` | `0` (disabled) | engage watermark per project (a project of byte weight w > 1 on a shared cell: the line x w, held so two unit lines fit beside it in the instance read memory; edge change #198) |
 | `PROJECT_MEMORY_RELEASE_PCT` | `75` | release when pressure falls below this % of the watermark |
 
 **Pressure model v1** (`PROJECT_PRESSURE_MODEL_VERSION=1`, printed at

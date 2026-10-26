@@ -263,9 +263,11 @@ pub(crate) fn try_reserve_read(bytes: u64) -> ReadReservation {
         .try_with(|request| {
             let ctl = &request.ticket.ctl;
             let project = request.share.get().map(ParkShare::read_bytes);
-            let line = ctl.project_memory_pressure_bytes();
-            ReadHold::try_reserve(ctl, project, line, bytes)
-                .map_or(ReadReservation::NoRoom, ReadReservation::Reserved)
+            let weight = request.share.get().map_or(1, ParkShare::byte_weight);
+            ReadHold::try_reserve(ctl, project, ctl.project_memory_line(weight), bytes)
+                .map_or(ReadReservation::NoRoom, |hold| {
+                    ReadReservation::Reserved(hold.weighted(weight))
+                })
         })
         .unwrap_or(ReadReservation::Unscoped)
 }
@@ -278,18 +280,22 @@ pub(crate) async fn reserve_read_until(
     bytes: u64,
     deadline: tokio::time::Instant,
 ) -> ReadReservation {
-    let Ok((ctl, project)) = REQUEST.try_with(|request| {
+    let Ok((ctl, project, weight)) = REQUEST.try_with(|request| {
+        let share = request.share.get();
         (
             request.ticket.ctl.clone(),
-            request.share.get().map(ParkShare::read_bytes),
+            share.map(ParkShare::read_bytes),
+            share.map_or(1, ParkShare::byte_weight),
         )
     }) else {
         return ReadReservation::Unscoped;
     };
-    let line = ctl.project_memory_pressure_bytes();
+    let line = ctl.project_memory_line(weight);
     ReadHold::reserve_until(&ctl, project, line, bytes, deadline)
         .await
-        .map_or(ReadReservation::NoRoom, ReadReservation::Reserved)
+        .map_or(ReadReservation::NoRoom, |hold| {
+            ReadReservation::Reserved(hold.weighted(weight))
+        })
 }
 
 /// The served request waits again with its read reservation taken back: it
@@ -304,6 +310,15 @@ pub(crate) fn release_read() {
         .unwrap_or(());
 }
 
+/// The byte weight of the served request's bound project (its memory line
+/// scales by it, `AdmissionController::project_memory_line`): 1 with no
+/// bound project or outside a served request.
+pub(crate) fn byte_weight() -> u64 {
+    REQUEST
+        .try_with(|request| request.share.get().map_or(1, ParkShare::byte_weight))
+        .unwrap_or(1)
+}
+
 /// Reserve `bytes` for what the served request is about to read and render
 /// without an admission reservation (a claim's leased messages, layout 6A
 /// package 1), in its bound project's read bytes under the project's line
@@ -312,14 +327,23 @@ pub(crate) fn release_read() {
 /// so its response body holds it once it settles to the page. Outside a
 /// served request nothing is reserved.
 pub(crate) async fn reserve_read(bytes: u64) -> Result<(), ReadRefusal> {
-    let Ok((ctl, project)) = REQUEST.try_with(|request| {
-        let project = request.share.get().map(ParkShare::read_bytes);
-        (request.ticket.ctl.clone(), project)
+    let Ok((ctl, project, weight)) = REQUEST.try_with(|request| {
+        let share = request.share.get();
+        let weight = share.map_or(1, ParkShare::byte_weight);
+        (
+            request.ticket.ctl.clone(),
+            share.map(ParkShare::read_bytes),
+            weight,
+        )
     }) else {
         return Ok(());
     };
-    let line = ctl.project_memory_pressure_bytes();
-    bind_read(ReadHold::reserve(&ctl, project, line, bytes).await?);
+    let line = ctl.project_memory_line(weight);
+    bind_read(
+        ReadHold::reserve(&ctl, project, line, bytes)
+            .await?
+            .weighted(weight),
+    );
     Ok(())
 }
 

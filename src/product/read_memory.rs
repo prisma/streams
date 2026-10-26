@@ -88,7 +88,7 @@ pub(crate) async fn refusal(
         return Some(refusal);
     }
     let bytes = page_bytes(method, path, query)?;
-    reserve(state, project_of(principal), bytes).await
+    reserve(state, project_of(principal), weight_of(principal), bytes).await
 }
 
 /// How long an append refused over the shed line has to finish sending the
@@ -160,7 +160,8 @@ impl AppState {
         limit: usize,
     ) -> Result<CatalogPage, Box<Response>> {
         let bytes = Registry::catalog_page_bytes(limit);
-        if let Some(refusal) = reserve(self, Some(project), bytes).await {
+        let weight = crate::admission::park::byte_weight();
+        if let Some(refusal) = reserve(self, Some(project), weight, bytes).await {
             return Err(Box::new(refusal));
         }
         self.registry
@@ -203,7 +204,7 @@ impl AppState {
             incoming,
             limit,
             principal.and_then(|p| self.quotas.pressure_handle(&p.project_id)),
-            self.admission.project_memory_pressure_bytes(),
+            self.admission.project_memory_line(weight_of(principal)),
         )
         .await
         .map_err(|refusal| Box::new(body_refusal(refusal, principal)))
@@ -218,7 +219,7 @@ impl AppState {
         principal: Option<&RequestPrincipal>,
         bytes: u64,
     ) -> Result<(), Box<Response>> {
-        match reserve(self, project_of(principal), bytes).await {
+        match reserve(self, project_of(principal), weight_of(principal), bytes).await {
             Some(refusal) => Err(Box::new(refusal)),
             None => Ok(()),
         }
@@ -228,6 +229,14 @@ impl AppState {
 /// The verified principal's project, if any.
 fn project_of(principal: Option<&RequestPrincipal>) -> Option<&ProjectId> {
     principal.map(|p| &p.project_id)
+}
+
+/// The byte weight of the principal's project, which its memory line
+/// scales by (`AdmissionController::project_memory_line`); 1 without a
+/// verified project. The catalog's page, reserved on the same project
+/// ledger, takes the weight of the share `admit_catalog` bound.
+pub(super) fn weight_of(principal: Option<&RequestPrincipal>) -> u64 {
+    principal.map_or(1, |p| p.quotas.byte_weight)
 }
 
 /// Whether the request is a records append, single or batch: over the shed
@@ -273,12 +282,17 @@ fn store_budget_refusal(
 /// Reserve `bytes` for the request's page in its project's read bytes and
 /// the instance's read memory: the refusal to answer, or `None` once the
 /// hold is bound to the request.
-async fn reserve(state: &AppState, project: Option<&ProjectId>, bytes: u64) -> Option<Response> {
+async fn reserve(
+    state: &AppState,
+    project: Option<&ProjectId>,
+    byte_weight: u64,
+    bytes: u64,
+) -> Option<Response> {
     let held = project.and_then(|p| state.quotas.read_bytes(p));
-    let line = state.admission.project_memory_pressure_bytes();
+    let line = state.admission.project_memory_line(byte_weight);
     match ReadHold::reserve(&state.admission, held, line, bytes).await {
         Ok(hold) => {
-            crate::admission::park::bind_read(hold);
+            crate::admission::park::bind_read(hold.weighted(byte_weight));
             None
         }
         Err(ReadRefusal::Project) => Some(memory_pressure(project)),
@@ -315,16 +329,17 @@ pub(crate) async fn body(
         crate::admission::body::discard_within(incoming, limit, SHED_DISCARD_WAIT).await;
         return Err(Box::new(shed));
     }
+    let weight = weight_of(principal);
     let buffered = crate::admission::body::buffer_within(
         incoming,
         state.config.cli.max_request_body_bytes,
         principal.and_then(|p| state.quotas.pressure_handle(&p.project_id)),
-        state.admission.project_memory_pressure_bytes(),
+        state.admission.project_memory_line(weight),
     )
     .await
     .map_err(|refusal| Box::new(body_refusal(refusal, principal)))?;
     if let Some(coverage) = pull_coverage(method, path)
-        && let Some(refusal) = reserve(state, project_of(principal), coverage).await
+        && let Some(refusal) = reserve(state, project_of(principal), weight, coverage).await
     {
         return Err(Box::new(refusal));
     }

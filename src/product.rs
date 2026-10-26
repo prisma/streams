@@ -710,11 +710,11 @@ pub(crate) fn project_memory_gate(
     state: &AppState,
     principal: Option<&crate::auth::RequestPrincipal>,
 ) -> Option<Response> {
-    let high = state.admission.project_memory_pressure_bytes();
+    let p = principal?;
+    let high = state.admission.project_memory_line(p.quotas.byte_weight);
     if high == 0 {
         return None;
     }
-    let p = principal?;
     let adm = state.quotas.pressure_handle(&p.project_id)?;
     if adm.memory_gate(
         &p.project_id,

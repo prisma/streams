@@ -80,7 +80,7 @@ pub(super) async fn body(
         incoming,
         limit,
         principal.and_then(|p| state.quotas.pressure_handle(&p.project_id)),
-        state.admission.project_memory_pressure_bytes(),
+        (state.admission).project_memory_line(super::super::read_memory::weight_of(principal)),
     )
     .await
     .map_err(|refusal| {

@@ -54,6 +54,8 @@ pub(crate) struct ParkShare {
     cell: Arc<crate::admission::fair_shed::InstanceLoad>,
     /// The request weight fair shedding judges its load at.
     request_weight: u64,
+    /// The byte weight its memory line scales by.
+    byte_weight: u64,
 }
 
 /// RAII place in a project's share, held while one wait is parked.
@@ -82,6 +84,7 @@ impl QuotaRegistry {
             read_rate: quotas.read_bytes_per_sec,
             cell: Arc::clone(&self.load),
             request_weight: quotas.request_weight,
+            byte_weight: quotas.byte_weight,
         })
     }
 }
@@ -111,6 +114,12 @@ impl ParkShare {
         Some(ProjectParked {
             admission: admission.clone(),
         })
+    }
+
+    /// The project's byte weight, which its memory line scales by
+    /// (`AdmissionController::project_memory_line`).
+    pub(crate) fn byte_weight(&self) -> u64 {
+        self.byte_weight
     }
 
     /// The project's read bytes, for a read the request makes beside the

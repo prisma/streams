@@ -158,6 +158,10 @@ impl ReadRefusal {
 pub(crate) struct ReadHold {
     ctl: AdmissionController,
     project: Option<ProjectReadBytes>,
+    /// Its project's byte weight: a woken wait takes again under its
+    /// project's memory line at it, read when it wakes
+    /// (`AdmissionController::project_memory_line`).
+    byte_weight: u64,
     /// What admission reserved: what a woken wait takes again before it
     /// renders. 0 for a hold no admission reserved.
     budget: u64,
@@ -222,6 +226,7 @@ impl ReadHold {
         Self {
             ctl: ctl.clone(),
             project,
+            byte_weight: 1,
             budget: bytes,
             bytes: AtomicU64::new(bytes),
             rendered: AtomicBool::new(false),
@@ -247,7 +252,7 @@ impl ReadHold {
         if self.rendered.load(Ordering::Relaxed) || short == 0 {
             return true;
         }
-        let line = self.ctl.project_memory_pressure_bytes();
+        let line = self.ctl.project_memory_line(self.byte_weight);
         let memory = &self.ctl.inner.read_memory;
         let wanted = || at_most().map_or(short, |bytes| bytes.min(short));
         match Self::take_until(memory, self.project.as_ref(), line, wanted, deadline).await {
@@ -319,10 +324,18 @@ impl ReadHold {
         Self {
             ctl: ctl.clone(),
             project,
+            byte_weight: 1,
             budget: 0,
             bytes: AtomicU64::new(0),
             rendered: AtomicBool::new(true),
         }
+    }
+
+    /// The same hold, for a project of byte weight `byte_weight`, whose
+    /// memory line its woken wait takes again under (layout 6A package 1).
+    pub(crate) fn weighted(mut self, byte_weight: u64) -> Self {
+        self.byte_weight = byte_weight;
+        self
     }
 
     /// The bytes this hold holds now.
