@@ -11,7 +11,7 @@ ratchet here is 1,000 lines per file; the s3lite census it reads (C2) is
 
 | File | Role |
 |---|---|
-| `k2gen.ts` (+ `common.ts`, `produce.ts`, `consume.ts`, `churn.ts`, `corpus.ts`) | Bun load generator: `setup`, `produce`, `walk`, `tail`, `group`, `churn`, `subs`, `corpus-stats` (`bun bench/k2cost/k2gen.ts help`) |
+| `k2gen.ts` (+ `common.ts`, `produce.ts`, `consume.ts`, `mux.ts`, `churn.ts`, `corpus.ts`) | Bun load generator: `setup`, `produce`, `walk`, `tail`, `group`, `churn`, `subs`, `mux` (a tenant's tails and groups through one multiplexed wait, `POST /v1/projects/{p}/live:wait`), `corpus-stats` (`bun bench/k2cost/k2gen.ts help`) |
 | `run-local.sh <point-file>` | one point in the release posture, from boot to `summary.json` |
 | `scrape.py` | the instruments: `loop` (with `--operator`, also `/operator/data.json`), `snapshot`, `usage`, `posture`, `envfile` |
 | `price.py [run-dir] [--baseline run-dir]` | Tigris pricing, the §4.3 allocation, K2 revenue, per-GiB costs and margins, W(r), calibration, validity; with `k2cells.py` (cell pricing and allocation), `k2store.py` (stored bytes, k, the a/b/c fit, U) and `k2valid.py` (§8 checks) |
@@ -506,6 +506,7 @@ audits every produced stream (`tenants.ts audit`) and prices the step
 |---|---|---|---|
 | `points/PACK-T.env` (`tenants/pack-t-NNNN.json`) | 1, 100, 400, 1,000 (cell-admin's default `--max-projects`, the scale Layer B certifies) | T: 3 streams, 200 appends a day of 400 B JSON singles, one long-poll tail always connected | 1 parked wait |
 | `points/PACK-S.env` (`tenants/pack-s-NNNN.json`) | 1, 5, 10, 20, 30, 46 (46 x 25 = 1,150 of the live pool's 1,200) | S: 20 streams, 2 appends a second of 1 KiB JSON singles, a long-poll tail per stream, one consumer group (pull 10, settle each) on 5 of them | 25 parked waits (20 tails, a pull loop per group stream) |
+| `points/PACK-S.env` with `PACK_MUX=1` (`tenants/pack-s-mux-NNNN.json`) | 48, 100, 150 | S as above, its 20 tails and 5 group streams in one `mux` phase (layout 6A package 2) | 1 parked wait (one multiplexed wait carrying 25 subscriptions) |
 
 Each step: admission, the manifest's 1,640 s (setup 0-120 s, the load from
 180 s, `steady` 360-1,560 s), a short quiescence, 60 s of idle tail, the

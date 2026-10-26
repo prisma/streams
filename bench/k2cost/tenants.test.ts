@@ -235,7 +235,9 @@ test("the packing manifests: Fable's T and S at every step, the shape alike, eve
   // README "Packing": N projects of one profile on one launch cell, priced
   // per tenant from the 20-minute `steady` period (packing.py).
   const { bounds, ceilings } = cellSizing(readProfiles(DEFAULT_PROFILES));
-  const steps: Record<string, number[]> = { t: [1, 100, 400, 1000], s: [1, 5, 10, 20, 30, 46] };
+  // `s-mux`: profile S through one multiplexed wait a project (layout 6A
+  // package 2, PACK_MUX=1).
+  const steps: Record<string, number[]> = { t: [1, 100, 400, 1000], s: [1, 5, 10, 20, 30, 46], "s-mux": [48, 100, 150] };
   const name = (p: string, n: number) => `pack-${p}-${String(n).padStart(4, "0")}`;
   const files = readdirSync(join(import.meta.dir, "tenants")).filter((f) => f.startsWith("pack-")).sort();
   expect(files).toEqual(Object.entries(steps).flatMap(([p, ns]) => ns.map((n) => `${name(p, n)}.json`)).sort());
@@ -244,23 +246,28 @@ test("the packing manifests: Fable's T and S at every step, the shape alike, eve
     for (const n of ns) {
       const { manifest: m } = readManifest(join(import.meta.dir, "tenants", `${name(p, n)}.json`));
       const [c, ...rest] = m.classes;
-      expect([m.name, rest.length, c!.class, c!.count, c!.role, c!.quotas]).toEqual([name(p, n), 0, p, n, "compliant", undefined]);
+      expect([m.name, rest.length, c!.class, c!.count, c!.role, c!.quotas]).toEqual([name(p, n), 0, p.slice(0, 1), n, "compliant", undefined]);
       const ph = (mode: string) => c!.phases.find((x) => x.mode === mode)!;
       const args = (mode: string) => ph(mode).args ?? {};
       // Fable's profiles (streams-cost report 2026-10-24 section 4.1).
       if (p === "t") {
         expect([c!.streams, Math.round(Number(args("produce").rate) * 86_400), args("produce")["record-bytes"], args("tail").streams])
           .toEqual([3, 200, 400, 1]);
-      } else {
+      } else if (p === "s") {
         expect([c!.streams, args("produce").rate, args("produce")["record-bytes"], args("group").streams, args("group").pull])
           .toEqual([20, 2, 1024, 5, 10]);
+      } else {
+        expect([c!.streams, args("produce").rate, args("produce")["record-bytes"], args("mux")["group-streams"], args("mux").pull])
+          .toEqual([20, 2, 1024, 5, 10]);
+        expect(c!.phases.some((x) => x.mode === "tail" || x.mode === "group")).toBe(false);
       }
-      // Each long-poll reader and each pull loop is a parked wait.
-      const tail = ph("tail");
+      // Each long-poll reader and each pull loop is a parked wait; a
+      // multiplexed project parks one.
+      const tail = c!.phases.find((x) => x.mode === "tail");
       const group = c!.phases.find((x) => x.mode === "group");
-      const waits = Number(tail.args?.streams ?? c!.streams) * Number(tail.args?.readers ?? 1)
+      const waits = p === "s-mux" ? 1 : Number(tail!.args?.streams ?? c!.streams) * Number(tail!.args?.readers ?? 1)
         + (group ? Number(group.args?.streams ?? c!.streams) * Number(group.args?.consumers ?? 1) : 0);
-      expect([name(p, n), waits]).toEqual([name(p, n), p === "t" ? 1 : 25]);
+      expect([name(p, n), waits]).toEqual([name(p, n), p === "t" || p === "s-mux" ? 1 : 25]);
       expect(waits <= ceilings.max_inflight_requests).toBe(true);
       // The cell parks every wait with room to spare, and the driver's pool
       // offers them all at once, with room for appends and woken reads.
@@ -564,3 +571,38 @@ test("the audit asks again for a cell that rate-limits its reads, as it does a h
     false, [["unexpected_records", "1"], ["record_count", `read ${produced.acked_records + 4} + missing 0 != expected ${produced.acked_records + 3}`]],
   ]);
 }, 60_000);
+
+test("a mux phase reads every record its project appended through one multiplexed wait, its group stream's records leased and settled", async () => {
+  const m: Manifest = { name: "mux", seed: 9, duration: 4, classes: [
+    { class: "m", count: 1, role: "compliant", streams: 3, phases: [
+      { mode: "setup", at: 0 },
+      { mode: "produce", at: 0.5, secs: 2.5, args: { rate: 20, "record-bytes": 256 } },
+      { mode: "mux", at: 0.4, secs: 3.4, args: { "group-streams": 1, pull: 10, "wait-ms": 1000 } },
+    ] },
+  ] };
+  checkManifest(m);
+  const plan = expand(m, "sha");
+  const mapFile = join(dir, "tokens-mux.json");
+  const tokens = plan.projects.map((p) => ({ project: p.id, token: `tok-${p.id}` }));
+  writeFileSync(mapFile, JSON.stringify(tokens));
+  for (const t of tokens) cell.tokens.set(t.token, t.project);
+  const before = cell.trace;
+  cell.trace = [];
+  const summary = await run(plan, cell.base, mapFile, join(dir, "run-mux"), 1);
+  const trace = cell.trace;
+  cell.trace = before;
+  expect(summary.phases_failed).toEqual([]);
+  const project = plan.projects[0]!.id;
+  const produced = json(join(dir, "run-mux", "projects", project, "phase-1.ledger.json"));
+  const read = json(join(dir, "run-mux", "projects", project, "phase-2.ledger.json"));
+  const appended = Object.values(produced.per_stream as Record<string, { acked_records: number }>).reduce((n, t) => n + t.acked_records, 0);
+  const g0 = Object.entries(produced.per_stream as Record<string, { acked_records: number }>).find(([k]) => k.endsWith("00000"))![1].acked_records;
+  // Every appended record through its tail, the group stream's once more.
+  expect(appended > 0).toBe(true);
+  expect(read.delivered_records).toBe(appended + g0);
+  expect(read.oracle_ok).toBe(appended + g0);
+  expect(read.settle_acked).toBe(g0);
+  const waits = trace.filter(([, method, path]) => method === "POST" && path.endsWith("/live:wait")).length;
+  const longPolls = trace.filter(([, , path]) => path.includes(":long-poll") || path.endsWith(":pull")).length;
+  expect([waits > 0, longPolls]).toEqual([true, 0]);
+}, 30_000);

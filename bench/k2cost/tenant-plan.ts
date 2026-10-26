@@ -158,7 +158,7 @@ function checkPhase(cls: ClassSpec, ph: PhaseSpec, i: number, duration: number):
   if (["produce", "churn"].includes(ph.mode) && payload !== undefined && payload !== "oracle") {
     fail(`${where}: a tenant writes --payload oracle (got ${payload}), so every read can be checked for leaks`);
   }
-  if (["walk", "tail", "group", "subs"].includes(ph.mode) && ["rate", "mbps", "concurrency"].some((k) => k in (ph.args ?? {}))) {
+  if (["walk", "tail", "group", "subs", "mux"].includes(ph.mode) && ["rate", "mbps", "concurrency"].some((k) => k in (ph.args ?? {}))) {
     fail(`${where}: a tenant's reader embeds no producer (its records could not be audited); give the class a produce phase`);
   }
 }

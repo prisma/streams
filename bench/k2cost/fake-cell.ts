@@ -11,7 +11,9 @@
 //   offset at byte 37, audit.ts cursorOffset).
 // - GET …/records, :long-poll, :sse, consumers (PUT, :pull, :settle; a
 //   pull with nothing to lease waits up to its waitMs for an append),
-//   GET /v1/streams (catalog), DELETE, GET /v1/projects/{p}/usage (meters
+//   POST /v1/projects/{p}/live:wait (tails from `now` pinned at once, else
+//   the first ready tail pages and group leases, waiting up to waitMs for
+//   an append), GET /v1/streams (catalog), DELETE, GET /v1/projects/{p}/usage (meters
 //   counted the way the generators count them) and the watch capability
 //   path (403 `watch_unauthorized`; each request recorded in `watches`,
 //   `watchHold` holds every one that arrives while it is set, and
@@ -255,6 +257,8 @@ export class FakeCell {
       }
       return refusal.code ? error(refusal.status, refusal.code) : new Response("upstream gone", { status: refusal.status });
     }
+    const live = /^\/v1\/projects\/([^/]+)\/live:wait$/.exec(path);
+    if (live) return live[1] === project ? this.liveWait(project, req) : error(404, "unknown_project");
     const usage = /^\/v1\/projects\/([^/]+)\/usage$/.exec(path);
     if (usage) return usage[1] === project ? json(200, { ...this.meter(project) }) : error(403, "forbidden");
     const ns = this.ns(project);
@@ -316,6 +320,57 @@ export class FakeCell {
     const page = this.page(project, recs, from, maxBytes);
     if (this.pageDelayMs > 0) await Bun.sleep(this.pageDelayMs);
     return page;
+  }
+
+  /** The multiplexed wait: every ready subscription's entry (a tail from
+   * `now` pins its cursor, one behind the tail pages; a group leases what
+   * is past its consumer's position), or, with none ready, the same after
+   * the first append within waitMs. */
+  private async liveWait(project: string, req: Request): Promise<Response> {
+    type Sub = { id: string; kind: string; stream: string; cursor?: string; group?: string; max?: number };
+    const body = (await req.json()) as { waitMs?: number; subs: Sub[] };
+    const ns = this.ns(project);
+    const ready = (): unknown[] => {
+      const out: unknown[] = [];
+      for (const sub of body.subs) {
+        const recs = ns.get(sub.stream);
+        if (!recs) {
+          out.push({ id: sub.id, status: 404, error: { code: "stream_not_found", message: "stream_not_found", retryable: false } });
+          continue;
+        }
+        if (sub.kind === "tail") {
+          const from = offsetOf(sub.cursor ?? "beginning", recs.length);
+          if (sub.cursor === "now" || from < recs.length) {
+            const page = recs.slice(from);
+            const m = this.meter(project);
+            m.readRecords += page.length;
+            m.readPayloadBytes += page.reduce((n, r) => n + r.length, 0);
+            out.push({ id: sub.id, records: page.map((r) => JSON.parse(r)), cursor: cursorOf(recs.length), upToDate: true, sealed: false });
+          }
+          continue;
+        }
+        const key = `${project}/${sub.stream}/${sub.group}`;
+        const at = this.groups.get(key) ?? 0;
+        if (at >= recs.length) continue;
+        const leased = recs.slice(at, at + (sub.max ?? 10));
+        this.groups.set(key, at + leased.length);
+        const m = this.meter(project);
+        const messages = leased.map((r, i) => {
+          const value = JSON.parse(r);
+          m.readRecords++;
+          m.readPayloadBytes += Buffer.byteLength(JSON.stringify(value));
+          return { id: `${at + i}`, routingKey: "", leaseToken: `${key}:${at + i}`, attempts: 1, value };
+        });
+        out.push({ id: sub.id, backlog: recs.length - at - leased.length, messages });
+      }
+      return out;
+    };
+    let results = ready();
+    if (results.length === 0) {
+      await this.waitAppend(Math.min(body.waitMs ?? 25_000, 25_000), req.signal);
+      results = ready();
+    }
+    return json(200, { results });
   }
 
   private async consumer(project: string, name: string, op: string, recs: string[], req: Request): Promise<Response> {

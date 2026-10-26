@@ -505,6 +505,7 @@ export const MODE_FLAGS: Record<string, string[]> = {
   group: [...COMMON, ...PRODUCER, "pull", "consumers", "group", "settle", "wait-ms", "visibility-ms", "retry-frac", "extend-frac", "until-empty", "dlq", "max-attempts", "stagger"],
   churn: [...COMMON, "count", "size-kib", "end", "record-bytes", "payload", "concurrency", "rate", "records"],
   subs: [...COMMON, ...PRODUCER, "count", "via", "connect-rate", "wait-ms"],
+  mux: [...COMMON, ...PRODUCER, "project", "wait-ms", "group", "group-streams", "pull", "settle", "visibility-ms"],
   audit: [...COMMON, "parallel", "max-bytes", "expect"],
   "corpus-stats": ["seed", "samples", "sizes", "payloads", "out", "sample"],
 };

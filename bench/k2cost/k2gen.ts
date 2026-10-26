@@ -20,6 +20,7 @@ import { corpusSample, corpusStats } from "./corpus.ts";
 import { produce, setup, type Ctx } from "./produce.ts";
 import { group, subs, tail, walk } from "./consume.ts";
 import { churn } from "./churn.ts";
+import { mux } from "./mux.ts";
 import { audit } from "./audit.ts";
 
 const USAGE = `k2gen <mode> [flags]
@@ -38,6 +39,9 @@ Modes
                 (a pull leases one message per routing key: give the producer --routing-keys K)
   churn         lifecycles: --count N --size-kib S --end delete|ttl:SECS [--rate L/s | --concurrency C]
   subs          --count N idle subscribers over the streams: --via sse|long-poll --connect-rate 20
+  mux           one multiplexed wait (POST /v1/projects/{p}/live:wait) carrying a tail on every stream
+                and a group on the first --group-streams N: --project P (tenants: the project's)
+                --wait-ms 25000 --group NAME --pull N --settle every|none --visibility-ms 30000
   audit         read --streams back in full and check them record for record and offset for offset
                 against the produce ledgers that wrote them: --expect a.ledger.json[,b...] --parallel P
   corpus-stats  per-record zstd-1 ratio (+55 B frame header) at --sizes 128,256,1024,2048,16384
@@ -49,7 +53,7 @@ Common
   --out FILE.jsonl  --ledger FILE.json  --key B64 (Streams-Encryption-Key; the header file may set it)
   --window SECS (10)  --port P (serve the latest window as JSON)  --routing-keys K (keys k0..k{K-1})
 
-Producer (produce; walk/tail/group/subs run one in-process when given --rate/--mbps/--concurrency)
+Producer (produce; walk/tail/group/subs/mux run one in-process when given --rate/--mbps/--concurrency)
   --records N per request (1 = POST /records; >1 = POST /records:batch, JSON only)
   --record-bytes B (1024)  --payload corpus|b64rand|bytes  --zipf S (0 = uniform stream activity)
   (--payload oracle, records that name their project, needs an owner: tenants.ts writes it)
@@ -126,6 +130,7 @@ try {
     case "group": result = await group(ctx, signal); break;
     case "churn": result = await churn(ctx, signal); break;
     case "subs": result = await subs(ctx, signal); break;
+    case "mux": result = await mux(ctx, signal); break;
     case "audit": result = await audit(ctx, signal); break;
     default: throw new Error(`unreachable mode ${mode}`);
   }

@@ -40,6 +40,7 @@ import {
 import { AuditReadError, audit } from "./audit.ts";
 import { Pools } from "./conn-pool.ts";
 import { churn } from "./churn.ts";
+import { mux } from "./mux.ts";
 import { group, subs, tail, walk } from "./consume.ts";
 import { HOSTILE_LEGS, HOSTILE_MODES } from "./hostile.ts";
 import { produce, setup, type Ctx } from "./produce.ts";
@@ -278,6 +279,7 @@ export const MODES: Record<string, Mode> = {
   group,
   churn,
   subs,
+  mux,
   idle: async (_ctx, signal) => {
     await sleep(7 * 86_400_000, signal);
     return {};
