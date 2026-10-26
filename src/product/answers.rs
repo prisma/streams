@@ -4,7 +4,8 @@
 //! (`src/product.rs`) builds the same 200 without `Cache-Control` for the
 //! answers the matrix lists without it: the two usage routes (§2.19, §2.21)
 //! and the fleet-internal receivers. `retry_unavailable` gives every product
-//! 503 `temporarily_unavailable` its retry hint.
+//! 503 `temporarily_unavailable` its retry hint. `watch_event` is the watch
+//! wait's body, which a multiplexed wait's watch entry carries too (§2.24).
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
@@ -45,6 +46,33 @@ pub(super) fn retry_unavailable(code: &str, mut response: Response) -> Response 
             .or_insert(HeaderValue::from_static("1"));
     }
     response
+}
+
+/// The watch wait's body for `observation` (WIRE-MATRIX §2.18): touched
+/// (`changed`, or `resync` when the touch is unproven), resynchronised, or
+/// timed out, each with the journal's cursor to wait from next.
+pub(super) fn watch_event(
+    observation: crate::application::watch::Observation,
+) -> serde_json::Value {
+    use crate::application::watch::Observation;
+    use serde_json::json;
+    match observation {
+        Observation::Touched {
+            cursor,
+            proven,
+            stream_cursor,
+        } => json!({
+            "invalidated": true, "reason": if proven { "changed" } else { "resync" },
+            "cursor": cursor, "streamCursor": stream_cursor,
+        }),
+        Observation::Stale { cursor } => {
+            json!({"invalidated": true, "reason": "resync", "cursor": cursor})
+        }
+        Observation::Timeout {
+            cursor,
+            stream_cursor,
+        } => json!({"invalidated": false, "cursor": cursor, "streamCursor": stream_cursor}),
+    }
 }
 
 #[cfg(test)]

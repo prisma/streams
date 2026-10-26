@@ -99,21 +99,21 @@ OWNERS = (
     # legs: an empty pull pays its coverage, and a parked pull of a project
     # in read debt does not walk again.
     owner('admission_read_memory', 'src/admission/read_memory.rs',
-          'admission:: dst_tests::read_memory::'),
+          'admission:: dst_tests::read_memory:: dst_tests::live_wait::'),
     owner('admission_park', 'src/admission/park.rs',
           'admission:: dst_tests::parked_waits:: dst_tests::read_memory:: '
           'dst_tests::shared_cell_hostile::a_create_pays_for_its_registry_writes '
           'dst_tests::shared_cell_hostile::a_listing_pays_for_the_descriptors_it_reads '
           'dst_tests::quota_stream_seed:: '
           'dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull '
-          'dst_tests::fair_shed::'),
+          'dst_tests::fair_shed:: dst_tests::live_wait::'),
     owner('product_read_memory', 'src/product/read_memory.rs',
           'product::read_memory:: dst_tests::read_memory:: dst_tests::shared_cell_capacity:: '
           'dst_tests::read_memory_wakes::a_shared_cells_default_page_reserves_one_mib '
           'dst_tests::shared_cell_hostile::a_create_pays_for_its_registry_writes '
           'dst_tests::shared_cell_hostile::a_listing_pays_for_the_descriptors_it_reads '
           'dst_tests::shared_cell_hostile::an_append_over_the_shed_line_is_refused '
-          'dst_tests::fair_shed::'),
+          'dst_tests::fair_shed:: dst_tests::live_wait::'),
     # Fair shedding over the RSS line (fairshed lane, lead decision of
     # 2026-10-20 under the owner's delegation of 2026-10-17): the blame
     # windows and verdicts, and the leg that sheds the flooder first.
@@ -122,7 +122,8 @@ OWNERS = (
     owner('quota_offered', 'src/quota/offered.rs', 'quota::offered:: dst_tests::fair_shed::'),
     owner('consumer_pull_wait', 'src/application/consumer/pull_wait.rs',
           'dst_tests::parked_waits:: dst_tests::consumer_ dst_tests::read_memory::a_woken_pull'
-          ' dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull'),
+          ' dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull'
+          ' dst_tests::live_wait::'),
     owner('shard_directory', 'src/shard_directory.rs',
           'shard_directory:: shard::task_lifecycle_tests:: sharddir::supersede::'),
     owner('history_partition', 'src/shard/history_partition.rs', 'shard::'),
@@ -304,7 +305,7 @@ OWNERS = (
     # owner decided the row on 2026-10-12 (OWNER-DECISIONS-2 X1 (b)).
     owner('watch', 'src/application/watch.rs',
           'application::watch:: dst_tests::watch_lookups:: dst_tests::watch_observation:: '
-          'dst_tests::watch_admission:: dst_tests::shared_cell_hostile::'),
+          'dst_tests::watch_admission:: dst_tests::shared_cell_hostile:: dst_tests::live_wait::'),
     # The denial journal, the other anonymous surface (phase B step 14(a));
     # the owner decided the row on 2026-10-12 (OWNER-DECISIONS-2 X1 (b)).
     owner('audit', 'src/audit.rs',
@@ -375,7 +376,8 @@ OWNERS = (
           'dst_tests::reads_product:: dst_tests::quota_read_volume:: '
           'dst_tests::product_descriptor_reads:: dst_tests::security_modes::'),
     owner('product_answers', 'src/product/answers.rs',
-          'product::answers:: dst_tests::product_lifecycle:: dst_tests::consumer_product::'),
+          'product::answers:: dst_tests::product_lifecycle:: dst_tests::consumer_product:: '
+          'dst_tests::watch_observation:: dst_tests::live_wait::'),
     owner('billing', 'src/billing.rs', 'billing'),
     # The storage clock left src/billing.rs (no line headroom) for its own
     # module; the row keeps it under mutation selection with billing's filter.

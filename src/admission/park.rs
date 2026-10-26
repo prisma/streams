@@ -270,6 +270,40 @@ pub(crate) fn try_reserve_read(bytes: u64) -> ReadReservation {
         .unwrap_or(ReadReservation::Unscoped)
 }
 
+/// Reserve `bytes` for a read the served request makes beside its page, as
+/// `try_reserve_read` does, waiting for room until `deadline` (a
+/// multiplexed wait's group walk, whose coverage the answer's hold does not
+/// cover). `NoRoom`: none came by then.
+pub(crate) async fn reserve_read_until(
+    bytes: u64,
+    deadline: tokio::time::Instant,
+) -> ReadReservation {
+    let Ok((ctl, project)) = REQUEST.try_with(|request| {
+        (
+            request.ticket.ctl.clone(),
+            request.share.get().map(ParkShare::read_bytes),
+        )
+    }) else {
+        return ReadReservation::Unscoped;
+    };
+    let line = ctl.project_memory_pressure_bytes();
+    ReadHold::reserve_until(&ctl, project, line, bytes, deadline)
+        .await
+        .map_or(ReadReservation::NoRoom, ReadReservation::Reserved)
+}
+
+/// The served request waits again with its read reservation taken back: it
+/// is released, as `park` releases it, until its next wake takes it again.
+pub(crate) fn release_read() {
+    REQUEST
+        .try_with(|request| {
+            if let Some(hold) = request.read.get() {
+                hold.unreserve();
+            }
+        })
+        .unwrap_or(());
+}
+
 /// While held, the served request is parked in a wait.
 pub(crate) struct Parked {
     _instance: ParkedTicket,

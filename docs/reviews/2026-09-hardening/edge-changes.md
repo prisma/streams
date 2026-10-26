@@ -4337,6 +4337,52 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Status:** awaiting the owner's decision (cost report decision 3) and ratification.
 - **Check against commit:** written with the change.
 
+### #200 (this record's commit) — One `POST /v1/projects/{project}/live:wait` long-poll waits on every tail, consumer-group pull and watch a client names, and answers whichever is ready with exactly what the per-stream routes would deliver
+
+- **Program item:** layout 6A package 2 (DESIGN-6A §5, research-density §1, REVIEW-6A F15): multiplexed waits, the density lever for small tenants. A small (S) tenant holds 25 waits (20 tails, 5 group pulls), so a launch cell is connection-bound at about 48 S (the live pool of 1,200, the edge's ~1,300 usable sockets); one multiplexed wait per client makes it one. Long-poll, not SSE: SSE does not pass Compute ingress (PRO-218).
+- **Surface:** product.
+- **Endpoint:** new: `POST /v1/projects/{project}/live:wait` (+ `OPTIONS` preflight). Owner: `product::live_wait` (route, admission, the wait, the answer) with `tail`, `group`, `watch`, `wire`; `WatchService::observe` (the watch wait without its own admission, `application::watch`); `LineageWatch` (`application::consumer::pull_wait`). WIRE-MATRIX §2.24.
+- **Condition:** a request with a JSON body `{waitMs?, maxBytes?, subs}` (1-256 subscriptions of kind `tail`, `group` or `watch`, each with the stream key), authenticated as every product route (enforce: the customer token; off/shadow: the deployment bearer), naming its own project in the path.
+- **Before:** 404 (no route); a client waited with one long-poll per stream: `GET …/records:long-poll`, `POST …/consumers/{c}:pull` with `waitMs`, `GET …/watches/{w}/keys/{k}`.
+- **After:** 200 `{"results": [...]}` as soon as any subscription is ready (records past a tail's cursor, a group walk that leases, a watch touched; at once for a cursor from `now`, which the entry pins), or at `waitMs` (≤ 25 s) with nothing (`[]`, plus each watch's current cursor). Entries in request order: tail `{id, records, cursor, upToDate, sealed}`, group `{id, backlog, messages}`, watch `{id, event}`, refusal `{id, status, error}` with exactly the status and `error` the per-stream route gives the same token (e.g. 403 `prefix_denied` for a stream outside its grant, 403 `missing_scope`, 403 `wrong_key`, 404 `not_found`, `consumer_not_found`), never failing the rest; 421 `not_owner` (retryable) for a stream this instance does not serve, 400 `deliver_unsupported` for `deliver: applied`, 400 `unsupported_format` for a tail on a non-JSON stream. Whole-request answers: 400 `invalid_body`; 401; 404 `unknown_project` (path names another project, journaled); 413 `too_large` (body over 256 KiB); 429 `live_subscription_limit` (> 256 subscriptions, not retryable; or #202's project share, retryable); 503 `subscription_capacity` (#202); and the page routes' admission answers (429 `project_concurrency_limit`, `project_memory_pressure`, `rate_limited`, the read-debt 429, 503 `read_memory_busy`). Tails share `maxBytes` (default 256 KiB, [4 KiB, 1 MiB]) evenly; a tail past its share answers `upToDate: false`. Group leases start when the answer is built; a lost answer's leases expire after their visibility window and are delivered again (at-least-once, as a lost pull answer). A woken group walk reserves read memory only for what was appended since its consumer was seen drained (+4 KiB), else one whole coverage (4 MiB); a drained group (nothing past its cursor unsettled) is not walked at all.
+- **Retry semantics:** the client keeps every cursor; a request lost in transport is sent again with the same cursors (no state on the server). Retryable: 429/503 admission answers, `not_owner`, `live_subscription_limit` from the share; permanent: 400s, 404 `unknown_project`, > 256 subscriptions, the per-subscription refusals the per-stream routes call permanent.
+- **Who is affected:** clients that adopt the route (the SDK by default, #203; the K2 rig's `mux` mode). The per-stream routes are unchanged.
+- **Pinning tests:** src/dst/tests/live_wait.rs: `subscriptions_from_now_are_answered_at_once_with_pinned_cursors`, `an_append_wakes_exactly_its_tail_and_an_idle_wait_answers_empty_at_its_deadline` (red on 63139112 without the route: `left: 404 right: 200`), `ready_tails_are_answered_in_request_order_within_one_shared_budget`, `every_subscription_is_held_to_the_tokens_grants_and_answered_its_own_refusal`, `a_drained_group_waits_without_walking_and_an_append_wakes_it_leased`, `an_unsettled_lease_is_redelivered_through_the_wait_at_its_deadline`, `a_woken_group_reserves_what_was_appended_not_a_whole_coverage`, `a_watch_pins_its_cursor_and_a_matching_append_invalidates_it`, `a_retired_engine_answers_its_wait_retryably_and_the_replay_gets_the_next_record`, `a_tail_waiting_through_a_splits_seal_window_follows_it_to_the_first_record_after`, `a_wait_reserves_its_answer_and_is_refused_when_read_memory_is_held`, `a_woken_group_waits_for_room_for_what_was_appended`, `a_tail_polling_through_a_seal_window_releases_its_reservation_between_polls`; `product::live_wait::wire::tests`.
+- **Risk reason:** medium: a new route sharing the per-stream operations (`execute_read`, `consumer::pull`, the touch journal), not new storage paths; nothing in `src/shard.rs` changes. The group drained probe skips a walk only when the segments' loaded queue state shows nothing past the cursor unsettled (a consumer the state does not hold reads as cursor 0). Reversal: drop the route merge.
+- **Status:** awaiting the owner's ratification.
+- **Check against commit:** written with the change.
+
+### #201 (this record's commit) — A multiplexed wait's answer meters one read operation however many streams it answers, and an empty one meters one
+
+- **Program item:** layout 6A package 2 (research-density §4 row 2).
+- **Surface:** usage and billing: `readOperations` per stream (`/v1/streams/{name}/usage`, `/v1/projects/{p}/usage`).
+- **Endpoint:** `POST /v1/projects/{project}/live:wait` (#200); `product::live_wait::Serve::render`.
+- **Condition:** a multiplexed wait answers.
+- **Before:** each per-stream long-poll answer, empty (204) or not, meters one read operation on its stream, and its records and payload bytes.
+- **After:** one read operation per answer, on the stream of the first answered tail in request order (no tail answered: the first tail subscription's stream; no tail subscription: none); every answered tail meters its records and payload bytes on its own stream without an operation; each non-empty group batch meters one queue operation with its records and bytes (as `:pull`); watches meter nothing (as the watch wait). An empty answer meters one read operation (as today's 204). The body's length is debited from the project's read-byte bucket. A stream's `readOperations` is therefore an allocation of the project's, not a count of its own answers; the project total is exact.
+- **Retry semantics:** not applicable.
+- **Who is affected:** clients of #200: fewer read operations (an S tenant's ~2.2 tail answers a second become one operation per multiplexed answer); per-stream `readOperations` of multiplexed streams move to the first-named stream.
+- **Owner option:** not metering the empty answer (one operation per 25 s per idle client) is the T profile's metering lever (PLAN (g) 8); this record keeps it.
+- **Pinning tests:** src/dst/tests/live_wait.rs::one_answer_meters_one_read_operation_and_each_streams_bytes (three tails, two answered: `[(0,0,0), (1,1,a), (0,2,b+c)]`; an empty answer: one operation on the first tail's stream).
+- **Risk reason:** low: billing rows keep their shape; the per-op price is unchanged.
+- **Status:** awaiting the owner's ratification.
+- **Check against commit:** written with the change.
+
+### #202 (this record's commit) — A multiplexed wait holds one live-pool place and one project live place however many streams it watches, and one subscription unit per stream from a budget sized under the RSS shed line
+
+- **Program item:** layout 6A package 2 (research-density §1.3, §4 row 4; REVIEW-6A F15's memory line).
+- **Surface:** quotas and admission: the live pool (`SSE_MAX_CONNECTIONS`), the project's live share (`max_live_subscriptions`), a new subscription-unit budget.
+- **Endpoint:** `POST /v1/projects/{project}/live:wait` (#200); `admission::live_units`.
+- **Condition:** a multiplexed wait waits (parks) / is admitted.
+- **Before:** each waiting long-poll, pull or watch held one pool place and one project place.
+- **After:** a multiplexed wait parks once: one pool place and one project place for all its subscriptions (when the pool or share is full it waits as an active request, as every wait). Each subscription takes one unit for the request's lifetime from the instance's budget, `RSS_SHED_MB` MiB / 16 in 4 KiB units (8,000 at the 500 MB line: 31.25 MiB beside read memory's quarter, the F15 budget line; unbounded with no shed line), and from its project's share of it, the budget / `PROJECT_SHARE_K` (1,000 at k = 8; the whole budget at k = 1). Over the share: 429 `live_subscription_limit`, `retry-after: 1`; over the budget: 503 `subscription_capacity`, `retry-after: 5`. The route counts as data plane for the pre-auth survival bound and the idle release.
+- **Retry semantics:** both refusals retryable; units free as requests end.
+- **Who is affected:** multiplexed clients; the pool and shares now bind on connections, not streams.
+- **Pinning tests:** src/dst/tests/live_wait.rs::a_wait_on_twenty_streams_parks_once_and_too_many_subscriptions_are_refused (20 streams, `parked() == 1`); src/admission/live_units.rs tests (`8,000` at 500 MB; share and budget refusals, release on drop); src/product/live_wait.rs::tests (the data-plane path).
+- **Risk reason:** low-medium: the 4 KiB a unit is a budget against ~2 KiB measured per watched stream (E11 on Linux decides the density claim).
+- **Status:** awaiting the owner's ratification.
+- **Check against commit:** written with the change.
+
 ## Discrepancies
 
 One record has verified=false: its commit did not match the recorded text.

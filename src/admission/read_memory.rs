@@ -188,6 +188,21 @@ impl ReadHold {
         Ok(Self::holding(ctl, project, bytes))
     }
 
+    /// Reserve `bytes` as `reserve` does, waiting for room until `deadline`
+    /// rather than `READ_MEMORY_WAIT`: a read whose request is already
+    /// parked waits for room within its own wait.
+    pub(crate) async fn reserve_until(
+        ctl: &AdmissionController,
+        project: Option<ProjectReadBytes>,
+        line: u64,
+        bytes: u64,
+        deadline: tokio::time::Instant,
+    ) -> Result<Self, ReadRefusal> {
+        let memory = &ctl.inner.read_memory;
+        Self::take_until(memory, project.as_ref(), line, || bytes, deadline).await?;
+        Ok(Self::holding(ctl, project, bytes))
+    }
+
     /// Reserve `bytes` in both ledgers as `reserve` does, without waiting:
     /// `None` when either has no room now. A read that does not reserve is
     /// deferred by its caller, not refused, so no memory shed is counted.

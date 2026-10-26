@@ -153,6 +153,9 @@ mod livefeed_swap;
 #[path = "tests/livefeed_tail.rs"]
 mod livefeed_tail;
 
+#[path = "tests/live_wait.rs"]
+mod live_wait;
+
 #[path = "tests/parked_waits.rs"]
 mod parked_waits;
 

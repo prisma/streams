@@ -640,7 +640,7 @@ async fn track_inflight(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let path_is_stream = req.uri().path().starts_with("/v1/stream");
+    let path_is_stream = crate::product::live_wait::data_plane(req.uri().path());
     let ticket = state.admission.enter(path_is_stream);
     let cur = ticket.current();
     // Round-13 (review): the ORDINARY inflight admission gate moved
@@ -1169,7 +1169,7 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
             "/v1/stream/{*name}",
             crate::product::queues::guard_raw(&state, any(stream_entry)),
         )
-        .merge(crate::product::queues::routes())
+        .merge(crate::product::queues::routes().merge(crate::product::live_wait::routes()))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             track_inflight,

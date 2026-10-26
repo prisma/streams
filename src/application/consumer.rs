@@ -8,6 +8,7 @@ use crate::crypto::StreamKey;
 use crate::registry::StreamDesc;
 pub(crate) use deletion::delete;
 pub(crate) use delivery::{PULL_COVERAGE_BYTES, pull, settle};
+pub(crate) use pull_wait::{LineageWatch, Seen};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -148,6 +149,12 @@ pub(crate) struct AuthorizedStreamContext {
     key: StreamKey,
     epoch: [u8; 16],
     consumer: String,
+}
+impl AuthorizedStreamContext {
+    /// The stream incarnation this context was authorized against.
+    pub(crate) fn descriptor(&self) -> &StreamDesc {
+        &self.desc
+    }
 }
 /// Queue mutations bind the active record generation as well as stream incarnation.
 pub(crate) struct AuthorizedConsumerContext {

@@ -178,6 +178,53 @@ impl AppState {
     }
 }
 
+impl AppState {
+    /// The multiplexed wait's admission after its project's (layout 6A
+    /// package 2): the request's project share, so its walks pay their
+    /// coverage; fair shedding over the shed line, its body read and
+    /// dropped; the read-debt gate every page route passes; then its body,
+    /// at most `limit` bytes, buffered under the project's memory line.
+    /// `Err` is the refusal to answer.
+    pub(crate) async fn admit_live_wait(
+        &self,
+        principal: Option<&RequestPrincipal>,
+        incoming: axum::body::Body,
+        limit: usize,
+    ) -> Result<(bytes::Bytes, Option<crate::quota::BufferedBodyGuard>), Box<Response>> {
+        crate::admission::park::bind_principal(&self.quotas, principal);
+        crate::admission::park::judge_load(self.config.cli.project_share_k);
+        let refusal =
+            blamed_refusal(self, principal).or_else(|| super::check_read_quota(self, principal));
+        if let Some(refusal) = refusal {
+            crate::admission::body::discard_within(incoming, limit as u64, SHED_DISCARD_WAIT).await;
+            return Err(Box::new(refusal));
+        }
+        crate::admission::body::buffer_within(
+            incoming,
+            limit,
+            principal.and_then(|p| self.quotas.pressure_handle(&p.project_id)),
+            self.admission.project_memory_pressure_bytes(),
+        )
+        .await
+        .map_err(|refusal| Box::new(body_refusal(refusal, principal)))
+    }
+
+    /// Reserve what the multiplexed wait's answer may hold, `bytes`, as a
+    /// page read reserves its page: the hold rides the request, released
+    /// while it waits and taken again, at most what its woken tails
+    /// appended, before it renders. `Err` is the refusal to answer.
+    pub(crate) async fn reserve_live_answer(
+        &self,
+        principal: Option<&RequestPrincipal>,
+        bytes: u64,
+    ) -> Result<(), Box<Response>> {
+        match reserve(self, project_of(principal), bytes).await {
+            Some(refusal) => Err(Box::new(refusal)),
+            None => Ok(()),
+        }
+    }
+}
+
 /// The verified principal's project, if any.
 fn project_of(principal: Option<&RequestPrincipal>) -> Option<&ProjectId> {
     principal.map(|p| &p.project_id)

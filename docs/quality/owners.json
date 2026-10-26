@@ -315,6 +315,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::live_wait",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Multiplexed-wait DSTs (layout 6A package 2): one POST /v1/projects/{p}/live:wait answers whichever tail, group pull or watch is ready with what the per-stream routes deliver, pins cursors from now, wakes on exactly the stream that moved, answers empty at its deadline, shares one byte budget in request order, answers a subscription the token's grants do not cover with the per-stream refusal, parks once, meters one read operation an answer, walks a drained group never and reserves a woken one's appended bytes; the compiler and the DST suite exercise the module.",
+      "syntax": "path = \"tests/live_wait.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::parked_waits",
       "path": "src/dst/dst_tests.rs",
       "reason": "Parked-wait DSTs (shared-cells PLAN step 5, M1 and the cost review's 2.3-2.4): waiting long-polls, consumer pulls and watch waits are parked within the live pool and their project's share, leave the write gate and the fleet heartbeat, and a waiting pull walks again only on a commit, a consumer-state change or a lease deadline; the compiler and the DST suite exercise the module.",
@@ -3711,6 +3719,214 @@
       "path": "src/application/queues/delivery.rs",
       "reason": "A long-poll claim pins its waiter's Notified future so it can be enabled before the claim, as tokio's Notify requires to not miss a wake.",
       "syntax": "std::pin::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tail",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::group",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::pinned",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::subscriptions_from_now_are_answered_at_once_with_pinned_cursors",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::an_append_wakes_exactly_its_tail_and_an_idle_wait_answers_empty_at_its_deadline",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 4,
+      "owner": "crate::ready_tails_are_answered_in_request_order_within_one_shared_budget",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 8,
+      "owner": "crate::one_answer_meters_one_read_operation_and_each_streams_bytes",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::a_wait_on_twenty_streams_parks_once_and_too_many_subscriptions_are_refused",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 4,
+      "owner": "crate::a_drained_group_waits_without_walking_and_an_append_wakes_it_leased",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::an_unsettled_lease_is_redelivered_through_the_wait_at_its_deadline",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::a_woken_group_reserves_what_was_appended_not_a_whole_coverage",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 4,
+      "owner": "crate::a_watch_pins_its_cursor_and_a_matching_append_invalidates_it",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::every_subscription_is_held_to_the_tokens_grants_and_answered_its_own_refusal",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::watch_event",
+      "path": "src/product/answers.rs",
+      "reason": "The watch wait's body (WIRE-MATRIX §2.18), one renderer for the per-stream watch wait and a multiplexed wait's watch entry (§2.24); its three shapes are pinned by dst_tests::watch_observation and dst_tests::live_wait::a_watch_pins_its_cursor_and_a_matching_append_invalidates_it.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Serve < 'a >::wait",
+      "path": "src/product/live_wait.rs",
+      "reason": "The multiplexed wait races its watched streams' notifications against its deadline (WIRE-MATRIX §2.24); either arm only ends the wait and the losing futures are dropped (notify registrations, and touch-journal waiters the journal reaps); pinned by dst_tests::live_wait.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::error_answer",
+      "path": "src/product/live_wait.rs",
+      "reason": "A multiplexed wait's per-subscription refusal entry carries the product error object ({code, message, retryable}) its per-stream route answers (WIRE-MATRIX §2.24); pinned by dst_tests::live_wait::every_subscription_is_held_to_the_tokens_grants_and_answered_its_own_refusal.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::unwatchable",
+      "path": "src/product/live_wait.rs",
+      "reason": "A multiplexed wait's per-subscription refusal entry carries the product error object ({code, message, retryable}) its per-stream route answers (WIRE-MATRIX §2.24); pinned by dst_tests::live_wait::every_subscription_is_held_to_the_tokens_grants_and_answered_its_own_refusal.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::a_retired_engine_answers_its_wait_retryably_and_the_replay_gets_the_next_record",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::replay_past_503",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::a_tail_waiting_through_a_splits_seal_window_follows_it_to_the_first_record_after",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::gap_tail",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::follow_gap_tail",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_wait_reserves_its_answer_and_is_refused_when_read_memory_is_held",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::a_woken_group_waits_for_room_for_what_was_appended",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::a_tail_polling_through_a_seal_window_releases_its_reservation_between_polls",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::gap_tail_of",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
     }
   ]
 }

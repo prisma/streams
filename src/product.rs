@@ -3435,7 +3435,7 @@ async fn product_watch_wait(
     query: &str,
     access: crate::application::watch::WatchAccess<'_>,
 ) -> Response {
-    use crate::application::watch::{Observation, WatchCredentials};
+    use crate::application::watch::WatchCredentials;
     // Parse a carrier without surfacing syntax diagnostics until proof exists.
     let parsed_query = strict_query(query, &["cursor", "cap", "timeoutMs"]);
     let capability = headers
@@ -3479,21 +3479,7 @@ async fn product_watch_wait(
         Err(response) => return response,
     };
     let body = match service.wait(verified, cursor, timeout).await {
-        Ok(Observation::Touched {
-            cursor,
-            proven,
-            stream_cursor,
-        }) => json!({
-            "invalidated": true, "reason": if proven { "changed" } else { "resync" },
-            "cursor": cursor, "streamCursor": stream_cursor,
-        }),
-        Ok(Observation::Stale { cursor }) => {
-            json!({"invalidated": true, "reason": "resync", "cursor": cursor})
-        }
-        Ok(Observation::Timeout {
-            cursor,
-            stream_cursor,
-        }) => json!({"invalidated": false, "cursor": cursor, "streamCursor": stream_cursor}),
+        Ok(observation) => watch_event(observation),
         Err(error) => return watch_failure_response(error),
     };
     watch_observation_response(&body)
@@ -3639,7 +3625,7 @@ pub(crate) async fn product_list(
 }
 
 mod answers;
-use answers::{json_ok_no_store, retry_unavailable, watch_observation_response};
+use answers::{json_ok_no_store, retry_unavailable, watch_event, watch_observation_response};
 mod append_body;
 use append_body::{
     AppendBody, capacity_refused, names_a_producer, parse_append_body, refuse_if_sealed,
@@ -3649,6 +3635,7 @@ use append_error::render_product_append_error;
 mod consumer_pull;
 use consumer_pull::product_consumer_pull;
 mod internal;
+pub(crate) mod live_wait;
 mod operation;
 pub(crate) use operation::{ProductOperation, VERBS};
 pub(crate) mod queues;

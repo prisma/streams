@@ -25,6 +25,7 @@ use crate::backpressure::GlobalLatch;
 
 pub(crate) mod body;
 pub(crate) mod fair_shed;
+pub(crate) mod live_units;
 pub(crate) mod park;
 pub(crate) mod read_memory;
 
@@ -172,6 +173,8 @@ struct Inner {
     /// The instance's read memory: page reads in flight and the bodies
     /// that still hold their pages (shared cells H3).
     read_memory: read_memory::ReadMemory,
+    /// What multiplexed waits' watched streams may hold (`live_units`).
+    live_units: Arc<live_units::LiveUnits>,
 }
 
 impl Inner {
@@ -296,6 +299,7 @@ impl AdmissionController {
                 data_plane_arrivals: AtomicU64::new(0),
                 record_ceiling: std::sync::atomic::AtomicUsize::new(knobs.record_ceiling_bytes),
                 read_memory: read_memory::ReadMemory::new(knobs.rss_shed_mb),
+                live_units: live_units::LiveUnits::new(knobs.rss_shed_mb),
             }),
         }
     }

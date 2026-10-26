@@ -134,6 +134,94 @@ impl PullPark {
     }
 }
 
+/// A multiplexed wait's watch on one consumer's lineage (layout 6A package
+/// 2): the same segments, views and lease deadlines a waiting pull watches,
+/// held across the request's walks, plus whether the consumer is drained
+/// there. Drained is read from the segments' queue state, so a group whose
+/// consumer has nothing to deliver or lease needs no walk at all: no
+/// configuration read and no Receive through the committer.
+pub(crate) struct LineageWatch {
+    watched: Vec<Watched>,
+    /// Each segment's sealed end; `None` for a live one.
+    ends: Vec<Option<u64>>,
+}
+
+/// The views a walk was taken against (`LineageWatch::seen`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Seen(Vec<View>);
+
+impl LineageWatch {
+    /// The lineage of `desc`, when this instance serves every segment.
+    pub(crate) async fn of(
+        service: &Arc<ConsumerService>,
+        desc: &crate::registry::StreamDesc,
+    ) -> Option<Self> {
+        let lineage = super::consumer_segments(desc);
+        let watched = watch(service, &lineage).await?;
+        Some(Self {
+            watched,
+            ends: lineage.iter().map(|segment| segment.3).collect(),
+        })
+    }
+
+    /// Whether `consumer` has nothing left to lease on any segment: every
+    /// segment's queue state is loaded and the consumer's backlog there
+    /// (records past its cursor up to the segment's durable tail or sealed
+    /// end, less those settled) is 0. A consumer the loaded state does not
+    /// hold has no rows there: cursor 0, nothing settled, as loading its
+    /// rows would make it. A closed engine, a poisoned or unloaded state is
+    /// not drained: the walk decides.
+    pub(crate) fn drained(&self, consumer: &str) -> bool {
+        self.watched.iter().zip(&self.ends).all(|(w, end)| {
+            if w.engine.is_closed() {
+                return false;
+            }
+            let Ok(state) = w.handle.state.lock() else {
+                return false;
+            };
+            let tail = end.unwrap_or(state.durable.next);
+            state.queue.loaded && backlog(state.queue.consumers.get(consumer), tail) == 0
+        })
+    }
+
+    /// The payload bytes before every segment's durable tail: what a walk
+    /// woken later reads at most beyond, with its framing.
+    pub(crate) fn payload(&self) -> u64 {
+        self.watched
+            .iter()
+            .filter_map(|w| w.handle.state.lock().ok().map(|s| s.durable.logical))
+            .sum()
+    }
+
+    /// The views a walk taken now is taken against, and the earliest
+    /// deadline among the consumer's live leases; `None` when an engine
+    /// closed or a state is poisoned (walk again).
+    pub(crate) fn seen(&self, consumer: &str) -> Option<(Seen, Option<Instant>)> {
+        observe(&self.watched, consumer).map(|(views, lease)| (Seen(views), lease))
+    }
+
+    /// Every segment's commit notification, registered now.
+    pub(crate) fn notified(&self) -> Vec<tokio::sync::futures::Notified<'_>> {
+        self.watched
+            .iter()
+            .map(|w| w.handle.notify.notified())
+            .collect()
+    }
+}
+
+/// The records of a segment whose tail is `tail` past the consumer's cursor
+/// and not settled; a consumer with no state there is at cursor 0.
+fn backlog(cs: Option<&crate::queue::ConsumerState>, tail: u64) -> u64 {
+    let Some(cs) = cs else {
+        return tail;
+    };
+    if cs.cursor >= tail {
+        return 0;
+    }
+    let settled = cs.acked.range(cs.cursor..tail).count() as u64;
+    (tail - cs.cursor).saturating_sub(settled)
+}
+
 /// Walk again after one poll interval (or at the deadline): the wait of a
 /// pull with no local notification to wait on, or whose engine closed.
 async fn poll(deadline: Instant) -> bool {

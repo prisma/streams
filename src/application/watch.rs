@@ -495,6 +495,24 @@ impl WatchService {
         } else {
             (None, None)
         };
+        // The wait holds its project's live slot above; on the instance it
+        // is parked, not a request in flight (shared cells M1).
+        let _parked = crate::admission::park::park_instance();
+        self.observe(&verified, &cursor, timeout).await
+    }
+
+    /// One observation of `verified`'s key from `cursor`, waiting at most
+    /// `timeout` (25 s at most), with no admission of its own: the wait
+    /// above admits and parks around it, and a multiplexed wait, which holds
+    /// one live place for every stream it watches, calls it directly.
+    pub(crate) async fn observe(
+        &self,
+        verified: &VerifiedObservation<'_>,
+        cursor: &str,
+        timeout: Duration,
+    ) -> Result<Observation, WatchFailure> {
+        let descriptor = &verified.descriptor;
+        let project = &descriptor.project_id;
         if descriptor.init.is_some() {
             return Err(WatchFailure::Creating);
         }
@@ -515,17 +533,14 @@ impl WatchService {
             .resolve(&stream_route.0, crate::shard_directory::Adoption::External)
             .await
             .map_err(WatchFailure::Resolve)?;
-        if let Some(key) = verified.key {
+        if let Some(key) = verified.key.clone() {
             self.keys
                 .put(descriptor.storage_hash(), key, descriptor.epoch());
         }
         let journal = self.touch.journal(descriptor.storage_hash(), stream_route);
-        // The wait holds its project's live slot above; on the instance it
-        // is parked, not a request in flight (shared cells M1).
-        let _parked = crate::admission::park::park_instance();
         let outcome = journal
             .wait(
-                &cursor,
+                cursor,
                 vec![crate::touch_keys::key_id_of(&verified.key_hex)],
                 timeout.min(Duration::from_secs(25)),
             )

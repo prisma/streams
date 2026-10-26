@@ -521,6 +521,17 @@
     "scenarios": []
   },
   {
+    "name": "a_drained_group_waits_without_walking_and_an_append_wakes_it_leased",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c554dadf32e5eada51a0ac916093a10f82cc075594d5eb468cad482b4522b8cc",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/live_wait.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_duplicate_absorbed_op_does_not_advance_the_trim",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -2068,6 +2079,17 @@
     "scenarios": []
   },
   {
+    "name": "a_retired_engine_answers_its_wait_retryably_and_the_replay_gets_the_next_record",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8e84b6cff0190e95e3c1657316a471423be875ccc284dc061a7ddaa338f736fd",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/live_wait.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_retry_across_two_splits_meets_its_row_when_the_clocks_disagree",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
@@ -2712,6 +2734,34 @@
     "scenarios": []
   },
   {
+    "name": "a_tail_polling_through_a_seal_window_releases_its_reservation_between_polls",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "3bccbca5e86ff49988ae2866aaf14ee4dada905304825be23759d4760529a81a",
+    "mechanisms": [],
+    "configuration": [
+      "let _l = super::fixture_failpoints::gap_lock().lock().await;",
+      "crate::failpoints::release_scaler_before_publish(\"sgrel\");"
+    ],
+    "file": "src/dst/tests/live_wait.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_tail_waiting_through_a_splits_seal_window_follows_it_to_the_first_record_after",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "38c04790ea3216808102bf28fa49672b7f047519bea012d9f1bf8e2804004e6b",
+    "mechanisms": [],
+    "configuration": [
+      "let _l = super::fixture_failpoints::gap_lock().lock().await;",
+      "crate::failpoints::release_scaler_before_publish(\"sgap\");"
+    ],
+    "file": "src/dst/tests/live_wait.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_takeover_completes_an_old_close_that_won",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -2779,6 +2829,28 @@
     "scenarios": []
   },
   {
+    "name": "a_wait_on_twenty_streams_parks_once_and_too_many_subscriptions_are_refused",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "842b2408ad9654fd596ddf08ee0530b34ed202407f7c810a1ecdf0b57263e814",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/live_wait.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_wait_reserves_its_answer_and_is_refused_when_read_memory_is_held",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "4d001509c3d6af74e97975e9083888bc3ce55de50fee556263d35aa374028663",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/live_wait.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_walk_scenario_excludes_an_injected_billing_clock",
     "attributes": [
       "#[tokio::test]"
@@ -2787,6 +2859,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/runtime_sweep.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_watch_pins_its_cursor_and_a_matching_append_invalidates_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "083fe0a9437d1b88db566cfd0a11d0de8e7ca5d3fe99b90df810042e1199130c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/live_wait.rs",
     "scenarios": []
   },
   {
@@ -2809,6 +2892,28 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_memory_wakes.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_woken_group_reserves_what_was_appended_not_a_whole_coverage",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0a4f5e33b1dda604c9e80bdb9566c625f8e3759aa17362333faa2c66be54b004",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/live_wait.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_woken_group_waits_for_room_for_what_was_appended",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0e7b0e9543960fd20f894accacb3bf4a33af5bcbd5e7ca900bd6cedc676285e0",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/live_wait.rs",
     "scenarios": []
   },
   {
@@ -3221,6 +3326,17 @@
     "scenarios": []
   },
   {
+    "name": "an_append_wakes_exactly_its_tail_and_an_idle_wait_answers_empty_at_its_deadline",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "788ba9c675fdb6ee9fbb2314aa8ce72b8eceb74072162ac4860b37c461362417",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/live_wait.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_append_whose_engine_closes_between_resolve_and_enqueue_is_answered_as_a_moved_shard",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -3596,6 +3712,17 @@
       "r#\"{\"count\":2,\"epoch\":1,\"reason\":\"seed\",\"computed_at_ms\":0}\"#.to_string(),"
     ],
     "file": "src/dst/tests/fleet_controller.rs",
+    "scenarios": []
+  },
+  {
+    "name": "an_unsettled_lease_is_redelivered_through_the_wait_at_its_deadline",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "09745d9282593533503c869f1bac309c22c619b6d895d170f84fcc79c93fc577",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/live_wait.rs",
     "scenarios": []
   },
   {
@@ -4564,6 +4691,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/quota_stream_seed.rs",
+    "scenarios": []
+  },
+  {
+    "name": "every_subscription_is_held_to_the_tokens_grants_and_answered_its_own_refusal",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "5cfe70b0d155cf80b84c283f35a17e2c25ebec6d89ccd927e330ec3f1eec8629",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/live_wait.rs",
     "scenarios": []
   },
   {
@@ -6234,6 +6372,17 @@
     "scenarios": []
   },
   {
+    "name": "one_answer_meters_one_read_operation_and_each_streams_bytes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c28c6d30fa1fafaaa5a9ca8f8c4aaca700c501f0d674e035de4e7c0f4a43a430",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/live_wait.rs",
+    "scenarios": []
+  },
+  {
     "name": "one_cell_serves_two_projects_with_full_isolation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -7864,6 +8013,17 @@
     "scenarios": []
   },
   {
+    "name": "ready_tails_are_answered_in_request_order_within_one_shared_budget",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c0e04ce2cf7b291e7f9c0632e3f8857269fec47c1be9df01df8319054d509b2c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/live_wait.rs",
+    "scenarios": []
+  },
+  {
     "name": "receive_then_delete_in_one_group_leaves_no_stale_lease",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -8852,6 +9012,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_revocation.rs",
+    "scenarios": []
+  },
+  {
+    "name": "subscriptions_from_now_are_answered_at_once_with_pinned_cursors",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "f2fe8edf5eceb10761abcc43ee0841fc01207b2bd5f31e6283e0fc667d96882b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/live_wait.rs",
     "scenarios": []
   },
   {
