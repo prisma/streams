@@ -3816,6 +3816,17 @@
     "scenarios": []
   },
   {
+    "name": "at_the_inflight_cap_the_queue_project_over_its_share_is_refused_before_its_neighbour",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "4047a38a3cb7e56abc8ce74aecc4a6a7fd3f7c9e8b55496eb9e9cb50efc55501",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_overload.rs",
+    "scenarios": []
+  },
+  {
     "name": "audit_tags_distinguish_caller_failures_from_cell_failures",
     "attributes": [
       "#[test]"
@@ -6655,6 +6666,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fair_shed.rs",
+    "scenarios": []
+  },
+  {
+    "name": "over_the_shed_line_the_queue_project_over_its_share_is_refused_before_its_neighbour",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "cfa71a302c474bfae31930637e378f3f49d096155f736c0a962ecfc149db300e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_overload.rs",
     "scenarios": []
   },
   {

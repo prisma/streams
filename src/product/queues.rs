@@ -6,6 +6,7 @@
 //! workflows; `handlers` renders them.
 mod guard;
 mod handlers;
+mod overload;
 
 pub(crate) use guard::{guard_raw, stream_refusal};
 
@@ -261,6 +262,10 @@ async fn list(state: &Arc<AppState>, headers: &HeaderMap, query: &str) -> Respon
         Ok(g) => g,
         Err(r) => return r,
     };
+    overload::judge(state, principal.as_ref());
+    if let Some(refusal) = super::read_memory::blamed_refusal(state, principal.as_ref()) {
+        return refusal;
+    }
     let tenant = tenant_of(state, principal.as_ref());
     let after = super::parse_query(query).remove("cursor");
     match state.queue_service().list(&tenant, after).await {
@@ -338,6 +343,7 @@ async fn queue_entry_inner(
         Ok(g) => g,
         Err(r) => return r,
     };
+    overload::judge(state, principal.as_ref());
     if crate::billing::is_reserved_stream(&name) {
         return super::perr(
             StatusCode::FORBIDDEN,
@@ -347,11 +353,16 @@ async fn queue_entry_inner(
             false,
         );
     }
+    let (parts, incoming) = req.into_parts();
+    let body = match overload::body(state, principal.as_ref(), incoming).await {
+        Ok(body) => body,
+        Err(r) => return *r,
+    };
     // mt-lint: allow(stream-ref-construction): ingress — the queue route's name qualified with the verified principal's project, as product.rs does
     let sref = tenant_of(state, principal.as_ref()).stream_ref(&name);
     let resp = handlers::dispatch(
         state,
-        handlers::Request::new(sref, resource, method, req),
+        handlers::Request::new(sref, resource, method, parts, body),
         principal.as_ref(),
     )
     .await;

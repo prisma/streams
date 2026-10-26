@@ -26,7 +26,7 @@ pub(super) struct Request {
     method: Method,
     headers: HeaderMap,
     query: String,
-    body: axum::body::Body,
+    body: Bytes,
 }
 
 impl Request {
@@ -34,10 +34,10 @@ impl Request {
         sref: crate::tenant::TenantStreamRef,
         resource: Resource,
         method: &Method,
-        req: axum::extract::Request,
+        parts: axum::http::request::Parts,
+        body: Bytes,
     ) -> Self {
-        let query = req.uri().query().unwrap_or("").to_string();
-        let (parts, body) = req.into_parts();
+        let query = parts.uri.query().unwrap_or("").to_string();
         Self {
             sref,
             resource,
@@ -66,16 +66,12 @@ pub(super) async fn dispatch(
     r: Request,
     principal: Option<&crate::auth::RequestPrincipal>,
 ) -> Response {
-    let limit = state.config.cli.max_request_body_bytes;
-    let Ok(body) = axum::body::to_bytes(r.body, limit).await else {
-        return failure_response(fail(FailureClass::TooLarge, "too_large", "body too large"));
-    };
     let call = Call {
         svc: state.queue_service(),
         sref: r.sref,
         headers: r.headers,
         query: r.query,
-        body,
+        body: r.body,
         principal,
     };
     let answer = match (r.resource, r.method) {

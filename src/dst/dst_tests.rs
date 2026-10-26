@@ -377,3 +377,6 @@ mod idle_release;
 
 #[path = "tests/fair_shed.rs"]
 mod fair_shed;
+
+#[path = "tests/queue_overload.rs"]
+mod queue_overload;

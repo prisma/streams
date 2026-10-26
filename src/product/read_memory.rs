@@ -93,7 +93,7 @@ pub(crate) async fn refusal(
 
 /// How long an append refused over the shed line has to finish sending the
 /// body the server reads and drops before answering.
-const SHED_DISCARD_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+pub(super) const SHED_DISCARD_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The page a records read without `maxBytes` renders and reserves on a
 /// shared cell (owner call Shared cells Q1 (B), the fallback Layer B's
@@ -361,7 +361,10 @@ async fn shed_before_body(
 /// the RSS shed line 429 `project_memory_pressure`, retryable after 2 s as
 /// the shed's appends are, and at the in-flight cap the gate's own 429
 /// `rate_limited`, retryable after 1 s.
-fn blamed_refusal(state: &AppState, principal: Option<&RequestPrincipal>) -> Option<Response> {
+pub(super) fn blamed_refusal(
+    state: &AppState,
+    principal: Option<&RequestPrincipal>,
+) -> Option<Response> {
     let project = &principal?.project_id;
     let reserved = state.runtime.history.budget.reserved_bytes();
     let (code, message, retry) = match state.admission.shed_blamed(reserved)? {

@@ -409,6 +409,14 @@
       "syntax": "path = \"tests/queue_product.rs\""
     },
     {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::queue_overload",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Native queues under the cell's overload gates over real HTTP rigs (layout 6A package 1, DESIGN-6A section 4.1): fair shedding, the memory lines, the RSS shed, the in-flight write gate, a full committer, parked claims and a claim's read memory, each asserted on the wire answers and the queues' stored counts; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/queue_overload.rs\""
+    },
+    {
       "category": "macro-dsl",
       "count": 1,
       "owner": "crate::q_key",
