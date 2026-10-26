@@ -4488,6 +4488,21 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Status:** awaiting the owner's ratification.
 - **Check against commit:** written with the change.
 
+### #194 (this record's commit) — A claim waiting for work is parked in the live pool, as a pull's wait is, so it no longer counts as an active request against the in-flight write cap or the survival bound
+
+- **Program item:** layout 6A package 1, overload parity (DESIGN-6A §4.1; research-queues §3.1 row "waiting", rule 4 of §3.2): a claim looped on the committer every <= 5 s for up to 25 s without parking (`application/queues/delivery.rs`), holding one of the active slots the write gate counts.
+- **Surface:** product.
+- **Endpoint:** `POST /v1/queues/{name}/groups/default:claim` with `waitMs` > 0 that finds nothing due. Owners: `QueueService::claim` (`park::park()` around each wait), `AdmissionController::park` and `ParkShare::park` (#106's pool and the project's share).
+- **Condition:** a claim with nothing due waits; the instance's live pool (the effective SSE cap, after open subscriptions) and the project's share (its `max_live_subscriptions` quota, after its subscriptions and other parked waits) have a place.
+- **Before:** the waiting claim counted as an active request: it filled the in-flight cap the appends and sends share, counted toward the 4 x cap survival bound and the fleet heartbeat's load.
+- **After:** while it waits the claim is parked: out of the active count (write gate, survival bound, heartbeat), in one place of the live pool and its project's share; between waits, while it runs its claim against the committer, it is active again. With no place in the pool or the share it waits active, as before. Its answer, timing and `waitMs` bound are unchanged.
+- **Retry semantics:** unchanged.
+- **Who is affected:** queue consumers (their long-poll claims no longer shed the cell's writes); a project's claims now share its live-subscription share with its subscriptions, watch waits and pulls (a full share only makes a claim wait active).
+- **Pinning tests:** src/dst/tests/queue_overload.rs::a_waiting_claim_parks_and_leaves_the_write_gate_to_sends (k = 1, cap 8 with 7 held: a claim with `waitMs` 20,000 parks (`parked() == 1`), a send beside it is 201, the claim wakes active again and returns that message). Red before: `panicked at src/dst/tests/queue_overload.rs:427:9: the waiting claim parks` (never parked, so the send was the ninth active).
+- **Risk reason:** low: no answer changes; waiting claims leave the write gate as every other wait did since #106. Reversal: drop the `park::park()` in `QueueService::claim`.
+- **Status:** awaiting the owner's ratification.
+- **Check against commit:** written with the change.
+
 ## Discrepancies
 
 One record has verified=false: its commit did not match the recorded text.

@@ -95,7 +95,8 @@ impl QueueService {
     /// queue's waiter until a send or settle in this process wakes it, at
     /// most 5 s at a time for work that falls due by time, until `waitMs`
     /// (an empty claim writes nothing, so a parked claim costs no store
-    /// writes).
+    /// writes). While it waits the request is parked (`admission::park`),
+    /// as a pull's wait is.
     pub(crate) async fn claim(
         &self,
         t: &QueueTarget,
@@ -121,6 +122,10 @@ impl QueueService {
                 return Ok(Claimed { messages, paused });
             }
             let nap = Duration::from_secs(5).min(deadline - now);
+            // Parked while it waits (shared cells M1, layout 6A package 1):
+            // out of the write gate's active count, in the live pool and its
+            // project's share; a wait that finds no place waits active.
+            let _parked = crate::admission::park::park();
             if tokio::time::timeout(nap, woken).await.is_ok() {
                 // Let the waking commit's other parked claims race fairly.
                 tokio::task::yield_now().await;

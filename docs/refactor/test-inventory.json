@@ -2895,6 +2895,17 @@
     "scenarios": []
   },
   {
+    "name": "a_waiting_claim_parks_and_leaves_the_write_gate_to_sends",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "84fc5dde39fa3e17c659be71e8de3259bfffeb974c19410aa4237624766e9812",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_overload.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_walk_scenario_excludes_an_injected_billing_clock",
     "attributes": [
       "#[tokio::test]"

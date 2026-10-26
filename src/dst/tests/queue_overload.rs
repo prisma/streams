@@ -391,3 +391,55 @@ async fn full(engine: &crate::shard::ShardEngine) {
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
 }
+
+/// Until `admission` counts `n` parked waits, at most 10 s.
+async fn parked(admission: &crate::admission::AdmissionController, n: i64) -> bool {
+    let wait = async {
+        while admission.parked() != n {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), wait)
+        .await
+        .is_ok()
+}
+
+/// A claim waiting for work parks in the live pool, as a pull's wait does:
+/// it leaves the active requests, so at the in-flight cap (8, seven held)
+/// a send is still admitted beside it, and the send wakes it with the
+/// message. Before: the claim waited as an active request, so the send
+/// was the ninth active and refused `429 rate_limited`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_waiting_claim_parks_and_leaves_the_write_gate_to_sends() {
+    let cell = open_cell(CellSpec::open(1)).await;
+    assert_eq!(ask(&cell, 0, "PUT", "/v1/queues/jobs", "").await.0, 201);
+    let admission = &cell.state.admission;
+    admission.set_max_inflight(CAP);
+    admission.add_inflight_for_test(CAP - 1);
+    let claim = r#"{"max":1,"waitMs":20000}"#;
+    let waiting = cell.call(
+        0,
+        "POST",
+        "/v1/queues/jobs/groups/default:claim",
+        claim.as_bytes(),
+    );
+    let probe = async {
+        assert!(parked(admission, 1).await, "the waiting claim parks");
+        let sent = send(&cell, 0, 7).await;
+        assert!(
+            parked(admission, 0).await,
+            "the woken claim is active again"
+        );
+        sent
+    };
+    let ((status, _, body), sent) = futures_util::future::join(waiting, probe).await;
+    assert_eq!(sent, SENT, "the send beside the parked claim");
+    let claimed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        (status, &claimed["messages"][0]["body"]["n"]),
+        (200, &serde_json::json!(7)),
+        "the claim takes the message that woke it"
+    );
+    admission.add_inflight_for_test(1 - CAP);
+    engine_shutdown(&cell.state).await;
+}
