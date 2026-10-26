@@ -4428,6 +4428,21 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Status:** awaiting the owner's ratification.
 - **Check against commit:** written with the change.
 
+### #190 (this record's commit) — A queue write is refused 429 `project_memory_pressure` while its project is over its memory line, and every queue body is charged to its project while it is buffered, as an append's is
+
+- **Program item:** layout 6A package 1, overload parity (DESIGN-6A §4.1; research-queues §3.1 row "body memory charge and the project write-pressure gate", rule 2 of §3.2): `product/queues/handlers.rs` buffered every queue body up to `max_request_body_bytes` uncharged, and queue writes never met the project's write latch.
+- **Surface:** product.
+- **Endpoint:** every `POST /v1/queues/{*path}` (send, `messages:batch`, claim, settle and the queue and group verbs) for the latch; every `/v1/queues/{*path}` request with a body for the charge. Owners: `product::queues::overload::body` (`product::project_memory_gate`, `admission::body::buffer_within`, `read_memory::memory_pressure`). Not affected: unverified requests (no project), `PROJECT_MEMORY_PRESSURE_BYTES` = 0.
+- **Condition:** `PROJECT_MEMORY_PRESSURE_BYTES` = line > 0 (32 MiB on the shared-cell profile). The latch engages when the project's estimated pressure (queued and unabsorbed append bytes, retained feed bytes, buffered bodies, held read pages) is over the line and releases below the release point (`PROJECT_MEMORY_RELEASE_PCT`, 75%), as for appends. The charge refuses a body chunk that would take the pressure past the line while the project holds other bytes.
+- **Before:** queue writes were served whatever the project's pressure; a queue body (up to 8 MiB on a shared cell) was buffered uncounted.
+- **After:** while the project's latch is engaged a queue `POST` is refused 429 `project_memory_pressure`, `Retry-After: 1`, tagged with its project, its body read and dropped first; a body that would take the project past its line is refused the same 429 while it is buffered; a body alone is buffered whole. The charge is held until the queue answers (the queue routes have no queued-append transfer point). A body over the limit still answers 413 `too_large`. Queue reads (`GET`) are unaffected.
+- **Retry semantics:** retryable after 1 s; nothing was written.
+- **Who is affected:** a project over its memory line (its queue sends, claims and settles now wait as its appends do), and its neighbours, whose memory the uncharged bodies shared.
+- **Pinning tests:** src/dst/tests/queue_overload.rs::a_queue_write_is_held_to_its_projects_memory_line (line 256 KiB; 300 KiB retained: a send, a claim and a settle each 429 `project_memory_pressure`, `retry-after: 1`, the queue's stats served; released: a send 201; 200 KiB retained: a 60 KiB message refused the same 429; nothing held: the same message 201; `queuedMessages` 3 exactly). Red before: `assertion failed: /v1/queues/jobs/messages left: (201, None, None) right: (429, Some("project_memory_pressure"), Some("1"))`; with the latch alone, `assertion failed: the body left: (201, None, None) right: (429, ...)`.
+- **Risk reason:** low: the answers are the append's, retryable, and reached only over a project's own line. Reversal: drop the latch and use an uncharged buffer in `overload::body`.
+- **Status:** awaiting the owner's ratification.
+- **Check against commit:** written with the change.
+
 ## Discrepancies
 
 One record has verified=false: its commit did not match the recorded text.

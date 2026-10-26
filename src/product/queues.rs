@@ -354,10 +354,11 @@ async fn queue_entry_inner(
         );
     }
     let (parts, incoming) = req.into_parts();
-    let body = match overload::body(state, principal.as_ref(), incoming).await {
-        Ok(body) => body,
-        Err(r) => return *r,
-    };
+    let (body, _body_charge) =
+        match overload::body(state, principal.as_ref(), method, incoming).await {
+            Ok(body) => body,
+            Err(r) => return *r,
+        };
     // mt-lint: allow(stream-ref-construction): ingress — the queue route's name qualified with the verified principal's project, as product.rs does
     let sref = tenant_of(state, principal.as_ref()).stream_ref(&name);
     let resp = handlers::dispatch(

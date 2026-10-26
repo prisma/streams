@@ -4,7 +4,7 @@
 //! assertion reads the wire answers and the queue's stored state (its
 //! `queuedMessages`, counted by the committer).
 
-use super::fixture_cell::{Cell, CellSpec, error_code, open_cell};
+use super::fixture_cell::{Cell, CellSpec, error_code, open_cell, project};
 use super::fixture_http::engine_shutdown;
 
 /// The rig's shed line (MiB), as `fair_shed.rs` sets it: an eighth over it
@@ -147,6 +147,59 @@ async fn at_the_inflight_cap_the_queue_project_over_its_share_is_refused_before_
             u64::try_from(FLOOD + 1).unwrap(),
             u64::try_from(ROUNDS).unwrap()
         )
+    );
+    engine_shutdown(&cell.state).await;
+}
+
+/// The project memory line the memory leg sets (256 KiB).
+const PROJECT_LINE: u64 = 256 * 1024;
+
+/// A queue write of a project over its memory line is refused `429
+/// project_memory_pressure`, Retry-After 1, as an append is: a send, a
+/// claim and a settle, while its stats are read; below the release point
+/// it writes again. And a send's body is charged to the project while it
+/// is buffered: with 200 KiB held, a 60 KiB message would take it past the
+/// line and is refused, the same message with nothing held is sent.
+/// Before: queue writes passed the latch and buffered their bodies
+/// uncharged, so both were sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_queue_write_is_held_to_its_projects_memory_line() {
+    let cell = open_cell(CellSpec::open(1)).await;
+    cell.state
+        .admission
+        .set_project_memory_pressure_bytes(PROJECT_LINE);
+    assert_eq!(ask(&cell, 0, "PUT", "/v1/queues/jobs", "").await.0, 201);
+    assert_eq!(send(&cell, 0, 0).await, SENT, "under the line");
+    let pid = crate::tenant::ProjectId::new(&project(0)).unwrap();
+    let adm = cell.state.quotas.pressure_handle(&pid).unwrap();
+    adm.retained_sse_add(300 * 1024);
+    let writes = [
+        ("POST", "/v1/queues/jobs/messages", r#"{"body":1}"#),
+        ("POST", "/v1/queues/jobs/groups/default:claim", "{}"),
+        (
+            "POST",
+            "/v1/queues/jobs/groups/default:settle",
+            r#"{"ops":[]}"#,
+        ),
+    ];
+    for (method, path, body) in writes {
+        let answer = ask(&cell, 0, method, path, body).await;
+        assert_eq!(answer, refused("project_memory_pressure", "1"), "{path}");
+    }
+    assert_eq!(queued(&cell, 0).await, 1, "its reads are served");
+    adm.retained_sse_sub(300 * 1024);
+    assert_eq!(send(&cell, 0, 1).await, SENT, "below the release point");
+    let large = format!("{{\"body\":\"{}\"}}", "x".repeat(60 * 1024));
+    adm.retained_sse_add(200 * 1024);
+    let held = ask(&cell, 0, "POST", "/v1/queues/jobs/messages", &large).await;
+    assert_eq!(held, refused("project_memory_pressure", "1"), "the body");
+    adm.retained_sse_sub(200 * 1024);
+    let alone = ask(&cell, 0, "POST", "/v1/queues/jobs/messages", &large).await;
+    assert_eq!(alone, SENT, "a body alone is buffered whole");
+    assert_eq!(
+        queued(&cell, 0).await,
+        3,
+        "every refused write stored nothing"
     );
     engine_shutdown(&cell.state).await;
 }

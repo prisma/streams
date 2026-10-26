@@ -287,7 +287,7 @@ async fn reserve(state: &AppState, project: Option<&ProjectId>, bytes: u64) -> O
 }
 
 /// 429 `project_memory_pressure`, retryable, tagged with the project.
-fn memory_pressure(project: Option<&ProjectId>) -> Response {
+pub(super) fn memory_pressure(project: Option<&ProjectId>) -> Response {
     let refusal = quota_refusal_response(&crate::quota::QuotaRefusal::MemoryPressure);
     match project {
         Some(project) => crate::audit::tag_project(refusal, project),
