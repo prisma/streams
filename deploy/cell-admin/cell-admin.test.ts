@@ -338,7 +338,7 @@ for (const kind of STORES) {
           "--quota max_stored_bytes=0: omit the field to take the cell default"],
         ["an unknown quota", ["--quota", "max_stream=5"], "--quota max_stream: not a quota field"],
         ["a weight as a quota", ["--quota", "byte_weight=5"],
-          "--quota byte_weight: a weight is not a quota; every project is admitted at weight 1"],
+          "--quota byte_weight: a weight is not a quota; admit sets it with --weight"],
         ["the system project", ["--project", "system"], "project system is reserved on cell cell_sc1"],
         ["the deployment's PROJECT_ID", ["--project", "proj_deploy"], "project proj_deploy is reserved on cell cell_sc1"],
         ["the cell's ACCOUNT_ID as workspace", ["--workspace", "acct_sink"],
@@ -359,6 +359,72 @@ for (const kind of STORES) {
         expect(r.err.split("\n")[0]).toContain(message);
         expect(readBundleText(c.state)).toBe(before);
         expect(Object.keys(readState(c.state).projects)).toEqual(["sp_canary_cell_sc1"]);
+      });
+
+      // Layout 6A package 1: weights scale a project's ceilings (bound / k x w
+      // on the request axes and the byte rates, queued bytes unscaled), and
+      // heavy projects pack so their weights on each axis sum to at most k - 1.
+      test("admits a weighted project at its weighted ceilings and packs heavy projects within k - 1", async () => {
+        const c = await initCell();
+        const m = await run("admit", "--state", c.state, "--project", "proj_m", "--workspace", "w1",
+          "--weight", "request=2", "--weight", "bytes=5");
+        expect([m.code, m.err]).toEqual([0, ""]);
+        const weighted = {
+          ...CEILINGS, requests_per_sec: 352, append_bytes_per_sec: 1287500, read_bytes_per_sec: 18750000,
+          max_inflight_requests: 128, max_live_subscriptions: 300, max_streams: 16384,
+          request_weight: 2, byte_weight: 5,
+        };
+        const quotasOf = () =>
+          Object.fromEntries((customerOnly(readBundle(c.state)).policies.projects as any[]).map((p) => [p.project_id, p.quotas]));
+        expect(quotasOf()).toEqual({ proj_m: weighted });
+        expect(validateDocument(readBundle(c.state).policies, schema("project-policies.schema.json"))).toEqual([]);
+        const over = await run("admit", "--state", c.state, "--project", "proj_l", "--workspace", "w2", "--weight", "bytes=3");
+        expect([over.code, over.err]).toEqual([1,
+          "cell-admin admit: --weight bytes=3: the cell's heavy projects would hold 8 byte_weight units, over k - 1 = 7 (they hold 5)"]);
+        // A second byte-weighted project fits the k - 1 byte budget (5 + 2 = 7) but
+        // not the read memory: two weighted lines and two unit lines would fill it.
+        const memory = await run("admit", "--state", c.state, "--project", "proj_s2", "--workspace", "w2", "--weight", "bytes=2");
+        expect(memory.err).toBe(
+          "cell-admin admit: --weight bytes=2: the byte-weighted projects' memory lines (127926270) and two unit " +
+            "lines (67108864) would fill the instance read memory (131072000)");
+        const fits = await run("admit", "--state", c.state, "--project", "proj_s2", "--workspace", "w2",
+          "--weight", "request=2");
+        expect(fits.code).toBe(0);
+        const unit = await run("admit", "--state", c.state, "--project", "proj_t", "--workspace", "w3");
+        expect(unit.code).toBe(0);
+        const requests = await run("admit", "--state", c.state, "--project", "proj_r", "--workspace", "w4",
+          "--weight", "request=3");
+        expect(requests.code).toBe(0);
+        const full = await run("admit", "--state", c.state, "--project", "proj_r2", "--workspace", "w5",
+          "--weight", "request=2");
+        expect(full.err).toBe(
+          "cell-admin admit: --weight request=2: the cell's heavy projects would hold 9 request_weight units, over k - 1 = 7 (they hold 7)");
+        const q = quotasOf();
+        expect([q.proj_s2.append_bytes_per_sec, q.proj_s2.requests_per_sec, q.proj_t]).toEqual([257500, 352, CEILINGS]);
+        expect(Object.keys(q).sort()).toEqual(["proj_m", "proj_r", "proj_s2", "proj_t"]);
+        const above = await run("quota", "--state", c.state, "--project", "proj_m", "--quota", "append_bytes_per_sec=1287501");
+        expect(above.err).toBe(
+          "cell-admin quota: --quota append_bytes_per_sec=1287501 exceeds the cell's ceiling 1287500 (bound / k x byte_weight 5, k = 8)");
+        const below = await run("quota", "--state", c.state, "--project", "proj_m", "--quota", "append_bytes_per_sec=1200000");
+        expect(below.code).toBe(0);
+        expect(quotasOf().proj_m).toEqual({ ...weighted, append_bytes_per_sec: 1200000 });
+      });
+
+      const weightRefusals: [string, string[], string][] = [
+        ["a weight of k", ["--weight", "bytes=8"], "--weight bytes=8: a weight is 1 to k - 1 = 7"],
+        ["a weight of 0", ["--weight", "request=0"], "--weight request=0: a weight is 1 to k - 1 = 7"],
+        ["an unknown weight", ["--weight", "reads=2"], "--weight reads=2 is not request=N or bytes=N"],
+        ["a weight given twice", ["--weight", "bytes=2", "--weight", "bytes=3"], "--weight bytes given twice"],
+        ["a quota above the weighted ceiling", ["--weight", "request=2", "--quota", "max_inflight_requests=129"],
+          "--quota max_inflight_requests=129 exceeds the cell's ceiling 128 (bound / k x request_weight 2, k = 8)"],
+      ];
+      test.each(weightRefusals)("refuses %s and publishes nothing", async (_what, flags, message) => {
+        const c = await initCell();
+        const before = readBundleText(c.state);
+        const r = await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "wksp_a", ...flags);
+        expect(r.code).not.toBe(0);
+        expect(r.err.split("\n")[0]).toContain(message);
+        expect(readBundleText(c.state)).toBe(before);
       });
 
       test("the canary is reserved and hidden: no customer takes its id or workspace, no cap counts it", async () => {

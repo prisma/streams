@@ -15,6 +15,7 @@ import {
   quotaValues,
   refuseCanary,
   setProjectField,
+  weightsOf,
 } from "./rules";
 import { type CellState, journal } from "./state";
 import { type AllowEntry, type Allowlist, Conflict, type StateStore } from "./store";
@@ -57,7 +58,7 @@ export async function quota(f: Flags, io: Io): Promise<void> {
     const { state } = await mutate(store, (s) => {
       const p = projectOf(s, project);
       if (p.phase !== "active") throw new AdminError(`project ${project} is ${p.phase}: its quotas are final`);
-      const quotas = { ...p.quotas, ...quotaValues(s, f.all("quota")) };
+      const quotas = { ...p.quotas, ...quotaValues(s, f.all("quota"), weightsOf(p.quotas)) };
       if (!setProjectField(s, project, { quotas })) {
         throw new AdminError(`project ${project} already has these quotas`);
       }

@@ -10,6 +10,7 @@ import { BundlePublisher, burnId, loadChecked, mutate } from "./publish";
 import {
   admitProject,
   admittedQuotas,
+  checkPacking,
   bumpFeed,
   canaryProjectId,
   checkId,
@@ -22,6 +23,7 @@ import {
   prefixesOf,
   SYSTEM_PROJECT,
   scopesOf,
+  weightValues,
 } from "./rules";
 import { type CellState, GATE_DEFAULT, journal, STATE_FORMAT, writeDurable } from "./state";
 import { Conflict, type StateStore } from "./store";
@@ -141,12 +143,15 @@ export async function admit(f: Flags, io: Io): Promise<void> {
     const sizing = checkSizing(first, readProfiles(profilesOf(f)));
     const { ids: denylist } = await store.readDenylist();
     checkPlacement(first, project, workspace, denylist);
-    const quotas = admittedQuotas(first, f.all("quota"), sizing.stored_default);
+    const weights = weightValues(first, f.all("weight"));
+    checkPacking(first, weights, sizing);
+    const quotas = admittedQuotas(first, f.all("quota"), sizing.stored_default, weights);
     const scopes = scopesOf(f.get("scopes"));
     const stream_prefixes = prefixesOf(f.all("prefix"));
     await burnId(store, project);
     const { result: credential, state } = await mutate(store, (state) => {
       checkPlacement(state, project, workspace, denylist);
+      checkPacking(state, weights, sizing);
       const credential = newCredentialId(state);
       admitProject(state, { project, workspace, quotas, scopes, stream_prefixes, credential: { id: credential } });
       journal(state, "admit", `${project} workspace=${workspace} credential=${credential}`);

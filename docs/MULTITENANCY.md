@@ -1412,7 +1412,9 @@ k ways a project's ceiling on the request axes (`requests_per_sec`,
 stays ⌊bound ÷ k⌋, a committer burst buffer a heavy project's share would
 take past the shard's line. The cell holds each weight to 1..k-1 (a
 higher value is held and warned in the log), so the unit-weight projects keep at least one
-k-th of every bound; k is the cell's weight budget, unit = one default
+k-th of every bound, and the admission tool (`deploy/cell-admin`, edge
+change #199) packs projects so the weights above 1 on each axis sum to at
+most k - 1; k is the cell's weight budget, unit = one default
 project, and weight 1 everywhere is the equal share. A dedicated cell
 ignores weights.
 

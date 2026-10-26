@@ -57,7 +57,7 @@ const COMMANDS = {
     run: admit,
     spec: {
       single: ["state", "s3-credentials", "project", "workspace", "scopes"],
-      multi: ["quota", "prefix", "profile"],
+      multi: ["quota", "weight", "prefix", "profile"],
       required: ["state", "project", "workspace"],
     },
   },

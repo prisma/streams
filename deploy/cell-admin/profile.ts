@@ -56,6 +56,10 @@ export interface CellSizing {
   bounds: Ceilings;
   ceilings: Ceilings;
   stored_default: number;
+  /// PROJECT_MEMORY_PRESSURE_BYTES, a unit project's memory line.
+  memory_line: number;
+  /// The instance read memory: a quarter of ADMIT_RSS_SHED_MB.
+  read_memory: number;
 }
 
 /// Read KEY=VALUE files in order; a later file's value wins.
@@ -153,7 +157,7 @@ const READ_MEMORY_FILLERS = 4;
 /// bytes line, where every append to the shard is refused (phase B step
 /// 12 on one shard). That is necessary, not the k-tolerance itself: a
 /// project's queued bytes can take it past its line (shared-cell.env).
-function checkShares(env: Map<string, string>, k: number): void {
+function checkShares(env: Map<string, string>, k: number): { memory_line: number; read_memory: number } {
   const feedTotal = positive(env, "SSE_FEED_TOTAL_BYTES");
   const feedProject = positive(env, "SSE_FEED_PROJECT_BYTES");
   if (feedProject !== Math.floor(feedTotal / k)) {
@@ -179,6 +183,7 @@ function checkShares(env: Map<string, string>, k: number): void {
         `would pass the shard line MAX_UNABSORBED_BYTES_PER_SHARD=${shard}`,
     );
   }
+  return { memory_line: line, read_memory: readMemory };
 }
 
 /// Check the layered profile is a single-server shared cell and derive
@@ -187,7 +192,7 @@ export function cellSizing(env: Map<string, string>): CellSizing {
   checkPosture(env);
   const k = positive(env, "PROJECT_SHARE_K");
   if (k < 2) throw new AdminError(`profile PROJECT_SHARE_K=${k}: a shared cell needs k >= 2`);
-  checkShares(env, k);
+  const memory = checkShares(env, k);
   const bounds: Ceilings = {
     requests_per_sec: positive(env, "CELL_ENVELOPE_REQUESTS_PER_SEC"),
     append_bytes_per_sec: positive(env, "CELL_ENVELOPE_APPEND_BYTES_PER_SEC"),
@@ -200,5 +205,11 @@ export function cellSizing(env: Map<string, string>): CellSizing {
   const ceilings = Object.fromEntries(
     BOUNDED_FIELDS.map((f) => [f, ceilingOf(bounds[f], k)]),
   ) as Ceilings;
-  return { share_k: k, bounds, ceilings, stored_default: positive(env, "PROJECT_STORED_BYTES_DEFAULT") };
+  return {
+    share_k: k,
+    bounds,
+    ceilings,
+    stored_default: positive(env, "PROJECT_STORED_BYTES_DEFAULT"),
+    ...memory,
+  };
 }

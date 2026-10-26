@@ -172,25 +172,149 @@ export function checkSizing(state: CellState, env: Map<string, string>): CellSiz
 /// `storedDefault` (the profile's PROJECT_STORED_BYTES_DEFAULT, from
 /// checkSizing or cellSizing) when absent, written explicitly as the
 /// ceilings are.
-export function admittedQuotas(state: CellState, given: readonly string[], storedDefault: number): Quotas {
+export function admittedQuotas(
+  state: CellState,
+  given: readonly string[],
+  storedDefault: number,
+  weights: Weights = UNIT_WEIGHTS,
+): Quotas {
   const quotas = Object.fromEntries(QUOTA_FIELDS.map((q) => [q, 0])) as Quotas;
-  const set = quotaValues(state, given);
+  const set = quotaValues(state, given, weights);
+  const ceilings = weightedCeilings(state, weights);
   for (const q of QUOTA_FIELDS) if (set[q] !== undefined) quotas[q] = set[q];
-  for (const q of BOUNDED_FIELDS) if (set[q] === undefined) quotas[q] = state.cell.ceilings[q];
+  for (const q of BOUNDED_FIELDS) if (set[q] === undefined) quotas[q] = ceilings[q];
   if (set.max_stored_bytes === undefined) quotas.max_stored_bytes = storedDefault;
-  for (const w of WEIGHT_FIELDS) quotas[w] = 1;
+  for (const w of WEIGHT_FIELDS) quotas[w] = weights[w];
   return quotas;
 }
 
-/// The policy feed's two weights (the server scales a project's ceilings
-/// by them, layout 6A package 1). cell-admin publishes every project at
-/// weight 1, the equal share bound / k, and sets no other.
+/// The policy feed's two weights (layout 6A package 1; src/auth/ceiling.rs):
+/// the server makes a project's ceiling on each request axis bound x
+/// request_weight / k and on the append and read byte rates bound x
+/// byte_weight / k, each weight held to 1..k-1; queued_append_bytes stays
+/// bound / k. Set at admission (`--weight request=N`, `--weight bytes=N`),
+/// fixed for the project's life.
 export const WEIGHT_FIELDS = ["request_weight", "byte_weight"] as const;
+export type Weights = Record<(typeof WEIGHT_FIELDS)[number], number>;
+export const UNIT_WEIGHTS: Weights = { request_weight: 1, byte_weight: 1 };
+
+/// The `--weight` names and the weight each sets.
+const WEIGHT_FLAGS: Record<string, keyof Weights> = { request: "request_weight", bytes: "byte_weight" };
+
+/// The weight that scales each bounded axis; queued_append_bytes is a
+/// committer burst buffer and keeps bound / k whatever the weights.
+const AXIS_WEIGHT: Record<BoundedField, keyof Weights | null> = {
+  requests_per_sec: "request_weight",
+  append_bytes_per_sec: "byte_weight",
+  read_bytes_per_sec: "byte_weight",
+  max_inflight_requests: "request_weight",
+  max_live_subscriptions: "request_weight",
+  max_streams: "request_weight",
+  queued_append_bytes: null,
+};
+
+/// The `--weight name=N` settings given (`request`, `bytes`), each once,
+/// each 1 to k - 1; an absent one is 1.
+export function weightValues(state: CellState, given: readonly string[]): Weights {
+  const weights = { ...UNIT_WEIGHTS };
+  const seen = new Set<string>();
+  const most = state.cell.share_k - 1;
+  for (const item of given) {
+    const m = /^([a-z]+)=([0-9]+)$/.exec(item);
+    const field = m ? WEIGHT_FLAGS[m[1]] : undefined;
+    if (!m || field === undefined) throw new AdminError(`--weight ${item} is not request=N or bytes=N`, 2);
+    if (seen.has(m[1])) throw new AdminError(`--weight ${m[1]} given twice`, 2);
+    seen.add(m[1]);
+    const value = Number(m[2]);
+    if (!Number.isSafeInteger(value) || value < 1 || value > most) {
+      throw new AdminError(`--weight ${m[1]}=${m[2]}: a weight is 1 to k - 1 = ${most}`);
+    }
+    weights[field] = value;
+  }
+  return weights;
+}
+
+/// The project's weights as its quotas record them (1 when absent).
+export const weightsOf = (quotas: Partial<Quotas>): Weights => ({
+  request_weight: quotas.request_weight || 1,
+  byte_weight: quotas.byte_weight || 1,
+});
+
+/// The project's ceilings at `weights`: each bounded axis's unit ceiling
+/// (bound / k) times the weight that scales it. A multiple of the floored
+/// unit is never above the server's floor(bound x weight / k), so every
+/// quota cell-admin publishes stays at or below the server's ceiling; a
+/// unit ceiling of 1, which may be the server's floor of 1 for a bound
+/// below k, is not scaled.
+export function weightedCeilings(state: CellState, weights: Weights): Record<BoundedField, number> {
+  return Object.fromEntries(
+    BOUNDED_FIELDS.map((q) => {
+      const w = AXIS_WEIGHT[q];
+      const unit = state.cell.ceilings[q];
+      return [q, w === null || unit === 1 ? unit : unit * weights[w]];
+    }),
+  ) as Record<BoundedField, number>;
+}
+
+/// The packing rule (layout 6A package 1): a project heavy on an axis
+/// (weight above 1) is placed only while the weights of the cell's heavy
+/// projects on that axis, its own included, sum to at most k - 1, so the
+/// unit-weight projects, which are not summed (overbooked as before), keep
+/// at least one k-th of every bound. And the memory lines of the
+/// byte-weighted projects (the server's: min(line x w, max(line, read memory
+/// - 2 x line - 1)), its own included, leave room for two unit lines in the
+/// instance read memory, so it still takes four projects at their lines to
+/// fill it (the owner's acceptance; on the 1 GiB profile, one byte-weighted
+/// project per cell). `except` is a project whose own weights the sums
+/// leave out.
+export function checkPacking(
+  state: CellState,
+  weights: Weights,
+  memory: Pick<CellSizing, "memory_line" | "read_memory">,
+  except?: string,
+): void {
+  const most = state.cell.share_k - 1;
+  for (const [flag, field] of Object.entries(WEIGHT_FLAGS)) {
+    if (weights[field] <= 1) continue;
+    const held = placedProjects(state)
+      .filter(([id]) => id !== except)
+      .map(([, p]) => weightsOf(p.quotas)[field])
+      .filter((w) => w > 1)
+      .reduce((a, b) => a + b, 0);
+    if (held + weights[field] > most) {
+      throw new AdminError(
+        `--weight ${flag}=${weights[field]}: the cell's heavy projects would hold ${held + weights[field]} ` +
+          `${field} units, over k - 1 = ${most} (they hold ${held})`,
+      );
+    }
+  }
+  if (weights.byte_weight <= 1) return;
+  const { memory_line: line, read_memory: read } = memory;
+  const lineOf = (w: number) => Math.min(line * w, Math.max(line, read - 2 * line - 1));
+  const lines = placedProjects(state)
+    .filter(([id]) => id !== except)
+    .map(([, p]) => weightsOf(p.quotas).byte_weight)
+    .filter((w) => w > 1)
+    .map(lineOf)
+    .reduce((a, b) => a + b, lineOf(weights.byte_weight));
+  if (lines + 2 * line >= read) {
+    throw new AdminError(
+      `--weight bytes=${weights.byte_weight}: the byte-weighted projects' memory lines (${lines}) and two unit ` +
+        `lines (${2 * line}) would fill the instance read memory (${read})`,
+    );
+  }
+}
 
 /// The `field=value` quota settings given, each a known field, given once,
-/// at least 1 and at most its ceiling (stored bytes have none).
-export function quotaValues(state: CellState, given: readonly string[]): Partial<Quotas> {
+/// at least 1 and at most its ceiling at the project's `weights` (stored
+/// bytes have none).
+export function quotaValues(
+  state: CellState,
+  given: readonly string[],
+  weights: Weights = UNIT_WEIGHTS,
+): Partial<Quotas> {
   const quotas: Partial<Quotas> = {};
+  const ceilings = weightedCeilings(state, weights);
   const seen = new Set<string>();
   for (const item of given) {
     const m = /^([a-z_]+)=([0-9]+)$/.exec(item);
@@ -200,7 +324,7 @@ export function quotaValues(state: CellState, given: readonly string[]): Partial
       throw new AdminError(`--quota ${field}: not a quota field (${QUOTA_FIELDS.join(", ")})`, 2);
     }
     if ((WEIGHT_FIELDS as readonly string[]).includes(field)) {
-      throw new AdminError(`--quota ${field}: a weight is not a quota; every project is admitted at weight 1`, 2);
+      throw new AdminError(`--quota ${field}: a weight is not a quota; admit sets it with --weight`, 2);
     }
     if (seen.has(field)) throw new AdminError(`--quota ${field} given twice`, 2);
     seen.add(field);
@@ -213,10 +337,12 @@ export function quotaValues(state: CellState, given: readonly string[]): Partial
           : `--quota ${field}=${raw}: 0 means no limit; omit the field to take the ceiling`,
       );
     }
-    const ceiling = state.cell.ceilings[field as BoundedField];
+    const ceiling = ceilings[field as BoundedField];
     if (ceiling !== undefined && value > ceiling) {
+      const w = AXIS_WEIGHT[field as BoundedField];
+      const scale = w !== null && weights[w] > 1 ? ` x ${w} ${weights[w]}` : "";
       throw new AdminError(
-        `--quota ${field}=${value} exceeds the cell's ceiling ${ceiling} (bound / k, k = ${state.cell.share_k})`,
+        `--quota ${field}=${value} exceeds the cell's ceiling ${ceiling} (bound / k${scale}, k = ${state.cell.share_k})`,
       );
     }
     quotas[field as QuotaField] = value;

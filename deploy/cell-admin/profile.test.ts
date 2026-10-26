@@ -60,6 +60,8 @@ describe("the shared-cell profile", () => {
         queued_append_bytes: 67108864,
       },
       stored_default: 10737418240,
+      memory_line: 33554432,
+      read_memory: 131072000,
     });
     const env = readProfiles(DEFAULT_PROFILES);
     expect(
