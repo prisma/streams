@@ -4398,6 +4398,21 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Status:** awaiting the owner's ratification.
 - **Check against commit:** written with the change.
 
+### #188 (this record's commit) — Above four times the in-flight cap the pre-auth survival bound refuses `/v1/queues` requests too, 503 `overloaded`, before authentication, as it refuses stream requests
+
+- **Program item:** layout 6A package 1, overload parity (DESIGN-6A §4.1; research-queues §3.1 row 1, rule 1 of §3.2): queues and streams share one cell, so a queue flood must meet the bound that defends the cell's sockets.
+- **Surface:** product.
+- **Endpoint:** `GET /v1/queues` and every `/v1/queues/{*path}` route. Owner: `AdmissionController::survival_refused` (now given the request path; `track_inflight`, `src/http.rs`).
+- **Condition:** `ADMIT_MAX_INFLIGHT` = cap > 0 (512 by default) and more than 4 x cap requests in flight that are not parked (2,049 of 2,048 at the default).
+- **Before:** queue routes were never refused by the survival bound (only paths starting `/v1/stream`); at 4 x cap a queue request was authenticated and served.
+- **After:** the request is refused before authentication with the survival refusal the stream routes get: `503`, `{"error":{"code":"overloaded","message":"retry","retryable":true}}`, `retry-after: 1`, counted `admit_shed_survival`. At or under 4 x cap nothing changes. Data-plane arrivals (the idle release's evidence) still count only `/v1/stream*` paths (follow-up below).
+- **Retry semantics:** retryable after 1 s; nothing was read or written.
+- **Who is affected:** queue clients of an instance at four times its in-flight cap.
+- **Pinning tests:** src/dst/tests/security_routes.rs::the_survival_refusal_covers_reads_and_the_product_surface_at_the_default_caps (now nine paths: the six stream paths plus `GET /v1/queues`, `POST /v1/queues/any/messages` and `POST /v1/queues/any/groups/default:claim`; each refused exactly, 9 survival sheds of 9, and at 2,048 each answers 401). Red before: `assertion failed: GET /v1/queues left: (401, "{\"error\":{\"code\":\"unauthorized\",...}}", None, ...) right: (503, "{\"error\":{\"code\":\"overloaded\",\"message\":\"retry\",\"retryable\":true}}", Some("1"), ...)`. src/admission.rs::tests::survival_and_ordinary_gates_are_distinct_mechanisms (a queue path refused, `/health` not).
+- **Risk reason:** low: the answer already existed for stream paths and is reached only at 4 x the cap. Follow-up for the owner: queue requests do not count as data-plane arrivals for the fleet's idle release (`AdmissionController::enter`), so a fleet cell serving only queues may look idle. Reversal: drop the `/v1/queues` prefix in `survival_refused`.
+- **Status:** awaiting the owner's ratification.
+- **Check against commit:** written with the change.
+
 ## Discrepancies
 
 One record has verified=false: its commit did not match the recorded text.

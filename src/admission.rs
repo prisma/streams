@@ -351,15 +351,18 @@ impl AdmissionController {
         Some(ParkedTicket { ctl: self.clone() })
     }
 
-    /// The PRE-AUTH survival bound: only an absolute multiple of the
-    /// ordinary cap, only on stream paths, no capacity answer — a
-    /// process this far over its cap is defending its sockets. Counts
-    /// the shed when it refuses. Parked waits are not counted: they
-    /// hold their own bounded pool.
-    pub(crate) fn survival_refused(&self, current: i64, stream_path: bool) -> bool {
+    /// The PRE-AUTH survival bound for a request on `path`: only an
+    /// absolute multiple of the ordinary cap, only on the stream surfaces
+    /// (`/v1/stream*`) and the queue surface (`/v1/queues`, whose sends and
+    /// claims hold the same sockets and committer; layout 6A package 1), no
+    /// capacity answer — a process this far over its cap is defending its
+    /// sockets. Counts the shed when it refuses. Parked waits are not
+    /// counted: they hold their own bounded pool.
+    pub(crate) fn survival_refused(&self, current: i64, path: &str) -> bool {
         let cap = self.max_inflight();
         let current = current - self.inner.parked.load(Ordering::Relaxed);
-        let refuse = cap > 0 && stream_path && current > cap.saturating_mul(SURVIVAL_MULTIPLIER);
+        let data_path = path.starts_with("/v1/stream") || path.starts_with("/v1/queues");
+        let refuse = cap > 0 && data_path && current > cap.saturating_mul(SURVIVAL_MULTIPLIER);
         if refuse {
             self.inner.shed_total.fetch_add(1, Ordering::Relaxed);
             self.inner.shed_survival.fetch_add(1, Ordering::Relaxed);
@@ -713,23 +716,30 @@ mod tests {
         );
     }
 
-    /// The survival bound refuses exactly above 4x the cap, on stream
-    /// paths only, and counts under `survival`; the ordinary gate refuses
-    /// above the cap and counts under `inflight`; both feed `total`.
+    /// The survival bound refuses exactly above 4x the cap, on stream and
+    /// queue paths only, and counts under `survival`; the ordinary gate
+    /// refuses above the cap and counts under `inflight`; both feed `total`.
     #[test]
     fn survival_and_ordinary_gates_are_distinct_mechanisms() {
         let c = ctl(4, 0, 0, 0);
-        assert!(!c.survival_refused(16, true), "at 4x: not over");
-        assert!(c.survival_refused(17, true), "over 4x on a stream path");
-        assert!(!c.survival_refused(17, false), "never on non-stream paths");
+        assert!(!c.survival_refused(16, "/v1/stream/a"), "at 4x: not over");
+        assert!(
+            c.survival_refused(17, "/v1/stream/a"),
+            "over 4x on a stream path"
+        );
+        assert!(
+            c.survival_refused(17, "/v1/queues/a/messages"),
+            "and a queue path"
+        );
+        assert!(!c.survival_refused(17, "/health"), "never on other paths");
         let off = ctl(0, 0, 0, 0);
-        assert!(!off.survival_refused(1_000, true), "cap 0 = off");
+        assert!(!off.survival_refused(1_000, "/v1/streams"), "cap 0 = off");
         c.add_inflight_for_test(5);
         assert_eq!(c.admit_write_inflight(), Err(WriteRefusal::Overloaded));
         c.set_max_inflight(8);
         assert_eq!(c.admit_write_inflight(), Ok(()));
         let s = c.snapshot().shed;
-        assert_eq!((s.total, s.survival, s.inflight), (2, 1, 1), "{s:?}");
+        assert_eq!((s.total, s.survival, s.inflight), (3, 2, 1), "{s:?}");
     }
 
     /// A parked request leaves the write gate, the survival bound and the
@@ -739,11 +749,14 @@ mod tests {
         let c = ctl(2, 0, 0, 0);
         let tickets: Vec<_> = (0..9).map(|_| c.enter(false)).collect();
         assert_eq!(c.admit_write_inflight(), Err(WriteRefusal::Overloaded));
-        assert!(c.survival_refused(9, true), "9 active over 4 x 2");
+        assert!(c.survival_refused(9, "/v1/stream/a"), "9 active over 4 x 2");
         let parked: Vec<_> = (0..7).map(|_| c.park().expect("unlimited pool")).collect();
         assert_eq!((c.snapshot().inflight, c.parked()), (9, 7));
         assert_eq!(c.admit_write_inflight(), Ok(()), "2 active at a cap of 2");
-        assert!(!c.survival_refused(9, true), "2 active of 9 in flight");
+        assert!(
+            !c.survival_refused(9, "/v1/stream/a"),
+            "2 active of 9 in flight"
+        );
         assert_eq!(c.swap_active_peak(), (2, 9), "the peak before parking");
         assert_eq!(c.swap_active_peak(), (2, 2), "swapped to the active count");
         drop(parked);

@@ -836,17 +836,21 @@ async fn the_survival_refusal_is_marked_as_this_servers_answer() {
 /// default instance cap (512, so 2,048 in flight) the middleware refuses by
 /// path alone, before authentication and whatever the method. A raw read, a
 /// raw long-poll, a product list, a product read and a product append get
-/// the refusal the raw append gets; a route that is not a stream path is
-/// served; and at exactly 2,048 in flight nothing is refused.
+/// the refusal the raw append gets, and so do the queue list, a queue send
+/// and a claim (layout 6A package 1); a route that is not a stream or queue
+/// path is served; and at exactly 2,048 in flight nothing is refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_survival_refusal_covers_reads_and_the_product_surface_at_the_default_caps() {
-    const STREAM_PATHS: [(&str, &str); 6] = [
+    const STREAM_PATHS: [(&str, &str); 9] = [
         ("POST", "/v1/stream/any"),
         ("GET", "/v1/stream/any"),
         ("GET", "/v1/stream/any?offset=-1&live=long-poll"),
         ("GET", "/v1/streams"),
         ("GET", "/v1/streams/any/records"),
         ("POST", "/v1/streams/any/records"),
+        ("GET", "/v1/queues"),
+        ("POST", "/v1/queues/any/messages"),
+        ("POST", "/v1/queues/any/groups/default:claim"),
     ];
     let store = mem();
     let (state, addr) = http_rig_auth(store, "tok").await;
@@ -880,8 +884,8 @@ async fn the_survival_refusal_covers_reads_and_the_product_surface_at_the_defaul
     let seen = state.admission.snapshot();
     assert_eq!(
         (st, seen.max_inflight, seen.shed.survival, seen.shed.total),
-        (200, 512, 6, 6),
-        "a route that is not a stream path is served, and each refusal is counted once"
+        (200, 512, 9, 9),
+        "a route that is not a stream or queue path is served, and each refusal is counted once"
     );
     // 2,047 held: the request that arrives is the 2,048th, at the bound.
     state.admission.add_inflight_for_test(-1);
@@ -894,7 +898,7 @@ async fn the_survival_refusal_covers_reads_and_the_product_surface_at_the_defaul
             String::from_utf8_lossy(&body)
         );
     }
-    assert_eq!(state.admission.snapshot().shed.survival, 6);
+    assert_eq!(state.admission.snapshot().shed.survival, 9);
     state.admission.add_inflight_for_test(1 - 4 * cap);
     engine_shutdown(&state).await;
 }

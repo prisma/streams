@@ -9409,7 +9409,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "b5cb7607fc029907bfcd0528ce0fc40defb63ccef10582ecc9f00b0dfd925d97",
+    "function_sha256": "36f8d16f1ed7b9b13824adbb1b0e758bba4c0ebc129ccc668e584a9d255a7ae3",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_routes.rs",

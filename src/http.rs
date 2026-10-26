@@ -653,7 +653,7 @@ async fn track_inflight(
     // ordinary cap): no tarpit, a generic instant refusal, because a
     // process at 4x its admission cap is defending its sockets, not
     // answering capacity questions.
-    if state.admission.survival_refused(cur, path_is_stream) {
+    if state.admission.survival_refused(cur, req.uri().path()) {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             [("retry-after", "1"), ("content-type", "application/json")],

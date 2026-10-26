@@ -173,9 +173,9 @@ fn a_server_that_sets_nothing_sheds_writes_above_512_in_flight() {
     );
     assert_eq!(
         (
-            admission.survival_refused(2048, true),
-            admission.survival_refused(2049, true),
-            admission.survival_refused(2049, false),
+            admission.survival_refused(2048, "/v1/stream/a"),
+            admission.survival_refused(2049, "/v1/stream/a"),
+            admission.survival_refused(2049, "/health"),
         ),
         (false, true, false)
     );
