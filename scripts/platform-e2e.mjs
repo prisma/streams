@@ -200,6 +200,41 @@ try {
   check("SDK append + read round-trip through gateway", false, String(e));
 }
 
+// The multiplexed wait (layout 6A package 2, edge changes #200/#203)
+// through the gateway: subscribe() waits through POST
+// /v1/projects/{p}/live:wait once its catch-up is done, and an append
+// reaches it; a path naming another project is refused before routing.
+try {
+  let muxCalls = 0;
+  const muxClient = new StreamsClient({
+    url: gwBase, project: "proj-e2e",
+    tokenProvider: async () => (await (await exchange(CURRENT_SECRET)).json()).accessToken,
+    fetch: (url, init) => {
+      if (String(url).endsWith("/v1/projects/proj-e2e/live:wait")) muxCalls++;
+      return fetch(url, init);
+    },
+  });
+  const muxStream = muxClient.stream("e2e/orders", { encryptionKey: KEY_B64 });
+  const head = await muxStream.read();
+  const controller = new AbortController();
+  const it = muxStream.subscribe({ from: head.cursor, signal: controller.signal })[Symbol.asyncIterator]();
+  const next = it.next();
+  await sleep(500);
+  await stream.append({ src: "mux" });
+  const got = await Promise.race([next, sleep(10_000).then(() => ({ timeout: true }))]);
+  controller.abort();
+  check("subscribe through the multiplexed wait delivers an append", got?.value?.src === "mux" && muxCalls >= 1,
+    `${JSON.stringify(got)} live:wait calls ${muxCalls}`);
+  const token = (await (await exchange(CURRENT_SECRET)).json()).accessToken;
+  const forged = await sfetch(`${gwBase}/v1/projects/proj-other/live:wait`, {
+    method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ subs: [{ id: "t", kind: "tail", stream: "e2e/orders", key: KEY_B64, cursor: "now" }] }),
+  });
+  check("a live wait naming another project is refused before routing", forged.status === 403, `status ${forged.status}`);
+} catch (e) {
+  check("subscribe through the multiplexed wait delivers an append", false, String(e));
+}
+
 // StreamsClient.connect on the same credential: one exchange, the
 // credential's project, the explicit url (the emulator's endpoint is null).
 // The client above keeps the rotation and revocation legs.

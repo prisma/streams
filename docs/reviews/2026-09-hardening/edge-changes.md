@@ -4383,6 +4383,21 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Status:** awaiting the owner's ratification.
 - **Check against commit:** written with the change.
 
+### #203 (this record's commit) — The SDK waits through one multiplexed long-poll per client for every `subscribe()` tail past its catch-up, consumer iterator and watch subscription, and per stream on a cell without it
+
+- **Program item:** layout 6A package 2 (DESIGN-6A §5: one multiplexer per client and project token, used by default).
+- **Surface:** SDK (`@prisma/streams`).
+- **Endpoint:** `Stream.subscribe()` (durable tails, after the catch-up reads), `Consumer.messages()`, `Watch.subscribe()`; `sdk/src/live_mux.ts`; option `liveMux` on `StreamsClientOptions` and `ConnectOptions` (default `true`).
+- **Condition:** a client with a `project` and a token (`connect()` always has both).
+- **Before:** one long-poll (or pull) per subscription, each its own connection.
+- **After:** the client's subscriptions wait through `POST /v1/projects/{project}/live:wait` (#200), one request at a time; a subscription takes part only while its iterator waits for its next answer. A request without a group is aborted and sent again when a subscription joins or leaves; one with a group is never aborted (its leases would be lost), and a subscription joining meanwhile waits in a second request ending with it (at least 1 s). Joins gather for 20 ms while a request is in flight, and more than 256 waiting subscriptions are split across requests. A 404/405 makes the client wait per stream for its life; a stream answered `not_owner`, `unsupported_format` or `deliver_unsupported` waits per stream; another refusal throws on its own iterator only; `deliver: "applied"` tails and capability-only watch clients wait per stream. `liveMux: false` keeps per-stream waits. Signatures unchanged.
+- **Retry semantics:** transport failures and retryable refusals reconnect with backoff (1-5 s) and the same cursors.
+- **Who is affected:** every SDK client with a project and token: one connection for its waits.
+- **Pinning tests:** sdk/scripts/live-mux.test.mjs (eight: twenty tails through one request, their entries routed; 404 fallback; `not_owner` fallback of one stream; a per-subscription refusal on its iterator only; a consumer's batch, its settlement and rejoin; `liveMux: false`; a watch from its pinned cursor; 300 subscriptions split into requests of at most 256); scripts/platform-e2e.mjs (subscribe through the gateway's multiplexed wait; a path naming another project refused 403 before routing).
+- **Risk reason:** medium: the default changes for every SDK client; the per-stream path stays as the fallback.
+- **Status:** awaiting the owner's ratification.
+- **Check against commit:** written with the change.
+
 ## Discrepancies
 
 One record has verified=false: its commit did not match the recorded text.

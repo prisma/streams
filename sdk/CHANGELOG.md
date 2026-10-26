@@ -4,6 +4,21 @@
 release is packed from the release candidate that certified the server of
 the same version, and published from that candidate's tarball.
 
+## Unreleased
+
+### Changed
+
+- A client with a `project` and a token (every `connect()` client) waits
+  for all its subscriptions through ONE long-poll,
+  `POST /v1/projects/{project}/live:wait`: every `subscribe()` tail past
+  its catch-up (`deliver: "durable"`), every consumer iterator
+  (`messages()`, `for await`) and every `Watch.subscribe()`. A client
+  waiting on twenty streams holds one connection for its waits, not
+  twenty; the iterators, their signatures and what they deliver are
+  unchanged. A cell without the route (`404`) is waited on per stream for
+  the client's life, and so is a stream the cell does not serve there;
+  `liveMux: false` keeps per-stream waits (edge change #203).
+
 ## 0.3.0-beta.1
 
 The first public beta, published under the npm dist-tag `beta`

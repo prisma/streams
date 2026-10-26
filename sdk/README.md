@@ -175,6 +175,15 @@ at most 1,024 characters, and a producer id or a token may not be empty.
 Each refusal has `status` 0 and `retryable: false`, and neither its message
 nor its fields show the value.
 
+A client with a `project` and a token waits for all its subscriptions
+through one multiplexed long-poll (`POST /v1/projects/{project}/live:wait`):
+every `subscribe()` past its catch-up, every consumer iterator and every
+watch subscription share one connection, and each iterator still receives
+exactly its own records, messages or events. A subscription takes part in
+the wait only while its iterator asks for more, so a slow handler is never
+answered over. `new StreamsClient({ ..., liveMux: false })` waits per
+stream instead, as the client does by itself on a cell without the route.
+
 `read()` and `subscribe()` send the routing key in the query, a space as
 `%20`, so a key with a space or a tab reads the lane its appends were
 written to. They do not check it: a key no append can write reads an empty

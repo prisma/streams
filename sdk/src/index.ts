@@ -21,6 +21,7 @@
  *   for await (const rec of orders.subscribe({ routingKey })) { ... }
  */
 
+import { LiveMux, MuxUnavailable, type MuxEntry, type MuxSpec, type MuxSub } from "./live_mux.js";
 import { Queue, type QueueOptions } from "./queue.js";
 import { subtle, webCrypto } from "./webcrypto.js";
 export * from "./queue.js";
@@ -72,6 +73,17 @@ export interface StreamsClientOptions {
    * consumer, subscription and watch loops still reconnect.
    */
   retry?: { transport?: boolean };
+  /**
+   * `true` (the default): every `subscribe()` tail past its catch-up,
+   * consumer iterator (`messages()`) and watch subscription of this client
+   * waits through ONE multiplexed long-poll (`POST
+   * /v1/projects/{project}/live:wait`) instead of one long-poll each, when
+   * the client knows its `project` and has a token. A cell without that
+   * route answers `404`, and the client then waits per stream for the rest
+   * of its life, as it does with `false`. `deliver: "applied"` tails always
+   * wait per stream.
+   */
+  liveMux?: boolean;
 }
 
 /**
@@ -589,6 +601,9 @@ interface Ctx {
    * made by `connect` keys them on the issuer URL, so following a new
    * endpoint keeps every producer's sequence. */
   scopeEndpoint?: string;
+  /** The client's multiplexed wait (`liveMux`): `null` when switched off,
+   * created by the first subscription that waits through it. */
+  mux?: LiveMux | null;
 }
 
 /** A token is refreshed once less than this margin of its lifetime is
@@ -1000,6 +1015,48 @@ async function reconnectAfter(backoffMs: number, signal?: AbortSignal): Promise<
   return Math.min(backoffMs * 2, 5000);
 }
 
+/** The client's multiplexed wait, or `undefined` where its subscriptions
+ * wait per stream: switched off, no project or no token to address it with,
+ * or a cell that answered it has none. */
+function liveMux(ctx: Ctx): LiveMux | undefined {
+  if (ctx.mux === null || !ctx.project || (ctx.token === undefined && !ctx.tokenProvider)) {
+    return undefined;
+  }
+  ctx.mux ??= new LiveMux({
+    send: async (body, signal) => {
+      const res = await req(
+        ctx,
+        "POST",
+        `/v1/projects/${encodeURIComponent(ctx.project ?? "")}/live:wait`,
+        { "content-type": "application/json" },
+        body,
+        signal,
+        false,
+      );
+      return (await res.json()) as { results: MuxEntry[] };
+    },
+    classify: (error) => {
+      if (error instanceof StreamsError && (error.status === 404 || error.status === 405)) {
+        return { kind: "unsupported" };
+      }
+      return retryableRequestError(error) ? { kind: "retry" } : { kind: "fatal", error };
+    },
+  });
+  return ctx.mux.unavailable ? undefined : ctx.mux;
+}
+
+/** A subscription's own refusal in a multiplexed answer, as the per-stream
+ * route would have thrown it. */
+function entryError(entry: MuxEntry): StreamsError | undefined {
+  if (entry.error === undefined) return undefined;
+  const e = entry.error;
+  return new StreamsError(entry.status ?? 0, e.code, e.message, e.retryable, e.details);
+}
+
+/** The refusals after which a subscription waits per stream: a stream this
+ * cell does not serve, or one the multiplexed wait does not tail. */
+const PER_STREAM_CODES = new Set(["not_owner", "unsupported_format", "deliver_unsupported"]);
+
 /** `path` is a function where each attempt needs its own (a watch wait's
  * capability, which expires).
  *
@@ -1284,6 +1341,8 @@ export interface ConnectOptions {
   url?: string;
   fetch?: typeof fetch;
   retry?: StreamsClientOptions["retry"];
+  /** `StreamsClientOptions.liveMux`. */
+  liveMux?: boolean;
   /** Accept an issuer `endpoint` that is neither `https:` nor a loopback
    * host. Every request carries the stream key. */
   allowInsecureEndpoint?: boolean;
@@ -1334,6 +1393,7 @@ export class StreamsClient {
       tokenProvider: options.tokenProvider,
       fetch: options.fetch ?? fetch.bind(globalThis),
       transportRetry: options.retry?.transport ?? true,
+      mux: options.liveMux === false ? null : undefined,
     };
   }
 
@@ -1365,6 +1425,7 @@ export class StreamsClient {
       project: first.projectId,
       fetch: options.fetch,
       retry: options.retry,
+      liveMux: options.liveMux,
       tokenProvider: async () => {
         const exchanged = await provider.exchange();
         if (follow && exchanged.endpoint !== null && (allowInsecure || secureEndpoint(exchanged.endpoint))) {
@@ -1680,8 +1741,47 @@ export class Stream<T = unknown> {
     // crash. The server refuses stale session cursors with 409
     // cursor_beyond_tail as a backstop.
     let durableCursor: string | undefined;
+    // Past its catch-up a durable tail waits through the client's
+    // multiplexed wait (`liveMux`), until the cell says it has none or
+    // refuses this stream there.
+    let mux: MuxSub | undefined;
+    let perStream = applied;
+    try {
     for (;;) {
       if (options?.signal?.aborted) return;
+      if (live && !perStream) {
+        mux ??= liveMux(this.ctx)?.open({
+          kind: "tail",
+          stream: this.name,
+          key: this.key,
+          routingKey: options?.routingKey || undefined,
+        });
+        if (mux === undefined) perStream = true;
+      }
+      if (live && mux !== undefined) {
+        mux.spec.cursor = cursor;
+        let entry: MuxEntry;
+        try {
+          entry = await mux.next(options?.signal);
+          const refused = entryError(entry);
+          if (refused !== undefined) throw refused;
+        } catch (e) {
+          if (options?.signal?.aborted) return;
+          if (e instanceof MuxUnavailable || (e instanceof StreamsError && PER_STREAM_CODES.has(e.code))) {
+            mux.close();
+            mux = undefined;
+            perStream = true;
+            continue;
+          }
+          if (!retryableRequestError(e)) throw e;
+          await sleep(1000, options?.signal);
+          continue;
+        }
+        for (const r of (entry.records ?? []) as T[]) yield r;
+        cursor = entry.cursor ?? cursor;
+        if (entry.sealed && entry.upToDate) return;
+        continue;
+      }
       const q = new URLSearchParams();
       if (options?.routingKey) q.set("routingKey", options.routingKey);
       q.set("cursor", cursor);
@@ -1731,6 +1831,9 @@ export class Stream<T = unknown> {
       const upToDate = productHeader(res, "up-to-date") === "true";
       if (sealed && upToDate) return;
       if (upToDate || res.status === 204) live = true;
+    }
+    } finally {
+      mux?.close();
     }
   }
 
@@ -2080,6 +2183,18 @@ export class Producer<T> {
 // ---------------------------------------------------------------------
 // Consumer
 
+/** A pull's answer body. */
+interface PullBody<T> {
+  messages: Array<{
+    id: string;
+    routingKey: string;
+    attempts: number;
+    leaseToken: string;
+    value: T;
+  }>;
+  backlog: number;
+}
+
 export class Consumer<T> {
   private ctx: Ctx;
   private stream: Stream<T>;
@@ -2113,16 +2228,22 @@ export class Consumer<T> {
       JSON.stringify(pullOptions),
       signal,
     );
-    const body = (await res.json()) as {
-      messages: Array<{
-        id: string;
-        routingKey: string;
-        attempts: number;
-        leaseToken: string;
-        value: T;
-      }>;
-      backlog: number;
-    };
+    return this.batchOf((await res.json()) as PullBody<T>);
+  }
+
+  /** One wait of `messages()` through the client's multiplexed wait: the
+   * batch it leased, settled as a pull's is. */
+  private async muxBatch(sub: MuxSub, signal: AbortSignal): Promise<PullBatch<T>> {
+    const entry = await sub.next(signal);
+    const refused = entryError(entry);
+    if (refused !== undefined) throw refused;
+    return this.batchOf({
+      messages: (entry.messages ?? []) as PullBody<T>["messages"],
+      backlog: entry.backlog ?? 0,
+    });
+  }
+
+  private batchOf(body: PullBody<T>): PullBatch<T> {
     const acks: Array<{ leaseToken: string }> = [];
     const retries: Array<{ leaseToken: string; delayMs?: number }> = [];
     const extends_: Array<{ leaseToken: string; visibilityMs: number }> = [];
@@ -2184,12 +2305,35 @@ export class Consumer<T> {
     const consumer = this;
     const generator = (async function* () {
       let backoff = 1000;
+      // Pulls wait through the client's multiplexed wait (`liveMux`) until
+      // the cell says it has none or refuses this stream there.
+      let sub: MuxSub | undefined;
+      let perStream = false;
+      try {
       while (!controller.signal.aborted) {
         let batch: PullBatch<T>;
         try {
-          batch = await consumer.pull({ waitMs: 20000, signal: controller.signal });
+          if (!perStream) {
+            sub ??= liveMux(consumer.ctx)?.open({
+              kind: "group",
+              stream: consumer.stream.name,
+              key: consumer.stream._kh()["streams-encryption-key"]!,
+              group: consumer.name,
+            });
+            if (sub === undefined) perStream = true;
+          }
+          batch = sub !== undefined
+            ? await consumer.muxBatch(sub, controller.signal)
+            : await consumer.pull({ waitMs: 20000, signal: controller.signal });
         } catch (error) {
           if (controller.signal.aborted && error === controller.signal.reason) return;
+          if (error instanceof MuxUnavailable ||
+            (error instanceof StreamsError && PER_STREAM_CODES.has(error.code))) {
+            sub?.close();
+            sub = undefined;
+            perStream = true;
+            continue;
+          }
           // A restart or a busy cell (a transport failure, or a 429/503
           // after the request's own replays): pull again.
           if (!retryableRequestError(error)) throw error;
@@ -2218,6 +2362,9 @@ export class Consumer<T> {
             throw error;
           }
         }
+      }
+      } finally {
+        sub?.close();
       }
     })();
     const observe = async (operation: Promise<IteratorResult<ConsumerMessage<T>, void>>) => {
@@ -2559,19 +2706,50 @@ export class Watch {
   }): AsyncIterable<WatchEvent> {
     let cursor = options?.from ?? "now";
     let backoff = 1000;
+    // Waits go through the client's multiplexed wait (`liveMux`), proved
+    // by its token and the stream key, until the cell says it has none or
+    // refuses this stream there; then each wait mints a capability.
+    let sub: MuxSub | undefined;
+    let perStream = false;
+    try {
     for (;;) {
       if (options?.signal?.aborted) return;
       let ev: WatchEvent;
       try {
-        // Each wait mints a fresh capability, so a reconnection after a
-        // long outage is not refused for an expired one.
-        ev = await this.wait({
-          cursor,
-          timeoutMs: 25000,
-          signal: options?.signal,
-        });
+        if (!perStream) {
+          sub ??= liveMux(this.ctx)?.open({
+            kind: "watch",
+            stream: this.stream.name,
+            key: this.encryptionKey,
+            watch: this.name,
+            watchKey: this.key,
+          });
+          if (sub === undefined) perStream = true;
+        }
+        if (sub !== undefined) {
+          sub.spec.cursor = cursor;
+          const entry = await sub.next(options?.signal);
+          const refused = entryError(entry);
+          if (refused !== undefined) throw refused;
+          ev = entry.event as WatchEvent;
+        } else {
+          // Each wait mints a fresh capability, so a reconnection after a
+          // long outage is not refused for an expired one.
+          ev = await this.wait({
+            cursor,
+            timeoutMs: 25000,
+            signal: options?.signal,
+          });
+        }
       } catch (error) {
         if (options?.signal?.aborted) return;
+        if (error instanceof MuxUnavailable ||
+          (error instanceof StreamsError && PER_STREAM_CODES.has(error.code))) {
+          sub?.close();
+          sub = undefined;
+          perStream = true;
+          continue;
+        }
         if (!retryableRequestError(error)) throw error;
         backoff = await reconnectAfter(backoff, options?.signal);
         continue;
@@ -2579,6 +2757,9 @@ export class Watch {
       backoff = 1000;
       cursor = ev.cursor;
       if (ev.invalidated) yield ev;
+    }
+    } finally {
+      sub?.close();
     }
   }
 }
