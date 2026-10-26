@@ -506,7 +506,7 @@ audits every produced stream (`tenants.ts audit`) and prices the step
 |---|---|---|---|
 | `points/PACK-T.env` (`tenants/pack-t-NNNN.json`) | 1, 100, 400, 1,000 (cell-admin's default `--max-projects`, the scale Layer B certifies) | T: 3 streams, 200 appends a day of 400 B JSON singles, one long-poll tail always connected | 1 parked wait |
 | `points/PACK-S.env` (`tenants/pack-s-NNNN.json`) | 1, 5, 10, 20, 30, 46 (46 x 25 = 1,150 of the live pool's 1,200) | S: 20 streams, 2 appends a second of 1 KiB JSON singles, a long-poll tail per stream, one consumer group (pull 10, settle each) on 5 of them | 25 parked waits (20 tails, a pull loop per group stream) |
-| `points/PACK-S.env` with `PACK_MUX=1` (`tenants/pack-s-mux-NNNN.json`) | 48, 100, 150 | S as above, its 20 tails and 5 group streams in one `mux` phase (layout 6A package 2) | 1 parked wait (one multiplexed wait carrying 25 subscriptions) |
+| `points/PACK-S.env` with `PACK_MUX=1` (`tenants/pack-s-mux-NNNN.json`) | 48, 70, 100, 150 | S as above, its 20 tails and 5 group streams in one `mux` phase (layout 6A package 2) | 1 parked wait (one multiplexed wait carrying 25 subscriptions) |
 
 Each step: admission, the manifest's 1,640 s (setup 0-120 s, the load from
 180 s, `steady` 360-1,560 s), a short quiescence, 60 s of idle tail, the

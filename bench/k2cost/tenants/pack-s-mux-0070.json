@@ -1,0 +1,55 @@
+{
+ "name": "pack-s-mux-0070",
+ "seed": 12,
+ "duration": 1640,
+ "comment": "Fable's profile S (streams-cost report 2026-10-24, section 4.1), 70 projects on one launch cell, each waiting through ONE multiplexed wait (layout 6A package 2, POST /v1/projects/{p}/live:wait): 20 streams of 1 KiB JSON singles at 2 appends a second (open-loop Poisson), a tail on every stream and one consumer group (pull max 10, settle each) on 5 of the streams, which take a quarter of the appends, all in the `mux` phase: 1 parked wait a project where pack-s-NNNN holds 25. Otherwise pack-s-0046's: creates 0.1 s apart, setup 0-120 s, the load 180-1,640 s (projects start spread over 60 s), the verdict window 'steady' 360-1,560 s. The class pool holds every project's wait, appends and settles at once.",
+ "periods": {
+  "steady": [
+   360,
+   1560
+  ]
+ },
+ "classes": [
+  {
+   "class": "s",
+   "count": 70,
+   "role": "compliant",
+   "streams": 20,
+   "prefix": "s/",
+   "pool": 340,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 120,
+     "args": {
+      "stagger": 0.1
+     }
+    },
+    {
+     "mode": "produce",
+     "at": 180,
+     "spread": 60,
+     "secs": 1380,
+     "args": {
+      "rate": 2,
+      "records": 1,
+      "record-bytes": 1024
+     }
+    },
+    {
+     "mode": "mux",
+     "at": 180,
+     "spread": 60,
+     "args": {
+      "group": "s-cg",
+      "group-streams": 5,
+      "pull": 10,
+      "settle": "every",
+      "wait-ms": 25000
+     }
+    }
+   ]
+  }
+ ]
+}
