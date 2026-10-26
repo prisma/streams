@@ -6,6 +6,7 @@
 //!
 //! This module owns the operations, their replies, the configuration and
 //! the row codecs; `shard::transaction::native_queue` applies them.
+pub(crate) mod compaction_guard;
 pub(crate) mod keys;
 pub(crate) mod rows;
 #[cfg(test)]

@@ -42,10 +42,9 @@ async fn rig_over(
     settings: Option<slatedb::config::Settings>,
     store: Arc<dyn ObjectStore>,
 ) -> Rig {
-    let mut builder = Db::builder(name, store.clone());
-    if let Some(settings) = settings {
-        builder = builder.with_settings(settings);
-    }
+    let settings = settings.unwrap_or_default();
+    let builder =
+        crate::native_queue::compaction_guard::shard_log_builder(name, store.clone(), settings);
     let db = Arc::new(builder.build().await.unwrap());
     let (tx, absorb) = mpsc::channel(1);
     let engine = ShardEngine::start(
@@ -463,6 +462,41 @@ async fn live_compactions(admin: &slatedb::admin::Admin) -> Vec<String> {
     live.map(|c| c.id().to_string()).collect()
 }
 
+/// SR 1 and SR 0 (the last run), each from one flushed L0 table, and the
+/// size-tiered shape [SR 1, SR 0] -> SR 0 running, held mid-read until the
+/// test releases `store`.
+async fn regular_job_into_the_last_run(
+    r: &Rig,
+    store: &HeldTables,
+    admin: &slatedb::admin::Admin,
+) -> slatedb::compactor::Compaction {
+    flushed_into_run(r, admin, b"a", 0).await;
+    flushed_into_run(r, admin, b"b", 1).await;
+    let runs = manifest(r).await.compacted().clone();
+    assert_eq!(runs.iter().map(|run| run.id).collect::<Vec<_>>(), [1, 0]);
+    let tables = runs.iter().flat_map(|run| run.sst_views().iter());
+    store.hold(
+        tables
+            .map(|v| v.sst.id.unwrap_compacted_id().to_string())
+            .collect(),
+    );
+    let both = vec![SourceId::SortedRun(1), SourceId::SortedRun(0)];
+    let regular = submit(admin, &CompactionSpec::new(both, 0)).await;
+    let running = async {
+        while admin
+            .read_compaction(regular.id(), None)
+            .await
+            .unwrap()
+            .map(|c| c.status())
+            != Some(slatedb::compactor::CompactionStatus::Running)
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    tokio::time::timeout(STEP_WITHIN, running).await.unwrap();
+    regular
+}
+
 /// The incident of 2026-10-24 (100x queue capacity run, shard 10): a regular
 /// sorted-run compaction into the last run is running when the collector
 /// passes. The pass's spec (every L0 table and every run into the last run)
@@ -476,32 +510,7 @@ async fn native_queue_collection_waits_out_a_compaction_into_the_last_run_before
     let every = Some(compactor_every(Duration::from_millis(100)));
     let r = rig_over("t/nqc-last-run", every, store.clone()).await;
     let admin = r.engine.queue_admin();
-    // Two sorted runs: SR 0 (the last run) and SR 1.
-    flushed_into_run(&r, &admin, b"a", 0).await;
-    flushed_into_run(&r, &admin, b"b", 1).await;
-    let runs = manifest(&r).await.compacted().clone();
-    assert_eq!(runs.iter().map(|run| run.id).collect::<Vec<_>>(), [1, 0]);
-    // The size-tiered shape [SR 1, SR 0] -> SR 0, held mid-read.
-    let tables = runs.iter().flat_map(|run| run.sst_views().iter());
-    store.hold(
-        tables
-            .map(|v| v.sst.id.unwrap_compacted_id().to_string())
-            .collect(),
-    );
-    let both = vec![SourceId::SortedRun(1), SourceId::SortedRun(0)];
-    let regular = submit(&admin, &CompactionSpec::new(both, 0)).await;
-    let running = async {
-        while admin
-            .read_compaction(regular.id(), None)
-            .await
-            .unwrap()
-            .map(|c| c.status())
-            != Some(slatedb::compactor::CompactionStatus::Running)
-        {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    };
-    tokio::time::timeout(STEP_WITHIN, running).await.unwrap();
+    let regular = regular_job_into_the_last_run(&r, &store, &admin).await;
     // The pass runs while the regular job does: twenty compactor polls and
     // worker polls later the shard log is open and the regular job is the
     // only live one. Released, the regular job finishes and the pass
@@ -527,4 +536,46 @@ async fn native_queue_collection_waits_out_a_compaction_into_the_last_run_before
         let value = r.db.get(key).await.unwrap();
         assert_eq!(value.as_deref(), Some(&b"v"[..]), "{key:?} kept");
     }
+}
+
+/// The shard log's compactor refuses a submitted spec that shares a run with
+/// a live job, so a pass that submits after the compactor scheduled a regular
+/// job, but before the pass read the compactions file, still cannot run
+/// beside it: the spec fails, the shard log stays open and the regular job
+/// completes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_queue_collection_spec_beside_a_live_compaction_is_refused_by_the_shard_log_compactor()
+ {
+    let store = Arc::new(HeldTables::default());
+    let every = Some(compactor_every(Duration::from_millis(100)));
+    let r = rig_over("t/nqc-guard", every, store.clone()).await;
+    let admin = r.engine.queue_admin();
+    let regular = regular_job_into_the_last_run(&r, &store, &admin).await;
+    r.db.put(b"c", b"v").await.unwrap();
+    let memtable = slatedb::config::FlushOptions {
+        flush_type: slatedb::config::FlushType::MemTable,
+    };
+    r.db.flush_with_options(memtable).await.unwrap();
+    let l0 =
+        r.db.manifest()
+            .l0()
+            .iter()
+            .map(|v| v.id)
+            .collect::<Vec<_>>();
+    assert_eq!(l0.len(), 1, "one flushed L0 table");
+    let everything = vec![
+        SourceId::SstView(l0[0]),
+        SourceId::SortedRun(1),
+        SourceId::SortedRun(0),
+    ];
+    let refused = submit(&admin, &CompactionSpec::new(everything, 0)).await;
+    let outcome = ShardEngine::await_compaction(&admin, &refused);
+    let outcome = tokio::time::timeout(STEP_WITHIN, outcome).await;
+    assert_eq!(outcome, Ok(false), "the compactor fails the spec");
+    let probe = r.db.put(b"probe", b"v").await;
+    probe.expect("the shard log stays open");
+    assert_eq!(live_compactions(&admin).await, [regular.id().to_string()]);
+    store.release();
+    let done = ShardEngine::await_compaction(&admin, &regular);
+    assert_eq!(tokio::time::timeout(STEP_WITHIN, done).await, Ok(true));
 }

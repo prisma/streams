@@ -16,7 +16,6 @@ use std::time::Duration;
 use anyhow::Context;
 use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use object_store::{ObjectStore, ObjectStoreExt};
-use slatedb::Db;
 
 use crate::config::validation::ValidatedServerConfig;
 use crate::config::validation::{resolve_effective_capacity, shard_settings};
@@ -494,11 +493,14 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
                     let db = {
                         let p2 = path.clone();
                         crate::bootstrap::on_slatedb_rt(async move {
-                            Db::builder(p2.as_str(), shard_store)
-                                .with_settings(settings)
-                                .with_db_cache(shared_cache)
-                                .build()
-                                .await
+                            crate::native_queue::compaction_guard::shard_log_builder(
+                                p2.as_str(),
+                                shard_store,
+                                settings,
+                            )
+                            .with_db_cache(shared_cache)
+                            .build()
+                            .await
                         })
                         .await
                         .with_context(|| format!("open shard log {path}"))?
