@@ -52,6 +52,8 @@ pub(crate) struct ParkShare {
     read_rate: u64,
     /// The cell's recently offered requests (fair shedding).
     cell: Arc<crate::admission::fair_shed::InstanceLoad>,
+    /// The request weight fair shedding judges its load at.
+    request_weight: u64,
 }
 
 /// RAII place in a project's share, held while one wait is parked.
@@ -79,15 +81,18 @@ impl QuotaRegistry {
             store_rate: quotas.requests_per_sec,
             read_rate: quotas.read_bytes_per_sec,
             cell: Arc::clone(&self.load),
+            request_weight: quotas.request_weight,
         })
     }
 }
 
 impl ParkShare {
     /// What fair shedding makes of a request of the project at `now_ms`
-    /// on a cell shared `share_k` ways (`admission::fair_shed`).
+    /// on a cell shared `share_k` ways, at its request weight
+    /// (`admission::fair_shed`).
     pub(crate) fn judge(&self, share_k: u64, now_ms: i64) -> Verdict {
-        self.cell.judge(&self.admission.load, share_k, now_ms)
+        let (load, weight) = (&self.admission.load, self.request_weight);
+        self.cell.judge(load, weight, share_k, now_ms)
     }
 
     /// Take one place for a parked wait: `None` when the project's live

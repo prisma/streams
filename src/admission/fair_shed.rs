@@ -4,8 +4,10 @@
 //! than their share of the cell's load are refused before any other.
 //!
 //! The blame signal is a project's share of the verified requests the cell
-//! was offered recently, against 1/k on a cell shared k ways
-//! (`PROJECT_SHARE_K`, the divisor of every project's ceilings). Each
+//! was offered recently, against its request weight's share w/k on a cell
+//! shared k ways (`PROJECT_SHARE_K`, the divisor of every project's
+//! ceilings; w is 1 unless its policy sets a `request_weight`, layout 6A
+//! package 1). Each
 //! verified request is counted at project admission, admitted or refused by
 //! its project's own quotas (`QuotaRegistry::admit_counted`): a refusal
 //! costs the cell its connection, its parse and its token check all the
@@ -14,9 +16,10 @@
 //! the current 5 s epoch and the one before it.
 //!
 //! An admitted request's verdict (`park::judge_load`): `Blamed` when its
-//! project's load times k is over the cell's; `Spared` when its project's is
-//! not, and the heaviest project counted in the window is; `Even` otherwise
-//! (nobody over its share, or a dedicated cell, k = 1). Over the line a
+//! project's load times k is over the cell's times its weight; `Spared` when
+//! its project's is not, and the heaviest project counted in the window, per
+//! unit of its weight, is; `Even` otherwise (nobody over its share, or a
+//! dedicated cell, k = 1). Over the line a
 //! blamed project's requests are refused (`product::read_memory`), a spared
 //! append passes the RSS write gate while the instance is at most an eighth
 //! over the line (`AdmissionController::admit_write_memory`; at the
@@ -109,13 +112,37 @@ impl ProjectLoad {
     }
 }
 
-/// The cell's offered requests, and the heaviest project load counted
-/// in the current epoch and in the one before it.
+/// A project's load and the request weight it is judged at: its share of
+/// the cell is measured against weight / k (a weight of 0 is 1).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Weighted {
+    load: u64,
+    weight: u64,
+}
+
+impl Weighted {
+    fn new(load: u64, weight: u64) -> Self {
+        Self {
+            load,
+            weight: weight.max(1),
+        }
+    }
+
+    /// The heavier of the two per unit of weight (`self` on a tie).
+    fn heavier(self, other: Self) -> Self {
+        let mine = u128::from(self.load) * u128::from(other.weight.max(1));
+        let theirs = u128::from(other.load) * u128::from(self.weight.max(1));
+        if theirs > mine { other } else { self }
+    }
+}
+
+/// The cell's offered requests, and the heaviest project load per unit of
+/// weight counted in the current epoch and in the one before it.
 #[derive(Debug, Default)]
 struct Totals {
     requests: Window,
-    heaviest: u64,
-    heaviest_before: u64,
+    heaviest: Weighted,
+    heaviest_before: Weighted,
 }
 
 impl Totals {
@@ -126,9 +153,9 @@ impl Totals {
             self.heaviest_before = if epoch == before + 1 {
                 self.heaviest
             } else {
-                0
+                Weighted::default()
             };
-            self.heaviest = 0;
+            self.heaviest = Weighted::default();
         }
     }
 }
@@ -140,7 +167,8 @@ pub(crate) struct InstanceLoad(Mutex<Totals>);
 /// What fair shedding makes of one request over the line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Verdict {
-    /// Its project carries more than 1/k of the cell's load: refused.
+    /// Its project carries more than its weight's w/k of the cell's load:
+    /// refused.
     Blamed,
     /// Its project does not, and another does: its appends are admitted up
     /// to the hard line.
@@ -150,37 +178,46 @@ pub(crate) enum Verdict {
 }
 
 impl InstanceLoad {
-    /// Count one request `project` offered the cell at `now_ms`.
-    pub(crate) fn count(&self, project: &ProjectLoad, now_ms: i64) {
+    /// Count one request `project`, of request weight `weight`, offered
+    /// the cell at `now_ms`.
+    pub(crate) fn count(&self, project: &ProjectLoad, weight: u64, now_ms: i64) {
         let epoch = now_ms.div_euclid(EPOCH_MS);
-        let own = project.count(epoch);
+        let own = Weighted::new(project.count(epoch), weight);
         let mut totals = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         totals.roll(epoch);
         totals.requests.count(epoch);
-        totals.heaviest = totals.heaviest.max(own);
+        totals.heaviest = totals.heaviest.heavier(own);
     }
 
-    /// Judge a request of `project` at `now_ms` on a cell shared `share_k`
-    /// ways, counting nothing.
-    pub(crate) fn judge(&self, project: &ProjectLoad, share_k: u64, now_ms: i64) -> Verdict {
+    /// Judge a request of `project`, of request weight `weight`, at
+    /// `now_ms` on a cell shared `share_k` ways, counting nothing.
+    pub(crate) fn judge(
+        &self,
+        project: &ProjectLoad,
+        weight: u64,
+        share_k: u64,
+        now_ms: i64,
+    ) -> Verdict {
         let epoch = now_ms.div_euclid(EPOCH_MS);
-        let own = project.load_at(epoch);
+        let own = Weighted::new(project.load_at(epoch), weight);
         let mut totals = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         totals.roll(epoch);
         let all = totals.requests.load();
-        let heaviest = totals.heaviest.max(totals.heaviest_before);
+        let heaviest = totals.heaviest.heavier(totals.heaviest_before);
         drop(totals);
         judge(own, heaviest, all, share_k)
     }
 }
 
-/// `load` of `all` is more than 1/`share_k` of it (never on a dedicated
-/// cell).
-fn over_share(load: u64, all: u64, share_k: u64) -> bool {
-    share_k > 1 && load.saturating_mul(share_k) > all
+/// `load` of `all` is more than its weight's w/`share_k` of it (never on a
+/// dedicated cell).
+fn over_share(load: Weighted, all: u64, share_k: u64) -> bool {
+    share_k > 1
+        && u128::from(load.load) * u128::from(share_k)
+            > u128::from(all) * u128::from(load.weight.max(1))
 }
 
-fn judge(own: u64, heaviest: u64, all: u64, share_k: u64) -> Verdict {
+fn judge(own: Weighted, heaviest: Weighted, all: u64, share_k: u64) -> Verdict {
     if over_share(own, all, share_k) {
         Verdict::Blamed
     } else if over_share(heaviest, all, share_k) {

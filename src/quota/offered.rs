@@ -18,7 +18,8 @@ impl QuotaRegistry {
     ) -> Result<QuotaGuard, QuotaRefusal> {
         let admitted = self.admit(project, quotas, now_ms);
         if let Some(admission) = self.tracked(project) {
-            self.load.count(&admission.load, now_ms);
+            self.load
+                .count(&admission.load, quotas.request_weight, now_ms);
         }
         admitted
     }

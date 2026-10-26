@@ -83,3 +83,59 @@ async fn a_weighted_project_appends_at_its_weighted_ceiling_beside_a_unit_projec
     );
     engine_shutdown(&cell.state).await;
 }
+
+/// The rig's shed line (MiB), as `fair_shed.rs` sets it.
+const LINE_MB: u64 = 1000;
+
+/// One small append of project `i` to `orders`: its status and code.
+async fn append(cell: &Cell, i: usize) -> (u16, Option<String>) {
+    let path = "/v1/streams/orders/records";
+    let (status, _, b) = cell.call(i, "POST", path, br#"{"n":1}"#).await;
+    (status, error_code(&b))
+}
+
+/// Over the shed line on a cell shared 8 ways, blame follows the weighted
+/// share: project 0 at request weight 4 sent 100 of the cell's 250 recent
+/// appends (40%, within its four eighths) and is spared, its appends
+/// served; project 1 at weight 1 sent 150 (60%, over its one eighth) and
+/// is refused `429 project_memory_pressure`. Before: blame compared every
+/// project with 1/8, so project 0 was blamed and refused too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn over_the_shed_line_blame_follows_the_weighted_share() {
+    let mut spec = CellSpec::open(2);
+    spec.cli = |cli| cli.project_share_k = 8;
+    spec.quotas = |i| ProjectQuotas {
+        request_weight: if i == 0 { 4 } else { 0 },
+        ..ProjectQuotas::default()
+    };
+    let cell = open_cell(spec).await;
+    for i in 0..2 {
+        let created = cell.call(i, "PUT", "/v1/streams/orders", CREATE).await;
+        assert_eq!(created.0, 201, "project {i}");
+    }
+    for (i, n) in [(0, 100), (1, 150)] {
+        for _ in 0..n {
+            assert_eq!(append(&cell, i).await, (200, None), "under the line");
+        }
+    }
+    let admission = &cell.state.admission;
+    admission.set_rss_shed_mb(LINE_MB);
+    admission.record_rss_mb(LINE_MB + 1);
+    let blamed = (429, Some("project_memory_pressure".to_string()));
+    for round in 0..5 {
+        assert_eq!(
+            append(&cell, 0).await,
+            (200, None),
+            "weighted, round {round}"
+        );
+        assert_eq!(append(&cell, 1).await, blamed, "unit, round {round}");
+    }
+    assert_eq!(admission.snapshot().shed.blamed, 5, "the unit project's");
+    admission.record_rss_mb(0);
+    assert_eq!(
+        (stored(&cell, 0).await, stored(&cell, 1).await),
+        (105, 150),
+        "every served append stored once, the refused ones not"
+    );
+    engine_shutdown(&cell.state).await;
+}
