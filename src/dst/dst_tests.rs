@@ -383,3 +383,6 @@ mod queue_overload;
 
 #[path = "tests/weighted_shares.rs"]
 mod weighted_shares;
+
+#[path = "tests/shared_cell_weighted.rs"]
+mod shared_cell_weighted;

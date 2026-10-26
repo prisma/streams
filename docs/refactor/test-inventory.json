@@ -1192,6 +1192,17 @@
     "scenarios": []
   },
   {
+    "name": "a_mixed_cell_under_pressure_sheds_its_flooder_and_starves_no_class",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "5a925d95c9f6e88b6fa1ba3952205b0ce666229f78585561321a3335783c799b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_weighted.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_month_closed_before_settlement_still_bills_only_up_to_the_expiry_instant",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -2958,6 +2969,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/weighted_shares.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_weighted_projects_refusals_are_journaled_to_it_alone",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a12e5f4498926aa787607e562673af73ab3e509d7a631057d4af2f0475f78dee",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_audit.rs",
     "scenarios": []
   },
   {
@@ -4766,6 +4788,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_operations.rs",
+    "scenarios": []
+  },
+  {
+    "name": "every_project_on_a_weighted_cell_holds_its_own_weighted_ceilings",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "265fd429c062047bcc3b67048092122245ad9de6404b7ff254f92fe98742ef9f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shared_cell_weighted.rs",
     "scenarios": []
   },
   {

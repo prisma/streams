@@ -425,6 +425,14 @@
       "syntax": "path = \"tests/weighted_shares.rs\""
     },
     {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::shared_cell_weighted",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A shared cell of every tenant class over real HTTP rigs (layout 6A package 1, DESIGN-6A section 4): weighted stream tenants, unit stream and queue tenants and a flooder under memory pressure and at the in-flight cap, and the weighted certification at cell_scale() projects (1,000 in the mt-cert job's Layer A leg); compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/shared_cell_weighted.rs\""
+    },
+    {
       "category": "macro-dsl",
       "count": 1,
       "owner": "crate::q_key",

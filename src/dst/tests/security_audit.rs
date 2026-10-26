@@ -476,3 +476,73 @@ async fn shared_cell_certification_smoke() {
     assert!(appended >= 2, "denials journaled: {appended}");
     engine_shutdown(&state).await;
 }
+
+/// Weighted shares and the audit journal (layout 6A package 1, edge
+/// changes #196 and #197): on a cell shared 8 ways, a project at byte
+/// weight 5 appends 1.2 MB in a second unrefused and then meets its own
+/// weighted ceiling (`429 project_rate_limit`), and every refusal it met is
+/// journaled to it alone; its unit neighbour's refusals at its unit
+/// ceiling (from its third append) are journaled to the neighbour alone;
+/// and a weight never widens what a project reads: each reads exactly the
+/// records it was answered 200 for, its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_weighted_projects_refusals_are_journaled_to_it_alone() {
+    use super::fixture_cell::{CREATE, CellSpec, error_code, journal, open_cell, project};
+    let mut spec = CellSpec::open(2);
+    spec.cli = |cli| cli.project_share_k = 8;
+    spec.bounds = crate::auth::ceiling::SharedBounds {
+        append_bytes_per_sec: 2_060_000,
+        ..crate::auth::ceiling::SharedBounds::default()
+    };
+    spec.quotas = |i| crate::project_policy::ProjectQuotas {
+        byte_weight: if i == 0 { 5 } else { 0 },
+        ..crate::project_policy::ProjectQuotas::default()
+    };
+    let cell = open_cell(spec).await;
+    let mut answers = [Vec::new(), Vec::new()];
+    for (i, answered) in answers.iter_mut().enumerate() {
+        let created = cell.call(i, "PUT", "/v1/streams/orders", CREATE).await;
+        assert_eq!(created.0, 201, "project {i}");
+        let body = format!("{{\"p\":{i},\"pad\":\"{}\"}}", "x".repeat(120_000));
+        while answered.len() < 40 && !answered.iter().any(|(st, _)| *st == 429) {
+            let path = "/v1/streams/orders/records";
+            let (st, _, b) = cell.call(i, "POST", path, body.as_bytes()).await;
+            answered.push((st, error_code(&b)));
+        }
+    }
+    let refused = (429, Some("project_rate_limit".to_string()));
+    for (i, first) in [(0, 10), (1, 2)] {
+        let a = &answers[i];
+        assert_eq!(
+            a[..first],
+            vec![(200, None); first][..],
+            "project {i}'s first appends"
+        );
+        assert_eq!(a.last(), Some(&refused), "project {i} meets its ceiling");
+    }
+    let journaled = journal(&cell.state).await;
+    for (i, answered) in answers.iter().enumerate() {
+        let p = project(i);
+        let mine = journaled
+            .iter()
+            .filter(|e| e["status"] == 429 && e["project_id"] == p.as_str())
+            .count();
+        assert_eq!(mine, 1, "project {i}'s one refusal journaled to it");
+        let read = cell
+            .json(i, "GET", "/v1/streams/orders/records?maxBytes=8388608")
+            .await;
+        let ps: Vec<u64> = read
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["p"].as_u64())
+            .collect();
+        let served = answered.len() - 1;
+        assert_eq!(
+            ps,
+            vec![u64::try_from(i).unwrap(); served],
+            "project {i} reads its own"
+        );
+    }
+    engine_shutdown(&cell.state).await;
+}
