@@ -165,12 +165,13 @@ impl LineageWatch {
     }
 
     /// Whether `consumer` has nothing left to lease on any segment: every
-    /// segment's queue state is loaded and the consumer's backlog there
-    /// (records past its cursor up to the segment's durable tail or sealed
-    /// end, less those settled) is 0. A consumer the loaded state does not
-    /// hold has no rows there: cursor 0, nothing settled, as loading its
-    /// rows would make it. A closed engine, a poisoned or unloaded state is
-    /// not drained: the walk decides.
+    /// segment's queue state is loaded and the consumer's cursor there has
+    /// reached the segment's durable tail (or sealed end). A settle advances
+    /// the cursor over every settled record at it (`settle`), so a cursor
+    /// short of the tail names a record leased or still to lease. A
+    /// consumer the loaded state does not hold has no rows there: cursor 0,
+    /// as loading its rows would make it. A closed engine, a poisoned or
+    /// unloaded state is not drained: the walk decides.
     pub(crate) fn drained(&self, consumer: &str) -> bool {
         self.watched.iter().zip(&self.ends).all(|(w, end)| {
             if w.engine.is_closed() {
@@ -180,7 +181,12 @@ impl LineageWatch {
                 return false;
             };
             let tail = end.unwrap_or(state.durable.next);
-            state.queue.loaded && backlog(state.queue.consumers.get(consumer), tail) == 0
+            let cursor = state
+                .queue
+                .consumers
+                .get(consumer)
+                .map_or(0, |cs| cs.cursor);
+            state.queue.loaded && cursor >= tail
         })
     }
 
@@ -207,19 +213,6 @@ impl LineageWatch {
             .map(|w| w.handle.notify.notified())
             .collect()
     }
-}
-
-/// The records of a segment whose tail is `tail` past the consumer's cursor
-/// and not settled; a consumer with no state there is at cursor 0.
-fn backlog(cs: Option<&crate::queue::ConsumerState>, tail: u64) -> u64 {
-    let Some(cs) = cs else {
-        return tail;
-    };
-    if cs.cursor >= tail {
-        return 0;
-    }
-    let settled = cs.acked.range(cs.cursor..tail).count() as u64;
-    (tail - cs.cursor).saturating_sub(settled)
 }
 
 /// Walk again after one poll interval (or at the deadline): the wait of a
