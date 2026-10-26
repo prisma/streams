@@ -54,7 +54,18 @@ The workspace lock contained neither banned package nor `openssl-sys`.
   `Settings` only through `Settings::default()`; SlateDB itself never calls its
   `from_file`, `from_env` or `load` providers, so the YAML parser is linked but
   unreached. Remove the exception when SlateDB drops or gates the provider.
-  These three named advisory exceptions do not exempt a new vulnerability
+- `zstd` 0.13.3 / `zstd-safe` 7.2.4 / `zstd-sys`, through Streams itself, pinned
+  SlateDB and foyer (owner decision of 2026-10-26: a time-boxed ignore until
+  2026-12-31, while slatedb/slatedb#2193 and foyer-rs/foyer#1382 bump zstd to
+  0.14): RUSTSEC-2026-0391 (an abandoned stream leaks into the next on a reused
+  `with_context` encoder; Streams compresses with `bulk::compress`, a fresh
+  context per call, SlateDB with bulk / `decode_all`, foyer with plain
+  `Encoder::new` / `Decoder::new`), RUSTSEC-2026-0398 (`Seekable::decompress`;
+  the seekable feature is not enabled), RUSTSEC-2026-0403 (`stream::write::Decoder`
+  only; Streams decodes with `read::Decoder`, `bulk::Decompressor` and
+  `decode_all`) and RUSTSEC-2026-0410 (wasm32 only). Remove the four at the pin
+  bump that takes the upstream PRs, and no later than 2026-12-31.
+  These seven named advisory exceptions do not exempt a new vulnerability
   advisory.
 - `webpki-roots` and `webpki-root-certs`, each exactly 1.0.8, contain certificate
   data under CDLA-Permissive-2.0. `deny.toml` permits that license only for these

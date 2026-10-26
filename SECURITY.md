@@ -52,6 +52,10 @@ SlateDB/foyer dependency update.
 | RUSTSEC-2025-0141 | SlateDB 0.14.1 → foyer → bincode 1.3.3 | unmaintained status, not a reported vulnerability | upgrade SlateDB/foyer when it removes bincode 1.x |
 | RUSTSEC-2024-0436 | SlateDB 0.14.1 → foyer → paste | unmaintained build-time macro crate | same |
 | RUSTSEC-2024-0449 | SlateDB 0717cc1 → figment → serde_yaml → unsafe-libyaml | unmaintained; Streams never calls SlateDB's YAML/file/env settings loaders (only `Settings::default()`) | SlateDB drops or feature-gates figment's `yaml` provider |
+| RUSTSEC-2026-0391 | Streams, SlateDB and foyer → zstd 0.13.3 | an abandoned stream's data leaks on a reused `with_context` encoder; none of the three uses one | until 2026-12-31: the pin bump taking slatedb/slatedb#2193 and foyer-rs/foyer#1382 (zstd 0.14) |
+| RUSTSEC-2026-0398 | zstd → zstd-safe 7.2.4 | `Seekable::decompress`; the seekable feature is not enabled | same |
+| RUSTSEC-2026-0403 | zstd 0.13.3 | `stream::write::Decoder` only; unused (bulk, `read::Decoder`, `decode_all`) | same |
+| RUSTSEC-2026-0410 | zstd-sys | wasm32 only; no wasm32 build | same |
 
 ## Triaged advisories outside RustSec
 
