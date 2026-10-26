@@ -851,3 +851,50 @@ fn gap_tail_of(stream: &str, cursor: &str) -> Value {
     json!({"id": "t", "kind": "tail", "stream": stream, "key": PRISMA_KEY,
            "routingKey": "ga", "cursor": cursor})
 }
+
+/// A group with a small backlog is walked under a reservation sized to the
+/// records past its consumer's cursor (three of ~120 B: 3 x (120 + 64) +
+/// 4 KiB), not a whole 4 MiB coverage: with all but 16 KiB of the read
+/// memory held elsewhere, a first wait leases its backlog at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_group_with_a_small_backlog_reserves_its_backlog_not_a_whole_coverage() {
+    let (state, addr) = http_rig(mem()).await;
+    create(addr, "q6", br#"{"format":{"kind":"json"}}"#).await;
+    let (st, _, _) = preq(addr, "PUT", "/v1/streams/q6/consumers/g", &[KEY], b"{}").await;
+    assert_eq!(st, 201);
+    append_batch(addr, "q6", 3, 100).await;
+    state.admission.set_read_memory_capacity(4 << 20);
+    let held = crate::admission::read_memory::ReadHold::try_reserve(
+        &state.admission,
+        None,
+        0,
+        (4 << 20) - (16 << 10),
+    )
+    .expect("all but 16 KiB of the read memory");
+    let body = json!({"waitMs": 3_000, "maxBytes": 4096, "subs": [group("g", "q6")]});
+    let (_, answer, took) = live_wait(addr, project(&state), &[], &body).await;
+    assert_eq!(
+        entry(&answer, "g")["messages"][0]["value"]["n"],
+        json!(0),
+        "{answer}"
+    );
+    assert!(took < Duration::from_secs(2), "leased after {took:?}");
+    drop(held);
+    engine_shutdown(&state).await;
+}
+
+/// `n` records of about `pad` bytes appended to `name` in one batch under
+/// routing key `k`.
+async fn append_batch(addr: SocketAddr, name: &str, n: usize, pad: usize) {
+    let pad = "x".repeat(pad);
+    let batch: Vec<Value> = (0..n).map(|i| json!({"n": i, "pad": pad})).collect();
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        &format!("/v1/streams/{name}/records:batch"),
+        &[KEY, ("prisma-routing-key", "k")],
+        serde_json::to_vec(&batch).unwrap().as_slice(),
+    )
+    .await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+}

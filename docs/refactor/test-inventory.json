@@ -944,6 +944,17 @@
     "scenarios": []
   },
   {
+    "name": "a_group_with_a_small_backlog_reserves_its_backlog_not_a_whole_coverage",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "16cf3577490192d7599d2d77c931001f48d08069894592eb889ea0eb0958d667",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/live_wait.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_half_deleted_fork_finishes_its_cleanup",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

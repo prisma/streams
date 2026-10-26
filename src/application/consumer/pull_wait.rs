@@ -190,13 +190,30 @@ impl LineageWatch {
         })
     }
 
-    /// The payload bytes before every segment's durable tail: what a walk
-    /// woken later reads at most beyond, with its framing.
-    pub(crate) fn payload(&self) -> u64 {
-        self.watched
+    /// What a walk of `consumer` taken now may read: on each segment the
+    /// records past its cursor at the segment's mean payload a record, with
+    /// 64 B framing each and 4 KiB a walk, at most `whole`. A walk reads its
+    /// coverage from the cursor, so these are the bytes it materializes; a
+    /// segment whose state is poisoned counts `whole`.
+    pub(crate) fn coverage(&self, consumer: &str, whole: u64) -> u64 {
+        let estimate = self
+            .watched
             .iter()
-            .filter_map(|w| w.handle.state.lock().ok().map(|s| s.durable.logical))
-            .sum()
+            .zip(&self.ends)
+            .fold(4096u64, |sum, (w, end)| {
+                let Ok(state) = w.handle.state.lock() else {
+                    return whole;
+                };
+                let tail = end.unwrap_or(state.durable.next);
+                let cursor = state
+                    .queue
+                    .consumers
+                    .get(consumer)
+                    .map_or(0, |cs| cs.cursor);
+                let mean = state.durable.logical / state.durable.next.max(1);
+                sum.saturating_add(tail.saturating_sub(cursor).saturating_mul(mean + 64))
+            });
+        estimate.min(whole)
     }
 
     /// The views a walk taken now is taken against, and the earliest

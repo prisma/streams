@@ -14,12 +14,14 @@
 //! 2. resolves every subscription: one that fails (a stream the token's
 //!    grants do not cover, a wrong key, a missing consumer or watch) is
 //!    answered with its error at once, without failing the rest;
-//! 3. answers every subscription that is ready (tails with records past
-//!    their cursor, groups whose walk leases, watches touched, and any
-//!    subscription from `now`, whose cursor it pins); with none ready it
-//!    parks once and waits on every watched stream's notifications, its
-//!    reservation released, until one is ready or `waitMs` (25 s at most)
-//!    passes, then takes back what its woken tails appended;
+//! 3. parks (one place in the live pool and its project's share, however
+//!    many streams it watches) and answers every subscription that is
+//!    ready (tails with records past their cursor, groups whose walk
+//!    leases, watches touched, and any subscription from `now`, whose
+//!    cursor it pins); with none ready it waits on every watched stream's
+//!    notifications, its reservation released, until one is ready or
+//!    `waitMs` (25 s at most) passes, then takes back what its woken tails
+//!    appended;
 //! 4. answers 200 `{"results": [...]}` with an entry per answered
 //!    subscription in request order (none at the deadline but its watches'
 //!    cursors), meters one read operation for the answer on its first
@@ -440,7 +442,6 @@ impl<'a> Serve<'a> {
             Err(refusal) => Some(error_answer(refusal).await),
         };
         drop(reservation);
-        g.rearm();
         answer
     }
 
