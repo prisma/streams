@@ -2862,6 +2862,17 @@
     "scenarios": []
   },
   {
+    "name": "a_wait_waiting_for_read_memory_on_its_first_walk_waits_parked",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "36d95ced33685da3877498ffa424d2af078c52058b8540beaf50c77c4d7506a4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/live_wait.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_walk_scenario_excludes_an_injected_billing_clock",
     "attributes": [
       "#[tokio::test]"

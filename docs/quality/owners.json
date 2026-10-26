@@ -3931,6 +3931,14 @@
     {
       "category": "macro-dsl",
       "count": 1,
+      "owner": "crate::a_wait_waiting_for_read_memory_on_its_first_walk_waits_parked",
+      "path": "src/dst/tests/live_wait.rs",
+      "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
       "owner": "crate::a_group_with_a_small_backlog_reserves_its_backlog_not_a_whole_coverage",
       "path": "src/dst/tests/live_wait.rs",
       "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",

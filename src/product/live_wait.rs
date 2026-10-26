@@ -319,17 +319,17 @@ impl<'a> Serve<'a> {
                 t.arm(self.state).await;
             }
         }
-        let mut parked = None;
+        // A multiplexed wait is a wait for its whole life: parked from here,
+        // so its first walks and their waits for read memory never count
+        // among the write gate's active requests; every read below takes
+        // its reservation back first.
+        let parked = crate::admission::park::park();
         loop {
-            self.act(&mut slots, &mut answers, parked.is_some()).await;
+            self.act(&mut slots, &mut answers).await;
             if answers.iter().any(Option::is_some) || Instant::now() >= deadline {
                 break;
             }
-            if parked.is_none() {
-                parked = Some(crate::admission::park::park());
-            } else {
-                crate::admission::park::release_read();
-            }
+            crate::admission::park::release_read();
             self.wait(&mut slots).await;
         }
         drop(parked);
@@ -376,16 +376,17 @@ impl<'a> Serve<'a> {
         }
     }
 
-    /// Answer every ready subscription and drop it from the wait. A parked
-    /// request first takes back what its ready tails appended (no room by
-    /// the deadline: its tails stay unanswered, as a woken long-poll's do).
-    async fn act(&self, slots: &mut Vec<Slot<'a>>, answers: &mut [Option<Answer>], parked: bool) {
+    /// Answer every ready subscription and drop it from the wait. The
+    /// parked request first takes back what its ready tails appended (no
+    /// room by the deadline: its tails stay unanswered, as a woken
+    /// long-poll's do).
+    async fn act(&self, slots: &mut Vec<Slot<'a>>, answers: &mut [Option<Answer>]) {
         let deadline = self.deadline;
         let ready_tails = slots
             .iter()
             .filter(|slot| matches!(&slot.kind, Kind::Tail(t) if t.ready()))
             .count();
-        let tails_room = !parked || ready_tails == 0 || {
+        let tails_room = ready_tails == 0 || {
             let appended = slots
                 .iter()
                 .filter_map(|slot| match &slot.kind {
@@ -399,7 +400,7 @@ impl<'a> Serve<'a> {
         for slot in slots.iter_mut() {
             let answer = match &mut slot.kind {
                 Kind::Tail(t) if tails_room && t.ready() => self.read(t, share).await,
-                Kind::Group(g) if g.ready() => self.walk(g, parked, deadline).await,
+                Kind::Group(g) if g.ready() => self.walk(g, deadline).await,
                 Kind::Watch(w, outcome) => self.observed(w, outcome).await,
                 Kind::Tail(_) | Kind::Group(_) => None,
             };
@@ -424,12 +425,12 @@ impl<'a> Serve<'a> {
     }
 
     /// One group walk with its coverage reserved until the deadline; no
-    /// room by then leaves the group unanswered. A parked request's walk
-    /// first waits while its project is in read debt, as a waiting pull's
-    /// does (the walk that leased nothing pays its coverage in `pull`).
-    async fn walk(&self, g: &mut group::Group, parked: bool, deadline: Instant) -> Option<Answer> {
+    /// room by then leaves the group unanswered. The walk first waits while
+    /// its project is in read debt, as a waiting pull's does (the walk that
+    /// leased nothing pays its coverage in `pull`).
+    async fn walk(&self, g: &mut group::Group, deadline: Instant) -> Option<Answer> {
         use crate::admission::park::ReadReservation;
-        if parked && !crate::admission::park::out_of_read_debt(deadline).await {
+        if !crate::admission::park::out_of_read_debt(deadline).await {
             return None;
         }
         let reservation = crate::admission::park::reserve_read_until(g.coverage(), deadline).await;

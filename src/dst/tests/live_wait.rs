@@ -852,6 +852,37 @@ fn gap_tail_of(stream: &str, cursor: &str) -> Value {
            "routingKey": "ga", "cursor": cursor})
 }
 
+/// A wait is parked from its start, not only once nothing was ready: a
+/// first walk of a group with a backlog that waits for read memory waits
+/// parked, outside the write gate's active requests, so a cell full of
+/// such waits never sheds its writers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_wait_waiting_for_read_memory_on_its_first_walk_waits_parked() {
+    let (state, addr) = http_rig(mem()).await;
+    create(addr, "q5", br#"{"format":{"kind":"json"}}"#).await;
+    let (st, _, _) = preq(addr, "PUT", "/v1/streams/q5/consumers/g", &[KEY], b"{}").await;
+    assert_eq!(st, 201);
+    append_batch(addr, "q5", 80, 2_000).await;
+    state.admission.set_read_memory_capacity(1 << 20);
+    let held = crate::admission::read_memory::ReadHold::try_reserve(
+        &state.admission,
+        None,
+        0,
+        (1 << 20) - (64 << 10),
+    )
+    .expect("all but 64 KiB of the read memory");
+    let body = json!({"waitMs": 1_500, "maxBytes": 4096, "subs": [group("g", "q5")]});
+    let waiting = live_wait(addr, project(&state), &[], &body);
+    let looking = async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        state.admission.parked()
+    };
+    let ((_, answer, _), parked) = futures_util::future::join(waiting, looking).await;
+    assert_eq!((parked, &answer), (1, &json!({"results": []})));
+    drop(held);
+    engine_shutdown(&state).await;
+}
+
 /// A group with a small backlog is walked under a reservation sized to the
 /// records past its consumer's cursor (three of ~120 B: 3 x (120 + 64) +
 /// 4 KiB), not a whole 4 MiB coverage: with all but 16 KiB of the read
