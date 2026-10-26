@@ -16,14 +16,20 @@
 //! project's estimated pressure is over its line, as an append is, and
 //! every queue body is charged to its project's buffered-body pressure
 //! while it is buffered and until the queue answers (`admission::body`).
+//!
+//! The RSS write shed (R25-E, edge changes #183 and #184): over the shed
+//! line a send or a settle is refused before its body is read, as an
+//! append is; claims, the other verbs and the reads are not.
 
 use axum::body::Body;
 use axum::http::Method;
 use axum::response::Response;
 use bytes::Bytes;
 
+use super::super::append_error::render_product_append_error;
 use super::super::read_memory::{SHED_DISCARD_WAIT, blamed_refusal, memory_pressure};
 use super::super::{AppState, project_memory_gate};
+use super::Resource;
 use crate::admission::body::BodyRefusal;
 use crate::application::queues::{FailureClass, fail};
 use crate::auth::RequestPrincipal;
@@ -38,15 +44,17 @@ pub(super) fn judge(state: &AppState, principal: Option<&RequestPrincipal>) {
 
 /// The request's body, buffered whole up to the request-body limit and
 /// charged to its project while the guard is held, or the refusal to
-/// answer: before the body, a blamed project's or a write (`POST`) of a
+/// answer: before the body, a blamed project's, a write (`POST`) of a
 /// project over its memory line (429 `project_memory_pressure`, as an
-/// append's), each with the body read and dropped first; while buffering,
+/// append's) or a send or settle the RSS write gate sheds (`rss_shed`),
+/// each with the body read and dropped first; while buffering,
 /// 429 `project_memory_pressure` when the body would take its project past
 /// the line, or 413 `too_large`.
 pub(super) async fn body(
     state: &AppState,
     principal: Option<&RequestPrincipal>,
     method: &Method,
+    resource: &Resource,
     incoming: Body,
 ) -> Result<(Bytes, Option<BufferedBodyGuard>), Box<Response>> {
     let limit = state.config.cli.max_request_body_bytes;
@@ -55,6 +63,10 @@ pub(super) async fn body(
             .then(|| project_memory_gate(state, principal))
             .flatten()
     });
+    let refusal = match refusal {
+        Some(refusal) => Some(refusal),
+        None => rss_shed(state, resource).await,
+    };
     if let Some(refusal) = refusal {
         let bound = u64::try_from(limit).unwrap_or(u64::MAX);
         crate::admission::body::discard_within(incoming, bound, SHED_DISCARD_WAIT).await;
@@ -75,4 +87,26 @@ pub(super) async fn body(
             BodyRefusal::MemoryPressure => memory_pressure(principal.map(|p| &p.project_id)),
         })
     })
+}
+
+/// Whether the request writes as an append does: a send (one message or a
+/// batch) or a settle.
+fn writes_like_append(resource: &Resource) -> bool {
+    matches!(
+        resource,
+        Resource::Messages | Resource::MessagesBatch | Resource::GroupVerb("settle")
+    )
+}
+
+/// The RSS write gate's refusal of a send or a settle, as an append meets
+/// it before its body (`application::append::memory_gate`, edge changes
+/// #183 and #184: 429 `rate_limited`, Retry-After 2, after the gate's
+/// tarpit; a spared project passes up to the hard line).
+async fn rss_shed(state: &AppState, resource: &Resource) -> Option<Response> {
+    if !writes_like_append(resource) {
+        return None;
+    }
+    let gate = crate::application::append::memory_gate(&state.admission, &state.runtime.history);
+    let failure = gate.await.err()?;
+    Some(render_product_append_error(failure))
 }

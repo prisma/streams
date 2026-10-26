@@ -6669,6 +6669,17 @@
     "scenarios": []
   },
   {
+    "name": "over_the_shed_line_queue_sends_and_settles_are_shed_before_their_bodies",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a5666714b2d2e28f9c14fb98bc22b7b93e13465561a138bda4f1845119ffde67",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_overload.rs",
+    "scenarios": []
+  },
+  {
     "name": "over_the_shed_line_the_project_over_its_share_is_refused_before_its_neighbour",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -6684,7 +6695,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "cfa71a302c474bfae31930637e378f3f49d096155f736c0a962ecfc149db300e",
+    "function_sha256": "20b7c37fc7a25571e96f66d124a5f8fae1c413af90a88fe4e6e6d04858864d5b",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_overload.rs",

@@ -355,7 +355,7 @@ async fn queue_entry_inner(
     }
     let (parts, incoming) = req.into_parts();
     let (body, _body_charge) =
-        match overload::body(state, principal.as_ref(), method, incoming).await {
+        match overload::body(state, principal.as_ref(), method, &resource, incoming).await {
             Ok(body) => body,
             Err(r) => return *r,
         };

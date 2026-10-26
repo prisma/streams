@@ -83,7 +83,8 @@ async fn every_route_refused(cell: &Cell, code: &str, retry: &str) {
 /// more than 1/8 of the cell's recent requests (project 0, 120 sends) is
 /// refused `429 project_memory_pressure`, Retry-After 2, on its sends,
 /// claims, stats and listing, while project 1's sends are served and
-/// stored; under the line both are served again. Before: queue requests
+/// stored, inside line x 9/8 too, and past it shed `429 rate_limited` as an
+/// append is; under the line both are served again. Before: queue requests
 /// were never judged, so the flooder's sends were served over the line.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn over_the_shed_line_the_queue_project_over_its_share_is_refused_before_its_neighbour() {
@@ -102,14 +103,25 @@ async fn over_the_shed_line_the_queue_project_over_its_share_is_refused_before_i
         u64::try_from(ROUNDS + 3).unwrap(),
         "the flooder's refusals"
     );
+    // Spared, the neighbour's sends pass the RSS gate inside line x 9/8
+    // (65 MiB clear of the absorber's reservation, as `fair_shed.rs`), and
+    // past it every send is shed as an append is.
+    admission.record_rss_mb(LINE_MB * 9 / 8 - 65);
+    assert_eq!(send(&cell, 1, ROUNDS).await, SENT, "inside line x 9/8");
+    admission.record_rss_mb(LINE_MB * 9 / 8 + 1);
+    assert_eq!(
+        send(&cell, 1, 99).await,
+        refused("rate_limited", "2"),
+        "past it"
+    );
     admission.record_rss_mb(0);
     assert_eq!(send(&cell, 0, FLOOD + ROUNDS).await, SENT, "under the line");
-    assert_eq!(send(&cell, 1, ROUNDS).await, SENT, "under the line");
+    assert_eq!(send(&cell, 1, ROUNDS + 1).await, SENT, "under the line");
     assert_eq!(
         (queued(&cell, 0).await, queued(&cell, 1).await),
         (
             u64::try_from(FLOOD + 1).unwrap(),
-            u64::try_from(ROUNDS + 1).unwrap()
+            u64::try_from(ROUNDS + 2).unwrap()
         ),
         "the refused sends stored nothing, every served one once"
     );
@@ -201,5 +213,66 @@ async fn a_queue_write_is_held_to_its_projects_memory_line() {
         3,
         "every refused write stored nothing"
     );
+    engine_shutdown(&cell.state).await;
+}
+
+/// Over the RSS shed line (a dedicated cell, so nobody is spared) a queue
+/// send and a settle are refused `429 rate_limited`, Retry-After 2, as an
+/// append is, before the body is read: a head declaring 4 MiB with no body
+/// sent reads the refusal. A claim and the queue's stats are served, and
+/// under the line the send is served. Before: queue writes never met the
+/// RSS shed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn over_the_shed_line_queue_sends_and_settles_are_shed_before_their_bodies() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let cell = open_cell(CellSpec::open(1)).await;
+    assert_eq!(ask(&cell, 0, "PUT", "/v1/queues/jobs", "").await.0, 201);
+    assert_eq!(send(&cell, 0, 0).await, SENT, "under the line");
+    let admission = &cell.state.admission;
+    admission.set_rss_shed_mb(500);
+    admission.record_rss_mb(501);
+    let batch = r#"{"messages":[{"body":1}]}"#;
+    let shed = [
+        ("/v1/queues/jobs/messages", r#"{"body":1}"#),
+        ("/v1/queues/jobs/messages:batch", batch),
+        ("/v1/queues/jobs/groups/default:settle", r#"{"ops":[]}"#),
+    ];
+    for (path, body) in shed {
+        let answer = ask(&cell, 0, "POST", path, body).await;
+        assert_eq!(answer, refused("rate_limited", "2"), "{path}");
+    }
+    let head = format!(
+        "POST /v1/queues/jobs/messages HTTP/1.1\r\nhost: rig\r\nauthorization: {}\r\nprisma-encryption-key: {}\r\ncontent-length: {}\r\n\r\n",
+        cell.bearers[0],
+        super::fixture_requests::PRISMA_KEY,
+        4 << 20
+    );
+    let mut silent = tokio::net::TcpStream::connect(cell.addr).await.unwrap();
+    silent.write_all(head.as_bytes()).await.unwrap();
+    let (mut text, mut chunk) = (Vec::new(), vec![0_u8; 4096]);
+    while !text.ends_with(b"}") {
+        let read = tokio::time::timeout(std::time::Duration::from_secs(5), silent.read(&mut chunk));
+        let n = read.await.unwrap().unwrap();
+        assert!(n > 0, "closed after {}", String::from_utf8_lossy(&text));
+        text.extend_from_slice(&chunk[..n]);
+    }
+    let text = String::from_utf8_lossy(&text).to_lowercase();
+    assert!(
+        text.starts_with("http/1.1 429") && text.contains("rate_limited"),
+        "a body never sent is not waited for: {text}"
+    );
+    let claim = ask(
+        &cell,
+        0,
+        "POST",
+        "/v1/queues/jobs/groups/default:claim",
+        "{}",
+    )
+    .await;
+    assert_eq!(claim.0, 200, "a claim is served over the line");
+    assert_eq!(queued(&cell, 0).await, 1, "and the stats");
+    admission.record_rss_mb(0);
+    assert_eq!(send(&cell, 0, 1).await, SENT, "under the line");
+    assert_eq!(queued(&cell, 0).await, 2, "every shed write stored nothing");
     engine_shutdown(&cell.state).await;
 }
