@@ -19,7 +19,9 @@
 //!
 //! The RSS write shed (R25-E, edge changes #183 and #184): over the shed
 //! line a send or a settle is refused before its body is read, as an
-//! append is; claims, the other verbs and the reads are not.
+//! append is; claims, the other verbs and the reads are not. And at the
+//! in-flight write cap a send or a settle is refused once its body is
+//! buffered, as an append is (`admit_write_inflight`).
 
 use axum::body::Body;
 use axum::http::Method;
@@ -31,6 +33,7 @@ use super::super::read_memory::{SHED_DISCARD_WAIT, blamed_refusal, memory_pressu
 use super::super::{AppState, project_memory_gate};
 use super::Resource;
 use crate::admission::body::BodyRefusal;
+use crate::application::append::{AppendCode, AppendFailure, FailureClass as AppendFailureClass};
 use crate::application::queues::{FailureClass, fail};
 use crate::auth::RequestPrincipal;
 use crate::quota::BufferedBodyGuard;
@@ -49,7 +52,8 @@ pub(super) fn judge(state: &AppState, principal: Option<&RequestPrincipal>) {
 /// append's) or a send or settle the RSS write gate sheds (`rss_shed`),
 /// each with the body read and dropped first; while buffering,
 /// 429 `project_memory_pressure` when the body would take its project past
-/// the line, or 413 `too_large`.
+/// the line, or 413 `too_large`; once buffered, a send or settle the
+/// in-flight write gate refuses (`inflight_refused`).
 pub(super) async fn body(
     state: &AppState,
     principal: Option<&RequestPrincipal>,
@@ -72,7 +76,7 @@ pub(super) async fn body(
         crate::admission::body::discard_within(incoming, bound, SHED_DISCARD_WAIT).await;
         return Err(Box::new(refusal));
     }
-    crate::admission::body::buffer_within(
+    let buffered = crate::admission::body::buffer_within(
         incoming,
         limit,
         principal.and_then(|p| state.quotas.pressure_handle(&p.project_id)),
@@ -86,7 +90,30 @@ pub(super) async fn body(
             }
             BodyRefusal::MemoryPressure => memory_pressure(principal.map(|p| &p.project_id)),
         })
-    })
+    })?;
+    match inflight_refused(state, resource).await {
+        Some(refusal) => Err(Box::new(refusal)),
+        None => Ok(buffered),
+    }
+}
+
+/// The in-flight write gate's refusal of a send or a settle, as an append
+/// meets it once its body is buffered (`AdmissionController::
+/// admit_write_inflight`, edge changes #79 and #185: 429 `rate_limited`,
+/// Retry-After 1, after a 25 ms tarpit; a spared project passes up to the
+/// cap x 5/4).
+async fn inflight_refused(state: &AppState, resource: &Resource) -> Option<Response> {
+    if !writes_like_append(resource) || state.admission.admit_write_inflight().is_ok() {
+        return None;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    let failure = AppendFailure::new(
+        AppendFailureClass::Capacity,
+        AppendCode::Overloaded,
+        "instance at admission capacity; retry",
+    )
+    .retry(1);
+    Some(render_product_append_error(failure))
 }
 
 /// Whether the request writes as an append does: a send (one message or a

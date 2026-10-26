@@ -131,8 +131,8 @@ async fn over_the_shed_line_the_queue_project_over_its_share_is_refused_before_i
 /// At the in-flight write cap (8, the cell's other slots held) on a cell
 /// shared 8 ways, the flooding queue project is refused `429 rate_limited`,
 /// Retry-After 1, on every queue route, while its neighbour's sends are
-/// served and stored. Before: the flooder's queue requests were served at
-/// the cap.
+/// served and stored up to cap x 5/4 and refused as appends are past it.
+/// Before: the flooder's queue requests were served at the cap.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn at_the_inflight_cap_the_queue_project_over_its_share_is_refused_before_its_neighbour() {
     let cell = flooded_cell().await;
@@ -151,13 +151,23 @@ async fn at_the_inflight_cap_the_queue_project_over_its_share_is_refused_before_
         (u64::try_from(ROUNDS + 3).unwrap(), 0),
         "the flooder's refusals at entry"
     );
-    admission.add_inflight_for_test(-CAP);
+    // Spared, the neighbour's sends pass the in-flight gate up to cap x 5/4
+    // (10 active), and past it every send is refused as an append is.
+    admission.add_inflight_for_test(CAP / 4 - 1);
+    assert_eq!(send(&cell, 1, ROUNDS).await, SENT, "at cap x 5/4");
+    admission.add_inflight_for_test(1);
+    assert_eq!(
+        send(&cell, 1, 99).await,
+        refused("rate_limited", "1"),
+        "past it"
+    );
+    admission.add_inflight_for_test(-CAP - CAP / 4);
     assert_eq!(send(&cell, 0, FLOOD + ROUNDS).await, SENT, "under the cap");
     assert_eq!(
         (queued(&cell, 0).await, queued(&cell, 1).await),
         (
             u64::try_from(FLOOD + 1).unwrap(),
-            u64::try_from(ROUNDS).unwrap()
+            u64::try_from(ROUNDS + 1).unwrap()
         )
     );
     engine_shutdown(&cell.state).await;
@@ -274,5 +284,51 @@ async fn over_the_shed_line_queue_sends_and_settles_are_shed_before_their_bodies
     admission.record_rss_mb(0);
     assert_eq!(send(&cell, 0, 1).await, SENT, "under the line");
     assert_eq!(queued(&cell, 0).await, 2, "every shed write stored nothing");
+    engine_shutdown(&cell.state).await;
+}
+
+/// At the in-flight write cap (a dedicated cell, so nobody is spared) a
+/// queue send and a settle are refused `429 rate_limited`, Retry-After 1,
+/// as an append is, while a claim and the queue's stats are served; under
+/// the cap the send is served. Before: queue writes never met the gate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn at_the_inflight_cap_queue_sends_and_settles_are_refused_as_appends_are() {
+    let cell = open_cell(CellSpec::open(1)).await;
+    assert_eq!(ask(&cell, 0, "PUT", "/v1/queues/jobs", "").await.0, 201);
+    assert_eq!(send(&cell, 0, 0).await, SENT, "under the cap");
+    let admission = &cell.state.admission;
+    admission.set_max_inflight(CAP);
+    admission.add_inflight_for_test(CAP);
+    let writes = [
+        ("/v1/queues/jobs/messages", r#"{"body":1}"#),
+        (
+            "/v1/queues/jobs/messages:batch",
+            r#"{"messages":[{"body":1}]}"#,
+        ),
+        ("/v1/queues/jobs/groups/default:settle", r#"{"ops":[]}"#),
+    ];
+    for (path, body) in writes {
+        let answer = ask(&cell, 0, "POST", path, body).await;
+        assert_eq!(answer, refused("rate_limited", "1"), "{path}");
+    }
+    let shed = admission.snapshot().shed;
+    assert_eq!((shed.inflight, shed.total), (3, 3), "counted as the gate's");
+    let claim = ask(
+        &cell,
+        0,
+        "POST",
+        "/v1/queues/jobs/groups/default:claim",
+        "{}",
+    )
+    .await;
+    assert_eq!(claim.0, 200, "a claim is served at the cap");
+    assert_eq!(queued(&cell, 0).await, 1, "and the stats");
+    admission.add_inflight_for_test(-CAP);
+    assert_eq!(send(&cell, 0, 1).await, SENT, "under the cap");
+    assert_eq!(
+        queued(&cell, 0).await,
+        2,
+        "every refused write stored nothing"
+    );
     engine_shutdown(&cell.state).await;
 }

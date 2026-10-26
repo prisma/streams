@@ -3816,6 +3816,17 @@
     "scenarios": []
   },
   {
+    "name": "at_the_inflight_cap_queue_sends_and_settles_are_refused_as_appends_are",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "783e20a9e233dfd6dd5435b42d616b3cd2dde512571d9820acf726f61a0dee81",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_overload.rs",
+    "scenarios": []
+  },
+  {
     "name": "at_the_inflight_cap_the_project_over_its_share_is_refused_before_its_neighbour",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -3831,7 +3842,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "4047a38a3cb7e56abc8ce74aecc4a6a7fd3f7c9e8b55496eb9e9cb50efc55501",
+    "function_sha256": "c9bb320c4b43d42907c3221c4bbf63d75e005be35316ec3603efb6f7d632fd1e",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_overload.rs",
