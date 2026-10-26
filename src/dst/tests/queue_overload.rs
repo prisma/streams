@@ -404,7 +404,8 @@ async fn parked(admission: &crate::admission::AdmissionController, n: i64) -> bo
         .is_ok()
 }
 
-/// A claim waiting for work parks in the live pool, as a pull's wait does:
+/// A claim waiting for work parks in the live pool, as a pull's wait does
+/// (its queue named for this test alone, so no other cell's send wakes it):
 /// it leaves the active requests, so at the in-flight cap (8, seven held)
 /// a send is still admitted beside it, and the send wakes it with the
 /// message. Before: the claim waited as an active request, so the send
@@ -412,7 +413,7 @@ async fn parked(admission: &crate::admission::AdmissionController, n: i64) -> bo
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_waiting_claim_parks_and_leaves_the_write_gate_to_sends() {
     let cell = open_cell(CellSpec::open(1)).await;
-    assert_eq!(ask(&cell, 0, "PUT", "/v1/queues/jobs", "").await.0, 201);
+    assert_eq!(ask(&cell, 0, "PUT", "/v1/queues/parking", "").await.0, 201);
     let admission = &cell.state.admission;
     admission.set_max_inflight(CAP);
     admission.add_inflight_for_test(CAP - 1);
@@ -420,12 +421,19 @@ async fn a_waiting_claim_parks_and_leaves_the_write_gate_to_sends() {
     let waiting = cell.call(
         0,
         "POST",
-        "/v1/queues/jobs/groups/default:claim",
+        "/v1/queues/parking/groups/default:claim",
         claim.as_bytes(),
     );
     let probe = async {
         assert!(parked(admission, 1).await, "the waiting claim parks");
-        let sent = send(&cell, 0, 7).await;
+        let sent = ask(
+            &cell,
+            0,
+            "POST",
+            "/v1/queues/parking/messages",
+            r#"{"body":{"n":7}}"#,
+        )
+        .await;
         assert!(
             parked(admission, 0).await,
             "the woken claim is active again"
@@ -441,5 +449,70 @@ async fn a_waiting_claim_parks_and_leaves_the_write_gate_to_sends() {
         "the claim takes the message that woke it"
     );
     admission.add_inflight_for_test(1 - CAP);
+    engine_shutdown(&cell.state).await;
+}
+
+/// The instance read memory the claim-memory leg gives the cell.
+const READ_MEMORY: u64 = 64 * 1024;
+
+/// A claim reserves read memory for exactly the messages it returns, after
+/// it leases them and before it reads their pages, as a page read
+/// reserves before it materializes: with 60 KiB of the cell's 64 KiB read
+/// memory held elsewhere, a claim that leases a 10 KiB message waits for
+/// room and is refused `503 read_memory_busy`, Retry-After 1, its lease
+/// given back with its attempt (due again a second later, the next claim
+/// takes it as attempt 1); with room
+/// for the message but not for the claim's 1 MiB budget it is served, so
+/// it reserves what it returns, never its budget; and a claim waiting for
+/// work holds nothing. Before: claims reserved nothing, so the first claim
+/// was served over the full read memory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_claim_reserves_read_memory_only_for_what_it_returns() {
+    use crate::admission::read_memory::ReadHold;
+    let cell = open_cell(CellSpec::open(1)).await;
+    let admission = &cell.state.admission;
+    admission.set_read_memory_capacity(READ_MEMORY);
+    assert_eq!(
+        ask(&cell, 0, "PUT", "/v1/queues/reserving", "").await.0,
+        201
+    );
+    let message = format!("{{\"body\":\"{}\"}}", "x".repeat(10 * 1024));
+    let sent = ask(&cell, 0, "POST", "/v1/queues/reserving/messages", &message).await;
+    assert_eq!(sent, SENT);
+    let other = ReadHold::reserve(admission, None, 0, READ_MEMORY - 4 * 1024).await;
+    let other = other.expect("the other read fits");
+    let claim = r#"{"max":1,"leaseMs":60000}"#;
+    let path = "/v1/queues/reserving/groups/default:claim";
+    let (status, headers, body) = cell.call(0, "POST", path, claim.as_bytes()).await;
+    assert_eq!(
+        (
+            status,
+            error_code(&body),
+            headers.get("retry-after").map(String::as_str)
+        ),
+        (503, Some("read_memory_busy".into()), Some("1")),
+        "no room for the leased message"
+    );
+    drop(other);
+    let waiting = r#"{"max":1,"waitMs":200}"#;
+    let held = ReadHold::reserve(admission, None, 0, READ_MEMORY - 20 * 1024).await;
+    let held = held.expect("room for the message, not for a 1 MiB budget");
+    let after = r#"{"max":1,"leaseMs":60000,"waitMs":3000}"#;
+    let (status, _, body) = cell.call(0, "POST", path, after.as_bytes()).await;
+    let claimed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        (status, &claimed["messages"][0]["attempt"]),
+        (200, &serde_json::json!(1)),
+        "served, the refused claim's attempt given back"
+    );
+    drop(held);
+    let empty = cell.call(0, "POST", path, waiting.as_bytes());
+    let probe = async {
+        assert!(parked(admission, 1).await, "the empty claim waits parked");
+        admission.read_memory().0
+    };
+    let ((status, _, _), during) = futures_util::future::join(empty, probe).await;
+    assert_eq!((status, during), (200, 0), "a waiting claim holds nothing");
+    assert_eq!(admission.read_memory().0, 0, "every hold released");
     engine_shutdown(&cell.state).await;
 }

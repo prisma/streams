@@ -79,6 +79,7 @@ pub(super) async fn dispatch(
         (Resource::Messages, _) => send(&call, false).await,
         (Resource::MessagesBatch, _) => send(&call, true).await,
         (Resource::Message(id), _) => message(&call, &id).await,
+        (Resource::GroupVerb("claim"), _) => claim(state, &call).await,
         (Resource::QueueVerb(verb) | Resource::GroupVerb(verb), _) => verb_call(&call, verb).await,
         (Resource::GroupView("wakeup"), m) => wakeup(&call, m == Method::PUT).await,
         (Resource::GroupView(view), _) => page(&call, view == "failed").await,
@@ -236,11 +237,6 @@ async fn message(c: &Call<'_>, id: &str) -> Answer {
 async fn verb_call(c: &Call<'_>, verb: &str) -> Answer {
     let t = c.target().await?;
     let body = match verb {
-        "claim" => {
-            let key = QueueService::key(&t, c.key_header())?;
-            let input: ClaimInput = doc(&c.body)?;
-            value(&c.svc.claim(&t, &key, input).await?)?
-        }
         "settle" => {
             let input: SettleInput = required(&c.body)?;
             json!({ "results": c.svc.settle(&t, input.ops).await? })
@@ -260,6 +256,29 @@ async fn verb_call(c: &Call<'_>, verb: &str) -> Answer {
         _ => republish(c, &t).await?,
     };
     Ok(json(StatusCode::OK, &body))
+}
+
+/// `groups/default:claim`: the claimed messages, whose rendered page is
+/// what the request's read hold settles to (`read_memory::settle`): the
+/// claim reserved its leased messages' bytes, and the answer holds exactly
+/// what it renders until its body ends.
+async fn claim(state: &AppState, c: &Call<'_>) -> Answer {
+    let t = c.target().await?;
+    let key = QueueService::key(&t, c.key_header())?;
+    let input: ClaimInput = doc(&c.body)?;
+    let claimed = c.svc.claim(&t, &key, input).await?;
+    let body = serde_json::to_vec(&claimed)
+        .map_err(|e| fail(FailureClass::Internal, "internal", e.to_string()))?;
+    super::super::read_memory::settle(state, c.principal, body.len());
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response())
 }
 
 async fn republish(c: &Call<'_>, t: &QueueTarget) -> Result<serde_json::Value, QueueFailure> {

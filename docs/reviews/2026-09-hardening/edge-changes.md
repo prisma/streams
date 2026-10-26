@@ -4503,6 +4503,21 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Status:** awaiting the owner's ratification.
 - **Check against commit:** written with the change.
 
+### #195 (this record's commit) — A claim reserves read memory for exactly the messages it leased before it reads them, and is refused 503 `read_memory_busy` or 429 `project_memory_pressure` with its leases given back when no room comes
+
+- **Program item:** layout 6A package 1, overload parity (DESIGN-6A §4.1 "claims ... reserve memory only for what they return"; research-queues §3.1 row "claim read memory", rule 4 of §3.2; QUEUES-DESIGN §6.1, whose 429 `project_memory_pressure` the claim did not implement, #186's departure "claims hold no read-memory reservation"): a claim could return up to 8 MiB (`MAX_CLAIM_BYTES`) outside the instance's read memory and its project's line.
+- **Surface:** product.
+- **Endpoint:** `POST /v1/queues/{name}/groups/default:claim`. Owners: `QueueService::reserve_leased` (`application/queues/delivery.rs`), `admission::park::reserve_read` (the request's hold, `ReadHold::reserve`), `DeliveryView::bytes` (each leased message's metadata bytes, from the committer), `product::queues::handlers::claim` (`read_memory::settle` to the rendered page).
+- **Condition:** a claim that leased messages; the instance's read memory (a quarter of `ADMIT_RSS_SHED_MB`) or the project's read bytes under `PROJECT_MEMORY_PRESSURE_BYTES` without room for their bytes within `READ_MEMORY_WAIT` (2 s). A claim that leases nothing reserves nothing; a waiting claim holds nothing (#194).
+- **Before:** a claim reserved nothing: its leased pages were read and rendered whatever the instance's read memory and its project's line held, and its answer was not counted while its body was sent.
+- **After:** after the claim leases, it reserves exactly its messages' bytes (never its `maxBytes` budget) in both ledgers, waiting up to 2 s for room, before it reads the pages stored under their own keys (a page up to 2 KiB that the claim read inline from its availability entry is already in memory, held through that wait unreserved); the rendered answer then holds its exact size until its body ends, as a page read's does. Without room the claim releases every lease with its attempt given back, waiting for room in the committer's queue for that release (the messages are due again a second later, as a released lease is) and answers 503 `read_memory_busy` (instance) or 429 `project_memory_pressure` (project line), `retryable: true`, `Retry-After: 1`, the messages the product's page reads use.
+- **Retry semantics:** retryable after 1 s; no attempt was spent; the messages redeliver to the next claim after 1 s.
+- **Who is affected:** queue consumers on a cell whose read memory is full or whose project is at its line; their neighbours' reads, which a burst of large claims no longer squeezes out.
+- **Pinning tests:** src/dst/tests/queue_overload.rs::a_claim_reserves_read_memory_only_for_what_it_returns (read memory 64 KiB; 60 KiB held elsewhere: a claim leasing a 10 KiB message answers `(503, read_memory_busy, Retry-After 1)`; released, a claim with `waitMs` 3,000 takes it as attempt 1 beside 44 KiB held, room for the message but not for a 1 MiB budget; an empty claim waiting parked holds 0 bytes; every hold released after). Red before: `assertion failed: no room for the leased message left: (200, None, None) right: (503, Some("read_memory_busy"), Some("1"))`.
+- **Risk reason:** low-medium: a claim gains a retryable refusal under memory pressure that costs a lease round-trip but no attempt. Reversal: drop `reserve_leased` and the settle in the handler.
+- **Status:** awaiting the owner's ratification.
+- **Check against commit:** written with the change.
+
 ## Discrepancies
 
 One record has verified=false: its commit did not match the recorded text.

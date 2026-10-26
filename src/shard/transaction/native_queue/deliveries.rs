@@ -229,6 +229,7 @@ pub(super) fn view(offset: u64, meta: &MetaRow, row: Option<&DeliveryRow>) -> De
             lease_deadline: 0,
             failure: None,
             page: None,
+            bytes: meta.bytes,
         };
     };
     let state = match row.state {
@@ -253,5 +254,6 @@ pub(super) fn view(offset: u64, meta: &MetaRow, row: Option<&DeliveryRow>) -> De
             failure_expires_at: row.failure_expires_at,
         }),
         page: None,
+        bytes: meta.bytes,
     }
 }

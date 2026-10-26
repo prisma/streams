@@ -157,6 +157,17 @@
     ]
   },
   {
+    "name": "a_claim_reserves_read_memory_only_for_what_it_returns",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e8682155eb76ad18d3430c7b4497e9b7817becce9eba03152135ae9e1535a129",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_overload.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_claim_under_a_stale_feed_spends_only_the_cells_lookups",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -2899,7 +2910,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "84fc5dde39fa3e17c659be71e8de3259bfffeb974c19410aa4237624766e9812",
+    "function_sha256": "cca1210d2f7b103972f93b00d62d619130b3d41a53bd30a0fc3b185d38804c1c",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_overload.rs",

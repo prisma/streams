@@ -44,7 +44,7 @@ use std::sync::{Arc, OnceLock};
 use axum::response::Response;
 
 use super::fair_shed::Verdict;
-use super::read_memory::ReadHold;
+use super::read_memory::{ReadHold, ReadRefusal};
 use super::{InflightTicket, ParkedTicket};
 use crate::auth::RequestPrincipal;
 use crate::quota::QuotaRegistry;
@@ -302,6 +302,25 @@ pub(crate) fn release_read() {
             }
         })
         .unwrap_or(());
+}
+
+/// Reserve `bytes` for what the served request is about to read and render
+/// without an admission reservation (a claim's leased messages, layout 6A
+/// package 1), in its bound project's read bytes under the project's line
+/// and in the instance's read memory, waiting for room as a page read's
+/// admission does (`ReadHold::reserve`), and bind the hold to the request,
+/// so its response body holds it once it settles to the page. Outside a
+/// served request nothing is reserved.
+pub(crate) async fn reserve_read(bytes: u64) -> Result<(), ReadRefusal> {
+    let Ok((ctl, project)) = REQUEST.try_with(|request| {
+        let project = request.share.get().map(ParkShare::read_bytes);
+        (request.ticket.ctl.clone(), project)
+    }) else {
+        return Ok(());
+    };
+    let line = ctl.project_memory_pressure_bytes();
+    bind_read(ReadHold::reserve(&ctl, project, line, bytes).await?);
+    Ok(())
 }
 
 /// While held, the served request is parked in a wait.

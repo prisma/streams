@@ -118,6 +118,7 @@ impl QueueService {
             };
             let now = tokio::time::Instant::now();
             if !deliveries.is_empty() || paused || now >= deadline {
+                self.reserve_leased(t, &deliveries).await?;
                 let messages = self.leased_messages(t, key, &deliveries).await?;
                 return Ok(Claimed { messages, paused });
             }
@@ -158,6 +159,34 @@ impl QueueService {
                 .unsigned_abs(),
             lease_ms: lease_ms.clamp(MIN_LEASE_MS, MAX_LEASE_MS),
         })
+    }
+
+    /// Reserve the read memory a claim's leased messages take before their
+    /// pages are read (`admission::park::reserve_read`): exactly their bytes,
+    /// never the claim's budget, so a claim holds memory only for what it
+    /// returns. Without room after the reservation's wait every lease of the
+    /// claim is released with its attempt given back and the claim is
+    /// refused: 429 `project_memory_pressure` at its project's line, 503
+    /// `read_memory_busy` for the instance's read memory, both retryable
+    /// after 1 s.
+    async fn reserve_leased(
+        &self,
+        t: &QueueTarget,
+        deliveries: &[DeliveryView],
+    ) -> Result<(), QueueFailure> {
+        let bytes = deliveries.iter().map(|d| u64::from(d.bytes)).sum::<u64>();
+        if bytes == 0 {
+            return Ok(());
+        }
+        let Err(refusal) = crate::admission::park::reserve_read(bytes).await else {
+            return Ok(());
+        };
+        let items = deliveries
+            .iter()
+            .map(|d| release(d.offset, d.lease_gen))
+            .collect();
+        give_back(t, items).await?;
+        Err(memory_refused(refusal))
     }
 
     /// The messages of a claim's leases. A read that fails releases every
@@ -304,6 +333,27 @@ impl ClaimOp {
             max_bytes: self.max_bytes,
             lease_ms: self.lease_ms,
         }
+    }
+}
+
+/// A claim refused for read memory, as a page read is refused.
+fn memory_refused(refusal: crate::admission::read_memory::ReadRefusal) -> QueueFailure {
+    use crate::admission::read_memory::ReadRefusal;
+    let failure = match refusal {
+        ReadRefusal::Project => fail(
+            FailureClass::Exhausted,
+            "project_memory_pressure",
+            "the project's estimated memory pressure is over its per-project backstop; retry",
+        ),
+        ReadRefusal::Instance => fail(
+            FailureClass::Unavailable,
+            "read_memory_busy",
+            "the instance's read memory is held by other reads; retry",
+        ),
+    };
+    QueueFailure {
+        retry_after: Some(1),
+        ..failure
     }
 }
 

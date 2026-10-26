@@ -298,6 +298,10 @@ pub(crate) struct DeliveryView {
     /// entry; `None`: read it by its page key.
     #[serde(skip)]
     pub page: Option<bytes::Bytes>,
+    /// The message's bytes (its metadata row's), what a claim reserves
+    /// before it reads and renders the message.
+    #[serde(skip)]
+    pub bytes: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
