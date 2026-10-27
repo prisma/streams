@@ -6,8 +6,10 @@
 //! wraps the admitted fields around the row's bytes. Each harness offers a
 //! row of `ROW` symbolic bytes (every version byte, first offset,
 //! timestamp, key version, nonce and ciphertext length) under a key of any
-//! length up to 26 symbolic bytes and the prefix `shard_page_prefix` gives a
-//! symbolic stream hash, and checks what an admitted row must satisfy. The
+//! length up to 27 symbolic bytes (one past the 18-byte prefix and its
+//! offset) and the prefix `shard_page_prefix` gives a symbolic stream hash
+//! (layout 6: the stream segment's tag, the hash and the page tag), and
+//! checks what an admitted row must satisfy. The
 //! record count and the routing-key length are fixed per harness, so every
 //! later field sits at a position the checker knows (a symbolic count
 //! varint or key length sends it through every field position and UTF-8
@@ -34,8 +36,8 @@ fn admit<const RK: u16>(
 ) {
     let hash: [u8; 16] = kani::any();
     let prefix = shard_page_prefix(&hash);
-    let key: [u8; 26] = kani::any();
-    let key_len = kani::any_where(|len: &usize| *len <= 26);
+    let key: [u8; 27] = kani::any();
+    let key_len = kani::any_where(|len: &usize| *len <= 27);
     let key = &key[..key_len];
     let mut raw: [u8; ROW] = kani::any();
     raw[9..9 + count.len()].copy_from_slice(count);
@@ -57,11 +59,11 @@ fn admission<const RK: u16>(count: &[u8]) {
             return;
         };
         assert!(
-            key.len() == 25 && key.starts_with(prefix),
+            key.len() == prefix.len() + 8 && key.starts_with(prefix),
             "an admitted row's key is its stream's prefix and one offset"
         );
         let mut offset = [0u8; 8];
-        offset.copy_from_slice(&key[17..25]);
+        offset.copy_from_slice(&key[prefix.len()..]);
         let offset = u64::from_be_bytes(offset);
         assert!(
             (1..=PAGE_MAX_RECORDS).contains(&page.count),
