@@ -2635,6 +2635,22 @@
     {
       "category": "global",
       "count": 1,
+      "owner": "crate::held_reads::M",
+      "path": "src/shard/test_support.rs",
+      "reason": "Test-only hold on a shard's billing-row reads, keyed by shard prefix so concurrent tests cannot hold each other's reads: a test proves a group's cold rows are read together by counting the most held at once; only a cfg(test) line in load_billing_meta consults it and nothing outside cfg(test) reads it.",
+      "syntax": "std :: sync :: OnceLock < Mutex < HashMap < String , Arc < HeldReads > > > >"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_group_reads_its_cold_streams_billing_rows_together",
+      "path": "src/shard/resident_tests.rs",
+      "reason": "The commit group and its watcher run concurrently in one test task so the watcher counts the held billing reads while the group waits on them, then releases them; the compiler checks the join's expansion and both futures borrow the test's rig.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "global",
+      "count": 1,
       "owner": "crate::billing_ops_refused::M",
       "path": "src/shard/test_support.rs",
       "reason": "Test-only count of the billing ops BillingReply's drop refused, per segment: BILLING_OPS_REFUSED counts them for the whole process, where every concurrent test's retiring engine adds to it, so a test that owns its segment reads its exact count here; only a cfg(test) line in that drop writes it and nothing outside cfg(test) reads it.",

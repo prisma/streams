@@ -121,6 +121,8 @@ impl ShardEngine {
         hash: [u8; 16],
     ) -> anyhow::Result<Option<crate::billing::SegmentBillingMetaV1>> {
         #[cfg(test)]
+        super::test_support::held_billing_read(&self.prefix).await;
+        #[cfg(test)]
         if billing_read_faults()
             .lock()
             .unwrap()

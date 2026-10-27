@@ -97,9 +97,14 @@ type AppendReply = oneshot::Receiver<Result<AppendAck, AppendErr>>;
 
 /// A billed append of `payload` to `SEGMENT`, and its reply.
 fn append_op(payload: &'static [u8]) -> (CommitOp, AppendReply) {
+    append_op_to(SEGMENT, payload)
+}
+
+/// A billed append of `payload` to `hash`, and its reply.
+fn append_op_to(hash: [u8; 16], payload: &'static [u8]) -> (CommitOp, AppendReply) {
     let (resp, reply) = oneshot::channel();
     let request = AppendReq {
-        hash: SEGMENT,
+        hash,
         route: [9; 16],
         enqueued_at: std::time::Instant::now(),
         entries: vec![Bytes::from_static(payload)],
@@ -385,5 +390,88 @@ async fn a_resident_handle_without_a_billing_row_reads_the_store() {
         ),
         (6, 42, 9)
     );
+    rig.stop().await;
+}
+
+/// A group of cold streams reads their billing rows together, not one
+/// after another on the serial commit path: with every read held open,
+/// all eight are in flight at once, and each stream bills on its own row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_group_reads_its_cold_streams_billing_rows_together() {
+    const STREAMS: u8 = 8;
+    let rig = Rig::start("resident-cold").await;
+    let hashes: Vec<[u8; 16]> = (0..STREAMS).map(|n| [0x60 + n; 16]).collect();
+    for hash in &hashes {
+        rig.db
+            .put(
+                crate::billing::billing_meta_key(hash),
+                serde_json::to_vec(&planted_row()).unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+    let held = super::test_support::hold_billing_reads("resident-cold");
+    let (ops, replies): (Vec<_>, Vec<_>) = hashes
+        .iter()
+        .map(|hash| append_op_to(*hash, b"payload"))
+        .unzip();
+    let cfg = ShardConfig::default();
+    let group = rig.engine.commit_group(ops, &cfg);
+    let watch = async {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while held.in_flight() < usize::from(STREAMS) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let together = held.most_in_flight();
+        held.release();
+        together
+    };
+    let ((), together) = tokio::join!(group, watch);
+    assert_eq!(
+        together,
+        usize::from(STREAMS),
+        "every cold row in flight at once"
+    );
+    for reply in replies {
+        assert_eq!(reply.await.unwrap().unwrap().next_offset, 1);
+    }
+    for hash in &hashes {
+        let raw = rig
+            .db
+            .get(crate::billing::billing_meta_key(hash))
+            .await
+            .unwrap()
+            .unwrap();
+        let row: crate::billing::SegmentBillingMetaV1 = serde_json::from_slice(&raw).unwrap();
+        assert_eq!((row.ingest_records_total, row.usage_version), (6, 9));
+    }
+    rig.stop().await;
+}
+
+/// A group reads no billing row for a stream it does not bill: with every
+/// read held open, an unbilled append and a config read still complete.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_group_reads_no_billing_row_for_a_stream_it_does_not_bill() {
+    let rig = Rig::start("resident-unbilled").await;
+    let held = super::test_support::hold_billing_reads("resident-unbilled");
+    let (mut append, appended) = append_op(b"payload");
+    if let CommitOp::Append(request) = &mut append {
+        request.billing = None;
+    }
+    let (get, got) = queue_op(QueueOp::ConfigGet {
+        consumer: "c".into(),
+    });
+    let cfg = ShardConfig::default();
+    let group = rig.engine.commit_group(vec![append, get], &cfg);
+    tokio::time::timeout(std::time::Duration::from_secs(2), group)
+        .await
+        .expect("no billing read held the group");
+    assert_eq!(appended.await.unwrap().unwrap().next_offset, 1);
+    assert!(matches!(
+        got.await.unwrap(),
+        Ok(QueueOut::Config { rec: None, .. })
+    ));
+    assert_eq!(held.most_in_flight(), 0);
+    held.release();
     rig.stop().await;
 }

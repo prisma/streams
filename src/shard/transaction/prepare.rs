@@ -1,4 +1,8 @@
 use super::*;
+use futures_util::StreamExt;
+
+/// At most this many cold streams of a group load at once.
+const COLD_LOADS: usize = 16;
 impl CommitTransaction<'_> {
     #[expect(
         clippy::excessive_nesting,
@@ -46,41 +50,66 @@ impl CommitTransaction<'_> {
         }
         expanded
     }
-    #[expect(
-        clippy::excessive_nesting,
-        reason = "CommitTransaction::billing_rows; the row load nests the failure capture inside the uncached-hash branch; flattening it would separate the failure from the hash it stops at"
-    )]
+    /// The group's billing rows, with every stream the group stages made
+    /// resident first. A cold stream's handle (its tail) and billing row are
+    /// store reads on the shard's one serial commit path, and after a
+    /// restart, a placement or an eviction the first groups' streams are all
+    /// cold, so the group issues those reads together, at most `COLD_LOADS`
+    /// at once, instead of one after another as its ops stage. A handle that
+    /// fails to load here loads again, and refuses its own op, when the op
+    /// stages; a billing row that fails refuses the group.
     pub(super) async fn billing_rows(
         engine: &ShardEngine,
         ops: &[CommitOp],
     ) -> Result<HashMap<[u8; 16], Option<crate::billing::SegmentBillingMetaV1>>, String> {
+        let mut streams: HashMap<[u8; 16], bool> = HashMap::new();
+        for (hash, billed) in ops.iter().filter_map(Self::staged_stream) {
+            *streams.entry(hash).or_default() |= billed;
+        }
+        let mut loads = futures_util::stream::iter(streams)
+            .map(|(hash, billed)| Self::warm(engine, hash, billed))
+            .buffer_unordered(COLD_LOADS);
         let mut billing_rows = HashMap::new();
-        let mut billing_failure = None;
-        for op in ops {
-            let hash = match op {
-                CommitOp::Append(r) if r.billing.is_some() => Some(r.hash),
-                CommitOp::UsageAck { hash, .. }
-                | CommitOp::BillingClose { hash, .. }
-                | CommitOp::BillingRetained { hash, .. } => Some(*hash),
-                _ => None,
-            };
-            if let Some(hash) = hash
-                && !billing_rows.contains_key(&hash)
-            {
-                match engine.billing_row(hash).await {
-                    Ok(row) => {
-                        billing_rows.insert(hash, row);
-                    }
-                    Err(error) => {
-                        billing_failure = Some(error);
-                        break;
-                    }
-                }
+        while let Some(load) = loads.next().await {
+            if let Some((hash, row)) = load {
+                billing_rows.insert(hash, row.map_err(|error| error.to_string())?);
             }
         }
-        if let Some(error) = billing_failure {
-            return Err(error.to_string());
-        }
         Ok(billing_rows)
+    }
+
+    /// The stream `op` stages, and whether the op bills it.
+    fn staged_stream(op: &CommitOp) -> Option<([u8; 16], bool)> {
+        match op {
+            CommitOp::Append(r) => Some((r.hash, r.billing.is_some())),
+            CommitOp::UsageAck { hash, .. }
+            | CommitOp::BillingClose { hash, .. }
+            | CommitOp::BillingRetained { hash, .. } => Some((*hash, true)),
+            CommitOp::Close(r) => Some((r.hash, false)),
+            CommitOp::SealFence(r) => Some((r.hash, false)),
+            CommitOp::Absorbed { hash, .. }
+            | CommitOp::Queue { hash, .. }
+            | CommitOp::NativeQueue { hash, .. }
+            | CommitOp::TrimStep { hash } => Some((*hash, false)),
+            CommitOp::AbsorbedBatch { .. } | CommitOp::TrimTick => None,
+        }
+    }
+
+    /// Make `hash`'s handle resident and, when the group bills it, read its
+    /// billing row.
+    async fn warm(
+        engine: &ShardEngine,
+        hash: [u8; 16],
+        billed: bool,
+    ) -> Option<(
+        [u8; 16],
+        anyhow::Result<Option<crate::billing::SegmentBillingMetaV1>>,
+    )> {
+        drop(engine.stream_handle(hash).await);
+        if billed {
+            Some((hash, engine.billing_row(hash).await))
+        } else {
+            None
+        }
     }
 }

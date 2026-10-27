@@ -74,3 +74,65 @@ pub(super) fn billing_ops_refused_on(segment: &[u8; 16]) -> u64 {
         .copied()
         .unwrap_or_default()
 }
+
+/// Test-only: billing-row reads a shard holds open until a test releases
+/// them, counting the most in flight at once. Keyed by shard prefix, so
+/// concurrent tests cannot hold each other's reads.
+pub(super) struct HeldReads {
+    in_flight: std::sync::atomic::AtomicUsize,
+    most: std::sync::atomic::AtomicUsize,
+    gate: tokio::sync::Semaphore,
+}
+
+impl Default for HeldReads {
+    fn default() -> Self {
+        Self {
+            in_flight: Default::default(),
+            most: Default::default(),
+            gate: tokio::sync::Semaphore::new(0),
+        }
+    }
+}
+
+impl HeldReads {
+    pub(super) fn in_flight(&self) -> usize {
+        self.in_flight.load(Ordering::SeqCst)
+    }
+
+    pub(super) fn most_in_flight(&self) -> usize {
+        self.most.load(Ordering::SeqCst)
+    }
+
+    /// Let every held read, and every later one, through.
+    pub(super) fn release(&self) {
+        self.gate
+            .add_permits(tokio::sync::Semaphore::MAX_PERMITS >> 1);
+    }
+}
+
+fn held_reads() -> &'static Mutex<HashMap<String, Arc<HeldReads>>> {
+    static M: std::sync::OnceLock<Mutex<HashMap<String, Arc<HeldReads>>>> =
+        std::sync::OnceLock::new();
+    M.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Hold `prefix`'s billing-row reads from now on.
+pub(super) fn hold_billing_reads(prefix: &str) -> Arc<HeldReads> {
+    let held = Arc::new(HeldReads::default());
+    held_reads()
+        .lock()
+        .unwrap()
+        .insert(prefix.to_owned(), held.clone());
+    held
+}
+
+/// One billing-row read of `prefix`: held while its shard's reads are.
+pub(super) async fn held_billing_read(prefix: &str) {
+    let Some(held) = held_reads().lock().unwrap().get(prefix).cloned() else {
+        return;
+    };
+    let now = held.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+    held.most.fetch_max(now, Ordering::SeqCst);
+    drop(held.gate.acquire().await.unwrap());
+    held.in_flight.fetch_sub(1, Ordering::SeqCst);
+}
