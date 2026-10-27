@@ -31,6 +31,7 @@ mod history_partition;
 mod lane_rows;
 mod lifecycle;
 mod maintenance_row;
+mod resident;
 mod tail_ring;
 mod transaction;
 use commit_plan::{
@@ -367,6 +368,8 @@ pub(crate) struct StreamState {
     pub seqs: HashMap<[u8; 16], String>,
     /// Queue-profile consumer state (loaded lazily by the committer).
     pub queue: crate::queue::QueueState,
+    /// Rows the committer keeps resident (`resident::HotRows`).
+    pub hot: resident::HotRows,
 }
 
 pub(crate) struct StreamHandle {
@@ -2041,14 +2044,6 @@ impl ShardEngine {
         before - map.len()
     }
 
-    #[expect(
-        clippy::unwrap_used,
-        reason = "ShardEngine::resident_streams; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
-    )]
-    pub(crate) fn resident_streams(&self) -> usize {
-        self.streams.lock().unwrap().len()
-    }
-
     /// Peek a resident handle's absorbed boundary WITHOUT materializing
     /// one (materialization is exactly what memory pruning must avoid).
     #[expect(
@@ -2581,5 +2576,7 @@ pub(crate) use test_support::{
 
 #[cfg(test)]
 mod page_log_tests;
+#[cfg(test)]
+mod resident_tests;
 #[cfg(test)]
 mod retirement_tests;

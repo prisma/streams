@@ -11,6 +11,7 @@ use super::*;
 mod append;
 mod billing;
 mod finalize;
+mod hot;
 mod maintenance;
 mod native_queue;
 mod overlay;

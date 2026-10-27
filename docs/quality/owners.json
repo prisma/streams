@@ -2356,6 +2356,14 @@
       "category": "unresolved-glob",
       "count": 1,
       "owner": "crate",
+      "path": "src/shard/resident_tests.rs",
+      "reason": "Shard engine test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the resident-row scenarios they are named after.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
       "path": "src/shard/commit_command_tests.rs",
       "reason": "Shard engine test module imports its enclosing production owner; the compiler resolves the parent exports and the fixtures pin the review scenarios they are named after.",
       "syntax": "compiler-resolved import; syntax cannot infer exports"

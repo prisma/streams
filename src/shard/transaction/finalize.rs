@@ -10,6 +10,7 @@ impl CommitTransaction<'_> {
         // A no-write group observes prior applied truth. Attach all its
         // replies (including fences/refusals) to the newest existing barrier.
         if !self.has_writes() {
+            self.keep_hot_rows();
             #[cfg(test)]
             self.engine
                 .completion_checkpoint(retirement_tests::CompletionPhase::NoWrite)
@@ -30,6 +31,7 @@ impl CommitTransaction<'_> {
                 return;
             }
         };
+        self.keep_hot_rows();
         self.write(maintenance).await;
     }
     fn has_writes(&self) -> bool {

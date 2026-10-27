@@ -52,6 +52,16 @@ acker only advances on the durability watermark, there are no rollback paths:
 a failed batch write touches nothing, and an object-store outage just stalls
 the watermark until backpressure (429) kicks in.
 
+The committer is one serial path per shard, so it keeps store reads out of
+its groups: a stream's billing row stays on the stream's resident handle
+once a group read or wrote it (the committer is the row's only writer), and
+later groups bill on that copy instead of reading the row again. A group
+leaves its rows on the handles just before its write; a group refused
+before the write leaves none, and a failed write retires the engine with
+its handles. Measured on 2026-10-27 at 100 small tenants on one shard
+(PACK-S-MUX), the per-group billing-row reads were 90% of the committer's
+time before they left the group.
+
 Readers use `durability_filter = Remote`, so **reads never observe data that
 is not yet durable in object storage** (the old system could serve
 locally-acked data that a total node loss would destroy).

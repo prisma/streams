@@ -67,7 +67,7 @@ impl CommitTransaction<'_> {
             if let Some(hash) = hash
                 && !billing_rows.contains_key(&hash)
             {
-                match engine.load_billing_meta(hash).await {
+                match engine.billing_row(hash).await {
                     Ok(row) => {
                         billing_rows.insert(hash, row);
                     }

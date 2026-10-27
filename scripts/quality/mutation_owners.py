@@ -218,6 +218,8 @@ OWNERS = (
     owner('transaction_billing', 'src/shard/transaction/billing.rs', 'shard::'),
     owner('transaction_overlay', 'src/shard/transaction/overlay.rs', 'shard::'),
     owner('transaction_prepare', 'src/shard/transaction/prepare.rs', 'shard::'),
+    owner('transaction_hot', 'src/shard/transaction/hot.rs', 'shard::resident_tests::'),
+    owner('shard_resident', 'src/shard/resident.rs', 'shard::'),
     owner('transaction_publish', 'src/shard/transaction/publish.rs', 'shard::'),
     owner('queue_config', 'src/shard/transaction/queue/config.rs', 'shard::'),
     owner('queue_load', 'src/shard/transaction/queue/load.rs', 'shard::'),
