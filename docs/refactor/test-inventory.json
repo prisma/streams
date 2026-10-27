@@ -6768,6 +6768,17 @@
     "scenarios": []
   },
   {
+    "name": "over_the_shed_line_a_settle_that_ends_leases_passes_until_the_hard_line",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a6408862e50fb6495abbd0b4b13c3e920c3db132fab340c2651b4b54cbc99d40",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_overload.rs",
+    "scenarios": []
+  },
+  {
     "name": "over_the_shed_line_blame_follows_the_weighted_share",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -6779,11 +6790,11 @@
     "scenarios": []
   },
   {
-    "name": "over_the_shed_line_queue_sends_and_settles_are_shed_before_their_bodies",
+    "name": "over_the_shed_line_queue_sends_are_shed_before_their_bodies",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "a5666714b2d2e28f9c14fb98bc22b7b93e13465561a138bda4f1845119ffde67",
+    "function_sha256": "7ecaa98137e65da59ce7e3c987c8b194812ec867530b898d984848b72996b021",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_overload.rs",

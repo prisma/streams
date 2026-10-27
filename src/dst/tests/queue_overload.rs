@@ -227,13 +227,13 @@ async fn a_queue_write_is_held_to_its_projects_memory_line() {
 }
 
 /// Over the RSS shed line (a dedicated cell, so nobody is spared) a queue
-/// send and a settle are refused `429 rate_limited`, Retry-After 2, as an
+/// send and a batch are refused `429 rate_limited`, Retry-After 2, as an
 /// append is, before the body is read: a head declaring 4 MiB with no body
 /// sent reads the refusal. A claim and the queue's stats are served, and
 /// under the line the send is served. Before: queue writes never met the
 /// RSS shed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn over_the_shed_line_queue_sends_and_settles_are_shed_before_their_bodies() {
+async fn over_the_shed_line_queue_sends_are_shed_before_their_bodies() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let cell = open_cell(CellSpec::open(1)).await;
     assert_eq!(ask(&cell, 0, "PUT", "/v1/queues/jobs", "").await.0, 201);
@@ -245,7 +245,6 @@ async fn over_the_shed_line_queue_sends_and_settles_are_shed_before_their_bodies
     let shed = [
         ("/v1/queues/jobs/messages", r#"{"body":1}"#),
         ("/v1/queues/jobs/messages:batch", batch),
-        ("/v1/queues/jobs/groups/default:settle", r#"{"ops":[]}"#),
     ];
     for (path, body) in shed {
         let answer = ask(&cell, 0, "POST", path, body).await;
@@ -514,5 +513,92 @@ async fn a_claim_reserves_read_memory_only_for_what_it_returns() {
     let ((status, _, _), during) = futures_util::future::join(empty, probe).await;
     assert_eq!((status, during), (200, 0), "a waiting claim holds nothing");
     assert_eq!(admission.read_memory().0, 0, "every hold released");
+    engine_shutdown(&cell.state).await;
+}
+
+/// A claim of one message from project 0's queue `jobs` for a minute: its
+/// lease token.
+async fn lease_one(cell: &Cell) -> String {
+    let path = "/v1/queues/jobs/groups/default:claim";
+    let claim = r#"{"max":1,"leaseMs":60000}"#;
+    let (status, _, b) = cell.call(0, "POST", path, claim.as_bytes()).await;
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(status, 200, "{v}");
+    v["messages"][0]["token"].as_str().unwrap().to_string()
+}
+
+/// One settle of `token` with `op`: its status, code and Retry-After, and
+/// the op's outcome when it was served.
+async fn settle_one(cell: &Cell, token: &str, op: &str) -> (Answer, Option<String>) {
+    let body = format!(r#"{{"ops":[{{"token":"{token}","op":"{op}"}}]}}"#);
+    let path = "/v1/queues/jobs/groups/default:settle";
+    let (status, headers, b) = cell.call(0, "POST", path, body.as_bytes()).await;
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap_or_default();
+    let answer = (status, error_code(&b), headers.get("retry-after").cloned());
+    (
+        answer,
+        v["results"][0]["outcome"].as_str().map(str::to_string),
+    )
+}
+
+/// Over the RSS shed line a settle whose every operation ends its lease (an
+/// ack, a release, a retry, a fail or a discard: no message bytes) is
+/// served until the instance is an eighth over the line, the lead's ruling
+/// on #191 under the owner's delegation of 2026-10-27, because refusing it
+/// turns every lease into a redelivery that feeds the overload; a settle
+/// that extends a lease is refused `429 rate_limited` as an append is, and
+/// past the hard line every settle is. Under the line the last lease is
+/// acked. Before: every settle was refused over the line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn over_the_shed_line_a_settle_that_ends_leases_passes_until_the_hard_line() {
+    let cell = open_cell(CellSpec::open(1)).await;
+    assert_eq!(ask(&cell, 0, "PUT", "/v1/queues/jobs", "").await.0, 201);
+    for n in 0..3 {
+        assert_eq!(send(&cell, 0, n).await, SENT);
+    }
+    let tokens = [
+        lease_one(&cell).await,
+        lease_one(&cell).await,
+        lease_one(&cell).await,
+    ];
+    let admission = &cell.state.admission;
+    admission.set_rss_shed_mb(500);
+    admission.record_rss_mb(501);
+    let served = |outcome: &str| ((200, None, None), Some(outcome.to_string()));
+    assert_eq!(
+        settle_one(&cell, &tokens[0], "ack").await,
+        served("ok"),
+        "an ack"
+    );
+    assert_eq!(
+        settle_one(&cell, &tokens[1], "release").await,
+        served("ok"),
+        "a release"
+    );
+    let shed = (refused("rate_limited", "2"), None);
+    assert_eq!(
+        settle_one(&cell, &tokens[2], "extend").await,
+        shed,
+        "an extend"
+    );
+    admission.record_rss_mb(500 * 9 / 8 + 1);
+    assert_eq!(
+        settle_one(&cell, &tokens[2], "ack").await,
+        shed,
+        "past the hard line"
+    );
+    admission.record_rss_mb(0);
+    assert_eq!(
+        settle_one(&cell, &tokens[2], "ack").await,
+        served("ok"),
+        "under the line"
+    );
+    let stats = cell.json(0, "GET", "/v1/queues/jobs").await;
+    let s = &stats["stats"];
+    assert_eq!(
+        (&s["counters"]["acked"], &s["queuedMessages"]),
+        (&serde_json::json!(2), &serde_json::json!(1)),
+        "two acked, the released message queued again"
+    );
     engine_shutdown(&cell.state).await;
 }

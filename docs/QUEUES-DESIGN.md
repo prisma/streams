@@ -410,18 +410,21 @@ groups stay untouched until then (D2).
 - **Settle bucket**: queue settles and extends draw from their own bucket at
   half the project's request rate (burst floor 25), beside the main bucket
   (`max(rate, 50)`, #162). A settle request whose tokens are mostly stale or
-  invalid is charged to the main bucket. Under the RSS shed (#184) settles
-  follow the append rules. Both are edge changes. The settle bucket is not
-  built yet.
+  invalid is charged to the main bucket. Both are edge changes. The settle
+  bucket is not built yet. Under the RSS shed a settle that only ends leases
+  (ack, release, retry, fail, discard) passes up to the hard line, the line
+  x 9/8, and one with an `extend` follows the append rule (#191 as amended,
+  the lead's ruling of 2026-10-27 under the owner's delegation).
 - **Overload parity** (layout 6A package 1, edge changes #188-#193, built):
   the pre-auth survival bound covers `/v1/queues`; a verified queue request
   is bound to fair shedding after project admission, so a project over its
   share of the cell's requests is refused on every queue route over the RSS
   shed line and at the in-flight cap; a queue `POST` is refused while its
   project is over its memory line and every queue body is charged to the
-  project while it is buffered; sends, batches and settles meet the RSS write
-  gate before their bodies and the in-flight write gate once buffered, with
-  the append's spared exceptions; and a request's committer operation is
+  project while it is buffered; sends and batches meet the RSS write gate
+  before their bodies, settles as §6.5's settle bucket bullet says, and all
+  three the in-flight write gate once buffered, with the append's spared
+  exceptions; and a request's committer operation is
   refused at once, 503 `shard_busy`, when the shard committer's queue is
   full (the sweeps and collector still wait for room).
 - **Request rate** has a producer and a consumer term, sized separately

@@ -34,7 +34,7 @@ use super::super::{AppState, project_memory_gate};
 use super::Resource;
 use crate::admission::body::BodyRefusal;
 use crate::application::append::{AppendCode, AppendFailure, FailureClass as AppendFailureClass};
-use crate::application::queues::{FailureClass, fail};
+use crate::application::queues::{FailureClass, SettleInput, SettleVerb, fail};
 use crate::auth::RequestPrincipal;
 use crate::quota::BufferedBodyGuard;
 
@@ -91,7 +91,11 @@ pub(super) async fn body(
             BodyRefusal::MemoryPressure => memory_pressure(principal.map(|p| &p.project_id)),
         })
     })?;
-    match inflight_refused(state, resource).await {
+    let refusal = match extend_shed(state, resource, &buffered.0).await {
+        Some(refusal) => Some(refusal),
+        None => inflight_refused(state, resource).await,
+    };
+    match refusal {
         Some(refusal) => Err(Box::new(refusal)),
         None => Ok(buffered),
     }
@@ -125,15 +129,52 @@ fn writes_like_append(resource: &Resource) -> bool {
     )
 }
 
-/// The RSS write gate's refusal of a send or a settle, as an append meets
-/// it before its body (`application::append::memory_gate`, edge changes
-/// #183 and #184: 429 `rate_limited`, Retry-After 2, after the gate's
-/// tarpit; a spared project passes up to the hard line).
+/// The RSS write gate's refusal before the body, as an append meets it
+/// (`application::append::memory_gate`, edge changes #183 and #184: 429
+/// `rate_limited`, Retry-After 2, after the gate's tarpit; a spared project
+/// passes up to the hard line): of a send, and of a settle only past the
+/// hard line (`admit_lease_ending_write`, #191 as ruled), its extends
+/// judged once its body is read (`extend_shed`).
 async fn rss_shed(state: &AppState, resource: &Resource) -> Option<Response> {
+    if *resource == Resource::GroupVerb("settle") {
+        let reserved = state.runtime.history.budget.reserved_bytes();
+        state.admission.admit_lease_ending_write(reserved).err()?;
+        return Some(memory_refusal().await);
+    }
     if !writes_like_append(resource) {
         return None;
     }
     let gate = crate::application::append::memory_gate(&state.admission, &state.runtime.history);
     let failure = gate.await.err()?;
     Some(render_product_append_error(failure))
+}
+
+/// The RSS write gate's refusal of a settle that extends a lease, once its
+/// body is read: an extend keeps its lease and is a write as an append is,
+/// under the append's rule; a settle that only ends leases passed before
+/// its body. A body that does not parse is the handler's 400.
+async fn extend_shed(state: &AppState, resource: &Resource, body: &Bytes) -> Option<Response> {
+    if *resource != Resource::GroupVerb("settle") {
+        return None;
+    }
+    let input = serde_json::from_slice::<SettleInput>(body).ok()?;
+    if !input.ops.iter().any(|op| op.op == SettleVerb::Extend) {
+        return None;
+    }
+    let gate = crate::application::append::memory_gate(&state.admission, &state.runtime.history);
+    let failure = gate.await.err()?;
+    Some(render_product_append_error(failure))
+}
+
+/// The RSS shed's answer, as `application::append::memory_gate` renders it
+/// after its tarpit: 429 `rate_limited`, Retry-After 2.
+async fn memory_refusal() -> Response {
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    let failure = AppendFailure::new(
+        AppendFailureClass::Capacity,
+        AppendCode::Overloaded,
+        "instance memory pressure; retry",
+    )
+    .retry(2);
+    render_product_append_error(failure)
 }

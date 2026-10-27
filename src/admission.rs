@@ -404,6 +404,24 @@ impl AdmissionController {
         Ok(())
     }
 
+    /// The RSS write-shed for a write that only ends leases (a queue settle
+    /// of acks, releases, retries, fails and discards, which carries no
+    /// message bytes; the lead's ruling on edge change #191 of 2026-10-27,
+    /// under the owner's delegation): refused only past the hard line, an
+    /// eighth over the shed line, whatever fair shedding makes of it,
+    /// because refusing it turns each lease into a redelivery that feeds the
+    /// overload. Counted as the RSS shed when it refuses.
+    pub(crate) fn admit_lease_ending_write(&self, reserved_bytes: u64) -> Result<(), WriteRefusal> {
+        if let Some((pressure, line)) = self.over_shed_line(reserved_bytes)
+            && pressure > fair_shed::rss_hard_line(line)
+        {
+            self.inner.shed_total.fetch_add(1, Ordering::Relaxed);
+            self.inner.shed_rss.fetch_add(1, Ordering::Relaxed);
+            return Err(WriteRefusal::MemoryPressure);
+        }
+        Ok(())
+    }
+
     /// Fair shedding: whether a served request its project's verdict blames
     /// is refused, and for which pressure (counted when it is): sampled RSS
     /// plus `reserved_bytes` over the shed line first, then the active
@@ -698,6 +716,9 @@ impl AdmissionController {
 }
 
 #[cfg(test)]
+mod line_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -736,33 +757,6 @@ mod tests {
             (0, 1),
             "swap resets the peak to the current count"
         );
-    }
-
-    /// A project's memory line is the cell's at weight 1 (or 0), the line
-    /// times its byte weight above it, held so two unit lines fit beside it
-    /// in the instance's read memory (125 MiB at a 500 MiB shed line: 125 -
-    /// 64 MiB less a byte), never below the cell's line, unbounded without
-    /// a read budget, and 0 when off.
-    #[test]
-    fn a_projects_memory_line_scales_with_its_byte_weight_leaving_two_lines_beside_it() {
-        const MIB: u64 = 1 << 20;
-        let c = ctl(0, 0, 500, 0);
-        c.set_project_memory_pressure_bytes(32 * MIB);
-        let lines = [0, 1, 2, 5].map(|w| c.project_memory_line(w));
-        let cap = 125 * MIB - 64 * MIB - 1;
-        assert_eq!(lines, [32 * MIB, 32 * MIB, cap, cap]);
-        assert!(
-            cap + 2 * 32 * MIB < 125 * MIB,
-            "three projects never fill it"
-        );
-        c.set_read_memory_capacity(160 * MIB);
-        assert_eq!(c.project_memory_line(2), 64 * MIB, "under the cap");
-        c.set_read_memory_capacity(80 * MIB);
-        assert_eq!(c.project_memory_line(5), 32 * MIB, "never below the line");
-        c.set_read_memory_capacity(0);
-        assert_eq!(c.project_memory_line(5), 160 * MIB, "no read budget");
-        c.set_project_memory_pressure_bytes(0);
-        assert_eq!(c.project_memory_line(5), 0, "off");
     }
 
     /// The survival bound refuses exactly above 4x the cap, on stream and

@@ -1728,7 +1728,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Who is affected:** on a shared cell under pressure, a project whose queue (or stream) traffic is more than 1/k of the cell's: its queue requests are now refused too; its neighbours are unaffected by this change (their spared sends are #191/#192).
 - **Pinning tests:** src/dst/tests/queue_overload.rs::over_the_shed_line_the_queue_project_over_its_share_is_refused_before_its_neighbour (k = 8, line 1,000, RSS 1,001; project 0 sent 120 messages under the line: its five sends, a claim, the queue's stats and the listing get 429 `project_memory_pressure`, `retry-after: 2`, 8 blamed refusals counted; project 1's five sends are 201; under the line both are served; `queuedMessages` 121 and 6 exactly) and ::at_the_inflight_cap_the_queue_project_over_its_share_is_refused_before_its_neighbour (cap 8 held: 429 `rate_limited`, `retry-after: 1`, 8 counted as in-flight blame, none as RSS; counts 121 and 5). Red before: `assertion failed: round 0 left: (201, None, None) right: (429, Some("project_memory_pressure"), Some("2"))` and `... right: (429, Some("rate_limited"), Some("1"))`.
 - **Risk reason:** medium: a queue-heavy project's queue requests gain refusals they never had under pressure; the answers and the blame rule are #184/#185's. Reversal: drop `overload::judge` and the blamed refusal from `product::queues`.
-- **Status:** awaiting the owner's ratification.
+- **Status:** ratified as drafted by the lead under the owner's delegation of 2026-10-27 (README "Owner decisions", layout 6A package 1).
 - **Check against commit:** written with the change.
 
 ### #191 (this record's commit) — Over the RSS shed line a queue send or settle is refused 429 `rate_limited` before its body is read, as an append is, and a spared project's pass until the instance is an eighth over the line
@@ -1743,7 +1743,8 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Who is affected:** queue producers and consumers on an instance over its memory line; their neighbours' appends, which no longer carry the whole shed alone.
 - **Pinning tests:** src/dst/tests/queue_overload.rs::over_the_shed_line_queue_sends_and_settles_are_shed_before_their_bodies (k = 1, line 500, RSS 501: a send, a batch and a settle each 429 `rate_limited`, `retry-after: 2`; a head declaring 4 MiB with no body sent reads the 429; a claim 200 and the stats served; under the line a send 201; `queuedMessages` 2 exactly) and ::over_the_shed_line_the_queue_project_over_its_share_is_refused_before_its_neighbour (k = 8: the spared neighbour's send 201 inside line x 9/8, 429 `rate_limited` `retry-after: 2` past it). Red before: `assertion failed: /v1/queues/jobs/messages left: (201, None, None) right: (429, Some("rate_limited"), Some("2"))` and `assertion failed: past it left: (201, None, None) right: (429, Some("rate_limited"), Some("2"))`.
 - **Risk reason:** medium: queue writes gain a refusal under memory pressure, and a refused settle can mean a redelivery; the answer and its line are the append's. Reversal: drop `rss_shed` from `overload::body`.
-- **Status:** awaiting the owner's ratification (and the settle option above).
+- **Status:** ratified with option (b) by the lead under the owner's delegation of 2026-10-27 (README "Owner decisions", layout 6A package 1); amended below.
+- **Amendment (#191 option (b), the lead's ruling of 2026-10-27 under the owner's delegation; its own commit):** a settle that only ends leases (every op an ack, release, retry, fail or discard: no message bytes) is not refused by the RSS shed before its body; it is refused only past the hard line (the line x 9/8; 562 MiB at 500), 429 `rate_limited`, `Retry-After: 2`, after the 25 ms tarpit, counted `admit_shed_rss` (`AdmissionController::admit_lease_ending_write`). A settle with any `extend` op is judged once its body is read under the append's rule (refused over the line unless its project is spared, `overload::extend_shed`). The in-flight write gate (#192) still binds every settle. Before: every settle was refused over the line unless spared. Reason: a refused settle turns each of its leases into a redelivery and more claims, which feeds the overload; settles drain it. Pins: src/dst/tests/queue_overload.rs::over_the_shed_line_a_settle_that_ends_leases_passes_until_the_hard_line (line 500, RSS 501: an ack and a release served `ok`, an extend 429 `rate_limited` `retry-after: 2`; at 563 an ack refused the same; under the line served; acked 2, queued 1), red before: `assertion failed: an ack left: ((429, Some("rate_limited"), Some("2")), None) right: ((200, None, None), Some("ok"))`; src/admission/line_tests.rs::a_lease_ending_write_passes_the_rss_gate_until_the_hard_line (1,125 passes, 1,126 refused and counted, no line passes); the send leg is ::over_the_shed_line_queue_sends_are_shed_before_their_bodies.
 - **Check against commit:** written with the change.
 
 ### #192 (this record's commit) — At the in-flight write cap a queue send or settle is refused 429 `rate_limited` once its body is buffered, as an append is, and a spared project's pass until the active requests are a quarter over the cap
@@ -1758,7 +1759,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Who is affected:** queue producers and consumers of an instance at its cap; the appends that shared the slots.
 - **Pinning tests:** src/dst/tests/queue_overload.rs::at_the_inflight_cap_queue_sends_and_settles_are_refused_as_appends_are (k = 1, cap 8 held: a send, a batch and a settle 429 `rate_limited` `retry-after: 1`, 3 counted as the gate's; a claim 200; under the cap a send 201; `queuedMessages` 2) and ::at_the_inflight_cap_the_queue_project_over_its_share_is_refused_before_its_neighbour (k = 8: the spared neighbour's send 201 at 10 active, 429 `rate_limited` at 11). Red before: `assertion failed: /v1/queues/jobs/messages left: (201, None, None) right: (429, Some("rate_limited"), Some("1"))` and `assertion failed: past it left: (201, None, None) right: (429, Some("rate_limited"), Some("1"))`.
 - **Risk reason:** medium: queue writes gain a refusal at the cap; the answer is the append's. Reversal: drop `inflight_refused`.
-- **Status:** awaiting the owner's ratification.
+- **Status:** ratified as drafted by the lead under the owner's delegation of 2026-10-27 (README "Owner decisions", layout 6A package 1).
 - **Check against commit:** written with the change.
 
 ### #196 (this record's commit) — On a shared cell a project's ceilings are its weights' share of each bound: the policy feed's `request_weight` and `byte_weight` scale bound / k on the request axes and the byte rates
@@ -1773,7 +1774,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Who is affected:** projects the feed gives weights (more capacity); their neighbours, whose own ceilings are unchanged but who share the cell's envelope with a heavier tenant; the admission tool (cell-admin) and the interim issuer, which publish weight 1 explicitly until cell-admin's packing (#199).
 - **Pinning tests:** src/dst/tests/weighted_shares.rs::a_weighted_project_appends_at_its_weighted_ceiling_beside_a_unit_project (k = 8, append envelope 2,060,000 B/s: M (2, 5)'s ten 120,000-byte appends all 200, the unit project's third 429 `project_rate_limit`, stored 10 and 2). Red before: `assertion failed: M's 1.2 MB second left: [(200, None), (200, None), (429, Some("project_rate_limit")), ... x8] right: [(200, None); 10]`. src/auth/ceiling.rs::tests::weights_scale_a_projects_share_of_each_bound (every axis at (2, 5); below the share stands; 0 and 1 are the unit; (9, max) held to 7, `clamps` true only above k - 1; k = 1 ignores weights). deploy/cell-admin/cell-admin.test.ts (the bundle carries both weights at 1 and is schema-valid; `--quota byte_weight=5` refused), deploy/issuer/projects.test.ts (the issuer's projects at weight 1).
 - **Risk reason:** medium: a weighted project can take up to (k - 1)/k of a bound; the packing rule that keeps several heavy projects off one cell is the admission tool's (#199). Reversal: drop the two fields from the contract and `effective`.
-- **Status:** awaiting the owner's ratification (DESIGN-6A §9 decision 4, "weighted per-project shares").
+- **Status:** ratified as drafted by the lead under the owner's delegation of 2026-10-27 (README "Owner decisions", layout 6A package 1).
 - **Check against commit:** written with the change.
 
 ### #197 (this record's commit) — Fair shedding judges a project against its request weight's share of the cell, w/k, so a weighted project is blamed only past its weighted share and spared within it
@@ -1788,7 +1789,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Who is affected:** weighted projects on a shared cell under pressure (now spared within their weighted share), and unit projects beside them (blamed against the cell's total as before; a weighted project's load no longer counts as "the heaviest" until it passes its own share).
 - **Pinning tests:** src/dst/tests/weighted_shares.rs::over_the_shed_line_blame_follows_the_weighted_share (k = 8; project 0 at request weight 4 sent 100 of 250 appends, project 1 at weight 1 sent 150; over the line project 0's five appends are 200 and project 1's 429 `project_memory_pressure`, 5 blamed refusals; stored 105 and 150). Red before: `assertion failed: weighted, round 0 left: (429, Some("project_memory_pressure")) right: (200, None)`. src/admission/fair_shed/tests.rs (`over_share` at w/k, weight 0 as 1, no overflow at u64::MAX; `judge` with a weighted own and heaviest; `the_heaviest_load_is_the_heaviest_per_unit_of_weight`); the unweighted #184/#185 DSTs unchanged and green.
 - **Risk reason:** medium: who is refused under pressure changes for weighted projects. Reversal: judge every project at weight 1.
-- **Status:** awaiting the owner's ratification.
+- **Status:** ratified as drafted by the lead under the owner's delegation of 2026-10-27 (README "Owner decisions", layout 6A package 1).
 - **Check against commit:** written with the change.
 
 ### #198 (this record's commit) — A project's memory line is the cell's line times its byte weight, held so two unit projects' lines still fit beside it in the instance's read memory, for its write latch, its buffered bodies and its read reservations
@@ -1803,7 +1804,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
 - **Who is affected:** byte-weighted projects (more headroom before 429 `project_memory_pressure`); their neighbours, who now share the instance read memory with one project that may hold almost half of it, two unit lines always fitting beside it.
 - **Pinning tests:** src/dst/tests/weighted_shares.rs::a_weighted_projects_memory_line_scales_leaving_two_unit_lines_beside_it (line 32 MiB, read memory 125 MiB; 40 MiB of each project's read bytes held: project 0 at byte weight 5 (line 61 MiB less a byte) appends 200 and its 8 MiB page read is reserved, the unit project 1 gets 429 `project_memory_pressure` on both; 70 MiB held: project 0 refused too, the cap; stored 2 and 1). Red before (and with the weighting disabled as a control): `assertion failed: weighted at 40 MiB left: (429, Some("project_memory_pressure")) right: (200, None)`. src/admission.rs::tests::a_projects_memory_line_scales_with_its_byte_weight_leaving_two_lines_beside_it (weights 0/1/2/5 at 125 MiB: 32, 32, 61 MiB - 1 B; under the cap; never below the line; no read budget; off). The read-memory and woken-wait DSTs (`dst_tests::read_memory::`), which move the line while waits are parked, unchanged and green.
 - **Risk reason:** medium: one weighted project may hold almost half the instance read memory. Reversal: return the cell's line from `project_memory_line`.
-- **Status:** awaiting the owner's ratification.
+- **Status:** ratified as drafted by the lead under the owner's delegation of 2026-10-27 (README "Owner decisions", layout 6A package 1).
 - **Check against commit:** written with the change.
 
 ## Low risk (120)
@@ -4500,7 +4501,7 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Who is affected:** queue clients of an instance at four times its in-flight cap.
 - **Pinning tests:** src/dst/tests/security_routes.rs::the_survival_refusal_covers_reads_and_the_product_surface_at_the_default_caps (now nine paths: the six stream paths plus `GET /v1/queues`, `POST /v1/queues/any/messages` and `POST /v1/queues/any/groups/default:claim`; each refused exactly, 9 survival sheds of 9, and at 2,048 each answers 401). Red before: `assertion failed: GET /v1/queues left: (401, "{\"error\":{\"code\":\"unauthorized\",...}}", None, ...) right: (503, "{\"error\":{\"code\":\"overloaded\",\"message\":\"retry\",\"retryable\":true}}", Some("1"), ...)`. src/admission.rs::tests::survival_and_ordinary_gates_are_distinct_mechanisms (a queue path refused, `/health` not).
 - **Risk reason:** low: the answer already existed for stream paths and is reached only at 4 x the cap. Follow-up for the owner: queue requests do not count as data-plane arrivals for the fleet's idle release (`AdmissionController::enter`), so a fleet cell serving only queues may look idle. Reversal: drop the `/v1/queues` prefix in `survival_refused`.
-- **Status:** awaiting the owner's ratification.
+- **Status:** ratified as drafted by the lead under the owner's delegation of 2026-10-27 (README "Owner decisions", layout 6A package 1).
 - **Check against commit:** written with the change.
 
 ### #190 (this record's commit) — A queue write is refused 429 `project_memory_pressure` while its project is over its memory line, and every queue body is charged to its project while it is buffered, as an append's is
@@ -4515,7 +4516,7 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Who is affected:** a project over its memory line (its queue sends, claims and settles now wait as its appends do), and its neighbours, whose memory the uncharged bodies shared.
 - **Pinning tests:** src/dst/tests/queue_overload.rs::a_queue_write_is_held_to_its_projects_memory_line (line 256 KiB; 300 KiB retained: a send, a claim and a settle each 429 `project_memory_pressure`, `retry-after: 1`, the queue's stats served; released: a send 201; 200 KiB retained: a 60 KiB message refused the same 429; nothing held: the same message 201; `queuedMessages` 3 exactly). Red before: `assertion failed: /v1/queues/jobs/messages left: (201, None, None) right: (429, Some("project_memory_pressure"), Some("1"))`; with the latch alone, `assertion failed: the body left: (201, None, None) right: (429, ...)`.
 - **Risk reason:** low: the answers are the append's, retryable, and reached only over a project's own line. Reversal: drop the latch and use an uncharged buffer in `overload::body`.
-- **Status:** awaiting the owner's ratification.
+- **Status:** ratified as drafted by the lead under the owner's delegation of 2026-10-27 (README "Owner decisions", layout 6A package 1).
 - **Check against commit:** written with the change.
 
 ### #193 (this record's commit) — A queue request whose shard committer's queue is full is answered at once, 503 `shard_busy` with `Retry-After: 1`, instead of waiting for room while it holds its request
@@ -4530,7 +4531,7 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Who is affected:** queue clients of a shard whose committer is 65,536 commands behind (a stalled store or a herd of claims); the appends beside them, which no longer lose their places to waiting queue requests.
 - **Pinning tests:** src/dst/tests/queue_overload.rs::a_queue_operation_on_a_full_committer_is_answered_at_once (`queue_reqs` 2, the committer held after taking one send with two queued: a fourth send answers `(503, "shard_busy", Retry-After 1)` within 1 s; released, the three sends 201; `queuedMessages` 3 exactly). Red before: `left: Err("no answer within 1 s") right: Ok((503, Some("shard_busy"), Some("1")))`.
 - **Risk reason:** low: a refusal only at a full committer queue, where the request used to wait without bound. Reversal: `QueueService::op` back to `submit_native_queue`.
-- **Status:** awaiting the owner's ratification.
+- **Status:** ratified as drafted by the lead under the owner's delegation of 2026-10-27 (README "Owner decisions", layout 6A package 1).
 - **Check against commit:** written with the change.
 
 ### #194 (this record's commit) — A claim waiting for work is parked in the live pool, as a pull's wait is, so it no longer counts as an active request against the in-flight write cap or the survival bound
@@ -4545,7 +4546,7 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Who is affected:** queue consumers (their long-poll claims no longer shed the cell's writes); a project's claims now share its live-subscription share with its subscriptions, watch waits and pulls (a full share only makes a claim wait active).
 - **Pinning tests:** src/dst/tests/queue_overload.rs::a_waiting_claim_parks_and_leaves_the_write_gate_to_sends (k = 1, cap 8 with 7 held: a claim with `waitMs` 20,000 parks (`parked() == 1`), a send beside it is 201, the claim wakes active again and returns that message). Red before: `panicked at src/dst/tests/queue_overload.rs:427:9: the waiting claim parks` (never parked, so the send was the ninth active).
 - **Risk reason:** low: no answer changes; waiting claims leave the write gate as every other wait did since #106. Reversal: drop the `park::park()` in `QueueService::claim`.
-- **Status:** awaiting the owner's ratification.
+- **Status:** ratified as drafted by the lead under the owner's delegation of 2026-10-27 (README "Owner decisions", layout 6A package 1).
 - **Check against commit:** written with the change.
 
 ### #195 (this record's commit) — A claim reserves read memory for exactly the messages it leased before it reads them, and is refused 503 `read_memory_busy` or 429 `project_memory_pressure` with its leases given back when no room comes
@@ -4560,7 +4561,7 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Who is affected:** queue consumers on a cell whose read memory is full or whose project is at its line; their neighbours' reads, which a burst of large claims no longer squeezes out.
 - **Pinning tests:** src/dst/tests/queue_overload.rs::a_claim_reserves_read_memory_only_for_what_it_returns (read memory 64 KiB; 60 KiB held elsewhere: a claim leasing a 10 KiB message answers `(503, read_memory_busy, Retry-After 1)`; released, a claim with `waitMs` 3,000 takes it as attempt 1 beside 44 KiB held, room for the message but not for a 1 MiB budget; an empty claim waiting parked holds 0 bytes; every hold released after). Red before: `assertion failed: no room for the leased message left: (200, None, None) right: (503, Some("read_memory_busy"), Some("1"))`.
 - **Risk reason:** low-medium: a claim gains a retryable refusal under memory pressure that costs a lease round-trip but no attempt. Reversal: drop `reserve_leased` and the settle in the handler.
-- **Status:** awaiting the owner's ratification.
+- **Status:** ratified as drafted by the lead under the owner's delegation of 2026-10-27 (README "Owner decisions", layout 6A package 1).
 - **Check against commit:** written with the change.
 
 ### #199 (this record's commit) — cell-admin admits a project with request and byte weights at its weighted ceilings, and packs heavy projects so their weights on each axis sum to at most k - 1
@@ -4575,7 +4576,7 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Who is affected:** operators placing medium and large tenants; on the 1 GiB profile at k = 8 a cell carries one byte-weighted tenant (an M (2, 5) or an L (1, 7)) and request weights up to the budget, with any number of unit tenants up to `--max-projects`.
 - **Pinning tests:** deploy/cell-admin/cell-admin.test.ts "admits a weighted project at its weighted ceilings and packs heavy projects within k - 1" (M at (2, 5): 352 req/s, 1,287,500 B/s, 18,750,000 B/s, 128, 300, 16,384, queued 64 MiB, schema-valid; a byte weight 3 beside it refused for the byte budget and a byte weight 2 for the read memory, each with its exact message, a request weight 2 admitted, a unit project at its unit ceilings, a request weight 3 admitted and then 2 refused at 9 of 7; `quota` above the weighted ceiling refused, below it published) and "refuses ... and publishes nothing" for a weight of k, of 0, an unknown weight, a weight given twice and a quota above the weighted ceiling, on both stores. Red before: `expect([m.code, m.err]).toEqual([0, ""])` received exit 2 (`--weight` unknown).
 - **Risk reason:** low: an operator tool; the server clamps whatever it is given (#196). Reversal: drop `--weight`.
-- **Status:** awaiting the owner's ratification (DESIGN-6A §9 decision 4).
+- **Status:** ratified as drafted by the lead under the owner's delegation of 2026-10-27 (README "Owner decisions", layout 6A package 1).
 - **Check against commit:** written with the change.
 
 ## Discrepancies

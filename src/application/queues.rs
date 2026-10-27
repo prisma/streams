@@ -15,7 +15,8 @@ pub(crate) use admin::{PageAt, View};
 pub(crate) use deletion::QueueDeletion;
 pub(crate) use envelope::Message;
 pub(crate) use wire::{
-    ClaimInput, IdsInput, RedriveInput, SendBatchInput, SendInput, SettleInput, WakeupInput,
+    ClaimInput, IdsInput, RedriveInput, SendBatchInput, SendInput, SettleInput, SettleVerb,
+    WakeupInput,
 };
 
 use std::sync::Arc;
