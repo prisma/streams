@@ -1,9 +1,10 @@
-//! A stream's billing row stays on its resident handle once a commit group
-//! read or staged it: the next group takes it from there, not from the
-//! store. A group refused before its write leaves no row behind.
+//! A stream's billing row and consumer records stay on its resident handle
+//! once a commit group read or staged them: the next group takes them from
+//! there, not from the store. A group refused before its write leaves no
+//! row behind.
 #![cfg(test)]
 use super::*;
-use crate::queue::{ConsumerConfig, ConsumerRecord, QueueOp, QueueOut};
+use crate::queue::{ConsumerConfig, ConsumerLifecycle, ConsumerRecord, QueueOp, QueueOut};
 
 const SEGMENT: [u8; 16] = [0x5e; 16];
 
@@ -236,6 +237,101 @@ async fn a_refused_group_leaves_no_billing_row_on_the_handle() {
     assert_eq!(rig.append(b"payload").await.unwrap().next_offset, 2);
     let row = rig.billing_row().await;
     assert_eq!((row.ingest_records_total, row.usage_version), (2, 2));
+    rig.stop().await;
+}
+
+/// A record a config read loaded, and one a group wrote, are answered from
+/// the handle afterwards; a lifecycle change replaces the held record, and
+/// a deleted one is let go of.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_consumer_record_stays_on_the_handle_after_its_group() {
+    let rig = Rig::start("resident-config").await;
+    let stored = ConsumerRecord {
+        generation: 3,
+        state: ConsumerLifecycle::Active,
+        config: config(),
+    };
+    let key = crate::queue::config_key(&SEGMENT, "loaded");
+    rig.db
+        .put(&key, serde_json::to_vec(&stored).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(rig.config("loaded").await, Some(stored.clone()));
+    rig.db.delete(&key).await.unwrap();
+    assert_eq!(
+        rig.config("loaded").await,
+        Some(stored),
+        "the loaded record is held"
+    );
+    let created = match rig
+        .queue(QueueOp::ConfigPut {
+            consumer: "c".into(),
+            cfg: config(),
+        })
+        .await
+    {
+        Ok(QueueOut::Config {
+            rec: Some(rec),
+            created: true,
+            ..
+        }) => rec,
+        other => panic!("the put creates generation 1: {other:?}"),
+    };
+    let key = crate::queue::config_key(&SEGMENT, "c");
+    rig.db.delete(&key).await.unwrap();
+    assert_eq!(
+        rig.config("c").await,
+        Some(created.clone()),
+        "written, held"
+    );
+    rig.queue(QueueOp::ConfigLifecycle {
+        consumer: "c".into(),
+        expect_gen: 1,
+        deleting: true,
+    })
+    .await
+    .unwrap();
+    let deleting = ConsumerRecord {
+        state: ConsumerLifecycle::Deleting,
+        ..created
+    };
+    assert_eq!(rig.config("c").await, Some(deleting.clone()));
+    let raw = rig.db.get(&key).await.unwrap().unwrap();
+    assert_eq!(
+        serde_json::from_slice::<ConsumerRecord>(&raw).unwrap(),
+        deleting
+    );
+    rig.queue(QueueOp::ConfigLifecycle {
+        consumer: "c".into(),
+        expect_gen: 1,
+        deleting: false,
+    })
+    .await
+    .unwrap();
+    rig.db.delete(&key).await.unwrap();
+    assert_eq!(rig.config("c").await, None, "a deleted record is not held");
+    rig.stop().await;
+}
+
+/// A consumer with no record is not held: a record that appears in the store
+/// afterwards is read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_consumer_without_a_record_is_read_again() {
+    let rig = Rig::start("resident-config-absent").await;
+    assert_eq!(rig.config("c").await, None);
+    let stored = ConsumerRecord {
+        generation: 1,
+        state: ConsumerLifecycle::Active,
+        config: config(),
+    };
+    rig.db
+        .put(
+            crate::queue::config_key(&SEGMENT, "c"),
+            serde_json::to_vec(&stored).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rig.config("c").await, Some(stored));
     rig.stop().await;
 }
 

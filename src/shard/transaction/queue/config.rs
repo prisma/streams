@@ -9,7 +9,15 @@ impl CommitTransaction<'_> {
         if let Some(record) = local.queue.configs.get(consumer) {
             return Ok(Some(record.clone()));
         }
-        self.engine
+        if let Some(record) = local
+            .handle
+            .hot(|hot| hot.config(consumer).cloned())
+            .flatten()
+        {
+            return Ok(Some(record));
+        }
+        let record = self
+            .engine
             .db
             .get(config_key(hash, consumer))
             .await
@@ -18,7 +26,13 @@ impl CommitTransaction<'_> {
                 decode_consumer_record(&value)
                     .map_err(|error| format!("consumer_config_corrupt: {error}"))
             })
-            .transpose()
+            .transpose()?;
+        // The store holds what the groups before this one left: nothing in
+        // this group staged the record, or the overlay would have answered.
+        if let Some(record) = &record {
+            local.handle.hot(|hot| hot.keep_config(consumer, record));
+        }
+        Ok(record)
     }
     #[expect(
         clippy::too_many_arguments,

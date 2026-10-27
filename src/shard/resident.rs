@@ -1,10 +1,10 @@
 //! A resident stream handle and the rows it keeps hot.
 //!
-//! The committer is the only writer of a stream's billing row, so once a
-//! commit group read or wrote it through a resident handle the handle can
-//! hold it: later groups take it from there instead of a store read on the
-//! shard's one serial commit path. A group leaves its row on the handle
-//! just before its write (`keep_hot_rows`);
+//! The committer is the only writer of a stream's billing row and consumer
+//! records, so once one of them is read or written through a resident
+//! handle the handle can hold it: later commit groups take it from there
+//! instead of a store read on the shard's one serial commit path. A group
+//! leaves its rows on the handle just before its write (`keep_hot_rows`);
 //! a group refused before the write leaves nothing, and a failed write
 //! retires the engine and every handle it holds (TLA-005-F5). An evicted
 //! handle takes its rows with it, and the next one reloads them.
@@ -15,6 +15,7 @@ use tokio::sync::Notify;
 
 use super::{ShardEngine, StreamHandle, StreamState, TailFields, TailRing, now_ms};
 use crate::billing::SegmentBillingMetaV1;
+use crate::queue::{ConsumerLifecycle, ConsumerRecord};
 
 /// The rows a resident handle holds for the committer.
 #[derive(Default)]
@@ -22,6 +23,11 @@ pub(crate) struct HotRows {
     /// The billing row as the last staged group left it; `None`: not
     /// resident (a stream with no row is never held, and reads it again).
     billing: Option<SegmentBillingMetaV1>,
+    /// Consumer records by name as the last staged group left them. A
+    /// consumer with no record, or a deleted one, is never held and reads
+    /// the store again, so names a stream churns through do not pile up.
+    // mt-lint: allow(name-keyed-map): consumer names are scoped by the handle's tenant-qualified stream hash
+    configs: HashMap<String, ConsumerRecord>,
 }
 
 impl HotRows {
@@ -30,10 +36,33 @@ impl HotRows {
         self.billing.as_ref()
     }
 
-    /// Hold the billing row a group read or wrote, if it has one.
-    pub(super) fn keep(&mut self, billing: Option<&SegmentBillingMetaV1>) {
+    /// Hold a group's staged rows: its billing row, if it read or wrote
+    /// one, and every consumer record it read or wrote.
+    pub(super) fn keep(
+        &mut self,
+        billing: Option<&SegmentBillingMetaV1>,
+        // mt-lint: allow(name-keyed-map): a group's consumer records of the one stream this handle is
+        configs: &HashMap<String, ConsumerRecord>,
+    ) {
         if let Some(row) = billing {
             self.billing = Some(row.clone());
+        }
+        for (consumer, record) in configs {
+            self.keep_config(consumer, record);
+        }
+    }
+
+    /// The resident record of `consumer`, if any.
+    pub(super) fn config(&self, consumer: &str) -> Option<&ConsumerRecord> {
+        self.configs.get(consumer)
+    }
+
+    /// Hold `record` as `consumer`'s record; a deleted one lets go of it.
+    pub(super) fn keep_config(&mut self, consumer: &str, record: &ConsumerRecord) {
+        if record.state == ConsumerLifecycle::Deleted {
+            self.configs.remove(consumer);
+        } else {
+            self.configs.insert(consumer.to_owned(), record.clone());
         }
     }
 }
