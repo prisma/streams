@@ -948,7 +948,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "16cf3577490192d7599d2d77c931001f48d08069894592eb889ea0eb0958d667",
+    "function_sha256": "41f5ba1762d6db8c8a93dfba3fac2f4726c30fe29471a5903fa785adfed2237c",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/live_wait.rs",

@@ -884,16 +884,17 @@ async fn a_wait_waiting_for_read_memory_on_its_first_walk_waits_parked() {
 }
 
 /// A group with a small backlog is walked under a reservation sized to the
-/// records past its consumer's cursor (three of ~120 B: 3 x (120 + 64) +
-/// 4 KiB), not a whole 4 MiB coverage: with all but 16 KiB of the read
-/// memory held elsewhere, a first wait leases its backlog at once.
+/// records past its consumer's cursor at their mean payload (twenty of
+/// ~120 B: 20 x (120 + 64) + 4 KiB), not a whole 4 MiB coverage: with all
+/// but 16 KiB of the read memory held elsewhere, a first wait leases its
+/// backlog at once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_group_with_a_small_backlog_reserves_its_backlog_not_a_whole_coverage() {
     let (state, addr) = http_rig(mem()).await;
     create(addr, "q6", br#"{"format":{"kind":"json"}}"#).await;
     let (st, _, _) = preq(addr, "PUT", "/v1/streams/q6/consumers/g", &[KEY], b"{}").await;
     assert_eq!(st, 201);
-    append_batch(addr, "q6", 3, 100).await;
+    append_batch(addr, "q6", 20, 100).await;
     state.admission.set_read_memory_capacity(4 << 20);
     let held = crate::admission::read_memory::ReadHold::try_reserve(
         &state.admission,
