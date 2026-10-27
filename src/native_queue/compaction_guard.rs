@@ -53,8 +53,18 @@ struct Guarded {
 }
 
 impl CompactionScheduler for Guarded {
+    /// The size-tiered scheduler's proposals for the queue tree are
+    /// dropped: that tree is compacted only by the queue collector (its L0
+    /// merges and its debt passes, `shard::queue_maintenance`), so a mixed
+    /// cell runs one stream of scheduler jobs, not one per tree (spike A2:
+    /// the queue tree's marginal cost on a mixed cell fell from $3.95 to
+    /// $0.25 per shard-month at -50% list).
     fn propose(&self, state: &CompactorStateView) -> Vec<CompactionSpec> {
-        self.inner.propose(state)
+        self.inner
+            .propose(state)
+            .into_iter()
+            .filter(|spec| spec.segment().as_ref() != crate::keyspace::QUEUE)
+            .collect()
     }
 
     fn validate(

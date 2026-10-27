@@ -1,6 +1,6 @@
 {
   "command": "python3 scripts/quality/mutation_driver.py --measure-sizes",
-  "commit": "601ab8c077cf45d62e3bd1a1d1a2deeeb863817d",
+  "commit": "49ee012a6c869afc686a98481f9cfcef51447d3e",
   "measured_on": "2026-10-27",
   "owners": {
     "admission_body": 14,
@@ -112,6 +112,7 @@
     "queue_codec_tests": 0,
     "queue_config": 19,
     "queue_dispatch": 14,
+    "queue_l0_merge": 20,
     "queue_load": 12,
     "queue_maintenance": 146,
     "queue_receive": 41,

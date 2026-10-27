@@ -750,14 +750,33 @@ This answers READINESS TLA-019-F3 for queues: no history rows exist, forks are
 refused, billing closes at retirement, deletes are bounded and resumable, and
 quiet-shard collection is stage 4.
 
-**Escalation if shared compaction is too costly.** If Q0 shows queue
-collection rewriting too much unrelated live data, or missing its deadline
-within latency and memory budgets: first, **queue-specific LSM segments in the
-same SlateDB** (segment-aware compaction exists at the pinned version and
-shares the WAL and atomic batches, but segmentation is fixed at database
-creation, so existing shard databases need a migration plan, and L0 object
-counts rise); then a separate queue database per shard holding **all**
-authoritative queue state, with the same scheduling and GC requirements.
+**The queue tree (layout 6).** Queue rows live in their own LSM segment of
+the shard log, `'Q' ‖ generation` (`src/keyspace.rs`; generation 0 only), so
+a collection pass reads and rewrites only queue data and the stream tree's
+compactions never wait on queue churn. The size-tiered scheduler never
+compacts the queue tree (`native_queue::compaction_guard`); the collector
+owns it twice over:
+
+- **L0 merges** (`shard::queue_maintenance::l0_merge`): once the tree holds
+  16 L0s (half the 32-L0 line), one merge takes every L0 and the newest runs
+  no larger than twice what it already holds, so runs stay geometric. It
+  submits only into a compactor with no live queue-tree job, does not poll
+  the job, and looks again after 10 s if the merged L0s are still there (a
+  refused or failed merge is retried then); a fresh destination sits 16 run
+  ids above the scheduler's next, so a stream-tree job planned at the same
+  moment never takes the same id.
+- **Debt passes** (stages 3 and 4 above), which also split a pass whose L0s
+  and rewrite time at the measured rate would reach the 32-L0 line: the L0s
+  into a fresh run first, then every run into the last run.
+
+Measured on a mixed cell (spike A2, Class A/B at half list): the queue tree
+costs $0.25 (10x) to $0.72 (1x) per shard-month at a 10 s flush cadence; a
+queue-only shard writes no stream-tree L0.
+
+**Escalation if shared compaction is too costly.** If the queue tree's passes
+still miss their deadline within latency and memory budgets: a separate queue
+database per shard holding **all** authoritative queue state, with the same
+scheduling and GC requirements.
 
 ### 8.3 Accounting
 

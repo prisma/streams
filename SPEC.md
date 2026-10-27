@@ -141,9 +141,10 @@ S FF×16 ...                       the dirty-stream index, billing and maintenan
 Q <gen u32> <hash16> ...          every native-queue row (generation 0), the queue
                                   stream's tail (`t`) and its message pages
 ```
-A native queue's rows live in the `Q` tree, the only tree the queue
-collector's passes read and rewrite, so a queue's churn never rewrites stream
-state and a queue-only shard writes no `S` L0.
+A native queue's rows live in the `Q` tree, which only the queue collector
+compacts (its L0 merges and debt passes, docs/QUEUES-DESIGN.md §8.2), so a
+queue's churn never rewrites stream state and a queue-only shard writes no `S`
+L0.
 
 History (one shared partition per shard, WAL disabled — the shard log *is*
 its WAL; layout 5):

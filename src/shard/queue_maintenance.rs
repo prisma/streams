@@ -275,6 +275,7 @@ struct PassReport {
     split: bool,
 }
 
+mod l0_merge;
 #[cfg(test)]
 mod native_queue_collector_tests;
 
@@ -285,6 +286,10 @@ impl ShardEngine {
         let collector = self.clone();
         self.spawn_required("queue-collector", async move {
             collector.collector_loop().await
+        });
+        let merger = self.clone();
+        self.spawn_required("queue-l0-merger", async move {
+            merger.queue_l0_merger_loop().await
         });
     }
 

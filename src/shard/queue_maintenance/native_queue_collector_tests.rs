@@ -719,3 +719,76 @@ async fn native_queue_collection_spec_beside_a_live_compaction_is_refused_by_the
     let done = ShardEngine::await_compaction(&admin, &regular);
     assert_eq!(tokio::time::timeout(STEP_WITHIN, done).await, Ok(true));
 }
+
+/// Flush one row into the queue tree and one into the stream tree.
+async fn flush_both(r: &Rig, i: u32) {
+    r.db.put(qk(&i.to_be_bytes()), b"v").await.unwrap();
+    r.db.put(sk(&i.to_be_bytes()), b"v").await.unwrap();
+    let memtable = slatedb::config::FlushOptions {
+        flush_type: slatedb::config::FlushType::MemTable,
+    };
+    r.db.flush_with_options(memtable).await.unwrap();
+}
+
+/// The scheduler never compacts the queue tree (it does compact the
+/// stream tree), and the collector merges the queue tree's L0s once they
+/// reach the trigger (16).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_queue_collection_merges_queue_l0s_at_the_trigger_and_the_scheduler_leaves_them() {
+    // The shard log's L0 line (32, `config::validation`): SlateDB's
+    // default would stall the queue tree's ninth flush below the trigger.
+    let settings = slatedb::config::Settings {
+        l0_max_ssts: 32,
+        l0_max_ssts_per_key: 32,
+        ..compactor_every(Duration::from_millis(100))
+    };
+    let r = rig("t/nqc-merge", Some(settings)).await;
+    for i in 0..15 {
+        flush_both(&r, i).await;
+    }
+    let stream_compacted = || {
+        let m = r.db.manifest();
+        let stream = m
+            .segment(&[crate::keyspace::STREAM])
+            .expect("a stream tree");
+        !stream.compacted().is_empty()
+    };
+    let stream_compacted = async {
+        while !stream_compacted() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    tokio::time::timeout(STEP_WITHIN, stream_compacted)
+        .await
+        .expect("the scheduler compacts the stream tree");
+    // Two merger ticks after the stream tree compacted: below the trigger
+    // the queue tree's L0s are never merged, by the scheduler or the merger.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let m = r.db.manifest();
+    assert_eq!(
+        queue_l0(&m).len(),
+        15,
+        "below the trigger nothing merges the queue L0s"
+    );
+    assert!(
+        queue_runs(&m).is_empty(),
+        "the scheduler wrote no queue-tree run"
+    );
+    flush_both(&r, 15).await;
+    let merged_now = || {
+        let m = r.db.manifest();
+        queue_l0(&m).is_empty() && !queue_runs(&m).is_empty()
+    };
+    let merged = async {
+        while !merged_now() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    tokio::time::timeout(STEP_WITHIN, merged)
+        .await
+        .expect("the L0s merge");
+    for i in 0..16u32 {
+        let v = r.db.get(qk(&i.to_be_bytes())).await.unwrap();
+        assert_eq!(v.as_deref(), Some(&b"v"[..]));
+    }
+}
