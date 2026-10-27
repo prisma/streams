@@ -2659,6 +2659,14 @@
     {
       "category": "global",
       "count": 1,
+      "owner": "crate::MEMO",
+      "path": "src/product/live_wait/cursor_memo.rs",
+      "reason": "The multiplexed wait's memo of tail cursors it already decoded, process-wide because every request of a stateless long-poll re-issues them: bounded at MEMO_CAP entries (a full memo starts over), keyed by every input of the pure ReadCursor::decode with the verified key named by its fingerprint, so it holds no key material and a token that does not decode is never held.",
+      "syntax": "OnceLock < CursorMemo >"
+    },
+    {
+      "category": "global",
+      "count": 1,
       "owner": "crate::BILLING_CLOCK_OVERRIDE",
       "path": "src/billing/test_clock.rs",
       "reason": "Test-only billing clock override the month-sensitive tests inject; nothing outside cfg(test) reads it.",

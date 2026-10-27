@@ -120,9 +120,16 @@ impl Tail {
         }
         let (key, epoch) = super::stream_key(&key, &desc)?;
         let binding = CursorBinding::of(&desc, epoch, &key, &routing_key);
-        let start = binding
-            .start(cursor.as_deref())
-            .map_err(|error| Box::new(binding.failure(error)))?;
+        let start = super::cursor_memo::start(&binding, cursor.as_deref(), |token| {
+            super::cursor_memo::Decoded {
+                project: desc.project_id.clone(),
+                epoch,
+                fingerprint: desc.key_fingerprint.clone(),
+                routing_key: routing_key.clone(),
+                token,
+            }
+        })
+        .map_err(|error| Box::new(binding.failure(error)))?;
         if let Err(error) = state.creation_service().renew_ttl(&desc).await {
             return Err(Box::new(super::retry_unavailable(&error.to_string())));
         }

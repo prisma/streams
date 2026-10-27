@@ -53,6 +53,7 @@ use crate::auth::RequestPrincipal;
 use crate::registry::StreamDesc;
 use crate::tenant::{ProjectId, Scope};
 
+mod cursor_memo;
 mod group;
 mod tail;
 mod watch;
