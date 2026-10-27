@@ -237,7 +237,7 @@ test("the packing manifests: Fable's T and S at every step, the shape alike, eve
   const { bounds, ceilings } = cellSizing(readProfiles(DEFAULT_PROFILES));
   // `s-mux`: profile S through one multiplexed wait a project (layout 6A
   // package 2, PACK_MUX=1).
-  const steps: Record<string, number[]> = { t: [1, 100, 400, 1000], s: [1, 5, 10, 20, 30, 46], "s-mux": [48, 70, 100, 150] };
+  const steps: Record<string, number[]> = { t: [1, 100, 400, 1000], s: [1, 5, 10, 20, 30, 46], "s-mux": [48, 70, 100, 150, 200] };
   const name = (p: string, n: number) => `pack-${p}-${String(n).padStart(4, "0")}`;
   const files = readdirSync(join(import.meta.dir, "tenants")).filter((f) => f.startsWith("pack-")).sort();
   expect(files).toEqual(Object.entries(steps).flatMap(([p, ns]) => ns.map((n) => `${name(p, n)}.json`)).sort());
