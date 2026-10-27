@@ -1,9 +1,12 @@
-//! Queue row keys (docs/QUEUES-DESIGN.md §5): every row of a queue lives
-//! under `hash ‖ 'Q' ‖ family`, big-endian so key order is numeric order.
-//! The message pages themselves keep the stream's page key
-//! (`crypto_page::shard_page_key`), one message per page.
+//! Queue row keys (docs/QUEUES-DESIGN.md §5; layout 6A): every row of a
+//! queue lives in the queue segment, under `'Q' ‖ gen ‖ hash ‖ family`,
+//! big-endian so key order is numeric order. The message pages keep the
+//! stream page layout under the same segment
+//! (`crypto_page::queue_page_key`), one message per page, and the queue
+//! stream's tail is `shard::queue_tail_key`.
 
-pub(crate) const TAG: u8 = b'Q';
+use crate::keyspace::{QUEUE, QUEUE_PREFIX_LEN};
+
 /// The queue's state row: configuration, clock, cursor, counters, debt.
 pub(crate) const STATE: u8 = b's';
 /// Per-message metadata row.
@@ -25,20 +28,27 @@ pub(crate) const DEDUP: u8 = b'u';
 /// Dedup expiry index: (expiresAt, tag).
 pub(crate) const DEDUP_EXPIRY: u8 = b'v';
 
+/// Where a queue row's family byte sits: after the segment prefix and the
+/// queue's hash.
+pub(crate) const FAMILY_AT: usize = QUEUE_PREFIX_LEN + 16;
+
 /// The shard-wide queue roster: one row per queue with pending work,
-/// keyed under the dirty sentinel so a new owner finds it by one prefix
-/// scan (§6.8). Value: the next deadline, i64 big-endian.
-pub(crate) const ROSTER_PREFIX: [u8; 18] = {
-    let mut k = [0xFFu8; 18];
-    k[16] = TAG;
-    k[17] = b'R';
+/// keyed under an all-0xFF sentinel hash in the queue segment so a new
+/// owner finds it by one prefix scan (§6.8). Value: the next deadline,
+/// i64 big-endian. Its tag `R` is no queue row family.
+pub(crate) const ROSTER_PREFIX: [u8; FAMILY_AT + 1] = {
+    let mut k = [0xFFu8; FAMILY_AT + 1];
+    let mut i = 0;
+    while i < QUEUE_PREFIX_LEN {
+        k[i] = QUEUE[i];
+        i += 1;
+    }
+    k[FAMILY_AT] = b'R';
     k
 };
 
 pub(crate) fn family(hash: &[u8; 16], family: u8) -> Vec<u8> {
-    let mut k = Vec::with_capacity(34);
-    k.extend_from_slice(hash);
-    k.push(TAG);
+    let mut k = crate::keyspace::queue_row(hash, 17);
     k.push(family);
     k
 }

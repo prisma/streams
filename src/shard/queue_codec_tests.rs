@@ -108,7 +108,8 @@ async fn r08_corrupt_queue_rows_refuse_without_replacing_persisted_state() {
 fn r08_queue_codecs_reject_partial_extensions_and_keep_key_bytes() {
     let hash = [3; 16];
     let key = queue::lease_key(&hash, "a", 0x0102, 0x0304);
-    let mut golden = vec![3; 16];
+    let mut golden = vec![b'S'];
+    golden.extend_from_slice(&[3; 16]);
     golden.extend_from_slice(b"la\0\0\0\0\0\0\0\x01\x02\0\0\0\0\0\0\x03\x04");
     assert_eq!(key, golden);
     assert_eq!(

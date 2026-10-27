@@ -57,20 +57,18 @@ pub(crate) struct QueueState {
 /// dead generation's residue:
 ///
 /// ```text
-/// <hash16> 'c' <consumer> 0x00 <gen BE>          cursor
-/// <hash16> 'l' <consumer> 0x00 <gen BE> <off BE> lease
-/// <hash16> 'x' <consumer> 0x00 <gen BE> <off BE> settled marker
+/// 'S' <hash16> 'c' <consumer> 0x00 <gen BE>          cursor
+/// 'S' <hash16> 'l' <consumer> 0x00 <gen BE> <off BE> lease
+/// 'S' <hash16> 'x' <consumer> 0x00 <gen BE> <off BE> settled marker
 /// ```
+///
+/// Consumer rows are stream state: every key starts with the stream
+/// segment's tag `'S'` (layout 6, `crate::keyspace::STREAM`).
 ///
 /// `state_prefix` (name + separator, NO generation) covers every
 /// generation — cleanup deletes a consumer's rows across all of them.
 pub(crate) fn state_prefix(hash: &[u8; 16], tag: u8, consumer: &str) -> Vec<u8> {
-    let mut k = Vec::with_capacity(18 + consumer.len());
-    k.extend_from_slice(hash);
-    k.push(tag);
-    k.extend_from_slice(consumer.as_bytes());
-    k.push(0);
-    k
+    [b"S".as_slice(), hash, &[tag], consumer.as_bytes(), &[0]].concat()
 }
 
 pub(crate) fn cursor_key(hash: &[u8; 16], consumer: &str, cgen: u64) -> Vec<u8> {
@@ -102,7 +100,8 @@ pub(crate) fn decode_state_key<'a>(
     key: &'a [u8],
 ) -> Result<(&'a str, u64, Option<u64>), &'static str> {
     let identity_error = "queue key identity mismatch";
-    let (prefix, rest) = key.split_first_chunk::<16>().ok_or(identity_error)?;
+    let rest = key.strip_prefix(b"S").ok_or(identity_error)?;
+    let (prefix, rest) = rest.split_first_chunk::<16>().ok_or(identity_error)?;
     let (kind, rest) = rest.split_first().ok_or(identity_error)?;
     if prefix != hash || *kind != tag {
         return Err(identity_error);
@@ -278,11 +277,7 @@ pub(crate) struct ConsumerRecord {
 }
 
 pub(crate) fn config_key(hash: &[u8; 16], consumer: &str) -> Vec<u8> {
-    let mut k = Vec::with_capacity(17 + consumer.len());
-    k.extend_from_slice(hash);
-    k.push(b'C');
-    k.extend_from_slice(consumer.as_bytes());
-    k
+    [b"S".as_slice(), hash, b"C", consumer.as_bytes()].concat()
 }
 
 /// DURABLE consumer-generation fence: `<hash16> 'F' <consumer>` →
@@ -300,11 +295,7 @@ pub(crate) fn config_key(hash: &[u8; 16], consumer: &str) -> Vec<u8> {
 /// The row is tiny, monotonic, and long-lived: new generations are always
 /// above it, so it never needs deleting.
 pub(crate) fn fence_key(hash: &[u8; 16], consumer: &str) -> Vec<u8> {
-    let mut k = Vec::with_capacity(17 + consumer.len());
-    k.extend_from_slice(hash);
-    k.push(b'F');
-    k.extend_from_slice(consumer.as_bytes());
-    k
+    [b"S".as_slice(), hash, b"F", consumer.as_bytes()].concat()
 }
 
 pub(crate) enum QueueOp {
@@ -487,7 +478,7 @@ mod tests {
     fn queue_key_identity_and_name_errors_remain_distinct() {
         let hash = [7; 16];
         let valid = cursor_key(&hash, "worker", 9);
-        for end in 0..17 {
+        for end in 0..18 {
             assert_eq!(
                 decode_state_key(&hash, b'c', valid.get(..end).unwrap()),
                 Err("queue key identity mismatch")
@@ -497,12 +488,11 @@ mod tests {
             decode_state_key(&[8; 16], b'c', &valid),
             Err("queue key identity mismatch")
         );
-        assert_eq!(
-            decode_state_key(&hash, b'l', &valid),
-            Err("queue key identity mismatch")
-        );
-        let mut missing = hash.to_vec();
-        missing.extend_from_slice(b"cworker");
+        for (tag, foreign) in [(b'l', &valid[..]), (b'c', &valid[1..])] {
+            let identity = decode_state_key(&hash, tag, foreign);
+            assert_eq!(identity, Err("queue key identity mismatch"));
+        }
+        let missing = [b"S".as_slice(), &hash, b"cworker"].concat();
         assert_eq!(
             decode_state_key(&hash, b'c', &missing),
             Err("queue key missing separator")
@@ -512,9 +502,7 @@ mod tests {
             decode_state_key(&hash, b'c', &empty),
             Err("queue key name is empty")
         );
-        let mut invalid_utf8 = hash.to_vec();
-        invalid_utf8.extend_from_slice(&[b'c', 255, 0]);
-        invalid_utf8.extend_from_slice(&[0; 8]);
+        let invalid_utf8 = [b"S".as_slice(), &hash, &[b'c', 255, 0], &[0; 8]].concat();
         assert_eq!(
             decode_state_key(&hash, b'c', &invalid_utf8),
             Err("queue key name is not UTF-8")

@@ -124,17 +124,26 @@ contiguous key range — a split is a single `projection_range` per child.
 
 ### 3.3 Keyspaces
 
-Shard log (one SlateDB per shard; payload bytes are ciphertext):
+Shard log (one SlateDB per shard; payload bytes are ciphertext). Since
+layout 6 every key starts with a segment tag, and SlateDB (RFC 0024) keeps one
+compaction tree per segment (`src/keyspace.rs`; the extractor is fixed when
+the shard log is created):
 ```
-<hash16> m                      stream meta (registry cache / tombstone)
-<hash16> t                      tail: next_offset, last_ts, last Stream-Seq,
-                                cumulative logical bytes, absorbed_through
-<hash16> p <last offset u64 BE> page (layout 5): one append request's records,
-                                at most 64 KiB and 4,096 of them, behind a clear
-                                header (first offset, count, routing key, nonce);
-                                the body is zstd-1 compressed when that pays, then
-                                encrypted once (src/crypto_page.rs)
+S <hash16> m                      stream meta (registry cache / tombstone)
+S <hash16> t                      tail: next_offset, last_ts, last Stream-Seq,
+                                  cumulative logical bytes, absorbed_through
+S <hash16> p <last offset u64 BE> page (layout 5): one append request's records,
+                                  at most 64 KiB and 4,096 of them, behind a clear
+                                  header (first offset, count, routing key, nonce);
+                                  the body is zstd-1 compressed when that pays, then
+                                  encrypted once (src/crypto_page.rs)
+S FF×16 ...                       the dirty-stream index, billing and maintenance rows
+Q <gen u32> <hash16> ...          every native-queue row (generation 0), the queue
+                                  stream's tail (`t`) and its message pages
 ```
+A native queue's rows live in the `Q` tree, the only tree the queue
+collector's passes read and rewrite, so a queue's churn never rewrites stream
+state and a queue-only shard writes no `S` L0.
 
 History (one shared partition per shard, WAL disabled — the shard log *is*
 its WAL; layout 5):

@@ -4,7 +4,7 @@
 //! row nor the page.
 #![cfg(test)]
 use super::{HASH, claim, clocked, msg, op, send_op};
-use crate::crypto_page::shard_page_key;
+use crate::crypto_page::queue_page_key as shard_page_key;
 use crate::native_queue::rows::{MetaRow, decode_avail};
 use crate::native_queue::{INLINE_PAGE_MAX, QueueConfig, keys};
 

@@ -69,7 +69,11 @@ async fn a_send_fills_the_byte_budget_exactly_and_no_further() {
     op(&e, send_op(vec![msg("1234567")])).await.unwrap();
     let s = state(&db).await;
     assert_eq!((s.queued_bytes, s.counters.sent), (10, 2));
-    let tail = db.get(super::tail_key(&HASH)).await.unwrap().unwrap();
+    let tail = db
+        .get(crate::shard::queue_tail_key(&HASH))
+        .await
+        .unwrap()
+        .unwrap();
     let tail = super::decode_tail_for_tests(&tail).unwrap();
     assert_eq!((tail.next, tail.logical, tail.ts), (2, 10, c));
     let appended = e.stats_appended.load(std::sync::atomic::Ordering::Relaxed);

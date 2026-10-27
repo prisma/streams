@@ -17,7 +17,8 @@ use slatedb::compactor::{
 };
 
 /// The shard log's database builder: `settings`' compactor options run under
-/// the guarded scheduler.
+/// the guarded scheduler, and every key is routed to its segment's tree by
+/// the shard log's segment extractor (layout 6, `crate::keyspace`).
 pub(crate) fn shard_log_builder(
     path: &str,
     store: Arc<dyn object_store::ObjectStore>,
@@ -28,7 +29,7 @@ pub(crate) fn shard_log_builder(
             .with_options(options)
             .with_scheduler_supplier(Arc::new(GuardedSupplier))
     });
-    let builder = slatedb::Db::builder(path, store).with_settings(settings);
+    let builder = crate::keyspace::db_builder(path, store).with_settings(settings);
     match compactor {
         Some(compactor) => builder.with_compactor_builder(compactor),
         None => builder,
@@ -80,7 +81,10 @@ impl CompactionScheduler for Guarded {
     }
 }
 
-/// Every sorted run and SST view a spec reads or writes.
+/// Every sorted run and SST view a spec reads or writes. Sorted-run ids are
+/// global across segments (RFC 0024: one counter; a fresh destination must
+/// exceed every tree's runs) and views are ULIDs, so two specs in different
+/// segments never share an id and the comparison needs no segment.
 fn footprint(spec: &CompactionSpec) -> HashSet<SourceId> {
     let destination = spec.destination().map(SourceId::SortedRun);
     spec.sources().iter().copied().chain(destination).collect()

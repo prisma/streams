@@ -57,8 +57,12 @@ pub(crate) const SHARD_PAGE_TAG: u8 = b'p';
 /// The row-key tag of a history page row. History's `'p'` rows are its
 /// postings pages, so its stored pages take a tag nothing else there uses.
 pub(crate) const HISTORY_PAGE_TAG: u8 = b'g';
-/// The width of a shard-log page prefix: hash16 and the tag.
-const SHARD_PAGE_PREFIX_LEN: usize = 17;
+/// The width of a shard-log stream page prefix: the stream segment tag,
+/// hash16 and the page tag (layout 6).
+const SHARD_PAGE_PREFIX_LEN: usize = 18;
+/// The width of a shard-log queue page prefix: the queue segment prefix
+/// (tag and generation), hash16 and the page tag (layout 6).
+const QUEUE_PAGE_PREFIX_LEN: usize = crate::keyspace::QUEUE_PREFIX_LEN + 17;
 /// The width of a history page prefix: route16, inc16 and the tag.
 const HISTORY_PAGE_PREFIX_LEN: usize = 33;
 /// The body cap of a page that holds more than one record, and the size at
@@ -109,18 +113,40 @@ pub(crate) fn page_scan_bound(to: u64) -> u64 {
 
 /// Shard-log row key of the page whose last offset is `last`.
 pub(crate) fn shard_page_key(hash: &[u8; 16], last: u64) -> Vec<u8> {
-    let mut key = Vec::with_capacity(25);
+    let mut key = Vec::with_capacity(SHARD_PAGE_PREFIX_LEN + 8);
     key.extend_from_slice(&shard_page_prefix(hash));
     key.extend_from_slice(&last.to_be_bytes());
     key
 }
 
-/// The canonical prefix of a segment's shard-log page keys: its hash and
-/// the shard-log page tag. `CheckedPage::from_row` admits a row against it.
+/// The canonical prefix of a segment's shard-log page keys: the stream
+/// segment tag, its hash and the shard-log page tag.
+/// `CheckedPage::from_row` admits a row against it.
 pub(crate) fn shard_page_prefix(hash: &[u8; 16]) -> [u8; SHARD_PAGE_PREFIX_LEN] {
     let mut prefix = [SHARD_PAGE_TAG; SHARD_PAGE_PREFIX_LEN];
-    let (namespace, _) = prefix.split_at_mut(16);
-    namespace.copy_from_slice(hash);
+    let (namespace, _) = prefix.split_at_mut(17);
+    let (segment, hash_part) = namespace.split_at_mut(1);
+    segment.copy_from_slice(&[crate::keyspace::STREAM]);
+    hash_part.copy_from_slice(hash);
+    prefix
+}
+
+/// Shard-log row key of a native queue's message page whose last offset is
+/// `last`: the page layout under the queue segment (layout 6).
+pub(crate) fn queue_page_key(hash: &[u8; 16], last: u64) -> Vec<u8> {
+    let mut key = Vec::with_capacity(QUEUE_PAGE_PREFIX_LEN + 8);
+    key.extend_from_slice(&queue_page_prefix(hash));
+    key.extend_from_slice(&last.to_be_bytes());
+    key
+}
+
+/// The canonical prefix of a native queue's page keys.
+pub(crate) fn queue_page_prefix(hash: &[u8; 16]) -> [u8; QUEUE_PAGE_PREFIX_LEN] {
+    let mut prefix = [SHARD_PAGE_TAG; QUEUE_PAGE_PREFIX_LEN];
+    let (namespace, _) = prefix.split_at_mut(QUEUE_PAGE_PREFIX_LEN - 1);
+    let (segment, hash_part) = namespace.split_at_mut(crate::keyspace::QUEUE_PREFIX_LEN);
+    segment.copy_from_slice(&crate::keyspace::QUEUE);
+    hash_part.copy_from_slice(hash);
     prefix
 }
 
@@ -153,7 +179,7 @@ pub(crate) fn history_page_prefix(
 /// any other row family, is refused before its rows are looked at.
 const fn page_tag(len: usize) -> Option<u8> {
     match len {
-        SHARD_PAGE_PREFIX_LEN => Some(SHARD_PAGE_TAG),
+        SHARD_PAGE_PREFIX_LEN | QUEUE_PAGE_PREFIX_LEN => Some(SHARD_PAGE_TAG),
         HISTORY_PAGE_PREFIX_LEN => Some(HISTORY_PAGE_TAG),
         _ => None,
     }

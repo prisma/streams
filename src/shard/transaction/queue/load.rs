@@ -24,19 +24,28 @@ impl CommitTransaction<'_> {
             loaded: true,
         };
         for tag in *b"clx" {
-            let mut prefix = hash.to_vec();
-            prefix.push(tag);
-            let mut rows = self
-                .engine
-                .db
-                .scan_prefix(&prefix[..], ..)
-                .await
-                .map_err(|e| e.to_string())?;
-            while let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-                Self::load_queue_row(&mut fresh, &hash, tag, &row.key, &row.value)?;
-            }
+            self.load_queue_rows(&mut fresh, &hash, tag).await?;
         }
         local.queue.state = Some(fresh);
+        Ok(())
+    }
+    /// Every consumer row of one tag (`'S' ‖ hash ‖ tag`, stream state).
+    async fn load_queue_rows(
+        &self,
+        fresh: &mut QueueState,
+        hash: &[u8; 16],
+        tag: u8,
+    ) -> Result<(), String> {
+        let prefix = [&[crate::keyspace::STREAM][..], hash, &[tag]].concat();
+        let mut rows = self
+            .engine
+            .db
+            .scan_prefix(&prefix[..], ..)
+            .await
+            .map_err(|e| e.to_string())?;
+        while let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
+            Self::load_queue_row(fresh, hash, tag, &row.key, &row.value)?;
+        }
         Ok(())
     }
     fn load_queue_row(

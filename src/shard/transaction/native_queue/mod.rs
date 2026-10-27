@@ -33,6 +33,9 @@ impl CommitTransaction<'_> {
         op: NqOp,
         resp: NativeReply,
     ) {
+        // A queue's tail row lives in the queue segment (layout 6): its
+        // first operation names it a queue before any row is staged.
+        local.handle.native_queue.store(true, Ordering::Relaxed);
         let mut st = match local.queue.native.take() {
             Some(st) => st,
             None => match self.nq_load(&hash).await {

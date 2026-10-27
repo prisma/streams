@@ -22,10 +22,10 @@ impl NativeStage {
     /// floor to the entry's time, and the state row carries it in the same
     /// batch as the entry.
     fn lower_floor(&mut self, key: &[u8]) {
-        let (Some(&fam), Some(at)) = (key.get(17), key_time(key)) else {
+        let (Some(&fam), Some(at)) = (key.get(keys::FAMILY_AT), key_time(key)) else {
             return;
         };
-        if key.get(16) != Some(&keys::TAG) {
+        if !key.starts_with(&crate::keyspace::QUEUE) {
             return;
         }
         if let Some(floor) = self.state.floors.of(fam) {
@@ -237,10 +237,10 @@ impl super::super::CommitTransaction<'_> {
     }
 }
 
-/// The time of a time-ordered index key (bytes 18..26 under
-/// `hash ‖ 'Q' ‖ family`).
+/// The time of a time-ordered index key (the eight bytes after
+/// `'Q' ‖ gen ‖ hash ‖ family`).
 pub(super) fn key_time(key: &[u8]) -> Option<i64> {
-    let at = <[u8; 8]>::try_from(key.get(18..26)?).ok()?;
+    let at = <[u8; 8]>::try_from(key.get(keys::FAMILY_AT + 1..keys::FAMILY_AT + 9)?).ok()?;
     i64::try_from(u64::from_be_bytes(at)).ok()
 }
 

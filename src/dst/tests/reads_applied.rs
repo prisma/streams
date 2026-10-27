@@ -307,7 +307,7 @@ async fn a_lost_applied_suffix_rewinds_to_the_durable_frontier() {
 
     // Epoch 2: no pump, 10-minute failsafe — an applied write CANNOT
     // become durable within the test's lifetime.
-    let db = slatedb::Db::builder(prefix, store.clone())
+    let db = crate::keyspace::db_builder(prefix, store.clone())
         .with_settings(slatedb::config::Settings {
             flush_interval: Some(std::time::Duration::from_secs(600)),
             manifest_poll_interval: std::time::Duration::from_millis(50),

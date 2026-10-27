@@ -96,7 +96,7 @@ async fn stored_rows(engine: &ShardEngine) -> Vec<(Bytes, Bytes)> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r08a_database_record_corruption_refuses_progress_without_mutation() {
     let mut short = shard_page_key(&[8; 16], 1);
-    short.remove(17);
+    short.remove(18);
     let mut long = shard_page_key(&[8; 16], 1);
     long.push(0);
     let cases = [
@@ -198,7 +198,7 @@ fn r08a_record_boundary_validates_namespace_extent_and_offset() {
         foreign[at] ^= 1;
         assert_eq!(admit(&foreign, &raw), Err(PageCorruption::Namespace));
     }
-    for width in [0, 17, 24, 26] {
+    for width in [0, 18, 25, 27] {
         let mut invalid = key.clone();
         invalid.resize(width, 0);
         assert_eq!(admit(&invalid, &raw), Err(PageCorruption::KeyWidth));

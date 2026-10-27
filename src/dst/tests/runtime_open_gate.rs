@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 /// was in when its engine first died: a WAL the boundary had not caught up
 /// with, behind a slow, partially cross-routed store.
 async fn seed_untrimmed_wal(store: Arc<dyn ObjectStore>, prefix: &str, records: u64) {
-    let db = slatedb::Db::builder(prefix, store)
+    let db = crate::keyspace::db_builder(prefix, store)
         .with_settings(slatedb::config::Settings {
             // Mint a WAL SST per write...
             flush_interval: Some(std::time::Duration::from_millis(1)),
@@ -34,7 +34,7 @@ async fn seed_untrimmed_wal(store: Arc<dyn ObjectStore>, prefix: &str, records: 
         .expect("seed db");
     for i in 0..records {
         db.put_with_options(
-            format!("k{i:06}").as_bytes(),
+            format!("Sk{i:06}").as_bytes(),
             vec![7u8; 256].as_slice(),
             &slatedb::config::PutOptions::default(),
             &slatedb::config::WriteOptions::default(),
@@ -88,7 +88,7 @@ async fn naive_get_or_open(
         // gets `Fenced` from the winner — count those, they are the
         // zombies of the real incident.
         let st2 = st.clone();
-        let db = slatedb::Db::builder(p.as_str(), st)
+        let db = crate::keyspace::db_builder(p.as_str(), st)
             .with_settings(slatedb::config::Settings {
                 flush_interval: Some(std::time::Duration::from_millis(5)),
                 manifest_poll_interval: std::time::Duration::from_millis(50),
@@ -329,7 +329,7 @@ async fn idle_engine_store_traffic_is_bounded_by_the_poll_cadence() {
 
     let inner = mem();
     let store = FaultStore::uniform(inner, 11, FaultPlan::new(0, 0, 100));
-    let db = slatedb::Db::builder("dst-idlepoll", store.clone() as Arc<dyn ObjectStore>)
+    let db = crate::keyspace::db_builder("dst-idlepoll", store.clone() as Arc<dyn ObjectStore>)
         .with_settings(slatedb::config::Settings {
             // Production shape: pump on ⇒ SlateDB's own flush timer is the
             // 60 s failsafe (the constant open_engine_cfg mirrors too).

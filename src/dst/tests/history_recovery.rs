@@ -17,7 +17,7 @@ async fn idle_stream_handles_evict_and_reload() {
     let store = FaultStore::uniform(inner.clone(), 95, FaultPlan::new(0, 0, 0));
     let key = skey();
 
-    let db = slatedb::Db::builder("dst-evict", store.clone() as Arc<dyn ObjectStore>)
+    let db = crate::keyspace::db_builder("dst-evict", store.clone() as Arc<dyn ObjectStore>)
         .with_settings(slatedb::config::Settings {
             flush_interval: Some(std::time::Duration::from_millis(5)),
             manifest_poll_interval: std::time::Duration::from_millis(50),
@@ -110,7 +110,7 @@ async fn a_second_absorption_wave_trims_under_a_global_budget() {
     const RECS: u64 = 200;
     const BUDGET: u64 = 512;
 
-    let db = slatedb::Db::builder("dst-maturewave", store.clone() as Arc<dyn ObjectStore>)
+    let db = crate::keyspace::db_builder("dst-maturewave", store.clone() as Arc<dyn ObjectStore>)
         .with_settings(slatedb::config::Settings {
             flush_interval: Some(std::time::Duration::from_millis(5)),
             manifest_poll_interval: std::time::Duration::from_millis(50),
@@ -270,7 +270,7 @@ async fn budget_deferred_streams_absorb_on_the_next_tick() {
     let key = skey();
     let hashes: Vec<[u8; 16]> = (0u8..6).map(|i| [0xD0 + i; 16]).collect();
 
-    let db = slatedb::Db::builder("dst-defer", store.clone() as Arc<dyn ObjectStore>)
+    let db = crate::keyspace::db_builder("dst-defer", store.clone() as Arc<dyn ObjectStore>)
         .with_settings(slatedb::config::Settings {
             flush_interval: Some(std::time::Duration::from_millis(5)),
             manifest_poll_interval: std::time::Duration::from_millis(50),
@@ -368,7 +368,7 @@ async fn a_large_record_absorbs_after_restart_under_default_policy() {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 
-    let db = slatedb::Db::builder("dst-bigrec", store.clone() as Arc<dyn ObjectStore>)
+    let db = crate::keyspace::db_builder("dst-bigrec", store.clone() as Arc<dyn ObjectStore>)
         .with_settings(bigrec_settings())
         .build()
         .await
@@ -449,15 +449,16 @@ async fn dirty_scan_retries_until_it_succeeds() {
     let hash = [0xA9u8; 16];
 
     {
-        let db = slatedb::Db::builder("dst-scanretry", store.clone() as Arc<dyn ObjectStore>)
-            .with_settings(slatedb::config::Settings {
-                flush_interval: Some(std::time::Duration::from_millis(5)),
-                manifest_poll_interval: std::time::Duration::from_millis(50),
-                ..Default::default()
-            })
-            .build()
-            .await
-            .expect("open db A");
+        let db =
+            crate::keyspace::db_builder("dst-scanretry", store.clone() as Arc<dyn ObjectStore>)
+                .with_settings(slatedb::config::Settings {
+                    flush_interval: Some(std::time::Duration::from_millis(5)),
+                    manifest_poll_interval: std::time::Duration::from_millis(50),
+                    ..Default::default()
+                })
+                .build()
+                .await
+                .expect("open db A");
         let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
         // R25-A: tests use the REAL load path — a fresh DB rebuilds to
         // zero; a reopened DB restores its durable backlog, exactly as
@@ -482,7 +483,7 @@ async fn dirty_scan_retries_until_it_succeeds() {
     // The first TWO scans on this shard fail; the third succeeds.
     crate::shard::inject_dirty_scan_faults("dst-scanretry", 2);
 
-    let db = slatedb::Db::builder("dst-scanretry", store.clone() as Arc<dyn ObjectStore>)
+    let db = crate::keyspace::db_builder("dst-scanretry", store.clone() as Arc<dyn ObjectStore>)
         .with_settings(slatedb::config::Settings {
             flush_interval: Some(std::time::Duration::from_millis(5)),
             manifest_poll_interval: std::time::Duration::from_millis(50),
@@ -560,7 +561,7 @@ async fn sparse_records_rediscovered_after_restart_are_absorbed() {
     let hash = [0xABu8; 16];
 
     {
-        let db = slatedb::Db::builder("dst-sparse", store.clone() as Arc<dyn ObjectStore>)
+        let db = crate::keyspace::db_builder("dst-sparse", store.clone() as Arc<dyn ObjectStore>)
             .with_settings(slatedb::config::Settings {
                 flush_interval: Some(std::time::Duration::from_millis(5)),
                 manifest_poll_interval: std::time::Duration::from_millis(50),
@@ -590,7 +591,7 @@ async fn sparse_records_rediscovered_after_restart_are_absorbed() {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 
-    let db = slatedb::Db::builder("dst-sparse", store.clone() as Arc<dyn ObjectStore>)
+    let db = crate::keyspace::db_builder("dst-sparse", store.clone() as Arc<dyn ObjectStore>)
         .with_settings(slatedb::config::Settings {
             flush_interval: Some(std::time::Duration::from_millis(5)),
             manifest_poll_interval: std::time::Duration::from_millis(50),
@@ -665,7 +666,7 @@ async fn pending_summary_clears_on_shard_close() {
     let key = skey();
     let hash = [0xADu8; 16];
 
-    let db = slatedb::Db::builder("dst-sumclear", store.clone() as Arc<dyn ObjectStore>)
+    let db = crate::keyspace::db_builder("dst-sumclear", store.clone() as Arc<dyn ObjectStore>)
         .with_settings(slatedb::config::Settings {
             flush_interval: Some(std::time::Duration::from_millis(5)),
             manifest_poll_interval: std::time::Duration::from_millis(50),
@@ -746,7 +747,7 @@ async fn handle_capacity_cap_evicts_oldest_first() {
     let store = FaultStore::uniform(inner.clone(), 102, FaultPlan::new(0, 0, 0));
     let key = skey();
 
-    let db = slatedb::Db::builder("dst-handlecap", store.clone() as Arc<dyn ObjectStore>)
+    let db = crate::keyspace::db_builder("dst-handlecap", store.clone() as Arc<dyn ObjectStore>)
         .with_settings(slatedb::config::Settings {
             flush_interval: Some(std::time::Duration::from_millis(5)),
             manifest_poll_interval: std::time::Duration::from_millis(50),

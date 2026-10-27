@@ -96,7 +96,7 @@ impl CommitTransaction<'_> {
                 || f.seq != b.seq
                 || f.closed != b.closed
             {
-                self.batch.put(tail_key(hash), encode_tail(f));
+                self.batch.put(local.handle.tail_row_key(), encode_tail(f));
                 let was_marked = b.absorbed < b.next || b.trimmed < b.trim_safe_to;
                 let is_marked = f.absorbed < f.next || f.trimmed < f.trim_safe_to;
                 if is_marked {

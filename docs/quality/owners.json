@@ -3657,6 +3657,14 @@
       "syntax": "tokio :: sync :: Semaphore"
     },
     {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::PASS_RATE_BPS",
+      "path": "src/shard/queue_maintenance.rs",
+      "reason": "The measured rewrite rate of the instance's queue collection passes (a running mean), which plans whether a pass must split to keep its tree under the L0 line (DESIGN-6A F5); instance-wide like the pass permit, because the passes share the instance's CPU and bandwidth.",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
       "category": "macro-dsl",
       "count": 1,
       "owner": "crate::ShardEngine::queue_tick",

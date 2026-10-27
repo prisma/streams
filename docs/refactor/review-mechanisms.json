@@ -1103,8 +1103,8 @@
       "finding": "R09",
       "before_commit": "d1131213250624de7dabf79ee3e0b9abce171b23",
       "before_sha256": "8bc4055ac728dca0543aa1e5742b7550840152476e39a32ff794c7889b16b0df",
-      "after_sha256": "c2ab263bf970c6c380094f2b6a826f5e17b5dd607e6a579c40c9e130b210f6e8",
-      "reason": "The fixture now registers the actual absorber with its engine through start_owned, matching production shutdown/join ownership. Its absorption settings and scenario scheduling remain unchanged. Item 76 drops the key cache the absorber never read (and the store start_owned no longer takes) from the opener's inputs; absorption settings and scheduling unchanged."
+      "after_sha256": "ef91524b72638eed80b75cb00369d77f0388d10cb7d408194f400a23fc44788a",
+      "reason": "The fixture now registers the actual absorber with its engine through start_owned, matching production shutdown/join ownership. Its absorption settings and scenario scheduling remain unchanged. Item 76 drops the key cache the absorber never read (and the store start_owned no longer takes) from the opener's inputs; absorption settings and scheduling unchanged. Layout 6 builds the rig's shard log through `crate::keyspace::db_builder`, which attaches the production segment extractor as `compaction_guard::shard_log_builder` does, so every rig DST writes the segmented keyspace; absorption settings, values and assertions are unchanged."
     },
     {
       "file": "src/dst/tests/fixture_livefeed.rs",

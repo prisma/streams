@@ -234,7 +234,7 @@ async fn maintenance_failed_append_group_is_noop() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn absorbed_boundary_and_maintenance_retire_atomically() {
     let store = mem();
-    let db = slatedb::Db::builder("dst-matomic/shard", store.clone())
+    let db = crate::keyspace::db_builder("dst-matomic/shard", store.clone())
         .build()
         .await
         .unwrap();
@@ -327,7 +327,7 @@ async fn absorbed_boundary_and_maintenance_retire_atomically() {
     // R25-D: complete absorption survives restart at zero.
     engine.begin_close();
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    let db2 = slatedb::Db::builder("dst-matomic/shard", store.clone())
+    let db2 = crate::keyspace::db_builder("dst-matomic/shard", store.clone())
         .build()
         .await
         .unwrap();
@@ -353,7 +353,7 @@ async fn absorbed_boundary_and_maintenance_retire_atomically() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refused_absorbed_chunk_leaves_no_phantom_backlog() {
     let store = mem();
-    let db = slatedb::Db::builder("dst-f1under/shard", store.clone())
+    let db = crate::keyspace::db_builder("dst-f1under/shard", store.clone())
         .build()
         .await
         .unwrap();
@@ -770,7 +770,7 @@ async fn legacy_rows_are_rebuilt_and_legacy_tails_repaired_on_open() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Reopen: the loader must rebuild EXACT state from the frames.
-    let db = slatedb::Db::builder(prefix, store.clone())
+    let db = crate::keyspace::db_builder(prefix, store.clone())
         .build()
         .await
         .unwrap();
@@ -848,7 +848,7 @@ async fn ownership_handoff_moves_backlog_without_aba() {
 
     // B opens the same shard (fencing A at the slatedb layer) and loads
     // the durable row — while A is STILL ALIVE: the ABA shape.
-    let db_b = slatedb::Db::builder("dst-handoff", store.clone())
+    let db_b = crate::keyspace::db_builder("dst-handoff", store.clone())
         .build()
         .await
         .unwrap();

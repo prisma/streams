@@ -24,17 +24,18 @@ impl ShardEngine {
     /// discovery path after restart or ownership move.
     #[cfg(test)]
     pub(crate) async fn usage_dirty_scan(&self) -> anyhow::Result<Vec<([u8; 16], u64)>> {
-        let mut pfx = Vec::with_capacity(17);
+        let mut pfx = Vec::with_capacity(18);
         pfx.extend_from_slice(&crate::billing::USAGE_DIRTY_SENTINEL);
         pfx.push(b'U');
         let mut out = Vec::new();
         let mut iter = self.db.scan_prefix(&pfx[..], ..).await?;
+        let at = crate::keyspace::SENTINEL_HASH_AT;
         while let Some(kv) = iter.next().await? {
-            if kv.key.len() != 33 || kv.value.len() < 8 {
+            if kv.key.len() != at + 16 || kv.value.len() < 8 {
                 continue;
             }
             let mut h = [0u8; 16];
-            h.copy_from_slice(&kv.key[17..33]);
+            h.copy_from_slice(&kv.key[at..at + 16]);
             let v = u64::from_le_bytes(kv.value[..8].try_into().unwrap());
             out.push((h, v));
         }
@@ -84,7 +85,7 @@ impl ShardEngine {
             }
             let hash: [u8; 16] = kv
                 .key
-                .get(17..)
+                .get(crate::keyspace::SENTINEL_HASH_AT..)
                 .ok_or_else(|| anyhow::anyhow!("invalid usage dirty key"))?
                 .try_into()?;
             rows.push((hash, decode_cursor(&kv.value)?));
@@ -169,7 +170,7 @@ impl ShardEngine {
     pub(crate) async fn usage_month_finals(
         &self,
     ) -> anyhow::Result<Vec<(Vec<u8>, crate::billing::SegmentSnapshot)>> {
-        let mut pfx = Vec::with_capacity(17);
+        let mut pfx = Vec::with_capacity(18);
         pfx.extend_from_slice(&crate::billing::USAGE_DIRTY_SENTINEL);
         pfx.push(b'V');
         let mut out = Vec::new();

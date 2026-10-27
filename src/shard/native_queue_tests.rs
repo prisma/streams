@@ -179,7 +179,7 @@ async fn a_sent_message_is_claimed_acked_and_its_rows_and_page_are_deleted() {
     assert!(r.iter().all(|r| r.outcome == SettleOutcome::Ok));
     // The acked message's page and rows are gone; the others stay.
     assert!(
-        db.get(crate::crypto_page::shard_page_key(&HASH, 0))
+        db.get(crate::crypto_page::queue_page_key(&HASH, 0))
             .await
             .unwrap()
             .is_none()
@@ -191,7 +191,7 @@ async fn a_sent_message_is_claimed_acked_and_its_rows_and_page_are_deleted() {
             .is_none()
     );
     assert!(
-        db.get(crate::crypto_page::shard_page_key(&HASH, 2))
+        db.get(crate::crypto_page::queue_page_key(&HASH, 2))
             .await
             .unwrap()
             .is_some()
@@ -232,7 +232,12 @@ async fn a_queue_tail_is_absorbed_in_place_and_never_marked_for_absorption() {
     let (e, db, _absorb) = engine("nq-tail").await;
     create(&e, QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), msg("b")])).await.unwrap();
-    let tail = decode_tail_for_tests(&db.get(tail_key(&HASH)).await.unwrap().unwrap()).unwrap();
+    assert!(
+        db.get(tail_key(&HASH)).await.unwrap().is_none(),
+        "no stream-segment tail"
+    );
+    let raw = db.get(crate::shard::queue_tail_key(&HASH)).await.unwrap();
+    let tail = decode_tail_for_tests(&raw.expect("the tail is in the queue segment")).unwrap();
     assert_eq!(
         (
             tail.next,
@@ -430,13 +435,15 @@ async fn a_deleted_queue_leaves_no_row_and_no_page() {
         }
     }
     assert!(done, "the delete never finished");
-    let mut prefix = HASH.to_vec();
-    prefix.push(keys::TAG);
+    let prefix = crate::keyspace::queue_row(&HASH, 0);
     let mut rows = db.scan_prefix(&prefix[..], ..).await.unwrap();
-    assert!(rows.next().await.unwrap().is_none(), "no queue row remains");
+    while let Some(row) = rows.next().await.unwrap() {
+        let family = row.key.get(keys::FAMILY_AT).copied();
+        assert_eq!(family, Some(b't'), "no queue row but the tail remains");
+    }
     for off in 0..20u64 {
         assert!(
-            db.get(crate::crypto_page::shard_page_key(&HASH, off))
+            db.get(crate::crypto_page::queue_page_key(&HASH, off))
                 .await
                 .unwrap()
                 .is_none()

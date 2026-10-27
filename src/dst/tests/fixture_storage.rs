@@ -85,7 +85,7 @@ pub(super) async fn open_engine_with_settings(
     cfg: crate::shard::ShardConfig,
     settings: slatedb::config::Settings,
 ) -> Arc<crate::shard::ShardEngine> {
-    let db = slatedb::Db::builder(prefix, store.clone())
+    let db = crate::keyspace::db_builder(prefix, store.clone())
         .with_settings(settings)
         .build()
         .await
@@ -132,7 +132,7 @@ pub(super) async fn open_engine_with_absorber_cfg(
     prefix: &str,
     cfg: crate::shard::ShardConfig,
 ) -> (Arc<crate::shard::ShardEngine>, tokio::task::JoinHandle<()>) {
-    let db = slatedb::Db::builder(prefix, store.clone())
+    let db = crate::keyspace::db_builder(prefix, store.clone())
         .with_settings(slatedb::config::Settings {
             flush_interval: Some(std::time::Duration::from_millis(5)),
             manifest_poll_interval: std::time::Duration::from_millis(50),

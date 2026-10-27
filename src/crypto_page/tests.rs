@@ -38,7 +38,7 @@ pub(super) fn lane() -> PageLane<'static> {
 
 /// The canonical shard-log page prefix of the fixture segment.
 pub(super) fn prefix() -> Vec<u8> {
-    [HASH.as_slice(), &[SHARD_PAGE_TAG]].concat()
+    [&b"S"[..], HASH.as_slice(), &[SHARD_PAGE_TAG]].concat()
 }
 
 /// Admit a sealed page under its canonical shard-log key.
@@ -495,7 +495,15 @@ fn a_scan_bound_reaches_the_page_holding_the_last_record() {
 fn row_keys_are_namespace_tag_and_last_offset() {
     let last = 0x0102_0304_0506_0708;
     let shard = shard_page_key(&HASH, last);
-    assert_eq!(shard, [&HASH[..], b"p", &last.to_be_bytes()].concat());
+    assert_eq!(
+        shard,
+        [&b"S"[..], &HASH[..], b"p", &last.to_be_bytes()].concat()
+    );
+    let queue = crate::crypto_page::queue_page_key(&HASH, last);
+    assert_eq!(
+        queue,
+        [&b"Q\0\0\0\0"[..], &HASH[..], b"p", &last.to_be_bytes()].concat()
+    );
     let (route, inc) = (RouteHash([0x0a; 16]), SegmentHash([0x0b; 16]));
     let history = history_page_key(route, inc, last);
     assert_eq!(

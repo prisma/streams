@@ -131,7 +131,7 @@ impl CommitTransaction<'_> {
             .flatten()
         {
             self.batch
-                .delete(crate::crypto_page::shard_page_key(hash, off));
+                .delete(crate::crypto_page::queue_page_key(hash, off));
             let bytes = MetaRow::decode(&v).map_or(0, |m| u64::from(m.bytes));
             Self::nq_debt(st, bytes, t);
         }

@@ -57,14 +57,17 @@ async fn queue_engine(
     (engine, seg.identity)
 }
 
-/// Every queue row stored under `hash` (`hash ‖ 'Q' ‖ family`).
+/// Every queue row stored under `hash` (`'Q' ‖ gen ‖ hash ‖ family`), the
+/// queue's pages and tail excepted.
 async fn queue_rows(engine: &crate::shard::ShardEngine, hash: &[u8; 16]) -> usize {
-    let mut prefix = hash.to_vec();
-    prefix.push(crate::native_queue::keys::TAG);
+    let prefix = crate::keyspace::queue_row(hash, 0);
     let mut rows = engine.db.scan_prefix(&prefix[..], ..).await.unwrap();
     let mut n = 0;
-    while rows.next().await.unwrap().is_some() {
-        n += 1;
+    while let Some(row) = rows.next().await.unwrap() {
+        let family = row.key.get(crate::native_queue::keys::FAMILY_AT).copied();
+        if !matches!(family, Some(b'p' | b't')) {
+            n += 1;
+        }
     }
     n
 }
@@ -181,7 +184,7 @@ async fn a_sent_message_is_claimed_decrypted_and_acked() {
         (&json!(1), &json!(1), &json!(0), &json!(0))
     );
     let (engine, hash) = queue_engine(&state, "jobs").await;
-    let page = crate::crypto_page::shard_page_key(&hash, 0);
+    let page = crate::crypto_page::queue_page_key(&hash, 0);
     assert!(
         engine.db.get(page).await.unwrap().is_none(),
         "the acked page is deleted"
@@ -571,7 +574,7 @@ async fn a_deleted_queue_is_fenced_then_gone_without_rows() {
     assert!(gone, "the cleanup finishes");
     assert_eq!(queue_rows(&engine, &hash).await, 0, "no queue row remains");
     for offset in 0..3 {
-        let page = crate::crypto_page::shard_page_key(&hash, offset);
+        let page = crate::crypto_page::queue_page_key(&hash, offset);
         assert!(
             engine.db.get(page).await.unwrap().is_none(),
             "page {offset}"

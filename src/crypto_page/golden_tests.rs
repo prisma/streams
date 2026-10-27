@@ -118,7 +118,11 @@ fn row_keys_are_pinned() {
     let last = 0x0102_0304_0506_0708;
     assert_eq!(
         hex(&shard_page_key(&[0xaa; 16], last)),
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa700102030405060708"
+        "53aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa700102030405060708"
+    );
+    assert_eq!(
+        hex(&crate::crypto_page::queue_page_key(&[0xaa; 16], last)),
+        "5100000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa700102030405060708"
     );
     let history = history_page_key(RouteHash([0xbb; 16]), SegmentHash([0xcc; 16]), last);
     assert_eq!(

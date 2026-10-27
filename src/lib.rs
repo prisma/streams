@@ -40,6 +40,7 @@ mod golden_tests;
 mod header_alias;
 mod history;
 mod http;
+mod keyspace;
 #[cfg(test)]
 mod loom_check;
 #[cfg(test)]

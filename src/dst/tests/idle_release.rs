@@ -163,7 +163,7 @@ async fn an_idle_release_flushes_what_the_shard_memtables_hold() {
     // Past the flush ticker's last tick after the append (5 s), a write the
     // engine does not count as an append stays in the memtable.
     tokio::time::sleep(Duration::from_secs(6)).await;
-    let probe = b"\xffq0-idle-flush-probe".as_slice();
+    let probe = b"S\xffq0-idle-flush-probe".as_slice();
     engine.db.put(probe, b"held").await.unwrap();
     let flushed_tables = || {
         trace
@@ -214,7 +214,7 @@ async fn a_read_during_the_release_flush_drops_that_release() {
         .expect("the stream's shard is open");
     // Past the flush ticker's last tick, a row the release must flush.
     tokio::time::sleep(Duration::from_secs(6)).await;
-    let probe = b"\xffq0-idle-flush-read-probe".as_slice();
+    let probe = b"S\xffq0-idle-flush-read-probe".as_slice();
     engine.db.put(probe, b"held").await.unwrap();
     // The release's L0 table PUT parks (the Db lives at `{prefix}/shard`).
     let held = state.shards.held_prefixes();

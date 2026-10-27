@@ -122,14 +122,15 @@ fn records(n: usize, size: usize) -> Vec<Vec<u8>> {
 /// Every record row of the fixture stream: its tag, the offset its key
 /// names and its value.
 async fn record_rows(engine: &ShardEngine) -> Vec<(u8, u64, Bytes)> {
-    let mut scan = engine.db.scan_prefix(HASH, ..).await.unwrap();
+    let prefix = crate::keyspace::stream_row(&HASH, 0);
+    let mut scan = engine.db.scan_prefix(prefix, ..).await.unwrap();
     let mut rows = Vec::new();
     while let Some(row) = scan.next().await.unwrap() {
         let Some((namespace, offset)) = row.key.split_last_chunk::<8>() else {
             continue;
         };
         if let [.., tag @ (b'r' | b'p')] = namespace
-            && namespace.len() == 17
+            && namespace.len() == 18
         {
             rows.push((*tag, u64::from_be_bytes(*offset), row.value));
         }
@@ -140,7 +141,7 @@ async fn record_rows(engine: &ShardEngine) -> Vec<(u8, u64, Bytes)> {
 /// Admit and open one stored page row of the fixture stream.
 fn open(last: u64, value: &Bytes) -> (CheckedPage, Vec<Opened>) {
     let key = shard_page_key(&HASH, last);
-    let prefix = [HASH.as_slice(), &[SHARD_PAGE_TAG]].concat();
+    let prefix = [&b"S"[..], HASH.as_slice(), &[SHARD_PAGE_TAG]].concat();
     let page = CheckedPage::from_row(&key, &prefix, value.clone()).unwrap();
     let opened = PageCipher::new(&subkey(), &HASH).open(&page).unwrap();
     let records = opened

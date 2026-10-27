@@ -84,7 +84,7 @@ fn a_row_key_outside_the_page_namespace_is_refused() {
     let raw = reference();
     let key = shard_page_key(&HASH, 42);
     let bytes = || Bytes::from(raw.clone());
-    let record_prefix = [&HASH[..], b"r"].concat();
+    let record_prefix = [&b"S"[..], &HASH[..], b"r"].concat();
     let refused = |key: &[u8], prefix: &[u8]| CheckedPage::from_row(key, prefix, bytes());
     assert_eq!(refused(&key, &record_prefix), Err(PageCorruption::RowTag));
     let (_, short) = key.split_last().unwrap();
@@ -124,7 +124,7 @@ fn each_keyspace_admits_only_its_own_page_tag() {
         Err(PageCorruption::Namespace)
     );
     let shard = shard_page_key(&HASH, 42);
-    let shard_as_history = [&HASH[..], b"g"].concat();
+    let shard_as_history = [&b"S"[..], &HASH[..], b"g"].concat();
     assert_eq!(
         refused(&shard, &shard_as_history),
         Err(PageCorruption::RowTag)

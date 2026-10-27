@@ -272,7 +272,7 @@ pub(super) async fn read(
     let raw = t
         .engine
         .db
-        .get(crate::crypto_page::shard_page_key(&t.hash, offset))
+        .get(crate::crypto_page::queue_page_key(&t.hash, offset))
         .await
         .map_err(|e| e.to_string())?;
     raw.map(|raw| open(t, key, offset, raw)).transpose()

@@ -423,8 +423,7 @@ pub(crate) struct UsageCorrection {
 /// `<seg-hash>'B'` → SegmentBillingMetaV1 (JSON). Tag byte `B` is
 /// unused by any other row family in the shard keyspace.
 pub(crate) fn billing_meta_key(hash: &[u8; 16]) -> Vec<u8> {
-    let mut k = Vec::with_capacity(17);
-    k.extend_from_slice(hash);
+    let mut k = crate::keyspace::stream_row(hash, 1);
     k.push(b'B');
     k
 }
@@ -434,10 +433,10 @@ pub(crate) fn billing_meta_key(hash: &[u8; 16]) -> Vec<u8> {
 /// absorber's dirty index (shard.rs): sorts outside every stream's key
 /// range, scanned once by the drainer, deleted through the committer so
 /// acknowledgment serializes with concurrent appends.
-pub(crate) const USAGE_DIRTY_SENTINEL: [u8; 16] = [0xFF; 16];
+pub(crate) const USAGE_DIRTY_SENTINEL: [u8; 17] = crate::keyspace::SENTINEL;
 
 pub(crate) fn usage_dirty_key(hash: &[u8; 16]) -> Vec<u8> {
-    let mut k = Vec::with_capacity(33);
+    let mut k = Vec::with_capacity(34);
     k.extend_from_slice(&USAGE_DIRTY_SENTINEL);
     k.push(b'U');
     k.extend_from_slice(hash);
@@ -449,7 +448,7 @@ pub(crate) fn usage_dirty_key(hash: &[u8; 16]) -> Vec<u8> {
 /// self-contained). Rare — one per segment-month — and deleted after
 /// the ledger acknowledges.
 pub(crate) fn usage_month_final_key(hash: &[u8; 16], year: i32, month: u32) -> Vec<u8> {
-    let mut k = Vec::with_capacity(40);
+    let mut k = Vec::with_capacity(41);
     k.extend_from_slice(&USAGE_DIRTY_SENTINEL);
     k.push(b'V');
     k.extend_from_slice(hash);

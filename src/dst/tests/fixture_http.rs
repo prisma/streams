@@ -267,7 +267,7 @@ pub(super) fn rig_opener(
                 'static,
                 anyhow::Result<Arc<crate::shard::ShardEngine>>,
             > = Box::pin(async move {
-                let db = slatedb::Db::builder(format!("{prefix}/shard"), store.clone())
+                let db = crate::keyspace::db_builder(format!("{prefix}/shard"), store.clone())
                     .with_settings(slatedb::config::Settings {
                         flush_interval: Some(std::time::Duration::from_millis(5)),
                         manifest_poll_interval: std::time::Duration::from_millis(50),
