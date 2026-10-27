@@ -37,16 +37,80 @@ impl CommitTransaction<'_> {
         tag: u8,
     ) -> Result<(), String> {
         let prefix = [&[crate::keyspace::STREAM][..], hash, &[tag]].concat();
-        let mut rows = self
-            .engine
+        Self::scan_queue_rows(self.engine, fresh, hash, &prefix, tag).await
+    }
+    /// Every row under `prefix` of one tag, into `fresh`.
+    async fn scan_queue_rows(
+        engine: &ShardEngine,
+        fresh: &mut QueueState,
+        hash: &[u8; 16],
+        prefix: &[u8],
+        tag: u8,
+    ) -> Result<(), String> {
+        #[cfg(test)]
+        crate::shard::test_support::held_queue_read(&engine.prefix).await;
+        let mut rows = engine
             .db
-            .scan_prefix(&prefix[..], ..)
+            .scan_prefix(prefix, ..)
             .await
             .map_err(|e| e.to_string())?;
         while let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
             Self::load_queue_row(fresh, hash, tag, &row.key, &row.value)?;
         }
         Ok(())
+    }
+    /// Put a cold stream's queue state, and the records of the consumers
+    /// its group names, on its handle before the group stages, as
+    /// `load_queue` and `config_record` would one op at a time on the
+    /// serial commit path. The store holds exactly what earlier groups
+    /// applied: this group has staged nothing yet. A failed or invalid
+    /// read leaves the handle as it was; the op reads again and answers it.
+    pub(in crate::shard::transaction) async fn warm_queue(
+        engine: &ShardEngine,
+        handle: &StreamHandle,
+        consumers: &[String],
+    ) {
+        let cold = handle.state.lock().is_ok_and(|state| !state.queue.loaded);
+        if cold && let Ok(snapshot) = Self::queue_snapshot(engine, &handle.hash).await {
+            Self::keep_queue_snapshot(handle, snapshot);
+        }
+        for consumer in consumers {
+            Self::warm_config(engine, handle, consumer).await;
+        }
+    }
+    /// The stream's checked queue state, every tag's rows.
+    async fn queue_snapshot(engine: &ShardEngine, hash: &[u8; 16]) -> Result<QueueState, String> {
+        let mut fresh = QueueState {
+            consumers: HashMap::new(),
+            loaded: true,
+        };
+        for tag in *b"clx" {
+            let prefix = [&[crate::keyspace::STREAM][..], hash, &[tag]].concat();
+            Self::scan_queue_rows(engine, &mut fresh, hash, &prefix, tag).await?;
+        }
+        Ok(fresh)
+    }
+    /// `snapshot` on the handle, unless a group loaded it meanwhile.
+    fn keep_queue_snapshot(handle: &StreamHandle, snapshot: QueueState) {
+        if let Ok(mut state) = handle.state.lock()
+            && !state.queue.loaded
+        {
+            state.queue = snapshot;
+        }
+    }
+    /// `consumer`'s stored record on the handle, unless one is held.
+    async fn warm_config(engine: &ShardEngine, handle: &StreamHandle, consumer: &str) {
+        if handle.hot(|hot| hot.config(consumer).is_some()) != Some(false) {
+            return;
+        }
+        #[cfg(test)]
+        crate::shard::test_support::held_config_read(&engine.prefix).await;
+        let stored = engine.db.get(config_key(&handle.hash, consumer)).await;
+        if let Ok(Some(raw)) = stored
+            && let Ok(record) = decode_consumer_record(&raw)
+        {
+            handle.hot(|hot| hot.keep_config(consumer, &record));
+        }
     }
     fn load_queue_row(
         fresh: &mut QueueState,

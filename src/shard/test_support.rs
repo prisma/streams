@@ -81,6 +81,7 @@ pub(super) fn billing_ops_refused_on(segment: &[u8; 16]) -> u64 {
 pub(super) struct HeldReads {
     in_flight: std::sync::atomic::AtomicUsize,
     most: std::sync::atomic::AtomicUsize,
+    total: std::sync::atomic::AtomicUsize,
     gate: tokio::sync::Semaphore,
 }
 
@@ -89,6 +90,7 @@ impl Default for HeldReads {
         Self {
             in_flight: Default::default(),
             most: Default::default(),
+            total: Default::default(),
             gate: tokio::sync::Semaphore::new(0),
         }
     }
@@ -101,6 +103,11 @@ impl HeldReads {
 
     pub(super) fn most_in_flight(&self) -> usize {
         self.most.load(Ordering::SeqCst)
+    }
+
+    /// Every read that reached the hold, held or let through.
+    pub(super) fn total(&self) -> usize {
+        self.total.load(Ordering::SeqCst)
     }
 
     /// Let every held read, and every later one, through.
@@ -131,8 +138,29 @@ pub(super) async fn held_billing_read(prefix: &str) {
     let Some(held) = held_reads().lock().unwrap().get(prefix).cloned() else {
         return;
     };
+    held.total.fetch_add(1, Ordering::SeqCst);
     let now = held.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
     held.most.fetch_max(now, Ordering::SeqCst);
     drop(held.gate.acquire().await.unwrap());
     held.in_flight.fetch_sub(1, Ordering::SeqCst);
+}
+
+/// Hold `prefix`'s queue-state loads from now on.
+pub(super) fn hold_queue_reads(prefix: &str) -> Arc<HeldReads> {
+    hold_billing_reads(&format!("{prefix}#queue"))
+}
+
+/// One queue-state load of `prefix`: held while its shard's are.
+pub(super) async fn held_queue_read(prefix: &str) {
+    held_billing_read(&format!("{prefix}#queue")).await;
+}
+
+/// Hold `prefix`'s consumer-record reads from now on.
+pub(super) fn hold_config_reads(prefix: &str) -> Arc<HeldReads> {
+    hold_billing_reads(&format!("{prefix}#config"))
+}
+
+/// One consumer-record read of `prefix`: held while its shard's are.
+pub(super) async fn held_config_read(prefix: &str) {
+    held_billing_read(&format!("{prefix}#config")).await;
 }

@@ -58,8 +58,9 @@ stream's resident handle once a group read or wrote them (the committer is
 their only writer), and later groups bill and answer config reads from that
 copy instead of reading the rows again; a deleted consumer's record is not
 held. A group whose streams are cold (after a restart, a placement or an
-eviction) first loads their handles and billing rows together, at most 16
-at once, rather than one store read after another as its ops stage. A group
+eviction) first loads their handles, billing rows, queue states and named
+consumer records together, at most 16 streams at once, rather than one
+store read after another as its ops stage. A group
 leaves its rows on the handles just before its write; a group refused
 before the write leaves none, and a failed write retires the engine with
 its handles. Measured on 2026-10-27 at 100 small tenants on one shard

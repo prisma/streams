@@ -2643,6 +2643,14 @@
     {
       "category": "macro-dsl",
       "count": 1,
+      "owner": "crate::a_group_loads_its_cold_streams_queue_state_together",
+      "path": "src/shard/resident_tests.rs",
+      "reason": "The commit group and its watcher run concurrently in one test task so the watcher counts the held queue-state loads while the group waits on them, then releases them; the compiler checks the join's expansion and both futures borrow the test's rig.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
       "owner": "crate::a_group_reads_its_cold_streams_billing_rows_together",
       "path": "src/shard/resident_tests.rs",
       "reason": "The commit group and its watcher run concurrently in one test task so the watcher counts the held billing reads while the group waits on them, then releases them; the compiler checks the join's expansion and both futures borrow the test's rig.",

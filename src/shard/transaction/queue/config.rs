@@ -16,6 +16,8 @@ impl CommitTransaction<'_> {
         {
             return Ok(Some(record));
         }
+        #[cfg(test)]
+        crate::shard::test_support::held_config_read(&self.engine.prefix).await;
         let record = self
             .engine
             .db

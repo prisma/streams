@@ -475,3 +475,86 @@ async fn a_group_reads_no_billing_row_for_a_stream_it_does_not_bill() {
     held.release();
     rig.stop().await;
 }
+
+/// A group's cold consumer-group streams load their queue state and the
+/// records of the consumers their ops name together, each once: with every
+/// queue scan and record read held open, all eight streams' are in flight
+/// at once, two config reads of one consumer on a stream read its record
+/// once, and each answers the stored record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_group_loads_its_cold_streams_queue_state_together() {
+    const STREAMS: u8 = 8;
+    let rig = Rig::start("resident-cold-queue").await;
+    let hashes: Vec<[u8; 16]> = (0..STREAMS).map(|n| [0x70 + n; 16]).collect();
+    let stored = ConsumerRecord {
+        generation: 1,
+        state: crate::queue::ConsumerLifecycle::Active,
+        config: config(),
+    };
+    for hash in &hashes {
+        rig.db
+            .put(
+                crate::queue::config_key(hash, "c"),
+                serde_json::to_vec(&stored).unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+    let scans = super::test_support::hold_queue_reads("resident-cold-queue");
+    let records = super::test_support::hold_config_reads("resident-cold-queue");
+    let (ops, replies): (Vec<_>, Vec<_>) = hashes
+        .iter()
+        .flat_map(|hash| [*hash, *hash])
+        .map(|hash| {
+            let (resp, reply) = oneshot::channel();
+            let op = CommitOp::Queue {
+                hash,
+                op: QueueOp::ConfigGet {
+                    consumer: "c".into(),
+                },
+                resp,
+            };
+            (op, reply)
+        })
+        .unzip();
+    let cfg = ShardConfig::default();
+    let group = rig.engine.commit_group(ops, &cfg);
+    let watch = async {
+        let mut together = Vec::new();
+        for held in [&scans, &records] {
+            together.push(released_at(held, usize::from(STREAMS)).await);
+        }
+        together
+    };
+    let ((), together) = tokio::join!(group, watch);
+    let streams = usize::from(STREAMS);
+    assert_eq!(
+        together,
+        [streams, streams],
+        "every cold stream's reads in flight at once"
+    );
+    assert_eq!(
+        (scans.total(), records.total()),
+        (3 * streams, streams),
+        "three scans and one record read a stream"
+    );
+    for reply in replies {
+        assert!(matches!(
+            reply.await.unwrap(),
+            Ok(QueueOut::Config { rec: Some(rec), .. }) if rec == stored
+        ));
+    }
+    rig.stop().await;
+}
+
+/// Once `n` reads are held, or after 2 s, the most held at once; then every
+/// held read goes through.
+async fn released_at(held: &super::test_support::HeldReads, n: usize) -> usize {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while held.in_flight() < n && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let most = held.most_in_flight();
+    held.release();
+    most
+}
