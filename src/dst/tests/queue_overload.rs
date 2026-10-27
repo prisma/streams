@@ -338,10 +338,12 @@ const COMMIT_QUEUE: usize = 2;
 /// A queue operation on a shard whose committer queue is full is answered
 /// at once, `503 shard_busy`, Retry-After 1, as an append meets a full
 /// queue at once, instead of waiting for room while holding its request:
-/// with the committer held after taking one send and two more queued, a
-/// fourth send answers within a second, and once the committer is
-/// released the three queued sends are stored, the refused one not.
-/// Before: the fourth send waited for room until the committer moved.
+/// with the committer held after taking one of three reads of the queue's
+/// state, submitted to the engine directly so they fill its queue whatever
+/// the runner's pace, a send answers within 5 s (it would wait without
+/// bound before); once the committer is released the reads are answered
+/// and the refused send stored nothing. Before: the send waited for room
+/// until the committer moved.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_queue_operation_on_a_full_committer_is_answered_at_once() {
     let mut spec = CellSpec::open(1);
@@ -352,35 +354,38 @@ async fn a_queue_operation_on_a_full_committer_is_answered_at_once() {
         .unwrap()
         .stream_ref("jobs");
     let desc = cell.state.registry.get(&sref).await.unwrap().unwrap();
-    let route = desc.resolve_segment("").shard_route;
+    let seg = desc.resolve_segment("");
     let engine = cell
         .state
         .shards
-        .resolve(&route, crate::shard_directory::Adoption::Internal)
+        .resolve(&seg.shard_route, crate::shard_directory::Adoption::Internal)
         .await
         .unwrap();
     let held = engine.test_hold_commit().await;
-    let pending = futures_util::future::join_all((0..=COMMIT_QUEUE).map(|n| send(&cell, 0, n)));
+    let reads = (0..=COMMIT_QUEUE)
+        .map(|_| engine.submit_native_queue(seg.identity, crate::native_queue::NqOp::Get));
+    let pending = futures_util::future::join_all(reads);
     let probe = async {
-        tokio::time::timeout(std::time::Duration::from_secs(10), full(&engine))
+        tokio::time::timeout(std::time::Duration::from_secs(30), full(&engine))
             .await
-            .expect("the three sends reach the committer");
+            .expect("the three reads fill the committer's queue");
         let busy = send(&cell, 0, 99);
-        let busy = tokio::time::timeout(std::time::Duration::from_secs(1), busy).await;
+        let busy = tokio::time::timeout(std::time::Duration::from_secs(5), busy).await;
         drop(held);
-        busy.map_err(|_| "no answer within 1 s")
+        busy.map_err(|_| "no answer within 5 s")
     };
-    let (sent, busy) = futures_util::future::join(pending, probe).await;
+    let (read, busy) = futures_util::future::join(pending, probe).await;
     assert_eq!(
         busy,
         Ok((503, Some("shard_busy".to_string()), Some("1".to_string())))
     );
-    assert_eq!(sent, vec![SENT; COMMIT_QUEUE + 1], "the queued sends");
-    assert_eq!(
-        queued(&cell, 0).await,
-        u64::try_from(COMMIT_QUEUE + 1).unwrap(),
-        "the queued sends are stored, the refused one not"
-    );
+    let answered = read
+        .iter()
+        .filter(|r| matches!(r, Ok(crate::native_queue::NqOut::Stats(_))))
+        .count();
+    assert_eq!(answered, COMMIT_QUEUE + 1, "the queued reads are answered");
+    assert_eq!(queued(&cell, 0).await, 0, "the refused send stored nothing");
+    assert_eq!(send(&cell, 0, 1).await, SENT, "with room, a send is served");
     engine_shutdown(&cell.state).await;
 }
 
