@@ -358,7 +358,8 @@ OWNERS = (
         ('src/product.rs', 'src/product/append_error.rs'),
         ('product::', 'dst_tests::product_lifecycle::', 'dst_tests::product_descriptor_reads::',
          'dst_tests::security_operations::', 'dst_tests::security_routes::',
-         'dst_tests::admission_memory::project_memory_pressure_throttles_new_appends_only'),
+         'dst_tests::admission_memory::project_memory_pressure_throttles_new_appends_only',
+         'dst_tests::queue_overload::a_queue_write_is_held_to_its_projects_memory_line'),
     ),
     owner('product_usage', 'src/product/usage.rs',
           'dst_tests::security_usage:: dst_tests::billing_usage:: dst_tests::billing_attribution:: '

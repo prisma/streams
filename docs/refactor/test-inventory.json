@@ -1695,7 +1695,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "924b703dcf10dc1f7761ecf26c128f5f0081aff5f9eb57f9c2acbad0b537218d",
+    "function_sha256": "ebbe49be46fefbe26907b6428b9c571489cf1fa9884b2d7d88253e556df4ab20",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_overload.rs",

@@ -4,7 +4,7 @@
 //! assertion reads the wire answers and the queue's stored state (its
 //! `queuedMessages`, counted by the committer).
 
-use super::fixture_cell::{Cell, CellSpec, error_code, open_cell, project};
+use super::fixture_cell::{Cell, CellSpec, error_code, journal, open_cell, project};
 use super::fixture_http::engine_shutdown;
 
 /// The rig's shed line (MiB), as `fair_shed.rs` sets it: an eighth over it
@@ -209,7 +209,24 @@ async fn a_queue_write_is_held_to_its_projects_memory_line() {
         assert_eq!(answer, refused("project_memory_pressure", "1"), "{path}");
     }
     assert_eq!(queued(&cell, 0).await, 1, "its reads are served");
-    adm.retained_sse_sub(300 * 1024);
+    // The latch holds until the pressure is below its release point (75%
+    // of the line): at 220 KiB a send would fit under the line, so only
+    // the latch refuses it, and a claim with no body, which charges
+    // nothing, is the latch's alone too.
+    adm.retained_sse_sub(80 * 1024);
+    let latched = [
+        ("/v1/queues/jobs/messages", r#"{"body":1}"#),
+        ("/v1/queues/jobs/groups/default:claim", ""),
+    ];
+    for (path, body) in latched {
+        let answer = ask(&cell, 0, "POST", path, body).await;
+        assert_eq!(
+            answer,
+            refused("project_memory_pressure", "1"),
+            "latched: {path}"
+        );
+    }
+    adm.retained_sse_sub(220 * 1024);
     assert_eq!(send(&cell, 0, 1).await, SENT, "below the release point");
     let large = format!("{{\"body\":\"{}\"}}", "x".repeat(60 * 1024));
     adm.retained_sse_add(200 * 1024);
@@ -222,6 +239,37 @@ async fn a_queue_write_is_held_to_its_projects_memory_line() {
         queued(&cell, 0).await,
         3,
         "every refused write stored nothing"
+    );
+    let journaled: Vec<_> = journal(&cell.state)
+        .await
+        .into_iter()
+        .filter(|e| e["status"] == 429)
+        .map(|e| {
+            let field = |name: &str| e[name].as_str().unwrap_or_default().to_string();
+            (
+                field("code"),
+                field("project_id"),
+                field("route"),
+                field("method"),
+            )
+        })
+        .collect();
+    let denial = |route: &str| {
+        let code = "project_memory_pressure".to_string();
+        (code, project(0), route.to_string(), "POST".to_string())
+    };
+    assert_eq!(
+        journaled,
+        [
+            "jobs/messages",
+            "jobs/groups/default:claim",
+            "jobs/groups/default:settle",
+            "jobs/messages",
+            "jobs/groups/default:claim",
+            "jobs/messages",
+        ]
+        .map(denial),
+        "each refusal journaled to its project, in order"
     );
     engine_shutdown(&cell.state).await;
 }
