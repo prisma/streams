@@ -68,7 +68,7 @@ impl CommitTransaction<'_> {
     pub(in crate::shard::transaction) async fn warm_queue(
         engine: &ShardEngine,
         handle: &StreamHandle,
-        consumers: &[String],
+        consumers: &std::collections::BTreeSet<String>,
     ) {
         let cold = handle.state.lock().is_ok_and(|state| !state.queue.loaded);
         if cold && let Ok(snapshot) = Self::queue_snapshot(engine, &handle.hash).await {

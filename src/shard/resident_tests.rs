@@ -432,6 +432,11 @@ async fn a_group_reads_its_cold_streams_billing_rows_together() {
         usize::from(STREAMS),
         "every cold row in flight at once"
     );
+    assert_eq!(
+        rig.engine.resident_streams(),
+        usize::from(STREAMS),
+        "each cold stream's handle is resident"
+    );
     for reply in replies {
         assert_eq!(reply.await.unwrap().unwrap().next_offset, 1);
     }

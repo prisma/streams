@@ -9,7 +9,8 @@ const COLD_LOADS: usize = 16;
 struct Cold {
     billed: bool,
     queue: bool,
-    consumers: Vec<String>,
+    // mt-lint: allow(name-keyed-map): consumer names of the one tenant-qualified stream hash this entry is keyed by
+    consumers: std::collections::BTreeSet<String>,
 }
 
 /// The consumer a queue op names.
@@ -119,9 +120,7 @@ impl CommitTransaction<'_> {
         cold.billed |= billed;
         if let Some(consumer) = queue {
             cold.queue = true;
-            if !cold.consumers.iter().any(|named| named == consumer) {
-                cold.consumers.push(consumer.to_owned());
-            }
+            cold.consumers.insert(consumer.to_owned());
         }
     }
 
