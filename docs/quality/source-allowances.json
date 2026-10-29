@@ -3230,13 +3230,6 @@
     {
       "category": "unresolved-glob",
       "count": 1,
-      "owner": "crate",
-      "path": "src/postings/validated/tests.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
       "owner": "crate::tests",
       "path": "src/product_cursor.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"

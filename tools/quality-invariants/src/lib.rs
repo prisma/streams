@@ -12,18 +12,6 @@
 mod crypto;
 #[allow(
     dead_code,
-    unreachable_pub,
-    unused_imports,
-    reason = "invariant harness; actual postings owner and tests are compiled unchanged; unrelated service entry points are outside this test scope"
-)]
-#[path = "../../../src/postings.rs"]
-// rustfmt resolves every module regardless of cfg, and postings.rs declares
-// its `#[cfg(kani)] mod proofs;` relative to its own directory, which a
-// by-path include cannot follow; the main crate formats postings.rs.
-#[rustfmt::skip]
-mod postings;
-#[allow(
-    dead_code,
     reason = "invariant harness; actual retained byte owner and tests are compiled unchanged; the library target has no service caller"
 )]
 #[path = "../../../src/retained_bytes.rs"]

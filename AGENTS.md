@@ -179,14 +179,14 @@ The gates enforce these; plan for them before writing
   frozen exactly: the row records its current values, so any change to it,
   shrinking included, fails as `stale exception growth row` (today:
   `bootstrap::run`). Hook new behaviour into something it already calls.
-- **By-path includes.** `src/{crypto,postings,tenant,retained_bytes,product_cursor,queue}.rs`,
+- **By-path includes.** `src/{crypto,tenant,retained_bytes,product_cursor,queue}.rs`,
   `src/quota/bucket.rs`, `src/rollup/{allocation,storage}.rs` and
   `src/application/read_{batch,budget,retention_probe}.rs` are compiled by
-  `#[path]` into `tools/quality-invariants` and/or `fuzz`, and
-  `src/spill/{object,crc32c}.rs`, `src/spill/directory/row.rs` and
-  `src/crypto_page/varint.rs` into the `fuzz` targets, most under module-wide
-  allows: **any net code growth there is exception growth** (owner decision).
-  Put new logic in a new module they do not include.
+  `#[path]` into `tools/quality-invariants`, and `src/spill/{object,crc32c}.rs`,
+  `src/spill/directory/row.rs` and `src/crypto_page/varint.rs` into the `fuzz`
+  targets, most under module-wide allows: **any net code growth there is
+  exception growth** (owner decision). Put new logic in a new module they do
+  not include.
 - **`docs/quality/owners.json`.** New statics, effects (`std::env::var`,
   spawns, `mem::forget`), non-expression macros (incl. `kani::cover!`),
   unresolved globs (`use super::*`) and `#[path]` modules need a reasoned row

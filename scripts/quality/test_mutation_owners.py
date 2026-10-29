@@ -110,7 +110,7 @@ class MutationOwnership(unittest.TestCase):
         owners = source_map()
         self.assertEqual(owners['src/shard/commit_handoff.rs'].name, 'commit_handoff')
         self.assertEqual(owners['src/bootstrap/rss.rs'].name, 'bootstrap_rss')
-        self.assertEqual(owners['src/postings/codec_tests.rs'].name, 'postings_codec_tests')
+        self.assertEqual(owners['src/crypto_page/varint.rs'].name, 'crypto_page_varint')
         self.assertEqual(
             owners['src/product_cursor/regressions.rs'].name,
             'product_cursor_regressions',

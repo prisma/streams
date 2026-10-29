@@ -20,7 +20,7 @@ from mutation_owners import (
 from production_changes import unchanged_production
 
 
-CODEC_PREFIXES = ('src/crypto', 'src/postings', 'src/product_cursor', 'src/queue',
+CODEC_PREFIXES = ('src/crypto', 'src/product_cursor', 'src/queue',
                   'src/application/read_', 'src/shard/record', 'src/rollup/allocation',
                   'src/rollup/storage')
 QUOTA_PREFIXES = ('src/quota',)

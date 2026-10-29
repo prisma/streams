@@ -8,7 +8,6 @@ from lint_contract import from_compiler
 
 PROOFS = {
     'src/crypto_page/header.rs': ('crate::CheckedPage::',),
-    'src/postings/validated.rs': ('crate::ValidatedRuns::', 'crate::RunWindow::'),
     'src/application/read_batch.rs': ('crate::PlainPayload::', 'crate::PlainBatch::'),
 }
 # Known expression DSLs do not define service owners. Still counted/reported;

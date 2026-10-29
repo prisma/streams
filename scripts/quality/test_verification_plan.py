@@ -190,7 +190,7 @@ class Triggers(unittest.TestCase):
 
     def test_trigger_controls(self):
         self.assertFalse(plan(['README.md'])['mutants'])
-        self.assertTrue(plan(['src/postings/validated.rs'])['properties_fuzz'])
+        self.assertTrue(plan(['src/crypto_page/varint.rs'])['properties_fuzz'])
         self.assertTrue(plan(['src/product_cursor/decode.rs'])['mutants'])
         self.assertFalse(plan(['src/product_cursor.rs'], ['src/product_cursor.rs'])['mutants'])
         self.assertTrue(plan(['src/queue.rs'])['mutants'])

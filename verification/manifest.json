@@ -2191,6 +2191,7 @@
         "src/shard/commit_plan.rs",
         "src/spill/pending.rs",
         "src/spill/directory.rs",
+        "src/spill/directory/row.rs",
         "src/shard/handle_load.rs"
       ],
       "verification_paths": [

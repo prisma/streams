@@ -52,10 +52,6 @@ def owner(name: str, source: str, filters: str, target: str = 'service-lib') -> 
 # Keep source paths literal and explicit: a new file under a critical prefix
 # must receive a deliberate row instead of silently inheriting a broad glob.
 OWNERS = (
-    owner('postings_codec', 'src/postings.rs', 'postings::', 'harness-lib'),
-    owner('postings_codec_tests', 'src/postings/codec_tests.rs', 'postings::', 'harness-lib'),
-    owner('postings', 'src/postings/validated.rs', 'postings::', 'harness-lib'),
-    owner('postings_properties', 'src/postings/validated/properties.rs', 'postings::', 'harness-lib'),
     owner('batch', 'src/application/read_batch.rs', 'application::read_batch::', 'harness-lib'),
     owner('retained', 'src/retained_bytes.rs', 'retained_bytes::', 'harness-lib'),
     owner('quota', 'src/quota/bucket.rs', 'quota_bucket::', 'harness-lib'),
@@ -351,7 +347,6 @@ OWNERS = (
     owner('sse_feed_retention', 'src/sse/feed/retention.rs', 'sse::'),
     owner('sse_feed_test_support', 'src/sse/feed/test_support.rs', 'sse::'),
     owner('sse_budget', 'src/sse/budget.rs', 'sse::'),
-    owner('postings_validated_tests', 'src/postings/validated/tests.rs', 'postings::'),
     # The release campaign's owners (NEXT-WORK §9 step 2): the product surface,
     # the billing core, the usage rollup, the replaced-incarnation closure
     # debts and the append application had no row, so the per-push plan never
