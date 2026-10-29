@@ -102,7 +102,14 @@ async fn a_corrupt_pending_row_fails_only_its_stream_at_the_open() {
     {
         eprintln!("corrupt open: the old engine did not close within 10 s");
     }
-    rig.engine.db.close().await.unwrap();
+    // The engine's own close may have closed the log first.
+    if let Err(e) = rig.engine.db.close().await {
+        assert_eq!(
+            e.kind(),
+            slatedb::ErrorKind::Closed(slatedb::CloseReason::Clean),
+            "{e}"
+        );
+    }
     {
         let db = crate::keyspace::db_builder(path.as_str(), rig.store.clone())
             .build()
