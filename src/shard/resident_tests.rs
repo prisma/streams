@@ -12,6 +12,10 @@ const SEGMENT: [u8; 16] = [0x5e; 16];
 struct Rig {
     engine: Arc<ShardEngine>,
     db: Arc<Db>,
+    /// The static-row reads already counted at this log's address when the
+    /// rig opened it: the counters are keyed by the `Db`'s address, which a
+    /// log another test freed may have used before.
+    reads_before: u64,
 }
 
 impl Rig {
@@ -33,7 +37,12 @@ impl Rig {
             None,
             maintenance,
         );
-        Self { engine, db }
+        let reads_before = super::test_support::billing_row_io_on(&db).1;
+        Self {
+            engine,
+            db,
+            reads_before,
+        }
     }
 
     /// One billed append of `payload` to `SEGMENT` as its own group; its reply.
@@ -82,9 +91,10 @@ impl Rig {
         self.billing_of(&SEGMENT).await
     }
 
-    /// How many static billing rows the engine read from the store.
+    /// How many static billing rows the engine read from the store since
+    /// the rig opened its log.
     fn static_reads(&self) -> u64 {
-        super::test_support::billing_row_io_on(&self.db).1
+        super::test_support::billing_row_io_on(&self.db).1 - self.reads_before
     }
 
     /// Store `planted_row()` as `hash`'s billing meta, before any engine

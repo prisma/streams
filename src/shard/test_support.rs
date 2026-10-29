@@ -226,7 +226,9 @@ pub(super) fn count_static_row_read(db: *const Db) {
         .1 += 1;
 }
 
-/// (static rows staged, static rows read from the store) for `db`.
+/// (static rows staged, static rows read from the store) for `db`'s
+/// address since the process started: a freed log's address can be reused,
+/// so a test measures from a baseline it takes when it opens its log.
 pub(crate) fn billing_row_io_on(db: &Arc<Db>) -> (u64, u64) {
     billing_row_io()
         .lock()
