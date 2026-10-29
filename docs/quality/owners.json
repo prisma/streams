@@ -4287,6 +4287,70 @@
       "path": "src/postings/validated/tests.rs",
       "reason": "Retained postings codec test module (layout 6A package 4, pushes 1 and 2 only): the lib no longer declares postings, so the syntax scanner cannot resolve this use super::*; the fuzz and invariants harnesses compile the codec by path until push 3 retires it.",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::varint",
+      "path": "fuzz/fuzz_targets/seal_directory.rs",
+      "reason": "Seal-directory row codec fuzz target (decided by the lead under the owner's delegation, 2026-10-28, step-3 batch 1, S2): one canonical production module compiled unchanged by the service and the private fuzz harness, so the harness fuzzes the parser the service runs; explicit file paths keep child resolution; no copied codec, stand-in type or public verification API.",
+      "syntax": "path = \"../../src/crypto_page/varint.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::crc32c",
+      "path": "fuzz/fuzz_targets/seal_directory.rs",
+      "reason": "Seal-directory row codec fuzz target (decided by the lead under the owner's delegation, 2026-10-28, step-3 batch 1, S2): one canonical production module compiled unchanged by the service and the private fuzz harness, so the harness fuzzes the parser the service runs; explicit file paths keep child resolution; no copied codec, stand-in type or public verification API.",
+      "syntax": "path = \"../../src/spill/crc32c.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::object",
+      "path": "fuzz/fuzz_targets/seal_directory.rs",
+      "reason": "Seal-directory row codec fuzz target (decided by the lead under the owner's delegation, 2026-10-28, step-3 batch 1, S2): one canonical production module compiled unchanged by the service and the private fuzz harness, so the harness fuzzes the parser the service runs; explicit file paths keep child resolution; no copied codec, stand-in type or public verification API.",
+      "syntax": "path = \"../../src/spill/object.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::row",
+      "path": "fuzz/fuzz_targets/seal_directory.rs",
+      "reason": "Seal-directory row codec fuzz target (decided by the lead under the owner's delegation, 2026-10-28, step-3 batch 1, S2): one canonical production module compiled unchanged by the service and the private fuzz harness, so the harness fuzzes the parser the service runs; explicit file paths keep child resolution; no copied codec, stand-in type or public verification API.",
+      "syntax": "path = \"../../src/spill/directory/row.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::crc32c",
+      "path": "fuzz/fuzz_targets/segment_chunk.rs",
+      "reason": "Segment-object chunk parser fuzz target (decided by the lead under the owner's delegation, 2026-10-28, step-3 batch 1, S2): one canonical production module compiled unchanged by the service and the private fuzz harness, so the harness fuzzes the parser the service runs; explicit file paths keep child resolution; no copied codec, stand-in type or public verification API.",
+      "syntax": "path = \"../../src/spill/crc32c.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::object",
+      "path": "fuzz/fuzz_targets/segment_chunk.rs",
+      "reason": "Segment-object chunk parser fuzz target (decided by the lead under the owner's delegation, 2026-10-28, step-3 batch 1, S2): one canonical production module compiled unchanged by the service and the private fuzz harness, so the harness fuzzes the parser the service runs; explicit file paths keep child resolution; no copied codec, stand-in type or public verification API.",
+      "syntax": "path = \"../../src/spill/object.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(libfuzzer_sys::fuzz_target)",
+      "path": "fuzz/fuzz_targets/seal_directory.rs",
+      "reason": "Seal-directory row codec fuzz target (decided by the lead under the owner's delegation, 2026-10-28, step-3 batch 1, S2): test-only fuzz harness; the pinned libfuzzer-sys macro is compiled and its generated cases execute the production owner. Syntax tokens remain explicitly inventoried.",
+      "syntax": "libfuzzer_sys::fuzz_target"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(libfuzzer_sys::fuzz_target)",
+      "path": "fuzz/fuzz_targets/segment_chunk.rs",
+      "reason": "Segment-object chunk parser fuzz target (decided by the lead under the owner's delegation, 2026-10-28, step-3 batch 1, S2): test-only fuzz harness; the pinned libfuzzer-sys macro is compiled and its generated cases execute the production owner. Syntax tokens remain explicitly inventoried.",
+      "syntax": "libfuzzer_sys::fuzz_target"
     }
   ]
 }

@@ -16,6 +16,7 @@ ignored = ["aes-gcm", "aes-gcm-siv", "base64", "hkdf", "hmac", "serde", "sha2", 
 
 [dependencies]
 libfuzzer-sys = "=0.4.13"
+bytes = "1"
 serde = "1"
 aes-gcm = "0.10"
 aes-gcm-siv = "0.11"
@@ -34,3 +35,17 @@ bench = false
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "seal_directory"
+path = "fuzz_targets/seal_directory.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "segment_chunk"
+path = "fuzz_targets/segment_chunk.rs"
+test = false
+doc = false
+bench = false

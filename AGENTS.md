@@ -182,7 +182,9 @@ The gates enforce these; plan for them before writing
 - **By-path includes.** `src/{crypto,postings,tenant,retained_bytes,product_cursor,queue}.rs`,
   `src/quota/bucket.rs`, `src/rollup/{allocation,storage}.rs` and
   `src/application/read_{batch,budget,retention_probe}.rs` are compiled by
-  `#[path]` into `tools/quality-invariants` and/or `fuzz` under module-wide
+  `#[path]` into `tools/quality-invariants` and/or `fuzz`, and
+  `src/spill/{object,crc32c}.rs`, `src/spill/directory/row.rs` and
+  `src/crypto_page/varint.rs` into the `fuzz` targets, most under module-wide
   allows: **any net code growth there is exception growth** (owner decision).
   Put new logic in a new module they do not include.
 - **`docs/quality/owners.json`.** New statics, effects (`std::env::var`,

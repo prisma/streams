@@ -3037,6 +3037,7 @@ dependencies = [
  "aes-gcm",
  "aes-gcm-siv",
  "base64 0.22.1",
+ "bytes",
  "hkdf",
  "hmac",
  "libfuzzer-sys",

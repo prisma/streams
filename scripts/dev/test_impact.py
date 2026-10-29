@@ -30,7 +30,7 @@ class ImpactTest(unittest.TestCase):
         assert not (ROOT / PLANNED).exists(), f'{PLANNED} must stay hypothetical for these tests'
         cls.shard = impact.analyze(['src/shard.rs'])
         cls.manifest_edit = impact.analyze(['verification/manifest.json'])
-        cls.mixed = impact.analyze(['src/segmap.rs', PLANNED, 'src/queue.rs', 'src/postings.rs',
+        cls.mixed = impact.analyze(['src/segmap.rs', PLANNED, 'src/queue.rs', 'src/spill/object.rs',
                                     'src/shard/maintenance_tests.rs'])
         cls.files = {f.path: f for f in cls.mixed.files}
 
@@ -46,7 +46,7 @@ class ImpactTest(unittest.TestCase):
 
     def test_harness_owner_runs_in_the_harness_package(self):
         self.assertEqual(self.files['src/queue.rs'].owner['package'], 'streams-quality-invariants')
-        self.assertIn('cargo test --locked -p streams-quality-invariants --lib -- postings:: queue::', self.mixed.tests)
+        self.assertIn('cargo test --locked -p streams-quality-invariants --lib -- queue::', self.mixed.tests)
 
     def test_a_planned_critical_file_must_be_registered_first(self):
         planned = self.files[PLANNED]
@@ -86,11 +86,11 @@ class ImpactTest(unittest.TestCase):
 
     def test_by_path_include_warns_about_exception_growth(self):
         self.assertEqual(self.files['src/queue.rs'].harness, ['streams-quality-invariants'])
-        self.assertEqual(self.files['src/postings.rs'].harness, ['streams-quality-fuzz', 'streams-quality-invariants'])
+        self.assertEqual(self.files['src/spill/object.rs'].harness, ['streams-quality-fuzz'])
         text = impact.render_text(self.mixed)
         by_path = next(line for line in text.splitlines() if line.startswith('by-path'))
         self.assertIn('src/queue.rs', by_path)
-        self.assertIn('src/postings.rs', by_path)
+        self.assertIn('src/spill/object.rs', by_path)
         self.assertIn('exception-growth.json', by_path)
 
     def test_headroom_of_a_file_over_a_thousand_lines(self):
@@ -146,8 +146,8 @@ class ImpactTest(unittest.TestCase):
         batch = {p.describe() for p in tree.placements['src/application/read_batch.rs']}
         self.assertIn('streams-slate lib: crate::application::read_batch', batch)
         self.assertIn('streams-quality-invariants lib: crate::application::read_batch', batch)
-        validated = {p.describe() for p in tree.placements['src/postings/validated.rs']}
-        self.assertIn('streams-quality-invariants lib: crate::postings::validated', validated)
+        row = {p.describe() for p in tree.placements['src/spill/directory/row.rs']}
+        self.assertIn('streams-quality-fuzz fuzz seal_directory: crate::row', row)
         # tests/pilot_membership.rs declares an inline module before its #[path] module.
         membership = {p.target for p in tree.placements['src/bin/pilot/generator/membership.rs']}
         self.assertIn('test pilot_membership', membership)
