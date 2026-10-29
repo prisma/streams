@@ -18,6 +18,16 @@ use super::test_hooks::Hold;
 use super::tests::{append, hashes, manual, random_bytes, rig, settle};
 use crate::shard::{ShardEngine, StreamHandle};
 
+/// Manual settings for a test that parks dispatch on purpose: the
+/// watchdog waits a minute rather than the test build's second.
+fn parked_dispatch() -> super::SealSettings {
+    super::SealSettings {
+        dispatch_warn: Duration::from_secs(30),
+        dispatch_stall: Duration::from_secs(60),
+        ..manual()
+    }
+}
+
 /// Wait (at most 10 s) until `handle`'s applied tail reached `next`.
 async fn applied(handle: &StreamHandle, next: u64) {
     let t0 = Instant::now();
@@ -27,8 +37,8 @@ async fn applied(handle: &StreamHandle, next: u64) {
     }
 }
 
-/// Wait (at most 20 s: the test build's 5 s dispatch stall and the loop's
-/// tick) until `engine` closed.
+/// Wait (at most 20 s; the test build's dispatch stall is 1 s) until
+/// `engine` closed.
 async fn closed(engine: &ShardEngine) {
     let t0 = Instant::now();
     while !engine.is_closed() {
@@ -70,7 +80,7 @@ async fn a_dispatch_that_leaves_a_durable_group_pending_retires_the_engine() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_seal_waits_for_dispatch_to_publish_what_its_wal_flush_made_durable() {
-    let rig = rig("catch-up", manual(), Duration::from_millis(2)).await;
+    let rig = rig("catch-up", parked_dispatch(), Duration::from_millis(2)).await;
     let sp = &rig.engine.layout.seal;
     let mut rng = StdRng::seed_from_u64(0xCA7C);
     let hash = hashes(&mut rng, 1)[0];
@@ -116,7 +126,7 @@ async fn negative_control_durable_only_leftovers_drop_the_age_clock() {
 /// A seal of stream A while B's first append is applied but parked before
 /// durable dispatch: the shard's age clock as the seal leaves it.
 async fn age_after_a_seal_with_a_stream_applied_during_it(control: bool) -> Option<Duration> {
-    let rig = rig("leftover-age", manual(), Duration::from_millis(2)).await;
+    let rig = rig("leftover-age", parked_dispatch(), Duration::from_millis(2)).await;
     let sp = &rig.engine.layout.seal;
     sp.hooks
         .durable_only_leftover

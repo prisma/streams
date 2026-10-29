@@ -127,11 +127,12 @@ pub(crate) struct SealSettings {
 pub(crate) const DISPATCH_WARN: Duration = Duration::from_secs(10);
 pub(crate) const DISPATCH_STALL: Duration = Duration::from_secs(60);
 /// The test build's watchdog, so a test (or a mutant) whose dispatch
-/// stalls fails in seconds; every test rig's engine starts with it.
+/// stalls fails within a second; every test rig's engine starts with it
+/// (a test that parks dispatch on purpose sets its own).
 #[cfg(test)]
-pub(crate) const TEST_DISPATCH_WARN: Duration = Duration::from_secs(2);
+pub(crate) const TEST_DISPATCH_WARN: Duration = Duration::from_millis(500);
 #[cfg(test)]
-pub(crate) const TEST_DISPATCH_STALL: Duration = Duration::from_secs(5);
+pub(crate) const TEST_DISPATCH_STALL: Duration = Duration::from_secs(1);
 
 impl Default for SealSettings {
     fn default() -> Self {
