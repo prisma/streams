@@ -17,7 +17,7 @@ import {
   installSignals, parseFlags, stop,
 } from "./common.ts";
 import { corpusSample, corpusStats } from "./corpus.ts";
-import { produce, setup, type Ctx } from "./produce.ts";
+import { drop, produce, setup, type Ctx } from "./produce.ts";
 import { group, subs, tail, walk } from "./consume.ts";
 import { churn } from "./churn.ts";
 import { mux } from "./mux.ts";
@@ -37,6 +37,7 @@ Modes
                 --dlq STREAM --max-attempts N (dead-letter after N deliveries; the DLQ stream must exist)
                 --stagger SECS (stream i's consumer is set up, and then first pulls, i x SECS after stream 0's)
                 (a pull leases one message per routing key: give the producer --routing-keys K)
+  drop          DELETE each of --streams N streams of --prefix (--parallel P); gone counts as dropped
   churn         lifecycles: --count N --size-kib S --end delete|ttl:SECS [--rate L/s | --concurrency C]
   subs          --count N idle subscribers over the streams: --via sse|long-poll --connect-rate 20
   mux           one multiplexed wait (POST /v1/projects/{p}/live:wait) carrying a tail on every stream
@@ -107,7 +108,7 @@ try {
   const meter = new Meter();
   const http = new Http(base.replace(/\/+$/, ""), hdrs, meter);
   const walkLag = mode === "walk" && o.str("from", "earliest").startsWith("lag:");
-  const runsToCompletion = mode === "setup" || mode === "churn" || mode === "audit" || (mode === "walk" && !walkLag);
+  const runsToCompletion = mode === "setup" || mode === "drop" || mode === "churn" || mode === "audit" || (mode === "walk" && !walkLag);
   const ctx: Ctx = {
     http,
     meter,
@@ -124,6 +125,7 @@ try {
   let result: Record<string, unknown>;
   switch (mode) {
     case "setup": result = { setup: await setup(ctx) }; break;
+    case "drop": result = { drop: await drop(ctx) }; break;
     case "produce": result = await produce(ctx, signal); break;
     case "walk": result = await walk(ctx, signal); break;
     case "tail": result = await tail(ctx, signal); break;

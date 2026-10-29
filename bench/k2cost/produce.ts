@@ -76,6 +76,30 @@ export async function setup(ctx: Ctx): Promise<Record<string, unknown>> {
   return { format, ttl_secs: ttl || null, created, existing, failed, names: names.sort() };
 }
 
+/** drop: DELETE each of the --streams streams of --prefix (a generation the
+ * soak rotates out). A stream already gone (404/410) counts as dropped. */
+export async function drop(ctx: Ctx): Promise<Record<string, unknown>> {
+  const { o, http, meter } = ctx;
+  let dropped = 0, failed = 0;
+  await pool(ctx.streams, o.int("parallel", 8), async (i) => {
+    const name = streamName(ctx.prefix, i);
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const r = await http.call("DELETE", `/v1/streams/${encName(name)}`);
+      if (r.status === 200 || r.status === 204 || r.status === 404 || r.status === 410) return void dropped++;
+      if (r.status === 429 || r.status === 503 || r.status === 0) {
+        await sleep(backoffMs(r), stop.signal);
+        continue;
+      }
+      process.stderr.write(`[k2gen drop] ${name}: ${r.status} ${utf8(r.body).slice(0, 200)}\n`);
+      break;
+    }
+    failed++;
+  }, stop.signal);
+  meter.add("streams_dropped", dropped);
+  meter.add("streams_failed", failed);
+  return { dropped, failed };
+}
+
 // ---------------------------------------------------------------- spec
 
 export interface ProduceSpec {
