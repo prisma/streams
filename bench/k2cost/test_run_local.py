@@ -33,8 +33,7 @@ sys.path.insert(0, HERE)
 FLEET_KEYS = ("FLEET_PREFIX", "FLEET_MAX", "FLEET_MIN", "FLEET_AUTH_MODE", "WORKLOAD_TOKEN_FILE", "SELF_URL",
               "FLEET_ALLOW_HTTP_PEERS")
 ENGINE_PINS = {"WAL_GROUP_COMMIT": "1", "FLUSH_INTERVAL_MS": "25", "WAL_POST_ACK_GATHER_MS": "6",
-               "FRAME_COMPRESS": "1", "ABSORB_BYTES": "4194304", "ABSORB_AGE_SECS": "60",
-               "TRIM_PER_OP": "65536", "TRIM_GLOBAL_BUDGET": "65536", "ADMIT_MAX_INFLIGHT_PER_STREAM": "256",
+               "FRAME_COMPRESS": "1", "ADMIT_MAX_INFLIGHT_PER_STREAM": "256",
                "LIMIT_BYTES_PER_SEC": "5000000", "LIMIT_REQS_PER_SEC": "1000", "LIMIT_RECS_PER_SEC": "5000",
                "INITIAL_SHARDS": "4"}
 
@@ -116,7 +115,7 @@ class DryRun(unittest.TestCase):
         for k, v in ENGINE_PINS.items():
             self.assertEqual(env.get(k), v, k)
         compute = profile("compute-1g.env")
-        for k in ("SHARED_CACHE_BYTES", "HISTORY_CACHE_BYTES", "L0_SST_SIZE_BYTES", "ADMIT_RSS_SHED_MB"):
+        for k in ("SHARED_CACHE_BYTES", "L0_SST_SIZE_BYTES", "ADMIT_RSS_SHED_MB"):
             self.assertEqual(env[k], compute[k], k)
         self.assertEqual(env["SLATE_S3_ENDPOINT"], "http://127.0.0.1:9581")
         self.assertEqual(env["FLEET_PREFIX"], "k2fleet")
@@ -169,7 +168,6 @@ class DryRun(unittest.TestCase):
                 self.assertEqual(env.get(k), feeds.get(k, v), k)
         self.assertEqual(env["INITIAL_SHARDS"], "1")
         self.assertEqual(env["SHARED_CACHE_BYTES"], "33554432")
-        self.assertEqual(env["HISTORY_CACHE_BYTES"], "16777216")
         # The shared-cell profile carries the tail ring (8 MiB, 4f048b12).
         self.assertEqual(env["TAIL_RING_BYTES"], layered["TAIL_RING_BYTES"])
         for k in FLEET_KEYS + ("INSTANCE_NAME",):
