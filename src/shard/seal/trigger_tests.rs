@@ -165,3 +165,25 @@ async fn a_forced_flush_restarts_the_memtable_count() {
     );
     rig.engine.begin_close();
 }
+
+/// The seal stats a shard serves (`GET /v1/debug/timings`) count what the
+/// sealer did: one seal of four pages, its directory, no stall.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_seal_stats_count_what_the_sealer_did() {
+    let rig = rig("stats", manual(), Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0x57A7);
+    let hash = hashes(&mut rng, 1)[0];
+    for _ in 0..4 {
+        append(&rig.engine, hash, vec![random_bytes(&mut rng, 300)]).await;
+    }
+    let report = rig.engine.seal_once(Trigger::Requested).await.unwrap();
+    let stats = rig.engine.seal_json();
+    assert_eq!(stats["seals"], 1);
+    assert_eq!(stats["objects"], 1);
+    assert_eq!(stats["page_bytes"], report.page_bytes);
+    assert_eq!(stats["object_bytes"], report.object_bytes);
+    assert_eq!(stats["directory_entries"], report.chunks);
+    assert_eq!(stats["directory_streams"], 1);
+    assert_eq!(stats["dispatch_stall_warnings"], 0);
+    rig.engine.begin_close();
+}
