@@ -64,6 +64,9 @@ pub(crate) struct SealHooks {
     pub(crate) dispatch_hold: Mutex<Option<Arc<Hold>>>,
     /// Skip every durable dispatch (the stall check's control).
     pub(crate) skip_dispatch: AtomicBool,
+    /// The age clock's negative control: after a seal, count only durable
+    /// unsealed pages as left over (the behaviour before S16c).
+    pub(crate) durable_only_leftover: AtomicBool,
     /// REVIEW-6A F1 negative control: the committer puts the remainder a
     /// seal task would have pre-built from the pages its snapshot knew,
     /// instead of the live one.
@@ -135,6 +138,15 @@ impl SealState {
         if let Some(hold) = hold {
             hold.park().await;
         }
+    }
+
+    /// The age clock's negative control: whether `st` counts as left over
+    /// when only durable unsealed pages do, if the control is on.
+    pub(super) fn durable_only_leftover(&self, st: &crate::shard::StreamState) -> Option<bool> {
+        self.hooks
+            .durable_only_leftover
+            .load(Ordering::Relaxed)
+            .then(|| st.durable.absorbed.lt(&st.durable.next))
     }
 
     pub(super) fn late_directory(&self) -> bool {

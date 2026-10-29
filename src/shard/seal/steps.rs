@@ -489,7 +489,11 @@ impl ShardEngine {
     }
 
     /// After a seal: the oldest unsealed page is at most as old as the
-    /// snapshot while any stream is still unsealed.
+    /// snapshot while any held stream still has a page in its pending row,
+    /// applied or durable. A stream first applied during the seal is not
+    /// durable yet, and its group's durability stamps no age, so counting
+    /// only durable pages would leave its pages with no age trigger or
+    /// deadline until another write (S16c).
     #[expect(
         clippy::unwrap_used,
         reason = "ShardEngine::note_leftover; a poisoned age lock or stream state may hold a half-written value; recovering it could let the age trigger and deadline miss an unsealed page, whereas panicking ends the sealer, a required engine task, whose exit retires the engine, and the next open rebuilds this state from the store"
@@ -497,7 +501,11 @@ impl ShardEngine {
     fn note_leftover(&self, snapshot_at: Instant) {
         let leftover = self.layout.unsealed().iter().any(|h| {
             let st = h.state.lock().unwrap();
-            st.durable.absorbed < st.durable.next
+            #[cfg(test)]
+            if let Some(control) = self.layout.seal.durable_only_leftover(&st) {
+                return control;
+            }
+            !st.pending.is_empty()
         });
         *self.layout.seal.oldest_unsealed.lock().unwrap() = leftover.then_some(snapshot_at);
     }

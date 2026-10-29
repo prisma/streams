@@ -2381,22 +2381,24 @@
       "scope": "function",
       "lint": "clippy::unwrap_used",
       "metrics": {
-        "scope_lines": 7,
         "nested_items": 1,
-        "syntax_facts": 25,
-        "unwrap_sites": 2,
+        "scope_lines": 10,
+        "syntax_facts": 32,
         "unwrap_site::3789e345da2ceb0b": 1,
         "unwrap_site::4d04365ff4ef7710": 1,
-        "unwrap_site:path::d3ad282b64718d61": 1,
-        "unwrap_site:path::9a42f5bc2f08b271": 1,
-        "unwrap_site:path::95270985d1d4b887": 2,
-        "unwrap_site:path::e593490a360ac810": 1,
         "unwrap_site:path::2c67c2806704bd82": 2,
+        "unwrap_site:path::4165defedaeb40a7": 1,
+        "unwrap_site:path::6162591f71d8fe40": 1,
+        "unwrap_site:path::8c036d77d3ca77c2": 1,
+        "unwrap_site:path::95270985d1d4b887": 3,
+        "unwrap_site:path::9a42f5bc2f08b271": 1,
+        "unwrap_site:path::d3ad282b64718d61": 1,
+        "unwrap_site:path::e593490a360ac810": 1,
         "unwrap_site:path::f677c83f998da589": 1,
-        "unwrap_site:path::4165defedaeb40a7": 1
+        "unwrap_sites": 2
       },
-      "rationale": "S16: New layout 6A package 4 code (f3 billing, the sealer and sealed reads); the gate pairs it with the unwrap_used contracts that vanished from src/shard.rs (note_trim_debt, resident_absorbed, trim_stats, decode_dirty_value) by its rename heuristic, so a new reviewed exception counts as growth. The poisoned-lock reason is in source.",
-      "approver": "the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement, and ask Fable 5.1 if you are uncertain. Bring 6A to completion.\"), layout 6A package 4 batch 5, S16, approved 2026-10-28"
+      "rationale": "S16: New layout 6A package 4 code (f3 billing, the sealer and sealed reads); the gate pairs it with the unwrap_used contracts that vanished from src/shard.rs (note_trim_debt, resident_absorbed, trim_stats, decode_dirty_value) by its rename heuristic, so a new reviewed exception counts as growth. The poisoned-lock reason is in source. S16c: liveness fix, a held stream with any pending page keeps the age stamp (a stream first applied during a seal, not yet durable, kept no age before). The growth (scope_lines 7 -> 10, syntax_facts 25 -> 32, three path fingerprints) is the cfg(test) negative-control hook alone; the production unwrap sites are unchanged.",
+      "approver": "the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement, and ask Fable 5.1 if you are uncertain. Bring 6A to completion.\"), layout 6A package 4 batch 5, S16, approved 2026-10-28; S16c re-pinned by the lead under the same delegation, 2026-10-29"
     },
     {
       "path": "src/shard/seal/steps.rs",

@@ -1,9 +1,10 @@
 #![cfg(test)]
 //! The sealer against durable dispatch: a durable group that stays
 //! pending (dispatch stalled) retires the engine through the sealer loop's
-//! watchdog instead of leaving its writers waiting, and a seal's step 1
-//! waits (at most a second) for dispatch to publish what its WAL flush
-//! made durable.
+//! watchdog instead of leaving its writers waiting; a seal's step 1 waits
+//! (at most a second) for dispatch to publish what its WAL flush made
+//! durable; and a stream first applied during a seal keeps the shard's age
+//! clock running after it.
 
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::Ordering;
@@ -14,7 +15,7 @@ use rand::{SeedableRng, rngs::StdRng};
 
 use super::Trigger;
 use super::test_hooks::Hold;
-use super::tests::{append, hashes, manual, random_bytes, rig};
+use super::tests::{append, hashes, manual, random_bytes, rig, settle};
 use crate::shard::{ShardEngine, StreamHandle};
 
 /// Wait (at most 10 s) until `handle`'s applied tail reached `next`.
@@ -93,4 +94,75 @@ async fn a_seal_waits_for_dispatch_to_publish_what_its_wal_flush_made_durable() 
     );
     assert_eq!(report.pages, 0, "dispatch never published the page");
     rig.engine.begin_close();
+}
+
+/// A stream first appended while a seal runs (applied and held, not yet
+/// durable when the seal ends) keeps the shard's oldest-unsealed stamp, so
+/// the age trigger and deadline still reach its pages.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stream_applied_during_a_seal_keeps_the_age_clock_running() {
+    let oldest = age_after_a_seal_with_a_stream_applied_during_it(false).await;
+    assert!(oldest.is_some(), "B's unsealed page is aged");
+}
+
+/// **The negative control.** The same race, counting only durable pages as
+/// left over: B's applied page loses the shard's age stamp.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn negative_control_durable_only_leftovers_drop_the_age_clock() {
+    let oldest = age_after_a_seal_with_a_stream_applied_during_it(true).await;
+    assert!(oldest.is_none(), "the control drops the age of B's page");
+}
+
+/// A seal of stream A while B's first append is applied but parked before
+/// durable dispatch: the shard's age clock as the seal leaves it.
+async fn age_after_a_seal_with_a_stream_applied_during_it(control: bool) -> Option<Duration> {
+    let rig = rig("leftover-age", manual(), Duration::from_millis(2)).await;
+    let sp = &rig.engine.layout.seal;
+    sp.hooks
+        .durable_only_leftover
+        .store(control, Ordering::Relaxed);
+    let mut rng = StdRng::seed_from_u64(0xA6E);
+    let [a, b] = hashes(&mut rng, 2)[..] else {
+        unreachable!()
+    };
+    append(&rig.engine, a, vec![random_bytes(&mut rng, 300)]).await;
+    settle(&rig.engine).await;
+    let a_handle = rig.engine.stream_handle(a).await.unwrap();
+    let b_handle = rig.engine.stream_handle(b).await.unwrap();
+    let flush = sp.flush_lock.lock().await;
+    let hold = Hold::new();
+    let seal = async {
+        let report = rig.engine.seal_once(Trigger::Requested).await;
+        // The age clock as the seal left it, before B's group is durable.
+        let oldest = rig.engine.seal_measure().oldest;
+        *sp.hooks.dispatch_hold.lock().unwrap() = None;
+        hold.release();
+        (report, oldest)
+    };
+    // B is appended only once dispatch is parked, so its group is applied
+    // and held but not durable-published when the seal ends.
+    let go = tokio::sync::Notify::new();
+    let record = random_bytes(&mut rng, 300);
+    let appended = async {
+        go.notified().await;
+        append(&rig.engine, b, vec![record]).await
+    };
+    let drive = async {
+        let t0 = Instant::now();
+        while a_handle.state.lock().unwrap().durable.absorbed < 1 {
+            assert!(
+                t0.elapsed() < Duration::from_secs(10),
+                "A's seal never durable"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        *sp.hooks.dispatch_hold.lock().unwrap() = Some(hold.clone());
+        go.notify_one();
+        applied(&b_handle, 1).await;
+        drop(flush);
+    };
+    let ((report, oldest), (), _) = futures_util::future::join3(seal, drive, appended).await;
+    assert_eq!(report.unwrap().pages, 1, "the seal took A's page");
+    rig.engine.begin_close();
+    oldest
 }
