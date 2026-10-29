@@ -70,7 +70,7 @@ impl CommitTransaction<'_> {
         for (hash, local) in &self.streams {
             if let Some(sealed) = &local.frames.sealed {
                 let bytes = stage_remainder(&mut self.batch, hash, local, sealed);
-                self.engine.note_remainder(&local.handle, bytes);
+                self.engine.note_remainder(bytes);
                 continue;
             }
             if local.frames.pending.is_empty() {

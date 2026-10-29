@@ -120,21 +120,17 @@ impl ShardEngine {
         let snapshot_at = Instant::now();
         let windows = self.seal_snapshot();
         let mut report = SealReport::default();
-        if windows.is_empty() {
-            // Step 7a for a memtable of no unsealed page (queue rows, a
-            // degraded window's operands): REVIEW-6A F2.
-            if !sp.skips_7a() {
-                self.wal_flush()
-                    .await
-                    .map_err(|e| SealError::Store(e.to_string()))?;
-            }
-        } else {
+        if !windows.is_empty() {
             self.seal_windows(sp, &windows, &mut report).await?;
         }
         // (7b), after (7a) in `seal_windows`.
         #[cfg(test)]
         sp.check_abort(super::test_hooks::SealStep::Durable)?;
-        self.forced_flush(false).await.map_err(SealError::Store)?;
+        // An empty seal's memtable (queue rows, a degraded window's
+        // operands) takes step 7a in the flush itself: REVIEW-6A F2.
+        self.forced_flush(windows.is_empty())
+            .await
+            .map_err(SealError::Store)?;
         for w in &windows {
             self.layout.release_sealed(&w.handle.hash);
         }
@@ -295,25 +291,7 @@ impl ShardEngine {
             seq: sp.next_seq.fetch_add(1, Ordering::Relaxed) + 1,
         };
         // (4)
-        #[cfg(test)]
-        sp.before_put().await?;
-        let path = object::object_path(&crate::sharddir::shard_db_path(&self.prefix), id);
-        self.data_store
-            .put_opts(
-                &object_store::path::Path::from(path),
-                // The body's slices as one payload, still without a copy.
-                encoded.parts.iter().cloned().collect::<PutPayload>(),
-                PutOptions {
-                    mode: PutMode::Create,
-                    ..Default::default()
-                },
-            )
-            .await
-            .map_err(|e| SealError::Store(e.to_string()))?;
-        sp.counters.objects.fetch_add(1, Ordering::Relaxed);
-        sp.counters
-            .object_bytes
-            .fetch_add(encoded.len as u64, Ordering::Relaxed);
+        self.put_object(sp, id, &encoded).await?;
         *report = SealReport {
             object: Some(id),
             object_bytes: encoded.len as u64,
@@ -332,7 +310,10 @@ impl ShardEngine {
             .zip(&summaries)
             .map(|(c, keys)| (c.entry.hash, DirEntry::of(id, c, keys.clone())))
             .collect();
+        #[cfg(test)]
         let late = sp.late_directory();
+        #[cfg(not(test))]
+        let late = false;
         if !late {
             self.publish_directory(&entries);
         }
@@ -370,7 +351,11 @@ impl ShardEngine {
         #[cfg(test)]
         sp.check_abort(super::test_hooks::SealStep::Applied)?;
         // (7a) The commit is applied; make it durable and published.
-        if !sp.skips_7a() {
+        #[cfg(test)]
+        let with_7a = !sp.skips_7a();
+        #[cfg(not(test))]
+        let with_7a = true;
+        if with_7a {
             self.wal_flush()
                 .await
                 .map_err(|e| SealError::Store(e.to_string()))?;
@@ -379,6 +364,35 @@ impl ShardEngine {
         if late {
             self.publish_directory(&entries);
         }
+        Ok(())
+    }
+
+    /// Step 4: the segment object's PUT, create-only, metered.
+    async fn put_object(
+        &self,
+        sp: &SealState,
+        id: ObjectId,
+        encoded: &object::EncodedObject,
+    ) -> Result<(), SealError> {
+        #[cfg(test)]
+        sp.before_put().await?;
+        let path = object::object_path(&crate::sharddir::shard_db_path(&self.prefix), id);
+        self.data_store
+            .put_opts(
+                &object_store::path::Path::from(path),
+                // The body's slices as one payload, still without a copy.
+                encoded.parts.iter().cloned().collect::<PutPayload>(),
+                PutOptions {
+                    mode: PutMode::Create,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| SealError::Store(e.to_string()))?;
+        sp.counters.objects.fetch_add(1, Ordering::Relaxed);
+        sp.counters
+            .object_bytes
+            .fetch_add(encoded.len as u64, Ordering::Relaxed);
         Ok(())
     }
 

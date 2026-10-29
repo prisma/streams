@@ -509,10 +509,8 @@ impl ShardEngine {
                 remainder_bytes = r.remainder_bytes,
                 "sealed"
             ),
-            Err(e) if !self.is_closed() => {
-                tracing::warn!(shard = %self.prefix, ?trigger, "seal failed: {e}");
-            }
-            Err(_) => {}
+            Err(SealError::Closed) => {}
+            Err(e) => tracing::warn!(shard = %self.prefix, ?trigger, "seal failed: {e}"),
         }
     }
 
@@ -524,7 +522,7 @@ impl ShardEngine {
             return;
         }
         let evicted = self.evict_idle_handles(idle, self.handle_max_resident);
-        if evicted > 0 {
+        if let Some(evicted) = std::num::NonZeroUsize::new(evicted) {
             tracing::debug!(shard = %self.prefix, "evicted {evicted} idle stream handles");
         }
     }
@@ -592,7 +590,9 @@ impl ShardEngine {
     async fn forced_flush(&self, with_7a: bool) -> Result<(), String> {
         let sp = self.seal_state();
         let _one_at_a_time = sp.flush_lock.lock().await;
-        if with_7a && !sp.skips_7a() {
+        #[cfg(test)]
+        let with_7a = with_7a && !sp.skips_7a();
+        if with_7a {
             self.wal_flush().await.map_err(|e| e.to_string())?;
         }
         self.reset_baseline();
@@ -647,13 +647,11 @@ impl ShardEngine {
         self.seal_state().json()
     }
 
-    /// A seal's commit put `bytes` of remainder on `handle`'s pending row:
-    /// metered beside the object bytes, and the stream stays held while
-    /// any page is left.
-    pub(crate) fn note_remainder(&self, handle: &Arc<super::StreamHandle>, bytes: u64) {
-        if bytes > 0 {
-            self.layout.hold_unsealed(handle);
-        }
+    /// A seal's commit put `bytes` of remainder on a stream's pending row,
+    /// metered beside the object bytes. The stream stays held without a
+    /// hold here: it is in the unsealed set while it has pages, and only the
+    /// sealer's release after this commit takes it out, once none is left.
+    pub(crate) fn note_remainder(&self, bytes: u64) {
         self.seal_state()
             .counters
             .remainder_bytes
@@ -673,19 +671,5 @@ impl ShardEngine {
     /// collector): it takes step 7a like every forced flush.
     pub(crate) async fn flush_memtable(&self) -> Result<(), String> {
         self.forced_flush(true).await
-    }
-}
-
-#[cfg(not(test))]
-impl SealState {
-    /// Only the test build's F2 control skips step 7a.
-    fn skips_7a(&self) -> bool {
-        false
-    }
-
-    /// Only the test build's race control publishes a seal's directory
-    /// entries late.
-    fn late_directory(&self) -> bool {
-        false
     }
 }
