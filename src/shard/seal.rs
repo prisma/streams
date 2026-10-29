@@ -370,7 +370,7 @@ impl SealState {
         self.retry_after
             .lock()
             .unwrap()
-            .is_some_and(|(at, _)| Instant::now() < at)
+            .is_some_and(|(at, _)| Instant::now().checked_duration_since(at).is_none())
     }
 
     /// Clear the backoff after a seal, or double it after a failure.
