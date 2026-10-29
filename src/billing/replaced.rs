@@ -148,12 +148,15 @@ async fn settle_segment(
                 }
             }
         }
-        Ok(_) => {
-            if let Err(error) = state.registry.settle_replaced(&entry.key, sid).await {
-                tracing::warn!("closure debt {} not settled: {error}", entry.key);
+        Ok(_) => match super::walk::request_purge(&engine, hash, Some(entry.debt.close_ms)).await {
+            Pass::Next => {
+                if let Err(error) = state.registry.settle_replaced(&entry.key, sid).await {
+                    tracing::warn!("closure debt {} not settled: {error}", entry.key);
+                }
+                Pass::Next
             }
-            Pass::Next
-        }
+            Pass::Stop => Pass::Stop,
+        },
         Err(error) => {
             tracing::error!("closure-debt metadata read failed: {error}");
             Pass::Stop

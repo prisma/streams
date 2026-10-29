@@ -222,15 +222,48 @@ actions to these contracts.
 
 - **Scope:** TLA-016, TLA-018.
 - **Statement:** a segment object PUT with `PutMode::Create` under a fresh
-  (writer epoch, seq) name is never overwritten, and no object a directory
-  row names is deleted while that row exists.
+  (writer epoch, seq) name is never overwritten, and no object holding a
+  chunk a read may pick is deleted while that read may fetch it.
 - **Origin:** `src/shard/seal/steps.rs` (step 4), `src/spill/object.rs`
-  (`object_path`).
-- **Enforcement / evidence:** the object store's conditional create; nothing
-  deletes segment objects before package 6's garbage collection.
-- **Invalidation:** package 6's garbage collection, which then carries this
-  as its obligation.
-- **Standing:** a design rule.
+  (`object_path`); package 6's collector (`src/shard/seal/gc.rs`).
+- **Enforcement / evidence:** the object store's conditional create; the
+  deletion half is TLA-019's obligation (`RefGC`: `NoDeleteWhileReferenced`,
+  `ReadsServed`, under ASM-PURGE-DELAY and ASM-HSEG-GRACE), and
+  `shard::seal::gc_tests`.
+- **Invalidation:** a delete path outside the collector and the sweep.
+- **Standing:** a design rule carried by TLA-019.
+
+### ASM-HSEG-GRACE
+
+- **Scope:** TLA-019 (`RefGC`).
+- **Statement:** a sealed read outside the collector's process (a peer, or a
+  fenced owner's read that started before its fence) ends within the grace
+  (`GcSettings::grace`, 10 min) after the object it may fetch lost its last
+  reference. A `'G'` row found when an opening starts is due no sooner than
+  one grace after that start.
+- **Origin:** `src/shard/seal/gc.rs` (`collect`, `opened_ms`).
+- **Enforcement / evidence:** reads are bounded by their request timeouts and
+  their page budgets; nothing measures a read against the grace. A read that
+  still meets a deleted object answers an error, never a short success.
+- **Invalidation:** a read path held open across minutes (a long-poll that
+  plans before it parks and fetches after).
+- **Standing:** a timing assumption.
+
+### ASM-PURGE-DELAY
+
+- **Scope:** TLA-019 (`RefGC`).
+- **Statement:** a dead incarnation's purge runs no sooner than its purge
+  delay (`GcSettings::purge_delay`, 10 min) after its close instant, and every
+  read or append of the incarnation admitted before its death ends within
+  that delay.
+- **Origin:** `src/shard/seal/gc/purge.rs` (`request_purge`, `purge_stream`),
+  `src/billing/walk.rs` (`request_purge`).
+- **Enforcement / evidence:** request timeouts; a late append of a purged
+  stream fails (`load_tail`), and `purge_lifecycle` and
+  `shard::seal::gc_tests` pin it.
+- **Invalidation:** a request admitted before a delete that runs for longer
+  than the delay.
+- **Standing:** a timing assumption.
 
 ### ASM-SEAL-COMMITTER-SERIAL
 

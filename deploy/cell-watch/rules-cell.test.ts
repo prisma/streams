@@ -549,6 +549,30 @@ describe("row 30: sealed index corrupt", () => {
   });
 });
 
+describe("row 31: gc inexact", () => {
+  test("pages on any refused decrement, and resolves after a restart that finds none", () => {
+    const w = new Watch();
+    w.polls(MIN_POLLS, data({ "local.gc_inexact_decrements": 0 }));
+    expect(fired(w, 31)).toEqual([]);
+    w.poll(data({ "local.gc_inexact_decrements": 1 }));
+    expect(fired(w, 31).map((e) => [e.class, e.values])).toEqual([["PAGE", { gc_inexact_decrements: 1 }]]);
+    w.polls(MIN_POLLS, data({ "local.gc_inexact_decrements": 0 }));
+    expect(row(w, 31)).toEqual([["trigger", "PAGE"], ["resolve", "PAGE"]]);
+  });
+});
+
+describe("row 32: gc reclaim lag", () => {
+  test("notifies once a dead incarnation waits over an hour past its due instant", () => {
+    const w = new Watch();
+    w.polls(MIN_POLLS, data({ "local.gc_oldest_unreclaimed_late_secs": 3600 }));
+    expect(fired(w, 32)).toEqual([]);
+    w.poll(data({ "local.gc_oldest_unreclaimed_late_secs": 3601 }));
+    expect(fired(w, 32).map((e) => [e.class, e.values])).toEqual([["NOTIFY", { gc_oldest_unreclaimed_late_secs: 3601 }]]);
+    w.polls(MIN_POLLS, data({ "local.gc_oldest_unreclaimed_late_secs": 0 }));
+    expect(row(w, 32)).toEqual([["trigger", "NOTIFY"], ["resolve", "NOTIFY"]]);
+  });
+});
+
 describe("row 26: usage overflow", () => {
   test("notifies on any overflow admit", () => {
     const w = new Watch();

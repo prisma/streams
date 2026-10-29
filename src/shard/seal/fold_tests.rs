@@ -375,7 +375,10 @@ async fn a_fenced_folders_object_is_an_orphan() {
 fn configure_merges(rig: &Rig) {
     rig.engine.layout.seal.fold.configure(|s| {
         s.fan_in = [2, 2];
-        s.retire_grace = Duration::ZERO;
+        s.auto = false;
+    });
+    rig.engine.gc_state().configure(|s| {
+        s.grace = Duration::ZERO;
         s.auto = false;
     });
 }
@@ -410,16 +413,13 @@ async fn merges_make_hourly_and_daily_objects_and_retire_their_inputs() {
         (daily.level, daily.entries, daily.seals),
         (2, folded, seals)
     );
-    rig.engine.delete_retired().await;
+    rig.engine.collect().await.expect("garbage pass");
     assert_eq!(
         index_objects(&rig).await,
         BTreeSet::from([daily.id]),
         "merged-away objects deleted"
     );
-    assert_eq!(
-        get(&rig.engine.layout.seal.fold.counters.retired_deleted),
-        6
-    );
+    assert_eq!(get(&rig.engine.gc_state().counters.deleted), 6);
     let oracle_now = oracle.lock().unwrap().clone();
     read_all(&rig, &oracle_now, "after the merges").await;
     // A merge stopped after its read-back or after its batch, then a restart.

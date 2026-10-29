@@ -1420,58 +1420,55 @@ is the old one, so the earlier shapes check what they checked before.
 
 ---
 
-## TLA-019 — Reachability-based garbage collection and reader/fork protection
+## TLA-019 — Reference-counted garbage collection of sealed objects and reader/fork protection
 
-Modules `ReachGC.tla`/`MC_ReachGC.tla` (physical object graph) and
-`ForkPin.tla`/`MC_ForkPin.tla` (registry fork pin). They share no state; the
-obligation is split by invariant ownership.
+Modules `RefGC.tla`/`MC_RefGC.tla` (the physical layer: layout 6A package
+6's refcount GC, which replaced `ReachGC`, history2's partition GC, retired
+with history2) and `ForkPin.tla`/`MC_ForkPin.tla` (registry fork pin). They
+share no state; the obligation is split by invariant ownership.
 
 ### What the repository actually owns
 
-The only physical deletions the repository performs itself are shard-log row
-trims (`maintenance.rs`), which TLA-016 covers. Every other object deletion is
-SlateDB's internal collector, configured per DB: history partitions in
-`history_settings` (`src/history.rs:456-527`; GC interval 600 s, fixed: no
-environment name sets it since 2026-09-29; upstream `min_age` 300 s;
-`manifest_poll_interval` 300 s at `:493`), shard DBs in
-`src/config/validation.rs`. Stream deletion is logical: a registry tombstone
-(`src/application/creation/deletion.rs`); rows are never deleted. Production
-creates no user checkpoints and no `DbReader`s (the compactor writes its own
-checkpoint before each compaction commit), and history reads go through the
-open writer's in-memory view. Fork retention is registry-level:
+Layout 6A's segment objects (`hseg/`) and run-index objects (`ridx/`) are
+the repository's own objects, and package 6 deletes them itself
+(`src/shard/seal/gc.rs`, `gc/purge.rs`, `gc/sweep.rs`, rows and the liveness
+rule in `src/spill/gc.rs`). A segment object's `'R'` row counts its
+unreclaimed chunks: the seal's commit writes it, a consolidation decrements
+the chunks it supersedes, a purge's reclaim decrements a dead stream's
+chunks, every such read-modify-write under the engine's `refs` lock. A row
+reaching zero is deleted with a `'G'` row in the same batch; a merge writes
+a `'G'` row for each run-index object it merged away. The collector deletes a
+`'G'` object once its grace passed and no sealed read of the process that
+started at or before its zeroing still runs (the pin). The orphan sweep
+deletes an object no row names, of a fenced opening or not in flight. A
+purge is asked for only for an irrevocably dead incarnation (a hard delete,
+or one a recreation replaced), by the tombstone walk and the closure-debt
+pass. SlateDB's own collector of the shard log is not this obligation. Fork
+retention is registry-level:
 `fork_children` references and the incarnation-bound CAS decisions in
 `delete_transition`, `anchor::install` and `release_fork_ref`, with the
 fork-debt index (`src/registry/fork_debt.rs`) and the `fork-debt-reconcile`
 task (`src/application/creation/reconcile.rs`) that settles what a deleted
 child still owes.
 
-The repository-owned decisions checked here are: the absorbed boundary
-advances only after the covering flush is in the manifest; history reads use
-the writer's unregistered, poll-refreshed view; a deleted-SST read error is
-propagated; the partition GC and poll settings; and the fork-pin protocol.
-The protection of a stale view comes from upstream: the compactor's
-checkpoint on the pre-compaction manifest.
+The repository-owned decisions checked here are the refcount writers, the
+consolidation's re-check (its chunks are still the picks and its stream is
+not dead), the committer's refusal of a purged stream's seal, the reader's
+candidate set (every index source its window reaches), the pin, the sweep's
+in-flight rule, and the fork-pin protocol.
 
 ### Claim
 
-- `ManifestRefsPresent`: nothing the live manifest references is deleted,
-  including an L0 uploaded before and committed after a collector pass
-  observed an older manifest, and a compaction output.
-- `HistoryBacked`: every offset below the absorbed boundary is held by a
-  present object of the live manifest (the uncompleted history transition and
-  the last copy, composed with TLA-016).
-- `NoFalseCompleteRead`: a production read never completes while silently
-  missing rows of a deleted SST.
-- `LiveReadViewProtected` (the catalog's reader clause): nothing a live read
-  view references is deleted. It holds because of the compactor's checkpoint
-  and the timing in ASM-SLATEDB-COMPACTION-CHECKPOINT (see F1).
-- `CheckpointPinned` (upstream contract; expanded shape only): an upstream
-  checkpoint pin protects its objects.
-- `EligibleEventuallyReclaimed` (upstream-contract liveness): an SST that is
-  unreferenced, not named by an unexpired checkpoint (user or compactor) and
-  meets the upstream eligibility premise is eventually deleted, even with a
-  stale inventory. This checks the modelled collector, not repository code,
-  and is not H14 evidence.
+- `RefcountExact`: every `'R'` row counts exactly its object's committed
+  chunks that are neither superseded by a committed consolidation nor of a
+  reclaimed stream, and is absent when there are none.
+- `NoDeleteWhileReferenced`: an object with such a chunk is never deleted,
+  by the collector or the sweep.
+- `GarbageUnreferenced`: only an object with no counted chunk has a `'G'`
+  row.
+- `ReadsServed`: a sealed read never meets a deleted object. With the
+  fetch's error on a missing object (NoFalseCompleteRead in the code), a
+  read never completes short.
 - ForkPin `ForkPinRespected` / `ReadyHoldsRef`: an anchored or Ready fork
   points at, and is referenced by, the current, not tombstoned incarnation it
   forked, across a source's deletion and recreation under the same name.
@@ -1492,13 +1489,12 @@ checkpoint on the pre-compaction manifest.
 
 ### Observation boundary
 
-ReachGC: object existence (`none` / `present` / `deleted`), id times, the
-stored manifest's references, the compactor's checkpoint (`cck`: the
-pre-compaction manifest and its expiry tick), the writer `Db`'s in-memory
-view `wv` and the tick it went stale, the compactions store (low
-watermark), one user checkpoint pin, one production read (its captured
-view, start tick and outcome), and the collector's per-pass snapshot
-(cutoff, observed references, inventory). One tick stands for 300 s. ForkPin: the source name's current
+RefGC: per object whether it is stored and committed, the operation in
+flight that put it (its claim) and its opening, its `'R'` count, its `'G'`
+row and the pin clock at its zeroing; the indexed chunks; per stream its
+purge state (live, requested, purged, reclaimed); per reader its phase, its
+start on the pin clock and its plan; and the objects the sweep deleted.
+ForkPin: the source name's current
 incarnation and lifecycle, its `fork_children`, each child's lifecycle and
 forked incarnation, each creator's progress, each child tombstone's
 `parent_ref_pending` debt, whether a `DELETE` is past its tombstone CAS,
@@ -1509,15 +1505,17 @@ child name (`Prev`), and whether the binary with the index is deployed.
 
 | Model action | Production function(s) | Atomicity justification / dependency contract |
 |---|---|---|
-| `FlushUpload`, `FlushCommit` | SlateDB memtable flush: L0 upload, then the manifest write; a conflict with the compactor's newer manifest makes the writer load and merge it first, so `wv` is current afterwards. The history partition flushes from `Absorber::commit` (`src/history/gather.rs:671`) | Two separate steps. The manifest write does not re-check object existence (ASM-SLATEDB-GC). |
-| `CompactStart` / `CompactUpload` / `CompactCommit` | Embedded compactor configured by `history_settings`; its commit is `write_manifest` in SlateDB `compactor_state_protocols.rs`: a checkpoint on the stored manifest with a 900 s lifetime, then the manifest swap | The job is recorded (low watermark) before the output upload. The checkpoint write and the swap are two CAS writes, merged into one step: in between, the live manifest still names the inputs. Mutation point `CompactionCheckpoint`. The compactor does not refresh the writer's view (ASM-SLATEDB-GC iv). |
-| `WriterPoll` | `PollManifest` every `manifest_poll_interval` (300 s), which merges the stored manifest (`src/history.rs:493`) | Atomic merge under the DB state lock. It may happen at any time; `Tick` forces it within `PollInterval` ticks of the view going stale (ASM-SLATEDB-COMPACTION-CHECKPOINT). |
-| `Tick` | Wall-clock time | Blocked while the writer view has been stale for `PollInterval` ticks or a read has run for `ReadSpan` ticks; forgets an expired compactor checkpoint. |
-| `OrphanUpload` | A fenced old writer's flush whose manifest CAS fails (ASM-HISTORY-FENCED-VIEW) | The object exists but is never referenced. |
-| `Advance` | `CommitTransaction::absorbed`, submitted only after `part.flush()` returned `Ok` (TLA-016 H3). Mutation point `AdvanceBacked` | — |
-| `CkCreate` / `CkRelease` | Upstream user-checkpoint API. **The repository never creates one** | Models the upstream contract only (`UseCheckpoint`). The compactor's checkpoint is `CompactCommit`'s. |
-| `ReadBegin` / `ReadEnd` | History reads through the writer `Db` (`decode_history_range`, `src/application/read.rs:720`; `read_history2*`, `src/history.rs:844-1047`) | The read captures `wv` and ends within `ReadSpan` ticks. A deleted SST in the view yields the upstream outcome (mutation point `UpstreamDeletedRead`), as the repository handles it (`map_err(\|e\| e.to_string())?`, mutation point `RepoOnDeletedRead`). |
-| `GcReadCompactions` → `GcReadManifest` → `GcList` → `GcDelete`* → `GcFinish` | Upstream `GarbageCollector::run_gc_task` → `remove_expired_checkpoints`, then `CompactedGcTask::collect` (SlateDB `0717cc1`, `garbage_collector.rs`, `garbage_collector/compacted_gc.rs`) | Compactions are read before the manifest; the manifest read includes the manifests of unexpired checkpoints (`CheckpointRefs`; expiry is checked at that step, which can only make deletion earlier); then the list, then per-object deletes. At most one pass per tick. |
+| `Put(o)` | A seal's, fold's, merge's or consolidation's PUT (`PutMode::Create`), its id drawn by `claim_object`, which registers it in flight (`gc.rs`) | One step; the claim is released when the operation's outcome is known. |
+| `SealCommit(o)` | The seal's commit, staged by the committer (`transaction/seal.rs::stage_seal`): its `'K'` and `'R'` rows | Atomic in one group. Refused for a purged stream (`load_tail` fails on the purged set or the `'H'` row; mutation point `SealAdmits`). It never reads the store. |
+| `Abort(o)` | An operation that fails after its PUT: a refused seal, a failed batch | Its claim drops; its object is an orphan. |
+| `ConsCommit` | `consolidate_one` under `refs`: `still_picked` (the picks over the range are exactly the job's chunks, and no `'H'` row) then one batch: `'K'`, `'R'`, `'O'` and every superseded chunk's decrement | Atomic: `refs` is held from the re-check until the batch is durable (`write_decrements`). Mutation point `ConsAdmits`. |
+| `Request`, `PurgeStep` | `request_purge` (an `'H'` row); `stage_purge` in the committer: tail and pending rows deleted, `'H'` Purged | `PurgeStep` waits until no read of the stream admitted before its death runs (ASM-PURGE-DELAY: the purge delay of 10 min). |
+| `Reclaim(s)` | `reclaim_locked` under `refs`: `live_chunks` (directory, then every live run-index object's run; `spill::gc::live_entries`), decrements, `'H'.reclaimed = head` in one batch | Atomic under `refs`. |
+| `Drop(c)` | A fold's or merge's `kept_entries`: covered entries and those below the stream's `reclaimed` | A superset: the model drops any decremented entry at any time. |
+| `Collect(o)` | `collect`: a due `'G'` row, `pinned` false, DELETE, then the `'G'` row deleted | Mutation point `PinOK`. |
+| `Fence` | A new owner opens the shard log; the old opening's operations die | Its readers are over within the grace (ASM-HSEG-GRACE). |
+| `Sweep(o)` | `sweep_orphans`: LIST, the in-flight set read after it, no `'R'`/`'X'`/`'G'` row, older than `orphan_age` | Mutation point `SweepEligible`. |
+| `RStart`, `RPlan`, `RFetch`, `RAgain` | `read_sealed`: `pin()` before `sealed_candidates` (directory, then every run within reach), `tile`, then the GETs; a 404 answers an error | Mutation point `Picks`. |
 | `ForkBegin` | `fork::prepare` validates the live current incarnation (`src/application/creation/fork.rs:28`); for a recreated name, `Registry::recreate` (`src/registry.rs:888-944`), which first records the replaced incarnation's closure debt (`:921`; `registry/replaced.rs:129-153`) and then indexes the debt of the stored tombstone (`:922`; `fork_debt.rs:193-201`), both before its CAS | For a child incarnation that recreates a name (`Prev`), the create overwrites the previous incarnation's tombstone and its debt; only its marker remains. The marker write and the CAS are two writes merged into one step: a crash between them leaves the marker beside the unchanged tombstone, which the reconciler repairs as usual. The closure-debt record is billing state and touches no fork reference. If it fails, the recreation fails before the marker and the CAS, as a create that never ran. Mutation point `IndexOverwritten`. Before the rollout the old binary writes no marker (`lostOld`). |
 | `ForkInstall` | `anchor::install`: `mutate_incarnation(source, forked epoch)` (`src/application/creation/anchor.rs:78`) | One CAS bound to the forked incarnation (ASM-OBJSTORE-CAS). Idempotent when already installed; declines on a soft, tombstoned or recreated source. Mutation point `InstallFence`. |
 | `ForkPostCheck` | `anchor.rs:134-182`: if the child incarnation vanished (lookup by name, bound to its epoch), release the fresh reference; otherwise require the source name's current descriptor to list the fork id | The release is one `release_fork_ref` CAS. The source presence check is by name, with no epoch check. |
@@ -1534,18 +1532,14 @@ child name (`Prev`), and whether the binary with the index is deployed.
 
 ### Assumptions
 
-ASM-SLATEDB-GC, ASM-SLATEDB-COMPACTION-CHECKPOINT, ASM-HISTORY-FENCED-VIEW,
-ASM-HISTORY-GC-CLOCK, ASM-HISTORY-ACTORS and ASM-OBJSTORE-CAS.
+ASM-HSEG-GRACE, ASM-PURGE-DELAY and ASM-SEAL-OBJECT-IMMUTABLE (RefGC);
+ASM-HISTORY-ACTORS and ASM-OBJSTORE-CAS (ForkPin).
 
 ### Constants per configuration
 
 | Config | MinAge | Horizon | MaxTime | CkLife | User checkpoint | Orphan | Reader | Spec |
 |---|---|---|---|---|---|---|---|---|
-| ReachGC `small`, `nc_no_compaction_checkpoint`, `nc_advance_on_upload`, `nc_no_generation`, witnesses except `ReaderViewErrors` | 1 | 2 | 4 | 3 | no | yes | yes | `Spec` |
-| ReachGC `lapse`, `nc_swallow_read_error`, `probe_upstream_short_read`, `w_ReaderViewErrors` | 1 | 2 | 4 | 1 | no | yes | yes | `Spec` |
-| ReachGC `expanded`, `nc_ignore_checkpoint_pin` | 2 | 2 | 5 | 3 | yes | yes | yes | `Spec` |
-| ReachGC `liveness`, `nc_stale_inventory` | 1 | 2 | 4 | 3 | no | yes | no\* | `LiveSpec` |
-| ReachGC `liveness_expanded` | 2 | 2 | 5 | 3 | yes | yes | no\* | `LiveSpec` |
+| RefGC every configuration | `Readers = {1, 2}`, `MaxClock = 4` | | | | | | | `Spec` (`baseline` with the deadlock check off: a finished run is quiescent, not stuck) |
 | ForkPin `baseline`, safety controls, witnesses except the legacy ones | children `{F1, F2, F3}`, F3 recreating F1's name; `MaxEpoch = 2`, `MaxCrashes = 1` | | | | | | | `Spec` |
 | ForkPin `liveness_reconciler`, `nc_no_reconciler`, `nc_settle_inconclusive` | children `{F1, F2}` (distinct names) | | | | | | | `LiveSpecReconciler` |
 | ForkPin `liveness_reconciler_recreated` | children `{F1, F3}`, F3 recreating F1's name | | | | | | | `LiveSpecReconciler` |
@@ -1554,19 +1548,11 @@ ASM-HISTORY-GC-CLOCK, ASM-HISTORY-ACTORS and ASM-OBJSTORE-CAS.
 | ForkPin `baseline_legacy` | children `{F1, F2, F3}`, F3 recreating F1's name, `Legacy` | | | | | | | `Spec` |
 | ForkPin `liveness_backfill_recreated`, `nc_recreate_without_index`, `nc_recreate_without_index_liveness`, `w_RecreationIndexesDebt`, `w_OldBinaryOverwroteDebt` | children `{F1, F3}`, F3 recreating F1's name, `Legacy` | | | | | | | `LiveSpecReconciler` / `Spec` |
 
-Every ReachGC configuration uses `PollInterval = 1` and `ReadSpan = 1`: one
-tick is 300 s, the writer view is refreshed within one tick of going stale,
-and a read ends within one tick. `CkLife = 3` is the 900 s compactor
-checkpoint. The `lapse` shape's one-tick checkpoint stands for the cases the
-timing assumption excludes (repeated failed polls, or a read that outlasts
-the checkpoint).
+RefGC has no liveness check: that every `'G'` object is eventually deleted
+follows from the collector's loop and the pin's end with each read, which
+the DSTs show (`shard::seal::gc_tests`).
 
-\*The collector never consults the production read view, so the view cannot
-affect reclamation; it is omitted from the liveness state space.
-
-**Liveness scope.** ReachGC: writer, compactor, orphan and pin activity stop
-at `Horizon`. `WF` on `Tick`, each collector step and `ReadEnd`; no fairness
-on any writer, delete-success or pin step. ForkPin: creator and delete
+**Liveness scope.** ForkPin: creator and delete
 crashes are bounded, so they cease. `WF` on each child's in-process request
 steps (`ForkInstall ∨ ForkPostCheck ∨ InRequestRelease`). `LiveSpecReconciler`
 adds `WF` on each marker's `Reconcile` and `Backfill` step, on
@@ -1583,25 +1569,12 @@ distinct names and one with a recreated name.
 
 | Control | Layer | Operator substituted | Must violate |
 |---|---|---|---|
-| `nc_no_compaction_checkpoint` | upstream contract (the model before the checkpoint was added) | `CompactionCheckpoint <- MutNoCompactionCheckpoint`: the compactor commits without checkpointing the pre-compaction manifest | `LiveReadViewProtected` |
-| `nc_advance_on_upload` | repository | `AdvanceBacked <- MutAdvanceOnUpload`: the boundary advances once the covering SST is uploaded, before the manifest commit | `HistoryBacked` |
-| `nc_swallow_read_error` (lapse shape) | repository | `RepoOnDeletedRead <- MutRepoSwallowReadError`: a deleted-SST read error becomes an empty completed result | `NoFalseCompleteRead` |
-| `probe_upstream_short_read` (lapse shape) | **probe** (ASM-SLATEDB-GC iii) | `UpstreamDeletedRead <- MutUpstreamShortRead`: upstream returns a short success for a deleted SST | `NoFalseCompleteRead` |
-| `nc_no_generation` | upstream contract | `GcEligible <- MutEligibleAgeOnly`: delete from an older reachability snapshot using only `min_age` | `ManifestRefsPresent` |
-| `nc_ignore_checkpoint_pin` | upstream contract (a user checkpoint, which the repository never creates) | `GcRefs <- MutRefsIgnoreCheckpoint`: the collector ignores every checkpoint's manifest | `CheckpointPinned` |
-| `nc_stale_inventory` | upstream contract | `GcInventory <- MutInventoryFrozen`: after the first list the collector trusts that inventory forever | `EligibleEventuallyReclaimed` |
-| ForkPin `nc_ignore_fork_pin` | repository | `DeleteDecision <- MutDeleteIgnoresRefs`: the source is tombstoned regardless of fork references | `ForkPinRespected` |
-| ForkPin `nc_install_ignores_incarnation` | repository | `InstallFence <- MutInstallIgnoresIncarnation`: the install CAS is not bound to the forked incarnation | `ForkPinRespected` |
-| ForkPin `nc_no_reconciler` | repository (pre-fix F4) | `ReconcilerFairness <- NoReconciler`: the reconciler never runs, and no client repeats `DELETE` | `RefEventuallyReleased` |
-| ForkPin `nc_settle_inconclusive` | repository | `SettleMarker <- MutSettleAlways`: a marker is removed after an inconclusive release | `RefEventuallyReleased` |
-| ForkPin `nc_no_backfill` (legacy shape) | repository (pre-8a03e0d) | `BackfillOn <- MutNoBackfill`: pre-index debt is never indexed | `RefEventuallyReleased` |
-| ForkPin `nc_reconcile_live_child` | repository | `MarkerView <- MutMarkerViewNoDefer`: a live child's marker is paid from the marker | `ReadyHoldsRef` |
-| ForkPin `nc_release_current_name_id` | repository | `ReleaseId <- MutReleaseCurrentNameId`: a recreated name's marker releases the fork id of the incarnation that now holds the name | `ReadyHoldsRef` |
-| ForkPin `nc_no_write_ahead_marker` | repository | `WriteAhead <- MutNoWriteAhead`: the tombstone is written without the marker ahead of it | `OwedRefIndexed` |
-| ForkPin `nc_recreate_without_index` (legacy, recreated name) | repository (pre-fix recreation) | `IndexOverwritten <- MutNoIndexOverwritten`: the recreate CAS overwrites a debt-bearing tombstone without indexing its debt | `OwedRefIndexed` |
-| ForkPin `nc_recreate_without_index_liveness` (legacy, recreated name) | repository (pre-fix recreation) | as above | `RefEventuallyReleased` |
-
-The former probe `probe_no_client_retry` (no client retry, no reconciler)
+| RefGC `nc_ignore_pin` | repository | `PinOK <- MutPinIgnored`: the collector deletes a zeroed object whatever reads run | `ReadsServed` |
+| RefGC `nc_lazy_reader` | repository (Fable 5.1 S1-1, package 5's reader) | `Picks <- MutLazyPicks`: a read stops consulting sources once its window tiles, so it picks originals a later source's consolidated chunk supersedes | `ReadsServed` |
+| RefGC `nc_consolidate_after_purge` | repository (Fable 5.1 S1-3) | `ConsAdmits <- MutConsUnchecked`: the consolidation's re-check ignores the stream's purge | `NoDeleteWhileReferenced` |
+| RefGC `nc_sweep_in_flight` | repository | `SweepEligible <- MutSweepAll`: the sweep deletes an unnamed object whose operation still runs | `NoDeleteWhileReferenced` |
+| RefGC `nc_zombie_seal` | repository (Fable 5.1 S2-1) | `SealAdmits <- MutSealAlways`: the committer admits a purged stream's seal | `RefcountExact` |
+| ForkPin `nc_ignore_fork_pin` |The former probe `probe_no_client_retry` (no client retry, no reconciler)
 is retired: with the reconciler the same premise is the passing baseline
 `fork-liveness-reconciler`, and `nc_no_reconciler` is its pre-fix behaviour.
 
@@ -1613,21 +1586,11 @@ exactly one property.
 
 | Witness | Behaviour shown reachable |
 |---|---|
-| `CompactedInputReclaimed` | A compacted-away L0 is deleted. |
-| `OrphanReclaimed` | A fenced writer's orphan is deleted. |
-| `HistoryServedAfterReclaim` | The absorbed boundary covers offset 0 through the compaction output after L1 is deleted. |
-| `ReaderViewErrors` (lapse shape) | With a checkpoint shorter than the view's staleness plus a read, a read needs an SST the collector deleted and fails. |
-| `StaleWriterViewRead` | A read begins on a writer view that still lists a compacted-away input. |
-| `QuietDeadZoneRetains` | An unreferenced SST survives the final collector pass on a quiet partition (F2). |
-| `LateCommitAfterGcView` | A collector pass lists an L0 its observed manifest does not reference while the live manifest already does; the generation condition protects it. |
-| `CheckpointProtectsReadView` | A collector pass has listed a compacted-away input that a live read view references and that is past the age and generation cutoff; only the compactor's checkpoint keeps it. |
-| ForkPin `SoftDeleteRetainedForFork` | The source is soft-deleted while a fork is Ready. |
-| ForkPin `TwoChildrenPinSource` | Two Ready forks both pin a soft-deleted source. |
-| ForkPin `ForkCascadeTombstone` | A child's release tombstones the soft source. |
-| ForkPin `InstallAfterChildDeleted` | A creator's install lands after its child was deleted. |
-| ForkPin `InstallDeclinedOnRecreatedSource` | An install is declined because the source was deleted and recreated. |
-| ForkPin `DebtClearedOnRecreatedSource` | A child's debt is cleared conclusively because the incarnation it forked is gone. |
-| ForkPin `PermanentPinWithoutRetry` | A child is gone and its reference still pins a soft-deleted source with no request in flight: before the fix only a client retry released it (F4); now its marker does. |
+| RefGC `GarbageDeleted` | A committed object is deleted by the collector. |
+| RefGC `OrphanSwept` | The sweep deletes an object no row names. |
+| RefGC `FencedOrphanSwept` | The sweep deletes a fenced opening's object. |
+| RefGC `PurgeReclaimed` | A stream is purged and reclaimed. |
+| RefGC `PinnedReadServed` | A read finishes served while an object it planned with waits, zeroed, for its delete. |
 | ForkPin `PinAfterSuccessfulDelete` | A child's `DELETE` returned success, then the creator's late install landed and the creator died, so the reference pins the source with no client signal to retry (the F4 schedule). |
 | ForkPin `ReconcilerReleasesLatePin` | The reconciler releases the reference of a child whose `DELETE` had returned success, with no client retry. |
 | ForkPin `ReconcilerReleasesReplacedName` | The reconciler releases, from the marker, the reference of a child incarnation whose name was recreated. |
@@ -1641,28 +1604,19 @@ rollout) is retired: with the fix it is unreachable, and
 
 ### Exclusions and what is not claimed
 
-- Upstream SlateDB GC, compaction, checkpoints and fencing are an assumed
-  interface (ASM-SLATEDB-GC, ASM-HISTORY-FENCED-VIEW), established by reading
-  the pinned code, not verified here. WAL-SST, manifest and compactions-file
-  collection, WAL fence objects and clone detach are not modelled.
-- One partition, four objects and one compaction of L0 inputs. Sorted-run
-  inputs are not modelled; the compactor's checkpoint names the whole
-  pre-compaction manifest, so they are protected the same way. The block
-  cache is not modelled; it can only turn a failing read into a successful
-  one. The shard DB's and the billing DB's collectors and reads have the
-  same contract with other settings and are not separately modelled.
-- Time is discrete (300 s ticks) and rounded against the protection: a view
-  that went stale in tick `k` may stay stale through tick `k + 1`, a read
-  that began in tick `j` may run through tick `j + 1`, and the checkpoint
-  written in tick `k` counts as expired from tick `k + 3`, up to one tick
-  early.
+- RefGC: two streams, four objects, one consolidation, one fence and two
+  readers. Run-index objects are folded into the index (`indexed`); their
+  own `'G'` rows follow the same collector and pin and are covered by the
+  DSTs. Time is abstracted (ASM-PURGE-DELAY, ASM-HSEG-GRACE). The fold's
+  and merge's object writes, the directory's publication before a commit
+  and the tiling of offsets are TLA-018 and KANI-105. SlateDB's own
+  collector of the shard log is not modelled.
 - Topology parent/child retention (H13) is out of scope: there is no physical
   range split or clone today. Multi-level fork ancestry, recursive cascade
   debt, `expires_at` expiry and creator resumption are TLA-013 and TLA-014.
   In particular ForkPin has no expiry: a child dies only by `ChildDelete`.
   The recreation of an expired fork child's name (fixed) is covered by a
   real-code regression only, and the open expiry leak above is not modelled.
-- Reclamation of hard-deleted incarnations' rows is not claimed (F3).
 - The reconciler's paging (64 markers a pass, a circle every
   `FORK_DEBT_SWEEP_SECS`), the backfill's page walk and progress object, the
   ancestor walk inside `repair_tombstone`, unparseable markers (skipped and
@@ -1686,7 +1640,6 @@ adds a state.
 |---|---|---|---|
 | HistoryAbsorb | `small` (5,254,914 states), `ledger_small` (19,579,296, with the bucket mate), `cache_cap2` (1,231,603), `pages_regather` (945,441), on the model reworked for the merge `3a24eace` | 23 | none across the four runs; `small` has no cache actions and no bucket mate, `ledger_small` no cache actions, `cache_cap2` no crash, flush failure, refusal, drop, reader or mate, `pages_regather` no cache, flush failure, drop, reader or mate. Within `CommitAbsorbed` the Detached branch fires (276,692 times in `small`); the Diverged branch never does, as `LedgerExact` implies, and fires only under the `Retires` mutation |
 | ReadCompose | `durable_keyed_small` (12,482,967, before the TLA-018-F3 fix), `applied_unfiltered_expanded` (19,384,259, rerun after the fix) | 17 | `WLosePostings`, `WLoseCanonical`: probe-only actions, disabled in every baseline; they fire in the probes' counterexamples. `RResync` (new) adds 12,884 distinct states in `applied_unfiltered_expanded` |
-| ReachGC | `small` (3,938,288), `expanded` (27,990,301) | 18 | none across the two runs; `small` has no user checkpoint (`CkCreate`, `CkRelease`) |
 | ForkPin | `baseline` (3,374,329), `liveness_backfill` (564,266), both after the TLA-019-F4 fix | 16 | none across the two runs; `baseline` has no `Rollout`, `Backfill` or `BackfillFinish` (the index predates every delete), which `liveness_backfill` covers |
 
 The action counts exclude `Init` and `Terminated`.
@@ -1697,7 +1650,7 @@ The action counts exclude `Init` and `Terminated`.
 |---|---|
 | `HistoryAbsorb.tla`, `MC_HistoryAbsorb.tla` | TLA-016 model and its wrapper (`Mut*` control operators, key map) |
 | `ReadCompose.tla`, `MC_ReadCompose.tla` | TLA-018 model and wrapper |
-| `ReachGC.tla`, `MC_ReachGC.tla` | TLA-019 physical object graph, the upstream GC contract and the repository's reliance on it, with wrapper |
+| `RefGC.tla`, `MC_RefGC.tla` | TLA-019 physical layer: the refcount GC of segment objects (layout 6A package 6), with wrapper |
 | `ForkPin.tla`, `MC_ForkPin.tla` | TLA-019 registry fork pin, with wrapper |
 | `MC_*_<shape>.cfg` | baselines, liveness configurations included |
 | `MC_*_kd_*.cfg` | known-defect checks (one property each; none today) |

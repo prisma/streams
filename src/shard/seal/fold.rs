@@ -70,9 +70,6 @@ pub(crate) struct FoldSettings {
     /// One merge's memory (`spill::budget::MERGE_BUFFER_BYTES`): its inputs
     /// take at most half.
     pub(crate) merge_bytes: u64,
-    /// A merged-away object is deleted this long after its merge (a read
-    /// that took the set before the merge may still fetch it).
-    pub(crate) retire_grace: Duration,
     /// How often the loop evaluates.
     pub(crate) tick: Duration,
     /// Whether the loop folds and merges by itself.
@@ -87,7 +84,6 @@ impl Default for FoldSettings {
             max_rows: 4096,
             fan_in: [4, 24],
             merge_bytes: MERGE_BUFFER_BYTES,
-            retire_grace: Duration::from_secs(300),
             tick: Duration::from_secs(1),
             auto: true,
         }
@@ -110,7 +106,6 @@ pub(crate) struct FoldCounters {
     pub(crate) merges: AtomicU64,
     pub(crate) merge_failures: AtomicU64,
     pub(crate) merged_inputs: AtomicU64,
-    pub(crate) retired_deleted: AtomicU64,
     /// `'K'`, `'I'` or `'O'` rows that did not decode (left in place).
     pub(crate) corrupt_rows: AtomicU64,
     /// Of them, `'K'` and `'I'` rows: the ones that may have named chunks,
@@ -135,8 +130,6 @@ pub(crate) struct FoldState {
     /// Orphan rows not yet folded, by the consolidation that wrote them.
     unfolded_orphans: Mutex<BTreeMap<ObjectId, Orphans>>,
     last_fold: Mutex<Option<Instant>>,
-    /// Merged-away objects and when their merge landed.
-    retired: Mutex<Vec<(Instant, ObjectId)>>,
     /// Wakes the fold loop when its settings change, so a new tick or
     /// period applies at once rather than after the old tick.
     wake: tokio::sync::Notify,
@@ -230,7 +223,6 @@ impl FoldState {
             "merges": n(&c.merges),
             "merge_failures": n(&c.merge_failures),
             "merged_inputs": n(&c.merged_inputs),
-            "retired_deleted": n(&c.retired_deleted),
             "corrupt_rows": n(&c.corrupt_rows),
             "corrupt_index_rows": n(&c.corrupt_index_rows),
             "footer_gets": n(&c.footer_gets),
@@ -303,7 +295,7 @@ impl ShardEngine {
 
     /// The fold loop: once the sealer's open finished, a fold whenever the
     /// period passed with anything unfolded or a directory outgrew its line,
-    /// then the merges and the retired objects' deletes.
+    /// then the merges (`gc` deletes the objects they merged away).
     pub(in crate::shard) async fn fold_loop(self: Arc<Self>) {
         if self.seal_ready().await.is_err() {
             return;
@@ -327,7 +319,6 @@ impl ShardEngine {
                 self.until_closed(self.fold_logged()).await;
             }
             self.until_closed(self.merge_logged()).await;
-            self.until_closed(self.delete_retired()).await;
         }
     }
 
@@ -390,18 +381,29 @@ impl ShardEngine {
             return Ok(FoldReport::default());
         }
         // (F2)
-        let id = self.next_index_id();
-        let built = build_fold(id, &scan)?;
+        let claim = self.claim_object();
+        let id = claim.id;
+        let hashes: std::collections::BTreeSet<[u8; 16]> = scan
+            .rows
+            .iter()
+            .flat_map(|(_, entries)| entries.iter().map(|(hash, _)| *hash))
+            .collect();
+        let reclaimed = self.reclaimed_heads(hashes).await?;
+        let built = build_fold(id, &scan, &reclaimed)?;
         // (F3), (F4)
-        self.put_verified(&built.bytes, &built.pointer).await?;
+        if let Some(built) = &built {
+            self.put_verified(&built.bytes, &built.pointer).await?;
+        }
         #[cfg(test)]
         fs.check_abort(test_hooks::FoldStep::Verified)?;
         // (F5)
         let mut batch = WriteBatch::new();
-        batch.put(
-            runindex::pointer_key(id),
-            runindex::encode_pointer(&built.pointer),
-        );
+        if let Some(built) = &built {
+            batch.put(
+                runindex::pointer_key(id),
+                runindex::encode_pointer(&built.pointer),
+            );
+        }
         for (row, _) in &scan.rows {
             batch.delete(directory::directory_key(*row));
         }
@@ -412,9 +414,11 @@ impl ShardEngine {
         #[cfg(test)]
         fs.check_abort(test_hooks::FoldStep::Committed)?;
         // (F6), (F7)
-        fs.replace_set(|set| {
-            set.insert(id, built.pointer.clone());
-        });
+        if let Some(built) = &built {
+            fs.replace_set(|set| {
+                set.insert(id, built.pointer.clone());
+            });
+        }
         self.unpublish_folded(&scan);
         {
             let mut unfolded = lock(&fs.unfolded_orphans);
@@ -423,11 +427,11 @@ impl ShardEngine {
             }
         }
         let report = FoldReport {
-            object: Some(id),
+            object: built.as_ref().map(|_| id),
             rows: scan.rows.len(),
-            entries: built.pointer.entries,
-            dropped: built.dropped,
-            bytes: built.pointer.len,
+            entries: built.as_ref().map_or(0, |b| b.pointer.entries),
+            dropped: built.as_ref().map_or(0, |b| b.dropped),
+            bytes: built.as_ref().map_or(0, |b| b.pointer.len),
             more: scan.more,
         };
         let c = &fs.counters;
@@ -440,14 +444,28 @@ impl ShardEngine {
         Ok(report)
     }
 
-    /// The next object id of this opening: the sealer's sequence, shared
-    /// by seals, folds, merges and consolidations, so no two of them name
-    /// the same key or path.
-    pub(crate) fn next_index_id(&self) -> ObjectId {
-        ObjectId {
-            epoch: self.writer_epoch,
-            seq: self.layout.seal.next_object_seq(),
+    /// The `reclaimed` offset of each of `hashes` that is a dead stream
+    /// (`spill::gc`): a fold or merge drops the entries ending below it,
+    /// every one of them already decremented. One point read per stream
+    /// (an absent `'H'` row costs a bloom probe).
+    pub(crate) async fn reclaimed_heads(
+        &self,
+        hashes: impl IntoIterator<Item = [u8; 16]>,
+    ) -> Result<Reclaimed, FoldError> {
+        let mut out = Reclaimed::new();
+        if !self.gc_state().heads_exist() {
+            return Ok(out);
         }
+        for hash in hashes {
+            let head = self
+                .head_row(&hash)
+                .await
+                .map_err(|e| FoldError::Store(e.to_string()))?;
+            if let Some(h) = head.filter(|h| h.reclaimed > 0) {
+                out.insert(hash, h.reclaimed);
+            }
+        }
+        Ok(out)
     }
 
     /// F1: the oldest `max` directory rows and every orphan row; rows that
@@ -612,12 +630,19 @@ impl ShardEngine {
     }
 }
 
-/// F2: one stream's entries, sorted for and stripped of contained ones.
-pub(super) fn kept_entries(mut entries: Vec<DirEntry>) -> (Vec<DirEntry>, u64) {
+/// Each dead stream's `reclaimed` offset.
+pub(crate) type Reclaimed = BTreeMap<[u8; 16], u64>;
+
+/// F2: one stream's entries, sorted for and stripped of contained ones and
+/// of those ending below its `reclaimed` offset.
+pub(super) fn kept_entries(mut entries: Vec<DirEntry>, reclaimed: u64) -> (Vec<DirEntry>, u64) {
+    let before = entries.len();
+    entries.retain(|e| e.last >= reclaimed);
+    let dead = (before - entries.len()) as u64;
     sort_for_drop(&mut entries, span_of);
     let spans: Vec<Span> = entries.iter().map(span_of).collect();
     let keep = drop_covered(&spans);
-    let dropped = (entries.len() - keep.len()) as u64;
+    let dropped = (entries.len() - keep.len()) as u64 + dead;
     let mut keep = keep.into_iter().peekable();
     let kept = entries
         .into_iter()
@@ -635,8 +660,13 @@ pub(crate) fn span_of(e: &DirEntry) -> Span {
     }
 }
 
-/// F2: the object of one fold's rows, and its pointer row.
-fn build_fold(id: ObjectId, scan: &Scan) -> Result<Built, FoldError> {
+/// F2: the object of one fold's rows, and its pointer row; `None` when no
+/// entry is left.
+fn build_fold(
+    id: ObjectId,
+    scan: &Scan,
+    reclaimed: &Reclaimed,
+) -> Result<Option<Built>, FoldError> {
     let mut streams: BTreeMap<[u8; 16], Vec<DirEntry>> = BTreeMap::new();
     for (_, entries) in &scan.rows {
         for (hash, e) in entries {
@@ -650,27 +680,29 @@ fn build_fold(id: ObjectId, scan: &Scan) -> Result<Built, FoldError> {
     let mut writer = ObjectWriter::new();
     let mut dropped = 0;
     for (hash, entries) in streams {
-        let (kept, d) = kept_entries(entries);
+        let (kept, d) = kept_entries(entries, reclaimed.get(&hash).copied().unwrap_or(0));
         dropped += d;
-        writer.push(hash, &kept).map_err(FoldError::Format)?;
+        if !kept.is_empty() {
+            writer.push(hash, &kept).map_err(FoldError::Format)?;
+        }
     }
     let seals = scan.rows.len() as u64;
     let built = finish(id, writer, 0, seals, orphans)?;
-    Ok(Built { dropped, ..built })
+    Ok(built.map(|b| Built { dropped, ..b }))
 }
 
-/// The object's last bytes and its pointer row.
+/// The object's last bytes and its pointer row; `None` for an object of
+/// no run.
 fn finish(
     id: ObjectId,
     writer: ObjectWriter,
     level: u8,
     seals: u64,
     orphans: Orphans,
-) -> Result<Built, FoldError> {
-    let (bytes, trailer) = writer
-        .finish(level)
-        .map_err(FoldError::Format)?
-        .ok_or_else(|| FoldError::Verify("an object of no run".into()))?;
+) -> Result<Option<Built>, FoldError> {
+    let Some((bytes, trailer)) = writer.finish(level).map_err(FoldError::Format)? else {
+        return Ok(None);
+    };
     let pointer = Pointer {
         id,
         level,
@@ -683,9 +715,9 @@ fn finish(
         orphans,
         created_ms: crate::shard::now_ms().unsigned_abs(),
     };
-    Ok(Built {
+    Ok(Some(Built {
         bytes,
         pointer,
         dropped: 0,
-    })
+    }))
 }

@@ -5,7 +5,7 @@
 (* never deletes except by absorbed-boundary trimming) readable for a live *)
 (* fork, and the release that eventually unpins it.                        *)
 (*                                                                         *)
-(* This layer shares no state with the physical graph in ReachGC.tla:      *)
+(* This layer shares no state with the physical layer in RefGC.tla:        *)
 (* registry retention decides whether a descriptor may be tombstoned, the  *)
 (* SlateDB manifest decides which SSTs are reachable.  Decomposed by       *)
 (* invariant ownership (roadmap 7.8).                                      *)

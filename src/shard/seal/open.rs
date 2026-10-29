@@ -17,6 +17,8 @@ impl ShardEngine {
     pub(super) async fn seal_open(&self) -> anyhow::Result<()> {
         #[cfg(test)]
         self.injected_open_fault()?;
+        self.gc_state().note_opened();
+        self.probe_heads().await?;
         let dir = self.rebuild_directory().await?;
         self.rebuild_run_index().await?;
         let unsealed = self.scan_tails().await?;

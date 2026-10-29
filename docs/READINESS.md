@@ -87,22 +87,29 @@ acceptance, ops-history/SLO work, documented terminal-closure residual.
 Recorded by the first formal-verification spike
 (docs/PRISMA-STREAMS-FORMAL-VERIFICATION-ROADMAP.md §0). Each stays open
 until its acceptance criteria are met. None of them is a model result.
-- **Physical reclamation of hard-deleted incarnations (TLA-019-F3).** Hard
-  deletion writes only a registry tombstone
-  (`src/application/creation/deletion.rs`). No code deletes a deleted or
-  expired incarnation's shard-log rows (`record_key`), tail and producer
-  rows, or history-partition rows. The only row deletes are
-  absorbed-boundary trims. The owner has to adopt a policy. Acceptance:
-  (1) a written policy naming which rows are reclaimed, after what delay,
-  and what fork references, checkpoints and billing closes must be
-  released first; (2) after a hard delete, or a TTL expiry that reaches
-  hard deletion, with no fork child left, every row keyed by that
-  incarnation's hash is deleted within the stated delay, and SlateDB GC
-  then reclaims the SSTs; (3) a same-name recreate, a live fork child and
-  an unsettled billing close each block reclamation, with a DST scenario
-  for each; (4) reclamation deletes run under the global trim or GC
-  budget, never as one unbounded batch (H5, R8); (5) a gauge of
-  unreclaimed deleted incarnations and their oldest age, with an alert.
+- **Physical reclamation of hard-deleted incarnations (TLA-019-F3).**
+  Built by layout 6A package 6 (edge change #230; acceptance met except
+  where noted). (1) The policy is SPEC C6: a hard-deleted or replaced
+  incarnation is purged once its close is 10 minutes old and its usage
+  reached the ledger; fork references block it (a soft-deleted or
+  fork-retained source is never purged); an expired incarnation is purged
+  once deleted or replaced. (2) Every row keyed by the incarnation's hash but
+  its billing row is deleted (tail, pending, producers, seq lanes, seal
+  fence), its sealed chunks are decremented, and each segment object with
+  no live chunk is deleted after a 10 minute grace; SlateDB GC then
+  reclaims the SSTs. (3) DSTs: a same-name recreate
+  (`purge_lifecycle::an_expired_stream_is_purged_only_once_its_name_is_recreated`),
+  a live fork child
+  (`purge_lifecycle::a_source_its_fork_reads_is_never_purged_until_the_fork_is_deleted`),
+  an unsettled usage close
+  (`shard::seal::gc_tests::a_purge_waits_for_the_ledger_and_for_its_own_group`).
+  (4) Reclaims and deletes run in batches of at most 2,048
+  (`a_reclaim_runs_in_bounded_batches_and_resumes_after_a_failed_one`).
+  (5) `/operator/data.json` `local.gc_unreclaimed_incarnations` and
+  `local.gc_oldest_unreclaimed_late_secs` with cell-watch row 32 (NOTIFY
+  over an hour late), and row 31 (PAGE on any inexact decrement). TLA-019
+  checks the refcount GC (`RefGC`). #230 ratified by the lead under the
+  owner's delegation (R1).
 - **GC convergence without further writes (H14, TLA-019-F2).** An
   unreferenced SST newer than a quiet partition's last compaction or newest
   L0 is never collected. Acceptance is in

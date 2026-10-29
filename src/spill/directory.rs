@@ -10,20 +10,18 @@
 //! Value: the row codec in `row`, a leaf the seal-directory fuzz target
 //! compiles unchanged (`fuzz/fuzz_targets/seal_directory.rs`).
 //!
-//! The refcount row (`'S' ‖ 0xFF×16 ‖ 'R' ‖ epoch BE ‖ seq BE` →
-//! `ver:u8=1 live_bytes:varint live_chunks:varint created_ms:varint`) rides
-//! the same commit; garbage collection reads it (package 6).
+//! The refcount row (`'S' ‖ 0xFF×16 ‖ 'R' ‖ epoch BE ‖ seq BE`, codec in
+//! `spill::gc`) rides the same commit; garbage collection keeps it exact.
 
 use std::collections::{BTreeMap, HashMap};
 
 use super::object::{ChunkInput, ObjectId};
-use crate::crypto_page::put_varint;
 
 #[cfg(kani)]
 mod proofs;
 mod row;
 
-use row::{BLOOM_BITS_PER_KEY, VERSION, halves, holds_bits, set_bits};
+use row::{BLOOM_BITS_PER_KEY, halves, holds_bits, set_bits};
 pub(crate) use row::{
     DirEntry, KeySummary, MAX_BLOOM_BYTES, MAX_SUMMARY_KEYS, decode_row, encode_row,
 };
@@ -50,18 +48,6 @@ pub(crate) fn directory_prefix() -> Vec<u8> {
     let mut k = crate::keyspace::SENTINEL.to_vec();
     k.push(DIRECTORY_TAG);
     k
-}
-
-pub(crate) fn refcount_key(id: ObjectId) -> Vec<u8> {
-    sentinel_key(REFCOUNT_TAG, id)
-}
-
-pub(crate) fn refcount_value(live_bytes: u64, live_chunks: u64, created_ms: u64) -> Vec<u8> {
-    let mut v = vec![VERSION];
-    put_varint(&mut v, live_bytes);
-    put_varint(&mut v, live_chunks);
-    put_varint(&mut v, created_ms);
-    v
 }
 
 /// The object a directory key names.

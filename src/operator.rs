@@ -124,6 +124,13 @@ pub(crate) async fn data(
         // Seal-index rows (directory, pointer, orphan) the local engines'
         // opens or folds skipped as undecodable (edge #222; cell-watch row 30).
         "sealed_index_corrupt_rows": state.shards.engines().iter().map(|e| e.sealed_index_corrupt_rows()).sum::<u64>(),
+        // Physical reclamation (layout 6A package 6, edge #230): decrements
+        // refused as inexact (cell-watch row 31), and dead incarnations not
+        // yet purged and reclaimed with the oldest one's lateness past its
+        // due instant (row 32).
+        "gc_inexact_decrements": state.shards.engines().iter().map(|e| e.gc_inexact()).sum::<u64>(),
+        "gc_unreclaimed_incarnations": state.shards.engines().iter().map(|e| e.gc_reclaim_lag().0).sum::<u64>(),
+        "gc_oldest_unreclaimed_late_secs": state.shards.engines().iter().map(|e| e.gc_reclaim_lag().1).max().unwrap_or(0),
         // per-op-class store latency, sentinels, steal — non-destructive read
         "store": crate::store_timing::snapshot(60, false, &state.runtime.store_io, &shard_opens),
     });

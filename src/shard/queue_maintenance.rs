@@ -304,6 +304,8 @@ impl ShardEngine {
         self.spawn_required("seal-consolidate", async move {
             consolidator.consolidate_loop().await
         });
+        let collector = self.clone();
+        self.spawn_required("seal-gc", async move { collector.gc_loop().await });
     }
 
     /// Waits for the next tick; false once the engine closes.

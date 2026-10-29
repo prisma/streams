@@ -2586,12 +2586,18 @@
     {
       "id": "TLA-019",
       "kind": "tla",
-      "title": "Reachability-based garbage collection and reader/fork protection",
+      "title": "Reference-counted garbage collection of sealed objects and reader/fork protection",
       "status": "pass-with-recorded-scope",
-      "owner": "history-partition GC settings and read view, and fork-reference retention and release",
+      "owner": "physical reclamation of segment and run-index objects (refcounts, purges, the collector's deletes, reader pins, the orphan sweep), and fork-reference retention and release",
       "source_paths": [
-        "src/history.rs",
-        "src/application/read.rs",
+        "src/shard/seal/gc.rs",
+        "src/shard/seal/gc/purge.rs",
+        "src/shard/seal/gc/sweep.rs",
+        "src/spill/gc.rs",
+        "src/shard/seal/consolidate.rs",
+        "src/shard/seal/read.rs",
+        "src/billing/walk.rs",
+        "src/billing/replaced.rs",
         "src/application/creation/deletion.rs",
         "src/application/creation/anchor.rs",
         "src/application/creation/fork.rs",
@@ -2601,8 +2607,8 @@
         "src/registry.rs"
       ],
       "verification_paths": [
-        "verification/tla/history/ReachGC.tla",
-        "verification/tla/history/MC_ReachGC.tla",
+        "verification/tla/history/RefGC.tla",
+        "verification/tla/history/MC_RefGC.tla",
         "verification/tla/history/ForkPin.tla",
         "verification/tla/history/MC_ForkPin.tla"
       ],
@@ -2624,212 +2630,122 @@
         "TLA-044"
       ],
       "assumptions": [
-        "ASM-SLATEDB-GC",
-        "ASM-SLATEDB-COMPACTION-CHECKPOINT",
-        "ASM-HISTORY-FENCED-VIEW",
-        "ASM-HISTORY-GC-CLOCK",
+        "ASM-HSEG-GRACE",
+        "ASM-PURGE-DELAY",
+        "ASM-SEAL-OBJECT-IMMUTABLE",
         "ASM-HISTORY-ACTORS",
         "ASM-OBJSTORE-CAS"
       ],
-      "input_scope": "ReachGC: one history partition with objects L1 (committed L0), L2 (a later flush: upload, then manifest commit), C (one compaction output) and O (a fenced writer's orphan L0); one absorbed boundary over 2 offsets; one tick stands for 300 s; the compactor checkpoints the pre-compaction manifest for 3 ticks (1 tick in the timing-lapse shape); the writer Db's in-memory manifest view is refreshed within 1 tick of going stale and a production read ends within 1 tick of starting; one collector pass per tick; min_age 1 tick, writers active to tick 2, clock to 4 (small, lapse), or min_age 2, clock to 5 with one upstream checkpoint pin (expanded); liveness with writer and pin activity ending at tick 2 and weak fairness on the clock, the collector steps and the end of a read. ForkPin: one source name with 2 incarnations; safety and witnesses with 3 fork-child incarnations (F3 recreates F1's name after F1's tombstone), liveness with 2 (distinct names, or one recreated name); creator installs racing child deletion, source deletion and recreation, 1 request crash (creator or DELETE); the write-ahead fork-debt marker, the background reconciler (weakly fair per marker in the reconciler liveness checks) and client DELETE retries (weakly fair only in the client-retry liveness check); legacy shapes where deletes before the rollout write no marker, the one-time backfill indexes them, and a child name may be recreated over such a tombstone before or after the rollout (the recreate CAS indexes the debt it overwrites; debt the old binary overwrote before the rollout is excluded from the properties). No symmetry, no state or action constraints.",
+      "input_scope": "RefGC: two seal objects S1 = {a1, b1} and S2 = {a2, b2} of streams A and B, a consolidation object K = {ka} superseding a1 and a2, a third seal object O = {b3} that a fenced writer may orphan; one fence (two openings); two readers, one per stream, each reading again after a served read; purges of either stream in two steps (the committer's purge, the reclaim under the refcount lock); fold and merge drops of decremented entries; the collector's delete of a 'G' object behind reader pins; the orphan sweep; the pin clock to 4. Time is abstracted: the purge delay outlasts a read admitted before the stream's death (ASM-PURGE-DELAY) and the grace covers reads outside the process and of a fenced opening (ASM-HSEG-GRACE). No liveness. ForkPin: one source name with 2 incarnations; safety and witnesses with 3 fork-child incarnations (F3 recreates F1's name after F1's tombstone), liveness with 2 (distinct names, or one recreated name); creator installs racing child deletion, source deletion and recreation, 1 request crash (creator or DELETE); the write-ahead fork-debt marker, the background reconciler (weakly fair per marker in the reconciler liveness checks) and client DELETE retries (weakly fair only in the client-retry liveness check); legacy shapes where deletes before the rollout write no marker, the one-time backfill indexes them, and a child name may be recreated over such a tombstone before or after the rollout (the recreate CAS indexes the debt it overwrites; debt the old binary overwrote before the rollout is excluded from the properties). No symmetry, no state or action constraints.",
       "checks": [
         {
-          "id": "TLA-019/baseline-small",
+          "id": "TLA-019/baseline",
           "role": "baseline",
-          "spec": "verification/tla/history/MC_ReachGC.tla",
-          "config": "verification/tla/history/MC_ReachGC_small.cfg",
+          "spec": "verification/tla/history/MC_RefGC.tla",
+          "config": "verification/tla/history/MC_RefGC_baseline.cfg",
           "expect": {
             "result": "pass"
           },
-          "timeout_seconds": 3600
+          "deadlock_check": false
         },
         {
-          "id": "TLA-019/baseline-expanded",
-          "role": "baseline",
-          "spec": "verification/tla/history/MC_ReachGC.tla",
-          "config": "verification/tla/history/MC_ReachGC_expanded.cfg",
-          "expect": {
-            "result": "pass"
-          },
-          "timeout_seconds": 7200
-        },
-        {
-          "id": "TLA-019/baseline-timing-lapse",
-          "role": "baseline",
-          "spec": "verification/tla/history/MC_ReachGC.tla",
-          "config": "verification/tla/history/MC_ReachGC_lapse.cfg",
-          "expect": {
-            "result": "pass"
-          },
-          "timeout_seconds": 3600
-        },
-        {
-          "id": "TLA-019/liveness-small",
-          "role": "baseline",
-          "spec": "verification/tla/history/MC_ReachGC.tla",
-          "config": "verification/tla/history/MC_ReachGC_liveness.cfg",
-          "expect": {
-            "result": "pass"
-          }
-        },
-        {
-          "id": "TLA-019/liveness-expanded",
-          "role": "baseline",
-          "spec": "verification/tla/history/MC_ReachGC.tla",
-          "config": "verification/tla/history/MC_ReachGC_liveness_expanded.cfg",
-          "expect": {
-            "result": "pass"
-          },
-          "timeout_seconds": 7200
-        },
-        {
-          "id": "TLA-019/nc-no-compaction-checkpoint",
+          "id": "TLA-019/nc-ignore-pin",
           "role": "negative-control",
-          "spec": "verification/tla/history/MC_ReachGC.tla",
-          "config": "verification/tla/history/MC_ReachGC_nc_no_compaction_checkpoint.cfg",
+          "spec": "verification/tla/history/MC_RefGC.tla",
+          "config": "verification/tla/history/MC_RefGC_nc_ignore_pin.cfg",
           "expect": {
             "result": "violation",
-            "property": "LiveReadViewProtected"
+            "property": "ReadsServed"
           }
         },
         {
-          "id": "TLA-019/nc-advance-on-upload",
+          "id": "TLA-019/nc-lazy-reader",
           "role": "negative-control",
-          "spec": "verification/tla/history/MC_ReachGC.tla",
-          "config": "verification/tla/history/MC_ReachGC_nc_advance_on_upload.cfg",
+          "spec": "verification/tla/history/MC_RefGC.tla",
+          "config": "verification/tla/history/MC_RefGC_nc_lazy_reader.cfg",
           "expect": {
             "result": "violation",
-            "property": "HistoryBacked"
+            "property": "ReadsServed"
           }
         },
         {
-          "id": "TLA-019/nc-swallow-read-error",
+          "id": "TLA-019/nc-consolidate-after-purge",
           "role": "negative-control",
-          "spec": "verification/tla/history/MC_ReachGC.tla",
-          "config": "verification/tla/history/MC_ReachGC_nc_swallow_read_error.cfg",
+          "spec": "verification/tla/history/MC_RefGC.tla",
+          "config": "verification/tla/history/MC_RefGC_nc_consolidate_after_purge.cfg",
           "expect": {
             "result": "violation",
-            "property": "NoFalseCompleteRead"
+            "property": "NoDeleteWhileReferenced"
           }
         },
         {
-          "id": "TLA-019/probe-upstream-short-read",
+          "id": "TLA-019/nc-sweep-in-flight",
           "role": "negative-control",
-          "spec": "verification/tla/history/MC_ReachGC.tla",
-          "config": "verification/tla/history/MC_ReachGC_probe_upstream_short_read.cfg",
+          "spec": "verification/tla/history/MC_RefGC.tla",
+          "config": "verification/tla/history/MC_RefGC_nc_sweep_in_flight.cfg",
           "expect": {
             "result": "violation",
-            "property": "NoFalseCompleteRead"
+            "property": "NoDeleteWhileReferenced"
           }
         },
         {
-          "id": "TLA-019/nc-no-generation-condition",
+          "id": "TLA-019/nc-zombie-seal",
           "role": "negative-control",
-          "spec": "verification/tla/history/MC_ReachGC.tla",
-          "config": "verification/tla/history/MC_ReachGC_nc_no_generation.cfg",
+          "spec": "verification/tla/history/MC_RefGC.tla",
+          "config": "verification/tla/history/MC_RefGC_nc_zombie_seal.cfg",
           "expect": {
             "result": "violation",
-            "property": "ManifestRefsPresent"
+            "property": "RefcountExact"
           }
         },
         {
-          "id": "TLA-019/nc-ignore-checkpoint-pin",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_ReachGC.tla",
-          "config": "verification/tla/history/MC_ReachGC_nc_ignore_checkpoint_pin.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "CheckpointPinned"
-          }
-        },
-        {
-          "id": "TLA-019/nc-stale-inventory",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_ReachGC.tla",
-          "config": "verification/tla/history/MC_ReachGC_nc_stale_inventory.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "EligibleEventuallyReclaimed"
-          }
-        },
-        {
-          "id": "TLA-019/witness-CompactedInputReclaimed",
+          "id": "TLA-019/witness-GarbageDeleted",
           "role": "witness",
-          "spec": "verification/tla/history/MC_ReachGC.tla",
-          "config": "verification/tla/history/MC_ReachGC_w_CompactedInputReclaimed.cfg",
+          "spec": "verification/tla/history/MC_RefGC.tla",
+          "config": "verification/tla/history/MC_RefGC_w_GarbageDeleted.cfg",
           "expect": {
             "result": "violation",
-            "property": "Witness_CompactedInputReclaimed"
+            "property": "Witness_GarbageDeleted"
           }
         },
         {
-          "id": "TLA-019/witness-OrphanReclaimed",
+          "id": "TLA-019/witness-OrphanSwept",
           "role": "witness",
-          "spec": "verification/tla/history/MC_ReachGC.tla",
-          "config": "verification/tla/history/MC_ReachGC_w_OrphanReclaimed.cfg",
+          "spec": "verification/tla/history/MC_RefGC.tla",
+          "config": "verification/tla/history/MC_RefGC_w_OrphanSwept.cfg",
           "expect": {
             "result": "violation",
-            "property": "Witness_OrphanReclaimed"
+            "property": "Witness_OrphanSwept"
           }
         },
         {
-          "id": "TLA-019/witness-HistoryServedAfterReclaim",
+          "id": "TLA-019/witness-FencedOrphanSwept",
           "role": "witness",
-          "spec": "verification/tla/history/MC_ReachGC.tla",
-          "config": "verification/tla/history/MC_ReachGC_w_HistoryServedAfterReclaim.cfg",
+          "spec": "verification/tla/history/MC_RefGC.tla",
+          "config": "verification/tla/history/MC_RefGC_w_FencedOrphanSwept.cfg",
           "expect": {
             "result": "violation",
-            "property": "Witness_HistoryServedAfterReclaim"
+            "property": "Witness_FencedOrphanSwept"
           }
         },
         {
-          "id": "TLA-019/witness-ReaderViewErrors",
+          "id": "TLA-019/witness-PurgeReclaimed",
           "role": "witness",
-          "spec": "verification/tla/history/MC_ReachGC.tla",
-          "config": "verification/tla/history/MC_ReachGC_w_ReaderViewErrors.cfg",
+          "spec": "verification/tla/history/MC_RefGC.tla",
+          "config": "verification/tla/history/MC_RefGC_w_PurgeReclaimed.cfg",
           "expect": {
             "result": "violation",
-            "property": "Witness_ReaderViewErrors"
+            "property": "Witness_PurgeReclaimed"
           }
         },
         {
-          "id": "TLA-019/witness-StaleWriterViewRead",
+          "id": "TLA-019/witness-PinnedReadServed",
           "role": "witness",
-          "spec": "verification/tla/history/MC_ReachGC.tla",
-          "config": "verification/tla/history/MC_ReachGC_w_StaleWriterViewRead.cfg",
+          "spec": "verification/tla/history/MC_RefGC.tla",
+          "config": "verification/tla/history/MC_RefGC_w_PinnedReadServed.cfg",
           "expect": {
             "result": "violation",
-            "property": "Witness_StaleWriterViewRead"
-          }
-        },
-        {
-          "id": "TLA-019/witness-QuietDeadZoneRetains",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_ReachGC.tla",
-          "config": "verification/tla/history/MC_ReachGC_w_QuietDeadZoneRetains.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_QuietDeadZoneRetains"
-          }
-        },
-        {
-          "id": "TLA-019/witness-LateCommitAfterGcView",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_ReachGC.tla",
-          "config": "verification/tla/history/MC_ReachGC_w_LateCommitAfterGcView.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_LateCommitAfterGcView"
-          }
-        },
-        {
-          "id": "TLA-019/witness-CheckpointProtectsReadView",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_ReachGC.tla",
-          "config": "verification/tla/history/MC_ReachGC_w_CheckpointProtectsReadView.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_CheckpointProtectsReadView"
+            "property": "Witness_PinnedReadServed"
           }
         },
         {
@@ -3128,8 +3044,11 @@
         }
       ],
       "regressions": [
-        "dst::dst_tests::read_history_lifecycle::tla019_pin_history_scan_survives_compaction_gc_on_stale_view",
-        "dst::dst_tests::read_history_lifecycle::tla019_pin_keyed_history_read_survives_compaction_gc_on_stale_view",
+        "shard::seal::gc_tests::a_read_that_planned_with_a_chunk_keeps_its_object_until_it_ends",
+        "shard::seal::gc_tests::a_consolidation_offered_before_a_purge_supersedes_nothing_after_it",
+        "shard::seal::gc_tests::objects_put_without_their_commit_are_swept_and_objects_in_flight_are_not",
+        "shard::seal::gc_tests::a_purge_waits_for_the_ledger_and_for_its_own_group",
+        "dst::dst_tests::purge_lifecycle::an_expired_stream_is_purged_only_once_its_name_is_recreated",
         "dst::dst_tests::fork_cleanup::a_crashed_creators_late_reference_is_repaired_by_delete_retry",
         "dst::dst_tests::fork_cleanup::a_crashed_creators_late_reference_is_released_without_a_client_retry",
         "dst::dst_tests::fork_cleanup::the_reconciler_never_releases_a_reference_a_live_creator_or_new_child_holds",
@@ -3139,7 +3058,6 @@
         "dst::dst_tests::fork_debt::a_recreated_name_releases_the_reference_its_expired_fork_held",
         "dst::dst_tests::fork_debt::the_backfill_resumes_after_a_restart",
         "dst::dst_tests::fork_debt::a_debt_that_outlives_its_circles_raises_the_stale_alert",
-        "verification/tla/history/evidence/TLA-019_reader_view_deleted.trace.txt",
         "verification/tla/history/evidence/TLA-019_fork_no_retry.trace.txt",
         "verification/tla/history/evidence/TLA-019_fork_pin_after_successful_delete.trace.txt"
       ]

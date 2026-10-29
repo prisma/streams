@@ -10,6 +10,7 @@ use super::{SealState, Trigger};
 use crate::crypto_page::CheckedPage;
 use crate::shard::{CommitOp, ShardEngine, StreamHandle};
 use crate::spill::directory::{self, DirEntry, KeySummary};
+use crate::spill::gc;
 use crate::spill::object::{self, ChunkInput, ObjectError, ObjectId};
 use crate::spill::pending::PendingPage;
 
@@ -29,8 +30,16 @@ pub(crate) struct SealAdvance {
     pub(crate) snapshot_remainder: Vec<PendingPage>,
 }
 
+/// What the sealer and the collector hand the committer
+/// (`CommitOp::Seal`, staged by `transaction::seal`).
+pub(crate) enum SealCommit {
+    Seal(SealBatch),
+    /// A dead stream's purge (`seal::gc::purge`).
+    Purge(super::gc::purge::PurgeStep),
+}
+
 /// A seal's commit, staged by the committer (`transaction::seal`).
-pub(crate) struct SealCommit {
+pub(crate) struct SealBatch {
     pub(crate) dir_key: Vec<u8>,
     pub(crate) dir_value: Vec<u8>,
     pub(crate) ref_key: Vec<u8>,
@@ -286,10 +295,8 @@ impl ShardEngine {
             .collect::<Result<Vec<_>, _>>()
             .map_err(SealError::Store)?;
         let encoded = object::encode(&inputs).map_err(SealError::Encode)?;
-        let id = ObjectId {
-            epoch: self.writer_epoch,
-            seq: sp.next_seq.fetch_add(1, Ordering::Relaxed) + 1,
-        };
+        let claim = self.claim_object();
+        let id = claim.id;
         // (4)
         self.put_object(sp, id, &encoded).await?;
         *report = SealReport {
@@ -317,6 +324,8 @@ impl ShardEngine {
         if !late {
             self.publish_directory(&entries);
         }
+        #[cfg(test)]
+        sp.after_publish().await;
         // (6)
         let rows: Vec<_> = encoded.chunks.iter().zip(&summaries).collect();
         let streams = advances(windows, report);
@@ -325,18 +334,19 @@ impl ShardEngine {
             .fetch_add(report.page_bytes, Ordering::Relaxed);
         let remainder_before = sp.counters.remainder_bytes.load(Ordering::Relaxed);
         let (resp, answer) = tokio::sync::oneshot::channel();
-        let commit = SealCommit {
+        let commit = SealCommit::Seal(SealBatch {
             dir_key: directory::directory_key(id),
             dir_value: directory::encode_row(&rows),
-            ref_key: directory::refcount_key(id),
-            ref_value: directory::refcount_value(
-                report.page_bytes,
-                inputs.len() as u64,
-                crate::shard::now_ms().unsigned_abs(),
-            ),
+            ref_key: gc::refcount_key(id),
+            ref_value: gc::encode_refcount(&gc::Refcount {
+                live_bytes: encoded.chunks.iter().map(|c| u64::from(c.entry.len)).sum(),
+                live_chunks: inputs.len() as u64,
+                created_ms: crate::shard::now_ms().unsigned_abs(),
+                object_len: encoded.len as u64,
+            }),
             streams,
             resp,
-        };
+        });
         if let Err(e) = self.submit_seal(commit, answer, windows).await {
             if !late {
                 self.withdraw_directory(&entries);

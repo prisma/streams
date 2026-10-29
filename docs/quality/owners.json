@@ -547,6 +547,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::purge_lifecycle",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Physical reclamation of dead incarnations end to end (layout 6A package 6): the production sweep asks the owning shard to purge a hard-deleted or replaced incarnation, never one merely expired, and the shard reclaims its chunks and objects; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/purge_lifecycle.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::billing_walk_custody",
       "path": "src/dst/dst_tests.rs",
       "reason": "Tombstone-walk custody across a page: a shard the walk cold-opens for a segment with nothing to close is handed back before the next segment, so a gauged dead stream later on the page closes at its persisted expiry under the production sweep and resident budget; compiler and the full DST suite exercise the module.",
@@ -4246,6 +4254,62 @@
       "owner": "crate::a_fenced_folders_object_is_an_orphan",
       "path": "src/shard/seal/fold_tests.rs",
       "reason": "The fold parked before its batch and the second writer's open run concurrently in one test task so the open fences the fold between its PUT and its batch; the compiler checks the join's expansion.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::GcState::json",
+      "path": "src/shard/seal/gc.rs",
+      "reason": "Operator-debug gauges of physical reclamation (edge change #230): serde macro output is compiled and asserted by the collector tests; no service state.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::ShardEngine::gc_totals",
+      "path": "src/shard/seal/gc.rs",
+      "reason": "Operator-debug totals of the refcount and garbage rows (edge change #230): serde macro output is compiled; a recount, no service state.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::ShardEngine::gc_loop",
+      "path": "src/shard/seal/gc.rs",
+      "reason": "Expression selection between the engine's close signal and the collector loop's tick; compiler checks expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::objects_put_without_their_commit_are_swept_and_objects_in_flight_are_not",
+      "path": "src/shard/seal/gc_tests.rs",
+      "reason": "The seal parked between its PUT and its commit and the orphan sweep run concurrently in one test task so the sweep meets an object in flight; the compiler checks the join's expansion.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_fenced_writers_object_is_swept_by_the_new_owner",
+      "path": "src/shard/seal/gc_tests.rs",
+      "reason": "The seal parked before its commit and the second writer's open run concurrently in one test task so the open fences the seal between its PUT and its commit; the compiler checks the join's expansion.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_read_that_planned_with_a_chunk_keeps_its_object_until_it_ends",
+      "path": "src/shard/seal/gc_tests.rs",
+      "reason": "The read parked at its first GET and the consolidation and collection that zero its objects run concurrently in one test task so the pin is exercised; the compiler checks the join's expansion.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_purge_racing_a_seal_in_flight_counts_nothing_the_seal_never_committed",
+      "path": "src/shard/seal/gc_tests.rs",
+      "reason": "The seal parked after publishing its directory entries and the purge that reclaims its stream run concurrently in one test task so the reclaim meets a seal in flight; the compiler checks the join's expansion.",
       "syntax": "tokio::join"
     },
     {

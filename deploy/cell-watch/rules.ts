@@ -734,6 +734,24 @@ function sealedIndexCorrupt(c: Ctx): Answer {
   return rows > 0 ? fire("PAGE", { sealed_index_corrupt_rows: rows }) : "clean";
 }
 
+/// `local.gc_inexact_decrements`: decrements of an object's refcount row the
+/// collector refused because the row cannot take them (edge #230): an index
+/// entry no seal counted, so the store's accounting is wrong. A page.
+function gcInexact(c: Ctx): Answer {
+  const n = num(get(c.poll.data, "local", "gc_inexact_decrements"));
+  if (n === null) return "skip";
+  return n > 0 ? fire("PAGE", { gc_inexact_decrements: n }) : "clean";
+}
+
+/// `local.gc_oldest_unreclaimed_late_secs`: how long the oldest dead
+/// incarnation has waited past its purge's due instant (edge #230); over an
+/// hour, deleted data is still stored past its stated delay.
+function gcReclaimLag(c: Ctx): Answer {
+  const late = num(get(c.poll.data, "local", "gc_oldest_unreclaimed_late_secs"));
+  if (late === null) return "skip";
+  return late > 3600 ? fire("NOTIFY", { gc_oldest_unreclaimed_late_secs: late }) : "clean";
+}
+
 /// /v1/admin/metrics `cache_age_secs` (deploy/issuer/ops.ts).
 function issuerCacheAge(c: Ctx): Answer {
   const age = num(get(c.poll.issuerMetrics, "cache_age_secs"));
@@ -807,6 +825,8 @@ export const RULES: readonly Rule[] = [
   rule(28, "admission_gate_closed", RUNBOOK.shared, admissionGateClosed, { enabled: withIssuer }),
   rule(29, "bytes_put_growth", RUNBOOK.billing, bytesPutGrowth),
   rule(30, "sealed_index_corrupt", RUNBOOK.store, sealedIndexCorrupt),
+  rule(31, "gc_inexact", RUNBOOK.store, gcInexact),
+  rule(32, "gc_reclaim_lag", RUNBOOK.store, gcReclaimLag),
 ];
 
 // ---- the step --------------------------------------------------------------

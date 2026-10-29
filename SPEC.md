@@ -416,12 +416,18 @@ lives, encryption, retention, erasure as built, backups) is
   `aborted`; render accordingly (e.g., pending-state styling) and rely on
   the durable checkpoint for resume.
 - **C6 Deletion semantics**: a delete tombstones the stream at once (reads
-  and writes answer 404/410). Its objects stay in the bucket as ciphertext
-  under keys the server never stored: no code removes them yet (physical
-  reclamation, TLA-019-F3 in docs/READINESS.md, cost lever E11), and their
-  names, routing keys and sizes stay visible to the operator until it
-  exists (G8). Crypto-erasure is complete once the customer destroys the
-  stream key.
+  and writes answer 404/410). Its data is removed physically later (edge
+  change #230): its shard-log rows (tail, pending pages, producers, seq
+  lanes, seal fence; not its billing row) about 10 minutes after the delete
+  once its usage reached the ledger, and each segment object once none of
+  its chunks is live, 10 minutes after the last one died and once no read
+  that may hold it runs. A recreation's replaced incarnation is removed the
+  same way. An expired stream nothing deleted or replaced is not removed:
+  a renewal admitted before its expiry may still revive it. Until removal
+  its objects stay in the bucket as
+  ciphertext under keys the server never stored, and their names, routing
+  keys and sizes stay visible to the operator (G8). Crypto-erasure is
+  complete once the customer destroys the stream key.
 - **C7 Offsets are opaque**: treat `Stream-Next-Offset` as a cursor; never
   arithmetic on it.
 - **C8 Reads of sealed data by routing key** cost one ranged GET per
@@ -511,9 +517,11 @@ lives, encryption, retention, erasure as built, backups) is
 - **L3 Sealing needs no key**: the sealer copies pages byte for byte, so a
   stream's pages are sealed within the age trigger (45 s) whether or not a
   keyed request follows.
-- **L4 Segment objects are not reclaimed yet**: each seal writes a refcount
-  row for the garbage collection that will read it; until then sealed
-  chunks of deleted streams stay in the bucket (see C6, G8).
+- **L4 Segment objects are reclaimed by reference count**: each object's
+  refcount row counts its live chunks; an object a consolidation or a purge
+  leaves with none is deleted after a 10 min grace (C6). An object mixing a
+  consolidated stream's superseded chunks with live chunks of other streams
+  stays until those die too (no repack yet).
 - **L5 Shard-log compression is per request** (layout 5): a request's
   records are compressed together in pages of up to 64 KiB before they are
   encrypted, and the segment objects hold the same pages. Requests of one small record,

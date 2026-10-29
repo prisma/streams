@@ -21,6 +21,8 @@ pub(crate) struct FoldHooks {
     pub(crate) fail_puts: AtomicBool,
     /// Fail the next index batch before it reaches the log.
     pub(crate) fail_next_batch: AtomicBool,
+    /// Fail the n-th index batch from now (1 = the next one; 0 = none).
+    pub(crate) fail_nth_batch: std::sync::atomic::AtomicU64,
     /// Park every index batch before it reaches the log.
     pub(crate) batch_hold: Mutex<Option<Arc<crate::shard::seal::test_hooks::Hold>>>,
 }
@@ -45,7 +47,11 @@ impl FoldState {
         if let Some(hold) = hold {
             hold.park().await;
         }
-        if self.hooks.fail_next_batch.swap(false, Ordering::Relaxed) {
+        let nth =
+            self.hooks
+                .fail_nth_batch
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1));
+        if nth == Ok(1) || self.hooks.fail_next_batch.swap(false, Ordering::Relaxed) {
             return Err(FoldError::Store("injected batch failure".into()));
         }
         Ok(())

@@ -488,6 +488,17 @@
     "scenarios": []
   },
   {
+    "name": "a_deleted_stream_is_purged_and_its_objects_reclaimed",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "94461d6f540d811907d576fc579f2139c15083ad0b2ee1a4bb14801a7c7edba0",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/purge_lifecycle.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_dirty_row_of_a_replaced_incarnation_still_closes_at_its_expiry",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -2423,6 +2434,17 @@
     "scenarios": []
   },
   {
+    "name": "a_source_its_fork_reads_is_never_purged_until_the_fork_is_deleted",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "921fc09a61c7c2ea4c0de6c764e7c1432d94f9be7329439d97cf08139862266a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/purge_lifecycle.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_split_consumers_deletion_fails_one_segment_then_retries_clean",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -3466,6 +3488,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_closure_debts.rs",
+    "scenarios": []
+  },
+  {
+    "name": "an_expired_stream_is_purged_only_once_its_name_is_recreated",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "bd88daa6462ae1dd75e3cb9a35bbf8f44fbf2f2e8a5b0763c8f8c4092de1dc4a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/purge_lifecycle.rs",
     "scenarios": []
   },
   {

@@ -221,6 +221,8 @@ impl ShardEngine {
             .await
             .map_err(|e| RangeReadError::Store(slatedb::Error::unavailable(e.to_string())))?;
         sp.counters.sealed_reads.fetch_add(1, Ordering::Relaxed);
+        // Every object this read may fetch stays stored until it ends.
+        let _pin = self.gc_state().pin();
         let candidates = self.sealed_candidates(hash, scan, key_filter).await?;
         let (steps, gap) = plan_steps(&sp.counters, &candidates.list, scan, key_filter);
         self.refuse_index_gap(hash, gap, candidates.complete)?;
@@ -279,19 +281,38 @@ impl ShardEngine {
         Ok(part)
     }
 
-    /// The chunks a sealed read of `scan` would fetch, by their offsets
-    /// (the consolidator's re-check).
+    /// Tests: the chunks a sealed read of `scan` would fetch, by their
+    /// offsets.
+    #[cfg(test)]
     pub(crate) async fn sealed_picks(
         &self,
         hash: [u8; 16],
         scan: RingScan,
     ) -> Result<Vec<Span>, RangeReadError> {
+        let picks = self.sealed_pick_entries(hash, scan).await?;
+        Ok(picks
+            .iter()
+            .map(crate::shard::seal::fold::span_of)
+            .collect())
+    }
+
+    /// The chunks a sealed read of `scan` would fetch (the consolidator's
+    /// re-check: a job copies exactly these, or nothing).
+    pub(crate) async fn sealed_pick_entries(
+        &self,
+        hash: [u8; 16],
+        scan: RingScan,
+    ) -> Result<Vec<DirEntry>, RangeReadError> {
+        let _pin = self.gc_state().pin();
         let candidates = self.sealed_candidates(hash, scan, None).await?.list;
         let spans: Vec<Span> = candidates.iter().map(Candidate::span).collect();
         let picks = tile(&spans, scan.from, scan.to, MAX_CHUNKS_LOOKED_AT);
         Ok(picks
             .into_iter()
-            .filter_map(|i| spans.get(i).copied())
+            .filter_map(|i| match candidates.get(i) {
+                Some(Candidate::Chunk(e)) => Some(e.clone()),
+                _ => None,
+            })
             .collect())
     }
 
@@ -299,9 +320,13 @@ impl ShardEngine {
     /// then each live run-index object's run of the stream (the set taken
     /// after: a fold installs its object before it removes the entries it
     /// folded, so no chunk is in neither). Runs are fetched in offset order
-    /// only while the chunks so far do not tile the window, its byte budget
-    /// or `MAX_CHUNKS_PER_READ`; a keyed read skips a dense run its bloom
-    /// excludes without a GET, as a span of consumed offsets.
+    /// while they start within the reach of the chunks so far, so every
+    /// chunk holding an offset the read serves is a candidate (a
+    /// consolidated chunk supersedes the chunks it copied, which the
+    /// collector may have deleted); a keyed read skips a dense run its bloom
+    /// excludes without a GET, as a span of consumed offsets. The directory
+    /// alone serves when it tiles the window: an original's `'K'` row is
+    /// older than its consolidation's, so it is never folded later.
     async fn sealed_candidates(
         &self,
         hash: [u8; 16],
@@ -324,14 +349,14 @@ impl ShardEngine {
             });
         }
         let fp = key_filter.map(crate::spill::directory::fingerprint);
-        let mut complete = true;
+        let complete = true;
+        // Every run starting within the reach so far is fetched, even once
+        // the chunks found tile the window: a later object may hold a
+        // consolidated chunk that supersedes them, whose originals' objects
+        // the collector may have deleted (`seal::gc`).
         for (pointer, footer) in self.runs_of(&hash, scan.from, scan.to).await? {
             candidates.sort_by_key(|c| c.span().first);
             let reach = Reach::of(&candidates, scan);
-            if reach.done(scan) {
-                complete = false;
-                break;
-            }
             if footer.first > reach.end {
                 break;
             }

@@ -63,6 +63,9 @@ mod dispatch_tests;
 pub(crate) mod fold;
 #[cfg(test)]
 mod fold_tests;
+pub(crate) mod gc;
+#[cfg(test)]
+mod gc_tests;
 #[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
@@ -80,7 +83,7 @@ mod tests;
 #[cfg(test)]
 mod trigger_tests;
 
-pub(crate) use steps::{SealAdvance, SealCommit, SealError, SealReport};
+pub(crate) use steps::{SealAdvance, SealBatch, SealCommit, SealError, SealReport};
 
 /// What starts a seal, and the deadlines that flush the memtable whatever
 /// a seal does.
@@ -314,6 +317,8 @@ pub(crate) struct SealState {
     pub(crate) counters: SealCounters,
     /// The fold and the run-index set (`fold`).
     pub(crate) fold: fold::FoldState,
+    /// Physical reclamation (`gc`).
+    pub(crate) gc: gc::GcState,
     #[cfg(test)]
     pub(crate) hooks: test_hooks::SealHooks,
 }
@@ -375,6 +380,7 @@ impl SealState {
         j["fold"] = self.fold.json();
         j["consolidation"] = self.fold.consolidator.json();
         j["caches"] = crate::spill::cache::json();
+        j["gc"] = self.gc.json();
         j
     }
 

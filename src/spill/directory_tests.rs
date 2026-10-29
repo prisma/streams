@@ -234,15 +234,6 @@ fn the_memory_gauge_is_the_sum_of_the_entries_through_inserts_and_removals() {
     assert_eq!((directory.entries(), directory.bytes()), (0, 0));
 }
 
-/// A seal's refcount row: the format version, then its live bytes, live
-/// chunks and creation instant as minimal varints (package 5's collector
-/// reads them), at pinned bytes.
-#[test]
-fn a_refcount_row_holds_its_live_bytes_chunks_and_creation_at_pinned_bytes() {
-    let row = super::directory::refcount_value(300, 2, 1_760_000_000_000);
-    assert_eq!(crate::crypto::hex(&row), "01ac02028080b3c19c33");
-}
-
 /// One entry's memory is the entry, its map key, eight bytes per summary
 /// key or one per bloom byte, and its anchors.
 #[test]

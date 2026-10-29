@@ -11,6 +11,7 @@ pub(crate) mod cache;
 pub(crate) mod crc32c;
 pub(crate) mod directory;
 pub(crate) mod estimate;
+pub(crate) mod gc;
 pub(crate) mod metrics;
 pub(crate) mod object;
 pub(crate) mod pending;
@@ -24,6 +25,8 @@ mod crc32c_tests;
 mod directory_tests;
 #[cfg(test)]
 mod estimate_tests;
+#[cfg(test)]
+mod gc_tests;
 #[cfg(test)]
 mod object_tests;
 #[cfg(test)]

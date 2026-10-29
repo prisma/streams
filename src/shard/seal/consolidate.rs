@@ -5,17 +5,17 @@
 //! next cold walk of those offsets costs one GET instead of one per chunk.
 //! The read already holds the bytes: consolidating costs no extra GET.
 //!
-//! One job (`consolidate_one`): if the offsets still tile to more than one
-//! chunk, the pages are checked to continue each other, encoded as one
+//! One job (`consolidate_one`, under the collector's `refs` lock): if the
+//! offsets still resolve to exactly the job's chunks, the pages are checked to continue each other, encoded as one
 //! chunk (one object, `PutMode::Create`, the shared object sequence), the
 //! chunk is published in the directory, then one batch writes its `'K'`
 //! row, its `'R'` row and an `'O'` row counting the chunks it superseded
 //! (WAL-flushed, durable; an error withdraws the entry and closes the
-//! engine). Every chunk it copies stays readable (readers holding older
-//! candidates still fetch them; package 6's garbage collection frees them),
-//! and readers prefer the consolidated chunk (`tiling::tile`). Until
-//! package 6, the superseded chunks are counted as orphans (`'O'` rows,
-//! folded into the pointer rows' counters, `seal.fold.orphan_*`).
+//! engine). The same batch decrements each superseded chunk's object
+//! (`seal::gc`): an object left with no live chunk is deleted after its
+//! grace, once no read that may still hold it runs. Readers prefer the
+//! consolidated chunk (`tiling::tile`). The `'O'` rows count the superseded
+//! chunks (`seal.fold.orphan_*`, cumulative).
 //!
 //! It races nothing it can break: seals only add chunks above a stream's
 //! boundary while it copies chunks below it; a fold folds its `'K'` row
@@ -31,6 +31,7 @@ use slatedb::WriteBatch;
 
 use crate::shard::{RingScan, ShardEngine};
 use crate::spill::directory::{self, DirEntry, KeySummary};
+use crate::spill::gc::{self, Decrements};
 use crate::spill::object::{self, ChunkInput};
 use crate::spill::runindex::{self, Orphans};
 
@@ -186,19 +187,21 @@ impl ShardEngine {
         }
     }
 
-    /// One job; false when its offsets no longer tile to several chunks.
+    /// One job; false when its offsets no longer resolve to exactly its
+    /// chunks, or its stream is dead. Under the collector's `refs` lock,
+    /// from the re-check until the batch is durable: the batch decrements
+    /// every superseded chunk's object (`seal::gc`), so no two jobs may
+    /// supersede one chunk.
     pub(crate) async fn consolidate_one(&self, job: Job) -> Result<bool, String> {
-        let (Some((first, _)), Some((last, _))) = (job.chunks.first(), job.chunks.last()) else {
-            return Ok(false);
-        };
-        let (first, last) = (first.first, last.last);
-        if self.tiles_to_one(job.hash, first, last).await? {
+        let _refs = self.gc_state().refs.lock().await;
+        if !self.still_picked(&job).await? {
             return Ok(false);
         }
         let input = consolidated_input(job.hash, &job.chunks)?;
         let keys = KeySummary::of(&input)?;
         let encoded = object::encode(std::slice::from_ref(&input)).map_err(|e| format!("{e:?}"))?;
-        let id = self.next_index_id();
+        let claim = self.claim_object();
+        let id = claim.id;
         let path = object::object_path(&crate::sharddir::shard_db_path(&self.prefix), id);
         self.data_store
             .put_opts(
@@ -213,46 +216,81 @@ impl ShardEngine {
             .map_err(|e| e.to_string())?;
         let chunk = encoded.chunks.first().ok_or("an object of no chunk")?;
         let entry = DirEntry::of(id, chunk, keys.clone());
-        self.publish_consolidated(job.hash, &entry, true);
         let orphans = Orphans {
             chunks: job.chunks.len() as u64,
             bytes: job.chunks.iter().map(|(e, _)| u64::from(e.chunk_len)).sum(),
         };
         let mut batch = WriteBatch::new();
+        let mut superseded = Decrements::new();
+        for (e, _) in &job.chunks {
+            gc::decrement(&mut superseded, e);
+        }
+        let zeroed = self
+            .stage_decrements(&mut batch, &superseded)
+            .await
+            .map_err(|e| e.to_string())?;
         batch.put(
             directory::directory_key(id),
             directory::encode_row(&[(chunk, &keys)]),
         );
-        let page_bytes = u64::from(chunk.entry.stored);
-        let now = crate::shard::now_ms().unsigned_abs();
         batch.put(
-            directory::refcount_key(id),
-            directory::refcount_value(page_bytes, 1, now),
+            gc::refcount_key(id),
+            gc::encode_refcount(&gc::Refcount {
+                live_bytes: u64::from(chunk.entry.len),
+                live_chunks: 1,
+                created_ms: crate::shard::now_ms().unsigned_abs(),
+                object_len: encoded.len as u64,
+            }),
         );
         batch.put(runindex::orphan_key(id), runindex::encode_orphans(orphans));
-        if let Err(e) = self.write_index_batch(batch).await {
+        self.publish_consolidated(job.hash, &entry, true);
+        if let Err(e) = self.write_decrements(batch, &zeroed).await {
             self.publish_consolidated(job.hash, &entry, false);
             return Err(e.to_string());
         }
         self.layout.seal.fold.note_orphans(id, orphans);
+        self.gc_state()
+            .counters
+            .superseded_chunks
+            .fetch_add(orphans.chunks, Ordering::Relaxed);
         let c = self.consolidator();
         c.chunks_in.fetch_add(orphans.chunks, Ordering::Relaxed);
         c.bytes_out.fetch_add(encoded.len as u64, Ordering::Relaxed);
         Ok(true)
     }
 
-    /// Whether `[first, last]` of `hash` already tiles to one chunk.
-    async fn tiles_to_one(&self, hash: [u8; 16], first: u64, last: u64) -> Result<bool, String> {
+    /// Whether the job's offsets still resolve to exactly its chunks (the
+    /// same objects, offsets and spans) and its stream is not dead: a chunk
+    /// another job already superseded, or a range partly consolidated, is
+    /// left alone.
+    async fn still_picked(&self, job: &Job) -> Result<bool, String> {
+        let (Some((first, _)), Some((last, _))) = (job.chunks.first(), job.chunks.last()) else {
+            return Ok(false);
+        };
+        if self
+            .head_row(&job.hash)
+            .await
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
+            return Ok(false);
+        }
         let scan = RingScan {
-            from: first,
-            to: last.saturating_add(1),
+            from: first.first,
+            to: last.last.saturating_add(1),
             max_bytes: usize::MAX,
         };
         let picks = self
-            .sealed_picks(hash, scan)
+            .sealed_pick_entries(job.hash, scan)
             .await
             .map_err(|e| format!("{e:?}"))?;
-        Ok(picks.len() <= 1)
+        let same = |(a, (b, _)): (&DirEntry, &(DirEntry, Bytes))| {
+            a.object == b.object
+                && a.chunk_off == b.chunk_off
+                && a.first == b.first
+                && a.last == b.last
+        };
+        Ok(picks.len() == job.chunks.len() && picks.iter().zip(&job.chunks).all(same))
     }
 
     /// Publish (or withdraw) a consolidated chunk's directory entry.

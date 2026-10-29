@@ -9,21 +9,22 @@
 //! whole and checked, merged stream by stream (entries a consolidated chunk
 //! contains dropped), PUT and read back like a fold's object, then one
 //! batch puts the new pointer row and deletes the inputs' (WAL-flushed,
-//! durable; an error closes the engine). The set gains the new object
-//! before it loses the inputs, and the inputs are deleted from the store
-//! `retire_grace` later (a read holding the old set may still fetch them;
-//! a restart before then leaves them as orphans for package 6's sweep).
+//! durable; an error closes the engine). The same batch writes a `'G'` row
+//! for each input, so the collector deletes it once its grace passed and no
+//! read that took the old set still runs (`seal::gc`). The set gains the
+//! new object before it loses the inputs. Entries of dead streams below
+//! their `reclaimed` offset are dropped (`kept_entries`); a merge left with
+//! no entry writes no object.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Instant;
 
 use bytes::Bytes;
 use object_store::ObjectStoreExt;
 use slatedb::WriteBatch;
 
-use super::{FoldError, FoldSettings, finish, kept_entries, lock};
+use super::{FoldError, FoldSettings, finish, kept_entries};
 use crate::shard::ShardEngine;
 use crate::spill::directory::DirEntry;
 use crate::spill::object::ObjectId;
@@ -84,7 +85,7 @@ impl ShardEngine {
     }
 
     /// One merge if one is due: `None` when none is, else its outcome.
-    pub(crate) async fn merge_once(self: &Arc<Self>) -> Option<Result<Pointer, FoldError>> {
+    pub(crate) async fn merge_once(self: &Arc<Self>) -> Option<Result<Option<Pointer>, FoldError>> {
         let fs = self.fold_state();
         let _one = fs.serial.lock().await;
         let inputs = merge_inputs(&fs.set(), &fs.settings())?;
@@ -101,46 +102,67 @@ impl ShardEngine {
         Some(result)
     }
 
-    async fn merge_steps(self: &Arc<Self>, inputs: Vec<Pointer>) -> Result<Pointer, FoldError> {
+    async fn merge_steps(
+        self: &Arc<Self>,
+        inputs: Vec<Pointer>,
+    ) -> Result<Option<Pointer>, FoldError> {
         let fs = self.fold_state();
         let mut read = Vec::with_capacity(inputs.len());
         for p in inputs {
             read.push(self.read_input(p).await?);
         }
         let level = read.iter().map(|i| i.pointer.level).max().unwrap_or(0) + 1;
-        let id = self.next_index_id();
-        let built = merged(id, level, &read)?;
-        self.put_verified(&built.bytes, &built.pointer).await?;
+        let claim = self.claim_object();
+        let id = claim.id;
+        let hashes: std::collections::BTreeSet<[u8; 16]> = read
+            .iter()
+            .flat_map(|i| i.footer.iter().map(|f| f.hash))
+            .collect();
+        let reclaimed = self.reclaimed_heads(hashes).await?;
+        let built = merged(id, level, &read, &reclaimed)?;
+        if let Some(built) = &built {
+            self.put_verified(&built.bytes, &built.pointer).await?;
+        }
         #[cfg(test)]
         fs.check_abort(super::test_hooks::FoldStep::Verified)?;
         let mut batch = WriteBatch::new();
-        batch.put(
-            runindex::pointer_key(id),
-            runindex::encode_pointer(&built.pointer),
-        );
+        if let Some(built) = &built {
+            batch.put(
+                runindex::pointer_key(id),
+                runindex::encode_pointer(&built.pointer),
+            );
+        }
+        let inputs: Vec<ObjectId> = read.iter().map(|i| i.pointer.id).collect();
         for i in &read {
             batch.delete(runindex::pointer_key(i.pointer.id));
+            batch.put(
+                crate::spill::gc::garbage_key(i.pointer.id),
+                self.retired_index_garbage(i.pointer.len),
+            );
         }
+        self.retiring_index(&inputs);
         self.write_index_batch(batch).await?;
         #[cfg(test)]
         fs.check_abort(super::test_hooks::FoldStep::Committed)?;
+        if let Some(built) = &built {
+            fs.replace_set(|set| {
+                set.insert(id, built.pointer.clone());
+            });
+        }
         fs.replace_set(|set| {
-            set.insert(id, built.pointer.clone());
-        });
-        fs.replace_set(|set| {
-            for i in &read {
-                set.remove(&i.pointer.id);
+            for i in &inputs {
+                set.remove(i);
             }
         });
-        let now = Instant::now();
-        lock(&fs.retired).extend(read.iter().map(|i| (now, i.pointer.id)));
+        self.note_retired_index(&inputs);
         fs.counters
             .merged_inputs
             .fetch_add(read.len() as u64, Ordering::Relaxed);
+        let dropped = built.as_ref().map_or(0, |b| b.dropped);
         fs.counters
             .entries_dropped
-            .fetch_add(built.dropped, Ordering::Relaxed);
-        Ok(built.pointer)
+            .fetch_add(dropped, Ordering::Relaxed);
+        Ok(built.map(|b| b.pointer))
     }
 
     /// An input, read whole and checked against its pointer row.
@@ -170,30 +192,6 @@ impl ShardEngine {
             footer,
         })
     }
-
-    /// Delete the merged-away objects whose grace passed.
-    pub(crate) async fn delete_retired(&self) {
-        let fs = self.fold_state();
-        let grace = fs.settings().retire_grace;
-        let due: Vec<ObjectId> = {
-            let mut retired = lock(&fs.retired);
-            let (due, keep): (Vec<_>, Vec<_>) =
-                retired.drain(..).partition(|(at, _)| at.elapsed() >= grace);
-            *retired = keep;
-            due.into_iter().map(|(_, id)| id).collect()
-        };
-        for id in due {
-            let path = object_store::path::Path::from(self.run_index_path(id));
-            match self.data_store.delete(&path).await {
-                Ok(()) | Err(object_store::Error::NotFound { .. }) => {
-                    fs.counters.retired_deleted.fetch_add(1, Ordering::Relaxed);
-                }
-                Err(e) => {
-                    tracing::debug!(shard = %self.prefix, "a retired run-index object stays (an orphan): {e}")
-                }
-            }
-        }
-    }
 }
 
 /// One input's run of `f`, decoded and checked against its footer entry.
@@ -215,8 +213,13 @@ fn input_run(input: &Input, f: &FooterEntry) -> Result<Vec<DirEntry>, FoldError>
 }
 
 /// The merged object: every stream of every input, in stream order, one
-/// stream's runs decoded at a time.
-fn merged(id: ObjectId, level: u8, inputs: &[Input]) -> Result<super::Built, FoldError> {
+/// stream's runs decoded at a time; `None` when no entry is left.
+fn merged(
+    id: ObjectId,
+    level: u8,
+    inputs: &[Input],
+    reclaimed: &super::Reclaimed,
+) -> Result<Option<super::Built>, FoldError> {
     let mut streams: BTreeMap<[u8; 16], Vec<(usize, usize)>> = BTreeMap::new();
     for (i, input) in inputs.iter().enumerate() {
         for (j, f) in input.footer.iter().enumerate() {
@@ -237,14 +240,16 @@ fn merged(id: ObjectId, level: u8, inputs: &[Input]) -> Result<super::Built, Fol
                 .ok_or_else(|| FoldError::Verify("footer".into()))?;
             entries.extend(input_run(input, f)?);
         }
-        let (kept, d) = kept_entries(entries);
+        let (kept, d) = kept_entries(entries, reclaimed.get(&hash).copied().unwrap_or(0));
         dropped += d;
-        writer.push(hash, &kept).map_err(FoldError::Format)?;
+        if !kept.is_empty() {
+            writer.push(hash, &kept).map_err(FoldError::Format)?;
+        }
     }
     let seals = inputs.iter().map(|i| i.pointer.seals).sum();
     let orphans = inputs
         .iter()
         .fold(Orphans::default(), |a, i| a.add(i.pointer.orphans));
     let built = finish(id, writer, level, seals, orphans)?;
-    Ok(super::Built { dropped, ..built })
+    Ok(built.map(|b| super::Built { dropped, ..b }))
 }

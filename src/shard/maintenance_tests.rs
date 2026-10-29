@@ -3,7 +3,7 @@
 #![cfg(test)]
 use super::*;
 use crate::shard::seal::test_hooks::Hold;
-use crate::shard::seal::{SealAdvance, SealCommit, SealError, Trigger};
+use crate::shard::seal::{SealAdvance, SealBatch, SealCommit, SealError, Trigger};
 use crate::spill::pending::{parse_pages, pending_key};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -299,10 +299,10 @@ fn seal_op(
 ) -> (CommitOp, oneshot::Receiver<String>) {
     let id = made_up_object(engine);
     let (resp, refusal) = oneshot::channel();
-    let commit = SealCommit {
+    let commit = SealCommit::Seal(SealBatch {
         dir_key: crate::spill::directory::directory_key(id),
         dir_value: Vec::new(),
-        ref_key: crate::spill::directory::refcount_key(id),
+        ref_key: crate::spill::gc::refcount_key(id),
         ref_value: Vec::new(),
         streams: vec![SealAdvance {
             hash,
@@ -312,7 +312,7 @@ fn seal_op(
             snapshot_remainder: Vec::new(),
         }],
         resp,
-    };
+    });
     (CommitOp::Seal(Box::new(commit)), refusal)
 }
 
@@ -340,7 +340,7 @@ async fn refused_beside_an_append(
     let id = made_up_object(engine);
     for key in [
         crate::spill::directory::directory_key(id),
-        crate::spill::directory::refcount_key(id),
+        crate::spill::gc::refcount_key(id),
     ] {
         assert!(
             engine.db.get(key).await.unwrap().is_none(),

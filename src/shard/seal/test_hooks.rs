@@ -54,6 +54,9 @@ pub(crate) struct SealHooks {
     pub(crate) put_delay: Mutex<Duration>,
     /// Park a seal after its PUT, before its commit.
     pub(crate) before_commit: Mutex<Option<Arc<Hold>>>,
+    /// Parks a seal after it published its directory entries, before its
+    /// commit is sent.
+    pub(crate) after_publish: Mutex<Option<Arc<Hold>>>,
     /// Park every sealed-range GET.
     pub(crate) get_hold: Mutex<Option<Arc<Hold>>>,
     /// Park a read after it captured its boundary and unsealed pages.
@@ -105,6 +108,13 @@ impl SealState {
 
     pub(super) async fn before_commit(&self) {
         let hold = self.hooks.before_commit.lock().unwrap().clone();
+        if let Some(hold) = hold {
+            hold.park().await;
+        }
+    }
+
+    pub(super) async fn after_publish(&self) {
+        let hold = self.hooks.after_publish.lock().unwrap().clone();
         if let Some(hold) = hold {
             hold.park().await;
         }

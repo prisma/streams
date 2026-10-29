@@ -20,7 +20,8 @@
 //! refusal), and the sealer reads the outcome from the streams' boundaries.
 use super::*;
 use crate::shard::commit_plan::{apply_seal, seal_fits};
-use crate::shard::seal::{SealAdvance, SealCommit};
+use crate::shard::seal::gc::purge::PurgeStep;
+use crate::shard::seal::{SealAdvance, SealBatch, SealCommit};
 
 /// What a seal left of a stream's pending row: the stream's applied pages
 /// at or above the boundary it moved to when the seal was staged (the
@@ -35,8 +36,12 @@ pub(super) struct SealedAt {
 }
 
 impl CommitTransaction<'_> {
-    pub(super) async fn stage_seal(&mut self, seal: SealCommit) {
-        let SealCommit {
+    pub(super) async fn stage_seal(&mut self, commit: SealCommit) {
+        let seal = match commit {
+            SealCommit::Seal(seal) => seal,
+            SealCommit::Purge(step) => return self.stage_purge(step).await,
+        };
+        let SealBatch {
             dir_key,
             dir_value,
             ref_key,
@@ -144,4 +149,68 @@ fn moved_since_snapshot(local: &StreamOverlay, adv: &SealAdvance) -> Option<Stri
             adv.bytes
         )
     })
+}
+
+impl CommitTransaction<'_> {
+    /// A dead stream's purge (`seal::gc::purge`, step 1): its tail and
+    /// pending rows deleted and its `'H'` row Purged at its live next
+    /// offset, in this group; its handle leaves the engine, and a later
+    /// load of it fails. Refused, changing nothing, while the stream has
+    /// another op in this group (it would put the tail back), while its
+    /// usage awaits the ledger (the counters live on the tail). A native
+    /// queue seals nothing: it is marked purged and its queue-segment rows
+    /// stay.
+    pub(super) async fn stage_purge(&mut self, step: PurgeStep) {
+        let PurgeStep { hash, prior, resp } = step;
+        match self.purge_refusal(hash).await {
+            Ok((next, queue)) => {
+                let purged = crate::spill::gc::Head {
+                    state: crate::spill::gc::HeadState::Purged,
+                    head: next.max(prior.head),
+                    ..prior
+                };
+                if !queue {
+                    self.batch.delete(crate::shard::tail_key(&hash));
+                    self.batch.delete(crate::spill::pending::pending_key(&hash));
+                }
+                self.batch.put(
+                    crate::spill::gc::head_key(&hash),
+                    crate::spill::gc::encode_head(&purged),
+                );
+                self.extra_writes = true;
+                self.engine.gc_state().note_purged(hash);
+                self.engine.forget_stream(&hash);
+                self.effects.seals.push(resp);
+            }
+            Err(why) => {
+                if resp.send(why).is_err() {
+                    tracing::debug!("the collector stopped waiting for its purge's refusal");
+                }
+            }
+        }
+    }
+
+    /// The stream's live next offset and whether it is a native queue, or
+    /// why it cannot be purged now.
+    async fn purge_refusal(&mut self, hash: [u8; 16]) -> Result<(u64, bool), String> {
+        if self.streams.contains_key(&hash) {
+            return Err("the stream has another op in this group".into());
+        }
+        if self.engine.layout.usage_pending(&hash) {
+            return Err("the stream's usage awaits the ledger".into());
+        }
+        let handle = self
+            .engine
+            .stream_handle(hash)
+            .await
+            .map_err(|e| e.to_string())?;
+        if handle.native_queue.load(Ordering::Relaxed) {
+            return Ok((0, true));
+        }
+        let st = handle
+            .state
+            .lock()
+            .map_err(|_| "a purged stream's state is poisoned".to_owned())?;
+        Ok((st.applied.next.max(st.durable.next), false))
+    }
 }

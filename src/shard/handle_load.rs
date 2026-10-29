@@ -21,6 +21,9 @@ impl ShardEngine {
     /// from one snapshot: a seal that commits between two plain reads would
     /// pair the tail from before it with the pending row from after it.
     pub(super) async fn load_tail(&self, hash: &[u8; 16]) -> Result<LoadedTail, slatedb::Error> {
+        if self.gc_state().purged(hash) {
+            return Err(purged());
+        }
         let snapshot = self.db.snapshot().await?;
         for (key, native_queue) in [(tail_key(hash), false), (queue_tail_key(hash), true)] {
             let Some(raw) = snapshot.get(key).await? else {
@@ -35,11 +38,19 @@ impl ShardEngine {
                 let raw = snapshot.get(pending_key(hash)).await?.unwrap_or_default();
                 PendingPages::tiled(&raw, tail.absorbed, tail.next).map_err(slatedb::Error::data)?
             };
+            // A purge staged while this load awaited the store: its rows go
+            // when its group writes, and no handle of it may be published.
+            if self.gc_state().purged(hash) {
+                return Err(purged());
+            }
             return Ok(LoadedTail {
                 tail,
                 native_queue,
                 pending,
             });
+        }
+        if self.purged_stream(hash).await? {
+            return Err(purged());
         }
         Ok(LoadedTail {
             tail: TailFields::default(),
@@ -78,4 +89,10 @@ impl StreamHandle {
             self.notify.notify_waiters();
         }
     }
+}
+
+/// A purged stream's load (`seal::gc::purge`): its incarnation was deleted
+/// or replaced, and its rows are gone.
+fn purged() -> slatedb::Error {
+    slatedb::Error::data("the stream was purged (a deleted or replaced incarnation)".to_owned())
 }

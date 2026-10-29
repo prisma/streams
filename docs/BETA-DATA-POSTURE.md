@@ -105,13 +105,16 @@ Limits, error answers and retry rules are in
   is crypto-erasure from the operator's side. A customer who keeps the
   stream key could still decrypt a copy of those objects; destroying the
   key completes the erasure.
-- **Later:** the encrypted objects, the descriptor's tombstone and the
-  page headers stay in the bucket. No code deletes a deleted stream's
-  rows yet (`docs/READINESS.md`, "Physical reclamation of hard-deleted
-  incarnations (TLA-019-F3)"); reclamation (cost lever E11) is planned
-  with the next storage layout's stage 3b, is not built, and whether it
-  must exist before the beta opens is undecided (NEXT-WORK item 2). Until it exists, the stream's name,
-  routing keys and sizes stay visible to the operator (`SPEC.md` G8).
+- **Later:** the stream's rows in its shard log (tail, unsealed pages,
+  producers, sequence lanes) are deleted about 10 minutes after the delete,
+  once its usage reached the ledger, and each encrypted segment object is
+  deleted once none of its chunks is live, after a further 10-minute grace
+  (edge change #230; layout 6A package 6). An object that also holds other
+  streams' live chunks stays until they die. The descriptor's tombstone and
+  the stream's billing row stay: they are Prisma's record. An expired
+  stream is removed only once it is deleted or its name is recreated. Until
+  removal, the stream's name, routing keys and sizes stay visible to the
+  operator (`SPEC.md` G8).
 - Usage records about a deleted stream stay in the usage ledgers and the
   rollup: they are Prisma's metering record.
 - *To be reviewed by Prisma legal:* whether this meets a deletion request

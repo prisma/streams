@@ -102,6 +102,24 @@ impl LayoutState {
         }
     }
 
+    /// Forget a purged stream's hold (its pending pages are deleted with
+    /// it). A poisoned set is left as it is: the hold then keeps a handle
+    /// nothing loads again until the engine retires.
+    pub(crate) fn forget_unsealed(&self, hash: &[u8; 16]) {
+        if let Ok(mut set) = self.unsealed.lock() {
+            set.remove(hash);
+        }
+    }
+
+    /// Whether `hash`'s usage awaits the ledger; true on a poisoned set,
+    /// so a purge waits rather than deleting counters it cannot vouch for.
+    pub(crate) fn usage_pending(&self, hash: &[u8; 16]) -> bool {
+        self.usage
+            .set
+            .lock()
+            .map_or(true, |set| set.contains_key(hash))
+    }
+
     /// Mark `hash` dirty at `version` (a billed group was applied).
     #[expect(
         clippy::unwrap_used,

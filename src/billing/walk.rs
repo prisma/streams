@@ -97,7 +97,10 @@ pub(super) async fn walk_segment(
         Ok(acquired) => acquired,
         Err(pass) => return pass,
     };
-    let pass = close_or_retain(d, sid, terminal, &engine).await;
+    let mut pass = close_or_retain(d, sid, terminal, &engine).await;
+    if pass == Pass::Next && d.deleted {
+        pass = request_purge(&engine, d.dynamic_segment_identity(sid), d.logical_close_ms).await;
+    }
     if ours {
         // Scheduler-opened for this segment: close it or keep it as an
         // indebted budgeted resident NOW, on every outcome of the step —
@@ -160,4 +163,29 @@ async fn close_or_retain(d: &StreamDesc, sid: u32, terminal: bool, engine: &Shar
         return Pass::Stop;
     }
     Pass::Next
+}
+
+/// Ask `engine` to purge a dead incarnation's segment `hash`
+/// (`shard::seal::gc::purge`) once its purge delay passed the close. Only an
+/// irrevocably dead incarnation is purged: a tombstone (`deleted`; a
+/// renewal, a fork and a recreation all decline it) or a replaced one
+/// (`replaced.rs`). An expired descriptor is not: a renewal or a fork
+/// admitted before its expiry may still revive or retain it. A refused
+/// request is `Pass::Stop`, so the page replays.
+pub(super) async fn request_purge(
+    engine: &ShardEngine,
+    hash: [u8; 16],
+    close_ms: Option<i64>,
+) -> Pass {
+    let close = close_ms
+        .unwrap_or_else(billing_now_ms)
+        .max(0)
+        .unsigned_abs();
+    match engine.request_purge(hash, close).await {
+        Ok(()) => Pass::Next,
+        Err(error) => {
+            tracing::warn!("purge request refused, the page replays: {error}");
+            Pass::Stop
+        }
+    }
 }

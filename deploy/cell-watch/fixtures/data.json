@@ -253,6 +253,9 @@
     "stream_shed": 0,
     "usage_overflow_admits": 0,
     "sealed_index_corrupt_rows": 0,
+    "gc_inexact_decrements": 0,
+    "gc_unreclaimed_incarnations": 0,
+    "gc_oldest_unreclaimed_late_secs": 0,
     "wedge_shed": 0
   },
   "ops": {

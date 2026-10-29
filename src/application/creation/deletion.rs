@@ -348,6 +348,7 @@ fn delete_lifecycle(
         // submission that still fails is safe because the debt lives
         // on the tombstone and the sweep reconciler retries it.
         submit_billing_closes(&state, &d, close_stamp).await;
+        request_purges(&state, &d, close_stamp).await;
         if let Some((src, fid, sep)) = parent {
             // Released CONCLUSIVELY: the tombstone owes nothing more.
             // This is `update`, not `cas_update`, because the
@@ -493,6 +494,35 @@ async fn submit_billing_closes(state: &Arc<CreationService>, d: &StreamDesc, clo
                      (tombstone debt persists; sweep retries): {e}",
                 d.name
             );
+        }
+    }
+}
+
+/// Ask each segment's shard to purge the hard-deleted incarnation once its
+/// purge delay passed the close (layout 6A package 6, edge #230). Best
+/// effort: a segment whose shard does not answer is asked again by the
+/// tombstone walk, which visits every tombstone.
+async fn request_purges(state: &Arc<CreationService>, d: &StreamDesc, close_stamp: i64) {
+    let seg_ids: Vec<u32> = d
+        .segments
+        .as_ref()
+        .map(|m| m.segments.iter().map(|sg| sg.seg_id).collect())
+        .unwrap_or_else(|| vec![0]);
+    let close = close_stamp.max(0).unsigned_abs();
+    for sid in seg_ids {
+        let Some(route) = d.segment_route_by_id(sid) else {
+            continue;
+        };
+        let identity = d.dynamic_segment_identity(sid);
+        let asked = match state.resolve(&route).await {
+            Ok(engine) => engine
+                .request_purge(identity, close)
+                .await
+                .map_err(|e| e.to_string()),
+            Err(e) => Err(format!("{e:?}")),
+        };
+        if let Err(e) = asked {
+            tracing::debug!("delete {}: purge request left to the walk: {e}", d.name);
         }
     }
 }
