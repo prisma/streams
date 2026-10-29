@@ -1631,6 +1631,11 @@
         "name": "many_streams_seal_under_the_streams_budget_in_turn",
         "file": "src/shard/seal/budget_tests.rs",
         "line": 77
+      },
+      {
+        "name": "an_exact_fit_is_taken_and_a_cut_defers_the_rest",
+        "file": "src/shard/seal/budget_tests.rs",
+        "line": 176
       }
     ],
     "mapped": true,
@@ -1650,6 +1655,21 @@
         "name": "sparse_records_rediscovered_after_restart_are_absorbed",
         "file": "src/dst/tests/history_recovery.rs",
         "line": 336
+      },
+      {
+        "name": "the_open_loads_only_streams_holding_unsealed_pages",
+        "file": "src/shard/seal/lifecycle_tests.rs",
+        "line": 193
+      },
+      {
+        "name": "a_handle_load_racing_a_seal_reads_one_state",
+        "file": "src/shard/seal/lifecycle_tests.rs",
+        "line": 215
+      },
+      {
+        "name": "the_sealer_holds_only_the_handle_the_engine_serves",
+        "file": "src/shard/seal/lifecycle_tests.rs",
+        "line": 331
       }
     ],
     "mapped": true,
@@ -1697,6 +1717,16 @@
         "name": "tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch",
         "file": "src/dst/tests/history_absorption.rs",
         "line": 286
+      },
+      {
+        "name": "a_stream_applied_during_a_seal_keeps_the_age_clock_running",
+        "file": "src/shard/seal/dispatch_tests.rs",
+        "line": 91
+      },
+      {
+        "name": "negative_control_durable_only_leftovers_drop_the_age_clock",
+        "file": "src/shard/seal/dispatch_tests.rs",
+        "line": 99
       }
     ],
     "mapped": true,
