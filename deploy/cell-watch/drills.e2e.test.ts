@@ -12,9 +12,9 @@
 //   CELL_WATCH_E2E_BIN_DIR=target/debug CELL_WATCH_DRILLS=1 bun test ./deploy/cell-watch/drills.e2e.test.ts
 //
 // The cell's drills, in order: a reserved project in the bundle (row 7),
-// the bundle deleted (row 6), `POST /v1/debug/history-stall` (row 13),
-// `absorb-pause` until the absorb-lag latch engages (row 12; the cell runs
-// with MAX_ABSORB_LAG_SECS=150 so it does within minutes, not 15), the
+// the bundle deleted (row 6), `seal-pause` until the lag latch engages
+// (row 12; the cell runs with MAX_ABSORB_LAG_SECS=150 so it does within
+// minutes, not 15), the
 // cell stopped (rows 3 and 1) and the watch killed (row 2). The issuer's,
 // on a cell with the issuer and the canary: the issuer stopped (row 21)
 // and the issuer's key published under another kid for the internal
@@ -131,20 +131,13 @@ maybe("the cell's drills each page the on-call: rows 7, 6, 13, 12, 3 with the up
   writeFeed(feeds, "grants", bundle.grants);
   await shows(p, mark, 150, [["open", page("r06_feed_delivery"), true], ["resolve", page("r06_feed_delivery"), true]]);
 
-  // Row 13: a gather's flush held 35 s.
+  // Row 12: sealing paused until the lag latch engages (the unsealed
+  // ledger stops making progress).
   mark = p.changes.length;
-  expect((await debug("history-stall?ms=35000")).status).toBe(200);
-  await shows(p, mark, 240, [["open", page("r13_history_flush_wait"), true]]);
-  expect(summaryOf(p, mark, page("r13_history_flush_wait"))).toMatch(/ history_flush_wait_ms_max=3[5-9]\d{3} /);
-  expect((await debug("history-stall?ms=0")).status).toBe(200);
-  await shows(p, mark, 240, [["open", page("r13_history_flush_wait"), true], ["resolve", page("r13_history_flush_wait"), true]]);
-
-  // Row 12: absorption paused until the absorb-lag latch engages.
-  mark = p.changes.length;
-  expect((await debug("absorb-pause?on=1")).status).toBe(200);
+  expect((await debug("seal-pause?on=1")).status).toBe(200);
   await shows(p, mark, 300, [["open", page("r12_backlog_latch"), true]]);
   expect(summaryOf(p, mark, page("r12_backlog_latch"))).toMatch(/^\[PAGE\] cell_sc1\/r12_backlog_latch engaged=1 /);
-  expect((await debug("absorb-pause?on=0")).status).toBe(200);
+  expect((await debug("seal-pause?on=0")).status).toBe(200);
   await shows(p, mark, 150, [["open", page("r12_backlog_latch"), true], ["resolve", page("r12_backlog_latch"), true]]);
 
   // Rows 3 and 1: the cell stopped. The watch's inside check pages after

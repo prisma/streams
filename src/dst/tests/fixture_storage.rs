@@ -90,81 +90,65 @@ pub(super) async fn open_engine_with_settings(
         .build()
         .await
         .expect("open db");
-    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
     // R25-A: tests use the REAL load path — a fresh DB rebuilds to
     // zero; a reopened DB restores its durable backlog, exactly as
     // the production opener does.
     let __maint = crate::shard::load_or_rebuild_maintenance(&db)
         .await
         .expect("load maintenance");
-    crate::shard::ShardEngine::start(
-        prefix.to_string(),
-        Arc::new(db),
-        store,
-        cfg,
-        absorb_tx,
-        None,
-        __maint,
-    )
+    crate::shard::ShardEngine::start(prefix.to_string(), Arc::new(db), store, cfg, None, __maint)
 }
 
 // ---- the tiered read path -------------------------------------------
 
-/// Open the engine WITH a real absorber, so records migrate into the
-/// history tier and reads exercise the production merge.
-///
-/// Runs multi-threaded on purpose: the absorber reaches
-/// `crate::bootstrap::on_slatedb_rt` (a process-global multi-threaded runtime) and
-/// `spawn_blocking`, so it cannot be driven from a paused current-thread
-/// test. That is precisely the coupling docs/DST.md's roadmap has to break
-/// before whole-scenario replay is possible.
-pub(super) async fn open_engine_with_absorber(
+/// Open the engine with its sealer on the fixtures' cadence (`SealCadence`),
+/// so records move into segment objects within tens of milliseconds and
+/// reads exercise the production composition of sealed and unsealed data.
+pub(super) async fn open_engine_with_sealer(
     store: Arc<dyn ObjectStore>,
     prefix: &str,
-) -> (Arc<crate::shard::ShardEngine>, tokio::task::JoinHandle<()>) {
-    open_engine_with_absorber_cfg(store, prefix, crate::shard::ShardConfig::default()).await
+) -> (Arc<crate::shard::ShardEngine>, SealCadence) {
+    open_engine_with_sealer_cfg(store, prefix, crate::shard::ShardConfig::default()).await
 }
 
-/// The absorber rig over an explicit engine configuration (history cache,
-/// compactor cadence) for scenarios about the history partition itself.
-pub(super) async fn open_engine_with_absorber_cfg(
+/// The sealer rig over an explicit engine configuration.
+pub(super) async fn open_engine_with_sealer_cfg(
     store: Arc<dyn ObjectStore>,
     prefix: &str,
     cfg: crate::shard::ShardConfig,
-) -> (Arc<crate::shard::ShardEngine>, tokio::task::JoinHandle<()>) {
-    let db = crate::keyspace::db_builder(prefix, store.clone())
-        .with_settings(slatedb::config::Settings {
+) -> (Arc<crate::shard::ShardEngine>, SealCadence) {
+    let engine = open_engine_with_settings(
+        store,
+        prefix,
+        cfg,
+        slatedb::config::Settings {
             flush_interval: Some(std::time::Duration::from_millis(5)),
             manifest_poll_interval: std::time::Duration::from_millis(50),
             ..Default::default()
-        })
-        .build()
-        .await
-        .expect("open db");
-    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
-    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
-    // zero; a reopened DB restores its durable backlog, exactly as
-    // the production opener does.
-    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-        .await
-        .expect("load maintenance");
-    let engine = crate::shard::ShardEngine::start(
-        prefix.to_string(),
-        Arc::new(db),
-        store.clone(),
-        cfg,
-        absorb_tx,
-        None,
-        __maint,
-    );
-    let cfg = crate::history::AbsorberConfig {
-        threshold_bytes: 1,
-        threshold_age: std::time::Duration::from_millis(1),
-        tick: std::time::Duration::from_millis(20),
-        ..Default::default()
-    };
-    let handle = crate::history::Absorber::start(engine.clone(), cfg, absorb_rx);
-    (engine, handle)
+        },
+    )
+    .await;
+    let cadence = SealCadence::start(&engine);
+    (engine, cadence)
+}
+
+/// The fixtures' sealer cadence: a seal whenever any page is unsealed,
+/// evaluated every 20 ms, backing off 20 ms to 1 s.
+pub(super) struct SealCadence;
+
+impl SealCadence {
+    pub(super) fn start(engine: &Arc<crate::shard::ShardEngine>) -> Self {
+        let tick = std::time::Duration::from_millis(20);
+        engine.configure_seal(|s| {
+            s.unsealed_bytes = 1;
+            s.age_seal = tick;
+            s.tick = tick;
+            s.backoff_min = tick;
+            s.backoff_max = std::time::Duration::from_secs(1);
+            s.auto = true;
+        });
+        Self
+    }
 }
 
 /// Drain the merged reader WITH a key filter (drain_observed hardcodes
@@ -218,26 +202,7 @@ pub(super) async fn drain_filtered(
 }
 
 /// Direct append of a payload of chosen size (the workload helper only
-/// sends tiny JSON bodies; the gather-budget tests need real volume).
-/// Stages one stream's absorbed-boundary advance the way one gather
-/// confirms it, so a fixture can put a stream into a maintenance state
-/// without running the absorber. The copy starts at the stream's applied
-/// boundary as of this call, not as of staging: a caller must let any
-/// earlier advance apply first, or the committer drops this one whole.
-pub(super) async fn absorb_through(
-    engine: &crate::shard::ShardEngine,
-    hash: [u8; 16],
-    upto: u64,
-    retired_bytes: u64,
-) {
-    let handle = engine.stream_handle(hash).await.unwrap();
-    let from = handle.state.lock().unwrap().applied.absorbed;
-    let copied = crate::shard::CopiedBytes::new(from, retired_bytes);
-    engine
-        .submit_absorbed_batch_v2(vec![(hash, upto, copied)])
-        .await;
-}
-
+/// sends tiny JSON bodies; the size tests need real volume).
 pub(super) async fn append_sized(
     engine: &Arc<crate::shard::ShardEngine>,
     hash: [u8; 16],
@@ -285,10 +250,8 @@ pub(super) async fn eventually(what: &str, ready: impl Fn() -> bool) {
     panic!("{what} did not happen within 10 s");
 }
 
-pub(super) async fn wait_all_absorbed(
-    engine: &Arc<crate::shard::ShardEngine>,
-    hashes: &[[u8; 16]],
-) {
+/// Wait until every stream's durable records are all sealed.
+pub(super) async fn wait_all_sealed(engine: &Arc<crate::shard::ShardEngine>, hashes: &[[u8; 16]]) {
     for h in hashes {
         let mut ok = false;
         for _ in 0..400 {
@@ -303,7 +266,7 @@ pub(super) async fn wait_all_absorbed(
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        assert!(ok, "stream {:02x?} never fully absorbed", &h[..2]);
+        assert!(ok, "stream {:02x?} never fully sealed", &h[..2]);
     }
 }
 

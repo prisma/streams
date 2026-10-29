@@ -11,22 +11,19 @@ type QueueReply = oneshot::Receiver<Result<QueueOut, String>>;
 
 struct Fixture {
     engine: Arc<ShardEngine>,
-    cfg: ShardConfig,
     usage: Arc<crate::usage::Counters>,
     journal: Arc<crate::touch::TouchJournal>,
-    signals: mpsc::Receiver<AbsorbSignal>,
 }
 impl Fixture {
     async fn new() -> Self {
         let store: Arc<dyn object_store::ObjectStore> =
             Arc::new(object_store::memory::InMemory::new());
         let db = Arc::new(
-            Db::builder("r03a-mixed", store.clone())
+            crate::keyspace::db_builder("r03a-mixed", store.clone())
                 .build()
                 .await
                 .unwrap(),
         );
-        let (tx, signals) = mpsc::channel(16);
         let cfg = ShardConfig {
             tail_ring_bytes: 1 << 20,
             ..Default::default()
@@ -35,18 +32,15 @@ impl Fixture {
             "r03a-mixed".into(),
             db,
             store,
-            cfg.clone(),
-            tx,
+            cfg,
             None,
             Default::default(),
         );
         let journal = crate::touch::TouchJournal::start(&crate::runtime::OsEntropy);
         Self {
             engine,
-            cfg,
             usage: Arc::new(Default::default()),
             journal,
-            signals,
         }
     }
     fn append(&self, hash: [u8; 16], sequence: u64, finish: AppendFinish) -> (CommitOp, Reply) {
@@ -142,7 +136,7 @@ impl Fixture {
     /// Commits `ops` as one group. Staging, refusing and writing never wait
     /// on dispatch, so a held dispatch gate cannot hold the group itself.
     async fn commit(&self, ops: Vec<CommitOp>) {
-        let group = self.engine.commit_group(ops, &self.cfg);
+        let group = self.engine.commit_group(ops);
         tokio::time::timeout(Duration::from_secs(10), group)
             .await
             .expect("the group waited on the held dispatch");
@@ -155,7 +149,7 @@ impl Fixture {
         }
         out
     }
-    async fn assert_quiet(&mut self) {
+    async fn assert_quiet(&self) {
         assert_eq!(self.usage.plaintext_bytes.load(Ordering::SeqCst), 0);
         assert_eq!(self.usage.frame_bytes.load(Ordering::SeqCst), 0);
         assert!(matches!(
@@ -168,7 +162,6 @@ impl Fixture {
                 .await,
             crate::touch::WaitOutcome::Timeout { end_offset: 0, .. }
         ));
-        assert!(self.signals.try_recv().is_err());
         for hash in [HASH, FINAL] {
             let handle = self.engine.stream_handle(hash).await.unwrap();
             assert_eq!(handle.state.lock().unwrap().durable.next, 0);
@@ -185,7 +178,9 @@ impl Fixture {
         let actual = self.rows().await;
         let mut total = 0;
         for hash in [HASH, FINAL] {
-            let key = crate::crypto_page::shard_page_key(&hash, 0);
+            // The group's page of the stream, as the one operand on its
+            // pending row.
+            let key = crate::spill::pending::pending_key(&hash);
             let frame = actual[&key].clone();
             let page =
                 crate::crypto_page::CheckedPage::admit(Bytes::from(frame.clone()), 0).unwrap();
@@ -211,18 +206,14 @@ impl Fixture {
                 seq: Some("alpha".into()),
                 route: [9; 16],
                 unabsorbed_bytes: bytes,
+                // The seeded billed segment's counters ride its tail (f3).
+                usage: (hash == HASH).then_some(crate::billing::stored_meta::UsageCounters {
+                    usage_version: 8,
+                    ..Default::default()
+                }),
                 ..Default::default()
             };
             expected.insert(tail_key(&hash), encode_tail(&tail));
-            expected.insert(
-                dirty_key(&hash),
-                dirty_value(&StreamMaintenance {
-                    next: 1,
-                    unabsorbed_bytes: bytes,
-                    ..Default::default()
-                })
-                .to_vec(),
-            );
             expected.insert(seq_key(&hash, &KEY), b"alpha".to_vec());
             let mut producer = Vec::new();
             for value in [1u64, 0, 0] {
@@ -246,10 +237,6 @@ impl Fixture {
         assert_eq!(maintenance.unabsorbed_frame_bytes, total);
         assert!((start..=now_ms()).contains(&maintenance.backlog_started_ms));
         assert!((start..=now_ms()).contains(&maintenance.last_progress_ms));
-        expected.insert(
-            shard_maint_key().to_vec(),
-            encode_shard_maint(&maintenance).to_vec(),
-        );
         assert_eq!(
             actual, expected,
             "complete key/value set, including unchanged accounting and absence of extra writes"
@@ -268,22 +255,22 @@ impl Fixture {
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r03a_mixed_transaction_preserves_every_row_reply_and_publication() {
-    let mut fixture = Fixture::new().await;
+    let fixture = Fixture::new().await;
     let final_key = crate::billing::usage_month_final_key(&HASH, 2026, 7);
     let mut seed = WriteBatch::new();
-    seed.put(
-        crate::billing::billing_meta_key(&HASH),
-        serde_json::to_vec(&crate::billing::SegmentBillingMetaV1 {
+    seed_billing(
+        &mut seed,
+        &HASH,
+        &crate::billing::SegmentBillingMetaV1 {
             v: 1,
             stream_id: "owed".into(),
             usage_version: 8,
             ..Default::default()
-        })
-        .unwrap(),
+        },
+        &TailFields::default(),
     );
-    seed.put(crate::billing::usage_dirty_key(&HASH), 8u64.to_le_bytes());
     seed.put(&final_key, b"owed snapshot");
-    seed.put(b"unrelated", b"untouched");
+    seed.put(seq_key(&[0xee; 16], &KEY), b"untouched");
     fixture.engine.db.write(seed).await.unwrap();
     let before = fixture.rows().await;
     for failure in [Some("required-read"), Some("write"), None] {
@@ -366,11 +353,10 @@ async fn r03a_mixed_transaction_preserves_every_row_reply_and_publication() {
                     effects.queue_acks.len(),
                     effects.tails.len(),
                     effects.ring_pub.len(),
-                    effects.signals.len(),
                     effects.touches.len(),
                     effects.usage.len()
                 ),
-                (6, 2, 2, 2, 2, 2, 2)
+                (6, 2, 2, 2, 2, 2)
             );
         }
         drop(dispatch);
@@ -414,14 +400,6 @@ async fn r03a_mixed_transaction_preserves_every_row_reply_and_publication() {
                 .await,
             crate::touch::WaitOutcome::Touched { end_offset: 1, .. }
         ));
-        let mut signals = BTreeMap::new();
-        for _ in 0..2 {
-            let signal = fixture.signals.try_recv().unwrap();
-            signals.insert(signal.hash, signal.appended_bytes);
-        }
-        assert_eq!(signals.len(), 2);
-        assert_eq!(signals.values().sum::<u64>(), total);
-        assert!(fixture.signals.try_recv().is_err());
         for hash in [HASH, FINAL] {
             let handle = fixture.engine.stream_handle(hash).await.unwrap();
             let state = handle.state.lock().unwrap();
@@ -455,10 +433,7 @@ async fn append_over_planted_row(
     fixture.engine.db.write(seed).await.unwrap();
     let before = fixture.rows().await;
     let (append, reply) = fixture.append(HASH, 0, AppendFinish::Open);
-    fixture
-        .engine
-        .commit_group(vec![append], &fixture.cfg)
-        .await;
+    fixture.engine.commit_group(vec![append]).await;
     let result = tokio::time::timeout(Duration::from_secs(5), reply)
         .await
         .unwrap()
@@ -511,10 +486,7 @@ async fn r53_a_stream_seq_past_the_tail_rows_u16_leaves_the_stream_openable() {
     if let CommitOp::Append(req) = &mut append {
         req.seq = Some(long.clone());
     }
-    fixture
-        .engine
-        .commit_group(vec![append], &fixture.cfg)
-        .await;
+    fixture.engine.commit_group(vec![append]).await;
     let acked = tokio::time::timeout(Duration::from_secs(5), reply)
         .await
         .unwrap()
@@ -522,10 +494,15 @@ async fn r53_a_stream_seq_past_the_tail_rows_u16_leaves_the_stream_openable() {
     assert!(acked.is_ok(), "the append itself commits, got {acked:?}");
     let stored = fixture
         .engine
-        .tail_fields(&HASH)
+        .db
+        .get(tail_key(&HASH))
         .await
-        .map(|tail| tail.map(|tail| tail.next))
-        .map_err(|e| e.to_string());
+        .map_err(|e| e.to_string())
+        .and_then(|row| {
+            row.map(|raw| stored_tail(&raw).map(|tail| tail.next))
+                .transpose()
+                .map_err(|e| e.to_string())
+        });
     assert_eq!(
         stored,
         Ok(Some(1)),

@@ -1,8 +1,8 @@
 #![cfg(test)]
 //! R17-B: stop a real transaction after staging/write, with its WAL held.
 use super::*;
-use crate::crypto_page::shard_page_key;
 use crate::queue::QueueOp;
+use crate::spill::pending::{parse_pages, pending_key};
 use slatedb::config::{DurabilityLevel, ReadOptions};
 use std::time::Duration;
 use tokio::sync::Semaphore;
@@ -65,7 +65,6 @@ struct Fixture {
     store: Arc<crate::dst::FaultStore>,
     usage: Arc<crate::usage::Counters>,
     journal: Arc<crate::touch::TouchJournal>,
-    signals: mpsc::Receiver<AbsorbSignal>,
 }
 impl Fixture {
     async fn new(name: &str) -> Self {
@@ -81,7 +80,7 @@ impl Fixture {
             crate::dst::FaultProfile::clean(),
         );
         let db = Arc::new(
-            Db::builder(name, store.clone())
+            crate::keyspace::db_builder(name, store.clone())
                 .with_settings(slatedb::config::Settings {
                     flush_interval: Some(Duration::from_millis(5)),
                     ..Default::default()
@@ -91,7 +90,6 @@ impl Fixture {
                 .await
                 .unwrap(),
         );
-        let (tx, signals) = mpsc::channel(16);
         let engine = ShardEngine::start(
             name.into(),
             db,
@@ -101,14 +99,12 @@ impl Fixture {
                 wal_group_commit: false,
                 ..Default::default()
             },
-            tx,
             None,
             Default::default(),
         );
         Self {
             engine,
             store,
-            signals,
             usage: Arc::new(Default::default()),
             journal: crate::touch::TouchJournal::start(&crate::runtime::OsEntropy),
         }
@@ -390,7 +386,7 @@ async fn r17b_durable_dispatch_claim_before_retirement_keeps_its_completion() {
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r17b_late_successful_write_settles_without_publishing_retired_effects() {
-    let mut fixture = Fixture::new("r17b-late-write").await;
+    let fixture = Fixture::new("r17b-late-write").await;
     let engine = fixture.engine.clone();
     let handle = engine.stream_handle(HASH).await.unwrap();
     let secondary = engine.stream_handle(SECOND).await.unwrap();
@@ -499,7 +495,6 @@ async fn r17b_late_successful_write_settles_without_publishing_retired_effects()
     assert_eq!(fixture.usage.plaintext_bytes.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.usage.frame_bytes.load(Ordering::SeqCst), 0);
     assert_eq!(engine.maintenance_snapshot().unabsorbed_frame_bytes, 0);
-    assert!(fixture.signals.try_recv().is_err());
     assert!(matches!(
         fixture
             .journal
@@ -513,7 +508,7 @@ async fn r17b_late_successful_write_settles_without_publishing_retired_effects()
     ));
     // An unknown result is not an absence claim: a replacement recovers the
     // complete successful storage transaction, but never the old live mirrors.
-    let replacement = Db::builder(engine.prefix.as_str(), fixture.store.clone())
+    let replacement = crate::keyspace::db_builder(engine.prefix.as_str(), fixture.store.clone())
         .build()
         .await
         .unwrap();
@@ -535,14 +530,7 @@ async fn r17b_late_successful_write_settles_without_publishing_retired_effects()
             .unwrap()
             .closed
     );
-    let billing: crate::billing::SegmentBillingMetaV1 = serde_json::from_slice(
-        &replacement
-            .get(crate::billing::billing_meta_key(&HASH))
-            .await
-            .unwrap()
-            .unwrap(),
-    )
-    .unwrap();
+    let billing = stored_billing(&replacement, &HASH).await.unwrap();
     assert_eq!(
         (
             billing.usage_version,
@@ -551,21 +539,10 @@ async fn r17b_late_successful_write_settles_without_publishing_retired_effects()
         ),
         (1, 1, 7)
     );
-    let frame = replacement
-        .get(shard_page_key(&HASH, 0))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(billing.owned_frame_bytes_current, frame.len() as u64);
-    assert_eq!(
-        replacement
-            .get(crate::billing::usage_dirty_key(&HASH))
-            .await
-            .unwrap()
-            .unwrap()
-            .as_ref(),
-        1u64.to_le_bytes()
-    );
+    let pending = replacement.get(pending_key(&HASH)).await.unwrap().unwrap();
+    let pages = parse_pages(&pending).unwrap();
+    assert_eq!(pages.iter().map(|(last, _)| *last).collect::<Vec<_>>(), [0]);
+    assert_eq!(billing.owned_frame_bytes_current, pending.len() as u64);
     replacement.close().await.unwrap();
 }
 

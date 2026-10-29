@@ -98,7 +98,6 @@ async fn naive_get_or_open(
             .await;
         match db {
             Ok(db) => {
-                let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
                 // R25-A: tests use the REAL load path — a fresh DB rebuilds to
                 // zero; a reopened DB restores its durable backlog, exactly as
                 // the production opener does.
@@ -110,7 +109,6 @@ async fn naive_get_or_open(
                     Arc::new(db),
                     st2,
                     crate::shard::ShardConfig::default(),
-                    absorb_tx,
                     None,
                     __maint,
                 );
@@ -346,7 +344,6 @@ async fn idle_engine_store_traffic_is_bounded_by_the_poll_cadence() {
         .build()
         .await
         .expect("open idle db");
-    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
     // R25-A: tests use the REAL load path — a fresh DB rebuilds to
     // zero; a reopened DB restores its durable backlog, exactly as
     // the production opener does.
@@ -361,7 +358,6 @@ async fn idle_engine_store_traffic_is_bounded_by_the_poll_cadence() {
             wal_group_commit: true,
             ..Default::default()
         },
-        absorb_tx,
         None,
         __maint,
     );

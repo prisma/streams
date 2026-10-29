@@ -1,5 +1,5 @@
 //! Entered fleet I/O cancellation and complete ownership-view publication.
-use super::fixture_http::{HttpRig, HttpRigOptions, engine_shutdown, http_rig_build};
+use super::fixture_http::{HttpRig, HttpRigOptions, cold_sealer, engine_shutdown, http_rig_build};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
 use crate::shard::now_ms;
@@ -532,22 +532,35 @@ async fn a_lagging_owner_moves_its_shard_only_to_an_active_member() {
         HttpRigOptions {
             fleet_store: Some(inner.clone()),
             instance: Some("streams-1".into()),
+            // No seal retires the faked byte below and refreshes progress.
+            seal: Some(cold_sealer),
             ..Default::default()
         },
     )
     .await;
-    assert!(matches!(
-        rig.state
-            .shards
-            .open_or_wait("00", Duration::from_secs(5))
-            .await,
-        crate::sharddir::OpenOutcome::Ready(_)
-    ));
-    // Lag no absorber clears (no stream owns this segment), well over the
-    // default 60 s threshold, attributed to shard 00.
-    let usage = &rig.state.runtime.usage;
-    usage.set_absorb_lag(crate::crypto::SegmentHash([0x34; 16]), 120);
-    usage.set_shard_lag("00", 120);
+    let crate::sharddir::OpenOutcome::Ready(engine) = rig
+        .state
+        .shards
+        .open_or_wait("00", Duration::from_secs(5))
+        .await
+    else {
+        panic!("shard 00 opens");
+    };
+    // A maintenance stall on shard 00, well over the default 60 s threshold:
+    // one byte outstanding (below every seal trigger and bound) with no
+    // progress for 120 s. Appends add to it without refreshing progress.
+    let stalled_since = now_ms() - 120_000;
+    engine.publish_maintenance(crate::shard::ShardMaintenance {
+        version: 2,
+        unabsorbed_frame_bytes: 1,
+        backlog_started_ms: stalled_since,
+        last_progress_ms: stalled_since,
+    });
+    assert_eq!(
+        rig.state.shards.shard_stalls(),
+        vec![("00".to_string(), 120)]
+    );
+    drop(engine);
     assert!(crate::fleet::start_configured(
         rig.state.clone(),
         &rig.tasks
@@ -565,6 +578,15 @@ async fn a_lagging_owner_moves_its_shard_only_to_an_active_member() {
         Some("streams-2"),
         "a move target must be a member of the active ring"
     );
+    // HIS-011/FLT-008: the shard leaves the laggard, and with it its stall
+    // report: stalls derive from the engines it still serves.
+    settled(Duration::from_secs(20), || !rig.state.shards.is_open("00")).await;
+    assert!(
+        !rig.state.shards.is_open("00"),
+        "the moved shard closes on the laggard"
+    );
+    assert_eq!(rig.state.shards.shard_stalls(), Vec::new());
+    assert_eq!(rig.state.shards.stall_max_secs(), 0);
     let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
     assert!(report.aborted.is_empty(), "{report:?}");
     engine_shutdown(&rig.state).await;

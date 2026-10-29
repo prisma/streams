@@ -29,7 +29,12 @@ pub(super) struct HttpRigOptions {
     /// restoration (R26-5): the test holds the lock, fires a request,
     /// proves nothing is answered from unrestored state, then releases.
     pub(super) open_park: Option<Arc<tokio::sync::Mutex<()>>>,
-    pub(super) absorber: Option<crate::history::AbsorberConfig>,
+    /// The sealer's settings on every engine the rig opens; None is the
+    /// fast cadence (`fast_sealer`), so reads cross the sealed tier.
+    pub(super) seal: Option<fn(&mut crate::shard::seal::SealSettings)>,
+    /// The usage service the rig's runtime and engines share; None is one
+    /// on the transport's system clock. Tests that drive time supply it.
+    pub(super) usage: Option<Arc<crate::usage::UsageService>>,
     /// An explicit auth service (MT Stage 5 shadow tests).
     pub(super) auth_service: Option<Arc<crate::auth::AuthService>>,
     /// (static fleet token, workload token source); None = the default
@@ -52,7 +57,8 @@ impl Default for HttpRigOptions {
             auth: None,
             instance: None,
             open_park: None,
-            absorber: None,
+            seal: None,
+            usage: None,
             auth_service: None,
             fleet_auth: None,
             cli: |_| {},
@@ -60,18 +66,22 @@ impl Default for HttpRigOptions {
     }
 }
 
-/// Absorbers that are NEVER DUE (huge byte + age thresholds): durable
-/// maintenance backlog stays put, which is what the R27-2 sweep-policy
-/// tests need — the subject is the sweep's retention decision, not
-/// absorber timing.
-pub(super) fn cold_absorber() -> crate::history::AbsorberConfig {
-    crate::history::AbsorberConfig {
-        threshold_bytes: u64::MAX,
-        threshold_age: std::time::Duration::from_secs(1_000_000),
-        tick: std::time::Duration::from_millis(50),
-        sweep_every: u32::MAX,
-        ..Default::default()
-    }
+/// The rigs' sealer cadence: a seal whenever any page is unsealed,
+/// evaluated every 20 ms, so reads soon cross the sealed tier.
+pub(super) fn fast_sealer(s: &mut crate::shard::seal::SealSettings) {
+    let tick = std::time::Duration::from_millis(20);
+    s.unsealed_bytes = 1;
+    s.age_seal = tick;
+    s.tick = tick;
+    s.backoff_min = tick;
+    s.backoff_max = std::time::Duration::from_secs(1);
+}
+
+/// A sealer that never seals or flushes by itself: unsealed backlog stays
+/// put, which is what the sweep-policy tests need (their subject is the
+/// sweep's retention decision, not seal timing).
+pub(super) fn cold_sealer(s: &mut crate::shard::seal::SealSettings) {
+    s.auto = false;
 }
 
 /// A running rig: the composition root, its loopback address, and the
@@ -193,30 +203,22 @@ pub(super) async fn http_rig_named_at(
     .parts()
 }
 
-/// A rig whose absorbers are never due (see [`cold_absorber`]).
-pub(super) async fn http_rig_cold_absorb(
+/// A rig whose sealers never seal (see [`cold_sealer`]).
+pub(super) async fn http_rig_cold_seal(
     store: Arc<dyn ObjectStore>,
     prefixes: Vec<String>,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
-    let rig = http_rig_build(
+    http_rig_build(
         store,
         RigRuntime::first(),
         HttpRigOptions {
             prefixes,
-            absorber: Some(cold_absorber()),
+            seal: Some(cold_sealer),
             ..Default::default()
         },
     )
-    .await;
-    // Recovery deliberately backdates discovered tails, so a large age
-    // threshold alone cannot promise "never due" during startup races.
-    // Pause this rig's owned absorber resource before callers create debt.
-    rig.state
-        .runtime
-        .history
-        .paused
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    rig.parts()
+    .await
+    .parts()
 }
 
 /// A rig with an explicit auth service (MT Stage 5 shadow tests).
@@ -237,9 +239,9 @@ pub(super) async fn http_rig_with_auth_service(
 }
 
 /// The rig's shard opener: the REAL production open order — db build →
-/// load_or_rebuild_maintenance → engine start → absorber — with the
-/// R26-5 park point before restoration and the fast test absorber
-/// defaults (a caller's absorber config, e.g. `cold_absorber`, wins).
+/// load_or_rebuild_maintenance → engine start — with the R26-5 park point
+/// before restoration, then the rig's sealer settings (`fast_sealer`
+/// unless the caller gave others, e.g. `cold_sealer`).
 /// PR 6.1.1-B: the principal rig opens engines the way production does
 /// — including the close notifier, so the whole suite exercises the real
 /// directory lifecycle (a fenced or failed engine evicts itself and arms
@@ -253,7 +255,7 @@ pub(super) fn rig_opener(
     store: Arc<dyn ObjectStore>,
     shard_cfg: crate::shard::ShardConfig,
     open_park: Option<Arc<tokio::sync::Mutex<()>>>,
-    absorber_cfg: Option<crate::history::AbsorberConfig>,
+    seal: Option<fn(&mut crate::shard::seal::SealSettings)>,
     notifier: crate::shard_directory::ShardCloseNotifier,
 ) -> crate::sharddir::OpenFn {
     Box::new(
@@ -262,7 +264,6 @@ pub(super) fn rig_opener(
             let store = store.clone();
             let shard_cfg = shard_cfg.clone();
             let open_park = open_park.clone();
-            let absorber_cfg = absorber_cfg.clone();
             let fut: futures_util::future::BoxFuture<
                 'static,
                 anyhow::Result<Arc<crate::shard::ShardEngine>>,
@@ -275,7 +276,6 @@ pub(super) fn rig_opener(
                     })
                     .build()
                     .await?;
-                let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
                 // R26-5 park point: BEFORE restoration, exactly where a
                 // slow durable-state load sits in production.
                 if let Some(park) = &open_park {
@@ -299,23 +299,10 @@ pub(super) fn rig_opener(
                     Arc::new(db),
                     store.clone(),
                     shard_cfg.clone(),
-                    absorb_tx,
                     Some(on_close),
                     __maint,
                 );
-                crate::history::Absorber::start_owned(
-                    engine.clone(),
-                    absorber_cfg
-                        .clone()
-                        .unwrap_or(crate::history::AbsorberConfig {
-                            threshold_bytes: 1,
-                            threshold_age: std::time::Duration::from_millis(1),
-                            tick: std::time::Duration::from_millis(20),
-                            sweep_every: u32::MAX,
-                            ..Default::default()
-                        }),
-                    absorb_rx,
-                );
+                engine.configure_seal(seal.unwrap_or(fast_sealer));
                 Ok(engine)
             });
             fut
@@ -378,7 +365,8 @@ pub(super) async fn http_rig_build(
         auth,
         instance: instance_name,
         open_park,
-        absorber: absorber_cfg,
+        seal,
+        usage,
         auth_service,
         fleet_auth,
         cli,
@@ -401,7 +389,6 @@ pub(super) async fn http_rig_build(
     } = runtime;
     let touch = Arc::new(crate::touch::TouchRegistry::with_entropy(touch_entropy));
     let opener_store = store.clone();
-    let opener_absorber = absorber_cfg.clone();
     // The rig's owned configuration (WP-01 PR 3.1): the no-environment
     // knob posture — every knob default, no env overlay. PR 4.1.1.1:
     // the CLI half comes from the HERMETIC fixture, never from a parse
@@ -424,23 +411,14 @@ pub(super) async fn http_rig_build(
         Arc::new(crate::runtime::SystemClock::default());
     // Wire deadlines and rate refill follow real transport time in HTTP rigs.
     // Tests that drive time explicitly may supply the shared usage capability.
-    rig_runtime.usage = shard_cfg.shared_usage.clone().unwrap_or_else(|| {
+    rig_runtime.usage = usage.unwrap_or_else(|| {
         Arc::new(crate::usage::UsageService::new(
             &rig_config.admission,
             protocol_clock.clone(),
         ))
     });
     let mut opener_shard_cfg = shard_cfg.clone();
-    if let Some(shared) = &opener_shard_cfg.shared_history {
-        rig_runtime.history = shared.clone();
-    }
-    if let Some(shared) = &opener_shard_cfg.shared_postings_cache {
-        rig_runtime.postings = shared.clone();
-    }
-    opener_shard_cfg.shared_usage = Some(rig_runtime.usage.clone());
     opener_shard_cfg.shared_ops = Some(rig_runtime.ops.clone());
-    opener_shard_cfg.shared_history = Some(rig_runtime.history.clone());
-    opener_shard_cfg.shared_postings_cache = Some(rig_runtime.postings.clone());
     let ownership = crate::ownership::OwnershipService::new(instance_name.unwrap_or_default());
     let (fleet_static_token, fleet_token_source) = match fleet_auth {
         Some((t, s)) => (t, s),
@@ -492,15 +470,7 @@ pub(super) async fn http_rig_build(
                 open_deadline: rig_config.shard.open_deadline,
                 open_wait: std::time::Duration::from_millis(rig_config.shard.open_wait_ms),
             },
-            |notifier| {
-                rig_opener(
-                    opener_store,
-                    opener_shard_cfg,
-                    open_park,
-                    opener_absorber,
-                    notifier,
-                )
-            },
+            |notifier| rig_opener(opener_store, opener_shard_cfg, open_park, seal, notifier),
         ),
         admission: crate::admission::AdmissionController::new(crate::admission::AdmissionKnobs {
             max_inflight: 0,
@@ -813,39 +783,4 @@ pub(super) async fn http_rig_owner_whole(
         },
     )
     .await
-}
-
-/// The history partition of an open shard whose L0 is at its 64-slot cap
-/// as the database last saw it and whose memtable holds a write no flush
-/// has made durable: the state a gather's flush and a final flush wait in.
-pub(super) async fn waiting_at_its_cap(state: &crate::http::AppState) -> Option<Arc<slatedb::Db>> {
-    for engine in state.shards.engines() {
-        let Some(history) = engine.history_partition_if_open() else {
-            continue;
-        };
-        if history.manifest().l0().len() >= 64
-            && rows(&history, slatedb::config::DurabilityLevel::Memory).await
-                > rows(&history, slatedb::config::DurabilityLevel::Remote).await
-        {
-            return Some(history);
-        }
-    }
-    None
-}
-
-/// The rows a scan of `db` at `durability_filter` sees.
-pub(super) async fn rows(
-    db: &slatedb::Db,
-    durability_filter: slatedb::config::DurabilityLevel,
-) -> usize {
-    let options = slatedb::config::ScanOptions {
-        durability_filter,
-        ..Default::default()
-    };
-    let mut scan = db.scan_with_options(.., &options).await.unwrap();
-    let mut rows = 0;
-    while scan.next().await.unwrap().is_some() {
-        rows += 1;
-    }
-    rows
 }

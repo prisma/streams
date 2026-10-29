@@ -211,8 +211,8 @@ Definition:
 
 - encrypted canonical record-frame bytes;
 - counted once per record;
-- independent of whether the record currently lives in shard tail or shared history;
-- unchanged by absorption, tail trimming, compaction, WAL deletion, indexing, or cache state;
+- independent of whether the record currently lives in the shard log's unsealed pages or a sealed segment object;
+- unchanged by sealing, compaction, WAL deletion, or cache state;
 - decremented only when the record logically ceases to be retained, such as future record retention or final hard deletion.
 
 Do not use total bucket bytes or temporary physical amplification as the customer billing dimension.
@@ -269,7 +269,7 @@ These may support future packaging, abuse detection, and support investigations 
 | empty long-poll/HEAD | — | 0 | — | read op |
 | watch notification | — | 0 in v1 | — | watch op |
 | fork creation | 0 | — | 0 owned bytes | fork |
-| absorption/trim/compaction | 0 | 0 | unchanged | background ops |
+| sealing/compaction | 0 | 0 | unchanged | background ops |
 | hard delete | 0 | 0 | closes accrual at deletion time | lifecycle |
 | internal owner relay | 0 | 0 | 0 | internal only |
 | `_usage`/`_ops_*` traffic | excluded | excluded | excluded | system only |
@@ -310,13 +310,13 @@ On every committed append, in the same shard `WriteBatch`:
 3. add committed payload and record counts;
 4. add canonical frame bytes to the current storage gauge;
 5. increment `usage_version`;
-6. update the durable usage-outbox row.
+6. carry the counters on the stream's tail row and mark the segment in the usage dirty set (§6.3).
 
 A duplicate does none of these.
 
 ### 6.2 Storage clock behavior
 
-- Absorption, tier movement, tail trimming, and compaction do not change the gauge.
+- Sealing, tier movement, and compaction do not change the gauge.
 - Future logical retention decrements the gauge at the logical expiration time.
 - Hard deletion advances the storage clock, sets the gauge to zero, and emits a terminal lifecycle observation.
 - A storage close of a row that is already closed through its instant (gauge zero, instant not after the storage clock) changes nothing: no version, no outbox row, no dirty marker. A later instant still moves the clock, and an open gauge always closes. `usage_version` orders and deduplicates snapshots; it counts mutations, not submitted closes (edge change #72).
@@ -324,21 +324,39 @@ A duplicate does none of these.
 
 ### 6.3 Durable usage outbox
 
-Each shard database contains coalescing outbox state:
+Since layout 6 (DESIGN-6A f3) a segment's billing meta is stored in two
+halves, so a commit group writes no billing row of its own
+(`src/billing/stored_meta.rs`):
 
 ```text
-usage/outbox/<stream-id>/<segment-id>
-    → latest SegmentUsageSnapshot
-
-usage/dirty/<stream-id>/<segment-id>
-    → latest usage_version not yet acknowledged by `_usage`
+'S' <hash16> 'B'   static row (binary): identity, the month holding the
+                   storage clock, the retention flag; written only when one
+                   of them changes (the first billed append of an
+                   incarnation, a month rollover, a retention change)
+'S' <hash16> 't'   the tail row, whose trailing 'F' extension carries the
+                   cumulative usage counters: version, ingest totals, gauge,
+                   storage clock, month totals and byte-time
+'S' FF×16 'V' <hash16> <YYYY-MM>   a closed month's final snapshot (JSON)
 ```
 
-The outbox update is atomic with the record commit. It adds bytes to the existing shard WAL but no additional object-store request.
+Every counter is absolute, so the newest tail always holds the whole state;
+the counters ride the tail in the same `WriteBatch` as the records they
+count, and add bytes to the existing shard WAL but no object-store request.
+The meta is resident in the stream's handle: a group reads no billing row.
+
+The usage dirty set is in memory, beside the engine (`shard::layout`): a
+billed group marks its segment with its version when it is applied, and an
+acknowledgement through that version clears it. The committer is the only
+writer, so the set is exact while the engine lives. At the first look after
+a shard opens, it is rebuilt by one scan of the tails and marks every billed
+segment: the drain emits each once more, and the rollup ignores a snapshot at
+or below the version it holds, so nothing is billed twice. Until that
+re-emission completes, usage answers may trail by one drain cadence per 256
+billed segments of the shard (the round's per-shard page, edge change #121).
 
 A drainer:
 
-1. scans dirty entries;
+1. pages the dirty set (256 segments per shard per round);
 2. batches observations across local shards;
 3. appends them to `_usage` with an idempotent producer sequence;
 4. after durable acknowledgement, marks the exact emitted version complete;
@@ -346,10 +364,10 @@ A drainer:
 
 Crash cases:
 
-- emit fails: dirty row remains;
+- emit fails: the segment stays in the dirty set;
 - emit succeeds, clear fails: the same version is re-emitted and deduplicated downstream;
-- owner moves: the new owner discovers dirty rows from durable storage;
-- process restarts: no in-memory checkpoint is required.
+- owner moves: the new owner rebuilds the dirty set from the tails it opens and re-emits every billed segment once;
+- process restarts: the same rebuild; no checkpoint is required.
 
 This makes ingest and storage usage exact and replayable.
 
@@ -707,7 +725,7 @@ Retain and normalize:
 - authenticated `/v1/debug/*`;
 - fleet heartbeat state;
 - router stats;
-- shard, history, postings, queue, memory, and store gauges.
+- shard, sealer, queue, memory, and store gauges.
 
 The live plane is for immediate diagnosis, not historical truth.
 
@@ -773,14 +791,12 @@ instance dark/live transitions
 cross-owner relay rate, bytes and latency
 ```
 
-#### History and read path
+#### Sealer and read path
 
 ```text
-absorb backlog bytes/streams/age
-trim backlog
-history reader hits/misses/reopens
-postings cache entries/bytes/hit rate
-canonical scan amplification
+unsealed backlog bytes/streams/age (the maintenance ledger)
+seals, failures, deadline flushes, object bytes
+sealed reads, sealed GETs, key-summary skips and misses
 ring hit rate
 ```
 
@@ -994,7 +1010,7 @@ store/WAL latency breach
 WAL or compaction stall
 memory shed or OOM pressure
 event-loop lag
-absorb or trim lag
+sealer stall (maintenance lag)
 fleet desired/live mismatch
 ownership imbalance or override age
 peer URL map stale
@@ -1081,14 +1097,14 @@ Invoices are generated only after reconciliation passes or a correction is recor
 | event append fails | durable event outbox remains; product transition is not rolled back |
 | telemetry event outbox overflows | product proceeds; durable gap counter/event; operator alert |
 | customer stream deletes/recreates same name | old stream ID closes; new ID starts independent rollup |
-| ownership move | segment billing meta and dirty outbox move with shard state |
+| ownership move | segment billing meta moves with shard state; the new owner re-marks every billed segment and the rollup deduplicates the re-emission |
 | internal fan-out retries | no customer usage increment until public coordinator delivery |
 
 ---
 
 ## 17. Cost posture
 
-The telemetry design must not recreate the per-stream request tax removed by history v2.
+The telemetry design must not add a per-stream object-store request tax.
 
 ### 17.1 Default cadences
 
@@ -1142,9 +1158,9 @@ At public Tigris list prices, a 10-second active usage cadence is roughly $1.30 
 
 1. Extend segment tail metadata with `SegmentBillingMetaV1`.
 2. Update it atomically on committed appends and logical deletion/retention.
-3. Add durable usage-outbox and dirty rows.
+3. Add the usage outbox and the dirty set (in memory since layout 6, rebuilt from the tails at open).
 4. Add owner-open dirty discovery and idempotent drain.
-5. Verify split, merge, owner move, crash, absorption, and trim behavior.
+5. Verify split, merge, owner move, crash, and sealing behavior.
 
 ### Phase 3 — `_usage` and rollup
 
@@ -1186,7 +1202,7 @@ At public Tigris list prices, a 10-second active usage cadence is roughly $1.30 
 - append and appendMany committed bytes exactly match record payloads;
 - duplicates and rejected appends add zero;
 - split/merge does not reset or double ingest/storage totals;
-- absorption and trim do not alter storage gauge;
+- sealing does not alter the storage gauge;
 - hard deletion closes storage accrual at the correct timestamp;
 - fork creation does not double owned storage;
 - restart and owner movement do not lose or duplicate segment snapshots;
@@ -1274,7 +1290,7 @@ Overview:
 - instance live/desired/ownership distribution;
 - store and WAL latency;
 - memory and event-loop health;
-- absorb/trim/history/postings lag;
+- sealer lag (unsealed backlog and stall);
 - usage/event/rollup pipeline lag;
 - open alerts.
 

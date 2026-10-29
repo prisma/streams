@@ -70,8 +70,10 @@ PROFILE = 'deploy/profiles/compute-1g.env'
 COMPUTE_SCRIPTS = ['bench/fleet/deploy-fleet.sh', 'bench/soak/deploy-region.sh', 'bench/soak/mt-tenants.sh',
                    'bench/soak/wc-ladder.sh', 'scripts/bench-fra-ab.sh']
 # Pins (K9, E1, E2): a new field, knob or reader changes one of these and the
-# tool fails until the pin is updated deliberately.
-PIN_OLD_LEAVES, PIN_NEW_LEAVES = 156, 139
+# tool fails until the pin is updated deliberately. 139 -> 127: layout 6A
+# package 4 retired the absorber, history, postings-cache and trim knobs
+# (edge change #208).
+PIN_OLD_LEAVES, PIN_NEW_LEAVES = 156, 127
 PIN_ARGS_LINES = 522
 PIN_RC4_NAMES, PIN_ENV_KNOBS, PIN_HELPERS = 72, 70, 6
 

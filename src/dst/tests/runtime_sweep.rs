@@ -1,9 +1,9 @@
 //! Runtime sweep.
 
 use super::fixture_failpoints::sweep_lock;
-use super::fixture_http::http_rig_cold_absorb;
+use super::fixture_http::http_rig_cold_seal;
 use super::fixture_requests::hreq;
-use super::fixture_storage::{absorb_through, mem};
+use super::fixture_storage::mem;
 use std::sync::Arc;
 
 /// Drain billing debt until the sweep's own probes read clean, so the
@@ -44,7 +44,7 @@ async fn drain_billing_clean(state: &Arc<crate::http::AppState>, prefixes: &[&st
 
 /// R27-2a: a restart leaves durable maintenance backlog on a shard no
 /// customer touches. The sweep must open it, see the backlog, KEEP the
-/// engine resident (its absorber is what drains cold debt), and close
+/// engine resident (its sealer is what drains cold debt), and close
 /// it on a later sweep once the ledger reaches zero. Before this fix
 /// the sweep closed it as "debt-free" after checking only billing rows,
 /// and the backlog sat until customer traffic happened to reopen it.
@@ -52,7 +52,7 @@ async fn drain_billing_clean(state: &Arc<crate::http::AppState>, prefixes: &[&st
 async fn cold_shard_maintenance_debt_survives_the_sweep_and_drains() {
     let _serial = sweep_lock().lock().await;
     let store = mem();
-    let (state, addr) = http_rig_cold_absorb(store, vec!["00".into()]).await;
+    let (state, addr) = http_rig_cold_seal(store, vec!["00".into()]).await;
     let ct = [("content-type", "application/json")];
     // Layout 4: routes are project-qualified, so the name that lands
     // in the pinned "00" shard is found by probing, not hardcoded.
@@ -91,8 +91,7 @@ async fn cold_shard_maintenance_debt_survives_the_sweep_and_drains() {
     state.shards.clear_holdoff("00"); // the fixture reopens at once
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-    // Sweep: reopens the owned shard, sees maintenance debt with clean
-    // billing, and must keep it resident.
+    // Sweep: reopens the owned shard and must keep it resident.
     crate::billing::sweep_owned_outboxes(&state).await;
     let kept = state.shards.open("00");
     let kept = kept.expect("sweep must keep a maintenance-indebted shard resident");
@@ -101,17 +100,21 @@ async fn cold_shard_maintenance_debt_survives_the_sweep_and_drains() {
         ledger,
         "the reopened engine restored the durable ledger"
     );
+    // The open re-marks every billed tail's usage dirty (layout 6): drain
+    // that billing debt, so the next sweep sees maintenance debt with clean
+    // billing, and must still keep the shard resident.
+    drain_billing_clean(&state, &["00"]).await;
+    crate::billing::sweep_owned_outboxes(&state).await;
+    assert!(
+        state.shards.is_open("00"),
+        "maintenance debt alone keeps the sweep-opened shard resident"
+    );
 
-    // The debt drains (deterministically, via an exact retirement — the
-    // absorber path is proven elsewhere; the subject here is the sweep
-    // policy)...
-    // Retire via the durable dirty index — the engine's own record of
-    // which stream carries the backlog (identity-derivation-free).
-    let dirty = kept.scan_dirty_streams().await.unwrap();
-    assert_eq!(dirty.len(), 1, "exactly one indebted stream expected");
-    let hash = dirty[0].0;
-    let tail = kept.tail_fields(&hash).await.unwrap().unwrap();
-    absorb_through(&kept, hash, tail.next, tail.unabsorbed_bytes).await;
+    // The debt drains (deterministically, via one requested seal — the
+    // sealer's own cadence is proven elsewhere; the subject here is the
+    // sweep policy)...
+    let report = kept.seal_requested().await.expect("a requested seal");
+    assert_eq!(report.streams, 1, "exactly one indebted stream expected");
     let mut drained = false;
     for _ in 0..400 {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -120,7 +123,7 @@ async fn cold_shard_maintenance_debt_survives_the_sweep_and_drains() {
             break;
         }
     }
-    assert!(drained, "retirement never drained the kept engine");
+    assert!(drained, "the seal never drained the kept engine");
 
     // ...and the NEXT sweep closes the now debt-free shard.
     crate::billing::sweep_owned_outboxes(&state).await;
@@ -143,7 +146,7 @@ async fn sweep_residency_bound_rotates_over_many_indebted_shards() {
         "10".to_string(),
         "11".to_string(),
     ];
-    let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
+    let (state, addr) = http_rig_cold_seal(store, prefixes.clone()).await;
     let ct = [("content-type", "application/json")];
     // Streams covering every physical shard.
     let mut covered: std::collections::HashSet<String> = Default::default();
@@ -255,7 +258,7 @@ async fn sweep_peak_open_never_exceeds_the_budget() {
         "10".to_string(),
         "11".to_string(),
     ];
-    let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
+    let (state, addr) = http_rig_cold_seal(store, prefixes.clone()).await;
     let ct = [("content-type", "application/json")];
     let mut covered: std::collections::HashSet<String> = Default::default();
     for i in 0..64 {
@@ -337,7 +340,7 @@ async fn customer_race_into_a_sweep_opened_engine_prevents_its_close() {
         "10".to_string(),
         "11".to_string(),
     ];
-    let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
+    let (state, addr) = http_rig_cold_seal(store, prefixes.clone()).await;
     let ct = [("content-type", "application/json")];
     // One stream with durable backlog on one shard.
     let name = "race-m0".to_string();
@@ -432,7 +435,7 @@ async fn custody_declines_on_prior_external_use() {
         "10".to_string(),
         "11".to_string(),
     ];
-    let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
+    let (state, addr) = http_rig_cold_seal(store, prefixes.clone()).await;
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/pre-mark-1", &ct, b"").await;
     assert!(st == 200 || st == 201);
@@ -513,7 +516,7 @@ async fn internal_touch_does_not_leak_an_engine_from_the_rotation() {
         "10".to_string(),
         "11".to_string(),
     ];
-    let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
+    let (state, addr) = http_rig_cold_seal(store, prefixes.clone()).await;
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/itouch-1", &ct, b"").await;
     assert!(st == 200 || st == 201);
@@ -619,7 +622,7 @@ async fn tombstone_walk_peak_residency_stays_under_the_budget() {
         "10".to_string(),
         "11".to_string(),
     ];
-    let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
+    let (state, addr) = http_rig_cold_seal(store, prefixes.clone()).await;
     let ct = [("content-type", "application/json"), ("stream-ttl", "1")];
     // TTL streams with data covering all four shards.
     let mut covered: std::collections::HashSet<String> = Default::default();
@@ -698,7 +701,7 @@ async fn tombstone_walk_peak_residency_stays_under_the_budget() {
 }
 
 /// R30: walk FAIRNESS, not just bounded peak. Two shards carry pinned
-/// maintenance debt (absorber paused) and occupy the residency budget;
+/// maintenance debt (sealer cold) and occupy the residency budget;
 /// TTL-expired streams on the OTHER two shards still get their billing
 /// closures within bounded sweeps — the walk's continuation cursor
 /// resumes at the deferred page instead of restarting at the first
@@ -721,7 +724,7 @@ async fn tombstone_walk_fairness_under_occupied_budget() {
         "10".to_string(),
         "11".to_string(),
     ];
-    let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
+    let (state, addr) = http_rig_cold_seal(store, prefixes.clone()).await;
     let ct = [("content-type", "application/json")];
     let ttl = [("content-type", "application/json"), ("stream-ttl", "1")];
     // Pin maintenance debt on two shards; TTL victims on the others.
@@ -778,12 +781,7 @@ async fn tombstone_walk_fairness_under_occupied_budget() {
     assert_eq!(expired_shards.len(), 2);
     let pref_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
     drain_billing_clean(&state, &pref_refs).await;
-    // Pin the maintenance debt: paused absorbers never retire it.
-    state
-        .runtime
-        .history
-        .paused
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    // The maintenance debt stays pinned: the cold sealer never retires it.
     let engines: Vec<_> = prefixes
         .iter()
         .filter_map(|p| {
@@ -823,11 +821,6 @@ async fn tombstone_walk_fairness_under_occupied_budget() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    state
-        .runtime
-        .history
-        .paused
-        .store(false, std::sync::atomic::Ordering::Relaxed);
     assert!(
         ok,
         "expired shards starved: walk close submits {} -> {}",
@@ -858,7 +851,7 @@ async fn revoked_close_keeps_the_identical_engine_with_no_new_open() {
         "10".to_string(),
         "11".to_string(),
     ];
-    let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
+    let (state, addr) = http_rig_cold_seal(store, prefixes.clone()).await;
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/noslot-1", &ct, b"").await;
     assert!(st == 200 || st == 201);

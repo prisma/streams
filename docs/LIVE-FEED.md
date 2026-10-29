@@ -260,7 +260,7 @@ absent — a noisy project's write volume can push the whole instance
 to the RSS shed line, and admission shed is instance-global (leg 5).
 The admission design needs BOTH static subscription pressure
 (connections, feeds) and dynamic write pressure (queued append
-bytes, write breadth, project-attributable unabsorbed debt); retained
+bytes, write breadth, project-attributable unsealed pages); retained
 SSE bytes stay governed by the existing exact budgets. Acceptance:
 rerun leg 5 — noisy must receive typed project-local shed BEFORE
 global RSS shed, victims at zero shed/cuts/reconnects with complete
@@ -291,8 +291,8 @@ estimated_project_pressure_bytes =
   + retained_sse_bytes           (exact mirror of the retention ledger)
   + buffered_body_bytes          (exact, chunk-accurate; no ceiling reserve)
   + queued_bytes                 (exact append-queue occupancy)
-  + unabsorbed_frame_bytes       (exact durable write debt, see below)
-  + dirty_streams        × 64 KiB
+  + unabsorbed_frame_bytes       (exact unsealed page bytes, see below)
+  + dirty_streams        × 64 KiB (streams holding unsealed pages)
 ```
 
 Weights are per-unit RESIDENT-state estimates calibrated from the
@@ -304,13 +304,15 @@ counts unconditionally, whether or not the corresponding quota is
 configured (round-13.3: quotas are refusal lines, not counting
 gates).
 
-**Exact write-pressure attribution.** Unabsorbed frame bytes ride a
-`StreamPressureBinding` on the stream handle: attribution publishes
-inside the shard state lock on append success and retires on absorb.
-The binding is seeded from the tail's persisted `unabsorbed_bytes`
-at bind time, so durable write debt that survives a restart is
-charged from the first append — it never starts from zero when
-durable debt already exists.
+**Exact write-pressure attribution.** A stream's unsealed page bytes
+(the pages its handle holds in memory until a seal moves them; the names
+`unabsorbed_*` predate layout 6) ride a `StreamPressureBinding` on the
+stream handle: attribution publishes inside the shard state lock on
+append success and retires when a seal's commit moves the stream's sealed
+boundary. The binding is seeded from the tail's persisted
+`unabsorbed_bytes` at bind time, so unsealed pages that survive a restart
+are charged from the first append — it never starts from zero when
+unsealed pages already exist.
 
 **Admission order.** The gate runs after ordinary per-project quotas
 and before the instance-global RSS gate. Pre-auth requests never see

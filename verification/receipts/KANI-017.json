@@ -6,9 +6,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "fc0e41adced7f6efedc0904d260e67f81279b45832f83a2d0d76b8b837a2181f",
+      "log_sha256": "c33838e993eadb08b1d13d882eacf932342cc230760e7929b23e592ab563c3a9",
       "role": "baseline",
-      "seconds": 52.1,
+      "seconds": 158.5,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "d61675d06c119bb38d292cb2e98e8d1ad5c1593ec02444c1906edb453bde637f",
+      "log_sha256": "0285dd243081a1e0317089d9eb772efd68cef8a04c4d53a4bd94be41cadc4610",
       "role": "baseline",
-      "seconds": 91.5,
+      "seconds": 137.5,
       "verdict": "pass"
     },
     {
@@ -28,9 +28,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "cc49864a55f4d61094189a19ad0000ad5efb53809bc18bf4a53217a5bed16dcd",
+      "log_sha256": "ec39f4ad7dbe2244402b2e7ae77dc6c594d3ba7b4ad83730232c518f1d12bf27",
       "role": "baseline",
-      "seconds": 48.7,
+      "seconds": 68.9,
       "verdict": "pass"
     },
     {
@@ -39,66 +39,47 @@
       "covers_satisfied": 1,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "ee5a76ca6c51751b109d17bfaf71bc033bb630a069a0e373b621cbcf18ce5080",
+      "log_sha256": "adcdcee8748aa03bd81da11ca804e073426c88e8a95cc58c405f4a419ce654e6",
       "role": "baseline",
-      "seconds": 46.0,
+      "seconds": 39.2,
       "verdict": "pass"
     },
     {
       "check": "KANI-017/nc-skip-the-offset-comparison",
       "covers": 2,
       "covers_satisfied": 1,
-      "expected": "fail:an admitted page carries its key's offset",
+      "expected": "fail:an admitted page ends at the offset naming it",
       "failed_checks": [
-        "\"an admitted page carries its key's offset\""
+        "\"an admitted page ends at the offset naming it\""
       ],
-      "log_sha256": "f410e199d19ae3170bec6884a87e6a427f31006cacf5b1df7dc9f9242537c79d",
+      "log_sha256": "15d9fac329e1b269c67b35585077db7a63445bb7285a37219e4f5274de41e940",
       "mutated": {
         "src/crypto_page/header.rs": {
-          "baseline": "d7b9d22f2c182a39a15e68b4d3e428424d962b7ad4d4c2bdb656158e2afc4df3",
-          "control": "9a0744b0d0d04c859ae81d23f372eabe6bcfa65aa200a18a476721642984fd87"
+          "baseline": "1aed88e68a1a6cdc29c003bd57009c25c8438e1e68632b10a95570769d392b81",
+          "control": "150f0af464f17ab5dc05b6955da646efcaad6794d6691f092e6c6e35bd028801"
         }
       },
       "role": "negative-control",
-      "seconds": 49.9,
-      "verdict": "fail"
-    },
-    {
-      "check": "KANI-017/nc-check-a-short-prefix",
-      "covers": 2,
-      "covers_satisfied": 2,
-      "expected": "fail:an admitted row's key is its stream's prefix and one offset",
-      "failed_checks": [
-        "\"an admitted row's key is its stream's prefix and one offset\""
-      ],
-      "log_sha256": "d4b724561f93e0447a5a91259057c576eefbd0285f623349ab0e28050563428b",
-      "mutated": {
-        "src/crypto_page/header.rs": {
-          "baseline": "d7b9d22f2c182a39a15e68b4d3e428424d962b7ad4d4c2bdb656158e2afc4df3",
-          "control": "c65499dc8e70051deeb922d449eed10e87824abcf09320c07bd8b5ed84baa0b5"
-        }
-      },
-      "role": "negative-control",
-      "seconds": 49.4,
+      "seconds": 63.2,
       "verdict": "fail"
     },
     {
       "check": "KANI-017/nc-allow-trailing-bytes",
       "covers": 2,
       "covers_satisfied": 2,
-      "expected": "fail:an admitted row is exactly one whole page with its tag",
+      "expected": "fail:an admitted page is exactly one whole page with its tag",
       "failed_checks": [
-        "\"an admitted row is exactly one whole page with its tag\""
+        "\"an admitted page is exactly one whole page with its tag\""
       ],
-      "log_sha256": "8cbf85f518b7ccb8b4b08a4dfa3b5c3d291ab53139678c82eff0a06c27a7e5c4",
+      "log_sha256": "de3ece38915a76468447244986a8eb7c6ceda5ca92eab0e7a3c83654ee2ee9c6",
       "mutated": {
         "src/crypto_page/header.rs": {
-          "baseline": "d7b9d22f2c182a39a15e68b4d3e428424d962b7ad4d4c2bdb656158e2afc4df3",
-          "control": "5090f46374934a814689962b50113a7c1b2ae21f880b051bdb6276139c0cdf65"
+          "baseline": "1aed88e68a1a6cdc29c003bd57009c25c8438e1e68632b10a95570769d392b81",
+          "control": "cff6f515e19fab9254a4381abdc3093ea5831120caf7722bc126722474a7bee3"
         }
       },
       "role": "negative-control",
-      "seconds": 48.5,
+      "seconds": 38.3,
       "verdict": "fail"
     },
     {
@@ -109,53 +90,53 @@
       "failed_checks": [
         "\"an admitted page holds 1 to 4,096 records\""
       ],
-      "log_sha256": "ea12619c81979c384d4ce9670ef5fcba90e2371443c037ad80daa8070a62e045",
+      "log_sha256": "63c89c56c5b96fc2bc9b452e7c3f506aef8fbfe6e8afae49c945e5ef8729be88",
       "mutated": {
         "src/crypto_page/header.rs": {
-          "baseline": "d7b9d22f2c182a39a15e68b4d3e428424d962b7ad4d4c2bdb656158e2afc4df3",
-          "control": "7fa56376fb9be5f6e5168948a12a0c74978dac1519f2914f4b6ee5454bf7fe4a"
+          "baseline": "1aed88e68a1a6cdc29c003bd57009c25c8438e1e68632b10a95570769d392b81",
+          "control": "45b97dcebd873e2a6b27504bc1cabd17671aa0fd6b702e3720614a745882df23"
         }
       },
       "role": "negative-control",
-      "seconds": 47.3,
+      "seconds": 36.7,
       "verdict": "fail"
     },
     {
       "check": "KANI-017/nc-compare-the-key-with-first",
       "covers": 2,
       "covers_satisfied": 1,
-      "expected": "fail:an admitted page carries its key's offset",
+      "expected": "fail:an admitted page ends at the offset naming it",
       "failed_checks": [
-        "\"an admitted page carries its key's offset\""
+        "\"an admitted page ends at the offset naming it\""
       ],
-      "log_sha256": "1e36ac6fd1863f9da5104a789d6331946670332a3a0a681a3211136648bcd233",
+      "log_sha256": "79875a0a47b35fea7e7b45e56f98ef68797510ccc6e7bb671afc7e7d210cdfc3",
       "mutated": {
         "src/crypto_page/header.rs": {
-          "baseline": "d7b9d22f2c182a39a15e68b4d3e428424d962b7ad4d4c2bdb656158e2afc4df3",
-          "control": "65a84d6e62f923703b832bd9b019c64c8e185199eca62d5d93b95324d9cf0876"
+          "baseline": "1aed88e68a1a6cdc29c003bd57009c25c8438e1e68632b10a95570769d392b81",
+          "control": "352f71e0afe347ad6ce19058cfcfd19025bb40b5239e61f82d1fe781cb324846"
         }
       },
       "role": "negative-control",
-      "seconds": 47.0,
+      "seconds": 37.3,
       "verdict": "fail"
     },
     {
       "check": "KANI-017/nc-let-the-last-offset-wrap",
       "covers": 2,
       "covers_satisfied": 2,
-      "expected": "fail:an admitted page carries its key's offset",
+      "expected": "fail:an admitted page ends at the offset naming it",
       "failed_checks": [
-        "\"an admitted page carries its key's offset\""
+        "\"an admitted page ends at the offset naming it\""
       ],
-      "log_sha256": "17babe46736416c05a225a4e38edeabbe4e607f3f5b3a88b88f84685c41f5bc0",
+      "log_sha256": "a3f8bb53bed22c8d4afa41649af96724111be9bbffd193863cbcf5d70c698f72",
       "mutated": {
         "src/crypto_page.rs": {
-          "baseline": "c161b5c90dcd9ad6be7879a17cb6dd6bbe9ccdea9397cbf483224e70435e02c6",
-          "control": "3aaae4f4a54f567358fa08225292ab8e7ea7f3c90858facb7e9de6bd0fb28c99"
+          "baseline": "693cf3887a3c5b5349f06032618dd5b2bc023ee589228bdf870279600e301350",
+          "control": "196ccab7b49295eadad338c1636e552bb6f6932c762ecdecf97f7f57f98f7f03"
         }
       },
       "role": "negative-control",
-      "seconds": 49.7,
+      "seconds": 37.9,
       "verdict": "fail"
     }
   ],
@@ -167,23 +148,23 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "2290fd7e52bc46b54f79d60cc98fad4addccb2ff5ff8870556f9d25e728109cd",
-      "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
+      "Cargo.lock": "88d5da53c80e347966960aa3e47a314016df2f5e0b5f90006e0ae5d0ab2a325e",
+      "Cargo.toml": "40c6f797e5a38a80abe4de69d4c2c5feaa4f6cc506bc3085ec30bde7b0995e9e",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
-      "src/crypto_page.rs": "c161b5c90dcd9ad6be7879a17cb6dd6bbe9ccdea9397cbf483224e70435e02c6",
-      "src/crypto_page/body.rs": "7a61c8c65651a9d1622dde812a5f17c58281d073ca9184c4fa2de00a5a8bbe67",
-      "src/crypto_page/header.rs": "d7b9d22f2c182a39a15e68b4d3e428424d962b7ad4d4c2bdb656158e2afc4df3",
-      "src/crypto_page/header/proofs.rs": "c22fa6746d3bc823871f0c184210bfb999970bedd6cd1a17113fd9a79814473a",
+      "src/crypto_page.rs": "693cf3887a3c5b5349f06032618dd5b2bc023ee589228bdf870279600e301350",
+      "src/crypto_page/body.rs": "0b8038c2ed72315430f8dd7293b78639d29ca2e7224e5d41889ef2005ffb91c1",
+      "src/crypto_page/header.rs": "1aed88e68a1a6cdc29c003bd57009c25c8438e1e68632b10a95570769d392b81",
+      "src/crypto_page/header/proofs.rs": "d79c02ff00ae570e4bf0b404d3eccf95b7de080a0de91ab3431f1d172c752c38",
+      "src/crypto_page/varint.rs": "a6864544d19ee31c6ca5f839a2a3b83e1fb7ca9642be8d16ac7959add288bfce",
       "verification/kani/controls/KANI-017-allow-trailing-bytes.patch": "9993c5f2bf9f39db7ab8b7d3dc391dab1aeb64228c987c95471b021793fdda6b",
-      "verification/kani/controls/KANI-017-check-a-short-prefix.patch": "9679374873542f96242b06136f2d7a9dcf521393482bcdf752c9523a446d4314",
       "verification/kani/controls/KANI-017-compare-the-key-with-first.patch": "17fed9e3295d17c6b55972459a09fb4ed4919f441f473b0615882e8c4f464b09",
       "verification/kani/controls/KANI-017-drop-the-count-bound.patch": "c2550f6b6ff0091ce33911690e8a4410c722e06507e19842ba027e012b268dbf",
-      "verification/kani/controls/KANI-017-let-the-last-offset-wrap.patch": "e06f96307c143905d227d7c4b6bd1458018c1fab553b792d0e662f76e757f59e",
+      "verification/kani/controls/KANI-017-let-the-last-offset-wrap.patch": "7c34fd76d2f5b7ef2dfc8bb66c678de510350bf4312d865db9bbbd557728c3eb",
       "verification/kani/controls/KANI-017-skip-the-offset-comparison.patch": "b79d1ec434d274168a7222359b3548a0d2c109a337419222c9389d1a8609d262"
     },
-    "manifest_entry": "0d26378604f61fbee6645be7385f27c087f0cf10f74797f7091fbd9f1bfe974d",
+    "manifest_entry": "f775c29deb153b178b9652c793fb66611bd36a0f2b6c9f1240addf1f4c71f300",
     "pins": {
       "formal": {
         "cbmc": "6.11.0",
@@ -205,10 +186,10 @@
       }
     }
   },
-  "inputs_sha256": "9d2bbc8b1c6bb048091a2b3f93978d76fe3d341218caa5c4c33f59ca240c667e",
+  "inputs_sha256": "6875bfba034cd6828154cfab203f0f230391fc2f92626b6323d62a0dcaf9826f",
   "run_on": {
     "dirty_tree": false,
-    "revision": "4d2132382e709d90abae004f194cb6e12eb7d9f7"
+    "revision": "f2e98054d2baf70a241b23d66ff1b8a70fd3936c"
   },
   "schema": 2,
   "tools": {

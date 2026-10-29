@@ -26,52 +26,6 @@ fn queue_consumer(op: &crate::queue::QueueOp) -> &str {
     }
 }
 impl CommitTransaction<'_> {
-    #[expect(
-        clippy::excessive_nesting,
-        reason = "CommitTransaction::expand; the expansion nests the trim cursor walk inside the trim-tick arm of the op match; flattening it would separate the walk from the tick that schedules it"
-    )]
-    #[expect(
-        clippy::unwrap_used,
-        reason = "CommitTransaction::expand; a poisoned trim debt or cursor may hold a half-recorded stream set; recovering it could trim a stream twice or never"
-    )]
-    pub(super) fn expand(engine: &ShardEngine, ops: Vec<CommitOp>) -> Vec<CommitOp> {
-        const TRIM_STREAMS_PER_TICK: usize = 64;
-        let mut expanded: Vec<CommitOp> = Vec::with_capacity(ops.len());
-        for op in ops {
-            match op {
-                CommitOp::AbsorbedBatch { streams, v2 } => {
-                    expanded.extend(streams.into_iter().map(|(hash, upto, bytes)| {
-                        CommitOp::Absorbed {
-                            hash,
-                            upto,
-                            bytes,
-                            v2,
-                        }
-                    }));
-                }
-                CommitOp::TrimTick => {
-                    use std::ops::Bound;
-                    let debt = engine.trim_debt.lock().unwrap();
-                    if debt.is_empty() {
-                        continue;
-                    }
-                    let mut cur = engine.trim_cursor.lock().unwrap();
-                    let picked: Vec<[u8; 16]> = debt
-                        .range((Bound::Excluded(*cur), Bound::Unbounded))
-                        .chain(debt.range((Bound::Unbounded, Bound::Included(*cur))))
-                        .take(TRIM_STREAMS_PER_TICK)
-                        .copied()
-                        .collect();
-                    if let Some(last) = picked.last() {
-                        *cur = *last;
-                    }
-                    expanded.extend(picked.into_iter().map(|hash| CommitOp::TrimStep { hash }));
-                }
-                other => expanded.push(other),
-            }
-        }
-        expanded
-    }
     /// The group's billing rows, with every stream the group stages made
     /// resident first. A cold stream's handle (its tail), queue state,
     /// consumer records and billing row are store reads on the shard's one
@@ -111,10 +65,10 @@ impl CommitTransaction<'_> {
             CommitOp::Queue { hash, op, .. } => (*hash, false, Some(queue_consumer(op))),
             CommitOp::Close(r) => (r.hash, false, None),
             CommitOp::SealFence(r) => (r.hash, false, None),
-            CommitOp::Absorbed { hash, .. }
-            | CommitOp::NativeQueue { hash, .. }
-            | CommitOp::TrimStep { hash } => (*hash, false, None),
-            CommitOp::AbsorbedBatch { .. } | CommitOp::TrimTick => return,
+            CommitOp::NativeQueue { hash, .. } => (*hash, false, None),
+            // A seal's streams hold unsealed pages, so their handles are
+            // resident (`LayoutState::hold_unsealed`).
+            CommitOp::Seal(_) => return,
         };
         let cold = streams.entry(hash).or_default();
         cold.billed |= billed;
@@ -142,7 +96,7 @@ impl CommitTransaction<'_> {
             Self::warm_queue(engine, handle, &cold.consumers).await;
         }
         if cold.billed {
-            Some((hash, engine.billing_row(hash).await))
+            Some((hash, engine.billing_for_commit(hash).await))
         } else {
             None
         }

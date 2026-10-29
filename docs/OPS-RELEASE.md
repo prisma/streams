@@ -12,8 +12,8 @@ has a date, that is its provenance, and re-measurement supersedes it.
 | SlateDB pin | upstream main `0717cc1e` (git-rev pinned; fork RETIRED 2026-08-05, #116) | move to a crates.io release when one ships past v0.15.0 |
 | our upstream PRs | #1964 (WAL yield) MERGED; #1991 (GC cadence) superseded by upstream #1993; probe/concurrent-deletes patches dropped (upstream #1968/#1894) | — |
 | open upstream items | PR #2010 (fencing conflict cap, typed error after 8 consecutive CAS losses); issue #1970 answered with 0.15 field data | drop local expectations when #2010 lands |
-| foyer-memory 0.22.3 (through the SlateDB pin) | self-deadlock, found 2026-09-24, upstream issue not yet filed: a cache miss polled while its Tokio runtime is closing spawns the fetch into the closed task list, Tokio drops the fetch on the same thread, and the fetch's destructor takes the in-flight lock `get_or_fetch` still holds. Absorbers and every other reader using the block cache can hit it when a runtime shuts down. Contained by the bounded service-runtime teardown (`bootstrap::serve`, 5 s), so process exit cannot hang; tests whose `#[tokio::test]` runtime drops live readers remain exposed | when a SlateDB pin carries a fixed foyer-memory, the canary `held_scan_teardown_helper` fails; then retire this row and the foyer rationale on `TEARDOWN_BOUND` |
-| carried behavior deltas | none in code; GC listing economics handled by static long sweep intervals (600 s, constants of the binary since 2026-09-29: `EngineConfig::GC_QUIET_INTERVAL` and the history GC interval) | revisit if upstream adaptive cadence ships |
+| foyer-memory 0.22.3 (through the SlateDB pin) | self-deadlock, found 2026-09-24, upstream issue not yet filed: a cache miss polled while its Tokio runtime is closing spawns the fetch into the closed task list, Tokio drops the fetch on the same thread, and the fetch's destructor takes the in-flight lock `get_or_fetch` still holds. Every reader using the block cache can hit it when a runtime shuts down. Contained by the bounded service-runtime teardown (`bootstrap::serve`, 5 s), so process exit cannot hang; tests whose `#[tokio::test]` runtime drops live readers remain exposed | when a SlateDB pin carries a fixed foyer-memory, the canary `held_scan_teardown_helper` fails; then retire this row and the foyer rationale on `TEARDOWN_BOUND` |
+| carried behavior deltas | none in code; GC listing economics handled by static long sweep intervals (600 s, a constant of the binary since 2026-09-29: `EngineConfig::GC_QUIET_INTERVAL`) | revisit if upstream adaptive cadence ships |
 | conformance suite | `@durable-streams/server-conformance-tests` EXACT-pinned `0.3.6`, must equal `src/protocol_pin.rs` | bump only with a protocol-pin change and a full dual-surface rerun |
 
 Rule: every carried patch exists as an upstream PR or a dated reason
@@ -28,8 +28,8 @@ Reviewed surfaces and their enforcement points (audited across rounds
   - the CUSTOMER account bearer authorizes every public `/v1/*` route
     (product, raw, `/v1/segments`, and — since round 19 — every
     `/v1/debug/*` route, which previously answered unauthenticated
-    while this document claimed otherwise; `absorb-pause` and `sleep`
-    MUTATE production state, `load` resets peak gauges, `usage`
+    while this document claimed otherwise; `abort` and `sleep`
+    act on production state, `load` resets peak gauges, `usage`
     exposes per-stream data). Route parsing is exact and happens
     BEFORE auth, auth BEFORE body buffering (#99). Negative-auth
     matrix in the suite covers every product route.
@@ -155,8 +155,8 @@ Each drill names the command and the observable that proves it.
    (`acked_records_survive_store_faults` family locally).
 5. **Restore-from-restart (quarterly):** stop an instance mid-load,
    restart on the same bucket namespace. PASS = durable frontier
-   resumes exactly (no acked loss, no double-ack), dirty-stream
-   rediscovery re-arms absorption (#41/#49).
+   resumes exactly (no acked loss, no double-ack), and the sealer's open
+   loads every stream with unsealed pages and seals them with no request.
 
 Drill results append to this file with dates; a failed drill is a
 release blocker until root-caused.
@@ -201,10 +201,9 @@ but that does not make rollback safe.
 | Fork-debt markers and backfill ("A background reconciler releases fork references that deleted children still owe", "Fork-reference debt from before the index is backfilled…") | Creates debt without a marker. | After the rollout completes, delete `registry/v4/fork-debt-backfill.json` so the backfill walks again (RUNBOOK.md §8). | Older binaries ignore markers; they stay until a newer binary pays them. |
 | Conditional writes without client retries ("Registry conditional writes never mistake their own committed write for a refusal") | Can misreport its own committed conditional write as a refusal. | None beyond the defect staying reachable on older instances. | None. |
 
-Performance acceptance is separate from these rules: the recount read-ahead
-("The absorbed-byte recount reads ahead again…") and the postings-cache
-bridging change carry measured costs (docs/PRISMA-STREAMS-FORMAL-VERIFICATION-ROADMAP.md
-§0) that still need workload acceptance.
+Performance acceptance is separate from these rules: layout 6's sealed
+reads (one ranged GET per chunk, no segment cache yet, edge change #207)
+carry request costs that still need workload acceptance.
 
 ## 7. Release-candidate certification: the fleet and single-cell shapes
 

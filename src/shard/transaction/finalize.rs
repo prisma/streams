@@ -1,7 +1,12 @@
 use super::*;
+use crate::billing::stored_meta::{UsageCounters, encode_static};
+use crate::shard::layout::StaticBilling;
+use crate::spill::pending::{concat_pages, pending_key};
 impl CommitTransaction<'_> {
     pub(super) async fn finish(mut self) {
+        self.sync_usage();
         self.stage_stream_rows();
+        self.stage_pending_rows();
         if let Some(message) = &self.accounting_diverged {
             tracing::error!("maintenance accounting diverged: {message}");
             self.reject("maintenance accounting diverged");
@@ -19,7 +24,7 @@ impl CommitTransaction<'_> {
             return;
         }
         #[cfg(test)]
-        if self.failpoint_tripped() {
+        if self.failpoint_tripped() || self.seal_failpoint_tripped() {
             self.reject("failpoint: group write failed");
             return;
         }
@@ -33,6 +38,49 @@ impl CommitTransaction<'_> {
         };
         self.keep_hot_rows();
         self.write(maintenance).await;
+    }
+    /// Every stream whose billing meta this group read takes its usage
+    /// counters into the tail it stages, and one whose billing it changed
+    /// its static meta too, and marks it in the usage dirty set (layout 6,
+    /// f3): the applied tail carries both for the next group, the durable
+    /// tail for the usage drain.
+    fn sync_usage(&mut self) {
+        for (hash, local) in &mut self.streams {
+            if let Some(usage) = local.billing.meta.as_ref().and_then(UsageCounters::of) {
+                local.fields.usage = Some(usage);
+            }
+            // Marked before the write: a write that fails retires the
+            // engine and its set with it, and a mark is never lost.
+            if local.billing.dirty
+                && let Some(bm) = &local.billing.meta
+            {
+                local.fields.billing = StaticBilling::Read(Some(bm.clone()));
+                self.engine.layout.mark_usage(*hash, bm.usage_version);
+            }
+        }
+    }
+    /// Every stream that took pages in this group takes them as one merge
+    /// operand on its pending row, and is held for the sealer (layout 6
+    /// b1). A stream this group seals instead takes a put of its remainder
+    /// (`transaction::seal`, REVIEW-6A F1). Held before the write, like a
+    /// usage mark: a write that fails retires the engine and its set with
+    /// it, and a held stream with no unsealed page is released by the
+    /// sealer.
+    fn stage_pending_rows(&mut self) {
+        for (hash, local) in &self.streams {
+            if let Some(sealed) = &local.frames.sealed {
+                let bytes = stage_remainder(&mut self.batch, hash, local, sealed);
+                self.engine.note_remainder(&local.handle, bytes);
+                continue;
+            }
+            if local.frames.pending.is_empty() {
+                continue;
+            }
+            let pages = local.frames.pending.iter().map(|(_, _, page)| page);
+            self.batch.merge(pending_key(hash), concat_pages(pages));
+            self.engine.layout.hold_unsealed(&local.handle);
+            self.engine.layout.seal.note_unsealed();
+        }
     }
     fn has_writes(&self) -> bool {
         self.changed
@@ -60,10 +108,6 @@ impl CommitTransaction<'_> {
             Attachment::Retired => self.effects.reject(AppendErr::Moved),
         }
     }
-    #[expect(
-        clippy::excessive_nesting,
-        reason = "CommitTransaction::stage_stream_rows; the row staging nests the dirty mark and the billing rows inside each changed stream's write; flattening it would separate the marks from the tail they qualify"
-    )]
     fn stage_stream_rows(&mut self) {
         for (hash, local) in &mut self.streams {
             if !local.frames.ring.is_empty() {
@@ -90,65 +134,19 @@ impl CommitTransaction<'_> {
                     local.frames.retired_bytes,
                 ));
             }
-            if f.next != b.next
-                || f.absorbed != b.absorbed
-                || f.trimmed != b.trimmed
-                || f.trim_safe_to != b.trim_safe_to
-                || f.unabsorbed_bytes != b.unabsorbed_bytes
-                || f.seq != b.seq
-                || f.closed != b.closed
-            {
+            if f.stored_differs(b) {
                 self.batch.put(local.handle.tail_row_key(), encode_tail(f));
-                let was_marked = b.absorbed < b.next || b.trimmed < b.trim_safe_to;
-                let is_marked = f.absorbed < f.next || f.trimmed < f.trim_safe_to;
-                if is_marked {
-                    self.batch.put(
-                        dirty_key(hash),
-                        dirty_value(&StreamMaintenance {
-                            absorbed: f.absorbed,
-                            next: f.next,
-                            unabsorbed_bytes: f.unabsorbed_bytes,
-                            ..Default::default()
-                        }),
-                    );
-                } else if was_marked {
-                    self.batch.delete(dirty_key(hash));
-                }
                 self.changed = true;
             }
-            if local.billing.dirty {
-                if let Some(bm) = &local.billing.meta {
-                    self.batch.put(
-                        crate::billing::billing_meta_key(hash),
-                        serde_json::to_vec(bm).unwrap_or_default(),
-                    );
-                    self.batch.put(
-                        crate::billing::usage_dirty_key(hash),
-                        &bm.usage_version.to_le_bytes()[..],
-                    );
-                    self.changed = true;
-                }
-                for snap in &local.billing.month_finals {
-                    if let Some((y, m)) = crate::billing::parse_month(&snap.month) {
-                        self.batch.put(
-                            crate::billing::usage_month_final_key(hash, y, m),
-                            serde_json::to_vec(snap).unwrap_or_default(),
-                        );
-                    }
-                }
-            }
-            self.effects.tails.push((local.handle.clone(), f.clone()));
+            self.changed |= stage_billing_rows(&mut self.batch, hash, local, b);
+            self.effects
+                .tails
+                .push((local.handle.clone(), f.clone(), !local.frames.seal_only));
             if local.frames.payload_bytes > 0 {
                 self.stats.appended_bytes = self
                     .stats
                     .appended_bytes
                     .saturating_add(local.frames.payload_bytes);
-            }
-            if local.frames.added_bytes > 0 {
-                self.effects.signals.push(AbsorbSignal {
-                    hash: *hash,
-                    appended_bytes: local.frames.added_bytes,
-                });
             }
         }
     }
@@ -161,8 +159,6 @@ impl CommitTransaction<'_> {
             .maintenance_snapshot()
             .apply_delta(self.maintenance_added, self.maintenance_retired, now_ms())
             .map_err(|error| error.to_string())?;
-        self.batch
-            .put(shard_maint_key(), encode_shard_maint(&maintenance));
         Ok(Some(maintenance))
     }
     #[expect(
@@ -206,6 +202,25 @@ impl CommitTransaction<'_> {
         self.engine.begin_close();
         self.reject(&error.to_string());
     }
+    /// Tests: whether this group stages a seal and the seal failpoint is
+    /// armed (one-shot).
+    #[cfg(test)]
+    fn seal_failpoint_tripped(&self) -> bool {
+        let tripped = !self.effects.seals.is_empty()
+            && self
+                .engine
+                .layout
+                .seal
+                .hooks
+                .fail_next_group
+                .swap(false, Ordering::SeqCst);
+        if tripped {
+            self.engine
+                .fail_group_tripped
+                .fetch_add(1, Ordering::SeqCst);
+        }
+        tripped
+    }
     #[cfg(test)]
     #[expect(
         clippy::excessive_nesting,
@@ -229,12 +244,6 @@ impl CommitTransaction<'_> {
                 None => false,
             }
         };
-        let tripped = tripped
-            || (self.group_has_absorbed
-                && self
-                    .engine
-                    .fail_next_absorbed_group
-                    .swap(false, Ordering::SeqCst));
         if tripped {
             self.engine
                 .fail_group_tripped
@@ -242,4 +251,68 @@ impl CommitTransaction<'_> {
         }
         tripped
     }
+}
+
+/// A billed stream's rows beside its tail (layout 6, f3): its static row,
+/// only when its identity, month or retention flag changed from the static
+/// meta the group started from (`base`'s), and the month finals the group
+/// closed. Whether anything was staged.
+fn stage_billing_rows(
+    batch: &mut WriteBatch,
+    hash: &[u8; 16],
+    local: &StreamOverlay,
+    base: &TailFields,
+) -> bool {
+    let billing = &local.billing;
+    if !billing.dirty {
+        return false;
+    }
+    let mut staged = false;
+    if let Some(bm) = &billing.meta {
+        let row = encode_static(bm);
+        let current = base.billing.clone().into_meta().as_ref().map(encode_static);
+        if current.as_deref() != Some(&row[..]) {
+            #[cfg(test)]
+            crate::shard::test_support::count_static_row_staged(local.handle.owner.as_ptr());
+            batch.put(crate::billing::billing_meta_key(hash), row);
+            staged = true;
+        }
+    }
+    for snap in &billing.month_finals {
+        if let Some((y, m)) = crate::billing::parse_month(&snap.month) {
+            batch.put(
+                crate::billing::usage_month_final_key(hash, y, m),
+                serde_json::to_vec(snap).unwrap_or_default(),
+            );
+            staged = true;
+        }
+    }
+    staged
+}
+
+/// Put a sealed stream's remainder: its applied pages at or above the
+/// new boundary (as the seal's staging read them) and this group's.
+/// Returns its bytes.
+fn stage_remainder(
+    batch: &mut WriteBatch,
+    hash: &[u8; 16],
+    local: &StreamOverlay,
+    sealed: &super::seal::SealedAt,
+) -> u64 {
+    let applied = &sealed.applied;
+    #[cfg(test)]
+    let applied = sealed.prebuilt.as_ref().unwrap_or(applied);
+    let pages: Vec<_> = applied
+        .iter()
+        .chain(&local.frames.pending)
+        .map(|(_, _, page)| page)
+        .collect();
+    if pages.is_empty() {
+        batch.delete(pending_key(hash));
+        return 0;
+    }
+    let remainder = concat_pages(pages);
+    let bytes = remainder.len() as u64;
+    batch.put(pending_key(hash), remainder);
+    bytes
 }

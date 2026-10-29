@@ -50,10 +50,10 @@ tails, routing-key reads) re-architected so that:
 | D2 | ACK point = object-store durability | product requirement; implemented via SlateDB's durable-seq watermark (writes applied with `await_durable=false`, acked when `DbStatus.durable_seq` passes their seqnum) |
 | D3 | **Dynamic shard topology** (extendible-hashing trie): shards are bit-prefixes of the stream hash; the service starts at **one shard** and splits a hot shard into its two children (doubling *that* shard) via SlateDB clone-with-projection; merges via manifest-union | separates the scaling unit from the isolation unit (stream); restores cross-stream WAL bundling; the PUT-cost floor and operational footprint scale *with actual usage* instead of a provisioned shard count; each split is one metadata-only operation on one shard, never a global resharding |
 | D4 | One **shard log** SlateDB per shard: ingest, durable+speculative tails, transient tail storage | group commit across all streams on the shard → PUT rate ∝ active shards (bounded), not active streams |
-| D5 | **Two-tier storage**: absorber drains shard log into per-stream **WAL-less SlateDBs** (history tier) | this is the no-dictionary path to ~90% compression (block zstd over plaintext inside the per-stream DB), gives exact per-stream physical size (manifest), and real byte deletion (prefix delete) |
+| D5 | **Two-tier storage** (layout 6): each shard's sealer moves its streams' unsealed pages out of the shard log into immutable **segment objects**, one per seal, located by the seal directory (§3.6) | the shard log's memtable never carries pages into an L0, sealed reads cost one ranged GET per chunk, and a stream's physical size is the length of its chunks plus its unsealed bytes (G10). It replaced the absorber and the per-shard history partitions (layout 6A decision D4) |
 | D6 | **One shared bucket** for the three roles (ops, shard logs, data; roles and streams are key prefixes), not per-stream buckets. The decision was three shared buckets, one per role. The binary takes one bucket name (`SLATE_S3_BUCKET`) and one credential pair, and since 2026-09-29 it accepts no per-role bucket argument (edge record #80, which awaits the owner's ratification): a split of the roles over buckets is a code change | avoids bucket-quota and provisioning friction at billions of streams; isolation moves into cryptography (D7); per-stream physical accounting comes from the per-stream DB manifest. Tigris has a global namespace with no per-prefix throughput limits, so bucket *pools* are unnecessary; splitting into pools remains a later option if provider limits ever appear |
-| D7 | Per-stream encryption keys attached to requests, never persisted; **payloads encrypted under per-routing-key subkeys**, since layout 5 as pages under page keys derived from them, with random nonces (see §3.7) | the shard log and history store the same pages: one append request's records of one routing key, compressed together when that pays, then encrypted once ([docs/crypto-page-v6.md](docs/crypto-page-v6.md)); history copies them without decrypting; tenant deletion = crypto-erasure + async prefix delete. (The original design, per-record ciphertext with deterministic nonces and a block-transformer-encrypted history tier, was replaced by random-nonce frames in R01 and by pages in layout 5.) |
-| D8 | No zstd dictionaries | complexity rejected; the history tier's block compression makes them unnecessary |
+| D7 | Per-stream encryption keys attached to requests, never persisted; **payloads encrypted under per-routing-key subkeys**, since layout 5 as pages under page keys derived from them, with random nonces (see §3.7) | the shard log and the segment objects store the same pages: one append request's records of one routing key, compressed together when that pays, then encrypted once ([docs/crypto-page-v6.md](docs/crypto-page-v6.md)); history copies them without decrypting; tenant deletion = crypto-erasure + async prefix delete. (The original design, per-record ciphertext with deterministic nonces and a block-transformer-encrypted history tier, was replaced by random-nonce frames in R01 and by pages in layout 5.) |
+| D8 | No zstd dictionaries | complexity rejected; per-page zstd (layout 5) is enough |
 | D9 | Tigris for **everything** (WAL + SSTs); no S3 Express | benchmarked ~14–18 ms small-object ops → durable tail latency ~25–45 ms; single provider, zero egress fees on Standard |
 | D10 | Archive Instant Retrieval tiering **deferred** | designed (COMPUTE-SPEC §7) but not built now |
 | D11 | Optional **speculative tails** (`DurabilityLevel::Memory`) with transient `persisted`/`aborted` events | opt-in low-latency mode for UIs; checkpoints (`Stream-Next-Offset`) only ever advance with the durable watermark |
@@ -62,13 +62,13 @@ tails, routing-key reads) re-architected so that:
 | D14 | SlateDB **manifest CAS fencing** is the sole ownership arbiter | shard moves need no coordination: the new owner opens the shard log and the old owner is fenced mid-flight; routing errors cost latency, never data |
 | D15 | **Inverted autoscaling**: instances jointly compute `desired.json`; the platform converges the fleet to it | the platform never interprets Streams metrics; deterministic formula over shared heartbeats makes CAS races benign |
 | D16 | **Replay-header routing** (`409` + `Streams-Replay-To`) | router needs no authoritative map — guess (ring), correction (replay), safety net (fencing) |
-| D17 | Separate **compactor service** for shard logs | shard-log values are record-encrypted, so compaction there needs no tenant keys; keeps CPU off 1-core gateways. History-tier compaction is key-gated and runs on shard owners piggybacked on absorption |
+| D17 | Separate **compactor service** for shard logs | shard-log values are record-encrypted, so compaction there needs no tenant keys; keeps CPU off 1-core gateways. Segment objects are immutable and never compacted |
 | D18 | Stream registry = CAS'd JSON objects in ops bucket (not a control stream) | idempotent provisioning, no bootstrap circularity, any server reads+caches descriptors directly |
 | D19 | **The CDN caches ciphertext only**; decryption happens client-side in an SDK using HKDF per-routing-key subkeys | tenant payloads are never at rest decrypted in edge caches; a routing-key subkey grants access to exactly that key's records (e.g. one chat), enabling end-user-granular access |
 | D20 | Key lifecycle and authn/authz are **delegated to an external service**; this repo ships a baseline `streams-keys` CLI (generate stream keys, derive routing subkeys, encrypt/decrypt records) used for development and benchmarking | keeps the data plane key-stateless; the CLI pins the envelope format the future service must implement |
 | D21 | **Globally unique stream names**; registry sharded by name hash (`registry/by-name/…`) with per-customer listing markers (`registry/by-customer/…`); target scale **billions of streams total, up to 1M per customer** | one lookup path, no tenancy in the stream identity; idle streams cost only their registry object + settled SSTs |
 | D22 | `flush_interval ≥ max(25 ms, backend PUT p90)` (amended twice) | 5 ms minted WAL SSTs ~7× faster than SlateDB's WAL GC reaps them; the backlog degraded per-DB durable-watermark latency to 0.3–1 s (EXPERIMENT-PILOT run 3). 25 ms holds the ack floor at ≈ flush + PUT ≈ 40–60 ms and cuts WAL churn 5×. Bench round 2 adds the RTT rider: the WAL flusher PUTs serially, so a flush interval below the backend's PUT latency mints SSTs faster than one pipe can ship them (Tigris p50 ~45 ms → 25 ms flush = durable-wait p90 518 ms; 50 ms flush = p90 82 ms). Local/fast backends keep 25 ms. **Under the group-commit pump, the binary's default since 2026-09-29 (edge record #77), this interval is the flush cadence no longer:** SlateDB's own timer is a fixed 60 s failsafe (owner decision of 2026-10-07; this interval stretched to at least 1 s until then), which no acknowledgement waits for, and the interval is read only as the gap when `WAL_FLUSH_GAP_MS=0`. The pump flushes a shard's WAL when commits wait, one flush after the other (the serial shipping the RTT rider asks for), and starts a flush no sooner than `WAL_FLUSH_GAP_MS` after the previous one started, 1 ms later still for the herd-settle. That gap is the one write tier, 100 ms since the owner's decision of 2026-10-07 (10 ms before, which permitted more WAL objects per second than the 25 ms floor): a busy shard writes at most about 9.9 WAL objects per second, and an append waits for the rest of the gap since its shard's last flush started, then the settle and one PUT. The floor is the cadence only with `WAL_GROUP_COMMIT=0` |
-| D23 | **No open handle runs default background loops** (response to V4): shard logs poll their manifest at 30–60 s with no embedded compactor/GC (fencing correctness comes from CAS write failures, not polls); history-tier DBs are only ever open in one of three modes — absorber-open (`compactor_options: None`, `garbage_collector_options: None`, no polling), checkpoint-pinned read-open (no loops), or maintenance piggybacked on absorber opens — and absorption fires on bytes-or-age thresholds (~4 MB / 60 s by default; the age was ~5 min, the value this decision was made with, until 2026-09-29, edge record #78; the cost of absorbing at 60 s has not been measured) so per-open costs amortize | turns idle cost from per-open-database (8.26 ops/s measured at defaults ≈ $10/mo each) into **per-shard baseline (~0.1 ops/s) + per-activity increments**; closed DBs cost zero; idle streams cost zero requests |
+| D23 | **No open handle runs default background loops** (response to V4): shard logs poll their manifest at 30–60 s with no embedded compactor/GC (fencing correctness comes from CAS write failures, not polls); segment objects are immutable and read by ranged GET, so they hold no open handle at all, and the sealer fires on byte, WAL-object or age thresholds (6 MiB L0 estimate, 24 MiB unsealed, 48 WAL objects, 45 s; §3.6) so its PUTs amortize | turns idle cost from per-open-database (8.26 ops/s measured at defaults ≈ $10/mo each) into **per-shard baseline (~0.1 ops/s) + per-activity increments**; closed DBs cost zero; idle streams cost zero requests |
 
 ## 3. Architecture
 
@@ -85,9 +85,9 @@ tails, routing-key reads) re-architected so that:
 ops role            control plane: stream registry (registry/by-name/<name>.json,
                     registry/by-customer/<cust>/<name>), topology.json (shard trie),
                     fleet heartbeats, desired.json, overrides.json, audit stream
-shard-log role      shard logs: shards/<bit-prefix>/ (SlateDB: WAL + SSTs)
-data role           history tier: streams/<hash>/ (per-stream WAL-less SlateDB:
-                    manifest + SSTs)
+shard-log role      shard logs: shards/<bit-prefix>/ (SlateDB: WAL + SSTs) and,
+                    since layout 6, each shard's segment objects under
+                    shards/<bit-prefix>/hseg/<epoch>/<seq> (§3.6)
 ```
 
 One bucket holds the three roles, each under its own key prefixes: the
@@ -95,11 +95,10 @@ binary takes one bucket name (`SLATE_S3_BUCKET`) and one credential pair, and
 since 2026-09-29 it accepts no per-role bucket argument (edge record #80).
 Tigris's global namespace has no per-prefix limits, so a split over buckets
 or pools is deferred until a provider limit demands it, and is then a code
-change (D6). The key names in the block are the design's. Two that were
-checked against the code differ: the binary opens the history tier of a shard
-as the shared partition `shards/<bit-prefix>/history2/`, inside the shard's
-own prefix (`sharddir::history2_path`), and writes stream descriptors under
-`registry/v4/projects/`.
+change (D6). The key names in the block are the design's. One that was
+checked against the code differs: the binary writes stream descriptors under
+`registry/v4/projects/`. Layout 6 has no history tier: a stream's sealed
+pages live in its shard's segment objects (§3.6).
 
 ### 3.2 Shard topology (dynamic)
 
@@ -131,13 +130,21 @@ the shard log is created):
 ```
 S <hash16> m                      stream meta (registry cache / tombstone)
 S <hash16> t                      tail: next_offset, last_ts, last Stream-Seq,
-                                  cumulative logical bytes, absorbed_through
-S <hash16> p <last offset u64 BE> page (layout 5): one append request's records,
-                                  at most 64 KiB and 4,096 of them, behind a clear
-                                  header (first offset, count, routing key, nonce);
-                                  the body is zstd-1 compressed when that pays, then
-                                  encrypted once (src/crypto_page.rs)
-S FF×16 ...                       the dirty-stream index, billing and maintenance rows
+                                  cumulative logical bytes, the sealed boundary
+                                  (`absorbed`), unsealed page bytes, usage counters
+S <hash16> P                      pending row: the stream's unsealed pages back to
+                                  back, as merge operands (one per commit group); a
+                                  seal puts the remainder. A page holds one append
+                                  request's records, at most 64 KiB and 4,096 of
+                                  them, behind a clear header (first offset, count,
+                                  routing key, nonce); the body is zstd-1
+                                  compressed when that pays, then encrypted once
+                                  (src/crypto_page.rs, src/spill/pending.rs)
+S FF×16 K <epoch> <seq>           seal directory row: one per seal, every chunk of
+                                  its segment object with its offsets and routing-
+                                  key summary (src/spill/directory.rs)
+S FF×16 R <epoch> <seq>           the seal object's refcount row
+S FF×16 ...                       billing rows
 Q <gen u32> <hash16> ...          every native-queue row (generation 0), the queue
                                   stream's tail (`t`) and its message pages
 ```
@@ -146,12 +153,9 @@ compacts (its L0 merges and debt passes, docs/QUEUES-DESIGN.md §8.2), so a
 queue's churn never rewrites stream state and a queue-only shard writes no `S`
 L0.
 
-History (one shared partition per shard, WAL disabled — the shard log *is*
-its WAL; layout 5):
-```
-<route16> <inc16> g <last offset u64 BE>   page: the shard log's page, byte for byte
-<route16> <inc16> p ...                    postings pages: each routing key's offset runs
-```
+Segment objects (one per seal, `src/spill/object.rs`): chunks of one
+stream's sealed pages, byte for byte, each with a header, a page directory,
+256 KiB anchors and a CRC-32C, then a table and a trailer.
 
 `hash16` = first 16 bytes of SHA-256 of the stream name. Offsets are a
 per-stream u64 sequence; the wire encoding is the canonical 26-char Crockford
@@ -211,33 +215,37 @@ stalls the watermark until backpressure (429) surfaces.
   checkpoint and re-receives anything unconfirmed.
 - **Catch-up / replay**: canonical fixed chunk boundaries; responses are
   byte-immutable forever (`ETag` + `Cache-Control: immutable`) → CDN cache
-  hits. Origin misses read: shard-log tail (recent) merged with the
-  per-stream history DB (absorbed prefix), through the shared ≤ 500 MB block
-  cache.
-- **Routing-key streaming**: `k!` prefix scan in the history DB (physically
-  contiguous, compressed) + in-memory filter over the un-absorbed tail.
-  Unlimited key cardinality — it's just keyspace.
+  hits. Origin misses read the ring, then the stream's sealed chunks (one
+  ranged GET per chunk, from the in-memory seal directory), then its
+  unsealed pages, which its handle holds in memory (§3.6).
+- **Routing-key streaming**: a keyed read skips every sealed chunk whose
+  routing-key summary excludes the key without a GET, and filters fetched
+  and unsealed pages by their clear headers. Unlimited key cardinality.
 
-### 3.6 The absorber
+### 3.6 The sealer (layout 6)
 
-Per shard, on the owner: drains committed shard-log records into per-stream
-history DBs in large batches — decrypt (the key arrived with the requests),
-write through the block transformer (zstd blocks → ~90% compression), advance
-`absorbed_through`, trim the absorbed shard-log prefix. Runs opportunistically
-whenever the stream key is in hand; a stream with no keyed traffic keeps its
-ciphertext tail in the shard log (harmless: nobody can read it without the
-key either). Absorption is idempotent (keys are offsets), so no cross-database
-transaction is needed around the cursor.
+Per shard, on the owner (`src/shard/seal.rs`): a committed page is appended
+to its stream's pending row as a merge operand and held in memory by the
+stream's handle, which is never evicted while it holds one. The sealer moves
+the durable unsealed pages of every stream into one segment object per seal:
+an awaited WAL flush and durable dispatch, a snapshot of the pages from
+memory, the object's PUT, its chunks published in the in-memory directory,
+then one commit that moves each stream's boundary, puts its pending row's
+remainder (every page above the boundary at that moment, from the live
+stream: REVIEW-6A F1) and writes the directory and refcount rows; then an
+awaited WAL flush and one forced memtable flush. Every forced memtable flush
+is preceded by an awaited WAL flush (REVIEW-6A F2), so the L0 holds the
+remainders, not the sealed pages. The directory is published before the
+commit can move a boundary, so a read never meets a hole between sealed and
+unsealed data.
 
-Cost discipline (D23): absorption fires per stream on a bytes-or-age
-threshold (~4 MB accumulated, or the oldest unabsorbed write 60 s old; the
-age was ~5 min until 2026-09-29, `ABSORB_AGE_SECS`, edge record #78), and the
-history DB is opened maintenance-free (no compactor, no GC, no polling),
-written in bulk with the F2 pattern (non-durable writes + one explicit
-`flush()`), optionally compacted while the key is in hand, and closed. A
-history DB that isn't being absorbed or read is closed and costs zero
-object-store requests; cold reads use a checkpoint-pinned reader with no
-background loops.
+Triggers: SlateDB's L0 estimate of the memtable's writes since the last
+forced flush (6 MiB), unsealed page bytes (24 MiB), WAL objects (48), or the
+oldest unsealed page's age (45 s). Deadlines flush the memtable whatever a
+seal does (64 WAL objects, 60 s). A failed seal backs off 0.5-16 s. The open
+rebuilds the directory from the `K` rows and loads every unsealed stream
+with its pending row tiled against its tail (or the open fails). The idle
+release seals instead of flushing.
 
 ### 3.7 Encryption envelope & SDK
 
@@ -270,9 +278,9 @@ The envelope that makes this coherent across both tiers and the wire:
   original design's deterministic nonces (nonce = offset, byte-identical
   re-encryption) were replaced in R01, so a frames response is not
   byte-identical across tiers or reads.
-- **Tiers:** the shard log and history store the same pages; the absorber
-  copies them byte for byte under history's own keys without decrypting.
-  Reads open pages and serve the records of their window.
+- **Tiers:** the shard log's pending rows and the segment objects store the
+  same pages; a seal copies them byte for byte without decrypting. Reads
+  open pages and serve the records of their window.
 - **Visibility boundary (accepted):** routing keys are *not* confidential to
   infrastructure — they appear in read URLs (CDN cache keys) and record
   headers. Payloads are confidential everywhere. Customers must not put
@@ -284,7 +292,7 @@ The envelope that makes this coherent across both tiers and the wire:
 ### 3.8 Fleet, routing, scaling
 
 See [COMPUTE-SPEC.md](./COMPUTE-SPEC.md) for the full spec. Summary:
-1 CPU / 1 GB instances, symmetric (gateway + shard owner + absorber);
+1 CPU / 1 GB instances, symmetric (gateway + shard owner + sealer);
 heartbeat objects every 2 s carrying a load vector; shard→instance assignment
 is weighted rendezvous hashing over the live set (derived, not stored);
 router corrections via `409` + `Streams-Replay-To`; instances jointly CAS a
@@ -335,11 +343,11 @@ the honest contract for any at-least-once boundary.
 **G8 — Tenant confidentiality.** Stream data is encrypted with the
 stream-specific key everywhere at rest in shared infrastructure. *Upheld
 by:* the envelope in §3.7 (per-routing-key subkeys, ciphertext on the wire
-and at the CDN, client-side decryption); block-transformer encryption
-(post-compression) in the history tier; keys held in memory only while
+and at the CDN, client-side decryption); every stored page encrypted
+(post-compression) under its routing key's page key, in the shard log and
+in the segment objects alike; keys held in memory only while
 streams are active; crypto-erasure on deletion. *Boundaries:* routing keys
-are visible metadata (C10); index-block coverage is verification item V1
-(L6); a deleted stream's objects stay in the bucket, unreadable without the
+are visible metadata (C10, L6); a deleted stream's objects stay in the bucket, unreadable without the
 key the server never stored, until stream reclamation (cost lever E11)
 removes them, and their names, routing keys and sizes stay visible to the
 operator until then (owner decision of 2026-10-08).
@@ -350,9 +358,10 @@ never unbounded buffering. *Upheld by:* bounded mpsc + `max_unflushed_bytes`
 + connection caps + shared 500 MB cache budget.
 
 **G10 — Accurate size reporting.** Logical size = cumulative payload-byte
-counter in the tail record (exact, crash-safe). Physical size = sum of SST
-sizes in the stream's history-DB manifest (one GET) + its transient shard-log
-share.
+counter in the tail record (exact, crash-safe). Physical size (layout 6) =
+the lengths of the stream's sealed chunks in the seal directory + its unsealed
+page bytes in the tail record (owner decision D3, by the lead under
+delegation, 2026-10-27).
 
 ## 5. Scalability properties
 
@@ -415,9 +424,9 @@ lives, encryption, retention, erasure as built, backups) is
   stream key.
 - **C7 Offsets are opaque**: treat `Stream-Next-Offset` as a cursor; never
   arithmetic on it.
-- **C8 Reads of freshly-appended data by routing key** may briefly scan the
-  un-absorbed tail (slightly higher cost than settled history); semantics
-  are identical.
+- **C8 Reads of sealed data by routing key** cost one ranged GET per
+  segment-object chunk whose routing-key summary admits the key; freshly
+  appended, unsealed data is served from memory. Semantics are identical.
 - **C9 Limits (initial, stated AND enforced — enforcement mechanics in
   COMPUTE-SPEC §12):**
 
@@ -426,7 +435,7 @@ lives, encryption, retention, erasure as built, backups) is
   | append body | 32 MiB by default (`MAX_REQUEST_BODY_BYTES`); 8 MiB on a shared cell (`deploy/profiles/shared-cell.env`), stored with the namespace at creation | body buffering: 413 `body_too_large` |
   | record | 131,072 bytes as stored, by default (`MAX_RECORD_PAYLOAD_BYTES`; on a non-JSON stream the request body is one record, so the ceiling bounds the body there) | 413 `record_too_large` (raw) / `body_too_large` (product); with a producer, 400 `invalid_body` |
   | response chunk | 8 MB | engine |
-  | per-stream sustained appends | measured (engine, 2026-07-14 round 2): **12.4k req/s, 55k ev/s, 56 MB/s** peak; **~750 req/s / 48k ev/s / ~49 MB/s pinned-sustained** with absorber+trim active — the earlier ~0.4–1.7 MB/s figure was two config defaults (`l0_max_ssts_per_key`, manifest-poll staleness), not a compaction defect. Stated product limit: 5k req/s / 50k ev/s / 50 MB/s per ordered stream, latency floor 2× flush + PUT (EXPERIMENT-PILOT bench round 2) | admission token bucket + committer fair-share |
+  | per-stream sustained appends | measured (engine, 2026-07-14 round 2): **12.4k req/s, 55k ev/s, 56 MB/s** peak; **~750 req/s / 48k ev/s / ~49 MB/s pinned-sustained** with the absorber that preceded the sealer active — the earlier ~0.4–1.7 MB/s figure was two config defaults (`l0_max_ssts_per_key`, manifest-poll staleness), not a compaction defect. Stated product limit: 5k req/s / 50k ev/s / 50 MB/s per ordered stream, latency floor 2× flush + PUT (EXPERIMENT-PILOT bench round 2) | admission token bucket + committer fair-share |
   | live tail connections per instance | 1,200 direct by default (`SSE_MAX_CONNECTIONS`, the 1 GiB Compute class value; all streams of the instance share it; unbounded via CDN/mux tier — OPERATIONS.md §4) | connection counter: 503 `subscription_capacity`, `retry-after: 5` |
   | per-project streams | the project's `max_streams`; on a shared cell at most 65,536 ÷ `PROJECT_SHARE_K` × its `request_weight` (1 unless its policy sets one, held to 1..k-1; edge change #196), 8,192 at k = 8 and weight 1 (`src/auth/ceiling.rs`) | create-time reservation: 429 `stream_limit` |
   | per-project live subscriptions | the project's `max_live_subscriptions`; on a shared cell at most `SSE_MAX_CONNECTIONS` ÷ k, 150 at k = 8 | 429 `project_concurrency_limit` |
@@ -499,26 +508,24 @@ lives, encryption, retention, erasure as built, backups) is
   TS implementation: evlog/metrics/otel-traces/state-protocol profiles,
   schema registry + lenses, `filter=` expressions, `since=` time seeks,
   search/aggregation companions, live/touch. Roadmap: O8.
-- **L3 Absorption is key-gated**: a stream with appends but no subsequent
-  keyed traffic keeps its tail un-absorbed (ciphertext in shard log)
-  indefinitely — correct but delays best-ratio compression and physical
-  accounting for that tail.
-- **L4 History-tier compaction is key-gated** (runs on owners when keys are
-  in hand): pathological patterns (huge burst, then never touched) leave
-  more small SSTs than ideal until the next keyed access.
+- **L3 Sealing needs no key**: the sealer copies pages byte for byte, so a
+  stream's pages are sealed within the age trigger (45 s) whether or not a
+  keyed request follows.
+- **L4 Segment objects are not reclaimed yet**: each seal writes a refcount
+  row for the garbage collection that will read it; until then sealed
+  chunks of deleted streams stay in the bucket (see C6, G8).
 - **L5 Shard-log compression is per request** (layout 5): a request's
   records are compressed together in pages of up to 64 KiB before they are
-  encrypted, and history holds the same pages. Requests of one small record,
+  encrypted, and the segment objects hold the same pages. Requests of one small record,
   and data that is already compressed or random, do not shrink.
-- **L6 Index-block exposure (to verify)**: if SlateDB's block transformer
-  does not cover SST index/filter blocks, routing keys (which appear in `k!`
-  index keys) could be visible in shared storage; mitigation is hashing
-  routing keys in index entries. Verification item V1.
+- **L6 Routing-key exposure**: routing keys are visible metadata (C10):
+  each stored page's clear header names its routing key, and the seal
+  directory's chunk summaries hold key fingerprints or blooms.
 - **L7 Tigris dependency**: durability, latency, and CAS semantics all ride
   one provider (V2). The design is provider-portable (anything with
   conditional writes), but no second provider is wired.
 - **L8 A fenced-but-alive old owner** may serve stale *reads* after a move
-  (writes are impossible; history is immutable so responses are never
+  (writes are impossible; sealed pages are immutable so responses are never
   wrong, only behind the head). The staleness window is BOUNDED to ≤ 5 s,
   not the manifest-poll interval: an owner only serves tail reads while it
   can prove recent ownership — any durable write in the last 5 s proves it

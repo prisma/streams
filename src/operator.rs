@@ -118,7 +118,6 @@ pub(crate) async fn data(
         "admit_shed_inflight": adm.shed.inflight,
         "admit_shed_survival": adm.shed.survival,
         "maintenance_backpressure": state.admission.maintenance_stats_json(),
-        "absorb_reserved_bytes_now": state.runtime.history.budget.reserved_bytes(),
         "sse_connections": adm.sse_connections,
         "sse_max_connections": adm.sse_effective_max,
         "usage_overflow_admits": state.runtime.usage.overflow_stats().0,

@@ -776,21 +776,9 @@ impl ConsumerService {
             )
         })?;
         let local = handle.state.lock().unwrap().durable.next;
-        let (remote, _) = engine
-            .durable_absorbed(&target.identity)
-            .await
-            .map_err(|e| {
-                failure(
-                    FailureClass::Unavailable,
-                    "queue_unavailable",
-                    &e.to_string(),
-                    None,
-                    true,
-                )
-            })?;
         Ok(QueuePosition {
             cursor,
-            tail: local.max(remote),
+            tail: local,
         })
     }
 }

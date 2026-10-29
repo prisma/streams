@@ -14,7 +14,6 @@
 //! any time. /v1/debug/usage exposes them; the billing task emits deltas
 //! as records on one internal stream (BILLING_STREAM / BILLING_STREAM_KEY).
 
-use crate::crypto::{RouteHash, SegmentHash};
 use crate::runtime::{Clock, MonotonicNow};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -248,12 +247,6 @@ pub(crate) struct UsageService {
     overflow_counters: Arc<Counters>,
     overflow_admits: AtomicU64,
     overflow_scan_tick: AtomicU64,
-    lag_map: Mutex<HashMap<SegmentHash, u64>>,
-    storage_links: Mutex<HashMap<RouteHash, std::collections::HashSet<SegmentHash>>>,
-    // mt-lint: allow(name-keyed-map): owned shard engine prefix -> pending work
-    pending_summary: Mutex<HashMap<String, (u64, u64)>>,
-    // mt-lint: allow(name-keyed-map): owned shard engine prefix -> lag
-    shard_lag_map: Mutex<HashMap<String, u64>>,
 }
 impl std::fmt::Debug for UsageService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -288,10 +281,6 @@ impl UsageService {
             overflow_counters: Counters::fresh(),
             overflow_admits: AtomicU64::new(0),
             overflow_scan_tick: AtomicU64::new(0),
-            lag_map: Mutex::new(HashMap::new()),
-            storage_links: Mutex::new(HashMap::new()),
-            pending_summary: Mutex::new(HashMap::new()),
-            shard_lag_map: Mutex::new(HashMap::new()),
         }
     }
     pub(crate) fn limits(&self) -> &Limits {
@@ -434,164 +423,6 @@ impl UsageService {
         }
     }
 
-    #[expect(
-        clippy::unwrap_used,
-        reason = "UsageService::set_absorb_lag; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
-    )]
-    pub(crate) fn set_absorb_lag(&self, hash: SegmentHash, secs: u64) {
-        self.lag_map.lock().unwrap().insert(hash, secs);
-    }
-
-    #[expect(
-        clippy::unwrap_used,
-        reason = "UsageService::clear_absorb_lag; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
-    )]
-    pub(crate) fn clear_absorb_lag(&self, hash: SegmentHash) {
-        self.lag_map.lock().unwrap().remove(&hash);
-    }
-
-    /// Join tenant route identity to segment identities within this runtime.
-    #[expect(
-        clippy::unwrap_used,
-        reason = "UsageService::link_storage; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
-    )]
-    pub(crate) fn link_storage(&self, usage_hash: RouteHash, storage_hash: SegmentHash) {
-        let mut m = self.storage_links.lock().unwrap();
-        if m.len() >= MAX_TRACKED && !m.contains_key(&usage_hash) {
-            return;
-        }
-        m.entry(usage_hash).or_default().insert(storage_hash);
-    }
-
-    #[expect(
-        clippy::unwrap_used,
-        reason = "UsageService::absorb_lag_for_usage; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
-    )]
-    pub(crate) fn absorb_lag_for_usage(&self, usage_hash: RouteHash) -> u64 {
-        let links = self.storage_links.lock().unwrap();
-        let Some(set) = links.get(&usage_hash) else {
-            return 0;
-        };
-        let lags = self.lag_map.lock().unwrap();
-        set.iter()
-            .filter_map(|h| lags.get(h).copied())
-            .max()
-            .unwrap_or(0)
-    }
-
-    #[expect(
-        clippy::unwrap_used,
-        reason = "UsageService::absorb_backlog_summary; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
-    )]
-    pub(crate) fn absorb_backlog_summary(&self) -> (usize, u64) {
-        let m = self.lag_map.lock().unwrap();
-        let lagging = m.values().filter(|v| **v > 0).count();
-        let max = m.values().copied().max().unwrap_or(0);
-        (lagging, max)
-    }
-
-    /// One row per engine; closing that engine removes its contribution.
-    #[expect(
-        clippy::unwrap_used,
-        reason = "UsageService::set_absorb_pending_summary; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
-    )]
-    pub(crate) fn set_absorb_pending_summary(
-        &self,
-        shard_prefix: &str,
-        eligible: u64,
-        oldest_eligible_secs: u64,
-    ) {
-        self.pending_summary
-            .lock()
-            .unwrap()
-            .insert(shard_prefix.to_string(), (eligible, oldest_eligible_secs));
-    }
-
-    #[expect(
-        clippy::unwrap_used,
-        reason = "UsageService::clear_absorb_pending_summary; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
-    )]
-    pub(crate) fn clear_absorb_pending_summary(&self, shard_prefix: &str) {
-        self.pending_summary.lock().unwrap().remove(shard_prefix);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn absorb_pending_summary_for(&self, shard_prefix: &str) -> Option<(u64, u64)> {
-        self.pending_summary
-            .lock()
-            .unwrap()
-            .get(shard_prefix)
-            .copied()
-    }
-
-    #[expect(
-        clippy::unwrap_used,
-        reason = "UsageService::absorb_pending_summary; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
-    )]
-    pub(crate) fn absorb_pending_summary(&self) -> (u64, u64) {
-        self.pending_summary
-            .lock()
-            .unwrap()
-            .values()
-            .fold((0, 0), |acc, v| (acc.0 + v.0, acc.1.max(v.1)))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn absorb_lag(&self, hash: SegmentHash) -> u64 {
-        self.lag_map
-            .lock()
-            .unwrap()
-            .get(&hash)
-            .copied()
-            .unwrap_or(0)
-    }
-
-    #[expect(
-        clippy::unwrap_used,
-        reason = "UsageService::absorb_lag_max; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
-    )]
-    pub(crate) fn absorb_lag_max(&self) -> u64 {
-        self.lag_map
-            .lock()
-            .unwrap()
-            .values()
-            .copied()
-            .max()
-            .unwrap_or(0)
-    }
-
-    #[expect(
-        clippy::unwrap_used,
-        reason = "UsageService::set_shard_lag; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
-    )]
-    pub(crate) fn set_shard_lag(&self, prefix: &str, secs: u64) {
-        self.shard_lag_map
-            .lock()
-            .unwrap()
-            .insert(prefix.to_string(), secs);
-    }
-
-    #[expect(
-        clippy::unwrap_used,
-        reason = "UsageService::clear_shard_lag; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
-    )]
-    pub(crate) fn clear_shard_lag(&self, prefix: &str) {
-        self.shard_lag_map.lock().unwrap().remove(prefix);
-    }
-
-    #[expect(
-        clippy::unwrap_used,
-        reason = "UsageService::shard_lag_all; poisoned accounting state may be inconsistent; recovery or a lock wrapper would hide the failed state transition"
-    )]
-    pub(crate) fn shard_lag_all(&self) -> Vec<(String, u64)> {
-        self.shard_lag_map
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(p, s)| (p.clone(), *s))
-            .collect()
-    }
-
     /// Per-stream counters from this owner; overflow is explicitly aggregated.
     #[expect(
         clippy::unwrap_used,
@@ -619,7 +450,7 @@ impl UsageService {
 }
 
 // Compatibility for direct storage fixtures only; production has no global
-// usage getter and every admission/read/absorber uses the runtime handle.
+// usage getter and every admission and read uses the runtime handle.
 #[cfg(test)]
 fn test_usage() -> &'static UsageService {
     static OWNER: std::sync::OnceLock<UsageService> = std::sync::OnceLock::new();
@@ -670,130 +501,6 @@ fn admit_append_in(
 #[cfg(test)]
 pub(crate) fn counters(hash: &[u8; 16]) -> std::sync::Arc<Counters> {
     test_usage().counters(hash)
-}
-
-#[cfg(test)]
-pub(crate) fn set_absorb_lag(hash: SegmentHash, secs: u64) {
-    test_usage().set_absorb_lag(hash, secs)
-}
-
-#[cfg(test)]
-pub(crate) fn clear_absorb_lag(hash: SegmentHash) {
-    test_usage().clear_absorb_lag(hash)
-}
-
-#[cfg(test)]
-pub(crate) fn link_storage(usage_hash: RouteHash, storage_hash: SegmentHash) {
-    test_usage().link_storage(usage_hash, storage_hash)
-}
-
-#[cfg(test)]
-pub(crate) fn absorb_lag_for_usage(usage_hash: RouteHash) -> u64 {
-    test_usage().absorb_lag_for_usage(usage_hash)
-}
-
-#[cfg(test)]
-pub(crate) fn absorb_backlog_summary() -> (usize, u64) {
-    test_usage().absorb_backlog_summary()
-}
-
-#[cfg(test)]
-pub(crate) fn absorb_lag(hash: SegmentHash) -> u64 {
-    test_usage().absorb_lag(hash)
-}
-
-#[cfg(test)]
-pub(crate) fn absorb_lag_max() -> u64 {
-    test_usage().absorb_lag_max()
-}
-
-#[cfg(test)]
-pub(crate) fn set_shard_lag(prefix: &str, secs: u64) {
-    test_usage().set_shard_lag(prefix, secs)
-}
-
-#[cfg(test)]
-pub(crate) fn clear_shard_lag(prefix: &str) {
-    test_usage().clear_shard_lag(prefix)
-}
-
-#[cfg(test)]
-pub(crate) fn shard_lag_all() -> Vec<(String, u64)> {
-    test_usage().shard_lag_all()
-}
-
-#[cfg(test)]
-mod shard_lag_tests {
-    use super::*;
-
-    // Regression: the rebalancer used to derive a shard prefix from a
-    // stream hash. Lag must be published BY the shard that owns it.
-    #[test]
-    fn shard_lag_roundtrips_and_clears() {
-        set_shard_lag("101", 42);
-        set_shard_lag("110", 7);
-        let all: std::collections::HashMap<String, u64> = shard_lag_all().into_iter().collect();
-        assert_eq!(all.get("101"), Some(&42));
-        assert_eq!(all.get("110"), Some(&7));
-
-        // a fenced-away shard must stop reporting, or it shows as
-        // phantom lag on an instance serving nothing (ladder pass 1 D3)
-        clear_shard_lag("101");
-        let all: std::collections::HashMap<String, u64> = shard_lag_all().into_iter().collect();
-        assert!(!all.contains_key("101"));
-        assert_eq!(all.get("110"), Some(&7));
-        clear_shard_lag("110");
-    }
-
-    #[test]
-    fn absorb_lag_max_is_the_worst_stream() {
-        // The lag map is process-global and other tests' absorbers
-        // publish into it concurrently: assert with a sentinel that IS
-        // the global worst (no real absorber publishes a year of lag)
-        // and exact per-stream reads, not an exact global max.
-        let a = SegmentHash([1u8; 16]);
-        let b = SegmentHash([2u8; 16]);
-        set_absorb_lag(a, 5);
-        set_absorb_lag(b, 40_000_000);
-        assert_eq!(absorb_lag(a), 5);
-        assert_eq!(absorb_lag(b), 40_000_000);
-        assert!(
-            absorb_lag_max() >= 40_000_000,
-            "the max must reflect the worst stream"
-        );
-        clear_absorb_lag(b);
-        assert!(absorb_lag_max() < 40_000_000, "clearing removes the worst");
-        clear_absorb_lag(a);
-    }
-
-    /// The wide tests' invisible-backlog finding: usage counters key by
-    /// the NAME hash, the absorber keys lag by the ENGINE hash, and the
-    /// per-stream join silently read 0 forever. The linked join must
-    /// bridge the keyspaces — including per-key streams, where one name
-    /// maps to several segment hashes (report the worst).
-    #[test]
-    fn lag_join_bridges_usage_and_engine_hashes() {
-        let usage_h = RouteHash([10u8; 16]);
-        let seg_a = SegmentHash([11u8; 16]);
-        let seg_b = SegmentHash([12u8; 16]);
-        // Unlinked: the join has nothing, even with lag present.
-        set_absorb_lag(seg_a, 30);
-        assert_eq!(absorb_lag_for_usage(usage_h), 0);
-        link_storage(usage_h, seg_a);
-        link_storage(usage_h, seg_b);
-        set_absorb_lag(seg_b, 90);
-        assert_eq!(
-            absorb_lag_for_usage(usage_h),
-            90,
-            "join must report the worst linked segment"
-        );
-        let (lagging, max) = absorb_backlog_summary();
-        assert!(lagging >= 2, "summary missed lagging streams");
-        assert!(max >= 90);
-        clear_absorb_lag(seg_a);
-        clear_absorb_lag(seg_b);
-        assert_eq!(absorb_lag_for_usage(usage_h), 0, "cleared lag must read 0");
-    }
 }
 
 #[cfg(test)]

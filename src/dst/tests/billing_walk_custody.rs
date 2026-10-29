@@ -75,19 +75,18 @@ fn names_past_discovery(state: &State, stems: [&str; 3]) -> [(String, String); 3
 }
 
 /// Whether any open shard carries (billing, maintenance) debt: what the
-/// sweep keeps a resident for (dirty rows or month finals; unabsorbed
-/// frames or trim debt).
+/// sweep keeps a resident for (dirty rows or month finals; unsealed
+/// frames).
 async fn debts(state: &State) -> (bool, bool) {
     let (mut billing, mut maintenance) = (false, false);
     for engine in state.shards.engines() {
         billing |= engine.has_billing_debt().await.unwrap_or(true);
-        maintenance |=
-            engine.maintenance_snapshot().unabsorbed_frame_bytes > 0 || engine.trim_stats().0 > 0;
+        maintenance |= engine.maintenance_snapshot().unabsorbed_frame_bytes > 0;
     }
     (billing, maintenance)
 }
 
-/// Drains billing and waits for absorption until no shard carries any debt,
+/// Drains billing and waits for the sealer until no shard carries any debt,
 /// so every residency in the sweeps under test is the walk's own.
 async fn quiesce(state: &State) {
     let mut wait = DrainWait::default();

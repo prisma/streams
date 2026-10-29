@@ -1,5 +1,5 @@
 //! Required engine workers share the runtime supervisor's join authority.
-use super::{ShardEngine, history_partition::HistoryPartition};
+use super::ShardEngine;
 use crate::tasks::{Policy, TaskOutcome, TaskResult, TaskSupervisor};
 use std::{
     future::Future,
@@ -50,26 +50,15 @@ impl EngineTasks {
     pub(super) fn failed(&self, role: &'static str) {
         self.failure.lock().unwrap().get_or_insert(role);
     }
-    pub(super) fn begin_close(
-        &self,
-        db: Arc<slatedb::Db>,
-        history: Arc<HistoryPartition>,
-        prefix: String,
-    ) {
-        history.stop();
+    pub(super) fn begin_close(&self, db: Arc<slatedb::Db>, prefix: String) {
         self.supervisor
             .begin_shutdown_with(WORKER_GRACE, "storage-close", async move {
-                // Close independently so one failure cannot orphan the other store.
-                let shard = super::history_partition::close_db(&db).await;
-                let history = history.close().await;
-                match (shard, history) {
-                    (Ok(()), Ok(())) => {
-                        tracing::info!(shard = %prefix, "engine workers and stores terminated");
+                match super::storage_close::close_db(&db).await {
+                    Ok(()) => {
+                        tracing::info!(shard = %prefix, "engine workers and store terminated");
                         TaskResult::Done
                     }
-                    (shard, history) => TaskResult::Failed(format!(
-                        "{prefix}: shard={shard:?}, history={history:?}"
-                    )),
+                    Err(shard) => TaskResult::Failed(format!("{prefix}: shard={shard}")),
                 }
             });
     }

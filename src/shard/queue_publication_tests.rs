@@ -5,8 +5,7 @@ use super::*;
 /// Commits `ops` as one group of `engine`. Staging, refusing and writing
 /// never wait on dispatch, so a held dispatch gate cannot hold the group.
 async fn commit(engine: &ShardEngine, ops: Vec<CommitOp>) {
-    let cfg = ShardConfig::default();
-    let group = engine.commit_group(ops, &cfg);
+    let group = engine.commit_group(ops);
     tokio::time::timeout(std::time::Duration::from_secs(10), group)
         .await
         .expect("the group waited on the held dispatch");
@@ -24,18 +23,16 @@ async fn commit(engine: &ShardEngine, ops: Vec<CommitOp>) {
 async fn r03_queue_refusal_from_staged_generation_shares_group_failure_and_dispatch() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let db = Arc::new(
-        Db::builder("r03-queue-refusal", store.clone())
+        crate::keyspace::db_builder("r03-queue-refusal", store.clone())
             .build()
             .await
             .unwrap(),
     );
-    let (tx, _rx) = mpsc::channel(1);
     let engine = ShardEngine::start(
         "r03-queue-refusal".into(),
         db.clone(),
         store,
         ShardConfig::default(),
-        tx,
         None,
         Default::default(),
     );

@@ -126,7 +126,6 @@ def check() -> list[str]:
                     json.loads((ROOT / 'docs/refactor/clippy-review-dispositions.json').read_text())))
 
     required_fixtures = {
-        ('src/dst/tests/fixture_http.rs', 'http_rig_cold_absorb'): 'b1864fffaca3f753a34129f95b8f5734cccd0a4a',
         ('src/dst/tests/fixture_http.rs', 'default'): 'd1131213250624de7dabf79ee3e0b9abce171b23',
         ('src/dst/tests/fixture_http.rs', 'http_rig_build'): 'd1131213250624de7dabf79ee3e0b9abce171b23',
         ('src/dst/tests/fixture_http.rs', 'rig_opener'): 'd1131213250624de7dabf79ee3e0b9abce171b23',
@@ -140,7 +139,6 @@ def check() -> list[str]:
         ] for name in names
     }
     required_units[('src/fleet/repository/document_tests.rs', 'r09_fleet_document_deadlines_leave_cas_source_retryable')] = 'e273b3a94f6de769b361f8eeef3433b308c6eb07'
-    required_units[('src/history/controller_tests.rs', 'active_absorber_cancel')] = '93f77ecfdb053850773bb698b3512e3777ce3354'
     required_units[('src/application/creation.rs', 'r05_cancelled_ttl_attempt_releases_only_its_owned_slot')] = '24cfdac0dfcf6618fd1ac51eae0ef70d458e29d1'
     required_units[('src/shard/transaction_tests.rs', 'r03a_mixed_transaction_preserves_every_row_reply_and_publication')] = '89884ab114b22929aa93707361e9e8d52c762bc2'
     required_units[('src/dst/tests/security_revocation.rs', 'subscription_survives_when_both_feeds_refresh_before_the_deadline')] = '89884ab114b22929aa93707361e9e8d52c762bc2'

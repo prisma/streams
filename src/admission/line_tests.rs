@@ -53,15 +53,15 @@ fn a_projects_memory_line_scales_with_its_byte_weight_leaving_two_lines_beside_i
 fn a_lease_ending_write_passes_the_rss_gate_until_the_hard_line() {
     let c = ctl(1000);
     c.record_rss_mb(1125);
-    assert_eq!(c.admit_lease_ending_write(0), Ok(()), "at the hard line");
+    assert_eq!(c.admit_lease_ending_write(), Ok(()), "at the hard line");
     assert_eq!(
-        c.admit_write_memory(0),
+        c.admit_write_memory(),
         Err(WriteRefusal::MemoryPressure),
         "an append"
     );
     c.record_rss_mb(1126);
     assert_eq!(
-        c.admit_lease_ending_write(0),
+        c.admit_lease_ending_write(),
         Err(WriteRefusal::MemoryPressure),
         "past it"
     );
@@ -69,5 +69,5 @@ fn a_lease_ending_write_passes_the_rss_gate_until_the_hard_line() {
     assert_eq!((s.rss, s.total), (2, 2), "the append's and this one");
     let off = ctl(0);
     off.record_rss_mb(10_000);
-    assert_eq!(off.admit_lease_ending_write(0), Ok(()), "no line");
+    assert_eq!(off.admit_lease_ending_write(), Ok(()), "no line");
 }

@@ -49,6 +49,9 @@ mod billing_readiness;
 #[path = "tests/billing_operation_counts.rs"]
 mod billing_operation_counts;
 
+#[path = "tests/billing_restart.rs"]
+mod billing_restart;
+
 #[path = "tests/billing_usage.rs"]
 mod billing_usage;
 
@@ -123,9 +126,6 @@ mod header_alias;
 
 #[path = "tests/history_absorption.rs"]
 mod history_absorption;
-
-#[path = "tests/history_gather.rs"]
-mod history_gather;
 
 #[path = "tests/history_recovery.rs"]
 mod history_recovery;

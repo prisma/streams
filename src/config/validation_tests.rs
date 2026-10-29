@@ -234,15 +234,6 @@ mod config_validation_tests {
             &shard_settings(&args, &crate::config::EngineConfig::default()),
         )
         .expect("default shard settings must open");
-        let cfg = crate::config::ServerConfig::load(
-            CliArgs::parse_from(["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"]),
-            &crate::config::MapEnvironment::empty(),
-        );
-        validate_engine_settings(
-            "history",
-            &crate::history::history_settings(&cfg.history, &cfg.engine.compactor_options()),
-        )
-        .expect("default history settings must open");
     }
 
     fn configured(
@@ -423,38 +414,11 @@ mod config_validation_tests {
         assert_eq!(resolved(10_000, true, 0).unwrap(), 10_000);
     }
 
-    /// CHAOS-3: the body ceiling is a capacity knob. Lowering it must
-    /// shrink the absorber reservation that every gather holds against
-    /// the shed line, and it must never be raisable above the pin.
+    /// CHAOS-3: the body ceiling is a capacity knob that only lowers: it
+    /// is never raisable above the protocol pin, and it has a floor.
     #[test]
-    fn body_ceiling_sizes_the_absorber_reservation_and_only_lowers() {
-        use crate::history::worst_frame_transient_for;
+    fn body_ceiling_only_lowers() {
         let pinned = crate::http::MAX_BODY_BYTES;
-        let at_pin = worst_frame_transient_for(pinned);
-        assert!(
-            at_pin > 96 * 1024 * 1024,
-            "the pinned reservation is the ~96 MiB measured in the field, got {at_pin}"
-        );
-        let lowered = worst_frame_transient_for(1024 * 1024);
-        assert!(
-            lowered * 25 < at_pin,
-            "a 1 MiB ceiling must shrink the reservation by more than 25x: \
-             {lowered} vs {at_pin}"
-        );
-
-        // The live wiring reads the same rule, so the freed bytes are
-        // real admission headroom and not a floor that clamps back.
-        assert_eq!(
-            crate::history::absorb_worst_frame_transient(),
-            worst_frame_transient_for(
-                crate::config::CliArgs::deterministic().max_request_body_bytes
-            )
-        );
-        assert_eq!(
-            crate::history::floored_budget_capacity(0),
-            crate::history::absorb_worst_frame_transient()
-        );
-
         assert!(
             validate_body_ceiling(pinned + 1).is_err(),
             "the protocol ceiling must not be raisable"

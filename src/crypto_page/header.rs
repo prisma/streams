@@ -5,10 +5,10 @@
 
 use bytes::Bytes;
 
-use super::body::{get_varint, put_varint};
+use super::varint::{get_varint, put_varint};
 use super::{
     NONCE_LEN, PAGE_MAX_RECORDS, PAGE_VER, PAGE_VER_Z, PageCorruption, PageLane, SealError,
-    TAG_LEN, body_cap, last_offset, page_tag,
+    TAG_LEN, body_cap, last_offset,
 };
 
 /// Everything the clear header of a page being sealed says.
@@ -110,28 +110,46 @@ fn parse(raw: &[u8]) -> Result<ClearPage<'_>, PageCorruption> {
     })
 }
 
-/// The last offset a row key names under `prefix`, the canonical page-key
-/// prefix of the selected segment: its namespace and its keyspace's page tag
-/// (`'p'` in the shard log, `'g'` in history). The key must be exactly that
-/// prefix and eight bytes.
-fn row_last(key: &[u8], prefix: &[u8]) -> Result<u64, PageCorruption> {
-    if page_tag(prefix.len()).is_none_or(|tag| prefix.last() != Some(&tag)) {
-        return Err(PageCorruption::RowTag);
+/// The stored length and
+/// the last offset of the page that starts `raw`, which may run on into the
+/// pages after it (pending pages back to back, or a segment chunk's pages
+/// read from a byte anchor). Only the clear header is walked here; the
+/// caller admits `raw[..len]` under the returned last offset
+/// (`CheckedPage::admit`), which checks it whole, and decryption
+/// authenticates every header field.
+pub(crate) fn page_extent(raw: &[u8]) -> Result<(usize, u64), PageCorruption> {
+    let mut input = raw;
+    let [ver] = field::<1>(&mut input)?;
+    if !matches!(ver, PAGE_VER | PAGE_VER_Z) {
+        return Err(PageCorruption::Version);
     }
-    let (namespace, last) = key
-        .split_last_chunk::<8>()
-        .ok_or(PageCorruption::KeyWidth)?;
-    if namespace.len() != prefix.len() {
-        return Err(PageCorruption::KeyWidth);
-    }
-    if namespace != prefix {
-        return Err(PageCorruption::Namespace);
-    }
-    Ok(u64::from_be_bytes(*last))
+    let first = u64::from_be_bytes(field(&mut input)?);
+    let count = get_varint(&mut input)
+        .and_then(|count| usize::try_from(count).ok())
+        .filter(|count| (1..=PAGE_MAX_RECORDS).contains(count))
+        .ok_or(PageCorruption::Count)?;
+    let _ts_ms = field::<8>(&mut input)?;
+    let _key_version = field::<4>(&mut input)?;
+    let rk_len = u16::from_be_bytes(field(&mut input)?);
+    let (_, rest) = input
+        .split_at_checked(usize::from(rk_len))
+        .ok_or(PageCorruption::Truncated)?;
+    input = rest;
+    let _nonce = field::<NONCE_LEN>(&mut input)?;
+    let ct_len = usize::try_from(u32::from_be_bytes(field(&mut input)?))
+        .map_err(|_| PageCorruption::Truncated)?;
+    let len = raw
+        .len()
+        .checked_sub(input.len())
+        .and_then(|head| head.checked_add(ct_len))
+        .filter(|len| *len <= raw.len())
+        .ok_or(PageCorruption::Truncated)?;
+    let last = last_offset(first, count).ok_or(PageCorruption::OffsetOverflow)?;
+    Ok((len, last))
 }
 
-/// A row's bytes parsed as one whole page whose first offset and record
-/// count end at `last`, the offset its key names.
+/// Page bytes parsed as one whole page whose first offset and record
+/// count end at `last`, the offset its holder names.
 fn page_at(raw: &[u8], last: u64) -> Result<ClearPage<'_>, PageCorruption> {
     let page = parse(raw)?;
     let derived = last_offset(page.first, page.count).ok_or(PageCorruption::OffsetOverflow)?;
@@ -144,7 +162,7 @@ fn page_at(raw: &[u8], last: u64) -> Result<ClearPage<'_>, PageCorruption> {
     Ok(page)
 }
 
-/// A stored page admitted against its row key without decrypting. It
+/// A stored page admitted against its last offset without decrypting. It
 /// retains the exact immutable bytes it was admitted from; its fields are
 /// private so no caller can pair them with other bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -165,15 +183,9 @@ pub(crate) struct CheckedPage {
 }
 
 impl CheckedPage {
-    /// Admit a stored row. `prefix` is the canonical page-key prefix of the
-    /// selected segment: its namespace and its keyspace's page tag (`'p'` in
-    /// the shard log, `'g'` in history); the row key is that prefix and the
-    /// page's last offset.
-    pub(crate) fn from_row(key: &[u8], prefix: &[u8], raw: Bytes) -> Result<Self, PageCorruption> {
-        Self::admit(raw, row_last(key, prefix)?)
-    }
-
-    /// Admit page bytes held under `last`, as the tail ring holds them.
+    /// Admit page bytes held under `last`: the offset the page's holder
+    /// names for it (the pending row's or a segment object's page extent,
+    /// the tail ring's entry).
     pub(crate) fn admit(raw: Bytes, last: u64) -> Result<Self, PageCorruption> {
         let page = page_at(&raw, last)?;
         let (header_len, sealed_from) = (page.header_len, raw.len().saturating_sub(page.ct_len));

@@ -70,17 +70,12 @@ impl Rig {
             &crate::config::MapEnvironment::empty(),
         );
         let settings = crate::config::validation::shard_settings(&config.cli, &config.engine);
-        let shard = super::shard_config(
-            &config.cli,
-            config.history.clone(),
-            config.engine.compactor_options(),
-        );
-        let db = slatedb::Db::builder("write-tier", store.clone())
+        let shard = super::shard_config(&config.cli);
+        let db = crate::keyspace::db_builder("write-tier", store.clone())
             .with_settings(settings)
             .build()
             .await
             .expect("open the shard log");
-        let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
         let maintenance = crate::shard::load_or_rebuild_maintenance(&db)
             .await
             .expect("load maintenance");
@@ -89,7 +84,6 @@ impl Rig {
             Arc::new(db),
             store.clone(),
             shard,
-            absorb_tx,
             None,
             maintenance,
         );

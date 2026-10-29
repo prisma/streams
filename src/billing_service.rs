@@ -574,13 +574,11 @@ mod drain_fairness_tests {
                     .await
                     .unwrap(),
             );
-            let (tx, _rx) = tokio::sync::mpsc::channel(1);
             engines.push(crate::shard::ShardEngine::start(
                 prefix,
                 db,
                 store.clone(),
                 crate::shard::ShardConfig::default(),
-                tx,
                 None,
                 Default::default(),
             ));

@@ -1,497 +1,198 @@
-//! Reads history.
+//! Reads history: keyed and forked reads across sealed segment objects and
+//! unsealed pages (layout 6).
 
 use super::fixture_storage::{
-    append_n, append_sized, drain_filtered, mem, open_engine_with_absorber, skey, wait_all_absorbed,
+    append_n, append_sized, drain_filtered, mem, open_engine, skey, wait_all_sealed,
 };
-use crate::dst::{FaultPlan, FaultStore};
-use crate::shard::{CopiedBytes, TailFields, encode_tail_for_tests, tail_key};
-use object_store::ObjectStore;
+use object_store::{ObjectStore, ObjectStoreExt};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
-/// The committer owns the history layout. A stream's first advancing
-/// boundary claims the shared partition and later advances continue on
-/// it. A tail the deleted per-stream lane absorbed (absorbed > 0 without
-/// the shared-partition bit) keeps its boundary: covering more of it from
-/// the shared partition would publish a range the read path refuses as v1
-/// history. The drop is counted so a namespace still carrying such a tail
-/// shows in /v1/debug/load.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_first_advance_seals_the_history_layout() {
-    let inner = mem();
-    let store = FaultStore::uniform(inner.clone(), 103, FaultPlan::new(0, 0, 0));
-    let key = skey();
-
-    let db = slatedb::Db::builder("dst-seal", store.clone() as Arc<dyn ObjectStore>)
-        .with_settings(slatedb::config::Settings {
-            flush_interval: Some(std::time::Duration::from_millis(5)),
-            manifest_poll_interval: std::time::Duration::from_millis(50),
-            ..Default::default()
-        })
-        .build()
-        .await
-        .expect("open db");
-    // Stream B's tail as the deleted per-stream lane left it.
-    let b = [0xF2u8; 16];
-    let legacy = TailFields {
-        next: 5,
-        absorbed: 3,
-        route: b,
-        ..Default::default()
-    };
-    let mut plant = slatedb::WriteBatch::new();
-    plant.put(tail_key(&b), encode_tail_for_tests(&legacy));
-    db.write(plant).await.expect("plant the legacy tail");
-    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
-    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
-    // zero; a reopened DB restores its durable backlog, exactly as
-    // the production opener does.
-    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-        .await
-        .expect("load maintenance");
-    let engine = crate::shard::ShardEngine::start(
-        "dst-seal".to_string(),
-        Arc::new(db),
-        store.clone(),
-        crate::shard::ShardConfig::default(),
-        absorb_tx,
-        None,
-        __maint,
-    );
-
-    #[expect(
-        clippy::excessive_nesting,
-        reason = "wait_absorbed; the fixture nests the absorbed-frontier read and its verdict inside the poll loop; flattening them would separate the verdict from the frontier it reads"
-    )]
-    async fn wait_absorbed(
-        engine: &Arc<crate::shard::ShardEngine>,
-        hash: [u8; 16],
-        want: u64,
-    ) -> (u64, bool) {
-        for _ in 0..400 {
-            let h = engine.stream_handle(hash).await.unwrap();
-            let (a, f) = {
-                let s = h.state.lock().unwrap();
-                (s.durable.absorbed, s.durable.history_v2)
-            };
-            if a >= want {
-                return (a, f);
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        let h = engine.stream_handle(hash).await.unwrap();
-        let s = h.state.lock().unwrap();
-        (s.durable.absorbed, s.durable.history_v2)
-    }
-
-    // Stream A: the first advance claims the shared partition; later
-    // advances continue on it.
-    let a = [0xF1u8; 16];
-    for _ in 0..5 {
-        append_sized(&engine, a, &key, "", 512).await;
-    }
+/// An engine on `store` at `prefix` whose sealer seals only when the test
+/// asks, in chunks of at most `pages_per_chunk` pages.
+async fn manual_seal_engine(
+    store: Arc<dyn ObjectStore>,
+    prefix: &str,
+    pages_per_chunk: usize,
+) -> Arc<crate::shard::ShardEngine> {
+    let engine = open_engine(store, prefix).await;
+    engine.seal_ready().await.expect("seal open");
+    engine.configure_seal(|s| {
+        s.auto = false;
+        s.max_pages_per_chunk = pages_per_chunk;
+    });
     engine
-        .submit_absorbed_batch_v2(vec![(a, 3, CopiedBytes::new(0, 0))])
-        .await;
-    let (abs, flag) = wait_absorbed(&engine, a, 3).await;
-    assert_eq!((abs, flag), (3, true), "first v2 advance seals v2");
-    engine
-        .submit_absorbed_batch_v2(vec![(a, 5, CopiedBytes::new(3, 0))])
-        .await;
-    let (abs, flag) = wait_absorbed(&engine, a, 5).await;
-    assert_eq!((abs, flag), (5, true), "sealed v2 keeps advancing");
-
-    // Stream B: the advance over the legacy tail is dropped whole. The
-    // committer queue is FIFO, so the sentinel's ack proves it was staged.
-    engine
-        .submit_absorbed_batch_v2(vec![(b, 5, CopiedBytes::new(3, 0))])
-        .await;
-    let sentinel = append_sized(&engine, b, &key, "", 64).await;
-    assert_eq!(sentinel, 5, "the sentinel lands after the planted tail");
-    let h = engine.stream_handle(b).await.unwrap();
-    let (abs, flag) = {
-        let s = h.state.lock().unwrap();
-        (s.durable.absorbed, s.durable.history_v2)
-    };
-    assert_eq!(
-        (abs, flag),
-        (3, false),
-        "a v2 advance on a legacy per-stream tail must be dropped whole"
-    );
-    assert_eq!(
-        engine.absorb_lane_dropped.load(Ordering::Relaxed),
-        1,
-        "the dropped cross-layout advance must be counted"
-    );
-    engine.begin_close();
 }
 
-/// ROUTING-V3 §5/§8.5: a sparse key spread across many canonical gaps
-/// pages through the planner under the span budget (≤ 8 per response)
-/// and the cursor advances via consumed_to — every match returned
-/// exactly once, in order, across multiple partial responses, with no
-/// per-offset GET pattern (structural: the reader only range-scans).
+/// Seal every durable record of `hash`.
+async fn seal(engine: &Arc<crate::shard::ShardEngine>, hash: [u8; 16]) {
+    engine
+        .seal_once(crate::shard::seal::Trigger::Requested)
+        .await
+        .expect("seal");
+    wait_all_sealed(engine, &[hash]).await;
+}
+
+/// The engine's sealer counter `name` (`GET /v1/debug/shards`).
+fn seal_counter(engine: &crate::shard::ShardEngine, name: &str) -> u64 {
+    engine.seal_json()[name].as_u64().expect("a seal counter")
+}
+
+/// Append one record `{"op": op, "att": 0, "k": rk}` under routing key
+/// `rk` (the shape `drain_filtered` decodes).
+async fn append_op(
+    engine: &Arc<crate::shard::ShardEngine>,
+    hash: [u8; 16],
+    key: &crate::crypto::StreamKey,
+    rk: &str,
+    op: u64,
+) {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let req = crate::shard::AppendReq {
+        enqueued_at: std::time::Instant::now(),
+        hash,
+        route: hash,
+        entries: vec![bytes::Bytes::from(
+            serde_json::json!({"op": op, "att": 0, "k": rk})
+                .to_string()
+                .into_bytes(),
+        )],
+        usage: crate::usage::counters(&hash),
+        routing_key: rk.to_string(),
+        key_hash: crate::crypto::RoutingKeyHash::of(rk).0,
+        producer_lineage: Vec::new(),
+        key_version: 0,
+        subkey: crate::crypto::derive_subkey(key, &hash, rk, 0),
+        ts_hint_ms: None,
+        seq: None,
+        bytes: 0,
+        finish: crate::shard::AppendFinish::Open,
+        producer: None,
+        deferred_error: None,
+        sealed_reject_new: None,
+        touch: None,
+        seal_gen: None,
+        billing: None,
+        resp: tx,
+    };
+    assert!(engine.try_enqueue(req).is_ok(), "enqueue");
+    rx.await.expect("resp").expect("ack");
+}
+
+/// ROUTING-V3 §5/§8.5 in layout 6: a sparse key spread across many sealed
+/// chunks pages through and the cursor advances via consumed_to — every
+/// match returned exactly once, in order, across multiple partial
+/// responses, with no per-offset GET pattern: each chunk of only the
+/// default key is skipped by its key summary without a GET, and each chunk
+/// of the key costs exactly one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sparse_key_reads_page_with_bounded_spans() {
-    let inner = mem();
-    let store = FaultStore::uniform(inner.clone(), 104, FaultPlan::new(0, 0, 0));
     let key = skey();
     let hash = [0xB1u8; 16];
-
-    let db = slatedb::Db::builder("dst-sparsekey", store.clone() as Arc<dyn ObjectStore>)
-        .with_settings(slatedb::config::Settings {
-            flush_interval: Some(std::time::Duration::from_millis(5)),
-            manifest_poll_interval: std::time::Duration::from_millis(50),
-            ..Default::default()
-        })
-        .build()
-        .await
-        .expect("open db");
-    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
-    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
-    // zero; a reopened DB restores its durable backlog, exactly as
-    // the production opener does.
-    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-        .await
-        .expect("load maintenance");
-    let engine = crate::shard::ShardEngine::start(
-        "dst-sparsekey".to_string(),
-        Arc::new(db),
-        store.clone(),
-        crate::shard::ShardConfig::default(),
-        absorb_tx,
-        None,
-        __maint,
-    );
-    let _absorber = crate::history::Absorber::start(
-        engine.clone(),
-        crate::history::AbsorberConfig {
-            threshold_bytes: 1,
-            threshold_age: std::time::Duration::from_millis(1),
-            tick: std::time::Duration::from_millis(20),
-            sweep_every: u32::MAX,
-            ..Default::default()
-        },
-        absorb_rx,
-    );
-
-    // 24 appends of 512 records each (12,288 offsets): the key "sp"
-    // hits every 512th offset (24 matches), buried in default-key
-    // records. Batched multi-entry appends with per-entry keys are not
-    // a workload-helper shape, so append per batch with the FIRST
-    // record keyed via a dedicated single append then a filler batch.
+    let engine = manual_seal_engine(mem(), "dst-sparsekey", 1).await;
+    // 24 requests of one "sp" record, each followed by a request of 511
+    // default-key records (12,288 offsets): every request is one page, so
+    // a one-page chunk holds either the key's record or none of the key.
     let mut expected = Vec::new();
-    let mut off = 0u64;
     for i in 0..24u64 {
-        let subkey = crate::crypto::derive_subkey(&key, &hash, "sp", 0);
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let req = crate::shard::AppendReq {
-            enqueued_at: std::time::Instant::now(),
-            hash,
-            route: hash,
-            entries: vec![bytes::Bytes::from(
-                serde_json::json!({"op": i, "att": 0, "k": "sp"})
-                    .to_string()
-                    .into_bytes(),
-            )],
-            usage: crate::usage::counters(&hash),
-            routing_key: "sp".to_string(),
-            key_hash: crate::crypto::stream_hash("sp"),
-            producer_lineage: Vec::new(),
-            key_version: 0,
-            subkey,
-            ts_hint_ms: None,
-            seq: None,
-            bytes: 0,
-            finish: crate::shard::AppendFinish::Open,
-            producer: None,
-            deferred_error: None,
-            sealed_reject_new: None,
-            touch: None,
-            seal_gen: None,
-            billing: None,
-            resp: tx,
-        };
-        assert!(engine.try_enqueue(req).is_ok());
-        rx.await.expect("resp").expect("ack");
+        append_op(&engine, hash, &key, "sp", i).await;
         expected.push((i, 0u32));
-        off += 1;
         append_n(&engine, hash, &key, 511, 40).await;
-        off += 511;
     }
-    let _ = off;
-    wait_all_absorbed(&engine, &[hash]).await;
-
-    let _ds: Arc<dyn ObjectStore> = store.clone();
+    seal(&engine, hash).await;
+    let (skips, gets) = (
+        seal_counter(&engine, "summary_skips"),
+        seal_counter(&engine, "sealed_gets"),
+    );
     let got = drain_filtered(&engine, hash, &key, "sp").await;
     assert_eq!(
         got, expected,
         "sparse keyed paging lost or reordered records"
     );
-    // Hits on this engine's own slice cache (ShardConfig::default() shares
-    // none): each is a page the postings planner served. READ_FRAMES_MATCHED
-    // is process-wide, so any other test's keyed read already made it
-    // positive.
-    let cache = &engine.postings_cache;
-    assert!(
-        cache.hits.load(Ordering::Relaxed) > 0,
-        "the postings planner must have served a page from this engine's cache: {}",
-        cache.stats()
+    assert_eq!(
+        seal_counter(&engine, "summary_skips") - skips,
+        24,
+        "each default-key chunk skipped by its summary, without a GET"
+    );
+    assert_eq!(
+        seal_counter(&engine, "sealed_gets") - gets,
+        24,
+        "one GET per chunk of the key"
     );
     engine.begin_close();
 }
 
-/// ROUTING-V3 §8.6: a corrupt postings page must never surface as
-/// completed=true over an unverified range — the reader falls back to
-/// ONE bounded canonical envelope scan (exact-key filtered), counts
-/// the corruption, and still returns every record exactly once.
+/// ROUTING-V3 §8.6 in layout 6 (no postings, no envelope): a sealed chunk
+/// whose bytes were altered in the store must never surface as a page
+/// with records missing, completed or not. A keyed read of the key the
+/// chunk holds fails loudly as corruption, at both visibilities.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn corrupt_postings_fall_back_to_the_envelope() {
-    let inner = mem();
-    let store = FaultStore::uniform(inner.clone(), 105, FaultPlan::new(0, 0, 0));
     let key = skey();
     let hash = [0xB3u8; 16];
-
-    let db = slatedb::Db::builder("dst-corruptp", store.clone() as Arc<dyn ObjectStore>)
-        .with_settings(slatedb::config::Settings {
-            flush_interval: Some(std::time::Duration::from_millis(5)),
-            manifest_poll_interval: std::time::Duration::from_millis(50),
-            ..Default::default()
-        })
-        .build()
-        .await
-        .expect("open db");
-    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
-    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
-    // zero; a reopened DB restores its durable backlog, exactly as
-    // the production opener does.
-    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-        .await
-        .expect("load maintenance");
-    let engine = crate::shard::ShardEngine::start(
-        "dst-corruptp".to_string(),
-        Arc::new(db),
-        store.clone(),
-        crate::shard::ShardConfig::default(),
-        absorb_tx,
-        None,
-        __maint,
-    );
-    let _absorber = crate::history::Absorber::start(
-        engine.clone(),
-        crate::history::AbsorberConfig {
-            threshold_bytes: 1,
-            threshold_age: std::time::Duration::from_millis(1),
-            tick: std::time::Duration::from_millis(20),
-            sweep_every: u32::MAX,
-            ..Default::default()
-        },
-        absorb_rx,
-    );
-
+    let store = mem();
+    // No ring: the sealed range is read from the segment object.
+    let engine = manual_seal_engine(store.clone(), "dst-corruptp", 8192).await;
     for i in 0..30u64 {
-        let subkey = crate::crypto::derive_subkey(&key, &hash, "ck", 0);
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let req = crate::shard::AppendReq {
-            enqueued_at: std::time::Instant::now(),
-            hash,
-            route: hash,
-            entries: vec![bytes::Bytes::from(
-                serde_json::json!({"op": i, "att": 0, "k": "ck"})
-                    .to_string()
-                    .into_bytes(),
-            )],
-            usage: crate::usage::counters(&hash),
-            routing_key: "ck".to_string(),
-            key_hash: crate::crypto::stream_hash("ck"),
-            producer_lineage: Vec::new(),
-            key_version: 0,
-            subkey,
-            ts_hint_ms: None,
-            seq: None,
-            bytes: 0,
-            finish: crate::shard::AppendFinish::Open,
-            producer: None,
-            deferred_error: None,
-            sealed_reject_new: None,
-            touch: None,
-            seal_gen: None,
-            billing: None,
-            resp: tx,
-        };
-        assert!(engine.try_enqueue(req).is_ok());
-        rx.await.expect("resp").expect("ack");
+        append_op(&engine, hash, &key, "ck", i).await;
     }
-    wait_all_absorbed(&engine, &[hash]).await;
-
-    // Corrupt the key's page in place: contiguous matches from offset 0
-    // make the page key fully deterministic (bucket 0, page_first 0).
-    let part = engine.history_partition().await.expect("partition");
-    let pk = crate::postings::postings_key(
-        crate::crypto::RouteHash(hash),
-        crate::crypto::SegmentHash(hash),
-        &crate::postings::rk_hash("ck"),
-        0,
-        0,
-    );
-    // The partition is WAL-disabled: a default (await-durable) put would
-    // wait for a flush that only comes later — write like the gather
-    // does, then flush explicitly.
-    let mut wb = slatedb::WriteBatch::new();
-    wb.put(&pk, b"garbage-not-a-page");
-    part.write_with_options(wb, &slatedb::config::WriteOptions::default())
-        .await
-        .expect("corrupt");
-    part.flush().await.expect("flush corruption");
-
-    let before = crate::history::POSTINGS_CORRUPT.load(Ordering::Relaxed);
-    let _ds: Arc<dyn ObjectStore> = store.clone();
-    // The absorber write-through-warmed the slice cache with the (valid)
-    // runs it encoded; served from there, the corruption would never be
-    // touched. The envelope contract is about a COLD index read — model
-    // the instance that did not absorb this data.
-    engine.postings_cache.sweep_idle(std::time::Duration::ZERO);
-    let got = drain_filtered(&engine, hash, &key, "ck").await;
-    let want: Vec<(u64, u32)> = (0..30u64).map(|i| (i, 0u32)).collect();
-    assert_eq!(got, want, "envelope fallback lost records");
-    assert!(
-        crate::history::POSTINGS_CORRUPT.load(Ordering::Relaxed) > before,
-        "corruption must be counted"
-    );
+    seal(&engine, hash).await;
+    corrupt_the_one_chunk(&store).await;
+    let handle = engine.stream_handle(hash).await.expect("handle");
+    for deliver in [
+        crate::shard::Deliver::Durable,
+        crate::shard::Deliver::Applied,
+    ] {
+        let read = crate::http::read_merged(
+            &key,
+            &hash,
+            &handle,
+            &engine,
+            0,
+            Some("ck"),
+            8 * 1024 * 1024,
+            deliver,
+        )
+        .await;
+        let error = match read {
+            Ok(page) => panic!(
+                "{deliver:?}: a corrupt chunk served {} records (completed {}, last {:?})",
+                page.recs.len(),
+                page.completed,
+                page.last
+            ),
+            Err(error) => error,
+        };
+        assert!(error.contains("corrupt"), "{deliver:?}: {error}");
+    }
     engine.begin_close();
 }
 
-/// Spec §7: a key's second read must be served from the decoded slice
-/// cache — no new physical index load — and repeated reads keep
-/// hitting. (The ≥90% active-window hit-rate gate runs in the
-/// acceptance campaign; this pins the mechanism.)
-#[expect(
-    clippy::too_many_lines,
-    reason = "postings cache scenario; the first read, the cached second read and the physical load counts form one causal sequence; helper phases would hide which read loaded the index again"
-)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn repeated_keyed_reads_hit_the_postings_cache() {
-    let inner = mem();
-    let store = FaultStore::uniform(inner.clone(), 107, FaultPlan::new(0, 0, 0));
-    let key = skey();
-    let hash = [0xB5u8; 16];
-
-    let db = slatedb::Db::builder("dst-pcache", store.clone() as Arc<dyn ObjectStore>)
-        .with_settings(slatedb::config::Settings {
-            flush_interval: Some(std::time::Duration::from_millis(5)),
-            manifest_poll_interval: std::time::Duration::from_millis(50),
-            ..Default::default()
-        })
-        .build()
+/// Flip one byte inside the last page of the store's one segment object's
+/// one chunk (before the chunk's CRC): the chunk spans the object up to
+/// the table the trailer locates.
+async fn corrupt_the_one_chunk(store: &Arc<dyn ObjectStore>) {
+    use futures_util::TryStreamExt;
+    let objects: Vec<_> = store
+        .list(None)
+        .try_filter(|meta| std::future::ready(meta.location.as_ref().contains("/hseg/")))
+        .try_collect()
         .await
-        .expect("open db");
-    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
-    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
-    // zero; a reopened DB restores its durable backlog, exactly as
-    // the production opener does.
-    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .expect("list");
+    assert_eq!(objects.len(), 1, "one seal, one segment object");
+    let path = &objects[0].location;
+    let mut body = store
+        .get(path)
         .await
-        .expect("load maintenance");
-    let engine = crate::shard::ShardEngine::start(
-        "dst-pcache".to_string(),
-        Arc::new(db),
-        store.clone(),
-        crate::shard::ShardConfig::default(),
-        absorb_tx,
-        None,
-        __maint,
-    );
-    let _absorber = crate::history::Absorber::start(
-        engine.clone(),
-        crate::history::AbsorberConfig {
-            threshold_bytes: 1,
-            threshold_age: std::time::Duration::from_millis(1),
-            tick: std::time::Duration::from_millis(20),
-            sweep_every: u32::MAX,
-            ..Default::default()
-        },
-        absorb_rx,
-    );
-    for i in 0..8u64 {
-        let subkey = crate::crypto::derive_subkey(&key, &hash, "hot", 0);
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let req = crate::shard::AppendReq {
-            enqueued_at: std::time::Instant::now(),
-            hash,
-            route: hash,
-            entries: vec![bytes::Bytes::from(
-                serde_json::json!({"op": i, "att": 0, "k": "hot"})
-                    .to_string()
-                    .into_bytes(),
-            )],
-            usage: crate::usage::counters(&hash),
-            routing_key: "hot".to_string(),
-            key_hash: crate::crypto::stream_hash("hot"),
-            producer_lineage: Vec::new(),
-            key_version: 0,
-            subkey,
-            ts_hint_ms: None,
-            seq: None,
-            bytes: 0,
-            finish: crate::shard::AppendFinish::Open,
-            producer: None,
-            deferred_error: None,
-            sealed_reject_new: None,
-            touch: None,
-            seal_gen: None,
-            billing: None,
-            resp: tx,
-        };
-        assert!(engine.try_enqueue(req).is_ok());
-        rx.await.expect("resp").expect("ack");
-        append_n(&engine, hash, &key, 32, 64).await;
-    }
-    wait_all_absorbed(&engine, &[hash]).await;
-
-    let _ds: Arc<dyn ObjectStore> = store.clone();
-    let cache = &engine.postings_cache;
-
-    // Write-through warming (spec §7): the absorber installed the runs
-    // it just wrote, so even the FIRST read pays no index round trip.
-    let first = drain_filtered(&engine, hash, &key, "hot").await;
-    assert_eq!(first.len(), 8);
-    assert_eq!(
-        cache.index_loads.load(Ordering::Relaxed),
-        0,
-        "first read after in-process absorption must be warm: {} / slice {:?}",
-        cache.stats(),
-        cache.debug_slice(
-            &crate::crypto::SegmentHash(hash),
-            &crate::postings::rk_hash("hot")
-        ),
-    );
-    assert!(cache.hits.load(Ordering::Relaxed) >= 1);
-    assert!(cache.warm_installs.load(Ordering::Relaxed) >= 1);
-
-    // Simulate an instance that did NOT absorb this data (restart /
-    // ownership move): sweep everything, then the cold-load contract
-    // applies — one physical load, then hits.
-    cache.sweep_idle(std::time::Duration::ZERO);
-    let again = drain_filtered(&engine, hash, &key, "hot").await;
-    assert_eq!(again, first);
-    let loads_after_cold = cache.index_loads.load(Ordering::Relaxed);
-    let hits_after_cold = cache.hits.load(Ordering::Relaxed);
-    assert!(loads_after_cold >= 1, "swept cache must load the index");
-
-    for _ in 0..5 {
-        let warm = drain_filtered(&engine, hash, &key, "hot").await;
-        assert_eq!(warm, first);
-    }
-    assert_eq!(
-        cache.index_loads.load(Ordering::Relaxed),
-        loads_after_cold,
-        "warm reads must not touch the physical index"
-    );
-    assert!(
-        cache.hits.load(Ordering::Relaxed) >= hits_after_cold + 5,
-        "warm reads must be cache hits"
-    );
-    engine.begin_close();
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap()
+        .to_vec();
+    let trailer = body.len() - crate::spill::object::TRAILER_LEN;
+    let table_off = u64::from_le_bytes(body[trailer..trailer + 8].try_into().unwrap());
+    let at = usize::try_from(table_off).unwrap() - crate::spill::object::CHUNK_CRC_LEN - 4;
+    body[at] ^= 0x40;
+    store.put(path, body.into()).await.unwrap();
 }
 
 /// Keyed drain from `from` for routing key "cold": (offsets, next cursor).
@@ -527,59 +228,56 @@ async fn keyed_offsets(
     (offs, from)
 }
 
-/// A cold postings load (restart, idle sweep, eviction) proves coverage
-/// only to the absorbed boundary it was loaded at. Records of the same key
-/// absorbed afterwards in the same bucket must reach a catch-up reader
-/// resuming from its old cursor: the slice used to claim the whole bucket,
-/// drop the write-through installs and serve the range as match-free.
+/// A cold directory load (restart, ownership move) knows the chunks its
+/// rebuild found. Records of the same key sealed afterwards into a second
+/// object must reach a catch-up reader resuming from its old cursor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn keyed_catch_up_after_a_cold_index_load_sees_later_absorbed_records() {
     let key = skey();
     let hash = [0xC7u8; 16];
-    let (engine, _absorber) = open_engine_with_absorber(mem(), "dst-coldclaim").await;
+    let store = mem();
+    let warm = manual_seal_engine(store.clone(), "dst-coldclaim", 8192).await;
     let mut first = Vec::new();
     for _ in 0..4 {
-        first.push(append_sized(&engine, hash, &key, "cold", 64).await);
+        first.push(append_sized(&warm, hash, &key, "cold", 64).await);
     }
-    wait_all_absorbed(&engine, &[hash]).await;
+    seal(&warm, hash).await;
+    warm.begin_close();
 
-    // The instance that did not absorb this data: cold index load.
-    let cache = &engine.postings_cache;
-    cache.sweep_idle(std::time::Duration::ZERO);
-    let loads = cache.index_loads.load(Ordering::Relaxed);
+    // The instance that did not seal this data: its directory is rebuilt
+    // from the shard log at open.
+    let engine = manual_seal_engine(store, "dst-coldclaim", 8192).await;
     let (got, cursor) = keyed_offsets(&engine, hash, &key, 0).await;
     assert_eq!(got, first);
-    assert!(
-        cache.index_loads.load(Ordering::Relaxed) > loads,
-        "the swept cache must load the index"
+    assert_eq!(cursor, 4, "the cursor consumed the sealed range");
+    assert_eq!(
+        seal_counter(&engine, "directory_entries"),
+        1,
+        "the rebuilt directory"
     );
 
-    // Same key, same 65,536-offset bucket, absorbed AFTER the cold load.
+    // Same key, sealed AFTER the cold load, into a second object.
     let mut later = Vec::new();
     for _ in 0..4 {
         later.push(append_sized(&engine, hash, &key, "cold", 64).await);
     }
-    wait_all_absorbed(&engine, &[hash]).await;
+    seal(&engine, hash).await;
     let (caught_up, _) = keyed_offsets(&engine, hash, &key, cursor).await;
     assert_eq!(
-        caught_up,
-        later,
-        "catch-up from the old cursor skipped durable records: slice {:?}",
-        cache.debug_slice(
-            &crate::crypto::SegmentHash(hash),
-            &crate::postings::rk_hash("cold")
-        ),
+        caught_up, later,
+        "catch-up from the old cursor skipped durable records"
     );
     engine.begin_close();
 }
 
-/// Layout 5: a fork whose boundary falls inside a page of its parent's
-/// absorbed history reads the parent exactly up to the boundary (the page
-/// is sliced, its later records never leak into the fork), then continues
-/// with the fork's own records.
+/// A fork whose boundary falls inside a page of its parent's sealed
+/// chunk reads the parent exactly up to the boundary (the page is sliced,
+/// its later records never leak into the fork), then continues with the
+/// fork's own records. Without a ring the parent's records come from the
+/// segment object.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fork_reads_its_parent_history_up_to_a_boundary_inside_a_page() {
-    use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig_build};
+    use super::fixture_http::{HttpRigOptions, cold_sealer, engine_shutdown, http_rig_build};
     use super::fixture_requests::hreq;
     let rig = http_rig_build(
         mem(),
@@ -589,12 +287,7 @@ async fn a_fork_reads_its_parent_history_up_to_a_boundary_inside_a_page() {
                 tail_ring_bytes: 0,
                 ..Default::default()
             },
-            absorber: Some(crate::history::AbsorberConfig {
-                threshold_bytes: 1,
-                threshold_age: std::time::Duration::from_millis(1),
-                tick: std::time::Duration::from_millis(20),
-                ..Default::default()
-            }),
+            seal: Some(cold_sealer),
             ..Default::default()
         },
     )
@@ -612,21 +305,17 @@ async fn a_fork_reads_its_parent_history_up_to_a_boundary_inside_a_page() {
     let route = desc.segment_route_by_id(0).unwrap();
     let engine = rig.state.engine_for(&route).await.unwrap();
     let hash = desc.storage_hash();
-    wait_all_absorbed(&engine, &[hash]).await;
-    // The one request is one history page holding records 0 to 9.
+    engine.seal_requested().await.expect("seal");
+    // The one request is one sealed page holding records 0 to 9, in one
+    // chunk, and nothing of the parent is left unsealed.
     let handle = engine.stream_handle(hash).await.unwrap();
-    let route = crate::crypto::RouteHash(handle.state.lock().unwrap().durable.route);
-    let (inc, part) = (
-        crate::crypto::SegmentHash(hash),
-        engine.history_partition().await.unwrap(),
-    );
-    let stored = part
-        .get(crate::crypto_page::history_page_key(route, inc, 9))
-        .await
-        .unwrap()
-        .expect("the request's page in history");
-    let page = crate::crypto_page::CheckedPage::admit(stored, 9).unwrap();
-    assert_eq!((page.first(), page.count()), (0, 10));
+    {
+        let st = handle.state.lock().unwrap();
+        assert_eq!((st.durable.absorbed, st.durable.next), (10, 10), "sealed");
+        assert!(st.pending.is_empty(), "no unsealed page left");
+    }
+    assert_eq!(seal_counter(&engine, "directory_entries"), 1, "one chunk");
+    let gets = seal_counter(&engine, "sealed_gets");
     let fork = [
         ("content-type", "application/json"),
         ("stream-forked-from", "pgparent"),
@@ -640,6 +329,10 @@ async fn a_fork_reads_its_parent_history_up_to_a_boundary_inside_a_page() {
         serde_json::from_slice::<Vec<serde_json::Value>>(&b).unwrap()
     };
     assert_eq!(read("pgchild").await, records[..6]);
+    assert!(
+        seal_counter(&engine, "sealed_gets") > gets,
+        "the fork read its parent's records from the segment object"
+    );
     let own = value(r#""own""#).unwrap();
     let body = serde_json::to_vec(&[&own]).unwrap();
     let (st, _, _) = hreq(rig.addr, "POST", "/v1/stream/pgchild", &ct, &body).await;
@@ -652,13 +345,13 @@ async fn a_fork_reads_its_parent_history_up_to_a_boundary_inside_a_page() {
     rig.tasks.shutdown(std::time::Duration::from_secs(5)).await;
 }
 
-/// A fork whose boundary falls inside a
-/// page its parent still holds in the shard-log tail (nothing absorbed)
-/// reads the parent exactly up to the boundary, from the ring and from the
-/// store, then the fork's own records; the parent still reads whole.
+/// A fork whose boundary falls inside a page its parent still holds
+/// unsealed (nothing sealed) reads the parent exactly up to the boundary
+/// from the unsealed pages, with and without a ring, then the fork's own
+/// records; the parent still reads whole.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fork_inside_an_unabsorbed_parent_page_reads_to_its_boundary() {
-    use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig_build};
+    use super::fixture_http::{HttpRigOptions, cold_sealer, engine_shutdown, http_rig_build};
     use super::fixture_requests::hreq;
     for ring in [0usize, 1 << 20] {
         let rig = http_rig_build(
@@ -669,12 +362,7 @@ async fn a_fork_inside_an_unabsorbed_parent_page_reads_to_its_boundary() {
                     tail_ring_bytes: ring,
                     ..Default::default()
                 },
-                absorber: Some(crate::history::AbsorberConfig {
-                    threshold_bytes: u64::MAX,
-                    threshold_age: std::time::Duration::from_secs(3600),
-                    tick: std::time::Duration::from_secs(3600),
-                    ..Default::default()
-                }),
+                seal: Some(cold_sealer),
                 ..Default::default()
             },
         )
@@ -696,7 +384,7 @@ async fn a_fork_inside_an_unabsorbed_parent_page_reads_to_its_boundary() {
         assert_eq!(
             (tail.absorbed, tail.next),
             (0, 10),
-            "ring {ring}: the page is unabsorbed"
+            "ring {ring}: the page is unsealed"
         );
         let fork = [
             ("content-type", "application/json"),

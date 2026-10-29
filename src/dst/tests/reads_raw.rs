@@ -4,7 +4,7 @@ use super::fixture_failpoints::{FailpointGuard, gap_lock};
 use super::fixture_http::{await_published, engine_shutdown, http_rig, rig_in_seal_gap};
 use super::fixture_requests::RIG_KEY_B64;
 use super::fixture_requests::{PRISMA_KEY, drain_no_closure, hreq, preq, read_page};
-use super::fixture_storage::{append_sized, mem, skey, wait_all_absorbed};
+use super::fixture_storage::{append_sized, mem, open_engine, skey, wait_all_sealed};
 use crate::dst::{FaultPlan, FaultStore};
 use object_store::ObjectStore;
 use std::sync::Arc;
@@ -362,50 +362,27 @@ async fn drain_keyed_paged(
     }
 }
 
+/// Seal every durable record of `hash` into a segment object.
+async fn seal_all(engine: &Arc<crate::shard::ShardEngine>, hash: [u8; 16]) {
+    engine
+        .seal_once(crate::shard::seal::Trigger::Requested)
+        .await
+        .expect("seal");
+    wait_all_sealed(engine, &[hash]).await;
+}
+
 /// One record far larger than the page budget, surrounded by small
-/// records of another key: it must be served (allow-first), and the
-/// drain must complete with exact contents.
+/// records of another key, all sealed: it must be served (allow-first),
+/// and the drain must complete with exact contents.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn oversized_keyed_record_pages_through() {
     let store = mem();
     let key = skey();
     let hash = [0xC1u8; 16];
-    let db = slatedb::Db::builder("dst-bigrec", store.clone())
-        .with_settings(slatedb::config::Settings {
-            flush_interval: Some(std::time::Duration::from_millis(5)),
-            manifest_poll_interval: std::time::Duration::from_millis(50),
-            ..Default::default()
-        })
-        .build()
-        .await
-        .expect("open db");
-    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
-    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
-    // zero; a reopened DB restores its durable backlog, exactly as
-    // the production opener does.
-    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-        .await
-        .expect("load maintenance");
-    let engine = crate::shard::ShardEngine::start(
-        "dst-bigrec".to_string(),
-        Arc::new(db),
-        store.clone(),
-        crate::shard::ShardConfig::default(),
-        absorb_tx,
-        None,
-        __maint,
-    );
-    let _absorber = crate::history::Absorber::start(
-        engine.clone(),
-        crate::history::AbsorberConfig {
-            threshold_bytes: 1,
-            threshold_age: std::time::Duration::from_millis(1),
-            tick: std::time::Duration::from_millis(20),
-            sweep_every: u32::MAX,
-            ..Default::default()
-        },
-        absorb_rx,
-    );
+    let engine = open_engine(store.clone(), "dst-bigrec").await;
+    // The test seals once every record is durable.
+    engine.seal_ready().await.expect("seal open");
+    engine.configure_seal(|s| s.auto = false);
     let mut want: Vec<(u64, usize)> = Vec::new();
     for _ in 0..3 {
         append_sized(&engine, hash, &key, "other", 4 * 1024).await;
@@ -423,8 +400,7 @@ async fn oversized_keyed_record_pages_through() {
             4 * 1024,
         ));
     }
-    wait_all_absorbed(&engine, &[hash]).await;
-    let _ds: Arc<dyn ObjectStore> = store.clone();
+    seal_all(&engine, hash).await;
     let (offs, sizes, pages) = drain_keyed_paged(&engine, hash, &key, "big", 1024 * 1024).await;
     assert_eq!(
         offs,
@@ -441,58 +417,23 @@ async fn oversized_keyed_record_pages_through() {
 }
 
 /// A contiguous single-key run larger than the 16 MiB plan budget AND
-/// the page budget: sub-run planning + span truncation page it through,
-/// including across a postings-cache wipe mid-drain (the restart /
-/// cold-instance shape).
+/// the page budget, sealed into a segment object: sub-run planning + span
+/// truncation page it through.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn long_keyed_run_pages_with_progress() {
     let store = mem();
     let key = skey();
     let hash = [0xC2u8; 16];
-    let db = slatedb::Db::builder("dst-bigrun", store.clone())
-        .with_settings(slatedb::config::Settings {
-            flush_interval: Some(std::time::Duration::from_millis(5)),
-            manifest_poll_interval: std::time::Duration::from_millis(50),
-            ..Default::default()
-        })
-        .build()
-        .await
-        .expect("open db");
-    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
-    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
-    // zero; a reopened DB restores its durable backlog, exactly as
-    // the production opener does.
-    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-        .await
-        .expect("load maintenance");
-    let engine = crate::shard::ShardEngine::start(
-        "dst-bigrun".to_string(),
-        Arc::new(db),
-        store.clone(),
-        crate::shard::ShardConfig::default(),
-        absorb_tx,
-        None,
-        __maint,
-    );
-    let _absorber = crate::history::Absorber::start(
-        engine.clone(),
-        crate::history::AbsorberConfig {
-            threshold_bytes: 1,
-            threshold_age: std::time::Duration::from_millis(1),
-            tick: std::time::Duration::from_millis(20),
-            sweep_every: u32::MAX,
-            ..Default::default()
-        },
-        absorb_rx,
-    );
+    let engine = open_engine(store.clone(), "dst-bigrun").await;
+    // The test seals once every record is durable.
+    engine.seal_ready().await.expect("seal open");
+    engine.configure_seal(|s| s.auto = false);
     let mut want = Vec::new();
     for _ in 0..24 {
         want.push(append_sized(&engine, hash, &key, "run", 1024 * 1024).await);
     }
-    wait_all_absorbed(&engine, &[hash]).await;
-    let _ds: Arc<dyn ObjectStore> = store.clone();
+    seal_all(&engine, hash).await;
 
-    // Page manually so the cache wipe lands between pages.
     let handle = engine.stream_handle(hash).await.expect("handle");
     let mut from = 0u64;
     let mut offs = Vec::new();
@@ -522,10 +463,6 @@ async fn long_keyed_run_pages_with_progress() {
         match res.last {
             Some(last) if last + 1 > from => from = last + 1,
             other => panic!("no progress at from={from} ({other:?})"),
-        }
-        if pages == 2 {
-            // Cold-instance restart between partial pages.
-            engine.postings_cache.sweep_idle(std::time::Duration::ZERO);
         }
     }
     assert_eq!(offs, want, "all 24 MiB drained exactly once, in order");
@@ -812,25 +749,20 @@ fn wire_frames(
     out
 }
 
-/// Layout 5: `format=frames` still re-encrypts each served record as its
-/// own frame, whatever page stores it. A read from the start and a read
-/// whose cursor falls inside the absorbed history page each answer one
+/// `format=frames` still re-encrypts each served record as its own frame,
+/// whatever page stores it. A read from the start and a read whose cursor
+/// falls inside the sealed page each answer one
 /// frame per record, in order, from the cursor on. Every frame is version 4
 /// (uncompressed), the 600 B records zstd would shrink included: no
 /// response length depends on how well a record compresses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn format_frames_reencrypts_each_record_of_a_paged_stream() {
-    use super::fixture_http::{HttpRigOptions, http_rig_build};
+    use super::fixture_http::{HttpRigOptions, cold_sealer, http_rig_build};
     let rig = http_rig_build(
         mem(),
         super::fixture_runtime::RigRuntime::first(),
         HttpRigOptions {
-            absorber: Some(crate::history::AbsorberConfig {
-                threshold_bytes: 1,
-                threshold_age: std::time::Duration::from_millis(1),
-                tick: std::time::Duration::from_millis(20),
-                ..Default::default()
-            }),
+            seal: Some(cold_sealer),
             ..Default::default()
         },
     )
@@ -855,7 +787,8 @@ async fn format_frames_reencrypts_each_record_of_a_paged_stream() {
         .engine_for(&desc.segment_route_by_id(0).unwrap())
         .await
         .unwrap();
-    wait_all_absorbed(&engine, &[desc.storage_hash()]).await;
+    engine.seal_requested().await.expect("seal");
+    wait_all_sealed(&engine, &[desc.storage_hash()]).await;
     let (st, _, _) = hreq(
         rig.addr,
         "POST",

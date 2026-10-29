@@ -1,0 +1,12 @@
+diff --git a/src/keyspace.rs b/src/keyspace.rs
+--- a/src/keyspace.rs
++++ b/src/keyspace.rs
+@@ -70,7 +70,7 @@
+ /// The segment prefix width of `bytes`, or `None` when it has none.
+ fn segment_len(bytes: &[u8]) -> Option<usize> {
+     match bytes.first() {
+-        Some(&STREAM) => Some(1),
++        Some(&STREAM) => Some(17),
+         Some(&QUEUE_TAG) if bytes.len() >= QUEUE_PREFIX_LEN => Some(QUEUE_PREFIX_LEN),
+         _ => None,
+     }

@@ -5,13 +5,13 @@
 use super::stamped;
 use bytes::Bytes;
 
-use super::body::{build_body, get_varint, put_varint, varint_len};
+use super::body::build_body;
 use super::seal::split_pages;
+use super::varint::{get_varint, put_varint, varint_len};
 use super::{
-    CheckedPage, PAGE_MAX_RECORDS, PageCipher, PageLane, SHARD_PAGE_TAG, SealError, SealRecord,
-    SealedPage, history_page_key, shard_page_key,
+    CheckedPage, PAGE_MAX_RECORDS, PageCipher, PageLane, SealError, SealRecord, SealedPage,
 };
-use crate::crypto::{MAX_RECORD_PLAINTEXT, RouteHash, SegmentHash, StreamKey, derive_subkey, hex};
+use crate::crypto::{MAX_RECORD_PLAINTEXT, StreamKey, derive_subkey, hex};
 
 pub(super) const SEGMENT: [u8; 16] = [0x22; 16];
 pub(super) const HASH: [u8; 16] = [0x44; 16];
@@ -36,15 +36,9 @@ pub(super) fn lane() -> PageLane<'static> {
     }
 }
 
-/// The canonical shard-log page prefix of the fixture segment.
-pub(super) fn prefix() -> Vec<u8> {
-    [&b"S"[..], HASH.as_slice(), &[SHARD_PAGE_TAG]].concat()
-}
-
-/// Admit a sealed page under its canonical shard-log key.
+/// Admit a sealed page under its last offset, as its holder names it.
 pub(super) fn admit(page: &SealedPage) -> CheckedPage {
-    let key = shard_page_key(&HASH, page.last);
-    CheckedPage::from_row(&key, &prefix(), Bytes::from(page.bytes.clone())).unwrap()
+    CheckedPage::admit(Bytes::from(page.bytes.clone()), page.last).unwrap()
 }
 
 /// Seal `records` as one request from `first`, every record at TS, admit
@@ -483,45 +477,15 @@ fn every_page_gets_a_fresh_nonce() {
 /// A window's scan reaches, exclusive, 4,095 offsets past its last record:
 /// the page holding that record ends below there whatever its size.
 #[test]
-fn a_scan_bound_reaches_the_page_holding_the_last_record() {
-    use super::page_scan_bound;
-    assert_eq!(page_scan_bound(1), PAGE_MAX_RECORDS as u64);
-    assert_eq!(page_scan_bound(10), 9 + PAGE_MAX_RECORDS as u64);
-    assert_eq!(page_scan_bound(u64::MAX - 1), u64::MAX);
-    assert_eq!(page_scan_bound(u64::MAX), u64::MAX);
-}
-
-#[test]
 fn row_keys_are_namespace_tag_and_last_offset() {
+    // Layout 6 keeps per-page rows only for native queues; a stream's
+    // pages live in its pending row and its segment objects.
     let last = 0x0102_0304_0506_0708;
-    let shard = shard_page_key(&HASH, last);
-    assert_eq!(
-        shard,
-        [&b"S"[..], &HASH[..], b"p", &last.to_be_bytes()].concat()
-    );
     let queue = crate::crypto_page::queue_page_key(&HASH, last);
     assert_eq!(
         queue,
         [&b"Q\0\0\0\0"[..], &HASH[..], b"p", &last.to_be_bytes()].concat()
     );
-    let (route, inc) = (RouteHash([0x0a; 16]), SegmentHash([0x0b; 16]));
-    let history = history_page_key(route, inc, last);
-    assert_eq!(
-        history,
-        [&[0x0a; 16][..], &[0x0b; 16], b"g", &last.to_be_bytes()].concat()
-    );
-
-    let sealed = cipher()
-        .seal_request(&lane(), 5, &stamped(TS, &[b"a".to_vec()]))
-        .unwrap();
-    let [page] = sealed.as_slice() else {
-        panic!("one page")
-    };
-    let key = history_page_key(route, inc, 5);
-    let prefix = history_page_key(route, inc, 0);
-    let (prefix, _) = prefix.split_last_chunk::<8>().unwrap();
-    let admitted = CheckedPage::from_row(&key, prefix, Bytes::from(page.bytes.clone()));
-    assert_eq!(admitted.unwrap(), admit(page));
 }
 
 /// The writer's bytes are pinned at every width from one group to ten.

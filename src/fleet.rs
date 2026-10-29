@@ -766,7 +766,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                         let healthy = peer_load
                             .get(&home)
                             .map(|(_, lag)| *lag == 0)
-                            .unwrap_or(home == cfg.instance && state.runtime.usage.absorb_lag_max() == 0);
+                            .unwrap_or(home == cfg.instance && state.shards.stall_max_secs() == 0);
                         if !healthy {
                             continue;
                         }
@@ -849,11 +849,10 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                         );
                     }
                     let victim = {
-                        // Possession-first, keyed by the shard the absorber
-                        // actually serves (never re-derived from a stream
-                        // hash — see usage::shard_lag_map).
+                        // Possession-first, keyed by the shard whose sealer
+                        // stalls (never re-derived from a stream hash).
                         let served: Vec<String> = state.shards.held_prefixes();
-                        pick_victim_shard(&state.runtime.usage.shard_lag_all(), &served)
+                        pick_victim_shard(&state.shards.shard_stalls(), &served)
                             // No committed backlog anywhere (shed-before-
                             // commit): move the WEDGED shard itself.
                             .or_else(|| {

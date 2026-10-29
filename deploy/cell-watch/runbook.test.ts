@@ -40,7 +40,7 @@ function section(heading: string): string {
 const CLASS: Readonly<Record<number, string>> = {
   1: "PAGE", 2: "PAGE", 3: "PAGE", 4: "NOTIFY / PAGE", 5: "NOTIFY", 6: "PAGE", 7: "PAGE",
   8: "PAGE / NOTIFY", 9: "PAGE / NOTIFY", 10: "PAGE / NOTIFY", 11: "PAGE", 12: "PAGE / NOTIFY",
-  13: "PAGE", 14: "PAGE", 15: "NOTIFY / PAGE", 16: "PAGE / NOTIFY", 17: "NOTIFY", 18: "NOTIFY",
+  14: "PAGE", 15: "NOTIFY / PAGE", 16: "PAGE / NOTIFY", 17: "NOTIFY", 18: "NOTIFY",
   19: "PAGE", 20: "NOTIFY", 21: "PAGE", 22: "PAGE", 23: "NOTIFY", 24: "NOTIFY", 25: "NOTIFY",
   26: "NOTIFY", 27: "NOTIFY", 28: "NOTIFY", 29: "NOTIFY",
 };
@@ -56,7 +56,7 @@ describe("RUNBOOK.md's What to alert on", () => {
     expect(header).toEqual(["#", "rule", "class", "where", "alert when", "paged by"]);
   });
 
-  test("holds rows 1 to 29 once each, in order, each saying where and when", () => {
+  test("holds rows 1 to 29 once each but row 13 (retired with the history tier), in order, each saying where and when", () => {
     expect(rows.map((c) => c[0])).toEqual(ROWS.map(String));
     for (const c of rows) expect([c[0], c.length, (c[3] ?? "") !== "", (c[4] ?? "") !== ""]).toEqual([c[0], 6, true, true]);
   });
@@ -171,8 +171,7 @@ describe("RUNBOOK.md's drills paragraph", () => {
     for (const want of [
       "a policy naming `PROJECT_ID` in the bundle (row 7)",
       "the three feed files deleted, as the wrapper's `feeds deleted` does (row 6",
-      "`POST /v1/debug/history-stall?ms=35000` (row 13)",
-      "`POST /v1/debug/absorb-pause?on=1` until the absorb-lag latch engages (row 12",
+      "`POST /v1/debug/seal-pause?on=1` until the lag latch engages",
       "the cell stopped (row 3 after 2 min and the uptime check after 3 failures",
       "the watch killed (the heartbeat, 3 min after its last beat)",
       "the issuer stopped (row 21)",

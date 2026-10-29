@@ -1,7 +1,7 @@
-diff --git a/src/crypto_page/body.rs b/src/crypto_page/body.rs
---- a/src/crypto_page/body.rs
-+++ b/src/crypto_page/body.rs
-@@ -51,7 +51,7 @@
+diff --git a/src/crypto_page/varint.rs b/src/crypto_page/varint.rs
+--- a/src/crypto_page/varint.rs
++++ b/src/crypto_page/varint.rs
+@@ -31,7 +31,7 @@
          }
          value |= group << shift;
          if byte & 0x80 == 0 {

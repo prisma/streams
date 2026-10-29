@@ -290,13 +290,6 @@
     {
       "category": "by-path-module",
       "count": 1,
-      "owner": "crate::history_gather",
-      "path": "src/dst/dst_tests.rs",
-      "syntax": "path = \"tests/history_gather.rs\""
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
       "owner": "crate::history_recovery",
       "path": "src/dst/dst_tests.rs",
       "syntax": "path = \"tests/history_recovery.rs\""
@@ -954,27 +947,6 @@
     },
     {
       "category": "effect",
-      "count": 1,
-      "owner": "crate::balanced_append_absorb_group_still_writes_progress",
-      "path": "src/dst/tests/billing_maintenance.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::mixed_append_absorb_group_refreshes_the_progress_clock",
-      "path": "src/dst/tests/billing_maintenance.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::over_retirement_fails_the_group_and_preserves_the_boundary",
-      "path": "src/dst/tests/billing_maintenance.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
       "count": 2,
       "owner": "crate::a_receive_after_delete_in_the_same_group_is_refused",
       "path": "src/dst/tests/consumer_atomicity.rs",
@@ -1076,13 +1048,6 @@
       "count": 1,
       "owner": "crate::r05_unknown_child_state_preserves_its_source_reference",
       "path": "src/dst/tests/fork_lifecycle.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::sparse_absorption_wave_bounds_append_latency",
-      "path": "src/dst/tests/history_gather.rs",
       "syntax": "tokio::spawn"
     },
     {
@@ -1403,13 +1368,6 @@
     {
       "category": "effect",
       "count": 1,
-      "owner": "crate::tests::cancelled_reservation_releases_its_gather_slot",
-      "path": "src/history.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
       "owner": "crate::tests::commit_blocked_detects_real_flush_stall",
       "path": "src/history.rs",
       "syntax": "tokio::spawn"
@@ -1417,58 +1375,9 @@
     {
       "category": "effect",
       "count": 1,
-      "owner": "crate::tests::worst_frame_floor_serializes_oversized_gathers_without_starvation",
-      "path": "src/history.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::Absorber::classify_due",
-      "path": "src/history/worker.rs",
-      "syntax": "std::env::var"
-    },
-    {
-      "category": "effect",
-      "count": 1,
       "owner": "crate::main",
       "path": "src/main.rs",
       "syntax": "std::thread::available_parallelism"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::PostingsCache::spawn_load",
-      "path": "src/postings_cache.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::HistoryPartition::open",
-      "path": "src/shard/history_partition.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 2,
-      "owner": "crate::r08a_database_record_corruption_refuses_progress_without_mutation",
-      "path": "src/shard/record_scan_tests.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::r17a_cancelled_history_opener_stays_owned_until_late_store_close",
-      "path": "src/shard/task_lifecycle_tests.rs",
-      "syntax": "tokio::spawn"
-    },
-    {
-      "category": "effect",
-      "count": 1,
-      "owner": "crate::CommitTransaction < '_ >::absorbed",
-      "path": "src/shard/transaction/maintenance.rs",
-      "syntax": "std::env::var"
     },
     {
       "category": "effect",
@@ -1816,126 +1725,7 @@
     {
       "category": "global",
       "count": 1,
-      "owner": "crate::ABSORB_BYTES_TOTAL",
-      "path": "src/history.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::ABSORB_ZERO_ROUTE_DROPPED",
-      "path": "src/history.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::CANONICAL_BYTES_WRITTEN",
-      "path": "src/history.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::GATHER_LAST_ACTUAL",
-      "path": "src/history.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::GATHER_LAST_FLUSH_MS",
-      "path": "src/history.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::GATHER_LAST_READ_MS",
-      "path": "src/history.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::GATHER_LAST_RESERVED",
-      "path": "src/history.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::GATHER_LAST_WRITE_MS",
-      "path": "src/history.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::HISTORY_FLUSH_STALL_MS",
-      "path": "src/history.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::HISTORY_FLUSH_WAIT_MS_MAX",
-      "path": "src/history.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
       "owner": "crate::INGEST_BYTES_TOTAL",
-      "path": "src/history.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::POSTINGS_BYTES_WRITTEN",
-      "path": "src/history.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::POSTINGS_CORRUPT",
-      "path": "src/history.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::POSTINGS_PAGES_WRITTEN",
-      "path": "src/history.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::POSTINGS_RUNS_WRITTEN",
-      "path": "src/history.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::READ_FRAMES_MATCHED",
-      "path": "src/history.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::READ_FRAMES_SCANNED",
-      "path": "src/history.rs",
-      "syntax": "AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
-      "owner": "crate::READ_SPANS_MAX",
       "path": "src/history.rs",
       "syntax": "AtomicU64"
     },
@@ -2553,13 +2343,6 @@
       "count": 1,
       "owner": "crate::run",
       "path": "src/bootstrap.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::run",
-      "path": "src/bootstrap.rs",
       "syntax": "tokio::select"
     },
     {
@@ -2641,20 +2424,6 @@
     },
     {
       "category": "macro-dsl",
-      "count": 2,
-      "owner": "crate::o3_retained_ring_coverage_skips_only_the_redundant_marker",
-      "path": "src/dst/tests/reads_ring.rs",
-      "syntax": "tokio::pin"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 2,
-      "owner": "crate::o3_retained_ring_coverage_skips_only_the_redundant_marker",
-      "path": "src/dst/tests/reads_ring.rs",
-      "syntax": "tokio::select"
-    },
-    {
-      "category": "macro-dsl",
       "count": 1,
       "owner": "crate::concurrent_plain_seals_serialize_into_one_terminal_transition",
       "path": "src/dst/tests/seal_convergence.rs",
@@ -2722,27 +2491,6 @@
       "owner": "crate::r09_fleet_population_budget_includes_its_coordination_documents",
       "path": "src/fleet/repository/document_tests.rs",
       "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::tests::absorb_budget_blocks_waiters_and_recovers_after_release",
-      "path": "src/history.rs",
-      "syntax": "tokio::pin"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::tests::gather_concurrency_cap_holds",
-      "path": "src/history.rs",
-      "syntax": "tokio::pin"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::Absorber::run",
-      "path": "src/history/worker.rs",
-      "syntax": "tokio::select"
     },
     {
       "category": "macro-dsl",
@@ -2886,13 +2634,6 @@
     },
     {
       "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::PostingsCache::stats",
-      "path": "src/postings_cache.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
       "count": 2,
       "owner": "crate::internal_segment_scan",
       "path": "src/product.rs",
@@ -3030,20 +2771,6 @@
       "owner": "crate::ShardEngine::committer_loop",
       "path": "src/shard.rs",
       "syntax": "tokio::select"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::ShardEngine::start",
-      "path": "src/shard.rs",
-      "syntax": "tokio::select"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::macro(tokio::task_local)",
-      "path": "src/shard/record.rs",
-      "syntax": "tokio::task_local"
     },
     {
       "category": "macro-dsl",
@@ -3426,13 +3153,6 @@
     {
       "category": "unresolved-glob",
       "count": 1,
-      "owner": "crate::history_postings",
-      "path": "src/golden_tests.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
       "owner": "crate::queue_keys",
       "path": "src/golden_tests.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
@@ -3456,27 +3176,6 @@
       "count": 1,
       "owner": "crate::tests",
       "path": "src/history.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate",
-      "path": "src/history/canonical_span.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate",
-      "path": "src/history/controller_tests.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate",
-      "path": "src/history/postings_validation_tests.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
@@ -3720,13 +3419,6 @@
     {
       "category": "unresolved-glob",
       "count": 1,
-      "owner": "crate::path_tests",
-      "path": "src/sharddir.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
       "owner": "crate::tests",
       "path": "src/sketch.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
@@ -3785,13 +3477,6 @@
       "count": 1,
       "owner": "crate::tests",
       "path": "src/touch_keys.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate::shard_lag_tests",
-      "path": "src/usage.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {

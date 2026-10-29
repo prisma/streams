@@ -4,8 +4,9 @@
 //! keeps one compaction tree per segment:
 //!
 //! - `'S'` (one byte): stream state — tails, producers and sequences,
-//!   seal fences, stream pages, consumer-group rows, billing rows, the
-//!   dirty and maintenance rows under their sentinel;
+//!   seal fences, pending rows (unsealed pages), consumer-group rows,
+//!   billing rows, and the seal directory and refcount rows under the
+//!   sentinel;
 //! - `'Q' ‖ gen u32` (five bytes, generation 0 only in phase 1): every
 //!   native-queue row — state, meta, availability, delivery, lease, retry,
 //!   failure and dedup rows, the roster, the queue's message pages and the
@@ -20,6 +21,9 @@ use std::sync::Arc;
 
 use slatedb::{PrefixExtractor, PrefixTarget};
 
+#[cfg(kani)]
+mod proofs;
+
 /// The stream-state segment's tag (and its whole prefix).
 pub(crate) const STREAM: u8 = b'S';
 /// The queue segment's tag.
@@ -30,16 +34,13 @@ pub(crate) const QUEUE: [u8; QUEUE_PREFIX_LEN] = [QUEUE_TAG, 0, 0, 0, 0];
 /// The width of a queue segment prefix.
 pub(crate) const QUEUE_PREFIX_LEN: usize = 5;
 /// The stream segment's sentinel: `'S'` and sixteen 0xFF bytes. Its rows
-/// (the dirty-stream index, the usage outbox, the shard's maintenance row)
-/// sort after every stream's rows, so each family is one range scan.
+/// (the seal directory and refcount rows, the usage outbox) sort after
+/// every stream's rows, so each family is one range scan.
 pub(crate) const SENTINEL: [u8; 17] = {
     let mut k = [0xFF; 17];
     k[0] = STREAM;
     k
 };
-/// Where a sentinel row keyed by a stream hash holds the hash: after the
-/// sentinel and the row's tag.
-pub(crate) const SENTINEL_HASH_AT: usize = SENTINEL.len() + 1;
 
 /// A stream-state row key: the `'S'` tag and the stream's hash, with room
 /// for `extra` more bytes.
@@ -93,13 +94,20 @@ pub(crate) fn extractor() -> Arc<dyn PrefixExtractor> {
     Arc::new(ShardLogSegments)
 }
 
-/// A shard log's database builder at `path`: the segment extractor
-/// attached, nothing else set.
+/// A shard log's database builder at `path`: the segment extractor, the
+/// pending rows' merge operator (the builder hands it to its compactor
+/// too) and the log's metrics recorder (`spill::metrics`) attached,
+/// nothing else set.
 pub(crate) fn db_builder<P: Into<object_store::path::Path>>(
     path: P,
     store: Arc<dyn object_store::ObjectStore>,
-) -> slatedb::DbBuilder<P> {
-    slatedb::Db::builder(path, store).with_segment_extractor(extractor())
+) -> slatedb::DbBuilder<object_store::path::Path> {
+    let path: object_store::path::Path = path.into();
+    let metrics = crate::spill::metrics::for_log(path.as_ref());
+    slatedb::Db::builder(path, store)
+        .with_segment_extractor(extractor())
+        .with_merge_operator(crate::spill::pending::merge_operator())
+        .with_metrics_recorder(metrics.recorder())
 }
 
 #[cfg(test)]

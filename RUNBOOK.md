@@ -16,7 +16,7 @@ One crate, several binaries (`cargo build --release` builds them all):
 
 | binary | role |
 |---|---|
-| `streams-slate` | the server: HTTP surface, shard engine, history tier, fleet member |
+| `streams-slate` | the server: HTTP surface, shard engine and sealer, fleet member |
 | `pilot` | swiss-army harness: `MODE=lb` routing load balancer, `MODE=gen` load generator, `MODE=bench` calibrated probes |
 | `s3lite` | local S3 emulator with configurable latency (`--latency-ms`) and conditional-PUT support — the dev/CI store |
 | `streams-keys` | generates stream encryption keys (32-byte base64) |
@@ -99,11 +99,8 @@ with an empty pool rather than dead sockets.
 | `MAX_UNFLUSHED_BYTES` | 16 MiB | per-shard byte backpressure. SlateDB's default is 512 MB — a byte flood OOMs a 1-GB box before backpressure fires; keep this small |
 | `L0_MAX_SSTS` | 32 | L0 count that triggers write backpressure. An L0 costs a stored object, not memory; 8 (the default until 2026-09-29) stalled batch ingest. It is also SlateDB's per-key L0 cap: a totally-ordered stream rewrites one meta row per memtable, so every L0 overlaps on that key and a lower per-key cap would be the real dispatch gate (the upstream default of 8 stalled the flusher). `L0_MAX_SSTS_PER_KEY` is not read (since 2026-09-29) |
 | `MANIFEST_POLL_MS` | 2000 | also how the flusher learns compaction freed L0 slots; loaded shards want 1000–2000. 60 s polls produced 14 s flush stalls. Each poll is a live Tigris 404 probe (~200-240 ms Tigris-internal) — the default IS the idle-cost posture, deploy scripts must not re-tighten it (docs/TIGRIS-404-COST.md; DST-pinned) |
-| `COMPACTOR_MAX_CONCURRENT`, `COMPACT_MAX_SUBCOMPACTIONS`, `COMPACT_MAX_FETCH_TASKS`, `COMPACT_BYTES_TO_FETCH`, `COMPACT_MAX_SST_SIZE_BYTES`, `STORE_BULK_INFLIGHT_MAX_BYTES` | 1, 1, 1, 1 MiB, 32 MiB, 32 MiB | the certified 1 GiB posture (`deploy/profiles/compute-1g.env`), the default since 2026-09-29. SlateDB's own worker values (4, 4, 4, 2 MiB, 256 MiB) with the bulk gate off stage about 1 GB for a 32-input L0 merge. A larger instance class raises them; batch ingest gains about a third from the larger values. `COMPACTOR_MAX_CONCURRENT` is also the argument `--compactor-max-concurrent`: the argument wins over the variable, and either one reaches the compactor of every database (shard, history, telemetry, rollup, read spool). The other five are read from the environment only. With `MEMPROFILE_CERT=compute-1g` a concurrency other than 1, from either source, refuses the start |
+| `COMPACTOR_MAX_CONCURRENT`, `COMPACT_MAX_SUBCOMPACTIONS`, `COMPACT_MAX_FETCH_TASKS`, `COMPACT_BYTES_TO_FETCH`, `COMPACT_MAX_SST_SIZE_BYTES`, `STORE_BULK_INFLIGHT_MAX_BYTES` | 1, 1, 1, 1 MiB, 32 MiB, 32 MiB | the certified 1 GiB posture (`deploy/profiles/compute-1g.env`), the default since 2026-09-29. SlateDB's own worker values (4, 4, 4, 2 MiB, 256 MiB) with the bulk gate off stage about 1 GB for a 32-input L0 merge. A larger instance class raises them; batch ingest gains about a third from the larger values. `COMPACTOR_MAX_CONCURRENT` is also the argument `--compactor-max-concurrent`: the argument wins over the variable, and either one reaches the compactor of every database (shard, telemetry, rollup, read spool). The other five are read from the environment only. With `MEMPROFILE_CERT=compute-1g` a concurrency other than 1, from either source, refuses the start |
 | `COMPACTOR_POLL_MS` | 2500 | compactions-log probe cadence = the largest idle-404 class (the old 500 ms pin was 8 probes/s/instance forever, pre-limiter era). At 5 MB/s/shard a 2.5 s scheduling gap bounds L0 accumulation to ~3 SSTs vs `L0_MAX_SSTS` 64; drain continuity comes from `COMPACTOR_MAX_CONCURRENT`, not scheduling latency (docs/TIGRIS-404-COST.md; DST-pinned) |
-| `TRIM_PER_OP` | 8192 | hot-log records retired per absorb commit; must outpace ingest (at 50k rec/s and one pass per 5 s a pass must retire ~250k) |
-| `ABSORB_BYTES` / `ABSORB_AGE_SECS` | 4 MiB / 60 | absorber thresholds into the history tier: a tail is absorbed at 4 MiB, or once it is 60 s old (the age was 300 until 2026-09-29) |
-| `ABSORB_GATHER_MAX_BYTES` / `ABSORB_READ_PAR` | 8 MiB / 8 | active v2 gather packing limit and concurrent frame reads within one gather (32 MiB until 2026-09-29). A gather stops staging at the limit; one oversized chunk still proceeds alone. The process budget may clamp the packing limit |
 
 **Fixed values (not settings, since 2026-09-29).** Garbage collection of the
 shard databases runs at constants of the binary; no argument and no variable
@@ -119,8 +116,27 @@ which `FLUSH_INTERVAL_MS` set before:
 | WAL sweep interval / minimum age | 30 s / 60 s | tighter than upstream (60/300): a loaded shard mints ~20 WAL SSTs/s and the WAL prefix must stay small — GC lists share the path with ack-critical PUTs. The minimum age must cover shard-move replay (<1 s; 60 s is generous) |
 | compactions-log sweep interval / minimum age | 30 s / 120 s | tighter than upstream (60/300): every compactor state change mints a `.compactions` version and shard OPEN pages through the survivors — at cross-region latency that class fed the eu-central-1 slow-open hang (docs/SOAK-REGIONS.md; upstream slatedb#1970). Only superseded versions below the GC boundary are reaped |
 | manifest, compacted and WAL-fence sweep interval | 600 s | the quiet directories: reclamation latency is traded for LIST steady-state (docs/TIGRIS-404-COST.md) |
-| history GC sweep interval | 600 s | every history database, for the same reason |
 | SlateDB's WAL flush timer on a shard log under the pump (the failsafe) | 60 s, plus a fixed per-shard offset below 30 s | since 2026-10-07 (owner decision, the write tier; 1-1.5 s before). Every commit wakes the pump, so no acknowledgement waits for this timer; a tick that finds commits waiting out the pump's gap in the WAL buffer writes them early as one more WAL object (about 0.8/s on a busy shard at 1 s). The offset (`bootstrap::run`, O14a) staggers shards: the single shard (prefix `""`) ticks every 76.3 s, shards `00`/`01`/`10`/`11` every 79.4/71.8/66.6/74.2 s. Under `WAL_GROUP_COMMIT=0` the timer is the tick, `FLUSH_INTERVAL_MS` |
+
+**The sealer (fixed values).** Each open shard's sealer (SPEC §3.6,
+`src/shard/seal.rs`) moves its streams' unsealed pages into one segment
+object per seal (`shards/<prefix>/hseg/<epoch>/<seq>`), then flushes the
+memtable. No argument or variable sets it:
+
+| what | value | why |
+|---|---|---|
+| seal triggers | SlateDB's L0 estimate of the memtable's writes since the last forced flush 6 MiB; unsealed page bytes on the shard 24 MiB; WAL objects since the last forced flush 48; the oldest unsealed page 45 s old | a seal takes the pages out before SlateDB freezes the memtable by itself (8 MiB), so the L0 holds the pending rows' remainders, not the pages; unsealed pages are held in memory by their stream handles until a seal moves them |
+| deadlines | 64 WAL objects or an unsealed page held 60 s | the memtable is flushed whatever a seal does: the replay bound of an open |
+| one seal | at most 64 MiB of pages, 1,024 streams, 8,192 pages per chunk | the rest follows in the next seal at once |
+| failed seal | backoff 0.5 s doubling to 16 s | the shard keeps its unsealed pages and retries; the deadlines still flush |
+| forced memtable flush | always preceded by an awaited WAL flush | SlateDB's memtable flush does not await its WAL; without it the newest pending-row operands would reach the L0 |
+
+The absorber, the history tier and physical trim are gone (layout 6, edge
+change #208): `TRIM_PER_OP`, `TRIM_GLOBAL_BUDGET`, `ABSORB_BYTES`,
+`ABSORB_AGE_SECS`, `ABSORB_GATHER_MAX_BYTES`, `ABSORB_READ_PAR`,
+`ABSORB_GLOBAL_BUDGET_BYTES`, `ABSORB_GLOBAL_GATHERS`, `HISTORY_CACHE_BYTES`,
+`POSTINGS_CACHE_BYTES` and the history reader settings are ignored in the
+environment, and their flags are refused on the command line.
 
 ### 3.2b Service limits, usage telemetry, billing
 
@@ -140,8 +156,6 @@ which `FLUSH_INTERVAL_MS` set before:
 | `MONTH_CLOSE_GRACE_MS` | 86400000 | wait after a month boundary before closing it |
 | `METRICS_INTERVAL_SECS` | 60 | `_ops_metrics` point cadence, checked by the drain round (64 s at the 8 s default). The alert rules keep their own 15 s cadence (16 s on the drain round) on a snapshot of their own, which `/operator/data.json` serves and the ledger does not store. 15 before the cost report of 2026-10-24 (edge change #187) |
 | `ALERT_USAGE_OUTBOX_DIRTY` | 1000 | unacked usage snapshots that open the outbox-lag alert |
-| `ABSORB_GLOBAL_BUDGET_BYTES` | 100859904 | active PROCESS-WIDE absorber gather budget; every gather reserves (estimate x build multiplier) BEFORE reading pages. The default is one worst-page build at the 32 MiB body ceiling, (32 MiB + 64 KiB) x 3; a smaller value is raised to that build for the server's own ceiling |
-| `ABSORB_GLOBAL_GATHERS` | 1 | active concurrent-gather ceiling, process-wide and further bounded by the byte budget. 2 until 2026-09-29; a gather reserves its adaptive estimate (about 12 MiB at the floor), so at 2 slots two gathers did run at once. Do not raise it on a 1 GiB instance (4 slots were OOM-killed, docs/CHAOS-CAMPAIGN.md CHAOS-5) |
 | `TELEMETRY_CACHE_BYTES` | 16777216 | ONE bounded cache shared by the read-spool and rollup SlateDB DBs (they must never inherit SlateDB's per-DB defaults) |
 | `SLATEDB_RT_THREADS` | 4 | worker threads of the dedicated SlateDB runtime (two-runtime split). 4 is what every deployed family runs; 2 was the default until 2026-09-29. Tests that open storage directly run on 2 |
 
@@ -167,12 +181,11 @@ registry's by-name objects). The billing stream's own usage is excluded.
 | env | default | guidance |
 |---|---|---|
 | `SHARED_CACHE_BYTES` | 128 MiB | ONE block cache shared by all shard DBs (192 MiB until 2026-09-29). SlateDB's per-DB default is 512 MB — 16 shards × 512 MB on a 1-GB box dies by cache fill in tens of minutes (this *was* our "platform kills instances" mystery). The shared cell sets 32 MiB (`deploy/profiles/shared-cell.env`): cache-on-write keeps it full under any write load, and at 128 MiB its blocks and the allocator pages they pin held a one-shard cell over the shed line under Layer B's compliant load |
-| `HISTORY_CACHE_BYTES` | 32 MiB | shared cache for history-tier/absorber DBs; the shared cell sets 16 MiB, for the same reason |
 | `TOKIO_WORKERS` | max(2, cores) | **do not run one worker.** On 1-vCPU instances the old `#[tokio::main]` default was a single worker; inline blocking quanta (SST build/compress) froze every future including commit acks — the O14a saga. The floor of 2 is enforced in code; the pilot runs 3. Measured effect at identical load: ack-excursion windows 30 % → 10 %, median-window WAL-PUT p99 617 → 141 ms |
 
 Memory budget on 1-GB/~750-MB-kill-line instances (revised 2026-07-21 after
 the saturation gate OOM'd the old envelope): the old numbers — shared cache
-192 + history cache 32 + unflushed 16×16 + absorber pass 32 + HTTP ≈ 700 MB
+192 + unflushed 16×16 + the retired absorber's caches and pass + HTTP ≈ 700 MB
 with shed at 800 — left NO headroom below the platform's ~750 MB kernel
 kill line and put the shed above it. When a fast substrate let the closed
 loop sustain 1.3–1.6k req/s and a flush stall piled memtables up, the
@@ -183,8 +196,12 @@ morning's slower substrate had paced the identical binary to a survivable
 - `SHARED_CACHE_BYTES` 128 MiB, `MAX_UNFLUSHED_BYTES` 16 MiB ×16 shards
   (do NOT halve it: 8 MiB doubled the L0 mint rate and turned OOM risk
   into an 8-minute L0-full flush wedge), `L0_MAX_SSTS` 32 for
-  compaction-lag headroom (L0 count costs S3 objects, not RAM), absorber
-  pass 32 MiB;
+  compaction-lag headroom (L0 count costs S3 objects, not RAM);
+- unsealed pages: each stream handle holds its unsealed pages in memory
+  until a seal moves them (a shard seals at 24 MiB of them, §3.2), and the
+  maintenance latch bounds them at `MAX_UNABSORBED_BYTES_PER_INSTANCE`
+  (512 MiB) per instance and `MAX_UNABSORBED_BYTES_PER_SHARD` (256 MiB)
+  per shard ([MAINTENANCE-BACKPRESSURE.md](./docs/MAINTENANCE-BACKPRESSURE.md));
 - `ADMIT_RSS_SHED_MB` 500, the default (this envelope first ran 550; the
   OOM review of 2026-08-07 lowered it) — below the kill line with margin,
   so the shed fires while the process can still serve;
@@ -243,7 +260,7 @@ reads.
 
 ### 3.5b Stream auto-scaling (segments) & shard rebalancing
 
-Per-stream Pravega-style segment splits/merges and absorb-lag-driven
+Per-stream Pravega-style segment splits/merges and maintenance-lag-driven
 shard moves — design and validation ladder in
 [docs/SCALING.md](./docs/SCALING.md). Opt a stream in with
 `Stream-Scaling: auto` at create; appends then require a `Stream-Key`
@@ -257,14 +274,13 @@ routing key and are routed server-side to internal child streams
 | `SCALE_HOT_PCT` | 75 | split above this % of the per-segment service limits; a segment is cold below 5% of it (3.75% of the limits at the default) |
 | `SCALE_HOT_EVALS` | 2 | consecutive hot evaluations before a split; a stream merges after every segment stayed cold for four times as many (8) |
 | `SCALE_COOLDOWN_SECS` | 600 | min segment age before it may re-scale |
-| `REBALANCE_LAG_SECS` | 60 | absorb-lag (s) beyond which the laggard moves a shard to a peer |
+| `REBALANCE_LAG_SECS` | 60 | maintenance lag (s) beyond which the laggard moves a shard to a peer: the longer of its longest sealer stall (seconds since a shard's sealer last retired unsealed bytes while some are held) and its worst commit wedge |
 | `REBALANCE_MOVE_COOLDOWN_SECS` | 60 | min gap between moves per host |
 
 Shard moves are published to `fleet/overrides.json` (CAS) and win over
 the rendezvous ring while the target is live. Splits survive scaler
 crashes: the append path re-seals and publishes the missing transition
-itself (`resume_split`). `SCALE_FAULT_POINT=after_seal` and
-`ABSORB_PAUSE=1` are test-only fault hooks (docker ladder D3/D4).
+itself (`resume_split`).
 
 While the server runs in a fleet (`FLEET_PREFIX` set, once its fleet loop
 has published a ring, of any size), the scaler splits nothing (edge change
@@ -281,7 +297,7 @@ server with fleet off splits as before.
 |---|---|---|---|
 | `ADMIT_MAX_INFLIGHT` | 512 (0 = off, the default until 2026-09-29) | 256 | above this many in-flight requests, an authenticated append gets `429 + Retry-After: 1` after a 25 ms tarpit. The count covers every request on every route, parked long-polls included; above four times the cap (2,048 at the default) every `/v1/stream` and `/v1/streams` request, reads included, gets `503 + Retry-After: 1` before authentication, with no tarpit. Direct-path instance capacity measured at ~510 concurrent; 256 is the guarded setting for router-fronted 1-CPU boxes |
 | `ADMIT_MAX_INFLIGHT_PER_STREAM` | 256 (0 = off; 64 until 2026-09-29) | — | above this many concurrent appends on one stream segment, a further append to it gets `429 stream_overloaded` + `Retry-After: 1` (product: `429 rate_limited`), with no tarpit, so that one hot stream cannot take every slot of the instance cap. Where `ADMIT_MAX_INFLIGHT` is lowered to 256 or less, set this below it: at the default it would equal the instance cap |
-| `ADMIT_RSS_SHED_MB` | 500 | 500 | appends (clients' and the server's own to its usage, audit and ops streams; not creates or deletes) get `429 + Retry-After: 2` after a 25 ms tarpit while sampled RSS plus the absorber's reserved bytes exceeds this (counted in MiB). Without it a 1-GB box OOM-dies at full throughput instead of shedding. The first pilot's 800 sat above the ~750 MB kill line and protected nothing; 0 turns it off |
+| `ADMIT_RSS_SHED_MB` | 500 | 500 | appends (clients' and the server's own to its usage, audit and ops streams; not creates or deletes) get `429 + Retry-After: 2` after a 25 ms tarpit while sampled RSS exceeds this (counted in MiB). Without it a 1-GB box OOM-dies at full throughput instead of shedding. The first pilot's 800 sat above the ~750 MB kill line and protected nothing; 0 turns it off |
 | `PROJECT_SHARE_K` | 1 (a dedicated cell) | — | k, the number of projects a shared cell is sized for (shared cells: 8). Each project's quota on every shared bound (the three envelopes below, `ADMIT_MAX_INFLIGHT`, the effective `SSE_MAX_CONNECTIONS`, the 65,536-entry per-stream maps, `MAX_UNABSORBED_BYTES_PER_INSTANCE`) is at most ⌊bound ÷ k⌋, and a 0 or missing quota takes exactly that, or for a project whose feed policy sets a `request_weight` or `byte_weight` w (held to 1..k-1) ⌊bound × w ÷ k⌋ on the request axes (requests, in-flight, subscriptions, streams) or the append and read byte rates respectively (`MAX_UNABSORBED_BYTES_PER_INSTANCE`'s stays ⌊bound ÷ k⌋; edge change #196); above 1 the deployment's `ACCOUNT_ID` is reserved too (its `PROJECT_ID` always is): a feed policy naming either is dropped and its tokens get `421 wrong_cell`; and a records read or long-poll without `maxBytes` pages (and reserves read memory for) 1 MiB, not 8 MiB (edge change #182). Must be at least 1 |
 | `CELL_ENVELOPE_REQUESTS_PER_SEC` / `CELL_ENVELOPE_APPEND_BYTES_PER_SEC` / `CELL_ENVELOPE_READ_BYTES_PER_SEC` | 0 (no shared bound) | — | the requests, appended bytes and read bytes per second the cell was measured to carry, divided by `PROJECT_SHARE_K` into each project's rate ceilings. Set only measured values: a bound set too low caps honest tenants |
 | `PROJECT_STORED_BYTES_DEFAULT` | 0 (no stored-bytes limit) | — | the `max_stored_bytes` a project gets when its policy sets 0 or none, at any k: a default, not a bound ÷ k, and a policy's own value stands (shared cells: 10737418240, 10 GiB, the owner's answer S1 of 2026-10-12; `cell-admin` and the issuer publish it explicitly at admit, and `cell-admin quota --project P --quota max_stored_bytes=N` gives one project more). A project whose stored bytes (stored page bytes after compression, page headers included, each live segment once) reach its quota is refused new appends `429 stored_bytes_limit`, not retryable, no `Retry-After`, until a delete or a larger quota brings it under; reads, creates, deletes, seals and consumers are never refused on it (edge change #158). Until physical reclamation exists a delete frees quota but not the bucket's bytes; `rollup.stored.writtenBytes` watches those a drain round saw ("What to alert on", Shared cells). The figure is the one the usage rollup last published (`/operator/billing.json` `rollup.stored`), so only the `ROLLUP=1` instance enforces it (a multi-server cell must distribute it first), and it trails the store by a drain round and a rollup step: about 10 s while a shard dirties at most 256 segments a round, minutes at tens of thousands of written streams, and the whole of a rollup stall ("Billing pipeline runbooks"). Under `BILLING_MODE=required` (the shared-cell profile) the rollup publishes before the server binds; in any other mode it opens inside its task after serving begins, and the cap refuses nothing until it has. Ops events (`_ops_events`, `/v1/debug/ops-events`): `project_stored_cap_reached` (warn) when a project is first refused, `project_stored_cap_cleared` (info) when it is next admitted, never one per refusal; their count a day is a product signal, not a page |
@@ -346,7 +362,7 @@ OOM-killed container under load otherwise stays down.
 | `PUT /v1/stream/{name}` | bearer + `Stream-Encryption-Key` | create (400 `missing_key` without the key header) |
 | `POST /v1/stream/{name}` | bearer + key | append (`{"events":[…]}`); 204 on durable commit |
 | `GET /v1/stream/{name}?…` | bearer + key | read/tail (offsets, long-poll, SSE; profile-specific routes per [PROFILES.md](./PROFILES.md)) |
-| `GET /v1/debug/timings` | bearer | per-shard commit-pipeline rings: `queue_wait_us`, `encode_us`, `write_us`, `durable_wait_us` per group — splits our pipeline from store waits |
+| `GET /v1/debug/timings` | bearer | per-shard commit-pipeline rings: `queue_wait_us`, `encode_us`, `write_us`, `durable_wait_us` per group — splits our pipeline from store waits; per shard also the pump, the tail ring and `seal`, the sealer's counters (seals, empty seals, failures, refusals, objects and object bytes, page and remainder bytes, deadline flushes, flush and open failures, snapshot gaps, corrupt streams, sealed reads and their GETs, key-summary skips and misses, directory entries and streams) |
 | `GET /v1/debug/load` | bearer | `inflight_now`, `inflight_peak` (swap-on-read), `rss_mb`, `admit_shed` |
 | `GET /v1/debug/store?window=60&swap=1` | bearer | per-(op,class) object-store latency cells (`put:wal`, `get:manifest`, …: n/err/p50/p90/p99/max), slow-op ring (≥300 ms with paths), outbound in-flight gauge, **timer sentinels** (`timer_thread`, `timer_tokio` drift) and `steal_pct`. `swap=1` resets the gauge peak — samplers only |
 | `GET /v1/debug/sleep?ms=N` | bearer | calibrated-latency probe (≤5000 ms): separates concurrency caps from rate caps at the edge |
@@ -381,11 +397,12 @@ was death (§3.6).
   the reads eat the outbound budget and starve the appends that would
   advance the WAL. Took eu-central-1 out of the 2026-07-26 soak
   ([docs/SOAK-REGIONS.md](./docs/SOAK-REGIONS.md)). Page on it.
-- `history_readers` hits ≪ misses, or `stale_reopens` tracking request
-  rate instead of absorb cadence → the history reader cache is not
-  absorbing per-request metadata traffic; every miss is a fresh DbReader
-  open (manifest reads + a checkpoint write) on the user-visible read
-  path.
+- `get:other` climbing with catch-up reads → sealed reads: each read of
+  sealed offsets the tail ring does not hold costs one ranged GET per
+  chunk of the stream's segment objects (`shards/<prefix>/hseg/…`, class
+  `other`). Compare each shard's `seal.sealed_gets` with
+  `seal.sealed_reads` in `/v1/debug/timings`; `seal.summary_skips` counts
+  the chunks keyed reads skipped without a GET.
 - `served_from` shows a large share from a **remote** PoP (>10 % non-local)
   → the provider is routing this bucket's traffic out of region. Every op
   carries the extra RTT; correlate before blaming our pipeline.
@@ -614,7 +631,7 @@ a restart.
 | domain + preview 404, version `running`, but the boot log shows the app **listening** and no request ever reaches it | **the edge never published this service** — seen 2026-07-31 for every new service, across projects and PoPs, including a hello-world app ([repro-edge-404/](./repro-edge-404/)) | not fixable from here. Confirm with `repro-edge-404/repro.sh` (hello-world control) before burning deploys; old services keep working, so do NOT redeploy anything you still depend on |
 | single instance dies (OOM/exit/wedge), even under traffic | plaform reprovisions transparently in seconds | nothing — this genuinely works (verified legs 1–5 of the repro) |
 | deploy CLI throws `styleText` import error | Node < 20 resolving the CLI | run `bunx --bun @prisma/compute-cli …` |
-| first requests after idle are slow | scale-to-zero wake + connection-pool warmup; on an awake instance, the idle release: 120 s after the last `/v1/stream*` request, once its absorb backlog has drained (under 1 MiB owed), the instance flushes its shard memtables, drops its SlateDB block caches and postings slices and sweeps the registry's expired descriptor slots (log line `released the block caches and the postings slices` with `why=idle`; while sampled RSS is over `ADMIT_RSS_SHED_MB` the instance releases them the same way at most every 30 s, busy or not, with `why="over the shed line"`, and its workers return their empty allocator pages), so the first read of each table pays its object-store GETs once | expected; the 4 s pool idle timeout (§3.1) exists for exactly this, and the release is what returns an idle instance's RSS after a load (Q0) |
+| first requests after idle are slow | scale-to-zero wake + connection-pool warmup; on an awake instance, the idle release: 120 s after the last `/v1/stream*` request, once its unsealed backlog is under 1 MiB, the instance seals every open shard (its unsealed pages go to a segment object and its memtable to an L0 after an awaited WAL flush; a shard whose seal fails keeps both and its sealer retries, log line `idle: seal failed`), drops its SlateDB block caches and sweeps the registry's expired descriptor slots (log line `released the block caches` with `why=idle`; while sampled RSS is over `ADMIT_RSS_SHED_MB` the instance releases them the same way at most every 30 s, busy or not, with `why="over the shed line"`, and its workers return their empty allocator pages), so the first read of each table pays its object-store GETs once | expected; the 4 s pool idle timeout (§3.1) exists for exactly this, and the release is what returns an idle instance's RSS after a load (Q0) |
 | a URL that worked before now 503s, service looks healthy | **preview domains are per-version**: a redeploy mints a new one and retires the old | re-resolve after every deploy: `compute versions list --project P --service S \| awk '$2=="running"{print $3}'` |
 | domain returns a generic JSON `binary_exited` 500 | the binary died at boot — before it ever accepted on `$PORT`, or within its first 60 s — and the wrapper holds the port unhealthy | read the platform log: the binary's stderr, then the wrapper's `binary exited with code N; holding :PORT unhealthy; details: {...}` (exit code, arguments, hint) — usually a missing required env var, wrong arch, or a store it cannot open. The body carries none of it: the port is customer-reachable |
 | instance replaced (exit 1); its log has `critical task <name> exited while the runtime was running: <outcome>; requesting the ordered stop, bounded at 30s` | a critical loop ended after the binary had been serving for 60 s: the process root stopped the runtime and exited 1 (item 38), and the wrapper exited with it, so Compute reprovisioned (item 39) | that line names the loop and how it ended; read the loop's own error line before it. The log usually ends in `Error: critical task <name> …`, but a stop that outlives its 30 s bound ends in `stop deadline: a stop was requested 30s ago and has not finished (cause: critical task <name> …); exiting` on stderr with no `Error:` line; that line and the escalation line both name the cause. The same exit within the first 60 s (e.g. `usage-rollup` with `ROLLUP=1` and a rollup DB the instance cannot open) is held as a `binary_exited` body instead; a loop that fails the same way after every boot can still end as the crash-loop zombie (first row), so fix its cause |
@@ -775,9 +792,7 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
 | env | default | what it does |
 |---|---|---|
 | `WAL_POST_ACK_GATHER_MS` | 6 (0 = off) | Pump releases each flush's acks itself (explicit barrier on the durable watch), then waits this long before the next freeze — closed-loop herds join one WAL instead of straddling two. Local A/B (25 ms store): c2 append p50 1.97x -> 1.01x of c1; c32 throughput +70 %, WAL PUT/s down. Soaked at 6. Gathers only when the completed flush left work in flight (drift), so a solo producer pays ~1 ms (herd-settle), not the window. Adaptive gather: the window is skipped when the NEXT WAL already holds 32 requests or 1 MiB — the window exists for a small next generation; at drift+saturation it is a tax (review #2's CDG throughput question). The two thresholds are fixed: `WAL_GATHER_SKIP_REQS` and `WAL_GATHER_SKIP_BYTES` are not read (since 2026-09-29). `/v1/debug/timings` pump block: gathers_applied vs gathers_skipped_busy, gathered_reqs, flushed_{reqs,records,bytes} (requests-per-WAL), ack_to_enqueue_{sum_us,count}. |
-| `TAIL_RING_BYTES` | 0 (off) | Per-engine durable-tail ring: dispatch publishes freshly-durable pages to memory BEFORE acks; woken live reads serve from it instead of scanning SlateDB. Canonical scan remains the fallback (restart/eviction/lag/filters). 32 MiB suggested; the shared cell sets 8 MiB on its one shard (`deploy/profiles/shared-cell.env`). `/v1/debug/timings` -> `tail_ring{published,hits,misses,evicted}`. A read WOKEN by a long-poll wait (a fresh commit group, not a backlog) has a page budget of 1 MiB, fixed: `TAIL_MAX_BYTES` is not read (since 2026-09-29). Bulk reads keep 8 MiB. |
-| `HIST_READER_CAP` | 8 | Cached history DbReaders per process. **Size it ≥ the number of streams concurrently reading history**: LRU with a rotating working set of cap+1 reopens on ~every read (the DST thrash test pins this behavior). Each cached reader costs one manifest poll (5 s) + one checkpoint. |
-| `HIST_READER_IDLE_SECS` | 120 | Idle eviction for cached history readers. |
+| `TAIL_RING_BYTES` | 0 (off) | Per-engine durable-tail ring: dispatch publishes freshly-durable pages to memory BEFORE acks. Since layout 6 a read serves only sealed offsets from it: unsealed offsets always come from the pages the stream's handle holds in memory, and sealed offsets the ring does not hold from the stream's segment objects (one ranged GET per chunk, SPEC §3.5), so the ring saves those GETs for reads just behind the sealed boundary. 32 MiB suggested; the shared cell sets 8 MiB on its one shard (`deploy/profiles/shared-cell.env`). `/v1/debug/timings` -> `tail_ring{published,hits,misses,evicted}`. A read WOKEN by a long-poll wait (a fresh commit group, not a backlog) has a page budget of 1 MiB, fixed: `TAIL_MAX_BYTES` is not read (since 2026-09-29). Bulk reads keep 8 MiB. |
 | `STREAMS_DEBUG_TIMING` | off | Benchmark-only: woken long-poll responses carry `Streams-Debug-Wait: waited arm_us read_us`, splitting the roundtrip-minus-append interval into wait-wake vs read-build stages. Do not enable outside benches. |
 
 **Campaign hygiene (destroyed-specimen lesson):** every soak deploy now
@@ -794,8 +809,9 @@ anything listed in `$SOAK_HOME/preserve.txt`.
 ## 11. Data operations
 
 - **Storage layout** (all under `PATH_PREFIX/`): `topology.json`,
-  `shards/<id>/…` (SlateDB per-shard: `wal/`, `manifest/`, `compacted/`),
-  `history/…` (absorbed per-stream SSTs), `registry/…` (by-name),
+  `shards/<id>/…` (SlateDB per-shard: `wal/`, `manifest/`, `compacted/`;
+  and `hseg/<epoch>/<seq>`, the shard's segment objects, one per seal),
+  `registry/…` (by-name),
   `fleet/`+`routers/` under `FLEET_PREFIX`. Everything except
   topology/fleet metadata is tenant-key ciphertext.
 - **Usage databases**: the read spool and the rollup are SlateDB databases
@@ -811,21 +827,24 @@ anything listed in `$SOAK_HOME/preserve.txt`.
   usage, wait for `spool.depth` 0 in `/operator/billing.json` and stop it
   gracefully (the stop seals the read window and runs one drain round); rows
   left in the old spool are not billed.
-- **GC**: WAL objects reaped per §3.2 after the 60 s minimum age; history SSTs retired
-  by compaction; deletion protection, soft-delete windows and GDPR erasure:
+- **GC**: WAL objects reaped per §3.2 after the 60 s minimum age; SSTs
+  retired by compaction. Segment objects are not reclaimed yet: each seal
+  writes a refcount row (`'R'`) beside its directory row for the garbage
+  collection that will read it. Deletion protection, soft-delete windows and GDPR erasure:
   [OPERATIONS.md §2.4](./OPERATIONS.md).
 - **Backups / PITR / restore drills**: checkpoint-pin + async copy design in
   [OPERATIONS.md §2](./OPERATIONS.md) (RPO ≤ 5 min target). Not yet wired in
   the pilot — treat the pilot keyspace as re-creatable.
 - **Fresh environment**: pick a new `PATH_PREFIX` (and `FLEET_PREFIX`).
   Cheap, instant, and how every pilot run isolated itself.
-- **Layout 5** (storage layout version 5): each append request is stored as
+- **Layout 6** (storage layout version 6): each append request is stored as
   pages of up to 64 KiB of records, compressed with zstd-1 when that pays
-  and encrypted once. There is no compression setting; `FRAME_COMPRESS` is
+  and encrypted once (the layout 5 page); the sealer moves them from the
+  shard log into segment objects (SPEC §3.6). There is no compression setting; `FRAME_COMPRESS` is
   no longer read and can be dropped from deployments. `format=frames` reads
   answer uncompressed version 4 frames on every deployment. A binary refuses any
   namespace written under another layout (`unsupported_storage_layout`),
-  so a layout 4 deployment moves to a fresh `PATH_PREFIX` or bucket.
+  so an earlier deployment moves to a fresh `PATH_PREFIX` or bucket.
 - **Decommission**: stop generators, redeploy without `KEEP_AWAKE`, let the
   platform sleep the fleet; delete the prefix when the data is disposable.
 
@@ -919,44 +938,38 @@ owner) is open.
 
 ## Memory survival posture (OOM review, 2026-08-07)
 
-The ab21 cloud death was a PRE-EXISTING cumulative-work
-history/absorber memory failure caused by the absence of a
-process-wide gather bound (the freeze4 control also dies on the same
-harness). Sixteen shards amplified the exposure but were neither
-necessary nor sufficient (the 4-shard arm also died). Telemetry was
-disabled in the failing cloud arm and was therefore NOT the immediate
-cause; the telemetry DBs independently inherited unsafe cache defaults
-— a latent additional hazard fixed in the same round. Preview.7 died
-~40% earlier than freeze4, so a partial regression exists but is not
-yet isolated. Deploy posture until the acceptance campaign clears a
-looser one (canonical file: deploy/profiles/compute-1g.env, sourced by
-every active deploy script; opt-out only via
-UNSAFE_LEGACY_MEMORY_PROFILE=1):
+The OOM review of 2026-08-07 set the deploy posture of the 1 GiB instance
+class: every cache bounded explicitly (the telemetry databases had inherited
+SlateDB's per-database defaults), the shed line below the kernel's kill
+line, and compaction's buffers bounded process-wide. The canonical file is
+`deploy/profiles/compute-1g.env`, sourced by every active deploy script
+(opt-out only via `UNSAFE_LEGACY_MEMORY_PROFILE=1`):
 
 ```text
 INITIAL_SHARDS=4                    # topology, per-script; fresh namespace required to change
-ABSORB_GATHER_MAX_BYTES=8388608
-ABSORB_GLOBAL_BUDGET_BYTES=100859904 # hard process-wide bound; the binary FLOORS this
-                                     # at the worst-frame transient ((32 MiB + 64 KiB
-                                     # encoding allowance) x3 ≈ 96 MiB) so one oversized
-                                     # frame's modeled build cost is always covered
-                                     # (~2x budget + gathers=2 restores two-way)
-ABSORB_GLOBAL_GATHERS=1             # EVERY gather reserves >= the worst-frame floor,
-                                    # so effective concurrency at this budget is ONE
 SLATEDB_RT_THREADS=4
 TELEMETRY_CACHE_BYTES=16777216
-ADMIT_RSS_SHED_MB=500               # shed = RSS + reserved absorber bytes
-SHARED_CACHE_BYTES / HISTORY_CACHE_BYTES / POSTINGS_CACHE_BYTES explicit
+SHARED_CACHE_BYTES=134217728
+MAX_UNFLUSHED_BYTES=16777216
+ADMIT_RSS_SHED_MB=500               # shed = sampled RSS
+STORE_BULK_INFLIGHT_MAX_BYTES / COMPACTOR_MAX_CONCURRENT / COMPACT_* at §3.2's values
 ROLLUP=0 on ingestion instances (designated instance carries ROLLUP=1)
 ```
 
-Watch: `history_flush_wait_ms_max` (leading indicator: history L0
-approaching 64 SSTs makes flushes block), `history_l0_ssts_max`,
-`absorb_reserved_bytes` + `absorb_gathers_inflight` (bounded by
-construction), `absorb_bytes_total` vs `ingest_bytes_total` (absorption
-keeping up), `rss_peak_since_scrape_mb` (inter-sample spikes),
-`read_spool_pending_bytes`, `sweep_resident_engines`. Detail:
-`GET /v1/debug/absorb` (authorized).
+The profile still names the retired absorber, history-cache and
+postings-cache settings; the binary ignores them (§3.2).
+
+Each open shard also holds its unsealed pages in memory until its sealer
+moves them (§3.2, "The sealer"); the maintenance latch bounds them
+([MAINTENANCE-BACKPRESSURE.md](./docs/MAINTENANCE-BACKPRESSURE.md)).
+
+Watch: `rss_peak_since_scrape_mb` (inter-sample spikes), the maintenance
+ledger (`/v1/debug/load` `maintenance_shards`: unsealed bytes and the
+sealer's stall per shard), each shard's `seal.failures` and
+`seal.deadline_flushes` in `/v1/debug/timings`, `read_spool_pending_bytes`,
+`sweep_resident_engines`. Detail: `GET /v1/debug/absorb` (authorized; the
+name predates layout 6): process-wide store GET count and transferred
+bytes, the ingest total, telemetry residency and process memory.
 
 
 ## Shared-cell release posture (SR3)
@@ -1058,7 +1071,8 @@ the issuer and `deploy-release.sh` (through `check-sizing`) refuse any
 other, so k and every ceiling stay fixed for the cell's life. A release
 whose profile changes only the block-cache sizes (`SHARED_CACHE_BYTES`,
 `HISTORY_CACHE_BYTES`, `POSTINGS_CACHE_BYTES`, `TELEMETRY_CACHE_BYTES`:
-the server's memory, not a ceiling; no sizing rule reads them) is taken
+the server's memory, not a ceiling; no sizing rule reads them, and since
+layout 6 the server reads only the shared and telemetry sizes) is taken
 with `cell-admin reprofile`. `deploy-release.sh` names the exact command
 when it refuses such a release. The procedure:
 1. Run `deploy-release.sh` for the new release. On "the layered profile
@@ -1120,12 +1134,11 @@ NOTIFY, while every other row pages from the first deploy;
 | 5 | `r05_wrong_build` | NOTIFY | `/health` `x-streams-git` | does not start with `EXPECTED_GIT`, the release's commit, for 10 min: the cell is not running the release deployed. Off when `EXPECTED_GIT` is `none` | cell-watch to `<notify channel>` |
 | 6 | `r06_feed_delivery` | PAGE | `feeds.jwks.ageSecs`, `feeds.policies.ageSecs`, `feeds.grants.ageSecs`; `feeds.policies.stale`, `feeds.grants.stale` | an age above 75 s (about 30 is normal), some 3 min before the cell refuses every request at 300 s; or `stale: true`: the outage has begun (`503 policy_stale`). The wrapper's log says `feeds poll failed`, `feeds bundle refused` or `feeds deleted` (Publishing, above) | cell-watch to `<on-call>` |
 | 7 | `r07_reserved_policy_dropped` | PAGE | `feeds.policies.reservedDropped` | above 0: a feed names the system project, `PROJECT_ID` or `ACCOUNT_ID` | cell-watch to `<on-call>` |
-| 8 | `r08_rss_at_shed_line` (level) | PAGE / NOTIFY | `local.rss_mb` + `local.absorb_reserved_bytes_now` / 2^20 against `local.rss_shed_mb` (the shed's own sum) | at or above the line for 10 min: PAGE, every tenant's writes are shed (NEXT-WORK 14.7, "Shared cells Q0"); at 90 % of it for 30 min: NOTIFY. After a load, an idle instance releases its caches 120 s after the last `/v1/stream*` request (or when its absorb backlog drains, if later) and its RSS falls back towards the boot reading within minutes; no `idle: released` line 10 minutes after the last request means a client is still sending (any `/v1/stream*` request, refused ones included, restarts the 120 s) or the loop has stopped | cell-watch to `<on-call>` / `<notify channel>` |
+| 8 | `r08_rss_at_shed_line` (level) | PAGE / NOTIFY | `local.rss_mb` against `local.rss_shed_mb` (what the shed reads) | at or above the line for 10 min: PAGE, every tenant's writes are shed (NEXT-WORK 14.7, "Shared cells Q0"); at 90 % of it for 30 min: NOTIFY. After a load, an idle instance releases its caches 120 s after the last `/v1/stream*` request and its RSS falls back towards the boot reading within minutes; no `idle: released` line 10 minutes after the last request means a client is still sending (any `/v1/stream*` request, refused ones included, restarts the 120 s) or the loop has stopped | cell-watch to `<on-call>` / `<notify channel>` |
 | 9 | `r09_rss_write_shed` | PAGE / NOTIFY | `local.admit_shed_rss` | growth on 2 readings in a row: PAGE; on one: NOTIFY. Look at the largest writers | cell-watch to `<on-call>` / `<notify channel>` |
 | 10 | `r10_overload_sheds` (level) | PAGE / NOTIFY | `local.admit_shed_inflight` + `local.admit_shed_survival` | growth on 3 readings in a row (45 s: the u = 0.5 packing failed): PAGE; on one: NOTIFY | cell-watch to `<on-call>` / `<notify channel>` |
 | 11 | `r11_durability_wedge` | PAGE | `local.wedge_shed` | any growth | cell-watch to `<on-call>` |
-| 12 | `r12_backlog_latch` (level) | PAGE / NOTIFY | `local.maintenance_backpressure` | `engaged`, or `appends_shed` growth: PAGE; `absorb_lag_secs` above 450 (half the 900 s latch) or `unabsorbed_bytes` above 256 MiB (half the instance's 512 MiB): NOTIFY. `cause` and `instance_cause` say why | cell-watch to `<on-call>` / `<notify channel>` |
-| 13 | `r13_history_flush_wait` (level) | PAGE | `ops.gauges.history_flush_wait_ms_max` (the last snapshot's peak since the one before; a gather's flush that waits raises it every 5 s) | above 30,000: a gather has waited 30 s at the history L0 cap because compaction frees no slot (one long sorted-run merge on the only compaction slot, or failing compactions), and with one gather permit (`ABSORB_GLOBAL_GATHERS=1`) no shard absorbs meanwhile. The alert carries `history_l0_ssts_max` (64 is the cap) and `history_compacted_runs_max`; detail `GET /v1/debug/absorb` | cell-watch to `<on-call>` |
+| 12 | `r12_backlog_latch` (level) | PAGE / NOTIFY | `local.maintenance_backpressure` | `engaged`, or `appends_shed` growth: PAGE; `absorb_lag_secs` (the longest sealer stall) above 450 (half the 900 s latch) or `unabsorbed_bytes` (unsealed page bytes) above 256 MiB (half the instance's 512 MiB): NOTIFY. `cause` and `instance_cause` say why | cell-watch to `<on-call>` / `<notify channel>` |
 | 14 | `r14_read_memory` (level) | PAGE | `local.read_memory_bytes` / `local.read_memory_capacity_bytes` | above 80 % for 5 min: neighbours' reads are waiting, then `503 read_memory_busy` | cell-watch to `<on-call>` |
 | 15 | `r15_live_pool` (level) | NOTIFY / PAGE | (`local.sse_connections` + `local.parked`) / `local.sse_max_connections` (one live pool; `SSE_MAX_CONNECTIONS`, 1,200) | 90 % for 1 min: NOTIFY; full for 1 min: PAGE, waits stop parking | cell-watch to `<notify channel>` / `<on-call>` |
 | 16 | `r16_object_store` (level) | PAGE / NOTIFY | `local.store.totals.ops["put:wal"]` and `["put:manifest"]` over the trailing minute (the growth of each cell's counts; a restart starts a new baseline), and `local.store.ops["put:wal"]` `p99_ms` (the last 60 s) | failed puts (`err`: a failure left after the client's retries, a transport error or a cancelled call) at 5 % or more of all puts on 2 readings in a row: PAGE. A refused put (412, a manifest CAS conflict, counted `unbilled`) is no failure, though `local.store.ops`' own `err` counts it and every 404. `put:wal` `p99_ms` above 2,000 for 5 min: NOTIFY. Diagnose with §5's `/v1/debug/store` | cell-watch to `<on-call>` / `<notify channel>` |
@@ -1141,7 +1154,7 @@ NOTIFY, while every other row pages from the first deploy;
 | 26 | `r26_usage_overflow` | NOTIFY | `local.usage_overflow_admits` | above 0: overflow streams share one limiter and one counter set, so their usage is mis-attributed under metered billing | cell-watch to `<notify channel>` |
 | 27 | `r27_issuer_cache_age` | NOTIFY | the issuer's `/v1/admin/metrics` `cache_age_secs` (bearer `STREAMS_ISSUER_METRICS_TOKEN`) | above 150: the exchange refuses with `503 issuer_unavailable` at 300. Only with `ISSUER_ORIGIN` | cell-watch to `<notify channel>` |
 | 28 | `r28_admission_gate_closed` | NOTIFY | the issuer's `/v1/admin/metrics` `gate_open` | `false`: sign-ups are refused, as expected after `cell-admin gate --close`. Only with `ISSUER_ORIGIN` | cell-watch to `<notify channel>` |
-| 29 | `r29_bytes_put_growth` | NOTIFY | `/operator/data.json` `local.store.totals.bytes_put` (every byte the process put since `totals.since_ms`: the WAL, L0 flushes, compaction and the history absorber included; a restart starts it again) | grew by more than 8 × G (400 GiB at G = 50 GiB) over the trailing 24 h: the bound from above on the bucket's growth, which sees what row 23 cannot (bytes stored and deleted between two drain rounds of a shard; the owner's call stored-cap #1 (c) of 2026-10-14). Cell-wide and unattributed, and raised by the store's own rewrites as much as by writes: the factor 8 is the lead's, uncalibrated until the certification cell measures `bytes_put` per stored byte. With row 23 quiet, look for a tenant that deletes what it writes: `rollup.stored.largest` and the projects' append and delete rates | cell-watch to `<notify channel>` |
+| 29 | `r29_bytes_put_growth` | NOTIFY | `/operator/data.json` `local.store.totals.bytes_put` (every byte the process put since `totals.since_ms`: the WAL, L0 flushes, compaction and the sealer's segment objects included; a restart starts it again) | grew by more than 8 × G (400 GiB at G = 50 GiB) over the trailing 24 h: the bound from above on the bucket's growth, which sees what row 23 cannot (bytes stored and deleted between two drain rounds of a shard; the owner's call stored-cap #1 (c) of 2026-10-14). Cell-wide and unattributed, and raised by the store's own rewrites as much as by writes: the factor 8 is the lead's, uncalibrated until the certification cell measures `bytes_put` per stored byte. With row 23 quiet, look for a tenant that deletes what it writes: `rollup.stored.largest` and the projects' append and delete rates | cell-watch to `<notify channel>` |
 
 **The canary (rows 19 and 22).** The watch probes the cell as a
 customer does: it exchanges `CANARY_CREDENTIAL` at the issuer's
@@ -1182,8 +1195,8 @@ order, each paged and, where the
 cell can be put right, resolved: a
 policy naming `PROJECT_ID` in the bundle (row 7); the three feed files
 deleted, as the wrapper's `feeds deleted` does (row 6, once a feed is
-75 s old); `POST /v1/debug/history-stall?ms=35000` (row 13); `POST
-/v1/debug/absorb-pause?on=1` until the absorb-lag latch engages (row 12;
+75 s old); `POST /v1/debug/seal-pause?on=1` until the lag latch engages
+(row 12;
 the drill's cell sets `MAX_ABSORB_LAG_SECS=150`, so it engages in
 minutes, not 15); the cell stopped (row 3 after 2 min and the uptime
 check after 3 failures; its return notifies row 4); the watch killed

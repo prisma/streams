@@ -366,7 +366,7 @@ async fn shed_before_body(
     if !appends(method, path) {
         return None;
     }
-    let gate = crate::application::append::memory_gate(&state.admission, &state.runtime.history);
+    let gate = crate::application::append::memory_gate(&state.admission);
     let failure = gate.await.err()?;
     Some(super::append_error::render_product_append_error(failure))
 }
@@ -381,8 +381,7 @@ pub(super) fn blamed_refusal(
     principal: Option<&RequestPrincipal>,
 ) -> Option<Response> {
     let project = &principal?.project_id;
-    let reserved = state.runtime.history.budget.reserved_bytes();
-    let (code, message, retry) = match state.admission.shed_blamed(reserved)? {
+    let (code, message, retry) = match state.admission.shed_blamed()? {
         WriteRefusal::MemoryPressure => (
             "project_memory_pressure",
             "the instance is over its memory line and this project carries more than its share of the cell's load; retry",

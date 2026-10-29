@@ -859,10 +859,7 @@ impl OpenGate {
     }
 }
 
-/// Canonical shard-DB path for a topology prefix. ONE definition — the
-/// static audit found history2 derived its path independently and
-/// landed BESIDE the shards/ tree ("01/history2", or "/history2" for a
-/// one-shard root) instead of inside the shard it belongs to.
+/// Canonical shard-DB path for a topology prefix. ONE definition.
 pub(crate) fn shard_db_path(prefix: &str) -> String {
     if prefix.is_empty() {
         "shards/root".to_string()
@@ -871,47 +868,6 @@ pub(crate) fn shard_db_path(prefix: &str) -> String {
         prefix.to_string()
     } else {
         format!("shards/{prefix}")
-    }
-}
-
-/// The shard's shared history-v2 partition, ALWAYS under the shard DB's
-/// own path so ownership (clone/split/move) travels with the shard.
-pub(crate) fn history2_path(prefix: &str) -> String {
-    format!("{}/history2", shard_db_path(prefix))
-}
-
-#[cfg(test)]
-mod path_tests {
-    use super::*;
-
-    #[test]
-    fn history2_lives_under_the_shard_db_path() {
-        assert_eq!(shard_db_path(""), "shards/root");
-        assert_eq!(history2_path(""), "shards/root/history2");
-        assert_eq!(shard_db_path("01"), "shards/01");
-        assert_eq!(history2_path("01"), "shards/01/history2");
-        assert_eq!(history2_path("a/b"), "a/b/history2");
-    }
-}
-
-#[cfg(test)]
-mod health_ownership_tests {
-    use super::*;
-    #[test]
-    fn runtimes_cannot_inherit_or_heal_each_others_health() {
-        let a = ShardHealth::default();
-        let b = ShardHealth::default();
-        for n in 0..100 {
-            a.failed(&format!("shard-{n}"), "unavailable".into());
-        }
-        assert_eq!(a.0.lock().unwrap().failed.len(), 3);
-        assert!(a.unready_reason().is_some());
-        assert!(b.unready_reason().is_none());
-        b.succeeded();
-        assert!(a.unready_reason().is_some());
-        a.succeeded();
-        assert!(a.unready_reason().is_none());
-        assert!(ShardHealth::default().unready_reason().is_none());
     }
 }
 
@@ -958,5 +914,26 @@ fn closing_outcome() -> OpenOutcome {
     OpenOutcome::Wait {
         code: "shard_closing",
         retry_after_secs: 1,
+    }
+}
+
+#[cfg(test)]
+mod health_ownership_tests {
+    use super::*;
+    #[test]
+    fn runtimes_cannot_inherit_or_heal_each_others_health() {
+        let a = ShardHealth::default();
+        let b = ShardHealth::default();
+        for n in 0..100 {
+            a.failed(&format!("shard-{n}"), "unavailable".into());
+        }
+        assert_eq!(a.0.lock().unwrap().failed.len(), 3);
+        assert!(a.unready_reason().is_some());
+        assert!(b.unready_reason().is_none());
+        b.succeeded();
+        assert!(a.unready_reason().is_some());
+        a.succeeded();
+        assert!(a.unready_reason().is_none());
+        assert!(ShardHealth::default().unready_reason().is_none());
     }
 }

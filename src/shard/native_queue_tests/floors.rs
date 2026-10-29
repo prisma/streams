@@ -13,7 +13,7 @@ use crate::native_queue::{
     DAY_MS, DeliveryView, HOUR_MS, NqOp, NqOut, NqResult, QueueConfig, SendMessage, SettleKind,
     keys,
 };
-use crate::shard::{CommitOp, ShardConfig, ShardEngine};
+use crate::shard::{CommitOp, ShardEngine};
 
 const RETENTION: i64 = 4 * DAY_MS;
 const LEASE: i64 = 30_000;
@@ -62,7 +62,7 @@ async fn claim_after(e: &ShardEngine, first: NqOp, max: usize) -> Vec<DeliveryVi
             resp: claim_tx,
         },
     ];
-    e.commit_group(ops, &ShardConfig::default()).await;
+    e.commit_group(ops).await;
     let reply = |rx: oneshot::Receiver<NqResult>| async move {
         tokio::time::timeout(REPLY_WITHIN, rx)
             .await
@@ -75,7 +75,7 @@ async fn claim_after(e: &ShardEngine, first: NqOp, max: usize) -> Vec<DeliveryVi
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_that_takes_the_due_work_raises_the_floor_to_the_next_entry() {
-    let (e, db, _absorb, c) = clocked("nq-floor-next", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-floor-next", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), due_at("b", c + 60_000)]))
         .await
         .unwrap();
@@ -108,7 +108,7 @@ async fn a_claim_that_takes_the_due_work_raises_the_floor_to_the_next_entry() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_reads_no_availability_entry_below_a_future_floor() {
-    let (e, db, _absorb, c) = clocked("nq-floor-skip", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-floor-skip", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), due_at("b", c + 60_000)]))
         .await
         .unwrap();
@@ -141,7 +141,7 @@ async fn a_claim_reads_no_availability_entry_below_a_future_floor() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_put_below_a_raised_floor_lowers_it_and_the_next_claim_takes_it() {
-    let (e, db, _absorb, c) = clocked("nq-floor-lowered", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-floor-lowered", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), due_at("b", c + 60_000)]))
         .await
         .unwrap();
@@ -173,7 +173,7 @@ async fn a_put_below_a_raised_floor_lowers_it_and_the_next_claim_takes_it() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_cut_short_leaves_the_floor_at_the_first_entry_it_did_not_take() {
-    let (e, db, _absorb, c) = clocked("nq-floor-cut", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-floor-cut", QueueConfig::default()).await;
     for i in 0..4_i64 {
         set_clock(&db, c + i).await;
         op(&e, send_op(vec![msg(&format!("{i:0>100}"))]))
@@ -205,7 +205,7 @@ async fn a_claim_cut_short_leaves_the_floor_at_the_first_entry_it_did_not_take()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_raises_the_floor_past_an_entry_its_group_cancelled() {
-    let (e, db, _absorb, c) = clocked("nq-floor-cancel", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-floor-cancel", QueueConfig::default()).await;
     let later = vec![msg("a"), due_at("b", c + 60_000), due_at("c", c + 120_000)];
     op(&e, send_op(later)).await.unwrap();
     let d = claim_after(&e, NqOp::Cancel { offsets: vec![1] }, 10).await;
@@ -231,7 +231,7 @@ async fn a_claim_raises_the_floor_past_an_entry_its_group_cancelled() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_raises_the_floor_to_a_later_entry_its_group_sent() {
-    let (e, db, _absorb, c) = clocked("nq-floor-staged-send", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-floor-staged-send", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
     let d = claim_after(&e, send_op(vec![due_at("b", c + 60_000)]), 10).await;
     assert_eq!(offsets(&d), vec![0]);
@@ -242,7 +242,7 @@ async fn a_claim_raises_the_floor_to_a_later_entry_its_group_sent() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_raises_the_retry_floor_past_a_retry_its_group_cancelled() {
-    let (e, db, _absorb, c) = clocked("nq-floor-retry-cancel", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-floor-retry-cancel", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), msg("b"), msg("c")]))
         .await
         .unwrap();
@@ -270,7 +270,7 @@ async fn a_claim_raises_the_retry_floor_past_a_retry_its_group_cancelled() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_cut_short_by_expired_entries_never_passes_an_entry_it_did_not_read() {
-    let (e, db, _absorb, c) = clocked("nq-floor-expired", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-floor-expired", QueueConfig::default()).await;
     op(
         &e,
         send_op((0..25).map(|i| msg(&format!("m{i}"))).collect()),
@@ -291,7 +291,7 @@ async fn a_claim_cut_short_by_expired_entries_never_passes_an_entry_it_did_not_r
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_due_retry_waiting_for_a_claim_does_not_delay_an_earlier_lease_expiry() {
-    let (e, db, _absorb, c) = clocked("nq-floor-lease-first", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-floor-lease-first", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), msg("b")])).await.unwrap();
     let d = claim(&e, 2).await;
     let now = SettleKind::Retry { delay_ms: Some(0) };
@@ -311,7 +311,7 @@ async fn a_due_retry_waiting_for_a_claim_does_not_delay_an_earlier_lease_expiry(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn claims_and_acks_leave_a_parked_roster_where_the_sweep_put_it() {
-    let (e, db, _absorb, c) = clocked("nq-floor-quiet", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-floor-quiet", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), msg("b"), msg("c")]))
         .await
         .unwrap();
@@ -336,7 +336,7 @@ async fn claims_and_acks_leave_a_parked_roster_where_the_sweep_put_it() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn floors_fall_with_every_put_and_rise_with_the_scans_that_find_the_heads() {
-    let (e, db, _absorb, c) = clocked("nq-floor-exact", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-floor-exact", QueueConfig::default()).await;
     assert_eq!(state(&db).await.floors, Floors::EMPTY, "a new queue");
     op(&e, send_op(vec![msg("a"), msg("b")])).await.unwrap();
     assert_eq!(state(&db).await.floors.avail, c);
@@ -375,7 +375,7 @@ async fn floors_fall_with_every_put_and_rise_with_the_scans_that_find_the_heads(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_waiting_retry_is_swept_only_at_its_cycle_deadline() {
-    let (e, db, _absorb, c) = clocked("nq-floor-cycle", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-floor-cycle", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
     let d = claim(&e, 1).await;
     let retry = SettleKind::Retry {

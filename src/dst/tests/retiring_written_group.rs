@@ -24,9 +24,7 @@
 //! append-and-close, a product `:seal` with a final record, and a plain and
 //! a producer-keyed product append.
 
-use super::fixture_http::{
-    HttpRig, HttpRigOptions, cold_absorber, engine_shutdown, http_rig_build,
-};
+use super::fixture_http::{HttpRig, HttpRigOptions, cold_sealer, engine_shutdown, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
@@ -41,24 +39,18 @@ type Reply = (u16, HashMap<String, String>, Vec<u8>);
 const JSON: (&str, &str) = ("content-type", "application/json");
 const KEY: [(&str, &str); 1] = [("prisma-encryption-key", PRISMA_KEY)];
 
-/// One runtime over `store`, its absorber never due and paused, so no
-/// absorption write reaches the shard's WAL while the hold is up.
+/// One runtime over `store`, its sealer off, so no seal commit or seal
+/// flush reaches the shard's WAL while the hold is up.
 async fn runtime(store: &Arc<FaultStore>, incarnation: u64) -> HttpRig {
-    let rig = http_rig_build(
+    http_rig_build(
         store.clone(),
         RigRuntime::incarnation(incarnation),
         HttpRigOptions {
-            absorber: Some(cold_absorber()),
+            seal: Some(cold_sealer),
             ..Default::default()
         },
     )
-    .await;
-    rig.state
-        .runtime
-        .history
-        .paused
-        .store(true, Ordering::Relaxed);
-    rig
+    .await
 }
 
 /// Polls `ready` every few milliseconds until it holds; fails after 10 s

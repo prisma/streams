@@ -284,11 +284,14 @@ export QUALITY_EVENT_NAME=push QUALITY_HEAD_SHA=$(git rev-parse HEAD) \
 scripts/quality/mutations.sh    # zero MISSED, TIMEOUT and incomplete; ~1 min per mutant locally
 ```
 
-CI deals the same leg over the `mutants` job's eight matrix jobs of
-360 min (`QUALITY_MUTANT_SHARD=k/8`, cargo-mutants `--shard`,
-round-robin): each tests every eighth selected mutant, together each one
-once. A push selecting more than about 900 mutants does not fit: split it
-into smaller pushes (preflight's `plan.json` lists the selection). Locally
+CI deals the same leg over the `mutants` job's matrix of `w` jobs of
+360 min (`QUALITY_MUTANT_SHARD=k/w`, cargo-mutants `--shard`,
+round-robin): each tests every `w`-th selected mutant, together each one
+once. The `mutants-plan` job sets `w` per run: one job per 110 measured
+mutants of the selection, at least 8 and at most 48, and 8 for the nightly
+(`scripts/quality/mutants_width.py --plan target/preflight/plan/plan.json`
+prints it for a push). A push selecting more than about 5,000 mutants does
+not fit even 48 jobs: split it into smaller pushes. Locally
 run it whole, or one share with the same variable. The driver runs every selected owner and
 fails once at the end with each owner's missed, timed-out and incomplete mutants (a catch
 whose tests died by a signal, or one cargo-mutants could not classify; MISSED and TIMEOUT

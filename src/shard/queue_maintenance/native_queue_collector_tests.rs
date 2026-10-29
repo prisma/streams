@@ -9,12 +9,11 @@ use std::time::Duration;
 use object_store::ObjectStore;
 use slatedb::Db;
 use slatedb::compactor::{CompactionSpec, SourceId};
-use tokio::sync::mpsc;
 
 use super::{QUEUE_TREE, pass_due, single_pass_fits};
 use crate::native_queue::rows::StateRow;
 use crate::native_queue::{NqOp, QueueConfig, keys};
-use crate::shard::{AbsorbSignal, ShardConfig, ShardEngine};
+use crate::shard::{ShardConfig, ShardEngine};
 
 const MIB: u64 = 1 << 20;
 const MIN: i64 = 60_000;
@@ -58,7 +57,6 @@ struct Rig {
     engine: Arc<ShardEngine>,
     db: Arc<Db>,
     store: Arc<dyn ObjectStore>,
-    _absorb: mpsc::Receiver<AbsorbSignal>,
 }
 
 /// An engine over a fresh in-memory store; a `name` with a `/` puts the
@@ -78,22 +76,15 @@ async fn rig_over(
     let builder =
         crate::native_queue::compaction_guard::shard_log_builder(name, store.clone(), settings);
     let db = Arc::new(builder.build().await.unwrap());
-    let (tx, absorb) = mpsc::channel(1);
     let engine = ShardEngine::start(
         name.to_owned(),
         db.clone(),
         store.clone(),
         ShardConfig::default(),
-        tx,
         None,
         Default::default(),
     );
-    Rig {
-        engine,
-        db,
-        store,
-        _absorb: absorb,
-    }
+    Rig { engine, db, store }
 }
 
 /// A compactor that validates and runs submitted compactions every `poll`.

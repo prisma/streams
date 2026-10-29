@@ -20,7 +20,7 @@
     "owner": "src/shard.rs durability transaction",
     "state": "partial",
     "mechanism": "park sequence N before enqueue/commit, allow N+1 to observe a gap, then commit N and retry N+1; final operation must commit exactly once.",
-    "disposition": "12997 parks the predecessor via Fp::AppendBeforeEnqueue, lets N+1 observe a gap, then commits N and retries \u2014 exact DUR-007 procedure, but exercised on final-intent closes (shared committer path), not plain appends.",
+    "disposition": "12997 parks the predecessor via Fp::AppendBeforeEnqueue, lets N+1 observe a gap, then commits N and retries — exact DUR-007 procedure, but exercised on final-intent closes (shared committer path), not plain appends.",
     "closure_evidence": {
       "source_tests": [
         "src/dst/tests/seal_recovery.rs::a_transient_producer_gap_does_not_lose_the_promised_record",
@@ -118,7 +118,7 @@
     "id": "CRT-012",
     "owner": "src/application/creation.rs",
     "state": "partial",
-    "mechanism": "vary exactly one semantic field\u2014key fingerprint, source epoch, body, content type, expiry, fork boundary\u2014and prove operation identities differ.",
+    "mechanism": "vary exactly one semantic field—key fingerprint, source epoch, body, content type, expiry, fork boundary—and prove operation identities differ.",
     "disposition": "Config-comparison and source-epoch identity legs exist; no vary-one-field identity-completeness matrix.",
     "closure_evidence": {
       "source_tests": [
@@ -126,7 +126,7 @@
         "src/dst/tests/fork_lifecycle.rs::a_fork_initialization_is_bound_to_its_source_incarnation"
       ],
       "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
-      "remaining": "Pending: vary exactly one semantic field\u2014key fingerprint, source epoch, body, content type, expiry, fork boundary\u2014and prove operation identities differ."
+      "remaining": "Pending: vary exactly one semantic field—key fingerprint, source epoch, body, content type, expiry, fork boundary—and prove operation identities differ."
     }
   },
   {
@@ -178,7 +178,7 @@
     "id": "FRK-002",
     "owner": "src/application/creation.rs fork preparation",
     "state": "partial",
-    "mechanism": "fork inside a binary record; partial suffix becomes child\u2019s first own record exactly once.",
+    "mechanism": "fork inside a binary record; partial suffix becomes child’s first own record exactly once.",
     "disposition": "22248 covers sub-offset materialization (JSON sub-offset leg, 'regression net for the conformance suite'); 33762 materializes a binary partial but asserts the record ceiling, not exact-once suffix semantics.",
     "closure_evidence": {
       "source_tests": [
@@ -186,7 +186,7 @@
         "src/dst/tests/livefeed_history.rs::fork_materialized_partial_respects_the_record_ceiling"
       ],
       "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
-      "remaining": "Pending: fork inside a binary record; partial suffix becomes child\u2019s first own record exactly once."
+      "remaining": "Pending: fork inside a binary record; partial suffix becomes child’s first own record exactly once."
     }
   },
   {
@@ -244,7 +244,7 @@
     "owner": "src/application/creation.rs fork preparation",
     "state": "partial",
     "mechanism": "while last-child release decides whether to hard-delete source, install a new child in both forced orderings.",
-    "disposition": "STATUS.md: 'covered by construction \u2014 release+decide in ONE CAS (release_fork_ref)'. No dedicated two-ordering test; the mechanism is structural.",
+    "disposition": "STATUS.md: 'covered by construction — release+decide in ONE CAS (release_fork_ref)'. No dedicated two-ordering test; the mechanism is structural.",
     "closure_evidence": {
       "source_tests": [
         "src/dst/tests/fork_lifecycle.rs::fork_creation_and_source_deletion_serialize"
@@ -337,7 +337,7 @@
     "owner": "src/application/topology.rs and src/scaler3.rs",
     "state": "pending",
     "mechanism": "one key dominates; no useless split; `hot_key` surfaced.",
-    "disposition": "GAP (Existing with no test): scaler3.rs implements hot-key suppression (scaler3.rs:238 '\u00a75.2') and hot_key() surfacing (scaler3.rs:124), and dst_tests.rs:14335 deliberately avoids tripping it \u2014 but no test asserts a dominant key refuses split and surfaces hot_key. Nearest mechanism unit test: src/sketch.rs:290 spacesaving_finds_the_dominant_key (detection only).",
+    "disposition": "GAP (Existing with no test): scaler3.rs implements hot-key suppression (scaler3.rs:238 '§5.2') and hot_key() surfacing (scaler3.rs:124), and dst_tests.rs:14335 deliberately avoids tripping it — but no test asserts a dominant key refuses split and surfaces hot_key. Nearest mechanism unit test: src/sketch.rs:290 spacesaving_finds_the_dominant_key (detection only).",
     "closure_evidence": {
       "source_tests": [],
       "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
@@ -421,32 +421,32 @@
   },
   {
     "id": "HIS-014",
-    "owner": "src/history.rs, src/postings_cache.rs and src/sse/registry.rs",
+    "owner": "src/shard/seal.rs sealer and deadline loops; src/shard/lifecycle.rs engine shutdown",
     "state": "partial",
-    "mechanism": "engine closes while partition OnceCell open is in progress; late DB closes and cannot survive old engine.",
-    "disposition": "Zombie-absorber/fence-class coverage exists; the exact 'engine closes while partition OnceCell open is in progress' race leg is not explicitly driven.",
+    "mechanism": "the engine closes or is fenced while the sealer open or a seal is in progress; the sealer and deadline loops exit and no sealer task outlives the old engine.",
+    "disposition": "A fenced owner joins its sealer and seal-deadlines and writes no segment object after the handoff; a close leaves a parked seal at once instead of aborting it at the workers' grace (which failed the close). The close-during-open-retry leg is not driven separately.",
     "closure_evidence": {
       "source_tests": [
         "src/dst/tests/runtime_isolation.rs::a_fenced_owners_absorber_exits",
-        "src/history.rs::absorber_exits_when_shard_engine_is_fenced",
-        "src/history.rs::r08_fence_disposition_uses_error_kind_through_context"
+        "src/shard/seal/lifecycle_tests.rs::a_close_leaves_a_seal_in_flight_at_once",
+        "src/dst/tests/runtime_isolation.rs::closing_an_engine_answers_queued_appends_and_ends_every_task"
       ],
       "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
-      "remaining": "Pending: engine closes while partition OnceCell open is in progress; late DB closes and cannot survive old engine."
+      "remaining": "Pending: the engine closes while the sealer open is still retrying; the open loop exits on the close watch."
     }
   },
   {
     "id": "HIS-015",
-    "owner": "src/history.rs, src/postings_cache.rs and src/sse/registry.rs",
+    "owner": "src/spill/object.rs segment-object naming; src/shard/seal/steps.rs object PUT",
     "state": "partial",
-    "mechanism": "one-shard topology with empty prefix; history path normalized and readable.",
-    "disposition": "IMPLEMENTED (unit-level path pin against /history2 drift). The empty-prefix one-shard end-to-end read leg is not separate.",
+    "mechanism": "one-shard topology with empty prefix; segment objects written under the normalized shard db path and read back.",
+    "disposition": "IMPLEMENTED (unit-level pin of the segment-object path under the shard db path, against hseg drift). The empty-prefix one-shard end-to-end read leg is not separate.",
     "closure_evidence": {
       "source_tests": [
-        "src/sharddir.rs::history2_lives_under_the_shard_db_path"
+        "src/spill/object_tests.rs::object_names_sit_under_the_shard_db_path"
       ],
       "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
-      "remaining": "Pending: one-shard topology with empty prefix; history path normalized and readable."
+      "remaining": "Pending: one-shard topology with empty prefix; segment objects written and read back end to end."
     }
   },
   {
@@ -466,7 +466,7 @@
     "owner": "src/history.rs and src/history/postings_read.rs",
     "state": "partial",
     "mechanism": "corrupt/missing page; canonical envelope scan, exact frames, honest incomplete/error.",
-    "disposition": "The corrupt-page leg is tested and enforced (read_history2_keyed falls back to the envelope scan). A postings page or canonical row lost after it was durable is not detected by the reader: zero pages read as absence, and a missing canonical row still completes its span. H11 stays as adopted; the owner must choose between a coverage mechanism and a deliberately revised contract (docs/dst/DST-EXPANSION-SPEC.md \u00a79.12.2, TLA-018-F2).",
+    "disposition": "The corrupt-page leg is tested and enforced (read_history2_keyed falls back to the envelope scan). A postings page or canonical row lost after it was durable is not detected by the reader: zero pages read as absence, and a missing canonical row still completes its span. H11 stays as adopted; the owner must choose between a coverage mechanism and a deliberately revised contract (docs/dst/DST-EXPANSION-SPEC.md §9.12.2, TLA-018-F2).",
     "closure_evidence": {
       "source_tests": [
         "src/dst/tests/reads_history.rs::corrupt_postings_fall_back_to_the_envelope"
@@ -479,12 +479,12 @@
     "id": "HIS-022",
     "owner": "src/history.rs, src/postings_cache.rs and src/sse/registry.rs",
     "state": "pending",
-    "mechanism": "64 callers, one open, \u226563 coalesced.",
+    "mechanism": "64 callers, one open, ≥63 coalesced.",
     "disposition": "MECHANISM REPLACED: no history-reader-cache module exists in current src/ (superseded by LiveFeed + postings cache). Nearest equivalents: livefeed_two_subscribers_share_one_feed_and_one_source_read:32317, src/sse/registry.rs:221 last_subscriber_evicts_and_reconnect_does_not_grow, src/postings_cache.rs:929 warm_install_serves_from_zero_without_index_load.",
     "closure_evidence": {
       "source_tests": [],
       "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
-      "remaining": "Pending: 64 callers, one open, \u226563 coalesced."
+      "remaining": "Pending: 64 callers, one open, ≥63 coalesced."
     }
   },
   {
@@ -537,16 +537,16 @@
   },
   {
     "id": "HIS-027",
-    "owner": "src/history.rs, src/postings_cache.rs and src/sse/registry.rs",
+    "owner": "src/shard/layout.rs unsealed set and directory; src/shard/seal.rs triggers",
     "state": "partial",
-    "mechanism": "many shard engines, one million keys/100 active; cache stays within one process budget and warm active hit rate gate.",
-    "disposition": "Unit-level process-budget pin exists; the warm-active hit-rate gate is campaign-level.",
+    "mechanism": "many shard engines, one million keys/100 active; unsealed pages held in memory and directory entries stay within one process budget.",
+    "disposition": "Package 4 pins what layout 6 bounds today across many engines in one process: unsealed bytes per shard near the seal trigger, the unsealed set within the active streams, at most one directory entry per active stream per seal, each under 512 B. The in-memory directory itself grows with every sealed chunk until package 5 folds it into run-index objects (one fold period per shard, DESIGN-6A §2.3 and F15's budget line).",
     "closure_evidence": {
       "source_tests": [
-        "src/postings_cache/tests.rs::million_key_shape_holds_process_budget"
+        "src/shard/seal/memory_tests.rs::many_engines_hold_unsealed_pages_near_the_trigger_and_bounded_directory_entries"
       ],
       "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
-      "remaining": "Pending: many shard engines, one million keys/100 active; cache stays within one process budget and warm active hit rate gate."
+      "remaining": "Pending (package 5): the fold bounds the in-memory directory at one fold period per shard, asserted in the same test; F15 memory budget line under the 500 MB shed line."
     }
   },
   {
@@ -820,12 +820,12 @@
     "id": "FLT-005",
     "owner": "src/fleet.rs fleet campaign owner",
     "state": "pending",
-    "mechanism": "route cache several versions stale; \u2264 configured replay hops, no duplicate dispatch commit.",
+    "mechanism": "route cache several versions stale; ≤ configured replay hops, no duplicate dispatch commit.",
     "disposition": "The catalogue procedure has no concrete local test. Preserve this obligation and execute the specified failure/order/load matrix under the owning harness.",
     "closure_evidence": {
       "source_tests": [],
       "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
-      "remaining": "Pending: route cache several versions stale; \u2264 configured replay hops, no duplicate dispatch commit."
+      "remaining": "Pending: route cache several versions stale; ≤ configured replay hops, no duplicate dispatch commit."
     }
   },
   {
@@ -868,12 +868,12 @@
     "id": "FLT-011",
     "owner": "src/fleet.rs fleet campaign owner",
     "state": "pending",
-    "mechanism": "1\u2192N\u21921, traffic throughout, no fence war or phantom owner.",
+    "mechanism": "1→N→1, traffic throughout, no fence war or phantom owner.",
     "disposition": "The catalogue procedure has no concrete local test. Preserve this obligation and execute the specified failure/order/load matrix under the owning harness.",
     "closure_evidence": {
       "source_tests": [],
       "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
-      "remaining": "Pending: 1\u2192N\u21921, traffic throughout, no fence war or phantom owner."
+      "remaining": "Pending: 1→N→1, traffic throughout, no fence war or phantom owner."
     }
   },
   {

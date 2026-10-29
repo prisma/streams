@@ -1,7 +1,7 @@
 //! Livefeed swap.
 
 use super::fixture_failpoints::{FailpointGuard, gap_lock, sweep_lock};
-use super::fixture_http::{await_published, http_rig, http_rig_cold_absorb};
+use super::fixture_http::{await_published, http_rig, http_rig_cold_seal};
 use super::fixture_livefeed::{
     hub_append_lf, hub_sse_collect, last_next_cursor, lf_connect, lf_record_and_status, seal_ok,
     split_and_await, wait_parked,
@@ -740,7 +740,7 @@ async fn livefeed_swap_externally_adopts_child_engines() {
         "10".to_string(),
         "11".to_string(),
     ];
-    let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
+    let (state, addr) = http_rig_cold_seal(store, prefixes.clone()).await;
     let (st, _, _) = preq(
         addr,
         "PUT",

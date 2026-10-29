@@ -38,8 +38,8 @@ pub(crate) use environment::MapEnvironment;
 pub use environment::{Environment, ProcessEnvironment};
 pub use model::ServerConfig;
 pub(crate) use model::{
-    AdmissionConfig, BillingConfig, EngineConfig, FleetConfig, HistoryConfig, HttpConfig,
-    ScaleConfig, ShardRuntimeConfig, SseConfig, StorageConfig,
+    AdmissionConfig, BillingConfig, EngineConfig, FleetConfig, HttpConfig, ScaleConfig,
+    ShardRuntimeConfig, SseConfig, StorageConfig,
 };
 #[cfg(test)]
 pub(crate) use tests::shared_cell_profile;

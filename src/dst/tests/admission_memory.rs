@@ -4,7 +4,7 @@ use super::fixture_auth::{
     RIG_SCOPES, auth_rig, mint_token, rig_append, rig_create, rig_policy, rig_sse,
 };
 use super::fixture_failpoints::gap_lock;
-use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig, http_rig_build};
+use super::fixture_http::{HttpRigOptions, cold_sealer, engine_shutdown, http_rig, http_rig_build};
 use super::fixture_livefeed::{
     hub_append_lf, hub_sse_collect, last_next_cursor, lf_connect, lf_record_and_status,
 };
@@ -13,7 +13,6 @@ use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::{mem, noise_text};
 use object_store::ObjectStore;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 /// Round-10 review reopen (red): PROJECT ISOLATION of the feed
 /// retention budget. The process budget is a CELL safety ceiling —
@@ -252,6 +251,7 @@ async fn livefeed_mass_disconnect_tears_down_within_deadline() {
 async fn pm_enforce_rig(
     store: Arc<dyn ObjectStore>,
     runtime: RigRuntime,
+    seal: Option<fn(&mut crate::shard::seal::SealSettings)>,
 ) -> (
     Arc<crate::http::AppState>,
     std::net::SocketAddr,
@@ -326,6 +326,7 @@ async fn pm_enforce_rig(
         runtime,
         HttpRigOptions {
             auth_service: Some(svc),
+            seal,
             ..Default::default()
         },
     )
@@ -380,7 +381,7 @@ async fn pm_enforce_rig(
 /// point restores appends (hysteresis pinned at the unit level).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn project_memory_pressure_throttles_new_appends_only() {
-    let (state, addr, bearer, pid) = pm_enforce_rig(mem(), RigRuntime::first()).await;
+    let (state, addr, bearer, pid) = pm_enforce_rig(mem(), RigRuntime::first(), None).await;
     state
         .admission
         .set_project_memory_pressure_bytes(256 * 1024);
@@ -454,16 +455,16 @@ async fn project_memory_pressure_throttles_new_appends_only() {
 
 /// Round-13 battery 9: durable frame debt SURVIVES a restart via the
 /// tail seed — the new incarnation's binding starts from the tail's
-/// persisted unabsorbed_bytes, never from zero, and absorption then
-/// retires it to zero. (Battery 10's owner-movement release is the
+/// persisted unsealed bytes, never from zero, and a seal then retires
+/// it to zero. (Battery 10's owner-movement release is the
 /// same Drop path, pinned at the unit level; the fleet leg exercises
 /// it in the field.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn frame_debt_survives_restart_via_tail_seed() {
     let _l = gap_lock().lock().await;
     let store = mem();
-    let (state, addr, bearer, pid) = pm_enforce_rig(store.clone(), RigRuntime::first()).await;
-    state.runtime.history.paused.store(true, Ordering::Relaxed);
+    let (state, addr, bearer, pid) =
+        pm_enforce_rig(store.clone(), RigRuntime::first(), Some(cold_sealer)).await;
     let auth = ("authorization", bearer.as_str());
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let ct = ("content-type", "application/json");
@@ -494,15 +495,15 @@ async fn frame_debt_survives_restart_via_tail_seed() {
     let debt_before = adm.unabsorbed_frame_bytes_now();
     assert!(
         debt_before > 64 * 1024,
-        "the paused absorber leaves attributed frame debt: {debt_before}"
+        "the cold sealer leaves attributed frame debt: {debt_before}"
     );
     engine_shutdown(&state).await;
     drop(state);
 
     // New incarnation on the SAME store: the first pressured append
     // binds and seeds from the durable tail — never from zero.
-    let (state2, addr2, bearer2, pid2) = pm_enforce_rig(store, RigRuntime::incarnation(1)).await;
-    state2.runtime.history.paused.store(true, Ordering::Relaxed);
+    let (state2, addr2, bearer2, pid2) =
+        pm_enforce_rig(store, RigRuntime::incarnation(1), Some(cold_sealer)).await;
     let auth2 = ("authorization", bearer2.as_str());
     let (st, _, b) = preq(
         addr2,
@@ -525,12 +526,10 @@ async fn frame_debt_survives_restart_via_tail_seed() {
     );
     assert!(adm2.dirty_streams_now() >= 1);
 
-    // Unpause: absorption retires the debt to exactly zero.
-    state2
-        .runtime
-        .history
-        .paused
-        .store(false, Ordering::Relaxed);
+    // A requested seal retires the debt to exactly zero.
+    for engine in state2.shards.engines() {
+        engine.seal_requested().await.expect("a requested seal");
+    }
     let mut zeroed = false;
     for _ in 0..600 {
         if adm2.unabsorbed_frame_bytes_now() == 0 && adm2.dirty_streams_now() == 0 {
@@ -539,6 +538,6 @@ async fn frame_debt_survives_restart_via_tail_seed() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    assert!(zeroed, "absorption retires attributed debt to zero");
+    assert!(zeroed, "the seal retires attributed debt to zero");
     engine_shutdown(&state2).await;
 }

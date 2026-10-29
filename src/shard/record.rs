@@ -1,21 +1,12 @@
 #![warn(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
-//! Checked stored-record admission, shared by shard and history readers.
-//! Invalid cache entries force a canonical storage read; corrupt stored rows
-//! fail before either matching or match-free progress can be published.
-//!
-//! The shard log stores layout 5 pages under `hash16 ‖ 'p' ‖ last offset`.
-//! A read of `[from, to)` scans from the key of `from`, so the first page it
-//! meets holds `from`, and stops at the first page that starts at or after
-//! `to`; a page holds at most `PAGE_MAX_RECORDS` records, so the scan never
-//! needs keys past `to - 1 + PAGE_MAX_RECORDS`.
+//! Checked stored-record admission and the result a stream read returns.
+//! Corrupt stored pages fail before either matching or match-free progress
+//! can be published. Layout 6 serves a stream's reads from its unsealed
+//! pages in memory and its segment objects (`shard::seal::read`).
 use super::{Deliver, ShardEngine, StreamHandle};
-use crate::crypto_page::{
-    CheckedPage, PAGE_TARGET_PLAINTEXT, PageCorruption, page_scan_bound, shard_page_key,
-    shard_page_prefix,
-};
+use crate::crypto_page::PageCorruption;
 mod pages;
 pub(crate) use pages::{PageSlice, PageSlices};
-use slatedb::config::{DurabilityLevel, ScanOptions};
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RecordCorruption {
@@ -78,277 +69,6 @@ impl From<RangeReadError> for slatedb::Error {
 pub(crate) struct FrameReadResult {
     pub frames: PageSlices,
     pub last_offset: Option<u64>,
-    pub(super) coverage: Option<DurableRingCoverage>,
-}
-
-/// Retained admission fact, not a caller-supplied permission to skip checks.
-/// Weak ownership binds this proof to one physical DB opening and keeps its
-/// allocation identity unique even after retirement. `hash` binds incarnation.
-pub(super) struct DurableRingCoverage {
-    owner: std::sync::Weak<slatedb::Db>,
-    hash: [u8; 16],
-    from: u64,
-    to: u64,
-}
-impl DurableRingCoverage {
-    pub(super) fn new(engine: &ShardEngine, hash: [u8; 16], from: u64, to: u64) -> Self {
-        Self {
-            owner: std::sync::Arc::downgrade(&engine.db),
-            hash,
-            from,
-            to,
-        }
-    }
-}
-impl FrameReadResult {
-    pub(crate) fn proves_durable_ring(
-        &self,
-        engine: &ShardEngine,
-        hash: [u8; 16],
-        from: u64,
-    ) -> bool {
-        self.coverage.as_ref().is_some_and(|proof| {
-            proof.owner.as_ptr() == std::sync::Arc::as_ptr(&engine.db)
-                && proof.hash == hash
-                && proof.from == from
-                && self.last_offset.and_then(|last| last.checked_add(1)) == Some(proof.to)
-                && proof.to > from
-        })
-    }
-}
-
-/// The read-ahead of a page scan whose stored-byte budget is `max_bytes`:
-/// the budget and one page past it, so at least the 64 KiB of one page, and
-/// at most 2 MiB. The scan stops at its budget, so a larger read-ahead only
-/// fetches (and in history caches) blocks the read never uses; a 64 KiB
-/// window scanned with 2 MiB of read-ahead fetched several store bytes per
-/// byte it served.
-pub(crate) fn scan_read_ahead(max_bytes: usize) -> usize {
-    max_bytes.saturating_add(PAGE_TARGET_PLAINTEXT).min(2 << 20)
-}
-
-/// Scan options for a shard-log page scan at `durability` whose stored-byte
-/// budget is `max_bytes`: its read-ahead on four concurrent block fetches,
-/// and slatedb's defaults otherwise (the fetched blocks are not cached).
-pub(super) fn page_scan_opts(max_bytes: usize, durability: DurabilityLevel) -> ScanOptions {
-    ScanOptions {
-        durability_filter: durability,
-        read_ahead_bytes: scan_read_ahead(max_bytes),
-        max_fetch_tasks: 4,
-        ..Default::default()
-    }
-}
-
-/// The page scan of a live window (`live_window`): `page_scan_opts`, and the
-/// blocks it fetches stay in the shard's block cache, each counted at its
-/// own size (`BlockCache` stores a copy of each). A flush caches its L0's
-/// data blocks but compaction caches none of its output's, so without this
-/// every read of a window GETs a block of each sorted run it seeks, however
-/// often the same window is read; with it the next read of those blocks
-/// GETs nothing.
-pub(super) fn live_scan_opts(max_bytes: usize, durability: DurabilityLevel) -> ScanOptions {
-    ScanOptions {
-        cache_blocks: true,
-        ..page_scan_opts(max_bytes, durability)
-    }
-}
-
-/// The most stored bytes a live window may reach: a woken tail read's
-/// budget (`TAIL_MAX_BYTES`, 1 MiB by default).
-pub(super) const LIVE_SCAN_BYTES: u64 = 1 << 20;
-
-/// Whether a read of `[from, to)` is a live window, given its stream's
-/// durable tail: the pages its scan can reach, from `from` to the end of
-/// its key range (`page_scan_bound(to)`) or the durable head `next`
-/// (whichever is first, but never before `to`), hold at most
-/// `LIVE_SCAN_BYTES` at the stream's average unabsorbed page bytes per
-/// offset (`unabsorbed_bytes` over `[absorbed, next)`). A scan fetches only
-/// blocks of its key range, so a live window's puts about that much of its
-/// stream's pages in the cache, and the blocks at either end of the range
-/// in each table it seeks. A tail, an SSE wake, a consumer pull and a
-/// reader a little behind read such windows, and read them again; a
-/// catch-up through a stream's unabsorbed backlog does not, so its blocks
-/// stay out of the cache.
-pub(super) fn live_window(tail: &super::TailFields, from: u64, to: u64) -> bool {
-    let reach = page_scan_bound(to)
-        .min(tail.next.max(to))
-        .saturating_sub(from);
-    let offsets = tail.next.saturating_sub(tail.absorbed);
-    u128::from(reach).saturating_mul(u128::from(tail.unabsorbed_bytes))
-        <= u128::from(LIVE_SCAN_BYTES).saturating_mul(u128::from(offsets))
-}
-
-/// The scan options of a read of `window` of `handle`'s stream at
-/// `durability`: a live window's, or the uncached page scan's when the
-/// window is not live or the stream's state is poisoned.
-fn read_scan_opts(
-    handle: &StreamHandle,
-    window: super::RingScan,
-    durability: DurabilityLevel,
-) -> ScanOptions {
-    let live = handle
-        .state
-        .lock()
-        .is_ok_and(|state| live_window(&state.durable, window.from, window.to));
-    if live {
-        live_scan_opts(window.max_bytes, durability)
-    } else {
-        page_scan_opts(window.max_bytes, durability)
-    }
-}
-
-/// Range-bounded frame read: scans `[scan_from, scan_to)` regardless of the
-/// durable frontier. Offsets below the frontier are dense, so disjoint
-/// ranges partition the log exactly — the absorber issues several of these
-/// concurrently to hide per-chunk object-store latency (a serial 8 MB chunk
-/// loop absorbed ~10k rec/s against a 150k rec/s ingest; bench 2026-07-14).
-/// The absorber's windows start and end on page edges (the absorbed
-/// boundary and the durable frontier are both page edges), so each slice it
-/// receives is a whole page. The absorber reads each range once, so its
-/// scan caches nothing (`page_scan_opts`).
-pub(crate) async fn read_frames_range(
-    engine: &ShardEngine,
-    handle: &StreamHandle,
-    scan_from: u64,
-    scan_to: u64,
-    max_bytes: usize,
-) -> Result<FrameReadResult, RangeReadError> {
-    if scan_from >= scan_to {
-        return Ok(FrameReadResult::default());
-    }
-    // Durable-tail fast path: live readers chase offsets the ring still
-    // holds; the scan below is the canonical fallback (restart, eviction,
-    // lagging consumers, ring off).
-    let window = super::RingScan {
-        from: scan_from,
-        to: scan_to,
-        max_bytes,
-    };
-    if let Some(hit) = engine.ring_read(handle, window, None) {
-        return Ok(hit);
-    }
-    let uncached = page_scan_opts(max_bytes, DurabilityLevel::Remote);
-    engine
-        .scan_pages(handle.hash, window, None, &uncached)
-        .await
-}
-
-impl ShardEngine {
-    /// The canonical page scan of `window` with `opts` (its visibility,
-    /// read-ahead and caching): every page that holds a record of
-    /// `[from, to)`, sliced to the window, until the stored page bytes reach
-    /// `max_bytes` (the page that reaches them is kept, so the first page
-    /// always fits). A page of another routing key than `key_filter` is
-    /// inspected and skipped without decrypting; its records still count as
-    /// consumed progress.
-    pub(super) async fn scan_pages(
-        &self,
-        hash: [u8; 16],
-        window: super::RingScan,
-        key_filter: Option<&str>,
-        opts: &ScanOptions,
-    ) -> Result<FrameReadResult, RangeReadError> {
-        let super::RingScan {
-            from,
-            to,
-            max_bytes,
-        } = window;
-        let mut out = FrameReadResult::default();
-        if from >= to {
-            return Ok(out);
-        }
-        let prefix = shard_page_prefix(&hash);
-        let range = shard_page_key(&hash, from)..shard_page_key(&hash, page_scan_bound(to));
-        let mut iter = self.db.scan_with_options(range, opts).await?;
-        let mut total = 0usize;
-        while let Some(kv) = iter.next().await? {
-            let page = CheckedPage::from_row(&kv.key, &prefix, kv.value)
-                .map_err(RecordCorruption::Page)?;
-            // The first page that starts at or after `to` ends the window.
-            let Some(slice) = PageSlice::clip(page, from, to) else {
-                break;
-            };
-            total = total.saturating_add(slice.stored_len());
-            out.last_offset = Some(slice.last());
-            if key_filter.is_none_or(|key| key == slice.page().routing_key()) {
-                out.frames.push(slice);
-            }
-            if total >= max_bytes {
-                break;
-            }
-        }
-        Ok(out)
-    }
-
-    /// `window` as a read at `deliver` sees it. DURABLE reads try the ring
-    /// first: it holds only durable pages, so an Applied read chasing the
-    /// just-applied suffix scans. Filtered reads use the keyed ring read
-    /// (#272): page headers are plaintext, so the lane filter runs on the
-    /// ring copy and the consumed offset still covers non-matching pages.
-    /// The scan seeks every L0 and sorted run overlapping the window and
-    /// GETs each block of them the block cache lacks; a live window keeps
-    /// what it fetched there (`read_scan_opts`).
-    async fn read_window(
-        &self,
-        handle: &StreamHandle,
-        window: super::RingScan,
-        key_filter: Option<&str>,
-        deliver: Deliver,
-    ) -> Result<FrameReadResult, slatedb::Error> {
-        if window.from >= window.to {
-            return Ok(FrameReadResult::default());
-        }
-        if deliver == Deliver::Durable
-            && let Some(hit) = self.ring_read(handle, window, key_filter)
-        {
-            return Ok(hit);
-        }
-        let opts = read_scan_opts(handle, window, deliver.durability());
-        Ok(self
-            .scan_pages(handle.hash, window, key_filter, &opts)
-            .await?)
-    }
-}
-
-/// Tail repair (R26-4) over pages: the stored bytes of the pages holding
-/// `[absorbed, next)`. The pages must hold exactly those records, page after
-/// page: a missing page inside the unabsorbed range is corruption, and
-/// repairing over it would bake the hole into the ledger, so the engine
-/// open fails instead.
-pub(super) async fn unabsorbed_page_bytes(
-    db: &slatedb::Db,
-    hash: &[u8; 16],
-    absorbed: u64,
-    next: u64,
-) -> anyhow::Result<u64> {
-    let prefix = shard_page_prefix(hash);
-    let mut rows = db
-        .scan(shard_page_key(hash, absorbed)..shard_page_key(hash, next))
-        .await?;
-    let (mut sum, mut expected) = (0u64, absorbed);
-    while let Some(row) = rows.next().await? {
-        let page = CheckedPage::from_row(&row.key, &prefix, row.value)
-            .map_err(|corruption| anyhow::anyhow!("tail repair: page {corruption:?}"))?;
-        let starts_inside = expected == absorbed && page.first() <= absorbed;
-        anyhow::ensure!(
-            starts_inside || page.first() == expected,
-            "tail repair found a page [{}, {}] where offset {expected} was due",
-            page.first(),
-            page.last(),
-        );
-        sum = sum
-            .checked_add(page.raw().len() as u64)
-            .ok_or_else(|| anyhow::anyhow!("tail repair overflow"))?;
-        expected = page
-            .last()
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("tail repair overflow"))?;
-    }
-    anyhow::ensure!(
-        expected == next,
-        "tail repair found pages for [{absorbed}, {expected}) of [{absorbed}, {next})",
-    );
-    Ok(sum)
 }
 
 #[cfg(test)]
@@ -376,64 +96,10 @@ pub(crate) async fn read_frames(
     .await
 }
 
-impl Deliver {
-    /// The shard-log view a read at this visibility observes. A tail scan and
-    /// the absorbed boundary that revalidates it must share it (TLA-018-F1).
-    fn durability(self) -> DurabilityLevel {
-        match self {
-            Deliver::Durable => DurabilityLevel::Remote,
-            Deliver::Applied => DurabilityLevel::Memory,
-        }
-    }
-}
-
-impl ShardEngine {
-    /// `(absorbed, history_v2)` from the stored tail row as a `visibility`
-    /// read sees it: the strongest boundary a tail scan at that visibility
-    /// can have observed trims for. An applied scan sees applied trims whose
-    /// advance is not yet Remote-durable, so revalidating it against the
-    /// Remote row would accept its hole as consumed (TLA-018-F1). The
-    /// published handle state is NOT enough: trim deletes become scan-visible
-    /// when their batch is written (applied) or durable, while `handle.state`
-    /// advances only at publication or dispatch, which can lag arbitrarily
-    /// under load (2026-07-27 boundary-race DST failure). Returned TOGETHER:
-    /// a reader adopting a boundary with a stale in-memory layout flag would
-    /// refuse a v2 history range as v1 (observed in the first-absorption
-    /// flush-to-dispatch window).
-    pub(crate) async fn visible_absorbed(
-        &self,
-        hash: &[u8; 16],
-        visibility: Deliver,
-    ) -> Result<(u64, bool), slatedb::Error> {
-        #[cfg(test)]
-        if let Ok((entered, release)) = TEST_MARKER_HOLD.try_with(Clone::clone) {
-            entered.notify_one();
-            release.notified().await;
-        }
-        let v = self
-            .db
-            .get_with_options(
-                super::tail_key(hash),
-                &slatedb::config::ReadOptions {
-                    durability_filter: visibility.durability(),
-                    ..Default::default()
-                },
-            )
-            .await?;
-        Ok(v.map(|b| super::stored_tail(&b))
-            .transpose()?
-            .map_or((0, false), |t| (t.absorbed, t.history_v2)))
-    }
-}
-
 /// Application pages bound examined offsets as well as selected bytes.
 #[expect(
     clippy::too_many_arguments,
     reason = "read_frames_until; a bounded durable read names its engine, stream, window, key filter, byte budget and delivery separately as the application resolved them; a request struct would exist for this single boundary"
-)]
-#[expect(
-    clippy::unwrap_used,
-    reason = "read_frames_until; a poisoned handle state may hold a partially advanced boundary; recovering it could serve frames past a boundary that was never committed"
 )]
 pub(crate) async fn read_frames_until(
     engine: &ShardEngine,
@@ -444,31 +110,12 @@ pub(crate) async fn read_frames_until(
     max_bytes: usize,
     deliver: Deliver,
 ) -> Result<FrameReadResult, slatedb::Error> {
-    let end = {
-        let st = handle.state.lock().unwrap();
-        let end = match deliver {
-            Deliver::Durable => st.durable.next,
-            // max() is defensive: `applied` loads equal to `durable`
-            // and only the committer advances it, but a floor here
-            // means Applied can never see LESS than a durable reader.
-            Deliver::Applied => st.applied.next.max(st.durable.next),
-        };
-        end.min(scan_to)
-    };
-    // The ring serves DURABLE windows only; see `read_window`.
     let window = super::RingScan {
         from: scan_from,
-        to: end,
+        to: scan_to,
         max_bytes,
     };
-    engine
-        .read_window(handle, window, key_filter, deliver)
-        .await
-}
-
-// Scoped to the actual read future, so a held redundant marker operation does
-// not block handle warming, the absorber, or another test's engine.
-#[cfg(test)]
-tokio::task_local! {
-    pub(crate) static TEST_MARKER_HOLD: (std::sync::Arc<tokio::sync::Notify>, std::sync::Arc<tokio::sync::Notify>);
+    Ok(engine
+        .read_stream_window(handle, window, key_filter, deliver)
+        .await?)
 }

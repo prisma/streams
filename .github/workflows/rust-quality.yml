@@ -90,22 +90,53 @@ jobs:
       - name: Compatible retained-buffer tests under Miri
         if: env.CHECK_MIRI == 'true'
         run: scripts/quality/nightly.sh miri
+  mutants-plan:
+    runs-on: ubuntu-24.04
+    # The mutants job's width for this run (round 7 D2.1, decided by the
+    # lead under the owner's delegation): one job per 110 measured mutants
+    # of the selection, at least 8 and at most 48; the nightly rotation
+    # stays at 8 (scripts/quality/mutants_width.py, pinned by
+    # test_mutants_width.py).
+    timeout-minutes: 30
+    outputs:
+      width: ${{ steps.width.outputs.width }}
+      shards: ${{ steps.width.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch exact previous push revision when unreachable
+        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        run: git cat-file -e "$QUALITY_BEFORE_SHA^{commit}" 2>/dev/null || git fetch --no-tags origin "$QUALITY_BEFORE_SHA"
+      - uses: ./.github/actions/rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: Select the UTC-day mutation rotation
+        if: github.event_name == 'schedule'
+        run: echo "QUALITY_SCHEDULE_SLOT=$(($(date -u +%s) / 86400))" >> "$GITHUB_ENV"
+      - name: Plan the mutants job's width
+        id: width
+        run: |
+          cargo build --locked -p streams-quality-syntax
+          python3 scripts/quality/verification_plan.py --out target/quality-plan
+          python3 scripts/quality/mutants_width.py --plan target/quality-plan/plan.json
   mutants:
     runs-on: ubuntu-24.04
-    # The mutation leg, dealt over eight jobs: each lists and tests every
-    # eighth mutant of every selected owner (round-robin, cargo-mutants
-    # --shard), so together they test the same selection with the same
-    # tests and timeouts, each mutant once. As one job inside
-    # invariant-tools it exceeded that job's 240 min on a push across the
-    # fleet owners (f780ad64: about 120 mutants, cancelled at 4 h); four
-    # jobs of 240 min could not finish a push selecting 681-919 mutants
-    # (owner decision of 2026-10-08: eight jobs of 360 min, GitHub's hosted
-    # maximum).
+    needs: mutants-plan
+    # The mutation leg, dealt over `mutants-plan`'s width of jobs: each
+    # lists and tests every width-th mutant of every selected owner
+    # (round-robin, cargo-mutants --shard), so together they test the same
+    # selection with the same tests and timeouts, each mutant once. As one
+    # job inside invariant-tools it exceeded that job's 240 min on a push
+    # across the fleet owners (f780ad64: about 120 mutants, cancelled at
+    # 4 h); four jobs of 240 min could not finish a push selecting 681-919
+    # mutants (owner decision of 2026-10-08: eight jobs of 360 min,
+    # GitHub's hosted maximum); a push selecting more takes more jobs
+    # (round 7 D2.1).
     timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        shard: ${{ fromJSON(needs.mutants-plan.outputs.shards) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -156,7 +187,7 @@ jobs:
         env:
           CARGO_INCREMENTAL: "1"
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=10737418240:10737418240 --
-          QUALITY_MUTANT_SHARD: ${{ matrix.shard }}/8
+          QUALITY_MUTANT_SHARD: ${{ matrix.shard }}/${{ needs.mutants-plan.outputs.width }}
         run: scripts/quality/mutations.sh
   formal:
     runs-on: ubuntu-24.04

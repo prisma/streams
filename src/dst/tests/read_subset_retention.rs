@@ -1,5 +1,5 @@
 //! O2-A exact retained allocation oracle through real frozen scan/fork readers.
-use super::fixture_http::{HttpRigOptions, cold_absorber, engine_shutdown, http_rig_build};
+use super::fixture_http::{HttpRigOptions, cold_sealer, engine_shutdown, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::{mem, skey};
@@ -7,11 +7,11 @@ use crate::application::read_budget::MAX_PAGE_PLAINTEXT;
 use crate::application::read_retention_probe::Probe;
 
 async fn rig() -> super::fixture_http::HttpRig {
-    let rig = http_rig_build(
+    http_rig_build(
         mem(),
         RigRuntime::first(),
         HttpRigOptions {
-            absorber: Some(cold_absorber()),
+            seal: Some(cold_sealer),
             shard: crate::shard::ShardConfig {
                 tail_ring_bytes: 0,
                 ..Default::default()
@@ -19,13 +19,7 @@ async fn rig() -> super::fixture_http::HttpRig {
             ..Default::default()
         },
     )
-    .await;
-    rig.state
-        .runtime
-        .history
-        .paused
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    rig
+    .await
 }
 #[expect(
     clippy::too_many_lines,

@@ -445,11 +445,9 @@ function reservedDropped(c: Ctx): Answer {
 
 function rssAtShedLine(c: Ctx): Answer {
   const local = get(c.poll.data, "local");
-  const rss = num(get(local, "rss_mb"));
-  const reserved = num(get(local, "absorb_reserved_bytes_now"));
+  const pressure = num(get(local, "rss_mb"));
   const line = num(get(local, "rss_shed_mb"));
-  if (rss === null || reserved === null || line === null || line <= 0) return "skip";
-  const pressure = rss + reserved / MIB;
+  if (pressure === null || line === null || line <= 0) return "skip";
   const over = c.held("over", pressure >= line);
   const near = c.held("near", pressure >= 0.9 * line);
   const values = { pressure_mb: round(pressure, 1), rss_shed_mb: line };
@@ -497,18 +495,6 @@ function backlogLatch(c: Ctx): Answer {
   if (engaged || g > 0) return fire("PAGE", values);
   if (lag > 450 || unabsorbed > 256 * MIB) return fire("NOTIFY", values);
   return "clean";
-}
-
-function historyFlushWait(c: Ctx): Answer {
-  const gauges = get(c.poll.data, "ops", "gauges");
-  const wait = num(get(gauges, "history_flush_wait_ms_max"));
-  if (wait === null) return "skip";
-  if (wait <= 30_000) return "clean";
-  return fire("PAGE", {
-    history_flush_wait_ms_max: wait,
-    history_l0_ssts_max: num(get(gauges, "history_l0_ssts_max")),
-    history_compacted_runs_max: num(get(gauges, "history_compacted_runs_max")),
-  });
 }
 
 function readMemory(c: Ctx): Answer {
@@ -794,7 +780,6 @@ export const RULES: readonly Rule[] = [
   rule(10, "overload_sheds", RUNBOOK.shared, overloadSheds, { level: true }),
   rule(11, "durability_wedge", RUNBOOK.shared, durabilityWedge),
   rule(12, "backlog_latch", RUNBOOK.shared, backlogLatch, { level: true }),
-  rule(13, "history_flush_wait", RUNBOOK.shared, historyFlushWait, { level: true }),
   rule(14, "read_memory", RUNBOOK.shared, readMemory, { level: true }),
   rule(15, "live_pool", RUNBOOK.shared, livePool, { level: true }),
   rule(16, "object_store", RUNBOOK.store, objectStore, { level: true }),

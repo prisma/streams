@@ -1,13 +1,16 @@
 //! R06-A exercises encoded storage, decryption and consumed progress together.
-//! The shard log and history hold layout 5 pages, one per fixture record.
+//! A stream holds one page per fixture record: unsealed in its pending row
+//! and, below its sealed boundary, in a segment object.
 use crate::application::read::read_merged;
 use crate::crypto::{FrameCompression, StreamKey, derive_subkey};
-use crate::crypto_page::{PageCipher, PageLane, SealError, history_page_key, shard_page_key};
+use crate::crypto_page::{PageCipher, PageLane, SealError};
+use crate::shard::seal::Trigger;
 use crate::shard::{
-    Deliver, RingBatch, ShardConfig, ShardEngine, ShardMaintenance, TailFields, encode_tail,
-    tail_key,
+    Deliver, RingBatch, ShardConfig, ShardEngine, TailFields, encode_tail, tail_key,
 };
+use crate::spill::pending::{concat_pages, pending_key};
 use bytes::Bytes;
+use object_store::ObjectStore;
 
 /// The shard-log page of one fixture record of `size` bytes of `x` at
 /// `offset` in `lane`.
@@ -37,56 +40,81 @@ fn tail_pages(key: &StreamKey, records: &[(String, usize)], history: usize) -> R
     }
     batch
 }
-use slatedb::{Db, WriteBatch};
+use slatedb::WriteBatch;
 use std::{sync::Arc, time::Duration};
 
-async fn compressed_fixture() -> (Arc<ShardEngine>, StreamKey) {
-    let store = Arc::new(object_store::memory::InMemory::new());
+/// An engine at `label` over `store` whose stream [8; 16] holds `pages`
+/// unsealed from `absorbed` to `next` (its tail and pending row are put
+/// before the engine opens), with a ring of `ring_bytes`. Its sealer is
+/// open and seals only when a test asks.
+async fn planted_engine(
+    store: &Arc<dyn ObjectStore>,
+    label: &str,
+    pages: &[Bytes],
+    (absorbed, next): (u64, u64),
+    ring_bytes: usize,
+) -> Arc<ShardEngine> {
     let db = Arc::new(
-        Db::builder("r06a-compressed", store.clone())
+        crate::keyspace::db_builder(label, store.clone())
             .build()
             .await
             .unwrap(),
     );
-    let key = StreamKey([7; 32]);
+    let pending = concat_pages(pages);
     let mut batch = WriteBatch::new();
-    for offset in 0..1600 {
-        let page = record_page(&key, offset, "", 16 * 1024);
-        assert!(
-            page.len() < 100,
-            "fixture must reproduce the compressed size gap"
-        );
-        batch.put(shard_page_key(&[8; 16], offset), page);
-    }
     batch.put(
         tail_key(&[8; 16]),
         encode_tail(&TailFields {
-            next: 1600,
+            next,
+            absorbed,
+            route: [4; 16],
+            unabsorbed_bytes: pending.len() as u64,
             ..Default::default()
         }),
     );
+    if !pending.is_empty() {
+        batch.put(pending_key(&[8; 16]), pending);
+    }
     db.write(batch)
         .await
         .unwrap()
         .await_durable()
         .await
         .unwrap();
-    let (tx, _rx) = tokio::sync::mpsc::channel(1);
-    (
-        ShardEngine::start(
-            "r06a-compressed".into(),
-            db,
-            store,
-            ShardConfig {
-                tail_ring_bytes: 0,
-                ..Default::default()
-            },
-            tx,
-            None,
-            ShardMaintenance::default(),
-        ),
-        key,
-    )
+    let maintenance = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .unwrap();
+    let engine = ShardEngine::start(
+        label.into(),
+        db,
+        store.clone(),
+        ShardConfig {
+            tail_ring_bytes: ring_bytes,
+            ..Default::default()
+        },
+        None,
+        maintenance,
+    );
+    engine.configure_seal(|s| s.auto = false);
+    engine.seal_ready().await.unwrap();
+    engine
+}
+
+async fn compressed_fixture() -> (Arc<ShardEngine>, StreamKey) {
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let key = StreamKey([7; 32]);
+    let pages: Vec<Bytes> = (0..1600)
+        .map(|offset| {
+            let page = record_page(&key, offset, "", 16 * 1024);
+            assert!(
+                page.len() < 100,
+                "fixture must reproduce the compressed size gap"
+            );
+            page
+        })
+        .collect();
+    let engine = planted_engine(&store, "r06a-compressed", &pages, (0, 1600), 0).await;
+    (engine, key)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -137,95 +165,43 @@ async fn r06a_compressed_database_pages_bound_plaintext_without_skipping() {
 }
 
 /// `_compression` names the matrix leg only: pages compress whenever that
-/// pays, in the shard log and history alike.
+/// pays, unsealed and sealed alike. The first `history` records are sealed
+/// into a segment object (sealed by an earlier engine, the rest planted
+/// unsealed before this one opens); with `ring`, the ring holds every page,
+/// and serves the sealed ones.
 async fn mixed_fixture(
     _compression: FrameCompression,
     ring: bool,
     history: usize,
     records: &[(String, usize)],
 ) -> (Arc<ShardEngine>, StreamKey) {
-    use crate::crypto::{RouteHash, SegmentHash};
-    let store = Arc::new(object_store::memory::InMemory::new());
-    let db = Arc::new(
-        Db::builder("r06a-mixed", store.clone())
-            .build()
-            .await
-            .unwrap(),
-    );
-    let mut batch = WriteBatch::new();
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let key = StreamKey([7; 32]);
-    let tail = tail_pages(&key, records, history);
-    for (last, page) in &tail.frames {
-        batch.put(shard_page_key(&[8; 16], *last), page.clone());
-    }
-    let pages: Vec<_> = (0u64..)
-        .zip(records)
-        .take(history)
-        .map(|(offset, (lane, size))| (offset, lane, record_page(&key, offset, lane, *size)))
-        .collect();
-    batch.put(
-        tail_key(&[8; 16]),
-        encode_tail(&TailFields {
-            next: records.len() as u64,
-            absorbed: history as u64,
-            history_v2: history > 0,
-            route: [4; 16],
-            ..Default::default()
-        }),
-    );
-    db.write(batch)
-        .await
-        .unwrap()
-        .await_durable()
-        .await
-        .unwrap();
-    let (tx, _rx) = tokio::sync::mpsc::channel(1);
-    let engine = ShardEngine::start(
-        "r06a-mixed".into(),
-        db,
-        store,
-        ShardConfig {
-            tail_ring_bytes: if ring { 4 << 20 } else { 0 },
-            ..Default::default()
-        },
-        tx,
-        None,
-        ShardMaintenance::default(),
-    );
+    let all = tail_pages(&key, records, 0);
+    let pages: Vec<Bytes> = all.frames.iter().map(|(_, page)| page.clone()).collect();
+    let (sealed, next) = (history as u64, records.len() as u64);
     if history > 0 {
-        let part = engine.history_partition().await.unwrap();
-        let mut batch = WriteBatch::new();
-        let mut builder = crate::postings::PageBuilder::default();
-        for (offset, lane, raw) in &pages {
-            batch.put(
-                history_page_key(RouteHash([4; 16]), SegmentHash([8; 16]), *offset),
-                raw.clone(),
-            );
-            builder.note_frame(crate::postings::rk_hash(lane), *offset, raw.len() as u64);
-        }
-        for (rk, bucket, first, value) in builder.finish().0 {
-            batch.put(
-                crate::postings::postings_key(
-                    RouteHash([4; 16]),
-                    SegmentHash([8; 16]),
-                    &rk,
-                    bucket,
-                    first,
-                ),
-                value,
-            );
-        }
-        let write = part.write(batch).await.unwrap();
-        part.flush_with_options(slatedb::config::FlushOptions {
-            flush_type: slatedb::config::FlushType::MemTable,
-        })
-        .await
-        .unwrap();
-        write.await_durable().await.unwrap();
+        let first = planted_engine(&store, "r06a-mixed", &pages[..history], (0, sealed), 0).await;
+        let report = first.seal_once(Trigger::Requested).await.unwrap();
+        assert_eq!(report.pages, sealed);
+        first.begin_close();
+        first
+            .await_terminated(Duration::from_secs(5))
+            .await
+            .unwrap();
     }
-    if ring && !tail.is_empty() {
+    let ring_bytes = if ring { 4 << 20 } else { 0 };
+    let engine = planted_engine(
+        &store,
+        "r06a-mixed",
+        &pages[history..],
+        (sealed, next),
+        ring_bytes,
+    )
+    .await;
+    if ring {
         let handle = engine.stream_handle([8; 16]).await.unwrap();
-        engine.ring_publish(&handle, &tail);
+        engine.ring_publish(&handle, &all);
     }
     (engine, key)
 }
@@ -378,7 +354,9 @@ async fn r06a_metadata_and_individual_decompression_are_bounded() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r06a_zero_payload_and_filtered_miss_pages_bound_record_and_scan_work() {
     let records = vec![("wanted".into(), 0); 5000];
-    for (ring, history) in [(false, 0), (true, 0), (false, 5000)] {
+    // Unsealed, sealed and served from the ring, sealed and served from the
+    // segment object.
+    for (ring, history) in [(false, 0), (true, 5000), (false, 5000)] {
         let (engine, key) =
             mixed_fixture(FrameCompression::ZstdLevel1, ring, history, &records).await;
         let handle = engine.stream_handle([8; 16]).await.unwrap();

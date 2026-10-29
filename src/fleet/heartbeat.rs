@@ -89,10 +89,11 @@ pub(crate) struct Heartbeat {
     /// The publisher is handing its ownership off in a planned drain: every
     /// ring drops it while it keeps beating (`fleet::drain`).
     pub draining: bool,
-    /// Age of the oldest unabsorbed bytes across owned shards (s). The
-    /// rebalance signal: sustained > REBALANCE_LAG_SECS means this host
-    /// cannot keep up with its shards' internal machinery and one should
-    /// move (SCALING.md §4).
+    /// The longest maintenance stall across owned shards (s): seconds since
+    /// a shard's sealer last retired unsealed bytes while some are held
+    /// (layout 6). The rebalance signal: sustained > REBALANCE_LAG_SECS
+    /// means this host cannot keep up with its shards' internal machinery
+    /// and one should move (SCALING.md §4).
     #[serde(default)]
     pub absorb_lag_max_secs: u64,
     /// Worst wedge across owned shards (ms): blocked commit write or
@@ -270,7 +271,7 @@ impl Sampler {
             out_inflight_peak,
             owned_shards: engines.into_iter().map(|(prefix, _)| prefix).collect(),
             draining: state.fleet.standing().draining(),
-            absorb_lag_max_secs: state.runtime.usage.absorb_lag_max(),
+            absorb_lag_max_secs: state.shards.stall_max_secs(),
             wedge_max_ms,
             url: state.config.fleet.self_url.clone(),
             boot_id: state.runtime.identity.boot_id.clone(),
@@ -316,7 +317,7 @@ impl AppState {
                 .into_iter()
                 .map(|(prefix, engine)| (prefix, engine.wedge_ms())),
         );
-        let lag = effective_lag_secs(self.runtime.usage.absorb_lag_max(), wedge_max_ms);
+        let lag = effective_lag_secs(self.shards.stall_max_secs(), wedge_max_ms);
         (wedge_prefix, wedge_max_ms, lag)
     }
 }
@@ -327,8 +328,8 @@ fn worst_wedge(wedges: impl Iterator<Item = (String, i64)>) -> (String, i64) {
     wedges.max_by_key(|(_, wedge)| *wedge).unwrap_or_default()
 }
 
-/// A shard host's lag as the rebalancer judges it: the oldest unabsorbed
-/// bytes or the wedge, whichever is longer. A backpressured shard sheds
+/// A shard host's lag as the rebalancer judges it: the longest sealer
+/// stall or the wedge, whichever is longer. A backpressured shard sheds
 /// appends before they commit, so a wedge never shows as absorb lag.
 fn effective_lag_secs(absorb_lag_secs: u64, wedge_ms: i64) -> u64 {
     absorb_lag_secs.max(u64::try_from(wedge_ms / 1000).unwrap_or(0))

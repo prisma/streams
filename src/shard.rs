@@ -18,146 +18,49 @@ use slatedb::{Db, WriteBatch};
 use tokio::sync::{Notify, mpsc, oneshot};
 
 pub(crate) mod record;
+pub(crate) use record::FrameReadResult;
 #[cfg(test)]
 pub(crate) use record::read_frames;
-pub(crate) use record::{FrameReadResult, read_frames_range};
 mod billing_ops;
 use billing_ops::BillingReply;
 mod commit_handoff;
 use commit_handoff::{Attachment, CommitHandoff};
 pub(crate) use tail_ring::RingScan;
 mod commit_plan;
-mod history_partition;
 mod lane_rows;
 mod lifecycle;
 mod maintenance_row;
 mod resident;
+mod storage_close;
 mod tail_ring;
 mod transaction;
+pub(crate) use commit_plan::{AppendFinish, CloseReq, EnqueueError, SealFenceReq, UsageAckScope};
 use commit_plan::{
-    AbsorbedAdvance, BillingAckDecision, ConsumerGeneration, DurableEffects, ProducerDecision,
-    decide_billing_ack, decide_consumer_generation, decide_producer, seal_authorized,
-};
-pub(crate) use commit_plan::{
-    AppendFinish, CloseReq, CopiedBytes, EnqueueError, SealFenceReq, Submissions, UsageAckScope,
+    BillingAckDecision, ConsumerGeneration, DurableEffects, ProducerDecision, decide_billing_ack,
+    decide_consumer_generation, decide_producer, seal_authorized,
 };
 use lane_rows::{decode_producer_row, decode_seq_row, encode_producer_row};
 pub(crate) use lifecycle::EngineShutdown;
-#[cfg(test)]
-pub(crate) use maintenance_row::decode_shard_maint;
-pub(crate) use maintenance_row::{ShardMaintRow, decode_shard_maint_row, encode_shard_maint};
-
 mod handle_load;
+mod layout;
+pub(crate) mod seal;
+#[cfg(test)]
+pub(crate) use layout::StaticBilling;
 mod rows;
 #[cfg(test)]
 use rows::decode_tail;
 pub(crate) use rows::{
-    decode_cursor, producer_key, queue_tail_key, seal_fence_key, seq_key, tail_key,
+    TailFields, decode_cursor, producer_key, queue_tail_key, seal_fence_key, seq_key, tail_key,
 };
 use rows::{encode_tail, stored_tail};
 
-/// Durable dirty-stream index (static audit P1): a marker per stream
-/// with outstanding maintenance — unabsorbed tail (`absorbed < next`)
-/// or pending physical trim (`trimmed < trim_safe_to`) — written in the
-/// SAME committer batch as the tail it describes and deleted in the
-/// batch that catches both up. A fresh owner scans this prefix once at
-/// absorber start, so outstanding work is rediscovered after
-/// restart/handoff without the customer ever touching the stream again.
-/// Lives under a sentinel "hash" of all-0xFF; a truncated-SHA stream
-/// hash CAN equal that value (p = 2^-128, astronomically unlikely, not
-/// impossible), but the distinct tag byte `D` — no stream row uses it —
-/// is what actually guarantees these keys never collide with
-/// `<hash16><tag>` stream rows. The sentinel's job is only to sort the
-/// index at the end of the keyspace for one cheap range scan. NOTE for
-/// physical range splitting (future): these markers sort OUTSIDE every
-/// stream's route range, so a range split cannot carry them into the
-/// child by key range — the index needs a route-local representation
-/// (or its own tracker partition) before splits land; static handoff
-/// (new owner opens the whole shard DB) is unaffected.
-const DIRTY_SENTINEL: [u8; 17] = crate::keyspace::SENTINEL;
-use crate::keyspace::SENTINEL_HASH_AT;
-/// A sentinel row keyed by a stream hash: the tag, the sentinel, the row
-/// tag and the hash.
-const SENTINEL_HASH_KEY_LEN: usize = 34;
-
-pub(crate) fn dirty_key(hash: &[u8; 16]) -> Vec<u8> {
-    let mut k = Vec::with_capacity(SENTINEL_HASH_KEY_LEN);
-    k.extend_from_slice(&DIRTY_SENTINEL);
-    k.push(b'D');
-    k.extend_from_slice(hash);
-    k
-}
-
-/// Durable maintenance summary for one stream.
-///
-/// R24-A. Maintenance backpressure previously derived its backlog from
-/// two process-lifetime atomics (`INGEST_BYTES_TOTAL - ABSORB_BYTES_TOTAL`),
-/// which is wrong in four independent ways:
-///
-///   * the ingest counter is bumped while the batch is being ASSEMBLED,
-///     so a failed group write leaves phantom backlog the absorber can
-///     never retire — a permanent, fictional 503;
-///   * both counters reset on restart, so a shard holding hundreds of MB
-///     of durable unabsorbed data reports zero backlog and accepts
-///     writes, and `saturating_sub` then keeps reporting zero until new
-///     ingest catches up with the historical absorbed count;
-///   * they are process-wide, so after an ownership move the old owner
-///     keeps shedding for a shard it no longer holds while the new owner
-///     inherits the data with no history and admits freely;
-///   * the "per-shard" figure actually read policy-DEFERRED bytes, which
-///     is a sparse-absorption decision, not the eligible backlog.
-///
-/// The fix is to make the DURABLE row the source of truth. These bytes
-/// ride in the existing dirty-stream index, which is already written in
-/// the same committer batch as the tail it describes — so it commits if
-/// and only if the append commits, survives restart, and moves with the
-/// shard because it lives in the shard's own DB.
-///
-/// `oldest_unabsorbed_ms` is deliberately conservative: it is only ever
-/// carried forward or cleared, never made younger, so a restart may
-/// overstate age but can never reset it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct StreamMaintenance {
-    pub absorbed: u64,
-    pub next: u64,
-    pub unabsorbed_bytes: u64,
-    pub oldest_unabsorbed_ms: i64,
-}
-
-/// v2 layout: absorbed, next, unabsorbed_bytes, oldest_unabsorbed_ms.
-/// v1 rows (16 bytes) decode with zero bytes/age — an old row is still a
-/// valid "this stream has outstanding maintenance" marker, it just
-/// contributes nothing to the byte bound until its next commit.
-fn dirty_value(m: &StreamMaintenance) -> [u8; 32] {
-    let mut v = [0u8; 32];
-    v[..8].copy_from_slice(&m.absorbed.to_le_bytes());
-    v[8..16].copy_from_slice(&m.next.to_le_bytes());
-    v[16..24].copy_from_slice(&m.unabsorbed_bytes.to_le_bytes());
-    v[24..].copy_from_slice(&m.oldest_unabsorbed_ms.to_le_bytes());
-    v
-}
-
-/// The one durable maintenance row per physical shard.
-///
-/// Sits beside the dirty-stream index under the same sentinel, with tag
-/// `M`. Written in the SAME committer batch as the appends it accounts
-/// for, and in the same absorbed-boundary batch that retires them — so
-/// it commits if and only if the work it describes commits, and a failed
-/// group write leaves it untouched.
 /// Exact frame-byte flow, in the maintenance unit (R25-B). These are
 /// process-lifetime observability counters, NOT admission inputs — the
-/// admission source of truth is each engine's durable row.
+/// admission source of truth is each engine's ledger.
 pub(crate) static INGEST_FRAME_BYTES_TOTAL: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 pub(crate) static ABSORBED_FRAME_BYTES_TOTAL: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
-
-pub(crate) fn shard_maint_key() -> Vec<u8> {
-    let mut k = Vec::with_capacity(18);
-    k.extend_from_slice(&DIRTY_SENTINEL);
-    k.push(b'M');
-    k
-}
 
 /// Engine-owned maintenance state for one physical shard (R25-A).
 ///
@@ -184,155 +87,36 @@ pub(crate) struct ShardMaintenance {
     pub last_progress_ms: i64,
 }
 
-/// Load this shard's durable maintenance state, or rebuild it from the
-/// dirty index — synchronously, BEFORE the engine starts serving.
-///
-/// R25-A. The R24 restore ran asynchronously inside the absorber's
-/// seed scan, which left four holes: the first request after a restart
-/// could be admitted before the backlog was known; a late restore could
-/// overwrite state a new append had already advanced; an old owner's
-/// cleanup task could delete a new owner's entry; and process totals
-/// went stale after ownership movement. Loading here, on the open path,
-/// closes all four at once because the state cannot exist before the
-/// engine and cannot outlive it.
-///
-/// A corrupt row or a failed rebuild scan is an ENGINE-OPEN FAILURE.
-/// Translating either to "zero backlog" would silently disable the
-/// safety bound exactly when the shard's state is least understood.
+/// This shard's maintenance ledger, rebuilt from its tails before the
+/// engine starts serving (layout 6: the ledger lives in memory only): the
+/// unsealed bytes every stream's durable tail holds. A tail that does not
+/// decode is left out and logged (its stream fails alone when loaded); a
+/// store error fails the open.
 pub(crate) async fn load_or_rebuild_maintenance(db: &Db) -> anyhow::Result<ShardMaintenance> {
-    match db.get(shard_maint_key()).await? {
-        Some(v) => match decode_shard_maint_row(&v)? {
-            ShardMaintRow::Exact(mut m) => {
-                if m.unabsorbed_frame_bytes > 0 && m.last_progress_ms == 0 {
-                    // A v2 row from before any progress cannot prove
-                    // age. Start the clock now: byte limits still
-                    // protect the process, and the stall clock begins
-                    // honestly.
-                    let now = now_ms();
-                    m.backlog_started_ms = now;
-                    m.last_progress_ms = now;
-                }
-                Ok(m)
-            }
-            // R26-4: the legacy value is PAYLOAD-unit — wrong in both
-            // directions against exact frame accounting — so it is
-            // ignored entirely and the ledger is rebuilt from the
-            // durable tails.
-            ShardMaintRow::LegacyPayloadUnit => rebuild_maintenance_from_tails(db).await,
-        },
-        None => rebuild_maintenance_from_tails(db).await,
-    }
-}
-
-/// Rebuild the shard ledger from the dirty index + durable tails and
-/// persist the exact v2 row. One-time cost per pre-existing shard.
-///
-/// R26-4 tail repair: a tail written before the exact gauge existed
-/// decodes `unabsorbed_bytes == 0` while genuinely holding
-/// `absorbed < next` — impossible for an exact tail (every encoded
-/// page is nonzero bytes), so that shape identifies a legacy row. Its
-/// exact gauge is recomputed by summing the stored pages holding
-/// `[absorbed, next)` and the repaired tail is staged in the SAME
-/// WriteBatch as the rebuilt shard row. Without this, the stream's
-/// first boundary advance retires real frame bytes against a zero
-/// ledger and the checked accounting (R26-3) refuses it forever.
-async fn rebuild_maintenance_from_tails(db: &Db) -> anyhow::Result<ShardMaintenance> {
-    let mut pfx = Vec::with_capacity(18);
-    pfx.extend_from_slice(&DIRTY_SENTINEL);
-    pfx.push(b'D');
     let mut total = 0u64;
-    let mut repaired_tails: Vec<([u8; 16], TailFields)> = Vec::new();
-    let mut iter = db.scan_prefix(&pfx[..], ..).await?;
-    while let Some(kv) = iter.next().await? {
-        if kv.key.len() != SENTINEL_HASH_KEY_LEN {
+    let mut rows = db.scan_prefix(&[crate::keyspace::STREAM][..], ..).await?;
+    while let Some(row) = rows.next().await? {
+        if row.key.len() != 18 || row.key.last() != Some(&b't') {
             continue;
         }
-        let mut h = [0u8; 16];
-        h.copy_from_slice(&kv.key[SENTINEL_HASH_AT..SENTINEL_HASH_KEY_LEN]);
-        let Some(tail_raw) = db.get(tail_key(&h)).await? else {
-            anyhow::bail!("dirty stream missing tail during maintenance rebuild");
+        let unsealed = match stored_tail(&row.value) {
+            Ok(tail) => tail.unabsorbed_bytes,
+            Err(e) => {
+                tracing::error!("maintenance rebuild skipped a tail it cannot decode: {e}");
+                continue;
+            }
         };
-        let mut tail = stored_tail(&tail_raw)?;
-        if tail.absorbed < tail.next && tail.unabsorbed_bytes == 0 {
-            tail.unabsorbed_bytes =
-                record::unabsorbed_page_bytes(db, &h, tail.absorbed, tail.next).await?;
-            repaired_tails.push((h, tail.clone()));
-        }
         total = total
-            .checked_add(tail.unabsorbed_bytes)
+            .checked_add(unsealed)
             .ok_or_else(|| anyhow::anyhow!("maintenance rebuild overflow"))?;
     }
-
     let now = now_ms();
-    let rebuilt = ShardMaintenance {
+    Ok(ShardMaintenance {
         version: 1,
         unabsorbed_frame_bytes: total,
         backlog_started_ms: if total > 0 { now } else { 0 },
         last_progress_ms: if total > 0 { now } else { 0 },
-    };
-    let mut wb = WriteBatch::new();
-    for (h, tail) in &repaired_tails {
-        wb.put(tail_key(h), encode_tail(tail));
-    }
-    wb.put(shard_maint_key(), encode_shard_maint(&rebuilt));
-    db.write_with_options(wb, &WriteOptions::default()).await?;
-    Ok(rebuilt)
-}
-
-#[expect(
-    clippy::unwrap_used,
-    reason = "decode_dirty_value; the stored rows are fixed-width, so every eight-byte field slice converts; a fallible decode would add an error path no stored row reaches"
-)]
-pub(crate) fn decode_dirty_value(v: &[u8]) -> Option<StreamMaintenance> {
-    // Preserve complete legacy fields (16/24 bytes) and current v2 (32).
-    // Partial fields or unknown extensions are corrupt, never an empty marker.
-    if !matches!(v.len(), 16 | 24 | 32) {
-        return None;
-    }
-    let g8 = |o: usize| u64::from_le_bytes(v[o..o + 8].try_into().unwrap());
-    Some(StreamMaintenance {
-        absorbed: g8(0),
-        next: g8(8),
-        unabsorbed_bytes: if v.len() >= 24 { g8(16) } else { 0 },
-        oldest_unabsorbed_ms: if v.len() >= 32 {
-            i64::from_le_bytes(v[24..32].try_into().unwrap())
-        } else {
-            0
-        },
     })
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct TailFields {
-    pub next: u64,
-    pub ts: i64,
-    pub logical: u64,
-    pub absorbed: u64,
-    pub trimmed: u64,
-    pub seq: Option<String>,
-    pub closed: bool,
-    /// This stream's absorbed range lives in the shared per-shard
-    /// history partition (v2). Set by the first AbsorbedBatch that
-    /// covers the stream; absorbed > 0 with this bit UNSET means legacy
-    /// per-stream history (v1) and the stream stays v1.
-    pub history_v2: bool,
-    /// Shard-routing hash (stream_hash(name)); zeros for streams last
-    /// written by callers without a name identity or by older binaries.
-    pub route: [u8; 16],
-    /// Highest offset physical trimming may reach: the absorbed boundary
-    /// before the latest advance. That lag keeps the range of a reader at
-    /// most one advance stale; a staler reader relies on `absorption_race`,
-    /// which revalidates each tail page against the absorbed boundary at
-    /// its scan's visibility (TLA-016-F2). `TrimTick` moves `trimmed` here
-    /// under a GLOBAL per-commit delete budget, so no absorption wave
-    /// builds one multi-gigabyte delete batch.
-    pub trim_safe_to: u64,
-    /// Exact stored frame bytes in [absorbed, next), maintained by the
-    /// committer (appends add frame lengths; absorb advances subtract
-    /// the bytes the absorber actually copied). Restart rediscovery
-    /// reads this instead of estimating records × 1 KiB, so the default
-    /// absorption policy's byte thresholds see the truth.
-    pub unabsorbed_bytes: u64,
 }
 
 /// Read visibility level. `Durable` (the pinned default everywhere)
@@ -370,6 +154,9 @@ pub(crate) struct StreamState {
     pub queue: crate::queue::QueueState,
     /// Rows the committer keeps resident (`resident::HotRows`).
     pub hot: resident::HotRows,
+    /// The stream's applied unsealed pages (layout 6): every page in
+    /// `[applied.absorbed, applied.next)`, never evicted while any is held.
+    pub pending: crate::spill::pending::PendingPages,
 }
 
 pub(crate) struct StreamHandle {
@@ -650,19 +437,11 @@ mod native_queue_submit;
 mod native_queue_tests;
 mod queue_maintenance;
 
-/// Notification to the absorber that a stream accumulated shard-log bytes.
-#[derive(Debug, Clone)]
-pub(crate) struct AbsorbSignal {
-    pub hash: [u8; 16],
-    pub appended_bytes: u64,
-}
-
 #[derive(Clone)]
 pub(crate) struct ShardConfig {
     pub queue_reqs: usize,
     pub max_batch_reqs: usize,
     pub max_batch_bytes: usize,
-    pub max_trim_per_op: u64,
     /// Commit pacing: once a drained group has at least this many requests
     /// (i.e. the stream is BUSY), keep gathering until `gather_window` so
     /// one flush cycle ships one big WAL SST instead of many tiny ones.
@@ -701,46 +480,22 @@ pub(crate) struct ShardConfig {
     /// on, dispatch_durable publishes each group's freshly-durable frames
     /// into a per-stream in-memory ring before releasing acks, and live
     /// tail reads are served from that ring instead of a SlateDB scan.
-    /// The canonical read path (scan -> history) remains the source of
-    /// truth for anything the ring no longer covers: restart, eviction,
-    /// lagging consumers.
+    /// The canonical read path (unsealed pages, then the segment objects)
+    /// remains the source of truth for anything the ring no longer covers.
     pub tail_ring_bytes: usize,
     /// Evict resident stream handles idle at least this long (and
-    /// referenced by nothing but the map). Zero disables. The durable
-    /// dirty-stream index keeps unabsorbed evictees discoverable, so
-    /// eviction never strands a tail.
+    /// referenced by nothing but the map). Zero disables. A handle holding
+    /// unsealed pages is held by the sealer's set, so it is never idle.
     pub handle_idle_evict: std::time::Duration,
     /// Capacity cap on resident stream handles (0 disables): when the
-    /// map exceeds this, the ticker evicts oldest-touched unreferenced
+    /// map exceeds this, the sealer's loop evicts oldest-touched unreferenced
     /// handles down to the cap WITHOUT waiting for the idle threshold —
     /// a cardinality burst can otherwise accumulate rate × idle-window
     /// handles before the first one ages out. Referenced handles
     /// (strong_count > 1) are never evicted, so the map can exceed the
     /// cap by the number of streams actively in use.
     pub handle_max_resident: usize,
-    /// GLOBAL cap on record-trim deletes per commit group, shared by
-    /// every `Absorbed` advance and `TrimStep` in the group. Without it
-    /// one gather's AbsorbedBatch over 1,024 mature streams ×
-    /// max_trim_per_op could expand into a multi-gigabyte WriteBatch
-    /// (67M deletes at the wide posture's TRIM_PER_OP=65536).
-    /// `max_trim_per_op` remains the per-stream bound within a group.
-    pub trim_global_budget: u64,
-    /// Decoded postings-slice cache budget (spec §7.1), bytes.
-    pub postings_cache_bytes: usize,
-    /// Process-shared postings cache (review finding 7: ONE budget for
-    /// the whole process, not one per engine — 32 engines x 16 MiB was
-    /// a nominal 512 MiB). main.rs passes the global; tests pass None
-    /// for hermetic per-engine caches (counters stay isolated).
-    pub shared_postings_cache: Option<Arc<crate::postings_cache::PostingsCache>>,
-    pub shared_history: Option<Arc<crate::history::HistoryResources>>,
-    pub shared_usage: Option<Arc<crate::usage::UsageService>>,
     pub shared_ops: Option<Arc<crate::ops::OpsService>>,
-    /// History/absorber knobs for the shard's shared history v2
-    /// partition (from the process ServerConfig at construction).
-    pub history: crate::config::HistoryConfig,
-    /// The ONE process-wide compaction profile every SlateDB in this
-    /// process opens with (R27-4/R28), resolved at engine construction.
-    pub compactor_options: slatedb::config::CompactorOptions,
 }
 
 impl Default for ShardConfig {
@@ -749,7 +504,6 @@ impl Default for ShardConfig {
             queue_reqs: 65_536,
             max_batch_reqs: 16_384,
             max_batch_bytes: 48 * 1024 * 1024,
-            max_trim_per_op: 8_192,
             pace_min_reqs: 32,
             gather_window: std::time::Duration::from_millis(15),
             wal_group_commit: false,
@@ -757,17 +511,10 @@ impl Default for ShardConfig {
             wal_post_ack_gather: std::time::Duration::ZERO,
             handle_idle_evict: std::time::Duration::from_secs(600),
             handle_max_resident: 65_536,
-            trim_global_budget: 65_536,
-            postings_cache_bytes: crate::postings_cache::POSTINGS_CACHE_BYTES,
-            shared_postings_cache: None,
-            shared_history: None,
-            shared_usage: None,
             shared_ops: None,
             wal_gather_skip_reqs: 32,
             wal_gather_skip_bytes: 1024 * 1024,
             tail_ring_bytes: 0,
-            history: crate::config::HistoryConfig::default(),
-            compactor_options: crate::config::EngineConfig::default().compactor_options(),
         }
     }
 }
@@ -813,25 +560,19 @@ pub(crate) struct ShardEngine {
     /// scheduler's custody and the external stamp that revokes it, owned
     /// by `crate::billing::SweepCustody` so no caller can reorder them.
     pub(crate) sweep_custody: crate::billing::SweepCustody,
-    /// Engine-owned maintenance state (R25-A). The durable row in this
-    /// shard's DB is authoritative; this is the published mirror,
-    /// updated ONLY after the write carrying the row succeeds. Owned by
-    /// the engine — not a process-global map — so restore-before-serve,
-    /// ownership handoff, and old-owner-task cleanup are all scoped to
-    /// the engine lifecycle automatically.
+    /// Layout 6's in-memory state (DESIGN-6A): the usage dirty set, the
+    /// unsealed set and the sealer's state.
+    layout: layout::LayoutState,
+    /// Engine-owned maintenance ledger (R25-A, layout 6): the shard's
+    /// unsealed bytes, rebuilt from the tails before the engine serves
+    /// and updated only after the write that moved them succeeds. Owned
+    /// by the engine, so restore-before-serve, ownership handoff and
+    /// old-owner-task cleanup are scoped to the engine lifecycle.
     maintenance: std::sync::RwLock<ShardMaintenance>,
+    /// Object store of the shard's DBs: the sealer's segment objects.
+    data_store: Arc<dyn object_store::ObjectStore>,
     /// Per-shard backpressure latch (hysteresis lives with the shard).
     pub maintenance_shard_shed: std::sync::atomic::AtomicBool,
-    /// Object store of the shard's DBs, held to lazily open the history v2 partition.
-    data_store: Arc<dyn object_store::ObjectStore>,
-    /// Shared history v2 partition (docs/HISTORY-V2.md): ONE writer Db per shard at
-    /// `{prefix}/history2`, opened lazily by whoever needs it first (absorber gather lane or
-    /// a v2 history read) and shared — two independent opens would fence each other. Closed with
-    /// the engine; a new shard owner's open fences this one, like the per-stream v1 DBs.
-    history2: Arc<history_partition::HistoryPartition>,
-    /// Pre-built SlateDB settings for `history2` (history knobs + the
-    /// ONE process-wide compactor profile, from the engine's ShardConfig).
-    history2_settings: slatedb::config::Settings,
     streams: Mutex<HashMap<[u8; 16], Arc<StreamHandle>>>,
     /// Seal fences by segment identity: a cache of the durable
     /// [`seal_fence_key`] rows, ENGINE-level because a queued AppendReq
@@ -875,8 +616,6 @@ pub(crate) struct ShardEngine {
     consumer_fences: ConsumerFences,
     #[cfg(test)]
     fail_group_tripped: std::sync::atomic::AtomicUsize,
-    #[cfg(test)]
-    fail_next_absorbed_group: std::sync::atomic::AtomicBool,
     /// Pump telemetry: flushes issued, requests acked at the pump's own
     /// barrier, gather windows taken. acked/flushes is the requests-per-
     /// WAL figure the flush-scheduling change is judged by.
@@ -929,30 +668,6 @@ pub(crate) struct ShardEngine {
     handle_idle_evict: std::time::Duration,
     /// Capacity cap for resident handles (ShardConfig copy; 0 = off).
     handle_max_resident: usize,
-    /// Streams with `trimmed < trim_safe_to`: physical-trim work the
-    /// budgeted TrimTick maintenance still owes. Maintained by the
-    /// committer after each successful group; seeded from the durable
-    /// dirty index at absorber start and from tail loads. BTreeSet so
-    /// the round-robin cursor is a plain range scan.
-    trim_debt: Mutex<std::collections::BTreeSet<[u8; 16]>>,
-    /// Round-robin position for TrimTick expansion.
-    trim_cursor: Mutex<[u8; 16]>,
-    /// Trim telemetry: deletes emitted in the last commit group that
-    /// trimmed anything, the max ever emitted in one group (the bound
-    /// the mature-second-wave gate reads), and a cumulative total.
-    pub trim_deletes_last: AtomicU64,
-    pub trim_deletes_max_batch: AtomicU64,
-    pub trim_deletes_total: AtomicU64,
-    /// Advances rejected by the layout seal: a shared-partition advance
-    /// over a tail the deleted per-stream lane absorbed. Nonzero means the
-    /// namespace still carries such a tail; the seal keeps its boundary,
-    /// but it is worth seeing.
-    pub absorb_lane_dropped: AtomicU64,
-    /// Decoded postings-slice cache (spec §7): keyed historical reads
-    /// pay the index once per active window.
-    pub postings_cache: Arc<crate::postings_cache::PostingsCache>,
-    pub history_resources: Arc<crate::history::HistoryResources>,
-    pub usage: Arc<crate::usage::UsageService>,
     pub ops: Arc<crate::ops::OpsService>,
     /// Level-triggered close signal for background tasks (see start()).
     close_tx: tokio::sync::watch::Sender<bool>,
@@ -964,14 +679,13 @@ pub(crate) struct ShardEngine {
     /// pump last looked". Distinct from flush_wake, whose permit the acker
     /// loop consumes.
     pump_wake: Notify,
-    absorb_tx: mpsc::Sender<AbsorbSignal>,
     /// Invoked when the shard db closes (fenced by a new owner / fatal):
     /// wired to TouchRegistry::close_shard so hanging /touch/wait clients
     /// get stale immediately instead of dangling until timeout.
     on_close: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Set once when the shard db reports closed (fenced by a new owner or
     /// fatal). Everything still holding this engine — request handlers, the
-    /// committer, the absorber — must fail fast / exit instead of retrying
+    /// committer, the sealer — must fail fast / exit instead of retrying
     /// against a dead db (the "zombie engine" fuel of the absorption war).
     closed: std::sync::atomic::AtomicBool,
     /// Wall-clock ms when the current db.write began, 0 when idle. A
@@ -1019,7 +733,6 @@ impl ShardEngine {
         db: Arc<Db>,
         data_store: Arc<dyn object_store::ObjectStore>,
         cfg: ShardConfig,
-        absorb_tx: mpsc::Sender<AbsorbSignal>,
         on_close: Option<Arc<dyn Fn() + Send + Sync>>,
         initial_maintenance: ShardMaintenance,
     ) -> Arc<ShardEngine> {
@@ -1030,21 +743,15 @@ impl ShardEngine {
         // cycle that used to leave one committer task (and the whole
         // engine allocation) resident per shard move, forever.
         let (close_tx, _) = tokio::sync::watch::channel(false);
-        // Pre-built settings for the shard's shared history v2 partition
-        // (history knobs + the ONE process-wide compactor profile,
-        // resolved from the process configuration at engine construction).
-        let history2_settings =
-            crate::history::history2_settings(&cfg.history, &cfg.compactor_options);
         let engine = Arc::new(ShardEngine {
             prefix,
             writer_epoch: db.manifest().writer_epoch(),
             db,
             sweep_custody: crate::billing::SweepCustody::default(),
+            layout: layout::LayoutState::default(),
             maintenance: std::sync::RwLock::new(initial_maintenance),
             maintenance_shard_shed: std::sync::atomic::AtomicBool::new(false),
             data_store,
-            history2: Arc::new(history_partition::HistoryPartition::default()),
-            history2_settings,
             streams: Mutex::new(HashMap::new()),
             seal_fences: Mutex::new(HashMap::new()),
             #[cfg(test)]
@@ -1060,8 +767,6 @@ impl ShardEngine {
             consumer_fences: Mutex::new(HashMap::new()),
             #[cfg(test)]
             fail_group_tripped: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(test)]
-            fail_next_absorbed_group: std::sync::atomic::AtomicBool::new(false),
             tx,
             in_flight: Mutex::new(CommitHandoff::default()),
             dispatch_gate: tokio::sync::Mutex::new(()),
@@ -1091,34 +796,12 @@ impl ShardEngine {
             ring_cfg_bytes: cfg.tail_ring_bytes as u64,
             handle_idle_evict: cfg.handle_idle_evict,
             handle_max_resident: cfg.handle_max_resident,
-            trim_debt: Mutex::new(std::collections::BTreeSet::new()),
-            trim_cursor: Mutex::new([0u8; 16]),
-            trim_deletes_last: AtomicU64::new(0),
-            trim_deletes_max_batch: AtomicU64::new(0),
-            trim_deletes_total: AtomicU64::new(0),
-            absorb_lane_dropped: AtomicU64::new(0),
-            usage: cfg.shared_usage.clone().unwrap_or_else(|| {
-                Arc::new(crate::usage::UsageService::new(
-                    &crate::config::AdmissionConfig::default(),
-                    Arc::new(crate::runtime::SystemClock::default()),
-                ))
-            }),
             ops: cfg
                 .shared_ops
                 .clone()
                 .unwrap_or_else(|| Arc::new(crate::ops::OpsService::new())),
-            history_resources: cfg.shared_history.clone().unwrap_or_else(|| {
-                Arc::new(crate::history::HistoryResources::new(
-                    &cfg.history,
-                    usize::MAX,
-                ))
-            }),
-            postings_cache: cfg.shared_postings_cache.clone().unwrap_or_else(|| {
-                crate::postings_cache::PostingsCache::new(cfg.postings_cache_bytes)
-            }),
             flush_wake: Notify::new(),
             pump_wake: Notify::new(),
-            absorb_tx,
             on_close,
             closed: std::sync::atomic::AtomicBool::new(false),
             close_tx,
@@ -1347,67 +1030,6 @@ impl ShardEngine {
         });
         let acker = engine.clone();
         engine.spawn_required("acker", async move { acker.acker_loop().await });
-        // F1 recovery bound: `max_wal_flushes_before_l0_flush` has a 4096
-        // upstream floor, so we cap the WAL replay window ourselves with a
-        // periodic explicit memtable->L0 flush whenever data accumulated.
-        let ticker = engine.clone();
-        let mut ticker_closed = engine.close_tx.subscribe();
-        engine.spawn_required("flush-ticker", async move {
-            use slatedb::config::{FlushOptions, FlushType};
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-            let mut last_appended = 0u64;
-            loop {
-                tokio::select! {
-                    _ = ticker_closed.changed() => {
-                        if *ticker_closed.borrow() {
-                            return;
-                        }
-                    }
-                    _ = interval.tick() => {}
-                }
-                if ticker.is_closed() {
-                    return;
-                }
-                let appended = ticker.stats_appended.load(Ordering::Relaxed);
-                if appended != last_appended {
-                    last_appended = appended;
-                    if let Err(e) = ticker
-                        .db
-                        .flush_with_options(FlushOptions {
-                            flush_type: FlushType::MemTable,
-                        })
-                        .await
-                    {
-                        tracing::warn!(shard = %ticker.prefix, "memtable flush tick failed: {e}");
-                    }
-                }
-                let idle = ticker.handle_idle_evict;
-                if !idle.is_zero() || ticker.handle_max_resident > 0 {
-                    let evicted = ticker.evict_idle_handles(idle, ticker.handle_max_resident);
-                    if evicted > 0 {
-                        tracing::debug!(
-                            shard = %ticker.prefix,
-                            "evicted {evicted} idle stream handles"
-                        );
-                    }
-                }
-                ticker
-                    .postings_cache
-                    .sweep_idle(crate::postings_cache::POSTINGS_CACHE_IDLE);
-                // Trim maintenance pulse: whenever streams owe
-                // physical trims, queue one budgeted TrimTick.
-                // try_send — a full committer queue means the next
-                // tick retries; trim work is never urgent enough to
-                // block behind.
-                if !ticker.trim_debt.lock().unwrap().is_empty() {
-                    #[expect(
-                        clippy::let_underscore_must_use,
-                        reason = "ShardEngine::start; the trim-tick send: a tick the committer queue cannot take is superseded by the next tick; a handled send would only restate the tick cadence"
-                    )]
-                    let _ = ticker.tx.try_send(CommitOp::TrimTick);
-                }
-            }
-        });
         engine
     }
 
@@ -1417,9 +1039,10 @@ impl ShardEngine {
         future: impl std::future::Future<Output = ()> + Send + 'static,
     ) {
         self.tasks.required(self, role, future);
-        // Native queue maintenance (§6.8) runs beside every engine's
-        // committer, from its first moment, so a queue nobody touches after
-        // a restart or move is still served by time alone.
+        // Native queue maintenance (§6.8) and the sealer (layout 6) run
+        // beside every engine's committer, from its first moment, so a
+        // queue nobody touches after a restart or move is still served by
+        // time alone, and the replay bound holds without traffic.
         if role == "committer" {
             self.spawn_queue_maintenance();
         }
@@ -1551,8 +1174,7 @@ impl ShardEngine {
         if first {
             let _ = self.close_tx.send(true);
             self.pump_wake.notify_one();
-            self.tasks
-                .begin_close(self.db.clone(), self.history2.clone(), self.prefix.clone());
+            self.tasks.begin_close(self.db.clone(), self.prefix.clone());
         }
         // Wake every parked live reader — on EVERY call, before the
         // double-close guard. A session parked on an idle tail has no
@@ -1644,60 +1266,6 @@ impl ShardEngine {
         self.commit_blocked_ms().max(self.oldest_inflight_ms())
     }
 
-    /// One gather's boundary advances as a SINGLE committer message:
-    /// every covered stream lands in the same write batch by
-    /// construction (per-stream sends only coalesced opportunistically).
-    /// Entries are (hash, new upto, copied bytes).
-    #[expect(
-        clippy::let_underscore_must_use,
-        reason = "ShardEngine::submit_absorbed_batch_v2; a command the committer queue cannot take is re-driven by the next absorb, usage or trim pass; a handled send would only restate that the queue is full or closed"
-    )]
-    pub(crate) async fn submit_absorbed_batch_v2(&self, streams: Vec<AbsorbedAdvance>) {
-        if streams.is_empty() {
-            return;
-        }
-        let _ = self
-            .tx
-            .send(CommitOp::AbsorbedBatch { streams, v2: true })
-            .await;
-    }
-
-    /// The history partition ONLY IF already open — the metrics path
-    /// must never trigger an open (an idle shard would materialize a
-    /// whole partition DB just to report zeros).
-    pub(crate) fn history_partition_if_open(&self) -> Option<Arc<Db>> {
-        self.history2.get()
-    }
-
-    /// The shard's shared history v2 partition, opened once and shared
-    /// between the absorber's gather lane and v2 history reads. Values
-    /// are raw stream-key-encrypted frames, so the partition needs no
-    /// block transformer and no compression (frames compress before
-    /// encryption; re-compressing ciphertext is pure waste).
-    pub(crate) async fn history_partition(&self) -> Result<Arc<Db>, slatedb::Error> {
-        if self.is_closed() {
-            return Err(slatedb::Error::closed(
-                "engine closed".into(),
-                slatedb::CloseReason::Clean,
-            ));
-        }
-        let path = crate::sharddir::history2_path(&self.prefix);
-        let store = self.data_store.clone();
-        let settings = self.history2_settings.clone();
-        let cache = self.history_resources.cache.clone();
-        self.history2
-            .open(move || {
-                crate::bootstrap::on_slatedb_rt(async move {
-                    Db::builder(path.as_str(), store)
-                        .with_settings(settings)
-                        .with_db_cache(cache)
-                        .build()
-                        .await
-                })
-            })
-            .await
-    }
-
     /// Split-safe Stream-Seq (review blocker 4): a sequence lane lives
     /// per (segment, routing key), but a child segment starts empty —
     /// without consulting its sealed predecessors, a sequence the
@@ -1750,149 +1318,14 @@ impl ShardEngine {
     }
 
     /// Publish new maintenance state. Callers must only do this AFTER
-    /// the write carrying the durable row has succeeded — that ordering
-    /// is the entire fix for phantom backlog.
+    /// the write that moved the bytes has succeeded — that ordering is the
+    /// entire fix for phantom backlog.
     #[expect(
         clippy::unwrap_used,
         reason = "ShardEngine::publish_maintenance; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
     )]
     pub(crate) fn publish_maintenance(&self, m: ShardMaintenance) {
         *self.maintenance.write().unwrap() = m;
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn scan_dirty_streams(&self) -> anyhow::Result<Vec<([u8; 16], u64, u64)>> {
-        #[cfg(test)]
-        {
-            let mut faults = dirty_scan_faults().lock().unwrap();
-            if let Some(n) = faults.get_mut(&self.prefix)
-                && *n > 0
-            {
-                *n -= 1;
-                anyhow::bail!("injected dirty-scan fault (test hook)");
-            }
-        }
-        let mut pfx = Vec::with_capacity(18);
-        pfx.extend_from_slice(&DIRTY_SENTINEL);
-        pfx.push(b'D');
-        let mut out = Vec::new();
-        let mut iter = self.db.scan_prefix(&pfx[..], ..).await?;
-        while let Some(kv) = iter.next().await? {
-            if kv.key.len() != SENTINEL_HASH_KEY_LEN || kv.value.len() < 16 {
-                continue;
-            }
-            let mut h = [0u8; 16];
-            h.copy_from_slice(&kv.key[SENTINEL_HASH_AT..SENTINEL_HASH_KEY_LEN]);
-            let absorbed = u64::from_le_bytes(kv.value[..8].try_into().unwrap());
-            let next = u64::from_le_bytes(kv.value[8..16].try_into().unwrap());
-            out.push((h, absorbed, next));
-        }
-        Ok(out)
-    }
-
-    pub(crate) async fn scan_dirty_streams_page(
-        &self,
-        after: Option<[u8; 16]>,
-        limit: usize,
-    ) -> anyhow::Result<(Vec<([u8; 16], u64, u64)>, bool)> {
-        use std::ops::Bound;
-        anyhow::ensure!(limit > 0, "dirty page limit must be positive");
-        #[cfg(test)]
-        {
-            let mut faults = dirty_scan_faults().lock().unwrap();
-            if let Some(n) = faults.get_mut(&self.prefix)
-                && *n > 0
-            {
-                *n -= 1;
-                anyhow::bail!("injected dirty-scan fault (test hook)");
-            }
-        }
-        let mut prefix = DIRTY_SENTINEL.to_vec();
-        prefix.push(b'D');
-        let range = (
-            after.map_or(Bound::Unbounded, |h| Bound::Excluded(h.to_vec())),
-            Bound::<Vec<u8>>::Unbounded,
-        );
-        let mut scan = self.db.scan_prefix(prefix, range).await?;
-        let mut rows = Vec::new();
-        while let Some(kv) = scan.next().await? {
-            if rows.len() == limit {
-                return Ok((rows, true));
-            }
-            let hash: [u8; 16] = kv
-                .key
-                .get(SENTINEL_HASH_AT..)
-                .ok_or_else(|| anyhow::anyhow!("invalid dirty-stream key"))?
-                .try_into()?;
-            let marker = decode_dirty_value(&kv.value)
-                .ok_or_else(|| anyhow::anyhow!("invalid dirty-stream value"))?;
-            anyhow::ensure!(
-                marker.absorbed <= marker.next,
-                "invalid dirty-stream boundaries"
-            );
-            rows.push((hash, marker.absorbed, marker.next));
-        }
-        Ok((rows, false))
-    }
-
-    /// The durable tail for one stream WITHOUT materializing a handle —
-    /// the startup marker scan reads these for the exact pending state
-    /// (unabsorbed_bytes, trim debt) of each marked stream; loading
-    /// handles for every cold dirty stream is exactly what memory
-    /// pruning must avoid.
-    pub(crate) async fn tail_fields(&self, hash: &[u8; 16]) -> anyhow::Result<Option<TailFields>> {
-        Ok(self
-            .db
-            .get(tail_key(hash))
-            .await?
-            .map(|raw| stored_tail(&raw))
-            .transpose()?)
-    }
-
-    /// Enroll a stream in TrimTick maintenance (startup marker scan; the
-    /// committer maintains the set itself for live streams).
-    #[expect(
-        clippy::unwrap_used,
-        reason = "ShardEngine::note_trim_debt; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
-    )]
-    pub(crate) fn note_trim_debt(&self, hash: [u8; 16]) {
-        self.trim_debt.lock().unwrap().insert(hash);
-    }
-
-    /// Queue one budgeted trim-maintenance pulse NOW (tests drive drain
-    /// cadence with this; the 5 s flush ticker is the production driver).
-    #[expect(
-        clippy::let_underscore_must_use,
-        reason = "ShardEngine::pump_trim_tick; a command the committer queue cannot take is re-driven by the next absorb, usage or trim pass; a handled send would only restate that the queue is full or closed"
-    )]
-    #[cfg(test)]
-    pub(crate) fn pump_trim_tick(&self) {
-        let _ = self.tx.try_send(CommitOp::TrimTick);
-    }
-
-    /// (streams owing trims, last group's deletes, max deletes in any
-    /// one group, cumulative deletes) — the mature-second-wave gate
-    /// reads max ≤ trim_global_budget from here.
-    #[expect(
-        clippy::unwrap_used,
-        reason = "ShardEngine::trim_stats; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
-    )]
-    pub(crate) fn trim_stats(&self) -> (usize, u64, u64, u64) {
-        (
-            self.trim_debt.lock().unwrap().len(),
-            self.trim_deletes_last.load(Ordering::Relaxed),
-            self.trim_deletes_max_batch.load(Ordering::Relaxed),
-            self.trim_deletes_total.load(Ordering::Relaxed),
-        )
-    }
-
-    /// The Remote-durable `(absorbed, history_v2)`: `visible_absorbed`
-    /// (`shard/record.rs`) at `Deliver::Durable`, for durable-only callers.
-    pub(crate) async fn durable_absorbed(
-        &self,
-        hash: &[u8; 16],
-    ) -> Result<(u64, bool), slatedb::Error> {
-        self.visible_absorbed(hash, Deliver::Durable).await
     }
 
     /// Durable consumer-cursor hint for the pull pre-read window. A
@@ -1916,9 +1349,6 @@ impl ShardEngine {
         let t = TailFields {
             next: at,
             absorbed: at,
-            trimmed: at,
-            trim_safe_to: at,
-            history_v2: true,
             route,
             ..Default::default()
         };
@@ -2044,18 +1474,6 @@ impl ShardEngine {
         before - map.len()
     }
 
-    /// Peek a resident handle's absorbed boundary WITHOUT materializing
-    /// one (materialization is exactly what memory pruning must avoid).
-    #[expect(
-        clippy::unwrap_used,
-        reason = "ShardEngine::resident_absorbed; a poisoned shard state may hold a partially applied tail, ring, fence, debt or maintenance update; recovering it could publish an offset or boundary that was never committed"
-    )]
-    pub(crate) fn resident_absorbed(&self, hash: &[u8; 16]) -> Option<u64> {
-        let h = self.streams.lock().unwrap().get(hash).cloned()?;
-        let st = h.state.lock().unwrap();
-        Some(st.durable.absorbed)
-    }
-
     #[expect(
         clippy::let_underscore_must_use,
         reason = "ShardEngine::committer_loop; a caller that gave up before its reply has no receiver; a handled send would only restate that the request was abandoned"
@@ -2088,13 +1506,10 @@ impl ShardEngine {
                             }
                             // A billing op dropped here answers its own
                             // refusal (`BillingReply`), as in `reject_op`.
-                            CommitOp::Absorbed { .. }
-                            | CommitOp::AbsorbedBatch { .. }
-                            | CommitOp::TrimTick
+                            CommitOp::Seal(_)
                             | CommitOp::UsageAck { .. }
                             | CommitOp::BillingClose { .. }
-                            | CommitOp::BillingRetained { .. }
-                            | CommitOp::TrimStep { .. } => {}
+                            | CommitOp::BillingRetained { .. } => {}
                         }
                     }
                     return;
@@ -2166,12 +1581,12 @@ impl ShardEngine {
                     }
                 }
             }
-            self.commit_group(ops, &cfg).await;
+            self.commit_group(ops).await;
         }
     }
 
-    async fn commit_group(&self, ops: Vec<CommitOp>, cfg: &ShardConfig) {
-        transaction::CommitTransaction::run(self, ops, cfg).await;
+    async fn commit_group(&self, ops: Vec<CommitOp>) {
+        transaction::CommitTransaction::run(self, ops).await;
     }
 
     /// Test hook: hold the COMMIT gate. While held, the committer
@@ -2271,12 +1686,15 @@ impl ShardEngine {
             .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Arm a one-shot failure for the next commit group that ADVANCES
-    /// an absorbed boundary (R25-D): proves retirement is atomic with
-    /// the boundary, which the client-append selector cannot reach.
+    /// Arm a one-shot failure for the next commit group that stages a
+    /// seal (R25-D, layout 6): proves the seal's retirement of unsealed
+    /// bytes is atomic with its boundary move.
     #[cfg(test)]
-    pub(crate) fn fail_next_absorbed_group(&self) {
-        self.fail_next_absorbed_group
+    pub(crate) fn fail_next_seal_group(&self) {
+        self.layout
+            .seal
+            .hooks
+            .fail_next_group
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
@@ -2449,9 +1867,8 @@ impl ShardEngine {
                     t.pop_front();
                 }
             }
-            for (handle, fields) in &group.effects.tails {
-                handle.state.lock().unwrap().durable = fields.clone();
-                handle.notify.notify_waiters();
+            for (handle, fields, wake) in &group.effects.tails {
+                handle.publish_durable(fields, *wake);
             }
             for (usage, plaintext, frames) in group.effects.usage {
                 usage
@@ -2467,9 +1884,6 @@ impl ShardEngine {
             }
             for (resp, out) in group.effects.native_acks {
                 let _ = resp.send(out);
-            }
-            for s in group.effects.signals {
-                let _ = self.absorb_tx.try_send(s);
             }
             // H2: feed touch journals only after the data is durable and
             // reader-visible, so an invalidation always finds fresh data.
@@ -2565,13 +1979,13 @@ impl ShardEngine {
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
-use test_support::dirty_scan_faults;
+use test_support::seal_open_faults;
 #[cfg(test)]
 mod transaction_tests;
 #[cfg(test)]
 pub(crate) use test_support::{
-    decode_tail_for_tests, dirty_value_for_tests, encode_tail_for_tests,
-    encode_tail_without_gauge_for_tests, inject_dirty_scan_faults,
+    decode_tail_for_tests, encode_tail_for_tests, inject_seal_open_faults, seed_billing,
+    stored_billing, usage_dirty_version,
 };
 
 #[cfg(test)]

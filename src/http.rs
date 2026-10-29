@@ -245,7 +245,6 @@ impl AppState {
             shards: self.shards.clone(),
             admission: self.admission.clone(),
             quotas: self.quotas.clone(),
-            history: self.runtime.history.clone(),
             scaler: self.runtime.scaler.clone(),
             keys: self.keys.clone(),
             watches: self.watch_service(),
@@ -784,17 +783,6 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
         .iter()
         .map(|e| e.resident_streams())
         .sum();
-    // Trim maintenance rollup across shards: debt = streams owing
-    // physical trims; max_batch is the gate the mature-second-wave
-    // stress reads (must stay ≤ TRIM_GLOBAL_BUDGET).
-    let (trim_debt, trim_last, trim_max_batch, trim_total) = state
-        .shards
-        .engines()
-        .iter()
-        .map(|e| e.trim_stats())
-        .fold((0usize, 0u64, 0u64, 0u64), |a, v| {
-            (a.0 + v.0, a.1.max(v.1), a.2.max(v.2), a.3 + v.3)
-        });
     // Seal-fence rollup (round 12): the map is deliberately unbounded
     // (no safe wall-clock expiry exists over a queue with no residence
     // bound), so its size is surfaced before it could ever matter.
@@ -866,13 +854,8 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
             "disconnect_client_closed": crate::sse::auth::sse_stats::DISCONNECT_CLIENT_CLOSED.load(std::sync::atomic::Ordering::Relaxed),
             "delivered_records": crate::sse::auth::sse_stats::DELIVERED_RECORDS.load(std::sync::atomic::Ordering::Relaxed),
         },
-        "absorb_reserved_bytes_now": state.runtime.history.budget.reserved_bytes(),
         "shed_line_mb": adm.rss_shed_mb,
         "maintenance_backpressure": state.admission.maintenance_stats_json(),
-        // #266 field attribution: the wc sampler reads THIS endpoint
-        // for the read phase of the last gather (edge record #86).
-        "gather_last_read_ms": crate::history::GATHER_LAST_READ_MS
-            .load(std::sync::atomic::Ordering::Relaxed),
         "maintenance_shards": maintenance_shards_json(&state),
         // R26-7: the ORDINARY per-stream limiter's refusals, by code —
         // so a throughput plateau is attributed to the right mechanism.
@@ -903,7 +886,6 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
         "stream_shed": adm.shed.stream,
         "wedge_shed": adm.shed.wedge,
         "streams_tracked": adm.streams_tracked,
-        "absorb_lag_max_secs": state.runtime.usage.absorb_lag_max(),
         "cardinality": {
             "resident_handles": resident_handles,
             "usage_tracked": state.runtime.usage.tracked_streams(),
@@ -914,30 +896,6 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
             "consumer_fence_entries": cfence_entries,
             "consumer_fence_max_generation": cfence_max_gen,
         },
-        "trim": {
-            "debt_streams": trim_debt,
-            "deletes_last_batch": trim_last,
-            "deletes_max_batch": trim_max_batch,
-            "deletes_total": trim_total,
-        },
-        // Postings index telemetry (ROUTING-V3 §14): write-side byte
-        // ratio (the 8%/2% gates), planner spans (≤ 8), scan-vs-match
-        // amplification, and corruption-envelope fallbacks (should
-        // never move).
-        "postings": {
-            "bytes_written": crate::history::POSTINGS_BYTES_WRITTEN.load(std::sync::atomic::Ordering::Relaxed),
-            "pages_written": crate::history::POSTINGS_PAGES_WRITTEN.load(std::sync::atomic::Ordering::Relaxed),
-            "runs_written": crate::history::POSTINGS_RUNS_WRITTEN.load(std::sync::atomic::Ordering::Relaxed),
-            "canonical_bytes_written": crate::history::CANONICAL_BYTES_WRITTEN.load(std::sync::atomic::Ordering::Relaxed),
-            "read_spans_max": crate::history::READ_SPANS_MAX.load(std::sync::atomic::Ordering::Relaxed),
-            "read_frames_scanned": crate::history::READ_FRAMES_SCANNED.load(std::sync::atomic::Ordering::Relaxed),
-            "read_frames_matched": crate::history::READ_FRAMES_MATCHED.load(std::sync::atomic::Ordering::Relaxed),
-            "corrupt": crate::history::POSTINGS_CORRUPT.load(std::sync::atomic::Ordering::Relaxed),
-            "cache": state
-                .shards.engines().first()
-                .map(|e| e.postings_cache.stats())
-                .unwrap_or(serde_json::json!(null)),
-        },
         "scaler": state.runtime.scaler.stats_json(),
         // Routing state as THIS instance sees it — the fleet
         // certification harness waits on real override convergence
@@ -946,10 +904,6 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
             "active": state.ownership.ring_active(),
             "overrides": state.ownership.overrides().into_iter().collect::<std::collections::BTreeMap<_, _>>(),
         },
-        // Cross-layout absorb advances rejected by the committer's
-        // layout seal. Nonzero = the absorber's lane classification
-        // raced dispatch somewhere; the seal made it harmless, but it
-        // should stay rare enough to investigate when it moves.
         // PR 6-F / item 37: supervised loops, the first critical exit and panicked connections.
         "tasks": {
             "phase": state.tasks.phase().map(|p| format!("{p:?}")),
@@ -961,10 +915,6 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
                 "state": format!("{:?}", t.state),
             })).collect::<Vec<_>>(),
         },
-        "absorb_lane_dropped": state
-            .shards.engines().iter()
-            .map(|e| e.absorb_lane_dropped.load(std::sync::atomic::Ordering::Relaxed))
-            .sum::<u64>(),
     }))
     .into_response()
 }
@@ -973,6 +923,20 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
 /// percentiles over ?window= seconds (default 60), the slow-op ring, and
 /// the outbound in-flight gauge. ?swap=1 resets the peak (sampler only —
 /// heartbeats read it non-destructively).
+/// `POST /v1/debug/seal-pause?on=1|0`: turns every local engine's sealer
+/// triggers and deadlines off (`on=1`) or back on (anything else), the
+/// cell-watch drill for the backlog latch (RUNBOOK row 12, edge #212).
+async fn debug_seal_pause(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
+) -> Response {
+    let on = q.get("on").is_some_and(|v| v == "1");
+    for engine in state.shards.engines() {
+        engine.pause_seal(on);
+    }
+    axum::Json(serde_json::json!({ "seal_paused": on })).into_response()
+}
+
 async fn debug_store(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
@@ -1006,7 +970,10 @@ async fn debug_auth(State(state): State<Arc<AppState>>) -> Response {
 /// is why the whole /v1/debug table mounts through `debug::gated`.
 async fn debug_usage(State(state): State<Arc<AppState>>) -> Response {
     let l = state.runtime.usage.limits();
-    let streams: Vec<serde_json::Value> = state.runtime.usage.snapshot()
+    let streams: Vec<serde_json::Value> = state
+        .runtime
+        .usage
+        .snapshot()
         .into_iter()
         .map(|(h, _gen, req, rec, bi, bo, pt, fr)| {
             serde_json::json!({
@@ -1018,14 +985,9 @@ async fn debug_usage(State(state): State<Arc<AppState>>) -> Response {
                 "plaintext_bytes": pt,
                 "frame_bytes": fr,
                 "compression_ratio": if fr > 0 { pt as f64 / fr as f64 } else { 0.0 },
-                // Counters key by name hash, lag by engine hash; the
-                // linked join (usage.rs) is what makes this nonzero.
-                "absorb_lag_secs": state.runtime.usage.absorb_lag_for_usage(crate::crypto::RouteHash(h)),
             })
         })
         .collect();
-    let (backlog_streams, backlog_max) = state.runtime.usage.absorb_backlog_summary();
-    let (eligible, oldest_eligible) = state.runtime.usage.absorb_pending_summary();
     let (overflow_admits, overflow_requests, overflow_records, overflow_bytes) =
         state.runtime.usage.overflow_stats();
     axum::Json(serde_json::json!({
@@ -1035,19 +997,11 @@ async fn debug_usage(State(state): State<Arc<AppState>>) -> Response {
             "records_per_sec": l.recs_per_sec,
             "burst_secs": l.burst_secs,
         },
-        // Aggregate view, immune to the per-stream listing cap: how many
-        // engine streams carry absorb lag right now, and the worst one.
-        "absorb_backlog": {
-            "streams": backlog_streams,
-            "max_secs": backlog_max,
-            "eligible": eligible,
-            "oldest_eligible_secs": oldest_eligible,
-        },
         // Past-cap visibility (never fail open): admissions routed
         // through the shared conservative overflow bucket, plus the
         // aggregate counters those streams accrue. `streams` below is
-        // capped at MAX_TRACKED entries — use these plus absorb_backlog
-        // for population-level truth.
+        // capped at MAX_TRACKED entries — use these for population-level
+        // truth.
         "tracked_streams": state.runtime.usage.tracked_streams(),
         "overflow": {
             "admits": overflow_admits,
@@ -1194,12 +1148,10 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// The operator debug table. Its routes MUTATE production state (pausing
-/// absorption, stalling flushes, aborting the process, resetting peak
-/// gauges) or expose per-stream usage, so it mounts only through
+/// The operator debug table. Its routes MUTATE production state (aborting
+/// the process, resetting peak gauges) or expose per-stream usage, so it mounts only through
 /// `debug::gated`: no handler here checks the bearer itself.
 #[expect(
-    clippy::too_many_lines,
     clippy::disallowed_methods,
     reason = "debug_routes; the operator debug table is one declaration behind one gate, and the debug abort spawns a bare task that ends the process itself; splitting the table would scatter what the gate covers and supervising the abort would separate it from the death it causes"
 )]
@@ -1212,18 +1164,7 @@ fn debug_routes() -> Router<Arc<AppState>> {
         .route("/auth", get(debug_auth))
         .route("/ops-events", get(debug_ops_events))
         .route("/usage-reconcile", get(debug_usage_reconcile))
-        .route(
-            "/absorb-pause",
-            post(
-                |State(state): State<Arc<AppState>>,
-                 Query(q): Query<std::collections::HashMap<String, String>>| async move {
-                    let on = q.get("on").map(|v| v == "1").unwrap_or(false);
-                    state.runtime.history.paused
-                        .store(on, std::sync::atomic::Ordering::Relaxed);
-                    axum::Json(serde_json::json!({"absorb_paused": on})).into_response()
-                },
-            ),
-        )
+        .route("/seal-pause", post(debug_seal_pause))
         // R27-5: remote crash for field handoff gates. abort() = SIGABRT
         // — no WAL flush, no fencing handoff, no absorber drain; the
         // successor must recover from durable state alone. Enabled only
@@ -1252,45 +1193,14 @@ fn debug_routes() -> Router<Arc<AppState>> {
             ),
         )
         .route("/sleep", get(debug_sleep))
-        // Injected history-flush slowdown (OOM review acceptance
-        // campaign): stalls the REAL gather flush path by ?ms= per
-        // flush, with the process-wide reservation held — the
-        // mechanism the slow-compactor campaign drives. 0 clears.
-        .route(
-            "/history-stall",
-            post(
-                |Query(q): Query<std::collections::HashMap<String, String>>| async move {
-                    let ms: u64 = q.get("ms").and_then(|v| v.parse().ok()).unwrap_or(0);
-                    crate::history::HISTORY_FLUSH_STALL_MS
-                        .store(ms, std::sync::atomic::Ordering::Relaxed);
-                    axum::Json(serde_json::json!({"historyFlushStallMs": ms})).into_response()
-                },
-            ),
-        )
-        // OOM-review causal detail: per-partition history L0 posture,
-        // the process-wide absorber budget, last-gather phases, and
-        // telemetry-plane residency — the exact signals needed to prove
-        // (or refute) "history compaction fell behind". Authorized like
-        // every other /v1/debug route.
+        // OOM-review causal detail: store transfer totals, telemetry-plane
+        // residency and process memory. Authorized like every other
+        // /v1/debug route.
         .route(
             "/absorb",
             get(
                 |State(state): State<Arc<AppState>>| async move {
                     let ord = std::sync::atomic::Ordering::Relaxed;
-                    let engines: Vec<_> = state.shards.engines_by_prefix();
-                    let mut parts = Vec::new();
-                    for (prefix, e) in engines {
-                        if let Some(part) = e.history_partition_if_open() {
-                            let (l0, l0b, runs, mid) = crate::history::history_l0_stats(&part);
-                            parts.push(serde_json::json!({
-                                "shard": prefix,
-                                "l0SstCount": l0,
-                                "l0BytesEst": l0b,
-                                "compactedRuns": runs,
-                                "manifestId": mid,
-                            }));
-                        }
-                    }
                     let spool = state.billing.read_spool_stats().map(|sp| {
                         let (rows, bytes) = (sp.pending_rows, sp.pending_bytes);
                         let (l0, l0b, runs, mid) = sp.l0;
@@ -1313,39 +1223,16 @@ fn debug_routes() -> Router<Arc<AppState>> {
                             "manifestId": mid,
                         })
                     });
-                    let budget = &state.runtime.history.budget;
                     axum::Json(serde_json::json!({
-                        "historyPartitions": parts,
                         "budget": {
-                            "capacityBytes": budget.capacity(),
-                            "gatherSlots": budget.gather_slots(),
-                            "effectiveGatherConcurrency":
-                                state.runtime.history.effective_gather_concurrency(),
-                            "perGatherReservationBytes":
-                                state.runtime.history.per_gather_reservation_bytes(),
-                            "worstFrameTransientBytes":
-                                state.runtime.history.worst_frame_transient,
-                            "injectedFlushStallMs": crate::history::HISTORY_FLUSH_STALL_MS
-                                .load(std::sync::atomic::Ordering::Relaxed),
                             "shedLineMb": state.admission.rss_shed_mb(),
                         },
                         "absorber": {
-                            "reservedBytes": state.runtime.history.budget.reserved_bytes(),
-                            "gathersInflight": state.runtime.history.budget.inflight(),
-                            "lastReservedBytes": crate::history::GATHER_LAST_RESERVED.load(ord),
-                            "lastActualBytes": crate::history::GATHER_LAST_ACTUAL.load(ord),
-                            "lastReadMs": crate::history::GATHER_LAST_READ_MS.load(ord),
-                            // R25-F: per-gather amplification removed —
-                            // the global-delta attribution was
-                            // contaminated by concurrent traffic.
                             // Process-wide TRANSFERRED bytes:
                             "storeGetCount": crate::store_timing::GET_COUNT
                                 .load(std::sync::atomic::Ordering::Relaxed),
                             "storeGetTransferredBytes": crate::store_timing::GET_BYTES
                                 .load(std::sync::atomic::Ordering::Relaxed),
-                            "lastWriteMs": crate::history::GATHER_LAST_WRITE_MS.load(ord),
-                            "lastFlushMs": crate::history::GATHER_LAST_FLUSH_MS.load(ord),
-                            "absorbedBytesTotal": crate::history::ABSORB_BYTES_TOTAL.load(ord),
                             "ingestBytesTotal": crate::history::INGEST_BYTES_TOTAL.load(ord),
                         },
                         "telemetry": {
@@ -1356,7 +1243,6 @@ fn debug_routes() -> Router<Arc<AppState>> {
                             "sweepResidentEngines":
                                 crate::billing::sweep_resident_engines(&state),
                         },
-                        "config": state.runtime.history.resolved_memory_config.get(),
                         "process": {
                             "rssMb": state.admission.rss_mb(),
                             "cgroupCurrentMb": std::fs::read_to_string("/sys/fs/cgroup/memory.current")
@@ -1449,6 +1335,7 @@ async fn debug_timings(State(state): State<Arc<AppState>>) -> Response {
                     "miss_empty": eng.ring_miss_empty.load(std::sync::atomic::Ordering::Relaxed),
                     "evicted": eng.ring_evicted.load(std::sync::atomic::Ordering::Relaxed),
                 },
+                "seal": eng.seal_json(),
             }),
         );
     }

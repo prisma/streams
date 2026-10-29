@@ -1,10 +1,9 @@
-# History tier models (group `history`): TLA-016, TLA-018, TLA-019
+# History tier models (group `history`): TLA-019
 
-These TLA+ models cover the destructive-maintenance boundary of the history
-tier. Records move from the shard log into the shared history-v2 partition,
-the absorbed boundary is published, hot copies are trimmed, the postings-slice
-cache is warmed, reads are served across the moving boundary, and storage
-objects and fork pins are reclaimed. Each result is a bounded model check of
+Layout 6A retired the history tier: TLA-016 and TLA-018 were retargeted to the
+seal (`verification/tla/spill/`), and their models here are deleted. What is
+left is TLA-019, the reachability-based reclamation of storage objects and
+fork pins, which package 6 retargets to the seal's refcount rows. Each result is a bounded model check of
 the recorded instance under the recorded assumptions (roadmap §1.2). The
 models do not prove that the Rust code refines them, and they do not verify
 upstream SlateDB.

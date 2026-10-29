@@ -6,11 +6,11 @@
 //! unacked offset; max-deliveries poison is judged per record, only while
 //! its key is open, the lowest poisoned record of a key per Receive.
 use crate::queue::{self, Lease, QueueOp, QueueOut};
-use crate::shard::{AbsorbSignal, AppendFinish, AppendReq, ShardConfig, ShardEngine};
+use crate::shard::{AppendFinish, AppendReq, ShardConfig, ShardEngine};
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 const HASH: [u8; 16] = [93; 16];
 const GROUP: &str = "g";
@@ -28,7 +28,6 @@ struct Rig {
     db: Arc<slatedb::Db>,
     keys: HashMap<u64, [u8; 16]>,
     next: u64,
-    _absorb: mpsc::Receiver<AbsorbSignal>,
 }
 
 impl Rig {
@@ -37,18 +36,16 @@ impl Rig {
         let store: Arc<dyn object_store::ObjectStore> =
             Arc::new(object_store::memory::InMemory::new());
         let db = Arc::new(
-            slatedb::Db::builder(name.to_string(), store.clone())
+            crate::keyspace::db_builder(name, store.clone())
                 .build()
                 .await
                 .unwrap(),
         );
-        let (tx, absorb) = mpsc::channel(64);
         let engine = ShardEngine::start(
             name.to_string(),
             db.clone(),
             store,
             ShardConfig::default(),
-            tx,
             None,
             Default::default(),
         );
@@ -57,7 +54,6 @@ impl Rig {
             db,
             keys: HashMap::new(),
             next: 0,
-            _absorb: absorb,
         };
         for key in layout.bytes() {
             rig.append(key).await;

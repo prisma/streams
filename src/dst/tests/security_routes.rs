@@ -571,16 +571,20 @@ async fn debug_surface_refuses_every_path_without_the_token() {
         ("GET", "/v1/debug/auth"),
         ("GET", "/v1/debug/ops-events"),
         ("GET", "/v1/debug/usage-reconcile"),
-        ("POST", "/v1/debug/absorb-pause?on=1"),
+        ("POST", "/v1/debug/seal-pause?on=1"),
         ("POST", "/v1/debug/abort"),
         ("GET", "/v1/debug/sleep"),
-        ("POST", "/v1/debug/history-stall"),
         ("GET", "/v1/debug/absorb"),
     ];
+    // The absorber's pause (now the seal pause) and the history flush stall
+    // left with layout 6; their old paths are unrouted and refused like any
+    // other.
     let unrouted = [
         ("GET", "/v1/debug/nope"),
         ("POST", "/v1/debug/nope"),
         ("GET", "/v1/debug"),
+        ("POST", "/v1/debug/absorb-pause?on=1"),
+        ("POST", "/v1/debug/history-stall"),
     ];
     let other_method = routed.map(|(m, p)| (if m == "GET" { "POST" } else { "GET" }, p));
     for (method, path) in routed.into_iter().chain(unrouted).chain(other_method) {
@@ -604,14 +608,6 @@ async fn debug_surface_refuses_every_path_without_the_token() {
             );
         }
     }
-    assert!(
-        !state
-            .runtime
-            .history
-            .paused
-            .load(std::sync::atomic::Ordering::Relaxed),
-        "an unauthenticated absorb-pause landed"
-    );
     engine_shutdown(&state).await;
 }
 
@@ -656,20 +652,9 @@ async fn debug_surface_serves_every_handler_with_the_token() {
         (503, &serde_json::Value::from("rollup_unavailable"))
     );
     for on in [true, false] {
-        let path = format!("/v1/debug/absorb-pause?on={}", u8::from(on));
+        let path = format!("/v1/debug/seal-pause?on={}", u8::from(on));
         let (st, v) = debug_json(addr, "POST", &path).await;
-        assert_eq!(
-            (st, &v["absorb_paused"]),
-            (200, &serde_json::Value::from(on))
-        );
-        assert_eq!(
-            state
-                .runtime
-                .history
-                .paused
-                .load(std::sync::atomic::Ordering::Relaxed),
-            on
-        );
+        assert_eq!((st, &v["seal_paused"]), (200, &serde_json::Value::from(on)));
     }
     // The rig never sets STREAMS_DEBUG_EXIT, so abort must refuse.
     let (st, v) = debug_json(addr, "POST", "/v1/debug/abort").await;
@@ -677,8 +662,6 @@ async fn debug_surface_serves_every_handler_with_the_token() {
         (st, &v["error"]["code"]),
         (403, &serde_json::Value::from("disabled"))
     );
-    // history-stall is not called: it sets a PROCESS-wide flush stall
-    // (history::HISTORY_FLUSH_STALL_MS) that other rigs in the run share.
     let ok = [("authorization", "Bearer s3cret")];
     let (st, _, body) = preq(addr, "GET", "/v1/debug/sleep?ms=1", &ok, b"").await;
     assert_eq!((st, body.as_slice()), (200, &b"ok"[..]));

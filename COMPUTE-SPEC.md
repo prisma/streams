@@ -1,15 +1,16 @@
 # Streams on Prisma Compute — Routing, Autoscaling & Storage-Tiering Spec
 
 Target platform: Prisma Compute instances with **1 CPU core / 1 GB RAM** each.
-Object storage: **Tigris** (Standard tier for WAL/manifests/hot SSTs; Archive
-Instant Retrieval for settled history — §7).
+Object storage: **Tigris** (Standard tier for WAL/manifests/SSTs; Archive
+Instant Retrieval for settled segment objects — §7).
 
 This spec covers what the platform's router and autoscaler must provide, what
 the Streams service provides in return, and the coordination protocol between
 instances. It assumes the architecture agreed so far: consistent-hash shards,
-each shard = one SlateDB (the *shard log*, ingest + tails), absorber →
-per-stream WAL-less SlateDBs under shared-bucket prefixes (history tier,
-block-encrypted per stream key, block-zstd compressed).
+each shard = one SlateDB (the *shard log*: ingest, tails and unsealed
+pages), and per shard a sealer that moves sealed pages into immutable
+segment objects under the shard's prefix (layout 6, SPEC.md §3.6). Pages
+are compressed and encrypted per stream key before they are stored.
 
 ---
 
@@ -30,7 +31,7 @@ block-encrypted per stream key, block-zstd compressed).
 
 ## 1. Instance model and budgets
 
-One instance = gateway + shard owner + absorber, all in one process.
+One instance = gateway + shard owner + sealer, all in one process.
 Compaction and GC of *shard logs* run in a separate service (§6).
 
 ### 1.1 Memory budget (1 GB)
@@ -39,26 +40,24 @@ Compaction and GC of *shard logs* run in a separate service (§6).
 |---|---:|---|
 | shared SlateDB block cache (all DBs) | 384 MB | `with_db_cache`, one cache |
 | shard-log memtables + WAL buffers | 192 MB | ~24 shards × `l0_sst_size_bytes=4MB`, `max_unflushed_bytes=8MB`/shard |
-| per-stream DB absorber transients | 96 MB | LRU of open history DBs (≤ 16), bulk write then close |
+| unsealed pages | 96 MB | held by stream handles until a seal; a shard seals at 24 MiB of them, and nothing enforces this line (the maintenance latch engages at 512 MiB per instance) |
 | connection state (SSE/long-poll) | 96 MB | ≤ 10,000 conns × ~8 KB; hard cap, then 503 reads |
 | HTTP/TLS/runtime/misc | 128 MB | — |
 | headroom (spikes, fragmentation) | 128 MB | RSS alarm at 800 MB |
 
 ### 1.2 CPU budget (1 core)
 
-Request path work per record: AES-GCM (≥1 GB/s/core with AES-NI) + zstd
-level 3 in the absorber (~200 MB/s/core) — negligible at target volumes.
+Request path work per record: AES-GCM-SIV (≥1 GB/s/core with AES-NI) + zstd
+level 1 per page when it pays — negligible at target volumes.
 The two CPU hogs are kept off the request path:
 
 - **Shard-log compaction/GC** → detached compactor service (§6). Shard-log
   values are record-encrypted, so compaction merges them *without any tenant
   key* — it never decrypts values.
-- **History-tier compaction** requires the stream key (block transformer), so
-  it can only run where keys are in hand: on the shard owner, opportunistically,
-  piggybacked on absorber batches, rate-limited to ≤ 15% of core. Pressure is
-  inherently low because the absorber writes large, pre-sorted, pre-compressed
-  L0s. (This key-gated compaction schedule is also what makes archive tiering
-  safe — §7.)
+- **Sealing** needs no tenant key either: a seal copies pages byte for byte
+  into a segment object, and segment objects are immutable once written, so
+  they never enter a compaction lifecycle (which is also what makes archive
+  tiering safe — §7).
 
 ### 1.3 Shard constants
 
@@ -91,15 +90,13 @@ The two CPU hogs are kept off the request path:
   manifest poll, and a long poll turns every compaction into a
   poll-length write stall (60 s poll → 14 s stalls → backpressure 408s).
   Idle shards may poll lazily; the setting follows load, not a global.
-- **Absorber throughput (amends §1.2)**: absorption must track ingest in
-  steady state or the hot tier grows without bound. The v2 gather planner
-  bounds packing with `ABSORB_GATHER_MAX_BYTES`, process memory and gather
-  concurrency with `ABSORB_GLOBAL_BUDGET_BYTES` / `ABSORB_GLOBAL_GATHERS`,
-  and read overlap within a gather with `ABSORB_READ_PAR`. It trims up to
-  `TRIM_PER_OP` (default 8k, throughput shards ≥ 256k) hot records per
-  Absorbed op so trim also tracks ingest. The ≤ 15 % core budget still
-  binds; on 1-core instances the budget, not the pipeline, is the sustained
-  ceiling.
+- **Sealer cadence (amends §1.2)**: sealing must track ingest in steady
+  state or the shard log's memtable carries pages into its L0s. A shard
+  seals at SlateDB's L0 estimate of 6 MiB, 24 MiB of unsealed pages, 48 WAL
+  objects or a 45 s old page, and flushes its memtable at 64 WAL objects or
+  60 s whatever a seal does (the replay bound); a failed seal backs off
+  0.5-16 s (SPEC.md §3.6). The maintenance latch refuses appends when
+  sealing stops making progress (docs/MAINTENANCE-BACKPRESSURE.md).
 
 ---
 
@@ -231,7 +228,7 @@ losers re-read and agree.
 | append requests/s | 6,000 | from bench: comfortable per-core rate |
 | ingest queue depth / 429 rate | queue < 50% capacity, 429s ≈ 0 | leading indicator |
 | memtable/unflushed bytes | < 60% of per-shard caps | write-side backpressure signal |
-| absorber lag (shard-log bytes not yet absorbed) | < 256 MB/instance | rises when keys are absent or CPU starved |
+| unsealed backlog (page bytes not yet sealed) | < 256 MB/instance | rises when seals fail (store refusals) or the instance is CPU starved |
 | block-cache hit rate + read p99 | hit > 85%, p99 < 100 ms | cache pressure → more instances = more aggregate cache |
 | WAL replay estimate per shard | < 1 s | affects failover/drain speed; tightens flush caps rather than scaling, alarm only |
 
@@ -286,12 +283,12 @@ compaction ages them out. Merge is the reverse via manifest-union.
 ## 6. Compactor service (separate Prisma Compute app)
 
 - Scales independently on: shard-log compaction debt (L0/sorted-run counts,
-  read from manifests), GC backlog, absorber lag alarms.
+  read from manifests), GC backlog.
 - Work claims: `compact-claims/<shard>.json` CAS objects with TTL — leaderless
   work distribution, same pattern as everything else.
 - Runs SlateDB's detached compactor against shard logs only (no tenant keys
-  needed — values stay ciphertext). History-tier DBs are never touched here
-  (key-gated, §1.2).
+  needed — values stay ciphertext). Segment objects are immutable and never
+  compacted.
 - Same 1 CPU/1 GB instances; a compactor instance saturates its core, which
   is fine — no latency SLO applies to it.
 
@@ -302,15 +299,13 @@ compaction ages them out. Merge is the reverse via manifest-union.
 Prices: Standard $0.02/GB/mo; Archive-IR $0.004/GB/mo + $0.03/GB retrieval,
 90-day minimum billing, same request prices, instant GETs.
 
-**Policy — history tier only, by quiet horizon:**
+**Policy — segment objects only, by quiet horizon:**
 
 - Always Standard: shard logs (WAL + SSTs; short-lived, hot), all manifests,
-  history-tier L0s and any SST younger than the **quiet horizon Q = 30 d**.
-- Archive-IR: history-tier SSTs untouched for Q. Because record keys are
-  offset-ascending, new data never overlaps old runs, and history compaction
-  is deliberately front-loaded (absorber writes big sorted L0s, key-gated
-  compaction settles them early) — an SST quiet for 30 d has effectively
-  left the compaction lifecycle.
+  and any segment object younger than the **quiet horizon Q = 30 d**.
+- Archive-IR: segment objects untouched for Q. A segment object is
+  immutable from its PUT on and holds offset-ascending chunks, so new data
+  never rewrites it — an object quiet for 30 d is settled.
 - Mechanism: per-object storage class on PUT if Tigris supports it for
   server-side copy (verify; then the "mover" is a same-key copy request),
   else a paired archive prefix + read-through in the ObjectStore wrapper
@@ -319,13 +314,13 @@ Prices: Standard $0.02/GB/mo; Archive-IR $0.004/GB/mo + $0.03/GB retrieval,
   decorator; SlateDB never knows.
 
 **Economics guardrails:**
-- Retrieval fee $0.03/GB = 1.5 months of Standard storage — an archived SST
-  read more than ~once per 6 weeks (after cache/CDN) should not be archived;
-  track per-SST cold-read counters in the wrapper and exempt hot ones.
+- Retrieval fee $0.03/GB = 1.5 months of Standard storage — an archived
+  object read more than ~once per 6 weeks (after cache/CDN) should not be
+  archived; track per-object cold-read counters in the wrapper and exempt
+  hot ones.
 - A rewrite of an archived object wastes ≤ 90 d × $0.004 = $0.36/GB phantom
   charge + $0.03/GB retrieval — tolerable if rare; alarm if > 1% of archived
-  bytes are rewritten per month (means Q is too short or compaction isn't
-  settling).
+  bytes are rewritten per month (means Q is too short).
 - Expected steady state for append-only streams: all bytes older than
   ~Q+60 d at 5× lower storage cost, i.e. blended storage → ~$0.005/GB/mo
   asymptotically, with reads of old data absorbed by CDN/disk cache first.
@@ -472,7 +467,7 @@ all changes ship read-compatible first.
   fleet-wide.
 - **Canary gates (evaluated per wave, against the prior wave's baseline):**
   append error rate, ack p50/p99, fence-event rate, replay-header rate,
-  CAS-conflict rate, absorber lag, RSS. Breach ⇒ automatic halt +
+  CAS-conflict rate, unsealed backlog, RSS. Breach ⇒ automatic halt +
   rollback of that wave (previous binary redeploy; instances drain per
   §5.2, shards fence back).
 - **Schema evolution (N/N-1 contract):** every coordination object

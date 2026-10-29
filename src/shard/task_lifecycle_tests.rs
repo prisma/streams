@@ -1,14 +1,14 @@
 //! R17-A owns real engine roles and a storage operation held after entry.
 use super::{CloseReq, ShardConfig, ShardEngine, ShardMaintenance};
-use slatedb::Db;
 use std::{sync::Arc, sync::atomic::Ordering, time::Duration};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 async fn fixture() -> (Arc<ShardEngine>, Arc<crate::dst::FaultStore>) {
     fixture_named("r17a-engine", 1717).await
 }
 
-/// An engine on its own clean store under `prefix`, with its absorber.
+/// An engine on its own clean store under `prefix`; it spawns its own
+/// sealer roles.
 async fn fixture_named(prefix: &str, seed: u64) -> (Arc<ShardEngine>, Arc<crate::dst::FaultStore>) {
     let store = crate::dst::FaultStore::new(
         Arc::new(object_store::memory::InMemory::new()),
@@ -16,7 +16,7 @@ async fn fixture_named(prefix: &str, seed: u64) -> (Arc<ShardEngine>, Arc<crate:
         crate::dst::FaultProfile::clean(),
     );
     let db = Arc::new(
-        Db::builder(prefix.to_string(), store.clone())
+        crate::keyspace::db_builder(prefix.to_string(), store.clone())
             .with_settings(slatedb::config::Settings {
                 flush_interval: Some(Duration::from_secs(600)),
                 ..Default::default()
@@ -25,7 +25,6 @@ async fn fixture_named(prefix: &str, seed: u64) -> (Arc<ShardEngine>, Arc<crate:
             .await
             .unwrap(),
     );
-    let (tx, rx) = mpsc::channel(16);
     let engine = ShardEngine::start(
         prefix.into(),
         db,
@@ -35,14 +34,8 @@ async fn fixture_named(prefix: &str, seed: u64) -> (Arc<ShardEngine>, Arc<crate:
             wal_flush_gap: Duration::ZERO,
             ..Default::default()
         },
-        tx,
         None,
         ShardMaintenance::default(),
-    );
-    crate::history::Absorber::start_owned(
-        engine.clone(),
-        crate::history::AbsorberConfig::default(),
-        rx,
     );
     (engine, store)
 }
@@ -132,7 +125,16 @@ async fn r17a_cancelling_a_shutdown_observer_cannot_detach_engine_tasks() {
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r17a_unexpected_required_engine_role_exit_fences_serving() {
-    for role in ["committer", "acker", "pump", "flush-ticker", "absorber"] {
+    for role in [
+        "committer",
+        "acker",
+        "pump",
+        "queue-sweeper",
+        "queue-collector",
+        "queue-l0-merger",
+        "sealer",
+        "seal-deadlines",
+    ] {
         let (engine, _store) = fixture().await;
         let stopped = engine.test_abort_task(role);
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -199,54 +201,6 @@ async fn r17a_runtime_shutdown_retains_held_engine_and_refuses_replacement() {
     assert!(engine.termination_complete());
 }
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "r17a_cancelled_history_opener_stays_owned_until_late_store_close; the fixture spawns the request it then cancels while the opener is held; a supervised spawn would tie the fixture's teardown to a supervisor it never builds"
-)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn r17a_cancelled_history_opener_stays_owned_until_late_store_close() {
-    let (engine, store) = fixture().await;
-    let entered = store.hold_class(crate::dst::StoreOp::Put, crate::dst::ObjClass::Manifest, 1);
-    let waiting = engine.clone();
-    let request = tokio::spawn(async move { waiting.history_partition().await });
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while entered.load(Ordering::SeqCst) == 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    request.abort();
-    assert!(matches!(request.await, Err(error) if error.is_cancelled()));
-    engine.begin_close();
-    assert!(
-        engine
-            .await_terminated(Duration::from_millis(5))
-            .await
-            .is_err()
-    );
-    assert!(
-        engine
-            .await_terminated(Duration::from_millis(5))
-            .await
-            .is_err()
-    );
-    store.release_hold();
-    engine
-        .await_terminated(Duration::from_secs(10))
-        .await
-        .unwrap();
-    let history = engine
-        .history_partition_if_open()
-        .expect("late open remained owned");
-    assert_eq!(
-        history.get(b"probe").await.unwrap_err().kind(),
-        slatedb::ErrorKind::Closed(slatedb::CloseReason::Clean)
-    );
-    assert!(engine.history_partition().await.is_err());
-    assert!(engine.termination_complete());
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r17a_fenced_final_flush_releases_only_after_the_owned_close_joins() {
     let (engine, store) = fixture().await;
@@ -271,7 +225,7 @@ async fn r17a_fenced_final_flush_releases_only_after_the_owned_close_joins() {
     .unwrap();
     // A different process takes ownership while the OLD owner's final flush
     // is held. Its persisted fencing epoch makes that flush return Fenced.
-    let replacement = Db::builder("r17a-engine", store.clone())
+    let replacement = crate::keyspace::db_builder("r17a-engine", store.clone())
         .with_settings(slatedb::config::Settings {
             flush_interval: Some(Duration::from_secs(600)),
             ..Default::default()

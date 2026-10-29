@@ -743,18 +743,11 @@ impl crate::config::ServerConfig {
         // +28 min, if any memory knob was dropped or overridden.
         let profile_errors = certified_memprofile_errors(self, &mut f.notices);
         f.errors.extend(profile_errors);
-        // Both engine tiers go through the same check so a future edit
-        // to either cannot reintroduce the permanently-500 hole.
-        for (what, settings) in [
-            ("shard", shard_settings(&self.cli, &self.engine)),
-            (
-                "history",
-                crate::history::history_settings(&self.history, &self.engine.compactor_options()),
-            ),
-        ] {
-            if let Err(e) = validate_engine_settings(what, &settings) {
-                f.err(format!("{e}"));
-            }
+        // The shard settings go through the check so a future edit cannot
+        // reintroduce the permanently-500 hole.
+        if let Err(e) = validate_engine_settings("shard", &shard_settings(&self.cli, &self.engine))
+        {
+            f.err(format!("{e}"));
         }
     }
 

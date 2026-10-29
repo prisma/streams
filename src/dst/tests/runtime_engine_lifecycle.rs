@@ -1,5 +1,5 @@
 //! R17-A observes actual required workers through the serving health surface.
-use super::fixture_http::{HttpRigOptions, cold_absorber, http_rig_build};
+use super::fixture_http::{HttpRigOptions, cold_sealer, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
@@ -10,7 +10,7 @@ async fn ready_rig() -> super::fixture_http::HttpRig {
         mem(),
         RigRuntime::first(),
         HttpRigOptions {
-            absorber: Some(cold_absorber()),
+            seal: Some(cold_sealer),
             shard: crate::shard::ShardConfig {
                 wal_group_commit: true,
                 ..Default::default()
@@ -56,7 +56,7 @@ async fn ready_rig() -> super::fixture_http::HttpRig {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r17a_each_required_engine_exit_changes_real_health_and_readyz() {
     let independent = ready_rig().await;
-    for role in ["committer", "acker", "pump", "flush-ticker", "absorber"] {
+    for role in ["committer", "acker", "pump", "sealer", "seal-deadlines"] {
         let rig = ready_rig().await;
         let engine = rig.state.shards.engines().into_iter().next().unwrap();
         // A rejected operation is not an unexpected task exit.

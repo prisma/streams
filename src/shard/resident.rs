@@ -1,28 +1,25 @@
 //! A resident stream handle and the rows it keeps hot.
 //!
-//! The committer is the only writer of a stream's billing row and consumer
-//! records, so once one of them is read or written through a resident
-//! handle the handle can hold it: later commit groups take it from there
-//! instead of a store read on the shard's one serial commit path. A group
-//! leaves its rows on the handle just before its write (`keep_hot_rows`);
-//! a group refused before the write leaves nothing, and a failed write
-//! retires the engine and every handle it holds (TLA-005-F5). An evicted
-//! handle takes its rows with it, and the next one reloads them.
+//! The committer is the only writer of a stream's consumer records, so once
+//! one is read or written through a resident handle the handle can hold it:
+//! later commit groups take it from there instead of a store read on the
+//! shard's one serial commit path. A group leaves its records on the handle
+//! just before its write (`keep_hot_rows`); a group refused before the write
+//! leaves nothing, and a failed write retires the engine and every handle it
+//! holds (TLA-005-F5). An evicted handle takes its records with it, and the
+//! next one reloads them. A billed stream's billing meta is resident the same
+//! way, on the handle's applied tail (layout 6, f3: `billing_for_commit`).
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::Notify;
 
 use super::{ShardEngine, StreamHandle, StreamState, TailFields, TailRing, now_ms};
-use crate::billing::SegmentBillingMetaV1;
 use crate::queue::{ConsumerLifecycle, ConsumerRecord};
 
 /// The rows a resident handle holds for the committer.
 #[derive(Default)]
 pub(crate) struct HotRows {
-    /// The billing row as the last staged group left it; `None`: not
-    /// resident (a stream with no row is never held, and reads it again).
-    billing: Option<SegmentBillingMetaV1>,
     /// Consumer records by name as the last staged group left them. A
     /// consumer with no record, or a deleted one, is never held and reads
     /// the store again, so names a stream churns through do not pile up.
@@ -31,22 +28,12 @@ pub(crate) struct HotRows {
 }
 
 impl HotRows {
-    /// The resident billing row, if any.
-    pub(super) fn billing(&self) -> Option<&SegmentBillingMetaV1> {
-        self.billing.as_ref()
-    }
-
-    /// Hold a group's staged rows: its billing row, if it read or wrote
-    /// one, and every consumer record it read or wrote.
+    /// Hold every consumer record a group read or wrote.
     pub(super) fn keep(
         &mut self,
-        billing: Option<&SegmentBillingMetaV1>,
         // mt-lint: allow(name-keyed-map): a group's consumer records of the one stream this handle is
         configs: &HashMap<String, ConsumerRecord>,
     ) {
-        if let Some(row) = billing {
-            self.billing = Some(row.clone());
-        }
         for (consumer, record) in configs {
             self.keep_config(consumer, record);
         }
@@ -69,12 +56,13 @@ impl HotRows {
 
 impl ShardEngine {
     /// A fresh handle for `hash` at the stored `tail` (a native queue's when
-    /// `native_queue`), nothing resident.
+    /// `native_queue`) holding its unsealed `pending` pages, no row resident.
     pub(super) fn fresh_handle(
         &self,
         hash: [u8; 16],
         tail: TailFields,
         native_queue: bool,
+        pending: crate::spill::pending::PendingPages,
     ) -> Arc<StreamHandle> {
         Arc::new(StreamHandle {
             owner: Arc::downgrade(&self.db),
@@ -86,6 +74,7 @@ impl ShardEngine {
                 seqs: HashMap::new(),
                 queue: crate::queue::QueueState::default(),
                 hot: HotRows::default(),
+                pending,
             }),
             notify: Notify::new(),
             applied_notify: Notify::new(),
@@ -103,26 +92,6 @@ impl ShardEngine {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len()
-    }
-
-    /// The handle of `hash` if it is resident; never loads one. A poisoned
-    /// handle map holds nothing resident.
-    fn resident_handle(&self, hash: &[u8; 16]) -> Option<Arc<StreamHandle>> {
-        self.streams.lock().ok()?.get(hash).cloned()
-    }
-
-    /// The stream's billing row for a commit group: the resident handle's
-    /// when it holds one, else the store's (`load_billing_meta`).
-    pub(super) async fn billing_row(
-        &self,
-        hash: [u8; 16],
-    ) -> anyhow::Result<Option<SegmentBillingMetaV1>> {
-        if let Some(handle) = self.resident_handle(&hash)
-            && let Some(row) = handle.hot(|hot| hot.billing().cloned()).flatten()
-        {
-            return Ok(Some(row));
-        }
-        self.load_billing_meta(hash).await
     }
 }
 

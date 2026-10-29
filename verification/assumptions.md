@@ -173,8 +173,8 @@ actions to these contracts.
   (`write_sst_in_object_store`, `PutMode::Create`, `AlreadyExists` ->
   `Fenced`).
 - **Enforcement / evidence:** SlateDB plus the object store's conditional put.
-  Repository tests `history::tests::absorber_exits_when_shard_engine_is_fenced`
-  and `src/dst/tests/producer_handoff.rs`; the provider contract suite's
+  Repository tests `dst::dst_tests::runtime_isolation::a_fenced_owners_absorber_exits`
+  (a fenced owner's sealer exits and seals nothing) and `src/dst/tests/producer_handoff.rs`; the provider contract suite's
   SlateDB cases (`src/bootstrap/tests/provider_contract/slatedb_cases.rs`,
   docs/PROVIDER-CONTRACT.md) check fencing and both lost-reply outcomes
   through the production client.
@@ -183,6 +183,69 @@ actions to these contracts.
 - **Standing:** established by upstream source inspection and repository
   tests, **conditional on ASM-OBJSTORE-CAS**, which is unestablished. Every
   TLA-011 result is therefore a conditional design check.
+
+### ASM-SLATEDB-MERGE
+
+- **Scope:** TLA-016.
+- **Statement:** a key's value read at any level is its newest put (or
+  nothing after a delete) followed by every later merge operand, oldest
+  first. The pending rows' merge operator is concatenation, `merge_batch` is
+  equivalent to folding `merge`, and flush and compaction preserve that
+  result.
+- **Origin:** `src/spill/pending.rs` (`PendingMerge`); pinned SlateDB
+  `merge_operator.rs` (`MergeOperatorIterator`).
+- **Enforcement / evidence:** `spill::pending_tests`; the seal tests that read
+  the pending row back after a reopen
+  (`shard::seal::tests::tiling_with_an_abort_between_every_pair_of_steps`).
+- **Invalidation:** a SlateDB upgrade; a merge operator other than
+  concatenation.
+- **Standing:** upstream source inspection plus repository tests.
+
+### ASM-SLATEDB-FLUSH-RETENTION
+
+- **Scope:** TLA-016 (the F2 property only).
+- **Statement:** a memtable flush keeps every version above
+  `min(last_remote_persisted_seq, min active snapshot seq, min active txn
+  seq)`; at or below it, it keeps merge operands down to and including the
+  newest put or delete and drops everything older. The model takes the
+  boundary to be the durable sequence: no older snapshot or transaction is
+  active during a forced flush.
+- **Origin:** pinned SlateDB `flush.rs` (`iter_imm_table`),
+  `retention_iterator.rs`.
+- **Enforcement / evidence:** `shard::seal::tests::flushdrop` and its two
+  controls (a flush without a seal, a seal without step 7a).
+- **Invalidation:** a SlateDB upgrade; a long-lived snapshot or transaction on
+  the shard log.
+- **Standing:** upstream source inspection plus repository tests.
+
+### ASM-SEAL-OBJECT-IMMUTABLE
+
+- **Scope:** TLA-016, TLA-018.
+- **Statement:** a segment object PUT with `PutMode::Create` under a fresh
+  (writer epoch, seq) name is never overwritten, and no object a directory
+  row names is deleted while that row exists.
+- **Origin:** `src/shard/seal/steps.rs` (step 4), `src/spill/object.rs`
+  (`object_path`).
+- **Enforcement / evidence:** the object store's conditional create; nothing
+  deletes segment objects before package 6's garbage collection.
+- **Invalidation:** package 6's garbage collection, which then carries this
+  as its obligation.
+- **Standing:** a design rule.
+
+### ASM-SEAL-COMMITTER-SERIAL
+
+- **Scope:** TLA-016.
+- **Statement:** the committer stages a group only after the previous group's
+  applied effects are published into the stream handles, so a handle's
+  in-memory unsealed pages at staging time are every applied page, which is
+  what a seal's remainder put relies on (REVIEW-6A F1).
+- **Origin:** `src/shard/transaction/mod.rs` (stage, then `finish().await`),
+  `src/shard/transaction/publish.rs` (`publish_into` under the state lock).
+- **Enforcement / evidence:**
+  `shard::seal::tests::an_append_committed_between_the_snapshot_and_the_commit_survives`
+  and its negative control.
+- **Invalidation:** pipelined staging.
+- **Standing:** source inspection plus repository tests.
 
 ### ASM-OBJSTORE-CAS
 

@@ -3,7 +3,7 @@
 use super::fixture_http::{engine_shutdown, http_rig, http_rig_at};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::RigRuntime;
-use super::fixture_storage::{append_sized, mem, open_engine, skey};
+use super::fixture_storage::{append_sized, eventually, mem, open_engine, skey};
 use crate::dst::{FaultPlan, FaultStore, ObjClass, Outcome, StoreOp, Workload};
 use object_store::ObjectStore;
 use std::sync::Arc;
@@ -316,7 +316,6 @@ async fn a_lost_applied_suffix_rewinds_to_the_durable_frontier() {
         .build()
         .await
         .expect("open db");
-    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
     // R25-A: tests use the REAL load path — a fresh DB rebuilds to
     // zero; a reopened DB restores its durable backlog, exactly as
     // the production opener does.
@@ -331,7 +330,6 @@ async fn a_lost_applied_suffix_rewinds_to_the_durable_frontier() {
             wal_group_commit: false,
             ..Default::default()
         },
-        absorb_tx,
         None,
         __maint,
     );
@@ -556,75 +554,112 @@ async fn a_stale_applied_cursor_is_refused_after_crash_restart() {
 }
 
 /// **TLA-018-F1: an applied keyed read never skips a durable record that
-/// an applied-but-not-durable advance trimmed.** Shard WAL PUTs stall
-/// while the history partition (WAL disabled) keeps flushing, so two
-/// one-record gathers apply the advances 0→1 and 1→2; the second trims
-/// row 0 in the memtable while the Remote-durable tail still says
-/// `absorbed = 0`. A `deliver=applied` read for the key from 0 scans at
-/// Memory level and cannot see row 0 in the tail, so its page must either
-/// serve record 0 (from history) or be an honest partial with no progress.
-/// It must never consume offset 0 without delivering it: both cursors
-/// would then move past a durable, acknowledged record.
+/// an applied-but-not-durable seal took out of memory.** Three durable
+/// records under key `k`; then shard WAL PUTs are held and a seal runs: its
+/// first WAL flush has nothing to write, its object PUT lands, and its
+/// commit applies, so the applied boundary is 3 and the pages are gone from
+/// memory while the durable boundary still says 0. A `deliver=applied`
+/// read for the key from 0 cannot find the records among the unsealed
+/// pages; it must serve them from the segment object the seal published
+/// before its commit, or be an honest partial with no progress. It must
+/// never consume offset 0 without delivering it: both cursors would then
+/// move past a durable, acknowledged record. The directory is published
+/// before the commit, so every read here serves all three records.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn applied_keyed_read_never_skips_rows_trimmed_by_a_non_durable_advance() {
     let store = FaultStore::uniform(mem(), 1818, FaultPlan::new(0, 0, 0));
     let key = skey();
     let hash = [0x18u8; 16];
     let engine = open_engine(store.clone(), "dst-applied-trim").await;
+    engine.seal_ready().await.expect("seal open");
+    engine.configure_seal(|s| s.auto = false);
     for _ in 0..3 {
         append_sized(&engine, hash, &key, "k", 64).await;
     }
-    // Open the partition before the hold so nothing but the shard WAL parks.
-    engine.history_partition().await.expect("history partition");
     let handle = engine.stream_handle(hash).await.unwrap();
     let engaged = store.hold_class(StoreOp::Put, ObjClass::Wal, u64::MAX);
-    let absorber = crate::history::Absorber::new(
-        engine.clone(),
-        crate::history::AbsorberConfig {
-            gather_max_bytes: 1,
-            ..Default::default()
-        },
+    // The seal is polled only until its commit applies; it then waits on
+    // the held WAL write while the reads run.
+    let seal = engine.seal_once(crate::shard::seal::Trigger::Requested);
+    tokio::pin!(seal);
+    let (durable_absorbed, unsealed) = tokio::select! {
+        sealed = &mut seal => panic!("the seal ended with WAL PUTs held: ok {}", sealed.is_ok()),
+        state = seal_applied(&handle, 3) => state,
+    };
+    assert_eq!(durable_absorbed, 0, "the seal stays non-durable");
+    assert!(unsealed, "the applied seal took the pages out of memory");
+    let wal_parked = || engaged.load(std::sync::atomic::Ordering::SeqCst);
+    eventually("the seal's WAL write parks", || wal_parked() > 0).await;
+    let pages = read_three_ways(&engine, &handle, &key, hash).await;
+    let parked = wal_parked();
+    assert_reads_skip_nothing(&pages, parked);
+    store.release_hold();
+    let report = seal.await.expect("the seal completes once WAL PUTs flow");
+    assert_eq!(report.pages, 3, "one page per append sealed");
+    assert_eq!(
+        handle.state.lock().unwrap().durable.absorbed,
+        3,
+        "the seal is durable"
     );
-    for upto in [1, 2] {
-        let gather = absorber.absorb_gather_v2(&[hash]).await.expect("gather");
-        assert_eq!(gather.advanced.len(), 1, "one record per gather");
-        assert_eq!(gather.advanced[0].1, upto);
-    }
+    assert_reads_skip_nothing(&read_three_ways(&engine, &handle, &key, hash).await, parked);
+    engine.begin_close();
+}
+
+/// Wait (10 s at most) until a seal's commit moved `handle`'s applied
+/// boundary to `upto`: (the durable boundary, whether no unsealed page is
+/// left in memory).
+async fn seal_applied(handle: &crate::shard::StreamHandle, upto: u64) -> (u64, bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let durable_absorbed = loop {
-        let (applied, durable) = {
+    loop {
+        let (applied, durable, unsealed) = {
             let st = handle.state.lock().unwrap();
             (
-                (st.applied.absorbed, st.applied.trimmed),
+                st.applied.absorbed,
                 st.durable.absorbed,
+                st.pending.is_empty(),
             )
         };
-        if applied == (2, 1) {
-            break durable;
+        if applied == upto {
+            return (durable, unsealed);
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "the second advance never applied its trim"
+            "the seal's commit never applied: applied boundary {applied}"
         );
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    };
-    assert_eq!(durable_absorbed, 0, "both advances stay non-durable");
-    // The boundary the pre-fix race check read: the Remote-durable tail row.
-    let remote = engine.durable_absorbed(&hash).await.expect("remote tail");
-    assert_eq!(remote.0, 0, "the Remote-durable tail still says absorbed 0");
+    }
+}
 
+/// From 0: an applied keyed read of `k`, an applied unfiltered read and a
+/// durable unfiltered read.
+async fn read_three_ways(
+    engine: &Arc<crate::shard::ShardEngine>,
+    handle: &Arc<crate::shard::StreamHandle>,
+    key: &crate::crypto::StreamKey,
+    hash: [u8; 16],
+) -> [crate::application::read::ReadPage; 3] {
     let read = |selector, deliver| {
-        crate::http::read_merged(&key, &hash, &handle, &engine, 0, selector, 1 << 20, deliver)
+        crate::http::read_merged(key, &hash, handle, engine, 0, selector, 1 << 20, deliver)
     };
-    let keyed = read(Some("k"), crate::shard::Deliver::Applied)
-        .await
-        .expect("applied keyed read");
-    let unfiltered = read(None, crate::shard::Deliver::Applied)
-        .await
-        .expect("applied unfiltered read");
-    let durable = read(None, crate::shard::Deliver::Durable)
-        .await
-        .expect("durable read");
+    [
+        read(Some("k"), crate::shard::Deliver::Applied)
+            .await
+            .expect("applied keyed read"),
+        read(None, crate::shard::Deliver::Applied)
+            .await
+            .expect("applied unfiltered read"),
+        read(None, crate::shard::Deliver::Durable)
+            .await
+            .expect("durable read"),
+    ]
+}
+
+/// The TLA-018-F1 verdict over `read_three_ways`: the keyed read delivers
+/// its consumed prefix whole, the applied reader sees no less than the
+/// durable one, and with the directory published before the commit each
+/// serves exactly records 0, 1 and 2.
+fn assert_reads_skip_nothing(pages: &[crate::application::read::ReadPage; 3], parked: u64) {
+    let [keyed, unfiltered, durable] = pages;
     let offs = |page: &crate::application::read::ReadPage| -> Vec<u64> {
         page.recs.iter().map(|r| r.off).collect()
     };
@@ -638,23 +673,23 @@ async fn applied_keyed_read_never_skips_rows_trimmed_by_a_non_durable_advance() 
             page.durable_resume(0),
         )
     };
-    let parked = engaged.load(std::sync::atomic::Ordering::SeqCst);
     // Every record is key `k`, so the consumed prefix must be delivered whole.
     assert_eq!(
-        offs(&keyed),
+        offs(keyed),
         (0..keyed.scanned_through(0)).collect::<Vec<u64>>(),
         "applied keyed read skipped a durable record: {} (WAL PUTs parked {parked})",
-        observed(&keyed)
+        observed(keyed)
     );
     // "Applied can never see LESS than a durable reader": the unfiltered
     // applied read makes the durable reader's progress, not a stalled partial.
     assert_eq!(
-        offs(&unfiltered),
-        offs(&durable),
+        offs(unfiltered),
+        offs(durable),
         "applied unfiltered read saw less than a durable reader: applied {}; durable {}",
-        observed(&unfiltered),
-        observed(&durable)
+        observed(unfiltered),
+        observed(durable)
     );
-    store.release_hold();
-    engine.begin_close();
+    for page in pages {
+        assert_eq!(offs(page), [0, 1, 2], "exact records: {}", observed(page));
+    }
 }

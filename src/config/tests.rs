@@ -347,15 +347,6 @@ fn default_values_are_pinned() {
     assert_eq!(c.shard.open_deadline, std::time::Duration::from_secs(180));
     assert_eq!(c.shard.open_wait_ms, 10_000);
     assert_eq!(c.shard.unready_exit_after_secs, 300);
-    assert!(!c.history.absorb_pause_initial);
-    assert_eq!(c.history.absorb_global_budget_bytes, 100_859_904);
-    assert_eq!(c.history.absorb_global_gathers, 1);
-    assert_eq!(c.history.cache_bytes, 32 * 1024 * 1024);
-    assert_eq!(
-        c.history.gc_interval,
-        Some(std::time::Duration::from_secs(600))
-    );
-    assert_eq!(c.postings.cache_bytes, 64 * 1024 * 1024);
     assert_eq!(c.sse.feed_ring_bytes, 1024 * 1024);
     assert_eq!(c.sse.feed_total_bytes, 64 * 1024 * 1024);
     assert_eq!(c.sse.feed_project_bytes_raw, None);
@@ -420,98 +411,33 @@ fn the_read_loss_window_is_the_flush_interval_plus_one_drain_cadence() {
     assert_eq!(load_with(&[]).billing.read_loss_window_secs(), 18);
 }
 
-/// The shipped absorber posture, built the way bootstrap builds it
-/// (`RuntimeCaps::production(..).with_config`). The default budget is one
-/// worst-frame build at the 32 MiB body ceiling, (32 MiB + 64 KiB) x3,
-/// the value deploy/profiles/compute-1g.env pins, and admits one
-/// worst-case gather at a time.
-#[test]
-fn shipped_absorber_budget_floors_to_one_worst_frame_gather() {
-    let c = load_with(&[]);
-    let caps = crate::runtime::RuntimeCaps::production("absorber-defaults").with_config(&c);
-    let history = &caps.history;
-    assert_eq!(
-        history.budget.capacity(),
-        100_859_904,
-        "the default budget is one worst-frame build"
-    );
-    assert_eq!(history.worst_frame_transient, 100_859_904);
-    assert_eq!(history.budget.gather_slots(), 1);
-    assert_eq!(history.packing_bytes, 8 * 1024 * 1024);
-    assert_eq!(history.per_gather_reservation_bytes(), 100_859_904);
-    assert_eq!(history.effective_gather_concurrency(), 1);
-}
-
-/// The slot is the bound that holds. A gather reserves its adaptive
-/// estimate (12,779,520 bytes at the floor), not the worst frame, so two
-/// fit the 100,859,904-byte budget; one slot keeps the second waiting,
-/// holding nothing, until the first returns.
-#[tokio::test]
-async fn shipped_absorber_runs_one_gather_at_a_time() {
-    let c = load_with(&[]);
-    let caps = crate::runtime::RuntimeCaps::production("absorber-one-gather").with_config(&c);
-    let budget = &caps.history.budget;
-    let floor = crate::history::worst_frame_transient_for(crate::history::GATHER_PER_STREAM_CAP);
-    assert_eq!(floor, 12_779_520);
-    let first = budget.reserve(floor).await;
-    let mut second = Box::pin(budget.reserve(floor));
-    let waited = tokio::time::timeout(std::time::Duration::from_millis(50), second.as_mut()).await;
-    assert_eq!(
-        (
-            waited.is_err(),
-            budget.inflight(),
-            budget.reserved_bytes(),
-            budget.gather_slots_free()
-        ),
-        (true, 1, 12_779_520, 0),
-        "a second gather must wait for the one slot although its bytes fit"
-    );
-    drop(first);
-    let second = tokio::time::timeout(std::time::Duration::from_secs(5), second)
-        .await
-        .expect("the waiter is granted when the slot returns");
-    assert_eq!(
-        (budget.inflight(), budget.reserved_bytes()),
-        (1, 12_779_520)
-    );
-    drop(second);
-    assert_eq!((budget.inflight(), budget.reserved_bytes()), (0, 0));
-}
-
 /// The fixed memory budgets the boot summary adds up (`bootstrap::run`,
-/// "memory budget"), in bytes, from the shipped defaults: shared cache,
-/// history, postings and telemetry caches, and the absorber budget.
+/// "memory budget"), in bytes, from the shipped defaults: the shared and
+/// telemetry caches (layout 6 has no history cache, postings cache or
+/// absorber budget).
 fn shipped_fixed_memory_budget_bytes(c: &ServerConfig) -> u64 {
-    let caps = crate::runtime::RuntimeCaps::production("memory-defaults").with_config(c);
-    let others = c.history.cache_bytes
-        + c.postings.cache_bytes
-        + c.billing.telemetry_cache_bytes
-        + caps.history.budget.capacity();
-    c.cli.shared_cache_bytes + others as u64
+    c.cli.shared_cache_bytes + c.billing.telemetry_cache_bytes as u64
 }
 
-/// 128 + 32 + 64 + 16 MiB of caches and 100,859,904 bytes of absorber
-/// budget: 352,518,144 bytes, which the boot summary floors to 336 MiB.
+/// 128 + 16 MiB of caches: 150,994,944 bytes, 144 MiB.
 #[test]
-fn shipped_fixed_memory_budgets_sum_to_336_mib() {
+fn shipped_fixed_memory_budgets_sum_to_144_mib() {
     let c = load_with(&[]);
     assert_eq!(c.cli.shared_cache_bytes, 134_217_728);
     let fixed = shipped_fixed_memory_budget_bytes(&c);
-    assert_eq!(fixed, 352_518_144);
-    assert_eq!(fixed / (1024 * 1024), 336);
+    assert_eq!(fixed, 150_994_944);
+    assert_eq!(fixed / (1024 * 1024), 144);
 }
 
 /// The boot check warns when the fixed budgets plus 100 exceed the shed
-/// line. Shipped: 336 + 100 = 436 against 500. With the 192 MiB cache the
-/// sum was 400 and a 500 line sat on the boundary, so the two defaults
-/// belong together.
+/// line. Shipped: 144 + 100 = 244 against 500.
 #[test]
 fn shipped_shed_line_keeps_the_boot_checks_headroom() {
     let c = load_with(&[]);
     assert_eq!(c.cli.admit_rss_shed_mb, 500);
     let fixed_mb = shipped_fixed_memory_budget_bytes(&c) / (1024 * 1024);
-    assert_eq!(fixed_mb + 100, 436);
-    assert_eq!(c.cli.admit_rss_shed_mb - (fixed_mb + 100), 64);
+    assert_eq!(fixed_mb + 100, 244);
+    assert_eq!(c.cli.admit_rss_shed_mb - (fixed_mb + 100), 256);
 }
 
 #[test]
@@ -537,13 +463,6 @@ fn env_overlay_applies_with_legacy_parse_semantics() {
     assert_eq!(c.billing.sweep_maint_resident, 0); // raw; floored at the use site
     assert_eq!(c.scaler.hot_pct, 0.9);
     assert!(c.fleet.allow_http_peers);
-
-    // The retired name is not read: the sweep keeps its default.
-    let c = load_with(&[("HISTORY_GC_MAX_INTERVAL_SECS", "42")]);
-    assert_eq!(
-        c.history.gc_interval,
-        Some(std::time::Duration::from_secs(600))
-    );
 }
 
 #[test]
@@ -603,18 +522,8 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
     ("compactor-poll-ms", "COMPACTOR_POLL_MS", "2500"),
     ("compactor-max-concurrent", "COMPACTOR_MAX_CONCURRENT", "1"),
     ("manifest-poll-ms", "MANIFEST_POLL_MS", "2000"),
-    ("trim-per-op", "TRIM_PER_OP", "8192"),
-    ("trim-global-budget", "TRIM_GLOBAL_BUDGET", "65536"),
-    ("absorb-bytes", "ABSORB_BYTES", "4194304"),
-    ("absorb-age-secs", "ABSORB_AGE_SECS", "60"),
     ("handle-idle-evict-secs", "HANDLE_IDLE_EVICT_SECS", "600"),
     ("handle-max-resident", "HANDLE_MAX_RESIDENT", "65536"),
-    (
-        "absorb-gather-max-bytes",
-        "ABSORB_GATHER_MAX_BYTES",
-        "8388608",
-    ),
-    ("absorb-read-par", "ABSORB_READ_PAR", "8"),
     ("conformance-default-key", "", ""),
     ("auth-token", "AUTH_TOKEN", ""),
     ("streams-auth-mode", "STREAMS_AUTH_MODE", "off"),
@@ -971,8 +880,8 @@ fn the_shared_cells_load_working_set_leaves_room_under_the_shed_line() {
     const HEADROOM_MIB: u64 = 100;
     let c = shared_cell_profile(&[("SLATE_S3_ENDPOINT", "http://127.0.0.1:1")]);
     let mib = 1u64 << 20;
-    let caches = c.cli.shared_cache_bytes
-        + (c.history.cache_bytes + c.billing.telemetry_cache_bytes + c.cli.tail_ring_bytes) as u64;
+    let caches =
+        c.cli.shared_cache_bytes + (c.billing.telemetry_cache_bytes + c.cli.tail_ring_bytes) as u64;
     let plateau = NOT_CACHE_MIB + caches * 21 / 10 / mib;
     assert!(
         plateau + HEADROOM_MIB <= c.cli.admit_rss_shed_mb,

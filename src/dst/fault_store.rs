@@ -154,8 +154,6 @@ struct Hold {
 enum HoldPaths {
     /// Under this prefix: one DB's WAL directory, say.
     Under(String),
-    /// Containing this segment: every shard's history2 tables, say.
-    Containing(String),
 }
 
 impl Hold {
@@ -164,7 +162,6 @@ impl Hold {
             && self.class == class
             && self.paths.as_ref().is_none_or(|paths| match paths {
                 HoldPaths::Under(prefix) => path.starts_with(prefix.as_str()),
-                HoldPaths::Containing(segment) => path.contains(segment.as_str()),
             })
     }
 }
@@ -404,18 +401,6 @@ impl FaultStore {
             Some(HoldPaths::Under(under.to_string())),
             max_parked,
         )
-    }
-
-    /// [`hold_class`](Self::hold_class) for paths containing `segment` only.
-    pub(crate) fn hold_class_containing(
-        &self,
-        op: StoreOp,
-        class: ObjClass,
-        segment: &str,
-        max_parked: u64,
-    ) -> Arc<AtomicU64> {
-        let paths = HoldPaths::Containing(segment.to_string());
-        self.hold(op, class, Some(paths), max_parked)
     }
 
     fn hold(

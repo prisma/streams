@@ -1,43 +1,74 @@
 //! R12: corrupt storage refuses to open without overwriting records.
 #![cfg(test)]
 use super::*;
-use crate::crypto_page::shard_page_key;
+use crate::billing::stored_meta::UsageCounters;
+use crate::spill::pending::pending_key;
 
+/// The v4 tail contract (layout 6): version 4 only, exactly its fields
+/// and seq, optionally followed by whole usage counters; flag bit 0
+/// (closed) is the only defined flag; a boundary past `next` is refused.
 #[test]
 fn r12_supported_tail_versions_and_extensions() {
     let tail = TailFields {
         next: 9,
         absorbed: 4,
-        trimmed: 2,
-        trim_safe_to: 3,
         seq: Some("lane".into()),
+        unabsorbed_bytes: 77,
         ..Default::default()
     };
-    let full = encode_tail(&tail);
-    let base = 44 + 4;
-    for extension in [0, 16, 24, 32] {
-        let decoded = stored_tail(&full[..base + extension]).unwrap();
-        assert_eq!(decoded.next, 9);
+    let base = encode_tail(&tail);
+    assert_eq!(base.len(), 60 + 4);
+    let billed = encode_tail(&TailFields {
+        usage: Some(UsageCounters {
+            usage_version: 300,
+            ingest_records_total: 2,
+            ..Default::default()
+        }),
+        ..tail
+    });
+    for accepted in [&base, &billed] {
+        let decoded = stored_tail(accepted).unwrap();
+        assert_eq!(
+            (
+                decoded.next,
+                decoded.absorbed,
+                decoded.unabsorbed_bytes,
+                decoded.closed
+            ),
+            (9, 4, 77, false)
+        );
         assert_eq!(decoded.seq.as_deref(), Some("lane"));
     }
-    let mut v2 = full.clone();
-    v2[0] = 2;
-    v2.remove(41); // v2 has no flags
-    assert_eq!(stored_tail(&v2[..43 + 4]).unwrap().next, 9);
-    for len in 0..full.len() {
-        if ![base, base + 16, base + 24].contains(&len) {
-            assert!(stored_tail(&full[..len]).is_err(), "len={len}");
-        }
+    assert_eq!(stored_tail(&base).unwrap().usage, None);
+    assert_eq!(
+        stored_tail(&billed)
+            .unwrap()
+            .usage
+            .map(|u| (u.usage_version, u.ingest_records_total)),
+        Some((300, 2))
+    );
+    for len in (0..billed.len()).filter(|len| *len != base.len()) {
+        assert!(stored_tail(&billed[..len]).is_err(), "len={len}");
     }
-    let mut invalid = full.clone();
-    invalid[0] = 99;
-    assert!(stored_tail(&invalid).is_err());
-    let mut invalid = full.clone();
-    invalid[41] = 4;
-    assert!(stored_tail(&invalid).is_err());
-    let mut invalid = full;
-    invalid[25..33].copy_from_slice(&10u64.to_le_bytes());
-    assert!(stored_tail(&invalid).is_err());
+    let mut trailing = billed;
+    trailing.push(0);
+    assert!(stored_tail(&trailing).is_err(), "a byte past the counters");
+    for version in [0, 2, 3, 5, 99] {
+        let mut other = base.clone();
+        other[0] = version;
+        assert!(stored_tail(&other).is_err(), "version={version}");
+    }
+    let mut closed = base.clone();
+    closed[33] = 1;
+    assert!(stored_tail(&closed).unwrap().closed);
+    for bit in 1..8 {
+        let mut flags = base.clone();
+        flags[33] = 1 << bit;
+        assert!(stored_tail(&flags).is_err(), "flag bit {bit}");
+    }
+    let mut ahead = base;
+    ahead[25..33].copy_from_slice(&10u64.to_le_bytes());
+    assert!(stored_tail(&ahead).is_err());
 }
 
 #[test]
@@ -54,25 +85,18 @@ fn r12_byte_compatibility_does_not_bypass_stored_state_validation() {
     let tail = TailFields {
         next: 9,
         absorbed: 4,
-        trimmed: 2,
-        trim_safe_to: 3,
         ..Default::default()
     };
-    for version in [2, 3] {
-        let mut encoded = encode_tail(&tail);
-        if version == 2 {
-            encoded[0] = 2;
-            encoded.remove(41);
-        }
-        encoded.extend_from_slice(&[0xee; 7]);
-        assert_eq!(stored_tail(&encoded).unwrap().next, tail.next);
-        for (at, value) in [(25, 10u64), (33, 5), (encoded.len() - 23, 5)] {
-            let mut inconsistent = encoded.clone();
-            inconsistent[at..at + 8].copy_from_slice(&value.to_le_bytes());
-            assert!(decode_tail(&inconsistent).is_some(), "byte layout is valid");
-            assert!(stored_tail(&inconsistent).is_err(), "state is invalid");
-        }
-    }
+    let encoded = encode_tail(&tail);
+    assert_eq!(stored_tail(&encoded).unwrap().next, tail.next);
+    let mut inconsistent = encoded;
+    inconsistent[25..33].copy_from_slice(&10u64.to_le_bytes());
+    assert_eq!(
+        decode_tail(&inconsistent).map(|t| (t.next, t.absorbed)),
+        Some((9, 10)),
+        "byte layout is valid"
+    );
+    assert!(stored_tail(&inconsistent).is_err(), "state is invalid");
 }
 
 #[expect(
@@ -82,32 +106,29 @@ fn r12_byte_compatibility_does_not_bypass_stored_state_validation() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r12_corrupt_tail_refuses_open_without_overwriting_records() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-    let db = Arc::new(Db::builder("r12", store.clone()).build().await.unwrap());
+    let db = Arc::new(
+        crate::keyspace::db_builder("r12", store.clone())
+            .build()
+            .await
+            .unwrap(),
+    );
     let hash = [12; 16];
     let mut wb = WriteBatch::new();
-    wb.put(shard_page_key(&hash, 0), b"retained ciphertext");
+    wb.put(pending_key(&hash), b"retained ciphertext");
     wb.put(tail_key(&hash), b"broken tail");
     db.write(wb).await.unwrap().await_durable().await.unwrap();
-    let (tx, _rx) = mpsc::channel(1);
     let engine = ShardEngine::start(
         "r12".into(),
         db.clone(),
         store,
         ShardConfig::default(),
-        tx,
         None,
         ShardMaintenance::default(),
     );
     assert!(engine.stream_handle(hash).await.is_err());
-    assert!(engine.tail_fields(&hash).await.is_err());
-    assert!(engine.durable_absorbed(&hash).await.is_err());
     assert!(engine.seed_fork_tail(hash, [1; 16], 0).await.is_err());
     assert_eq!(
-        db.get(shard_page_key(&hash, 0))
-            .await
-            .unwrap()
-            .unwrap()
-            .as_ref(),
+        db.get(pending_key(&hash)).await.unwrap().unwrap().as_ref(),
         b"retained ciphertext"
     );
     assert_eq!(
@@ -132,14 +153,17 @@ fn stored_producer_row(epoch: u64, seq: u64, offset: u64, hash: [u8; 16]) -> Vec
 /// An engine over a fresh store, for loading lane rows planted directly.
 async fn lane_engine(name: &str) -> (Arc<ShardEngine>, Arc<Db>) {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-    let db = Arc::new(Db::builder(name, store.clone()).build().await.unwrap());
-    let (tx, _rx) = mpsc::channel(1);
+    let db = Arc::new(
+        crate::keyspace::db_builder(name, store.clone())
+            .build()
+            .await
+            .unwrap(),
+    );
     let engine = ShardEngine::start(
         name.into(),
         db.clone(),
         store,
         ShardConfig::default(),
-        tx,
         None,
         ShardMaintenance::default(),
     );
@@ -300,8 +324,6 @@ fn r53_the_tail_copies_a_stream_seq_only_while_its_length_fits() {
     let tail = |seq: String| TailFields {
         next: 9,
         absorbed: 4,
-        trimmed: 2,
-        trim_safe_to: 3,
         route: [0xA5; 16],
         unabsorbed_bytes: 77,
         seq: Some(seq),
@@ -313,14 +335,8 @@ fn r53_the_tail_copies_a_stream_seq_only_while_its_length_fits() {
     let past = stored_tail(&encode_tail(&tail("s".repeat(usize::from(u16::MAX) + 1)))).unwrap();
     assert_eq!(past.seq, None, "a copy past the u16 length is not written");
     assert_eq!(
-        (
-            past.next,
-            past.absorbed,
-            past.trim_safe_to,
-            past.route,
-            past.unabsorbed_bytes
-        ),
-        (9, 4, 3, [0xA5; 16], 77),
+        (past.next, past.absorbed, past.route, past.unabsorbed_bytes),
+        (9, 4, [0xA5; 16], 77),
         "every field decodes where it was written"
     );
 }

@@ -27,7 +27,7 @@ fn clear_counts(s: &mut StateRow) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_roster_holds_a_queue_while_any_one_count_or_its_debt_is_pending() {
-    let (e, db, _absorb, c) = clocked("nq-roster-counts", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-roster-counts", QueueConfig::default()).await;
     assert_eq!(
         roster(&db).await,
         None,
@@ -69,7 +69,7 @@ async fn the_roster_holds_a_queue_while_any_one_count_or_its_debt_is_pending() {
 async fn a_sweep_that_moves_nothing_leaves_the_state_row_untouched() {
     // On the wall clock: a sweep that moved something would advance the
     // queue clock to now.
-    let (e, db, _absorb) = super::engine("nq-idle-sweep").await;
+    let (e, db) = super::engine("nq-idle-sweep").await;
     super::create(&e, QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
     let before = db.get(keys::state(&HASH)).await.unwrap();
@@ -80,7 +80,7 @@ async fn a_sweep_that_moves_nothing_leaves_the_state_row_untouched() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sweep_reports_the_exact_next_deadline_and_parks_the_roster_there() {
-    let (e, db, _absorb, c) = clocked("nq-next-deadline", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-next-deadline", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
     assert_eq!(
         swept(&e).await.0,
@@ -110,7 +110,7 @@ async fn a_sweep_reports_the_exact_next_deadline_and_parks_the_roster_there() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_subscribed_queue_with_nothing_due_looks_again_in_a_minute() {
-    let (e, db, _absorb, c) = clocked("nq-next-notify", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-next-notify", QueueConfig::default()).await;
     op(
         &e,
         NqOp::SetWakeup {
@@ -137,7 +137,7 @@ async fn a_subscribed_queue_with_nothing_due_looks_again_in_a_minute() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_wake_up_fires_at_its_backoff_exactly_and_doubles_it_while_unanswered() {
-    let (e, db, _absorb, c) = clocked("nq-wake-backoff", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-wake-backoff", QueueConfig::default()).await;
     let url = Some("https://example.com/w".to_owned());
     let subscribe = NqOp::SetWakeup {
         url,
@@ -178,7 +178,7 @@ async fn a_wake_up_fires_at_its_backoff_exactly_and_doubles_it_while_unanswered(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_untaken_message_enters_the_gap_at_its_retention_end_exactly() {
-    let (e, db, _absorb, c) = clocked("nq-untaken-expiry", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-untaken-expiry", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
     set_clock(&db, c + RETENTION - 1).await;
     assert_eq!(swept(&e).await.0, Some(c + RETENTION));
@@ -200,7 +200,7 @@ async fn an_untaken_message_enters_the_gap_at_its_retention_end_exactly() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_message_is_discarded_at_its_failure_expiry_exactly() {
-    let (e, db, _absorb, c) = clocked("nq-failure-expiry", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-failure-expiry", QueueConfig::default()).await;
     let expiry = c + QueueConfig::default().failure_retention_ms;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
     let d = claim(&e, 1).await;
@@ -224,7 +224,7 @@ async fn a_failed_message_is_discarded_at_its_failure_expiry_exactly() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dedup_entry_is_deleted_at_its_window_end_exactly_and_a_younger_one_stays() {
-    let (e, db, _absorb, c) = clocked("nq-dedup-expiry", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-dedup-expiry", QueueConfig::default()).await;
     let tagged = |tag: u8| SendMessage {
         dedup_tag: Some([tag; 16]),
         ..msg("m")
@@ -267,7 +267,7 @@ async fn failures(e: &super::ShardEngine) -> Vec<(u64, &'static str)> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_retry_due_at_its_cycle_deadline_fails_in_a_sweep_at_that_millisecond() {
-    let (e, db, _absorb, c) = clocked("nq-retry-due-at-cycle", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-retry-due-at-cycle", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
     let d = claim(&e, 1).await;
     let at_deadline = SettleKind::Retry {
@@ -294,7 +294,7 @@ async fn a_retry_due_at_its_cycle_deadline_fails_in_a_sweep_at_that_millisecond(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sweep_that_runs_after_a_retrys_cycle_deadline_still_fails_it() {
-    let (e, db, _absorb, c) = clocked("nq-retry-late-sweep", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-retry-late-sweep", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
     let d = claim(&e, 1).await;
     let later = SettleKind::Retry {
@@ -319,7 +319,7 @@ async fn a_sweep_that_runs_after_a_retrys_cycle_deadline_still_fails_it() {
 async fn a_sweep_that_fills_its_step_looks_again_in_a_second() {
     let mut cfg = QueueConfig::default();
     cfg.group.max_batch = 1_000;
-    let (e, db, _absorb, c) = clocked("nq-sweep-step", cfg).await;
+    let (e, db, c) = clocked("nq-sweep-step", cfg).await;
     let n = crate::native_queue::SWEEP_STEP;
     op(&e, send_op((0..n).map(|_| msg("m")).collect()))
         .await
@@ -357,7 +357,7 @@ async fn a_sweep_that_fills_its_step_looks_again_in_a_second() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dedup_and_retention_sweeps_that_fill_their_step_look_again_in_a_second() {
-    let (e, db, _absorb, c) = clocked("nq-sweep-steps", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-sweep-steps", QueueConfig::default()).await;
     let n = crate::native_queue::SWEEP_STEP;
     let tagged = (0..n).map(|i| SendMessage {
         dedup_tag: Some(u128::try_from(i).unwrap().to_be_bytes()),

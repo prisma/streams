@@ -14,26 +14,20 @@ import subprocess
 from common import ROOT, write_json
 
 PREFIX = '#![allow(dead_code, reason = "compiler fixture; compile both positive and negative cases; functions are type-checked without execution")]\n'
-IMPORTS = '''use crate::postings::{ValidatedRuns as Runs, RunWindow as Window};
-use crate::crypto_page::CheckedPage as Page;
+IMPORTS = '''use crate::crypto_page::CheckedPage as Page;
+use crate::postings::RunWindow as Window;
 use crate::application::read_batch::{PlainBatch as Batch, PlainPayload as Payload};
 '''
 POSITIVE = '''
 fn controls(page: &Page, batch: &Batch, payload: &Payload) {
     let _last = page.last(); let _records = batch.iter();
     let _bytes = payload.as_ref();
-    let owner = Runs::new(Vec::new()).unwrap();
-    let window = Window::new(owner, 0, 0); assert_eq!(window.iter().count(), 0);
 }
 fn released_before_await(window: Window) -> impl std::future::Future<Output=()> { drop(window); async { tokio::task::yield_now().await; } }
 '''
 CASES = [
  ('page_construct', 'E0451', 'fn page_construct() { let _x = Page { raw:bytes::Bytes::new(), header_len:0, sealed_from:0, nonce:[0; 12], ver:0, first:0, last:0, count:1, ts_ms:0, key_version:0, routing_key:Box::from("") }; }'),
  ('page_mutate', 'E0616', 'fn page_mutate(x: &mut Page) { x.last = 0; }'),
- ('runs_construct', 'E0423', 'fn runs_construct() { let _x = Runs(std::sync::Arc::from([])); }'),
- ('runs_mutate', 'E0616', 'fn runs_mutate(x: &mut Runs) { x.0 = std::sync::Arc::from([]); }'),
- ('window_construct', 'E0451', 'fn window_construct() { let _x = Window { owner:Runs::empty(), indices:0..0, from:0, upto:0 }; }'),
- ('window_mutate', 'E0616', 'fn window_mutate(x: &mut Window) { x.indices = 0..0; }'),
  ('batch_construct', 'E0451', 'fn batch_construct(x: Batch) { let _x = Batch { records:Vec::new(), ..x }; }'),
  ('batch_mutate', 'E0616', 'fn batch_mutate(x: &mut Batch) { x.records.clear(); }'),
  ('payload_construct', 'E0451', 'fn payload_construct() { let _x = Payload { owner:bytes::Bytes::new(), range:0..0 }; }'),

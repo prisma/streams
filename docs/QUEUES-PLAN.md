@@ -13,7 +13,7 @@ references (§) without a file name point into the design.
 | Q0 Storage feasibility | §2: storage rows and guards, the collection pass, churn beside a co-tenant on Tigris, timer rotation, cold open, the pricing preliminary | 9-11 days |
 | Q1 Engine | queue storage mode and every guarded consumer, the tail flag, queue clock, pages and rows, cursor, delivery rows and indexes, ready cache, claim, settle, backoff and retention rules, `maxInFlight`, `rate`, pause, settle bucket | 22-30 days |
 | Q2 Queue resource | `kind: queue` and refusals, routes for `default`, scopes and clamps, dedup, scheduled messages, failed view, redrive, republish, discard, cancel, peek, audit, admission budget and redrive admission, reservations, the `deleting` fence | 10-14 days |
-| Q3 Sweep and reclamation | the sweep and queue roster, gaps and lifetimes, hard expiry under load (1 million deliveries within 2 h under the trim budget while serving 1,000 msg/s), dedup expiry, retirement, deletion, the collection scheduler and trigger policy, queue delete lifecycle, accounting of the three quantities | 19-27 days |
+| Q3 Sweep and reclamation | the sweep and queue roster, gaps and lifetimes, hard expiry under load (1 million deliveries within 2 h under the sweep's step bound while serving 1,000 msg/s), dedup expiry, retirement, deletion, the collection scheduler and trigger policy, queue delete lifecycle, accounting of the three quantities | 19-27 days |
 | Q4 Execution | SDK API and runner, wake-up subscriptions (secrets, egress, re-arming), the bounded-drain handler for Compute and Workers, Workers CI | 12-16 days |
 | Q5 Verification | §4, and the pricing benchmark's decisive run | 13-20 days |
 | Q6 Ordered and named groups (after) | design §6.4, then build; §8.5; stream consumers onto the engine | after design |
@@ -22,7 +22,7 @@ references (§) without a file name point into the design.
 migration. Q1 starts only when Q0 passes. Then Q1 → Q2 → Q3, with Q4 against
 Q2's routes and Q5 alongside.
 
-Costs to plan for: edits to `src/shard/transaction/append.rs`, the absorber,
+Costs to plan for: edits to `src/shard/transaction/append.rs`, the sealer,
 the tail codec and the shard transaction core stale formal receipts (about
 150 min serial per round); new key families go in new modules because
 `src/queue.rs` and `src/product_cursor.rs` are by-path includes; routes live
@@ -80,9 +80,10 @@ every row under a storage hash).
 
 ### 2.2 The co-tenant baseline
 
-The history tier is a separate database (`src/shard.rs:1895-1908`), so the
-stable data a queue pass rewrites is the **shard log's resident set**: about
-10,000 stream tails and their unabsorbed backlog of up to 60 s, with
+Sealed stream pages live in segment objects outside the shard log (layout
+6), so the stable data a queue pass rewrites is the **shard log's resident
+set**: about 10,000 stream tails and their pending rows (unsealed pages, up
+to 45 s old before the age trigger seals them), with
 ordinary Streams appends at Layer B's compliant rates driving the shard near
 its working memory. That set is fixed before the runs and identical across
 arms; rewrite amplification is measured against it.
@@ -164,9 +165,9 @@ acceptance are the owner's).
   queue not stopping other tenants, an unconsumed queue freeing its budget,
   hard expiry fencing a long-extended lease, explicit retry past retention,
   dedup expiry on a quiet queue, wake-up re-arm after drain, restart and
-  move) and the storage-mode guards: an absorber tick gathers nothing from a
-  queue; a queue tail is never a repair candidate; queue traffic does not
-  mask a stalled absorber; a cold queue shard is not absorption debt; a
+  move) and the storage-mode guards: a seal never takes a queue page; queue
+  traffic does not mask a stalled sealer; a cold queue shard is not
+  unsealed debt; a
   deleted queue's rows are gone after restart and move; a queue roster
   resumes the sweep on a new owner; double-retirement attempts move
   accounting once; a redriven message retries after the original retention
@@ -195,9 +196,9 @@ from the design text or are not yet built, each to be closed or ratified:
 
 - **Persisted queue kind**: the stream descriptor's `kind: queue`, not a tail
   flag. Queue mode needs no tail bit: every queue batch keeps `absorbed =
-  next` and never raises `trim_safe_to`, so the dirty index, absorber,
-  repair, backpressure and trim consumers never see a queue (§5.6's
-  invariants hold by construction; D19 resolved without a format change).
+  next`, and the sealer skips queue streams, so the sealer and the
+  maintenance backpressure never see a queue (§5.6's invariants hold by
+  construction; D19 resolved without a format change).
 - **Retirement and deletion coincide** for every per-message path (ack,
   discard, cancel, expiry, failure expiry): the deleting batch is bounded by
   the operation, records the debt and needs no retired index `X`.

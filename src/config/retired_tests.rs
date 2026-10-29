@@ -7,14 +7,13 @@ use super::{CliArgs, Environment, MapEnvironment, ProcessEnvironment, ServerConf
 use clap::Parser;
 
 /// Every value a retired name used to set, read where the server reads it:
-/// the GC options and the L0 caps the shard databases open with, the
-/// history sweep, and the gather thresholds `bootstrap::run` takes (the
+/// the GC options and the L0 caps the shard databases open with, and the
+/// gather thresholds `bootstrap::run` takes (the
 /// constants of `EngineConfig`; no field carries them). The assumed
 /// capacity of the scaler has no value to read: its field is gone with
 /// the cap the boot line printed.
 type RetiredValues = (
     ((Option<u64>, u64), (Option<u64>, u64), [Option<u64>; 3]),
-    Option<u64>,
     (usize, usize),
     (u32, u64),
 );
@@ -37,7 +36,6 @@ fn retired_values(config: &ServerConfig) -> RetiredValues {
             ]
             .map(|o| secs(o).0),
         ),
-        config.history.gc_interval.map(|d| d.as_secs()),
         (settings.l0_max_ssts, settings.l0_max_ssts_per_key),
         (
             super::EngineConfig::WAL_GATHER_SKIP_REQS,
@@ -63,7 +61,6 @@ fn retired_names_helper() {
         retired_values(&config),
         (
             ((Some(30), 60), (Some(30), 120), [Some(600); 3]),
-            Some(600),
             (48, 48),
             (32, 1_048_576),
         ),
@@ -160,13 +157,17 @@ fn overlay_names_nothing_set_are_not_read() {
         ("SSE_H1_MAX_BUF", "4096"),
     ]);
     assert_eq!(
+        c.redacted_summary(),
+        load_with(&[]).redacted_summary(),
+        "HISTORY_GC_INTERVAL_SECS changes nothing"
+    );
+    assert_eq!(
         (
-            c.history.gc_interval.map(|d| d.as_secs()),
             c.http.tail_max_bytes,
             c.http.h1_max_buf,
             c.validate().map(|_| ()).map_err(|e| e.to_string()),
         ),
-        (Some(600), 1024 * 1024, 64 * 1024, Ok(()))
+        (1024 * 1024, 64 * 1024, Ok(()))
     );
 }
 
@@ -206,33 +207,4 @@ fn required_billing_cannot_be_loaded_with_ingest_unmetered() {
     let held = required(&[("BILLING_METER", "off")]);
     assert!(held.cli.billing_required());
     assert_eq!(held, required(&[]));
-}
-
-/// The history databases of both layouts open with the embedded compactor,
-/// on the worker options the engine resolved (one compaction at a time,
-/// polled every 2.5 s, 32 MiB output SSTs), and with L0 caps of 64, whatever
-/// `HISTORY_COMPACTOR` holds: read on the settings the builders receive, not
-/// on the configuration value.
-#[test]
-fn the_history_compactor_cannot_be_switched_off() {
-    let c = load_with(&[("HISTORY_COMPACTOR", "off")]);
-    let workers = c.engine.compactor_options();
-    let opened_with = |s: slatedb::config::Settings| {
-        let compactor = s.compactor_options.map(|o| {
-            (
-                o.poll_interval.as_millis(),
-                o.max_concurrent_compactions,
-                o.worker.map(|w| w.max_sst_size),
-            )
-        });
-        (s.l0_max_ssts, s.l0_max_ssts_per_key, compactor)
-    };
-    let expected = (64, 64, Some((2500, 1, Some(32 * 1024 * 1024))));
-    assert_eq!(
-        (
-            opened_with(crate::history::history_settings(&c.history, &workers)),
-            opened_with(crate::history::history2_settings(&c.history, &workers)),
-        ),
-        (expected, expected)
-    );
 }

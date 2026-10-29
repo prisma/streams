@@ -18,6 +18,7 @@ mod overlay;
 mod prepare;
 mod publish;
 mod queue;
+mod seal;
 use overlay::StreamOverlay;
 #[derive(Default)]
 struct GroupStats {
@@ -26,13 +27,11 @@ struct GroupStats {
 }
 pub(super) struct CommitTransaction<'a> {
     engine: &'a ShardEngine,
-    cfg: &'a ShardConfig,
     batch: WriteBatch,
     effects: DurableEffects,
     streams: HashMap<[u8; 16], StreamOverlay>,
     billing_rows: HashMap<[u8; 16], Option<crate::billing::SegmentBillingMetaV1>>,
     stats: GroupStats,
-    trim_budget: u64,
     extra_writes: bool,
     changed: bool,
     accounting_diverged: Option<String>,
@@ -43,16 +42,13 @@ pub(super) struct CommitTransaction<'a> {
     reqs: u32,
     #[cfg(test)]
     client_append_hashes: std::collections::HashSet<[u8; 16]>,
-    #[cfg(test)]
-    group_has_absorbed: bool,
 }
 impl<'a> CommitTransaction<'a> {
     #[expect(
         clippy::cast_possible_truncation,
         reason = "CommitTransaction::run; the queue wait is clamped to u32::MAX and the request count is bounded by the group the committer drained; checked conversions would only restate those bounds"
     )]
-    pub(super) async fn run(engine: &'a ShardEngine, ops: Vec<CommitOp>, cfg: &'a ShardConfig) {
-        let ops = Self::expand(engine, ops);
+    pub(super) async fn run(engine: &'a ShardEngine, ops: Vec<CommitOp>) {
         if engine.is_closed() {
             for op in ops {
                 Self::reject_op(op, AppendErr::Moved);
@@ -82,13 +78,11 @@ impl<'a> CommitTransaction<'a> {
             .unwrap_or(0);
         let mut transaction = Self {
             engine,
-            cfg,
             batch: WriteBatch::new(),
             effects: DurableEffects::default(),
             streams: HashMap::new(),
             billing_rows,
             stats: GroupStats::default(),
-            trim_budget: cfg.trim_global_budget,
             extra_writes: false,
             changed: false,
             accounting_diverged: None,
@@ -99,8 +93,6 @@ impl<'a> CommitTransaction<'a> {
             reqs: ops.len() as u32,
             #[cfg(test)]
             client_append_hashes: Default::default(),
-            #[cfg(test)]
-            group_has_absorbed: false,
         };
         for op in ops {
             transaction.stage(op).await;
@@ -138,18 +130,20 @@ impl<'a> CommitTransaction<'a> {
         reason = "CommitTransaction::stage; the hash arms stay separate so the mutation harness never selects the whole stage as one mutant, whose blank form hangs every waiting reply instead of failing a test; folding the arms would put the dispatch under a mutant the harness cannot bound"
     )]
     async fn stage(&mut self, op: CommitOp) {
+        let op = match op {
+            CommitOp::Seal(seal) => return self.stage_seal(*seal).await,
+            op => op,
+        };
         let hash = match &op {
             CommitOp::Append(r) => r.hash,
             CommitOp::Close(r) => r.hash,
             CommitOp::SealFence(r) => r.hash,
-            CommitOp::Absorbed { hash, .. } => *hash,
             CommitOp::Queue { hash, .. } => *hash,
             CommitOp::NativeQueue { hash, .. } => *hash,
-            CommitOp::TrimStep { hash } => *hash,
             CommitOp::UsageAck { hash, .. } => *hash,
             CommitOp::BillingClose { hash, .. } => *hash,
             CommitOp::BillingRetained { hash, .. } => *hash,
-            CommitOp::AbsorbedBatch { .. } | CommitOp::TrimTick => return,
+            CommitOp::Seal(_) => return,
         };
 
         // Temporarily take one overlay to stage through the owner without
@@ -183,14 +177,9 @@ impl<'a> CommitTransaction<'a> {
             CommitOp::BillingRetained { retained, resp, .. } => {
                 self.billing_retained_answered(&mut local, retained, resp)
             }
-            CommitOp::Absorbed {
-                upto, bytes, v2, ..
-            } => self.absorbed(&mut local, hash, upto, bytes, v2),
-            CommitOp::TrimStep { .. } => self.trim(&mut local, hash),
-            CommitOp::AbsorbedBatch { .. } | CommitOp::TrimTick => {
-                unreachable!("expanded before staging")
-            }
+            CommitOp::Seal(_) => {}
         }
+        local.frames.seal_only = false;
         self.streams.insert(hash, local);
     }
     /// A rejected group backs no fence it staged (a failed write retires the

@@ -5,9 +5,8 @@
 //! (`BillingReply`).
 #[cfg(test)]
 use super::billing_read_faults;
-use super::{
-    AppendAck, AppendErr, CommitOp, DurableEffects, ShardEngine, TailFields, decode_cursor,
-};
+use super::layout::StaticBilling;
+use super::{AppendAck, AppendErr, CommitOp, DurableEffects, ShardEngine, TailFields};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::oneshot;
 
@@ -18,83 +17,47 @@ use tokio::sync::oneshot;
 pub(crate) static BILLING_OPS_REFUSED: AtomicU64 = AtomicU64::new(0);
 
 impl ShardEngine {
-    /// Usage-dirty index scan (§6.3): every segment whose durable
-    /// billing state has versions `_usage` has not acknowledged.
-    /// (hash, unacked version). One prefix scan; the drainer's
-    /// discovery path after restart or ownership move.
+    /// The usage dirty set whole (§6.3, layout 6): every segment whose
+    /// usage counters hold versions `_usage` has not acknowledged, as
+    /// (hash, unacked version).
     #[cfg(test)]
     pub(crate) async fn usage_dirty_scan(&self) -> anyhow::Result<Vec<([u8; 16], u64)>> {
-        let mut pfx = Vec::with_capacity(18);
-        pfx.extend_from_slice(&crate::billing::USAGE_DIRTY_SENTINEL);
-        pfx.push(b'U');
-        let mut out = Vec::new();
-        let mut iter = self.db.scan_prefix(&pfx[..], ..).await?;
-        let at = crate::keyspace::SENTINEL_HASH_AT;
-        while let Some(kv) = iter.next().await? {
-            if kv.key.len() != at + 16 || kv.value.len() < 8 {
-                continue;
-            }
-            let mut h = [0u8; 16];
-            h.copy_from_slice(&kv.key[at..at + 16]);
-            let v = u64::from_le_bytes(kv.value[..8].try_into().unwrap());
-            out.push((h, v));
-        }
-        Ok(out)
+        self.seal_ready().await?;
+        Ok(self.layout.usage_page(None, usize::MAX).0)
     }
 
-    /// Presence probe for residency decisions: at most one row from
-    /// each outbox index, including orphaned final rows.
+    /// Presence probe for residency decisions: the usage dirty set, then
+    /// at most one month-final row, including orphaned ones.
     pub(crate) async fn has_billing_debt(&self) -> anyhow::Result<bool> {
-        for tag in *b"UV" {
-            let mut prefix = crate::billing::USAGE_DIRTY_SENTINEL.to_vec();
-            prefix.push(tag);
-            if self
-                .db
-                .scan_prefix(prefix, ..)
-                .await?
-                .next()
-                .await?
-                .is_some()
-            {
-                return Ok(true);
-            }
+        self.seal_ready().await?;
+        if self.layout.usage_dirty() {
+            return Ok(true);
         }
-        Ok(false)
+        let mut prefix = crate::billing::USAGE_DIRTY_SENTINEL.to_vec();
+        prefix.push(b'V');
+        Ok(self
+            .db
+            .scan_prefix(prefix, ..)
+            .await?
+            .next()
+            .await?
+            .is_some())
     }
 
-    /// One bounded page of the dirty index, with an exclusive identity
-    /// continuation. Only the caller's finite page is materialized.
+    /// One bounded page of the usage dirty set, with an exclusive identity
+    /// continuation, and whether more follow.
     pub(crate) async fn usage_dirty_page(
         &self,
         after: Option<[u8; 16]>,
         limit: usize,
     ) -> anyhow::Result<(Vec<([u8; 16], u64)>, bool)> {
-        use std::ops::Bound;
         anyhow::ensure!(limit > 0, "dirty page limit must be positive");
-        let mut prefix = crate::billing::USAGE_DIRTY_SENTINEL.to_vec();
-        prefix.push(b'U');
-        let range = (
-            after.map_or(Bound::Unbounded, |h| Bound::Excluded(h.to_vec())),
-            Bound::<Vec<u8>>::Unbounded,
-        );
-        let mut scan = self.db.scan_prefix(&prefix, range).await?;
-        let mut rows = Vec::new();
-        while let Some(kv) = scan.next().await? {
-            if rows.len() == limit {
-                return Ok((rows, true));
-            }
-            let hash: [u8; 16] = kv
-                .key
-                .get(crate::keyspace::SENTINEL_HASH_AT..)
-                .ok_or_else(|| anyhow::anyhow!("invalid usage dirty key"))?
-                .try_into()?;
-            rows.push((hash, decode_cursor(&kv.value)?));
-        }
-        Ok((rows, false))
+        self.seal_ready().await?;
+        Ok(self.layout.usage_page(after, limit))
     }
 
-    /// Bounded finals for a single dirty segment. More finals keep its
-    /// dirty marker alive even after this page's exact keys are acked.
+    /// Bounded finals for a single dirty segment. More finals keep it in the
+    /// usage dirty set even after this page's exact keys are acked.
     pub(crate) async fn usage_month_finals_page(
         &self,
         hash: [u8; 16],
@@ -115,7 +78,14 @@ impl ShardEngine {
         Ok((rows, false))
     }
 
-    /// Missing means never billed. Read errors and invalid rows remain errors.
+    /// The billing meta the usage drain, the tombstone walk and the debt
+    /// pass meter (layout 6, f3): the segment's **durable** static meta and
+    /// usage counters, never a group's applied but not yet durable state (a
+    /// write that fails retires the engine, and a version it named must not
+    /// reach the ledger). A resident handle answers from its durable tail; a
+    /// stream with no resident handle is read from the store at remote
+    /// durability, without loading a handle. Missing means never billed;
+    /// read errors and invalid rows remain errors.
     pub(crate) async fn load_billing_meta(
         &self,
         hash: [u8; 16],
@@ -131,28 +101,88 @@ impl ShardEngine {
         {
             anyhow::bail!("injected billing metadata read failure");
         }
-        self.db
-            .get(crate::billing::billing_meta_key(&hash))
+        let resident = self
+            .streams
+            .lock()
+            .ok()
+            .and_then(|map| map.get(&hash).cloned());
+        if let Some(StaticBilling::Read(meta)) =
+            resident.map(|handle| billing_view(&handle, Visibility::Durable))
+        {
+            return Ok(meta);
+        }
+        let durable = slatedb::config::ReadOptions {
+            durability_filter: slatedb::config::DurabilityLevel::Remote,
+            ..Default::default()
+        };
+        let Some(mut meta) = self.static_billing_row(hash, &durable).await? else {
+            return Ok(None);
+        };
+        if let Some(raw) = self
+            .db
+            .get_with_options(super::tail_key(&hash), &durable)
             .await?
-            .map(|v| {
-                let meta: crate::billing::SegmentBillingMetaV1 = serde_json::from_slice(&v)
-                    .map_err(|e| anyhow::anyhow!("invalid billing metadata: {e}"))?;
-                anyhow::ensure!(
-                    meta.v == 1 && !meta.stream_id.is_empty(),
-                    "invalid billing metadata identity/version"
-                );
-                anyhow::ensure!(
-                    meta.month_storage_byte_ms.is_empty()
-                        || meta.month_storage_byte_ms.parse::<u128>().is_ok(),
-                    "invalid billing byte-time"
-                );
-                anyhow::ensure!(
-                    meta.storage_accounted_through_ms == 0 || (1..=12).contains(&meta.month_month),
-                    "invalid billing month"
-                );
-                Ok(meta)
-            })
+            && let Some(usage) = super::stored_tail(&raw)?.usage
+        {
+            usage.apply(&mut meta);
+        }
+        checked(meta).map(Some)
+    }
+
+    /// The billing meta a commit group stages on (layout 6, f3): the
+    /// handle's **applied** static meta and counters. The static row is read
+    /// from the store once per handle and kept on its tails.
+    pub(super) async fn billing_for_commit(
+        &self,
+        hash: [u8; 16],
+    ) -> anyhow::Result<Option<crate::billing::SegmentBillingMetaV1>> {
+        #[cfg(test)]
+        if billing_read_faults()
+            .lock()
+            .unwrap()
+            .remove(&self.prefix)
+            .is_some()
+        {
+            anyhow::bail!("injected billing metadata read failure");
+        }
+        let handle = self.stream_handle(hash).await?;
+        if let StaticBilling::Read(meta) = billing_view(&handle, Visibility::Applied) {
+            return Ok(meta);
+        }
+        let stored = self
+            .static_billing_row(hash, &slatedb::config::ReadOptions::default())
+            .await?;
+        cache_static_billing(&handle, &stored);
+        billing_view(&handle, Visibility::Applied)
+            .into_meta()
+            .map(checked)
             .transpose()
+    }
+
+    /// The segment's static billing row, decoded with zero counters.
+    async fn static_billing_row(
+        &self,
+        hash: [u8; 16],
+        options: &slatedb::config::ReadOptions,
+    ) -> anyhow::Result<Option<crate::billing::SegmentBillingMetaV1>> {
+        #[cfg(test)]
+        super::test_support::held_billing_read(&self.prefix).await;
+        #[cfg(test)]
+        super::test_support::count_static_row_read(std::sync::Arc::as_ptr(&self.db));
+        let Some(raw) = self
+            .db
+            .get_with_options(crate::billing::billing_meta_key(&hash), options)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let meta = crate::billing::stored_meta::decode_static(&raw)
+            .ok_or_else(|| anyhow::anyhow!("invalid billing metadata"))?;
+        anyhow::ensure!(
+            meta.v == 1 && !meta.stream_id.is_empty(),
+            "invalid billing metadata identity/version"
+        );
+        Ok(Some(meta))
     }
 
     /// Legacy test convenience; production must handle missing and failed reads.
@@ -316,4 +346,65 @@ async fn answered(answer: oneshot::Receiver<Result<AppendAck, AppendErr>>) -> Re
         Ok(Err(refusal)) => Err(format!("refused unapplied ({refusal:?}); retry")),
         Err(_) => Err("dropped unanswered; retry".to_string()),
     }
+}
+
+/// Which of a handle's tails a billing view reads.
+#[derive(Clone, Copy)]
+enum Visibility {
+    Applied,
+    Durable,
+}
+
+/// The billing meta `handle`'s applied or durable tail holds: its static
+/// meta with that tail's counters; `Unread` when the static row was never
+/// read or written on this handle.
+#[expect(
+    clippy::unwrap_used,
+    reason = "billing_view; a poisoned stream state may hold half-applied fields; recovering it could bill counters the write never covered, whereas panicking fails the group or the drain that read it, and the next read reloads the stream's billing from the store"
+)]
+fn billing_view(handle: &super::StreamHandle, visibility: Visibility) -> StaticBilling {
+    let st = handle.state.lock().unwrap();
+    let tail = match visibility {
+        Visibility::Applied => &st.applied,
+        Visibility::Durable => &st.durable,
+    };
+    match &tail.billing {
+        StaticBilling::Unread => StaticBilling::Unread,
+        StaticBilling::Read(meta) => StaticBilling::Read(meta.clone().map(|mut meta| {
+            if let Some(usage) = &tail.usage {
+                usage.apply(&mut meta);
+            }
+            meta
+        })),
+    }
+}
+
+/// Keep a static row read from the store on both of `handle`'s tails,
+/// unless a group published one meanwhile (which is newer).
+#[expect(
+    clippy::unwrap_used,
+    reason = "cache_static_billing; a poisoned stream state may hold half-applied fields; recovering it could bill counters the write never covered, whereas panicking fails the group or the drain that read it, and the next read reloads the stream's billing from the store"
+)]
+fn cache_static_billing(
+    handle: &super::StreamHandle,
+    stored: &Option<crate::billing::SegmentBillingMetaV1>,
+) {
+    let mut st = handle.state.lock().unwrap();
+    let st = &mut *st;
+    for tail in [&mut st.applied, &mut st.durable] {
+        if matches!(tail.billing, StaticBilling::Unread) {
+            tail.billing = StaticBilling::Read(stored.clone());
+        }
+    }
+}
+
+/// A meta whose storage clock has started names a month.
+fn checked(
+    meta: crate::billing::SegmentBillingMetaV1,
+) -> anyhow::Result<crate::billing::SegmentBillingMetaV1> {
+    anyhow::ensure!(
+        meta.storage_accounted_through_ms == 0 || (1..=12).contains(&meta.month_month),
+        "invalid billing month"
+    );
+    Ok(meta)
 }

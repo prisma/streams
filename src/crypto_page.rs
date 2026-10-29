@@ -20,9 +20,10 @@
 //! AAD      = segment identity (16 B) || header bytes from ver through nonce
 //! page key = HKDF-SHA256(salt = segment identity, ikm = routing-key subkey,
 //!                        info = "prisma-streams/page/v6/aes-256-gcm-siv")
-//! row key  = hash16 || 'p' || last offset              (shard log)
-//!            route16 || inc16 || 'g' || last offset    (history, where 'p'
-//!                                                       rows are postings)
+//! held     = back to back in a stream's pending row and in segment-object
+//!            chunks, each page named by its own last offset (layout 6);
+//!            a native queue's page row key = queue prefix || hash16 || 'p'
+//!            || last offset
 //! ```
 //!
 //! Integers are big-endian. A varint is minimal LEB128: seven bits per byte,
@@ -37,15 +38,17 @@ use aes_gcm_siv::aead::KeyInit;
 use hkdf::Hkdf;
 use sha2::Sha256;
 
-use crate::crypto::{KEY_LEN, MAX_RECORD_PLAINTEXT, RouteHash, SegmentHash};
+use crate::crypto::{KEY_LEN, MAX_RECORD_PLAINTEXT};
 
 mod body;
 mod header;
 mod open;
 mod seal;
+mod varint;
 
-pub(crate) use header::CheckedPage;
+pub(crate) use header::{CheckedPage, page_extent};
 pub(crate) use open::{OpenedPage, PageDecoder};
+pub(crate) use varint::{get_varint, put_varint};
 
 /// Version byte of a page whose body is stored raw.
 pub(crate) const PAGE_VER: u8 = 6;
@@ -54,17 +57,9 @@ pub(crate) const PAGE_VER_Z: u8 = 7;
 /// The row-key tag between a shard-log page row's namespace and its last
 /// offset.
 pub(crate) const SHARD_PAGE_TAG: u8 = b'p';
-/// The row-key tag of a history page row. History's `'p'` rows are its
-/// postings pages, so its stored pages take a tag nothing else there uses.
-pub(crate) const HISTORY_PAGE_TAG: u8 = b'g';
-/// The width of a shard-log stream page prefix: the stream segment tag,
-/// hash16 and the page tag (layout 6).
-const SHARD_PAGE_PREFIX_LEN: usize = 18;
 /// The width of a shard-log queue page prefix: the queue segment prefix
 /// (tag and generation), hash16 and the page tag (layout 6).
 const QUEUE_PAGE_PREFIX_LEN: usize = crate::keyspace::QUEUE_PREFIX_LEN + 17;
-/// The width of a history page prefix: route16, inc16 and the tag.
-const HISTORY_PAGE_PREFIX_LEN: usize = 33;
 /// The body cap of a page that holds more than one record, and the size at
 /// which a request is cut into pages.
 pub(crate) const PAGE_TARGET_PLAINTEXT: usize = 64 << 10;
@@ -100,37 +95,6 @@ pub(crate) fn last_offset(first: u64, count: usize) -> Option<u64> {
     first.checked_add(extra)
 }
 
-/// The row-key offset a forward scan of the window `[from, to)` must reach,
-/// exclusive, to meet the page that holds `to - 1`: a page holds at most
-/// PAGE_MAX_RECORDS records, so that page's last offset is below
-/// `to - 1 + PAGE_MAX_RECORDS`. Both the shard log and history scan to it
-/// and stop at the first page that starts at or after `to`. It saturates:
-/// a page keyed u64::MAX is never reached, and none is ever written (a
-/// stream's next offset cannot pass u64::MAX).
-pub(crate) fn page_scan_bound(to: u64) -> u64 {
-    to.saturating_sub(1).saturating_add(PAGE_MAX_RECORDS as u64)
-}
-
-/// Shard-log row key of the page whose last offset is `last`.
-pub(crate) fn shard_page_key(hash: &[u8; 16], last: u64) -> Vec<u8> {
-    let mut key = Vec::with_capacity(SHARD_PAGE_PREFIX_LEN + 8);
-    key.extend_from_slice(&shard_page_prefix(hash));
-    key.extend_from_slice(&last.to_be_bytes());
-    key
-}
-
-/// The canonical prefix of a segment's shard-log page keys: the stream
-/// segment tag, its hash and the shard-log page tag.
-/// `CheckedPage::from_row` admits a row against it.
-pub(crate) fn shard_page_prefix(hash: &[u8; 16]) -> [u8; SHARD_PAGE_PREFIX_LEN] {
-    let mut prefix = [SHARD_PAGE_TAG; SHARD_PAGE_PREFIX_LEN];
-    let (namespace, _) = prefix.split_at_mut(17);
-    let (segment, hash_part) = namespace.split_at_mut(1);
-    segment.copy_from_slice(&[crate::keyspace::STREAM]);
-    hash_part.copy_from_slice(hash);
-    prefix
-}
-
 /// Shard-log row key of a native queue's message page whose last offset is
 /// `last`: the page layout under the queue segment (layout 6).
 pub(crate) fn queue_page_key(hash: &[u8; 16], last: u64) -> Vec<u8> {
@@ -148,41 +112,6 @@ pub(crate) fn queue_page_prefix(hash: &[u8; 16]) -> [u8; QUEUE_PAGE_PREFIX_LEN] 
     segment.copy_from_slice(&crate::keyspace::QUEUE);
     hash_part.copy_from_slice(hash);
     prefix
-}
-
-/// History row key of the page whose last offset is `last`.
-pub(crate) fn history_page_key(route: RouteHash, inc: SegmentHash, last: u64) -> Vec<u8> {
-    let mut key = Vec::with_capacity(HISTORY_PAGE_PREFIX_LEN + 8);
-    key.extend_from_slice(&history_page_prefix(route, inc));
-    key.extend_from_slice(&last.to_be_bytes());
-    key
-}
-
-/// The canonical prefix of one stream incarnation's history page keys: its
-/// route, its incarnation and the history page tag. `CheckedPage::from_row`
-/// admits a history row against it.
-pub(crate) fn history_page_prefix(
-    route: RouteHash,
-    inc: SegmentHash,
-) -> [u8; HISTORY_PAGE_PREFIX_LEN] {
-    let mut prefix = [HISTORY_PAGE_TAG; HISTORY_PAGE_PREFIX_LEN];
-    let (namespace, _) = prefix.split_at_mut(32);
-    let (route_part, inc_part) = namespace.split_at_mut(16);
-    route_part.copy_from_slice(&route.0);
-    inc_part.copy_from_slice(&inc.0);
-    prefix
-}
-
-/// The page tag a page prefix of `len` bytes must end in: the shard log's
-/// for `hash16 || tag`, history's for `route16 || inc16 || tag`. No other
-/// width is a page keyspace, so a prefix of the wrong keyspace's tag, or of
-/// any other row family, is refused before its rows are looked at.
-const fn page_tag(len: usize) -> Option<u8> {
-    match len {
-        SHARD_PAGE_PREFIX_LEN | QUEUE_PAGE_PREFIX_LEN => Some(SHARD_PAGE_TAG),
-        HISTORY_PAGE_PREFIX_LEN => Some(HISTORY_PAGE_TAG),
-        _ => None,
-    }
 }
 
 /// The lane fields every page of one request carries in its clear header.
@@ -237,11 +166,6 @@ pub(crate) enum SealError {
 /// corruption: the writer never produces such a row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PageCorruption {
-    /// The prefix the caller selected is not a page namespace: it does not
-    /// end in the page tag of the keyspace its width names.
-    RowTag,
-    KeyWidth,
-    Namespace,
     Version,
     Count,
     /// A header field, or the ciphertext its length names, is cut short.

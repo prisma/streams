@@ -238,43 +238,40 @@ state. So:
 ### 5.6 Queue storage mode
 
 A queue's tail carries a persisted **queue storage kind**: a tail flag bit.
-Today's decoder refuses unknown flag bits (`src/shard.rs:125`), so the first
-binary that writes it is a one-way upgrade for any cell that has created a
-queue (decision D19). Queue mode keeps queue pages in the shard database for
-their whole life (at most 58 days, §7.1), never absorbed into history: the
-absorber copies across two databases (read, write and flush to history, then
-advance the boundary; `src/history/gather.rs`), which would race reclamation.
+The tail decoder refuses unknown flag bits, so the first binary that writes
+it is a one-way upgrade for any cell that has created a queue (decision
+D19). Queue mode keeps queue pages in the shard database for their whole
+life (at most 58 days, §7.1), in the `Q` tree (SPEC.md §3.3), never sealed
+into segment objects: a seal copies pages into an immutable object and
+moves the stream's boundary, which would race reclamation.
 
-"Not absorbed" is a ledger state many subsystems read, so queue mode is
+"Unsealed" is a ledger state several subsystems read, so queue mode is
 defined by **invariants with guarded consumers**, not by a single field:
 
-1. **Queue pages create no absorption debt.** Queue appends add nothing to
-   `unabsorbed_bytes`, and a queue tail keeps `absorbed = next` as a
-   projection, so a consumer that reads `absorbed < next` sees nothing.
-2. **Queue writes and retirements report no absorber progress.** The
-   maintenance ledger moves `last_progress_ms` when frame bytes retire
-   (`src/shard/maintenance_row.rs:70`); queue frames never enter that path,
-   so queue traffic cannot make a stalled ordinary absorber look healthy.
+1. **Queue pages create no unsealed debt.** Queue appends add nothing to the
+   tail's unsealed bytes (`unabsorbed_bytes`), and a queue tail keeps
+   `absorbed = next` ("sealed in place"), so a consumer that reads
+   `absorbed < next` sees nothing.
+2. **Queue writes and retirements report no seal progress.** The
+   maintenance ledger moves `last_progress_ms` when unsealed bytes retire
+   (`src/shard/maintenance_row.rs`); queue pages never enter that path, so
+   queue traffic cannot make a stalled sealer look healthy.
 3. **Queue storage has its own accounting**: live bytes and reclamation debt
-   (§8.3), not the absorption gauge.
-4. **Ordinary history reads, contiguous-tail repair and stream trimming never
-   touch queue pages.** The read path treats `absorbed` as the boundary
-   history serves below (`src/application/read.rs`); queue routes read pages
-   only by point get (§6.1).
+   (§8.3), not the unsealed gauge.
+4. **Ordinary stream reads never touch queue pages.** The stream read path
+   reads sealed chunks below `absorbed` and the handle's unsealed pages
+   above it; queue routes read pages only by point get (§6.1).
 5. **Queue retirement is the only authority that deletes queue pages.**
 
-Each consumer of the absorption state is guarded by the kind and covered by a
+Each consumer of the unsealed state is guarded by the kind and covered by a
 named test ([QUEUES-PLAN.md](QUEUES-PLAN.md) §4):
 
 | Consumer | Queue-mode behaviour |
 |---|---|
-| dirty index (`src/shard/transaction/finalize.rs:100-112`) | a queue tail is never marked dirty for absorption |
-| absorber roster and due list (`src/history/gather.rs:252-258`, `src/history.rs:625-645`, `src/history/worker.rs:226-290`) | queues never enter the roster; a tick gathers nothing for them |
-| maintenance ledger and stall latch (`src/shard.rs:388-420`, `maintenance_row.rs`, `src/backpressure.rs:150-180,343-350`, cell-watch lag rule) | queue bytes are excluded from unabsorbed bytes and from progress |
-| restart tail repair (`src/shard.rs:401-405`, `src/shard/record.rs:258-291`) | a queue tail is never a repair candidate |
-| frame reconciliation (`finalize.rs:80-88`) | queue deletes are counted on the queue's own ledger side |
-| billing sweep residency (`probe_debt`, `src/billing.rs:1676-1686`) | counts queue reclamation debt and the roster's earliest deadline (§6.8) instead of absorption debt; idle release only drops caches and is unaffected |
-| stream read and trim paths | refuse queue streams |
+| the sealer's snapshot (`src/shard/seal/steps.rs`) | skips every queue stream; a seal never takes a queue page |
+| maintenance ledger and stall latch (`src/shard/maintenance_row.rs`, `src/backpressure.rs`, cell-watch lag rule) | queue bytes are excluded from unsealed bytes and from progress |
+| billing sweep residency (`probe_debt`, `src/billing.rs`) | counts queue reclamation debt and the roster's earliest deadline (§6.8); the idle release seals and drops caches and is unaffected |
+| stream read paths | refuse queue streams |
 
 ### 5.7 Per-shard queue bytes
 
@@ -606,7 +603,7 @@ delivery ends, and `H` bounds how long that can take.
 
 **2. Deletion (logical).** The sweep deletes, for each `X` entry, the page,
 the metadata row, the `A` entry, the key-index entry and the `X` entry, in
-bounded batches under the global trim budget (READINESS H5, R8). Deletes are
+bounded batches of the sweep's step (`SWEEP_STEP`, 256 entries; READINESS H5, R8). Deletes are
 idempotent. `GET …/messages/{id}` answers `404 reclaimed` from the retired
 state or the missing metadata row, never from page presence (the tail ring
 may still hold a deleted page). **The deleting batch creates the collection
@@ -746,7 +743,7 @@ registry tombstone (`src/application/creation/deletion.rs`):
    collection (stages 3 and 4) continues after the tombstone; the reservation
    is released when the debt clears.
 
-This answers READINESS TLA-019-F3 for queues: no history rows exist, forks are
+This answers READINESS TLA-019-F3 for queues: no sealed chunks exist, forks are
 refused, billing closes at retirement, deletes are bounded and resumable, and
 quiet-shard collection is stage 4.
 
@@ -1036,7 +1033,7 @@ The verification plan (TLA+, Kani, DSTs, SDK, Layer B, pilot) is in
 | D14 | Billing | Cloudflare parity: $0.40 per million logical operations per message per 64 KB (send a write, each delivery a read, ack or discard a delete), one million a month included; empty claims free; bandwidth and standard retention included; live bytes count against capacity (a message's until retirement, dedup entries until their window ends) |
 | D15 | Sequencing | Q0 gates Q1; the first release gates the beta if queues are a beta requirement |
 | D16 | Wake-up egress | §9.2 egress policy with a versioned derived secret |
-| D17 | Queue storage | Queue pages in the shard database, never absorbed, under queue storage mode |
+| D17 | Queue storage | Queue pages in the shard database, never sealed into segment objects, under queue storage mode |
 | D18 | Groups | Only `default` first; named groups under §8.5 |
 | D19 | Tail format | A queue storage flag bit in the tail; the first binary writing it is a one-way upgrade for cells with queues (or a `LAYOUT_VERSION` bump, if the owner prefers) |
 | D20 | Collection | The compaction trigger in the shared shard database; segments, then a separate queue database, only if Q0 shows shared compaction too costly |

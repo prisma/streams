@@ -1,0 +1,12 @@
+diff --git a/src/spill/directory/row.rs b/src/spill/directory/row.rs
+--- a/src/spill/directory/row.rs
++++ b/src/spill/directory/row.rs
+@@ -53,7 +53,7 @@
+ /// `i < BLOOM_HASHES`, modulo its bit count.
+ pub(super) fn probes(hash: &[u8; 16], len: usize) -> impl Iterator<Item = usize> {
+     let (h1, h2) = halves(hash);
+-    let bits = u64::try_from(len * 8).unwrap_or(u64::MAX).max(1);
++    let bits = u64::try_from(len * 8 + 1).unwrap_or(u64::MAX).max(1);
+     (0..BLOOM_HASHES)
+         .map(move |i| usize::try_from(h1.wrapping_add(i.wrapping_mul(h2)) % bits).unwrap_or(0))
+ }

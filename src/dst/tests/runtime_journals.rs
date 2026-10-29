@@ -206,10 +206,6 @@ async fn r10_runtime_body_limits_apply_to_each_collector_and_preflight() {
         } else {
             assert!(result.is_ok());
         }
-        assert_eq!(
-            rig.state.runtime.history.worst_frame_transient,
-            crate::history::worst_frame_transient_for(rig.state.config.cli.max_request_body_bytes)
-        );
     }
     for rig in rigs {
         engine_shutdown(&rig.state).await;
@@ -255,7 +251,7 @@ async fn r10_operator_data_serves_the_cached_ops_snapshot_without_recollecting()
         bodies[0]["ops"], bodies[1]["ops"],
         "re-collected per request"
     );
-    assert!(body["ops"]["gauges"]["history_flush_wait_ms_max"].is_u64());
+    assert!(body["ops"]["gauges"]["rss_peak_since_scrape_mb"].is_u64());
     assert!(body["feeds"]["policies"]["reservedDropped"].is_u64());
     let local = &body["local"];
     assert!(local["admit_shed_rss"].is_u64());
@@ -387,12 +383,10 @@ async fn alerts_run_every_16_s_between_minute_points() {
     assert!(alerted(), "the drop opens its alert at the 32 s round");
     let cached = state.runtime.ops.last_snapshot().unwrap();
     assert_eq!(drops(&cached), 1, "the rules' snapshot is the one cached");
-    for drained in ["rss_peak_since_scrape_mb", "history_flush_wait_ms_max"] {
-        assert!(
-            cached.gauges.contains_key(drained),
-            "{drained} is collected"
-        );
-    }
+    assert!(
+        cached.gauges.contains_key("rss_peak_since_scrape_mb"),
+        "the drained RSS peak is collected"
+    );
     let stored =
         |points: Vec<crate::ops::OpsSnapshot>| points.iter().map(drops).collect::<Vec<_>>();
     assert_eq!(
@@ -405,9 +399,10 @@ async fn alerts_run_every_16_s_between_minute_points() {
     stop_paused_rig(rig).await;
 }
 
-/// `carry_peaks` raises the two gauges a collection drains to the larger
-/// of the two snapshots' (adding one the later snapshot lacks) and leaves
-/// every other gauge as the later snapshot collected it.
+/// `carry_peaks` raises the gauge a collection drains (the RSS peak since
+/// the last scrape) to the larger of the two snapshots' (adding it when the
+/// later snapshot lacks it) and leaves every other gauge as the later
+/// snapshot collected it.
 #[test]
 fn carry_peaks_raises_only_the_drained_peak_gauges() {
     let snapshot = |gauges: &[(&str, u64)]| crate::ops::OpsSnapshot {
@@ -420,13 +415,13 @@ fn carry_peaks_raises_only_the_drained_peak_gauges() {
         counters: std::collections::BTreeMap::new(),
         gauges: gauges.iter().map(|(k, v)| ((*k).to_string(), *v)).collect(),
     };
-    let (peak, wait) = ("rss_peak_since_scrape_mb", "history_flush_wait_ms_max");
-    let earlier = snapshot(&[(peak, 900), (wait, 40), ("rss_mb", 900)]);
-    let mut later = snapshot(&[(peak, 300), (wait, 70), ("rss_mb", 300)]);
+    let peak = "rss_peak_since_scrape_mb";
+    let earlier = snapshot(&[(peak, 900), ("rss_mb", 900)]);
+    let mut later = snapshot(&[(peak, 300), ("rss_mb", 300)]);
     later.carry_peaks(&earlier);
-    let raised = snapshot(&[(peak, 900), (wait, 70), ("rss_mb", 300)]);
+    let raised = snapshot(&[(peak, 900), ("rss_mb", 300)]);
     assert_eq!(later.gauges, raised.gauges);
     let mut bare = snapshot(&[]);
     bare.carry_peaks(&earlier);
-    assert_eq!(bare.gauges, snapshot(&[(peak, 900), (wait, 40)]).gauges);
+    assert_eq!(bare.gauges, snapshot(&[(peak, 900)]).gauges);
 }

@@ -290,7 +290,7 @@ fn a_body_never_holds_a_record_over_the_record_cap() {
     use super::body::parse_body;
     let over = crate::crypto::MAX_RECORD_PLAINTEXT + 1;
     let mut body = Vec::new();
-    super::body::put_varint(&mut body, over as u64);
+    super::varint::put_varint(&mut body, over as u64);
     body.push(0);
     body.resize(body.len() + over, 0);
     assert_eq!(

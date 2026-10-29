@@ -16,11 +16,8 @@ use bytes::Bytes;
 use super::body::build_body;
 use super::header::{HeaderFields, encode_header};
 use super::tests::{Opened, noise};
-use super::{
-    CheckedPage, PAGE_VER, PageCipher, PageLane, SealRecord, history_page_key, page_key,
-    shard_page_key,
-};
-use crate::crypto::{RouteHash, SegmentHash, hex, unhex};
+use super::{CheckedPage, PAGE_VER, PageCipher, PageLane, SealRecord, page_key};
+use crate::crypto::{hex, unhex};
 
 const SUBKEY: [u8; 32] = [0x11; 32];
 const SEGMENT: [u8; 16] = [0x22; 16];
@@ -116,18 +113,10 @@ fn a_compressed_page_is_pinned_and_decodes() {
 #[test]
 fn row_keys_are_pinned() {
     let last = 0x0102_0304_0506_0708;
-    assert_eq!(
-        hex(&shard_page_key(&[0xaa; 16], last)),
-        "53aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa700102030405060708"
-    );
+    // Layout 6 keeps per-page rows only for native queues.
     assert_eq!(
         hex(&crate::crypto_page::queue_page_key(&[0xaa; 16], last)),
         "5100000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa700102030405060708"
-    );
-    let history = history_page_key(RouteHash([0xbb; 16]), SegmentHash([0xcc; 16]), last);
-    assert_eq!(
-        hex(&history),
-        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcccccccccccccccccccccccccccccccc670102030405060708"
     );
 }
 

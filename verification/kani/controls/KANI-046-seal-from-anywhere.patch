@@ -1,0 +1,8 @@
+diff --git a/src/shard/commit_plan.rs b/src/shard/commit_plan.rs
+--- a/src/shard/commit_plan.rs
++++ b/src/shard/commit_plan.rs
+@@ -172,3 +172,3 @@
+ pub(super) fn seal_fits(tail: &TailFields, from: u64, upto: u64, bytes: u64) -> bool {
+-    tail.absorbed == from && from <= upto && upto <= tail.next && bytes <= tail.unabsorbed_bytes
++    tail.absorbed <= from && from <= upto && upto <= tail.next && bytes <= tail.unabsorbed_bytes
+ }

@@ -49,7 +49,7 @@ async fn redrive(e: &super::ShardEngine, offset: u64) -> (u64, u64, bool) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_queue_seeds_its_jitter_from_its_hash_and_a_change_advances_its_clock() {
-    let (e, db, _absorb) = engine("nq-jitter-clock").await;
+    let (e, db) = engine("nq-jitter-clock").await;
     create(&e, QueueConfig::default()).await;
     let created = state(&db).await;
     assert_eq!(created.jitter, u64::from_le_bytes([9; 8]) | 1);
@@ -64,7 +64,7 @@ async fn a_send_fills_the_byte_budget_exactly_and_no_further() {
         max_queued_bytes: 10,
         ..QueueConfig::default()
     };
-    let (e, db, _absorb, c) = clocked("nq-send-bytes", cfg).await;
+    let (e, db, c) = clocked("nq-send-bytes", cfg).await;
     op(&e, send_op(vec![msg("abc")])).await.unwrap();
     op(&e, send_op(vec![msg("1234567")])).await.unwrap();
     let s = state(&db).await;
@@ -90,7 +90,7 @@ async fn a_send_fills_the_dedup_budget_and_schedules_up_to_retention_exactly() {
         max_dedup_entries: 2,
         ..QueueConfig::default()
     };
-    let (e, _db, _absorb, c) = clocked("nq-send-dedup", cfg).await;
+    let (e, _db, c) = clocked("nq-send-dedup", cfg).await;
     let tagged = |tag: u8| SendMessage {
         dedup_tag: Some([tag; 16]),
         ..msg("m")
@@ -127,7 +127,7 @@ async fn a_redrive_reserves_a_message_slot_and_stops_at_a_full_queue() {
         max_queued_messages: 2,
         ..QueueConfig::default()
     };
-    let (e, db, _absorb, _c) = clocked("nq-redrive-count", cfg).await;
+    let (e, db, _c) = clocked("nq-redrive-count", cfg).await;
     op(&e, send_op(vec![msg("a"), msg("b")])).await.unwrap();
     fail_claimed(&e, 2).await;
     op(&e, send_op(vec![msg("c")])).await.unwrap();
@@ -147,7 +147,7 @@ async fn a_redrive_fills_the_byte_budget_exactly() {
         max_queued_bytes: 10,
         ..QueueConfig::default()
     };
-    let (e, db, _absorb, _c) = clocked("nq-redrive-bytes", cfg).await;
+    let (e, db, _c) = clocked("nq-redrive-bytes", cfg).await;
     op(&e, send_op(vec![msg("1234567"), msg("abc")]))
         .await
         .unwrap();
@@ -163,7 +163,7 @@ async fn a_redrive_fills_the_byte_budget_exactly() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_and_peeked_messages_page_by_offset_with_a_cursor_only_on_a_full_page() {
-    let (e, db, _absorb, _c) = clocked("nq-pages", QueueConfig::default()).await;
+    let (e, db, _c) = clocked("nq-pages", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), msg("b"), msg("c")]))
         .await
         .unwrap();
@@ -179,7 +179,7 @@ async fn failed_and_peeked_messages_page_by_offset_with_a_cursor_only_on_a_full_
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_takes_due_retries_within_the_byte_limit_and_never_early_ones() {
-    let (e, _db, _absorb, _c) = clocked("nq-claim-retries", QueueConfig::default()).await;
+    let (e, _db, _c) = clocked("nq-claim-retries", QueueConfig::default()).await;
     let body = |n: usize| msg(&"x".repeat(n));
     op(&e, send_op(vec![body(100), body(100), body(200)]))
         .await
@@ -232,7 +232,7 @@ async fn claim_within(e: &super::ShardEngine, max_bytes: u64) -> Vec<u64> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_leases_a_first_untaken_message_larger_than_its_byte_limit_alone() {
-    let (e, _db, _absorb, _c) = clocked("nq-claim-first-big", QueueConfig::default()).await;
+    let (e, _db, _c) = clocked("nq-claim-first-big", QueueConfig::default()).await;
     let body = |n: usize| msg(&"x".repeat(n));
     op(&e, send_op(vec![body(300), body(1)])).await.unwrap();
     assert_eq!(
@@ -245,7 +245,7 @@ async fn a_claim_leases_a_first_untaken_message_larger_than_its_byte_limit_alone
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_of_untaken_messages_fills_its_byte_limit_exactly_and_no_further() {
-    let (e, _db, _absorb, _c) = clocked("nq-claim-new-bytes", QueueConfig::default()).await;
+    let (e, _db, _c) = clocked("nq-claim-new-bytes", QueueConfig::default()).await;
     let body = |n: usize| msg(&"x".repeat(n));
     let sizes = [100, 100, 100, 99, 2];
     op(&e, send_op(sizes.into_iter().map(body).collect()))
@@ -262,7 +262,7 @@ async fn a_claim_of_untaken_messages_fills_its_byte_limit_exactly_and_no_further
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_marks_the_message_taken_and_skips_one_past_its_retention_end() {
-    let (e, db, _absorb, c) = clocked("nq-claim-meta", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-claim-meta", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), msg("b")])).await.unwrap();
     assert_eq!(claim(&e, 1).await.len(), 1);
     let raw = db.get(keys::by_offset(&HASH, keys::META, 0)).await.unwrap();
@@ -282,7 +282,7 @@ async fn a_claim_marks_the_message_taken_and_skips_one_past_its_retention_end() 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn settles_discard_and_retry_up_to_the_cycle_deadline_exactly() {
-    let (e, db, _absorb, c) = clocked("nq-settle-retry", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-settle-retry", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), msg("b")])).await.unwrap();
     let d = claim(&e, 2).await;
     let retry = SettleKind::Retry {
@@ -317,7 +317,7 @@ async fn a_policy_retry_waits_its_jittered_backoff_and_fails_once_attempts_are_s
     let mut cfg = QueueConfig::default();
     cfg.group.max_attempts = 2;
     cfg.group.backoff.initial_ms = 10_000;
-    let (e, db, _absorb, c) = clocked("nq-policy-retry", cfg.clone()).await;
+    let (e, db, c) = clocked("nq-policy-retry", cfg.clone()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
     let mut s = state(&db).await;
     let delay = crate::native_queue::backoff_ms(&cfg.group.backoff, 1, s.next_jitter());
@@ -341,7 +341,7 @@ async fn a_policy_retry_waits_its_jittered_backoff_and_fails_once_attempts_are_s
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn debt_ages_from_its_first_deletion_and_a_pass_clears_what_it_captured() {
-    let (e, db, _absorb, c) = clocked("nq-debt", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-debt", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), msg("bb")])).await.unwrap();
     let d = claim(&e, 2).await;
     op(&e, settle(vec![(0, d[0].lease_gen, SettleKind::Ack)]))
@@ -377,7 +377,7 @@ async fn debt_ages_from_its_first_deletion_and_a_pass_clears_what_it_captured() 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_retry_scheduled_later_is_not_claimed_before_its_time_nor_failed_by_a_sweep() {
-    let (e, db, _absorb, c) = clocked("nq-retry-later", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-retry-later", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
     let d = claim(&e, 1).await;
     let later = SettleKind::Retry {

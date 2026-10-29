@@ -19,7 +19,7 @@ async fn r03_close_and_fence_wait_for_write_remote_durability_and_dispatch() {
         crate::dst::FaultProfile::clean(),
     );
     let db = Arc::new(
-        Db::builder("r03-barriers", store.clone())
+        crate::keyspace::db_builder("r03-barriers", store.clone())
             .with_settings(slatedb::config::Settings {
                 flush_interval: Some(std::time::Duration::from_millis(5)),
                 ..Default::default()
@@ -28,13 +28,11 @@ async fn r03_close_and_fence_wait_for_write_remote_durability_and_dispatch() {
             .await
             .unwrap(),
     );
-    let (tx, _rx) = mpsc::channel(1);
     let engine = ShardEngine::start(
         "r03-barriers".into(),
         db.clone(),
         store.clone(),
         ShardConfig::default(),
-        tx,
         None,
         ShardMaintenance::default(),
     );
@@ -147,7 +145,10 @@ async fn r03_close_and_fence_wait_for_write_remote_durability_and_dispatch() {
         .await
         .unwrap();
     let _ = db.close().await;
-    let reopened = Db::builder("r03-barriers", store).build().await.unwrap();
+    let reopened = crate::keyspace::db_builder("r03-barriers", store)
+        .build()
+        .await
+        .unwrap();
     assert!(
         stored_tail(&reopened.get(tail_key(&hash)).await.unwrap().unwrap())
             .unwrap()
@@ -164,18 +165,16 @@ async fn r03_close_and_fence_wait_for_write_remote_durability_and_dispatch() {
 async fn r03_failed_group_discards_close_and_fence_effects_together() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let db = Arc::new(
-        Db::builder("r03-reject", store.clone())
+        crate::keyspace::db_builder("r03-reject", store.clone())
             .build()
             .await
             .unwrap(),
     );
-    let (tx, _rx) = mpsc::channel(1);
     let engine = ShardEngine::start(
         "r03-reject".into(),
         db.clone(),
         store,
         ShardConfig::default(),
-        tx,
         None,
         ShardMaintenance::default(),
     );
@@ -184,21 +183,18 @@ async fn r03_failed_group_discards_close_and_fence_effects_together() {
     let (ftx, fence) = oneshot::channel();
     engine.fail_next_group_for(hash);
     engine
-        .commit_group(
-            vec![
-                CommitOp::Close(CloseReq {
-                    hash,
-                    generation: Some(1),
-                    resp: ctx,
-                }),
-                CommitOp::SealFence(SealFenceReq {
-                    hash,
-                    generation: 2,
-                    resp: ftx,
-                }),
-            ],
-            &ShardConfig::default(),
-        )
+        .commit_group(vec![
+            CommitOp::Close(CloseReq {
+                hash,
+                generation: Some(1),
+                resp: ctx,
+            }),
+            CommitOp::SealFence(SealFenceReq {
+                hash,
+                generation: 2,
+                resp: ftx,
+            }),
+        ])
         .await;
     assert!(close.await.unwrap().is_err());
     assert!(fence.await.unwrap().is_err());

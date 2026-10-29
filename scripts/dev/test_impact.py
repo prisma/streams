@@ -30,7 +30,7 @@ class ImpactTest(unittest.TestCase):
         assert not (ROOT / PLANNED).exists(), f'{PLANNED} must stay hypothetical for these tests'
         cls.shard = impact.analyze(['src/shard.rs'])
         cls.manifest_edit = impact.analyze(['verification/manifest.json'])
-        cls.mixed = impact.analyze(['src/segmap.rs', PLANNED, 'src/postings.rs',
+        cls.mixed = impact.analyze(['src/segmap.rs', PLANNED, 'src/queue.rs', 'src/postings.rs',
                                     'src/shard/maintenance_tests.rs'])
         cls.files = {f.path: f for f in cls.mixed.files}
 
@@ -45,8 +45,8 @@ class ImpactTest(unittest.TestCase):
         self.assertIn('--release', self.mixed.release)
 
     def test_harness_owner_runs_in_the_harness_package(self):
-        self.assertEqual(self.files['src/postings.rs'].owner['package'], 'streams-quality-invariants')
-        self.assertIn('cargo test --locked -p streams-quality-invariants --lib -- postings::', self.mixed.tests)
+        self.assertEqual(self.files['src/queue.rs'].owner['package'], 'streams-quality-invariants')
+        self.assertIn('cargo test --locked -p streams-quality-invariants --lib -- postings:: queue::', self.mixed.tests)
 
     def test_a_planned_critical_file_must_be_registered_first(self):
         planned = self.files[PLANNED]
@@ -85,10 +85,11 @@ class ImpactTest(unittest.TestCase):
         self.assertIn('EVERYTHING', impact.render_text(self.manifest_edit))
 
     def test_by_path_include_warns_about_exception_growth(self):
-        postings = self.files['src/postings.rs']
-        self.assertEqual(postings.harness, ['streams-quality-fuzz', 'streams-quality-invariants'])
+        self.assertEqual(self.files['src/queue.rs'].harness, ['streams-quality-invariants'])
+        self.assertEqual(self.files['src/postings.rs'].harness, ['streams-quality-fuzz', 'streams-quality-invariants'])
         text = impact.render_text(self.mixed)
         by_path = next(line for line in text.splitlines() if line.startswith('by-path'))
+        self.assertIn('src/queue.rs', by_path)
         self.assertIn('src/postings.rs', by_path)
         self.assertIn('exception-growth.json', by_path)
 
@@ -142,8 +143,10 @@ class ImpactTest(unittest.TestCase):
 
     def test_module_tree_follows_path_attributes_and_nested_modules(self):
         tree = impact.module_tree()
+        batch = {p.describe() for p in tree.placements['src/application/read_batch.rs']}
+        self.assertIn('streams-slate lib: crate::application::read_batch', batch)
+        self.assertIn('streams-quality-invariants lib: crate::application::read_batch', batch)
         validated = {p.describe() for p in tree.placements['src/postings/validated.rs']}
-        self.assertIn('streams-slate lib: crate::postings::validated', validated)
         self.assertIn('streams-quality-invariants lib: crate::postings::validated', validated)
         # tests/pilot_membership.rs declares an inline module before its #[path] module.
         membership = {p.target for p in tree.placements['src/bin/pilot/generator/membership.rs']}

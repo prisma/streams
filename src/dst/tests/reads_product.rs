@@ -840,25 +840,20 @@ async fn floor_batch(addr: std::net::SocketAddr, key: &str, from: u64, to: u64) 
     );
 }
 
-/// Layout 5: a keyed product pager at the byte floor (`maxBytes=1` clamps
-/// to 4 KiB, four 1,000-byte records) walks a key whose records share
-/// pages, absorbed into history and in the tail, with another key's page
+/// A keyed product pager at the byte floor (`maxBytes=1` clamps to 4 KiB,
+/// four 1,000-byte records) walks a key whose records share pages, sealed
+/// into a segment object and unsealed, with another key's page
 /// between them. Every read but the last serves exactly four records, so
 /// most reads end inside a page, and the next read resumes at the next
 /// record: all 110 records come back once, in order.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_product_pager_at_the_byte_floor_resumes_inside_pages() {
-    use super::fixture_http::{HttpRigOptions, http_rig_build};
+    use super::fixture_http::{HttpRigOptions, cold_sealer, http_rig_build};
     let rig = http_rig_build(
         mem(),
         super::fixture_runtime::RigRuntime::first(),
         HttpRigOptions {
-            absorber: Some(crate::history::AbsorberConfig {
-                threshold_bytes: 1,
-                threshold_age: std::time::Duration::from_millis(1),
-                tick: std::time::Duration::from_millis(20),
-                ..Default::default()
-            }),
+            seal: Some(cold_sealer),
             ..Default::default()
         },
     )
@@ -883,10 +878,10 @@ async fn a_product_pager_at_the_byte_floor_resumes_inside_pages() {
         .engine_for(&desc.segment_route_by_id(0).unwrap())
         .await
         .unwrap();
-    super::fixture_storage::wait_all_absorbed(&engine, &[desc.storage_hash()]).await;
+    engine.seal_requested().await.expect("seal");
     let handle = engine.stream_handle(desc.storage_hash()).await.unwrap();
     let absorbed = handle.state.lock().unwrap().durable.absorbed;
-    assert_eq!(absorbed, 50, "c1's first page and c2's page are in history");
+    assert_eq!(absorbed, 50, "c1's first page and c2's page are sealed");
     floor_batch(addr, "c1", 40, 110).await;
     let (mut cursor, mut served, mut reads) = (String::from("beginning"), Vec::new(), 0);
     loop {

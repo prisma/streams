@@ -124,24 +124,12 @@ impl ShardEngine {
             }
             return None;
         }
-        let (out, expected) = ring.serve(scan_from, scan_to, max_bytes, selector)?;
-        Some(self.ring_hit(out, handle, scan_from, expected))
+        let (out, _) = ring.serve(scan_from, scan_to, max_bytes, selector)?;
+        Some(self.ring_hit(out))
     }
 
-    /// Records a served window: its coverage witness and the hit counter.
-    fn ring_hit(
-        &self,
-        mut out: FrameReadResult,
-        handle: &StreamHandle,
-        scan_from: u64,
-        expected: u64,
-    ) -> FrameReadResult {
-        out.coverage = Some(record::DurableRingCoverage::new(
-            self,
-            handle.hash,
-            scan_from,
-            expected,
-        ));
+    /// Records a served window in the hit counter.
+    fn ring_hit(&self, out: FrameReadResult) -> FrameReadResult {
         self.ring_hits.fetch_add(1, Ordering::Relaxed);
         out
     }

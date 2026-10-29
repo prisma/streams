@@ -70,10 +70,10 @@ usage rollup are not encrypted under a customer key.
 |---|---|---|
 | shard logs (WAL + SSTs + manifests) | per-shard **checkpoint pin** (SlateDB checkpoint = immutable manifest + referenced SSTs) + async copy of newly referenced objects to the backup target | checkpoint every 5 min; copy lag target ≤ 5 min |
 | WAL objects | retained ≥ 24 h past checkpoint (GC floor) AND copied continuously | continuous |
-| history tier (absorbed per-stream SSTs) | immutable once written → copy-once on creation; per-stream manifests checkpoint-pinned on every absorber close (point-in-time = pinned manifest + its SSTs, not bucket versioning) | continuous |
+| segment objects (`shards/<prefix>/hseg/<epoch>/<seq>`, one per seal) | immutable once written → copy-once on creation; the shard log's seal directory rows name them, so a shard checkpoint pins the objects its directory names (point-in-time = pinned checkpoint + the objects it names, not bucket versioning) | continuous |
 | registry + coordination prefixes | bucket versioning + hourly full snapshot (small) | hourly |
 
-Backup GC: when compaction retires a history/shard SST past every pinned
+Backup GC: when compaction retires a shard SST past every pinned
 checkpoint that references it, the copy actor deletes the backup copy on
 the same schedule + 24 h — backup storage tracks live-referenced bytes,
 not all-bytes-ever. The scrubber (§2.3) walks the BACKUP replica's
@@ -119,7 +119,7 @@ at 64 concurrent opens ≈ 15–30 min, dominated by manifest reads.
 tombstone at once (`src/application/creation/deletion.rs`): reads and
 writes answer 404/410. Nothing deletes the stream's objects afterwards:
 no compaction filter or prefix delete removes a deleted incarnation's
-shard-log, tail, producer or history rows (docs/READINESS.md, TLA-019-F3;
+shard-log rows (tail, pending, producer) or chunks of its segment objects (docs/READINESS.md, TLA-019-F3;
 physical reclamation is cost lever E11, not built). The objects stay
 ciphertext under keys the server never stored, so they are crypto-erased
 from the operator's side, while their names, routing keys and sizes stay
@@ -135,8 +135,8 @@ below is therefore not a commitment today.
   via break-glass role.
 - Tenant deletion (API `DELETE` / retention expiry): registry tombstone
   immediately (reads/writes 404/410), physical erasure of shard-log
-  records via compaction filter and of history SSTs via prefix delete
-  within 30 days, backup copies expire on the same schedule (backup
+  rows via compaction filter and of sealed chunks by rewriting or deleting
+  the segment objects that hold them (refcount rows) within 30 days, backup copies expire on the same schedule (backup
   retention ≤ 30 d for deleted streams). Crypto-erasure is additionally
   available to customers instantly by destroying their key.
 
@@ -180,7 +180,7 @@ therefore two-tier and documented to customers:
    also obtain ciphertext).
 2. **Re-encrypt history (optional, priced):** a re-encryption job — a
    dedicated worker granted a short-lived, audited copy of old+new keys —
-   rewrites history SSTs under the new key epoch (same mechanics as
+   rewrites the stream's stored pages under the new key epoch (same mechanics as
    delete/recreate, D21 storage-epoch swap, reader cutover via registry).
    This is the only component besides the request path that ever holds a
    tenant key, and only for the job's lifetime.
@@ -248,7 +248,7 @@ system of record while the export path is the incident-safe copy.
 | append availability (non-429 5xx rate) | 99.95 % monthly | 5 min burn-rate |
 | append durable-ack p99 | < 250 ms | 15 min sustained |
 | tail freshness (append→tail-visible) p99 | < 500 ms | 15 min |
-| absorber lag | < 256 MB/instance | 30 min |
+| unsealed backlog (the maintenance ledger) | < 256 MB/instance | 30 min |
 | backup copy lag (§2.1) | < 5 min | immediate |
 | fence events | ≈ shard-move rate | excess = flapping page |
 | scrub failures | 0 | immediate page |
@@ -264,16 +264,16 @@ isolation unit so pages carry a cell id and a blast-radius statement.
 
 Measured inputs (pilot + benchmarks): ~220-byte single-record appends cost
 1 gateway hop + share of one WAL PUT (25 ms window) + share of one L0 PUT +
-compaction amplification ≈ **3–4 object-store ops amortized per 1,000
+share of one segment-object PUT + compaction amplification ≈ **3–4 object-store ops amortized per 1,000
 records at healthy batching**. Since layout 5 each append request is stored
 as pages of up to 64 KiB compressed together (zstd-1) before encryption, in
-the shard log and history alike: about a third of the raw bytes for batched
+the shard log and the segment objects alike: about a third of the raw bytes for batched
 JSON, about the same bytes for single-record requests and incompressible
 data ([docs/crypto-page-v6.md](docs/crypto-page-v6.md)).
 
 | driver | model |
 |---|---|
-| storage | stored page bytes (raw bytes × ~0.25–0.35 for batched JSON, × ~1 for single records and incompressible data) × provider $/GB-mo; history >30 d quiet → archive tier at 1/5 cost (COMPUTE-SPEC §7) |
+| storage | stored page bytes (raw bytes × ~0.25–0.35 for batched JSON, × ~1 for single records and incompressible data) × provider $/GB-mo; segment objects >30 d quiet → archive tier at 1/5 cost (COMPUTE-SPEC §7) |
 | requests | WAL PUTs ≈ shards × 40/s max (25 ms) but load-proportional under batching; per-million-appends object-op cost ≈ (1M / effective batch size) × 2.5 ops |
 | compute | instances = max over §4.2 dims; ~6k appends/s/core target, 8k conns/instance |
 | capacity planning | reactive autoscaler (§4) for minutes-scale; forecasted floor per cell from 7-day peak × 1.3, pre-provisioned as cell weights in `cells.json`; new-cell lead time is the planning horizon (< 1 h, it's stateless) |

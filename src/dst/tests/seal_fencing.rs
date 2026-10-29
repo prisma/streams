@@ -951,8 +951,8 @@ async fn unfenced_final_keeps_its_claim(
     state.registry.invalidate(&sref);
     let d = state.registry.get(&sref).await.unwrap().unwrap();
     let engine = state.engine_for(&seg.shard_route).await.unwrap();
-    let tail = engine.tail_fields(&seg.identity).await.unwrap();
-    let closed = tail.is_some_and(|tail| tail.closed);
+    let handle = engine.stream_handle(seg.identity).await.unwrap();
+    let closed = handle.state.lock().unwrap().durable.closed;
     let standing = d
         .sealing
         .as_ref()

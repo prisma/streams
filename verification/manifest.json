@@ -308,13 +308,14 @@
     {
       "id": "KANI-017",
       "kind": "kani",
-      "title": "Stored page key and last-offset agreement",
+      "title": "Stored page and last-offset agreement",
       "status": "pass-with-recorded-scope",
       "owner": "Stored-record admission",
       "source_paths": [
         "src/crypto_page.rs",
         "src/crypto_page/header.rs",
-        "src/crypto_page/body.rs"
+        "src/crypto_page/body.rs",
+        "src/crypto_page/varint.rs"
       ],
       "verification_paths": [
         "src/crypto_page/header/proofs.rs"
@@ -332,7 +333,7 @@
         "ASM-KANI-SCOPE",
         "ASM-KANI-COMPILER"
       ],
-      "input_scope": "CheckedPage::from_row's two steps, row_last (the key against the prefix) and page_at (the clear-header parser, get_varint, last_offset and the offset comparison), over a 64-byte row of symbolic bytes, a key of up to 26 symbolic bytes and the prefix shard_page_prefix gives a symbolic stream hash; every field is symbolic (the version byte, the first offset, the timestamp, the key version, the nonce, the ciphertext length and the routing key's bytes) except the record count and the routing-key length, which are fixed per harness so every later field has a known position: 2 records keyless, 1 record with a 4-byte routing key, 4,096 records (two-byte count) and 4,097 records (refused). CheckedPage::admit's wrapping of the admitted fields around the row's Bytes is outside the proof (a symbolic Bytes row did not finish in the solver)",
+      "input_scope": "CheckedPage::admit's parser step page_at (the clear-header parser, get_varint, last_offset and the comparison with the last offset the page's holder names: a pending row's or a segment object's page extent, the tail ring's entry), over a 64-byte page of symbolic bytes and a symbolic last offset; every field is symbolic (the version byte, the first offset, the timestamp, the key version, the nonce, the ciphertext length and the routing key's bytes) except the record count and the routing-key length, which are fixed per harness so every later field has a known position: 2 records keyless, 1 record with a 4-byte routing key, 4,096 records (two-byte count) and 4,097 records (refused). CheckedPage::admit's wrapping of the admitted fields around the page's Bytes is outside the proof (a symbolic Bytes page did not finish in the solver). Layout 6 has no per-page row keys, so no key is checked",
       "checks": [
         {
           "id": "KANI-017/keyless-row",
@@ -373,17 +374,7 @@
           "patch": "verification/kani/controls/KANI-017-skip-the-offset-comparison.patch",
           "expect": {
             "result": "fail",
-            "property": "an admitted page carries its key's offset"
-          }
-        },
-        {
-          "id": "KANI-017/nc-check-a-short-prefix",
-          "role": "negative-control",
-          "harness": "crypto_page::header::proofs::kani_017_a_keyless_row_is_admitted_only_under_its_own_key",
-          "patch": "verification/kani/controls/KANI-017-check-a-short-prefix.patch",
-          "expect": {
-            "result": "fail",
-            "property": "an admitted row's key is its stream's prefix and one offset"
+            "property": "an admitted page ends at the offset naming it"
           }
         },
         {
@@ -393,7 +384,7 @@
           "patch": "verification/kani/controls/KANI-017-allow-trailing-bytes.patch",
           "expect": {
             "result": "fail",
-            "property": "an admitted row is exactly one whole page with its tag"
+            "property": "an admitted page is exactly one whole page with its tag"
           }
         },
         {
@@ -413,7 +404,7 @@
           "patch": "verification/kani/controls/KANI-017-compare-the-key-with-first.patch",
           "expect": {
             "result": "fail",
-            "property": "an admitted page carries its key's offset"
+            "property": "an admitted page ends at the offset naming it"
           }
         },
         {
@@ -423,7 +414,7 @@
           "patch": "verification/kani/controls/KANI-017-let-the-last-offset-wrap.patch",
           "expect": {
             "result": "fail",
-            "property": "an admitted page carries its key's offset"
+            "property": "an admitted page ends at the offset naming it"
           }
         }
       ],
@@ -927,12 +918,12 @@
     {
       "id": "KANI-046",
       "kind": "kani",
-      "title": "Absorption and trim frontier arithmetic",
+      "title": "Seal frontier arithmetic",
       "status": "pass-with-recorded-scope",
-      "owner": "committer frontier decisions",
+      "owner": "committer seal decisions",
       "source_paths": [
         "src/shard/commit_plan.rs",
-        "src/shard/transaction/maintenance.rs"
+        "src/shard/transaction/seal.rs"
       ],
       "verification_paths": [
         "src/shard/commit_plan/proofs.rs"
@@ -950,63 +941,55 @@
         "ASM-KANI-SCOPE",
         "ASM-KANI-COMPILER"
       ],
-      "input_scope": "retire_absorbed and trim_target over full-width u64 frontiers of a tail the committer keeps ordered (trimmed <= trim_safe_to <= absorbed <= next), a symbolic copied range and ledger, and a symbolic trim budget; retire_absorbed with upto past the boundary, as its caller (CommitTransaction::absorbed in src/shard/transaction/maintenance.rs) requires. The callers' deletes of [trimmed, target) and trimmed = max(trimmed, target) are in scope by inspection only",
+      "input_scope": "seal_fits and apply_seal over full-width u64 frontiers of a tail the committer keeps ordered (absorbed <= next), a symbolic unsealed ledger and a symbolic advance (from, upto, bytes); CommitTransaction::stage_seal in src/shard/transaction/seal.rs applies an advance only after every stream of the seal fits, which is in scope by inspection only",
       "checks": [
-        {
-          "id": "KANI-046/trim-step",
-          "role": "baseline",
-          "harness": "shard::commit_plan::proofs::kani_046_a_trim_step_stays_behind_the_safe_boundary",
-          "expect": {
-            "result": "pass"
-          }
-        },
         {
           "id": "KANI-046/advance",
           "role": "baseline",
-          "harness": "shard::commit_plan::proofs::kani_046_an_advance_moves_the_boundary_forward_within_the_log",
+          "harness": "shard::commit_plan::proofs::kani_046_a_seal_moves_the_boundary_forward_within_the_log",
           "expect": {
             "result": "pass"
           }
         },
         {
-          "id": "KANI-046/nc-trim-past-the-safe-boundary",
+          "id": "KANI-046/nc-seal-from-anywhere",
           "role": "negative-control",
-          "harness": "shard::commit_plan::proofs::kani_046_a_trim_step_stays_behind_the_safe_boundary",
-          "patch": "verification/kani/controls/KANI-046-trim-past-the-safe-boundary.patch",
+          "harness": "shard::commit_plan::proofs::kani_046_a_seal_moves_the_boundary_forward_within_the_log",
+          "patch": "verification/kani/controls/KANI-046-seal-from-anywhere.patch",
           "expect": {
             "result": "fail",
-            "property": "a trim never passes the safe boundary"
+            "property": "the boundary moves forward from the snapshot's boundary within the log"
           }
         },
         {
-          "id": "KANI-046/nc-wrap-the-trim-budget",
+          "id": "KANI-046/nc-seal-past-the-log",
           "role": "negative-control",
-          "harness": "shard::commit_plan::proofs::kani_046_a_trim_step_stays_behind_the_safe_boundary",
-          "patch": "verification/kani/controls/KANI-046-wrap-the-trim-budget.patch",
+          "harness": "shard::commit_plan::proofs::kani_046_a_seal_moves_the_boundary_forward_within_the_log",
+          "patch": "verification/kani/controls/KANI-046-seal-past-the-log.patch",
           "expect": {
             "result": "fail",
-            "property": "a trim never moves backwards"
+            "property": "the boundary moves forward from the snapshot's boundary within the log"
           }
         },
         {
-          "id": "KANI-046/nc-boundary-past-the-log",
+          "id": "KANI-046/nc-seal-past-the-ledger",
           "role": "negative-control",
-          "harness": "shard::commit_plan::proofs::kani_046_an_advance_moves_the_boundary_forward_within_the_log",
-          "patch": "verification/kani/controls/KANI-046-boundary-past-the-log.patch",
+          "harness": "shard::commit_plan::proofs::kani_046_a_seal_moves_the_boundary_forward_within_the_log",
+          "patch": "verification/kani/controls/KANI-046-seal-past-the-ledger.patch",
           "expect": {
             "result": "fail",
-            "property": "the boundary moves forward within the log"
+            "property": "subtract with overflow"
           }
         }
       ],
       "regressions": [
-        "shard::commit_plan::tests::retire_absorbed_retires_only_a_copy_that_starts_at_the_boundary"
+        "shard::commit_plan::tests::a_seal_advance_fits_only_from_the_boundary_within_the_log"
       ]
     },
     {
       "id": "KANI-047",
       "kind": "kani",
-      "title": "Dirty/maintenance metadata codecs and debt deltas",
+      "title": "Maintenance ledger debt deltas",
       "status": "pass-with-recorded-scope",
       "owner": "shard maintenance summaries",
       "source_paths": [
@@ -1027,24 +1010,8 @@
         "ASM-KANI-SCOPE",
         "ASM-KANI-COMPILER"
       ],
-      "input_scope": "encode_shard_maint/decode_shard_maint_row and dirty_value/decode_dirty_value over every value and every stored length up to one past the longest layout (symbolic bytes), ShardMaintenance::apply_delta over full-width counters, deltas and clock, and no_progress_secs over full-width clocks",
+      "input_scope": "ShardMaintenance::apply_delta over full-width counters, deltas and clock, and no_progress_secs over full-width clocks (layout 6 keeps the ledger in memory: no row codec is left)",
       "checks": [
-        {
-          "id": "KANI-047/shard-row",
-          "role": "baseline",
-          "harness": "shard::maintenance_row::proofs::kani_047_a_shard_row_decodes_exactly_or_is_refused",
-          "expect": {
-            "result": "pass"
-          }
-        },
-        {
-          "id": "KANI-047/dirty-row",
-          "role": "baseline",
-          "harness": "shard::maintenance_row::proofs::kani_047_a_dirty_row_decodes_exactly_or_is_refused",
-          "expect": {
-            "result": "pass"
-          }
-        },
         {
           "id": "KANI-047/delta",
           "role": "baseline",
@@ -1059,26 +1026,6 @@
           "harness": "shard::maintenance_row::proofs::kani_047_the_stall_signal_survives_clock_extremes",
           "expect": {
             "result": "pass"
-          }
-        },
-        {
-          "id": "KANI-047/nc-read-a-short-row-as-zero-debt",
-          "role": "negative-control",
-          "harness": "shard::maintenance_row::proofs::kani_047_a_shard_row_decodes_exactly_or_is_refused",
-          "patch": "verification/kani/controls/KANI-047-read-a-short-row-as-zero-debt.patch",
-          "expect": {
-            "result": "fail",
-            "property": "an unsupported row is refused"
-          }
-        },
-        {
-          "id": "KANI-047/nc-accept-an-unknown-dirty-extension",
-          "role": "negative-control",
-          "harness": "shard::maintenance_row::proofs::kani_047_a_dirty_row_decodes_exactly_or_is_refused",
-          "patch": "verification/kani/controls/KANI-047-accept-an-unknown-dirty-extension.patch",
-          "expect": {
-            "result": "fail",
-            "property": "a dirty row decodes its complete fields or is refused"
           }
         },
         {
@@ -1103,8 +1050,7 @@
         }
       ],
       "regressions": [
-        "shard::maintenance_tests::apply_delta_is_checked_and_tracks_progress",
-        "shard::maintenance_tests::codec_roundtrips_v2_and_refuses_v1_values"
+        "shard::maintenance_tests::apply_delta_is_checked_and_tracks_progress"
       ]
     },
     {
@@ -1115,7 +1061,8 @@
       "owner": "Layout 5 page codec (crypto_page::body)",
       "source_paths": [
         "src/crypto_page.rs",
-        "src/crypto_page/body.rs"
+        "src/crypto_page/body.rs",
+        "src/crypto_page/varint.rs"
       ],
       "verification_paths": [
         "src/crypto_page/proofs.rs"
@@ -1203,6 +1150,151 @@
         "crypto_page::tamper_tests::an_authenticated_body_must_parse_exactly",
         "crypto_page::tamper_tests::a_timestamp_delta_is_to_the_record_before",
         "crypto_page::properties::quality_page_bodies_parse_exactly"
+      ]
+    },
+    {
+      "id": "KANI-098",
+      "kind": "kani",
+      "title": "Shard-log segment extractor agreement",
+      "status": "pass-with-recorded-scope",
+      "owner": "Layout 6 keyspace (keyspace)",
+      "source_paths": [
+        "src/keyspace.rs"
+      ],
+      "verification_paths": [
+        "src/keyspace/proofs.rs"
+      ],
+      "requirements": [
+        "D8",
+        "H2"
+      ],
+      "models": [],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER"
+      ],
+      "input_scope": "segment_len (the extractor's width for a point key and for a scan prefix) over every key of up to 8 symbolic bytes and every prefix of it, and stream_row and queue_row over a symbolic stream hash. SlateDB's routing of a key or a scan to the tree its width names is outside the proof (RFC 0024's contract)",
+      "regressions": [
+        "keyspace::tests::stream_and_queue_keys_map_to_their_segments"
+      ],
+      "checks": [
+        {
+          "id": "KANI-098/widths",
+          "role": "baseline",
+          "harness": "keyspace::proofs::kani_098_a_key_and_every_prefix_of_it_name_one_segment",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-098/row-keys",
+          "role": "baseline",
+          "harness": "keyspace::proofs::kani_098_every_row_key_has_its_family_segment",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-098/nc-take-a-short-queue-prefix",
+          "role": "negative-control",
+          "harness": "keyspace::proofs::kani_098_a_key_and_every_prefix_of_it_name_one_segment",
+          "patch": "verification/kani/controls/KANI-098-take-a-short-queue-prefix.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a key's segment is its tag's"
+          }
+        },
+        {
+          "id": "KANI-098/nc-take-the-hash-into-the-stream-segment",
+          "role": "negative-control",
+          "harness": "keyspace::proofs::kani_098_a_key_and_every_prefix_of_it_name_one_segment",
+          "patch": "verification/kani/controls/KANI-098-take-the-hash-into-the-stream-segment.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a key's segment is its tag's"
+          }
+        }
+      ]
+    },
+    {
+      "id": "KANI-099",
+      "kind": "kani",
+      "title": "Seal directory key summaries never exclude a held key",
+      "status": "pass-with-recorded-scope",
+      "owner": "Layout 6 seal directory (spill::directory)",
+      "source_paths": [
+        "src/spill/directory.rs",
+        "src/spill/directory/row.rs"
+      ],
+      "verification_paths": [
+        "src/spill/directory/proofs.rs"
+      ],
+      "requirements": [
+        "D8",
+        "H2"
+      ],
+      "models": [],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER"
+      ],
+      "input_scope": "set_probe_bits then holds_probe_bits over any seven probe positions inside a bloom of any width from 1 to MAX_BLOOM_BYTES whose other bits are arbitrary (a bloom's other keys only OR bits in); probes (through halves) puts every probe of every 16-byte key hash inside a bloom of any such width; set_bits and holds_bits, which pass probes(hash, bloom.len()) to those two, are proven end to end at widths 1 and 256 only (a symbolic width through both runs two divisions the solver must show agree, which exceeds the hour) and pinned at other widths by the unit tests. The key hash itself (SHA-256 of the routing key) and the named-key summary's sorted binary search are outside the proof",
+      "regressions": [
+        "spill::directory_tests::a_bloom_is_capped_and_its_false_positive_rate_is_about_one_percent"
+      ],
+      "checks": [
+        {
+          "id": "KANI-099/bits",
+          "role": "baseline",
+          "harness": "spill::directory::proofs::kani_099_a_bloom_admits_every_key_it_holds",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-099/probes",
+          "role": "baseline",
+          "harness": "spill::directory::proofs::kani_099_every_probe_lies_inside_the_bloom",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-099/one-byte",
+          "role": "baseline",
+          "harness": "spill::directory::proofs::kani_099_a_one_byte_bloom_admits_its_key",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-099/capped",
+          "role": "baseline",
+          "harness": "spill::directory::proofs::kani_099_a_capped_bloom_admits_its_key",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-099/nc-set-the-wrong-bit",
+          "role": "negative-control",
+          "harness": "spill::directory::proofs::kani_099_a_bloom_admits_every_key_it_holds",
+          "patch": "verification/kani/controls/KANI-099-set-the-wrong-bit.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a bloom admits every key it holds"
+          }
+        },
+        {
+          "id": "KANI-099/nc-probe-past-the-bloom",
+          "role": "negative-control",
+          "harness": "spill::directory::proofs::kani_099_every_probe_lies_inside_the_bloom",
+          "patch": "verification/kani/controls/KANI-099-probe-past-the-bloom.patch",
+          "expect": {
+            "result": "fail",
+            "property": "every probe lies inside the bloom"
+          }
+        }
       ]
     },
     {
@@ -2065,922 +2157,329 @@
     {
       "id": "TLA-016",
       "kind": "tla",
-      "title": "History absorption, publication, and safe hot-data trimming",
+      "title": "Seal spill: pending operands, snapshot, object, directory and remainder commit",
       "status": "pass-with-recorded-scope",
-      "owner": "history absorber (gather, lane marks, the settled plan-time rollback of a stranded mark, the dirty-index rescan and the sweep prune), shard committer maintenance (absorbed-advance retirement from the stream's own boundary, trims, byte ledger), the settlement receipts, the postings warm install and the postings index admission of overlapping pages",
+      "owner": "the sealer (seal_once: the durable snapshot, the object PUT, the directory publication before the commit and its withdrawal, 7a before every forced memtable flush), the committer's seal staging (the all-or-nothing live-tail check, the remainder put built from the live stream, the 'K' rows in the same batch), the pending row's merge operand and its applied publication, and the open's directory rebuild and pending-row load",
       "source_paths": [
-        "src/history.rs",
-        "src/history/gather.rs",
-        "src/history/worker.rs",
-        "src/shard/commit_plan.rs",
-        "src/shard/transaction/maintenance.rs",
-        "src/shard/transaction/mod.rs",
-        "src/shard/transaction/prepare.rs",
+        "src/shard/seal.rs",
+        "src/shard/seal/steps.rs",
+        "src/shard/seal/open.rs",
+        "src/shard/transaction/seal.rs",
         "src/shard/transaction/finalize.rs",
-        "src/shard/record.rs",
-        "src/shard.rs",
-        "src/postings_cache.rs",
-        "src/postings.rs"
+        "src/shard/transaction/overlay.rs",
+        "src/shard/commit_plan.rs",
+        "src/spill/pending.rs",
+        "src/spill/directory.rs",
+        "src/shard/handle_load.rs"
       ],
       "verification_paths": [
-        "verification/tla/history/HistoryAbsorb.tla",
-        "verification/tla/history/MC_HistoryAbsorb.tla"
+        "verification/tla/spill/SealSpill.tla",
+        "verification/tla/spill/MC_SealSpill.tla"
       ],
       "requirements": [
         "H1",
         "H2",
         "H3",
-        "H4",
-        "H11",
         "H13"
       ],
       "models": [
-        "TLA-017",
-        "TLA-018",
-        "TLA-019",
-        "TLA-020"
+        "TLA-005",
+        "TLA-018"
       ],
       "assumptions": [
         "ASM-SLATEDB-DURABLE",
-        "ASM-HISTORY-ACTORS",
-        "ASM-HISTORY-REABSORB",
-        "ASM-HISTORY-EVICTION",
-        "ASM-HISTORY-SETTLEMENT",
-        "ASM-HISTORY-PAGES"
+        "ASM-SLATEDB-MERGE",
+        "ASM-SLATEDB-FLUSH-RETENTION",
+        "ASM-SEAL-OBJECT-IMMUTABLE",
+        "ASM-SEAL-COMMITTER-SERIAL"
       ],
-      "input_scope": "one stream incarnation, 3 one-byte record offsets (1 durable at Init, 2 appends) with routing keys K1, K1, K2, or 4 offsets (K1, K1, K2, K1; 3 appends) in the page shape; per-stream gather cap 2 records (small, ledger, liveness, cache-cap2, page, overlap witnesses, scan probe) or 1 record (expanded, cache); gathers by one Remote scan over the snapshot taken when it starts (small, ledger, liveness, overlap witnesses) or by that scan or the durable ring (expanded, cache, page); up to 2 (small) or 3 (expanded) applied-not-durable commit groups; up to 2 AbsorbedBatch messages in flight (3 in the scan probe), each carrying the chunk start and byte count of its copy and a settlement receipt that a group retiring an Exact advance holds until dispatch has published its tails, and every other advance drops at staging; the committer retires an advance only from the stream's own boundary (Exact, Detached, Diverged); a plan rolls a stranded lane mark back only while the stream's bucket is settled; a pending-roster flag that signals, the gather outcome and the seeding-only dirty-index rescan update; the sweep prune for evictable handles, not gated on settlement (all shapes but the page shape, liveness-refusal keeps it); a bucket-sharing stream toggled by the environment (ledger-small, the mate witness only); 1 crash, 1 failed or ambiguous history flush and 1 refused group or dropped op (small, expanded, ledger-small); 2 refused groups, one of which may be a dropped op, and 1 failed or ambiguous flush, with no crash or prune (page); 1 crash and 1 refused group with the prune (page-regather); 1 refused group or dropped op (liveness-refusal); none in the ledger-overlap, cache and liveness shapes; 1 (small) or 2 (expanded) reader snapshots; per-operation trim allowances {0,1,3}; postings-slice cache with 1 weight eviction and cold loads (cache shapes only); postings pages per routing key as (first offset, offsets) under the (key, first offset) page key, with the reader's admission of overlapping pages that agree over their common span (page shapes, the overlap witnesses and the scan probe only); liveness with bounded faults and fairness on actor attempts only, the rescan included. No symmetry, no state or action constraints.",
+      "regressions": [
+        "shard::seal::tests::an_append_committed_between_the_snapshot_and_the_commit_survives",
+        "shard::seal::tests::flushdrop",
+        "shard::seal::tests::tiling_with_an_abort_between_every_pair_of_steps"
+      ],
+      "input_scope": "one shard log, one stream of 3 one-record offsets (small) or 4 (expanded), or two streams of 2 offsets sealed in one commit (two-streams); records identified by offset and the incarnation that appended them; each commit group one WriteBatch, applied in order and durable as a prefix (WAL flushes of any prefix, or an L0 flush of the whole memtable); durable dispatch in group order, a record acknowledged when its group's durable tail is published; the sealer one seal at a time: the snapshot of the durable unsealed pages from memory (a stream that does not tile is skipped), one object of one chunk per stream, its PUT (may fail), directory publication, the committer's all-or-nothing live-tail check, the remainder put (the applied pages at or above the boundary plus the group's own page; a delete when empty) and the 'K' rows in the same group, which may also append one record to a sealed stream; 7a (WAL flush, wait for dispatch) and 7b (forced memtable flush) under the flush lock; 2 seals (small, two-streams) or 3 (expanded); 1 crash with restart from the durable prefix (directory from 'K' rows, tail and pending row per stream); 1 seal group dropped whole; 1 seal failure (the PUT, or 7a after the commit applied); 1 deadline flush whose 7a and memtable flush are separate steps; SlateDB's memtable-flush retention modelled at the durable seq with no older snapshot or transaction. No GC, eviction, queues, ledger, liveness, symmetry or constraints.",
       "checks": [
         {
           "id": "TLA-016/baseline-small",
           "role": "baseline",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_small.cfg",
-          "expect": {
-            "result": "pass"
-          },
-          "timeout_seconds": 14400
-        },
-        {
-          "id": "TLA-016/baseline-expanded",
-          "role": "baseline",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_expanded.cfg",
-          "expect": {
-            "result": "pass"
-          },
-          "timeout_seconds": 28800
-        },
-        {
-          "id": "TLA-016/ledger-small",
-          "role": "baseline",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_ledger_small.cfg",
-          "expect": {
-            "result": "pass"
-          },
-          "timeout_seconds": 14400
-        },
-        {
-          "id": "TLA-016/ledger-overlap",
-          "role": "baseline",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_ledger_overlap.cfg",
-          "expect": {
-            "result": "pass"
-          },
-          "timeout_seconds": 3600
-        },
-        {
-          "id": "TLA-016/liveness-small",
-          "role": "baseline",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_liveness.cfg",
-          "expect": {
-            "result": "pass"
-          },
-          "timeout_seconds": 3600
-        },
-        {
-          "id": "TLA-016/liveness-refusal",
-          "role": "baseline",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_liveness_refusal.cfg",
-          "expect": {
-            "result": "pass"
-          },
-          "timeout_seconds": 3600
-        },
-        {
-          "id": "TLA-016/baseline-cache",
-          "role": "baseline",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_cache.cfg",
-          "expect": {
-            "result": "pass"
-          },
-          "timeout_seconds": 3600
-        },
-        {
-          "id": "TLA-016/baseline-cache-cap2",
-          "role": "baseline",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_cache_cap2.cfg",
-          "expect": {
-            "result": "pass"
-          },
-          "timeout_seconds": 7200
-        },
-        {
-          "id": "TLA-016/baseline-pages",
-          "role": "baseline",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_pages.cfg",
+          "spec": "verification/tla/spill/MC_SealSpill.tla",
+          "config": "verification/tla/spill/MC_SealSpill_small.cfg",
           "expect": {
             "result": "pass"
           },
           "timeout_seconds": 1800
         },
         {
-          "id": "TLA-016/baseline-pages-regather",
+          "id": "TLA-016/baseline-two-streams",
           "role": "baseline",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_pages_regather.cfg",
+          "spec": "verification/tla/spill/MC_SealSpill.tla",
+          "config": "verification/tla/spill/MC_SealSpill_two_streams.cfg",
           "expect": {
             "result": "pass"
           },
           "timeout_seconds": 3600
         },
         {
-          "id": "TLA-016/baseline-layout5-pages",
+          "id": "TLA-016/baseline-expanded",
           "role": "baseline",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_pages_layout5.cfg",
+          "spec": "verification/tla/spill/MC_SealSpill.tla",
+          "config": "verification/tla/spill/MC_SealSpill_expanded.cfg",
           "expect": {
             "result": "pass"
-          }
+          },
+          "timeout_seconds": 3600
         },
         {
-          "id": "TLA-016/nc-publish-before-flush",
+          "id": "TLA-016/nc-prebuilt-remainder",
           "role": "negative-control",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_nc_publish_before_flush.cfg",
+          "spec": "verification/tla/spill/MC_SealSpill.tla",
+          "config": "verification/tla/spill/MC_SealSpill_nc_prebuilt_remainder.cfg",
           "expect": {
             "result": "violation",
-            "property": "H3_AbsorbedBackedByDurableHistory"
+            "property": "I1_AckedReadableAfterRestart"
           }
         },
         {
-          "id": "TLA-016/nc-canonical-only",
+          "id": "TLA-016/nc-skip-7a",
           "role": "negative-control",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_nc_canonical_only.cfg",
+          "spec": "verification/tla/spill/MC_SealSpill.tla",
+          "config": "verification/tla/spill/MC_SealSpill_nc_skip_7a.cfg",
           "expect": {
             "result": "violation",
-            "property": "H3_AbsorbedBackedByDurableHistory"
+            "property": "F2_SealFlushLeavesNoSealedPage"
           }
         },
         {
-          "id": "TLA-016/nc-trim-to-proposed",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_nc_trim_to_proposed.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "StaleReaderRangeIntact"
-          }
-        },
-        {
-          "id": "TLA-016/nc-duplicate-collapse",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_nc_duplicate_collapse.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "StaleReaderRangeIntact"
-          }
-        },
-        {
-          "id": "TLA-016/nc-tick-trim-to-absorbed",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_nc_tick_trim_to_absorbed.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "StaleReaderRangeIntact"
-          }
-        },
-        {
-          "id": "TLA-016/nc-lastcopy-publish-before-flush",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_nc_lastcopy_publish_before_flush.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "LastRecoverableCopy"
-          }
-        },
-        {
-          "id": "TLA-016/nc-lastcopy-trim-past-absorbed",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_nc_lastcopy_trim_past_absorbed.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "LastRecoverableCopy"
-          }
-        },
-        {
-          "id": "TLA-016/nc-retire-chunk-bytes",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_nc_retire_chunk_bytes.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "LedgerExact"
-          }
-        },
-        {
-          "id": "TLA-016/nc-retire-chunk-bytes-overlap",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_nc_retire_chunk_bytes_overlap.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "LedgerExact"
-          }
-        },
-        {
-          "id": "TLA-016/nc-retire-chunk-bytes-liveness",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_nc_retire_chunk_bytes_liveness.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "AbsorptionCompletes"
-          }
-        },
-        {
-          "id": "TLA-016/nc-warm-install-from-plan",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_nc_warm_install_from_plan.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "CacheNeverProvesFalseAbsence"
-          }
-        },
-        {
-          "id": "TLA-016/nc-ungated-rollback",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_nc_ungated_rollback.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "DetachedOnlyAfterFault"
-          }
-        },
-        {
-          "id": "TLA-016/nc-settle-before-publish",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_nc_settle_before_publish.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "NoRegatherUnderInFlight"
-          }
-        },
-        {
-          "id": "TLA-016/nc-no-plan-rollback",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_nc_no_plan_rollback.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "AbsorptionCompletes"
-          }
-        },
-        {
-          "id": "TLA-016/probe-scan-per-row",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_probe_scan_per_row.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "PagesAdmit"
-          }
-        },
-        {
-          "id": "TLA-016/nc-cut-mid-page",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_nc_cut_mid_page.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "BoundaryOnPageEdge"
-          }
-        },
-        {
-          "id": "TLA-016/witness-TrimDurable",
+          "id": "TLA-016/witness-SealDurable",
           "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_TrimDurable.cfg",
+          "spec": "verification/tla/spill/MC_SealSpill.tla",
+          "config": "verification/tla/spill/MC_SealSpill_w_SealDurable.cfg",
           "expect": {
             "result": "violation",
-            "property": "Witness_TrimDurable"
+            "property": "Witness_SealDurable"
           }
         },
         {
-          "id": "TLA-016/witness-FullyAbsorbedDurable",
+          "id": "TLA-016/witness-RemainderCarriesLatePage",
           "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_FullyAbsorbedDurable.cfg",
+          "spec": "verification/tla/spill/MC_SealSpill.tla",
+          "config": "verification/tla/spill/MC_SealSpill_w_RemainderCarriesLatePage.cfg",
           "expect": {
             "result": "violation",
-            "property": "Witness_FullyAbsorbedDurable"
+            "property": "Witness_RemainderCarriesLatePage"
           }
         },
         {
-          "id": "TLA-016/witness-LostPublicationRecovered",
+          "id": "TLA-016/witness-SealGroupCarriesAppend",
           "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_LostPublicationRecovered.cfg",
+          "spec": "verification/tla/spill/MC_SealSpill.tla",
+          "config": "verification/tla/spill/MC_SealSpill_w_SealGroupCarriesAppend.cfg",
           "expect": {
             "result": "violation",
-            "property": "Witness_LostPublicationRecovered"
+            "property": "Witness_SealGroupCarriesAppend"
           }
         },
         {
-          "id": "TLA-016/witness-FlushFailRecovered",
+          "id": "TLA-016/witness-CrashAfterSealRecovered",
           "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_FlushFailRecovered.cfg",
+          "spec": "verification/tla/spill/MC_SealSpill.tla",
+          "config": "verification/tla/spill/MC_SealSpill_w_CrashAfterSealRecovered.cfg",
           "expect": {
             "result": "violation",
-            "property": "Witness_FlushFailRecovered"
+            "property": "Witness_CrashAfterSealRecovered"
           }
         },
         {
-          "id": "TLA-016/witness-StaleDuplicateIgnored",
+          "id": "TLA-016/witness-DeadlineCarriesSealedPages",
           "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_StaleDuplicateIgnored.cfg",
+          "spec": "verification/tla/spill/MC_SealSpill.tla",
+          "config": "verification/tla/spill/MC_SealSpill_w_DeadlineCarriesSealedPages.cfg",
           "expect": {
             "result": "violation",
-            "property": "Witness_StaleDuplicateIgnored"
-          }
-        },
-        {
-          "id": "TLA-016/witness-CrashRecovered",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_CrashRecovered.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_CrashRecovered"
-          }
-        },
-        {
-          "id": "TLA-016/witness-GatherOverTrimmedPrefix",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_GatherOverTrimmedPrefix.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_GatherOverTrimmedPrefix"
-          }
-        },
-        {
-          "id": "TLA-016/witness-StaleSnapshotLosesTail",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_StaleSnapshotLosesTail.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_StaleSnapshotLosesTail"
-          }
-        },
-        {
-          "id": "TLA-016/witness-TwoAdvancesNotDurable",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_TwoAdvancesNotDurable.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_TwoAdvancesNotDurable"
-          }
-        },
-        {
-          "id": "TLA-016/witness-EvictedMarkPrunedInFlight",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_EvictedMarkPrunedInFlight.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_EvictedMarkPrunedInFlight"
-          }
-        },
-        {
-          "id": "TLA-016/witness-RingGatherBelowTrim",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_RingGatherBelowTrim.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_RingGatherBelowTrim"
-          }
-        },
-        {
-          "id": "TLA-016/witness-WarmBridgeCovers",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_WarmBridgeCovers.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_WarmBridgeCovers"
-          }
-        },
-        {
-          "id": "TLA-016/witness-InstallStartsAbovePlan",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_InstallStartsAbovePlan.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_InstallStartsAbovePlan"
-          }
-        },
-        {
-          "id": "TLA-016/witness-RefusalHealed",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_RefusalHealed.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_RefusalHealed"
-          }
-        },
-        {
-          "id": "TLA-016/witness-MateDelaysRollback",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_MateDelaysRollback.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_MateDelaysRollback"
-          }
-        },
-        {
-          "id": "TLA-016/witness-OverlapAdmittedRefusedChain",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_OverlapAdmittedRefusedChain.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_OverlapAdmitted"
-          }
-        },
-        {
-          "id": "TLA-016/witness-OverlapAdmittedPrune",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_OverlapAdmittedPrune.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_OverlapAdmitted"
-          }
-        },
-        {
-          "id": "TLA-016/witness-OverlapAdmittedNewOwner",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_HistoryAbsorb.tla",
-          "config": "verification/tla/history/MC_HistoryAbsorb_w_OverlapAdmittedNewOwner.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_OverlapAdmitted"
+            "property": "Witness_DeadlineCarriesSealedPages"
           }
         }
-      ],
-      "regressions": [
-        "dst::dst_tests::billing_maintenance::refused_absorbed_chunk_leaves_no_phantom_backlog",
-        "shard::commit_plan::tests::retire_absorbed_retires_only_a_copy_that_starts_at_the_boundary",
-        "shard::commit_plan::tests::a_stream_settles_when_its_last_receipt_drops",
-        "shard::maintenance_tests::an_advance_that_overlaps_the_boundary_retires_nothing_and_fails_no_append",
-        "shard::maintenance_tests::an_advance_that_skips_offsets_is_dropped_whole",
-        "shard::maintenance_tests::a_receipted_advance_settles_only_after_its_group_is_durable",
-        "shard::maintenance_tests::a_refused_advance_settles_with_its_group",
-        "shard::commit_plan::loom_tests::quality_loom_an_unconditional_rollback_never_retires_a_byte_twice",
-        "shard::commit_plan::loom_tests::quality_loom_an_upto_only_retirement_counts_a_regathered_overlap_twice",
-        "shard::commit_plan::loom_tests::quality_loom_an_unsettled_batch_keeps_its_lane_mark",
-        "shard::commit_plan::loom_tests::quality_loom_an_unconditional_rollback_regathers_under_an_unsettled_batch",
-        "shard::commit_plan::loom_tests::quality_loom_a_refused_batch_is_regathered_from_the_durable_boundary",
-        "shard::commit_plan::loom_tests::quality_loom_a_shared_bucket_only_delays_a_rollback",
-        "history::bounded_discovery_tests::a_regather_from_the_submitted_mark_retires_each_byte_once",
-        "history::bounded_discovery_tests::a_rescan_during_an_inflight_advance_never_fails_an_append",
-        "history::bounded_discovery_tests::a_rescan_during_an_inflight_advance_regathers_from_the_submitted_mark",
-        "history::bounded_discovery_tests::a_refused_advance_is_regathered_from_the_durable_boundary",
-        "history::bounded_discovery_tests::a_refused_advance_heals_at_its_next_gather_under_a_busy_absorber",
-        "history::bounded_discovery_tests::a_regather_across_a_detached_chunk_keeps_the_index_readable",
-        "history::bounded_discovery_tests::a_new_owner_regather_across_inherited_chunks_keeps_the_index_readable",
-        "history::bounded_discovery_tests::stale_regather_never_warms_a_trimmed_head_as_absent",
-        "postings_cache::tests::a_regather_install_after_an_eviction_proves_nothing_below_its_rows",
-        "postings_cache::tests::a_demand_bridge_never_crosses_an_unadmitted_install",
-        "postings_cache::tests::an_install_bridge_never_crosses_an_unadmitted_install",
-        "postings_cache::tests::a_bridge_never_crosses_a_chunk_that_found_its_key_short",
-        "history::bounded_discovery_tests::a_warm_bridge_never_crosses_an_unadmitted_install",
-        "dst::dst_tests::reads_ring::a_duplicate_absorbed_op_does_not_advance_the_trim",
-        "verification/tla/history/evidence/TLA-016_ledger_under_retire.trace.txt",
-        "verification/tla/history/evidence/TLA-016_ledger_over_retire.trace.txt",
-        "verification/tla/history/evidence/TLA-016_liveness_stall.trace.txt",
-        "verification/tla/history/evidence/TLA-016_cache_false_absence.trace.txt",
-        "verification/tla/history/evidence/TLA-016_overlap_admitted_refused_chain.trace.txt",
-        "verification/tla/history/evidence/TLA-016_overlap_admitted_prune.trace.txt",
-        "verification/tla/history/evidence/TLA-016_overlap_admitted_new_owner.trace.txt"
       ]
     },
     {
       "id": "TLA-018",
       "kind": "tla",
-      "title": "Exact composition of history, hot storage, and read visibility",
+      "title": "Exact composition of the ring, sealed chunks and unsealed pages under read visibility",
       "status": "pass-with-recorded-scope",
-      "owner": "merged read path: execute_segment, the absorption race check, the durable resume cursor and the provisional continuation",
+      "owner": "the layout 6 read: execute_segment and read_stream_window (P, the visibility end and the capture of the unsealed pages under one state lock, TLA-018-F4), the ring, the directory plan with key-summary skips and the honest partial, and read_unsealed over the capture",
       "source_paths": [
         "src/application/read.rs",
-        "src/application/read_request.rs",
-        "src/application/read_continuation.rs",
-        "src/application/read_budget.rs",
         "src/shard/record.rs",
-        "src/history/postings_read.rs",
-        "src/history.rs"
+        "src/shard/seal/read.rs",
+        "src/shard/seal/steps.rs",
+        "src/shard/transaction/overlay.rs",
+        "src/spill/directory.rs",
+        "src/spill/pending.rs",
+        "src/shard/tail_ring.rs"
       ],
       "verification_paths": [
-        "verification/tla/history/ReadCompose.tla",
-        "verification/tla/history/MC_ReadCompose.tla"
+        "verification/tla/spill/SealRead.tla",
+        "verification/tla/spill/MC_SealRead.tla"
       ],
       "requirements": [
         "H1",
         "H2",
         "H9",
         "H10",
-        "H11",
         "D8",
         "D9"
       ],
       "models": [
-        "TLA-012",
-        "TLA-015",
         "TLA-016",
-        "TLA-019",
-        "TLA-020",
-        "TLA-021",
+        "TLA-012",
         "KANI-022"
       ],
       "assumptions": [
         "ASM-SLATEDB-DURABLE",
-        "ASM-HISTORY-FENCED-VIEW",
-        "ASM-SLATEDB-GC",
-        "ASM-HISTORY-WRITER",
-        "ASM-HISTORY-POSTINGS-CACHE",
-        "ASM-HISTORY-RING"
+        "ASM-HISTORY-RING",
+        "ASM-SEAL-OBJECT-IMMUTABLE"
       ],
-      "input_scope": "one stream incarnation and segment, 3 offsets with routing keys K1, K2, K1 and sizes 3, 1, 1 bytes, page request 2 bytes (the first record exceeds a page); durable and applied visibility, keyed (K1) and unfiltered reads; small shapes: 3 records durable at Init, 4 pages; expanded shapes: 1 durable record and 2 appends during the reads, 5 pages; up to 2 applied-not-durable commit groups; 1 ownership move; race-check loop bound 2 (production 16); trim allowances {0,1,3}; durable tail ring (durable mode); corrupt postings and short postings windows (keyed); history read errors on the current engine (small shapes); applied-mode provisional continuations bound to the serving engine (writer epoch) and an observation digest, verified by a re-read on another engine or refused with the durable recovery cursor, and V2 positions refused past the durable frontier (applied expanded shapes, keyed and unfiltered); the probes lose a durable postings page or canonical row. No symmetry, no state or action constraints.",
+      "regressions": [
+        "shard::seal::read_tests::sealed_ranges_read_back_exactly_across_chunks_anchors_and_budgets",
+        "shard::seal::read_tests::a_reader_racing_a_seal_gets_exact_data_at_both_visibilities",
+        "shard::seal::read_tests::negative_control_a_directory_published_after_the_commit_leaves_a_hole",
+        "shard::seal::read_tests::a_keyed_read_skips_chunks_the_summary_excludes_without_a_get",
+        "shard::seal::read_tests::a_bloom_false_positive_costs_one_get_that_serves_nothing",
+        "shard::seal::read_tests::a_read_that_captured_its_boundary_before_a_seal_commits_serves_exact_data"
+      ],
+      "input_scope": "one stream of one shard, 3 one-record offsets with routing keys K1, K2, K1 (4 offsets K1, K2, K1, K2 in the expanded shape); durable and applied visibility, unfiltered and keyed (K1) reads; a client paging from offset 0, 3 reads (4 expanded), each with a scan window of 3 offsets (2 expanded) and a page budget drawn from 1-2 that stands for every early stop; R1 (P, the end and a capture of the unsealed pages from max(cursor, P) below the end, at most the budget, under one lock), the sealed part (the ring when it holds the whole part, else the directory's chunks: summary skips consumed, fetched pages filtered, a hole ends the read short) and the unsealed part read from the capture, each an atomic step; the writer's appends, durable dispatch (filling the ring), ring eviction, and 2 seals (3 expanded) of one-page chunks whose summaries may admit a key they lack (keyed shapes), published before the commit; no crash, refusal, GC or multi-record pages. No symmetry, no constraints.",
       "checks": [
         {
-          "id": "TLA-018/baseline-durable-keyed-small",
+          "id": "TLA-018/baseline-durable-unfiltered",
           "role": "baseline",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_durable_keyed_small.cfg",
+          "spec": "verification/tla/spill/MC_SealRead.tla",
+          "config": "verification/tla/spill/MC_SealRead_durable_unfiltered.cfg",
           "expect": {
             "result": "pass"
           },
-          "timeout_seconds": 3600
+          "timeout_seconds": 1800
         },
         {
-          "id": "TLA-018/baseline-durable-unfiltered-small",
+          "id": "TLA-018/baseline-durable-keyed",
           "role": "baseline",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_durable_unfiltered_small.cfg",
-          "expect": {
-            "result": "pass"
-          }
-        },
-        {
-          "id": "TLA-018/baseline-applied-keyed-small",
-          "role": "baseline",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_applied_keyed_small.cfg",
+          "spec": "verification/tla/spill/MC_SealRead.tla",
+          "config": "verification/tla/spill/MC_SealRead_durable_keyed.cfg",
           "expect": {
             "result": "pass"
           },
-          "timeout_seconds": 3600
+          "timeout_seconds": 1800
         },
         {
-          "id": "TLA-018/baseline-applied-unfiltered-small",
+          "id": "TLA-018/baseline-applied-unfiltered",
           "role": "baseline",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_applied_unfiltered_small.cfg",
-          "expect": {
-            "result": "pass"
-          }
-        },
-        {
-          "id": "TLA-018/baseline-durable-keyed-expanded",
-          "role": "baseline",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_durable_keyed_expanded.cfg",
+          "spec": "verification/tla/spill/MC_SealRead.tla",
+          "config": "verification/tla/spill/MC_SealRead_applied_unfiltered.cfg",
           "expect": {
             "result": "pass"
           },
-          "timeout_seconds": 5400
+          "timeout_seconds": 1800
         },
         {
-          "id": "TLA-018/baseline-durable-unfiltered-expanded",
+          "id": "TLA-018/baseline-applied-keyed",
           "role": "baseline",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_durable_unfiltered_expanded.cfg",
-          "expect": {
-            "result": "pass"
-          }
-        },
-        {
-          "id": "TLA-018/baseline-applied-unfiltered-expanded",
-          "role": "baseline",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_applied_unfiltered_expanded.cfg",
+          "spec": "verification/tla/spill/MC_SealRead.tla",
+          "config": "verification/tla/spill/MC_SealRead_applied_keyed.cfg",
           "expect": {
             "result": "pass"
           },
-          "timeout_seconds": 3600
+          "timeout_seconds": 1800
         },
         {
           "id": "TLA-018/baseline-applied-keyed-expanded",
           "role": "baseline",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_applied_keyed_expanded.cfg",
+          "spec": "verification/tla/spill/MC_SealRead.tla",
+          "config": "verification/tla/spill/MC_SealRead_applied_keyed_expanded.cfg",
           "expect": {
             "result": "pass"
           },
-          "timeout_seconds": 5400
+          "timeout_seconds": 3600
         },
         {
-          "id": "TLA-018/baseline-pages-applied-unfiltered",
-          "role": "baseline",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_pages_applied_unfiltered.cfg",
-          "expect": {
-            "result": "pass"
-          }
-        },
-        {
-          "id": "TLA-018/baseline-pages-durable-keyed",
-          "role": "baseline",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_pages_durable_keyed.cfg",
-          "expect": {
-            "result": "pass"
-          }
-        },
-        {
-          "id": "TLA-018/baseline-lost-page-refused",
-          "role": "baseline",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_lost_page_refused.cfg",
-          "expect": {
-            "result": "pass"
-          }
-        },
-        {
-          "id": "TLA-018/nc-old-history-view",
+          "id": "TLA-018/nc-late-directory",
           "role": "negative-control",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_nc_old_history_view.cfg",
+          "spec": "verification/tla/spill/MC_SealRead.tla",
+          "config": "verification/tla/spill/MC_SealRead_nc_late_directory.cfg",
           "expect": {
             "result": "violation",
-            "property": "ExactDurablePrefix"
+            "property": "NoShortRead"
           }
         },
         {
-          "id": "TLA-018/nc-filtered-race-never",
+          "id": "TLA-018/nc-hole-consumed",
           "role": "negative-control",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_nc_filtered_race_never.cfg",
+          "spec": "verification/tla/spill/MC_SealRead.tla",
+          "config": "verification/tla/spill/MC_SealRead_nc_hole_consumed.cfg",
           "expect": {
             "result": "violation",
-            "property": "ExactDurablePrefix"
+            "property": "NoSkip"
           }
         },
         {
-          "id": "TLA-018/nc-short-index-accepted",
+          "id": "TLA-018/nc-summary-under",
           "role": "negative-control",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_nc_short_index_accepted.cfg",
+          "spec": "verification/tla/spill/MC_SealRead.tla",
+          "config": "verification/tla/spill/MC_SealRead_nc_summary_under.cfg",
           "expect": {
             "result": "violation",
-            "property": "ExactDurablePrefix"
+            "property": "NoSkip"
           }
         },
         {
-          "id": "TLA-018/nc-applied-race-remote",
+          "id": "TLA-018/nc-second-lock",
           "role": "negative-control",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_nc_applied_race_remote.cfg",
+          "spec": "verification/tla/spill/MC_SealRead.tla",
+          "config": "verification/tla/spill/MC_SealRead_nc_second_lock.cfg",
           "expect": {
             "result": "violation",
-            "property": "ExactDurablePrefix"
+            "property": "NoReadError"
           }
         },
         {
-          "id": "TLA-018/nc-applied-race-remote-unfiltered",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_nc_applied_race_remote_unfiltered.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "TailGapExplained"
-          }
-        },
-        {
-          "id": "TLA-018/nc-no-continuation-check",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_nc_no_continuation_check.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "ExactDurablePrefix"
-          }
-        },
-        {
-          "id": "TLA-018/probe-lost-durable-postings",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_probe_lost_postings.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "ExactDurablePrefix"
-          }
-        },
-        {
-          "id": "TLA-018/nc-no-tiling-check",
-          "role": "negative-control",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_nc_no_tiling_check.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "ExactDurablePrefix"
-          }
-        },
-        {
-          "id": "TLA-018/witness-BoundaryRaceAdopted",
+          "id": "TLA-018/witness-ReadSpansBoundary",
           "role": "witness",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_w_BoundaryRaceAdopted.cfg",
+          "spec": "verification/tla/spill/MC_SealRead.tla",
+          "config": "verification/tla/spill/MC_SealRead_w_ReadSpansBoundary.cfg",
           "expect": {
             "result": "violation",
-            "property": "Witness_BoundaryRaceAdopted"
-          }
-        },
-        {
-          "id": "TLA-018/witness-UnfilteredRaceAdopted",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_w_UnfilteredRaceAdopted.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_BoundaryRaceAdopted"
-          }
-        },
-        {
-          "id": "TLA-018/witness-AppliedRaceAdopted",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_w_AppliedRaceAdopted.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_AppliedRaceAdopted"
-          }
-        },
-        {
-          "id": "TLA-018/witness-LargeFirstRecordDelivered",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_w_LargeFirstRecordDelivered.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_LargeFirstRecordDelivered"
-          }
-        },
-        {
-          "id": "TLA-018/witness-EnvelopeServed",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_w_EnvelopeServed.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_EnvelopeServed"
-          }
-        },
-        {
-          "id": "TLA-018/witness-ShortIndexPartial",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_w_ShortIndexPartial.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_ShortIndexPartial"
-          }
-        },
-        {
-          "id": "TLA-018/witness-ReadFromFencedEngine",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_w_ReadFromFencedEngine.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_ReadFromFencedEngine"
+            "property": "Witness_ReadSpansBoundary"
           }
         },
         {
           "id": "TLA-018/witness-RingServed",
           "role": "witness",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_w_RingServed.cfg",
+          "spec": "verification/tla/spill/MC_SealRead.tla",
+          "config": "verification/tla/spill/MC_SealRead_w_RingServed.cfg",
           "expect": {
             "result": "violation",
             "property": "Witness_RingServed"
           }
         },
         {
-          "id": "TLA-018/witness-ReaderCompletes",
+          "id": "TLA-018/witness-SummarySkip",
           "role": "witness",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_w_ReaderCompletes.cfg",
+          "spec": "verification/tla/spill/MC_SealRead.tla",
+          "config": "verification/tla/spill/MC_SealRead_w_SummarySkip.cfg",
           "expect": {
             "result": "violation",
-            "property": "Witness_ReaderCompletes"
+            "property": "Witness_SummarySkip"
           }
         },
         {
-          "id": "TLA-018/witness-TrimBelowReaderCursor",
+          "id": "TLA-018/witness-UnsealedReadRacesSeal",
           "role": "witness",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_w_TrimBelowReaderCursor.cfg",
+          "spec": "verification/tla/spill/MC_SealRead.tla",
+          "config": "verification/tla/spill/MC_SealRead_w_UnsealedReadRacesSeal.cfg",
           "expect": {
             "result": "violation",
-            "property": "Witness_TrimBelowReaderCursor"
-          }
-        },
-        {
-          "id": "TLA-018/witness-ReadErrorCurrentEngine",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_w_ReadErrorCurrentEngine.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_ReadErrorCurrentEngine"
-          }
-        },
-        {
-          "id": "TLA-018/witness-ContinuedAcrossMove",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_w_ContinuedAcrossMove.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_ContinuedAcrossMove"
-          }
-        },
-        {
-          "id": "TLA-018/witness-StaleContinuationResynced",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_w_StaleContinuationResynced.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_StaleContinuationResynced"
-          }
-        },
-        {
-          "id": "TLA-018/witness-CursorInsidePage",
-          "role": "witness",
-          "spec": "verification/tla/history/MC_ReadCompose.tla",
-          "config": "verification/tla/history/MC_ReadCompose_w_CursorInsidePage.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_CursorInsidePage"
+            "property": "Witness_UnsealedReadRacesSeal"
           }
         }
-      ],
-      "regressions": [
-        "dst::dst_tests::reads_applied::applied_keyed_read_never_skips_rows_trimmed_by_a_non_durable_advance",
-        "dst::dst_tests::reads_applied::a_stale_applied_cursor_is_refused_after_crash_restart",
-        "dst::dst_tests::reads_applied_history::a_stale_unfiltered_continuation_is_refused_after_the_replacement_tail_passes_it",
-        "dst::dst_tests::reads_applied_history::a_stale_keyed_continuation_is_refused_after_the_replacement_tail_passes_it",
-        "dst::dst_tests::reads_applied_history::an_owner_change_that_loses_nothing_keeps_the_continuation",
-        "application::read_continuation::tests::only_the_observed_records_prove_a_replaced_history",
-        "application::read_continuation::tests::a_digest_carried_across_pages_equals_the_single_page_digest",
-        "application::read_continuation::tests::a_session_started_at_the_applied_tail_cannot_be_verified",
-        "verification/regressions/TLA-018-F3/README.md",
-        "verification/tla/history/evidence/TLA-018_applied_keyed_skip.trace.txt",
-        "verification/tla/history/evidence/TLA-018_applied_stale_cursor.trace.txt"
       ]
     },
     {

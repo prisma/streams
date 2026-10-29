@@ -1,20 +1,12 @@
-//! History absorption.
+//! History absorption, layout 6: records acked on the shard log stay
+//! readable, exactly, once the sealer has moved them into segment objects —
+//! keylessly, across chunks of one page, across an engine handoff, and for
+//! a residual too small for any byte trigger.
 
-use super::fixture_storage::{drain_filtered, mem, open_engine_with_absorber, skey};
+use super::fixture_storage::{drain_filtered, mem, open_engine, open_engine_with_sealer, skey};
 use crate::dst::{FaultPlan, FaultStore, OpLog, Workload, drain_observed, mech};
-use object_store::ObjectStore;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::time::Duration;
 
-/// I1 across the tier boundary. Records acknowledged on the shard log must
-/// still be readable — through the production merged reader — after the
-/// absorber has moved them into the history tier and the shard log has
-/// been trimmed behind them.
-///
-/// The first version of this harness discarded the absorber channel
-/// entirely and read straight off the shard log, so history DB creation,
-/// block encryption, the absorbed-boundary publication, trimming and the
-/// merge were all untested.
 /// Looks at the stream's durable tail up to `tries` times, 25 ms apart,
 /// until `ready` holds; returns the last tail seen, if the handle existed.
 async fn durable_tail(
@@ -26,7 +18,7 @@ async fn durable_tail(
     let mut last = None;
     for _ in 0..tries {
         let Ok(handle) = engine.stream_handle(hash).await else {
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            tokio::time::sleep(Duration::from_millis(25)).await;
             continue;
         };
         let tail = handle.state.lock().unwrap().durable.clone();
@@ -35,19 +27,53 @@ async fn durable_tail(
         if done {
             return last;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
     last
 }
 
+/// The stream's durable records from offset 0 through the production
+/// merged reader: (offset, payload) in order.
+async fn read_all(
+    engine: &std::sync::Arc<crate::shard::ShardEngine>,
+    hash: [u8; 16],
+    key: &crate::crypto::StreamKey,
+) -> Vec<(u64, Vec<u8>)> {
+    let handle = engine.stream_handle(hash).await.expect("handle");
+    let mut out = Vec::new();
+    for _ in 0..64 {
+        let from = out.last().map_or(0, |(off, _)| off + 1);
+        let page = crate::http::read_merged(
+            key,
+            &hash,
+            &handle,
+            engine,
+            from,
+            None,
+            8 * 1024 * 1024,
+            crate::shard::Deliver::Durable,
+        )
+        .await
+        .expect("read");
+        out.extend(page.recs.iter().map(|rec| (rec.off, rec.payload.to_vec())));
+        if page.completed || page.recs.is_empty() {
+            break;
+        }
+    }
+    out
+}
+
+/// I1 across the tier boundary. Records acknowledged on the shard log must
+/// still be readable — through the production merged reader — after the
+/// sealer has moved them into segment objects, while later records are
+/// still unsealed pages.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn acked_records_survive_absorption_into_history() {
-    let inner = mem();
-    let store = FaultStore::uniform(inner.clone(), 17, FaultPlan::new(0, 0, 10));
+    let store = FaultStore::uniform(mem(), 17, FaultPlan::new(0, 0, 10));
     let cov = store.coverage();
     let key = skey();
     let hash = [8u8; 16];
-    let (engine, absorber) = open_engine_with_absorber(store.clone(), "dst-hist").await;
+    let (engine, _cadence) = open_engine_with_sealer(store.clone(), "dst-hist").await;
 
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
@@ -55,173 +81,45 @@ async fn acked_records_survive_absorption_into_history() {
         .await;
     assert!(log.total_acked() > 0, "nothing acked");
 
-    // Wait for the absorbed boundary to advance past zero.
-    let absorbed = durable_tail(&engine, hash, 400, |t| t.absorbed > 0)
+    // Wait for the sealed boundary to advance past zero.
+    let sealed = durable_tail(&engine, hash, 400, |t| t.absorbed > 0)
         .await
         .map_or(0, |t| t.absorbed);
     assert!(
-        absorbed > 0,
-        "the absorber never advanced the boundary — the scenario would only \
+        sealed > 0,
+        "the sealer never advanced the boundary — the scenario would only \
          have tested the shard log again"
     );
 
-    let _ds: Arc<dyn ObjectStore> = store.clone();
     let observed = drain_observed(&engine, hash, &key, &cov).await;
     if let Err(e) = log.audit(&observed) {
-        panic!("absorbed={absorbed}: {e}\ncoverage={:?}", cov.snapshot());
+        panic!("sealed={sealed}: {e}\ncoverage={:?}", cov.snapshot());
     }
     if let Err(e) = cov.require(&[mech::READ_FROM_HISTORY]) {
         panic!("{e}");
     }
-    absorber.abort();
+    engine.begin_close();
 }
 
-/// Signals are the absorber's fast path, not its source of truth. The
-/// signal channel is a bounded `try_send` (it provably drops ~35k of
-/// 100k seed signals, docs/COST-WIDE1.md §3), and a restarted instance
-/// has no signals for pre-crash data. The re-discovery sweep must find
-/// unabsorbed streams from the engine's resident handles with NO signal
-/// ever delivered.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn absorber_sweep_recovers_streams_whose_signals_were_lost() {
-    let inner = mem();
-    let store = FaultStore::uniform(inner.clone(), 51, FaultPlan::CLEAN);
-    let cov = store.coverage();
-    let key = skey();
-    let hash = [35u8; 16];
-
-    let db = slatedb::Db::builder("dst-sweep", store.clone() as Arc<dyn ObjectStore>)
-        .with_settings(slatedb::config::Settings {
-            flush_interval: Some(std::time::Duration::from_millis(5)),
-            manifest_poll_interval: std::time::Duration::from_millis(50),
-            ..Default::default()
-        })
-        .build()
-        .await
-        .expect("open db");
-    // The engine's signal channel goes nowhere: rx dropped on the spot.
-    let (engine_tx, engine_rx) = crate::history::absorber_channel();
-    drop(engine_rx);
-    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
-    // zero; a reopened DB restores its durable backlog, exactly as
-    // the production opener does.
-    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-        .await
-        .expect("load maintenance");
-    let engine = crate::shard::ShardEngine::start(
-        "dst-sweep".to_string(),
-        Arc::new(db),
-        store.clone(),
-        crate::shard::ShardConfig::default(),
-        engine_tx,
-        None,
-        __maint,
-    );
-    // The absorber listens on a channel that never carries a signal. Keep
-    // the sender alive: a closed channel would exit the absorber loop.
-    let (_quiet_tx, quiet_rx) = crate::history::absorber_channel();
-    let absorber = crate::history::Absorber::start(
-        engine.clone(),
-        crate::history::AbsorberConfig {
-            threshold_bytes: 1,
-            threshold_age: std::time::Duration::from_millis(1),
-            tick: std::time::Duration::from_millis(20),
-            sweep_every: 2,
-            ..Default::default()
-        },
-        quiet_rx,
-    );
-
-    let mut log = OpLog::default();
-    let mut w = Workload::new(cov.clone());
-    w.run(&engine, hash, &key, &["s"], 15, false, &mut log)
-        .await;
-    assert!(log.total_acked() > 0, "nothing acked");
-
-    // No signal was ever delivered; only the sweep can find this stream.
-    let caught = |t: &crate::shard::TailFields| t.absorbed > 0 && t.absorbed == t.next;
-    let caught_up = durable_tail(&engine, hash, 400, caught)
-        .await
-        .is_some_and(|t| caught(&t));
-    assert!(
-        caught_up,
-        "the sweep never absorbed the signal-less stream — lost signals \
-         mean lost absorption"
-    );
-    let _ds: Arc<dyn ObjectStore> = store.clone();
-    let observed = drain_observed(&engine, hash, &key, &cov).await;
-    if let Err(e) = log.audit(&observed) {
-        panic!("sweep-absorbed stream lost records: {e}");
-    }
-    absorber.abort();
-}
-
-/// CHAOS 2026-08-09: a gather TRUNCATED by the per-stream byte cap
-/// reported its stream as `advanced` — fully drained — and the tick
-/// loop retired it from the pending set. Nothing re-drove the
-/// remainder: 8x100 KiB behind a 64 KiB cap absorbed exactly ONE
-/// record and then stopped forever (field repro: 3x32 MiB frames left
-/// 67 MB parked in the shard log across sweeps, rescans, restarts and
-/// fresh append signals — one record per process boot). Reads stayed
-/// correct (they merge the shard log), so the damage is unbounded hot-
-/// tier growth and a trim boundary that can never advance, which is
-/// precisely the cost/memory failure the absorber exists to prevent.
-/// The gather now reports a PARTIAL advance and the caller keeps such
-/// streams pending, so absorption CONVERGES.
+/// CHAOS 2026-08-09, layout 6: records larger than a chunk's bound must
+/// still seal whole. Here a chunk holds one page, and ONE append carries
+/// six 100 KiB records (each past the 64 KiB page target, so a page each):
+/// one requested seal must move the boundary to next across six chunks,
+/// and every record must read back byte for byte from the object.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn absorber_drains_records_larger_than_the_per_stream_gather_cap() {
-    let inner = mem();
-    let store = FaultStore::uniform(inner.clone(), 77, FaultPlan::CLEAN);
+    let store = FaultStore::uniform(mem(), 77, FaultPlan::CLEAN);
     let key = skey();
     let hash = [77u8; 16];
+    let engine = open_engine(store.clone(), "dst-bigrec").await;
+    engine.configure_seal(|s| {
+        s.auto = false;
+        s.max_pages_per_chunk = 1;
+    });
 
-    let db = slatedb::Db::builder("dst-bigrec", store.clone() as Arc<dyn ObjectStore>)
-        .with_settings(slatedb::config::Settings {
-            flush_interval: Some(std::time::Duration::from_millis(5)),
-            manifest_poll_interval: std::time::Duration::from_millis(50),
-            ..Default::default()
-        })
-        .build()
-        .await
-        .expect("open db");
-    let (engine_tx, engine_rx) = crate::history::absorber_channel();
-    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
-    // zero; a reopened DB restores its durable backlog, exactly as
-    // the production opener does.
-    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-        .await
-        .expect("load maintenance");
-    let engine = crate::shard::ShardEngine::start(
-        "dst-bigrec".to_string(),
-        Arc::new(db),
-        store.clone(),
-        crate::shard::ShardConfig::default(),
-        engine_tx,
-        None,
-        __maint,
-    );
-    // 64 KiB gather cap: EVERY record below is bigger, so every gather
-    // is truncated after exactly one record.
-    let absorber = crate::history::Absorber::start(
-        engine.clone(),
-        crate::history::AbsorberConfig {
-            threshold_bytes: 1,
-            threshold_age: std::time::Duration::from_millis(1),
-            tick: std::time::Duration::from_millis(20),
-            gather_max_bytes: 64 * 1024,
-            sweep_every: 100_000, // the sweep must NOT be what saves us
-            ..Default::default()
-        },
-        engine_rx,
-    );
-
-    // ONE batched append carrying SIX oversized records: one signal,
-    // six gathers needed. (Six separate appends would emit six signals
-    // and mask the wedge — each fresh signal re-adds the stream to the
-    // pending set, which is exactly why the field only saw this with
-    // few-appends/much-data.)
     const RECORDS: usize = 6;
     const SIZE: usize = 100 * 1024;
+    let fills: Vec<u8> = (b'a'..).take(RECORDS).collect();
     {
         let subkey = crate::crypto::derive_subkey(&key, &hash, "k", 0);
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -229,9 +127,9 @@ async fn absorber_drains_records_larger_than_the_per_stream_gather_cap() {
             enqueued_at: std::time::Instant::now(),
             hash,
             route: hash,
-            entries: (b'a'..)
-                .take(RECORDS)
-                .map(|fill| bytes::Bytes::from(vec![fill; SIZE]))
+            entries: fills
+                .iter()
+                .map(|fill| bytes::Bytes::from(vec![*fill; SIZE]))
                 .collect(),
             usage: crate::usage::counters(&hash),
             routing_key: "k".to_string(),
@@ -255,70 +153,45 @@ async fn absorber_drains_records_larger_than_the_per_stream_gather_cap() {
         rx.await.expect("ack channel").expect("append acked");
     }
 
-    // Convergence: absorbed must REACH next. Before the fix this stuck
-    // one record in and never moved again.
-    let fully_drained = |t: &crate::shard::TailFields| t.next > 0 && t.absorbed == t.next;
-    let tail = durable_tail(&engine, hash, 400, fully_drained).await;
-    let last_seen = tail.as_ref().map_or((0, 0), |t| (t.absorbed, t.next));
-    let drained = tail.is_some_and(|t| fully_drained(&t));
-    assert!(
-        drained,
-        "absorption stalled with records larger than the gather cap: \
-         absorbed={} next={} (a truncated gather must keep the stream pending)",
-        last_seen.0, last_seen.1
+    let report = engine.seal_requested().await.expect("seal");
+    assert_eq!(
+        (report.streams, report.pages, report.chunks),
+        (1, RECORDS as u64, RECORDS),
+        "one stream's six pages seal as six one-page chunks"
     );
-    absorber.abort();
+    let tail = durable_tail(&engine, hash, 1, |_| true)
+        .await
+        .expect("tail");
+    assert_eq!(
+        (tail.absorbed, tail.next, tail.unabsorbed_bytes),
+        (RECORDS as u64, RECORDS as u64, 0),
+        "the seal must reach next and retire every unsealed byte"
+    );
+    let expected: Vec<(u64, Vec<u8>)> = (0u64..)
+        .zip(&fills)
+        .map(|(off, fill)| (off, vec![*fill; SIZE]))
+        .collect();
+    assert!(
+        read_all(&engine, hash, &key).await == expected,
+        "the sealed records must read back exactly"
+    );
+    engine.begin_close();
 }
 
-/// History v2's headline property: absorption WITHOUT the customer key.
-/// The gather lane copies raw encrypted frames into the shared
-/// partition, so the absorber, which holds no key cache, must still absorb
-/// — and the records must decode correctly on read, where the client
-/// supplies the key. (v1 required the key server-side and stranded
-/// key-expired backlogs; docs/COST-WIDE1.md §2.)
+/// Keyless sealing: the sealer holds no customer key — it moves encrypted
+/// pages into the object and writes key summaries of hashed routing keys —
+/// yet every record must decode on read, where the client supplies the
+/// key, and both filters must work over the sealed chunks. (v1 required
+/// the key server-side and stranded key-expired backlogs;
+/// docs/COST-WIDE1.md §2.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn v2_absorbs_without_customer_keys() {
-    let inner = mem();
-    let store = FaultStore::uniform(inner.clone(), 61, FaultPlan::new(0, 0, 10));
+    let store = FaultStore::uniform(mem(), 61, FaultPlan::new(0, 0, 10));
     let cov = store.coverage();
     let key = skey();
     let hash = [50u8; 16];
-
-    let db = slatedb::Db::builder("dst-v2nokey", store.clone() as Arc<dyn ObjectStore>)
-        .with_settings(slatedb::config::Settings {
-            flush_interval: Some(std::time::Duration::from_millis(5)),
-            manifest_poll_interval: std::time::Duration::from_millis(50),
-            ..Default::default()
-        })
-        .build()
-        .await
-        .expect("open db");
-    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
-    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
-    // zero; a reopened DB restores its durable backlog, exactly as
-    // the production opener does.
-    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-        .await
-        .expect("load maintenance");
-    let engine = crate::shard::ShardEngine::start(
-        "dst-v2nokey".to_string(),
-        Arc::new(db),
-        store.clone(),
-        crate::shard::ShardConfig::default(),
-        absorb_tx,
-        None,
-        __maint,
-    );
-    let absorber = crate::history::Absorber::start(
-        engine.clone(),
-        crate::history::AbsorberConfig {
-            threshold_bytes: 1,
-            threshold_age: std::time::Duration::from_millis(1),
-            tick: std::time::Duration::from_millis(20),
-            ..Default::default()
-        },
-        absorb_rx,
-    );
+    let engine = open_engine(store.clone(), "dst-v2nokey").await;
+    engine.configure_seal(|s| s.auto = false);
 
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
@@ -326,152 +199,101 @@ async fn v2_absorbs_without_customer_keys() {
         .await;
     assert!(log.total_acked() > 0, "nothing acked");
 
-    let tail = durable_tail(&engine, hash, 400, |t| t.absorbed > 0).await;
-    let absorbed = tail.as_ref().map_or(0, |t| t.absorbed);
-    if absorbed > 0 {
-        assert!(
-            tail.is_some_and(|t| t.history_v2),
-            "absorption advanced without the v2 flag"
-        );
-    }
+    let report = engine.seal_requested().await.expect("keyless seal");
+    assert_eq!(report.streams, 1, "the seal took the stream");
+    let tail = durable_tail(&engine, hash, 1, |_| true)
+        .await
+        .expect("tail");
     assert!(
-        absorbed > 0,
-        "keyless v2 absorption never advanced — the gather lane still \
-         depends on the customer key"
+        tail.absorbed > 0 && tail.absorbed == tail.next,
+        "keyless sealing must reach next: absorbed={} next={}",
+        tail.absorbed,
+        tail.next
     );
 
-    // Reads (client-supplied key) must see every acked record across the
-    // boundary, and filters must work against the shared partition.
-    let _ds: Arc<dyn ObjectStore> = store.clone();
+    // Reads (client-supplied key) must see every acked record, all from
+    // sealed chunks, and filters must work against their key summaries.
     let observed = drain_observed(&engine, hash, &key, &cov).await;
     if let Err(e) = log.audit(&observed) {
-        panic!("v2 keyless absorption lost records (absorbed={absorbed}): {e}");
+        panic!(
+            "keyless sealing lost records (sealed={}): {e}",
+            tail.absorbed
+        );
     }
     let unkeyed = drain_filtered(&engine, hash, &key, "").await;
-    assert_eq!(&unkeyed, &log.acked[""], "v2 empty-key filter broken");
+    assert_eq!(&unkeyed, &log.acked[""], "empty-key filter broken");
     let keyed = drain_filtered(&engine, hash, &key, "vk").await;
-    assert_eq!(&keyed, &log.acked["vk"], "v2 keyed filter broken");
-    absorber.abort();
+    assert_eq!(&keyed, &log.acked["vk"], "keyed filter broken");
+    engine.begin_close();
 }
 
-/// v2 history must survive the owner handing the shard to a NEW engine:
-/// the flags/route round-trip through the durable tail, the successor
-/// opens the shared partition itself (fencing the old writer), and every
-/// acked record stays readable — without any customer key ever reaching
-/// an absorber.
+/// Sealed history must survive the owner handing the shard to a NEW
+/// engine: the successor fences the old writer, rebuilds its directory
+/// from the `'K'` rows the old owner's seals committed, and serves every
+/// acked record — sealed by either owner or still unsealed — without any
+/// customer key reaching a sealer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn v2_history_survives_engine_handoff() {
-    let inner = mem();
-    let store = FaultStore::uniform(inner.clone(), 67, FaultPlan::CLEAN);
+    let store = FaultStore::uniform(mem(), 67, FaultPlan::CLEAN);
     let cov = store.coverage();
     let key = skey();
     let hash = [51u8; 16];
     let prefix = "dst-v2reopen";
 
-    let (a, absorber_a) = open_engine_with_absorber(store.clone(), prefix).await;
+    let (a, _cadence_a) = open_engine_with_sealer(store.clone(), prefix).await;
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
     w.run(&a, hash, &key, &["r"], 20, false, &mut log).await;
-    let absorbed = durable_tail(&a, hash, 400, |t| t.absorbed > 0)
+    let sealed = durable_tail(&a, hash, 400, |t| t.absorbed > 0)
         .await
         .map_or(0, |t| t.absorbed);
-    assert!(absorbed > 0, "no v2 absorption before the handoff");
+    assert!(sealed > 0, "no seal before the handoff");
 
-    // Successor opens the same shard; its first commit fences the old
-    // owner, its partition open fences the old partition writer.
-    let (b, absorber_b) = open_engine_with_absorber(store.clone(), prefix).await;
+    // Successor opens the same shard; its open fences the old owner and
+    // rebuilds the directory from the committed seals.
+    let (b, _cadence_b) = open_engine_with_sealer(store.clone(), prefix).await;
+    b.seal_ready().await.expect("the successor's sealer opens");
+    assert_eq!(
+        b.seal_json()["directory_streams"],
+        1,
+        "the successor's directory covers the old owner's sealed stream"
+    );
     // Same Workload: op numbering must continue, or the post-handoff ops
     // collide with the pre-handoff ones in the shared OpLog.
     w.run(&b, hash, &key, &["r"], 5, false, &mut log).await;
 
-    let _ds: Arc<dyn ObjectStore> = store.clone();
     let observed = drain_observed(&b, hash, &key, &cov).await;
     if let Err(e) = log.audit(&observed) {
-        panic!("v2 history lost records across the handoff: {e}");
+        panic!("sealed history lost records across the handoff: {e}");
     }
-    {
-        let h = b.stream_handle(hash).await.expect("handle");
-        let st = h.state.lock().unwrap();
-        assert!(
-            st.durable.history_v2,
-            "v2 flag lost across the tail round-trip"
-        );
-    }
-    absorber_a.abort();
-    absorber_b.abort();
     a.begin_close();
+    b.begin_close();
 }
 
-/// R26-1 regression: age absorption takes EVERYTHING — there is no
-/// sparse floor. The deleted interim policy (age absorption gated on
-/// min_age_bytes) could permanently trap an instance: a sub-threshold
-/// residual never retires, the durable no-progress clock ages past
-/// MAX_ABSORB_LAG_SECS, the LagSecs latch sheds every append on the
-/// instance — and shed appends are the only way the residual could ever
-/// grow eligible. The 2026-08-11 soak measured a 154 KiB residual at
-/// 938 s of stall, one evaluator tick from that deadlock.
+/// R26-1 regression, layout 6: age sealing takes EVERYTHING — there is no
+/// sparse floor. A sub-threshold residual that never retires ages the
+/// no-progress clock past MAX_ABSORB_LAG_SECS, the LagSecs latch sheds
+/// every append on the instance — and shed appends are the only way the
+/// residual could ever grow eligible. The 2026-08-11 soak measured a
+/// 154 KiB residual at 938 s of stall, one evaluator tick from that
+/// deadlock.
 ///
-/// Gate: a tiny stream (far under the old 256 KiB floor) and a fat one
-/// BOTH age-absorb; the shard's durable maintenance ledger returns to
-/// zero, so the progress latch has nothing to trip on.
+/// Gate: the sealer is off while a tiny stream (two small frames) and a
+/// fat one are written; then every byte trigger is put out of reach and
+/// the age made immediate. BOTH streams must age-seal and the shard's
+/// maintenance ledger must return to zero.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch() {
-    let inner = mem();
-    let store = FaultStore::uniform(inner.clone(), 57, FaultPlan::CLEAN);
+    let store = FaultStore::uniform(mem(), 57, FaultPlan::CLEAN);
     let cov = store.coverage();
     let key = skey();
     let tiny = [40u8; 16];
     let fat = [41u8; 16];
+    let engine = open_engine(store.clone(), "dst-defer").await;
+    engine.configure_seal(|s| s.auto = false);
 
-    let db = slatedb::Db::builder("dst-defer", store.clone() as Arc<dyn ObjectStore>)
-        .with_settings(slatedb::config::Settings {
-            flush_interval: Some(std::time::Duration::from_millis(5)),
-            manifest_poll_interval: std::time::Duration::from_millis(50),
-            ..Default::default()
-        })
-        .build()
-        .await
-        .expect("open db");
-    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
-    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
-    // zero; a reopened DB restores its durable backlog, exactly as
-    // the production opener does.
-    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-        .await
-        .expect("load maintenance");
-    let engine = crate::shard::ShardEngine::start(
-        "dst-defer".to_string(),
-        Arc::new(db),
-        store.clone(),
-        crate::shard::ShardConfig::default(),
-        absorb_tx,
-        None,
-        __maint,
-    );
-    let absorber = crate::history::Absorber::start(
-        engine.clone(),
-        crate::history::AbsorberConfig {
-            // Byte threshold out of reach; age immediate — absorption
-            // happens purely through the age trigger, which must take
-            // the 2-record stream exactly like the 60-record one.
-            threshold_bytes: 64 * 1024 * 1024,
-            threshold_age: std::time::Duration::from_millis(1),
-            tick: std::time::Duration::from_millis(20),
-            ..Default::default()
-        },
-        absorb_rx,
-    );
-
-    // Pause absorption while the workloads run so the final
-    // "absorbed == next" comparison is not racing a mid-workload pass.
-    engine
-        .history_resources
-        .paused
-        .store(true, Ordering::Relaxed);
     let mut tiny_log = OpLog::default();
     let mut w1 = Workload::new(cov.clone());
-    // ~2 small frames pending: far under the deleted 256 KiB floor —
-    // exactly the residual shape that used to defer forever.
     w1.run(&engine, tiny, &key, &["d"], 2, false, &mut tiny_log)
         .await;
     let mut fat_log = OpLog::default();
@@ -480,98 +302,51 @@ async fn tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch() {
         .await;
     assert!(
         engine.maintenance_snapshot().unabsorbed_frame_bytes > 0,
-        "workloads committed but the durable ledger shows no backlog"
+        "workloads committed but the ledger shows no backlog"
     );
-    engine
-        .history_resources
-        .paused
-        .store(false, Ordering::Relaxed);
+    engine.configure_seal(|s| {
+        s.memtable_bytes = u64::MAX;
+        s.unsealed_bytes = u64::MAX;
+        s.wal_objects_seal = u64::MAX;
+        s.age_seal = Duration::from_millis(1);
+        s.tick = Duration::from_millis(20);
+        s.auto = true;
+    });
 
-    // BOTH streams must age-absorb — the tiny one especially.
+    // BOTH streams must age-seal — the tiny one especially.
     let aged = |t: &crate::shard::TailFields| t.absorbed > 0 && t.absorbed == t.next;
     for (name, hash) in [("tiny", tiny), ("fat", fat)] {
-        let absorbed = durable_tail(&engine, hash, 400, aged)
+        let sealed = durable_tail(&engine, hash, 400, aged)
             .await
             .is_some_and(|t| aged(&t));
-        assert!(absorbed, "the {name} stream never age-absorbed");
+        assert!(sealed, "the {name} stream never age-sealed");
     }
 
-    // With everything retired the shard's durable maintenance ledger is
-    // zero — the no-progress latch has nothing to age on. THIS is the
-    // deadlock gate: a permanent residual here means an eventual
-    // instance-wide LagSecs shed that no append could ever clear.
+    // With everything retired the shard's maintenance ledger is zero —
+    // the no-progress latch has nothing to age on. THIS is the deadlock
+    // gate: a permanent residual here means an eventual instance-wide
+    // LagSecs shed that no append could ever clear.
     let mut drained = false;
     for _ in 0..400 {
         if engine.maintenance_snapshot().unabsorbed_frame_bytes == 0 {
             drained = true;
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
     assert!(
         drained,
-        "durable maintenance ledger kept a residual after full absorption"
+        "maintenance ledger kept a residual after full sealing"
     );
 
     // Both streams stay fully readable through the merged reader.
-    let _ds: Arc<dyn ObjectStore> = store.clone();
     let obs_tiny = drain_observed(&engine, tiny, &key, &cov).await;
     tiny_log
         .audit(&obs_tiny)
-        .expect("tiny stream readable from the shard log");
+        .expect("tiny stream readable after sealing");
     let obs_fat = drain_observed(&engine, fat, &key, &cov).await;
     fat_log
         .audit(&obs_fat)
-        .expect("fat stream readable after absorption");
-    absorber.abort();
-}
-
-/// S1, decided under the owner's delegation of 2026-10-11 to Fable 5.1: a
-/// gather whose flush waits at the history L0 cap resumes once compaction
-/// frees a slot, not at the partition's next manifest poll (300 s). The
-/// rig's absorber gathers every 20 ms and each gather flushes one L0 SST,
-/// so a burst of appends fills a partition's 64 slots before its compactor
-/// frees one. Once a gather's write waits there, every row the memtable
-/// holds is durable within 20 s and the Db's view of L0 is below the cap.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_gather_waiting_at_the_history_l0_cap_resumes_when_compaction_frees_a_slot() {
-    use super::fixture_http::{HttpRigOptions, http_rig_build, rows, waiting_at_its_cap};
-    use slatedb::config::DurabilityLevel::{Memory, Remote};
-    let rig = http_rig_build(
-        mem(),
-        super::fixture_runtime::RigRuntime::first(),
-        HttpRigOptions::default(),
-    )
-    .await;
-    let json = [("content-type", "application/json")];
-    let mut streams = 0;
-    let history = loop {
-        assert!(streams < 1_000, "no gather's write waited at an L0 cap");
-        let path = format!("/v1/stream/capped-{streams}");
-        let created = super::fixture_requests::hreq(rig.addr, "PUT", &path, &json, b"").await;
-        assert_eq!(created.0, 201);
-        let body = br#"[{"n":1}]"#;
-        let appended = super::fixture_requests::hreq(rig.addr, "POST", &path, &json, body).await;
-        assert_eq!(appended.0, 204);
-        streams += 1;
-        if let Some(history) = waiting_at_its_cap(&rig.state).await {
-            break history;
-        }
-    };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    loop {
-        let (memory, remote) = (rows(&history, Memory).await, rows(&history, Remote).await);
-        let l0 = history.manifest().l0().len();
-        if memory == remote && l0 < 64 {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the gather's flush still waited after 20 s: {l0} L0 in the Db's view, {} \
-             memtable-only rows",
-            memory.saturating_sub(remote)
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    rig.shutdown().await;
+        .expect("fat stream readable after sealing");
+    engine.begin_close();
 }

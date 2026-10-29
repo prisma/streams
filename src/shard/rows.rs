@@ -2,7 +2,7 @@
 //! starts with the `'S'` segment tag, a native queue's tail with the queue
 //! segment's prefix (`crate::keyspace`, layout 6).
 
-use super::TailFields;
+use crate::billing::stored_meta::UsageCounters;
 
 pub(crate) fn tail_key(hash: &[u8; 16]) -> Vec<u8> {
     let mut k = crate::keyspace::stream_row(hash, 1);
@@ -19,102 +19,78 @@ pub(crate) fn queue_tail_key(hash: &[u8; 16]) -> Vec<u8> {
     k
 }
 
-/// Tail value v3:
-/// `[ver u8=3][next u64][last_ts i64][logical u64][absorbed u64][trimmed u64][flags u8][seq_len u16][seq][route16?][trim_safe_to u64?][unabsorbed_bytes u64?]`
+/// Tail value v4 (layout 6):
+/// `[ver u8=4][next u64][last_ts i64][logical u64][absorbed u64][flags u8][seq_len u16][seq][route16][unabsorbed_bytes u64][usage counters?]`
 ///
-/// `flags` is a bitmask: bit0 = closed, bit1 = history v2 (the stream's
-/// absorbed range lives in the shared per-shard partition, not a
-/// per-stream DB). The optional trailing route16 (the shard-routing
-/// hash), trim_safe_to and unabsorbed_bytes are backward-compatible
-/// extensions: v3 decoders read exactly `seq_len` seq bytes and ignore
-/// trailing bytes. `trim_safe_to` is the highest offset physical
-/// trimming may reach (the absorbed boundary before the latest advance:
-/// a snapshot at most one advance stale keeps its range; see
-/// `TailFields::trim_safe_to`); `unabsorbed_bytes` is the
-/// exact stored frame bytes in [absorbed, next), maintained by the
-/// committer so restart rediscovery sizes pending work truthfully
-/// instead of estimating (a single 32 MiB record used to estimate as
-/// 1 KiB and never re-absorb under the default policy). Downgrade
-/// caveat: a pre-bitmask binary reads flags with `== 1`, so it would
-/// see a closed+v2 stream (flags=3) as open — acceptable for
-/// forward-only deployments, noted here because it is not zero.
+/// `flags` bit 0 is closed; no other bit is defined. `absorbed` is the
+/// sealed boundary: every page below it is in a segment object, every page
+/// at or above it in the stream's pending row. `route` is the
+/// shard-routing hash; `unabsorbed_bytes` the exact stored page bytes in
+/// `[absorbed, next)` (the pending row's size). A billed segment's usage
+/// counters (`UsageCounters`, f3) may follow, whole; nothing else may.
 /// `seq` only copies the lane's Stream-Seq (its `s` row owns it): a copy past the
 /// u16 length is not written, since a wrapped length wedges every later load.
 pub(super) fn encode_tail(t: &TailFields) -> Vec<u8> {
     let seq = t.seq.as_deref().unwrap_or("").as_bytes();
     let (seq_len, seq) = u16::try_from(seq.len()).map_or((0, &[][..]), |len| (len, seq));
-    let mut v = Vec::with_capacity(76 + seq.len());
-    v.push(3);
+    let mut v = Vec::with_capacity(TAIL_MIN_LEN + seq.len());
+    v.push(TAIL_VERSION);
     v.extend_from_slice(&t.next.to_le_bytes());
     v.extend_from_slice(&t.ts.to_le_bytes());
     v.extend_from_slice(&t.logical.to_le_bytes());
     v.extend_from_slice(&t.absorbed.to_le_bytes());
-    v.extend_from_slice(&t.trimmed.to_le_bytes());
-    let mut flags = 0u8;
-    if t.closed {
-        flags |= 1;
-    }
-    if t.history_v2 {
-        flags |= 2;
-    }
-    v.push(flags);
+    v.push(u8::from(t.closed));
     v.extend_from_slice(&seq_len.to_le_bytes());
     v.extend_from_slice(seq);
     v.extend_from_slice(&t.route);
-    v.extend_from_slice(&t.trim_safe_to.to_le_bytes());
     v.extend_from_slice(&t.unabsorbed_bytes.to_le_bytes());
+    if let Some(usage) = &t.usage {
+        usage.encode_into(&mut v);
+    }
     v
 }
 
+const TAIL_VERSION: u8 = 4;
+/// A tail with an empty seq and no usage counters.
+const TAIL_MIN_LEN: usize = 60;
+
 pub(super) fn decode_tail(v: &[u8]) -> Option<TailFields> {
-    if v.len() < 43 || (v[0] != 2 && v[0] != 3) {
+    if v.len() < TAIL_MIN_LEN || v.first() != Some(&TAIL_VERSION) {
         return None;
     }
-    let v3 = v[0] == 3;
-    let next = u64::from_le_bytes(v[1..9].try_into().ok()?);
-    let ts = i64::from_le_bytes(v[9..17].try_into().ok()?);
-    let logical = u64::from_le_bytes(v[17..25].try_into().ok()?);
-    let absorbed = u64::from_le_bytes(v[25..33].try_into().ok()?);
-    let trimmed = u64::from_le_bytes(v[33..41].try_into().ok()?);
-    let (flags, seq_at) = if v3 { (v[41], 42usize) } else { (0u8, 41usize) };
-    let seq_len = u16::from_le_bytes(v.get(seq_at..seq_at + 2)?.try_into().ok()?) as usize;
+    let le8 = |at: usize| -> Option<[u8; 8]> { v.get(at..at + 8)?.try_into().ok() };
+    let next = u64::from_le_bytes(le8(1)?);
+    let ts = i64::from_le_bytes(le8(9)?);
+    let logical = u64::from_le_bytes(le8(17)?);
+    let absorbed = u64::from_le_bytes(le8(25)?);
+    let flags = *v.get(33)?;
+    if flags & !1 != 0 {
+        return None;
+    }
+    let seq_len = usize::from(u16::from_le_bytes(v.get(34..36)?.try_into().ok()?));
     let seq = if seq_len == 0 {
         None
     } else {
-        Some(String::from_utf8(v.get(seq_at + 2..seq_at + 2 + seq_len)?.to_vec()).ok()?)
+        Some(String::from_utf8(v.get(36..36 + seq_len)?.to_vec()).ok()?)
     };
-    let route_at = seq_at + 2 + seq_len;
-    // Historical tails end after seq, route, or trim_safe_to. A partial
-    // known extension is corruption. Once the complete known suffix is
-    // present, preserve the layout's forward-compatible trailing bytes.
-    let extension_len = v.len().checked_sub(route_at)?;
-    if (!matches!(extension_len, 0 | 16 | 24) && extension_len < 32) || flags & !3 != 0 {
-        return None;
-    }
-    let route: [u8; 16] = v
-        .get(route_at..route_at + 16)
-        .and_then(|r| r.try_into().ok())
-        .unwrap_or([0u8; 16]);
-    let le8 = |at: usize| -> u64 {
-        v.get(at..at + 8)
-            .and_then(|b| b.try_into().ok())
-            .map(u64::from_le_bytes)
-            .unwrap_or(0)
+    let route_at = 36 + seq_len;
+    let route: [u8; 16] = v.get(route_at..route_at + 16)?.try_into().ok()?;
+    let unabsorbed_bytes = u64::from_le_bytes(le8(route_at + 16)?);
+    let usage = match v.get(route_at + 24..) {
+        None | Some([]) => None,
+        Some(counters) => Some(UsageCounters::decode(counters)?),
     };
-    let trim_safe_to = le8(route_at + 16);
-    let unabsorbed_bytes = le8(route_at + 24);
     Some(TailFields {
         next,
         ts,
         logical,
         absorbed,
-        trimmed,
         seq,
         closed: flags & 1 != 0,
-        history_v2: flags & 2 != 0,
         route,
-        trim_safe_to,
         unabsorbed_bytes,
+        usage,
+        billing: super::layout::StaticBilling::Unread,
     })
 }
 
@@ -124,10 +100,7 @@ pub(super) fn stored_tail(raw: &[u8]) -> Result<TailFields, slatedb::Error> {
         .ok_or_else(|| slatedb::Error::data("invalid persisted tail encoding".into()))?;
     // Decoding owns byte compatibility; every serving/recovery reader also
     // validates the state before it can authorize an offset or a repair.
-    if tail.trimmed > tail.absorbed
-        || tail.absorbed > tail.next
-        || tail.trim_safe_to > tail.absorbed
-    {
+    if tail.absorbed > tail.next {
         return Err(slatedb::Error::data("inconsistent persisted tail".into()));
     }
     Ok(tail)
@@ -169,4 +142,47 @@ pub(crate) fn producer_key(hash: &[u8; 16], key_hash: &[u8; 16], producer_id: &s
     k.extend_from_slice(key_hash);
     k.extend_from_slice(producer_id.as_bytes());
     k
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TailFields {
+    pub next: u64,
+    pub ts: i64,
+    pub logical: u64,
+    /// The sealed boundary (layout 6): every page below it is in a
+    /// segment object, every page at or above it unsealed.
+    pub absorbed: u64,
+    pub seq: Option<String>,
+    pub closed: bool,
+    /// Shard-routing hash (stream_hash(name)); zeros for streams last
+    /// written by callers without a name identity.
+    pub route: [u8; 16],
+    /// Exact stored page bytes in [absorbed, next), maintained by the
+    /// committer (appends add page lengths; a seal subtracts the bytes it
+    /// sealed): the stream's share of the shard's unsealed ledger.
+    pub unabsorbed_bytes: u64,
+    /// A billed segment's cumulative usage counters (layout 6, f3): they
+    /// ride the tail every billed group writes, and its static billing row
+    /// is written only when its identity, month or retention flag changes
+    /// (`crate::billing::stored_meta`). `None` for an unbilled stream.
+    pub usage: Option<UsageCounters>,
+    /// The segment's static billing meta as this tail's group left it
+    /// (layout 6, f3), with zero counters. Not part of the stored tail: its
+    /// row is `billing_meta_key`; the applied and durable tails carry it so
+    /// a group stages on the applied one and the usage drain meters the
+    /// durable one.
+    pub billing: super::layout::StaticBilling,
+}
+
+impl TailFields {
+    /// Whether this tail's stored row differs from `base`'s: the fields a
+    /// group writes the tail for, the usage counters included (layout 6, f3).
+    pub(super) fn stored_differs(&self, base: &TailFields) -> bool {
+        self.next != base.next
+            || self.absorbed != base.absorbed
+            || self.unabsorbed_bytes != base.unabsorbed_bytes
+            || self.seq != base.seq
+            || self.closed != base.closed
+            || self.usage != base.usage
+    }
 }

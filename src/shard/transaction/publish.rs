@@ -4,11 +4,7 @@ impl CommitTransaction<'_> {
     /// observe the same sequence and dispatch barrier through DurableEffects.
     #[expect(
         clippy::unwrap_used,
-        reason = "CommitTransaction::publish; a poisoned handoff, stream state or trim debt may hold a half-published group; recovering it could expose fields, producers or debt the write never covered"
-    )]
-    #[expect(
-        clippy::excessive_nesting,
-        reason = "CommitTransaction::publish; the publication nests the trim-debt decision inside the per-stream walk under the debt lock; flattening it would separate the decision from the stream it marks"
+        reason = "CommitTransaction::publish; a poisoned handoff or stream state may hold a half-published group; recovering it could expose fields, producers or pages the write never covered"
     )]
     #[expect(
         clippy::cast_possible_truncation,
@@ -40,43 +36,7 @@ impl CommitTransaction<'_> {
             std::sync::atomic::Ordering::Relaxed,
         );
         for local in self.streams.values() {
-            let mut st = local.handle.state.lock().unwrap();
-            st.applied = local.fields.clone();
-            if let Some(b) = local.handle.pressure.get() {
-                b.frames_added(local.frames.added_bytes);
-                b.frames_retired(local.frames.retired_bytes);
-            }
-            for (plane, v) in &local.producer.rows {
-                st.producers.insert(plane.clone(), *v);
-            }
-            for (kh, v) in &local.producer.seqs {
-                st.seqs.insert(*kh, v.clone());
-            }
-            if let Some(q) = &local.queue.state {
-                st.queue = (*q).clone();
-            }
-        }
-        {
-            let mut debt = self.engine.trim_debt.lock().unwrap();
-            for (hash, local) in &self.streams {
-                if local.fields.trimmed < local.fields.trim_safe_to {
-                    debt.insert(*hash);
-                } else {
-                    debt.remove(hash);
-                }
-            }
-        }
-        let trim_used = self.cfg.trim_global_budget.saturating_sub(self.trim_budget);
-        if trim_used > 0 {
-            self.engine
-                .trim_deletes_last
-                .store(trim_used, Ordering::Relaxed);
-            self.engine
-                .trim_deletes_max_batch
-                .fetch_max(trim_used, Ordering::Relaxed);
-            self.engine
-                .trim_deletes_total
-                .fetch_add(trim_used, Ordering::Relaxed);
+            local.publish_into(&mut local.handle.state.lock().unwrap());
         }
         self.engine
             .stats_appended
@@ -96,7 +56,7 @@ impl CommitTransaction<'_> {
         });
         drop(handoff);
         for local in self.streams.values() {
-            local.handle.applied_notify.notify_waiters();
+            local.notify_applied();
         }
         self.engine.flush_wake.notify_one();
         self.engine.pump_wake.notify_one();

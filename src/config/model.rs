@@ -13,9 +13,8 @@
 //!   environment-knob sub-configs carry tunables only.
 //! - **Immutable after construction.** Built once at the composition
 //!   root and handed to owners by reference/clone; there is no
-//!   process-global slot. Runtime-mutable controls (e.g. the absorber
-//!   pause flag) keep their own atomics; config only carries their
-//!   initial value.
+//!   process-global slot. Runtime-mutable controls keep their own
+//!   atomics; config only carries their initial value.
 
 use crate::config::cli::CliArgs;
 use std::time::Duration;
@@ -32,8 +31,6 @@ pub struct ServerConfig {
     pub storage: StorageConfig,
     pub engine: EngineConfig,
     pub shard: ShardRuntimeConfig,
-    pub history: HistoryConfig,
-    pub postings: PostingsConfig,
     pub sse: SseConfig,
     pub http: HttpConfig,
     pub billing: BillingConfig,
@@ -177,34 +174,6 @@ pub struct ShardRuntimeConfig {
     pub open_wait_ms: u64,
     /// UNREADY_EXIT_AFTER_SECS, default 300 (0 disables the watchdog).
     pub unready_exit_after_secs: u64,
-}
-
-/// History/absorber knobs (src/history.rs).
-#[derive(Clone, Debug, PartialEq)]
-pub struct HistoryConfig {
-    /// ABSORB_PAUSE == "1", default false. Only the INITIAL value of the
-    /// runtime-mutable pause flag (the debug endpoint toggles the
-    /// atomic at runtime).
-    pub absorb_pause_initial: bool,
-    /// ABSORB_GLOBAL_BUDGET_BYTES, default 100,859,904: one worst-frame
-    /// build at the 32 MiB body pin, (32 MiB + 64 KiB) x3. The runtime
-    /// floors a smaller value at that build for the server's own ceiling
-    /// (`HistoryResources::with_body_limit`).
-    pub absorb_global_budget_bytes: usize,
-    /// ABSORB_GLOBAL_GATHERS, max(1), default 1 (the 1 GiB profile's value).
-    pub absorb_global_gathers: usize,
-    /// HISTORY_CACHE_BYTES, default 32 MiB.
-    pub cache_bytes: usize,
-    /// GC sweep interval of every history database: 600 s. No environment
-    /// name sets it; `None` (no sweeps) exists for tests that build the value.
-    pub gc_interval: Option<Duration>,
-}
-
-/// Postings cache (src/postings_cache.rs).
-#[derive(Clone, Debug, PartialEq)]
-pub struct PostingsConfig {
-    /// POSTINGS_CACHE_BYTES, default 64 MiB.
-    pub cache_bytes: usize,
 }
 
 /// LiveFeed budgets and heartbeat (src/sse/).
@@ -397,8 +366,6 @@ impl ServerConfig {
             storage: Default::default(),
             engine,
             shard: Default::default(),
-            history: Default::default(),
-            postings: Default::default(),
             sse: Default::default(),
             http: Default::default(),
             billing: Default::default(),
@@ -440,29 +407,6 @@ impl Default for ShardRuntimeConfig {
             open_deadline: Duration::from_secs(180),
             open_wait_ms: 10_000,
             unready_exit_after_secs: 300,
-        }
-    }
-}
-
-impl Default for HistoryConfig {
-    fn default() -> Self {
-        Self {
-            absorb_pause_initial: false,
-            // The field-validated posture in every build. Budgets are per
-            // runtime, so a test that needs more headroom states it in its
-            // own HistoryConfig; the default never forks on the build.
-            absorb_global_budget_bytes: 100_859_904,
-            absorb_global_gathers: 1,
-            cache_bytes: 32 * 1024 * 1024,
-            gc_interval: Some(Duration::from_secs(600)),
-        }
-    }
-}
-
-impl Default for PostingsConfig {
-    fn default() -> Self {
-        Self {
-            cache_bytes: 64 * 1024 * 1024,
         }
     }
 }

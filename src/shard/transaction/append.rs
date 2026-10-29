@@ -207,7 +207,7 @@ impl CommitTransaction<'_> {
         self.stats.records += req.entries.len() as u64;
         local.fields.next = start + req.entries.len() as u64;
         local.fields.ts = ts;
-        if local.fields.route == [0u8; 16] && req.route != [0u8; 16] && !local.fields.history_v2 {
+        if local.fields.route == [0u8; 16] && req.route != [0u8; 16] {
             local.fields.route = req.route;
         }
         if let Some(seq) = &req.seq {
@@ -232,13 +232,13 @@ impl CommitTransaction<'_> {
         ));
     }
     /// Stage a request's sealed pages, the first starting at offset `first`,
-    /// in the group's write batch under their last offsets, so every page of
-    /// the request commits or none does, and in the stream's ring batch.
-    /// Returns their stored bytes.
+    /// as the stream's unsealed pages of the group (one merge operand on its
+    /// pending row at finish, so every page of the group commits or none
+    /// does, layout 6 b1) and in its ring batch. Returns their stored bytes.
     fn stage_pages(
         &mut self,
         local: &mut StreamOverlay,
-        hash: [u8; 16],
+        _stream: [u8; 16],
         first: u64,
         pages: Vec<crate::crypto_page::SealedPage>,
     ) -> u64 {
@@ -252,8 +252,7 @@ impl CommitTransaction<'_> {
             if self.engine.ring_enabled {
                 local.frames.ring.push_page(first, page.last, bytes.clone());
             }
-            self.batch
-                .put(crate::crypto_page::shard_page_key(&hash, page.last), bytes);
+            local.frames.pending.push((first, page.last, bytes));
             first = page.last.saturating_add(1);
         }
         stored

@@ -338,11 +338,8 @@ async fn original_survives_a_refused_retry(
     };
     let seg = d.resolve_segment("");
     let engine = a.engine_for(&seg.shard_route).await.unwrap();
-    let closed = engine
-        .tail_fields(&seg.identity)
-        .await
-        .unwrap()
-        .is_some_and(|tail| tail.closed);
+    let handle = engine.stream_handle(seg.identity).await.unwrap();
+    let closed = handle.state.lock().unwrap().durable.closed;
     let (_, _, records) = hreq(addr_a, "GET", &path, &[], b"").await;
     let records: Vec<serde_json::Value> = serde_json::from_slice(&records).unwrap();
     let observed = format!(

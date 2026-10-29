@@ -23,9 +23,9 @@ pub(crate) fn shard_log_builder(
     path: &str,
     store: Arc<dyn object_store::ObjectStore>,
     mut settings: slatedb::config::Settings,
-) -> slatedb::DbBuilder<&str> {
+) -> slatedb::DbBuilder<object_store::path::Path> {
     let compactor = settings.compactor_options.take().map(|options| {
-        slatedb::CompactorBuilder::new(path, store.clone())
+        slatedb::CompactorBuilder::new(object_store::path::Path::from(path), store.clone())
             .with_options(options)
             .with_scheduler_supplier(Arc::new(GuardedSupplier))
     });

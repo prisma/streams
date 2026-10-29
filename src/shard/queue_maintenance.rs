@@ -291,6 +291,13 @@ impl ShardEngine {
         self.spawn_required("queue-l0-merger", async move {
             merger.queue_l0_merger_loop().await
         });
+        let sealer = self.clone();
+        self.spawn_required("sealer", async move { sealer.seal_loop().await });
+        let deadlines = self.clone();
+        self.spawn_required(
+            "seal-deadlines",
+            async move { deadlines.deadline_loop().await },
+        );
     }
 
     /// Waits for the next tick; false once the engine closes.
@@ -538,14 +545,8 @@ impl ShardEngine {
     /// returns an error, and the next tick starts over: a pass never submits
     /// beside a live job in its tree, its own earlier one included.
     async fn compact_queue_tree(&self) -> Result<PassReport, String> {
-        use slatedb::config::{FlushOptions, FlushType};
         use std::sync::atomic::Ordering;
-        self.db
-            .flush_with_options(FlushOptions {
-                flush_type: FlushType::MemTable,
-            })
-            .await
-            .map_err(|e| e.to_string())?;
+        self.flush_memtable().await?;
         self.compact_flushed_queue_tree(PASS_RATE_BPS.load(Ordering::Relaxed))
             .await
     }

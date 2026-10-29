@@ -1,8 +1,6 @@
 //! Runtime retirement.
 
-use super::fixture_http::{
-    HttpRigOptions, engine_shutdown, http_rig, http_rig_build, waiting_at_its_cap,
-};
+use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig, http_rig_build};
 use super::fixture_requests::{drain_no_closure, hreq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::{mem, open_engine};
@@ -16,7 +14,7 @@ async fn open_engine_with_on_close(
     prefix: &str,
     on_close: Arc<dyn Fn() + Send + Sync>,
 ) -> Arc<crate::shard::ShardEngine> {
-    let db = slatedb::Db::builder(prefix, store.clone())
+    let db = crate::keyspace::db_builder(prefix, store.clone())
         .with_settings(slatedb::config::Settings {
             flush_interval: Some(std::time::Duration::from_millis(5)),
             manifest_poll_interval: std::time::Duration::from_millis(50),
@@ -25,7 +23,6 @@ async fn open_engine_with_on_close(
         .build()
         .await
         .expect("open db");
-    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
     let maint = crate::shard::load_or_rebuild_maintenance(&db)
         .await
         .expect("load maintenance");
@@ -34,7 +31,6 @@ async fn open_engine_with_on_close(
         Arc::new(db),
         store,
         crate::shard::ShardConfig::default(),
-        absorb_tx,
         Some(on_close),
         maint,
     )
@@ -450,16 +446,35 @@ async fn a_sweep_eviction_arms_only_the_base_holdoff() {
     }
 }
 
-/// The shard-close hang of 2026-10-08: a shard whose history partition is
-/// at its L0 cap closes at once and loses nothing. The rig's absorber
-/// gathers every 20 ms and each gather flushes one L0 SST, so a burst of
-/// appends fills the partition's 64 slots before its compactor frees one,
-/// and the partition learns of freed slots only at its manifest poll
-/// (300 s). Once a gather's write waits at the cap, the stop still settles
-/// every engine within the rig's 10 s, the partition closes Clean, and the
+/// An open shard whose log holds its L0 cap of tables in one tree (the cap
+/// is per tree; the shard log keeps one per key segment), if any: the
+/// sealer's next forced memtable flush waits for the compactor to free a
+/// slot.
+fn at_its_l0_cap(state: &crate::http::AppState) -> Option<Arc<slatedb::Db>> {
+    let cap = slatedb::config::Settings::default().l0_max_ssts;
+    let fullest = |db: &slatedb::Db| {
+        let manifest = db.manifest();
+        let segments = manifest.segments().iter().map(|s| s.l0().len());
+        segments.chain([manifest.l0().len()]).max().unwrap_or(0)
+    };
+    state
+        .shards
+        .engines()
+        .into_iter()
+        .map(|engine| engine.db.clone())
+        .find(|db| fullest(db) >= cap)
+}
+
+/// The shard-close hang of 2026-10-08, on the layout-6 shard log: a shard
+/// whose log is at its L0 cap closes at once and loses nothing. The rig's
+/// sealer seals every 20 ms and each seal forces one memtable flush to an L0
+/// table, so a burst of appends fills the log's slots (SlateDB's default
+/// cap) before its compactor (polling every 5 s) frees one. Once the log is
+/// at the cap, the stop settles every engine once the compactor frees a
+/// slot (within 30 s, not a manifest poll), the log closes Clean, and the
 /// next process reads every acknowledged record.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_shard_whose_history_partition_is_at_its_l0_cap_closes_and_loses_nothing() {
+async fn a_shard_whose_log_is_at_its_l0_cap_closes_and_loses_nothing() {
     let store = mem();
     let rig = http_rig_build(
         store.clone(),
@@ -470,17 +485,27 @@ async fn a_shard_whose_history_partition_is_at_its_l0_cap_closes_and_loses_nothi
     let json = [("content-type", "application/json")];
     let mut streams = 0;
     let capped = loop {
-        assert!(streams < 1_000, "no gather's write waited at an L0 cap");
+        assert!(streams < 1_000, "no shard log reached its L0 cap");
         let path = format!("/v1/stream/capped-{streams}");
         assert_eq!(hreq(rig.addr, "PUT", &path, &json, b"").await.0, 201);
         let appended = hreq(rig.addr, "POST", &path, &json, br#"[{"n":1}]"#).await;
         assert_eq!(appended.0, 204);
         streams += 1;
-        if let Some(history) = waiting_at_its_cap(&rig.state).await {
-            break history;
+        if let Some(log) = at_its_l0_cap(&rig.state) {
+            break log;
         }
     };
-    rig.shutdown().await;
+    // The close waits for the compactor to free a slot (the rig's shard log
+    // polls every 5 s), never for a manifest poll (the 300 s of 2026-10-08).
+    let report = rig.tasks.shutdown(std::time::Duration::from_secs(5)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
+    let closing = std::time::Instant::now();
+    rig.state
+        .shards
+        .shutdown(std::time::Duration::from_secs(30))
+        .await
+        .unwrap();
+    eprintln!("L0-cap close took {:?}", closing.elapsed());
     let (closes, opens) = rig.state.shards.pending_work();
     assert_eq!(opens, 0);
     assert!(closes.iter().all(crate::shard::EngineShutdown::terminated));

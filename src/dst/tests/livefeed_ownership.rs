@@ -350,8 +350,12 @@ async fn livefeed_parked_live_session_is_cut_off_by_engine_close() {
             ov.set_override(&p, "inst-a");
         }
     }
-    let engines: Vec<_> = state_b.shards.engines();
-    drop(engines); // retirement already closed them
+    // The loser's engines close as its fence closes them (round 11.4).
+    state_b
+        .shards
+        .engines()
+        .iter()
+        .for_each(|e| e.begin_close());
     let (a1, eof1) = hub_sse_collect(&mut sub, 10, |_| false).await;
     assert!(
         eof1,

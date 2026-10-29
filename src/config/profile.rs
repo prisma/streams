@@ -5,7 +5,7 @@
 
 use crate::config::notice::ConfigNotice;
 
-/// Dedicated runtime for every SlateDB instance (shard logs, history DBs,
+/// Dedicated runtime for every SlateDB instance (shard logs, telemetry,
 /// readers). SlateDB spawns its flusher / compactor / batch-writer on the
 /// runtime that drives `build()`, and those tasks run CPU-bound SST builds
 /// (block encode + zstd + AES block transform) inline in their polls — on
@@ -58,16 +58,6 @@ pub(crate) fn production_settings_families(
 ) -> Vec<(&'static str, Option<slatedb::config::CompactorOptions>)> {
     vec![
         ("shard", Some(resolved_compactor_options(&cfg.engine))),
-        (
-            "history_v1",
-            crate::history::history_settings(&cfg.history, &cfg.engine.compactor_options())
-                .compactor_options,
-        ),
-        (
-            "history_v2",
-            crate::history::history2_settings(&cfg.history, &cfg.engine.compactor_options())
-                .compactor_options,
-        ),
         (
             "telemetry",
             crate::billing::telemetry_settings(&cfg.billing, &cfg.engine.compactor_options())

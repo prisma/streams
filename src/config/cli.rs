@@ -169,37 +169,9 @@ pub struct CliArgs {
     #[arg(long, env = "MANIFEST_POLL_MS", default_value_t = crate::DEFAULT_MANIFEST_POLL_MS)]
     pub(crate) manifest_poll_ms: u64,
 
-    /// Hot-log records deleted per stream per commit group. Trim must
-    /// keep pace with ingest in steady state: at 50k records/s and ~1
-    /// absorb pass per 5 s, the pass has to retire ~250k records or the
-    /// hot DB grows without bound. Tombstones are ~30 B, so even the
-    /// high setting is a few MB per batch. The GLOBAL per-commit bound
-    /// across all streams is TRIM_GLOBAL_BUDGET.
-    #[arg(long, env = "TRIM_PER_OP", default_value_t = 8_192)]
-    pub(crate) trim_per_op: u64,
-
-    /// GLOBAL cap on trim deletes per commit group, shared by every
-    /// boundary advance and maintenance step in the group. This is what
-    /// bounds a mature-fleet second absorption wave: without it one
-    /// gather's AbsorbedBatch × TRIM_PER_OP could expand into tens of
-    /// millions of deletes in a single WriteBatch (multi-GiB). Leftover
-    /// work becomes trim debt, drained a budgeted slice per 5 s tick.
-    #[arg(long, env = "TRIM_GLOBAL_BUDGET", default_value_t = 65_536)]
-    pub(crate) trim_global_budget: u64,
-
-    /// Absorber thresholds (§3.6 / D23).
-    #[arg(long, env = "ABSORB_BYTES", default_value_t = 4 * 1024 * 1024)]
-    pub(crate) absorb_bytes: u64,
-    /// Age threshold, seconds: a stream's unabsorbed tail is absorbed once
-    /// it is this old, whatever its size. The default, 60, is the value the
-    /// deployments run (300 until 2026-09-29).
-    #[arg(long, env = "ABSORB_AGE_SECS", default_value_t = 60)]
-    pub(crate) absorb_age_secs: u64,
-
     /// Evict resident per-stream handles idle at least this long
     /// (seconds; 0 = never, refused under STREAMS_AUTH_MODE=enforce, item
-    /// 50). Handles reload from the shard DB on next touch; the durable
-    /// dirty-stream index keeps unabsorbed evictees discoverable.
+    /// 50). Handles reload from the shard DB on next touch.
     #[arg(long, env = "HANDLE_IDLE_EVICT_SECS", default_value_t = 600)]
     pub(crate) handle_idle_evict_secs: u64,
 
@@ -209,19 +181,6 @@ pub struct CliArgs {
     /// evicts oldest-touched unreferenced handles immediately.
     #[arg(long, env = "HANDLE_MAX_RESIDENT", default_value_t = 65_536)]
     pub(crate) handle_max_resident: usize,
-
-    /// Aggregate byte budget for one shared-history gather WriteBatch
-    /// (keys + frames, keyed index rows counted twice). Bounds absorber
-    /// peak memory on small instances; streams that do not fit gather on
-    /// later ticks. Default 8 MiB, the batch the 1 GiB posture runs.
-    #[arg(long, env = "ABSORB_GATHER_MAX_BYTES", default_value_t = 8 * 1024 * 1024)]
-    pub(crate) absorb_gather_max_bytes: usize,
-
-    /// Concurrent per-stream frame reads within one absorber gather.
-    /// Shrinks the read phase's wall time — the window during which
-    /// append service dips (#266). 1 = serial.
-    #[arg(long, env = "ABSORB_READ_PAR", default_value_t = 8)]
-    pub(crate) absorb_read_par: usize,
 
     /// Conformance/dev only: use this stream key (base64url, 32 bytes) for
     /// requests that carry no Stream-Encryption-Key header. The upstream
@@ -529,14 +488,8 @@ impl CliArgs {
             compactor_poll_ms: crate::DEFAULT_COMPACTOR_POLL_MS,
             compactor_max_concurrent: 1,
             manifest_poll_ms: crate::DEFAULT_MANIFEST_POLL_MS,
-            trim_per_op: 8_192,
-            trim_global_budget: 65_536,
-            absorb_bytes: 4 * 1024 * 1024,
-            absorb_age_secs: 60,
             handle_idle_evict_secs: 600,
             handle_max_resident: 65_536,
-            absorb_gather_max_bytes: 8 * 1024 * 1024,
-            absorb_read_par: 8,
             conformance_default_key: None,
             auth_token: None,
             streams_auth_mode: "off".into(),

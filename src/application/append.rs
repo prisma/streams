@@ -19,19 +19,14 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 const APPEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// The instance's RSS write gate: while sampled RSS plus the absorber's
-/// reserved bytes is over the shed line a write is refused, retryable after
-/// 2 s, after a 25 ms tarpit. The product entry asks it before an append's
+/// The instance's RSS write gate: while sampled RSS is over the shed line a
+/// write is refused, retryable after 2 s, after a 25 ms tarpit. The product entry asks it before an append's
 /// body is read (`product::read_memory::refusal`), and the append path asks
 /// it again before the append is submitted (`AppendService::check_memory`).
 pub(crate) async fn memory_gate(
     admission: &crate::admission::AdmissionController,
-    history: &crate::history::HistoryResources,
 ) -> Result<(), AppendFailure> {
-    if admission
-        .admit_write_memory(history.budget.reserved_bytes())
-        .is_err()
-    {
+    if admission.admit_write_memory().is_err() {
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         return Err(AppendFailure::new(
             FailureClass::Capacity,
@@ -48,7 +43,6 @@ pub(crate) struct AppendService {
     pub(crate) shards: crate::shard_directory::ShardDirectory,
     pub(crate) admission: crate::admission::AdmissionController,
     pub(crate) quotas: crate::quota::QuotaRegistry,
-    pub(crate) history: Arc<crate::history::HistoryResources>,
     pub(crate) usage: Arc<crate::usage::UsageService>,
     pub(crate) scaler: Arc<crate::scaler3::Scaler>,
     pub(crate) keys: Arc<crate::history::KeyCache>,
@@ -151,7 +145,7 @@ impl AppendService {
         Ok(AuthorizedAppend { descriptor, key })
     }
     pub(crate) async fn check_memory(&self) -> Result<(), AppendFailure> {
-        memory_gate(&self.admission, &self.history).await
+        memory_gate(&self.admission).await
     }
     pub(crate) async fn execute(&self, command: AppendCommand) -> AppendResult {
         let prepared = self
@@ -382,9 +376,6 @@ async fn execute_once(
             .scaler
             .note_append(&desc, &seg, bytes as u64, entries.len() as u64);
     }
-    state
-        .usage
-        .link_storage(desc.route_hash(), crate::crypto::SegmentHash(seg.identity));
     let kv = command.key_version;
     let subkey = derive_subkey(&key, &epoch, &routing_key, kv);
     state.keys.put(seg.identity, key, epoch);

@@ -1,9 +1,10 @@
 //! Idle release (Q0): an instance that has seen no data-plane request for two
-//! minutes, with nothing left to absorb, releases its block caches and its
-//! postings slices; health and operator requests do not hold it back, and the
-//! next read returns the same records and starts a new quiet period.
+//! minutes, with less than 1 MiB unsealed, seals every open shard and releases
+//! its shared and telemetry block caches; health and operator requests do not
+//! hold it back, and the next read returns the same records and starts a new
+//! quiet period.
 
-use super::fixture_http::{HttpRigOptions, http_rig_build};
+use super::fixture_http::{HttpRigOptions, cold_sealer, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
@@ -43,6 +44,26 @@ async fn tick_until(clock: &ManualClock, ticks: u32, done: impl Fn() -> bool) ->
     false
 }
 
+/// A raw stream's (sealed boundary, durable next) on its engine.
+async fn sealed_through(state: &crate::http::AppState, stream: &str) -> (u64, u64) {
+    let sref = state.deployment.raw_adapter_sref(stream);
+    let desc = state.registry.get(&sref).await.unwrap().unwrap();
+    let route = desc.segment_route_by_id(0).unwrap();
+    let engine = state.engine_for(&route).await.unwrap();
+    let handle = engine.stream_handle(desc.storage_hash()).await.unwrap();
+    let state = handle.state.lock().unwrap();
+    (state.durable.absorbed, state.durable.next)
+}
+
+/// A rig whose sealer never seals by itself: what is sealed, the idle
+/// release sealed, and the release's forced flush is the only one.
+fn idle_rig_options() -> HttpRigOptions {
+    HttpRigOptions {
+        seal: Some(cold_sealer),
+        ..HttpRigOptions::default()
+    }
+}
+
 /// Both streams' records, as a reader sees them.
 async fn records(addr: std::net::SocketAddr) -> Vec<Vec<u8>> {
     let mut all = Vec::new();
@@ -57,12 +78,7 @@ async fn records(addr: std::net::SocketAddr) -> Vec<Vec<u8>> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_idle_instance_releases_its_caches_and_the_next_read_refills_them() {
     let store = FaultStore::new(mem(), 7, FaultProfile::clean());
-    let rig = http_rig_build(
-        store.clone(),
-        RigRuntime::first(),
-        HttpRigOptions::default(),
-    )
-    .await;
+    let rig = http_rig_build(store.clone(), RigRuntime::first(), idle_rig_options()).await;
     let (state, addr, clock) = (rig.state.clone(), rig.addr, rig.clock.clone());
     let ct = [("content-type", "application/json")];
     for stream in ["idle-a", "idle-b"] {
@@ -76,37 +92,16 @@ async fn an_idle_instance_releases_its_caches_and_the_next_read_refills_them() {
         }
     }
     let runtime = &state.runtime;
-    let absorbed = tokio::time::timeout(Duration::from_secs(30), async {
-        while crate::backpressure::snapshot(&state.shards).unabsorbed_bytes_instance > 0
-            || runtime.history.cache.inserted_bytes() == 0
-        {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    });
-    absorbed
-        .await
-        .expect("the absorber flushed both streams into history, cached on write");
+    // Eight one-record appends per stream, all unsealed: a backlog under the
+    // release's 1 MiB drain line.
+    for stream in ["idle-a", "idle-b"] {
+        assert_eq!(sealed_through(&state, stream).await, (0, 8), "{stream}");
+    }
     let before = records(addr).await;
-    assert_ne!(
-        runtime.postings.stats()["entries"],
-        0,
-        "the absorber installed postings"
-    );
-    // The history partitions' compactors run on real time, not the manual
-    // clock: one that writes a table between the release and the reading
-    // below caches its index (48 bytes) in the new generation, as idle.rs
-    // allows (`REFILL_FLOOR`). History tables are written only once the
-    // release is read; the release's own flush writes shard tables.
-    store.hold_class_containing(
-        StoreOp::Put,
-        ObjClass::Sst,
-        "/history2/compacted/",
-        u64::MAX,
-    );
 
     crate::bootstrap::idle::start(&state, &rig.tasks);
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let released = || runtime.history.cache.releases();
+    let released = || runtime.shared_cache.releases();
     // Health and operator requests every 30 s do not count as arrivals:
     // nothing is released by 118 s, and the release follows.
     for ticks in [15, 15, 15, 14] {
@@ -119,11 +114,16 @@ async fn an_idle_instance_releases_its_caches_and_the_next_read_refills_them() {
     }
     assert!(tick_until(&clock, 30, || released() > 0).await, "released");
     assert_eq!(released(), 1);
-    assert_eq!(runtime.shared_cache.releases(), 1);
     assert_eq!(runtime.telemetry.cache.releases(), 1);
-    assert_eq!(runtime.history.cache.inserted_bytes(), 0);
-    assert_eq!(runtime.postings.stats()["entries"], 0);
-    store.release_hold();
+    // The release sealed every record before it emptied the caches, so the
+    // read below is served from the segment objects.
+    for stream in ["idle-a", "idle-b"] {
+        assert_eq!(sealed_through(&state, stream).await, (8, 8), "{stream}");
+    }
+    assert_eq!(
+        crate::backpressure::snapshot(&state.shards).unabsorbed_bytes_instance,
+        0
+    );
 
     assert_eq!(records(addr).await, before, "a read after the release");
     tick(&clock, 58).await;
@@ -135,20 +135,14 @@ async fn an_idle_instance_releases_its_caches_and_the_next_read_refills_them() {
     rig.shutdown().await;
 }
 
-/// The engine's flush ticker flushes a shard's memtable only after appends,
-/// so what the absorber writes once appends stop (its maintenance deletes)
-/// stays in memory at idle: about 20 MB over four shards in the Q0 rig's F3
-/// posture. The idle release flushes every shard's memtable to an L0 table
-/// before it empties the caches.
+/// What a shard writes once appends stop (the queue collector, the billing
+/// drain) stays in its memtable at idle unless something flushes it. The idle
+/// release's seal flushes every shard's memtable to an L0 table before it
+/// empties the caches.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_idle_release_flushes_what_the_shard_memtables_hold() {
     let trace = TraceStore::verbatim(mem());
-    let rig = http_rig_build(
-        trace.clone(),
-        RigRuntime::first(),
-        HttpRigOptions::default(),
-    )
-    .await;
+    let rig = http_rig_build(trace.clone(), RigRuntime::first(), idle_rig_options()).await;
     let (state, addr, clock) = (rig.state.clone(), rig.addr, rig.clock.clone());
     let ct = [("content-type", "application/json")];
     let (status, _, _) = hreq(addr, "PUT", "/v1/stream/idle-flush", &ct, b"").await;
@@ -160,9 +154,8 @@ async fn an_idle_release_flushes_what_the_shard_memtables_hold() {
         .engines()
         .pop()
         .expect("the stream's shard is open");
-    // Past the flush ticker's last tick after the append (5 s), a write the
-    // engine does not count as an append stays in the memtable.
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    // The sealer never flushes by itself here: a write the engine does not
+    // count as an append stays in the memtable.
     let probe = b"S\xffq0-idle-flush-probe".as_slice();
     engine.db.put(probe, b"held").await.unwrap();
     let flushed_tables = || {
@@ -177,7 +170,7 @@ async fn an_idle_release_flushes_what_the_shard_memtables_hold() {
     crate::bootstrap::idle::start(&state, &rig.tasks);
     tokio::time::sleep(SPACING).await;
     tick(&clock, 59).await;
-    let released = || state.runtime.history.cache.releases() > 0;
+    let released = || state.runtime.shared_cache.releases() > 0;
     assert!(tick_until(&clock, 30, released).await, "released");
     assert!(
         flushed_tables() > before,
@@ -194,12 +187,7 @@ async fn an_idle_release_flushes_what_the_shard_memtables_hold() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_read_during_the_release_flush_drops_that_release() {
     let store = FaultStore::new(mem(), 7, FaultProfile::clean());
-    let rig = http_rig_build(
-        store.clone(),
-        RigRuntime::first(),
-        HttpRigOptions::default(),
-    )
-    .await;
+    let rig = http_rig_build(store.clone(), RigRuntime::first(), idle_rig_options()).await;
     let (state, addr, clock) = (rig.state.clone(), rig.addr, rig.clock.clone());
     let ct = [("content-type", "application/json")];
     let path = "/v1/stream/idle-flush-read";
@@ -212,11 +200,11 @@ async fn a_read_during_the_release_flush_drops_that_release() {
         .engines()
         .pop()
         .expect("the stream's shard is open");
-    // Past the flush ticker's last tick, a row the release must flush.
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    // The sealer never flushes by itself here: a row the release must flush.
     let probe = b"S\xffq0-idle-flush-read-probe".as_slice();
     engine.db.put(probe, b"held").await.unwrap();
-    // The release's L0 table PUT parks (the Db lives at `{prefix}/shard`).
+    // The release seal's forced flush parks on its L0 table PUT (the Db lives
+    // at `{prefix}/shard`; segment objects go under `hseg/`).
     let held = state.shards.held_prefixes();
     assert_eq!(held.len(), 1, "one shard serves the stream: {held:?}");
     let tables = format!(
@@ -236,7 +224,7 @@ async fn a_read_during_the_release_flush_drops_that_release() {
     let (status, _, _) = hreq(addr, "GET", path, &[], b"").await;
     assert_eq!(status, 200, "a read while the release flushes");
     store.release_hold();
-    let released = || state.runtime.history.cache.releases();
+    let released = || state.runtime.shared_cache.releases();
     tick(&clock, 58).await;
     assert_eq!(released(), 0, "the caches were released under the read");
     assert!(
@@ -267,8 +255,9 @@ async fn keyed(addr: std::net::SocketAddr, routing: &str) -> Vec<u64> {
     panic!("{routing}: no end after 64 pages");
 }
 
-/// Waits until the absorber owes nothing, at most 30 s.
-async fn absorbed(state: &crate::http::AppState) {
+/// Seals every open shard, then waits until nothing is unsealed, at most 30 s.
+async fn all_sealed(state: &crate::http::AppState) {
+    seal_every_shard(state).await;
     let drained = async {
         while crate::backpressure::snapshot(&state.shards).unabsorbed_bytes_instance > 0 {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -276,7 +265,14 @@ async fn absorbed(state: &crate::http::AppState) {
     };
     tokio::time::timeout(Duration::from_secs(30), drained)
         .await
-        .expect("absorbed");
+        .expect("everything sealed");
+}
+
+/// One requested seal of every open shard.
+async fn seal_every_shard(state: &crate::http::AppState) {
+    for engine in state.shards.engines() {
+        engine.seal_requested().await.expect("a requested seal");
+    }
 }
 
 /// The routing keys of stream `press`.
@@ -312,11 +308,11 @@ async fn read_prefixes(addr: std::net::SocketAddr, done: &std::sync::atomic::Ato
     reads
 }
 
-/// Pressure releases (RSS over the shed line: block caches dropped, postings
-/// swept at a zero horizon, registry slots swept) run beside live keyed
-/// appends, keyed readers and the absorber's installs, and every reader
-/// sees exactly its key's records, in order, with no gap or repeat: during
-/// the load a prefix, after it all of them (mem2 review L5).
+/// Pressure releases (RSS over the shed line: block caches dropped, registry
+/// slots swept) run beside live keyed appends, keyed readers and seals that
+/// move every shard's sealed boundary each round, and every reader sees
+/// exactly its key's records, in order, with no gap or repeat: during the
+/// load a prefix, after it all of them (mem2 review L5).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pressure_releases_beside_live_keyed_reads_keep_every_record() {
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
@@ -336,6 +332,7 @@ async fn pressure_releases_beside_live_keyed_reads_keep_every_record() {
         for round in 0..rounds {
             state.admission.record_rss_mb(0);
             append_keyed(addr, round * per..(round + 1) * per).await;
+            seal_every_shard(&state).await;
             state.admission.record_rss_mb(501);
             let before = releases();
             tick(&clock, 14).await;
@@ -343,7 +340,7 @@ async fn pressure_releases_beside_live_keyed_reads_keep_every_record() {
             assert!(released, "round {round}");
         }
         state.admission.record_rss_mb(0);
-        absorbed(&state).await;
+        all_sealed(&state).await;
         done.store(true, Ordering::Relaxed);
     };
     let ((), reads) = futures_util::future::join(load, read_prefixes(addr, &done)).await;
@@ -353,10 +350,5 @@ async fn pressure_releases_beside_live_keyed_reads_keep_every_record() {
         assert_eq!(keyed(addr, routing).await, all, "{routing} after the load");
     }
     assert!(releases() >= rounds, "a release each round");
-    let entries = &state.runtime.postings.stats()["entries"];
-    assert_ne!(
-        entries, 0,
-        "the absorber installed postings the readers used"
-    );
     rig.shutdown().await;
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::crypto::RouteHash;
 use crate::runtime::{ManualClock, RuntimeCaps, SeededEntropy};
 use std::time::Duration;
 
@@ -53,18 +54,6 @@ fn r10_runtime_usage_limits_counters_and_backlog_are_isolated() {
         shared.usage.admit_append(&hash.0, 1, 1),
         Err(LimitHit::Bytes { .. })
     ));
-    let segment = SegmentHash([22; 16]);
-    a.usage.link_storage(hash, segment);
-    a.usage.set_absorb_lag(segment, 42);
-    a.usage.set_shard_lag("same-shard", 42);
-    a.usage.set_absorb_pending_summary("same-shard", 3, 42);
-    assert_eq!(a.usage.absorb_lag_for_usage(hash), 42);
-    assert_eq!(a.usage.absorb_pending_summary(), (3, 42));
-    assert_eq!(b.usage.absorb_lag_for_usage(hash), 0);
-    assert_eq!(b.usage.absorb_pending_summary(), (0, 0));
-    assert!(b.usage.shard_lag_all().is_empty());
-    b.usage.clear_shard_lag("same-shard");
-    assert_eq!(a.usage.shard_lag_all(), [("same-shard".into(), 42)]);
     let weak = Arc::downgrade(&a.usage);
     drop(shared);
     drop(a);
@@ -74,7 +63,6 @@ fn r10_runtime_usage_limits_counters_and_backlog_are_isolated() {
     );
     let restarted = runtime(10.0, Arc::new(ManualClock::at(0)));
     assert_eq!(restarted.usage.tracked_streams(), 0);
-    assert_eq!(restarted.usage.absorb_pending_summary(), (0, 0));
     assert!(restarted.usage.admit_append(&hash.0, 10, 1).is_ok());
 }
 

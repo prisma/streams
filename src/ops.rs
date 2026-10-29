@@ -389,7 +389,7 @@ pub(crate) struct OpsSnapshot {
 
 /// The gauges `collect_snapshot` drains: each is the peak since the
 /// previous collection.
-const PEAK_SINCE_SCRAPE: [&str; 2] = ["history_flush_wait_ms_max", "rss_peak_since_scrape_mb"];
+const PEAK_SINCE_SCRAPE: [&str; 1] = ["rss_peak_since_scrape_mb"];
 
 impl OpsSnapshot {
     /// Raises each peak-since-scrape gauge to `earlier`'s, a snapshot
@@ -450,74 +450,11 @@ pub(crate) fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) ->
         gauges.insert("read_spool_pending_bytes".into(), sp.pending_bytes);
     }
     // ---- OOM-review causal metrics ------------------------------------
-    // Absorber: runtime-owned budget + last-gather phases. reserved vs
-    // actual is the review's "is the multiplier honest" check.
     let ord = Ordering::Relaxed;
-    gauges.insert(
-        "absorb_reserved_bytes".into(),
-        state.runtime.history.budget.reserved_bytes(),
-    );
-    gauges.insert(
-        "absorb_gathers_inflight".into(),
-        state.runtime.history.budget.inflight(),
-    );
-    gauges.insert(
-        "gather_last_reserved_bytes".into(),
-        crate::history::GATHER_LAST_RESERVED.load(ord),
-    );
-    gauges.insert(
-        "gather_last_actual_bytes".into(),
-        crate::history::GATHER_LAST_ACTUAL.load(ord),
-    );
-    gauges.insert(
-        "gather_last_read_ms".into(),
-        crate::history::GATHER_LAST_READ_MS.load(ord),
-    );
-    gauges.insert(
-        "gather_last_write_ms".into(),
-        crate::history::GATHER_LAST_WRITE_MS.load(ord),
-    );
-    gauges.insert(
-        "gather_last_flush_ms".into(),
-        crate::history::GATHER_LAST_FLUSH_MS.load(ord),
-    );
-    // PEAK-SINCE-SCRAPE (swap 0): a flush stall between snapshots
-    // cannot vanish — the next snapshot carries the peak.
-    gauges.insert(
-        "history_flush_wait_ms_max".into(),
-        crate::history::HISTORY_FLUSH_WAIT_MS_MAX.swap(0, ord),
-    );
-    gauges.insert(
-        "history_flush_injected_stall_ms".into(),
-        crate::history::HISTORY_FLUSH_STALL_MS.load(ord),
-    );
-    counters.insert(
-        "absorb_bytes_total".into(),
-        crate::history::ABSORB_BYTES_TOTAL.load(ord),
-    );
     counters.insert(
         "ingest_bytes_total".into(),
         crate::history::INGEST_BYTES_TOTAL.load(ord),
     );
-    // History partitions: L0 posture from each OPEN partition's
-    // in-memory manifest snapshot (no store requests, never opens one).
-    {
-        let engines: Vec<_> = state.shards.engines();
-        let (mut open, mut l0_max, mut l0_bytes, mut runs_max) = (0u64, 0u64, 0u64, 0u64);
-        for e in engines {
-            if let Some(part) = e.history_partition_if_open() {
-                let (n, b, runs, _id) = crate::history::history_l0_stats(&part);
-                open += 1;
-                l0_max = l0_max.max(n);
-                l0_bytes += b;
-                runs_max = runs_max.max(runs);
-            }
-        }
-        gauges.insert("history_partitions_open".into(), open);
-        gauges.insert("history_l0_ssts_max".into(), l0_max);
-        gauges.insert("history_l0_bytes_total".into(), l0_bytes);
-        gauges.insert("history_compacted_runs_max".into(), runs_max);
-    }
     gauges.insert(
         "sweep_resident_engines".into(),
         crate::billing::sweep_resident_engines(state),

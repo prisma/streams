@@ -1,9 +1,7 @@
 //! The scan RPC accepts old omissions without accepting malformed present
 //! bounds, and every internal receiver tells an unreadable registry apart
 //! from an absent stream.
-use super::fixture_http::{
-    HttpRig, HttpRigOptions, cold_absorber, engine_shutdown, http_rig_build,
-};
+use super::fixture_http::{HttpRig, HttpRigOptions, cold_sealer, engine_shutdown, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::{mem, skey};
@@ -68,7 +66,7 @@ async fn o2c_old_scan_headers_preserve_records_progress_and_physical_frontier() 
         mem(),
         RigRuntime::first(),
         HttpRigOptions {
-            absorber: Some(cold_absorber()),
+            seal: Some(cold_sealer),
             ..Default::default()
         },
     )
@@ -164,7 +162,7 @@ async fn o2c_new_sender_clips_legacy_pages_across_owner_upgrade_and_rollback() {
         RigRuntime::first(),
         HttpRigOptions {
             instance: Some("inst-a".into()),
-            absorber: Some(cold_absorber()),
+            seal: Some(cold_sealer),
             ..Default::default()
         },
     )
@@ -323,7 +321,7 @@ async fn o2c_registry_store_error_on_a_receiver_is_retryable_not_gone() {
         mem(),
         RigRuntime::first(),
         HttpRigOptions {
-            absorber: Some(cold_absorber()),
+            seal: Some(cold_sealer),
             ..Default::default()
         },
     )

@@ -4592,6 +4592,127 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Status:** awaiting the owner's ratification.
 - **Check against commit:** written with the change.
 
+### #205 (this record's commit) — A billed segment's usage reaches the ledger from its tail's counters and an in-memory dirty set: after a shard opens every billed segment's usage is emitted once more, so answers stay exact but may trail by one drain cadence per 256 billed segments of the shard until that re-emission completes
+
+- **Program item:** layout 6A's format reset, package 4 step 2 (DESIGN-6A draft 3, f3: static binary billing meta once per stream incarnation-month, cumulative counters on the tail, in-memory dirty set; REVIEW-6A F4).
+- **Surface:** product (usage answers) and operator (alerts).
+- **Endpoint:** `GET /v1/streams/{name}/usage/*` and `GET /v1/projects/{project}/usage` (freshness only); the `usage_outbox_lag` alert on `/operator`.
+- **Condition:** a shard opens (restart, deploy, ownership move, cold open by the sweep) while it holds billed segments.
+- **Before:** each billed commit group wrote the segment's JSON billing row and a usage-dirty row keyed by version; the drain paged the durable dirty rows, so after an open only segments with unacknowledged versions were emitted.
+- **After:** a billed group stages no billing row of its own: the counters ride the tail it writes anyway, the static row is written only when the identity, month or retention flag changes, and the dirty set is in memory (marked when a billed group is applied, cleared by the acknowledgement through its version). At the first look after the open the set is rebuilt from the tails and holds every billed segment, so the drain emits each once more; the rollup ignores a snapshot at or below the version it holds (unchanged), so no total changes. Until that re-emission completes, a segment written after the open may wait behind it: one drain cadence (`TELEMETRY_DRAIN_SECS`, 8 s) per 256 billed segments of the shard beyond the first round (#121's per-shard page). The `usage_outbox_lag` alert counts the re-marked segments, so on a shard with more billed segments than its threshold it opens after an open until the re-emission completes.
+- **Retry semantics:** none needed; answers converge without client action.
+- **Who is affected:** usage readers on shards with more than 256 billed segments, in the minutes after a shard opens; operators of such shards (a transient alert).
+- **Pinning tests:** `shard::billing_read_tests::f3_tests::the_usage_drain_meters_only_durable_counters` (the drain reads the durable version while a billed group's WAL write is held; an ack through it keeps the newer version dirty), `shard::billing_read_tests::f3_tests::an_ack_in_a_rejected_group_leaves_its_finals_and_the_segment_is_emitted_again`, `shard::billing_read_tests::f3_tests::f3_billing_counters_ride_the_tail_and_the_static_row_is_written_once_a_month` (one static row staged and read for 40 groups, once more at the month rollover, the dirty set cleared by the ack, a fresh engine re-marks the segment and rebuilds the same meta); `dst::dst_tests::billing_restart::a_restart_re_emits_every_billed_segment_and_the_rollup_bills_it_once` (exact totals across a restart and a later write); `billing::stored_meta::tests::*` (codec, goldens, refusal); `golden_tests::billing::golden_layout6_billing_meta_static_row_and_counters_bytes`.
+- **Risk reason:** low. Totals are exact by the rollup's existing version rule; only freshness after an open and an operator alert change, and only on shards with many billed segments.
+- **Status:** awaiting the owner's ratification.
+- **Check against commit:** written with the change.
+
+### #206 (this record's commit) — A stream's physical size is the length of its sealed chunks plus its unsealed page bytes (G10, layout 6)
+
+- **Program item:** layout 6A's format reset, package 4 step 3 (owner decision D3, by the lead under delegation, 2026-10-27).
+- **Surface:** the product guarantee G10 (`SPEC.md` §4); no endpoint reports physical size today.
+- **Endpoint:** none (specification).
+- **Condition:** any stream.
+- **Before:** physical size = the SST sizes of the stream's history database manifest plus its transient shard-log share.
+- **After:** physical size = the lengths of the stream's sealed chunks in its shard's seal directory (pages plus each chunk's header, page directory and CRC) plus the unsealed page bytes its tail records. The history tier is gone.
+- **Retry semantics:** none.
+- **Who is affected:** whoever builds a physical-size report against G10.
+- **Pinning tests:** `shard::seal::tests::tiling_with_an_abort_between_every_pair_of_steps` (the directory tiles `[0, absorbed)` and the pending row `[absorbed, next)`, so the two terms cover every stored page once).
+- **Risk reason:** low. Specification only; logical size and billing are unchanged.
+- **Status:** ratified by the lead under the owner's delegation (D3), 2026-10-27.
+- **Check against commit:** written with the change.
+
+### #207 (this record's commit) — A read of sealed offsets costs one ranged GET per chunk unless the ring holds them; a keyed read skips the chunks whose key summary excludes its key
+
+- **Program item:** layout 6A, package 4 step 3 (keyed sealed reads, decision K and D4).
+- **Surface:** product and raw reads (latency and object-store requests).
+- **Endpoint:** every read route (`GET /v1/streams/{name}`, the product read and live routes, SSE catch-up).
+- **Condition:** a read below a stream's sealed boundary that the tail ring does not cover.
+- **Before:** offsets below the absorbed boundary were read from the shard's history partition through the block cache (keyed reads through the postings index and its cache).
+- **After:** the read takes the stream's chunks from the in-memory seal directory and issues one ranged GET per chunk (at most 8 in flight, at most 256 per read, from the anchor at or before the offset due to the first anchor past the window or the byte budget); there is no segment cache yet (package 5). A keyed read skips a chunk whose routing-key summary excludes its key without a GET, and fetches a chunk the summary admits (a bloom's false positive costs one GET that serves nothing). A missing object is a retryable 503-class read error; a chunk that fails its checks is corruption. Unsealed offsets are served from memory.
+- **Retry semantics:** unchanged; a missing object answers like a store outage (retryable).
+- **Who is affected:** readers that catch up through sealed history; cost per catch-up read.
+- **Pinning tests:** `shard::seal::read_tests::sealed_ranges_read_back_exactly_across_chunks_anchors_and_budgets`, `a_keyed_read_skips_chunks_the_summary_excludes_without_a_get`, `a_bloom_false_positive_costs_one_get_that_serves_nothing`, `a_corrupt_sealed_chunk_surfaces_as_corruption`, `a_reader_racing_a_seal_gets_exact_data_at_both_visibilities`.
+- **Risk reason:** medium. Latency and request cost of cold reads change until package 5's run index and chunk cache; correctness is pinned.
+- **Status:** ratified by the lead under the owner's delegation, 2026-10-28 (step-3 batch 1, S5).
+- **Check against commit:** written with the change.
+
+### #208 (this record's commit) — The absorber's and the history tier's operator surfaces are gone, and the shard debug JSON gains the sealer's counters
+
+- **Program item:** layout 6A, package 4 step 3 (D4: the absorber, history2, trim, the dirty index and the 'M' row retired).
+- **Surface:** operator-debug and process configuration.
+- **Endpoint:** `POST /v1/debug/absorb-pause` and `POST /v1/debug/history-stall` (removed: 404); `GET /v1/debug/absorb`, `/v1/debug/store`, `/v1/debug/timings`, `/operator/data.json` (absorber, history-partition, postings-cache, trim and absorb-reservation fields removed); `/v1/debug/timings` adds each shard's `seal` (seals, empty seals, failures, refusals, objects and bytes, page and remainder bytes, deadline flushes, flush and open failures, snapshot gaps, corrupt streams, sealed reads and GETs, summary skips and misses, directory entries and streams); the fleet heartbeat's `absorb_lag_max_secs` now carries the longest sealer stall (seconds since a shard's sealer last retired unsealed bytes while some are held); configuration: the history, postings-cache and absorber-budget knobs and their flags and environment names are retired (a retired name is ignored, a retired flag refused, as for #80-#85).
+- **Condition:** always.
+- **Before:** those routes, fields and knobs existed.
+- **After:** they are gone; the RSS write gate reads sampled RSS alone (no absorber reservation).
+- **Retry semantics:** none.
+- **Who is affected:** operators and dashboards reading those fields; deploy profiles that set the retired knobs.
+- **Pinning tests:** `config::retired_tests::*`, `config::tests::default_values_are_pinned`, `admission::tests::rss_gate_reads_sampled_rss_against_the_line`, the security-route matrix (`dst::dst_tests::security_routes`).
+- **Risk reason:** low. Operator-only.
+- **Status:** ratified by the lead under the owner's delegation, 2026-10-28 (step-3 batch 1, S5).
+- **Check against commit:** written with the change; the route that carries `seal` corrected from `/v1/debug/shards` (no such route) to `/v1/debug/timings` before landing (2026-10-28).
+- **Amended before landing (2026-10-28):** `seal` also carries `deadline_flushes_during_seal` (F5, step-3 batch 2) and `directory_bytes`, the in-memory directory's memory estimate (S13 condition 1: the directory grows until package 5's fold, and the K2 legs and soaks measure it). Both are additive operator-debug fields; the lead's batch-2 and S13 rulings asked for them.
+
+### #209 (this record's commit) — The idle release seals every open shard instead of flushing its memtable
+
+- **Program item:** layout 6A, package 4 step 3 (Fable step-3 review: idle release requests a seal).
+- **Surface:** process (memory and object-store requests at idle).
+- **Endpoint:** none (`bootstrap::idle`).
+- **Condition:** the idle release or a memory-pressure release.
+- **Before:** each open shard's memtable was flushed to an L0 (the absorber's deletes left in memory otherwise).
+- **After:** each open shard is sealed: its unsealed pages go to a segment object and its memtable to an L0 after an awaited WAL flush; a shard whose seal fails keeps both and its sealer retries. The release then empties the shared and telemetry caches (no history cache or postings slices exist).
+- **Retry semantics:** none.
+- **Who is affected:** idle cells (one object PUT per shard holding unsealed pages).
+- **Pinning tests:** `dst::dst_tests::idle_release::*`.
+- **Risk reason:** low.
+- **Status:** ratified by the lead under the owner's delegation, 2026-10-28 (step-3 batch 1, S5).
+- **Check against commit:** written with the change.
+
+### #210 (this record's commit) — A stream's tail row is format v4 within layout 6, and a tail or pending row that does not decode fails only its own stream
+
+- **Program item:** layout 6A, package 4 step 3 (format reset; no released cell ever ran layout 6's v3 tail).
+- **Surface:** storage (operator-visible through refusals).
+- **Endpoint:** none.
+- **Condition:** a shard log written by an earlier build of layout 6 (step 1, never deployed), or a corrupt tail or pending row.
+- **Before:** layout 6 tails were v3 (trim fields, the history-v2 flag); a corrupt dirty-marked tail failed the shard's open.
+- **After:** tails are v4 (no trim fields, no history-v2 flag; `absorbed` is the sealed boundary); every other version is refused (no legacy decoder). A tail or pending row that does not decode is logged and counted by the sealer's open (`corrupt_streams`) and left out of the shard's maintenance ledger; its stream fails when loaded and every other stream is served.
+- **Retry semantics:** none.
+- **Who is affected:** nobody in production (layout 6 is unreleased); operators of a corrupted shard.
+- **Pinning tests:** `golden_tests::tail_codec::*` (v4 bytes and refusals), `shard::seal::tests::a_corrupt_pending_row_fails_only_its_stream_at_the_open`.
+- **Risk reason:** low.
+- **Status:** ratified by the lead under the owner's delegation, 2026-10-28 (step-3 batch 1, S5).
+- **Check against commit:** written with the change.
+
+### #211 (this record's commit) — Cell-watch's RSS rule reads sampled RSS alone, and the history-flush-wait rule is retired
+
+- **Program item:** layout 6A, package 4 step 3 (the absorber and the history tier retired, D4).
+- **Surface:** operator alerting (cell-watch, `deploy/cell-watch/rules.ts`; RUNBOOK's "What to alert on").
+- **Endpoint:** none (alert rules over `/operator/data.json`).
+- **Condition:** always.
+- **Before:** row 8 (`r08_rss_at_shed_line`) summed `local.rss_mb` and the absorber's reserved bytes against the shed line; row 13 (`r13_history_flush_wait`) paged when a history gather waited over 30 s at the history L0 cap. Both fields are gone, so both rules skipped silently.
+- **After:** row 8 compares `local.rss_mb` with `local.rss_shed_mb` (what the RSS shed now reads), same thresholds; row 13 is retired (no history tier). A sealer that stops sealing shows in row 12 through the maintenance ledger's stall (`absorb_lag_secs`).
+- **Retry semantics:** none.
+- **Who is affected:** on-call; row 13's page no longer exists.
+- **Pinning tests:** `deploy/cell-watch/rules-cell.test.ts` (row 8), `rules.test.ts` (the table without row 13), `runbook.test.ts`.
+- **Risk reason:** low.
+- **Status:** ratified by the lead under the owner's delegation, 2026-10-28 (step-3 batch 2).
+- **Check against commit:** written with the change.
+
+### #212 (this record's commit) — `POST /v1/debug/seal-pause?on=1|0` turns every local engine's sealer off and on, and drives cell-watch's row-12 drill
+
+- **Program item:** layout 6A, package 4 step 3 (the absorb-pause analogue, step-3 batch 2).
+- **Surface:** operator-debug.
+- **Endpoint:** `POST /v1/debug/seal-pause?on=1|0`, behind the debug gate and the same auth posture as every debug route.
+- **Condition:** an operator or the drills call it.
+- **Before:** `POST /v1/debug/absorb-pause` paused the absorber (removed with it, #208), and the row-12 drill used it.
+- **After:** `on=1` turns every local engine's sealer triggers and deadlines off (a seal in flight finishes; an engine opened later starts unpaused); any other value turns them back on. Answers 200 `{"seal_paused": bool}`. The row-12 drill pauses sealing until the lag latch engages, then resumes it; the row-13 drill is gone with its rule (#211).
+- **Retry semantics:** idempotent.
+- **Who is affected:** operators running drills.
+- **Pinning tests:** `deploy/cell-watch/runbook.test.ts` (the drills paragraph), `deploy/cell-watch/drills.e2e.test.ts` (opt-in), the debug-route auth matrix (`dst::dst_tests::security_routes`).
+- **Risk reason:** low. Debug-gated; pausing the sealer grows the unsealed backlog until the latch sheds appends, which is what the drill proves.
+- **Status:** ratified by the lead under the owner's delegation, 2026-10-28 (step-3 batch 2).
+- **Check against commit:** written with the change.
+
 ## Discrepancies
 
 One record has verified=false: its commit did not match the recorded text.

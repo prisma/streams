@@ -53,11 +53,10 @@ enum Script {
 /// A real engine over an in-memory store (`unwind::tests` keeps the same shape).
 pub(super) async fn open_engine(prefix: &str) -> Arc<ShardEngine> {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-    let db = slatedb::Db::builder(prefix, store.clone())
+    let db = crate::keyspace::db_builder(prefix, store.clone())
         .build()
         .await
         .expect("open db");
-    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
     let maintenance = crate::shard::load_or_rebuild_maintenance(&db)
         .await
         .expect("load maintenance");
@@ -66,7 +65,6 @@ pub(super) async fn open_engine(prefix: &str) -> Arc<ShardEngine> {
         Arc::new(db),
         store,
         crate::shard::ShardConfig::default(),
-        absorb_tx,
         None,
         maintenance,
     )

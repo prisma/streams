@@ -344,8 +344,8 @@ fn delivered_records(complete: &str) -> Vec<u64> {
 /// subscribers (~0.3% of cut events). This leg drives the same
 /// convergence hard: a shared feed under a tiny retention budget
 /// (constant ProjectOver -> clear_ring + floor=head -> cuts),
-/// continuous appends, the absorb boundary swinging (pause flag
-/// toggles), store latency injected, and two cursor-resuming
+/// continuous appends, the sealed boundary swinging (a seal on every
+/// engine each 47 ms), store latency injected, and two cursor-resuming
 /// subscribers reconciled EXACTLY against the acked set.
 #[expect(
     clippy::disallowed_methods,
@@ -426,17 +426,17 @@ async fn cut_resume_never_skips_a_durable_record() {
         assert_eq!(position.offset, 0, "sub{i} must start before q=0");
     }
 
-    // Absorb-boundary swinger: WAL->history retirement races reads.
+    // Seal-boundary swinger: seals move the sealed boundary under reads.
     let stop2 = stopf.clone();
-    let swinger_resources = state.runtime.history.clone();
+    let swinger_state = state.clone();
     let swinger = tokio::spawn(async move {
-        let mut on = false;
         while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
-            on = !on;
-            swinger_resources.paused.store(on, Ordering::Relaxed);
+            for engine in swinger_state.shards.engines() {
+                // A failed seal only skips its turn; the readers judge.
+                let _sealed = engine.seal_requested().await;
+            }
             tokio::time::sleep(std::time::Duration::from_millis(47)).await;
         }
-        swinger_resources.paused.store(false, Ordering::Relaxed);
     });
 
     // Continuous appends: 1 KiB records, serial, as fast as the rig
@@ -467,16 +467,13 @@ async fn cut_resume_never_skips_a_durable_record() {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
     stopf.store(true, std::sync::atomic::Ordering::Relaxed);
-    swinger
-        .await
-        .expect("the absorb-boundary swinger completed");
+    swinger.await.expect("the seal-boundary swinger completed");
     for t in subtasks {
         tokio::time::timeout(std::time::Duration::from_secs(10), t)
             .await
             .expect("a subscriber stopped within ten seconds of the stop flag")
             .expect("a subscriber task panicked");
     }
-    state.runtime.history.paused.store(false, Ordering::Relaxed);
 
     let cuts = crate::sse::auth::sse_stats::FEED_LAG_DISCONNECTS
         .load(std::sync::atomic::Ordering::Relaxed);

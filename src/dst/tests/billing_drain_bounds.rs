@@ -4,7 +4,7 @@
 //! `_usage` record bounds.
 
 use super::fixture_http::{
-    HttpRigOptions, cold_absorber, http_rig_build, install_read_spool, install_rollup,
+    HttpRigOptions, cold_sealer, http_rig_build, install_read_spool, install_rollup,
 };
 use super::fixture_requests::hreq;
 use super::fixture_runtime::RigRuntime;
@@ -23,10 +23,10 @@ use std::time::Duration;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_drain_round_takes_up_to_256_dirty_rows_of_each_shard() {
     let _clock = crate::billing::billing_clock_lock().read().await;
-    // The absorber is not the subject (and the rig's fast one keeps a
+    // The sealer is not the subject (and the rig's fast one keeps a
     // shard of this many segments from closing at the rig's stop).
     let options = HttpRigOptions {
-        absorber: Some(cold_absorber()),
+        seal: Some(cold_sealer),
         ..HttpRigOptions::default()
     };
     let rig = http_rig_build(mem(), RigRuntime::first(), options).await;

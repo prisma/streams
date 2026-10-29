@@ -1,11 +1,13 @@
 # Stored pages (layout 5): format, keys and cryptographic acceptance
 
-Since storage layout 5, every record the server stores, in the shard log and
-in history, is inside a **page**: one append request's records of one
+Since storage layout 5, every record the server stores is inside a
+**page**: one append request's records of one
 routing key and key version, cut at 64 KiB of body and 4,096 records,
 compressed together with zstd level 1 when that pays, and encrypted once with
-AES-256-GCM-SIV. History holds the shard log's pages byte for byte. Pages
-never leave the server: `format=frames` reads re-encrypt each record as a
+AES-256-GCM-SIV. Layout 6 keeps the page unchanged: a stream's unsealed
+pages sit back to back on its pending row in the shard log, and a seal
+copies them byte for byte into a chunk of a segment object (SPEC §3.3,
+§3.6). Pages never leave the server: `format=frames` reads re-encrypt each record as a
 version 4 frame ([crypto-frame-v4.md](crypto-frame-v4.md)), and JSON and raw
 reads return plaintext. The code is `src/crypto_page.rs` and
 `src/crypto_page/`; the decisions behind it are the layout 5 spec (owner
@@ -29,10 +31,12 @@ body, the plaintext (compressed when ver is 7):
 - Integers are big-endian. A varint is minimal LEB128 (seven bits per byte,
   low group first, no redundant zero group), so every page has exactly one
   byte string. `ct_len` counts the ciphertext and its tag.
-- Row keys: `hash16 ‖ 'p' ‖ last offset` in the shard log,
-  `route16 ‖ inc16 ‖ 'g' ‖ last offset` in history (`'p'` rows there are
-  postings pages). A scan of `[from, to)` reads from the key of `from` to the
-  key of `to - 1 + 4,096` (`page_scan_bound`).
+- Where pages are held: no page has a row of its own. The pending row
+  `'S' ‖ hash16 ‖ 'P'` holds a stream's unsealed pages back to back, and a
+  segment chunk holds its sealed pages back to back behind a page directory
+  (6 bytes per page: length and record count). A reader walks them by their
+  clear headers (`page_extent`: each header gives its page's length and last
+  offset) and admits each page under the last offset its holder names.
 - Limits: count 1 to 4,096; a body of more than one record is at most
   64 KiB; a single record is at most the 32 MiB record cap, so a
   single-record body is at most 32 MiB + 5 (a four-byte length and its zero
@@ -69,12 +73,12 @@ nonce    = 12 bytes from OsRng per page
 
 ## What is checked, and when
 
-- **Before decryption, without a key** (`CheckedPage::from_row`, `admit`):
-  the row tag of the keyspace the prefix names, the key width and namespace,
+- **Before decryption, without a key** (`page_extent`, `CheckedPage::admit`):
   version 6 or 7, a minimal count varint in 1 to 4,096, no truncated field, a
   UTF-8 routing key, the exact length with nothing trailing, a full 16-byte
   tag, a ciphertext no longer than the body cap of its count plus the tag,
-  and the key's last offset equal to `first + count - 1` without overflow.
+  and the last offset its holder names equal to `first + count - 1` without
+  overflow.
   So the work an unauthenticated row can cause is bounded by its cap.
 - **After authentication** (`PageCipher::open_within`): a version 7 body
   must be exactly one standard zstd frame that declares its content size, no
@@ -88,15 +92,16 @@ nonce    = 12 bytes from OsRng per page
 - A read that cannot use a single-record page whose record is surely past
   its remaining budget neither decrypts it (raw) nor inflates it
   (compressed).
-- A history read checks that the pages it meets tile its window: an
-  overlapping or a lost page fails the read as corruption instead of serving
+- A read checks that the pages it meets tile its window, across sealed
+  chunks and unsealed pages: an overlapping or a lost page fails the read
+  as corruption instead of serving
   offsets twice or passing records off as consumed.
 - Opened pages and records have no Debug form, so plaintext cannot reach a
   log through `{:?}`.
 
 Formal coverage: KANI-017 (admission, counts up to 4,096 and past it) and
 KANI-097 (the body parser) in `verification/manifest.json`; TLA-016 (the
-absorbed boundary is always a page edge) and TLA-018 (a lost page is
+sealed boundary is always a page edge) and TLA-018 (a lost page is
 refused, cursors inside pages).
 
 ## Compression and length

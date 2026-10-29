@@ -109,11 +109,7 @@ fn summary_durations_saturate_instead_of_wrapping_to_zero() {
         (Duration::MAX, u64::MAX),
     ] {
         cfg.shard.open_deadline = duration;
-        cfg.history.gc_interval = Some(duration);
         let summary = cfg.redacted_summary();
         assert_eq!(summary["shard"]["open_deadline_ms"], expected);
-        assert_eq!(summary["history"]["gc_interval_ms"], expected);
     }
-    cfg.history.gc_interval = None;
-    assert!(cfg.redacted_summary()["history"]["gc_interval_ms"].is_null());
 }

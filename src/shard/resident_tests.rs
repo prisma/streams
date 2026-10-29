@@ -1,7 +1,8 @@
-//! A stream's billing row and consumer records stay on its resident handle
-//! once a commit group read or staged them: the next group takes them from
-//! there, not from the store. A group refused before its write leaves no
-//! row behind.
+//! A stream's billing meta and consumer records stay on its resident
+//! handle once a commit group read or staged them: the next group takes
+//! them from there, not from the store (the billing meta on the applied
+//! tail, layout 6 f3; the records in `HotRows`). A group refused before its
+//! write leaves nothing behind.
 #![cfg(test)]
 use super::*;
 use crate::queue::{ConsumerConfig, ConsumerLifecycle, ConsumerRecord, QueueOp, QueueOut};
@@ -11,37 +12,34 @@ const SEGMENT: [u8; 16] = [0x5e; 16];
 struct Rig {
     engine: Arc<ShardEngine>,
     db: Arc<Db>,
-    _signals: mpsc::Receiver<AbsorbSignal>,
 }
 
 impl Rig {
     async fn start(prefix: &str) -> Self {
         let store: Arc<dyn object_store::ObjectStore> =
             Arc::new(object_store::memory::InMemory::new());
-        let db = Arc::new(Db::builder(prefix, store.clone()).build().await.unwrap());
-        let (tx, signals) = mpsc::channel(64);
+        let db = Arc::new(
+            crate::keyspace::db_builder(prefix, store.clone())
+                .build()
+                .await
+                .unwrap(),
+        );
+        let maintenance = load_or_rebuild_maintenance(&db).await.unwrap();
         let engine = ShardEngine::start(
             prefix.into(),
             db.clone(),
             store,
             ShardConfig::default(),
-            tx,
             None,
-            ShardMaintenance::default(),
+            maintenance,
         );
-        Self {
-            engine,
-            db,
-            _signals: signals,
-        }
+        Self { engine, db }
     }
 
     /// One billed append of `payload` to `SEGMENT` as its own group; its reply.
     async fn append(&self, payload: &'static [u8]) -> Result<AppendAck, AppendErr> {
         let (append, reply) = append_op(payload);
-        self.engine
-            .commit_group(vec![append], &ShardConfig::default())
-            .await;
+        self.engine.commit_group(vec![append]).await;
         tokio::time::timeout(std::time::Duration::from_secs(5), reply)
             .await
             .unwrap()
@@ -51,9 +49,7 @@ impl Rig {
     /// One queue op on `SEGMENT` as its own group; its reply.
     async fn queue(&self, op: QueueOp) -> Result<QueueOut, String> {
         let (op, reply) = queue_op(op);
-        self.engine
-            .commit_group(vec![op], &ShardConfig::default())
-            .await;
+        self.engine.commit_group(vec![op]).await;
         tokio::time::timeout(std::time::Duration::from_secs(5), reply)
             .await
             .unwrap()
@@ -73,15 +69,31 @@ impl Rig {
         }
     }
 
-    /// The stored billing row of `SEGMENT`.
-    async fn billing_row(&self) -> crate::billing::SegmentBillingMetaV1 {
-        let raw = self
-            .db
-            .get(crate::billing::billing_meta_key(&SEGMENT))
+    /// The stored billing meta of `hash`: its static row with the usage
+    /// counters its tail carries (layout 6, f3).
+    async fn billing_of(&self, hash: &[u8; 16]) -> crate::billing::SegmentBillingMetaV1 {
+        super::test_support::stored_billing(&self.db, hash)
             .await
-            .unwrap()
-            .unwrap();
-        serde_json::from_slice(&raw).unwrap()
+            .expect("a stored billing row")
+    }
+
+    /// The stored billing meta of `SEGMENT`.
+    async fn billing_row(&self) -> crate::billing::SegmentBillingMetaV1 {
+        self.billing_of(&SEGMENT).await
+    }
+
+    /// How many static billing rows the engine read from the store.
+    fn static_reads(&self) -> u64 {
+        super::test_support::billing_row_io_on(&self.db).1
+    }
+
+    /// Store `planted_row()` as `hash`'s billing meta, before any engine
+    /// group touches the stream: its static row and a tail carrying its
+    /// counters.
+    async fn plant(&self, hash: &[u8; 16]) {
+        let mut batch = WriteBatch::new();
+        super::test_support::seed_billing(&mut batch, hash, &planted_row(), &TailFields::default());
+        self.db.write(batch).await.unwrap();
     }
 
     async fn stop(self) {
@@ -175,10 +187,10 @@ fn config() -> ConsumerConfig {
     }
 }
 
-/// The second billed group never reads the row the first one wrote, nor
-/// does a group between them that bills nothing let go of it: an unreadable
-/// stored row does not refuse the second, and the row it writes carries both
-/// appends' totals.
+/// The second billed group never reads the row the first one staged, nor
+/// does a group between them that bills nothing let go of it: the engine
+/// reads the stream's static row from the store once, and the second
+/// group's counters carry both appends' totals.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_group_bills_on_the_row_its_predecessor_left_on_the_handle() {
     let rig = Rig::start("resident-billing").await;
@@ -187,17 +199,12 @@ async fn a_group_bills_on_the_row_its_predecessor_left_on_the_handle() {
     assert_eq!(
         (first.ingest_records_total, first.usage_version),
         (1, 1),
-        "the first group wrote the row"
+        "the first group staged the row"
     );
+    let reads = rig.static_reads();
     assert_eq!(rig.config("x").await, None, "a group that bills nothing");
-    rig.db
-        .put(
-            crate::billing::billing_meta_key(&SEGMENT),
-            b"unreadable".to_vec(),
-        )
-        .await
-        .unwrap();
     assert_eq!(rig.append(b"payload").await.unwrap().next_offset, 2);
+    assert_eq!(rig.static_reads(), reads, "the second group read no row");
     let second = rig.billing_row().await;
     assert_eq!(
         (
@@ -232,9 +239,7 @@ async fn a_refused_group_leaves_no_billing_row_on_the_handle() {
         consumer: "c".into(),
         cfg: config(),
     });
-    rig.engine
-        .commit_group(vec![append, put], &ShardConfig::default())
-        .await;
+    rig.engine.commit_group(vec![append, put]).await;
     assert!(appended.await.unwrap().is_err(), "the group is refused");
     assert!(created.await.unwrap().is_err(), "with all its ops");
     assert_eq!(rig.billing_row().await.ingest_records_total, 1);
@@ -340,47 +345,42 @@ async fn a_consumer_without_a_record_is_read_again() {
     rig.stop().await;
 }
 
-/// A group that writes nothing still leaves the row it read on the handle.
+/// A group that writes nothing still leaves the row it read on the handle:
+/// the next group reads no row and bills on the planted totals.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_group_that_writes_nothing_leaves_its_billing_row_on_the_handle() {
     let rig = Rig::start("resident-billing-no-write").await;
-    let key = crate::billing::billing_meta_key(&SEGMENT);
-    rig.db
-        .put(&key, serde_json::to_vec(&planted_row()).unwrap())
-        .await
-        .unwrap();
+    rig.plant(&SEGMENT).await;
     rig.engine
-        .commit_group(
-            vec![CommitOp::UsageAck {
-                hash: SEGMENT,
-                scope: UsageAckScope::ThroughVersion(7),
-                month_final_keys: vec![],
-            }],
-            &ShardConfig::default(),
-        )
+        .commit_group(vec![CommitOp::UsageAck {
+            hash: SEGMENT,
+            scope: UsageAckScope::ThroughVersion(7),
+            month_final_keys: vec![],
+        }])
         .await;
     assert_eq!(rig.billing_row().await.usage_version, 8, "nothing written");
-    rig.db.put(&key, b"unreadable".to_vec()).await.unwrap();
+    let reads = rig.static_reads();
+    assert_eq!(reads, 1, "the acknowledgement read the row");
     rig.append(b"payload").await.unwrap();
+    assert_eq!(rig.static_reads(), reads, "the append read no row");
     let row = rig.billing_row().await;
     assert_eq!((row.ingest_records_total, row.usage_version), (6, 9));
     rig.stop().await;
 }
 
-/// A resident handle that holds no billing row reads the store's.
+/// A handle made resident by a group that bills nothing holds no billing
+/// meta: the first billed group reads the stream's static row, once, and
+/// bills from it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_resident_handle_without_a_billing_row_reads_the_store() {
     let rig = Rig::start("resident-billing-unheld").await;
+    rig.plant(&SEGMENT).await;
     assert_eq!(rig.config("c").await, None);
     assert_eq!(rig.engine.resident_streams(), 1);
-    rig.db
-        .put(
-            crate::billing::billing_meta_key(&SEGMENT),
-            serde_json::to_vec(&planted_row()).unwrap(),
-        )
-        .await
-        .unwrap();
+    assert_eq!(rig.static_reads(), 0, "the config read read no billing row");
     rig.append(b"payload").await.unwrap();
+    rig.append(b"payload").await.unwrap();
+    assert_eq!(rig.static_reads(), 1, "read once, then held");
     let row = rig.billing_row().await;
     assert_eq!(
         (
@@ -388,7 +388,7 @@ async fn a_resident_handle_without_a_billing_row_reads_the_store() {
             row.ingest_payload_bytes_total,
             row.usage_version
         ),
-        (6, 42, 9)
+        (7, 49, 10)
     );
     rig.stop().await;
 }
@@ -402,21 +402,14 @@ async fn a_group_reads_its_cold_streams_billing_rows_together() {
     let rig = Rig::start("resident-cold").await;
     let hashes: Vec<[u8; 16]> = (0..STREAMS).map(|n| [0x60 + n; 16]).collect();
     for hash in &hashes {
-        rig.db
-            .put(
-                crate::billing::billing_meta_key(hash),
-                serde_json::to_vec(&planted_row()).unwrap(),
-            )
-            .await
-            .unwrap();
+        rig.plant(hash).await;
     }
     let held = super::test_support::hold_billing_reads("resident-cold");
     let (ops, replies): (Vec<_>, Vec<_>) = hashes
         .iter()
         .map(|hash| append_op_to(*hash, b"payload"))
         .unzip();
-    let cfg = ShardConfig::default();
-    let group = rig.engine.commit_group(ops, &cfg);
+    let group = rig.engine.commit_group(ops);
     let watch = async {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while held.in_flight() < usize::from(STREAMS) && std::time::Instant::now() < deadline {
@@ -441,13 +434,7 @@ async fn a_group_reads_its_cold_streams_billing_rows_together() {
         assert_eq!(reply.await.unwrap().unwrap().next_offset, 1);
     }
     for hash in &hashes {
-        let raw = rig
-            .db
-            .get(crate::billing::billing_meta_key(hash))
-            .await
-            .unwrap()
-            .unwrap();
-        let row: crate::billing::SegmentBillingMetaV1 = serde_json::from_slice(&raw).unwrap();
+        let row = rig.billing_of(hash).await;
         assert_eq!((row.ingest_records_total, row.usage_version), (6, 9));
     }
     rig.stop().await;
@@ -466,8 +453,7 @@ async fn a_group_reads_no_billing_row_for_a_stream_it_does_not_bill() {
     let (get, got) = queue_op(QueueOp::ConfigGet {
         consumer: "c".into(),
     });
-    let cfg = ShardConfig::default();
-    let group = rig.engine.commit_group(vec![append, get], &cfg);
+    let group = rig.engine.commit_group(vec![append, get]);
     tokio::time::timeout(std::time::Duration::from_secs(2), group)
         .await
         .expect("no billing read held the group");
@@ -522,8 +508,7 @@ async fn a_group_loads_its_cold_streams_queue_state_together() {
             (op, reply)
         })
         .unzip();
-    let cfg = ShardConfig::default();
-    let group = rig.engine.commit_group(ops, &cfg);
+    let group = rig.engine.commit_group(ops);
     let watch = async {
         let mut together = Vec::new();
         for held in [&scans, &records] {

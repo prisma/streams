@@ -56,7 +56,7 @@ derives the same ceilings and publishes every quota explicitly at or below
 them. `PROJECT_MEMORY_PRESSURE_BYTES` and the envelope values await
 certification on the one-shard shape. `init` and `admit` refuse a profile
 whose `PROJECT_SHARE_K` projects at their memory lines would pass the one
-shard's unabsorbed-bytes line (`MAX_UNABSORBED_BYTES_PER_SHARD`, stated in
+shard's unsealed-bytes line (`MAX_UNABSORBED_BYTES_PER_SHARD`, stated in
 the profile at the binary's 256 MiB), past which every append to the cell
 is refused; the profile's comment states the real tolerance.
 

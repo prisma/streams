@@ -14,7 +14,7 @@ use super::{OpenError, PAGE_TARGET_PLAINTEXT, PAGE_VER_Z, body_cap};
 fn two_records(len: usize, fill: u8) -> Vec<u8> {
     let mut body = Vec::new();
     for _ in 0..2 {
-        super::body::put_varint(&mut body, len as u64);
+        super::varint::put_varint(&mut body, len as u64);
     }
     body.extend_from_slice(&[0, 0]);
     body.extend(std::iter::repeat_n(fill, len.checked_mul(2).unwrap()));

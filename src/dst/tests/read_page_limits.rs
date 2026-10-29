@@ -1,5 +1,5 @@
 //! R06-A real append -> compressed ring/DB -> local page -> HTTP peer receiver.
-use super::fixture_http::{HttpRigOptions, cold_absorber, engine_shutdown, http_rig_build};
+use super::fixture_http::{HttpRigOptions, cold_sealer, engine_shutdown, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::{mem, skey};
@@ -30,7 +30,7 @@ async fn r06a_compressed_local_and_peer_pages_have_identical_complete_sequences(
         mem(),
         RigRuntime::first(),
         HttpRigOptions {
-            absorber: Some(cold_absorber()),
+            seal: Some(cold_sealer),
             max_request_body_bytes: Some(32 << 20),
             shard: crate::shard::ShardConfig {
                 tail_ring_bytes: 4 << 20,
@@ -40,14 +40,9 @@ async fn r06a_compressed_local_and_peer_pages_have_identical_complete_sequences(
         },
     )
     .await;
+    // The sealer stays off: 1,600 records of 16 KiB pass the 24 MiB unsealed
+    // trigger, and this fixture's pages stay in the tail tier.
     let state = &rig.state;
-    // Recovery backdates discovered debt, so age thresholds alone cannot
-    // keep this tail-page fixture cold under a delayed startup schedule.
-    state
-        .runtime
-        .history
-        .paused
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let headers = [("prisma-encryption-key", PRISMA_KEY)];
     assert_eq!(
         preq(

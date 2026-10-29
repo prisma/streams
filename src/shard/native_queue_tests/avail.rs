@@ -10,7 +10,7 @@ use crate::native_queue::{INLINE_PAGE_MAX, QueueConfig, keys};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_small_message_rides_in_its_availability_entry_with_its_metadata() {
-    let (e, db, _absorb, c) = clocked("nq-avail-inline", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-avail-inline", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("hello")])).await.unwrap();
     let page = db.get(shard_page_key(&HASH, 0)).await.unwrap().unwrap();
     let entry = db
@@ -41,7 +41,7 @@ async fn a_small_message_rides_in_its_availability_entry_with_its_metadata() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_of_an_untaken_message_never_reads_its_metadata_row() {
-    let (e, db, _absorb, _c) = clocked("nq-avail-no-meta", QueueConfig::default()).await;
+    let (e, db, _c) = clocked("nq-avail-no-meta", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
     // Only the availability entry can tell the claim about the message.
     db.delete(keys::by_offset(&HASH, keys::META, 0))
@@ -76,7 +76,7 @@ fn noise(n: usize) -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_page_rides_inline_up_to_the_limit_exactly_and_not_a_byte_past_it() {
-    let (e, db, _absorb, c) = clocked("nq-avail-limit", QueueConfig::default()).await;
+    let (e, db, c) = clocked("nq-avail-limit", QueueConfig::default()).await;
     // One send of every body size around the limit; each is its own page.
     let text = noise(2 * INLINE_PAGE_MAX);
     let sizes = INLINE_PAGE_MAX * 3 / 4..INLINE_PAGE_MAX * 5 / 4;
@@ -105,7 +105,7 @@ async fn a_page_rides_inline_up_to_the_limit_exactly_and_not_a_byte_past_it() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_of_a_large_message_leaves_its_page_to_the_page_key() {
-    let (e, db, _absorb, _c) = clocked("nq-avail-large", QueueConfig::default()).await;
+    let (e, db, _c) = clocked("nq-avail-large", QueueConfig::default()).await;
     op(&e, send_op(vec![msg(&noise(2 * INLINE_PAGE_MAX))]))
         .await
         .unwrap();

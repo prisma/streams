@@ -116,12 +116,7 @@ impl ReadService {
                             .stream_handle(identity)
                             .await
                             .map_err(|e| ReadFailure::Storage(e.to_string()))?;
-                        let local = handle.state.lock().unwrap().durable.next;
-                        let (shared, _) = engine
-                            .durable_absorbed(&identity)
-                            .await
-                            .map_err(|e| ReadFailure::Storage(e.to_string()))?;
-                        local.max(shared)
+                        handle.state.lock().unwrap().durable.next
                     }
                     Err(ResolveError::NotOwner { owner, .. }) => {
                         self.remote_scan_span(

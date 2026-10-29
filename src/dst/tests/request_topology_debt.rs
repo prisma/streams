@@ -1,5 +1,5 @@
 //! R09-A cancels an owned resume while its actual parent WAL close is held.
-use super::fixture_http::{HttpRigOptions, cold_absorber, http_rig_build};
+use super::fixture_http::{HttpRigOptions, cold_sealer, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
@@ -18,7 +18,7 @@ use std::{sync::atomic::Ordering, time::Duration};
 async fn r09a_cancelled_topology_job_leaves_exact_debt_for_a_fresh_read_owner() {
     let store = FaultStore::new(mem(), 911, FaultProfile::clean());
     let opts = || HttpRigOptions {
-        absorber: Some(cold_absorber()),
+        seal: Some(cold_sealer),
         ..Default::default()
     };
     let rig = http_rig_build(store.clone(), RigRuntime::first(), opts()).await;

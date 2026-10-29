@@ -1,68 +1,12 @@
 {
   "occurrences": [
     {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::crypto",
-      "path": "fuzz/fuzz_targets/postings.rs",
-      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
-      "syntax": "path = \"../../src/crypto.rs\""
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::postings",
-      "path": "fuzz/fuzz_targets/postings.rs",
-      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
-      "syntax": "path = \"../../src/postings.rs\""
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::tenant",
-      "path": "fuzz/fuzz_targets/postings.rs",
-      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
-      "syntax": "path = \"../../src/tenant.rs\""
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::validated",
-      "path": "src/postings.rs",
-      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
-      "syntax": "path = \"postings/validated.rs\""
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::properties",
-      "path": "src/postings/validated.rs",
-      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
-      "syntax": "path = \"validated/properties.rs\""
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/postings/validated.rs",
-      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
-      "syntax": "path = \"validated/tests.rs\""
-    },
-    {
       "category": "effect",
       "count": 1,
       "owner": "crate::run",
       "path": "src/bootstrap/rss.rs",
       "reason": "Canonical supervised RSS sampler; one joined finite pointer-free purge; failure returns TaskResult::Failed.",
       "syntax": "tokio::task::spawn_blocking"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::macro(libfuzzer_sys::fuzz_target)",
-      "path": "fuzz/fuzz_targets/postings.rs",
-      "reason": "Test-only property or fuzz harness; pinned macro implementation is compiled and its generated cases execute the production owner. Syntax tokens remain explicitly inventoried.",
-      "syntax": "libfuzzer_sys::fuzz_target"
     },
     {
       "category": "macro-dsl",
@@ -115,14 +59,6 @@
     {
       "category": "macro-dsl",
       "count": 1,
-      "owner": "crate::macro(proptest)",
-      "path": "src/postings/validated/properties.rs",
-      "reason": "Test-only property or fuzz harness; pinned macro implementation is compiled and its generated cases execute the production owner. Syntax tokens remain explicitly inventoried.",
-      "syntax": "proptest"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
       "owner": "crate::requires_test",
       "path": "tools/quality-syntax/src/facts.rs",
       "reason": "Pinned syn type macro for parsing comma-separated cfg syntax; compiled tool tests cover aliases and mixed cfg.",
@@ -134,14 +70,6 @@
       "owner": "crate",
       "path": "src/application/read_batch/tests.rs",
       "reason": "Read-batch test owner; two existing imports (super::* and proptest::prelude::*) are compiler checked and explicitly counted as unresolved syntax. This total replaces the accidental sum of one legacy and one owner registration; it permits no additional import.",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 2,
-      "owner": "crate",
-      "path": "src/postings/validated/properties.rs",
-      "reason": "Test module imports its enclosing production owner and the pinned proptest prelude; compiler checks names. This is an explicit unresolved syntax inventory, not a claim of syntax-level resolution.",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
@@ -219,14 +147,6 @@
     {
       "category": "by-path-module",
       "count": 1,
-      "owner": "crate::postings",
-      "path": "tools/quality-invariants/src/lib.rs",
-      "reason": "Invariant harness; compiles the canonical private production owner and its existing tests directly; no copied implementation or public verification API.",
-      "syntax": "path = \"../../../src/postings.rs\""
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
       "owner": "crate::retained_bytes",
       "path": "tools/quality-invariants/src/lib.rs",
       "reason": "Invariant harness; compiles the canonical private production owner and its existing tests directly; no copied implementation or public verification API.",
@@ -247,6 +167,14 @@
       "path": "src/dst/dst_tests.rs",
       "reason": "Retained real HTTP history authentication and delete/recreate regression after removal of the experimental span cache; compiler and full DST suite exercise the module.",
       "syntax": "path = \"tests/read_history_lifecycle.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::billing_restart",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Layout 6 (f3) billing exactness across a restart: a fresh process rebuilds the in-memory usage dirty set from the tails and re-emits every billed segment, which the rollup's version rule makes a no-op; the compiler and the DST suite exercise the module.",
+      "syntax": "path = \"tests/billing_restart.rs\""
     },
     {
       "category": "by-path-module",
@@ -719,14 +647,6 @@
       "path": "tools/quality-invariants/src/lib.rs",
       "reason": "Month-allocation invariant harness; includes the canonical production implementation and properties directly; no model, source rewrite or public service API.",
       "syntax": "path = \"../../../src/rollup/allocation.rs\""
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::codec_tests",
-      "path": "src/postings.rs",
-      "reason": "Canonical postings decoder regressions; compile the same private decoder and allocation admission in the server and invariant harness; no copied parser or public test API.",
-      "syntax": "path = \"postings/codec_tests.rs\""
     },
     {
       "category": "by-path-module",
@@ -1393,6 +1313,22 @@
       "syntax": "tokio::spawn"
     },
     {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::applied_keyed_read_never_skips_rows_trimmed_by_a_non_durable_advance",
+      "path": "src/dst/tests/reads_applied.rs",
+      "reason": "Pins a future the test polls across select! iterations in its own task; the compiler checks the expansion.",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::applied_keyed_read_never_skips_rows_trimmed_by_a_non_durable_advance",
+      "path": "src/dst/tests/reads_applied.rs",
+      "reason": "Expression selection between the work and its cancellation or wake (the engine's close watch, a tick, a notify); the compiler checks the expansion and every branch is a plain future of this function.",
+      "syntax": "tokio::select"
+    },
+    {
       "category": "effect",
       "count": 2,
       "owner": "crate::touch_close_shard_matches_route_hash_not_storage_hash",
@@ -1686,6 +1622,14 @@
       "owner": "crate::over_retirement_fails_the_group_and_preserves_the_boundary",
       "path": "src/dst/tests/billing_maintenance.rs",
       "reason": "Maintenance group fixture owns the rider request handle; it is joined after the failing group is released. Concurrent execution is required for the rider to land in the failing group.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::rider_and_seal_in_one_group",
+      "path": "src/dst/tests/billing_maintenance.rs",
+      "reason": "Test-only rider and seal: two tasks enqueue an append and a requested seal behind a held commit gate so both land in one group; the scenario releases the gate and joins both before asserting.",
       "syntax": "tokio::spawn"
     },
     {
@@ -2100,14 +2044,6 @@
       "category": "macro-dsl",
       "count": 1,
       "owner": "crate::macro(proptest::proptest)",
-      "path": "src/postings/validated/tests.rs",
-      "reason": "Validated-runs clip property; generated run arrays and cuts execute the production proof owner's clipped_to against an independent offset oracle and re-extend through extend_after.",
-      "syntax": "proptest::proptest"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::macro(proptest::proptest)",
       "path": "src/registry/catalog/tests.rs",
       "reason": "Descriptor-key binding properties; generated project and stream identities are minted through the production desc_path and must bind back to exactly themselves, while damaged, re-rooted, non-canonical and arbitrary keys bind to nothing and never panic.",
       "syntax": "proptest::proptest"
@@ -2337,6 +2273,14 @@
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_receipted_advance_settles_only_after_its_group_is_durable",
+      "path": "src/shard/maintenance_tests.rs",
+      "reason": "Runs the scenario's futures concurrently in the one test task (no primitive spawn), so a parked seal, read or hold and the driver that releases it make progress together; the compiler checks the join's expansion.",
+      "syntax": "tokio::join"
+    },
+    {
       "category": "unresolved-glob",
       "count": 1,
       "owner": "crate",
@@ -2391,14 +2335,6 @@
       "path": "src/history/bounded_discovery_tests.rs",
       "reason": "Discovery test module imports its enclosing production owner; the compiler resolves the parent exports and the fixture pins the pending capacity bound.",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
-      "owner": "crate::tests",
-      "path": "src/postings.rs",
-      "reason": "Postings codec and span planner tests; compile beside the same private codec in the server, fuzz and invariant harness crates so the owner stays within the file-size limit; no copied codec or public test API.",
-      "syntax": "path = \"postings/tests.rs\""
     },
     {
       "category": "effect",
@@ -2675,6 +2611,22 @@
     {
       "category": "global",
       "count": 1,
+      "owner": "crate::billing_row_io::M",
+      "path": "src/shard/test_support.rs",
+      "reason": "Test-only: per shard log, the static billing rows a group staged and the engine read from the store (layout 6, f3), keyed by the shard log's address so concurrent tests read exact counts; production never compiles it.",
+      "syntax": "std :: sync :: OnceLock < RowIo >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::seal_open_faults::M",
+      "path": "src/shard/test_support.rs",
+      "reason": "Test-only: per shard prefix, how many sealer opens fail before one succeeds (HIS-009's open retry); keyed by prefix so concurrent tests cannot see each other's faults; production never compiles it.",
+      "syntax": "std :: sync :: OnceLock < Mutex < HashMap < String , u32 > > >"
+    },
+    {
+      "category": "global",
+      "count": 1,
       "owner": "crate::BILLING_CLOCK_OVERRIDE",
       "path": "src/billing/test_clock.rs",
       "reason": "Test-only billing clock override the month-sensitive tests inject; nothing outside cfg(test) reads it.",
@@ -2914,42 +2866,10 @@
     },
     {
       "category": "macro-dsl",
-      "count": 3,
-      "owner": "crate::kani_006_every_u64_round_trips_and_consumes_its_encoding",
-      "path": "src/postings/proofs.rs",
-      "reason": "Kani proof harness for KANI-006 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
-      "syntax": "kani::cover"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 3,
-      "owner": "crate::kani_006_decoding_matches_the_wide_oracle",
-      "path": "src/postings/proofs.rs",
-      "reason": "Kani proof harness for KANI-006 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
-      "syntax": "kani::cover"
-    },
-    {
-      "category": "macro-dsl",
       "count": 4,
       "owner": "crate::kani_005_a_position_maps_to_the_span_that_holds_it",
       "path": "src/sse/source/proofs.rs",
       "reason": "Kani proof harness for KANI-005 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
-      "syntax": "kani::cover"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::kani_047_a_shard_row_decodes_exactly_or_is_refused",
-      "path": "src/shard/maintenance_row/proofs.rs",
-      "reason": "Kani proof harness for KANI-047 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
-      "syntax": "kani::cover"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
-      "owner": "crate::kani_047_a_dirty_row_decodes_exactly_or_is_refused",
-      "path": "src/shard/maintenance_row/proofs.rs",
-      "reason": "Kani proof harness for KANI-047 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
       "syntax": "kani::cover"
     },
     {
@@ -2978,16 +2898,8 @@
     },
     {
       "category": "macro-dsl",
-      "count": 3,
-      "owner": "crate::kani_046_a_trim_step_stays_behind_the_safe_boundary",
-      "path": "src/shard/commit_plan/proofs.rs",
-      "reason": "Kani proof harness for KANI-046 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
-      "syntax": "kani::cover"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 3,
-      "owner": "crate::kani_046_an_advance_moves_the_boundary_forward_within_the_log",
+      "count": 2,
+      "owner": "crate::kani_046_a_seal_moves_the_boundary_forward_within_the_log",
       "path": "src/shard/commit_plan/proofs.rs",
       "reason": "Kani proof harness for KANI-046 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
       "syntax": "kani::cover"
@@ -3454,6 +3366,14 @@
       "owner": "crate::debug_routes",
       "path": "src/http.rs",
       "reason": "Diagnostic JSON serialization owner; the pinned serde_json macro encodes the operator debug table's reviewed answers behind its one bearer gate; it does not establish domain identity or introduce an unowned effect.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::debug_seal_pause",
+      "path": "src/http.rs",
+      "reason": "Operator-debug JSON document (the seal stats and the seal-pause answer, edge records #208 and #212); serde macro output is compiled and the fields are pinned by the security-route and seal tests.",
       "syntax": "serde_json::json"
     },
     {
@@ -4023,6 +3943,334 @@
       "path": "src/dst/tests/live_wait.rs",
       "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",
       "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::kani_098_a_key_and_every_prefix_of_it_name_one_segment",
+      "path": "src/keyspace/proofs.rs",
+      "reason": "Kani proof harness for KANI-098 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::kani_099_a_bloom_admits_every_key_it_holds",
+      "path": "src/spill/directory/proofs.rs",
+      "reason": "Kani proof harness for KANI-099 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::kani_099_every_probe_lies_inside_the_bloom",
+      "path": "src/spill/directory/proofs.rs",
+      "reason": "Kani proof harness for KANI-099 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::sparse_absorption_wave_bounds_append_latency",
+      "path": "src/dst/tests/history_recovery.rs",
+      "reason": "Test-only seal wave: one task runs the requested seal while the scenario measures paced append latency beside it, and the scenario joins it before asserting; the seal must run concurrently with the appends it is measured against.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::unique::N",
+      "path": "src/shard/seal/tests.rs",
+      "reason": "Test-only: a process-wide counter that makes every seal test rig's shard prefix unique across concurrently running tests; production never compiles it.",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::appended_between_snapshot_and_commit",
+      "path": "src/shard/seal/tests.rs",
+      "reason": "Runs the scenario's futures concurrently in the one test task (no primitive spawn), so a parked seal, read or hold and the driver that releases it make progress together; the compiler checks the join's expansion.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::flushdrop",
+      "path": "src/shard/seal/tests.rs",
+      "reason": "Runs the scenario's futures concurrently in the one test task (no primitive spawn), so a parked seal, read or hold and the driver that releases it make progress together; the compiler checks the join's expansion.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::TABLES",
+      "path": "src/spill/crc32c.rs",
+      "reason": "The CRC-32C slicing-by-16 tables, built at compile time by a const fn and read only; immutable process-wide data, no state.",
+      "syntax": "[[u32 ; 256] ; 16]"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::registry::REGISTRY",
+      "path": "src/spill/metrics.rs",
+      "reason": "Each shard log's SlateDB metrics recorder by log path for the process (spill::metrics): a reopen of the same path records into the same recorder so the sealer's memtable trigger reads deltas across reopens; keyed by log path, never by a stream or tenant identity.",
+      "syntax": "OnceLock < Registry >"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::an_applied_read_from_inside_a_page_its_trim_deleted_rereads_it_from_history",
+      "path": "src/application/read_decode/concurrency_tests.rs",
+      "reason": "Pins a future the test polls across select! iterations in its own task; the compiler checks the expansion.",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::an_applied_read_from_inside_a_page_its_trim_deleted_rereads_it_from_history",
+      "path": "src/application/read_decode/concurrency_tests.rs",
+      "reason": "Expression selection between the work and its cancellation or wake (the engine's close watch, a tick, a notify); the compiler checks the expansion and every branch is a plain future of this function.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::durable_reads_see_only_the_remote_frontier",
+      "path": "src/shard/durability_frontier_tests.rs",
+      "reason": "Runs the scenario's futures concurrently in the one test task (no primitive spawn), so a parked seal, read or hold and the driver that releases it make progress together; the compiler checks the join's expansion.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::SealCounters::json",
+      "path": "src/shard/seal.rs",
+      "reason": "Operator-debug JSON document (the seal stats and the seal-pause answer, edge records #208 and #212); serde macro output is compiled and the fields are pinned by the security-route and seal tests.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::ShardEngine::seal_loop",
+      "path": "src/shard/seal.rs",
+      "reason": "Expression selection between the work and its cancellation or wake (the engine's close watch, a tick, a notify); the compiler checks the expansion and every branch is a plain future of this function.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::ShardEngine::seal_wait",
+      "path": "src/shard/seal.rs",
+      "reason": "Expression selection between the work and its cancellation or wake (the engine's close watch, a tick, a notify); the compiler checks the expansion and every branch is a plain future of this function.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::ShardEngine::until_closed",
+      "path": "src/shard/seal.rs",
+      "reason": "Expression selection between the work and its cancellation or wake (the engine's close watch, a tick, a notify); the compiler checks the expansion and every branch is a plain future of this function.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_sealed_read_has_eight_gets_in_flight_and_fetches_at_most_256_chunks",
+      "path": "src/shard/seal/amplification_tests.rs",
+      "reason": "Runs the scenario's futures concurrently in the one test task (no primitive spawn), so a parked seal, read or hold and the driver that releases it make progress together; the compiler checks the join's expansion.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::ShardEngine::seal_ready",
+      "path": "src/shard/seal/open.rs",
+      "reason": "Expression selection between the work and its cancellation or wake (the engine's close watch, a tick, a notify); the compiler checks the expansion and every branch is a plain future of this function.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_read_that_captured_its_boundary_before_a_seal_commits_serves_exact_data",
+      "path": "src/shard/seal/read_tests.rs",
+      "reason": "Runs the scenario's futures concurrently in the one test task (no primitive spawn), so a parked seal, read or hold and the driver that releases it make progress together; the compiler checks the join's expansion.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_seal_wakes_no_waiter_of_the_stream",
+      "path": "src/shard/seal/read_tests.rs",
+      "reason": "Runs the scenario's futures concurrently in the one test task (no primitive spawn), so a parked seal, read or hold and the driver that releases it make progress together; the compiler checks the join's expansion.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_seal_wakes_no_waiter_of_the_stream",
+      "path": "src/shard/seal/read_tests.rs",
+      "reason": "Pins a future the test polls across select! iterations in its own task; the compiler checks the expansion.",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_seal_wakes_no_waiter_of_the_stream",
+      "path": "src/shard/seal/read_tests.rs",
+      "reason": "Expression selection between the work and its cancellation or wake (the engine's close watch, a tick, a notify); the compiler checks the expansion and every branch is a plain future of this function.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::held_wal_race",
+      "path": "src/shard/seal/read_tests.rs",
+      "reason": "Runs the scenario's futures concurrently in the one test task (no primitive spawn), so a parked seal, read or hold and the driver that releases it make progress together; the compiler checks the join's expansion.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::routing_key_hash",
+      "path": "src/golden_tests.rs",
+      "reason": "Test or transaction-step module importing its parent's items with use super::*; the compiler resolves the import and the module adds no item the parent does not own.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction/seal.rs",
+      "reason": "Test or transaction-step module importing its parent's items with use super::*; the compiler resolves the import and the module adds no item the parent does not own.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::crypto",
+      "path": "fuzz/fuzz_targets/postings.rs",
+      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
+      "syntax": "path = \"../../src/crypto.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::postings",
+      "path": "fuzz/fuzz_targets/postings.rs",
+      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
+      "syntax": "path = \"../../src/postings.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tenant",
+      "path": "fuzz/fuzz_targets/postings.rs",
+      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
+      "syntax": "path = \"../../src/tenant.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::validated",
+      "path": "src/postings.rs",
+      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
+      "syntax": "path = \"postings/validated.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::properties",
+      "path": "src/postings/validated.rs",
+      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
+      "syntax": "path = \"validated/properties.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/postings/validated.rs",
+      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
+      "syntax": "path = \"validated/tests.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(libfuzzer_sys::fuzz_target)",
+      "path": "fuzz/fuzz_targets/postings.rs",
+      "reason": "Test-only property or fuzz harness; pinned macro implementation is compiled and its generated cases execute the production owner. Syntax tokens remain explicitly inventoried.",
+      "syntax": "libfuzzer_sys::fuzz_target"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(proptest)",
+      "path": "src/postings/validated/properties.rs",
+      "reason": "Test-only property or fuzz harness; pinned macro implementation is compiled and its generated cases execute the production owner. Syntax tokens remain explicitly inventoried.",
+      "syntax": "proptest"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 2,
+      "owner": "crate",
+      "path": "src/postings/validated/properties.rs",
+      "reason": "Test module imports its enclosing production owner and the pinned proptest prelude; compiler checks names. This is an explicit unresolved syntax inventory, not a claim of syntax-level resolution.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::postings",
+      "path": "tools/quality-invariants/src/lib.rs",
+      "reason": "Invariant harness; compiles the canonical private production owner and its existing tests directly; no copied implementation or public verification API.",
+      "syntax": "path = \"../../../src/postings.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::codec_tests",
+      "path": "src/postings.rs",
+      "reason": "Canonical postings decoder regressions; compile the same private decoder and allocation admission in the server and invariant harness; no copied parser or public test API.",
+      "syntax": "path = \"postings/codec_tests.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(proptest::proptest)",
+      "path": "src/postings/validated/tests.rs",
+      "reason": "Validated-runs clip property; generated run arrays and cuts execute the production proof owner's clipped_to against an independent offset oracle and re-extend through extend_after.",
+      "syntax": "proptest::proptest"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/postings.rs",
+      "reason": "Postings codec and span planner tests; compile beside the same private codec in the server, fuzz and invariant harness crates so the owner stays within the file-size limit; no copied codec or public test API.",
+      "syntax": "path = \"postings/tests.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::kani_006_every_u64_round_trips_and_consumes_its_encoding",
+      "path": "src/postings/proofs.rs",
+      "reason": "Kani proof harness for KANI-006 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::kani_006_decoding_matches_the_wide_oracle",
+      "path": "src/postings/proofs.rs",
+      "reason": "Kani proof harness for KANI-006 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/postings/validated/tests.rs",
+      "reason": "Retained postings codec test module (layout 6A package 4, pushes 1 and 2 only): the lib no longer declares postings, so the syntax scanner cannot resolve this use super::*; the fuzz and invariants harnesses compile the codec by path until push 3 retires it.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
     }
   ]
 }

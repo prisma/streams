@@ -40,6 +40,7 @@ mod telemetry_loop;
 pub(crate) use telemetry_loop::spawn_telemetry;
 pub(crate) mod replaced;
 mod storage_clock;
+pub(crate) mod stored_meta;
 mod walk;
 
 // ---------------------------------------------------------------------
@@ -428,20 +429,11 @@ pub(crate) fn billing_meta_key(hash: &[u8; 16]) -> Vec<u8> {
     k
 }
 
-/// Usage-dirty index: `<0xFF sentinel>'U'<seg-hash>` → LE usage_version
-/// not yet acknowledged by `_usage`. Same sentinel discipline as the
-/// absorber's dirty index (shard.rs): sorts outside every stream's key
-/// range, scanned once by the drainer, deleted through the committer so
-/// acknowledgment serializes with concurrent appends.
+/// The usage outbox's sentinel (`'S' ‖ FF×16`): the month-final rows sort
+/// after every stream's rows, scanned by the drainer and deleted through
+/// the committer so acknowledgment serializes with concurrent appends. The
+/// usage dirty set itself is in memory since layout 6 (`shard::layout`).
 pub(crate) const USAGE_DIRTY_SENTINEL: [u8; 17] = crate::keyspace::SENTINEL;
-
-pub(crate) fn usage_dirty_key(hash: &[u8; 16]) -> Vec<u8> {
-    let mut k = Vec::with_capacity(34);
-    k.extend_from_slice(&USAGE_DIRTY_SENTINEL);
-    k.push(b'U');
-    k.extend_from_slice(hash);
-    k
-}
 
 /// Closed-month final snapshots awaiting emission:
 /// `<0xFF sentinel>'V'<seg-hash><"YYYY-MM">` → SegmentSnapshot (JSON,
@@ -776,7 +768,7 @@ pub(crate) async fn drain_once(
     // events count against the budget like everything else. A row's
     // contribution (finals + live snapshot + lifecycle) is admitted
     // atomically: over budget, the whole row waits for the next round
-    // (one cadence later) with its dirty marker intact.
+    // (one cadence later) still in the usage dirty set.
     const DRAIN_MAX_ENVELOPES: usize = 1000;
     const DRAIN_MAX_BYTES: usize = 1_000_000;
     const LIFECYCLE_EST: usize = 512;
@@ -1569,7 +1561,6 @@ pub(crate) async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::App
             evicted_now.insert(prefix.clone());
             tracing::info!(
                 unabsorbed_frame_bytes = debt.maintenance,
-                trim_debt_streams = debt.trim,
                 billing = debt.billing,
                 "sweep closes {prefix} over residency budget {budget}; \
                  debt is durable and rotation returns to it"
@@ -1635,7 +1626,6 @@ pub(crate) async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::App
         if debt.any() {
             tracing::info!(
                 unabsorbed_frame_bytes = debt.maintenance,
-                trim_debt_streams = debt.trim,
                 billing = debt.billing,
                 "sweep retains {prefix} (debt; drain runs while resident)"
             );
@@ -1651,8 +1641,8 @@ pub(crate) async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::App
 }
 
 /// One residency budget for EVERY debt class the scheduler can retain
-/// an engine for — billing rows, month finals, maintenance backlog,
-/// physical-trim debt (R28 review: an unconditional billing-debt
+/// an engine for — billing rows, month finals, maintenance backlog
+/// (R28 review: an unconditional billing-debt
 /// retention let a `_usage` outage keep every owned shard resident,
 /// bypassing the bound entirely). Validated at startup: zero would
 /// silently starve all cold-debt drain, so it is rejected there.
@@ -1664,12 +1654,11 @@ pub(crate) fn sweep_resident_budget(cfg: &crate::config::BillingConfig) -> usize
 struct Debt {
     billing: bool,
     maintenance: u64,
-    trim: u64,
 }
 
 impl Debt {
     fn any(&self) -> bool {
-        self.billing || self.maintenance > 0 || self.trim > 0
+        self.billing || self.maintenance > 0
     }
 }
 
@@ -1680,7 +1669,6 @@ async fn probe_debt(engine: &std::sync::Arc<crate::shard::ShardEngine>) -> Debt 
     Debt {
         billing,
         maintenance: engine.maintenance_snapshot().unabsorbed_frame_bytes,
-        trim: engine.trim_stats().0 as u64,
     }
 }
 

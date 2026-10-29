@@ -1,6 +1,4 @@
 use super::*;
-use crate::crypto_page::shard_page_key;
-use crate::shard::commit_plan::{AbsorbRetirement, retire_absorbed, trim_target};
 impl CommitTransaction<'_> {
     pub(super) fn usage_ack(
         &mut self,
@@ -9,10 +7,12 @@ impl CommitTransaction<'_> {
         scope: UsageAckScope,
         month_final_keys: Vec<Vec<u8>>,
     ) {
+        // The usage dirty set is in memory (layout 6, f3): the ack clears it
+        // as it is staged. A billed op of this group staged after it marks
+        // its stream again at publish; one staged before it raised `cur`.
         let cur = local.billing.meta.as_ref().map(|bm| bm.usage_version);
         if decide_billing_ack(cur, scope) == BillingAckDecision::ClearDirty {
-            self.batch.delete(crate::billing::usage_dirty_key(&hash));
-            self.extra_writes = true;
+            self.engine.layout.clear_usage(hash, cur);
         }
         for k in month_final_keys {
             self.batch.delete(k);
@@ -222,135 +222,5 @@ impl CommitTransaction<'_> {
                 duplicate: false,
             }),
         ));
-    }
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "CommitTransaction::absorbed; the absorbed boundary carries the stream, its new boundary, the retired bytes and the layout flag as the absorber reported them; a report struct would exist only for this signature"
-    )]
-    #[cfg_attr(
-        test,
-        expect(
-            clippy::disallowed_methods,
-            reason = "CommitTransaction::absorbed; the drain trace is switched on by the DST harness through the process environment; carrying a debugging switch in the engine's configuration would put it on the production path"
-        )
-    )]
-    pub(super) fn absorbed(
-        &mut self,
-        local: &mut StreamOverlay,
-        hash: [u8; 16],
-        upto: u64,
-        bytes: CopiedBytes,
-        v2: bool,
-    ) {
-        // The first advancing boundary seals the history layout. Duplicates
-        // never raise the one-pass-lag trim target or retire bytes again.
-        let prev_absorbed = local.fields.absorbed;
-        #[cfg(test)]
-        if std::env::var("DST_DRAIN_TRACE").is_ok() {
-            eprintln!(
-                "ADVANCE {} prev={prev_absorbed} upto={upto} v2={v2} next={} trimmed={} flag={}",
-                crate::crypto::hex(&hash[..4]),
-                local.fields.next,
-                local.fields.trimmed,
-                local.fields.history_v2
-            );
-        }
-        let lane_ok = if v2 {
-            prev_absorbed == 0 || local.fields.history_v2
-        } else {
-            !local.fields.history_v2
-        };
-        if !lane_ok && upto > prev_absorbed {
-            self.engine
-                .absorb_lane_dropped
-                .fetch_add(1, Ordering::Relaxed);
-            tracing::warn!(
-                shard = %self.engine.prefix,
-                v2,
-                upto,
-                prev = prev_absorbed,
-                "dropped cross-layout absorb advance (layout sealed)"
-            );
-        }
-        if lane_ok && upto > prev_absorbed {
-            let moved = self.advance_boundary(local, hash, upto, bytes);
-            if moved && v2 {
-                local.fields.history_v2 = true;
-            }
-        }
-    }
-    /// Retire an advancing absorbed op. Only a copy that starts at the
-    /// stream's boundary moves it: the ledger loses exactly the copied
-    /// bytes and the previous boundary becomes trimmable (one advance of
-    /// lag for in-flight readers). A copy that starts elsewhere re-covers
-    /// retired bytes or leaves a gap, so it is dropped whole; one the
-    /// ledger cannot cover fails the group closed. True when it moved.
-    fn advance_boundary(
-        &mut self,
-        local: &mut StreamOverlay,
-        hash: [u8; 16],
-        upto: u64,
-        bytes: CopiedBytes,
-    ) -> bool {
-        let prev_absorbed = local.fields.absorbed;
-        match retire_absorbed(&mut local.fields, upto, &bytes) {
-            AbsorbRetirement::Exact => {}
-            AbsorbRetirement::Detached => {
-                tracing::warn!(
-                    shard = %self.engine.prefix,
-                    stream = %crate::crypto::hex(&hash[..4]),
-                    from = bytes.from,
-                    upto,
-                    prev = prev_absorbed,
-                    "dropped an absorb advance that does not start at the boundary"
-                );
-                return false;
-            }
-            AbsorbRetirement::Diverged => {
-                self.accounting_diverged = Some(format!(
-                    "absorbed-boundary retirement exceeds the stream ledger: \
-             stream={} upto={upto} retire_bytes={} ledger={}",
-                    crate::crypto::hex(&hash[..4]),
-                    bytes.len,
-                    local.fields.unabsorbed_bytes,
-                ));
-                return false;
-            }
-        }
-        #[cfg(test)]
-        {
-            self.group_has_absorbed = true;
-        }
-        local.frames.retired_bytes += bytes.len;
-        let allowed = self.trim_budget.min(self.cfg.max_trim_per_op);
-        let trim_to = trim_target(&local.fields, allowed);
-        for off in local.fields.trimmed..trim_to {
-            self.batch.delete(shard_page_key(&hash, off));
-        }
-        self.trim_budget -= trim_to.saturating_sub(local.fields.trimmed);
-        local.fields.trimmed = local.fields.trimmed.max(trim_to);
-        // Only a retired advance can still land: the group holds its
-        // receipt until durable dispatch or refusal. Every other advance
-        // settled when its copy dropped above.
-        if let Some(receipt) = bytes.into_receipt() {
-            self.effects.receipts.push(receipt);
-        }
-        true
-    }
-    /// Trims delete shard-log pages by key: one blind tombstone per offset
-    /// in `[trimmed, trim_to)`, so exactly the pages whose LAST offset is
-    /// below `trim_to` go, and a page holding any record at or above it (an
-    /// unabsorbed one among them, since `trim_to` never passes the absorbed
-    /// boundary) stays. Most of those keys name no page: the prototype pays
-    /// one tombstone per record where exact page tombstones would pay one per
-    /// page (the absorbed advance knows the pages it copied).
-    pub(super) fn trim(&mut self, local: &mut StreamOverlay, hash: [u8; 16]) {
-        let allowed = self.trim_budget.min(self.cfg.max_trim_per_op);
-        let trim_to = trim_target(&local.fields, allowed);
-        for off in local.fields.trimmed..trim_to {
-            self.batch.delete(shard_page_key(&hash, off));
-        }
-        self.trim_budget -= trim_to.saturating_sub(local.fields.trimmed);
-        local.fields.trimmed = local.fields.trimmed.max(trim_to);
     }
 }

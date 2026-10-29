@@ -154,7 +154,7 @@ pin, DST scenario count).
 | [SPEC.md](./SPEC.md) | architecture, decision log, guarantees |
 | [RUNBOOK.md](./RUNBOOK.md) | build, run, deploy, scale, monitor, debug |
 | [CONFORMANCE.md](./CONFORMANCE.md) | the pinned Durable Streams suite; how to run it |
-| [docs/ROUTING-V3.md](./docs/ROUTING-V3.md) | routing keys, physical scaling, postings, cost |
+| [docs/ROUTING-V3.md](./docs/ROUTING-V3.md) | routing keys, physical scaling, cost |
 | [OPERATIONS.md](./OPERATIONS.md) | provider requirements, backup/PITR, identity, SLOs |
 | [docs/OBSERVABILITY-BILLING.md](./docs/OBSERVABILITY-BILLING.md) | billing/usage/telemetry design (normative) |
 | [docs/OBSERVABILITY-BILLING-STATUS.md](./docs/OBSERVABILITY-BILLING-STATUS.md) | billing implementation matrix + open gates |
@@ -175,7 +175,8 @@ src/            server crate (streams-slate) + bins
   shard.rs      shard engine: commit pipeline, group PUTs, watermarks, fences
   registry.rs   the descriptor control plane (incarnations, seal state)
   scaler3.rs    routing-key distribution sketches + physical split/merge
-  history.rs    history tier + absorber
+  shard/seal.rs the sealer: unsealed pages into segment objects; sealed reads
+  spill/        segment objects, the seal directory, pending pages
   crypto.rs     stream-key envelope (AES-GCM)
   fleet.rs      heartbeats, load vector, desired-count computation
   dst/          deterministic simulation tests

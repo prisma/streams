@@ -4,18 +4,16 @@ use crate::crypto::{StreamKey, derive_subkey};
 use crate::crypto_page::{PageCipher, PageLane, stamped};
 use crate::shard::{RingBatch, RingScan, ShardConfig, ShardEngine, ShardMaintenance, StreamHandle};
 use bytes::Bytes;
-use slatedb::Db;
 use std::sync::Arc;
 
 async fn engine(tail_ring_bytes: usize) -> Arc<ShardEngine> {
     let store = Arc::new(object_store::memory::InMemory::new());
     let db = Arc::new(
-        Db::builder("tail-ring-tests", store.clone())
+        crate::keyspace::db_builder("tail-ring-tests", store.clone())
             .build()
             .await
             .unwrap(),
     );
-    let (tx, _rx) = tokio::sync::mpsc::channel(1);
     ShardEngine::start(
         "tail-ring-tests".into(),
         db,
@@ -24,7 +22,6 @@ async fn engine(tail_ring_bytes: usize) -> Arc<ShardEngine> {
             tail_ring_bytes,
             ..Default::default()
         },
-        tx,
         None,
         ShardMaintenance::default(),
     )

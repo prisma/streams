@@ -1,13 +1,12 @@
-//! Layout 5 page reads under concurrent absorption and trims, across a page
-//! of the full 4,096 records, and at the TLA-018-F1 frontier with a cursor
-//! inside a page: every pager serves every record exactly once, in order
-//! (from the G3 correctness review of 2026-10-08).
+//! Layout 6 page reads under concurrent seals, across a page of the full
+//! 4,096 records, and at the TLA-018-F1 frontier (a seal applied but not
+//! durable) with a cursor inside a page: every pager serves every record
+//! exactly once, in order (from the G3 correctness review of 2026-10-08).
 #![cfg(test)]
 use crate::application::read::read_merged;
 use crate::crypto::StreamKey;
-use crate::history::{Absorber, AbsorberConfig};
+use crate::shard::seal::Trigger;
 use crate::shard::{Deliver, ShardConfig, ShardEngine};
-use slatedb::Db;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -42,7 +41,7 @@ async fn append(engine: &ShardEngine, rk: &str, records: Vec<Vec<u8>>) -> u64 {
         entries: records.into_iter().map(bytes::Bytes::from).collect(),
         usage: crate::usage::counters(&HASH),
         routing_key: rk.to_string(),
-        key_hash: crate::postings::rk_hash(rk).0,
+        key_hash: crate::crypto::RoutingKeyHash::of(rk).0,
         producer_lineage: Vec::new(),
         key_version: 0,
         subkey: crate::crypto::derive_subkey(&KEY, &HASH, rk, 0),
@@ -73,7 +72,7 @@ async fn engine_on(
     path: &str,
     shard: ShardConfig,
 ) -> Arc<ShardEngine> {
-    let db = Db::builder(path, store.clone())
+    let db = crate::keyspace::db_builder(path, store.clone())
         .with_settings(slatedb::config::Settings {
             flush_interval: Some(Duration::from_millis(5)),
             ..Default::default()
@@ -84,16 +83,14 @@ async fn engine_on(
     let maintenance = crate::shard::load_or_rebuild_maintenance(&db)
         .await
         .unwrap();
-    let (tx, _signals) = tokio::sync::mpsc::channel(1);
-    ShardEngine::start(
-        path.into(),
-        Arc::new(db),
-        store,
-        shard,
-        tx,
-        None,
-        maintenance,
-    )
+    let engine = ShardEngine::start(path.into(), Arc::new(db), store, shard, None, maintenance);
+    // The tests drive every seal themselves.
+    engine.seal_ready().await.unwrap();
+    engine.configure_seal(|s| {
+        s.auto = false;
+        s.max_pages_per_chunk = 4;
+    });
+    engine
 }
 
 async fn engine(path: &str, shard: ShardConfig) -> Arc<ShardEngine> {
@@ -185,30 +182,24 @@ async fn run_pager(engine: &Arc<ShardEngine>, pager: Pager, progress: &Progress)
     }
 }
 
-/// One small gather and a trim pulse. A gather that fails only skips its
-/// turn; the readers judge G3.
-async fn absorb_step(engine: &Arc<ShardEngine>, absorber: &Absorber) {
-    if absorber.absorb_gather_v2(&[HASH]).await.is_err() {
+/// One seal: it moves the sealed boundary to the durable end, puts the
+/// pages behind it in a segment object (chunks of at most four pages) and
+/// drops them from memory. A seal that fails only skips its turn; the
+/// readers judge G3.
+async fn seal_step(engine: &Arc<ShardEngine>) {
+    if engine.seal_once(Trigger::Requested).await.is_err() {
         tokio::task::yield_now().await;
     }
-    engine.pump_trim_tick();
 }
 
 /// Append 150 requests of 1 to 40 records of 40 to 640 bytes, two thirds
-/// under key a, gathering one small chunk after every third request so
-/// the absorbed boundary and the trims behind it trail the tail; returns
-/// every record written. Fifty gathers stay below the history partition's
-/// 64 L0 tables: past them a flush waits for the 300 s manifest poll.
-async fn write(
-    engine: &Arc<ShardEngine>,
-    absorber: &Absorber,
-    seed: u64,
-    progress: &Progress,
-) -> Vec<Served> {
+/// under key a, sealing after every third request so the sealed boundary
+/// trails the end; returns every record written.
+async fn write(engine: &Arc<ShardEngine>, seed: u64, progress: &Progress) -> Vec<Served> {
     let (mut rng, mut expected, mut offset) = (Rng(seed), Vec::new(), 0u64);
     for request in 0..150 {
         if request % 3 == 2 {
-            absorb_step(engine, absorber).await;
+            seal_step(engine).await;
         }
         let rk = if rng.below(3) == 0 { "b" } else { "a" };
         let count = 1 + rng.below(40);
@@ -237,28 +228,23 @@ const PAGERS: [Pager; 8] = [
     (Some("b"), 3000, Deliver::Durable),
 ];
 
-/// G3 under the absorption race with cursors inside pages: a writer appends
-/// requests of 1 to 40 records under two keys and gathers one small chunk
-/// after every third request (each gather one page edge further, the
-/// trims seven offsets per step behind it), and pagers whose budgets end inside
-/// pages read concurrently, unfiltered and keyed, durable and applied.
-/// Every pager must serve exactly its key's records, each once, in order.
+/// G3 under concurrent seals with cursors inside pages: a writer appends
+/// requests of 1 to 40 records under two keys and seals after every third
+/// request (each seal moving the sealed boundary under the readers and
+/// dropping the sealed pages from memory), and pagers whose budgets end
+/// inside pages read concurrently from the ring, the segment objects and
+/// the unsealed pages, unfiltered and keyed, durable and applied. Every
+/// pager must serve exactly its key's records, each once, in order.
 async fn race_round(seed: u64, ring: usize) {
     let shard = ShardConfig {
         tail_ring_bytes: ring,
-        max_trim_per_op: 7,
         ..ShardConfig::default()
     };
     let engine = engine(&format!("g3-race-{seed:x}"), shard).await;
-    let config = AbsorberConfig {
-        gather_max_bytes: 3000,
-        ..AbsorberConfig::default()
-    };
-    let absorber = Absorber::new(engine.clone(), config);
     let progress = Progress::default();
     let pagers = PAGERS.map(|pager| run_pager(&engine, pager, &progress));
     let work = futures_util::future::join(
-        write(&engine, &absorber, seed, &progress),
+        write(&engine, seed, &progress),
         futures_util::future::join_all(pagers),
     );
     let settled = tokio::time::timeout(Duration::from_secs(120), work).await;
@@ -283,9 +269,8 @@ async fn race_round(seed: u64, ring: usize) {
     let handle = engine.stream_handle(HASH).await.unwrap();
     let tail = handle.state.lock().unwrap().durable.clone();
     assert!(
-        0 < tail.trimmed && tail.absorbed < tail.next,
-        "seed {seed:x}: no trims, or no lag: {} {} {}",
-        tail.trimmed,
+        0 < tail.absorbed && tail.absorbed < tail.next,
+        "seed {seed:x}: no seal, or no unsealed lag: {} {}",
         tail.absorbed,
         tail.next
     );
@@ -305,8 +290,8 @@ async fn concurrent_absorb_and_trim_with_an_evicting_ring_never_skip_or_repeat_a
 }
 
 /// Two requests of 5,000 nine-byte records: a's pages [0, 4095] and
-/// [4096, 4999] absorbed into history, b's [5000, 9095] and [9096, 9999]
-/// in the tail.
+/// [4096, 4999] sealed into a segment object, b's [5000, 9095] and
+/// [9096, 9999] unsealed.
 async fn capped_stream(ring: usize) -> Arc<ShardEngine> {
     let shard = ShardConfig {
         tail_ring_bytes: ring,
@@ -315,9 +300,8 @@ async fn capped_stream(ring: usize) -> Arc<ShardEngine> {
     let engine = engine(&format!("g3-cap-{ring}"), shard).await;
     let big = |first: u64, rk: &str| (first..first + 5000).map(|o| tiny(rk, o)).collect();
     assert_eq!(append(&engine, "a", big(0, "a")).await, 4999);
-    let absorber = Absorber::new(engine.clone(), AbsorberConfig::default());
-    let outcome = absorber.absorb_gather_v2(&[HASH]).await.unwrap();
-    assert_eq!(outcome.advanced.first().map(|a| a.1), Some(5000));
+    let report = engine.seal_once(Trigger::Requested).await.unwrap();
+    assert_eq!(report.pages, 2, "a's two pages sealed");
     absorbed_reaches(&engine, Deliver::Durable, 5000).await;
     assert_eq!(append(&engine, "b", big(5000, "b")).await, 9999);
     engine
@@ -359,7 +343,7 @@ async fn one_byte_pager(engine: &Arc<ShardEngine>, from: u64, selector: Option<&
 
 /// A request of more than 4,096 records is cut at the page's record cap.
 /// Reads from both sides of that edge, from the first and last record of
-/// the full page, in history and in the tail, serve exactly the records
+/// the full page, sealed and unsealed, serve exactly the records
 /// from there, and a one-byte pager crosses the edge one record per read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_request_past_the_page_record_cap_reads_exactly_across_its_page_edge() {
@@ -385,10 +369,18 @@ async fn a_request_past_the_page_record_cap_reads_exactly_across_its_page_edge()
     }
 }
 
-/// Wait until `engine`'s tail row at `visibility` names `absorbed`.
+/// Wait until the stream's sealed boundary at `visibility` is `absorbed`.
 async fn absorbed_reaches(engine: &ShardEngine, visibility: Deliver, absorbed: u64) {
+    let handle = engine.stream_handle(HASH).await.unwrap();
+    let boundary = || {
+        let st = handle.state.lock().unwrap();
+        match visibility {
+            Deliver::Durable => st.durable.absorbed,
+            Deliver::Applied => st.applied.absorbed,
+        }
+    };
     let reached = tokio::time::timeout(Duration::from_secs(10), async {
-        while engine.visible_absorbed(&HASH, visibility).await.unwrap().0 != absorbed {
+        while boundary() != absorbed {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
     })
@@ -399,12 +391,9 @@ async fn absorbed_reaches(engine: &ShardEngine, visibility: Deliver, absorbed: u
     );
 }
 
-/// Wait until a shard-log WAL write reaches the store's hold. A gather's
-/// advance is applied when the committer writes it; its WAL reaches the
-/// store only on SlateDB's next 5 ms flush tick, which can fire after all
-/// three gathers. The parked write is the first WAL PUT after the hold, and
-/// SlateDB's WAL writer flushes one WAL at a time, so every advance not in
-/// it waits behind it.
+/// Wait until a shard-log WAL write reaches the store's hold: the seal's
+/// commit, applied by the committer, reaches the store only with SlateDB's
+/// next WAL flush.
 async fn wal_write_parks(engaged: &AtomicU64) {
     let parked = tokio::time::timeout(Duration::from_secs(10), async {
         while engaged.load(Ordering::SeqCst) == 0 {
@@ -412,7 +401,7 @@ async fn wal_write_parks(engaged: &AtomicU64) {
         }
     })
     .await;
-    assert!(parked.is_ok(), "the advances' WAL write never parked");
+    assert!(parked.is_ok(), "the seal's WAL write never parked");
 }
 
 /// The offsets one unfiltered read of `deliver` from `from` serves, and
@@ -431,14 +420,15 @@ async fn offsets_from(
 
 /// TLA-018-F1 with a cursor inside a page (the branch's own frontier test
 /// appends one record per request): four requests of ten records are
-/// pages [0, 9] .. [30, 39]. With the shard log's WAL write held, three
-/// one-page gathers advance the applied boundary to 30, and the trims the
-/// second and third advances enable delete pages [0, 9] and [10, 19],
-/// applied only; the durable boundary still says 0. An applied read from 15
-/// (inside the deleted page) sees the head gap, adopts the applied boundary
-/// and serves 15..=19 from history; a durable read from 15 still finds the
-/// page in the durable shard log. Both serve exactly 15..=39, also once the
-/// write lands.
+/// pages [0, 9] .. [30, 39], all durable. With the shard log's WAL PUTs
+/// held, a seal puts its object and its commit applies: the applied
+/// boundary is 40 and the pages are gone from memory, while the durable
+/// boundary still says 0. An applied read from 15 (inside a page the seal
+/// dropped) and a durable read from 15 both find the pages in the segment
+/// object the seal published before its commit, and serve exactly
+/// 15..=39, also once the WAL write lands. The appends are durable before
+/// the hold, so the seal's first WAL flush has nothing to write and the
+/// first WAL PUT the hold parks is the seal's commit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_applied_read_from_inside_a_page_its_trim_deleted_rereads_it_from_history() {
     let store = crate::dst::FaultStore::new(
@@ -453,30 +443,32 @@ async fn an_applied_read_from_inside_a_page_its_trim_deleted_rereads_it_from_his
             .collect();
         assert_eq!(append(&engine, "lane", records).await, request * 10 + 9);
     }
-    let config = AbsorberConfig {
-        gather_max_bytes: 1,
-        ..AbsorberConfig::default()
-    };
-    let absorber = Absorber::new(engine.clone(), config);
-    // Open the history partition first: its open writes objects the WAL
-    // hold would otherwise park.
-    engine.history_partition().await.unwrap();
-    let engaged = store.hold_class(crate::dst::StoreOp::Put, crate::dst::ObjClass::Wal, 1);
-    for upto in [10, 20, 30] {
-        let outcome = absorber.absorb_gather_v2(&[HASH]).await.unwrap();
-        assert_eq!(outcome.advanced.first().map(|a| a.1), Some(upto));
-        absorbed_reaches(&engine, Deliver::Applied, upto).await;
+    let engaged = store.hold_class(
+        crate::dst::StoreOp::Put,
+        crate::dst::ObjClass::Wal,
+        u64::MAX,
+    );
+    // The seal is polled only until its commit applies; it then waits on
+    // the held WAL write while the reads run.
+    let seal = engine.seal_once(Trigger::Requested);
+    tokio::pin!(seal);
+    tokio::select! {
+        sealed = &mut seal => panic!("the seal ended with WAL PUTs held: ok {}", sealed.is_ok()),
+        () = absorbed_reaches(&engine, Deliver::Applied, 40) => {}
     }
     wal_write_parks(&engaged).await;
     let handle = engine.stream_handle(HASH).await.unwrap();
-    let (durable, applied) = {
+    let (durable, applied, unsealed) = {
         let st = handle.state.lock().unwrap();
-        (st.durable.clone(), st.applied.clone())
+        (
+            st.durable.clone(),
+            st.applied.clone(),
+            st.pending.is_empty(),
+        )
     };
-    assert_eq!(
-        (durable.absorbed, applied.absorbed, applied.trimmed),
-        (0, 30, 20)
-    );
+    assert_eq!((durable.absorbed, durable.next), (0, 40), "durable");
+    assert_eq!((applied.absorbed, applied.next), (40, 40), "applied");
+    assert!(unsealed, "the applied seal dropped the pages from memory");
     let want = ((15..40).collect::<Vec<u64>>(), Some(39));
     assert_eq!(
         offsets_from(&engine, 15, Deliver::Applied).await,
@@ -489,11 +481,12 @@ async fn an_applied_read_from_inside_a_page_its_trim_deleted_rereads_it_from_his
         "durable, held"
     );
     store.release_hold();
-    absorbed_reaches(&engine, Deliver::Durable, 30).await;
-    assert_eq!(
-        offsets_from(&engine, 15, Deliver::Durable).await,
-        want,
-        "durable, landed"
-    );
+    let report = seal.await.expect("the seal completes once WAL PUTs flow");
+    assert_eq!(report.pages, 4, "the seal sealed the four pages");
+    absorbed_reaches(&engine, Deliver::Durable, 40).await;
+    for deliver in [Deliver::Durable, Deliver::Applied] {
+        let got = offsets_from(&engine, 15, deliver).await;
+        assert_eq!(got, want, "{deliver:?}, landed");
+    }
     engine.begin_close();
 }

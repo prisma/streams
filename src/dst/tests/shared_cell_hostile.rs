@@ -13,7 +13,7 @@ use super::fixture_cell::{
     CREATE, Cell, CellSpec, SHARE_K, Token, burst, credential, error_code, fleet_key, grant,
     hold_subscriptions, journal, jwks_key, open_cell, padded, policy, project,
 };
-use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig_build};
+use super::fixture_http::{HttpRigOptions, cold_sealer, engine_shutdown, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
@@ -487,7 +487,7 @@ async fn a_capability_carrier_with_only_a_key_is_refused() {
 
 /// A7 (H2): two hostile tenants grind stream names onto the shard that
 /// holds the victim's `orders` and each append 600 bytes, pushing it
-/// past its unabsorbed-bytes line (1 KiB here, absorption paused). The
+/// past its unsealed-bytes line (1 KiB here, every sealer off). The
 /// victim's append is still admitted; the shed lands on the
 /// contributors.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -503,11 +503,14 @@ async fn names_ground_onto_the_victims_shard_never_shed_the_victim() {
     spec.prefixes = ["00", "01", "10", "11"].map(str::to_string).to_vec();
     spec.admission = Some(admission);
     let cell = open_cell(spec).await;
-    cell.state
-        .runtime
-        .history
-        .paused
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    for prefix in ["00", "01", "10", "11"] {
+        let wait = std::time::Duration::from_secs(5);
+        let opened = cell.state.shards.open_or_wait(prefix, wait).await;
+        let crate::sharddir::OpenOutcome::Ready(engine) = opened else {
+            panic!("shard {prefix} opens");
+        };
+        engine.configure_seal(cold_sealer);
+    }
     let shard = |i: usize, name: &str| {
         let sref = ProjectId::new(&project(i)).unwrap().stream_ref(name);
         cell.state

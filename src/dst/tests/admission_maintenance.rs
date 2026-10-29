@@ -1,16 +1,15 @@
 //! Admission maintenance.
 
 use super::fixture_failpoints::gap_lock;
-use super::fixture_http::{HttpRigOptions, http_rig, http_rig_build};
+use super::fixture_http::{HttpRigOptions, cold_sealer, http_rig, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::{eventually, mem, noise_text, open_engine, skey};
 use crate::dst::{FaultPlan, FaultStore, Outcome, Workload};
-use crate::shard::{encode_shard_maint, shard_maint_key};
 use object_store::ObjectStore;
 use std::sync::Arc;
 
-/// A rig whose shard OPENER parks on the given lock right before
+/// A backlog rig whose shard OPENER parks on the given lock right before
 /// maintenance restoration (R26-5). Its only use is a RESTART phase
 /// over a store another rig wrote, so the incarnation is explicit.
 async fn http_rig_park(
@@ -18,16 +17,11 @@ async fn http_rig_park(
     park: Arc<tokio::sync::Mutex<()>>,
     runtime: RigRuntime,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
-    http_rig_build(
-        store,
-        runtime,
-        HttpRigOptions {
-            open_park: Some(park),
-            ..Default::default()
-        },
-    )
-    .await
-    .parts()
+    let options = backlog_options(HttpRigOptions {
+        open_park: Some(park),
+        ..Default::default()
+    });
+    http_rig_build(store, runtime, options).await.parts()
 }
 
 /// R25-D: per-shard isolation at the admission mechanism — one engine
@@ -174,12 +168,10 @@ fn reserved_system_streams_are_recognized() {
 
 const BACKLOG_LIMIT: u64 = 1024;
 
-/// The HTTP routes use the real configured maintenance bound. Absorption is
-/// paused only while arranging real acknowledged records, never by replacing
-/// the ledger that the committer and absorber must reconcile.
-async fn backlog_rig(
-    mut options: HttpRigOptions,
-) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+/// The HTTP routes use the real configured maintenance bound. The sealer is
+/// off only while arranging real acknowledged records, never by replacing
+/// the ledger that the committer and the sealer must reconcile.
+fn backlog_options(mut options: HttpRigOptions) -> HttpRigOptions {
     let mut admission = crate::config::ServerConfig::load(
         crate::config::CliArgs::deterministic(),
         &crate::config::MapEnvironment::empty(),
@@ -187,13 +179,17 @@ async fn backlog_rig(
     .admission;
     admission.unabsorbed_bytes_shard = BACKLOG_LIMIT;
     options.admission = Some(admission);
-    let rig = http_rig_build(mem(), RigRuntime::first(), options).await;
-    rig.state
-        .runtime
-        .history
-        .paused
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    rig.parts()
+    options.seal = Some(cold_sealer);
+    options
+}
+
+async fn backlog_rig(
+    options: HttpRigOptions,
+) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+    let options = backlog_options(options);
+    http_rig_build(mem(), RigRuntime::first(), options)
+        .await
+        .parts()
 }
 
 async fn append_raw_backlog(addr: std::net::SocketAddr, name: &str) {
@@ -212,17 +208,13 @@ async fn append_raw_backlog(addr: std::net::SocketAddr, name: &str) {
     );
 }
 
-async fn drain_backlog(state: &crate::http::AppState, engine: &crate::shard::ShardEngine) {
-    state
-        .runtime
-        .history
-        .paused
-        .store(false, std::sync::atomic::Ordering::Relaxed);
+async fn drain_backlog(engine: &Arc<crate::shard::ShardEngine>) {
+    engine.seal_requested().await.expect("a requested seal");
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
     while engine.maintenance_snapshot().unabsorbed_frame_bytes > BACKLOG_LIMIT * 75 / 100 {
         assert!(
             tokio::time::Instant::now() < deadline,
-            "real absorption did not release backlog: {:?}",
+            "a real seal did not release backlog: {:?}",
             engine.maintenance_snapshot()
         );
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -288,7 +280,7 @@ async fn raw_hierarchical_append_sheds_typed_503_under_backlog() {
     let (st, _, _) = hreq(addr, "GET", &format!("/v1/stream/{name}"), &[], b"").await;
     assert_eq!(st, 200, "reads must not shed");
 
-    drain_backlog(&state, &engine).await;
+    drain_backlog(&engine).await;
     let (st, _, _) = hreq(
         addr,
         "POST",
@@ -405,7 +397,7 @@ async fn split_admission() -> SplitAdmission {
 async fn split_child_sheds_while_sibling_child_admits() {
     let _l = gap_lock().lock().await;
     let SplitAdmission {
-        state,
+        state: _state,
         addr,
         first: AdmissionChild {
             key: ka,
@@ -466,7 +458,7 @@ async fn split_child_sheds_while_sibling_child_admits() {
         "sibling child must keep admitting, got {st}"
     );
 
-    drain_backlog(&state, &e0).await;
+    drain_backlog(&e0).await;
     let (st, _, body) = preq(
         addr,
         "POST",
@@ -542,11 +534,15 @@ async fn ownership_replay_wins_over_a_latched_local_engine() {
     );
 }
 
-/// Rig 1 of R26-5d: after restore-x's first append settles (which rewrites the
-/// maintenance row), persist an over-bound row and hand the shard over.
+/// Rig 1 of R26-5d: with the sealer off, restore-x's acknowledged appends
+/// leave more than the bound unsealed on its durable tail; then the shard is
+/// handed over.
 async fn hand_over_an_over_bound_row(store: Arc<dyn ObjectStore>) -> String {
     let ct = [("content-type", "application/json")];
-    let (state1, addr1) = http_rig(store).await;
+    let options = backlog_options(HttpRigOptions::default());
+    let (state1, addr1) = http_rig_build(store, RigRuntime::first(), options)
+        .await
+        .parts();
     let (st, _, _) = hreq(addr1, "PUT", "/v1/stream/restore-x", &ct, b"").await;
     assert!(st == 200 || st == 201);
     let (st, _, _) = hreq(addr1, "POST", "/v1/stream/restore-x", &ct, br#"[{"n":1}]"#).await;
@@ -563,18 +559,8 @@ async fn hand_over_an_over_bound_row(store: Arc<dyn ObjectStore>) -> String {
         .engine_for_scaler(&seg.shard_route)
         .await
         .expect("engine");
-    let settled = || engine1.maintenance_snapshot().unabsorbed_frame_bytes == 0;
-    eventually("the append's settlement", settled).await;
-    let fat = crate::shard::ShardMaintenance {
-        version: 99,
-        unabsorbed_frame_bytes: 300 * 1024 * 1024,
-        backlog_started_ms: 1,
-        last_progress_ms: 1,
-    };
-    let mut wb = slatedb::WriteBatch::new();
-    wb.put(shard_maint_key(), encode_shard_maint(&fat));
-    engine1.db.write(wb).await.unwrap();
-    engine1.db.flush().await.unwrap();
+    append_raw_backlog(addr1, "restore-x").await;
+    assert!(engine1.maintenance_snapshot().unabsorbed_frame_bytes > BACKLOG_LIMIT);
     state1.shards.retire(
         &prefix,
         crate::shard_directory::RetirementReason::Shutdown,
@@ -586,9 +572,10 @@ async fn hand_over_an_over_bound_row(store: Arc<dyn ObjectStore>) -> String {
 }
 
 /// R26-5d: the first request CANNOT pass while backlog restoration is
-/// parked, and then sees the restored ledger, not a default. Rig 1 persists
-/// an over-bound durable row; rig 2 reopens the namespace with restoration
-/// parked: the request stays unanswered, then gets the restored state's 503.
+/// parked, and then sees the restored ledger, not a default. Rig 1 leaves an
+/// over-bound unsealed backlog on its durable tails; rig 2 reopens the
+/// namespace with restoration parked: the request stays unanswered, then
+/// gets the 503 of the ledger rebuilt from the tails.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn first_request_waits_for_restoration_then_sees_the_restored_ledger() {
     let store = mem();
@@ -700,10 +687,7 @@ async fn debug_load_reports_typed_limiter_and_frame_totals() {
         mem(),
         RigRuntime::first(),
         HttpRigOptions {
-            shard: crate::shard::ShardConfig {
-                shared_usage: Some(usage),
-                ..Default::default()
-            },
+            usage: Some(usage),
             ..Default::default()
         },
     )
@@ -834,10 +818,7 @@ async fn product_batch_over_record_capacity_is_413_without_retry_after() {
         mem(),
         RigRuntime::first(),
         HttpRigOptions {
-            shard: crate::shard::ShardConfig {
-                shared_usage: Some(usage),
-                ..Default::default()
-            },
+            usage: Some(usage),
             ..Default::default()
         },
     )
@@ -912,10 +893,7 @@ async fn a_deferred_producer_verdict_outranks_the_capacity_refusal() {
         mem(),
         RigRuntime::first(),
         HttpRigOptions {
-            shard: crate::shard::ShardConfig {
-                shared_usage: Some(usage),
-                ..Default::default()
-            },
+            usage: Some(usage),
             ..Default::default()
         },
     )
@@ -957,12 +935,8 @@ async fn the_product_capacity_413_precedes_the_key_but_not_a_producer_verdict() 
         },
         Arc::new(crate::runtime::ManualClock::at(0)),
     ));
-    let shard = crate::shard::ShardConfig {
-        shared_usage: Some(usage),
-        ..Default::default()
-    };
     let options = HttpRigOptions {
-        shard,
+        usage: Some(usage),
         ..Default::default()
     };
     let rig = http_rig_build(mem(), RigRuntime::first(), options).await;

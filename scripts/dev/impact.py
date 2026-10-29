@@ -197,7 +197,7 @@ INCLUDE = re.compile(r'\binclude_(?:str|bytes)!\(\s*"([^"]+)"')
 @dataclass(frozen=True)
 class Placement:
     crate: str
-    target: str        # 'lib', 'bin pilot', 'test pilot_membership', 'fuzz postings'
+    target: str        # 'lib', 'bin pilot', 'test pilot_membership', 'fuzz segment_chunk'
     selector: tuple    # `cargo test` target selection; () when cargo test cannot run it
     modpath: tuple     # module path below the crate root; () is the root itself
     cfgs: tuple        # cfg predicates along the declaration chain

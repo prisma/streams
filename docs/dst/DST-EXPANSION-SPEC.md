@@ -51,7 +51,7 @@ same scenario + same choice trace
 → identical failure fingerprint
 ```
 
-This MUST include the absorber, SlateDB background work, compaction, GC, task scheduling, and process lifecycle. A deterministic object-store fault schedule on top of nondeterministic task scheduling is not sufficient.
+This MUST include the sealer, SlateDB background work, compaction, GC, task scheduling, and process lifecycle. A deterministic object-store fault schedule on top of nondeterministic task scheduling is not sufficient.
 
 ## 2.2 Whole-system scope
 
@@ -60,7 +60,7 @@ The simulator MUST support, in one process:
 - several Streams nodes;
 - one router/edge actor;
 - the fleet membership and ownership loop;
-- multiple shard databases and history partitions;
+- multiple shard databases, each with its segment objects and seal directory;
 - clients using both the product API and the raw Durable Streams API;
 - automatic split and merge;
 - consumer groups and watches;
@@ -85,7 +85,7 @@ A scenario MUST be invalid, not passing, when its intended mechanism did not run
 
 - a fencing scenario with zero fences;
 - a crash-window scenario that never reached the failpoint;
-- a history scenario with zero history reads;
+- a sealed-read scenario with zero sealed-range GETs (`sealed_gets`);
 - a takeover scenario in which no old request remained in flight;
 - a split scenario in which both children stayed on one physical owner;
 - a GC scenario that generated no obsolete objects;
@@ -116,10 +116,10 @@ DST MUST enforce deterministic budgets for:
 - physical Class A and Class B request attempts;
 - successful billable response classes;
 - LIST pages;
-- WAL, manifest, compaction, and history PUTs;
+- WAL, manifest, compaction, and segment-object PUTs;
 - bytes fetched versus bytes returned;
-- canonical spans per postings read;
-- open DBs, readers, tasks, timers, cache bytes, handles, and pending operations;
+- ranged GETs per sealed read and chunks skipped by key summary per keyed read;
+- open DBs, tasks, timers, cache bytes, handles (unsealed-page holders included), and pending operations;
 - queue depth and oldest request age;
 - logical work required to drain a backlog.
 
@@ -136,7 +136,7 @@ A change that preserves correctness by shifting the cost from storage bytes to p
 - Correctness under supported object-store semantics and client/network failures.
 - Multi-node ownership, routing, split/merge, and scale transitions.
 - Lifecycle state machines: create, initialize, seal, delete, expiry, fork.
-- Tiering: shard log, shared history, postings, trim, compaction, GC.
+- Tiering: shard log, pending rows, the sealer, segment objects, the seal directory, compaction, GC.
 - Consumer and watch semantics.
 - Cost and resource invariants.
 - Security-relevant route classification and capability boundaries where they are pure server logic.
@@ -162,7 +162,7 @@ Because the product is pre-launch:
 
 - no mixed binary versions;
 - no old descriptor decoding;
-- no old history layout migration;
+- no migration from an earlier storage layout;
 - no legacy routing modes;
 - no rolling-format compatibility scenarios.
 
@@ -198,7 +198,7 @@ World
 ├── Stores
 │   ├── ops store
 │   ├── shard store
-│   ├── data/history store
+│   ├── segment-object store (shards/<prefix>/hseg/)
 │   └── physical request ledger
 ├── Router
 │   ├── route cache
@@ -213,7 +213,7 @@ World
 │   ├── task group
 │   ├── serving map / OpenGate
 │   ├── shard engines
-│   ├── absorbers and history partitions
+│   ├── sealers, seal directories, and pending pages
 │   ├── scaler
 │   ├── fleet loop
 │   └── caches
@@ -292,7 +292,6 @@ The simulator MUST support many simultaneous SlateDB instances:
 enum DbRole {
     Ops,
     Shard { prefix: ShardPrefix },
-    History { shard: ShardPrefix },
 }
 
 struct DbInstanceId {
@@ -301,6 +300,8 @@ struct DbInstanceId {
     writer_epoch: u64,
 }
 ```
+
+A shard's segment objects are plain immutable objects under its prefix (`shards/<prefix>/hseg/<epoch>/<seq>`), not a database: the shard store holds them beside the shard log, and the physical request ledger records their PUTs and ranged GETs.
 
 A handoff opens the same persistent prefix from a new node while the old node may still have tasks. It is not modeled as replacing one global DB handle.
 
@@ -337,7 +338,7 @@ Events include:
 - descriptor CAS attempted/won/lost;
 - lifecycle intent installed/renewed/fenced/completed;
 - topology phase transitions;
-- history write/flush/boundary/trim;
+- seal snapshot/PUT/directory publish/commit/flush, and deadline memtable flushes;
 - object-store request dispatch/result;
 - task spawn/exit/cancel;
 - process pause/crash/restart;
@@ -353,7 +354,7 @@ The state hash MUST include logical state, not incidental addresses:
 - producer and sequence state;
 - consumer state;
 - fork graph and debts;
-- history boundaries and postings ranges;
+- sealed boundaries (`absorbed`), unsealed pending pages, and the seal directory's chunks and key summaries;
 - live object reachability graph;
 - node ownership and serving map;
 - pending client operations and outcomes;
@@ -519,7 +520,8 @@ The model MUST track logical reachability:
 
 - descriptor objects;
 - shard WAL/SST/manifest generations;
-- history canonical and postings rows;
+- segment objects, the seal directory's `'K'` rows that name them, and their `'R'` refcount rows;
+- pending rows (`'S' ‖ hash ‖ 'P'`) and their merge operands;
 - fork ancestors and child references;
 - pending deletion debts;
 - topology parents/children;
@@ -628,23 +630,23 @@ The following invariant families are mandatory. Detailed scenarios are in `SCENA
 | **T11** | At most one owner epoch, the one holding the shard's storage fence, may acknowledge newly authorized writes for a shard. An engine of an older epoch MAY still send a success after a newer epoch fenced it, but only for a write it claimed durable before its retirement; that record MUST already be durable at its acknowledged offset, written under the older epoch's own fence, and replayed by every higher-epoch owner that serves. No other response from an older epoch may be a success, and no operation commits under two epochs. *Reconciled wording, pending spec-owner confirmation: §9.12.1.* |
 | **T12** | Serving possession, not ring preference alone, determines whether a node may act. |
 
-## 9.7 History, postings, trim, and GC
+## 9.7 Sealing, sealed reads, and GC
 
 | ID | Invariant |
 |---|---|
-| **H1** | History is an exact prefix and shard tail an exact suffix of each segment log. |
-| **H2** | Merged reads cover every durable offset exactly once. |
-| **H3** | `absorbed` advances only after canonical frames and postings are durable. |
-| **H4** | Trim never passes the previously safe absorbed boundary. |
-| **H5** | Global gather and trim work are bounded by configured memory/work budgets. |
-| **H6** | Budget-deferred streams remain pending without requiring a later customer signal. |
-| **H7** | Dirty-stream recovery discovers untouched backlog after restart under production policy. |
-| **H8** | A failed dirty scan is retried until convergence. |
-| **H9** | Large records always make cursor progress. |
-| **H10** | Postings reads issue bounded canonical spans and bounded read amplification; never one GET per record. |
-| **H11** | Corrupt/missing postings cannot produce a false complete result. *Adopted as written and only partly enforced by the reader: open obligation, §9.12.2.* |
-| **H12** | Reader/postings caches are single-flight, cancellation-proof, store-scoped, and process-budgeted. |
-| **H13** | Nothing reachable from a live manifest, topology parent/child, fork, reader checkpoint, or history boundary is deleted. |
+| **H1** | Sealed chunks are an exact prefix and pending pages an exact suffix of each segment log: the seal directory's chunks tile `[0, absorbed)` and the pending row's pages tile `[absorbed, next)`, with no gap and no overlap. |
+| **H2** | Merged reads (ring, sealed chunks, unsealed pages) cover every durable offset exactly once. |
+| **H3** | `absorbed` (the sealed boundary) moves only after the seal's segment object is durable (its `PutMode::Create` PUT finished) and its chunks are published in the in-memory seal directory, and only in the seal commit that also writes the seal's `'K'` row. |
+| **H4** | Retired with physical trim in layout 6: no page row or page tombstone exists. A seal's commit puts the pending row's remainder (every page at or above the new boundary at the moment the committer stages it, from the live stream), which shadows every older operand. |
+| **H5** | A seal's work is bounded: at most 64 MiB of pages per object (a stream larger than what is left contributes a prefix, the first stream always at least one page), at most 1,024 streams per seal, and at most 8,192 pages per chunk. |
+| **H6** | Streams a seal leaves behind for its budget stay pending without requiring a later customer signal: the next seal follows at once (`Trigger::Deferred`) and starts after the last stream the previous one took. |
+| **H7** | The sealer's open rebuilds the directory from the `'K'` rows and loads every stream whose durable tail holds unsealed pages, its pending row tiled against its tail, without any customer request touching the stream. A tail or pending row that does not decode fails only its own stream (`corrupt_streams`). |
+| **H8** | A failed sealer open is retried (backing off to 5 s) until it succeeds or the engine closes; a sealed read waits for the open and never serves from a partial directory. A failed seal blocks the next for a backoff of 0.5-16 s, doubling per failure, and the memtable deadlines still flush. |
+| **H9** | Large records always make cursor progress: a seal takes at least one page of its first stream whatever its budget, and a read keeps the page that reaches its byte budget. |
+| **H10** | Sealed reads cost one ranged GET per chunk (at most 8 in flight and 256 per read); keyed reads skip chunks whose routing-key summary excludes the key without a GET; never one GET per record. |
+| **H11** | A missing or corrupt sealed chunk cannot produce a false complete result. *Adopted as written and only partly enforced by the reader: open obligation, §9.12.2.* |
+| **H12** | The seal directory and the unsealed pages stream handles hold are per-engine state, rebuilt from durable rows at open and dropped on close or crash: the directory changes only by a seal's publish (before its commit) or its withdrawal (a refused or dropped commit); a handle holding unsealed pages is never evicted, and the unsealed bytes are bounded by the seal triggers and the maintenance-backpressure latch. No reader or postings cache exists. |
+| **H13** | Nothing reachable from a live manifest, topology parent/child, fork, reader checkpoint, sealed boundary, or the seal directory (a `'K'` row names its segment object) is deleted. |
 | **H14** | GC converges without periodic LIST storms and cannot be suppressed by a stale inventory or refresh dead zone. *Shown only while the partition keeps writing; convergence on a partition with no further writes is an open service obligation, §9.12.3.* |
 | **H15** | Pending summaries and lag gauges clear on ownership loss and never produce phantom fleet backlog. |
 
@@ -691,13 +693,13 @@ The following invariant families are mandatory. Detailed scenarios are in `SCENA
 | ID | Invariant |
 |---|---|
 | **R1** | Every task owned by a closed, crashed, or fenced engine terminates. |
-| **R2** | Task, DB, reader, handle, cache, timer, and pending-operation counts are bounded. |
+| **R2** | Task, DB, handle, cache, timer, and pending-operation counts are bounded. |
 | **R3** | Safety state required by queued work is not evicted or expired prematurely. |
 | **R4** | Idle cardinality state is eventually evicted without losing restart discovery. |
 | **R5** | Overload sheds instead of queueing into unbounded latency and recovers after healing. |
 | **R6** | Usage tracking never silently fails open after its tracked-stream bound. |
 | **R7** | Billing checkpoints never advance past un-emitted deltas. |
-| **R8** | History/request cost is bounded by bytes/work, not stream or routing-key cardinality. |
+| **R8** | Sealing and sealed-read request cost is bounded by bytes/work, not stream or routing-key cardinality. |
 
 ## 9.12 Reconciliation with the formal-verification findings
 
@@ -742,105 +744,102 @@ during a move. That changes no safety content.
 unestablished ASM-OBJSTORE-CAS. **The spec owner must confirm this
 wording.** Until then, the requirement is the reconciled text.
 
-### 9.12.2 H11: missing postings and completeness (open obligation)
+### 9.12.2 H11: missing or corrupt sealed chunks and completeness (open obligation)
 
-**Requirement as adopted.** Corrupt or missing postings cannot produce a
-false complete result. HIS-019 exercises the same scope: "corrupt/missing
-page; canonical envelope scan, exact frames, honest incomplete/error".
+**Requirement as adopted.** A missing or corrupt sealed chunk cannot produce
+a false complete result. HIS-019 exercises the same scope.
 
-**What the reader enforces today.**
+**What the reader enforces today** (`src/shard/seal/read.rs`).
 
-- *Corrupt pages.* A page that fails to decode, that disagrees with its
-  key, or whose runs fail `ValidatedRuns::new` is not used to claim
-  completeness. `read_history2_keyed` (`src/history.rs`) counts it in
-  `POSTINGS_CORRUPT` and serves one bounded canonical envelope scan,
-  filtered by exact key bytes (`read_history2_keyed_envelope`).
-- *Unproven cache windows.* A load window that cannot reach the requested
-  end gives an honest partial result. `execute_postings_plan`
-  (`src/history/postings_read.rs`) reports completion only when
-  `plan.complete && provable_to >= upto`.
-- *Postings never made durable.* H3 prevents this: `absorbed` advances only
-  after the chunk's canonical rows and postings pages are flushed together.
-  TLA-016 checks it.
-- *Tail and trim races.* `absorption_race` (`src/application/read.rs`)
-  revalidates each tail page against the absorbed boundary at the scan's
-  own visibility.
+- *Corrupt chunks fetched whole.* A ranged GET that covers a whole chunk is
+  checked by the chunk's CRC-32C (`object::decode_chunk`), and the chunk's
+  header must agree with its directory entry (stream hash, first and last
+  offsets, page count). A failure is a corruption error
+  (`sealed range corrupt`), never a short success.
+- *Every fetched page.* Each page is admitted against the offset its holder
+  names (`CheckedPage::admit`: version, record count, routing key, exact
+  length, last offset), and the pages must tile the planned range exactly
+  (`admit_plan`); a GET returning fewer bytes than its range is corruption.
+  A page that is served is opened under its AEAD, which authenticates its
+  clear header as AAD.
+- *Missing objects.* A 404 for an object whose chunk the directory holds is
+  a retryable `unavailable` error, not an empty result: the directory names
+  only objects whose PUT finished, and nothing deletes segment objects yet
+  (ASM-SEAL-OBJECT-IMMUTABLE).
+- *Missing directory entries.* An offset below the sealed boundary that no
+  chunk holds stops the plan there (`plan_sealed`), so the read ends short
+  as an honest partial and the offset is never consumed. A `'K'` row that
+  does not decode fails the sealer's open, which is retried; sealed reads
+  wait for the open (`seal_ready`) and never serve from a partial
+  directory.
+- *Seal and read races.* A seal publishes its chunks in the directory
+  before its commit can move a boundary (`seal::steps`, step 5), and a read
+  captures the boundary and the unsealed pages above it under one lock, so
+  a read never meets a hole between sealed and unsealed data. Unsealed
+  pages that do not tile from the boundary fail the read
+  (`RecordCorruption::Misplaced` / `Missing`).
 
-**What the reader does not enforce.** TLA-018-F2
-(`verification/tla/history/README.md`) covers these cases:
+**What the reader does not enforce.**
 
-- A keyed read takes zero postings pages over an absorbed range as proof
-  that the range holds no matches (`read_history2_keyed`).
-- A span whose canonical rows are missing still counts as consumed
-  (`execute_postings_plan`: "The span is fully consumed even if nothing
-  matched").
-- The unfiltered history scan (`read_history2_scan`) and the corruption
-  envelope (`read_history2_keyed_envelope`) also complete over a missing
-  canonical row.
+- *Keyed skips trust the key summary.* A keyed read skips a chunk whose
+  summary excludes the key without a GET and counts its offsets as consumed
+  (`Step::Skip`). The summary (up to 16 exact key fingerprints, or a bloom
+  of at most 256 bytes) has no false negatives by construction, but the
+  `'K'` row carries no checksum of its own: a summary that is wrong when
+  SlateDB returns it hides matches as a complete result. Its correctness
+  rests on ASM-SLATEDB-DURABLE and on the directory's round-trip tests.
+- *Anchored ranges are not CRC-checked.* A ranged GET that starts at an
+  anchor or stops before the chunk's end is not covered by the chunk CRC.
+  Its pages are checked by admission and tiling, and a served page is
+  authenticated when opened, but a page a keyed read filters out by its
+  clear routing key is never opened: a corrupted routing key in such a
+  range hides that page while its offsets count as consumed.
 
-The model probe `probe_lost_postings`
-(`verification/tla/history/MC_ReadCompose_probe_lost_postings.cfg`) produces
-a false complete page, and `probe_lost_canonical` did until layout 5: since
-then a history read checks that the pages it meets tile its window
-(`page_read::PageScan`, 13aee2c0), so a lost canonical page fails the read,
-which TLA-018's `baseline-lost-page-refused` checks and `nc-no-tiling-check`
-shows failing without the check. The existing HIS-019 test,
-`corrupt_postings_fall_back_to_the_envelope`, exercises only a corrupt page.
+The layout-6 read model (`verification/tla/spill/SealRead.tla`, TLA-018)
+checks the summary skip and the honest partial at a hole, but its recorded
+scope excludes multi-record pages, anchors and ranged GETs
+(`verification/tla/spill/README.md`).
 
-**What the remaining completeness rests on.** A page or row that was durable
-and later disappeared is ruled out only by assumptions
-(`verification/assumptions.md`):
+**What the remaining completeness rests on.** A chunk, object or row that
+was durable and later disappeared or changed is ruled out only by
+assumptions (`verification/assumptions.md`):
 
 - ASM-SLATEDB-DURABLE (i): durable data never rolls back.
+- ASM-SEAL-OBJECT-IMMUTABLE: a segment object is never overwritten, and no
+  object a directory row names is deleted while that row exists.
 - ASM-SLATEDB-GC (i) and (iii): the collector deletes only SSTs no manifest
   or checkpoint references, and a read of a deleted SST fails rather than
   returning a short success.
-- H13 and TLA-019: nothing reachable is deleted.
-- ASM-HISTORY-POSTINGS-CACHE: a warm window proves absence only over chunks
-  that recorded every key.
-
-Before their fixes, TLA-016-F3 and the cache-bridge defect were production
-paths to the same observable. The observable is therefore not hypothetical.
+- H13: nothing reachable is deleted.
 
 **Open obligation: the owner must choose one option.** This document does
 not choose.
 
-- **Option A: keep H11 as adopted and add an evidence mechanism.**
-  - Write a per-chunk coverage record in the same history `WriteBatch` as
-    the chunk's canonical rows and postings pages. It works as a chunk
-    manifest. Key it by `(route, segment, from)`. It holds:
-    - `upto` and the canonical row count;
-    - for each postings bucket, a key-membership filter with no false
-      negatives (an exact sorted `rk_hash` prefix set, or an xor/Bloom
-      filter).
-  - The reader makes one bounded range scan of these records, and caches
-    it with the postings slice. The records must tile `[from, upto)`
-    contiguously, or the result is an honest partial or an error.
-  - Zero pages count as absence only where the filter says the key is
-    absent. A "maybe present" with no page is a detected loss, served
-    through the envelope scan and counted.
-  - Every offset a postings run names must return a row. A missing row
-    ends the page as partial or an error, not consumed.
-  - The unfiltered scan checks density against the record's row count, as
-    `absorption_race` does for the tail.
-  - Evidence: `probe_lost_postings` and `probe_lost_canonical` become
-    baselines that must pass, with lost data answered honestly. HIS-019
-    gains durable-page-loss and durable-row-loss failpoints. H10 and R8
-    budgets are re-measured for the extra record, since it adds bytes to
-    every absorbed chunk and one scan to every cold keyed read.
+- **Option A: keep H11 as adopted and close the two gaps.**
+  - Cover the directory row's chunk summaries with a checksum verified at
+    open (a mismatch fails the row, as an undecodable row does today), or
+    fetch a chunk the summary excludes whenever its row cannot be verified.
+  - Verify every fetched byte of an anchored range before a keyed read
+    filters it: a per-anchor-span CRC in the chunk, or authenticating each
+    filtered-out page's header.
+  - Evidence: HIS-019 gains a corrupt-summary failpoint and a
+    corrupt-routing-key-in-an-anchored-range failpoint, each answered as an
+    error or an honest partial; H10 and R8 budgets are re-measured for any
+    added bytes or GETs.
 - **Option B: deliberately revise the contract.**
-  - Narrow H11 to: corrupt pages, unproven load windows and postings never
-    made durable cannot produce a false complete result. Loss of durable
-    postings pages or canonical rows is excluded, and depends on the
-    assumptions above.
+  - Narrow H11 to: corrupt whole chunks, missing objects, missing directory
+    entries and corrupt served pages cannot produce a false complete
+    result. A wrong key summary and a corrupt clear header of a filtered
+    page in an anchored range are excluded, and depend on the assumptions
+    above.
   - Roadmap §2.10 treats this as weakening a customer-visible guarantee. It
     needs the owner's recorded decision, with:
     - a rationale;
     - the conditional boundary stated in the product documentation
       (`docs/ROUTING-V3.md`);
-    - compensating checks, such as a background canonical and postings
-      scrub, an alert on `POSTINGS_CORRUPT`, and continued evidence for
-      H13.
+    - compensating checks, such as a background segment-object scrub that
+      verifies every chunk CRC against its directory entry, and continued
+      evidence for H13.
 
 Until the owner decides, H11 stands as written, and its status is "adopted,
 partly enforced". No gate or report may count it as met.
@@ -865,22 +864,23 @@ it is what existed at the last activity. It can still last indefinitely.
 **Open service obligation.** H14 is not narrowed. A partition that receives
 no writes still has to converge. Acceptance criteria:
 
-1. Create an unreferenced SST on a history partition, for example by
-   fencing a writer mid-flush. Then send no further writes. Repeat on a
-   shard database, which uses the same collector. The SST is deleted
-   within a bound the owner
-   states in terms of `min_age`, the GC interval
-   (600 s, a constant of the binary) and the manifest poll
+1. Create an unreferenced SST on a shard database, for example by
+   fencing a writer mid-flush. Then send no further writes. The SST is
+   deleted within a bound the owner states in terms of `min_age`, the GC
+   interval (600 s, a constant of the binary) and the manifest poll
    interval. A candidate is `min_age + 2 × gc_interval`.
 2. The mechanism adds no periodic LIST beyond the existing GC cadence. It
-   must not break COST-002 or the HISTORY-V2 Class A scorecard.
+   must not break COST-002 or raise the segment-object PUT count.
 3. A DST scenario and a `ReachGC` baseline without the continued-write
    premise check it. `witness-QuietDeadZoneRetains` then becomes a control
    of the old behaviour.
 
 One possible mechanism is an idle-partition compaction or flush nudge when
 the collector sees unreferenced SSTs above its watermark. It is not chosen
-here. The obligation is tracked in `docs/READINESS.md`.
+here. The obligation is tracked in `docs/READINESS.md`. H14 concerns
+SlateDB's collector only: segment objects are not reclaimed yet (each seal
+writes an `'R'` refcount row for a future collector, which then carries
+ASM-SEAL-OBJECT-IMMUTABLE as its obligation).
 
 ---
 
@@ -892,7 +892,7 @@ All current ad hoc controls MUST be consolidated:
 - `scaler3::failpoints`;
 - `http::fork_failpoints`;
 - `ShardEngine::test_hold_dispatch`;
-- absorber pause flags;
+- the sealer's test hooks (`SealHooks`: abort steps, PUT faults, holds, controls) and `seal_open_faults`;
 - any environment-variable failpoint.
 
 ## 10.1 API
@@ -976,21 +976,34 @@ topology.before_parent_retire
 topology.before_parent_gc
 ```
 
-### History and GC
+### Sealer, sealed reads, and GC
 
 ```text
-history.after_gather_before_write
-history.after_write_before_flush
-history.after_flush_before_absorbed_batch
-history.after_absorbed_before_trim
-history.during_trim
-history.reader_after_cache_lookup
-history.reader_after_probe
-history.reader_during_open
-history.reader_before_cache_insert
+sealer.after_wal_flush_before_snapshot
+sealer.after_put_before_directory_publish
+sealer.after_directory_publish_before_commit
+sealer.after_commit_applied_before_durable
+sealer.after_durable_before_memtable_flush
+sealer.during_open
+sealed_read.after_boundary_capture
+sealed_read.before_chunk_get
 gc.after_inventory_before_delete
 gc.after_delete_before_inventory_update
 ```
+
+None of these is in the semantic registry (`src/failpoints.rs`) yet. Today
+the sealer's windows are forced by its test hooks (`SealHooks`,
+`src/shard/seal/test_hooks.rs`), which the registry MUST absorb: the abort
+points `SealStep::{WalFlushed, Put, Applied, Durable}`;
+the `before_commit` hold (after the PUT, before the commit); `fail_puts`
+and `put_delay`; `fail_next_group` (fail the next commit group that stages
+a seal); the read holds `window_hold` (after a read captured its boundary
+and unsealed pages) and `get_hold` (before each sealed-range GET); and the
+per-shard sealer-open fault (`seal_open_faults`). The negative controls
+`prebuilt_remainder` (REVIEW-6A F1), `late_directory` (publish after the
+commit is durable) and `skip_7a` (REVIEW-6A F2) are mutation switches, not
+failpoints. Segment objects have no collector yet, so the `gc.*` points
+apply to SlateDB's collector only.
 
 ### Fleet and ownership
 
@@ -1112,7 +1125,7 @@ Named distributions:
 - one million sparse streams, 100 active;
 - batch 1, 10, 100, 1,000;
 - large contiguous runs;
-- highly fragmented postings;
+- highly fragmented sealed chunks (many keys per chunk, bloom summaries; one-page chunks);
 - repeated split/merge oscillation;
 - many short-lived consumer groups;
 - long fork chains and wide fork trees.
@@ -1131,11 +1144,11 @@ Each subsystem exposes monotonic progress measures:
 
 ```text
 commit:          durable sequence / pending group count
-history:         absorbed, trimmed, dirty count
+sealer:          sealed boundary (absorbed), unsealed bytes and streams, seals / failures
 GC:              obsolete reachable count / deletion debt
 ownership:       stable owner epochs / unserved shards
 create:          initializing count and age
-seal:            sealing operations and phase
+seal:            stream sealing (lifecycle) operations and phase
 fork:            unpaid references and initializing children
 topology:        pending transitions
 consumer:        settled prefix / active leases
@@ -1152,7 +1165,7 @@ The world is quiescent only when:
 - no client operation remains Pending unless intentionally long-lived;
 - no recoverable lifecycle or topology intent remains;
 - all acknowledged data is readable;
-- history/trim/GC have reached configured convergence;
+- no unsealed backlog remains past the seal triggers, and GC has reached configured convergence;
 - no stale owner task remains;
 - control-plane ownership is stable;
 - no unbounded retry timer or runnable task remains;
@@ -1191,18 +1204,27 @@ split_phase_b
 merge_phase_a
 merge_phase_b
 stale_route_replay
-history_flush
-absorbed_batch
-trim_delete
-postings_cache_hit
-postings_cache_miss
-reader_open_coalesced
+seal.seals
+seal.empty_seals
+seal.failures
+seal.refused
+seal.objects
+seal.deadline_flushes
+seal.flush_errors
+seal.open_failures
+seal.corrupt_streams
+seal.sealed_reads
+seal.sealed_gets
+seal.summary_skips
+seal.summary_misses
 gc_inventory_reused
 gc_list_fallback
 node_crash
 node_restart
 liveness_heal
 ```
+
+The `seal.*` names are the sealer's counters, under each shard's `seal` key in `GET /v1/debug/timings` (beside them: `object_bytes`, `page_bytes`, `remainder_bytes`, `snapshot_gaps`, `directory_entries`, `directory_streams`).
 
 A scenario declares minimum counts. Example:
 
@@ -1234,10 +1256,12 @@ publish Sealed with pending topology
 publish Ready before initial body durability
 skip source-epoch validation on fork hop
 clear fork deletion debt before parent release
-advance absorbed before history flush
-trim to current absorbed rather than previous safe boundary
+move the sealed boundary before the seal's object PUT is durable
+publish the directory entries only after the seal commit is durable
+put a remainder pre-built from the seal snapshot instead of the live pending pages
+force a memtable flush without the preceding awaited WAL flush
 delete topology parent objects immediately after split
-serve corrupt postings as complete empty result
+consume a sealed range no directory chunk holds as a complete empty result
 publish watch before append durability
 use ring ownership without possession
 fail open after usage-map capacity
@@ -1261,15 +1285,18 @@ records per WAL
 queue generations crossed
 ```
 
-## 16.2 History/postings
+## 16.2 Sealer and sealed reads
 
 ```text
-history Class A / GiB absorbed
-postings bytes / canonical bytes
-canonical spans / keyed response
-canonical bytes scanned / matching bytes
+segment-object PUTs / GiB sealed (seal.objects / seal.page_bytes)
+object bytes / page bytes sealed (seal.object_bytes / seal.page_bytes)
+remainder bytes put / page bytes sealed (seal.remainder_bytes / seal.page_bytes)
+deadline memtable flushes / seal (seal.deadline_flushes / seal.seals)
+ranged GETs / sealed read (seal.sealed_gets / seal.sealed_reads)
+chunks skipped by summary / keyed read (seal.summary_skips), summary false positives (seal.summary_misses)
+sealed bytes fetched / matching bytes returned
+directory entries and bytes / sealed stream (seal.directory_entries / seal.directory_streams)
 LISTs / 30 simulated minutes
-reader opens / active-key window
 ```
 
 ## 16.3 Cardinality
@@ -1280,8 +1307,8 @@ At fixed active cardinality, increasing total known streams/keys MUST not cause 
 - metrics maps;
 - key caches;
 - registry cache;
-- postings cache;
-- dirty state;
+- seal directory entries;
+- stream handles held for unsealed pages;
 - timers;
 - background object-store traffic.
 
@@ -1373,7 +1400,7 @@ A deterministic scenario may not be retried to make CI green. A replay mismatch 
 ## Phase A — consolidate current focused controls
 
 1. Add one semantic `FailPointRegistry`.
-2. Move existing HTTP, scaler, store, dispatch, and absorber gates onto it.
+2. Move existing HTTP, scaler, store, dispatch, and sealer gates (`SealHooks`) onto it.
 3. Require entered/release handshakes.
 4. Add mechanism counters to every existing regression.
 5. Add the immediate lifecycle/durability cases from the scenario catalogue marked **L1-now**.
@@ -1382,7 +1409,7 @@ A deterministic scenario may not be retried to make CI green. A replay mismatch 
 
 ## Phase B — reference model and scenario runner
 
-1. Implement `ReferenceModel` for collection, per-key log, lifecycle, forks, segments, consumers, and history.
+1. Implement `ReferenceModel` for collection, per-key log, lifecycle, forks, segments, consumers, and sealed/unsealed pages.
 2. Wrap existing single-node test helpers in `ScenarioRunner`.
 3. Emit canonical trace events and state hashes.
 4. Serialize/replay scenario artifacts.
@@ -1393,10 +1420,10 @@ A deterministic scenario may not be retried to make CI green. A replay mismatch 
 
 1. Extract `streams-core` library.
 2. Inject clock, entropy, runtime, CPU executor, and process metrics.
-3. Run SlateDB and absorber work through deterministic owned executors.
+3. Run SlateDB and sealer work through deterministic owned executors.
 4. Eliminate direct nondeterministic calls from core.
 
-**Acceptance:** one complete single-node create→append→absorb→read→seal→delete scenario replays 100 times with identical hashes.
+**Acceptance:** one complete single-node create→append→seal (sealer)→sealed read→seal (stream)→delete scenario replays 100 times with identical hashes.
 
 ## Phase D — multi-node world
 

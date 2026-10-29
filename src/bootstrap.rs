@@ -19,7 +19,7 @@ use object_store::{ObjectStore, ObjectStoreExt};
 
 use crate::config::validation::ValidatedServerConfig;
 use crate::config::validation::{resolve_effective_capacity, shard_settings};
-use crate::history::{Absorber, AbsorberConfig, KeyCache, absorber_channel};
+use crate::history::KeyCache;
 use crate::http::AppState;
 use crate::registry::{Registry, load_or_init_topology};
 use crate::shard::{ShardConfig, ShardEngine};
@@ -92,34 +92,14 @@ pub(crate) use service_runtime::serve;
 
 static RUN_WAS_INVOKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// The CLI-to-active-absorber boundary. Legacy compatibility options are not
-/// inputs, so they cannot accidentally regain runtime meaning through a later
-/// bootstrap edit.
-fn absorber_config(args: &crate::config::CliArgs, gather_max_bytes: usize) -> AbsorberConfig {
-    AbsorberConfig {
-        threshold_bytes: args.absorb_bytes,
-        threshold_age: Duration::from_secs(args.absorb_age_secs),
-        gather_max_bytes,
-        gather_read_par: args.absorb_read_par,
-        ..Default::default()
-    }
-}
-
 /// The part of every shard engine's configuration that the parsed settings
-/// decide: the WAL pipeline, the gather-skip constants, the trims, the
-/// handle settings, the tail ring, the history settings and the compactor
-/// options. `run` adds the runtime's shared handles once and hands each
+/// decide: the WAL pipeline, the gather-skip constants, the handle
+/// settings and the tail ring. `run` adds the runtime's shared handles once and hands each
 /// engine a clone, so this is where a setting is shown to reach the engine.
 /// FRAME_COMPRESS is a retired name: layout 5 pages compress whenever that
 /// pays.
-fn shard_config(
-    args: &crate::config::CliArgs,
-    history: crate::config::HistoryConfig,
-    compactor_options: slatedb::config::CompactorOptions,
-) -> ShardConfig {
+fn shard_config(args: &crate::config::CliArgs) -> ShardConfig {
     let mut config = ShardConfig {
-        max_trim_per_op: args.trim_per_op,
-        trim_global_budget: args.trim_global_budget,
         wal_group_commit: args.wal_group_commit != 0,
         wal_flush_gap: Duration::from_millis(if args.wal_flush_gap_ms == 0 {
             args.flush_interval_ms
@@ -130,8 +110,6 @@ fn shard_config(
         tail_ring_bytes: args.tail_ring_bytes,
         handle_idle_evict: Duration::from_secs(args.handle_idle_evict_secs),
         handle_max_resident: args.handle_max_resident,
-        history,
-        compactor_options,
         ..Default::default()
     };
     // The gather-skip thresholds are constants (edge record #80) that
@@ -428,41 +406,11 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
         let touch = touch.clone();
         let settings = shard_settings(&config.cli, &config.engine);
         let shared_cache = runtime_caps.shared_cache.clone();
-        // Startup invariant (OOM disposition 2): the per-gather packing
-        // cap must fit the process budget after the build multiplier,
-        // or the envelope claim quietly breaks via reservation
-        // clamping. Clamp the PACKING LIMIT (not the reservation) and
-        // say so loudly.
-        let absorb_gather_max_bytes = {
-            let budget = runtime_caps.history.budget.capacity();
-            let max_allowed = budget / crate::history::ABSORB_BUILD_MULTIPLIER;
-            if config.cli.absorb_gather_max_bytes > max_allowed {
-                tracing::warn!(
-                    "ABSORB_GATHER_MAX_BYTES {} x{} exceeds the process budget {} — \
-                     clamping the gather packing limit to {}",
-                    config.cli.absorb_gather_max_bytes,
-                    crate::history::ABSORB_BUILD_MULTIPLIER,
-                    budget,
-                    max_allowed,
-                );
-                max_allowed
-            } else {
-                config.cli.absorb_gather_max_bytes
-            }
-        };
-        let absorber_config = absorber_config(&config.cli, absorb_gather_max_bytes);
         // Every engine's configuration, built once: the settings-derived
         // part, then the runtime's shared handles. The Fn opener runs once
         // per shard open and cannot move a captured value into an engine,
         // so it hands each engine a clone.
-        let mut shard_config = shard_config(
-            &config.cli,
-            config.history.clone(),
-            config.engine.compactor_options(),
-        );
-        shard_config.shared_postings_cache = Some(runtime_caps.postings.clone());
-        shard_config.shared_history = Some(runtime_caps.history.clone());
-        shard_config.shared_usage = Some(runtime_caps.usage.clone());
+        let mut shard_config = shard_config(&config.cli);
         shard_config.shared_ops = Some(runtime_caps.ops.clone());
         Box::new(
             move |prefix: String, incarnation: crate::sharddir::EngineIncarnation| {
@@ -471,7 +419,6 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
                 let shared_cache = shared_cache.clone();
                 let data_store = data_store.clone();
                 let touch = touch.clone();
-                let absorber_config = absorber_config.clone();
                 let mut settings = settings.clone();
                 // O14a: desynchronize WAL flush ticks across shards. 16
                 // shards flushing on the same phase PUT in synchronized
@@ -515,7 +462,6 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
                     let maintenance = crate::shard::load_or_rebuild_maintenance(&db)
                         .await
                         .with_context(|| format!("load maintenance state for shard {prefix}"))?;
-                    let (absorb_tx, absorb_rx) = absorber_channel();
                     let on_close = {
                         let touch = touch.clone();
                         let prefix = prefix.clone();
@@ -525,17 +471,14 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
                             notifier.closed(&prefix, incarnation);
                         }) as Arc<dyn Fn() + Send + Sync>
                     };
-                    let engine = ShardEngine::start(
+                    Ok(ShardEngine::start(
                         prefix.clone(),
                         db,
                         data_store.clone(),
                         shard_config,
-                        absorb_tx,
                         Some(on_close),
                         maintenance,
-                    );
-                    Absorber::start_owned(engine.clone(), absorber_config, absorb_rx);
-                    Ok(engine)
+                    ))
                 })
             },
         )
@@ -818,60 +761,18 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
     {
         let cfg = &config;
         let shared = config.cli.shared_cache_bytes as usize;
-        let history = cfg.history.cache_bytes;
-        let postings = cfg.postings.cache_bytes;
         let telemetry = cfg.billing.telemetry_cache_bytes;
-        let budget = &runtime_caps.history.budget;
-        let absorb_budget = budget.capacity();
-        let gathers = budget.gather_slots();
-        // Every gather reserves at least the worst-frame transient, so
-        // the EFFECTIVE concurrency is the byte budget divided by that
-        // floor — 1 under the 1-GiB profile regardless of configured
-        // slots. Print both so nobody reads two slots as two-way.
-        // R23-3: use the SHARED accounting so the log, the debug
-        // surface, and the campaign verification cannot disagree. A
-        // gather reserves max(packing x multiplier, worst_frame), not
-        // the worst frame alone.
-        let per_gather = runtime_caps.history.per_gather_reservation_bytes();
-        let effective_gathers = runtime_caps.history.effective_gather_concurrency();
         let rt_threads = cfg.engine.slatedb_rt_threads;
         let mib = |b: usize| b / (1024 * 1024);
         tracing::info!(
-            "memory budget: caches shared={}MiB history={}MiB postings={}MiB telemetry={}MiB; unflushed/db={}MiB; absorb budget={}MiB (worst-frame build={}MiB, per-gather reservation={}MiB, configured gather slots={}, EFFECTIVE gather concurrency={}); slatedb rt threads={}; shed line={}MB (RSS + reserved absorber bytes)",
+            "memory budget: caches shared={}MiB telemetry={}MiB; unflushed/db={}MiB; slatedb rt threads={}; shed line={}MB (RSS)",
             mib(shared),
-            mib(history),
-            mib(postings),
             mib(telemetry),
             mib(config.cli.max_unflushed_bytes),
-            mib(absorb_budget),
-            mib(runtime_caps.history.worst_frame_transient),
-            mib(per_gather),
-            gathers,
-            effective_gathers,
             rt_threads,
             config.cli.admit_rss_shed_mb,
         );
-        let _ = runtime_caps
-            .history
-            .resolved_memory_config
-            .set(serde_json::json!({
-                "gatherPackingLimitBytes": config.cli
-                    .absorb_gather_max_bytes
-                    .min(absorb_budget / crate::history::ABSORB_BUILD_MULTIPLIER),
-                "absorbBudgetBytes": absorb_budget,
-                "gatherSlots": gathers,
-                "effectiveGatherConcurrency": effective_gathers,
-                "slatedbRuntimeThreads": rt_threads,
-                "sharedCacheBytes": shared,
-                "historyCacheBytes": history,
-                "postingsCacheBytes": postings,
-                "telemetryCacheBytes": telemetry,
-                "maxUnflushedBytes": config.cli.max_unflushed_bytes,
-                "l0SstSizeBytes": config.cli.l0_sst_size_bytes,
-                "l0MaxSsts": config.cli.l0_max_ssts,
-                "shedLineMb": config.cli.admit_rss_shed_mb,
-            }));
-        let fixed_mb = mib(shared + history + postings + telemetry + absorb_budget) as u64;
+        let fixed_mb = mib(shared + telemetry) as u64;
         if config.cli.admit_rss_shed_mb > 0 && fixed_mb + 100 > config.cli.admit_rss_shed_mb {
             tracing::warn!(
                 "fixed memory budgets ({fixed_mb} MiB) leave <100 MiB below the shed line                  ({} MB) — this posture does not fit the instance class",

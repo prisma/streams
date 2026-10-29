@@ -56,7 +56,7 @@ version of this document overstated what had been built. Precisely:
 |---|---|
 | fault placement is a pure function of the seed | **yes**, and tested |
 | injected latency is realistic (8–185 ms) and costs no wall clock | **yes** — scenarios run with paused virtual time |
-| scenarios drive the real `ShardEngine`, absorber and merged reader | **yes** |
+| scenarios drive the real `ShardEngine`, sealer and merged reader | **yes** |
 | task scheduling is seed-controlled | **no** — it is Tokio's |
 | whole-scenario replay yields an identical trace | **no** |
 | multiple nodes, router, ring, topology | **no** |
@@ -113,13 +113,13 @@ Production deliberately runs SlateDB on a **separate, process-global,
 multi-threaded runtime** (`main::slatedb_runtime`, reached through
 `on_slatedb_rt`), because SlateDB's encode/compress work stalls the timer
 and IO driver when it shares a runtime (sinmax run 12: tokio timer p99
-848 ms against 3.6 ms on a raw OS thread). The absorber additionally uses
-`spawn_blocking`.
+848 ms against 3.6 ms on a raw OS thread).
 
 So the determinism goal and the two-runtime architecture are in direct
-tension: a scenario that drives the absorber escapes the test runtime's
-clock and scheduler entirely. `acked_records_survive_absorption_into_history`
-therefore runs multi-threaded and is explicitly **not** replayable.
+tension: a scenario that drives the sealer's WAL and memtable flushes
+escapes the test runtime's clock and scheduler entirely. The sealing
+scenarios (`history_absorption`, `history_recovery`) therefore run
+multi-threaded and are explicitly **not** replayable.
 
 This is not something to work around later. It is why milestone M1 is an
 injected `TaskRuntime`/`CpuExecutor`, and why that step cannot be skipped.
@@ -141,7 +141,7 @@ World
 ```
 
 Each node owns its tasks explicitly — heartbeat, ring refresh, shard
-opener, engine committer/acker/maintenance, absorber, scaler, usage
+opener, engine committer/acker, sealer, scaler, usage
 publisher, tail sessions. A simulated crash aborts every task owned by
 that node, drops its caches and keys, abandons in-flight requests, and
 does **not** close databases gracefully. A pause freezes it without
@@ -172,10 +172,10 @@ deepen our fork, and it survives dropping the patch.
 
 Its top-level harness owns **one** installed `Arc<Db>`, and `swap_db()`
 replaces that single database. We need many at once — ops, one per shard
-prefix, one per `(stream, epoch)` history DB — and a shard handoff is not
-a swap: the new node opens the same prefix, the old engine must observe
-fencing, its committer, acker and absorber must terminate, its history
-handles must close, its serving-map entry must clear, and the router may
+prefix, the telemetry databases — and a shard handoff is not a swap: the
+new node opens the same prefix, the old engine must observe fencing, its
+committer, acker and sealer must terminate, its serving-map entry must
+clear, and the router may
 stay stale meanwhile. So the plan is to build `streams-sim` above
 slatedb-dst's clock, randomness, failpoint and object-store primitives
 while owning a separate multi-DB registry, rather than adopting its world
@@ -194,7 +194,7 @@ by owner), `CpuExecutor` (replacing `spawn_blocking`), `ProcessMetrics`
 
 The current core reaches directly for all of them — counted across `src/`
 excluding the harness itself: 45 `Instant::now()`, 40 `now_ms()`, 28
-`sleep`/`interval`/`tick`, 3 `rand::rng()` sites (history block nonces,
+`sleep`/`interval`/`tick`, 3 `rand::rng()` sites (page nonces,
 touch, http), one `spawn_blocking`, the global SlateDB runtime, and
 environment variables. A `clippy.toml` disallowed-method list should
 enforce the boundary once it exists, with the production adapter as the
@@ -255,12 +255,12 @@ immediately beforehand.
 
 Families still to build, in rough priority order:
 
-- **Tiering** — history is an exact prefix of the durable log and the
-  shard tail an exact suffix; the merge covers every offset exactly once;
-  the trim boundary never passes data not durably in history; absorber
-  retries are idempotent; nothing reachable from a live manifest, clone,
-  union, parent or child is ever deleted; a fenced DB cannot mutate live
-  state.
+- **Sealing** — the seal directory's chunks tile `[0, absorbed)` and the
+  pending row `[absorbed, next)`, so the merge covers every offset exactly
+  once; a boundary moves only after the chunks below it are published; a
+  seal that fails at any step leaves every page readable; nothing reachable
+  from a live manifest, clone, union, parent, child or seal directory is
+  ever deleted; a fenced DB cannot mutate live state.
 - **Ownership, routing, topology** — at most one owner epoch acknowledges
   new writes per shard, and a retired epoch may only finish responses for
   writes it claimed durable before a newer epoch fenced it (T11 in
@@ -274,8 +274,8 @@ Families still to build, in rough priority order:
   plaintext; crypto-erasure; queue lease uniqueness, visibility deadlines,
   retries and DLQ transitions; touches emitted only after durability;
   missed touch history forces an explicit resync.
-- **Resources** — bounded open DB handles, spawned tasks, pending absorber
-  entries, retry timers; nothing owned by a crashed or fenced node stays
+- **Resources** — bounded open DB handles, spawned tasks, unsealed pages
+  held in memory, retry timers; nothing owned by a crashed or fenced node stays
   alive; no operation spins without advancing logical time.
 
 ## 7. Liveness
@@ -292,17 +292,17 @@ of nodes with store access, heals their connectivity, restarts them,
 leaves everything else down, and advances logical time until the system
 converges or exhausts a deterministic event budget. Convergence means
 every request reaches a terminal state, every acknowledged append is
-readable, ownership stabilises, fenced engines and absorbers exit, history
-catches up, trim and GC settle, split/merge intents resolve, and desired
-capacity converges.
+readable, ownership stabilises, fenced engines and sealers exit, every
+unsealed page is sealed, GC settles, split/merge intents resolve, and
+desired capacity converges.
 
 A failure must name the stalled measure, not report a timeout:
 
 ```
 liveness failure:
   seed=... scenario=...
-  node_2 absorber unchanged for 75,000 events
-  stream=... absorbed=912 durable_next=1148
+  node_2 sealer unchanged for 75,000 events
+  stream=... sealed=912 durable_next=1148
   engine_closed=false pending_store_ops=0
 ```
 
@@ -349,15 +349,14 @@ simulating one would test a system we neither have nor ship against.
 Still to add: reset and truncated bodies, bandwidth limits and slow close,
 CAS/precondition conflicts, per-node store partitions, and — importantly —
 **systematic crash boundaries** rather than random ones: `before_wal_write`,
-`after_durable_watermark`, `before_ack_send`, `after_history_flush`,
-`before_absorbed_marker`, `before_tail_trim`, `after_shard_seal`,
+`after_durable_watermark`, `before_ack_send`, `after_seal_put`,
+`before_seal_commit`, `after_shard_seal`,
 `after_child_clone`, `before_topology_cas`, `before_parent_gc`,
 `before_fence`, `after_engine_close` — each enumerable as "crash after the
 Nth durable action". Random percentages almost never hit a narrow window;
 enumeration always does. The two ad-hoc env hooks left over from the
-ladder (`SCALE_FAULT_POINT`, `ABSORB_PAUSE`) should fold into that
-registry, which also removes test-only env vars from the production
-binary.
+ladder are gone from the production binary; the failpoint registry
+(below) holds the named crash points.
 
 ### A finding the fault model produced — and its correction
 
@@ -423,15 +422,10 @@ per-(op, class) protocol-cost counters (the storm IS a budget violation),
 and paused virtual time (a storm that takes twenty minutes of wall clock
 in production takes half a second here at the real simulated latencies).
 
-The same protocol-cost discipline now guards the metadata-read surface
-(the Tigris "metadata trickle", docs/SOAK-REGIONS.md): the history
-DbReader cache carries budget scenarios (repeat reads must not reopen
-readers; reopens must track absorb cadence, not request rate), a
-**deterministically stale** reader test (the reader's poll is pinned to
-an hour so the coverage probe MUST be what saves the read — for filtered
-reads too, where offset-contiguity checks cannot), an eviction-cap test,
-and a reopen-after-compactor-churn budget that fails if the compactions
-log stops being reaped (upstream: slatedb#1970).
+The same protocol-cost discipline guards the sealed read path: a read of
+sealed offsets costs one ranged GET per chunk it needs, and a keyed read
+none for a chunk whose routing-key summary excludes its key (`reads_history`,
+counted by the sealer's `sealed_gets` and `summary_skips`).
 
 ## 9. Swarm and focused modes
 
@@ -460,13 +454,15 @@ checks for several passes while never once triggering their mechanism).
 
 Counters today: injected error / lost response / latency; append acked /
 rejected / unknown / retried; producer duplicate suppressed; old owner
-fenced; append in flight at fence; read served from history.
+fenced; append in flight at fence; read served from sealed pages
+(`read_served_from_history`, a name kept from before layout 6).
 
 Lifecycle gets the same treatment. `a_fenced_owners_absorber_exits`
-asserts the old owner's absorber **task actually finishes** after a
-handoff, not merely that the engine reports itself closed — those are
-different claims, and only the second one catches a zombie that will fight
-the new owner for its history DB ("the absorption war", 2026-07-20).
+asserts the old owner's sealer **task actually finishes** after a handoff
+and writes no segment object once the new owner holds the log, not merely
+that the engine reports itself closed — those are different claims, and
+only the second one catches a zombie that fights the new owner for its
+storage ("the absorption war" of the sealer's predecessor, 2026-07-20).
 
 The oracle's negative controls are built from failure shapes this project
 actually hit: loss (the C3 shape), duplication, reordering, a rejected
@@ -476,9 +472,9 @@ self-contradictory ledger so a harness bug cannot silently weaken every
 other check.
 
 Still to add: **canary mutations** — deliberately broken builds (ack
-before the durable watermark, ignore a fencing error, advance `absorbed`
-before history durability, trim to the current instead of the previously
-safe boundary, delete parent SSTs immediately after a split, use ring
+before the durable watermark, ignore a fencing error, move a stream's
+sealed boundary before its seal's chunks are published, flush the memtable
+without the awaited WAL flush before it, delete parent SSTs immediately after a split, use ring
 ownership without possession, publish a touch before durability) that the
 suite must catch within a fixed seed budget. That tests the test system,
 which is the only way to know the suite has not quietly become decorative.
@@ -514,13 +510,14 @@ DST cannot measure wall-clock latency against a real provider. It *can*
 assert **protocol-cost budgets**, and should: object-store GETs per 1,000
 records, bytes fetched versus returned, manifest GETs per operation, WAL
 and SST PUT counts, router hops and replays, open/close cycles, logical
-ticks to absorb a fixed backlog, peak task and handle counts.
+ticks to seal a fixed backlog, peak task and handle counts.
 
 That corrects an earlier claim here. The 42× history-read regression
 (84 → 3,528 rec/s) was described as un-findable by simulation, on the
 grounds that synthetic latency would not flag one-block-per-GET as wrong.
 Only half true: it would have violated a GET-count budget with no network
-at all. What simulation genuinely cannot do is predict the wall-clock cost.
+at all. (The history read path it measured is retired; sealed reads cost
+one ranged GET per chunk.) What simulation genuinely cannot do is predict the wall-clock cost.
 
 Keep real benchmarks for CPU, compression and encryption throughput,
 allocator behaviour and RSS, real provider latency, HTTP and TLS overhead,
@@ -562,8 +559,7 @@ never close — one resident committer and engine allocation per shard move,
 forever), queued appends are answered on close instead of hanging, and
 `await_terminated` joins every handle rather than trusting
 `is_finished()`, which is also true after a panic. Streaming `list`
-faulted; mechanism counters fire only on applied behaviour. Tiering
-proven by trim, not just absorption. Oracle gained I7 (issued-set
+faulted; mechanism counters fire only on applied behaviour. Oracle gained I7 (issued-set
 membership) and records acked offsets.
 
 **M0.2 — the performance changes came with their invariants.** The
@@ -573,36 +569,15 @@ TAIL_MAX_BYTES) landed with DST coverage in the same commits:
 gather under WAL errors/lost responses/latency, full audit, task
 termination), `tail_ring_serves_live_reads_and_survives_eviction`
 (2 KiB budget forces constant eviction; the audit runs over ring-backed
-reads), and `tail_ring_matches_the_db_scan_and_restarts_cold` (ring/DB
-byte-equality across a reopen; publish-before-ack). The ring is a cache
-whose only fallback is the canonical scan — those scenarios are what
-license calling it that.
+reads), and `tail_ring_matches_the_db_scan_and_restarts_cold` (since
+layout 6, ring/segment-object byte-equality across a reopen;
+publish-before-ack). The ring is a cache whose fallback is the stored
+pages (segment objects below the sealed boundary, the handle's unsealed
+pages above it) — those scenarios are what license calling it that.
 
-**M0.3 — the reader cache became a service, and its concurrency became
-provable.** Review #3's P0 was correct and production-relevant:
-`acquire()` was check→probe→open→insert with no per-key single-flight, so
-cold and stale stampedes scaled reader opens with request concurrency —
-the metadata storm the cache exists to prevent, recreated at the moment
-64 subscribers wake after an absorb. The cache is now `HistReaders`: one
-instance per store (AppState-owned in production; per simulated node in
-DST — the process-global OnceLock both blocked multi-node modeling and
-could have served a wrong-store read), per-key single-flight slots whose
-probe/open runs in a cache-owned task (caller cancellation cannot detach
-it — the read-only cousin of the shard reopen storm, closed the same way
-as OpenGate), three-way probe classification (`Ok(None)` is staleness;
-`Err` is an error that must NOT evict the healthy reader), explicit
-closes on the SlateDB runtime with a counted lifecycle, and configurable
-capacity. Scenarios: 64-cold→1 open (≥63 coalesced); 64-stale→1 probe,
-1 reopen, 1 open; all-callers-cancel→the open still lands and the next
-read hits; probe-error retention; measured hot-set bounds (fits: N opens
-total; thrash at cap<set: bounded by reads, asserted to actually thrash
-so the eviction policy can't drift silently); two independent nodes over
-two stores (same hash) each reading their OWN store; eviction closes run
-to completion. A finding pinned along the way: a transient STORE outage
-cannot surface as a probe `Err` at all — SlateDB retries reads
-internally — so the reachable probe-error class is data/transform
-errors, and that is what the scenario injects. Also added the I6
-composite review #3 asked for: durable commit, response lost to a client
+**M0.3 — the reader cache became a service.** *Done, then retired:* the
+history DbReader cache it made single-flight went with the history tier
+in layout 6. It also added the I6 composite review #3 asked for: durable commit, response lost to a client
 deadline, handoff, identical-bytes retry → duplicate at the recovered
 original offset, exactly one copy across both owners' tenures.
 
@@ -633,15 +608,15 @@ retry from the committed cursor with every record decoded exactly once
 
 **M1 — deterministic substrate.** `src/lib.rs`; injected clock, entropy,
 task ownership, CPU execution and process metrics; a seeded current-thread
-runtime everywhere *including* the absorber path; named per-actor random
+runtime everywhere *including* the sealer's flushes; named per-actor random
 substreams; event traces and state hashes.
 *Acceptance: replaying one serialised scenario 100 times on one commit
 yields an identical event-trace hash and final-state hash.*
 
 **M2 — complete single-node data plane.** Registry, create/delete/
-recreate, absorber, history, trim, GC, restarts, tails, key rotation,
+recreate, sealer, segment objects, GC, restarts, tails, key rotation,
 profile behaviour.
-*Acceptance: I1–I7 and the tiering invariants hold under process crashes
+*Acceptance: I1–I7 and the sealing invariants hold under process crashes
 and every supported object-store fault class.*
 
 **M3 — multi-node control plane.** Several `AppState` instances, router

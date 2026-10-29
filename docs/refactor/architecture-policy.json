@@ -36,13 +36,6 @@
       "finding": "R07/R15/R16",
       "rationale": "The route match now transports explicit verified account/capability/deployment contexts and delegates typed consumer/watch operations; it performs no owner workflow.",
       "source_obligation": "No-body-poll and cross-tenant admission matrix; product consumer/watch protocol tests"
-    },
-    "function:src/shard.rs::start": {
-      "limit": 399,
-      "owner": "Shard actor startup",
-      "finding": "R03/R10",
-      "rationale": "The shared runtime maintenance controller and typed transaction publication are explicitly constructed at engine startup. Resolve explicit usage and ops capabilities once per engine; no added per-append scan or policy duplication.",
-      "source_obligation": "Two-runtime isolation and committer startup/readiness tests; runtime isolation and active-controller cancellation regressions"
     }
   },
   "transport_rationales": {

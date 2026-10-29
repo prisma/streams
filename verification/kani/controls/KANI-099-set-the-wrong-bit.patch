@@ -1,0 +1,12 @@
+diff --git a/src/spill/directory/row.rs b/src/spill/directory/row.rs
+--- a/src/spill/directory/row.rs
++++ b/src/spill/directory/row.rs
+@@ -68,7 +68,7 @@
+ pub(super) fn set_probe_bits(bloom: &mut [u8], probes: impl Iterator<Item = usize>) {
+     for bit in probes {
+         if let Some(byte) = bloom.get_mut(bit / 8) {
+-            *byte |= 1 << (bit % 8);
++            *byte |= 1 << ((bit + 1) % 8);
+         }
+     }
+ }

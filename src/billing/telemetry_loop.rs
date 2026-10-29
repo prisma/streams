@@ -268,13 +268,9 @@ mod emission_tests {
     use crate::runtime::{Clock, ManualClock};
     use std::time::Duration;
 
-    /// A collected snapshot with the two peak gauges and the plain RSS gauge.
-    fn collected(rss_peak: u64, flush_wait: u64) -> crate::ops::OpsSnapshot {
-        let gauges = [
-            ("rss_peak_since_scrape_mb", rss_peak),
-            ("history_flush_wait_ms_max", flush_wait),
-            ("rss_mb", rss_peak),
-        ];
+    /// A collected snapshot with the peak RSS gauge and the plain RSS gauge.
+    fn collected(rss_peak: u64, rss: u64) -> crate::ops::OpsSnapshot {
+        let gauges = [("rss_peak_since_scrape_mb", rss_peak), ("rss_mb", rss)];
         crate::ops::OpsSnapshot {
             v: 1,
             ts_ms: 0,
@@ -330,20 +326,16 @@ mod emission_tests {
     }
 
     /// One round 16 s after the last: what it took the snapshot for, and the
-    /// snapshot's peak RSS, peak flush wait and RSS gauges.
+    /// snapshot's peak RSS and RSS gauges.
     fn round(
         emission: &mut MetricsEmission,
         clock: &ManualClock,
         snapshot: crate::ops::OpsSnapshot,
-    ) -> (Due, [u64; 3]) {
+    ) -> (Due, [u64; 2]) {
         let (taken, due) = emission.take(clock.monotonic(), || snapshot).unwrap();
         clock.advance_monotonic(Duration::from_secs(16));
         let gauge = |name: &str| taken.gauges[name];
-        let names = [
-            "rss_peak_since_scrape_mb",
-            "history_flush_wait_ms_max",
-            "rss_mb",
-        ];
+        let names = ["rss_peak_since_scrape_mb", "rss_mb"];
         (due, names.map(gauge))
     }
 
@@ -357,22 +349,25 @@ mod emission_tests {
         let clock = ManualClock::at(0);
         let mut emission = MetricsEmission::new(Duration::from_secs(60));
         let mut rounds = Vec::new();
-        for (rss_peak, flush_wait) in [(100, 1), (700, 2), (300, 9), (200, 4), (150, 3), (120, 5)] {
-            rounds.push(round(
-                &mut emission,
-                &clock,
-                collected(rss_peak, flush_wait),
-            ));
+        for (rss_peak, rss) in [
+            (100, 90),
+            (700, 650),
+            (300, 280),
+            (200, 190),
+            (150, 140),
+            (120, 110),
+        ] {
+            rounds.push(round(&mut emission, &clock, collected(rss_peak, rss)));
         }
         assert_eq!(
             rounds,
             [
-                (Due::Point, [100, 1, 100]),
-                (Due::Alerts, [700, 2, 700]),
-                (Due::Alerts, [700, 9, 300]),
-                (Due::Alerts, [700, 9, 200]),
-                (Due::Point, [700, 9, 150]),
-                (Due::Alerts, [120, 5, 120]),
+                (Due::Point, [100, 90]),
+                (Due::Alerts, [700, 650]),
+                (Due::Alerts, [700, 280]),
+                (Due::Alerts, [700, 190]),
+                (Due::Point, [700, 140]),
+                (Due::Alerts, [120, 110]),
             ]
         );
     }

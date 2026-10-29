@@ -90,7 +90,7 @@ since 2026-09-29 (edge record #80).
 
 | prefix | holds | note |
 |---|---|---|
-| `shards/<id>/` | shard logs (`wal`, `manifest`, `compacted`) and, under `shards/<id>/history2/`, that shard's history tier | the log is the hot, ack-critical path (RUNBOOK §3.2); the history tier is large, cold and read-heavy, and lives inside the shard's prefix so that it travels with the shard |
+| `shards/<id>/` | shard logs (`wal`, `manifest`, `compacted`) and, under `shards/<id>/hseg/`, that shard's segment objects (one per seal) | the log is the hot, ack-critical path (RUNBOOK §3.2); the segment objects are large, immutable, cold and read-heavy, and live inside the shard's prefix so that they travel with the shard |
 | `registry/` | the stream registry | one JSON descriptor per stream, under `registry/v4/projects/` |
 | `fleet/`, `routers/`, topology | fleet metadata | tiny, high-frequency |
 
@@ -142,12 +142,9 @@ ROLLUP=1                            # exactly one instance per cell
 # restores the pre-review posture under last-one-wins env application
 # (that exact failure shipped twice). Topology settings such as
 # INITIAL_SHARDS stay campaign-specific and live in this file.
-# Under the 1-GiB profile EVERY gather reserves the worst-frame floor,
-# so effective gather concurrency is ONE; the startup budget summary
-# prints configured slots vs effective concurrency.
 # ROLLUP placement: on multi-instance cells, ROLLUP=1 goes on a
-# designated NON-INGEST instance (it must not compete with history
-# compaction on an ingestion VM); a single-instance cell accepts the
+# designated NON-INGEST instance (it must not compete with shard
+# compaction and sealing on an ingestion VM); a single-instance cell accepts the
 # co-location under the profile's bounds.
 
 # --- engine (1 GB discipline, RUNBOOK 3.2/3.3)
@@ -161,10 +158,7 @@ WAL_POST_ACK_GATHER_MS=6
 MANIFEST_POLL_MS=1000
 COMPACTOR_POLL_MS=500
 COMPACTOR_MAX_CONCURRENT=2
-ABSORB_BYTES=4194304
-ABSORB_AGE_SECS=60
-TRIM_PER_OP=65536
-TRIM_GLOBAL_BUDGET=65536            # global per-commit trim-delete cap; TRIM_PER_OP is per-stream within it
+# the sealer has no settings (RUNBOOK 3.2, "The sealer")
 
 # --- admission (ON in production, RUNBOOK 3.6)
 ADMIT_MAX_INFLIGHT=512
@@ -197,7 +191,6 @@ SCALE_IN_SECS=60
 
 # --- NOT set in staging
 # KEEP_AWAKE      : leave unset so idle instances sleep and stop billing
-# SCALE_FAULT_POINT / ABSORB_PAUSE : test-only hooks, must never be set
 ```
 
 `KEEP_AWAKE` deserves emphasis: it bills continuously. It goes on only for
@@ -248,8 +241,8 @@ documented in docs/SCALING.md §9 "Known v1 limitations":
   deletion do not yet reclaim a deleted incarnation's stored rows (an open
   service obligation in docs/READINESS.md), so bucket bytes still grow.
 - **GC.** WAL objects reaped every 30 s once 60 s old (fixed, RUNBOOK
-  §3.2); history SSTs retired by
-  compaction. Watch bucket size weekly (§8); unbounded growth is the
+  §3.2); SSTs retired by compaction; segment objects are not reclaimed
+  yet. Watch bucket size weekly (§8); unbounded growth is the
   cheapest early signal that something is wrong.
 - **Backup.** None (see B6). The tester agreement says so.
 - **Reset procedure.** A new `PATH_PREFIX` is a new universe: instant,
@@ -272,7 +265,7 @@ and OPERATIONS.md §5 SLOs):
 | durable-ack p99 | > 250 ms sustained 15 min | also the scale-out trigger |
 | RSS | any instance > 650 MB | kill line ~750; shed starts at 600 |
 | `timer_tokio` p99 | > 100 ms | the O14a blocking-work regression alarm — this is how we caught the SlateDB encode stall |
-| absorber lag | > 60 s sustained | the rebalance signal; sustained means the fleet cannot keep up |
+| maintenance lag (`absorb_lag_max_secs` in the heartbeat: the longest sealer stall) | > 60 s sustained | the rebalance signal; sustained means the fleet cannot keep up |
 | fence events | rate ≫ shard-move rate | routing flap |
 | bucket size | week-over-week growth > forecast | GC/retention not working |
 | cost | daily spend > budget | `KEEP_AWAKE` left on is the classic cause |

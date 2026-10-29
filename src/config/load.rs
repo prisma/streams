@@ -25,8 +25,6 @@ impl ServerConfig {
         self.overlay_storage(env);
         self.overlay_engine(env);
         self.overlay_shard_runtime(env);
-        self.overlay_history(env);
-        self.overlay_postings(env);
         self.overlay_sse(env);
         self.overlay_http(env);
         self.overlay_billing_telemetry_rollup(env);
@@ -79,27 +77,6 @@ impl ServerConfig {
         }
         if let Some(v) = env_parse(env, "UNREADY_EXIT_AFTER_SECS") {
             self.shard.unready_exit_after_secs = v;
-        }
-    }
-
-    fn overlay_history(&mut self, env: &dyn Environment) {
-        if env.get("ABSORB_PAUSE").as_deref() == Some("1") {
-            self.history.absorb_pause_initial = true;
-        }
-        if let Some(v) = env_parse(env, "ABSORB_GLOBAL_BUDGET_BYTES") {
-            self.history.absorb_global_budget_bytes = v;
-        }
-        if let Some(v) = env_parse::<usize>(env, "ABSORB_GLOBAL_GATHERS") {
-            self.history.absorb_global_gathers = v.max(1);
-        }
-        if let Some(v) = env_parse(env, "HISTORY_CACHE_BYTES") {
-            self.history.cache_bytes = v;
-        }
-    }
-
-    fn overlay_postings(&mut self, env: &dyn Environment) {
-        if let Some(v) = env_parse(env, "POSTINGS_CACHE_BYTES") {
-            self.postings.cache_bytes = v;
         }
     }
 

@@ -565,102 +565,102 @@ Every scenario MUST declare mechanism counters and MUST fail as invalid if the m
 
 ---
 
-# F. History, postings, caches, trim, and GC
+# F. Sealing, sealed reads, the seal directory, and GC
 
-### HIS-001 — Acknowledged data survives absorption
+### HIS-001 — Acknowledged data survives sealing
 **Status:** Existing  
-**Procedure:** append, absorb, trim, merged read exact.  
+**Procedure:** append, seal (object PUT, directory publish, seal commit, remainder put), merged read (ring, sealed chunks, unsealed pages) exact.  
 **Invariants:** H1, H2.
 
-### HIS-002 — V2 absorption needs no customer key
+### HIS-002 — Sealing needs no customer key
 **Status:** Existing  
-**Procedure:** key cache empty/restarted; copy encrypted frames into history.  
+**Procedure:** key cache empty/restarted; the seal copies the encrypted pages into the segment object byte for byte without decrypting, and a read with the key opens them exactly.  
 **Invariants:** H3.
 
-### HIS-003 — History survives owner handoff
+### HIS-003 — Sealed data survives owner handoff
 **Status:** Existing  
-**Procedure:** absorb on A, fence, read/continue on B.  
+**Procedure:** seal on A, fence, new owner B rebuilds the directory from the `'K'` rows and reads/continues the stream exactly.  
 **Invariants:** H1, T11.
 
-### HIS-004 — Aggregate gather byte bound
+### HIS-004 — Seal object byte budget
 **Status:** Existing  
-**Procedure:** many streams/large frames; one batch stays within budget except explicit one-item oversized allowance.  
+**Procedure:** many streams/large pages; one seal's object stays within its 64 MiB page budget, a stream larger than what is left contributing a prefix of its pages.  
 **Invariants:** H5, R2.
 
-### HIS-005 — Oversized chunk makes progress alone
+### HIS-005 — Oversized stream makes progress alone
 **Status:** Existing  
-**Procedure:** first frame exceeds budget; process alone, no starvation.  
+**Procedure:** the first stream's pages exceed the object budget; the seal takes at least one page of it, no starvation, and the rest seals at the next evaluation.  
 **Invariants:** H5, H9.
 
 ### HIS-006 — Budget-deferred streams remain pending
 **Status:** Existing  
-**Procedure:** disable sweep, force budget skip, next tick absorbs without new signal.  
+**Procedure:** more streams than one seal's 1,024-stream budget, or a seal cut short by its byte budget; the next seal follows at once (`Trigger::Deferred`) without a new append or read.  
 **Invariants:** H6.
 
-### HIS-007 — Dirty restart discovery without touch
+### HIS-007 — Restart loads unsealed streams without touch
 **Status:** Existing  
-**Procedure:** append, crash before absorption, new owner, zero customer requests, absorb and clear marker.  
+**Procedure:** append, crash before sealing, new owner, zero customer requests; the sealer's open loads every stream whose tail holds unsealed pages and seals them.  
 **Invariants:** H7.
 
 ### HIS-008 — Large single record restart accounting
 **Status:** Existing  
-**Procedure:** one large frame under production policy; marker bytes make it eligible.  
+**Procedure:** one large page under the default triggers; after restart the tail's unsealed bytes make it count toward the unsealed-bytes trigger, and it seals.  
 **Invariants:** H7, H9.
 
-### HIS-009 — Dirty scan retries after failure
+### HIS-009 — Sealer open retries after failure
 **Status:** Existing  
-**Procedure:** first scans fail/truncate, later succeeds, untouched streams converge.  
+**Procedure:** the first opens fail (injected open fault or store error), a later one succeeds; sealed reads wait for it and untouched unsealed streams converge.  
 **Invariants:** H8.
 
-### HIS-010 — Sparse intentional deferral remains visible
+### HIS-010 — Small unsealed backlog seals by age
 **Status:** Existing  
-**Procedure:** tiny sparse record stays deferred and counted after restart.  
+**Procedure:** a tiny record on an otherwise idle shard stays unsealed and counted after restart until the age trigger (45 s) or the idle release seals it.  
 **Invariants:** H7, H15.
 
-### HIS-011 — Pending summary clears on close/move
+### HIS-011 — Stall report clears on close/move
 **Status:** Existing  
-**Procedure:** ownership loss removes old owner summary; new owner alone reports backlog.  
+**Procedure:** a lagging owner's shard moves away; the old owner closes it and its stall report goes with it (stalls derive from the engines it still serves), so the new owner alone reports backlog.  
 **Invariants:** H15.
 
-### HIS-012 — Global trim budget on mature second wave
+### HIS-012 — Seal streams budget on a mature second wave
 **Status:** Existing  
-**Procedure:** 1,024 mature streams with old safe prefixes receive new data; no commit builds millions of tombstones, eventual trim converges.  
+**Procedure:** 1,024 mature streams with sealed prefixes receive new data; seals take them under the streams budget in turn, each seal commit puts one remainder per stream (no page row or tombstone), and the backlog converges.  
 **Invariants:** H4, H5.
 
-### HIS-013 — Duplicate absorbed update does not advance trim
+### HIS-013 — Remainder put reflects the live stream
 **Status:** Existing  
-**Procedure:** repeat boundary; trim remains based on previous safe boundary.  
+**Procedure:** an append commits between a seal's snapshot and its commit; the remainder the committer puts holds every page above the new boundary, the appended one included.  
 **Invariants:** H4.
 
-### HIS-014 — History partition close race
+### HIS-014 — Sealer and engine close race
 **Status:** Existing/strengthen  
-**Procedure:** engine closes while partition OnceCell open is in progress; late DB closes and cannot survive old engine.  
+**Procedure:** the engine closes or is fenced while the sealer's open or a seal is in progress; the sealer and deadline loops exit, and no sealer task outlives the old engine.  
 **Invariants:** R1, H13.
 
-### HIS-015 — Empty-root shard history path
+### HIS-015 — Empty-root shard segment-object path
 **Status:** L1-now  
-**Procedure:** one-shard topology with empty prefix; history path normalized and readable.  
-**Catches:** `/history2` path drift.  
+**Procedure:** one-shard topology with empty prefix; segment objects are written under the normalized `shards/<prefix>/hseg/<epoch>/<seq>` path and read back.  
+**Catches:** segment-object path drift.  
 **Invariants:** H1.
 
-### HIS-016 — Postings storage ratio
+### HIS-016 — Segment-object storage ratio
 **Status:** Existing campaign/property  
-**Procedure:** incompressible b1/b10 workload; postings/canonical and total bytes within gates.  
+**Procedure:** incompressible b1/b10 workload; object bytes over sealed page bytes, remainder bytes and total bytes within gates.  
 **Invariants:** R8.
 
-### HIS-017 — Sparse postings bounded spans
+### HIS-017 — Sparse key reads cost bounded GETs
 **Status:** Existing  
-**Procedure:** fragmented key; planner emits ≤8 spans and bounded scan bytes.  
+**Procedure:** fragmented key across many chunks; a keyed read skips excluded chunks without a GET and issues at most one ranged GET per fetched chunk, at most 8 in flight and 256 per read.  
 **Invariants:** H10.
 
-### HIS-018 — Hard amplification bound
+### HIS-018 — Hard read amplification bound
 **Status:** L1-now  
-**Procedure:** tiny matches separated by 1–64 KiB gaps; planner never exceeds configured amplification.  
+**Procedure:** tiny matches in large chunks; a ranged GET starts at the last 256 KiB anchor at or before the offset and stops at the first anchor past the window or byte budget, so fetched bytes exceed the window by at most about one anchor span at each end.  
 **Invariants:** H10.
 
-### HIS-019 — Corrupt postings fallback
+### HIS-019 — Corrupt or missing sealed chunk
 **Status:** Existing  
-**Procedure:** corrupt/missing page; canonical envelope scan, exact frames, honest incomplete/error.  
+**Procedure:** corrupt a chunk, remove a segment object, remove a directory entry; the read fails as corruption, as a retryable error, or ends short as an honest partial, never a complete result.  
 **Invariants:** H11.
 
 ### HIS-020 — Large keyed record pages through
@@ -673,34 +673,34 @@ Every scenario MUST declare mechanism counters and MUST fail as invalid if the m
 **Procedure:** run exceeds scan budget; partial pages advance consumed cursor without loops.  
 **Invariants:** H9, H10.
 
-### HIS-022 — Reader cache cold stampede
+### HIS-022 — Sealed reads before the sealer's open
 **Status:** Existing  
-**Procedure:** 64 callers, one open, ≥63 coalesced.  
+**Procedure:** 64 sealed reads arrive while the sealer's open is in progress; all wait for the one open, none serves from a partial directory.  
 **Invariants:** H12.
 
-### HIS-023 — Reader cache stale stampede
+### HIS-023 — Directory rebuilt at open
 **Status:** Existing  
-**Procedure:** one probe, one reopen, all callers correct.  
+**Procedure:** restart; the directory rebuilt from the `'K'` rows holds exactly the chunks the seals published, and every caller reads exactly.  
 **Invariants:** H12.
 
-### HIS-024 — All callers cancel, open still lands
+### HIS-024 — All readers cancel, the open still lands
 **Status:** Existing  
-**Procedure:** cancel every waiter; cache-owned open completes; next read hits.  
+**Procedure:** cancel every read waiting for the sealer's open; the open completes and the next read is served from the directory.  
 **Invariants:** H12.
 
-### HIS-025 — Probe error does not evict healthy reader
+### HIS-025 — Read error does not disturb the directory
 **Status:** Existing  
-**Procedure:** deterministic transform/data error, not transient store retry; retain cached reader.  
+**Procedure:** a deterministic corruption or 404 on one sealed-range GET fails that read only; the directory and other streams' reads are unaffected.  
 **Invariants:** H12.
 
-### HIS-026 — Independent node/store caches
+### HIS-026 — Independent node/store directories
 **Status:** Existing  
-**Procedure:** same hash/key on two stores; each node reads own data.  
+**Procedure:** same hash/key on two stores; each node reads its own directory and segment objects.  
 **Invariants:** H12.
 
-### HIS-027 — Process-wide postings cache budget
+### HIS-027 — Process-wide unsealed and directory memory
 **Status:** L2-sim/performance  
-**Procedure:** many shard engines, one million keys/100 active; cache stays within one process budget and warm active hit rate gate.  
+**Procedure:** many shard engines, one million keys/100 active; directory entries and handles held for unsealed pages stay within one process budget.  
 **Invariants:** H12, R2.
 
 ### HIS-028 — GC cached inventory cannot suppress work
@@ -920,17 +920,17 @@ Every scenario MUST declare mechanism counters and MUST fail as invalid if the m
 **Procedure:** route cache several versions stale; ≤ configured replay hops, no duplicate dispatch commit.  
 **Invariants:** T10.
 
-### FLT-006 — Ownership handoff with unabsorbed data
+### FLT-006 — Ownership handoff with unsealed data
 **Status:** L2-sim  
-**Procedure:** crash owner, no customer touch to selected stream; new owner discovers dirty marker and drains.  
+**Procedure:** crash owner, no customer touch to selected stream; new owner's sealer open loads the stream from its tail and pending row and seals it.  
 **Invariants:** H7, T11.
 
 ### FLT-007 — Old owner tasks terminate after movement
 **Status:** Existing/L2  
-**Procedure:** committer, pump, acker, flush ticker, absorber, history DB all exit/join.  
+**Procedure:** committer, pump, acker, sealer and deadline loops all exit/join.  
 **Invariants:** R1.
 
-### FLT-008 — Pending summaries do not double count after move
+### FLT-008 — Backlog reports do not double count after move
 **Status:** Existing/L2  
 **Procedure:** old row clears; new owner reports one backlog.  
 **Invariants:** H15.
@@ -967,7 +967,7 @@ Every scenario MUST declare mechanism counters and MUST fail as invalid if the m
 
 ### FLT-015 — Heal phase convergence
 **Status:** L2-sim  
-**Procedure:** fault-heavy multi-node phase, heal one viable core, require all lifecycle/topology/history/debt measures converge.  
+**Procedure:** fault-heavy multi-node phase, heal one viable core, require all lifecycle/topology/sealer/debt measures converge.  
 **Invariants:** all liveness families.
 
 ---
@@ -981,7 +981,7 @@ Every scenario MUST declare mechanism counters and MUST fail as invalid if the m
 
 ### RES-002 — Handle eviction preserves safety state
 **Status:** Existing/strengthen  
-**Procedure:** dirty markers, fences, producer state, consumer state survive or remain reconstructible.  
+**Procedure:** fences, producer state, consumer state survive or remain reconstructible; a handle holding unsealed pages is never evicted.  
 **Invariants:** R3, R4.
 
 ### RES-003 — 65,536 tracking overflow is fail-closed
@@ -1024,19 +1024,19 @@ Every scenario MUST declare mechanism counters and MUST fail as invalid if the m
 **Procedure:** 30 virtual minutes; LIST count within gate, WAL listing policy explicit.  
 **Invariants:** H14, R8.
 
-### COST-003 — Shared history cardinality slope
+### COST-003 — Sealing cardinality slope
 **Status:** Existing campaign  
-**Procedure:** same bytes across 10, 1k, 100k streams; history Class A nearly flat.  
+**Procedure:** same bytes across 10, 1k, 100k streams; segment-object PUTs and Class A nearly flat (one object per seal, up to 1,024 streams each).  
 **Invariants:** R8.
 
-### COST-004 — Routing-key postings do not shift cost to GETs
+### COST-004 — Routing-key reads do not shift cost to GETs
 **Status:** Existing/strengthen  
-**Procedure:** covering/postings equivalent workload; total Class A unchanged, spans/amplification bounded, warm cache hit.  
+**Procedure:** keyed and unfiltered reads of the same sealed range; total Class A unchanged, one ranged GET per fetched chunk, excluded chunks skipped by key summary without a GET, amplification bounded.  
 **Invariants:** H10, R8.
 
 ### COST-005 — Cache stampede request budget
 **Status:** Existing  
-**Procedure:** 64 callers cause one reader/open/index load.  
+**Procedure:** 64 callers cause one source read and one open.  
 **Invariants:** H12, R8.
 
 ### COST-006 — Sparse L0 timer/recovery budget

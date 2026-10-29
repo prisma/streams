@@ -387,6 +387,26 @@ impl ShardDirectory {
             .collect()
     }
 
+    /// Each serving engine's maintenance stall (layout 6): seconds since
+    /// its sealer last retired unsealed bytes while some are held, by shard
+    /// prefix. The rebalancer moves the most stalled shard first.
+    pub(crate) fn shard_stalls(&self) -> Vec<(String, u64)> {
+        let now = crate::shard::now_ms();
+        self.engines_by_prefix()
+            .into_iter()
+            .map(|(prefix, engine)| (prefix, engine.maintenance_snapshot().no_progress_secs(now)))
+            .collect()
+    }
+
+    /// The largest maintenance stall of the serving engines.
+    pub(crate) fn stall_max_secs(&self) -> u64 {
+        self.shard_stalls()
+            .into_iter()
+            .map(|(_, secs)| secs)
+            .max()
+            .unwrap_or(0)
+    }
+
     #[expect(
         clippy::unwrap_used,
         reason = "ShardDirectory::engines_by_prefix; a poisoned serving map may hold a partially inserted or removed resident; recovering it could route requests to an engine that was never installed or was already retired"

@@ -75,7 +75,7 @@ pub(crate) struct AdmissionKnobs {
 pub(crate) enum WriteRefusal {
     /// Over the ordinary in-flight cap.
     Overloaded,
-    /// Sampled RSS plus reserved absorber bytes is over the shed line.
+    /// Sampled RSS is over the shed line.
     MemoryPressure,
 }
 
@@ -388,12 +388,11 @@ impl AdmissionController {
         Ok(())
     }
 
-    /// The RSS write-shed (R25-E): sampled RSS PLUS `reserved_bytes` (the
-    /// absorber's reservation) against the shed line, so the line moves
-    /// BEFORE the memory does. A served request fair shedding spares
-    /// (`fair_shed`) passes up to an eighth over the line.
-    pub(crate) fn admit_write_memory(&self, reserved_bytes: u64) -> Result<(), WriteRefusal> {
-        if let Some((pressure, line)) = self.over_shed_line(reserved_bytes)
+    /// The RSS write-shed (R25-E): sampled RSS against the shed line. A
+    /// served request fair shedding spares (`fair_shed`) passes up to an
+    /// eighth over the line.
+    pub(crate) fn admit_write_memory(&self) -> Result<(), WriteRefusal> {
+        if let Some((pressure, line)) = self.over_shed_line()
             && (pressure > fair_shed::rss_hard_line(line)
                 || park::verdict() != Some(fair_shed::Verdict::Spared))
         {
@@ -411,8 +410,8 @@ impl AdmissionController {
     /// eighth over the shed line, whatever fair shedding makes of it,
     /// because refusing it turns each lease into a redelivery that feeds the
     /// overload. Counted as the RSS shed when it refuses.
-    pub(crate) fn admit_lease_ending_write(&self, reserved_bytes: u64) -> Result<(), WriteRefusal> {
-        if let Some((pressure, line)) = self.over_shed_line(reserved_bytes)
+    pub(crate) fn admit_lease_ending_write(&self) -> Result<(), WriteRefusal> {
+        if let Some((pressure, line)) = self.over_shed_line()
             && pressure > fair_shed::rss_hard_line(line)
         {
             self.inner.shed_total.fetch_add(1, Ordering::Relaxed);
@@ -424,13 +423,13 @@ impl AdmissionController {
 
     /// Fair shedding: whether a served request its project's verdict blames
     /// is refused, and for which pressure (counted when it is): sampled RSS
-    /// plus `reserved_bytes` over the shed line first, then the active
-    /// requests over the in-flight cap.
-    pub(crate) fn shed_blamed(&self, reserved_bytes: u64) -> Option<WriteRefusal> {
+    /// over the shed line first, then the active requests over the
+    /// in-flight cap.
+    pub(crate) fn shed_blamed(&self) -> Option<WriteRefusal> {
         if park::verdict() != Some(fair_shed::Verdict::Blamed) {
             return None;
         }
-        if self.over_shed_line(reserved_bytes).is_some() {
+        if self.over_shed_line().is_some() {
             self.inner.shed_blamed.fetch_add(1, Ordering::Relaxed);
             return Some(WriteRefusal::MemoryPressure);
         }
@@ -449,11 +448,11 @@ impl AdmissionController {
         (cap > 0 && active > cap).then_some((active, cap))
     }
 
-    /// The pressure (sampled RSS plus `reserved_bytes`, MiB) and the line,
-    /// when a shed line is set and the pressure is over it.
-    fn over_shed_line(&self, reserved_bytes: u64) -> Option<(u64, u64)> {
+    /// The pressure (sampled RSS, MiB) and the line, when a shed line is
+    /// set and the pressure is over it.
+    fn over_shed_line(&self) -> Option<(u64, u64)> {
         let line = self.rss_shed_mb();
-        let pressure = crate::history::memory_pressure_mb(self.rss_mb(), reserved_bytes);
+        let pressure = self.rss_mb();
         (line > 0 && pressure > line).then_some((pressure, line))
     }
 
@@ -848,22 +847,22 @@ mod tests {
         assert!(c.park().is_none(), "a rig sizes the pool");
     }
 
-    /// The RSS gate reads sampled RSS PLUS the reserved bytes against the
-    /// line; 0 = off.
+    /// The RSS gate reads sampled RSS against the line; 0 = off.
     #[test]
-    fn rss_gate_counts_reserved_bytes() {
+    fn rss_gate_reads_sampled_rss_against_the_line() {
         let c = ctl(0, 0, 100, 0);
-        c.record_rss_mb(90);
-        assert_eq!(c.admit_write_memory(0), Ok(()));
+        c.record_rss_mb(100);
+        assert_eq!(c.admit_write_memory(), Ok(()), "at the line");
+        c.record_rss_mb(101);
         assert_eq!(
-            c.admit_write_memory(20 * 1024 * 1024),
+            c.admit_write_memory(),
             Err(WriteRefusal::MemoryPressure),
-            "90 MiB sampled + 20 MiB reserved crosses the 100 MiB line"
+            "101 MiB sampled crosses the 100 MiB line"
         );
         assert_eq!(c.snapshot().shed.rss, 1);
         let off = ctl(0, 0, 0, 0);
         off.record_rss_mb(10_000);
-        assert_eq!(off.admit_write_memory(u64::MAX / 4), Ok(()));
+        assert_eq!(off.admit_write_memory(), Ok(()));
     }
 
     /// Per-stream slots: bounded per stream, released at zero, untracked

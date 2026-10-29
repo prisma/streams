@@ -155,14 +155,12 @@ pub(crate) struct RuntimeCaps {
     pub audit: Arc<crate::audit::AuditJournal>,
     pub scaler: Arc<crate::scaler3::Scaler>,
     pub usage: Arc<crate::usage::UsageService>,
-    pub history: Arc<crate::history::HistoryResources>,
-    pub postings: Arc<crate::postings_cache::PostingsCache>,
     pub telemetry: Arc<TelemetryResources>,
     /// §1.1: one block cache for every shard database of this runtime, not
     /// one per database (SlateDB's default is 512 MB per database: a
     /// 16-shard 1 GB instance dies by cache fill, the run 6/8 zombie
-    /// generator). The idle release empties it with the history and
-    /// telemetry caches.
+    /// generator). The idle release empties it with the telemetry
+    /// cache.
     pub shared_cache: Arc<BlockCache>,
     /// What the fork-debt reconciler last published (ops gauges).
     pub fork_debt: Arc<crate::application::creation::ForkDebtStatus>,
@@ -175,7 +173,6 @@ impl fmt::Debug for RuntimeCaps {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RuntimeCaps")
             .field("identity", &self.identity)
-            .field("history", &self.history)
             .finish_non_exhaustive()
     }
 }
@@ -192,12 +189,6 @@ impl RuntimeCaps {
             &config.admission,
             self.clock.clone(),
         ));
-        self.history = Arc::new(crate::history::HistoryResources::with_body_limit(
-            &config.history,
-            config.cli.absorb_gather_max_bytes,
-            config.cli.max_request_body_bytes,
-        ));
-        self.postings = crate::postings_cache::PostingsCache::new(config.postings.cache_bytes);
         self.telemetry = Arc::new(TelemetryResources::new(
             config.billing.telemetry_cache_bytes,
         ));
@@ -247,13 +238,6 @@ impl RuntimeCaps {
             )),
             ops: Arc::new(crate::ops::OpsService::new()),
             audit: Arc::new(crate::audit::AuditJournal::new()),
-            history: Arc::new(crate::history::HistoryResources::new(
-                &crate::config::HistoryConfig::default(),
-                usize::MAX,
-            )),
-            postings: crate::postings_cache::PostingsCache::new(
-                crate::postings_cache::POSTINGS_CACHE_BYTES,
-            ),
             telemetry: Arc::new(TelemetryResources::new(
                 crate::config::BillingConfig::default().telemetry_cache_bytes,
             )),
@@ -424,73 +408,6 @@ impl Entropy for SeededEntropy {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn configured_resources_are_shared_only_within_their_runtime_and_release() {
-        let config = |bytes, slots| {
-            let mut cfg = crate::config::ServerConfig::load(
-                crate::config::CliArgs::deterministic(),
-                &crate::config::MapEnvironment::empty(),
-            );
-            cfg.history.absorb_global_budget_bytes = bytes;
-            cfg.history.absorb_global_gathers = slots;
-            cfg
-        };
-        let clock = Arc::new(ManualClock::at(1000));
-        let a = RuntimeCaps::with(clock.clone(), Arc::new(SeededEntropy::seeded(1)), "a")
-            .with_config(&config(256 * 1024 * 1024, 2));
-        let b = RuntimeCaps::with(clock, Arc::new(SeededEntropy::seeded(2)), "b")
-            .with_config(&config(512 * 1024 * 1024, 4));
-        assert_eq!(a.history.budget.capacity(), 256 * 1024 * 1024);
-        assert_eq!(b.history.budget.capacity(), 512 * 1024 * 1024);
-        assert_eq!(a.history.budget.gather_slots(), 2);
-        assert_eq!(b.history.budget.gather_slots(), 4);
-        assert!(!Arc::ptr_eq(&a.history.cache, &b.history.cache));
-        assert!(!Arc::ptr_eq(&a.postings, &b.postings));
-        a.history
-            .paused
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        assert!(!b.history.paused.load(std::sync::atomic::Ordering::Relaxed));
-        let engine_handle = a.history.clone();
-        let r1 = a.history.budget.reserve(60).await;
-        let r2 = engine_handle.budget.reserve(100).await;
-        assert_eq!(a.history.budget.reserved_bytes(), 160);
-        assert_eq!(b.history.budget.reserved_bytes(), 0);
-        drop((r1, r2));
-        assert_eq!(engine_handle.budget.reserved_bytes(), 0);
-        let history = Arc::downgrade(&a.history);
-        let postings = Arc::downgrade(&a.postings);
-        drop(engine_handle);
-        drop(a);
-        assert!(history.upgrade().is_none());
-        assert!(postings.upgrade().is_none());
-    }
-
-    #[test]
-    fn different_runtime_body_limits_size_independent_history_floors() {
-        let configured = |body_limit| {
-            let mut cfg = crate::config::ServerConfig::load(
-                crate::config::CliArgs::deterministic(),
-                &crate::config::MapEnvironment::empty(),
-            );
-            cfg.cli.max_request_body_bytes = body_limit;
-            cfg.cli.absorb_gather_max_bytes = 1;
-            cfg.history.absorb_global_budget_bytes = 0;
-            RuntimeCaps::production("body-limit-test").with_config(&cfg)
-        };
-        let small = configured(1024 * 1024);
-        let large = configured(4 * 1024 * 1024);
-        let small_floor = crate::history::worst_frame_transient_for(1024 * 1024);
-        let large_floor = crate::history::worst_frame_transient_for(4 * 1024 * 1024);
-        assert_eq!(small.history.worst_frame_transient, small_floor);
-        assert_eq!(large.history.worst_frame_transient, large_floor);
-        assert_eq!(small.history.budget.capacity(), small_floor);
-        assert_eq!(large.history.budget.capacity(), large_floor);
-        assert_eq!(small.history.per_gather_reservation_bytes(), small_floor);
-        assert_eq!(large.history.per_gather_reservation_bytes(), large_floor);
-        drop(large);
-        assert_eq!(small.history.budget.capacity(), small_floor);
-    }
 
     /// Scripted entropy: returns prescribed bytes and RECORDS every
     /// draw, so identity construction is proven by inspection rather

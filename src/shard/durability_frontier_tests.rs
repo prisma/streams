@@ -3,11 +3,12 @@ use super::{
     AppendAck, AppendErr, AppendFinish, AppendReq, CloseReq, SealFenceReq, ShardConfig,
     ShardEngine, ShardMaintenance, stored_tail, tail_key,
 };
-use crate::crypto_page::shard_page_key;
-use slatedb::{Db, config::DurabilityLevel};
+use crate::shard::seal::Trigger;
+use crate::shard::seal::test_hooks::Hold;
+use slatedb::config::{DurabilityLevel, ReadOptions};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 #[expect(
     clippy::too_many_lines,
@@ -21,7 +22,7 @@ async fn r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier() 
         crate::dst::FaultProfile::clean(),
     );
     let db = Arc::new(
-        Db::builder("r24-prior-frontier", store.clone())
+        crate::keyspace::db_builder("r24-prior-frontier", store.clone())
             .with_settings(slatedb::config::Settings {
                 flush_interval: Some(std::time::Duration::from_millis(5)),
                 ..Default::default()
@@ -30,13 +31,11 @@ async fn r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier() 
             .await
             .unwrap(),
     );
-    let (tx, _rx) = mpsc::channel(1);
     let engine = ShardEngine::start(
         "r24-prior-frontier".into(),
         db.clone(),
         store.clone(),
         ShardConfig::default(),
-        tx,
         None,
         ShardMaintenance::default(),
     );
@@ -161,7 +160,7 @@ async fn r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier() 
         .await_terminated(std::time::Duration::from_secs(5))
         .await
         .unwrap();
-    let reopened = Db::builder("r24-prior-frontier", store)
+    let reopened = crate::keyspace::db_builder("r24-prior-frontier", store)
         .build()
         .await
         .unwrap();
@@ -187,23 +186,20 @@ async fn a_seal_fence_survives_engine_replacement() {
     );
     let identity = [26; 16];
     let open = || async {
-        let db = Db::builder("fence-replacement", store.clone())
+        let db = crate::keyspace::db_builder("fence-replacement", store.clone())
             .build()
             .await
             .unwrap();
-        let (tx, _rx) = mpsc::channel(1);
-        let engine = ShardEngine::start(
+        ShardEngine::start(
             "fence-replacement".into(),
             Arc::new(db),
             store.clone(),
             ShardConfig::default(),
-            tx,
             None,
             ShardMaintenance::default(),
-        );
-        (engine, _rx)
+        )
     };
-    let (engine, _first_rx) = open().await;
+    let engine = open().await;
     let (fence_tx, fenced) = oneshot::channel();
     engine
         .try_seal_fence(SealFenceReq {
@@ -219,7 +215,7 @@ async fn a_seal_fence_survives_engine_replacement() {
         .await
         .unwrap();
 
-    let (replacement, _second_rx) = open().await;
+    let replacement = open().await;
     let close = |generation| {
         let (resp, reply) = oneshot::channel();
         replacement
@@ -247,11 +243,8 @@ async fn a_seal_fence_survives_engine_replacement() {
 }
 
 /// A shard engine at `prefix` over `store` whose WAL flushes every 5 ms.
-async fn fence_engine(
-    prefix: &str,
-    store: &Arc<crate::dst::FaultStore>,
-) -> (Arc<ShardEngine>, mpsc::Receiver<super::AbsorbSignal>) {
-    let db = Db::builder(prefix, store.clone())
+async fn fence_engine(prefix: &str, store: &Arc<crate::dst::FaultStore>) -> Arc<ShardEngine> {
+    let db = crate::keyspace::db_builder(prefix, store.clone())
         .with_settings(slatedb::config::Settings {
             flush_interval: Some(std::time::Duration::from_millis(5)),
             ..Default::default()
@@ -259,17 +252,14 @@ async fn fence_engine(
         .build()
         .await
         .unwrap();
-    let (tx, rx) = mpsc::channel(1);
-    let engine = ShardEngine::start(
+    ShardEngine::start(
         prefix.into(),
         Arc::new(db),
         store.clone(),
         ShardConfig::default(),
-        tx,
         None,
         ShardMaintenance::default(),
-    );
-    (engine, rx)
+    )
 }
 
 /// TLA-002-F2: `SealSuperseded` releases the refused handler's claim, so a
@@ -284,7 +274,7 @@ async fn a_superseded_close_waits_for_its_fence_to_be_durable() {
         2407,
         crate::dst::FaultProfile::clean(),
     );
-    let (engine, _rx) = fence_engine("fence-barrier", &store).await;
+    let engine = fence_engine("fence-barrier", &store).await;
     let identity = [27; 16];
     let engaged = store.hold_class(crate::dst::StoreOp::Put, crate::dst::ObjClass::Wal, 1);
     let commit = engine.test_hold_commit().await;
@@ -341,7 +331,7 @@ async fn a_failed_fence_group_refuses_nothing() {
         2408,
         crate::dst::FaultProfile::clean(),
     );
-    let (engine, _rx) = fence_engine("fence-lost", &store).await;
+    let engine = fence_engine("fence-lost", &store).await;
     let identity = [28; 16];
     let close = |generation| {
         let (resp, reply) = oneshot::channel();
@@ -442,7 +432,7 @@ async fn a_seal_fence_refuses_only_its_own_segment() {
         crate::dst::FaultProfile::clean(),
     );
     let (fenced, sibling, cold) = ([29; 16], [30; 16], [31; 16]);
-    let (engine, _rx) = fence_engine("fence-scoped", &store).await;
+    let engine = fence_engine("fence-scoped", &store).await;
     let (fence_tx, fence) = oneshot::channel();
     engine
         .try_seal_fence(SealFenceReq {
@@ -465,7 +455,7 @@ async fn a_seal_fence_refuses_only_its_own_segment() {
         .await
         .unwrap();
 
-    let (replacement, _second_rx) = fence_engine("fence-scoped", &store).await;
+    let replacement = fence_engine("fence-scoped", &store).await;
     let submit = |hash, finish, seal_gen| {
         let (append, reply) = seal_append(hash, finish, seal_gen);
         replacement.try_enqueue(append).unwrap();
@@ -497,14 +487,29 @@ async fn a_seal_fence_refuses_only_its_own_segment() {
         .unwrap();
 }
 
-/// Waits until `engine`'s Remote-durable `(absorbed, history_v2)` for
-/// `hash` is `expected`.
-async fn durable_absorbed_reaches(engine: &ShardEngine, hash: &[u8; 16], expected: (u64, bool)) {
+/// `hash`'s sealed boundary as the Remote-durable shard log holds it.
+async fn remote_absorbed(engine: &ShardEngine, hash: &[u8; 16]) -> u64 {
+    let options = ReadOptions {
+        durability_filter: DurabilityLevel::Remote,
+        ..Default::default()
+    };
+    let raw = engine
+        .db
+        .get_with_options(tail_key(hash), &options)
+        .await
+        .unwrap()
+        .unwrap();
+    stored_tail(&raw).unwrap().absorbed
+}
+
+/// Waits until `engine`'s Remote-durable sealed boundary for `hash` is
+/// `expected`.
+async fn durable_absorbed_reaches(engine: &ShardEngine, hash: &[u8; 16], expected: u64) {
     let mut seen = None;
     let reached = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while seen != Some(expected) {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            seen = Some(engine.durable_absorbed(hash).await.unwrap());
+            seen = Some(remote_absorbed(engine, hash).await);
         }
     })
     .await;
@@ -514,12 +519,33 @@ async fn durable_absorbed_reaches(engine: &ShardEngine, hash: &[u8; 16], expecte
     );
 }
 
+/// Appends the one-record requests `records` to `hash`, one page each.
+async fn append_records(engine: &ShardEngine, hash: [u8; 16], records: std::ops::Range<u8>) {
+    for i in records {
+        let (mut append, reply) = seal_append(hash, AppendFinish::Open, None);
+        append.entries = vec![bytes::Bytes::from(vec![i; 16 + usize::from(i)])];
+        engine.try_enqueue(append).unwrap();
+        let next = reply.await.unwrap().unwrap().next_offset;
+        assert_eq!(next, u64::from(i) + 1);
+    }
+}
+
+/// Waits (at most 10 s) until `done` holds.
+async fn until(what: &str, mut done: impl FnMut() -> bool) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !done() {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{what}"));
+}
+
 /// TLA-018-F1: a durable read observes only the Remote-durable shard log.
-/// While an absorbed advance, and the trims it enables, are applied but
-/// their WAL write is held, the applied boundary has moved, but the durable
-/// boundary still names the previous advance and a durable scan still sees
-/// the rows those trims deleted; once the write lands, the durable boundary
-/// catches up.
+/// While a seal's commit is applied but its WAL write is held, the applied
+/// boundary has moved, but the durable boundary still names the previous
+/// seal, and a durable read from 0 still serves every record exactly once;
+/// once the write lands, the durable boundary catches up.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn durable_reads_see_only_the_remote_frontier() {
     let store = crate::dst::FaultStore::new(
@@ -527,81 +553,64 @@ async fn durable_reads_see_only_the_remote_frontier() {
         2410,
         crate::dst::FaultProfile::clean(),
     );
-    let (engine, _rx) = fence_engine("durable-view", &store).await;
+    let engine = fence_engine("durable-view", &store).await;
+    engine.configure_seal(|s| s.auto = false);
+    engine.seal_ready().await.unwrap();
     let hash = [32; 16];
-    // One request per record: each record is its own page, so the trims
-    // below delete whole pages.
-    for i in 0..4u8 {
-        let (mut append, reply) = seal_append(hash, AppendFinish::Open, None);
-        append.entries = vec![bytes::Bytes::from(vec![i; 16 + usize::from(i)])];
-        engine.try_enqueue(append).unwrap();
-        let next = reply.await.unwrap().unwrap().next_offset;
-        assert_eq!(next, u64::from(i) + 1);
-    }
-    let mut frames = Vec::new();
-    for offset in 0..4 {
-        let row = engine.db.get(shard_page_key(&hash, offset)).await;
-        frames.push(row.unwrap().unwrap().len() as u64);
-    }
-    let copied = super::CopiedBytes::new(0, frames[0] + frames[1]);
-    engine
-        .submit_absorbed_batch_v2(vec![(hash, 2, copied)])
-        .await;
-    durable_absorbed_reaches(&engine, &hash, (2, true)).await;
-
-    let engaged = store.hold_class(crate::dst::StoreOp::Put, crate::dst::ObjClass::Wal, 1);
-    let copied = super::CopiedBytes::new(2, frames[2] + frames[3]);
-    engine
-        .submit_absorbed_batch_v2(vec![(hash, 4, copied)])
-        .await;
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while engine
-            .visible_absorbed(&hash, super::Deliver::Applied)
-            .await
-            .unwrap()
-            != (4, true)
-        {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the advance is applied");
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while engaged.load(Ordering::SeqCst) == 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the advance's WAL write is parked");
-    assert_eq!(
-        engine.durable_absorbed(&hash).await.unwrap(),
-        (2, true),
-        "a durable read adopted an advance that is only applied"
-    );
+    append_records(&engine, hash, 0..2).await;
+    assert_eq!(engine.seal_once(Trigger::Requested).await.unwrap().pages, 2);
+    durable_absorbed_reaches(&engine, &hash, 2).await;
+    append_records(&engine, hash, 2..4).await;
     let handle = engine.stream_handle(hash).await.unwrap();
-    let durable = super::record::read_frames_until(
-        &engine,
-        &handle,
-        0,
-        u64::MAX,
-        None,
-        usize::MAX,
-        super::Deliver::Durable,
-    )
-    .await
-    .unwrap();
-    let offsets: Vec<u64> = durable
-        .frames
-        .iter()
-        .map(|frame| frame.view().header.offset)
-        .collect();
-    assert_eq!(
-        offsets,
-        [0, 1, 2, 3],
-        "a durable scan saw trims that are only applied"
-    );
-    store.release_hold();
-    durable_absorbed_reaches(&engine, &hash, (4, true)).await;
+    let before_commit = Hold::new();
+    *engine.layout.seal.hooks.before_commit.lock().unwrap() = Some(before_commit.clone());
+    let checks = async {
+        until("the seal reaches its commit", || {
+            before_commit.entered.load(Ordering::Acquire) > 0
+        })
+        .await;
+        let engaged = store.hold_class(crate::dst::StoreOp::Put, crate::dst::ObjClass::Wal, 1);
+        before_commit.release();
+        until("the seal is applied", || {
+            handle.state.lock().unwrap().applied.absorbed == 4
+        })
+        .await;
+        until("the seal's WAL write is parked", || {
+            engaged.load(Ordering::SeqCst) > 0
+        })
+        .await;
+        assert_eq!(handle.state.lock().unwrap().durable.absorbed, 2);
+        assert_eq!(
+            remote_absorbed(&engine, &hash).await,
+            2,
+            "a durable read adopted a seal that is only applied"
+        );
+        let durable = super::record::read_frames_until(
+            &engine,
+            &handle,
+            0,
+            u64::MAX,
+            None,
+            usize::MAX,
+            super::Deliver::Durable,
+        )
+        .await
+        .unwrap();
+        let offsets: Vec<u64> = durable
+            .frames
+            .iter()
+            .flat_map(|slice| slice.first()..=slice.last())
+            .collect();
+        assert_eq!(
+            offsets,
+            [0, 1, 2, 3],
+            "a durable read lost or repeated a record"
+        );
+        store.release_hold();
+    };
+    let (sealed, ()) = tokio::join!(engine.seal_once(Trigger::Requested), checks);
+    assert_eq!(sealed.unwrap().pages, 2);
+    durable_absorbed_reaches(&engine, &hash, 4).await;
     engine.begin_close();
     engine
         .await_terminated(std::time::Duration::from_secs(5))

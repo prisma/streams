@@ -27,6 +27,16 @@ pub(super) struct FrameEffects {
     pub retired_bytes: u64,
     /// The group's sealed pages of this stream, for the ring once durable.
     pub ring: RingBatch,
+    /// The group's pages of this stream as unsealed pages (layout 6): one
+    /// merge operand on its pending row, and its handle's pending pages
+    /// once published.
+    pub pending: Vec<crate::spill::pending::PendingPage>,
+    /// Set when this group seals the stream (`transaction::seal`): the
+    /// boundary it moves to and the applied pages its remainder keeps.
+    pub sealed: Option<super::seal::SealedAt>,
+    /// The seal is the group's only op on the stream: its waiters wait for
+    /// nothing it changed.
+    pub seal_only: bool,
     /// The group's page cipher and the subkey it was derived from.
     cipher: Option<(
         [u8; crate::crypto::KEY_LEN],
@@ -63,6 +73,41 @@ impl StreamOverlay {
                 ..Default::default()
             },
             frames: FrameEffects::default(),
+        }
+    }
+}
+impl StreamOverlay {
+    /// Publish this group's applied effects into its stream's state: the
+    /// tail (with a billed group's usage counters and static meta, layout 6
+    /// f3), its unsealed pages (b1, less those a seal took), the pressure attribution, producers,
+    /// sequences and queue rows.
+    pub(super) fn publish_into(&self, st: &mut StreamState) {
+        st.applied = self.fields.clone();
+        for page in &self.frames.pending {
+            st.pending.push(page.clone());
+        }
+        st.pending.seal_below(self.fields.absorbed);
+        if let Some(b) = self.handle.pressure.get() {
+            b.frames_added(self.frames.added_bytes);
+            b.frames_retired(self.frames.retired_bytes);
+        }
+        for (plane, v) in &self.producer.rows {
+            st.producers.insert(plane.clone(), *v);
+        }
+        for (kh, v) in &self.producer.seqs {
+            st.seqs.insert(*kh, v.clone());
+        }
+        if let Some(q) = &self.queue.state {
+            st.queue = (*q).clone();
+        }
+    }
+}
+impl StreamOverlay {
+    /// Wake the stream's applied waiters, unless the group's only op on it
+    /// was a seal, which changes nothing they wait for (layout 6).
+    pub(super) fn notify_applied(&self) {
+        if !self.frames.seal_only {
+            self.handle.applied_notify.notify_waiters();
         }
     }
 }

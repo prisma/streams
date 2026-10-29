@@ -3113,6 +3113,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "slatedb",
+ "slatedb-common",
  "syn",
  "tokio",
  "tracing",

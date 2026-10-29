@@ -17,21 +17,22 @@ const slug = (heading: string) =>
   heading.trim().toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, "").replace(/\s/g, "-");
 
 describe("the table", () => {
-  test("holds rows 3 to 29 once each, every anchor a RUNBOOK heading, the level rules 8, 10 and 12 to 16", () => {
-    expect(RULES.map((r) => r.row)).toEqual(Array.from({ length: 27 }, (_, i) => i + 3));
-    expect(new Set(RULES.map((r) => r.id)).size).toBe(27);
+  test("holds rows 3 to 29 once each but row 13 (retired with the history tier), every anchor a RUNBOOK heading, the level rules 8, 10, 12 and 14 to 16", () => {
+    const rows = Array.from({ length: 27 }, (_, i) => i + 3).filter((row) => row !== 13);
+    expect(RULES.map((r) => r.row)).toEqual(rows);
+    expect(new Set(RULES.map((r) => r.id)).size).toBe(26);
     for (const r of RULES) expect(r.id).toMatch(new RegExp(`^r${String(r.row).padStart(2, "0")}_[a-z0-9_]+$`));
     const runbook = readFileSync(join(import.meta.dir, "..", "..", "RUNBOOK.md"), "utf8");
     const anchors = new Set(
       runbook.split("\n").filter((l) => /^#{1,6} /.test(l)).map((l) => `RUNBOOK.md#${slug(l.replace(/^#+ /, ""))}`),
     );
     for (const r of RULES) expect([r.id, anchors.has(r.anchor)]).toEqual([r.id, true]);
-    expect(RULES.filter((r) => r.level).map((r) => r.row)).toEqual([8, 10, 12, 13, 14, 15, 16]);
+    expect(RULES.filter((r) => r.level).map((r) => r.row)).toEqual([8, 10, 12, 14, 15, 16]);
   });
 
   test("the issuer's rows run only with ISSUER_ORIGIN, row 5 only with EXPECTED_GIT", () => {
     const on = (cfg: typeof CFG) => RULES.filter((r) => r.enabled(cfg)).map((r) => r.row);
-    expect(on(CFG)).toEqual([3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 23, 24, 25, 26, 29]);
+    expect(on(CFG)).toEqual([3, 4, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20, 23, 24, 25, 26, 29]);
     expect(on(ALL_ROWS)).toEqual(RULES.map((r) => r.row));
   });
 });
@@ -267,7 +268,6 @@ function lacedData(i: number): Json {
     "ops.cell": laced,
     "ops.counters.unowned_meter_events_total": i,
     "ops.counters.ingest_bytes_total": i * 1000,
-    "ops.gauges.history_flush_wait_ms_max": 45_000,
     [`ops.gauges.${STREAM_HASH}`]: 1,
     ts_ms: 1791830622870 + 600_000,
   });

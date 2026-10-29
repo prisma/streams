@@ -2,15 +2,11 @@
 //! A billing close that would change nothing is skipped whole.
 #![cfg(test)]
 use super::*;
-use crate::crypto_page::shard_page_key;
+use crate::spill::pending::{parse_pages, pending_key};
 
 #[expect(
     clippy::excessive_nesting,
     reason = "r13_failed_accounting_reads_preserve_group_and_newer_dirty_version; the fixture stages the failed read inside the group inside the engine it drives, and the assertions read that nesting; flattening it would separate the failure from the group it must preserve"
-)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "r13_failed_accounting_reads_preserve_group_and_newer_dirty_version; the scenario pins one ordered sequence of a failed accounting read, the preserved group and the newer dirty version; helper phases would hide which step each assertion observes"
 )]
 #[expect(
     clippy::let_underscore_must_use,
@@ -19,16 +15,11 @@ use crate::crypto_page::shard_page_key;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r13_failed_accounting_reads_preserve_group_and_newer_dirty_version() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-    let db = Arc::new(Db::builder("r13", store.clone()).build().await.unwrap());
-    let (tx, _rx) = mpsc::channel(1);
-    let engine = ShardEngine::start(
-        "r13".into(),
-        db.clone(),
-        store,
-        ShardConfig::default(),
-        tx,
-        None,
-        ShardMaintenance::default(),
+    let db = Arc::new(
+        crate::keyspace::db_builder("r13", store.clone())
+            .build()
+            .await
+            .unwrap(),
     );
     let hash = [13; 16];
     let meta = crate::billing::SegmentBillingMetaV1 {
@@ -39,8 +30,8 @@ async fn r13_failed_accounting_reads_preserve_group_and_newer_dirty_version() {
         owned_frame_bytes_current: 876,
         ..Default::default()
     };
-    let encoded = serde_json::to_vec(&meta).unwrap();
-    let dirty = crate::billing::usage_dirty_key(&hash);
+    let engine = r13_engine(&db, store, hash, &meta).await;
+    let encoded = crate::billing::stored_meta::encode_static(&meta);
     let key = crate::billing::billing_meta_key(&hash);
     let final_key = crate::billing::usage_month_final_key(&hash, 2026, 7);
     for corrupt in [false, true] {
@@ -51,9 +42,7 @@ async fn r13_failed_accounting_reads_preserve_group_and_newer_dirty_version() {
         };
         let mut wb = WriteBatch::new();
         wb.put(key.clone(), before.clone());
-        wb.put(dirty.clone(), 8u64.to_le_bytes());
         wb.put(final_key.clone(), b"owed snapshot");
-        wb.put(shard_page_key(&hash, 0), b"retained record");
         db.write(wb).await.unwrap();
         for action in 0..3 {
             if !corrupt {
@@ -65,60 +54,69 @@ async fn r13_failed_accounting_reads_preserve_group_and_newer_dirty_version() {
             let accounting = accounting_op(action, hash, &final_key);
             let (tx, rx) = oneshot::channel();
             engine
-                .commit_group(
-                    vec![
-                        CommitOp::Queue {
-                            hash,
-                            op: crate::queue::QueueOp::ConfigGet {
-                                consumer: "c".into(),
-                            },
-                            resp: tx,
+                .commit_group(vec![
+                    CommitOp::Queue {
+                        hash,
+                        op: crate::queue::QueueOp::ConfigGet {
+                            consumer: "c".into(),
                         },
-                        accounting,
-                    ],
-                    &ShardConfig::default(),
-                )
+                        resp: tx,
+                    },
+                    accounting,
+                ])
                 .await;
             assert!(
                 rx.await.unwrap().is_err(),
                 "no group success on required read failure"
             );
             assert_eq!(db.get(&key).await.unwrap().unwrap().as_ref(), &before);
-            assert_eq!(
-                db.get(&dirty).await.unwrap().unwrap().as_ref(),
-                &8u64.to_le_bytes()
-            );
+            assert_eq!(usage_dirty_version(&engine, hash).await, Some(8));
             assert_eq!(
                 db.get(&final_key).await.unwrap().unwrap().as_ref(),
                 b"owed snapshot"
             );
             assert_eq!(
-                db.get(shard_page_key(&hash, 0))
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .as_ref(),
+                db.get(pending_key(&hash)).await.unwrap().unwrap().as_ref(),
                 b"retained record"
             );
         }
     }
     db.put(&key, encoded).await.unwrap();
     engine
-        .commit_group(
-            vec![CommitOp::UsageAck {
-                hash,
-                scope: UsageAckScope::ThroughVersion(7),
-                month_final_keys: vec![],
-            }],
-            &ShardConfig::default(),
-        )
+        .commit_group(vec![CommitOp::UsageAck {
+            hash,
+            scope: UsageAckScope::ThroughVersion(7),
+            month_final_keys: vec![],
+        }])
         .await;
-    assert_eq!(
-        db.get(&dirty).await.unwrap().unwrap().as_ref(),
-        &8u64.to_le_bytes()
-    );
+    assert_eq!(usage_dirty_version(&engine, hash).await, Some(8));
     engine.begin_close();
     let _ = db.close().await;
+}
+
+/// R13's engine over `db`, opened after the billed tail of `hash` (`meta`'s
+/// counters) and a pending row it does not tile are stored, so the open's
+/// tail scan marks the segment in the usage dirty set (layout 6, f3) the way
+/// it would after a restart.
+async fn r13_engine(
+    db: &Arc<Db>,
+    store: Arc<dyn object_store::ObjectStore>,
+    hash: [u8; 16],
+    meta: &crate::billing::SegmentBillingMetaV1,
+) -> Arc<ShardEngine> {
+    let mut wb = WriteBatch::new();
+    seed_billing(&mut wb, &hash, meta, &TailFields::default());
+    // The seeded tail has absorbed == next, so no load tiles this row.
+    wb.put(pending_key(&hash), b"retained record");
+    db.write(wb).await.unwrap();
+    ShardEngine::start(
+        "r13".into(),
+        db.clone(),
+        store,
+        ShardConfig::default(),
+        None,
+        ShardMaintenance::default(),
+    )
 }
 
 /// R13's accounting op `action` on `hash`: a usage ack, a billing close or a
@@ -209,27 +207,30 @@ fn json(row: &Meta) -> String {
     serde_json::to_string(row).unwrap()
 }
 
-/// `SEGMENT`'s billing row in `db` as JSON text, and the version its dirty
-/// marker holds.
+/// `SEGMENT`'s billing meta in `db` as JSON text: its static row and the
+/// usage counters its tail carries (layout 6, f3). A store holds no usage
+/// dirty marker any more, so the second part is always `None`; a live
+/// engine's dirty set is `CloseRig::stored`'s.
 async fn stored_in(db: &Db) -> (Option<String>, Option<u64>) {
-    let row = db
+    let Some(raw) = db
         .get(crate::billing::billing_meta_key(&SEGMENT))
         .await
         .unwrap()
-        .map(|row| String::from_utf8(row.to_vec()).unwrap());
-    let dirty = db
-        .get(crate::billing::usage_dirty_key(&SEGMENT))
-        .await
-        .unwrap()
-        .map(|mark| u64::from_le_bytes(mark.as_ref().try_into().unwrap()));
-    (row, dirty)
+    else {
+        return (None, None);
+    };
+    let mut meta = crate::billing::stored_meta::decode_static(&raw).unwrap();
+    let tail = db.get(tail_key(&SEGMENT)).await.unwrap().unwrap();
+    if let Some(usage) = stored_tail(&tail).unwrap().usage {
+        usage.apply(&mut meta);
+    }
+    (Some(json(&meta)), None)
 }
 
 struct CloseRig {
     engine: Arc<ShardEngine>,
     db: Arc<Db>,
     store: Arc<dyn object_store::ObjectStore>,
-    _signals: mpsc::Receiver<AbsorbSignal>,
 }
 
 impl CloseRig {
@@ -238,38 +239,70 @@ impl CloseRig {
     async fn start(prefix: &str, row: Option<&Meta>) -> Self {
         let store: Arc<dyn object_store::ObjectStore> =
             Arc::new(object_store::memory::InMemory::new());
-        let db = Arc::new(Db::builder(prefix, store.clone()).build().await.unwrap());
-        if let Some(row) = row {
-            let key = crate::billing::billing_meta_key(&SEGMENT);
-            db.put(&key, serde_json::to_vec(row).unwrap())
+        let db = Arc::new(
+            crate::keyspace::db_builder(prefix, store.clone())
+                .build()
                 .await
-                .unwrap();
+                .unwrap(),
+        );
+        if let Some(row) = row {
+            let mut seed = WriteBatch::new();
+            seed_billing(&mut seed, &SEGMENT, row, &TailFields::default());
+            db.write(seed).await.unwrap();
         }
-        let (tx, signals) = mpsc::channel(16);
         let engine = ShardEngine::start(
             prefix.into(),
             db.clone(),
             store.clone(),
             ShardConfig::default(),
-            tx,
             None,
             ShardMaintenance::default(),
         );
-        Self {
-            engine,
-            db,
-            store,
-            _signals: signals,
+        // The first look after the open marks every billed segment dirty
+        // (layout 6, f3); the seeded row is acknowledged.
+        if let Some(row) = row {
+            assert_eq!(
+                usage_dirty_version(&engine, SEGMENT).await,
+                Some(row.usage_version)
+            );
+            let ack = CommitOp::UsageAck {
+                hash: SEGMENT,
+                scope: UsageAckScope::ThroughVersion(row.usage_version),
+                month_final_keys: vec![],
+            };
+            engine.commit_group(vec![ack]).await;
         }
+        Self { engine, db, store }
+    }
+
+    /// A fresh engine over `store`, where an earlier one at `prefix` stopped.
+    async fn reopen(prefix: &str, store: Arc<dyn object_store::ObjectStore>) -> Self {
+        let db = Arc::new(
+            crate::keyspace::db_builder(prefix, store.clone())
+                .build()
+                .await
+                .unwrap(),
+        );
+        let engine = ShardEngine::start(
+            prefix.into(),
+            db.clone(),
+            store.clone(),
+            ShardConfig::default(),
+            None,
+            ShardMaintenance::default(),
+        );
+        Self { engine, db, store }
     }
 
     async fn commit(&self, ops: Vec<CommitOp>) {
-        self.engine.commit_group(ops, &ShardConfig::default()).await;
+        self.engine.commit_group(ops).await;
     }
 
-    /// The stored row as JSON text, and the version its dirty marker holds.
+    /// The stored meta as JSON text, and the version the usage dirty set
+    /// holds for it.
     async fn stored(&self) -> (Option<String>, Option<u64>) {
-        stored_in(&self.db).await
+        let (row, _) = stored_in(&self.db).await;
+        (row, usage_dirty_version(&self.engine, SEGMENT).await)
     }
 
     /// Waits until exactly `n` ops wait in the committer's queue.
@@ -290,13 +323,28 @@ impl CloseRig {
             .await_terminated(std::time::Duration::from_secs(5))
             .await
             .unwrap();
-        let db = Db::builder(self.engine.prefix.as_str(), self.store.clone())
+        let db = crate::keyspace::db_builder(self.engine.prefix.as_str(), self.store.clone())
             .build()
             .await
             .unwrap();
         let stored = stored_in(&db).await;
         db.close().await.unwrap();
         stored
+    }
+
+    /// The last offsets of the pages the stream's pending row holds.
+    async fn pending_lasts(&self) -> Vec<u64> {
+        let raw = self
+            .db
+            .get(pending_key(&SEGMENT))
+            .await
+            .unwrap()
+            .unwrap_or_default();
+        parse_pages(&raw)
+            .unwrap()
+            .into_iter()
+            .map(|(last, _)| last)
+            .collect()
     }
 
     async fn rows(&self) -> std::collections::BTreeMap<Vec<u8>, Vec<u8>> {
@@ -387,7 +435,7 @@ fn unbilled_append() -> (CommitOp, oneshot::Receiver<Result<AppendAck, AppendErr
     (append, reply)
 }
 
-/// Layout 5: retention is billed on the bytes stored. A billed request
+/// Retention is billed on the bytes stored. A billed request
 /// split over three pages and one whose ten records share a page raise the
 /// row's gauge by exactly the bytes of the four pages they stored, far
 /// below their payload, while ingest stays metered on payload bytes and
@@ -406,15 +454,19 @@ async fn the_retention_gauge_is_the_sum_of_the_stored_page_bytes() {
         let ack = tokio::time::timeout(std::time::Duration::from_secs(5), reply).await;
         assert_eq!(ack.unwrap().unwrap().unwrap().next_offset, next);
     }
-    let prefix = crate::crypto_page::shard_page_prefix(&SEGMENT);
-    let rows = rig.rows().await;
-    let pages: Vec<usize> = rows
-        .iter()
-        .filter(|(key, _)| key.starts_with(&prefix))
-        .map(|(_, page)| page.len())
-        .collect();
-    assert_eq!(pages.len(), 4, "three pages and one");
-    let stored = u64::try_from(pages.iter().sum::<usize>()).unwrap();
+    let pending = rig.db.get(pending_key(&SEGMENT)).await.unwrap().unwrap();
+    let pages = parse_pages(&pending).unwrap();
+    assert_eq!(
+        pages.iter().map(|(last, _)| *last).collect::<Vec<_>>(),
+        [0, 1, 2, 12],
+        "three pages and one"
+    );
+    let stored = u64::try_from(pages.iter().map(|(_, page)| page.len()).sum::<usize>()).unwrap();
+    assert_eq!(
+        stored,
+        pending.len() as u64,
+        "the pending row holds only the pages"
+    );
     let (row, _) = rig.stored().await;
     let row: Meta = serde_json::from_str(&row.unwrap()).unwrap();
     let payload = u64::try_from(payload).unwrap();
@@ -535,13 +587,7 @@ async fn a_skipped_close_after_an_append_in_its_group_leaves_the_row_dirty_and_w
         (10, 0, CLOSED, "3153600000", 4, Some(10)),
         "one version for the append, one for the close, none for the second close"
     );
-    assert!(
-        rig.db
-            .get(shard_page_key(&SEGMENT, 0))
-            .await
-            .unwrap()
-            .is_some()
-    );
+    assert_eq!(rig.pending_lasts().await, [0], "the page was written");
     let ack = tokio::time::timeout(std::time::Duration::from_secs(5), reply)
         .await
         .unwrap()
@@ -577,13 +623,7 @@ async fn a_group_of_unbilled_appends_reads_no_billing_row() {
         .unwrap()
         .unwrap();
     assert_eq!(ack.next_offset, 1);
-    assert!(
-        rig.db
-            .get(shard_page_key(&SEGMENT, 0))
-            .await
-            .unwrap()
-            .is_some()
-    );
+    assert_eq!(rig.pending_lasts().await, [0], "the page was written");
     assert_eq!(
         rig.stored().await,
         (Some(json(&open_row())), None),
@@ -787,3 +827,5 @@ async fn refused_once(retained: bool) {
         "the dropped op changed nothing (retained: {retained})"
     );
 }
+
+mod f3_tests;

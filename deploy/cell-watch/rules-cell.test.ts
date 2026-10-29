@@ -229,9 +229,9 @@ describe("row 7: a reserved policy dropped", () => {
 });
 
 describe("row 8: RSS at the shed line", () => {
-  test("pages after 10 min at or above the line, with the absorber's reservation counted", () => {
+  test("pages after 10 min at or above the line", () => {
     const w = new Watch();
-    const at = data({ "local.rss_mb": 499, "local.absorb_reserved_bytes_now": 2 ** 20 });
+    const at = data({ "local.rss_mb": 500 });
     w.polls(40, at);
     expect(row(w, 8)).toEqual([]);
     w.poll(at);
@@ -324,20 +324,6 @@ describe("row 12: the backlog latch", () => {
     // A counter that went down is no growth, never a negative one.
     w.poll(latch({ engaged: true, appends_shed: 2 }));
     expect(fired(w, 12)[1]?.values.appends_shed_growth).toBe(0);
-  });
-});
-
-describe("row 13: history flush wait", () => {
-  test("pages above 30 s with the L0 and sorted-run gauges", () => {
-    const w = new Watch();
-    w.poll(data({ "ops.gauges.history_flush_wait_ms_max": 30_000 }));
-    expect(row(w, 13)).toEqual([]);
-    w.poll(data({ "ops.gauges.history_flush_wait_ms_max": 30_001, "ops.gauges.history_l0_ssts_max": 64, "ops.gauges.history_compacted_runs_max": 9 }));
-    expect(fired(w, 13).map((e) => [e.class, e.values])).toEqual([
-      ["PAGE", { history_flush_wait_ms_max: 30_001, history_l0_ssts_max: 64, history_compacted_runs_max: 9 }],
-    ]);
-    w.polls(MIN_POLLS);
-    expect(row(w, 13)).toEqual([["trigger", "PAGE"], ["resolve", "PAGE"]]);
   });
 });
 

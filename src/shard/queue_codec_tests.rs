@@ -11,18 +11,16 @@ async fn r08_corrupt_queue_rows_refuse_without_replacing_persisted_state() {
         let store: Arc<dyn object_store::ObjectStore> =
             Arc::new(object_store::memory::InMemory::new());
         let db = Arc::new(
-            Db::builder(format!("r08-queue-{case}"), store.clone())
+            crate::keyspace::db_builder(format!("r08-queue-{case}"), store.clone())
                 .build()
                 .await
                 .unwrap(),
         );
-        let (tx, _rx) = mpsc::channel(1);
         let engine = ShardEngine::start(
             format!("r08-queue-{case}"),
             db.clone(),
             store,
             ShardConfig::default(),
-            tx,
             None,
             Default::default(),
         );
@@ -60,10 +58,7 @@ async fn r08_corrupt_queue_rows_refuse_without_replacing_persisted_state() {
         };
         let (resp, received) = oneshot::channel();
         engine
-            .commit_group(
-                vec![CommitOp::Queue { hash, op, resp }],
-                &ShardConfig::default(),
-            )
+            .commit_group(vec![CommitOp::Queue { hash, op, resp }])
             .await;
         assert!(
             tokio::time::timeout(std::time::Duration::from_secs(2), received)

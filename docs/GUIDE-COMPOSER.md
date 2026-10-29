@@ -21,7 +21,7 @@ prisma-composer (app.mjs — the wiring)
 ├─ bucket "streams-data"          Prisma Bucket (S3-compatible object storage)
 │
 ├─ compute "streams"              the Prisma Streams server
-│    binary: streams-slate        (Rust; WAL + shards + history live in the bucket)
+│    binary: streams-slate        (Rust; WAL + shards + segment objects live in the bucket)
 │    exposes port: streams        (kind "streams" — the same contract the
 │                                  first-party streams() module exposes)
 │

@@ -114,15 +114,10 @@ pub(crate) struct ReadPage {
     pub(crate) completed: bool,
 }
 
-// The merge itself, free of `AppState` so the simulation harness can call
-// the production reader instead of reimplementing the history/tail split
-// (`src/dst/runtime.rs`). A second copy of this boundary logic would be a
-// copy that can drift, and drift here means the oracle stops testing what
-// production does.
-#[expect(
-    clippy::too_many_lines,
-    reason = "execute_segment; the ring, history and tail legs of one segment read share the boundary the plan fixed, which the tail leg revalidates at the plan visibility; splitting them would separate the legs from the boundary that orders them"
-)]
+// The read itself, free of `AppState` so the simulation harness can call
+// the production reader instead of reimplementing it (`src/dst/runtime.rs`).
+// A second copy would be a copy that can drift, and drift here means the
+// oracle stops testing what production does.
 #[expect(
     clippy::unwrap_used,
     reason = "execute_segment; a poisoned stream state may hold a half-advanced durable or applied frontier; recovering it could serve a page past a length never made durable or applied"
@@ -139,24 +134,18 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
         visibility: deliver,
     } = plan;
     let scan_from = range.from;
-    // The sub-stream identity (AAD + history-DB path): for total-order
-    // streams this is the incarnation hash; for per-key streams, the
-    // segment hash. Either way it's the handle's identity.
+    // The sub-stream identity (AAD): for total-order streams this is the
+    // incarnation hash; for per-key streams, the segment hash. Either way
+    // it's the handle's identity.
     let hash = handle.hash;
-    let (absorbed, end, mut hist_v2, route, watermarks) = {
+    let (end, watermarks) = {
         let st = handle.state.lock().unwrap();
         let end = match deliver {
             crate::shard::Deliver::Durable => st.durable.next,
-            // Applied extends visibility to the applied watermark; the
-            // history boundary below stays durable-sourced (absorption
-            // only ever operates on durable data, so boundary <= end).
             crate::shard::Deliver::Applied => st.applied.next.max(st.durable.next),
         };
         (
-            st.durable.absorbed,
             end,
-            st.durable.history_v2,
-            st.durable.route,
             Watermarks {
                 durable: st.durable.next,
                 applied: st.applied.next.max(st.durable.next),
@@ -173,122 +162,36 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
     };
     let mut budget = PageBudget::new(max_bytes);
     let mut subkeys = ReadKeys::new(key, epoch, hash);
-
-    // The absorbed snapshot above and the tail scan below are a TOCTOU
-    // pair: the absorber can advance the boundary AND trim the shard log
-    // between them (an applied scan sees the trim before it is durable,
-    // TLA-018-F1), leaving the tail scan a hole at
-    // `[cursor, new_boundary)` that this loop would otherwise emit as a
-    // "complete" page — permanently skipping records for a paginating
-    // client (2026-07-27 boundary-race DST failure). Everything trim can
-    // remove is already readable in history (the absorber flushes history
-    // before the boundary advances), so on detecting an advance we
-    // re-serve the gap from history and re-scan the tail. `boundary` only
-    // moves forward and is capped by `end`, so the loop terminates; the
-    // bound is paranoia, and falling out of it yields an honest
-    // `completed = false` partial page.
-    let mut cursor = scan_from; // next offset still needed
-    let mut boundary = absorbed; // history serves [_, boundary)
-    for _ in 0..16 {
-        let hist_upto = boundary.min(read_end);
-        if cursor < hist_upto && !budget.full() {
-            if !hist_v2 {
-                // The v1 per-stream layout was deleted in the clean
-                // switch: an unabsorbed-below-boundary tail without the
-                // v2 flag cannot exist in a fresh namespace.
-                return Err("unsupported_storage_layout: v1 history".into());
-            }
-            let completed = decode_history_range(
-                &ReadPlan::segment(
-                    key, epoch, handle, engine, range, key_filter, max_bytes, deliver,
-                ),
-                HistoryRange {
-                    route,
-                    identity: hash,
-                    from: cursor,
-                    upto: hist_upto,
-                    absorbed: boundary,
-                },
-                &mut subkeys,
-                &mut out,
-                &mut budget,
-            )
-            .await?;
-            if !completed {
-                // Byte-truncated, or (v1) the reader cannot prove coverage
-                // of this boundary yet: report the honest partial; the
-                // caller re-polls from `last + 1`.
-                out.completed = false;
-                return Ok(out);
-            }
-            // Fully scanned with proven coverage: everything below
-            // `hist_upto` is consumed even when the range yields no
-            // records for this key filter.
-            if hist_upto > 0 {
-                out.last = Some(out.last.map_or(hist_upto - 1, |o| o.max(hist_upto - 1)));
-            }
-            cursor = hist_upto;
-        }
-        if budget.full() || cursor >= read_end {
-            break;
-        }
+    // Layout 6 reads sealed offsets from the segment objects and the rest
+    // from the handle's unsealed pages; a seal publishes its chunks before
+    // it moves the boundary, so the read meets no hole between the two.
+    if scan_from < read_end {
         let part = crate::shard::record::read_frames_until(
             engine,
             handle,
-            cursor,
-            cursor.saturating_add(SCAN_WINDOW).min(read_end),
+            scan_from,
+            scan_from.saturating_add(SCAN_WINDOW).min(read_end),
             key_filter,
             budget.remaining().min(MAX_SCAN_BATCH_BYTES),
             deliver,
         )
         .await
         .map_err(|e| e.to_string())?;
-        // Revalidate the scan against concurrent absorption before
-        // trusting it.
-        let raced_boundary = absorption_race(
-            engine,
-            hash,
-            &part,
-            cursor,
-            read_end,
-            key_filter.is_none(),
-            deliver,
-        )
-        .await?;
-        if let Some((raced, raced_v2)) = raced_boundary {
-            if raced > boundary {
-                // Adopt the stored LAYOUT FLAG with the stored boundary:
-                // in the first absorption's flush-to-dispatch window the
-                // in-memory snapshot still says v1 while the row that
-                // moved the boundary already says v2 — mixing the two
-                // refused a perfectly readable v2 range as v1.
-                boundary = raced;
-                hist_v2 = hist_v2 || raced_v2;
-                continue; // the gap is in history now; re-serve from there
-            }
-            // A hole the boundary does not explain: never emit it as
-            // consumed. Drop the tail and report the honest partial.
-            out.completed = false;
-            return Ok(out);
-        }
         let decoded_all = decode_frames_into(&part.frames, &mut subkeys, &mut out, &mut budget)?;
         if decoded_all && let Some(last) = part.last_offset {
-            out.last = Some(out.last.map_or(last, |o| o.max(last)));
+            out.last = Some(last);
         }
-        break;
     }
     let consumed_next = out.last.map(|o| o + 1).unwrap_or(scan_from);
     out.completed = consumed_next >= read_end;
-    // Round-13 CODE-RED bisect (test builds): an unfiltered merged read
-    // must NEVER emit a gapped page — any panic here localizes the
-    // durable-skip to THIS layer.
+    // Test builds: an unfiltered read must NEVER emit a gapped page.
     #[cfg(test)]
     if key_filter.is_none() {
         let mut expect = scan_from;
         for r in &out.recs {
             assert!(
                 r.off <= expect,
-                "read_merged emitted a gap: expected <= {expect}, got {} (scan_from {scan_from}, last {:?}, boundary-race?)",
+                "read emitted a gap: expected <= {expect}, got {} (scan_from {scan_from}, last {:?})",
                 r.off,
                 out.last
             );
@@ -297,7 +200,7 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
         if let Some(l) = out.last {
             assert!(
                 l < expect,
-                "read_merged over-claimed: last {l} beyond served {expect} (scan_from {scan_from})"
+                "read over-claimed: last {l} beyond served {expect} (scan_from {scan_from})"
             );
         }
     }
@@ -704,141 +607,6 @@ mod request;
 pub(crate) use request::{
     ReadCommand, ReadFailure, ReadMode, ReadOutcome, ReadResultKind, ReadStart, ScanStart,
 };
-
-/// One history range retains its physical identity and proven boundary while
-/// the canonical postings reader plans bounded parallel envelope fetches.
-struct HistoryRange {
-    route: [u8; 16],
-    identity: [u8; 16],
-    from: u64,
-    upto: u64,
-    absorbed: u64,
-}
-async fn decode_history_range(
-    plan: &ReadPlan<'_>,
-    range: HistoryRange,
-    subkeys: &mut ReadKeys<'_>,
-    out: &mut ReadPage,
-    budget: &mut PageBudget,
-) -> Result<bool, String> {
-    // v2: the range lives in the shard's SHARED partition,
-    // read through the owner's open Db — no reader open, no
-    // checkpoint, no coverage probe (this Db's flush is what
-    // advanced the boundary). Frames decode like tail frames.
-    // Keyed ranges resolve their postings runs through the
-    // plan.engine's decoded slice cache (spec §7).
-    let upto = range.upto.min(range.from.saturating_add(SCAN_WINDOW));
-    let part = plan
-        .engine
-        .history_partition()
-        .await
-        .map_err(|e| e.to_string())?;
-    let (frames, scan_last, completed) = match plan.selector {
-        Some(rk) => crate::history::read_history2_keyed_cached(
-            &plan.engine.postings_cache,
-            &part,
-            crate::crypto::RouteHash(range.route),
-            crate::crypto::SegmentHash(range.identity),
-            rk,
-            range.from,
-            upto,
-            range.absorbed,
-            budget.remaining().min(MAX_SCAN_BATCH_BYTES),
-        )
-        .await
-        .map_err(|e| e.to_string())?,
-        None => crate::history::read_history2(
-            &part,
-            crate::crypto::RouteHash(range.route),
-            crate::crypto::SegmentHash(range.identity),
-            range.from,
-            upto,
-            None,
-            budget.remaining().min(MAX_SCAN_BATCH_BYTES),
-        )
-        .await
-        .map_err(|e| e.to_string())?,
-    };
-    let decoded_all = decode_frames_into(&frames, subkeys, out, budget)?;
-    // consumed_to is first-class (review blocker): a partial
-    // keyed page's cursor advances over every range the read
-    // PROVED — index-verified match-free stretches and
-    // mid-run truncation points — never inferred from the
-    // last matching frame alone. Without this, a fat run
-    // that planned zero frames re-polled the same position
-    // forever.
-    if decoded_all && let Some(sl) = scan_last.or_else(|| completed.then(|| upto.saturating_sub(1)))
-    {
-        out.last = Some(out.last.map_or(sl, |o| o.max(sl)));
-    }
-
-    Ok(decoded_all && completed && upto == range.upto)
-}
-
-/// A tail page is accepted only after ruling out a concurrent trim it saw.
-/// A retained dense durable-ring interval already proves what was inspected.
-/// Other scans need the boundary/layout tuple at the scan's own visibility:
-/// an applied scan sees trims whose advance is not yet Remote-durable, so a
-/// Remote boundary would accept its hole as consumed (TLA-018-F1).
-#[expect(
-    clippy::too_many_arguments,
-    reason = "absorption_race; the race check takes the engine, hash, page, cursor, end, filter flag and visibility the read loop already holds; a context struct would exist only for this signature"
-)]
-async fn absorption_race(
-    engine: &Arc<ShardEngine>,
-    hash: [u8; 16],
-    part: &crate::shard::FrameReadResult,
-    cursor: u64,
-    end: u64,
-    unfiltered: bool,
-    visibility: Deliver,
-) -> Result<Option<(u64, bool)>, String> {
-    if part.proves_durable_ring(engine, hash, cursor) {
-        return Ok(None);
-    }
-    Ok(if unfiltered {
-        // Unfiltered offsets below the durable frontier are dense,
-        // so ANY gap in the page IS the absorb/trim race — head OR
-        // MID-PAGE (round-13 CODE-RED: the 2026-07-27 guard checked
-        // only the head; a mid-scan retire produced {..78, 88..}
-        // pages that were consumed as complete, permanently
-        // skipping the seam for every subscriber and every resume —
-        // 11 durable records lost in field leg A1v2, reproduced
-        // deterministically by cut_resume_never_skips_a_durable_record).
-        let gap = if part.frames.is_empty() {
-            cursor < end // nothing at all in a non-empty range
-        } else {
-            // O(1): dense pages satisfy count == last - first + 1,
-            // so one head decode + the page's own last_offset
-            // detects head AND mid-page gaps without touching the
-            // hot path's per-frame budget (the O(n) version cost
-            // the capacity gate ~2%).
-            let first = part.frames[0].view().header.offset;
-            first > cursor
-                || part
-                    .last_offset
-                    .is_some_and(|l| l + 1 - first != part.frames.len() as u64)
-        };
-        if gap {
-            Some(
-                engine
-                    .visible_absorbed(&hash, visibility)
-                    .await
-                    .map_err(|e| e.to_string())?,
-            )
-        } else {
-            None
-        }
-    } else {
-        // A filtered scan cannot distinguish "trimmed" from "did not
-        // match", so always ask the tracker at the scan's visibility.
-        let (absorbed, v2) = engine
-            .visible_absorbed(&hash, visibility)
-            .await
-            .map_err(|e| e.to_string())?;
-        (absorbed > cursor).then_some((absorbed, v2))
-    })
-}
 
 #[cfg(test)]
 mod o2_tests {

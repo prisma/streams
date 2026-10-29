@@ -1,21 +1,18 @@
-//! Admission refuses every malformed or misplaced row from its bytes and
-//! row key alone, before any key is used.
+//! Admission refuses every malformed or misplaced page from its bytes and
+//! the last offset its holder names alone, before any key is used.
 #![cfg(test)]
 
 use super::stamped;
 use bytes::Bytes;
 
 use super::header::{HeaderFields, encode_header};
-use super::tests::{FIRST, HASH, NONCE, TS, cipher, flip, lane, prefix, reference};
+use super::tests::{FIRST, NONCE, TS, cipher, flip, lane, reference};
 use super::{
     CheckedPage, PAGE_MAX_RECORDS, PAGE_TARGET_PLAINTEXT, PageCorruption, PageLane, body_cap,
-    history_page_key, history_page_prefix, shard_page_key,
 };
-use crate::crypto::{RouteHash, SegmentHash};
 
 fn admit_at(raw: &[u8], last: u64) -> Result<CheckedPage, PageCorruption> {
-    let key = shard_page_key(&HASH, last);
-    CheckedPage::from_row(&key, &prefix(), Bytes::copy_from_slice(raw))
+    CheckedPage::admit(Bytes::copy_from_slice(raw), last)
 }
 
 /// A page whose clear header says `ver`, `first` and `count` and whose
@@ -77,63 +74,6 @@ fn an_admitted_page_reports_the_key_version_its_header_holds() {
     assert_eq!(admit_at(&raw, 42).unwrap().key_version(), 1);
     let other = spliced(&raw, 18..22, &0x0a0b_0c0d_u32.to_be_bytes());
     assert_eq!(admit_at(&other, 42).unwrap().key_version(), 0x0a0b_0c0d);
-}
-
-#[test]
-fn a_row_key_outside_the_page_namespace_is_refused() {
-    let raw = reference();
-    let key = shard_page_key(&HASH, 42);
-    let bytes = || Bytes::from(raw.clone());
-    let record_prefix = [&b"S"[..], &HASH[..], b"r"].concat();
-    let refused = |key: &[u8], prefix: &[u8]| CheckedPage::from_row(key, prefix, bytes());
-    assert_eq!(refused(&key, &record_prefix), Err(PageCorruption::RowTag));
-    let (_, short) = key.split_last().unwrap();
-    assert_eq!(refused(short, &prefix()), Err(PageCorruption::KeyWidth));
-    let long = [key.as_slice(), &[0]].concat();
-    assert_eq!(refused(&long, &prefix()), Err(PageCorruption::KeyWidth));
-    assert_eq!(refused(b"tiny", &prefix()), Err(PageCorruption::KeyWidth));
-    let other = shard_page_key(&[0x45; 16], 42);
-    assert_eq!(refused(&other, &prefix()), Err(PageCorruption::Namespace));
-    assert!(refused(&key, &prefix()).is_ok());
-}
-
-/// Each keyspace admits its own page tag only: the shard log's `'p'`, and
-/// history's `'g'`, whose keyspace already spends `'p'` on postings pages.
-/// A prefix of the other keyspace's tag, or of any other width, is refused
-/// before its row is looked at, so neither keyspace can read the other's
-/// rows as pages.
-#[test]
-fn each_keyspace_admits_only_its_own_page_tag() {
-    let raw = reference();
-    let refused =
-        |key: &[u8], prefix: &[u8]| CheckedPage::from_row(key, prefix, Bytes::from(raw.clone()));
-    let (route, inc) = (RouteHash([0x0a; 16]), SegmentHash([0x0b; 16]));
-    let history = history_page_key(route, inc, 42);
-    let history_prefix = history_page_prefix(route, inc);
-    assert_eq!(history_prefix.last(), Some(&b'g'));
-    assert!(refused(&history, &history_prefix).is_ok());
-    let postings_prefix = [&history_prefix[..32], b"p"].concat();
-    let postings_key = [postings_prefix.as_slice(), &42u64.to_be_bytes()].concat();
-    assert_eq!(
-        refused(&postings_key, &postings_prefix),
-        Err(PageCorruption::RowTag),
-        "history's 'p' rows are postings"
-    );
-    assert_eq!(
-        refused(&postings_key, &history_prefix),
-        Err(PageCorruption::Namespace)
-    );
-    let shard = shard_page_key(&HASH, 42);
-    let shard_as_history = [&b"S"[..], &HASH[..], b"g"].concat();
-    assert_eq!(
-        refused(&shard, &shard_as_history),
-        Err(PageCorruption::RowTag)
-    );
-    assert_eq!(refused(&history, &[]), Err(PageCorruption::RowTag));
-    assert_eq!(
-        refused(&history, &history_prefix[1..]),
-        Err(PageCorruption::RowTag)
-    );
 }
 
 #[test]

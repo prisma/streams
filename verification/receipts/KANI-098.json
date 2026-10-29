@@ -1,0 +1,115 @@
+{
+  "checks": [
+    {
+      "check": "KANI-098/widths",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "163add33be2b57be3a0847410b4c65381bf4b670528ea110a2bb6699576ad204",
+      "role": "baseline",
+      "seconds": 189.4,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-098/row-keys",
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "1cf91fe67c48e568677a843c00cb30d2bd93fab59e10c96796595b757a5dc996",
+      "role": "baseline",
+      "seconds": 104.2,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-098/nc-take-a-short-queue-prefix",
+      "covers": 2,
+      "covers_satisfied": 1,
+      "expected": "fail:a key's segment is its tag's",
+      "failed_checks": [
+        "\"a key's segment is its tag's\""
+      ],
+      "log_sha256": "f26cc566bea6990d31d8028f41e977d29203539a39033b4a4d471b958e6f0a36",
+      "mutated": {
+        "src/keyspace.rs": {
+          "baseline": "f32c779db13b12f5734ba5dbef814f9b24be9c556b89b164c032073fcdac0fa7",
+          "control": "05835043504c7076285457724946a0e769115e6ccf94facc57df1484be96d1fa"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 35.5,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-098/nc-take-the-hash-into-the-stream-segment",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "fail:a key's segment is its tag's",
+      "failed_checks": [
+        "\"a key's segment is its tag's\""
+      ],
+      "log_sha256": "e5757cbe9f3390c1a49b3d604c8b4062ea2cb46f79202ce625fe2a529d198bf0",
+      "mutated": {
+        "src/keyspace.rs": {
+          "baseline": "f32c779db13b12f5734ba5dbef814f9b24be9c556b89b164c032073fcdac0fa7",
+          "control": "887b54c76885d250a410863dfa22b875661b4b2692831faa29b94b3c3f4c6378"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 68.1,
+      "verdict": "fail"
+    }
+  ],
+  "complete": true,
+  "id": "KANI-098",
+  "inputs": {
+    "assumptions": {
+      "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
+      "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
+    },
+    "files": {
+      "Cargo.lock": "88d5da53c80e347966960aa3e47a314016df2f5e0b5f90006e0ae5d0ab2a325e",
+      "Cargo.toml": "40c6f797e5a38a80abe4de69d4c2c5feaa4f6cc506bc3085ec30bde7b0995e9e",
+      "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
+      "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
+      "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
+      "src/keyspace.rs": "f32c779db13b12f5734ba5dbef814f9b24be9c556b89b164c032073fcdac0fa7",
+      "src/keyspace/proofs.rs": "e68df3d53a64e566995eee7f99710b9c3daa924f6272a228ada930fd116e2c4e",
+      "verification/kani/controls/KANI-098-take-a-short-queue-prefix.patch": "5a84e43d2df0dbd0aa228fc35218051cb8bdc34e033aea13cd80857d21d65147",
+      "verification/kani/controls/KANI-098-take-the-hash-into-the-stream-segment.patch": "8855cf7dfd0dbc94f4848cc06e0adaab1e9e387cdbaaaa4f860a493168ce160e"
+    },
+    "manifest_entry": "aa14ba3c50f59c81ce8fc97aead07a6e25de5b31e26adf44598f04188d9ac5e8",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "git": "https://github.com/slatedb/slatedb.git",
+        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+      }
+    }
+  },
+  "inputs_sha256": "f82c2c7a9156864b843f91f4bab3b32d548e3bc30a2515b1370e27592948fd2d",
+  "run_on": {
+    "dirty_tree": false,
+    "revision": "f2e98054d2baf70a241b23d66ff1b8a70fd3936c"
+  },
+  "schema": 2,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "aarch64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

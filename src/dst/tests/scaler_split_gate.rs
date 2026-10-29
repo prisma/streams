@@ -54,10 +54,7 @@ async fn instance(store: Arc<dyn object_store::ObjectStore>, name: &str, n: u64)
         instance: Some(name.to_owned()),
         prefixes: vec!["0".to_owned(), "1".to_owned()],
         admission: Some(admission()),
-        shard: crate::shard::ShardConfig {
-            shared_usage: Some(usage),
-            ..Default::default()
-        },
+        usage: Some(usage),
         ..Default::default()
     };
     http_rig_build(store, RigRuntime::incarnation(n), options).await

@@ -25,8 +25,6 @@ import { openStore } from "./stores";
 /// A key any sizing rule, or step 6 of deploy-release, reads never joins.
 export const REPROFILE_KEYS = [
   "SHARED_CACHE_BYTES",
-  "HISTORY_CACHE_BYTES",
-  "POSTINGS_CACHE_BYTES",
   "TELEMETRY_CACHE_BYTES",
 ] as const;
 

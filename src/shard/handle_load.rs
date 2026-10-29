@@ -2,39 +2,76 @@
 //! holds it (layout 6), and the handle built around it.
 
 use super::{Arc, ShardEngine, StreamHandle, TailFields, queue_tail_key, stored_tail, tail_key};
+use crate::spill::pending::{PendingPages, pending_key};
+
+/// A stream's stored state as its handle is built from it: its durable
+/// tail, whether it is a native queue's (whose tail lives in the queue
+/// segment), and its unsealed pages.
+pub(super) struct LoadedTail {
+    tail: TailFields,
+    native_queue: bool,
+    pending: PendingPages,
+}
 
 impl ShardEngine {
-    /// A stream's durable tail and whether it is a native queue's, whose
-    /// tail lives in the queue segment: the stream segment is read first,
-    /// then the queue segment; a stream with neither has the default tail.
-    pub(super) async fn load_tail(
-        &self,
-        hash: &[u8; 16],
-    ) -> Result<(TailFields, bool), slatedb::Error> {
+    /// A stream's stored state: its tail from the stream segment, else the
+    /// queue segment (the default tail when neither holds one), and, for a
+    /// stream with unsealed records, its pending row, whose pages must tile
+    /// `[absorbed, next)` exactly or the load fails (layout 6).
+    pub(super) async fn load_tail(&self, hash: &[u8; 16]) -> Result<LoadedTail, slatedb::Error> {
         for (key, native_queue) in [(tail_key(hash), false), (queue_tail_key(hash), true)] {
-            if let Some(raw) = self.db.get(key).await? {
-                return Ok((stored_tail(&raw)?, native_queue));
-            }
+            let Some(raw) = self.db.get(key).await? else {
+                continue;
+            };
+            let tail = stored_tail(&raw)?;
+            let pending = if native_queue || tail.absorbed == tail.next {
+                PendingPages::default()
+            } else {
+                let raw = self.db.get(pending_key(hash)).await?.unwrap_or_default();
+                PendingPages::tiled(&raw, tail.absorbed, tail.next).map_err(slatedb::Error::data)?
+            };
+            return Ok(LoadedTail {
+                tail,
+                native_queue,
+                pending,
+            });
         }
-        Ok((TailFields::default(), false))
+        Ok(LoadedTail {
+            tail: TailFields::default(),
+            native_queue: false,
+            pending: PendingPages::default(),
+        })
     }
 
-    /// A new handle around a loaded tail. Trim-debt discovery on load: a
-    /// stream evicted (or restarted) mid-maintenance re-enters the TrimTick
-    /// rotation the moment anything touches it again. The absorber's
-    /// startup marker scan covers never-touched streams.
+    /// A new handle around a loaded stream; one holding unsealed pages is
+    /// held for the sealer, and so never evicted until a seal takes them.
+    pub(super) fn new_handle(&self, hash: [u8; 16], loaded: LoadedTail) -> Arc<StreamHandle> {
+        let LoadedTail {
+            tail,
+            native_queue,
+            pending,
+        } = loaded;
+        let unsealed = !pending.is_empty();
+        let handle = self.fresh_handle(hash, tail, native_queue, pending);
+        if unsealed {
+            self.layout.hold_unsealed(&handle);
+        }
+        handle
+    }
+}
+
+impl StreamHandle {
+    /// Publish a durable group's tail of this stream, and wake its durable
+    /// waiters unless the group's only op on it was a seal (`wake` false),
+    /// which changes nothing they wait for (layout 6).
     #[expect(
         clippy::unwrap_used,
-        reason = "ShardEngine::new_handle; a poisoned trim-debt set may hold a partially applied maintenance update; recovering it could retire a boundary that was never committed"
+        reason = "StreamHandle::publish_durable; a poisoned stream state may hold a half-published tail; recovering it could serve a frontier no group made durable, whereas panicking ends durable dispatch, which retires the engine, and the next open reloads the durable tail from the store"
     )]
-    pub(super) fn new_handle(
-        &self,
-        hash: [u8; 16],
-        (tail, native_queue): (TailFields, bool),
-    ) -> Arc<StreamHandle> {
-        if tail.trimmed < tail.trim_safe_to {
-            self.trim_debt.lock().unwrap().insert(hash);
+    pub(super) fn publish_durable(&self, fields: &TailFields, wake: bool) {
+        self.state.lock().unwrap().durable = fields.clone();
+        if wake {
+            self.notify.notify_waiters();
         }
-        self.fresh_handle(hash, tail, native_queue)
     }
 }

@@ -214,14 +214,10 @@ fn read(
         arrivals: admission.data_plane_arrivals(),
         active: admission.active(),
         unabsorbed: crate::backpressure::snapshot(shards).unabsorbed_bytes_instance,
-        refilled: [
-            &runtime.shared_cache,
-            &runtime.history.cache,
-            &runtime.telemetry.cache,
-        ]
-        .map(|cache| cache.inserted_bytes())
-        .iter()
-        .sum(),
+        refilled: [&runtime.shared_cache, &runtime.telemetry.cache]
+            .map(|cache| cache.inserted_bytes())
+            .iter()
+            .sum(),
         over_line: over_shed_line(admission.rss_mb(), admission.rss_shed_mb()),
     }
 }
@@ -233,34 +229,27 @@ fn over_shed_line(rss_mb: u64, line_mb: u64) -> bool {
     line_mb > 0 && rss_mb > line_mb
 }
 
-/// Flushes every open shard's memtable to an L0 table. The engine's flush
-/// ticker flushes only after appends, so what the absorber writes once they
-/// stop (its maintenance deletes) would stay in memory at idle: about 20 MB
-/// over four shards in the Q0 rig's F3 posture. The flush runs before the
-/// caches are emptied, so the blocks it caches on write go with them. A
-/// shard whose flush fails keeps its memtable, as before.
+/// Seals every open shard (layout 6): its unsealed pages go to a segment
+/// object and its memtable to an L0 table after an awaited WAL flush, so
+/// what the queue collector and the billing drain wrote once appends stopped
+/// does not stay in memory at idle. The seal runs before the caches are
+/// emptied, so the blocks it caches on write go with them. A shard whose
+/// seal fails keeps its memtable and its unsealed pages; its sealer retries.
 async fn flush_memtables(shards: &ShardDirectory) {
-    use slatedb::config::{FlushOptions, FlushType};
     for engine in shards.engines() {
-        let flushed = engine.db.flush_with_options(FlushOptions {
-            flush_type: FlushType::MemTable,
-        });
-        if let Err(error) = flushed.await {
-            tracing::warn!(shard = %engine.prefix, "idle: memtable flush failed: {error}");
+        if let Err(error) = engine.seal_requested().await {
+            tracing::warn!(shard = %engine.prefix, "idle: seal failed: {error}");
         }
     }
 }
 
-/// Releases the three block caches and every postings slice, and sweeps
-/// the registry's stale descriptor slots, at idle or under memory pressure
-/// (`why`). A swept segment's warm absence proof is poisoned, so its next
-/// read reloads; the zero-horizon sweep is tested after a quiet period and
-/// beside live keyed reads, appends and installs (DST `idle_release`).
+/// Releases the two block caches and sweeps the registry's stale
+/// descriptor slots, at idle or under memory pressure (`why`); the release
+/// is tested after a quiet period and beside live keyed reads, appends and
+/// installs (DST `idle_release`).
 fn release(runtime: &RuntimeCaps, registry: &Registry, why: &'static str) {
     let shared = runtime.shared_cache.release();
-    let history = runtime.history.cache.release();
     let telemetry = runtime.telemetry.cache.release();
-    let postings = runtime.postings.sweep_idle(Duration::ZERO);
     let descriptors = registry.sweep_cache();
     // The byte counts are what writes inserted into each released generation
     // since the release before it (evicted entries included), not what it
@@ -268,12 +257,10 @@ fn release(runtime: &RuntimeCaps, registry: &Registry, why: &'static str) {
     tracing::info!(
         release = runtime.shared_cache.releases(),
         shared_inserted_bytes = shared,
-        history_inserted_bytes = history,
         telemetry_inserted_bytes = telemetry,
-        postings_slices = postings,
         descriptor_slots = descriptors,
         why,
-        "released the block caches and the postings slices"
+        "released the block caches"
     );
 }
 

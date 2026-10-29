@@ -9,11 +9,8 @@ use proptest::prelude::{Just, Strategy, any};
 
 use super::body::{build_body, parse_body, record_body_bytes};
 use super::seal::split_pages;
-use super::tests::{HASH, TS, cipher, expected_at, lane, noise, prefix, round_trip_at};
-use super::{
-    CheckedPage, PAGE_MAX_RECORDS, PAGE_TARGET_PLAINTEXT, SealRecord, body_cap, shard_page_key,
-    stamped,
-};
+use super::tests::{TS, cipher, expected_at, lane, noise, round_trip_at};
+use super::{CheckedPage, PAGE_MAX_RECORDS, PAGE_TARGET_PLAINTEXT, SealRecord, body_cap, stamped};
 
 /// One record: a size class, a size jitter, a fill byte, and whether its
 /// bytes compress. Mostly small; some near half a page, some past a page.
@@ -141,8 +138,7 @@ proptest::proptest! {
         let mut raw = page.bytes.clone();
         let at = at.index(raw.len());
         *raw.get_mut(at).unwrap() ^= mask;
-        let key = shard_page_key(&HASH, page.last);
-        let opened = CheckedPage::from_row(&key, &prefix(), Bytes::from(raw))
+        let opened = CheckedPage::admit(Bytes::from(raw), page.last)
             .ok()
             .and_then(|page| cipher().open(&page).ok());
         proptest::prop_assert!(opened.is_none(), "byte {} xor {:#04x} survived", at, mask);
@@ -155,8 +151,7 @@ proptest::proptest! {
         raw in proptest::collection::vec(any::<u8>(), 0..=160),
         last in any::<u64>(),
     ) {
-        let key = shard_page_key(&HASH, last);
-        if let Ok(page) = CheckedPage::from_row(&key, &prefix(), Bytes::from(raw)) {
+        if let Ok(page) = CheckedPage::admit(Bytes::from(raw), last) {
             proptest::prop_assert!((1..=PAGE_MAX_RECORDS).contains(&page.count()));
             let span = u64::try_from(page.count()).unwrap().saturating_sub(1);
             proptest::prop_assert_eq!(page.first().checked_add(span), Some(last));

@@ -77,8 +77,8 @@ writer of segmap.json):
    — subsequent appends to the parent get `410 segment_sealed` +
    `Streams-Segment-Map: v(N+1)` header; clients re-route to children.
 4. Children accept appends immediately (they're empty logs — no data
-   movement, ever; history/absorption of the parent continues
-   independently until drained, then the parent shard prefix is GC'd).
+   movement, ever; the parent's unsealed pages are sealed into segment
+   objects by its shard's sealer like any other stream's).
 5. Readers: per-key readers finish the parent range (bounded — it's
    sealed), then follow `successors[k]`.
 
@@ -99,9 +99,10 @@ creation — Pravega's anti-flap rules.
 
 Pravega moves no data on scale events and neither do we: a segment's
 records live in the shard log where they were written; splitting only
-changes WHERE NEW WRITES GO. The absorber keeps draining parent segments
-to the history tier after sealing; a fully-absorbed sealed segment is a
-tombstone in the segment map plus history-tier objects.
+changes WHERE NEW WRITES GO. The shard's sealer keeps moving a sealed
+parent's unsealed pages into segment objects; a fully sealed parent
+segment is a tombstone in the segment map plus the chunks its shard's
+seal directory names.
 
 ## 4. Placement & host rebalancing
 
@@ -110,11 +111,13 @@ controller scaling from segment-container balancing the same way):
 
 - **Scaler** (above): decides the segment map. Placement of NEW segments:
   least-loaded shard on the least-loaded host (load = Σ segment EWMA
-  bytes / host absorb capacity ~14 MB/s per 1 GB instance, from fleet
+  bytes / host ingest capacity ~14 MB/s per 1 GB instance, from fleet
   heartbeats).
 - **Rebalancer**: moves whole SHARDS between hosts when a host is
-  unhealthy: `absorb_lag_max_secs > 60` (the agreed signal) or RSS/CPU
-  sustained hot. Shard moves already exist operationally (fencing +
+  unhealthy: `absorb_lag_max_secs > 60` (the agreed signal: since layout 6
+  the longest sealer stall, seconds since a shard's sealer last retired
+  unsealed bytes while some are held, or the worst commit wedge if longer)
+  or RSS/CPU sustained hot. Shard moves already exist operationally (fencing +
   reopen + Streams-Replay-To); the rebalancer just chooses WHEN, via the
   ring: write a new `ring_active` assignment, the losing host closes the
   shard on fence, the gaining host opens it lazily on first routed
@@ -152,9 +155,9 @@ freshly-moved shard isn't double-treated.
 - Reader at split boundary: parent is sealed hence bounded; the
   `next_offset` at seal is recorded in the segmap entry so a reader can
   prove it drained the parent before switching (exactly-once handoff).
-- Merge with laggy absorber: merging only changes future writes; parent
-  drains are independent. No interaction with absorb-lag beyond the
-  placement guard.
+- Merge with a stalled sealer: merging only changes future writes; the
+  parents' seals are independent. No interaction with the maintenance lag
+  beyond the placement guard.
 
 ## 7. Env / knobs
 
@@ -165,10 +168,8 @@ freshly-moved shard isn't double-treated.
 | `SCALE_HOT_PCT` | 75 | split above this % of the per-segment limits; cold below 5% of it |
 | `SCALE_HOT_EVALS` | 2 | consecutive hot evals before a split; merge after four times as many cold evals |
 | `SCALE_COOLDOWN_SECS` | 600 | min segment age before re-scale |
-| `REBALANCE_LAG_SECS` | 60 | absorb-lag threshold (sustained 2 fleet ticks) |
+| `REBALANCE_LAG_SECS` | 60 | maintenance-lag threshold (sustained 2 fleet ticks) |
 | `REBALANCE_MOVE_COOLDOWN_SECS` | 60 | churn guard: min gap between moves per host |
-| `SCALE_FAULT_POINT` | unset | test-only: `after_seal` aborts a split in the seal→save window (D4) |
-| `ABSORB_PAUSE` | unset | test-only: `1` pauses absorption so lag grows (D3) |
 
 ### Crash resumability (implemented)
 
@@ -224,8 +225,9 @@ fresh midpoint is correct regardless of what the dead scaler intended.
 
 ### Rebalancer (implemented)
 
-Self-initiated: the laggard instance knows its own per-shard absorb lag,
-so it initiates the move (no leader). When `absorb_lag_max > 
+Self-initiated: the laggard instance knows its own per-shard maintenance
+lag (the sealer's stall, or the commit wedge if longer), so it initiates
+the move (no leader). When `absorb_lag_max > 
 REBALANCE_LAG_SECS` for 2 fleet ticks and the move cooldown passed, it
 CAS-appends `{shard -> coolest fresh, healthy member of the active ring}`
 to `fleet/overrides.json` and drops the shard from its serving map.
@@ -251,7 +253,10 @@ checks through the fleet formed afterwards over the same PATH_PREFIX:
 - D2: drive 4× limit → recursive splits to 4 segments; then idle →
   merges back respecting cooldowns; order verified continuously.
 - D3: hot HOST, cool segments → rebalancer moves shards (no splits);
-  absorb-lag injected via absorber pause → move fires at 60 s.
+  maintenance lag injected → move fires at 60 s (the 2026-07 ladder
+  injected it with the absorber pause, which layout 6 removed with the
+  absorber; `bench/docker` still sets `ABSORB_PAUSE`, which the binary
+  no longer reads, so D3 needs a new lag injection).
 - D4: kill the scaler mid-split at every step (fault-point loop) →
   resumability; kill a server mid-move → fencing correctness.
 - D5: 30-minute soak at mixed load with chaos (random container

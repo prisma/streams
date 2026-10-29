@@ -37,20 +37,12 @@ mod shard_keys {
     }
 
     #[test]
-    fn golden_layout5_shard_page_key_bytes_be_last_offset() {
-        // <hash16> 'p' <last offset u64 BIG-endian> — BE keeps pages
-        // offset-ordered inside the hash range.
-        let key = crate::crypto_page::shard_page_key(&H, OFF);
+    fn golden_layout6_pending_key_bytes() {
+        // 'S' <hash16> 'P': the stream's unsealed pages, one row
         assert_eq!(
-            hex(&key),
-            concat!(
-                "53",
-                "11111111111111111111111111111111",
-                "70",
-                "0102030405060708"
-            )
+            hex(&crate::spill::pending::pending_key(&H)),
+            concat!("53", "11111111111111111111111111111111", "50")
         );
-        assert_eq!(key.len(), 26);
     }
 
     #[test]
@@ -90,36 +82,13 @@ mod shard_keys {
             concat!("53", "11111111111111111111111111111111", "47")
         );
     }
-
-    #[test]
-    fn golden_layout4_dirty_key_sentinel_bytes() {
-        // <0xFF*16 sentinel> 'D' <hash16>
-        assert_eq!(
-            hex(&dirty_key(&H)),
-            concat!(
-                "53", // layout 6 stream segment tag
-                "ffffffffffffffffffffffffffffffff",
-                "44",
-                "11111111111111111111111111111111"
-            )
-        );
-    }
-
-    #[test]
-    fn golden_layout4_shard_maint_key_bytes() {
-        // <0xFF*16 sentinel> 'M'
-        assert_eq!(
-            hex(&shard_maint_key()),
-            concat!("53", "ffffffffffffffffffffffffffffffff", "4d")
-        );
-    }
 }
 
 mod tail_codec {
     use super::*;
     use crate::shard::{TailFields, decode_tail_for_tests, encode_tail_for_tests};
 
-    /// Fully-populated v3 tail. Each numeric field carries a distinct
+    /// A fully populated v4 tail. Each numeric field carries a distinct
     /// ascending byte pattern so field-order or endianness regressions
     /// move the golden bytes.
     fn full_tail() -> TailFields {
@@ -128,35 +97,31 @@ mod tail_codec {
             ts: 0x1817_1615_1413_1211,
             logical: 0x2827_2625_2423_2221,
             absorbed: 0x3837_3635_3433_3231,
-            trimmed: 0x4847_4645_4443_4241,
             seq: Some("seq-7".into()),
             closed: true,
-            history_v2: true,
             route: [
                 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD,
                 0xAE, 0xAF,
             ],
-            trim_safe_to: 0x5857_5655_5453_5251,
             unabsorbed_bytes: 0x6867_6665_6463_6261,
+            usage: None,
+            billing: crate::shard::StaticBilling::Unread,
         }
     }
 
-    /// v3 layout:
-    /// [ver=3][next u64 LE][ts i64 LE][logical u64 LE][absorbed u64 LE]
-    /// [trimmed u64 LE][flags u8][seq_len u16 LE][seq][route 16]
-    /// [trim_safe_to u64 LE][unabsorbed_bytes u64 LE]
-    const FULL_V3_HEX: &str = concat!(
-        "03",                               // ver
+    /// v4 layout (layout 6):
+    /// [ver=4][next u64 LE][ts i64 LE][logical u64 LE][absorbed u64 LE]
+    /// [flags u8][seq_len u16 LE][seq][route 16][unabsorbed_bytes u64 LE]
+    const FULL_V4_HEX: &str = concat!(
+        "04",                               // ver
         "0102030405060708",                 // next LE
         "1112131415161718",                 // ts LE
         "2122232425262728",                 // logical LE
-        "3132333435363738",                 // absorbed LE
-        "4142434445464748",                 // trimmed LE
-        "03",                               // flags: bit0 closed | bit1 history_v2
+        "3132333435363738",                 // absorbed (sealed boundary) LE
+        "01",                               // flags: bit0 closed
         "0500",                             // seq_len LE = 5
         "7365712d37",                       // "seq-7"
         "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf", // route16
-        "5152535455565758",                 // trim_safe_to LE
         "6162636465666768",                 // unabsorbed_bytes LE
     );
 
@@ -165,161 +130,103 @@ mod tail_codec {
         assert_eq!(t.ts, 0x1817_1615_1413_1211);
         assert_eq!(t.logical, 0x2827_2625_2423_2221);
         assert_eq!(t.absorbed, 0x3837_3635_3433_3231);
-        assert_eq!(t.trimmed, 0x4847_4645_4443_4241);
         assert_eq!(t.seq.as_deref(), Some("seq-7"));
         assert!(t.closed);
-        assert!(t.history_v2);
         assert_eq!(t.route[0], 0xA0);
         assert_eq!(t.route[15], 0xAF);
-        assert_eq!(t.trim_safe_to, 0x5857_5655_5453_5251);
         assert_eq!(t.unabsorbed_bytes, 0x6867_6665_6463_6261);
     }
 
     #[test]
-    fn golden_layout4_tail_v3_full_bytes() {
+    fn golden_layout6_tail_v4_full_bytes() {
         let v = encode_tail_for_tests(&full_tail());
-        assert_eq!(v.len(), 81);
-        assert_eq!(hex(&v), FULL_V3_HEX);
+        assert_eq!(v.len(), 65);
+        assert_eq!(hex(&v), FULL_V4_HEX);
     }
 
     #[test]
-    fn golden_layout4_tail_v3_minimal_bytes() {
-        // Default fields: seq=None encodes as seq_len=0, flags=0, and
-        // the extension block is zeroed — 0x03 then 75 zero bytes.
+    fn golden_layout6_tail_v4_minimal_bytes() {
+        // Default fields: 0x04, then four zero u64 lanes, flags 0,
+        // seq_len 0, a zero route and a zero unsealed count: 60 bytes.
         let v = encode_tail_for_tests(&TailFields::default());
-        assert_eq!(v.len(), 76);
-        // 0x03 followed by exactly 75 zero bytes (5 zeroed u64 lanes,
-        // flags=0, seq_len=0, zeroed route16/trim_safe_to/unabsorbed).
-        assert_eq!(
-            hex(&v),
-            concat!(
-                "03",
-                "00000000000000000000000000000000000000000000000000",
-                "00000000000000000000000000000000000000000000000000",
-                "00000000000000000000000000000000000000000000000000",
-            )
-        );
+        assert_eq!(v.len(), 60);
+        assert_eq!(hex(&v), format!("04{}", "00".repeat(59)));
     }
 
     #[test]
-    fn golden_layout4_tail_v3_roundtrip_fields() {
-        let d = decode_tail_for_tests(&encode_tail_for_tests(&full_tail())).expect("v3 decodes");
+    fn golden_layout6_tail_v4_roundtrip_fields() {
+        let d = decode_tail_for_tests(&encode_tail_for_tests(&full_tail())).expect("v4 decodes");
         assert_full_fields(&d);
     }
 
-    /// v2 rows have NO flags byte: seq_len sits at offset 41, and the
-    /// decoder reports flags=0 (open, legacy per-stream history).
-    fn v2_row() -> Vec<u8> {
-        let mut v = vec![2u8];
-        v.extend_from_slice(&0x0807_0605_0403_0201u64.to_le_bytes()); // next
-        v.extend_from_slice(&0x1817_1615_1413_1211i64.to_le_bytes()); // ts
-        v.extend_from_slice(&0x2827_2625_2423_2221u64.to_le_bytes()); // logical
-        v.extend_from_slice(&0x3837_3635_3433_3231u64.to_le_bytes()); // absorbed
-        v.extend_from_slice(&0x4847_4645_4443_4241u64.to_le_bytes()); // trimmed
-        v.extend_from_slice(&5u16.to_le_bytes()); // seq_len at offset 41
-        v.extend_from_slice(b"seq-7");
-        v
-    }
-
     #[test]
-    fn golden_layout4_tail_v2_decode_no_flags_byte() {
-        // A bare v2 row ends after the seq bytes: the extension fields
-        // default to zero.
-        let d = decode_tail_for_tests(&v2_row()).expect("v2 decodes");
-        assert_eq!(d.next, 0x0807_0605_0403_0201);
-        assert_eq!(d.ts, 0x1817_1615_1413_1211);
-        assert_eq!(d.logical, 0x2827_2625_2423_2221);
-        assert_eq!(d.absorbed, 0x3837_3635_3433_3231);
-        assert_eq!(d.trimmed, 0x4847_4645_4443_4241);
-        assert_eq!(d.seq.as_deref(), Some("seq-7"));
-        assert!(!d.closed, "v2 rows have no flags byte -> open");
-        assert!(!d.history_v2, "v2 rows predate the v2-history bit");
-        assert_eq!(d.route, [0u8; 16]);
-        assert_eq!(d.trim_safe_to, 0);
-        assert_eq!(d.unabsorbed_bytes, 0);
-    }
-
-    #[test]
-    fn golden_layout4_tail_v2_decode_with_trailing_extensions() {
-        // The decoder reads route/trim_safe_to/unabsorbed_bytes from a
-        // v2 row that carries them (same trailing layout as v3).
-        let mut v = v2_row();
-        v.extend_from_slice(&[0xA0u8; 16]);
-        v.extend_from_slice(&0x5857_5655_5453_5251u64.to_le_bytes());
-        v.extend_from_slice(&0x6867_6665_6463_6261u64.to_le_bytes());
-        let d = decode_tail_for_tests(&v).expect("v2 + extensions decodes");
-        assert_eq!(d.route, [0xA0u8; 16]);
-        assert_eq!(d.trim_safe_to, 0x5857_5655_5453_5251);
-        assert_eq!(d.unabsorbed_bytes, 0x6867_6665_6463_6261);
-        assert!(!d.closed && !d.history_v2);
-    }
-
-    #[test]
-    fn golden_layout4_tail_decode_tolerates_trailing_bytes() {
-        // Forward evolution: unknown trailing bytes are ignored.
+    fn golden_layout6_tail_trailing_bytes_are_usage_counters_or_refused() {
+        // Layout 6 (f3): after the complete known suffix only a billed
+        // segment's usage counters follow; any other trailing bytes are
+        // corruption.
         let mut v = encode_tail_for_tests(&full_tail());
         v.extend_from_slice(&[0xEE; 7]);
-        let d = decode_tail_for_tests(&v).expect("trailing bytes tolerated");
-        assert_full_fields(&d);
-    }
-
-    #[test]
-    fn golden_layout4_tail_decode_rejects_short_and_bad_version() {
-        // Shorter than the fixed v3 prefix (44 bytes): None, not a panic.
-        assert!(decode_tail_for_tests(&[3u8; 43]).is_none());
-        assert!(decode_tail_for_tests(&[]).is_none());
-        // Version bytes outside {2, 3} are refused even at full length.
-        assert!(decode_tail_for_tests(&[4u8; 64]).is_none());
-        assert!(decode_tail_for_tests(&[0u8; 64]).is_none());
-        assert!(decode_tail_for_tests(&[1u8; 64]).is_none());
-        // A seq_len overrunning the buffer is None, not a panic.
-        let mut v = encode_tail_for_tests(&TailFields::default());
-        v.truncate(44);
-        v[42] = 0xFF; // seq_len = 65535
-        v[43] = 0xFF;
-        assert!(decode_tail_for_tests(&v).is_none());
-    }
-}
-
-mod dirty_value {
-    use crate::shard::{StreamMaintenance, decode_dirty_value, dirty_value_for_tests};
-
-    #[test]
-    fn golden_layout4_dirty_value_32byte_le() {
-        // v2 row: absorbed, next, unabsorbed_bytes, oldest_unabsorbed_ms
-        // — four little-endian u64/i64 lanes, 32 bytes total.
-        let m = StreamMaintenance {
-            absorbed: 0x0807_0605_0403_0201,
-            next: 0x1817_1615_1413_1211,
-            unabsorbed_bytes: 0x2827_2625_2423_2221,
-            oldest_unabsorbed_ms: 0x3837_3635_3433_3231,
-        };
-        let v = dirty_value_for_tests(&m);
+        assert!(
+            decode_tail_for_tests(&v).is_none(),
+            "trailing bytes refused"
+        );
+        let mut billed = full_tail();
+        billed.usage = Some(crate::billing::stored_meta::UsageCounters {
+            usage_version: 2,
+            ingest_payload_bytes_total: 300,
+            ingest_records_total: 1,
+            owned_frame_bytes_current: 380,
+            storage_accounted_through_ms: 1_700_000_000_000,
+            month_ingest_payload_bytes: 300,
+            month_ingest_records: 1,
+            month_storage_byte_ms: None,
+        });
+        let v = encode_tail_for_tests(&billed);
         assert_eq!(
-            crate::crypto::hex(&v),
+            hex(&v[65..]),
             concat!(
-                "0102030405060708", // absorbed LE
-                "1112131415161718", // next LE
-                "2122232425262728", // unabsorbed_bytes LE
-                "3132333435363738", // oldest_unabsorbed_ms LE
+                "46",
+                "02",
+                "ac02",
+                "01",
+                "fc02",
+                "80a0abfef962",
+                "ac02",
+                "01",
+                "00"
             )
         );
-        let d = decode_dirty_value(&v).expect("v2 row decodes");
-        assert_eq!(d, m);
+        let d = decode_tail_for_tests(&v).expect("counters decode");
+        assert_full_fields(&d);
+        assert_eq!(d.usage, billed.usage);
+        assert!(
+            decode_tail_for_tests(&v[..v.len() - 1]).is_none(),
+            "partial counters refused"
+        );
     }
 
     #[test]
-    fn golden_layout4_dirty_value_v1_16byte_decode() {
-        // v1 rows (absorbed, next only) decode with zero gauge/age and
-        // remain valid "has outstanding maintenance" markers.
-        let v1 = crate::crypto::unhex("01020304050607081112131415161718").unwrap();
-        let d = decode_dirty_value(&v1).expect("v1 row decodes");
-        assert_eq!(d.absorbed, 0x0807_0605_0403_0201);
-        assert_eq!(d.next, 0x1817_1615_1413_1211);
-        assert_eq!(d.unabsorbed_bytes, 0);
-        assert_eq!(d.oldest_unabsorbed_ms, 0);
-        // Anything shorter than one v1 row is rejected, never a panic.
-        assert!(decode_dirty_value(&v1[..15]).is_none());
+    fn golden_layout6_tail_decode_rejects_short_bad_version_and_unknown_flags() {
+        // Shorter than the fixed v4 prefix (60 bytes): None, not a panic.
+        let minimal = encode_tail_for_tests(&TailFields::default());
+        assert!(decode_tail_for_tests(&minimal[..59]).is_none());
+        assert!(decode_tail_for_tests(&[]).is_none());
+        // Every version byte but 4 is refused at full length, the earlier
+        // layouts' 2 and 3 included: no legacy decoder.
+        for ver in [0u8, 1, 2, 3, 5, 0xFF] {
+            let mut v = minimal.clone();
+            v[0] = ver;
+            assert!(decode_tail_for_tests(&v).is_none(), "version {ver}");
+        }
+        // A flag bit other than closed is refused (bit 1 was history v2).
+        let mut v = minimal.clone();
+        v[33] = 0x02;
+        assert!(decode_tail_for_tests(&v).is_none());
+        // A seq_len overrunning the buffer is None, not a panic.
+        let mut v = minimal;
+        v[34] = 0xFF; // seq_len = 65535
+        v[35] = 0xFF;
+        assert!(decode_tail_for_tests(&v).is_none());
     }
 }
 
@@ -407,9 +314,8 @@ mod queue_keys {
 
 mod billing {
     use super::*;
-    use crate::billing::{
-        SegmentBillingMetaV1, billing_meta_key, usage_dirty_key, usage_month_final_key,
-    };
+    use crate::billing::stored_meta::{UsageCounters, decode_static, encode_static};
+    use crate::billing::{SegmentBillingMetaV1, billing_meta_key, usage_month_final_key};
 
     #[test]
     fn golden_layout4_billing_meta_key_bytes() {
@@ -417,20 +323,6 @@ mod billing {
         assert_eq!(
             hex(&billing_meta_key(&H)),
             concat!("53", "11111111111111111111111111111111", "42")
-        );
-    }
-
-    #[test]
-    fn golden_layout4_usage_dirty_key_bytes() {
-        // <0xFF*16 sentinel> 'U' <seg-hash16>
-        assert_eq!(
-            hex(&usage_dirty_key(&H)),
-            concat!(
-                "53", // layout 6 stream segment tag
-                "ffffffffffffffffffffffffffffffff",
-                "55",
-                "11111111111111111111111111111111"
-            )
         );
     }
 
@@ -451,10 +343,10 @@ mod billing {
         );
     }
 
-    /// The billing-meta VALUE codec is serde_json over
-    /// SegmentBillingMetaV1; every field always serializes (no skips).
+    /// The billing meta is stored in two halves (layout 6, f3): its static
+    /// row under `billing_meta_key`, and its usage counters on the tail.
     #[test]
-    fn golden_layout4_billing_meta_value_json() {
+    fn golden_layout6_billing_meta_static_row_and_counters_bytes() {
         let m = SegmentBillingMetaV1 {
             v: 1,
             account_id: "acct-1".into(),
@@ -474,75 +366,59 @@ mod billing {
             month_storage_byte_ms: "12345678901234567890".into(), // u128 as string
             retained_by_forks: true,
         };
-        let json = serde_json::to_string(&m).unwrap();
+        let row = encode_static(&m);
         assert_eq!(
-            json,
-            r#"{"v":1,"account_id":"acct-1","project_id":"proj-test","stream_id":"sid","stream_name":"orders","segment_id":2,"usage_version":9,"ingest_payload_bytes_total":1000,"ingest_records_total":10,"owned_frame_bytes_current":4096,"storage_accounted_through_ms":1786000000000,"month_year":2026,"month_month":8,"month_ingest_payload_bytes":500,"month_ingest_records":5,"month_storage_byte_ms":"12345678901234567890","retained_by_forks":true}"#
+            hex(&row),
+            concat!(
+                "01",                   // static row version
+                "0100",                 // v LE
+                "02000000",             // segment_id LE
+                "ea070000",             // month_year LE
+                "08",                   // month (varint)
+                "01",                   // flags: retained by forks
+                "06616363742d31",       // "acct-1"
+                "0970726f6a2d74657374", // "proj-test"
+                "03736964",             // "sid"
+                "066f7264657273",       // "orders"
+            )
         );
-    }
-
-    #[test]
-    fn golden_layout4_billing_meta_value_default_json_and_decode() {
-        // Every field carries #[serde(default)]: "{}" decodes to the
-        // zero row, and the zero row serializes with all keys present.
-        let d: SegmentBillingMetaV1 = serde_json::from_str("{}").unwrap();
+        let mut counters = Vec::new();
+        UsageCounters::of(&m).unwrap().encode_into(&mut counters);
         assert_eq!(
-            serde_json::to_string(&d).unwrap(),
-            r#"{"v":0,"account_id":"","project_id":"","stream_id":"","stream_name":"","segment_id":0,"usage_version":0,"ingest_payload_bytes_total":0,"ingest_records_total":0,"owned_frame_bytes_current":0,"storage_accounted_through_ms":0,"month_year":0,"month_month":0,"month_ingest_payload_bytes":0,"month_ingest_records":0,"month_storage_byte_ms":"","retained_by_forks":false}"#
+            hex(&counters),
+            concat!(
+                "46",                   // 'F'
+                "09",                   // usage_version
+                "e807",                 // ingest bytes 1000
+                "0a",                   // ingest records
+                "8020",                 // gauge 4096
+                "8090aadefa67",         // storage clock (zigzag)
+                "f403",                 // month bytes 500
+                "05",                   // month records
+                "01",                   // month byte-time present
+                "d295fcd8ceb1aaaaab01", // low 64 bits
+                "00",                   // high 64 bits
+            )
+        );
+        let mut back = decode_static(&row).unwrap();
+        UsageCounters::decode(&counters).unwrap().apply(&mut back);
+        assert_eq!(
+            serde_json::to_value(&back).unwrap(),
+            serde_json::to_value(&m).unwrap()
         );
     }
 }
 
-mod history_postings {
+mod routing_key_hash {
     use super::*;
-    use crate::crypto::{RouteHash, RoutingKeyHash, SegmentHash};
-
-    #[test]
-    fn golden_layout5_history_page_key_bytes() {
-        // <route16> <inc16> 'g' <last offset u64 BE>; 'p' is postings below
-        assert_eq!(
-            hex(&crate::crypto_page::history_page_key(
-                RouteHash(H),
-                SegmentHash(K),
-                OFF
-            )),
-            concat!(
-                "11111111111111111111111111111111",
-                "22222222222222222222222222222222",
-                "67",
-                "0102030405060708"
-            )
-        );
-    }
-
-    #[test]
-    fn golden_layout4_postings_key_bytes() {
-        // <route16> <inc16> 'p' <rk_hash16> <bucket BE8> <page_first BE8>
-        assert_eq!(
-            hex(&crate::postings::postings_key(
-                RouteHash(H),
-                SegmentHash(K),
-                &RoutingKeyHash([0x33; 16]),
-                OFF,
-                OFF2
-            )),
-            concat!(
-                "11111111111111111111111111111111",
-                "22222222222222222222222222222222",
-                "70",
-                "33333333333333333333333333333333",
-                "0102030405060708",
-                "1112131415161718"
-            )
-        );
-    }
 
     #[test]
     fn golden_layout4_rk_hash_sha256_prefix() {
-        // rk_hash is the first 16 bytes of SHA-256 over the routing key
-        // (independently computed: sha256("golden-key")[..16]).
+        // A routing key's hash is the first 16 bytes of SHA-256 over the
+        // key (independently computed: sha256("golden-key")[..16]); the
+        // seal directory's key summaries are built from it.
         assert_eq!(
-            hex(&crate::postings::rk_hash("golden-key").0),
+            hex(&crate::crypto::RoutingKeyHash::of("golden-key").0),
             "62518b7ee254c5426695f549d536d62c"
         );
     }

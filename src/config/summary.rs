@@ -32,14 +32,6 @@ impl ServerConfig {
                 "open_wait_ms": self.shard.open_wait_ms,
                 "unready_exit_after_secs": self.shard.unready_exit_after_secs,
             },
-            "history": {
-                "absorb_pause_initial": self.history.absorb_pause_initial,
-                "absorb_global_budget_bytes": self.history.absorb_global_budget_bytes,
-                "absorb_global_gathers": self.history.absorb_global_gathers,
-                "cache_bytes": self.history.cache_bytes,
-                "gc_interval_ms": self.history.gc_interval.map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
-            },
-            "postings": { "cache_bytes": self.postings.cache_bytes },
             "sse": {
                 "feed_ring_bytes": self.sse.feed_ring_bytes,
                 "feed_total_bytes": self.sse.feed_total_bytes,

@@ -1,9 +1,12 @@
-//! Maintenance rows: load-or-rebuild across present, missing and corrupt
-//! state, and the absorbed-boundary retirement that keeps the ledger exact.
+//! The shard's unsealed ledger: its delta rule, its rebuild from the stored
+//! tails, and the seal commits that retire it exactly (layout 6).
 #![cfg(test)]
 use super::*;
-use crate::crypto_page::shard_page_key;
+use crate::shard::seal::test_hooks::Hold;
+use crate::shard::seal::{SealAdvance, SealCommit, SealError, Trigger};
+use crate::spill::pending::{parse_pages, pending_key};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 /// R25-A: the delta rule. Retirement past the ledger is an ERROR —
 /// clamping would hide the exact unit-divergence class this type
@@ -86,261 +89,109 @@ fn maintenance_refusals_keep_their_words() {
         full.apply_delta(1, 0, 1).unwrap_err().to_string(),
         "maintenance byte overflow"
     );
-    assert_eq!(
-        decode_shard_maint_row(&[2u8; 39])
-            .err()
-            .map(|error| error.to_string())
-            .as_deref(),
-        Some("unsupported shard maintenance row (39 bytes)")
-    );
 }
 
-/// R25-A/R26-4: the codec round-trips v2; the R24 16-byte row is
-/// classified LEGACY — its payload-unit value is never surfaced as
-/// frame bytes (it can under- OR overstate, and understatement makes
-/// the first exact retirement read as over-retirement forever).
-#[test]
-fn codec_roundtrips_v2_and_refuses_v1_values() {
-    let m = ShardMaintenance {
-        version: 7,
-        unabsorbed_frame_bytes: 123_456,
-        backlog_started_ms: 111,
-        last_progress_ms: 222,
-    };
-    let got = decode_shard_maint(&encode_shard_maint(&m)).unwrap();
-    assert_eq!(got, m);
-
-    // R24 layout: [bytes u64][oldest_ms i64], 16 untagged bytes.
-    let mut v1 = [0u8; 16];
-    v1[..8].copy_from_slice(&987_654u64.to_le_bytes());
-    v1[8..].copy_from_slice(&42i64.to_le_bytes());
-    assert!(
-        matches!(
-            decode_shard_maint_row(&v1),
-            Ok(ShardMaintRow::LegacyPayloadUnit)
-        ),
-        "16-byte row must classify as legacy"
-    );
-    assert!(
-        decode_shard_maint(&v1).is_err(),
-        "the strict decode must never surface a payload-unit value"
-    );
-
-    assert!(
-        decode_shard_maint(&[0u8; 7]).is_err(),
-        "corrupt row must error"
-    );
-    let mut bad = [0u8; 40];
-    bad[0] = 99;
-    assert!(
-        decode_shard_maint(&bad).is_err(),
-        "unknown version must error"
-    );
-}
-
-/// R25-A: load semantics against a real DB — present row loads (with
-/// the progress clock initialized for v1 rows), missing row rebuilds
-/// from the dirty index + tails and PERSISTS the rebuilt row.
-#[expect(
-    clippy::too_many_lines,
-    reason = "load_or_rebuild_covers_present_missing_and_corrupt; the scenario pins the present, missing and corrupt maintenance rows through one engine in one order; helper phases would hide which state each rebuild observed"
-)]
+/// Layout 6: the ledger lives in memory only, and the open rebuilds it by
+/// summing the stored stream tails' unsealed bytes. Tails holding 300 and
+/// 400 unsealed bytes rebuild to 700 with both clocks started; a log with
+/// no tail rebuilds to a zero ledger with no clock; a tail that does not
+/// decode, or whose boundary is past its next offset, is left out (its
+/// stream fails alone at its handle load), and a queue's tail is not a
+/// stream's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn load_or_rebuild_covers_present_missing_and_corrupt() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-
-    // 1. Present v2 row: loads exactly.
-    let db = Db::builder("m1/shard", store.clone())
-        .build()
-        .await
-        .unwrap();
-    let m = ShardMaintenance {
-        version: 3,
-        unabsorbed_frame_bytes: 555,
-        backlog_started_ms: 10,
-        last_progress_ms: 20,
-    };
-    let mut wb = WriteBatch::new();
-    wb.put(shard_maint_key(), encode_shard_maint(&m));
-    db.write_with_options(wb, &WriteOptions::default())
-        .await
-        .unwrap();
-    assert_eq!(load_or_rebuild_maintenance(&db).await.unwrap(), m);
-    db.close().await.unwrap();
-
-    // 2. Present v1 row (payload-unit 777): the value is IGNORED and
-    // the ledger is rebuilt from the exact tails (R26-4). The
-    // persisted replacement is a v2 row.
-    let db = Db::builder("m2/shard", store.clone())
-        .build()
-        .await
-        .unwrap();
-    let mut v1 = [0u8; 16];
-    v1[..8].copy_from_slice(&777u64.to_le_bytes());
-    let h0 = [9u8; 16];
-    let mut wb = WriteBatch::new();
-    wb.put(shard_maint_key(), v1);
-    wb.put(
-        tail_key(&h0),
+    let unsealed = |bytes: u64| {
         encode_tail(&TailFields {
-            next: 5,
-            absorbed: 2,
-            unabsorbed_bytes: 300,
-            ..Default::default()
-        }),
-    );
-    wb.put(
-        dirty_key(&h0),
-        dirty_value(&StreamMaintenance {
-            absorbed: 2,
-            next: 5,
-            ..Default::default()
-        }),
-    );
-    db.write_with_options(wb, &WriteOptions::default())
-        .await
-        .unwrap();
-    let got = load_or_rebuild_maintenance(&db).await.unwrap();
-    assert_eq!(
-        got.unabsorbed_frame_bytes, 300,
-        "legacy value must be rebuilt from tails, never converted"
-    );
-    assert!(
-        got.last_progress_ms > 0,
-        "rebuilt backlog must start the stall clock"
-    );
-    let raw = db
-        .get(shard_maint_key())
-        .await
-        .unwrap()
-        .expect("row replaced");
-    assert_eq!(raw.len(), 40, "the legacy row must be replaced by v2");
-    db.close().await.unwrap();
-
-    // 3. Missing row: rebuild from dirty index + tails, then persist.
-    let db = Db::builder("m3/shard", store.clone())
-        .build()
-        .await
-        .unwrap();
-    let h1 = [1u8; 16];
-    let h2 = [2u8; 16];
-    let mut wb = WriteBatch::new();
-    for (h, bytes) in [(h1, 300u64), (h2, 400u64)] {
-        let t = TailFields {
             next: 10,
             absorbed: 4,
             unabsorbed_bytes: bytes,
             ..Default::default()
-        };
-        wb.put(tail_key(&h), encode_tail(&t));
-        wb.put(
-            dirty_key(&h),
-            dirty_value(&StreamMaintenance {
-                absorbed: 4,
-                next: 10,
-                ..Default::default()
-            }),
-        );
-    }
-    db.write_with_options(wb, &WriteOptions::default())
-        .await
-        .unwrap();
-    let got = load_or_rebuild_maintenance(&db).await.unwrap();
-    assert_eq!(got.unabsorbed_frame_bytes, 700, "rebuild sums tail gauges");
-    // And it persisted: a second load takes the row path.
-    let raw = db
-        .get(shard_maint_key())
-        .await
-        .unwrap()
-        .expect("row persisted");
-    assert_eq!(
-        decode_shard_maint(&raw).unwrap().unabsorbed_frame_bytes,
-        700
-    );
-    db.close().await.unwrap();
+        })
+    };
 
-    // 4. Corrupt row: an engine-open FAILURE, never zero backlog.
-    let db = Db::builder("m4/shard", store.clone())
+    // 1. Present tails: the rebuild sums their unsealed bytes.
+    let db = crate::keyspace::db_builder("m1/shard", store.clone())
         .build()
         .await
         .unwrap();
     let mut wb = WriteBatch::new();
-    wb.put(shard_maint_key(), vec![9u8; 11]);
-    db.write_with_options(wb, &WriteOptions::default())
-        .await
-        .unwrap();
-    assert!(
-        load_or_rebuild_maintenance(&db).await.is_err(),
-        "corrupt maintenance row must fail the open"
-    );
-    db.close().await.unwrap();
-}
-
-/// R26-4: the rebuild repairs only a tail that holds unabsorbed records with
-/// a zero gauge. A fully absorbed stream whose trims are pending keeps its
-/// dirty mark, and its zero gauge is exact: the rebuild counts it as no
-/// backlog and leaves its tail row as stored. The row is the pre-gauge
-/// layout, so a repair would show: it rewrites the row with its gauge.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_rebuild_keeps_a_fully_absorbed_tail_with_pending_trims() {
-    let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-    let db = Db::builder("m5/shard", store).build().await.unwrap();
-    let h = [5u8; 16];
-    let stored = encode_tail_without_gauge_for_tests(&TailFields {
+    wb.put(tail_key(&[1; 16]), unsealed(300));
+    wb.put(tail_key(&[2; 16]), unsealed(400));
+    let sealed = TailFields {
         next: 10,
         absorbed: 10,
-        trimmed: 4,
-        trim_safe_to: 10,
         ..Default::default()
-    });
-    let mut wb = WriteBatch::new();
-    wb.put(tail_key(&h), stored.clone());
-    wb.put(
-        dirty_key(&h),
-        dirty_value(&StreamMaintenance {
-            absorbed: 10,
-            next: 10,
-            ..Default::default()
-        }),
-    );
-    db.write_with_options(wb, &WriteOptions::default())
+    };
+    wb.put(tail_key(&[3; 16]), encode_tail(&sealed));
+    db.write(wb).await.unwrap();
+    let before = now_ms();
+    let got = load_or_rebuild_maintenance(&db).await.unwrap();
+    assert_eq!(got.unabsorbed_frame_bytes, 700, "rebuild sums tail gauges");
+    for clock in [got.backlog_started_ms, got.last_progress_ms] {
+        assert!(
+            (before..=now_ms()).contains(&clock),
+            "a rebuilt backlog starts both clocks: {got:?}"
+        );
+    }
+    db.close().await.unwrap();
+
+    // 2. No tail: nothing unsealed, no clock.
+    let db = crate::keyspace::db_builder("m2/shard", store.clone())
+        .build()
         .await
         .unwrap();
+    assert_eq!(
+        load_or_rebuild_maintenance(&db).await.unwrap(),
+        ShardMaintenance {
+            version: 1,
+            ..ShardMaintenance::default()
+        }
+    );
+    db.close().await.unwrap();
+
+    // 3. Corrupt tails are left out; a queue tail is not counted.
+    let db = crate::keyspace::db_builder("m3/shard", store.clone())
+        .build()
+        .await
+        .unwrap();
+    let ahead = TailFields {
+        next: 10,
+        absorbed: 11,
+        unabsorbed_bytes: 999,
+        ..Default::default()
+    };
+    let mut wb = WriteBatch::new();
+    wb.put(tail_key(&[1; 16]), unsealed(300));
+    wb.put(tail_key(&[4; 16]), b"broken tail");
+    wb.put(tail_key(&[5; 16]), encode_tail(&ahead));
+    wb.put(queue_tail_key(&[6; 16]), unsealed(50));
+    db.write(wb).await.unwrap();
     let got = load_or_rebuild_maintenance(&db).await.unwrap();
-    assert_eq!(
-        (
-            got.unabsorbed_frame_bytes,
-            got.backlog_started_ms,
-            got.last_progress_ms
-        ),
-        (0, 0, 0)
-    );
-    let tail = db.get(tail_key(&h)).await.unwrap().unwrap();
-    assert_eq!(
-        tail.as_ref(),
-        stored.as_slice(),
-        "the tail row was rewritten"
-    );
+    assert_eq!(got.unabsorbed_frame_bytes, 300);
     db.close().await.unwrap();
 }
 
-// ---- absorbed-boundary retirement (release hold: the capacity run's
-// one-off 500). An absorbed advance that re-covers bytes an earlier
-// advance retired used to retire them again; once the stream ledger was
-// smaller than the double count, the whole commit group was refused as
-// "maintenance accounting diverged" and every append in it answered 500.
+// ---- seal retirement (release hold: the capacity run's one-off 500). A
+// boundary advance that re-covered bytes an earlier one retired used to
+// retire them again; once the stream ledger was smaller than the double
+// count, the whole commit group was refused as "maintenance accounting
+// diverged" and every append in it answered 500. In layout 6 the advance is
+// a seal's commit, staged against the live tail: one whose snapshot no
+// longer matches is refused whole and retires nothing.
 
 type Answer = oneshot::Receiver<Result<AppendAck, AppendErr>>;
 const ANSWER_WITHIN: std::time::Duration = std::time::Duration::from_secs(20);
 
-/// An engine over a fault store whose WAL puts a test can hold.
+/// An engine over a fault store whose WAL puts a test can hold, its sealer
+/// open and driven only by the test (`seal_once`).
 async fn rig(name: &str) -> (Arc<ShardEngine>, Arc<crate::dst::FaultStore>) {
     let store = crate::dst::FaultStore::uniform(
         Arc::new(object_store::memory::InMemory::new()),
         0x52,
         crate::dst::FaultPlan::new(0, 0, 0),
     );
-    let db = Db::builder(name, store.clone() as Arc<dyn object_store::ObjectStore>)
+    let db = crate::keyspace::db_builder(name, store.clone() as Arc<dyn object_store::ObjectStore>)
         .with_settings(slatedb::config::Settings {
             flush_interval: Some(std::time::Duration::from_millis(5)),
             ..Default::default()
@@ -348,16 +199,16 @@ async fn rig(name: &str) -> (Arc<ShardEngine>, Arc<crate::dst::FaultStore>) {
         .build()
         .await
         .unwrap();
-    let (tx, _signals) = mpsc::channel(1);
     let engine = ShardEngine::start(
         name.into(),
         Arc::new(db),
         store.clone(),
         ShardConfig::default(),
-        tx,
         None,
         Default::default(),
     );
+    engine.configure_seal(|s| s.auto = false);
+    engine.seal_ready().await.unwrap();
     (engine, store)
 }
 
@@ -401,14 +252,26 @@ async fn append(engine: &ShardEngine, hash: [u8; 16]) -> Result<AppendAck, Appen
         .unwrap()
 }
 
-/// Stored frame bytes of the stream's records [from, upto).
+/// Stored bytes of the stream's one-record pages [from, upto), every one of
+/// which its pending row must hold.
 async fn stored_bytes(engine: &ShardEngine, hash: &[u8; 16], from: u64, upto: u64) -> u64 {
-    let mut total = 0;
-    for offset in from..upto {
-        let row = engine.db.get(shard_page_key(hash, offset)).await.unwrap();
-        total += row.unwrap().len() as u64;
-    }
-    total
+    let raw = engine
+        .db
+        .get(pending_key(hash))
+        .await
+        .unwrap()
+        .unwrap_or_default();
+    let pages: Vec<(u64, Bytes)> = parse_pages(&raw)
+        .unwrap()
+        .into_iter()
+        .filter(|(last, _)| (from..upto).contains(last))
+        .collect();
+    assert_eq!(
+        pages.len() as u64,
+        upto - from,
+        "pages [{from}, {upto}) are not all pending"
+    );
+    pages.iter().map(|(_, page)| page.len() as u64).sum()
 }
 
 async fn applied(engine: &ShardEngine, hash: [u8; 16]) -> TailFields {
@@ -417,108 +280,100 @@ async fn applied(engine: &ShardEngine, hash: [u8; 16]) -> TailFields {
     state.applied.clone()
 }
 
-/// The advance under test as the committer stages it: `len` bytes copied
-/// from offset `from`, up to `upto`.
-fn advance(hash: [u8; 16], from: u64, upto: u64, len: u64) -> CommitOp {
-    CommitOp::Absorbed {
-        hash,
-        upto,
-        bytes: CopiedBytes::new(from, len),
-        v2: true,
+/// The object a hand-built seal names: none was PUT.
+fn made_up_object(engine: &ShardEngine) -> crate::spill::object::ObjectId {
+    crate::spill::object::ObjectId {
+        epoch: engine.writer_epoch,
+        seq: u64::MAX,
     }
 }
 
-/// The same advance through the committer queue, as one gather's batch.
-async fn submit_advance(engine: &ShardEngine, hash: [u8; 16], from: u64, upto: u64, len: u64) {
-    let copied = CopiedBytes::new(from, len);
-    engine
-        .submit_absorbed_batch_v2(vec![(hash, upto, copied)])
-        .await;
-}
-
-/// A trim step drains what an advance's budget left behind: the advance
-/// trims at most `max_trim_per_op` records below the old boundary, the rest
-/// stays trim debt, and each TrimTick moves `trimmed` on by the budget up to
-/// `trim_safe_to` and never past it (KANI-046's bound at both call sites).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_trim_tick_drains_what_an_advances_budget_left() {
-    let (engine, _store) = rig("trim-debt").await;
-    let cfg = ShardConfig {
-        max_trim_per_op: 1,
-        ..ShardConfig::default()
+/// A seal's commit of `hash`'s `[from, upto)` (`bytes` sealed) as a seal
+/// would submit it from a snapshot the test makes up, and the receiver of
+/// its refusal.
+fn seal_op(
+    engine: &ShardEngine,
+    hash: [u8; 16],
+    window: std::ops::Range<u64>,
+    bytes: u64,
+) -> (CommitOp, oneshot::Receiver<String>) {
+    let id = made_up_object(engine);
+    let (resp, refusal) = oneshot::channel();
+    let commit = SealCommit {
+        dir_key: crate::spill::directory::directory_key(id),
+        dir_value: Vec::new(),
+        ref_key: crate::spill::directory::refcount_key(id),
+        ref_value: Vec::new(),
+        streams: vec![SealAdvance {
+            hash,
+            from: window.start,
+            upto: window.end,
+            bytes,
+            snapshot_remainder: Vec::new(),
+        }],
+        resp,
     };
-    let h = [0x2e; 16];
-    for _ in 0..8 {
-        append(&engine, h).await.unwrap();
-    }
-    let b04 = stored_bytes(&engine, &h, 0, 4).await;
-    let b48 = stored_bytes(&engine, &h, 4, 8).await;
-    // While the stream owes trims, the engine's 5 s flush ticker queues a
-    // TrimTick at the engine's own budget; holding the commit gate parks it
-    // in the committer, so only this test's budgeted ticks move `trimmed`.
-    let _ticker_parked = engine.test_hold_commit().await;
-    engine.commit_group(vec![advance(h, 0, 4, b04)], &cfg).await;
-    engine.commit_group(vec![advance(h, 4, 8, b48)], &cfg).await;
-    let tail = applied(&engine, h).await;
-    let frontiers = (tail.absorbed, tail.trim_safe_to, tail.trimmed);
-    assert_eq!(frontiers, (8, 4, 1), "the advance trims one record behind");
-    for trimmed in [2, 3, 4, 4] {
-        engine.commit_group(vec![CommitOp::TrimTick], &cfg).await;
-        assert_eq!(applied(&engine, h).await.trimmed, trimmed);
-    }
-    assert!(
-        engine
-            .db
-            .get(shard_page_key(&h, 3))
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        engine
-            .db
-            .get(shard_page_key(&h, 4))
-            .await
-            .unwrap()
-            .is_some()
-    );
+    (CommitOp::Seal(Box::new(commit)), refusal)
 }
 
-/// Committer layer: in one group, an advance over [0, 4) and a second
-/// over [0, 8) that re-covers it. The first retires exactly, the second
-/// is dropped whole, and the append beside them commits; the ledger then
-/// holds exactly the bytes of [absorbed, next). The stream's next advance
-/// from the boundary retires the rest and trims one advance behind.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_advance_that_overlaps_the_boundary_retires_nothing_and_fails_no_append() {
-    let (engine, _store) = rig("overlap-advance").await;
-    let cfg = ShardConfig::default();
-    let h = [0x2a; 16];
-    for _ in 0..8 {
-        append(&engine, h).await.unwrap();
-    }
-    let (b04, b48) = (
-        stored_bytes(&engine, &h, 0, 4).await,
-        stored_bytes(&engine, &h, 4, 8).await,
-    );
-    let (req, reply) = append_op(h);
-    let group = vec![
-        advance(h, 0, 4, b04),
-        advance(h, 0, 8, b04 + b48),
-        CommitOp::Append(req),
-    ];
-    engine.commit_group(group, &cfg).await;
+/// Commits a stale seal of `hash` beside one append in one group: the
+/// append commits, and the seal is refused whole, writing no row of its
+/// own.
+async fn refused_beside_an_append(
+    engine: &ShardEngine,
+    hash: [u8; 16],
+    stale: (CommitOp, oneshot::Receiver<String>),
+) {
+    let (seal, refusal) = stale;
+    let (req, reply) = append_op(hash);
+    engine.commit_group(vec![seal, CommitOp::Append(req)]).await;
     let answer = tokio::time::timeout(ANSWER_WITHIN, reply)
         .await
         .unwrap()
         .unwrap();
     assert!(
         answer.is_ok(),
-        "an append co-grouped with an overlapping advance was refused: {answer:?}"
+        "an append co-grouped with a stale seal was refused: {answer:?}"
     );
+    let why = refusal.await.expect("a refused seal is answered");
+    assert!(why.contains("moved since its snapshot"), "{why}");
+    let id = made_up_object(engine);
+    for key in [
+        crate::spill::directory::directory_key(id),
+        crate::spill::directory::refcount_key(id),
+    ] {
+        assert!(
+            engine.db.get(key).await.unwrap().is_none(),
+            "a refused seal wrote its row"
+        );
+    }
+}
+
+/// Committer layer: a seal over [0, 4) commits; then, in one group, a seal
+/// over [0, 8) whose snapshot predates it (it overlaps the boundary) and an
+/// append. The stale seal is refused whole, retiring nothing, and the
+/// append commits; the ledger then holds exactly the bytes of
+/// [absorbed, next). The stream's next seal from the boundary retires
+/// exactly what it seals.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_advance_that_overlaps_the_boundary_retires_nothing_and_fails_no_append() {
+    let (engine, _store) = rig("overlap-advance").await;
+    let h = [0x2a; 16];
+    for _ in 0..4 {
+        append(&engine, h).await.unwrap();
+    }
+    let b04 = stored_bytes(&engine, &h, 0, 4).await;
+    let first = engine.seal_once(Trigger::Requested).await.unwrap();
+    assert_eq!((first.pages, first.page_bytes), (4, b04));
+    for _ in 4..8 {
+        append(&engine, h).await.unwrap();
+    }
+    let b48 = stored_bytes(&engine, &h, 4, 8).await;
+    let stale = seal_op(&engine, h, 0..8, b04 + b48);
+    refused_beside_an_append(&engine, h, stale).await;
     let b8 = stored_bytes(&engine, &h, 8, 9).await;
     let tail = applied(&engine, h).await;
-    assert_eq!((tail.absorbed, tail.history_v2, tail.trimmed), (4, true, 0));
+    assert_eq!((tail.absorbed, tail.next), (4, 9));
     assert_eq!(
         tail.unabsorbed_bytes,
         b48 + b8,
@@ -526,45 +381,27 @@ async fn an_advance_that_overlaps_the_boundary_retires_nothing_and_fails_no_appe
     );
     let ledger = engine.maintenance_snapshot().unabsorbed_frame_bytes;
     assert_eq!(ledger, b48 + b8, "the shard ledger is not the stream's");
-    // A duplicate at the boundary raises no trim target.
-    engine.commit_group(vec![advance(h, 4, 4, 0)], &cfg).await;
-    let tail = applied(&engine, h).await;
-    assert_eq!(
-        (tail.absorbed, tail.trim_safe_to),
-        (4, 0),
-        "a duplicate moved the tail"
-    );
-    submit_advance(&engine, h, 4, 8, b48).await;
+    let next = engine.seal_once(Trigger::Requested).await.unwrap();
+    assert_eq!((next.pages, next.page_bytes), (5, b48 + b8));
     append(&engine, h).await.unwrap();
     let b9 = stored_bytes(&engine, &h, 9, 10).await;
     let tail = applied(&engine, h).await;
     assert_eq!(
-        tail.absorbed, 8,
-        "the advance from the boundary did not retire"
+        tail.absorbed, 9,
+        "the seal from the boundary did not retire"
     );
-    assert_eq!((tail.trim_safe_to, tail.trimmed), (4, 4));
-    assert!(
-        engine
-            .db
-            .get(shard_page_key(&h, 0))
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert_eq!(engine.trim_deletes_total.load(Ordering::Relaxed), 4);
     assert_eq!(
-        tail.unabsorbed_bytes,
-        b8 + b9,
-        "the stream ledger is not [8, 10)"
+        tail.unabsorbed_bytes, b9,
+        "the stream ledger is not [9, 10)"
     );
     let ledger = engine.maintenance_snapshot().unabsorbed_frame_bytes;
-    assert_eq!(ledger, b8 + b9, "the shard ledger is not the stream's");
+    assert_eq!(ledger, b9, "the shard ledger is not the stream's");
     engine.begin_close();
 }
 
-/// Committer layer: an advance that starts past the boundary would leave
-/// [0, 1) unretired forever (a phantom backlog); it is dropped whole, the
-/// layout stays unsealed and the append beside it commits.
+/// Committer layer: a seal that starts past the boundary would leave
+/// [0, 1) unretired forever (a phantom backlog); it is refused whole, the
+/// boundary stays 0 and the append beside it commits.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_advance_that_skips_offsets_is_dropped_whole() {
     let (engine, _store) = rig("skip-advance").await;
@@ -573,22 +410,13 @@ async fn an_advance_that_skips_offsets_is_dropped_whole() {
         append(&engine, h2).await.unwrap();
     }
     let b1 = stored_bytes(&engine, &h2, 1, 2).await;
-    let (req, reply) = append_op(h2);
-    let group = vec![advance(h2, 1, 2, b1), CommitOp::Append(req)];
-    engine.commit_group(group, &ShardConfig::default()).await;
-    let answer = tokio::time::timeout(ANSWER_WITHIN, reply)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        answer.is_ok(),
-        "an append beside a skipping advance was refused: {answer:?}"
-    );
+    let skipping = seal_op(&engine, h2, 1..2, b1);
+    refused_beside_an_append(&engine, h2, skipping).await;
     let tail = applied(&engine, h2).await;
     assert_eq!(
-        (tail.absorbed, tail.history_v2),
-        (0, false),
-        "an advance that skips offsets moved the boundary"
+        (tail.absorbed, tail.next),
+        (0, 3),
+        "a seal that skips offsets moved the boundary"
     );
     let all = stored_bytes(&engine, &h2, 0, 3).await;
     assert_eq!(
@@ -611,10 +439,10 @@ async fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
     }
 }
 
-/// Settlement: the group that retired a receipted advance holds its
-/// receipt while the group is applied but not yet durable, and drops it
-/// once durable dispatch has published the tail. Until then the absorber
-/// may not roll the stream's lane mark back.
+/// Settlement: a seal whose commit is applied but not yet durable has not
+/// settled: `seal_once` returns only once durable dispatch has published
+/// the stream's new boundary and ledger (step 7a), so nothing that follows
+/// a seal (its memtable flush) runs ahead of its durability.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_receipted_advance_settles_only_after_its_group_is_durable() {
     let (engine, store) = rig("settle-durable").await;
@@ -624,31 +452,48 @@ async fn a_receipted_advance_settles_only_after_its_group_is_durable() {
     }
     let b04 = stored_bytes(&engine, &h, 0, 4).await;
     let handle = engine.stream_handle(h).await.unwrap();
-    let engaged = store.hold_class(crate::dst::StoreOp::Put, crate::dst::ObjClass::Wal, 1);
-    let submissions = Arc::new(Submissions::default());
-    let copied = CopiedBytes::new(0, b04).receipted(submissions.submit(&h));
-    engine.submit_absorbed_batch_v2(vec![(h, 4, copied)]).await;
-    wait_for("the advance applied behind a held WAL put", || {
-        engaged.load(Ordering::SeqCst) >= 1 && handle.state.lock().unwrap().applied.absorbed == 4
-    })
-    .await;
-    assert!(
-        !submissions.settled(&h),
-        "an advance settled before its group was durable"
-    );
-    assert_eq!(handle.state.lock().unwrap().durable.absorbed, 0);
-    store.release_hold();
-    wait_for("the durable advance settled", || submissions.settled(&h)).await;
-    let published = handle.state.lock().unwrap().durable.absorbed;
+    let before_commit = Hold::new();
+    *engine.layout.seal.hooks.before_commit.lock().unwrap() = Some(before_commit.clone());
+    let settled = AtomicBool::new(false);
+    let seal = async {
+        let report = engine.seal_once(Trigger::Requested).await;
+        settled.store(true, Ordering::SeqCst);
+        let durable = handle.state.lock().unwrap().durable.clone();
+        (report, durable)
+    };
+    let checks = async {
+        wait_for("the seal reached its commit", || {
+            before_commit.entered.load(Ordering::Acquire) > 0
+        })
+        .await;
+        let engaged = store.hold_class(crate::dst::StoreOp::Put, crate::dst::ObjClass::Wal, 1);
+        before_commit.release();
+        wait_for("the seal applied behind a held WAL put", || {
+            engaged.load(Ordering::SeqCst) >= 1
+                && handle.state.lock().unwrap().applied.absorbed == 4
+        })
+        .await;
+        assert!(
+            !settled.load(Ordering::SeqCst),
+            "a seal settled before its group was durable"
+        );
+        assert_eq!(handle.state.lock().unwrap().durable.absorbed, 0);
+        store.release_hold();
+    };
+    let ((report, durable), ()) = tokio::join!(seal, checks);
+    assert_eq!(report.unwrap().page_bytes, b04);
     assert_eq!(
-        published, 4,
-        "an advance settled before its boundary was published"
+        (durable.absorbed, durable.unabsorbed_bytes),
+        (4, 0),
+        "a seal settled before its boundary and ledger were published"
     );
+    assert_eq!(engine.maintenance_snapshot().unabsorbed_frame_bytes, 0);
     engine.begin_close();
 }
 
-/// Settlement: a refused group drops its advance's receipt with the
-/// refusal, and the boundary does not move.
+/// Settlement: a seal whose group is refused settles with the refusal:
+/// `seal_once` fails, and the boundary, the ledgers and the pending pages
+/// do not move; the next seal takes them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_refused_advance_settles_with_its_group() {
     let (engine, _store) = rig("settle-refused").await;
@@ -657,13 +502,24 @@ async fn a_refused_advance_settles_with_its_group() {
         append(&engine, h).await.unwrap();
     }
     let b04 = stored_bytes(&engine, &h, 0, 4).await;
-    engine.fail_next_absorbed_group();
-    let submissions = Arc::new(Submissions::default());
-    let copied = CopiedBytes::new(0, b04).receipted(submissions.submit(&h));
-    engine.submit_absorbed_batch_v2(vec![(h, 4, copied)]).await;
-    wait_for("the group refused", || engine.group_failures_tripped() >= 1).await;
-    wait_for("the refused advance settled", || submissions.settled(&h)).await;
+    let counters = &engine.layout.seal.counters;
+    let failures = counters.failures.load(Ordering::Relaxed);
+    engine.fail_next_seal_group();
+    let refused = engine.seal_once(Trigger::Requested).await;
+    assert!(matches!(refused, Err(SealError::Store(_))), "{refused:?}");
+    assert_eq!(engine.group_failures_tripped(), 1);
+    assert_eq!(counters.failures.load(Ordering::Relaxed), failures + 1);
     let tail = applied(&engine, h).await;
     assert_eq!((tail.absorbed, tail.unabsorbed_bytes), (0, b04));
+    assert_eq!(engine.maintenance_snapshot().unabsorbed_frame_bytes, b04);
+    assert_eq!(
+        stored_bytes(&engine, &h, 0, 4).await,
+        b04,
+        "the pending row moved"
+    );
+    let next = engine.seal_once(Trigger::Requested).await.unwrap();
+    assert_eq!((next.pages, next.page_bytes), (4, b04));
+    let tail = applied(&engine, h).await;
+    assert_eq!((tail.absorbed, tail.unabsorbed_bytes), (4, 0));
     engine.begin_close();
 }

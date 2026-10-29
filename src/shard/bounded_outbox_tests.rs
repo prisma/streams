@@ -3,10 +3,6 @@
 use super::*;
 
 #[expect(
-    clippy::too_many_lines,
-    reason = "r09_dirty_and_final_pages_are_bounded_and_partial_ack_preserves_debt; the scenario pins one ordered sequence of dirty and final pages and a partial acknowledgement; helper phases would hide which page each bound is checked against"
-)]
-#[expect(
     clippy::let_underscore_must_use,
     reason = "r09_dirty_and_final_pages_are_bounded_and_partial_ack_preserves_debt; the fixture ignores a delivery or join result whose only failure is the shutdown it stages itself; treating it as fallible would add branches the pinned sequence never takes"
 )]
@@ -14,28 +10,11 @@ use super::*;
 async fn r09_dirty_and_final_pages_are_bounded_and_partial_ack_preserves_debt() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let db = Arc::new(
-        Db::builder("r09-outbox", store.clone())
+        crate::keyspace::db_builder("r09-outbox", store.clone())
             .build()
             .await
             .unwrap(),
     );
-    let (tx, _rx) = mpsc::channel(1);
-    let engine = ShardEngine::start(
-        "r09-outbox".into(),
-        db.clone(),
-        store,
-        ShardConfig::default(),
-        tx,
-        None,
-        Default::default(),
-    );
-    let mut batch = WriteBatch::new();
-    for id in 0..130u64 {
-        let mut hash = [0; 16];
-        hash[..8].copy_from_slice(&id.to_be_bytes());
-        batch.put(crate::billing::usage_dirty_key(&hash), 8u64.to_le_bytes());
-    }
-    let hash = [0; 16];
     let meta = crate::billing::SegmentBillingMetaV1 {
         v: 1,
         stream_id: "s".into(),
@@ -44,10 +23,13 @@ async fn r09_dirty_and_final_pages_are_bounded_and_partial_ack_preserves_debt() 
         month_month: 7,
         ..Default::default()
     };
-    batch.put(
-        crate::billing::billing_meta_key(&hash),
-        serde_json::to_vec(&meta).unwrap(),
-    );
+    let mut batch = WriteBatch::new();
+    for id in 0..130u64 {
+        let mut hash = [0; 16];
+        hash[..8].copy_from_slice(&id.to_be_bytes());
+        seed_billing(&mut batch, &hash, &meta, &TailFields::default());
+    }
+    let hash = [0; 16];
     for n in 0..35u32 {
         batch.put(
             crate::billing::usage_month_final_key(&hash, 2020 + (n / 12) as i32, n % 12 + 1),
@@ -55,6 +37,14 @@ async fn r09_dirty_and_final_pages_are_bounded_and_partial_ack_preserves_debt() 
         );
     }
     db.write(batch).await.unwrap();
+    let engine = ShardEngine::start(
+        "r09-outbox".into(),
+        db.clone(),
+        store,
+        ShardConfig::default(),
+        None,
+        Default::default(),
+    );
     assert!(engine.has_billing_debt().await.unwrap());
     let (first, more) = engine.usage_dirty_page(None, 64).await.unwrap();
     assert!(more);
@@ -76,42 +66,24 @@ async fn r09_dirty_and_final_pages_are_bounded_and_partial_ack_preserves_debt() 
     assert!(more);
     assert_eq!(finals.len(), 32);
     engine
-        .commit_group(
-            vec![CommitOp::UsageAck {
-                hash,
-                scope: UsageAckScope::FinalRowsOnly,
-                month_final_keys: finals.into_iter().map(|(key, _)| key).collect(),
-            }],
-            &ShardConfig::default(),
-        )
+        .commit_group(vec![CommitOp::UsageAck {
+            hash,
+            scope: UsageAckScope::FinalRowsOnly,
+            month_final_keys: finals.into_iter().map(|(key, _)| key).collect(),
+        }])
         .await;
     let (remaining, more) = engine.usage_month_finals_page(hash, 32).await.unwrap();
     assert!(!more);
     assert_eq!(remaining.len(), 3);
-    assert_eq!(
-        db.get(crate::billing::usage_dirty_key(&hash))
-            .await
-            .unwrap()
-            .unwrap()
-            .as_ref(),
-        &8u64.to_le_bytes()
-    );
+    assert_eq!(usage_dirty_version(&engine, hash).await, Some(8));
     engine
-        .commit_group(
-            vec![CommitOp::UsageAck {
-                hash,
-                scope: UsageAckScope::ThroughVersion(8),
-                month_final_keys: remaining.into_iter().map(|(key, _)| key).collect(),
-            }],
-            &ShardConfig::default(),
-        )
+        .commit_group(vec![CommitOp::UsageAck {
+            hash,
+            scope: UsageAckScope::ThroughVersion(8),
+            month_final_keys: remaining.into_iter().map(|(key, _)| key).collect(),
+        }])
         .await;
-    assert!(
-        db.get(crate::billing::usage_dirty_key(&hash))
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert_eq!(usage_dirty_version(&engine, hash).await, None);
     engine.begin_close();
     let _ = db.close().await;
 }

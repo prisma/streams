@@ -20,22 +20,24 @@ const HASH: [u8; 16] = [9; 16];
 /// the test instead of hanging it.
 const REPLY_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// The engine, its database, and the absorber receiver the test must keep:
-/// a dropped receiver closes the engine.
-async fn engine(name: &str) -> (Arc<ShardEngine>, Arc<Db>, mpsc::Receiver<AbsorbSignal>) {
+/// The engine and its database.
+async fn engine(name: &str) -> (Arc<ShardEngine>, Arc<Db>) {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-    let db = Arc::new(Db::builder(name, store.clone()).build().await.unwrap());
-    let (tx, rx) = mpsc::channel(1);
+    let db = Arc::new(
+        crate::keyspace::db_builder(name, store.clone())
+            .build()
+            .await
+            .unwrap(),
+    );
     let engine = ShardEngine::start(
         name.to_owned(),
         db.clone(),
         store,
         ShardConfig::default(),
-        tx,
         None,
         Default::default(),
     );
-    (engine, db, rx)
+    (engine, db)
 }
 
 async fn op(e: &ShardEngine, op: NqOp) -> Result<NqOut, NqRefusal> {
@@ -47,16 +49,13 @@ async fn op(e: &ShardEngine, op: NqOp) -> Result<NqOut, NqRefusal> {
 /// A created queue whose clock is pinned a day ahead of the wall clock:
 /// every later operation runs at exactly the clock the test sets, and the
 /// roster-driven sweeper, which reads the wall clock, never finds it due.
-/// Returns the engine, its database, the absorber receiver and the clock.
-async fn clocked(
-    name: &str,
-    cfg: QueueConfig,
-) -> (Arc<ShardEngine>, Arc<Db>, mpsc::Receiver<AbsorbSignal>, i64) {
-    let (e, db, absorb) = engine(name).await;
+/// Returns the engine, its database and the clock.
+async fn clocked(name: &str, cfg: QueueConfig) -> (Arc<ShardEngine>, Arc<Db>, i64) {
+    let (e, db) = engine(name).await;
     create(&e, cfg).await;
     let c = now_ms() + crate::native_queue::DAY_MS;
     set_clock(&db, c).await;
-    (e, db, absorb, c)
+    (e, db, c)
 }
 
 /// Rewrite the stored state row; the next operation loads it.
@@ -146,7 +145,7 @@ fn settle(items: Vec<(u64, u32, SettleKind)>) -> NqOp {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sent_message_is_claimed_acked_and_its_rows_and_page_are_deleted() {
-    let (e, db, _absorb) = engine("nq-ack").await;
+    let (e, db) = engine("nq-ack").await;
     create(&e, QueueConfig::default()).await;
     let NqOut::Sent(sent) = op(&e, send_op(vec![msg("a"), msg("b"), msg("c")]))
         .await
@@ -229,7 +228,7 @@ async fn a_sent_message_is_claimed_acked_and_its_rows_and_page_are_deleted() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_queue_tail_is_absorbed_in_place_and_never_marked_for_absorption() {
-    let (e, db, _absorb) = engine("nq-tail").await;
+    let (e, db) = engine("nq-tail").await;
     create(&e, QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), msg("b")])).await.unwrap();
     assert!(
@@ -238,24 +237,23 @@ async fn a_queue_tail_is_absorbed_in_place_and_never_marked_for_absorption() {
     );
     let raw = db.get(crate::shard::queue_tail_key(&HASH)).await.unwrap();
     let tail = decode_tail_for_tests(&raw.expect("the tail is in the queue segment")).unwrap();
-    assert_eq!(
-        (
-            tail.next,
-            tail.absorbed,
-            tail.unabsorbed_bytes,
-            tail.trim_safe_to
-        ),
-        (2, 2, 0, 0)
+    assert_eq!((tail.next, tail.absorbed, tail.unabsorbed_bytes), (2, 2, 0));
+    assert!(
+        db.get(crate::spill::pending::pending_key(&HASH))
+            .await
+            .unwrap()
+            .is_none(),
+        "no pending row: the sealer never sees a queue"
     );
     assert!(
-        db.get(dirty_key(&HASH)).await.unwrap().is_none(),
-        "no dirty mark: the absorber never sees a queue"
+        e.layout.unsealed().is_empty(),
+        "nothing held for the sealer"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_empty_claim_writes_nothing() {
-    let (e, db, _absorb) = engine("nq-empty").await;
+    let (e, db) = engine("nq-empty").await;
     create(&e, QueueConfig::default()).await;
     let before = db.get(keys::state(&HASH)).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -265,7 +263,7 @@ async fn an_empty_claim_writes_nothing() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_duplicate_dedup_key_returns_the_original_and_the_budget_refuses_past_it() {
-    let (e, _db, _absorb) = engine("nq-dedup").await;
+    let (e, _db) = engine("nq-dedup").await;
     let cfg = QueueConfig {
         max_queued_messages: 2,
         ..QueueConfig::default()
@@ -291,7 +289,7 @@ async fn a_duplicate_dedup_key_returns_the_original_and_the_budget_refuses_past_
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exhausted_attempts_fail_keylessly_and_redrive_starts_a_new_cycle() {
-    let (e, db, _absorb) = engine("nq-fail").await;
+    let (e, db) = engine("nq-fail").await;
     let mut cfg = QueueConfig::default();
     cfg.group.max_attempts = 2;
     create(&e, cfg).await;
@@ -351,7 +349,7 @@ async fn exhausted_attempts_fail_keylessly_and_redrive_starts_a_new_cycle() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_expired_lease_is_moved_by_the_sweep_and_a_late_extend_is_refused() {
-    let (e, db, _absorb) = engine("nq-lease").await;
+    let (e, db) = engine("nq-lease").await;
     create(&e, QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
     let d = match op(
@@ -407,7 +405,7 @@ async fn an_expired_lease_is_moved_by_the_sweep_and_a_late_extend_is_refused() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_deleted_queue_leaves_no_row_and_no_page() {
-    let (e, db, _absorb) = engine("nq-delete").await;
+    let (e, db) = engine("nq-delete").await;
     create(&e, QueueConfig::default()).await;
     op(
         &e,
@@ -454,7 +452,7 @@ async fn a_deleted_queue_leaves_no_row_and_no_page() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_roster_driven_sweeper_moves_an_expired_lease_without_any_request() {
-    let (e, db, _absorb) = engine("nq-sweeper").await;
+    let (e, db) = engine("nq-sweeper").await;
     create(&e, QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
     match op(
@@ -491,7 +489,7 @@ async fn the_roster_driven_sweeper_moves_an_expired_lease_without_any_request() 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_subscribed_queue_with_due_work_wakes_its_receiver_with_backoff_until_a_useful_claim() {
-    let (e, db, _absorb) = engine("nq-wake").await;
+    let (e, db) = engine("nq-wake").await;
     create(&e, QueueConfig::default()).await;
     let wake = |o: NqOut| match o {
         NqOut::Swept { wake, .. } => wake,
@@ -538,7 +536,7 @@ async fn a_subscribed_queue_with_due_work_wakes_its_receiver_with_backoff_until_
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancel_deletes_untaken_and_held_messages_and_discard_deletes_only_failed_ones() {
-    let (e, db, _absorb) = engine("nq-cancel").await;
+    let (e, db) = engine("nq-cancel").await;
     let mut cfg = QueueConfig::default();
     cfg.group.max_attempts = 1;
     create(&e, cfg).await;
@@ -612,7 +610,7 @@ async fn cancel_deletes_untaken_and_held_messages_and_discard_deletes_only_faile
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn release_gives_the_attempt_back_twice_then_counts_and_extend_moves_the_deadline() {
-    let (e, db, _absorb) = engine("nq-release").await;
+    let (e, db) = engine("nq-release").await;
     create(&e, QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
     let mut attempts = Vec::new();
@@ -673,7 +671,7 @@ async fn release_gives_the_attempt_back_twice_then_counts_and_extend_moves_the_d
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_explicit_retry_past_retention_fails_and_a_scheduled_message_waits_for_its_time() {
-    let (e, db, _absorb) = engine("nq-retention").await;
+    let (e, db) = engine("nq-retention").await;
     let cfg = QueueConfig {
         retention_ms: crate::native_queue::HOUR_MS,
         dedup_window_ms: 0,
@@ -737,7 +735,7 @@ async fn an_explicit_retry_past_retention_fails_and_a_scheduled_message_waits_fo
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_respects_bytes_in_flight_and_pause() {
-    let (e, db, _absorb) = engine("nq-limits").await;
+    let (e, db) = engine("nq-limits").await;
     let mut cfg = QueueConfig::default();
     cfg.group.max_in_flight = 3;
     create(&e, cfg).await;
@@ -792,7 +790,7 @@ async fn a_claim_respects_bytes_in_flight_and_pause() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sweep_with_nothing_due_parks_the_roster_at_the_next_deadline() {
-    let (e, db, _absorb) = engine("nq-roster").await;
+    let (e, db) = engine("nq-roster").await;
     create(&e, QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
     op(&e, NqOp::Sweep).await.unwrap();

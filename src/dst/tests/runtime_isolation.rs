@@ -5,19 +5,20 @@ use super::fixture_livefeed::{hub_sse_collect, sse_head};
 use super::fixture_requests::RIG_KEY_B64;
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::{RIG_START_MS, RigRuntime};
-use super::fixture_storage::{mem, open_engine, open_engine_with_absorber, skey};
+use super::fixture_storage::{mem, open_engine, open_engine_with_sealer, skey, wait_all_sealed};
 use crate::dst::{FaultPlan, FaultProfile, FaultStore, ObjClass, OpLog, Workload};
 use object_store::{GetOptions, ObjectStore, PutOptions, PutPayload};
 use std::sync::Arc;
 
-/// A fenced owner must not leave a **zombie absorber** behind.
+/// A fenced owner must not leave a **zombie sealer** behind.
 ///
-/// This is not hypothetical: a fenced shard's absorber that keeps retrying
-/// against a dead DB evicts the rightful owner's history handle in a
-/// ping-pong — "the absorption war" (2026-07-20), which `history.rs`
-/// guards against explicitly. Asserting that the old engine *reports*
-/// itself closed is not the same as asserting its tasks actually exited,
-/// and only the second one catches a leak.
+/// This is not hypothetical: a fenced shard's background maintenance that
+/// keeps retrying against a dead DB fights the rightful owner for the same
+/// storage — "the absorption war" (2026-07-20) of the absorber, the
+/// sealer's predecessor. Asserting that the old engine *reports* itself
+/// closed is not the same as asserting its tasks actually exited, and only
+/// the second one catches a leak. The fenced owner's sealer exits, and it
+/// writes no segment object once the new owner holds the log.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fenced_owners_absorber_exits() {
     let inner = mem();
@@ -27,18 +28,25 @@ async fn a_fenced_owners_absorber_exits() {
     let hash = [11u8; 16];
     let prefix = "dst-zombie";
 
-    let (a, absorber_a) = open_engine_with_absorber(store.clone(), prefix).await;
+    let (a, _cadence_a) = open_engine_with_sealer(store.clone(), prefix).await;
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
     w.run(&a, hash, &key, &["z"], 10, false, &mut log).await;
     assert!(log.total_acked() > 0, "nothing acked before the handoff");
-    assert!(
-        !absorber_a.is_finished(),
-        "the absorber exited before the shard was even fenced"
-    );
+    wait_all_sealed(&a, &[hash]).await;
 
     // The handoff: a new owner opens the same shard log.
-    let (b, absorber_b) = open_engine_with_absorber(store.clone(), prefix).await;
+    let (b, _cadence_b) = open_engine_with_sealer(store.clone(), prefix).await;
+    let a_objects = format!(
+        "{}/hseg/{:016x}",
+        crate::sharddir::shard_db_path(prefix),
+        a.writer_epoch
+    );
+    let sealed_by_a = objects_under(&inner, &a_objects).await;
+    assert!(
+        !sealed_by_a.is_empty(),
+        "the owner's sealer sealed under {a_objects} before the handoff"
+    );
 
     // Give the old engine a reason to notice: its next commit attempt is
     // what discovers the fence.
@@ -52,9 +60,10 @@ async fn a_fenced_owners_absorber_exits() {
         "I4 violated: the fenced owner acknowledged writes"
     );
 
-    // EVERY task the old engine owns must terminate — not just the
-    // absorber, and not merely "is_finished" (which is also true after a
-    // panic). await_terminated joins each handle and names stragglers.
+    // EVERY task the old engine owns must terminate — the sealer and the
+    // seal deadlines included, and not merely "is_finished" (which is also
+    // true after a panic). await_terminated joins each handle and names
+    // stragglers.
     //
     // The committer is the one that used to be unable to exit at all: it
     // held the engine, the engine held its channel sender, so the channel
@@ -65,26 +74,30 @@ async fn a_fenced_owners_absorber_exits() {
         Err(e) => panic!("fenced owner left tasks behind: {e}"),
     }
 
-    // The absorber is a separately-owned task; join it explicitly too.
-    let mut exited = false;
-    for _ in 0..400 {
-        if absorber_a.is_finished() {
-            exited = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
+    // The fenced owner sealed nothing after the handoff, and seals nothing
+    // when asked.
     assert!(
-        exited,
-        "the fenced owner's absorber is still running — a zombie that will \
-         fight the new owner for its history DB"
+        a.seal_requested().await.is_err(),
+        "a fenced owner's requested seal must fail"
     );
-    absorber_a
-        .await
-        .expect("absorber must exit cleanly, not panic");
+    assert_eq!(
+        objects_under(&inner, &a_objects).await,
+        sealed_by_a,
+        "the fenced owner wrote a segment object after the handoff"
+    );
+    b.begin_close();
+}
 
-    absorber_b.abort();
-    let _ = b;
+/// The objects under `dir`, sorted.
+async fn objects_under(store: &Arc<dyn ObjectStore>, dir: &str) -> Vec<String> {
+    use futures_util::StreamExt;
+    let mut names = Vec::new();
+    let mut listing = store.list(Some(&object_store::path::Path::from(dir)));
+    while let Some(meta) = listing.next().await {
+        names.push(meta.expect("list").location.as_ref().to_string());
+    }
+    names.sort();
+    names
 }
 
 /// Queued-but-uncommitted appends must be answered when the shard closes,

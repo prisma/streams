@@ -41,6 +41,17 @@ mod header_alias;
 mod history;
 mod http;
 mod keyspace;
+/// Retained only as `clippy.toml`'s `await-holding-invalid-types` anchor.
+/// Layout 6 retired the postings codec, but the adopted lint profile names
+/// `streams_slate::postings::RunWindow`, and the profile changes only by an
+/// owner-approved baseline re-capture; until then the path must resolve
+/// (lead decision S3b under the owner's delegation, 2026-10-28).
+mod postings {
+    /// The anchor type: never held, never constructed outside its use below.
+    pub(crate) struct RunWindow;
+}
+/// The anchor's one use, which keeps it live code (see `postings`).
+const _: postings::RunWindow = postings::RunWindow;
 #[cfg(test)]
 mod loom_check;
 #[cfg(test)]
@@ -51,8 +62,6 @@ mod operator;
 mod ops;
 mod ownership;
 mod peer;
-mod postings;
-mod postings_cache;
 mod product;
 mod product_cursor;
 mod project_policy;
@@ -68,6 +77,7 @@ mod shard;
 mod shard_directory;
 mod sharddir;
 mod sketch;
+mod spill;
 mod sse;
 mod store_timing;
 mod tasks;

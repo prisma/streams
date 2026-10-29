@@ -24,7 +24,7 @@ const shipped = (name: string) => readFileSync(join(import.meta.dir, "..", "prof
 
 /// shared-cell.env before f8456a52 added the block-cache lines: the profile
 /// every cell initialised before the RC recorded (field round 6).
-const BEFORE_CACHES = shipped("shared-cell.env").replace(/^(SHARED|HISTORY)_CACHE_BYTES=.*\n/gm, "");
+const BEFORE_CACHES = shipped("shared-cell.env").replace(/^SHARED_CACHE_BYTES=.*\n/gm, "");
 
 /// A release's two profile files, compute-1g.env then `shared` (the
 /// shipped shared-cell.env unless given) with `extra` appended, as `flag`
@@ -53,7 +53,7 @@ for (const kind of STORES) {
       expect(readState(c.state).cell.profile_digest).toBe(was);
       const bundle = readBundleText(c.state);
       const r = await run("reprofile", "--state", c.state, ...release("--recorded-profile", { shared: BEFORE_CACHES }), ...rc);
-      const keys = "HISTORY_CACHE_BYTES 33554432 -> 16777216, SHARED_CACHE_BYTES 134217728 -> 33554432";
+      const keys = "SHARED_CACHE_BYTES 134217728 -> 33554432";
       expect([r.code, r.err]).toEqual([0, ""]);
       expect(r.out.split("\n")).toEqual([
         `cell cell_sc1: profile digest ${was.slice(0, 12)} -> ${now.slice(0, 12)} (${keys}); k and the ceilings are unchanged`,
@@ -142,7 +142,7 @@ describe("the keys reprofile takes", () => {
     cellSizing(new Recording(readProfiles(release("--profile").filter((_, i) => i % 2 === 1))));
     expect(read.has("PROJECT_SHARE_K") && read.has("ADMIT_MAX_INFLIGHT") && read.has("ADMIT_RSS_SHED_MB")).toBe(true);
     expect(REPROFILE_KEYS.filter((k) => read.has(k))).toEqual([]);
-    expect([...REPROFILE_KEYS]).toEqual(["SHARED_CACHE_BYTES", "HISTORY_CACHE_BYTES", "POSTINGS_CACHE_BYTES", "TELEMETRY_CACHE_BYTES"]);
+    expect([...REPROFILE_KEYS]).toEqual(["SHARED_CACHE_BYTES", "TELEMETRY_CACHE_BYTES"]);
     for (const k of REPROFILE_KEYS) expect(readFileSync(join(import.meta.dir, "..", "..", "src", "config", "load.rs"), "utf8")
       + readFileSync(join(import.meta.dir, "..", "..", "src", "config", "cli.rs"), "utf8")).toContain(`"${k}"`);
   });

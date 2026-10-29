@@ -137,14 +137,13 @@ fn writes_like_append(resource: &Resource) -> bool {
 /// judged once its body is read (`extend_shed`).
 async fn rss_shed(state: &AppState, resource: &Resource) -> Option<Response> {
     if *resource == Resource::GroupVerb("settle") {
-        let reserved = state.runtime.history.budget.reserved_bytes();
-        state.admission.admit_lease_ending_write(reserved).err()?;
+        state.admission.admit_lease_ending_write().err()?;
         return Some(memory_refusal().await);
     }
     if !writes_like_append(resource) {
         return None;
     }
-    let gate = crate::application::append::memory_gate(&state.admission, &state.runtime.history);
+    let gate = crate::application::append::memory_gate(&state.admission);
     let failure = gate.await.err()?;
     Some(render_product_append_error(failure))
 }
@@ -161,7 +160,7 @@ async fn extend_shed(state: &AppState, resource: &Resource, body: &Bytes) -> Opt
     if !input.ops.iter().any(|op| op.op == SettleVerb::Extend) {
         return None;
     }
-    let gate = crate::application::append::memory_gate(&state.admission, &state.runtime.history);
+    let gate = crate::application::append::memory_gate(&state.admission);
     let failure = gate.await.err()?;
     Some(render_product_append_error(failure))
 }

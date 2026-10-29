@@ -1,9 +1,9 @@
-//! The durable maintenance row of one physical shard (R25-A): its value,
-//! the delta the committer applies to it, its age signal and its codec.
+//! The maintenance ledger of one physical shard (R25-A, layout 6: in
+//! memory only): the delta the committer applies to it and its age signal.
 use super::ShardMaintenance;
-/// Why a maintenance row or delta is refused. Typed rather than an
-/// `anyhow` error so the codec and the delta stay checkable by Kani
-/// (KANI-047); `Display` keeps the words the logs and tests read.
+/// Why a maintenance delta is refused. Typed rather than an `anyhow` error
+/// so the delta stays checkable by Kani (KANI-047); `Display` keeps the
+/// words the logs and tests read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MaintenanceError {
     /// The backlog plus the added bytes pass `u64::MAX`.
@@ -11,8 +11,6 @@ pub(crate) enum MaintenanceError {
     /// A retirement larger than the backlog: the two sides of the
     /// accounting have diverged.
     OverRetirement { retire: u64, available: u64 },
-    /// A stored row of a layout this build does not read.
-    UnsupportedRow(usize),
 }
 
 impl std::fmt::Display for MaintenanceError {
@@ -23,9 +21,6 @@ impl std::fmt::Display for MaintenanceError {
                 f,
                 "maintenance retirement exceeds backlog: retire={retire} available={available}"
             ),
-            Self::UnsupportedRow(len) => {
-                write!(f, "unsupported shard maintenance row ({len} bytes)")
-            }
         }
     }
 }
@@ -82,67 +77,6 @@ impl ShardMaintenance {
             0
         } else {
             u64::try_from(now_ms.saturating_sub(self.last_progress_ms)).unwrap_or(0) / 1_000
-        }
-    }
-}
-
-const SHARD_MAINT_V2: u8 = 2;
-
-pub(crate) fn encode_shard_maint(m: &ShardMaintenance) -> [u8; 40] {
-    let mut v = [0u8; 40];
-    v[0] = SHARD_MAINT_V2;
-    v[8..16].copy_from_slice(&m.version.to_le_bytes());
-    v[16..24].copy_from_slice(&m.unabsorbed_frame_bytes.to_le_bytes());
-    v[24..32].copy_from_slice(&m.backlog_started_ms.to_le_bytes());
-    v[32..40].copy_from_slice(&m.last_progress_ms.to_le_bytes());
-    v
-}
-
-/// Row classification (R26-4). The R24 row was 16 untagged PAYLOAD-unit
-/// bytes: on compressible data it overstates the frame backlog, but on
-/// small incompressible frames the encoding overhead (headers, auth
-/// tag) makes frames LARGER than payload, so it can also understate —
-/// and an understated ledger makes the first exact retirement look like
-/// over-retirement, which the checked accounting refuses forever. The
-/// legacy value is therefore never trusted as frame bytes in either
-/// direction: the opener rebuilds from the durable tails instead.
-pub(crate) enum ShardMaintRow {
-    Exact(ShardMaintenance),
-    LegacyPayloadUnit,
-}
-
-pub(crate) fn decode_shard_maint_row(v: &[u8]) -> Result<ShardMaintRow, MaintenanceError> {
-    if v.len() == 16 {
-        return Ok(ShardMaintRow::LegacyPayloadUnit);
-    }
-    let row: &[u8; 40] = v
-        .try_into()
-        .map_err(|_| MaintenanceError::UnsupportedRow(v.len()))?;
-    if row[0] != SHARD_MAINT_V2 {
-        return Err(MaintenanceError::UnsupportedRow(v.len()));
-    }
-    let field = |at: usize| {
-        let mut bytes = [0u8; 8];
-        bytes.copy_from_slice(&row[at..at + 8]);
-        bytes
-    };
-    Ok(ShardMaintRow::Exact(ShardMaintenance {
-        version: u64::from_le_bytes(field(8)),
-        unabsorbed_frame_bytes: u64::from_le_bytes(field(16)),
-        backlog_started_ms: i64::from_le_bytes(field(24)),
-        last_progress_ms: i64::from_le_bytes(field(32)),
-    }))
-}
-
-/// Strict v2 decode: rows written by THIS build. A legacy 16-byte row
-/// is an error here — callers that can meet one go through
-/// `decode_shard_maint_row` and the rebuild path.
-#[cfg(test)]
-pub(crate) fn decode_shard_maint(v: &[u8]) -> anyhow::Result<ShardMaintenance> {
-    match decode_shard_maint_row(v)? {
-        ShardMaintRow::Exact(m) => Ok(m),
-        ShardMaintRow::LegacyPayloadUnit => {
-            anyhow::bail!("legacy payload-unit maintenance row; rebuild required")
         }
     }
 }

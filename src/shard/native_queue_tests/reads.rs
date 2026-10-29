@@ -14,9 +14,9 @@ use object_store::path::Path as ObjPath;
 use object_store::{ObjectStore, memory::InMemory};
 use slatedb::config::{FlushOptions, FlushType, Settings};
 use slatedb::db_cache::foyer::FoyerCacheOptions;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 
-use super::{AbsorbSignal, HASH, ShardConfig, ShardEngine, create, msg, send_op, set_clock};
+use super::{HASH, ShardConfig, ShardEngine, create, msg, send_op, set_clock};
 use crate::native_queue::{DAY_MS, DeliveryView, NqOp, NqOut, QueueConfig};
 use crate::runtime::block_cache::BlockCache;
 
@@ -197,7 +197,7 @@ async fn a_claim_on_a_cold_backlog_waits_for_no_block_its_predecessors_read() {
         shards: 1,
     }));
     // No compactor: the table the test flushes is the table the claims read.
-    let db = slatedb::Db::builder("nq-cold-walk", object_store.clone())
+    let db = crate::keyspace::db_builder("nq-cold-walk", object_store.clone())
         .with_settings(Settings {
             compactor_options: None,
             ..Default::default()
@@ -208,13 +208,11 @@ async fn a_claim_on_a_cold_backlog_waits_for_no_block_its_predecessors_read() {
         .unwrap();
     let db = Arc::new(db);
     // A dropped absorber receiver closes the engine.
-    let (tx, _absorb) = mpsc::channel::<AbsorbSignal>(1);
     let e = ShardEngine::start(
         "nq-cold-walk".to_owned(),
         db.clone(),
         object_store,
         ShardConfig::default(),
-        tx,
         None,
         Default::default(),
     );
