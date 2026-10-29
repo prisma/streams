@@ -340,3 +340,42 @@ fn r53_the_tail_copies_a_stream_seq_only_while_its_length_fits() {
         "every field decodes where it was written"
     );
 }
+
+/// A fork's first tail starts its record space at the fork boundary under
+/// the route it names, and a retried seed leaves the stored tail as it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_seeded_fork_tail_holds_its_boundary_and_route() {
+    let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let db = Arc::new(
+        crate::keyspace::db_builder("fork-seed", store.clone())
+            .build()
+            .await
+            .unwrap(),
+    );
+    let engine = ShardEngine::start(
+        "fork-seed".into(),
+        db.clone(),
+        store,
+        ShardConfig::default(),
+        None,
+        ShardMaintenance::default(),
+    );
+    let (hash, route) = ([0x5f; 16], [0x7a; 16]);
+    engine.seed_fork_tail(hash, route, 42).await.unwrap();
+    let stored = || async {
+        let raw = db.get(tail_key(&hash)).await.unwrap().unwrap();
+        let t = stored_tail(&raw).unwrap();
+        (t.next, t.absorbed, t.route)
+    };
+    assert_eq!(stored().await, (42, 42, route));
+    engine.seed_fork_tail(hash, [0x01; 16], 7).await.unwrap();
+    assert_eq!(stored().await, (42, 42, route), "a retry changes nothing");
+    engine.begin_close();
+    if let Err(e) = db.close().await {
+        assert_eq!(
+            e.kind(),
+            slatedb::ErrorKind::Closed(slatedb::CloseReason::Clean),
+            "{e}"
+        );
+    }
+}

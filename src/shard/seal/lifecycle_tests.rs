@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
-use super::Trigger;
+use super::{SealError, Trigger};
 use super::test_hooks::Hold;
 use super::tests::{
     Oracle, append, append_recorded, hashes, manual, open, random_bytes, random_record, read_back,
@@ -185,6 +185,28 @@ async fn a_close_leaves_a_seal_in_flight_at_once() {
     assert_eq!(hold.entered.load(Ordering::Acquire), 1);
 }
 
+/// **The open loads only the streams holding unsealed pages.** Three
+/// streams sealed whole, then one of them appended to: after a restart the
+/// open made that one stream resident and left the two sealed ones to their
+/// first touch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_open_loads_only_streams_holding_unsealed_pages() {
+    let mut rig = rig("open-loads", manual(), Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0x0BE7);
+    let streams = hashes(&mut rng, 3);
+    for hash in &streams {
+        append(&rig.engine, *hash, vec![random_bytes(&mut rng, 500)]).await;
+    }
+    settle(&rig.engine).await;
+    rig.engine.seal_once(Trigger::Requested).await.unwrap();
+    append(&rig.engine, streams[0], vec![random_bytes(&mut rng, 500)]).await;
+    settle(&rig.engine).await;
+    rig = reopen(rig).await;
+    let resident: Vec<[u8; 16]> = rig.engine.streams.lock().unwrap().keys().copied().collect();
+    assert_eq!(resident, vec![streams[0]], "only the unsealed stream");
+    rig.engine.begin_close();
+}
+
 /// **A handle load racing a seal reads one state.** A load parked after it
 /// read a stream's tail while a seal takes the stream's only page: the load
 /// still sees a tail and a pending row of one moment, before the seal or
@@ -211,5 +233,39 @@ async fn a_handle_load_racing_a_seal_reads_one_state() {
     };
     let (loaded, ()) = tokio::join!(rig.engine.load_tail(&hash), drive);
     loaded.expect("the load reads one state");
+    rig.engine.begin_close();
+}
+
+/// **A seal whose group fails publishes nothing.** The commit group that
+/// stages the seal fails: the seal reports that its group was not applied,
+/// the directory holds none of its chunks, the stream's boundary has not
+/// moved, and the next seal takes the same pages and publishes them once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_seal_whose_group_fails_publishes_nothing() {
+    let rig = rig("group-fails", manual(), Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0xFA11);
+    let hash = hashes(&mut rng, 1)[0];
+    for _ in 0..3 {
+        append(&rig.engine, hash, vec![random_bytes(&mut rng, 300)]).await;
+    }
+    settle(&rig.engine).await;
+    let entries = || rig.engine.layout.seal.directory.read().unwrap().entries();
+    rig.engine.fail_next_seal_group();
+    let failed = tokio::time::timeout(
+        Duration::from_secs(10),
+        rig.engine.seal_once(Trigger::Requested),
+    )
+    .await
+    .expect("a failed group ends the seal");
+    assert!(
+        matches!(&failed, Err(SealError::Store(why)) if why == "the seal's group was not applied"),
+        "{failed:?}"
+    );
+    assert_eq!(entries(), 0, "the failed seal's chunks were withdrawn");
+    let handle = rig.engine.stream_handle(hash).await.unwrap();
+    assert_eq!(handle.state.lock().unwrap().applied.absorbed, 0);
+    let report = rig.engine.seal_once(Trigger::Requested).await.unwrap();
+    assert_eq!(report.pages, 3);
+    assert_eq!(entries(), report.chunks as u64, "the next seal published once");
     rig.engine.begin_close();
 }

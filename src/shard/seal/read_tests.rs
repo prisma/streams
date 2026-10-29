@@ -331,6 +331,44 @@ async fn a_keyed_read_skips_chunks_the_summary_excludes_without_a_get() {
     rig.engine.begin_close();
 }
 
+/// A keyed read whose window ends inside a chunk the summary excludes
+/// consumes that chunk only up to the window's last offset: the offset at
+/// the window's end belongs to the next read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_keyed_skip_stops_at_the_window_end_inside_its_chunk() {
+    let mut settings = manual();
+    settings.max_pages_per_chunk = 4;
+    let rig = rig_with("keyed-end", settings, 0, Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0x5E1D);
+    let hash = hashes(&mut rng, 1)[0];
+    for _ in 0..8 {
+        append_lane(
+            &rig.engine,
+            hash,
+            "other",
+            vec![random_bytes(&mut rng, 200)],
+        )
+        .await;
+    }
+    rig.engine.seal_once(Trigger::Requested).await.unwrap();
+    let handle = rig.engine.stream_handle(hash).await.unwrap();
+    for to in [2, 4, 6] {
+        let window = crate::shard::tail_ring::RingScan {
+            from: 0,
+            to,
+            max_bytes: 1 << 20,
+        };
+        let out = rig
+            .engine
+            .read_stream_window(&handle, window, Some("mine"), Deliver::Durable)
+            .await
+            .unwrap();
+        assert!(out.frames.is_empty(), "no record of the key");
+        assert_eq!(out.last_offset, Some(to - 1), "consumed through {}", to - 1);
+    }
+    rig.engine.begin_close();
+}
+
 /// A chunk of more keys than a summary names gets a bloom; a key the bloom
 /// wrongly admits costs one GET that serves nothing, and its offsets are
 /// still consumed.

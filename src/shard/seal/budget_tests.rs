@@ -167,3 +167,51 @@ async fn a_seal_its_budget_cut_short_completes_at_the_next_evaluation() {
     }
     rig.engine.begin_close();
 }
+
+/// A page that fits what is left of the budget exactly is taken; a stream
+/// the budget cuts short defers the rest to the next seal, which starts
+/// after it, and leaves the shard's oldest unsealed page counted; a seal
+/// that takes everything defers nothing and leaves no age behind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_exact_fit_is_taken_and_a_cut_defers_the_rest() {
+    let rig = rig("budget-exact", manual(), Duration::from_millis(2)).await;
+    let sp = &rig.engine.layout.seal;
+    let mut rng = StdRng::seed_from_u64(0xE8AC);
+    let hash = hashes(&mut rng, 1)[0];
+    for len in [300, 500, 700] {
+        super::tests::append(&rig.engine, hash, vec![random_bytes(&mut rng, len)]).await;
+    }
+    settle(&rig.engine).await;
+    let handle = rig.engine.stream_handle(hash).await.unwrap();
+    let sizes: Vec<u64> = handle
+        .state
+        .lock()
+        .unwrap()
+        .pending
+        .from(0)
+        .map(|(_, _, raw)| raw.len() as u64)
+        .collect();
+    assert_eq!(sizes.len(), 3, "one page per append");
+    rig.engine
+        .configure_seal(|s| s.max_object_bytes = sizes[0] + sizes[1] - 1);
+    let cut = rig.engine.seal_once(Trigger::Requested).await.unwrap();
+    assert_eq!(cut.pages, 1, "the second page does not fit");
+    assert!(
+        sp.deferred.load(Ordering::Acquire),
+        "the cut defers the rest"
+    );
+    assert_eq!(*sp.cursor.lock().unwrap(), Some(hash));
+    assert!(
+        rig.engine.seal_measure().oldest.is_some(),
+        "the rest is still unsealed"
+    );
+    sp.deferred.store(false, Ordering::Release);
+    rig.engine
+        .configure_seal(|s| s.max_object_bytes = sizes[1] + sizes[2]);
+    let exact = rig.engine.seal_once(Trigger::Requested).await.unwrap();
+    assert_eq!(exact.pages, 2, "both pages fit the budget exactly");
+    assert!(!sp.deferred.load(Ordering::Acquire), "nothing deferred");
+    assert_eq!(*sp.cursor.lock().unwrap(), None);
+    assert_eq!(rig.engine.seal_measure().oldest, None, "nothing unsealed");
+    rig.engine.begin_close();
+}

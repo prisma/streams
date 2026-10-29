@@ -625,6 +625,62 @@ async fn flushdrop() {
     rig.engine.begin_close();
 }
 
+/// **A forced flush takes step 7a** (REVIEW-6A F2): a seal applied but not
+/// durable (stopped after its commit, the shard's WAL PUTs parked from the
+/// commit on), then a forced memtable flush, as the deadline and the queue
+/// collector take it. Its awaited WAL flush makes the seal's puts durable
+/// before the memtable freezes, so the L0 holds at most 5% of the sealed
+/// page bytes; without it the shadowed operands reach the L0.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_forced_flush_makes_an_applied_seal_durable_first() {
+    let rig = rig("forced-7a", manual(), Duration::from_millis(5)).await;
+    let sp = &rig.engine.layout.seal;
+    let mut rng = StdRng::seed_from_u64(0x07A);
+    let streams = hashes(&mut rng, 8);
+    fill(&rig.engine, &streams, 4).await;
+    let sealed_before = sp.counters.page_bytes.load(Ordering::Relaxed);
+    *sp.hooks.abort_at.lock().unwrap() = Some(SealStep::Applied);
+    let hold = Hold::new();
+    *sp.hooks.before_commit.lock().unwrap() = Some(hold.clone());
+    let park_wal = async {
+        while hold.entered.load(Ordering::Acquire) == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        rig.fault.hold_class(
+            crate::dst::StoreOp::Put,
+            crate::dst::ObjClass::Wal,
+            u64::MAX,
+        );
+        hold.release();
+    };
+    let (sealed, ()) =
+        futures_util::future::join(rig.engine.seal_once(Trigger::Requested), park_wal).await;
+    assert!(
+        matches!(sealed, Err(SealError::Aborted(SealStep::Applied))),
+        "{sealed:?}"
+    );
+    *sp.hooks.abort_at.lock().unwrap() = None;
+    *sp.hooks.before_commit.lock().unwrap() = None;
+    let page_bytes = sp.counters.page_bytes.load(Ordering::Relaxed) - sealed_before;
+    assert!(page_bytes >= 4 << 20, "{page_bytes} B sealed");
+    let before = rig.metrics.counter(db_stats::L0_FLUSH_BYTES);
+    let release = async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        rig.fault.release_hold();
+    };
+    let (flushed, ()) = futures_util::future::join(rig.engine.flush_memtable(), release).await;
+    flushed.unwrap();
+    let l0 = rig.metrics.counter(db_stats::L0_FLUSH_BYTES) - before;
+    eprintln!(
+        "forced 7a: sealed {page_bytes} B applied, not durable; the forced flush's L0 {l0} B"
+    );
+    assert!(
+        l0 * 100 <= page_bytes * 5,
+        "the forced flush wrote the shadowed operands: L0 {l0} B of {page_bytes} B"
+    );
+    rig.engine.begin_close();
+}
+
 /// Once a seal parks before its commit: hold the shard's WAL PUTs, let the
 /// seal commit, and release the PUTs 300 ms later.
 async fn hold_wal_across_the_commit(hold: &Hold, fault: &crate::dst::FaultStore) {

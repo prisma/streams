@@ -113,3 +113,18 @@ fn malformed_rows_are_refused() {
     long.month_storage_byte_ms = "-1".into();
     assert_eq!(UsageCounters::of(&long), None);
 }
+
+/// The storage clock is signed (the default is -1, "never accounted"):
+/// every sign and both extremes read back as written.
+#[test]
+fn the_storage_clock_round_trips_at_every_sign() {
+    for clock in [i64::MIN, -2, -1, 0, 1, 1_730_000_000_000, i64::MAX] {
+        let counters = UsageCounters {
+            storage_accounted_through_ms: clock,
+            ..UsageCounters::default()
+        };
+        let mut out = Vec::new();
+        counters.encode_into(&mut out);
+        assert_eq!(UsageCounters::decode(&out), Some(counters), "clock {clock}");
+    }
+}

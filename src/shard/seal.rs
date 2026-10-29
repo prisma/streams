@@ -68,6 +68,8 @@ mod steps;
 pub(crate) mod test_hooks;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod trigger_tests;
 
 pub(crate) use steps::{SealAdvance, SealCommit, SealError, SealReport};
 
