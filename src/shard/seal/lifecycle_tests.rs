@@ -269,3 +269,42 @@ async fn a_seal_whose_group_fails_publishes_nothing() {
     assert_eq!(entries(), report.chunks as u64, "the next seal published once");
     rig.engine.begin_close();
 }
+
+/// **No sealer, no wait.** An engine whose sealer task is gone before its
+/// open finished answers a sealed read's readiness wait at once, naming the
+/// missing task, instead of leaving the read waiting for an open no task
+/// will finish.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn readiness_without_a_sealer_task_fails_at_once() {
+    let store: std::sync::Arc<dyn object_store::ObjectStore> =
+        std::sync::Arc::new(object_store::memory::InMemory::new());
+    let prefix = super::tests::unique("no-sealer");
+    crate::shard::inject_seal_open_faults(&prefix, u32::MAX);
+    let db = std::sync::Arc::new(
+        crate::keyspace::db_builder(crate::sharddir::shard_db_path(&prefix).as_str(), store.clone())
+            .build()
+            .await
+            .unwrap(),
+    );
+    let engine = crate::shard::ShardEngine::start(
+        prefix.clone(),
+        db,
+        store,
+        crate::shard::ShardConfig::default(),
+        None,
+        crate::shard::ShardMaintenance::default(),
+    );
+    let sealer = engine.test_abort_task("sealer");
+    let t0 = Instant::now();
+    while !sealer.is_finished() {
+        assert!(t0.elapsed() < Duration::from_secs(5), "the sealer never stopped");
+        tokio::task::yield_now().await;
+    }
+    let refused = tokio::time::timeout(Duration::from_secs(5), engine.seal_ready())
+        .await
+        .expect("readiness answers at once");
+    let error = refused.expect_err("no sealer is ready").to_string();
+    assert!(error.contains("no sealer task"), "{error}");
+    crate::shard::inject_seal_open_faults(&prefix, 0);
+    engine.begin_close();
+}

@@ -1,6 +1,6 @@
 //! Required engine workers share the runtime supervisor's join authority.
 use super::ShardEngine;
-use crate::tasks::{Policy, TaskOutcome, TaskResult, TaskSupervisor};
+use crate::tasks::{Policy, TaskOutcome, TaskResult, TaskState, TaskSupervisor};
 use std::{
     future::Future,
     sync::{Arc, Mutex, Weak},
@@ -42,6 +42,14 @@ impl EngineTasks {
     )]
     pub(super) fn failure(&self) -> Option<&'static str> {
         *self.failure.lock().unwrap()
+    }
+    /// Whether a task of `role` is registered and still running.
+    pub(super) fn running(&self, role: &str) -> bool {
+        self.supervisor
+            .monitor()
+            .snapshot()
+            .iter()
+            .any(|t| t.name == role && t.state == TaskState::Running)
     }
     #[expect(
         clippy::unwrap_used,

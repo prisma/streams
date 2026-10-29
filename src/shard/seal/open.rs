@@ -112,7 +112,9 @@ impl ShardEngine {
     }
 
     /// Wait until the sealer's open finished; an error once the engine
-    /// closed before it did.
+    /// closed before it did, or when no sealer task is running to finish
+    /// it (an engine whose required tasks were never spawned would
+    /// otherwise keep every sealed read waiting).
     pub(crate) async fn seal_ready(&self) -> anyhow::Result<()> {
         let mut ready = self.layout.seal.ready.subscribe();
         let mut closed = self.close_tx.subscribe();
@@ -120,6 +122,10 @@ impl ShardEngine {
             if *ready.borrow_and_update() {
                 return Ok(());
             }
+            anyhow::ensure!(
+                self.tasks.running("sealer"),
+                "no sealer task is running to open the sealer"
+            );
             anyhow::ensure!(
                 !*closed.borrow_and_update() && !self.is_closed(),
                 "the engine closed before its sealer opened"
