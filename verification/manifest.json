@@ -244,15 +244,16 @@
       "kind": "kani",
       "title": "Varint codec and consumed-input boundaries",
       "status": "pass-with-recorded-scope",
-      "owner": "postings codec",
+      "owner": "crypto page varint codec",
       "source_paths": [
-        "src/postings.rs"
+        "src/crypto_page/varint.rs"
       ],
       "verification_paths": [
-        "src/postings/proofs.rs"
+        "src/crypto_page/varint/proofs.rs"
       ],
       "requirements": [
-        "H11"
+        "D8",
+        "H2"
       ],
       "models": [
         "TLA-016",
@@ -262,47 +263,67 @@
         "ASM-KANI-SCOPE",
         "ASM-KANI-COMPILER"
       ],
-      "input_scope": "put_varint over every u64; get_varint over every symbolic input of 0 to 11 bytes (the ten-byte maximum representation plus one overlong byte), against an independent u128 oracle of the continuation rule; overlong in-range encodings decode (the format promises no canonical rejection)",
+      "input_scope": "put_varint, varint_len and get_varint over every u64 against an independent minimal LEB128 encoder (the writer's bytes, the length and the read-back asserted apart); get_varint over every symbolic input of 0 to 11 bytes (the ten-byte maximum representation plus one) against an independent u128 oracle of the continuation rule that accepts a run only when its bytes are exactly the minimal encoding of its value: every accepted run decodes to that value and consumes exactly its bytes, and every unterminated, overflowing (past u64) or overlong (redundant zero last group) run is refused. The decoder reads at most ten bytes of an eleven-byte input, so what it does on a longer input is decided by the same bytes; termination is the bounded loop, checked by Kani's unwinding assertions",
       "checks": [
         {
           "id": "KANI-006/round-trip",
           "role": "baseline",
-          "harness": "postings::proofs::kani_006_every_u64_round_trips_and_consumes_its_encoding",
+          "harness": "crypto_page::varint::proofs::kani_006_every_u64_is_written_and_read_as_its_minimal_encoding",
           "expect": {
             "result": "pass"
           }
         },
         {
-          "id": "KANI-006/wide-oracle",
+          "id": "KANI-006/minimal-oracle",
           "role": "baseline",
-          "harness": "postings::proofs::kani_006_decoding_matches_the_wide_oracle",
+          "harness": "crypto_page::varint::proofs::kani_006_decoding_accepts_exactly_minimal_encodings",
           "expect": {
             "result": "pass"
           }
         },
         {
-          "id": "KANI-006/nc-allow-an-overflowing-final-byte",
+          "id": "KANI-006/nc-accept-an-overflowing-final-group",
           "role": "negative-control",
-          "harness": "postings::proofs::kani_006_decoding_matches_the_wide_oracle",
-          "patch": "verification/kani/controls/KANI-006-allow-an-overflowing-final-byte.patch",
+          "harness": "crypto_page::varint::proofs::kani_006_decoding_accepts_exactly_minimal_encodings",
+          "patch": "verification/kani/controls/KANI-006-accept-an-overflowing-final-group.patch",
           "expect": {
             "result": "fail",
-            "property": "an unterminated or overflowing run is refused"
+            "property": "an overflowing run is refused"
+          }
+        },
+        {
+          "id": "KANI-006/nc-accept-an-overlong-encoding",
+          "role": "negative-control",
+          "harness": "crypto_page::varint::proofs::kani_006_decoding_accepts_exactly_minimal_encodings",
+          "patch": "verification/kani/controls/KANI-006-accept-an-overlong-encoding.patch",
+          "expect": {
+            "result": "fail",
+            "property": "an overlong run is refused"
           }
         },
         {
           "id": "KANI-006/nc-remove-the-termination-check",
           "role": "negative-control",
-          "harness": "postings::proofs::kani_006_every_u64_round_trips_and_consumes_its_encoding",
+          "harness": "crypto_page::varint::proofs::kani_006_decoding_accepts_exactly_minimal_encodings",
           "patch": "verification/kani/controls/KANI-006-remove-the-termination-check.patch",
           "expect": {
             "result": "fail",
-            "property": "the value survives the round trip"
+            "property": "the minimal encoding of a u64 decodes to its value and consumes exactly itself"
+          }
+        },
+        {
+          "id": "KANI-006/nc-write-a-redundant-zero-group",
+          "role": "negative-control",
+          "harness": "crypto_page::varint::proofs::kani_006_every_u64_is_written_and_read_as_its_minimal_encoding",
+          "patch": "verification/kani/controls/KANI-006-write-a-redundant-zero-group.patch",
+          "expect": {
+            "result": "fail",
+            "property": "put_varint writes the minimal encoding of its value"
           }
         }
       ],
       "regressions": [
-        "postings::tests::varint_roundtrip_edges"
+        "crypto_page::tests::varints_are_minimal_leb128_and_refuse_every_other_spelling"
       ]
     },
     {

@@ -1,0 +1,13 @@
+diff --git a/src/crypto_page/varint.rs b/src/crypto_page/varint.rs
+--- a/src/crypto_page/varint.rs
++++ b/src/crypto_page/varint.rs
+@@ -26,9 +26,6 @@
+         let (&byte, rest) = input.split_first()?;
+         *input = rest;
+         let group = u64::from(byte & 0x7f);
+-        if shift == 63 && group > 1 {
+-            return None;
+-        }
+         value |= group << shift;
+         if byte & 0x80 == 0 {
+             return (byte != 0 || shift == 0).then_some(value);

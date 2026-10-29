@@ -1,12 +1,12 @@
-diff --git a/src/postings.rs b/src/postings.rs
---- a/src/postings.rs
-+++ b/src/postings.rs
-@@ -116,9 +116,6 @@
+diff --git a/src/crypto_page/varint.rs b/src/crypto_page/varint.rs
+--- a/src/crypto_page/varint.rs
++++ b/src/crypto_page/varint.rs
+@@ -30,9 +30,6 @@
              return None;
          }
-         out |= u64::from(byte & 0x7f) << shift;
+         value |= group << shift;
 -        if byte & 0x80 == 0 {
--            return Some(out);
+-            return (byte != 0 || shift == 0).then_some(value);
 -        }
      }
      None

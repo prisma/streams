@@ -1,0 +1,12 @@
+diff --git a/src/crypto_page/varint.rs b/src/crypto_page/varint.rs
+--- a/src/crypto_page/varint.rs
++++ b/src/crypto_page/varint.rs
+@@ -8,7 +8,7 @@
+ /// value's low byte with its top bit set; the last is the remaining value,
+ /// below 0x80. The group count bounds the loop, so the writer always ends.
+ pub(crate) fn put_varint(out: &mut Vec<u8>, mut value: u64) {
+-    for _ in 1..varint_len(value) {
++    for _ in 0..varint_len(value) {
+         let [low, ..] = value.to_le_bytes();
+         out.push(low | 0x80);
+         value >>= 7;

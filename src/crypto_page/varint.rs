@@ -42,3 +42,6 @@ pub(super) fn varint_len(value: u64) -> usize {
     let bits = u64::BITS.saturating_sub(value.leading_zeros()).max(1);
     bits.div_ceil(7) as usize
 }
+
+#[cfg(kani)]
+mod proofs;

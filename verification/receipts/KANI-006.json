@@ -6,58 +6,96 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "a2cb44e3841c76d8eb46f3c26c2176e1a99804f4e9d3d48919c62acd692ceac4",
+      "log_sha256": "5d61c9c4afafd7525836f1fd155843a2ad8c128ab3395feb3339ea7743a2d0fe",
       "role": "baseline",
-      "seconds": 56.9,
+      "seconds": 83.5,
       "verdict": "pass"
     },
     {
-      "check": "KANI-006/wide-oracle",
-      "covers": 3,
-      "covers_satisfied": 3,
+      "check": "KANI-006/minimal-oracle",
+      "covers": 4,
+      "covers_satisfied": 4,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "fcf8aa8d3734791db92e610ff36808253dc7e5b929769eeb4924231154009ced",
+      "log_sha256": "7821fa8fce31aecdec5aa53666d253efeb5d6325bbfb4bb840cb84eb44efdd44",
       "role": "baseline",
-      "seconds": 86.7,
+      "seconds": 43.5,
       "verdict": "pass"
     },
     {
-      "check": "KANI-006/nc-allow-an-overflowing-final-byte",
-      "covers": 3,
+      "check": "KANI-006/nc-accept-an-overflowing-final-group",
+      "covers": 4,
       "covers_satisfied": 3,
-      "expected": "fail:an unterminated or overflowing run is refused",
+      "expected": "fail:an overflowing run is refused",
       "failed_checks": [
-        "\"an unterminated or overflowing run is refused\""
+        "\"an overflowing run is refused\""
       ],
-      "log_sha256": "1b59344589aeb4e86388d3b681384654fe2c51a69bfd3ea065d113e935ca8970",
+      "log_sha256": "e254ad201b54c1193b3405113a4023608baf0620a063278581333c7c9c3752a9",
       "mutated": {
-        "src/postings.rs": {
-          "baseline": "6c15d9738e2d0bff530f63dc6fbb9ad2241775cd6406af4982cbc55153111f73",
-          "control": "1357df597177b8267a154922dd1f9e522b5d6edcfe929f50bbbea11097462012"
+        "src/crypto_page/varint.rs": {
+          "baseline": "a6864544d19ee31c6ca5f839a2a3b83e1fb7ca9642be8d16ac7959add288bfce",
+          "control": "8ca1ec017b91da61c1db2053fe7ab0e196bde6cb0adba67fa581249aaf087852"
         }
       },
       "role": "negative-control",
-      "seconds": 205.1,
+      "seconds": 89.8,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-006/nc-accept-an-overlong-encoding",
+      "covers": 4,
+      "covers_satisfied": 3,
+      "expected": "fail:an overlong run is refused",
+      "failed_checks": [
+        "\"an overlong run is refused\""
+      ],
+      "log_sha256": "09e1bae9dbbf4a951729ca12a763bb4cb6f20de556936a6c8cccce4e6184a077",
+      "mutated": {
+        "src/crypto_page/varint.rs": {
+          "baseline": "a6864544d19ee31c6ca5f839a2a3b83e1fb7ca9642be8d16ac7959add288bfce",
+          "control": "6e5430398b8d24c7477a941e0f13fe96913a5868e1e13776f0e5e1bdf13ba1d0"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 42.7,
       "verdict": "fail"
     },
     {
       "check": "KANI-006/nc-remove-the-termination-check",
-      "covers": 3,
-      "covers_satisfied": 0,
-      "expected": "fail:the value survives the round trip",
+      "covers": 4,
+      "covers_satisfied": 2,
+      "expected": "fail:the minimal encoding of a u64 decodes to its value and consumes exactly itself",
       "failed_checks": [
-        "\"the value survives the round trip\""
+        "\"the minimal encoding of a u64 decodes to its value and consumes exactly itself\""
       ],
-      "log_sha256": "d678bda2a2b5cf2f7266fd98e87a3fc4b77e0a26288ef05bfdca873abda50bee",
+      "log_sha256": "fa1f830d734f35f00f2af8984e1aa2a852ddcb25a00f2bca1e858ef76bf11c59",
       "mutated": {
-        "src/postings.rs": {
-          "baseline": "6c15d9738e2d0bff530f63dc6fbb9ad2241775cd6406af4982cbc55153111f73",
-          "control": "40c83c28538c27a5aa7b0fd1a0ff2ba9ffe6bcd2cda736e53d66eb3831f4b62f"
+        "src/crypto_page/varint.rs": {
+          "baseline": "a6864544d19ee31c6ca5f839a2a3b83e1fb7ca9642be8d16ac7959add288bfce",
+          "control": "1096abb797d5da2126f82212ec0b992b18c5e9a90054c9dccb9a7e817cc5906b"
         }
       },
       "role": "negative-control",
-      "seconds": 208.0,
+      "seconds": 41.3,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-006/nc-write-a-redundant-zero-group",
+      "covers": 3,
+      "covers_satisfied": 0,
+      "expected": "fail:put_varint writes the minimal encoding of its value",
+      "failed_checks": [
+        "\"put_varint writes the minimal encoding of its value\""
+      ],
+      "log_sha256": "64d98e82baf8890251851a24618bfb01248dccd12fa7ace4be5898ba90c2c69b",
+      "mutated": {
+        "src/crypto_page/varint.rs": {
+          "baseline": "a6864544d19ee31c6ca5f839a2a3b83e1fb7ca9642be8d16ac7959add288bfce",
+          "control": "bcbc50bad9f4dc1469accac9a90956103c9b692e04ed6541eceee0b5850a01b7"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 36.4,
       "verdict": "fail"
     }
   ],
@@ -69,17 +107,19 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "2290fd7e52bc46b54f79d60cc98fad4addccb2ff5ff8870556f9d25e728109cd",
-      "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
+      "Cargo.lock": "d532ca051f4f918281c23fcafbcfa276c2b04b5a8e9fc480b81684d5411ba500",
+      "Cargo.toml": "40c6f797e5a38a80abe4de69d4c2c5feaa4f6cc506bc3085ec30bde7b0995e9e",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
-      "src/postings.rs": "6c15d9738e2d0bff530f63dc6fbb9ad2241775cd6406af4982cbc55153111f73",
-      "src/postings/proofs.rs": "36ed31a0655ced4f497cc745f0d200d5867acf5463964841242fb0d6c9ee5845",
-      "verification/kani/controls/KANI-006-allow-an-overflowing-final-byte.patch": "4b559eef1bc26d5433771081ebb16cea8b333e7fe4b72c51361263127d4c0ba7",
-      "verification/kani/controls/KANI-006-remove-the-termination-check.patch": "2985e3071e18a9344719cc96fe4d7afa515c733f24beee0d409243f99b7cf6d3"
+      "src/crypto_page/varint.rs": "a6864544d19ee31c6ca5f839a2a3b83e1fb7ca9642be8d16ac7959add288bfce",
+      "src/crypto_page/varint/proofs.rs": "62cf06b40ece6fc22f79c4aff18a3ea689f85fa520c8f80f6daee85fddc4b62f",
+      "verification/kani/controls/KANI-006-accept-an-overflowing-final-group.patch": "cb75b7d8d3f54e5dc8f481beb960017323b9facb72978ffec93668a9baa449da",
+      "verification/kani/controls/KANI-006-accept-an-overlong-encoding.patch": "8bcb93d5ce3eeddc60c312c0a78b99eee776311dbbabb9d3712058c92f4ebe6e",
+      "verification/kani/controls/KANI-006-remove-the-termination-check.patch": "e5acdb96bc66a8de82faca3bd679ffcdb37fe237f33eccd14c7ad2c47f264db5",
+      "verification/kani/controls/KANI-006-write-a-redundant-zero-group.patch": "c1fcddb0477f6b8e64f3f60e45008c2df858c6104ae5388b68f8c7ccda4926aa"
     },
-    "manifest_entry": "6d085b3d43df726b815064d4a073a3b36ff42cd0b84a31e67b6624dbd1ac185d",
+    "manifest_entry": "bd0f2e980b17d0d835ef8a92037be242191e6e5974297631e1282040f20ec5ac",
     "pins": {
       "formal": {
         "cbmc": "6.11.0",
@@ -101,10 +141,10 @@
       }
     }
   },
-  "inputs_sha256": "8c83f3a5196eedf6242f6af724eacf8aca30fe288bcfaa5b246099717ad01084",
+  "inputs_sha256": "6dd4c40f47951c5ce3d009463499bef2feb9ff49cc6ef4c8d86a5a966346325e",
   "run_on": {
-    "dirty_tree": false,
-    "revision": "5d84f29623835e9e217642f0cc25e01990b4df00"
+    "dirty_tree": true,
+    "revision": "e3ceaefde0d96324c381e931bee169c876b693e6"
   },
   "schema": 2,
   "tools": {
