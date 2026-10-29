@@ -468,6 +468,7 @@ impl ShardEngine {
             }
             retry = (retry * 2).min(Duration::from_secs(5));
         }
+        sp.ready.send_replace(true);
         let mut evicted_at = Instant::now();
         let mut dispatch_seen = None;
         while self.seal_wait(&mut closed).await {

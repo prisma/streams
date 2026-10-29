@@ -11,8 +11,9 @@ use crate::shard::{ShardEngine, stored_tail};
 use crate::spill::directory::{self, Directory};
 
 impl ShardEngine {
-    /// The open's rebuild. Until it finishes, sealed reads and the usage
-    /// drain wait (`seal_ready`) and no seal starts.
+    /// The open's rebuild. Until it finishes (the sealer's loop marks the
+    /// state ready once it returns), sealed reads and the usage drain wait
+    /// (`seal_ready`) and no seal starts.
     pub(super) async fn seal_open(&self) -> anyhow::Result<()> {
         #[cfg(test)]
         self.injected_open_fault()?;
@@ -32,7 +33,6 @@ impl ShardEngine {
         if !self.layout.unsealed().is_empty() {
             sp.note_unsealed();
         }
-        sp.ready.send_replace(true);
         Ok(())
     }
 
