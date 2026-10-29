@@ -109,7 +109,12 @@ pub(super) async fn open(
     };
     let engine = ShardEngine::start(prefix.to_string(), db, store, cfg, None, maintenance);
     engine.layout.seal.configure(|s| *s = settings);
-    engine.seal_ready().await.unwrap();
+    // An open that keeps failing (its rebuild refused) retries for ever;
+    // a test fails instead of waiting with it.
+    tokio::time::timeout(Duration::from_secs(20), engine.seal_ready())
+        .await
+        .expect("the sealer opened within 20 s")
+        .unwrap();
     engine
 }
 
