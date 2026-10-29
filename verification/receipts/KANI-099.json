@@ -6,9 +6,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "cfce10ef78d7f693351eed22089d80879be0f0cc3933620f3b2cc2787a9c904f",
+      "log_sha256": "7f54755a2b3f6e909215cd636110ddeab968dfa999f68954c7b2a95b31474a18",
       "role": "baseline",
-      "seconds": 16.1,
+      "seconds": 98.1,
       "verdict": "pass"
     },
     {
@@ -17,27 +17,27 @@
       "covers_satisfied": 1,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "2410a7a41c019168a88e3365f762c96431a332bfc3f8842e73a7075443a375d2",
+      "log_sha256": "28e0a0fa3c01030838668c6259662c2d1475b6472492655fc050c5f377a42ad5",
       "role": "baseline",
-      "seconds": 29.9,
+      "seconds": 39.5,
       "verdict": "pass"
     },
     {
       "check": "KANI-099/one-byte",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "0b7dc3a9df8002acef17698675bcb3b80b52476aca4404ca32a60e9d86fc7ac5",
+      "log_sha256": "0f743b98f09eb8224bb80dc3290c5231ffc6a16aefc2e8c0c4fca9750e450b65",
       "role": "baseline",
-      "seconds": 31.0,
+      "seconds": 39.4,
       "verdict": "pass"
     },
     {
       "check": "KANI-099/capped",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "b1766ef7ff5ca2a46a79b56d5a5fd8de4c3a99f7358dc76d6b67c3ed5b3c5ba1",
+      "log_sha256": "3cec843b1cbb0ac0e00483fdc208040356c938aa3406e9cf1ae3abed2aebcb62",
       "role": "baseline",
-      "seconds": 109.3,
+      "seconds": 131.0,
       "verdict": "pass"
     },
     {
@@ -48,7 +48,7 @@
       "failed_checks": [
         "\"a bloom admits every key it holds\""
       ],
-      "log_sha256": "183e14d957160cc9699f80673fdb61f150ff228e3e648929e0e7adaf608c2f9d",
+      "log_sha256": "882f8d90c51bb72202e971c8b53717d792de6a821962bb43d2d9ae8ab37d4505",
       "mutated": {
         "src/spill/directory/row.rs": {
           "baseline": "2afc798be7e7e2aa0306eb6ce5685e06b0b0d5bbd746c9865c819a77ccd7c77c",
@@ -56,7 +56,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 38.5,
+      "seconds": 91.9,
       "verdict": "fail"
     },
     {
@@ -67,7 +67,7 @@
       "failed_checks": [
         "\"every probe lies inside the bloom\""
       ],
-      "log_sha256": "5a53a140230e2af34a270a8af0a22d4a18b776be3155292cf6e36087c4fd3d69",
+      "log_sha256": "cfe6cbc0cd3460396d57f92c21ac2965487fea0e778ed119120c0bccfc8ef820",
       "mutated": {
         "src/spill/directory/row.rs": {
           "baseline": "2afc798be7e7e2aa0306eb6ce5685e06b0b0d5bbd746c9865c819a77ccd7c77c",
@@ -75,7 +75,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 32.4,
+      "seconds": 38.2,
       "verdict": "fail"
     }
   ],
@@ -92,7 +92,7 @@
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
-      "src/spill/directory.rs": "bb1f73598ba470d838387a9871542d97b3568c24ffe702f93500a0963aed211b",
+      "src/spill/directory.rs": "18955eba376a0ec1ba4dca4fced885ade1b6b87da51d96974295347d3b658821",
       "src/spill/directory/proofs.rs": "5971e838fecf0c2e5f67d927afef46e7925275fe78e2204dd1ff84ec427b6443",
       "src/spill/directory/row.rs": "2afc798be7e7e2aa0306eb6ce5685e06b0b0d5bbd746c9865c819a77ccd7c77c",
       "verification/kani/controls/KANI-099-probe-past-the-bloom.patch": "72043ba7061860699dbf614d259f52a10cf7fcd83c1af0a194c5a22d064d58e4",
@@ -120,10 +120,10 @@
       }
     }
   },
-  "inputs_sha256": "393e24121e0ef1fefd2a9149d43633a90aab6a8cc0ee2142b61c113df05b106a",
+  "inputs_sha256": "7a9bcd4c89b4e4f91219ec11b32c5e486a252ddb3d4bd159e868a2dbec4fba2c",
   "run_on": {
     "dirty_tree": false,
-    "revision": "1c923976909bd1445280511361ac74560b90cd43"
+    "revision": "37a21177b0beb9ef7d161543a299f48b1d3f014a"
   },
   "schema": 2,
   "tools": {
