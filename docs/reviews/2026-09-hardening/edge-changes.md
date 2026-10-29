@@ -4728,6 +4728,21 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Status:** ratified by the lead under the owner's delegation, 2026-10-29.
 - **Check against commit:** written with the change.
 
+### #214 (this record's commit) — A shard whose durable dispatch stalls for 60 s retires instead of leaving its writers waiting, and the shard debug JSON counts stall warnings
+
+- **Program item:** layout 6A, package 4 (push 1's rust-quality survivors; the dispatch watchdog decided by the lead under the owner's delegation, 2026-10-29).
+- **Surface:** client-write and client-read (a stalled shard's requests), operator-debug (the counter).
+- **Endpoint:** every request served by a shard engine; `GET /v1/debug/timings`, each shard's `seal` object.
+- **Condition:** the shard log's durable sequence covers its oldest pending commit group, nothing holds the dispatch gate, and no durable dispatch is attempted. By construction the acker and the pump dispatch every durable group within moments, so only a bug (or an acker starved for the whole window) reaches it.
+- **Before:** the group's writers (appends, closes, consumer acks) waited for an acknowledgement that never came, and reads at durable delivery waited for a frontier that never moved, until their own timeouts.
+- **After:** the sealer's loop watches dispatch on every tick. After 10 s with no dispatch it logs a warning once per episode and counts it (`dispatch_stall_warnings` in the shard's `seal` stats); after 60 s it retires the engine (failure "dispatch"), so every waiter is answered as at any retirement (a shard-closing refusal, retryable), and the next request reopens the shard. Any dispatch attempted, or the gate seen held, starts the window over. The thresholds are fixed production defaults (no env or runtime switch); only the test build's engines use 2 s and 5 s.
+- **Retry semantics:** the retirement's answers are the ordinary shard-closing ones: retry against the reopened shard.
+- **Who is affected:** no client in correct operation; under the bug, writers of the stalled shard get a retryable refusal after 60 s instead of hanging; operators see the warning counter before anything retires.
+- **Pinning tests:** `shard::commit_handoff::watchdog_tests::production_warns_at_ten_seconds_and_retires_at_sixty`, `one_group_with_no_dispatch_is_warned_once_then_stalled`, `any_progress_starts_the_episode_over`; `shard::seal::dispatch_tests::a_dispatch_that_leaves_a_durable_group_pending_retires_the_engine` (warned once, then retired).
+- **Risk reason:** medium. A false retirement on a shared one-shard cell is a whole-cell interruption, so the window is 60 s and requires no dispatch at all; the 10 s warning makes a near miss visible first.
+- **Status:** decided by the lead under the owner's delegation, 2026-10-29.
+- **Check against commit:** written with the change.
+
 ## Discrepancies
 
 One record has verified=false: its commit did not match the recorded text.

@@ -962,7 +962,7 @@ impl ShardEngine {
                             // dispatch has finished sending. Either way,
                             // when this returns, every ack this flush
                             // unblocked is on the wire.
-                            let acked = pump.dispatch_durable(durable_seq).await;
+                            let acked = pump.dispatch_checked(durable_seq).await;
                             pump.pump_barrier_acked
                                 .fetch_add(acked as u64, Ordering::Relaxed);
                             // Arm the ack->next-enqueue probe: the next
@@ -1913,7 +1913,7 @@ impl ShardEngine {
                 }
                 status.durable_seq
             };
-            self.dispatch_durable(durable_seq).await;
+            self.dispatch_checked(durable_seq).await;
             tokio::select! {
                 _ = self.closed() => return,
                 changed = status_rx.changed() => {

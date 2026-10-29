@@ -26,6 +26,8 @@ const S: SealSettings = SealSettings {
     auto: false,
     backoff_min: Duration::from_millis(400),
     backoff_max: Duration::from_millis(1000),
+    dispatch_warn: Duration::from_secs(2),
+    dispatch_stall: Duration::from_secs(5),
 };
 
 const QUIET: Measure = Measure {

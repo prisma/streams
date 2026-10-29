@@ -60,6 +60,10 @@ pub(crate) struct SealHooks {
     pub(crate) window_hold: Mutex<Option<Arc<Hold>>>,
     /// Park a handle load after it read the stream's tail.
     pub(crate) load_hold: Mutex<Option<Arc<Hold>>>,
+    /// Park every durable dispatch before it takes the dispatch gate.
+    pub(crate) dispatch_hold: Mutex<Option<Arc<Hold>>>,
+    /// Skip every durable dispatch (the stall check's control).
+    pub(crate) skip_dispatch: AtomicBool,
     /// REVIEW-6A F1 negative control: the committer puts the remainder a
     /// seal task would have pre-built from the pages its snapshot knew,
     /// instead of the live one.
@@ -115,6 +119,15 @@ impl SealState {
         if let Some(hold) = hold {
             hold.park().await;
         }
+    }
+
+    /// Park or skip a durable dispatch; true when it is skipped.
+    pub(crate) async fn before_dispatch(&self) -> bool {
+        let hold = self.hooks.dispatch_hold.lock().unwrap().clone();
+        if let Some(hold) = hold {
+            hold.park().await;
+        }
+        self.hooks.skip_dispatch.load(Ordering::Relaxed)
     }
 
     pub(crate) async fn after_tail_load(&self) {

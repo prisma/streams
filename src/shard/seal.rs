@@ -56,6 +56,8 @@ mod amplification_tests;
 #[cfg(test)]
 mod budget_tests;
 #[cfg(test)]
+mod dispatch_tests;
+#[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
 mod memory_tests;
@@ -111,7 +113,25 @@ pub(crate) struct SealSettings {
     /// `backoff_max`.
     pub(crate) backoff_min: Duration,
     pub(crate) backoff_max: Duration,
+    /// The dispatch watchdog (`ShardEngine::watch_dispatch`): a durable
+    /// group pending with no dispatch at all this long is warned about
+    /// once (and counted)...
+    pub(crate) dispatch_warn: Duration,
+    /// ...and this long retires the engine.
+    pub(crate) dispatch_stall: Duration,
 }
+
+/// The production dispatch watchdog: warn after 10 s, retire after 60 s
+/// without any dispatch. A false retire on a shared cell is a whole-cell
+/// outage, and a loaded small instance can starve the acker for seconds.
+pub(crate) const DISPATCH_WARN: Duration = Duration::from_secs(10);
+pub(crate) const DISPATCH_STALL: Duration = Duration::from_secs(60);
+/// The test build's watchdog, so a test (or a mutant) whose dispatch
+/// stalls fails in seconds; every test rig's engine starts with it.
+#[cfg(test)]
+pub(crate) const TEST_DISPATCH_WARN: Duration = Duration::from_secs(2);
+#[cfg(test)]
+pub(crate) const TEST_DISPATCH_STALL: Duration = Duration::from_secs(5);
 
 impl Default for SealSettings {
     fn default() -> Self {
@@ -129,6 +149,14 @@ impl Default for SealSettings {
             auto: true,
             backoff_min: Duration::from_millis(500),
             backoff_max: Duration::from_secs(16),
+            #[cfg(not(test))]
+            dispatch_warn: DISPATCH_WARN,
+            #[cfg(not(test))]
+            dispatch_stall: DISPATCH_STALL,
+            #[cfg(test)]
+            dispatch_warn: TEST_DISPATCH_WARN,
+            #[cfg(test)]
+            dispatch_stall: TEST_DISPATCH_STALL,
         }
     }
 }
@@ -186,6 +214,12 @@ pub(crate) struct SealCounters {
     /// Chunks a keyed read fetched and found no page of its key in (the
     /// summary's false positives).
     pub(crate) summary_misses: AtomicU64,
+    /// Durable dispatches attempted (the dispatch watchdog's progress
+    /// signal; not served).
+    pub(crate) dispatches: AtomicU64,
+    /// Times a durable group stayed pending with no dispatch for the
+    /// watchdog's warning threshold (each episode once).
+    pub(crate) dispatch_stall_warnings: AtomicU64,
 }
 
 impl SealCounters {
@@ -210,6 +244,7 @@ impl SealCounters {
             "sealed_gets": n(&self.sealed_gets),
             "summary_skips": n(&self.summary_skips),
             "summary_misses": n(&self.summary_misses),
+            "dispatch_stall_warnings": n(&self.dispatch_stall_warnings),
         })
     }
 }
@@ -434,11 +469,13 @@ impl ShardEngine {
             retry = (retry * 2).min(Duration::from_secs(5));
         }
         let mut evicted_at = Instant::now();
+        let mut dispatch_seen = None;
         while self.seal_wait(&mut closed).await {
             if evicted_at.elapsed() >= EVICT_EVERY {
                 evicted_at = Instant::now();
                 self.evict_idle();
             }
+            self.watch_dispatch(&mut dispatch_seen);
             let settings = sp.settings();
             if !settings.auto || sp.backing_off() {
                 continue;
