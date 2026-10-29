@@ -112,7 +112,8 @@ Limits, error answers and retry rules are in
   (edge change #230; layout 6A package 6). An object that also holds other
   streams' live chunks stays until they die. The descriptor's tombstone and
   the stream's billing row stay: they are Prisma's record. An expired
-  stream is removed only once it is deleted or its name is recreated. Until
+  stream becomes a deleted tombstone about 10 minutes after its expiry and
+  is removed the same way (edge change #231). Until
   removal, the stream's name, routing keys and sizes stay visible to the
   operator (`SPEC.md` G8).
 - Usage records about a deleted stream stay in the usage ledgers and the

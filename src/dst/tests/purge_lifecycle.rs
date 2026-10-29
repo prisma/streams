@@ -6,10 +6,12 @@
 //! billing close reached the ledger.
 //! - A hard-deleted stream: its tail goes, its sealed chunks are
 //!   decremented and its objects deleted, and its handle never loads again.
-//! - An expired stream nothing deleted or replaced is not purged (a renewal
-//!   or a fork admitted before the expiry may still revive or retain it);
-//!   once its name is recreated, the replaced incarnation is purged and the
-//!   new one is untouched.
+//! - An expired stream becomes a tombstone once its expiry is
+//!   `EXPIRY_TOMBSTONE_DELAY_MS` old (edge #231), and is purged then: a
+//!   renewal that landed before the tombstone's CAS keeps it alive, one that
+//!   lands after is refused. Within the delay nothing is purged; a
+//!   recreation of its name purges the replaced incarnation and leaves the
+//!   new one alone.
 //! - A source a fork reads through is not purged until the fork is gone.
 
 use super::billing_closure_debts::{JSON, ROW, engine_of, expire, raw_put, stored};
@@ -213,7 +215,7 @@ async fn a_deleted_stream_is_purged_and_its_objects_reclaimed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_expired_stream_is_purged_only_once_its_name_is_recreated() {
+async fn an_expired_stream_is_not_purged_within_its_tombstone_delay_and_a_recreation_purges_it() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let (state, addr) = http_rig(mem()).await;
     raw_put(addr, "gc-ttl", &[JSON, ("stream-ttl", "3600")], ROW).await;
@@ -315,5 +317,168 @@ async fn a_source_its_fork_reads_is_never_purged_until_the_fork_is_deleted() {
     );
     sweep_until_purged(&state, &engine, id).await;
     assert_eq!(counted_chunks(&engine, id).await, 0);
+    engine_shutdown(&state).await;
+}
+
+const HOUR_MS: i64 = 3_600_000;
+
+/// A raw stream with a one-hour TTL and sealed records, then expired
+/// `ago_ms` ago: its sref, the expired descriptor the walk would read, the
+/// engine and the segment id.
+async fn expired_stream(
+    state: &State,
+    addr: Addr,
+    name: &str,
+    ago_ms: i64,
+) -> (
+    crate::tenant::TenantStreamRef,
+    crate::registry::StreamDesc,
+    Engine,
+    [u8; 16],
+) {
+    raw_put(addr, name, &[JSON, ("stream-ttl", "3600")], ROW).await;
+    let sref = state.deployment.raw_adapter_sref(name);
+    let desc = stored(state, &sref).await;
+    let engine = engine_of(state, &desc, 0).await;
+    drive(&engine);
+    sealed_records(addr, &engine, name).await;
+    expire(&[state], &sref, crate::shard::now_ms() - ago_ms).await;
+    let seen = stored(state, &sref).await;
+    let id = seen.dynamic_segment_identity(0);
+    (sref, seen, engine, id)
+}
+
+/// The renewal an append admitted before the expiry submits (`touch_ttl`),
+/// landing now.
+async fn land_renewal(state: &State, seen: &crate::registry::StreamDesc) {
+    crate::application::creation::TtlMutation::for_tests(
+        state.registry.clone(),
+        seen.sref(),
+        seen.stream_epoch.clone(),
+        3600,
+        crate::shard::now_ms() + HOUR_MS,
+    )
+    .run()
+    .await
+    .expect("the renewal's mutation runs");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_renewal_that_lands_before_the_expiry_tombstone_keeps_the_stream_alive() {
+    let _clock = crate::billing::billing_clock_lock().read().await;
+    let (state, addr) = http_rig(mem()).await;
+    let delay = crate::application::creation::EXPIRY_TOMBSTONE_DELAY_MS;
+    let (sref, seen, engine, id) = expired_stream(&state, addr, "gc-renew", delay + 60_000).await;
+    // The walk read `seen` expired; the renewal lands before its CAS.
+    land_renewal(&state, &seen).await;
+    let made = state
+        .creation_service()
+        .tombstone_expired(&seen)
+        .await
+        .unwrap();
+    assert!(!made, "the CAS re-checks the expiry and declines");
+    let live = stored(&state, &sref).await;
+    assert!(
+        !live.deleted && crate::http::desc_alive(&live),
+        "renewed, alive"
+    );
+    let mut drain = DrainWait::default();
+    for _ in 0..3 {
+        crate::billing::sweep_owned_outboxes(&state).await;
+        drain.round(&state).await;
+        engine.gc_pass().await;
+    }
+    assert_eq!(
+        engine.head_row(&id).await.unwrap(),
+        None,
+        "nothing is purged"
+    );
+    assert!(counted_chunks(&engine, id).await > 0);
+    let (st, _, body) = hreq(addr, "GET", "/v1/stream/gc-renew?offset=-1", &[], b"").await;
+    assert_eq!(
+        st,
+        200,
+        "the renewed stream reads: {}",
+        String::from_utf8_lossy(&body)
+    );
+    engine_shutdown(&state).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_renewal_that_lands_after_the_expiry_tombstone_is_refused_and_the_stream_purged() {
+    let _clock = crate::billing::billing_clock_lock().read().await;
+    let (state, addr) = http_rig(mem()).await;
+    let delay = crate::application::creation::EXPIRY_TOMBSTONE_DELAY_MS;
+    let (sref, seen, engine, id) = expired_stream(&state, addr, "gc-late", delay + 60_000).await;
+    // The production sweep makes it a tombstone and asks for its purge.
+    sweep_until_purged(&state, &engine, id).await;
+    let dead = stored(&state, &sref).await;
+    assert!(
+        dead.deleted,
+        "the walk made the expired incarnation a tombstone"
+    );
+    assert_eq!(
+        dead.logical_close_ms, seen.expires_at_ms,
+        "closed at its expiry"
+    );
+    assert_eq!(
+        counted_chunks(&engine, id).await,
+        0,
+        "and it is fully reclaimed"
+    );
+    // A renewal admitted before the expiry lands now: refused.
+    land_renewal(&state, &seen).await;
+    let still = stored(&state, &sref).await;
+    assert!(still.deleted, "a late renewal does not revive a tombstone");
+    assert_eq!(still.expires_at_ms, seen.expires_at_ms);
+    let (st, _, _) = hreq(addr, "GET", "/v1/stream/gc-late?offset=-1", &[], b"").await;
+    assert!(st == 404 || st == 410, "gone: {st}");
+    engine_shutdown(&state).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fork_anchored_before_the_expiry_tombstone_retains_its_source() {
+    let _clock = crate::billing::billing_clock_lock().read().await;
+    let (state, addr) = http_rig(mem()).await;
+    let delay = crate::application::creation::EXPIRY_TOMBSTONE_DELAY_MS;
+    let (sref, seen, engine, id) = expired_stream(&state, addr, "gc-anchor", delay + 60_000).await;
+    // The walk read `seen` expired with no child; a fork prepared before
+    // the expiry installs its reference before the CAS (`anchor::install`).
+    let installed = state
+        .registry
+        .mutate_incarnation(&sref, &seen.stream_epoch, |current| {
+            let mut next = current.to_persisted();
+            next.fork_children.push("fork-late".to_string());
+            crate::registry::Mutation::Write(next, ())
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        installed,
+        crate::registry::MutationResult::Applied(())
+    ));
+    let made = state
+        .creation_service()
+        .tombstone_expired(&seen)
+        .await
+        .unwrap();
+    assert!(!made, "the CAS re-checks the children and declines");
+    let kept = stored(&state, &sref).await;
+    assert!(
+        !kept.deleted && kept.fork_children.len() == 1,
+        "retained for its fork"
+    );
+    let mut drain = DrainWait::default();
+    for _ in 0..3 {
+        crate::billing::sweep_owned_outboxes(&state).await;
+        drain.round(&state).await;
+        engine.gc_pass().await;
+    }
+    assert_eq!(
+        engine.head_row(&id).await.unwrap(),
+        None,
+        "a retained source is not purged"
+    );
+    assert!(counted_chunks(&engine, id).await > 0);
     engine_shutdown(&state).await;
 }

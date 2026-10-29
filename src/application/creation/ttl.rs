@@ -73,6 +73,26 @@ impl TtlMutation {
         Ok(())
     }
 }
+#[cfg(test)]
+impl TtlMutation {
+    /// Tests: the renewal `touch_ttl` would submit, built from parts, so a
+    /// test lands it at a chosen moment.
+    pub(crate) fn for_tests(
+        registry: Arc<Registry>,
+        stream: crate::tenant::TenantStreamRef,
+        epoch: String,
+        ttl: u64,
+        target: i64,
+    ) -> Self {
+        Self {
+            registry,
+            stream,
+            epoch,
+            ttl,
+            target,
+        }
+    }
+}
 impl Drop for TtlMutation {
     fn drop(&mut self) {
         // Also revalidate after an ambiguous cancelled CAS.

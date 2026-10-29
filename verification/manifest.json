@@ -3048,7 +3048,7 @@
         "shard::seal::gc_tests::a_consolidation_offered_before_a_purge_supersedes_nothing_after_it",
         "shard::seal::gc_tests::objects_put_without_their_commit_are_swept_and_objects_in_flight_are_not",
         "shard::seal::gc_tests::a_purge_waits_for_the_ledger_and_for_its_own_group",
-        "dst::dst_tests::purge_lifecycle::an_expired_stream_is_purged_only_once_its_name_is_recreated",
+        "dst::dst_tests::purge_lifecycle::a_renewal_that_lands_before_the_expiry_tombstone_keeps_the_stream_alive",
         "dst::dst_tests::fork_cleanup::a_crashed_creators_late_reference_is_repaired_by_delete_retry",
         "dst::dst_tests::fork_cleanup::a_crashed_creators_late_reference_is_released_without_a_client_retry",
         "dst::dst_tests::fork_cleanup::the_reconciler_never_releases_a_reference_a_live_creator_or_new_child_holds",

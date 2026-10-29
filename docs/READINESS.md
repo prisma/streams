@@ -92,13 +92,13 @@ until its acceptance criteria are met. None of them is a model result.
   where noted). (1) The policy is SPEC C6: a hard-deleted or replaced
   incarnation is purged once its close is 10 minutes old and its usage
   reached the ledger; fork references block it (a soft-deleted or
-  fork-retained source is never purged); an expired incarnation is purged
-  once deleted or replaced. (2) Every row keyed by the incarnation's hash but
+  fork-retained source is never purged), and an expired one becomes a
+  tombstone 10 minutes after its expiry and is purged then (edge #231). (2) Every row keyed by the incarnation's hash but
   its billing row is deleted (tail, pending, producers, seq lanes, seal
   fence), its sealed chunks are decremented, and each segment object with
   no live chunk is deleted after a 10 minute grace; SlateDB GC then
   reclaims the SSTs. (3) DSTs: a same-name recreate
-  (`purge_lifecycle::an_expired_stream_is_purged_only_once_its_name_is_recreated`),
+  (`purge_lifecycle::an_expired_stream_is_not_purged_within_its_tombstone_delay_and_a_recreation_purges_it`),
   a live fork child
   (`purge_lifecycle::a_source_its_fork_reads_is_never_purged_until_the_fork_is_deleted`),
   an unsettled usage close
@@ -108,8 +108,8 @@ until its acceptance criteria are met. None of them is a model result.
   (5) `/operator/data.json` `local.gc_unreclaimed_incarnations` and
   `local.gc_oldest_unreclaimed_late_secs` with cell-watch row 32 (NOTIFY
   over an hour late), and row 31 (PAGE on any inexact decrement). TLA-019
-  checks the refcount GC (`RefGC`). #230 ratified by the lead under the
-  owner's delegation (R1).
+  checks the refcount GC (`RefGC`). #230 and #231 ratified by the lead
+  under the owner's delegation (R1, R2).
 - **GC convergence without further writes (H14, TLA-019-F2).** An
   unreferenced SST newer than a quiet partition's last compaction or newest
   L0 is never collected. Acceptance is in

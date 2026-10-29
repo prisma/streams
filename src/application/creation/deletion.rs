@@ -542,3 +542,87 @@ fn delete_transition(current: &StreamDesc, close_ms: i64) -> Mutation<DeleteTran
         Mutation::Write(next, DeleteTransition::Tombstoned)
     }
 }
+
+/// How long past its expiry an expired incarnation waits before the walk
+/// makes it a tombstone (layout 6A package 6, the lead's ruling R2 under the
+/// owner's delegation, edge #231): longer than a renewal admitted before the
+/// expiry may still take to land.
+pub(crate) const EXPIRY_TOMBSTONE_DELAY_MS: i64 = 600_000;
+
+/// Whether `d` is an expired incarnation the walk may make a tombstone at
+/// `now`: expired at least `EXPIRY_TOMBSTONE_DELAY_MS` ago, not deleted,
+/// not soft-deleted and with no fork child (a fork reading through it
+/// retains it).
+pub(crate) fn expired_for_tombstone(d: &crate::registry::PersistedDescriptor, now: i64) -> bool {
+    !d.deleted
+        && !d.soft_deleted
+        && d.fork_children.is_empty()
+        && d.expires_at_ms
+            .is_some_and(|e| now >= e.saturating_add(EXPIRY_TOMBSTONE_DELAY_MS))
+}
+
+impl CreationService {
+    /// Make the expired incarnation the walk found (`seen`) a tombstone, so
+    /// that a later renewal or fork anchor is refused and its storage can
+    /// be purged (edge #231). One CAS against the stored incarnation whose
+    /// predicate re-checks `expired_for_tombstone`: a renewal or a fork that
+    /// landed after the walk's read keeps the stream alive. The parent debt
+    /// is indexed ahead of the write and released after it, as a delete
+    /// does; the stream-count slot is left as expiry leaves it. True when
+    /// the incarnation is a tombstone now (this CAS's or an earlier one).
+    pub(crate) async fn tombstone_expired(
+        self: &Arc<Self>,
+        seen: &StreamDesc,
+    ) -> Result<bool, String> {
+        if seen.deleted {
+            return Ok(true);
+        }
+        let now = now_ms();
+        if !expired_for_tombstone(seen, now) {
+            return Ok(false);
+        }
+        self.registry
+            .record_fork_debt(seen)
+            .await
+            .map_err(|e| e.to_string())?;
+        let sref = seen.sref();
+        let outcome = self
+            .registry
+            .mutate_incarnation(&sref, &seen.stream_epoch, |current| {
+                expire_transition(current, now)
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        self.registry.invalidate(&sref);
+        match outcome {
+            MutationResult::Applied(_) => {}
+            MutationResult::Declined(done) => return Ok(done),
+            MutationResult::IncarnationChanged | MutationResult::Missing => return Ok(false),
+        }
+        if let Some(parent) = seen.forked_from.as_ref() {
+            let (src, fid, sep) = (&parent.source, &parent.fork_id, &parent.source_epoch);
+            if release_fork_ref(self, seen.ref_in_project(src), fid, sep).await? {
+                clear_parent_debt(self, &sref, &seen.stream_epoch, Some((src, fid))).await?;
+                settle_marker(self, seen).await;
+            }
+        }
+        Ok(true)
+    }
+}
+
+/// The expiry tombstone's decision against the stored incarnation:
+/// declined `true` when it is a tombstone already, `false` when it is no
+/// longer expired long enough (renewed), retained or forked.
+fn expire_transition(current: &StreamDesc, now: i64) -> Mutation<bool> {
+    if current.deleted {
+        return Mutation::Decline(true);
+    }
+    if !expired_for_tombstone(current, now) {
+        return Mutation::Decline(false);
+    }
+    let mut next = current.to_persisted();
+    next.deleted = true;
+    next.logical_close_ms = current.expires_at_ms;
+    next.parent_ref_pending = next.forked_from.is_some();
+    Mutation::Write(next, true)
+}

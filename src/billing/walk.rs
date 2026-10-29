@@ -98,8 +98,8 @@ pub(super) async fn walk_segment(
         Err(pass) => return pass,
     };
     let mut pass = close_or_retain(d, sid, terminal, &engine).await;
-    if pass == Pass::Next && d.deleted {
-        pass = request_purge(&engine, d.dynamic_segment_identity(sid), d.logical_close_ms).await;
+    if pass == Pass::Next && terminal {
+        pass = purge_if_dead(state, d, sid, &engine).await;
     }
     if ours {
         // Scheduler-opened for this segment: close it or keep it as an
@@ -165,13 +165,40 @@ async fn close_or_retain(d: &StreamDesc, sid: u32, terminal: bool, engine: &Shar
     Pass::Next
 }
 
+/// A terminal incarnation's segment `sid` purged on `engine` once it is
+/// irrevocably dead: a tombstone, or an expired incarnation the walk makes
+/// one (`CreationService::tombstone_expired`, edge #231: a renewal or a
+/// fork anchor that lands first keeps it alive, one that lands later is
+/// refused). Its close is the tombstone's stamp, or the expiry instant.
+async fn purge_if_dead(
+    state: &Arc<AppState>,
+    d: &StreamDesc,
+    sid: u32,
+    engine: &ShardEngine,
+) -> Pass {
+    let close = if d.deleted {
+        d.logical_close_ms
+    } else {
+        match state.creation_service().tombstone_expired(d).await {
+            Ok(true) => d.expires_at_ms,
+            Ok(false) => return Pass::Next,
+            Err(error) => {
+                tracing::warn!(
+                    "expiry tombstone of {} failed, the page replays: {error}",
+                    d.sref()
+                );
+                return Pass::Stop;
+            }
+        }
+    };
+    request_purge(engine, d.dynamic_segment_identity(sid), close).await
+}
+
 /// Ask `engine` to purge a dead incarnation's segment `hash`
 /// (`shard::seal::gc::purge`) once its purge delay passed the close. Only an
 /// irrevocably dead incarnation is purged: a tombstone (`deleted`; a
 /// renewal, a fork and a recreation all decline it) or a replaced one
-/// (`replaced.rs`). An expired descriptor is not: a renewal or a fork
-/// admitted before its expiry may still revive or retain it. A refused
-/// request is `Pass::Stop`, so the page replays.
+/// (`replaced.rs`). A refused request is `Pass::Stop`, so the page replays.
 pub(super) async fn request_purge(
     engine: &ShardEngine,
     hash: [u8; 16],

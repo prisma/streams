@@ -422,9 +422,10 @@ lives, encryption, retention, erasure as built, backups) is
   once its usage reached the ledger, and each segment object once none of
   its chunks is live, 10 minutes after the last one died and once no read
   that may hold it runs. A recreation's replaced incarnation is removed the
-  same way. An expired stream nothing deleted or replaced is not removed:
-  a renewal admitted before its expiry may still revive it. Until removal
-  its objects stay in the bucket as
+  same way, and so is an expired stream: about 10 minutes after its
+  expiry the walk makes it a deleted tombstone (edge change #231; a renewal
+  landing later no longer revives it), unless a fork reads through it.
+  Until removal its objects stay in the bucket as
   ciphertext under keys the server never stored, and their names, routing
   keys and sizes stay visible to the operator (G8). Crypto-erasure is
   complete once the customer destroys the stream key.
@@ -446,7 +447,7 @@ lives, encryption, retention, erasure as built, backups) is
   | per-project streams | the project's `max_streams`; on a shared cell at most 65,536 ÷ `PROJECT_SHARE_K` × its `request_weight` (1 unless its policy sets one, held to 1..k-1; edge change #196), 8,192 at k = 8 and weight 1 (`src/auth/ceiling.rs`) | create-time reservation: 429 `stream_limit` |
   | per-project live subscriptions | the project's `max_live_subscriptions`; on a shared cell at most `SSE_MAX_CONNECTIONS` ÷ k, 150 at k = 8 | 429 `project_concurrency_limit` |
   | per-project stored bytes | the project's `max_stored_bytes`, else `PROJECT_STORED_BYTES_DEFAULT` (10 GiB on a shared cell; 0, no limit, by default) | 429 `stored_bytes_limit` on appends (edge change #158) |
-  | stream lifetime / retention | bytes bounded only by the project's stored-bytes limit; a whole-stream expiry set at creation (`expiry: {idle}` or `{at}`), default none; no per-record maximum age yet, and no archive tier (Prisma Buckets expose one storage class) | an expired stream ends as a deleted one does (C6) |
+  | stream lifetime / retention | bytes bounded only by the project's stored-bytes limit; a whole-stream expiry set at creation (`expiry: {idle}` or `{at}`), default none; no per-record maximum age yet, and no archive tier (Prisma Buckets expose one storage class) | an expired stream ends as a deleted one does (C6): about 10 minutes after its expiry it becomes a deleted tombstone, and a renewal that lands later no longer revives it (edge change #231) |
   | request rate 429 contract | Retry-After + scoped error body | COMPUTE-SPEC §12.2 |
 
   Stream names are UTF-8 and unique **within a project**: the registry

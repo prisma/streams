@@ -845,6 +845,17 @@
     "scenarios": []
   },
   {
+    "name": "a_fork_anchored_before_the_expiry_tombstone_retains_its_source",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "25a684eb8aaea3f73402b8bef05e8bdb25d23fc9f8bbe263bf16817c52162d95",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/purge_lifecycle.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_fork_inheriting_a_legacy_window_is_born_alive",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -2035,6 +2046,28 @@
       "crate::failpoints::release_release_after_epoch_check(\"frk15src\");"
     ],
     "file": "src/dst/tests/lifecycle_incarnation.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_renewal_that_lands_after_the_expiry_tombstone_is_refused_and_the_stream_purged",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "446dd682d5635379a2bee356419f55c25a0c1a3159f7c5ea996f8db89dbb1eb3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/purge_lifecycle.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_renewal_that_lands_before_the_expiry_tombstone_keeps_the_stream_alive",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "59c462aae2aafab564ee666f8ef7b198719fbd4a0004c10138e6b3f14d75cbe3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/purge_lifecycle.rs",
     "scenarios": []
   },
   {
@@ -3491,11 +3524,11 @@
     "scenarios": []
   },
   {
-    "name": "an_expired_stream_is_purged_only_once_its_name_is_recreated",
+    "name": "an_expired_stream_is_not_purged_within_its_tombstone_delay_and_a_recreation_purges_it",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "bd88daa6462ae1dd75e3cb9a35bbf8f44fbf2f2e8a5b0763c8f8c4092de1dc4a",
+    "function_sha256": "ce0cd8c5801e4b12d8065ab3a039dda3e5f20de41b59d071424206ac8da9366c",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/purge_lifecycle.rs",

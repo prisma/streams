@@ -89,6 +89,8 @@ pub(crate) struct CreationService {
 mod anchor;
 mod claim;
 mod deletion;
+#[cfg(test)]
+pub(crate) use deletion::EXPIRY_TOMBSTONE_DELAY_MS;
 mod fork;
 mod initialization;
 mod product;
