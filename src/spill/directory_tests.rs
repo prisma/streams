@@ -233,3 +233,47 @@ fn the_memory_gauge_is_the_sum_of_the_entries_through_inserts_and_removals() {
     directory.remove(&[1; 16], entries[0].last, OBJECT);
     assert_eq!((directory.entries(), directory.bytes()), (0, 0));
 }
+
+/// A seal's refcount row: the format version, then its live bytes, live
+/// chunks and creation instant as minimal varints (package 5's collector
+/// reads them), at pinned bytes.
+#[test]
+fn a_refcount_row_holds_its_live_bytes_chunks_and_creation_at_pinned_bytes() {
+    let row = super::directory::refcount_value(300, 2, 1_760_000_000_000);
+    assert_eq!(crate::crypto::hex(&row), "01ac02028080b3c19c33");
+}
+
+/// One entry's memory is the entry, its map key, eight bytes per summary
+/// key or one per bloom byte, and its anchors.
+#[test]
+fn an_entrys_memory_counts_its_summary_and_anchors_exactly() {
+    use super::object::Anchor;
+    let entry = |keys, anchors| DirEntry {
+        object: OBJECT,
+        chunk_off: 0,
+        chunk_len: 0,
+        first: 0,
+        last: 9,
+        page_count: 1,
+        keys,
+        anchors: vec![
+            Anchor {
+                page: 1,
+                offset: 1,
+                byte: 1,
+            };
+            anchors
+        ],
+    };
+    let base = size_of::<DirEntry>() + size_of::<u64>();
+    let memory = |e: DirEntry| {
+        let mut d = Directory::default();
+        d.insert([7; 16], e);
+        usize::try_from(d.bytes()).unwrap()
+    };
+    assert_eq!(
+        memory(entry(KeySummary::Keys(vec![1, 2, 3]), 2)),
+        base + 3 * 8 + 2 * size_of::<Anchor>()
+    );
+    assert_eq!(memory(entry(KeySummary::Bloom(vec![0; 64]), 0)), base + 64);
+}
