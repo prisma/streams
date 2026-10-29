@@ -1,13 +1,17 @@
 #![cfg(test)]
-//! HIS-027, what layout 6 bounds in one process today: several shard
-//! engines on one store, each with 100 active streams over a space of a
-//! million routing keys, written far past the unsealed trigger. Per shard
-//! the unsealed pages stay near the trigger; the in-memory seal directory
-//! grows by at most one entry per active stream per seal, and every entry
-//! stays under a fixed cap. Package 5's fold bounds the directory itself
-//! at one fold period (DESIGN-6A §2.3); its assertion joins this test then.
+//! HIS-027, what layout 6 bounds in one process: several shard engines on
+//! one store, each with 100 active streams over a space of a million
+//! routing keys, written far past the unsealed trigger. Per shard the
+//! unsealed pages stay near the trigger; the in-memory seal directory
+//! grows by at most one entry per active stream per seal, every entry
+//! stays under a fixed cap, and the fold keeps the directory to the chunks
+//! sealed within one fold period (DESIGN-6A §2.3): at every sample it holds
+//! no more than the shard sealed in the last two periods, while the shard
+//! seals many times that over the run.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -27,6 +31,63 @@ const TRIGGER: u64 = 256 << 10;
 const UNSEALED_MAX: u64 = 4 * TRIGGER;
 /// One directory entry's memory, its key summary and anchors included.
 const ENTRY_MAX: u64 = 512;
+/// The fold period the engines run with.
+const FOLD_PERIOD: Duration = Duration::from_millis(300);
+/// The window the directory's bound is checked against: two periods (a
+/// fold's scan lags its period by at most one tick and its own run).
+const FOLD_WINDOW: Duration = Duration::from_millis(600);
+
+/// Each engine's chunks sealed so far, by sample time: the folded entries
+/// plus the directory's (no consolidation runs: nothing reads).
+struct Sealed {
+    samples: VecDeque<(Instant, u64)>,
+    peak_directory: u64,
+    peak_excess: i64,
+}
+
+impl Sealed {
+    fn new() -> Self {
+        Self {
+            samples: VecDeque::new(),
+            peak_directory: 0,
+            peak_excess: i64::MIN,
+        }
+    }
+
+    /// Sample `engine`: its directory must hold at most what it sealed
+    /// within `FOLD_WINDOW`.
+    fn sample(&mut self, i: usize, engine: &ShardEngine) {
+        let (entries, largest) = {
+            let d = engine.layout.seal.directory.read().unwrap();
+            (d.entries(), d.entry_bytes().max().unwrap_or(0))
+        };
+        assert!(largest <= ENTRY_MAX, "engine {i}: an entry of {largest} B");
+        let folded = engine
+            .layout
+            .seal
+            .fold
+            .counters
+            .entries_folded
+            .load(Ordering::Relaxed);
+        let now = Instant::now();
+        let total = folded + entries;
+        self.samples.push_back((now, total));
+        while self.samples.len() > 1 && self.samples[1].0 <= now - FOLD_WINDOW {
+            self.samples.pop_front();
+        }
+        let base = match self.samples.front() {
+            Some((t, n)) if *t <= now - FOLD_WINDOW => *n,
+            _ => 0,
+        };
+        let window = total - base;
+        self.peak_directory = self.peak_directory.max(entries);
+        self.peak_excess = self.peak_excess.max(entries as i64 - window as i64);
+        assert!(
+            entries <= window,
+            "engine {i}: the directory holds {entries} entries, more than the {window} sealed in the last two fold periods"
+        );
+    }
+}
 
 /// One round: one append of one record under a random key of the million
 /// to each active stream of `engine`, all in flight at once.
@@ -58,17 +119,21 @@ async fn many_engines_hold_unsealed_pages_near_the_trigger_and_bounded_directory
     let mut engines = Vec::new();
     for i in 0..ENGINES {
         let prefix = unique(&format!("memory-{i}"));
-        engines.push(
-            open(
-                store.clone(),
-                &prefix,
-                settings,
-                1 << 20,
-                Duration::from_millis(2),
-            )
-            .await,
-        );
+        let engine = open(
+            store.clone(),
+            &prefix,
+            settings,
+            1 << 20,
+            Duration::from_millis(2),
+        )
+        .await;
+        engine.layout.seal.fold.configure(|f| {
+            f.period = FOLD_PERIOD;
+            f.tick = Duration::from_millis(20);
+        });
+        engines.push(engine);
     }
+    let mut sealed: Vec<Sealed> = (0..ENGINES).map(|_| Sealed::new()).collect();
     let mut rng = StdRng::seed_from_u64(0x27);
     let streams: Vec<Vec<[u8; 16]>> = (0..ENGINES).map(|_| hashes(&mut rng, ACTIVE)).collect();
     let mut peak = vec![0u64; ENGINES];
@@ -84,6 +149,7 @@ async fn many_engines_hold_unsealed_pages_near_the_trigger_and_bounded_directory
         for (i, engine) in engines.iter().enumerate() {
             let unsealed = engine.maintenance_snapshot().unabsorbed_frame_bytes;
             peak[i] = peak[i].max(unsealed);
+            sealed[i].sample(i, engine);
             assert!(
                 engine.layout.unsealed().len() <= ACTIVE,
                 "engine {i}: more streams held than active"
@@ -100,11 +166,33 @@ async fn many_engines_hold_unsealed_pages_near_the_trigger_and_bounded_directory
             "engine {i}: {p} B unsealed (max {UNSEALED_MAX}, written {written})"
         );
     }
+    check_folds(&engines, &sealed);
     check_directories(&engines).await;
 }
 
+/// The fold ran and kept the directory to a small part of what was sealed.
+fn check_folds(engines: &[Arc<ShardEngine>], sealed: &[Sealed]) {
+    for (i, (engine, s)) in engines.iter().zip(sealed).enumerate() {
+        let fold = &engine.layout.seal.fold.counters;
+        let folds = fold.folds.load(Ordering::Relaxed);
+        let folded = fold.entries_folded.load(Ordering::Relaxed);
+        let total = s.samples.back().map_or(0, |(_, n)| *n);
+        eprintln!(
+            "HIS-027 engine {i}: {folds} folds, {folded} of {total} entries folded, peak directory {} (peak excess over the window {})",
+            s.peak_directory, s.peak_excess
+        );
+        assert!(folds >= 3, "engine {i}: the fold ran {folds} times");
+        assert!(
+            s.peak_directory * 2 <= total,
+            "engine {i}: the directory peaked at {} of {total} entries",
+            s.peak_directory
+        );
+    }
+}
+
 /// After the last seal: every engine's directory holds at most one entry
-/// per active stream per seal, and every entry is under `ENTRY_MAX`.
+/// per active stream per seal (seals since the last fold), and every entry
+/// is under `ENTRY_MAX`.
 async fn check_directories(engines: &[Arc<ShardEngine>]) {
     let t0 = Instant::now();
     while engines
@@ -143,7 +231,7 @@ async fn check_directories(engines: &[Arc<ShardEngine>]) {
         eprintln!(
             "HIS-027 engine {i}: {seals} seals, {entries} entries, {bytes} B, largest {largest} B"
         );
-        assert!(entries > 0 && seals > 1, "engine {i}: nothing sealed");
+        assert!(seals > 1, "engine {i}: nothing sealed");
         assert!(
             entries <= seals * ACTIVE as u64,
             "engine {i}: {entries} entries from {seals} seals"

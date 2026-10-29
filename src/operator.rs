@@ -121,6 +121,9 @@ pub(crate) async fn data(
         "sse_connections": adm.sse_connections,
         "sse_max_connections": adm.sse_effective_max,
         "usage_overflow_admits": state.runtime.usage.overflow_stats().0,
+        // Seal-index rows (directory, pointer, orphan) the local engines'
+        // opens or folds skipped as undecodable (edge #222; cell-watch row 30).
+        "sealed_index_corrupt_rows": state.shards.engines().iter().map(|e| e.sealed_index_corrupt_rows()).sum::<u64>(),
         // per-op-class store latency, sentinels, steal — non-destructive read
         "store": crate::store_timing::snapshot(60, false, &state.runtime.store_io, &shard_opens),
     });

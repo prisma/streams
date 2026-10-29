@@ -1961,8 +1961,8 @@
       }
     ],
     "mapped": true,
-    "note": "Layout 6 (package 4): six engines in one process, 100 active streams each over a 1M routing-key space, 6 MB written per shard: unsealed bytes per shard stay under 4x the 256 KiB trigger, the unsealed set never exceeds the active streams, the directory grows by at most one entry per active stream per seal, and every entry stays under 512 B. The directory bound itself (one fold period, DESIGN-6A §2.3) needs package 5's fold.",
-    "coverage": "partial"
+    "note": "Layout 6 (packages 4-5): six engines in one process, 100 active streams each over a 1M routing-key space, 6 MB written per shard: unsealed bytes per shard stay under 4x the 256 KiB trigger, the unsealed set never exceeds the active streams, every directory entry stays under 512 B, and the fold keeps each directory to the chunks sealed within one fold period (at every sample, no more than the last two periods' chunks).",
+    "coverage": "full"
   },
   {
     "id": "HIS-028",

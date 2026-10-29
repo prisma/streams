@@ -6,13 +6,17 @@
 //! (`seal::steps`, step 5), so a read never meets a hole between the two
 //! and needs no race check. A window `[from, to)` is served:
 //! 1. below the boundary, from the ring when it holds the whole sealed
-//!    part, else from the segment objects: the directory's chunks from the
-//!    one holding `from`, one ranged GET per chunk (from the last anchor at
-//!    or before the offset due to the first anchor past the window or the
-//!    byte budget), at most `MAX_IN_FLIGHT` at once, every page admitted,
-//!    tiled and clipped. A keyed read skips a chunk its key summary
-//!    excludes without a GET (its offsets still count as consumed), and
-//!    filters a fetched chunk's pages by their clear headers;
+//!    part, else from the segment objects: the chunks of the in-memory
+//!    directory and of the run-index objects the fold wrote (`runs`),
+//!    tiled from the one holding `from` (`spill::runindex::tiling`: the
+//!    holder with the largest last offset, so a consolidated chunk wins),
+//!    one ranged GET per chunk (from the last anchor at or before the
+//!    offset due to the first anchor past the window or the byte budget)
+//!    unless the chunk cache holds it whole, at most `MAX_IN_FLIGHT` at
+//!    once, every page admitted, tiled and clipped. A keyed read skips a
+//!    dense run its bloom excludes and a chunk its key summary excludes
+//!    without a GET (their offsets still count as consumed), and filters a
+//!    fetched chunk's pages by their clear headers;
 //! 2. from the boundary on, from the handle's unsealed pages in memory, up
 //!    to the read's visibility (a durable read never sees a page past the
 //!    durable frontier).
@@ -30,12 +34,15 @@ use bytes::Bytes;
 use futures_util::stream::{self, StreamExt};
 use object_store::ObjectStoreExt;
 
+use super::SealCounters;
 use crate::crypto_page::{CheckedPage, page_extent};
 use crate::shard::record::{FrameReadResult, PageSlice, RangeReadError, RecordCorruption};
 use crate::shard::{Deliver, RingScan, ShardEngine, StreamHandle};
+use crate::spill::cache::{CHUNK_CACHE_MAX_ITEM, chunk_cache};
 use crate::spill::directory::DirEntry;
 use crate::spill::object::{self, CHUNK_CRC_LEN, CHUNK_HEADER_LEN, DIR_ENTRY_LEN};
 use crate::spill::pending::PendingPage;
+use crate::spill::runindex::tiling::{Span, tile};
 
 /// The most ranged GETs one read has in flight.
 const MAX_IN_FLIGHT: usize = 8;
@@ -214,7 +221,9 @@ impl ShardEngine {
             .await
             .map_err(|e| RangeReadError::Store(slatedb::Error::unavailable(e.to_string())))?;
         sp.counters.sealed_reads.fetch_add(1, Ordering::Relaxed);
-        let steps = self.plan_sealed(hash, scan, key_filter);
+        let candidates = self.sealed_candidates(hash, scan, key_filter).await?;
+        let (steps, gap) = plan_steps(&sp.counters, &candidates.list, scan, key_filter);
+        self.refuse_index_gap(hash, gap, candidates.complete)?;
         if steps.is_empty() && scan.max_bytes != 0 {
             // A seal publishes its chunks before its commit moves the
             // boundary, and the open rebuilds them before any read: a window
@@ -228,13 +237,15 @@ impl ShardEngine {
         let gets: Vec<_> = steps
             .iter()
             .filter_map(|step| match step {
-                Step::Fetch(plan) => Some(self.get_chunk(plan)),
+                Step::Fetch(plan) => Some(self.fetch_chunk(plan)),
                 Step::Skip(_) => None,
             })
             .collect();
         let mut bodies = stream::iter(gets).buffered(MAX_IN_FLIGHT);
         let mut part = Part::new();
         let mut due = scan.from;
+        let mut wholes = Vec::new();
+        let mut spent = false;
         for step in &steps {
             let plan = match step {
                 Step::Skip(through) => {
@@ -247,63 +258,161 @@ impl ShardEngine {
             let Some(body) = bodies.next().await else {
                 break;
             };
+            let body = body?;
             let served_before = part.out.frames.len();
-            let pages = admit_plan(hash, plan, &body?)?;
+            let pages = admit_plan(hash, plan, &body)?;
+            if plan.whole {
+                wholes.push((plan.entry.clone(), body));
+            }
             if part.take_pages(pages, &mut due, scan, key_filter) {
-                return Ok(part);
+                spent = true;
+                break;
             }
             if key_filter.is_some() && part.out.frames.len() == served_before {
                 sp.counters.summary_misses.fetch_add(1, Ordering::Relaxed);
             }
         }
-        part.reached = due >= scan.to;
+        self.offer_consolidation(hash, wholes);
+        if !spent {
+            part.reached = due >= scan.to;
+        }
         Ok(part)
     }
 
-    /// The read's steps, from the chunk holding `scan.from`: a keyed read
-    /// skips a chunk its key summary excludes (its offsets count as
-    /// consumed, without a GET), every other chunk is fetched. The plan
-    /// stops at the window's end, the byte budget, `MAX_CHUNKS_PER_READ`
-    /// fetches, or an offset no chunk holds (never consumed).
-    #[expect(
-        clippy::unwrap_used,
-        reason = "ShardEngine::plan_sealed; a poisoned directory may hold a half-inserted seal; recovering it could serve a sealed range from chunks no seal finished publishing, whereas panicking fails this read, which then serves nothing instead of frames no commit backs"
-    )]
-    fn plan_sealed(&self, hash: [u8; 16], scan: RingScan, key_filter: Option<&str>) -> Vec<Step> {
-        let sp = &self.layout.seal;
-        let entries = sp
+    /// The chunks a sealed read of `scan` would fetch, by their offsets
+    /// (the consolidator's re-check).
+    pub(crate) async fn sealed_picks(
+        &self,
+        hash: [u8; 16],
+        scan: RingScan,
+    ) -> Result<Vec<Span>, RangeReadError> {
+        let candidates = self.sealed_candidates(hash, scan, None).await?.list;
+        let spans: Vec<Span> = candidates.iter().map(Candidate::span).collect();
+        let picks = tile(&spans, scan.from, scan.to, MAX_CHUNKS_LOOKED_AT);
+        Ok(picks
+            .into_iter()
+            .filter_map(|i| spans.get(i).copied())
+            .collect())
+    }
+
+    /// The chunks that may serve `scan`: the directory's (taken first),
+    /// then each live run-index object's run of the stream (the set taken
+    /// after: a fold installs its object before it removes the entries it
+    /// folded, so no chunk is in neither). Runs are fetched in offset order
+    /// only while the chunks so far do not tile the window, its byte budget
+    /// or `MAX_CHUNKS_PER_READ`; a keyed read skips a dense run its bloom
+    /// excludes without a GET, as a span of consumed offsets.
+    async fn sealed_candidates(
+        &self,
+        hash: [u8; 16],
+        scan: RingScan,
+        key_filter: Option<&str>,
+    ) -> Result<Candidates, RangeReadError> {
+        let entries = self
+            .layout
+            .seal
             .directory
             .read()
-            .unwrap()
+            .map_err(|_| sealed_corrupt("the seal directory's lock is poisoned"))?
             .from(&hash, scan.from, MAX_CHUNKS_LOOKED_AT);
-        let mut steps = Vec::new();
-        let (mut due, mut fetches) = (scan.from, 0usize);
-        let mut budget = scan.max_bytes as u64;
-        for entry in entries {
-            if due >= scan.to || budget == 0 || fetches >= MAX_CHUNKS_PER_READ {
+        let mut candidates: Vec<Candidate> = entries.into_iter().map(Candidate::Chunk).collect();
+        candidates.sort_by_key(|c| c.span().first);
+        if Reach::of(&candidates, scan).done(scan) {
+            return Ok(Candidates {
+                list: candidates,
+                complete: false,
+            });
+        }
+        let fp = key_filter.map(crate::spill::directory::fingerprint);
+        let mut complete = true;
+        for (pointer, footer) in self.runs_of(&hash, scan.from, scan.to).await? {
+            candidates.sort_by_key(|c| c.span().first);
+            let reach = Reach::of(&candidates, scan);
+            if reach.done(scan) {
+                complete = false;
                 break;
             }
-            if entry.first > due || entry.last < due {
+            if footer.first > reach.end {
                 break;
             }
-            if let Some(key) = key_filter
-                && !entry.keys.may_hold(key)
+            if let Some(fp) = fp
+                && footer.dense()
+                && !footer.may_hold(fp)
             {
-                sp.counters.summary_skips.fetch_add(1, Ordering::Relaxed);
-                let through = entry.last.min(scan.to - 1);
-                due = through.saturating_add(1);
-                steps.push(Step::Skip(through));
+                self.layout
+                    .seal
+                    .fold
+                    .counters
+                    .run_bloom_skips
+                    .fetch_add(1, Ordering::Relaxed);
+                candidates.push(Candidate::Skip(Span {
+                    first: footer.first,
+                    last: footer.last,
+                }));
                 continue;
             }
-            let Some(plan) = Plan::of(entry, due, scan.to, budget) else {
-                break;
-            };
-            budget = budget.saturating_sub(u64::from(plan.end - plan.start));
-            due = plan.next;
-            fetches += 1;
-            steps.push(Step::Fetch(plan));
+            let run = self.fetch_run(&pointer, &footer).await?;
+            let held = run.iter().filter(|e| e.last >= scan.from).cloned();
+            candidates.extend(held.map(Candidate::Chunk));
         }
-        steps
+        candidates.sort_by_key(|c| c.span().first);
+        Ok(Candidates {
+            list: candidates,
+            complete,
+        })
+    }
+
+    /// A gap below the boundary where every index source was consulted,
+    /// on a shard whose open or fold skipped a directory or pointer row
+    /// that does not decode: the gap may be that row's chunks, so the read
+    /// answers corruption instead of a short answer (edge #222).
+    fn refuse_index_gap(
+        &self,
+        hash: [u8; 16],
+        gap: Option<u64>,
+        complete: bool,
+    ) -> Result<(), RangeReadError> {
+        let skipped = self
+            .layout
+            .seal
+            .fold
+            .counters
+            .corrupt_index_rows
+            .load(Ordering::Relaxed);
+        match gap {
+            Some(at) if complete && skipped > 0 => Err(sealed_corrupt(&format!(
+                "offset {at} of {} is in no chunk the index holds, and {skipped} index rows of the shard did not decode",
+                crate::crypto::hex(&hash[..4])
+            ))),
+            _ => Ok(()),
+        }
+    }
+
+    /// A plan's bytes: from the chunk cache when it holds the whole chunk,
+    /// else one ranged GET (a whole chunk small enough is then cached).
+    async fn fetch_chunk(&self, plan: &Plan) -> Result<Bytes, RangeReadError> {
+        let path = object::object_path(
+            &crate::sharddir::shard_db_path(&self.prefix),
+            plan.entry.object,
+        );
+        let key = self.layout.seal.fold.cache_scope.key(&path);
+        let cache = chunk_cache();
+        if let Some(chunk) = cache.get(&key, plan.entry.chunk_off) {
+            let range = plan.start as usize..plan.end as usize;
+            if let Some(body) = chunk.get(range.clone()).map(|_| chunk.slice(range)) {
+                self.layout
+                    .seal
+                    .counters
+                    .chunk_cache_hits
+                    .fetch_add(1, Ordering::Relaxed);
+                return Ok(body);
+            }
+        }
+        let body = self.get_chunk(plan).await?;
+        if plan.whole && body.len() as u64 <= CHUNK_CACHE_MAX_ITEM {
+            cache.insert(&key, plan.entry.chunk_off, body.clone(), body.len() as u64);
+        }
+        Ok(body)
     }
 
     /// One ranged GET, retried on a transient error; a 404 is retryable for
@@ -395,6 +504,126 @@ impl Plan {
             next,
         })
     }
+}
+
+/// One chunk a sealed read may fetch, or a dense run of chunks a keyed
+/// read's run bloom excludes (its offsets consumed without a GET).
+#[derive(Clone, Debug)]
+enum Candidate {
+    Chunk(DirEntry),
+    Skip(Span),
+}
+
+impl Candidate {
+    fn span(&self) -> Span {
+        match self {
+            Self::Chunk(e) => crate::shard::seal::fold::span_of(e),
+            Self::Skip(span) => *span,
+        }
+    }
+}
+
+/// A sealed read's candidates, and whether every index source that could
+/// hold an offset of the window up to the first gap was consulted.
+struct Candidates {
+    list: Vec<Candidate>,
+    complete: bool,
+}
+
+/// How far the candidates so far tile a window.
+struct Reach {
+    end: u64,
+    picks: usize,
+    bytes: u64,
+}
+
+impl Reach {
+    fn of(candidates: &[Candidate], scan: RingScan) -> Self {
+        let spans: Vec<Span> = candidates.iter().map(Candidate::span).collect();
+        let picks = tile(&spans, scan.from, scan.to, MAX_CHUNKS_PER_READ);
+        let end = picks
+            .last()
+            .and_then(|&i| spans.get(i))
+            .map_or(scan.from, |s| s.last.saturating_add(1));
+        let bytes = picks
+            .iter()
+            .filter_map(|&i| match candidates.get(i) {
+                Some(Candidate::Chunk(e)) => Some(u64::from(e.chunk_len)),
+                _ => None,
+            })
+            .sum();
+        Self {
+            end,
+            picks: picks.len(),
+            bytes,
+        }
+    }
+
+    fn done(&self, scan: RingScan) -> bool {
+        self.end >= scan.to
+            || self.picks >= MAX_CHUNKS_PER_READ
+            || self.bytes >= scan.max_bytes as u64
+    }
+}
+
+/// The read's steps over the candidates (sorted by first offset), in the
+/// order `tiling::tile` picks them from `scan.from`: a keyed read skips a
+/// chunk its key summary excludes (its offsets consumed, without a GET),
+/// every other chunk is fetched. The plan stops at the window's end, the
+/// byte budget, `MAX_CHUNKS_PER_READ` fetches, or an offset no candidate
+/// holds (never consumed), which it returns as the gap.
+fn plan_steps(
+    counters: &SealCounters,
+    candidates: &[Candidate],
+    scan: RingScan,
+    key_filter: Option<&str>,
+) -> (Vec<Step>, Option<u64>) {
+    let spans: Vec<Span> = candidates.iter().map(Candidate::span).collect();
+    let mut steps = Vec::new();
+    let (mut due, mut fetches) = (scan.from, 0usize);
+    let mut budget = scan.max_bytes as u64;
+    let picks = tile(&spans, scan.from, scan.to, MAX_CHUNKS_LOOKED_AT);
+    let tiled = picks.len() < MAX_CHUNKS_LOOKED_AT;
+    let mut stopped = false;
+    for pick in picks {
+        if due >= scan.to || budget == 0 || fetches >= MAX_CHUNKS_PER_READ {
+            stopped = true;
+            break;
+        }
+        let entry = match candidates.get(pick) {
+            Some(Candidate::Chunk(entry)) => entry,
+            Some(Candidate::Skip(span)) => {
+                let through = span.last.min(scan.to - 1);
+                due = through.saturating_add(1);
+                steps.push(Step::Skip(through));
+                continue;
+            }
+            None => {
+                stopped = true;
+                break;
+            }
+        };
+        if let Some(key) = key_filter
+            && !entry.keys.may_hold(key)
+        {
+            counters.summary_skips.fetch_add(1, Ordering::Relaxed);
+            let through = entry.last.min(scan.to - 1);
+            due = through.saturating_add(1);
+            steps.push(Step::Skip(through));
+            continue;
+        }
+        let Some(plan) = Plan::of(entry.clone(), due, scan.to, budget) else {
+            stopped = true;
+            break;
+        };
+        budget = budget.saturating_sub(u64::from(plan.end - plan.start));
+        due = plan.next;
+        fetches += 1;
+        steps.push(Step::Fetch(plan));
+    }
+    let gap = (!stopped && tiled && due < scan.to && budget > 0 && fetches < MAX_CHUNKS_PER_READ)
+        .then_some(due);
+    (steps, gap)
 }
 
 fn sealed_corrupt(what: &str) -> RangeReadError {

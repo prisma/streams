@@ -1,0 +1,13 @@
+diff --git a/src/spill/runindex/tiling.rs b/src/spill/runindex/tiling.rs
+index cd12bb6da..a08b261e7 100644
+--- a/src/spill/runindex/tiling.rs
++++ b/src/spill/runindex/tiling.rs
+@@ -28,7 +28,7 @@ pub(crate) struct Span {
+ 
+ /// Whether `a` is the better pick than `b` for an offset both hold.
+ fn better(a: Span, b: Span) -> bool {
+-    a.last > b.last || (a.last == b.last && a.first < b.first)
++    a.last > b.last || (a.last == b.last && a.first > b.first)
+ }
+ 
+ /// The spans that tile `[from, to)`, by index into `spans` (sorted by

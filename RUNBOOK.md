@@ -403,6 +403,19 @@ was death (§3.6).
   `other`). Compare each shard's `seal.sealed_gets` with
   `seal.sealed_reads` in `/v1/debug/timings`; `seal.summary_skips` counts
   the chunks keyed reads skipped without a GET.
+  A read of offsets sealed before the shard's last fold also reads the
+  run-index objects (`shards/<prefix>/ridx/…`): `seal.fold.footer_gets`
+  and `seal.fold.run_gets` count those GETs (the process's index cache,
+  `seal.caches.index_cache`, serves repeats), `seal.chunk_cache_hits` the
+  chunks served from the chunk cache. A walker over many small chunks
+  consolidates them (`seal.consolidation`); the chunks it superseded are
+  counted, still stored, in `seal.fold.orphan_bytes` until garbage
+  collection exists.
+- `seal.directory_bytes` climbing past 4 MiB on a shard, or
+  `seal.fold.failures` rising → the fold is not keeping up: the directory
+  (memory) then grows at the seal rate. Look for the fold's warnings
+  (`fold failed`) and object-store errors on `ridx/` PUTs; a
+  `seal.fold.corrupt_rows` above zero names a row the fold leaves in place.
 - `served_from` shows a large share from a **remote** PoP (>10 % non-local)
   → the provider is routing this bucket's traffic out of region. Every op
   carries the extra RTT; correlate before blaming our pipeline.
@@ -1155,6 +1168,7 @@ NOTIFY, while every other row pages from the first deploy;
 | 27 | `r27_issuer_cache_age` | NOTIFY | the issuer's `/v1/admin/metrics` `cache_age_secs` (bearer `STREAMS_ISSUER_METRICS_TOKEN`) | above 150: the exchange refuses with `503 issuer_unavailable` at 300. Only with `ISSUER_ORIGIN` | cell-watch to `<notify channel>` |
 | 28 | `r28_admission_gate_closed` | NOTIFY | the issuer's `/v1/admin/metrics` `gate_open` | `false`: sign-ups are refused, as expected after `cell-admin gate --close`. Only with `ISSUER_ORIGIN` | cell-watch to `<notify channel>` |
 | 29 | `r29_bytes_put_growth` | NOTIFY | `/operator/data.json` `local.store.totals.bytes_put` (every byte the process put since `totals.since_ms`: the WAL, L0 flushes, compaction and the sealer's segment objects included; a restart starts it again) | grew by more than 8 × G (400 GiB at G = 50 GiB) over the trailing 24 h: the bound from above on the bucket's growth, which sees what row 23 cannot (bytes stored and deleted between two drain rounds of a shard; the owner's call stored-cap #1 (c) of 2026-10-14). Cell-wide and unattributed, and raised by the store's own rewrites as much as by writes: the factor 8 is the lead's, uncalibrated until the certification cell measures `bytes_put` per stored byte. With row 23 quiet, look for a tenant that deletes what it writes: `rollup.stored.largest` and the projects' append and delete rates | cell-watch to `<notify channel>` |
+| 30 | `r30_sealed_index_corrupt` | PAGE | `local.sealed_index_corrupt_rows` (seal-index rows, directory, run-index pointer or orphan, that the local engines' opens and folds skipped because they do not decode; edge #222) | above 0: a stream whose chunks only that row named answers its reads through the hole with a corruption error (`sealed range corrupt`), every other stream is served. The shard's log says `skipped a directory row that does not decode` (or `pointer`, `orphan`) with the key; `GET /v1/debug/timings` each shard's `seal.fold.corrupt_rows`. The row stays in place for repair; a restart counts it again | cell-watch to `<on-call>` |
 
 **The canary (rows 19 and 22).** The watch probes the cell as a
 customer does: it exchanges `CANARY_CREDENTIAL` at the issuer's

@@ -18,6 +18,7 @@ impl ShardEngine {
         #[cfg(test)]
         self.injected_open_fault()?;
         let dir = self.rebuild_directory().await?;
+        self.rebuild_run_index().await?;
         let unsealed = self.scan_tails().await?;
         // Each stream the scan found with unsealed pages is held through
         // the handle the engine serves it from (a request's load may have
@@ -36,17 +37,20 @@ impl ShardEngine {
         Ok(())
     }
 
-    /// The directory from the `'K'` rows.
+    /// The directory from the `'K'` rows the fold has not folded yet (at
+    /// most one fold period's). A row that does not decode is counted and
+    /// skipped: the fold leaves it in place, and every other row is served.
     async fn rebuild_directory(&self) -> anyhow::Result<Directory> {
         let prefix = directory::directory_prefix();
         let mut rows = self.db.scan_prefix(&prefix[..], ..).await?;
         let mut dir = Directory::default();
         while let Some(kv) = rows.next().await? {
-            let id = directory::parse_directory_key(&kv.key)
-                .ok_or_else(|| anyhow::anyhow!("not a directory key ({} B)", kv.key.len()))?;
-            let entries = directory::decode_row(id, &kv.value).ok_or_else(|| {
-                anyhow::anyhow!("corrupt directory row {:016x}/{:016x}", id.epoch, id.seq)
-            })?;
+            let decoded = directory::parse_directory_key(&kv.key)
+                .and_then(|id| directory::decode_row(id, &kv.value));
+            let Some(entries) = decoded else {
+                self.note_corrupt_index_row("directory", &kv.key);
+                continue;
+            };
             for (hash, entry) in entries {
                 dir.insert(hash, entry);
             }

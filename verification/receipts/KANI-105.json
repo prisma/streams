@@ -1,0 +1,138 @@
+{
+  "checks": [
+    {
+      "check": "KANI-105/tile",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "56e576477f0c3255ae503798485bbfb6e83c12fd5a211afaf03fb7aab22f2109",
+      "role": "baseline",
+      "seconds": 180.0,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-105/drop-covered",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "366e1ff1773a493ed33dbbe49ca5323daab03cfac1b0a1dbf68ca28fec367970",
+      "role": "baseline",
+      "seconds": 303.8,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-105/nc-stop-before-a-held-offset",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "fail:a read stops only where no span holds the offset",
+      "failed_checks": [
+        "\"a read stops only where no span holds the offset\""
+      ],
+      "log_sha256": "78f7b8435aa9d58a30ad89724cac054c14fe3948218d527765af5c7cdc6adbd6",
+      "mutated": {
+        "src/spill/runindex/tiling.rs": {
+          "baseline": "8c49b300ef8a42ac76b1f191b8a23df2fd2d2ab0c422e83062f72270dbac66cb",
+          "control": "0321ec943c88fea20298acc9e99e228816eac3d8e9cd32aae5ddd02a48875192"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 212.2,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-105/nc-prefer-the-later-first",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "fail:each pick is the best holder of its offset",
+      "failed_checks": [
+        "\"each pick is the best holder of its offset\""
+      ],
+      "log_sha256": "f65a94fd4e78cbd557aab458cf39df7aee1776dee5798fa1a6aaa3e4d7a151aa",
+      "mutated": {
+        "src/spill/runindex/tiling.rs": {
+          "baseline": "8c49b300ef8a42ac76b1f191b8a23df2fd2d2ab0c422e83062f72270dbac66cb",
+          "control": "0e1bd0155247d13e3fce5df6fda1665a2c5e3d02a91dab08d7d451f2f61e84ff"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 173.8,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-105/nc-keep-a-contained-span",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "fail:last offsets increase strictly",
+      "failed_checks": [
+        "\"first offsets increase strictly\"",
+        "\"last offsets increase strictly\""
+      ],
+      "log_sha256": "4a198b0a4fcae4c9ea62141a12d999bfc12ead69f7fc670c238bae9539eed4e2",
+      "mutated": {
+        "src/spill/runindex/tiling.rs": {
+          "baseline": "8c49b300ef8a42ac76b1f191b8a23df2fd2d2ab0c422e83062f72270dbac66cb",
+          "control": "ced141db07c45c422c617c90a81fd02e934c0e43b3d0717afdd046e69beeadd1"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 303.6,
+      "verdict": "fail"
+    }
+  ],
+  "complete": true,
+  "id": "KANI-105",
+  "inputs": {
+    "assumptions": {
+      "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
+      "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
+    },
+    "files": {
+      "Cargo.lock": "88d5da53c80e347966960aa3e47a314016df2f5e0b5f90006e0ae5d0ab2a325e",
+      "Cargo.toml": "40c6f797e5a38a80abe4de69d4c2c5feaa4f6cc506bc3085ec30bde7b0995e9e",
+      "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
+      "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
+      "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
+      "src/spill/runindex/tiling.rs": "8c49b300ef8a42ac76b1f191b8a23df2fd2d2ab0c422e83062f72270dbac66cb",
+      "src/spill/runindex/tiling/proofs.rs": "f79b3340fac95f738d88e02e11da10f448186bd49ddb9b69fd5f4753bed75d38",
+      "verification/kani/controls/KANI-105-keep-a-contained-span.patch": "93069869d543ef70f94d9c5ac54a08cda330cfbc6a12f3eb8a4dee43ba87f7f6",
+      "verification/kani/controls/KANI-105-prefer-the-later-first.patch": "b6acef2d9502c674bb468e42e6a55d78e3c500c7792932544d09db9814b50061",
+      "verification/kani/controls/KANI-105-stop-before-a-held-offset.patch": "c0256d8eea46419940c113c1a5018e4c672aef0cbac3ed45ae4c185304acc396"
+    },
+    "manifest_entry": "6081a8045725b6ce6930e40d9bedb3989bb40c96dfd1521587423965af775b58",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "git": "https://github.com/slatedb/slatedb.git",
+        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+      }
+    }
+  },
+  "inputs_sha256": "28a2979cdfd7029f42afba7546b781d9923bbc6fedf6e7ff807bb1a10770dd35",
+  "run_on": {
+    "dirty_tree": true,
+    "revision": "869e203261e976647c4471f8ba566e0745dd07a1"
+  },
+  "schema": 2,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "aarch64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

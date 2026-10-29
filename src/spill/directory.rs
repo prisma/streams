@@ -31,7 +31,8 @@ pub(crate) use row::{
 pub(crate) const DIRECTORY_TAG: u8 = b'K';
 pub(crate) const REFCOUNT_TAG: u8 = b'R';
 
-fn sentinel_key(tag: u8, id: ObjectId) -> Vec<u8> {
+/// `'S' ‖ 0xFF×16 ‖ tag ‖ epoch BE ‖ seq BE`: a row about one object.
+pub(crate) fn sentinel_key(tag: u8, id: ObjectId) -> Vec<u8> {
     let mut k = Vec::with_capacity(34);
     k.extend_from_slice(&crate::keyspace::SENTINEL);
     k.push(tag);
@@ -107,20 +108,41 @@ impl KeySummary {
     }
 }
 
-/// A routing key's fingerprint: the first 8 bytes of its hash.
-#[cfg(test)]
+/// A routing key's fingerprint: the first 8 bytes of its hash (what a
+/// summary names, and what a run-index bloom holds).
 pub(crate) fn fingerprint(routing_key: &str) -> u64 {
     halves(&crate::crypto::RoutingKeyHash::of(routing_key).0).0
 }
 
-/// The in-memory directory: each stream's sealed chunks by last offset.
+/// The in-memory directory: each stream's sealed chunks by last offset and
+/// object (a consolidated chunk may end where one of the chunks it copied
+/// ends). The fold keeps it to the seals of at most one fold period
+/// (`shard::seal::fold`).
+/// One stream's entries, by (last offset, object).
+type StreamEntries = BTreeMap<(u64, ObjectId), DirEntry>;
+
 #[derive(Default)]
 pub(crate) struct Directory {
-    streams: HashMap<[u8; 16], BTreeMap<u64, DirEntry>>,
+    streams: HashMap<[u8; 16], StreamEntries>,
     entries: u64,
-    /// The entries' memory, by `entry_heap` (the seal stats' gauge: the
-    /// directory grows until package 5 folds it into run-index objects).
+    /// The entries' memory, by `entry_heap` (the seal stats' gauge, and
+    /// this directory's share of `process_bytes`).
     bytes: u64,
+}
+
+/// Every live directory's memory in the process (the fold's process-wide
+/// trigger, `spill::budget::PROCESS_DIRECTORY_BYTES`).
+static PROCESS_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Every live directory's memory in the process.
+pub(crate) fn process_bytes() -> u64 {
+    PROCESS_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+impl Drop for Directory {
+    fn drop(&mut self) {
+        PROCESS_BYTES.fetch_sub(self.bytes, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// One entry's memory, an upper estimate: the entry, its map key, its key
@@ -138,41 +160,48 @@ fn entry_heap(e: &DirEntry) -> u64 {
 }
 
 impl Directory {
+    fn grow(&mut self, added: u64) {
+        self.bytes += added;
+        PROCESS_BYTES.fetch_add(added, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn shrink(&mut self, removed: u64) {
+        self.bytes -= removed;
+        PROCESS_BYTES.fetch_sub(removed, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub(crate) fn insert(&mut self, hash: [u8; 16], entry: DirEntry) {
         let added = entry_heap(&entry);
-        match self
-            .streams
-            .entry(hash)
-            .or_default()
-            .insert(entry.last, entry)
-        {
+        let key = (entry.last, entry.object);
+        match self.streams.entry(hash).or_default().insert(key, entry) {
             None => self.entries += 1,
-            Some(replaced) => self.bytes -= entry_heap(&replaced),
+            Some(replaced) => self.shrink(entry_heap(&replaced)),
         }
-        self.bytes += added;
+        self.grow(added);
     }
 
-    /// Remove an entry a failed seal inserted (only if it still names
-    /// `object`).
+    /// Remove the entry of `hash` ending at `last` in `object`, if present
+    /// (a failed seal's, or one the fold moved into a run-index object).
     pub(crate) fn remove(&mut self, hash: &[u8; 16], last: u64, object: ObjectId) {
-        if let Some(m) = self.streams.get_mut(hash)
-            && m.get(&last).is_some_and(|e| e.object == object)
-        {
-            if let Some(removed) = m.remove(&last) {
-                self.bytes -= entry_heap(&removed);
-            }
-            self.entries -= 1;
-            if m.is_empty() {
-                self.streams.remove(hash);
-            }
+        let Some(m) = self.streams.get_mut(hash) else {
+            return;
+        };
+        let Some(removed) = m.remove(&(last, object)) else {
+            return;
+        };
+        if m.is_empty() {
+            self.streams.remove(hash);
         }
+        self.entries -= 1;
+        self.shrink(entry_heap(&removed));
     }
 
-    /// The chunks of `hash` from the one holding `from`, in offset order,
-    /// at most `max` of them.
+    /// The chunks of `hash` ending at or after `from`, by last offset, at
+    /// most `max` of them.
     pub(crate) fn from(&self, hash: &[u8; 16], from: u64, max: usize) -> Vec<DirEntry> {
+        let start = (from, ObjectId { epoch: 0, seq: 0 });
         self.streams.get(hash).map_or_else(Vec::new, |m| {
-            m.range(from..).take(max).map(|(_, e)| e.clone()).collect()
+            m.range(start..).take(max).map(|(_, e)| e.clone()).collect()
         })
     }
 

@@ -1,0 +1,13 @@
+diff --git a/src/spill/runindex/tiling.rs b/src/spill/runindex/tiling.rs
+index cd12bb6da..557bbd163 100644
+--- a/src/spill/runindex/tiling.rs
++++ b/src/spill/runindex/tiling.rs
+@@ -67,7 +67,7 @@ pub(crate) fn drop_covered(spans: &[Span]) -> Vec<usize> {
+     let mut out = Vec::new();
+     let mut reach: Option<u64> = None;
+     for (i, s) in spans.iter().enumerate() {
+-        if reach.is_none_or(|r| s.last > r) {
++        if reach.is_none_or(|r| s.last >= r) {
+             out.push(i);
+             reach = Some(s.last);
+         }

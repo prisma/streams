@@ -13,6 +13,13 @@ libfuzzer-sys = "=0.4.13"
 bytes = "1"
 
 [[bin]]
+name = "run_index"
+path = "fuzz_targets/run_index.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "seal_directory"
 path = "fuzz_targets/seal_directory.rs"
 test = false

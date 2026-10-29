@@ -298,6 +298,12 @@ impl ShardEngine {
             "seal-deadlines",
             async move { deadlines.deadline_loop().await },
         );
+        let folder = self.clone();
+        self.spawn_required("seal-fold", async move { folder.fold_loop().await });
+        let consolidator = self.clone();
+        self.spawn_required("seal-consolidate", async move {
+            consolidator.consolidate_loop().await
+        });
     }
 
     /// Waits for the next tick; false once the engine closes.

@@ -7755,7 +7755,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "44b34ba53a29dc68946d62c51bce130904abf1cedc7590cb5a506fe7d3ef1db6",
+    "function_sha256": "9be0703d0f118966b7f3816018d2691ef0ab6b3ca43f79d4b47c5a2e8b5a18d0",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/runtime_journals.rs",

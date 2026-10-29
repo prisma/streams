@@ -6,7 +6,7 @@ NIGHTLY=$(python3 -c 'import tomllib; print(tomllib.load(open("quality-tools.tom
 HOST=$(rustc "+$NIGHTLY" -vV | sed -n 's/^host: //p')
 [[ -n "$HOST" ]]
 # Every fuzz target in fuzz/Cargo.toml, each with its saved corpus.
-FUZZ_TARGETS=(seal_directory segment_chunk)
+FUZZ_TARGETS=(run_index seal_directory segment_chunk)
 case "${1:?expected miri, corpus, or fuzz}" in
   miri)
     cargo "+$NIGHTLY" miri test --locked -p streams-quality-invariants --lib retained_bytes::tests

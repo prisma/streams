@@ -700,7 +700,7 @@ Every scenario MUST declare mechanism counters and MUST fail as invalid if the m
 
 ### HIS-027 — Process-wide unsealed and directory memory
 **Status:** L2-sim/performance  
-**Procedure:** many shard engines, one million keys/100 active; directory entries and handles held for unsealed pages stay within one process budget.  
+**Procedure:** many shard engines, one million keys/100 active; directory entries and handles held for unsealed pages stay within one process budget; the fold keeps each directory to one fold period's chunks.  
 **Invariants:** H12, R2.
 
 ### HIS-028 — GC cached inventory cannot suppress work

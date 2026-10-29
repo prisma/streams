@@ -1319,6 +1319,85 @@
       ]
     },
     {
+      "id": "KANI-105",
+      "kind": "kani",
+      "title": "Run-index tiling: sealed reads and folds keep every held offset",
+      "status": "pass-with-recorded-scope",
+      "owner": "Layout 6 run-index tiling (spill::runindex::tiling)",
+      "source_paths": [
+        "src/spill/runindex/tiling.rs"
+      ],
+      "verification_paths": [
+        "src/spill/runindex/tiling/proofs.rs"
+      ],
+      "requirements": [
+        "H1",
+        "H2",
+        "D8"
+      ],
+      "models": [
+        "TLA-016",
+        "TLA-018"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER"
+      ],
+      "input_scope": "tile over up to 4 spans with offsets below 8 (any overlap, nesting or gap) sorted by first offset, any window [from, to) with to <= 8 and any pick cap up to 5; drop_covered over up to 4 such spans sorted by first ascending then last descending, checked at every offset below 8. The candidates' gathering from the directory and the run-index objects (seal::read::sealed_candidates) and the run format's order check are outside the proof; the fold tests and the brute-force regression pin them",
+      "regressions": [
+        "spill::runindex::tiling_tests::both_rules_match_a_brute_force_reference",
+        "shard::seal::fold_tests::tiling_across_directory_run_index_and_pending_with_stopped_folds"
+      ],
+      "checks": [
+        {
+          "id": "KANI-105/tile",
+          "role": "baseline",
+          "harness": "spill::runindex::tiling::proofs::kani_105_tile_covers_every_offset_until_none_holds_one",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-105/drop-covered",
+          "role": "baseline",
+          "harness": "spill::runindex::tiling::proofs::kani_105_drop_covered_keeps_every_offset",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-105/nc-stop-before-a-held-offset",
+          "role": "negative-control",
+          "harness": "spill::runindex::tiling::proofs::kani_105_tile_covers_every_offset_until_none_holds_one",
+          "patch": "verification/kani/controls/KANI-105-stop-before-a-held-offset.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a read stops only where no span holds the offset"
+          }
+        },
+        {
+          "id": "KANI-105/nc-prefer-the-later-first",
+          "role": "negative-control",
+          "harness": "spill::runindex::tiling::proofs::kani_105_tile_covers_every_offset_until_none_holds_one",
+          "patch": "verification/kani/controls/KANI-105-prefer-the-later-first.patch",
+          "expect": {
+            "result": "fail",
+            "property": "each pick is the best holder of its offset"
+          }
+        },
+        {
+          "id": "KANI-105/nc-keep-a-contained-span",
+          "role": "negative-control",
+          "harness": "spill::runindex::tiling::proofs::kani_105_drop_covered_keeps_every_offset",
+          "patch": "verification/kani/controls/KANI-105-keep-a-contained-span.patch",
+          "expect": {
+            "result": "fail",
+            "property": "last offsets increase strictly"
+          }
+        }
+      ]
+    },
+    {
       "id": "TLA-005",
       "kind": "tla",
       "title": "Commit groups, dependency barriers, and observable replies",

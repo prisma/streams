@@ -440,6 +440,20 @@ fn shipped_shed_line_keeps_the_boot_checks_headroom() {
     assert_eq!(c.cli.admit_rss_shed_mb - (fixed_mb + 100), 256);
 }
 
+/// Layout 6's index and read structures (`spill::budget`: directories,
+/// index and chunk caches, merges, consolidations) have budget lines of 120
+/// MiB together; with the fixed caches and the boot check's 100 MiB of
+/// headroom they stay under the shed line: 144 + 120 + 100 = 364 <= 500.
+#[test]
+fn layout6_index_and_read_budgets_fit_under_the_shed_line() {
+    let c = load_with(&[]);
+    let fixed_mb = shipped_fixed_memory_budget_bytes(&c) / (1024 * 1024);
+    let index_mb = crate::spill::budget::INDEX_AND_READ_BYTES / (1024 * 1024);
+    assert_eq!(index_mb, 120);
+    assert_eq!(fixed_mb + index_mb + 100, 364);
+    assert!(fixed_mb + index_mb + 100 <= c.cli.admit_rss_shed_mb);
+}
+
 #[test]
 fn env_overlay_applies_with_legacy_parse_semantics() {
     let c = load_with(&[

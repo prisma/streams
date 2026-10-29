@@ -6,13 +6,18 @@
 //! reads (`metrics`). The sealer itself
 //! needs the engine's internals and lives in `shard::seal`.
 
+pub(crate) mod budget;
+pub(crate) mod cache;
 pub(crate) mod crc32c;
 pub(crate) mod directory;
 pub(crate) mod estimate;
 pub(crate) mod metrics;
 pub(crate) mod object;
 pub(crate) mod pending;
+pub(crate) mod runindex;
 
+#[cfg(test)]
+mod cache_tests;
 #[cfg(test)]
 mod crc32c_tests;
 #[cfg(test)]

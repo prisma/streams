@@ -258,6 +258,10 @@ async fn r10_operator_data_serves_the_cached_ops_snapshot_without_recollecting()
     assert!(local["maintenance_backpressure"]["appends_shed"].is_u64());
     assert!(local["sse_max_connections"].is_u64());
     assert!(local["usage_overflow_admits"].is_u64());
+    assert_eq!(
+        local["sealed_index_corrupt_rows"], 0,
+        "no seal-index row skipped (cell-watch row 30)"
+    );
     engine_shutdown(&rig.state).await;
 }
 

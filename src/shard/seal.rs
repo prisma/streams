@@ -55,8 +55,14 @@ use crate::spill::metrics::ShardLogMetrics;
 mod amplification_tests;
 #[cfg(test)]
 mod budget_tests;
+mod consolidate;
+#[cfg(test)]
+mod consolidate_tests;
 #[cfg(test)]
 mod dispatch_tests;
+pub(crate) mod fold;
+#[cfg(test)]
+mod fold_tests;
 #[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
@@ -65,6 +71,7 @@ mod open;
 pub(crate) mod read;
 #[cfg(test)]
 mod read_tests;
+mod runs;
 mod steps;
 #[cfg(test)]
 pub(crate) mod test_hooks;
@@ -221,6 +228,8 @@ pub(crate) struct SealCounters {
     /// Times a durable group stayed pending with no dispatch for the
     /// watchdog's warning threshold (each episode once).
     pub(crate) dispatch_stall_warnings: AtomicU64,
+    /// Plans served from the chunk cache, without a GET.
+    pub(crate) chunk_cache_hits: AtomicU64,
 }
 
 impl SealCounters {
@@ -246,6 +255,7 @@ impl SealCounters {
             "summary_skips": n(&self.summary_skips),
             "summary_misses": n(&self.summary_misses),
             "dispatch_stall_warnings": n(&self.dispatch_stall_warnings),
+            "chunk_cache_hits": n(&self.chunk_cache_hits),
         })
     }
 }
@@ -302,6 +312,8 @@ pub(crate) struct SealState {
     /// Set once the open's rebuild finished; sealed reads wait for it.
     ready: tokio::sync::watch::Sender<bool>,
     pub(crate) counters: SealCounters,
+    /// The fold and the run-index set (`fold`).
+    pub(crate) fold: fold::FoldState,
     #[cfg(test)]
     pub(crate) hooks: test_hooks::SealHooks,
 }
@@ -360,7 +372,16 @@ impl SealState {
             j["directory_streams"] = d.streams().into();
             j["directory_bytes"] = d.bytes().into();
         }
+        j["fold"] = self.fold.json();
+        j["consolidation"] = self.fold.consolidator.json();
+        j["caches"] = crate::spill::cache::json();
         j
+    }
+
+    /// The next object sequence of this opening (seals, folds, merges and
+    /// consolidations share it).
+    pub(crate) fn next_object_seq(&self) -> u64 {
+        self.next_seq.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     #[expect(
@@ -679,6 +700,15 @@ impl ShardEngine {
     #[cfg(test)]
     pub(crate) fn seal_commits_sent(&self) -> u64 {
         self.seal_state().hooks.commits_sent.load(Ordering::Acquire)
+    }
+
+    /// Seal-index rows this engine skipped as undecodable (`/operator/data.json`).
+    pub(crate) fn sealed_index_corrupt_rows(&self) -> u64 {
+        self.seal_state()
+            .fold
+            .counters
+            .corrupt_rows
+            .load(Ordering::Relaxed)
     }
 
     /// The sealer's counters and directory size (`GET /v1/debug/timings`, each shard's `seal`).

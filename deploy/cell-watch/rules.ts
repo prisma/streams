@@ -724,6 +724,16 @@ function usageOverflow(c: Ctx): Answer {
   return admits > 0 ? fire("NOTIFY", { usage_overflow_admits: admits }) : "clean";
 }
 
+/// `local.sealed_index_corrupt_rows`: seal-index rows (directory, pointer,
+/// orphan) the local engines skipped as undecodable (edge #222). A read
+/// whose window meets the hole one leaves answers corruption, so any is a
+/// page.
+function sealedIndexCorrupt(c: Ctx): Answer {
+  const rows = num(get(c.poll.data, "local", "sealed_index_corrupt_rows"));
+  if (rows === null) return "skip";
+  return rows > 0 ? fire("PAGE", { sealed_index_corrupt_rows: rows }) : "clean";
+}
+
 /// /v1/admin/metrics `cache_age_secs` (deploy/issuer/ops.ts).
 function issuerCacheAge(c: Ctx): Answer {
   const age = num(get(c.poll.issuerMetrics, "cache_age_secs"));
@@ -796,6 +806,7 @@ export const RULES: readonly Rule[] = [
   rule(27, "issuer_cache_age", RUNBOOK.shared, issuerCacheAge, { enabled: withIssuer }),
   rule(28, "admission_gate_closed", RUNBOOK.shared, admissionGateClosed, { enabled: withIssuer }),
   rule(29, "bytes_put_growth", RUNBOOK.billing, bytesPutGrowth),
+  rule(30, "sealed_index_corrupt", RUNBOOK.store, sealedIndexCorrupt),
 ];
 
 // ---- the step --------------------------------------------------------------

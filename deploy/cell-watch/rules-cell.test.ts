@@ -537,6 +537,18 @@ describe("row 20 before any boot id is seen", () => {
   });
 });
 
+describe("row 30: sealed index corrupt", () => {
+  test("pages while any seal-index row is skipped, and resolves after a restart that finds none", () => {
+    const w = new Watch();
+    w.polls(MIN_POLLS, data({ "local.sealed_index_corrupt_rows": 0 }));
+    expect(fired(w, 30)).toEqual([]);
+    w.poll(data({ "local.sealed_index_corrupt_rows": 2 }));
+    expect(fired(w, 30).map((e) => [e.class, e.values])).toEqual([["PAGE", { sealed_index_corrupt_rows: 2 }]]);
+    w.polls(MIN_POLLS, data({ "local.sealed_index_corrupt_rows": 0 }));
+    expect(row(w, 30)).toEqual([["trigger", "PAGE"], ["resolve", "PAGE"]]);
+  });
+});
+
 describe("row 26: usage overflow", () => {
   test("notifies on any overflow admit", () => {
     const w = new Watch();

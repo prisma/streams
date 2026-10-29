@@ -1,5 +1,5 @@
 // RUNBOOK.md against the watch (public-beta alerting triage B5): the shared
-// cell's "What to alert on" table holds the alerting table's rows 1 to 29,
+// cell's "What to alert on" table holds the alerting table's rows 1 to 30,
 // each with the rule RULES runs for it, its class and where it is paged;
 // §7.5 says who answers, beside the Compute escalation contact; §8 states
 // the operator surface's bearer gate; the canary's paragraph makes the
@@ -42,7 +42,7 @@ const CLASS: Readonly<Record<number, string>> = {
   8: "PAGE / NOTIFY", 9: "PAGE / NOTIFY", 10: "PAGE / NOTIFY", 11: "PAGE", 12: "PAGE / NOTIFY",
   14: "PAGE", 15: "NOTIFY / PAGE", 16: "PAGE / NOTIFY", 17: "NOTIFY", 18: "NOTIFY",
   19: "PAGE", 20: "NOTIFY", 21: "PAGE", 22: "PAGE", 23: "NOTIFY", 24: "NOTIFY", 25: "NOTIFY",
-  26: "NOTIFY", 27: "NOTIFY", 28: "NOTIFY", 29: "NOTIFY",
+  26: "NOTIFY", 27: "NOTIFY", 28: "NOTIFY", 29: "NOTIFY", 30: "PAGE",
 };
 /// Where each class goes: §7.5's "Who answers" names them.
 const TO: Readonly<Record<string, string>> = { PAGE: "`<on-call>`", NOTIFY: "`<notify channel>`" };
@@ -56,12 +56,12 @@ describe("RUNBOOK.md's What to alert on", () => {
     expect(header).toEqual(["#", "rule", "class", "where", "alert when", "paged by"]);
   });
 
-  test("holds rows 1 to 29 once each but row 13 (retired with the history tier), in order, each saying where and when", () => {
+  test("holds rows 1 to 30 once each but row 13 (retired with the history tier), in order, each saying where and when", () => {
     expect(rows.map((c) => c[0])).toEqual(ROWS.map(String));
     for (const c of rows) expect([c[0], c.length, (c[3] ?? "") !== "", (c[4] ?? "") !== ""]).toEqual([c[0], 6, true, true]);
   });
 
-  test("names the rule RULES runs for rows 3 to 29, the level rules marked, and the paging tool's checks for 1 and 2", () => {
+  test("names the rule RULES runs for rows 3 to 30, the level rules marked, and the paging tool's checks for 1 and 2", () => {
     expect([cells(1)[1], cells(2)[1]]).toEqual(["uptime check", "heartbeat"]);
     for (const r of RULES) expect([r.row, cells(r.row)[1]]).toEqual([r.row, `\`${r.id}\`${r.level ? " (level)" : ""}`]);
   });

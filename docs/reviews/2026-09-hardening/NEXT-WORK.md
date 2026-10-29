@@ -136,15 +136,11 @@ alongside and finish before admission opens.
    reopens with the layout (the owner's). E11's physical reclamation and
    per-stream retention ride design B's stage 3b; whether either gates the
    beta is open (below).
-   **Release blocker (lead, 2026-10-28, S13):** the in-memory seal
-   directory is unbounded until package 5's fold. It grows by about one
-   entry per active stream per seal (`SealState::directory`; per-shard
-   gauges `seal.directory_entries` and `seal.directory_bytes` under
-   `GET /v1/debug/timings`). DESIGN-6A §2.3 bounds it at one fold period
-   per shard once the fold writes run-index objects, and F15 gives it a
-   budget line under the 500 MB shed line. No 6A binary deploys before
-   that fold lands and HIS-027's test (`shard::seal::memory_tests`)
-   asserts the bound.
+   The seal directory's bound (S13, the lead's release blocker of
+   2026-10-28) is met by package 5's fold: each shard's in-memory
+   directory holds at most one fold period's chunks (HIS-027,
+   `shard::seal::memory_tests`), with a budget line under the shed line
+   (`src/spill/budget.rs`).
 3. **The interim token issuer and an unattended admit-to-bundle path**
    (README "Shared cells Q9" left self-serve to the platform's Stage 1
    issuer; the owner chose an interim one). Built in the landing stack,

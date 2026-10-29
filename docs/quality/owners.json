@@ -4223,6 +4223,182 @@
       "path": "fuzz/fuzz_targets/segment_chunk.rs",
       "reason": "Segment-object chunk parser fuzz target (decided by the lead under the owner's delegation, 2026-10-28, step-3 batch 1, S2): test-only fuzz harness; the pinned libfuzzer-sys macro is compiled and its generated cases execute the production owner. Syntax tokens remain explicitly inventoried.",
       "syntax": "libfuzzer_sys::fuzz_target"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_fenced_folders_object_is_an_orphan",
+      "path": "src/shard/seal/fold_tests.rs",
+      "reason": "The fold parked before its batch and the second writer's open run concurrently in one test task so the open fences the fold between its PUT and its batch; the compiler checks the join's expansion.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::merge_permit::ONE",
+      "path": "src/spill/budget.rs",
+      "reason": "One run-index merge at a time per instance (spill::budget::MERGE_BUFFER_BYTES, REVIEW-6A F15 budget line): a merge holds its inputs and output in memory, so every shard's merges share this one permit to keep the line process-wide.",
+      "syntax": "tokio :: sync :: Semaphore"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::consolidation_permits::KIB",
+      "path": "src/spill/budget.rs",
+      "reason": "Pages held by read-triggered consolidations in flight, process-wide in KiB permits (spill::budget::CONSOLIDATION_BYTES, REVIEW-6A F15 budget line); a read that cannot take its permits offers nothing.",
+      "syntax": "tokio :: sync :: Semaphore"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::index_cache::CACHE",
+      "path": "src/spill/cache.rs",
+      "reason": "The process's run-index footer and run cache (spill::cache::INDEX_CACHE_BYTES, REVIEW-6A F15 budget line): one byte budget for the process, because every shard's sealed reads share the memory it bounds; values are immutable objects' bytes, never tenant state.",
+      "syntax": "std :: sync :: LazyLock < ByteLru < IndexValue > >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::chunk_cache::CACHE",
+      "path": "src/spill/cache.rs",
+      "reason": "The process's whole-chunk cache (spill::cache::CHUNK_CACHE_BYTES, REVIEW-6A F15 budget line): one byte budget for the process, because every shard's sealed reads share the memory it bounds; values are immutable segment objects' bytes, each still admitted by its reader.",
+      "syntax": "std :: sync :: LazyLock < ByteLru < Bytes > >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::PROCESS_BYTES",
+      "path": "src/spill/directory.rs",
+      "reason": "Every live seal directory's memory in the process (spill::budget::PROCESS_DIRECTORY_BYTES, REVIEW-6A F15 budget line): the fold's process-wide trigger reads it, each Directory adds and drops its own share; a counter, no runtime or tenant state.",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::<Scope as Default>::default::NEXT",
+      "path": "src/spill/cache.rs",
+      "reason": "The next cache scope of the process: each shard engine takes one at construction so its keys in the process-wide index and chunk caches never meet another engine's, even for the same object path on another store; a counter, no runtime or tenant state.",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::kani_105_tile_covers_every_offset_until_none_holds_one",
+      "path": "src/spill/runindex/tiling/proofs.rs",
+      "reason": "Kani proof harness for KANI-105 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::kani_105_drop_covered_keeps_every_offset",
+      "path": "src/spill/runindex/tiling/proofs.rs",
+      "reason": "Kani proof harness for KANI-105 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::varint",
+      "path": "fuzz/fuzz_targets/run_index.rs",
+      "reason": "Run-index object codec fuzz target (layout 6A package 5, the brief's parser fuzz target; the lead's step-3 S2 ruling for by-path fuzz harnesses): one canonical production module compiled unchanged by the service and the private fuzz harness, so the harness fuzzes the parser the service runs; explicit file paths keep child resolution; no copied codec, stand-in type or public verification API.",
+      "syntax": "path = \"../../src/crypto_page/varint.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::crc32c",
+      "path": "fuzz/fuzz_targets/run_index.rs",
+      "reason": "Run-index object codec fuzz target (layout 6A package 5, the brief's parser fuzz target; the lead's step-3 S2 ruling for by-path fuzz harnesses): one canonical production module compiled unchanged by the service and the private fuzz harness, so the harness fuzzes the parser the service runs; explicit file paths keep child resolution; no copied codec, stand-in type or public verification API.",
+      "syntax": "path = \"../../src/spill/crc32c.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::object",
+      "path": "fuzz/fuzz_targets/run_index.rs",
+      "reason": "Run-index object codec fuzz target (layout 6A package 5, the brief's parser fuzz target; the lead's step-3 S2 ruling for by-path fuzz harnesses): one canonical production module compiled unchanged by the service and the private fuzz harness, so the harness fuzzes the parser the service runs; explicit file paths keep child resolution; no copied codec, stand-in type or public verification API.",
+      "syntax": "path = \"../../src/spill/object.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::row",
+      "path": "fuzz/fuzz_targets/run_index.rs",
+      "reason": "Run-index object codec fuzz target (layout 6A package 5, the brief's parser fuzz target; the lead's step-3 S2 ruling for by-path fuzz harnesses): one canonical production module compiled unchanged by the service and the private fuzz harness, so the harness fuzzes the parser the service runs; explicit file paths keep child resolution; no copied codec, stand-in type or public verification API.",
+      "syntax": "path = \"../../src/spill/directory/row.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::format",
+      "path": "fuzz/fuzz_targets/run_index.rs",
+      "reason": "Run-index object codec fuzz target (layout 6A package 5, the brief's parser fuzz target; the lead's step-3 S2 ruling for by-path fuzz harnesses): one canonical production module compiled unchanged by the service and the private fuzz harness, so the harness fuzzes the parser the service runs; explicit file paths keep child resolution; no copied codec, stand-in type or public verification API.",
+      "syntax": "path = \"../../src/spill/runindex/format.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(libfuzzer_sys::fuzz_target)",
+      "path": "fuzz/fuzz_targets/run_index.rs",
+      "reason": "Run-index object codec fuzz target (layout 6A package 5): test-only fuzz harness; the pinned libfuzzer-sys macro is compiled and its generated cases execute the production owner. Syntax tokens remain explicitly inventoried.",
+      "syntax": "libfuzzer_sys::fuzz_target"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::FoldState::json",
+      "path": "src/shard/seal/fold.rs",
+      "reason": "Operator-debug gauges (edge change #220/#221): serde macro output is compiled and asserted by the fold and consolidation tests; no service state.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Consolidator::json",
+      "path": "src/shard/seal/consolidate.rs",
+      "reason": "Operator-debug gauges (edge change #220/#221): serde macro output is compiled and asserted by the fold and consolidation tests; no service state.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::ByteLru < V >::json",
+      "path": "src/spill/cache.rs",
+      "reason": "Operator-debug gauges (edge change #220/#221): serde macro output is compiled and asserted by the fold and consolidation tests; no service state.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::json",
+      "path": "src/spill/cache.rs",
+      "reason": "Operator-debug gauges (edge change #220/#221): serde macro output is compiled and asserted by the fold and consolidation tests; no service state.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::ShardEngine::fold_loop",
+      "path": "src/shard/seal/fold.rs",
+      "reason": "Expression selection between the engine's close signal and the fold loop's tick; compiler checks expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::ShardEngine::consolidate_loop",
+      "path": "src/shard/seal/consolidate.rs",
+      "reason": "Expression selection between the engine's close signal and the consolidator's next job; compiler checks expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::consolidations_racing_reads_seals_and_folds_lose_nothing",
+      "path": "src/shard/seal/consolidate_tests.rs",
+      "reason": "The appender, the walkers and the folder run concurrently in one test task so consolidations race reads, seals and folds; the compiler checks the join's expansion and every future borrows the test's rig.",
+      "syntax": "tokio::join"
     }
   ]
 }

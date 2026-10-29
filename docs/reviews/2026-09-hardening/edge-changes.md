@@ -4741,6 +4741,50 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Pinning tests:** `shard::commit_handoff::watchdog_tests::production_warns_at_ten_seconds_and_retires_at_sixty`, `one_group_with_no_dispatch_is_warned_once_then_stalled`, `any_progress_starts_the_episode_over`; `shard::seal::dispatch_tests::a_dispatch_that_leaves_a_durable_group_pending_retires_the_engine` (warned once, then retired).
 - **Risk reason:** medium. A false retirement on a shared one-shard cell is a whole-cell interruption, so the window is 60 s and requires no dispatch at all; the 10 s warning makes a near miss visible first.
 - **Status:** decided by the lead under the owner's delegation, 2026-10-29.
+
+### #220 (this record's commit) — Sealed reads find folded chunks through run-index objects, and the shard debug JSON gains the fold's, consolidation's and caches' gauges
+
+- **Program item:** layout 6A, package 5 (DESIGN-6A §2.3-§2.4: the fold, run-index objects, the chunk cache).
+- **Surface:** read latency and object-store requests of sealed reads; operator-debug.
+- **Endpoint:** every read of sealed offsets (raw and product, keyed or not, at both visibilities); `GET /v1/debug/timings`, each shard's `seal` adds `fold` (live run-index objects by level, their bytes, orphan chunks and bytes, folds, failures, rows and entries folded, entries dropped, objects and bytes written, merges and failures, merged inputs, retired objects deleted, corrupt rows, footer and run GETs, run bloom skips), `consolidation` (#221), `caches` (the process's index and chunk caches: bytes, budget, hits, misses, evictions) and `chunk_cache_hits`.
+- **Condition:** a read of offsets sealed before the shard's last fold (every 15 minutes, or sooner when the shard's directory holds 4 MiB, or the process's directories 32 MiB).
+- **Before:** every sealed chunk was in the in-memory directory, which grew with every seal until the process ran out of memory (S13's release blocker).
+- **After:** a read takes the directory's chunks, then each live run-index object's run of the stream: the object's footer (one GET, then the process's 16 MiB index cache) and the stream's run (one GET, then the cache), skipping a dense run a keyed read's bloom excludes; then one ranged GET per chunk unless the process's 32 MiB chunk cache holds the chunk whole. A cold read therefore pays up to two more GETs per live object holding the stream (about 31 objects for a week of history), once per process while cached. Records, offsets and pagination are unchanged.
+- **Retry semantics:** a run-index object a merge just retired answers a retryable 503 (`unavailable`), as a missing segment object does; bytes that fail their checks are corruption.
+- **Who is affected:** readers of streams sealed more than one fold period ago (latency of the first cold read per process); operators reading the debug JSON.
+- **Pinning tests:** `shard::seal::fold_tests::*`, `shard::seal::memory_tests::*` (HIS-027), `spill::runindex::format_tests::*`, `spill::cache_tests::*`, the keyed-read suite (`shard::seal::read_tests::*`, `dst::dst_tests::reads_raw::*`).
+- **Risk reason:** medium. A new index on the read path; KANI-105 proves the tiling, the fold's crash windows and fencing are DSTs, and every object is read back before it becomes the only index of its chunks.
+- **Status:** ratified by the lead under the owner's delegation, 2026-10-28.
+- **Check against commit:** written with the change.
+
+### #221 (this record's commit) — A cold walk over many small sealed chunks consolidates them, so the next walk costs one GET per consolidated chunk
+
+- **Program item:** layout 6A, package 5 (DESIGN-6A §2.4 (d), read-triggered consolidation).
+- **Surface:** object-store requests and storage; operator-debug.
+- **Endpoint:** every read of sealed offsets; `GET /v1/debug/timings`, each shard's `seal.consolidation` (offered, done, skipped, failed, chunks in, bytes out) and `seal.fold.orphan_chunks` / `orphan_bytes`.
+- **Condition:** one read fetches at least 8 contiguous whole chunks of one stream, each under 64 KiB.
+- **Before:** every cold walk paid one GET per sealed chunk (about 261k GETs per logical GiB at S10's 2.4 KB chunks).
+- **After:** the engine copies those chunks' pages byte for byte (never re-encrypted) into one chunk of a new segment object (one PUT of at most 1 MiB of pages, from bytes the read already holds), indexes it with one `'K'` row, and counts the chunks it superseded as orphans in an `'O'` row (folded into the run-index pointer rows; the superseded chunks stay stored until package 6's garbage collection frees them). Later walks of those offsets take the consolidated chunk.
+- **Retry semantics:** none (no read waits for a consolidation).
+- **Who is affected:** walkers of slow streams (fewer GETs); storage (the copied bytes are stored twice until package 6).
+- **Pinning tests:** `shard::seal::consolidate_tests::*`.
+- **Risk reason:** low. A byte copy behind the read path; any failure leaves the original chunks in force.
+- **Status:** ratified by the lead under the owner's delegation, 2026-10-28.
+- **Check against commit:** written with the change.
+
+### #222 (this record's commit) — A seal directory, run-index pointer or orphan row that does not decode is skipped and counted instead of stopping the shard's sealer, and a read that meets the hole it may leave answers corruption
+
+- **Program item:** layout 6A, package 5 (Fable 5.1's design review S2-3; the lead's ratification condition of 2026-10-28).
+- **Surface:** availability and answers of sealed reads after corruption; operator surface and alerting.
+- **Endpoint:** the shard's open and every fold; every read of sealed offsets; `/operator/data.json` `local.sealed_index_corrupt_rows` (new; the local engines' skipped rows); cell-watch row 30 `r30_sealed_index_corrupt` (PAGE while it is above 0); `GET /v1/debug/timings`, each shard's `seal.fold.corrupt_rows` and `corrupt_index_rows`.
+- **Condition:** one such row in the shard log does not decode.
+- **Before:** the sealer's open failed and retried forever, so every sealed read of the shard waited and no seal ran.
+- **After:** the row is logged, counted once per key and left in place (a fold never deletes it); the sealer seals and the fold folds; every other stream and object is served exactly. A read (keyed or not) whose window reaches an offset no chunk of the directory or of any live run-index object holds, below the stream's sealed boundary, on a shard that skipped a directory or pointer row, answers the corruption error a corrupt sealed chunk answers (`sealed range corrupt`), never an empty or short answer. A read whose window the remaining chunks tile is served exactly. An orphan row only feeds a gauge, so it is counted but never fails a read.
+- **Retry semantics:** none (corruption, not retryable).
+- **Who is affected:** a shard with a corrupt index row (none observed); its on-call (row 30 pages).
+- **Pinning tests:** `shard::seal::fold_tests::a_gap_a_corrupt_index_row_leaves_answers_corruption_and_nothing_else_does`, `shard::seal::fold_tests::a_corrupt_index_row_is_skipped_and_counted`, `dst::dst_tests::runtime_journals` (the operator field), `deploy/cell-watch/rules-cell.test.ts` (row 30), `deploy/cell-watch/runbook.test.ts`.
+- **Risk reason:** low.
+- **Status:** ratified by the lead under the owner's delegation, 2026-10-28, on the condition this record now states (a hole answers corruption; the count reaches cell-watch; a DST).
 - **Check against commit:** written with the change.
 
 ## Discrepancies
