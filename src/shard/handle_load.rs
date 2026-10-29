@@ -17,17 +17,22 @@ impl ShardEngine {
     /// A stream's stored state: its tail from the stream segment, else the
     /// queue segment (the default tail when neither holds one), and, for a
     /// stream with unsealed records, its pending row, whose pages must tile
-    /// `[absorbed, next)` exactly or the load fails (layout 6).
+    /// `[absorbed, next)` exactly or the load fails (layout 6). Both are read
+    /// from one snapshot: a seal that commits between two plain reads would
+    /// pair the tail from before it with the pending row from after it.
     pub(super) async fn load_tail(&self, hash: &[u8; 16]) -> Result<LoadedTail, slatedb::Error> {
+        let snapshot = self.db.snapshot().await?;
         for (key, native_queue) in [(tail_key(hash), false), (queue_tail_key(hash), true)] {
-            let Some(raw) = self.db.get(key).await? else {
+            let Some(raw) = snapshot.get(key).await? else {
                 continue;
             };
             let tail = stored_tail(&raw)?;
+            #[cfg(test)]
+            self.layout.seal.after_tail_load().await;
             let pending = if native_queue || tail.absorbed == tail.next {
                 PendingPages::default()
             } else {
-                let raw = self.db.get(pending_key(hash)).await?.unwrap_or_default();
+                let raw = snapshot.get(pending_key(hash)).await?.unwrap_or_default();
                 PendingPages::tiled(&raw, tail.absorbed, tail.next).map_err(slatedb::Error::data)?
             };
             return Ok(LoadedTail {

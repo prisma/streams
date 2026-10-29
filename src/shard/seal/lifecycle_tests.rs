@@ -177,3 +177,32 @@ async fn a_close_leaves_a_seal_in_flight_at_once() {
     );
     assert_eq!(hold.entered.load(Ordering::Acquire), 1);
 }
+
+/// **A handle load racing a seal reads one state.** A load parked after it
+/// read a stream's tail while a seal takes the stream's only page: the load
+/// still sees a tail and a pending row of one moment, before the seal or
+/// after it, never the tail before and the row after.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_handle_load_racing_a_seal_reads_one_state() {
+    let rig = rig("load-race", manual(), Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0x10AD);
+    let hash = hashes(&mut rng, 1)[0];
+    append(&rig.engine, hash, vec![random_bytes(&mut rng, 300)]).await;
+    settle(&rig.engine).await;
+    let hold = Hold::new();
+    *rig.engine.layout.seal.hooks.load_hold.lock().unwrap() = Some(hold.clone());
+    let drive = async {
+        let t0 = Instant::now();
+        while hold.entered.load(Ordering::Acquire) == 0 {
+            assert!(t0.elapsed() < Duration::from_secs(10), "the load never parked");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        *rig.engine.layout.seal.hooks.load_hold.lock().unwrap() = None;
+        let report = rig.engine.seal_once(Trigger::Requested).await.unwrap();
+        assert_eq!(report.pages, 1, "the seal took the page");
+        hold.release();
+    };
+    let (loaded, ()) = tokio::join!(rig.engine.load_tail(&hash), drive);
+    loaded.expect("the load reads one state");
+    rig.engine.begin_close();
+}

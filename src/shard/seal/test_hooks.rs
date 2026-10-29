@@ -58,6 +58,8 @@ pub(crate) struct SealHooks {
     pub(crate) get_hold: Mutex<Option<Arc<Hold>>>,
     /// Park a read after it captured its boundary and unsealed pages.
     pub(crate) window_hold: Mutex<Option<Arc<Hold>>>,
+    /// Park a handle load after it read the stream's tail.
+    pub(crate) load_hold: Mutex<Option<Arc<Hold>>>,
     /// REVIEW-6A F1 negative control: the committer puts the remainder a
     /// seal task would have pre-built from the pages its snapshot knew,
     /// instead of the live one.
@@ -110,6 +112,13 @@ impl SealState {
 
     pub(crate) async fn before_window_read(&self) {
         let hold = self.hooks.window_hold.lock().unwrap().clone();
+        if let Some(hold) = hold {
+            hold.park().await;
+        }
+    }
+
+    pub(crate) async fn after_tail_load(&self) {
+        let hold = self.hooks.load_hold.lock().unwrap().clone();
         if let Some(hold) = hold {
             hold.park().await;
         }
