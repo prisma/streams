@@ -301,6 +301,7 @@ async fn a_keyed_read_skips_chunks_the_summary_excludes_without_a_get() {
     }
     let counters = &rig.engine.layout.seal.counters;
     let (skips, gets) = (get(&counters.summary_skips), get(&counters.sealed_gets));
+    let misses = get(&counters.summary_misses);
     let at = ReadAt {
         from: 0,
         selector: Some("mine"),
@@ -325,6 +326,11 @@ async fn a_keyed_read_skips_chunks_the_summary_excludes_without_a_get() {
         get(&counters.sealed_gets) - gets,
         3,
         "one GET per chunk of the key"
+    );
+    assert_eq!(
+        get(&counters.summary_misses),
+        misses,
+        "every chunk fetched served the key"
     );
     rig.engine.begin_close();
 }
@@ -563,4 +569,359 @@ async fn a_read_that_captured_its_boundary_before_a_seal_commits_serves_exact_da
     );
     assert!(page.completed);
     rig.engine.begin_close();
+}
+
+/// A read the tail ring serves through the sealed boundary carries on into
+/// the unsealed pages in the same call: one window from 0 returns every
+/// record, the sealed ones from the ring and the rest from memory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_ring_read_through_the_boundary_continues_into_the_unsealed_pages() {
+    let rig = rig("ring-through", manual(), Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0x7149);
+    let hash = hashes(&mut rng, 1)[0];
+    for _ in 0..3 {
+        append_lane(&rig.engine, hash, "", vec![random_bytes(&mut rng, 200)]).await;
+    }
+    rig.engine.seal_once(Trigger::Requested).await.unwrap();
+    for _ in 0..2 {
+        append_lane(&rig.engine, hash, "", vec![random_bytes(&mut rng, 200)]).await;
+    }
+    let handle = rig.engine.stream_handle(hash).await.unwrap();
+    assert_eq!(
+        handle.state.lock().unwrap().durable.absorbed,
+        3,
+        "three sealed"
+    );
+    let gets = get(&rig.engine.layout.seal.counters.sealed_gets);
+    let window = crate::shard::tail_ring::RingScan {
+        from: 0,
+        to: u64::MAX,
+        max_bytes: 1 << 20,
+    };
+    let out = rig
+        .engine
+        .read_stream_window(&handle, window, None, Deliver::Durable)
+        .await
+        .unwrap();
+    assert_eq!(
+        get(&rig.engine.layout.seal.counters.sealed_gets),
+        gets,
+        "the ring served the sealed range"
+    );
+    assert_eq!(out.last_offset, Some(4), "through the unsealed pages");
+    // A budget the sealed range fills exactly stops the read at the
+    // boundary: nothing past it is inspected.
+    let sealed = crate::shard::tail_ring::RingScan { to: 3, ..window };
+    let first = rig
+        .engine
+        .read_stream_window(&handle, sealed, None, Deliver::Durable)
+        .await
+        .unwrap();
+    let bytes: usize = first
+        .frames
+        .iter()
+        .map(crate::shard::record::PageSlice::stored_len)
+        .sum();
+    let exact = crate::shard::tail_ring::RingScan {
+        max_bytes: bytes,
+        ..window
+    };
+    let out = rig
+        .engine
+        .read_stream_window(&handle, exact, None, Deliver::Durable)
+        .await
+        .unwrap();
+    assert_eq!(out.last_offset, Some(2), "the budget ends at the boundary");
+    rig.engine.begin_close();
+}
+
+/// A closed engine serves nothing from memory: a read of a stream whose
+/// records are all in memory meets the close as a store read would.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_closed_engine_refuses_a_read_it_could_serve_from_memory() {
+    let rig = rig("closed-read", manual(), Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0xC105);
+    let hash = hashes(&mut rng, 1)[0];
+    append_lane(&rig.engine, hash, "", vec![random_bytes(&mut rng, 200)]).await;
+    let handle = rig.engine.stream_handle(hash).await.unwrap();
+    rig.engine.begin_close();
+    tokio::time::timeout(Duration::from_secs(10), rig.engine.closed())
+        .await
+        .expect("the engine closed");
+    let window = crate::shard::tail_ring::RingScan {
+        from: 0,
+        to: u64::MAX,
+        max_bytes: 1 << 20,
+    };
+    let refused = rig
+        .engine
+        .read_stream_window(&handle, window, None, Deliver::Durable)
+        .await;
+    assert!(
+        matches!(refused, Err(crate::shard::record::RangeReadError::Store(_))),
+        "a closed engine refuses the read"
+    );
+}
+
+/// A sealed read stops planning at its window's end: a window ending at a
+/// chunk boundary fetches that chunk alone, never the next.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_window_ending_at_a_chunk_boundary_fetches_no_further_chunk() {
+    let mut settings = manual();
+    settings.max_pages_per_chunk = 4;
+    let rig = rig_with("window-end", settings, 0, Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0xE4D);
+    let hash = hashes(&mut rng, 1)[0];
+    for _ in 0..8 {
+        append_lane(&rig.engine, hash, "", vec![random_bytes(&mut rng, 200)]).await;
+    }
+    rig.engine.seal_once(Trigger::Requested).await.unwrap();
+    let handle = rig.engine.stream_handle(hash).await.unwrap();
+    let gets = get(&rig.engine.layout.seal.counters.sealed_gets);
+    let window = crate::shard::tail_ring::RingScan {
+        from: 0,
+        to: 4,
+        max_bytes: 1 << 20,
+    };
+    let out = rig
+        .engine
+        .read_stream_window(&handle, window, None, Deliver::Durable)
+        .await
+        .unwrap();
+    assert_eq!(out.last_offset, Some(3));
+    assert_eq!(
+        get(&rig.engine.layout.seal.counters.sealed_gets) - gets,
+        1,
+        "one chunk fetched"
+    );
+    rig.engine.begin_close();
+}
+
+/// One sealed read fetches at most 256 chunks: of 300 one-page chunks, a
+/// read from 0 fetches the first 256 and ends at the last offset they hold.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sealed_read_fetches_at_most_256_chunks() {
+    let mut settings = manual();
+    settings.max_pages_per_chunk = 1;
+    let rig = rig_with("chunk-cap", settings, 0, Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0x256);
+    let hash = hashes(&mut rng, 1)[0];
+    for _ in 0..300 {
+        append_lane(&rig.engine, hash, "", vec![random_bytes(&mut rng, 16)]).await;
+    }
+    rig.engine.seal_once(Trigger::Requested).await.unwrap();
+    let handle = rig.engine.stream_handle(hash).await.unwrap();
+    let gets = get(&rig.engine.layout.seal.counters.sealed_gets);
+    let window = crate::shard::tail_ring::RingScan {
+        from: 0,
+        to: u64::MAX,
+        max_bytes: 64 << 20,
+    };
+    let out = rig
+        .engine
+        .read_stream_window(&handle, window, None, Deliver::Durable)
+        .await
+        .unwrap();
+    assert_eq!(
+        get(&rig.engine.layout.seal.counters.sealed_gets) - gets,
+        256
+    );
+    assert_eq!(out.last_offset, Some(255), "the 256 chunks' offsets");
+    rig.engine.begin_close();
+}
+
+/// A sealed-range GET the store keeps failing is tried three times, then
+/// the read fails as the store's unavailability, at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failing_chunk_get_is_tried_three_times_then_the_read_fails() {
+    let inner: std::sync::Arc<dyn ObjectStore> =
+        std::sync::Arc::new(object_store::memory::InMemory::new());
+    let profile = crate::dst::FaultProfile::clean().with_op_class(
+        StoreOp::Get,
+        ObjClass::Other,
+        FaultPlan::new(100, 0, 0),
+    );
+    let store = FaultStore::new(inner, 0x6E7, profile);
+    let engine = open(
+        store,
+        &unique("get-retries"),
+        manual(),
+        0,
+        Duration::from_millis(2),
+    )
+    .await;
+    let mut rng = StdRng::seed_from_u64(0x6E7);
+    let hash = hashes(&mut rng, 1)[0];
+    for _ in 0..2 {
+        append_lane(&engine, hash, "", vec![random_bytes(&mut rng, 200)]).await;
+    }
+    engine.seal_once(Trigger::Requested).await.unwrap();
+    let handle = engine.stream_handle(hash).await.unwrap();
+    let gets = get(&engine.layout.seal.counters.sealed_gets);
+    let window = crate::shard::tail_ring::RingScan {
+        from: 0,
+        to: u64::MAX,
+        max_bytes: 1 << 20,
+    };
+    let read = tokio::time::timeout(
+        Duration::from_secs(5),
+        engine.read_stream_window(&handle, window, None, Deliver::Durable),
+    )
+    .await
+    .expect("the read gives up");
+    assert!(
+        matches!(read, Err(crate::shard::record::RangeReadError::Store(_))),
+        "the store's unavailability"
+    );
+    assert_eq!(
+        get(&engine.layout.seal.counters.sealed_gets) - gets,
+        3,
+        "three attempts"
+    );
+    engine.begin_close();
+}
+
+/// A read whose budget covers a whole chunk past several anchors fetches
+/// it in one GET and serves every record of it in one call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_budget_past_every_anchor_reads_the_whole_chunk_at_once() {
+    let rig = rig_with("whole-chunk", manual(), 0, Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0xA9C);
+    let hash = hashes(&mut rng, 1)[0];
+    for _ in 0..12 {
+        append_lane(
+            &rig.engine,
+            hash,
+            "",
+            vec![random_bytes(&mut rng, 64 << 10)],
+        )
+        .await;
+    }
+    rig.engine.seal_once(Trigger::Requested).await.unwrap();
+    let handle = rig.engine.stream_handle(hash).await.unwrap();
+    let gets = get(&rig.engine.layout.seal.counters.sealed_gets);
+    let window = crate::shard::tail_ring::RingScan {
+        from: 0,
+        to: u64::MAX,
+        max_bytes: 64 << 20,
+    };
+    let out = rig
+        .engine
+        .read_stream_window(&handle, window, None, Deliver::Durable)
+        .await
+        .unwrap();
+    assert_eq!(out.last_offset, Some(11), "every record of the chunk");
+    assert_eq!(
+        get(&rig.engine.layout.seal.counters.sealed_gets) - gets,
+        1,
+        "one GET"
+    );
+    // A 100 KiB budget fetches up to the first anchor past it (anchors
+    // every 256 KiB of pages), not the whole 768 KiB chunk.
+    let fetched = get(&rig.engine.layout.seal.hooks.get_bytes);
+    let small = crate::shard::tail_ring::RingScan {
+        max_bytes: 100 << 10,
+        ..window
+    };
+    let out = rig
+        .engine
+        .read_stream_window(&handle, small, None, Deliver::Durable)
+        .await
+        .unwrap();
+    let span = get(&rig.engine.layout.seal.hooks.get_bytes) - fetched;
+    assert!(span <= 320 << 10, "one anchor span fetched: {span} B");
+    assert!(
+        out.last_offset.is_some_and(|l| l < 11),
+        "{:?}",
+        out.last_offset
+    );
+    rig.engine.begin_close();
+}
+
+/// A whole-chunk GET whose chunk header disagrees with the directory entry
+/// that planned it is refused as corruption, never served: an entry that
+/// names another stream's chunk, or another page count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_chunk_whose_header_disagrees_with_its_entry_is_refused() {
+    let rig = rig_with("header-check", manual(), 0, Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0x4EAD);
+    let [a, b] = hashes(&mut rng, 2)[..] else {
+        unreachable!()
+    };
+    for hash in [a, b] {
+        for _ in 0..3 {
+            append_lane(&rig.engine, hash, "", vec![random_bytes(&mut rng, 200)]).await;
+        }
+    }
+    rig.engine.seal_once(Trigger::Requested).await.unwrap();
+    let dir = &rig.engine.layout.seal.directory;
+    let entry_of = |hash| dir.read().unwrap().from(&hash, 0, 1)[0].clone();
+    let (entry_a, entry_b) = (entry_of(a), entry_of(b));
+    let window = crate::shard::tail_ring::RingScan {
+        from: 0,
+        to: u64::MAX,
+        max_bytes: 1 << 20,
+    };
+    let read = |hash| {
+        let engine = rig.engine.clone();
+        async move {
+            let handle = engine.stream_handle(hash).await.unwrap();
+            engine
+                .read_stream_window(&handle, window, None, Deliver::Durable)
+                .await
+        }
+    };
+    assert!(read(b).await.is_ok(), "B reads back as sealed");
+    // B's entry names A's chunk (same offsets and page count).
+    dir.write()
+        .unwrap()
+        .remove(&b, entry_b.last, entry_b.object);
+    dir.write().unwrap().insert(b, entry_a.clone());
+    assert!(read(b).await.is_err(), "another stream's chunk is refused");
+    // A's entry claims one page fewer than its chunk holds.
+    dir.write()
+        .unwrap()
+        .remove(&a, entry_a.last, entry_a.object);
+    dir.write().unwrap().insert(
+        a,
+        crate::spill::directory::DirEntry {
+            page_count: entry_a.page_count - 1,
+            ..entry_a
+        },
+    );
+    assert!(
+        read(a).await.is_err(),
+        "a page count the chunk disagrees with is refused"
+    );
+    rig.engine.begin_close();
+}
+
+/// A read captures only the unsealed pages its window and budget can
+/// reach: those that start before its end, up to the page that passes its
+/// byte budget.
+#[test]
+fn a_read_captures_only_the_unsealed_pages_it_can_reach() {
+    let mut pending = crate::spill::pending::PendingPages::default();
+    for offset in 0..10 {
+        pending.push((offset, offset, bytes::Bytes::from(vec![0u8; 100])));
+    }
+    let captured = |start, to, max_bytes| {
+        super::read::unsealed_pages(&pending, start, to, max_bytes)
+            .iter()
+            .map(|(first, _, _)| *first)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(captured(0, 3, 1 << 20), vec![0, 1, 2], "the window's end");
+    assert_eq!(captured(4, 6, 1 << 20), vec![4, 5]);
+    assert_eq!(
+        captured(0, u64::MAX, 250),
+        vec![0, 1, 2],
+        "the page past the budget"
+    );
+    assert_eq!(
+        captured(0, u64::MAX, 300),
+        vec![0, 1, 2],
+        "a budget met exactly"
+    );
+    assert_eq!(captured(0, u64::MAX, 1 << 20).len(), 10);
 }

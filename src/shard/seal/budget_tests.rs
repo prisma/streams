@@ -215,3 +215,33 @@ async fn an_exact_fit_is_taken_and_a_cut_defers_the_rest() {
     assert_eq!(rig.engine.seal_measure().oldest, None, "nothing unsealed");
     rig.engine.begin_close();
 }
+
+/// A seal's window holds a stream's pages from its boundary that tile up to
+/// the durable frontier: never a page past it (applied, not yet durable),
+/// never a page after a gap.
+#[test]
+fn a_window_takes_only_tiling_pages_below_the_durable_frontier() {
+    let pending = |offsets: &[u64]| {
+        let mut p = crate::spill::pending::PendingPages::default();
+        for &o in offsets {
+            p.push((o, o, bytes::Bytes::from_static(b"page")));
+        }
+        p
+    };
+    let window = |p: &crate::spill::pending::PendingPages, upto| {
+        let (pages, due) = super::steps::durable_pages(p, 0, upto);
+        (
+            pages.iter().map(|(first, _, _)| *first).collect::<Vec<_>>(),
+            due,
+        )
+    };
+    let tiled = pending(&[0, 1, 2, 3, 4]);
+    assert_eq!(
+        window(&tiled, 3),
+        (vec![0, 1, 2], 3),
+        "the durable frontier"
+    );
+    assert_eq!(window(&tiled, 5), (vec![0, 1, 2, 3, 4], 5));
+    let gap = pending(&[0, 1, 3, 4]);
+    assert_eq!(window(&gap, 5), (vec![0, 1], 2), "no page after a gap");
+}

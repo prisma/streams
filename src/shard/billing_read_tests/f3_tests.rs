@@ -217,3 +217,57 @@ async fn an_ack_in_a_rejected_group_leaves_its_finals_and_the_segment_is_emitted
     );
     reopened.stop().await;
 }
+
+/// The meta of a stream no handle holds is read at durable visibility: a
+/// newer tail the shard log applied but has not made durable (its WAL PUT
+/// parked) is not reported.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cold_streams_meta_is_read_at_durable_visibility() {
+    let inner: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let fault = crate::dst::FaultStore::uniform(inner, 0xD0B1, crate::dst::FaultPlan::CLEAN);
+    let store: Arc<dyn object_store::ObjectStore> = fault.clone();
+    let db = Arc::new(
+        crate::keyspace::db_builder("f3-cold-durable", store.clone())
+            .build()
+            .await
+            .unwrap(),
+    );
+    let mut durable = super::WriteBatch::new();
+    super::seed_billing(&mut durable, &SEGMENT, &open_row(), &Default::default());
+    db.write(durable)
+        .await
+        .unwrap()
+        .await_durable()
+        .await
+        .unwrap();
+    let engine = ShardEngine::start(
+        "f3-cold-durable".into(),
+        db.clone(),
+        store,
+        ShardConfig::default(),
+        None,
+        ShardMaintenance::default(),
+    );
+    engine.seal_ready().await.unwrap();
+    fault.hold_class(
+        crate::dst::StoreOp::Put,
+        crate::dst::ObjClass::Wal,
+        u64::MAX,
+    );
+    let newer = super::Meta {
+        usage_version: open_row().usage_version + 1,
+        ..open_row()
+    };
+    let mut applied = super::WriteBatch::new();
+    super::seed_billing(&mut applied, &SEGMENT, &newer, &Default::default());
+    // Applied to the memtable; its durability is never awaited.
+    drop(db.write(applied).await.unwrap());
+    let meta = engine.load_billing_meta(SEGMENT).await.unwrap().unwrap();
+    fault.release_hold();
+    assert_eq!(
+        meta.usage_version,
+        open_row().usage_version,
+        "the applied, not durable, tail is not reported"
+    );
+    engine.begin_close();
+}

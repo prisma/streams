@@ -349,14 +349,14 @@ async fn the_sealer_holds_only_the_handle_the_engine_serves() {
     rig.engine.begin_close();
 }
 
-/// **The sealer's loop evicts idle handles.** An engine whose handles idle
-/// out after a millisecond: a stream loaded and left alone (no unsealed
-/// page, so not held) is evicted by the loop's next eviction round.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_sealer_loop_evicts_an_idle_handle() {
+/// An engine started with `cfg`'s handle eviction, its sealer open.
+async fn eviction_engine(
+    label: &str,
+    cfg: crate::shard::ShardConfig,
+) -> std::sync::Arc<crate::shard::ShardEngine> {
     let store: std::sync::Arc<dyn object_store::ObjectStore> =
         std::sync::Arc::new(object_store::memory::InMemory::new());
-    let prefix = super::tests::unique("idle-evict");
+    let prefix = super::tests::unique(label);
     let db = std::sync::Arc::new(
         crate::keyspace::db_builder(
             crate::sharddir::shard_db_path(&prefix).as_str(),
@@ -370,25 +370,65 @@ async fn the_sealer_loop_evicts_an_idle_handle() {
         prefix,
         db,
         store,
-        crate::shard::ShardConfig {
-            handle_idle_evict: Duration::from_millis(1),
-            ..Default::default()
-        },
+        cfg,
         None,
         crate::shard::ShardMaintenance::default(),
     );
     engine.seal_ready().await.unwrap();
-    let hash = hashes(&mut StdRng::seed_from_u64(0x1D1E), 1)[0];
-    drop(engine.stream_handle(hash).await.unwrap());
-    assert_eq!(engine.resident_streams(), 1, "the load made it resident");
+    engine
+}
+
+/// Wait (at most 10 s) until at most `left` handles are resident.
+async fn evicted_down_to(engine: &crate::shard::ShardEngine, left: usize) {
     let t0 = Instant::now();
-    while engine.resident_streams() > 0 {
+    while engine.resident_streams() > left {
         assert!(
             t0.elapsed() < Duration::from_secs(10),
-            "the sealer's loop never evicted the idle handle"
+            "the sealer's loop never evicted down to {left}"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// **The sealer's loop evicts idle handles.** An engine whose handles idle
+/// out after a millisecond: a stream loaded and left alone (no unsealed
+/// page, so not held) is evicted by the loop's next eviction round.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_sealer_loop_evicts_an_idle_handle() {
+    let engine = eviction_engine(
+        "idle-evict",
+        crate::shard::ShardConfig {
+            handle_idle_evict: Duration::from_millis(1),
+            ..Default::default()
+        },
+    )
+    .await;
+    let hash = hashes(&mut StdRng::seed_from_u64(0x1D1E), 1)[0];
+    drop(engine.stream_handle(hash).await.unwrap());
+    assert_eq!(engine.resident_streams(), 1, "the load made it resident");
+    evicted_down_to(&engine, 0).await;
+    engine.begin_close();
+}
+
+/// **With idle eviction off, the cap still evicts.** An engine that never
+/// evicts by age but keeps at most one resident handle: of three loaded
+/// streams, the loop's next round leaves one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_sealer_loop_evicts_down_to_the_cap_with_idle_eviction_off() {
+    let engine = eviction_engine(
+        "cap-evict",
+        crate::shard::ShardConfig {
+            handle_idle_evict: Duration::ZERO,
+            handle_max_resident: 1,
+            ..Default::default()
+        },
+    )
+    .await;
+    for hash in hashes(&mut StdRng::seed_from_u64(0xCA9), 3) {
+        drop(engine.stream_handle(hash).await.unwrap());
+    }
+    assert_eq!(engine.resident_streams(), 3, "the loads made them resident");
+    evicted_down_to(&engine, 1).await;
     engine.begin_close();
 }
 

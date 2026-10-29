@@ -379,3 +379,49 @@ async fn a_seeded_fork_tail_holds_its_boundary_and_route() {
         );
     }
 }
+
+/// A tail's stored row differs from its base when any one stored field
+/// does, each alone; the static billing meta is not part of the row.
+#[test]
+fn each_stored_tail_field_alone_makes_the_row_differ() {
+    let base = TailFields {
+        next: 9,
+        absorbed: 4,
+        seq: Some("lane".into()),
+        unabsorbed_bytes: 77,
+        ..Default::default()
+    };
+    assert!(!base.stored_differs(&base.clone()), "the same row");
+    let changed = [
+        TailFields {
+            next: 10,
+            ..base.clone()
+        },
+        TailFields {
+            absorbed: 5,
+            ..base.clone()
+        },
+        TailFields {
+            unabsorbed_bytes: 78,
+            ..base.clone()
+        },
+        TailFields {
+            seq: Some("other".into()),
+            ..base.clone()
+        },
+        TailFields {
+            closed: true,
+            ..base.clone()
+        },
+        TailFields {
+            usage: Some(UsageCounters {
+                usage_version: 1,
+                ..Default::default()
+            }),
+            ..base.clone()
+        },
+    ];
+    for (i, tail) in changed.iter().enumerate() {
+        assert!(tail.stored_differs(&base), "field {i} alone");
+    }
+}

@@ -554,7 +554,7 @@ impl Budget {
 
 /// The pages tiling `[from, upto)` from `from` on, and the offset after the
 /// last of them (`upto` when they tile it whole).
-fn durable_pages(
+pub(super) fn durable_pages(
     pending: &crate::spill::pending::PendingPages,
     from: u64,
     upto: u64,
