@@ -48,20 +48,19 @@ impl ShardEngine {
         })
     }
 
-    /// A new handle around a loaded stream; one holding unsealed pages is
-    /// held for the sealer, and so never evicted until a seal takes them.
+    /// A new handle around a loaded stream. A load holds nothing for the
+    /// sealer: two loads of one stream may race, and only the handle the
+    /// resident map keeps may be held. The sealer's open holds the handle it
+    /// is served for every stream with unsealed pages, and the committer the
+    /// handle it writes pages to, so a held stream is never evicted until a
+    /// seal takes its pages.
     pub(super) fn new_handle(&self, hash: [u8; 16], loaded: LoadedTail) -> Arc<StreamHandle> {
         let LoadedTail {
             tail,
             native_queue,
             pending,
         } = loaded;
-        let unsealed = !pending.is_empty();
-        let handle = self.fresh_handle(hash, tail, native_queue, pending);
-        if unsealed {
-            self.layout.hold_unsealed(&handle);
-        }
-        handle
+        self.fresh_handle(hash, tail, native_queue, pending)
     }
 }
 

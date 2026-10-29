@@ -18,9 +18,13 @@ impl ShardEngine {
         self.injected_open_fault()?;
         let dir = self.rebuild_directory().await?;
         let unsealed = self.scan_tails().await?;
+        // Each stream the scan found with unsealed pages is held through
+        // the handle the engine serves it from (a request's load may have
+        // put it there first).
         for hash in unsealed {
-            if let Err(e) = self.stream_handle(hash).await {
-                self.note_corrupt_stream(&hash, &e.to_string());
+            match self.stream_handle(hash).await {
+                Ok(handle) => self.layout.hold_unsealed(&handle),
+                Err(e) => self.note_corrupt_stream(&hash, &e.to_string()),
             }
         }
         let sp = &self.layout.seal;

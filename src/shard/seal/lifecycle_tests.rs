@@ -11,12 +11,12 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
-use super::{SealError, Trigger};
 use super::test_hooks::Hold;
 use super::tests::{
     Oracle, append, append_recorded, hashes, manual, open, random_bytes, random_record, read_back,
     reopen, rig, rig_with, settle,
 };
+use super::{SealError, Trigger};
 use crate::shard::Deliver;
 use crate::spill::pending::pending_key;
 
@@ -223,7 +223,10 @@ async fn a_handle_load_racing_a_seal_reads_one_state() {
     let drive = async {
         let t0 = Instant::now();
         while hold.entered.load(Ordering::Acquire) == 0 {
-            assert!(t0.elapsed() < Duration::from_secs(10), "the load never parked");
+            assert!(
+                t0.elapsed() < Duration::from_secs(10),
+                "the load never parked"
+            );
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         *rig.engine.layout.seal.hooks.load_hold.lock().unwrap() = None;
@@ -231,7 +234,7 @@ async fn a_handle_load_racing_a_seal_reads_one_state() {
         assert_eq!(report.pages, 1, "the seal took the page");
         hold.release();
     };
-    let (loaded, ()) = tokio::join!(rig.engine.load_tail(&hash), drive);
+    let (loaded, ()) = futures_util::future::join(rig.engine.load_tail(&hash), drive).await;
     loaded.expect("the load reads one state");
     rig.engine.begin_close();
 }
@@ -266,7 +269,11 @@ async fn a_seal_whose_group_fails_publishes_nothing() {
     assert_eq!(handle.state.lock().unwrap().applied.absorbed, 0);
     let report = rig.engine.seal_once(Trigger::Requested).await.unwrap();
     assert_eq!(report.pages, 3);
-    assert_eq!(entries(), report.chunks as u64, "the next seal published once");
+    assert_eq!(
+        entries(),
+        report.chunks as u64,
+        "the next seal published once"
+    );
     rig.engine.begin_close();
 }
 
@@ -281,10 +288,13 @@ async fn readiness_without_a_sealer_task_fails_at_once() {
     let prefix = super::tests::unique("no-sealer");
     crate::shard::inject_seal_open_faults(&prefix, u32::MAX);
     let db = std::sync::Arc::new(
-        crate::keyspace::db_builder(crate::sharddir::shard_db_path(&prefix).as_str(), store.clone())
-            .build()
-            .await
-            .unwrap(),
+        crate::keyspace::db_builder(
+            crate::sharddir::shard_db_path(&prefix).as_str(),
+            store.clone(),
+        )
+        .build()
+        .await
+        .unwrap(),
     );
     let engine = crate::shard::ShardEngine::start(
         prefix.clone(),
@@ -297,7 +307,10 @@ async fn readiness_without_a_sealer_task_fails_at_once() {
     let sealer = engine.test_abort_task("sealer");
     let t0 = Instant::now();
     while !sealer.is_finished() {
-        assert!(t0.elapsed() < Duration::from_secs(5), "the sealer never stopped");
+        assert!(
+            t0.elapsed() < Duration::from_secs(5),
+            "the sealer never stopped"
+        );
         tokio::task::yield_now().await;
     }
     let refused = tokio::time::timeout(Duration::from_secs(5), engine.seal_ready())
@@ -307,4 +320,31 @@ async fn readiness_without_a_sealer_task_fails_at_once() {
     assert!(error.contains("no sealer task"), "{error}");
     crate::shard::inject_seal_open_faults(&prefix, 0);
     engine.begin_close();
+}
+
+/// **One handle per stream.** After a restart, each stream the sealer
+/// holds is held through the very handle the engine serves it from, also
+/// when requests load the streams while the sealer's open does: a load
+/// holds nothing itself, so the sealer never seals a handle the committer
+/// does not write to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_sealer_holds_only_the_handle_the_engine_serves() {
+    let mut rig = rig("one-handle", manual(), Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0x0AE1);
+    let streams = hashes(&mut rng, 16);
+    for hash in &streams {
+        append(&rig.engine, *hash, vec![random_bytes(&mut rng, 100)]).await;
+    }
+    settle(&rig.engine).await;
+    rig = reopen(rig).await;
+    let served = rig.engine.streams.lock().unwrap().clone();
+    let held = rig.engine.layout.unsealed();
+    assert_eq!(held.len(), streams.len(), "every stream with pages is held");
+    for handle in held {
+        assert!(
+            std::sync::Arc::ptr_eq(&handle, &served[&handle.hash]),
+            "the sealer holds the served handle"
+        );
+    }
+    rig.engine.begin_close();
 }
