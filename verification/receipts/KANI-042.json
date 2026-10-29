@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "8e8b6180c773dcf60fb54828efd0a01ead0604b2d202f62a34d14cf6c6cebfd1",
+      "log_sha256": "f27176676ce08ba7936a750ad08602401141f558a0ba2e6c621dd4179bcf046b",
       "role": "baseline",
-      "seconds": 205.4,
+      "seconds": 216.9,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"the raw surface follows the contract\""
       ],
-      "log_sha256": "4e8cf22188548659af56f784aa91108dee9ddb6817c74a6e32df3b76595de9a0",
+      "log_sha256": "e1f4bf043a6308934167278ff2502df6970ec8bd4d7e10b269503ffaec5be006",
       "mutated": {
         "src/application/lifecycle/claims.rs": {
           "baseline": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 212.9,
+      "seconds": 183.0,
       "verdict": "fail"
     },
     {
@@ -38,7 +38,7 @@
       "failed_checks": [
         "\"the product surface agrees with the raw surface\""
       ],
-      "log_sha256": "a7c1c15b058f37a2174ad18ed503ea60f5d5706d93d97fd55571bc9e44e34d57",
+      "log_sha256": "30b0e81cde76efc28cc7d023e708210da7f4f90bf42b76b54bb019be7f95428c",
       "mutated": {
         "src/application/append/contract.rs": {
           "baseline": "815c2043ae5f07ec9162a3b1245169e64c4af28a4e1e1b7efb4a9f7e9e04bf87",
@@ -46,7 +46,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 210.9,
+      "seconds": 253.4,
       "verdict": "fail"
     }
   ],
@@ -58,8 +58,8 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "2290fd7e52bc46b54f79d60cc98fad4addccb2ff5ff8870556f9d25e728109cd",
-      "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
+      "Cargo.lock": "88d5da53c80e347966960aa3e47a314016df2f5e0b5f90006e0ae5d0ab2a325e",
+      "Cargo.toml": "40c6f797e5a38a80abe4de69d4c2c5feaa4f6cc506bc3085ec30bde7b0995e9e",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -91,10 +91,10 @@
       }
     }
   },
-  "inputs_sha256": "a4afff86e52bdf3fb8ea27e8cc029d7a19160ca2d597d1184ed5dafe9869b61a",
+  "inputs_sha256": "d8d5240a1f1c3c73fd4477c7f06fe8e3f3410ea9e973ad41e0692d10ef795de2",
   "run_on": {
     "dirty_tree": false,
-    "revision": "5d84f29623835e9e217642f0cc25e01990b4df00"
+    "revision": "0bb9bcbd8f9b4bfb348957e94078a594989b382a"
   },
   "schema": 2,
   "tools": {

@@ -6,18 +6,18 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "96dcfb065aec398f359ac984020a840b0591827a4a901d44a43dbf4bb3b77c32",
+      "log_sha256": "50fe1d2b5ac88c9e3e97cafb034d5364028ea6600f738eb99de946bed7b920c9",
       "role": "baseline",
-      "seconds": 498.9,
+      "seconds": 493.5,
       "verdict": "pass"
     },
     {
       "check": "KANI-001/canonical-digits",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "cfec78533341a5b47108b8edc846063f52bd9c2bdaf3a0cd646919b8e5cf0591",
+      "log_sha256": "7815a9e2b62f2e38af7fa0069dc744e26ac2939385201f63e9e12215c7265d74",
       "role": "baseline",
-      "seconds": 346.4,
+      "seconds": 314.1,
       "verdict": "pass"
     },
     {
@@ -28,7 +28,7 @@
       "failed_checks": [
         "\"epoch and next survive the round trip\""
       ],
-      "log_sha256": "f3a1c40fea71ef77a72b1c01731781b6ab03632b7be4f9896164b4578c9dd5ab",
+      "log_sha256": "4f65c4524e73a45cebc0f09bf1db1c7ab61f6553822a415a1b570be104ed280d",
       "mutated": {
         "src/offsets.rs": {
           "baseline": "7f5bfa2ef61b991c1919aea7b51a9d587c7117f3c53f2184f4916a3ba54fd43c",
@@ -36,7 +36,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 499.7,
+      "seconds": 406.0,
       "verdict": "fail"
     }
   ],
@@ -49,8 +49,8 @@
       "ASM-OFFSET-DOMAIN": "aef34325e54b8193d77cf768b07426056852471934347bda2d6476cdd90cc297"
     },
     "files": {
-      "Cargo.lock": "2290fd7e52bc46b54f79d60cc98fad4addccb2ff5ff8870556f9d25e728109cd",
-      "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
+      "Cargo.lock": "88d5da53c80e347966960aa3e47a314016df2f5e0b5f90006e0ae5d0ab2a325e",
+      "Cargo.toml": "40c6f797e5a38a80abe4de69d4c2c5feaa4f6cc506bc3085ec30bde7b0995e9e",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -80,10 +80,10 @@
       }
     }
   },
-  "inputs_sha256": "622ad938d8169545d900826975436f8d8bc41bf2884f875ee4c04e622f93e6df",
+  "inputs_sha256": "64f2615d382f0d919d086f41e6776982854a976f391a629f9e96394638f901a3",
   "run_on": {
     "dirty_tree": false,
-    "revision": "5d84f29623835e9e217642f0cc25e01990b4df00"
+    "revision": "0bb9bcbd8f9b4bfb348957e94078a594989b382a"
   },
   "schema": 2,
   "tools": {

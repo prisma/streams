@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "a2839000f9543be3b017f6578638c18ac29b5972d0c7a76ac595a4755efcd85c",
+      "log_sha256": "a754fddcc584b8b8f31223501652a7aeb1b475007b7292b04f17b1fe2bbd46bd",
       "role": "baseline",
-      "seconds": 49.3,
+      "seconds": 43.5,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"token byte order is position order\""
       ],
-      "log_sha256": "0208d8aa7d56a7833af6054d80241af27c716350d08f8a5d37b8fb1517ba99a1",
+      "log_sha256": "261efef3d1336a725bcf5331c9524b8137779fdb3e376d769929c2e46a7c46bc",
       "mutated": {
         "src/offsets.rs": {
           "baseline": "7f5bfa2ef61b991c1919aea7b51a9d587c7117f3c53f2184f4916a3ba54fd43c",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 163.4,
+      "seconds": 71.4,
       "verdict": "fail"
     }
   ],
@@ -40,8 +40,8 @@
       "ASM-OFFSET-DOMAIN": "aef34325e54b8193d77cf768b07426056852471934347bda2d6476cdd90cc297"
     },
     "files": {
-      "Cargo.lock": "2290fd7e52bc46b54f79d60cc98fad4addccb2ff5ff8870556f9d25e728109cd",
-      "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
+      "Cargo.lock": "88d5da53c80e347966960aa3e47a314016df2f5e0b5f90006e0ae5d0ab2a325e",
+      "Cargo.toml": "40c6f797e5a38a80abe4de69d4c2c5feaa4f6cc506bc3085ec30bde7b0995e9e",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -71,10 +71,10 @@
       }
     }
   },
-  "inputs_sha256": "02e7bd67294d8cb64b6769b02226a93f73bb3c108a1400be452c705e24629ea6",
+  "inputs_sha256": "524d4bf9dd59d271f26e8b269b7a285ce81309971a7533ea80166ab34934a4f3",
   "run_on": {
     "dirty_tree": false,
-    "revision": "5d84f29623835e9e217642f0cc25e01990b4df00"
+    "revision": "0bb9bcbd8f9b4bfb348957e94078a594989b382a"
   },
   "schema": 2,
   "tools": {

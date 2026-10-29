@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "627a174e93d49071e85ffc009c86e98073fd8f87170fa6313c60cd2989c191c6",
+      "log_sha256": "5d5388d29f35e5a3dae8e5610249263af3831ea83109a5f82877f7278249fb41",
       "role": "baseline",
-      "seconds": 58.0,
+      "seconds": 91.1,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "04a3a228e6fab2a11e5d1da1da8d246676f70915db29c7d2eafb183d7a89155f",
+      "log_sha256": "63bc8bbe4194accc1710d9ba7ff158ba732bbcd04475ec6d6de46602a9f8dcc8",
       "role": "baseline",
-      "seconds": 71.2,
+      "seconds": 85.0,
       "verdict": "pass"
     },
     {
@@ -28,9 +28,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "f0c52be44f49f94557170881ebd5edd32024cac818fafe4b1cd89e35f474fda9",
+      "log_sha256": "360b0aedfbbd8ce08c62546856fb89de3d081bc48a39ffa792635c283296a14d",
       "role": "baseline",
-      "seconds": 86.0,
+      "seconds": 122.6,
       "verdict": "pass"
     },
     {
@@ -41,15 +41,15 @@
       "failed_checks": [
         "\"an accepted body is exactly the minimal encoding of its tables and payloads\""
       ],
-      "log_sha256": "5bbfe2777a35e023bf17f35aa0a7d758192747e8053273f5da54ebebac349608",
+      "log_sha256": "4c8115ad3f21fe79b78c9e0db110c7b70bac77953cfc4234b0fd4d620f05ac85",
       "mutated": {
-        "src/crypto_page/body.rs": {
-          "baseline": "7a61c8c65651a9d1622dde812a5f17c58281d073ca9184c4fa2de00a5a8bbe67",
-          "control": "e7181f14533b7cd293ab31cb971478da4b6dc38bce2a5dd0a20b9d36c313a0ac"
+        "src/crypto_page/varint.rs": {
+          "baseline": "a6864544d19ee31c6ca5f839a2a3b83e1fb7ca9642be8d16ac7959add288bfce",
+          "control": "6e5430398b8d24c7477a941e0f13fe96913a5868e1e13776f0e5e1bdf13ba1d0"
         }
       },
       "role": "negative-control",
-      "seconds": 60.8,
+      "seconds": 48.3,
       "verdict": "fail"
     },
     {
@@ -61,15 +61,15 @@
         "\"the first record is at the page timestamp and none goes back\"",
         "\"an accepted body is exactly the minimal encoding of its tables and payloads\""
       ],
-      "log_sha256": "0bb55618f76dbac05811c1fbb8ecba9b9062ea1e5cd39634097ecd2f31e6a53d",
+      "log_sha256": "93a806d0a309fe902dd1fef7ec59bd2bafc145d74acb610aba7fcfc5a033b4b0",
       "mutated": {
         "src/crypto_page/body.rs": {
-          "baseline": "7a61c8c65651a9d1622dde812a5f17c58281d073ca9184c4fa2de00a5a8bbe67",
-          "control": "1eab30297445bdac9f87828b2f796f77b44471507381a2a7d276987087fff9a7"
+          "baseline": "0b8038c2ed72315430f8dd7293b78639d29ca2e7224e5d41889ef2005ffb91c1",
+          "control": "c54363efe25faf3508e76469c428d3221154524914b56db720a234e76bddf16d"
         }
       },
       "role": "negative-control",
-      "seconds": 83.8,
+      "seconds": 167.6,
       "verdict": "fail"
     },
     {
@@ -80,15 +80,15 @@
       "failed_checks": [
         "\"the first record is at the page timestamp and none goes back\""
       ],
-      "log_sha256": "f4a68f2aa4ecd6e587adfcd8ad7f3f1793274698ba82e8d2da3d0dcafc8c7c57",
+      "log_sha256": "9f905070cbf72b1b24c5b60ad55e2151b05147eca00943330d37ee6fc4251764",
       "mutated": {
         "src/crypto_page/body.rs": {
-          "baseline": "7a61c8c65651a9d1622dde812a5f17c58281d073ca9184c4fa2de00a5a8bbe67",
-          "control": "2ab6aff59f18c68e5dbfbfddd1e50afef70e88abbe002b68ab8bc1cac33f9d3f"
+          "baseline": "0b8038c2ed72315430f8dd7293b78639d29ca2e7224e5d41889ef2005ffb91c1",
+          "control": "0a67b87db1b0ac74829a4044c3a62059b35e215425154d02e44ce03784236b34"
         }
       },
       "role": "negative-control",
-      "seconds": 56.6,
+      "seconds": 84.4,
       "verdict": "fail"
     },
     {
@@ -99,15 +99,15 @@
       "failed_checks": [
         "\"the lengths tile the payload bytes exactly\""
       ],
-      "log_sha256": "a0d2f3bd8dd4da7e563c2923696f67f1da0674272fe331bcb81f20cf91d934d3",
+      "log_sha256": "4d65dc1aee6fb4a09ae73e664c4f7ab531d475b06f9acde655faf1d45431bcd8",
       "mutated": {
         "src/crypto_page/body.rs": {
-          "baseline": "7a61c8c65651a9d1622dde812a5f17c58281d073ca9184c4fa2de00a5a8bbe67",
-          "control": "19c2a33e16db98fac9866de48c9f152edd022519ca35b9ec79d20ea16688d841"
+          "baseline": "0b8038c2ed72315430f8dd7293b78639d29ca2e7224e5d41889ef2005ffb91c1",
+          "control": "afe0f3762800c3f64dfcd62510f797565d152b4df96d26472b1db76331518ca7"
         }
       },
       "role": "negative-control",
-      "seconds": 62.8,
+      "seconds": 77.5,
       "verdict": "fail"
     }
   ],
@@ -119,20 +119,21 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "2290fd7e52bc46b54f79d60cc98fad4addccb2ff5ff8870556f9d25e728109cd",
-      "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
+      "Cargo.lock": "88d5da53c80e347966960aa3e47a314016df2f5e0b5f90006e0ae5d0ab2a325e",
+      "Cargo.toml": "40c6f797e5a38a80abe4de69d4c2c5feaa4f6cc506bc3085ec30bde7b0995e9e",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
-      "src/crypto_page.rs": "c161b5c90dcd9ad6be7879a17cb6dd6bbe9ccdea9397cbf483224e70435e02c6",
-      "src/crypto_page/body.rs": "7a61c8c65651a9d1622dde812a5f17c58281d073ca9184c4fa2de00a5a8bbe67",
+      "src/crypto_page.rs": "693cf3887a3c5b5349f06032618dd5b2bc023ee589228bdf870279600e301350",
+      "src/crypto_page/body.rs": "0b8038c2ed72315430f8dd7293b78639d29ca2e7224e5d41889ef2005ffb91c1",
       "src/crypto_page/proofs.rs": "000d96fbd2cae23fca52e4db7f070a7466f7aa889c4ca108753f5b82a6e6fe1a",
+      "src/crypto_page/varint.rs": "a6864544d19ee31c6ca5f839a2a3b83e1fb7ca9642be8d16ac7959add288bfce",
       "verification/kani/controls/KANI-097-accept-a-nonzero-first-delta.patch": "bef3e7cfc69c1b5636dce8ed2d62c2282d259cbaa8fe32283cd5f6a00e8a1503",
-      "verification/kani/controls/KANI-097-accept-an-overlong-varint.patch": "9df1b95c4a349f49d5ceb5364bf026f6221b29c74d8ba877e73931c5178ab3f3",
+      "verification/kani/controls/KANI-097-accept-an-overlong-varint.patch": "8bcb93d5ce3eeddc60c312c0a78b99eee776311dbbabb9d3712058c92f4ebe6e",
       "verification/kani/controls/KANI-097-add-deltas-to-the-header.patch": "ea4935a43e753c6c97892b21a2e412e2b606bdb597d28e0693d727fda7e99bfb",
       "verification/kani/controls/KANI-097-ignore-trailing-bytes.patch": "6775dfe9210fa6b9de1ac04be2a06fd79076172c47aa100960a4df79e84d0823"
     },
-    "manifest_entry": "0ce793a9e5c4d264706102d02766bcf8a849b60a198bb26e654c5e022f08fa15",
+    "manifest_entry": "71e2518ef46d003889f7ad0f2faa88122e72d69a4b5ef0e712145afdde95e644",
     "pins": {
       "formal": {
         "cbmc": "6.11.0",
@@ -154,10 +155,10 @@
       }
     }
   },
-  "inputs_sha256": "f8830bf7011da2376bde3ad1c003f93ff42c60fad4df0e808c505e3b4ff7d225",
+  "inputs_sha256": "b0e142fbbeea751c24e439af820b2c934747e66517eadc04f612a5e451e76405",
   "run_on": {
     "dirty_tree": false,
-    "revision": "60d2ba968168ae886d1b7ddde4940d11337f413a"
+    "revision": "0bb9bcbd8f9b4bfb348957e94078a594989b382a"
   },
   "schema": 2,
   "tools": {

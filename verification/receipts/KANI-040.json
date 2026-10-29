@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "aa77f115478bad267471387d61dd6df3d22f076edfb8b025e31d19a11ae76e75",
+      "log_sha256": "de5384a8744b9c69788c22491c0c5c1a0d3f333a37d26ed837f224e61163123b",
       "role": "baseline",
-      "seconds": 152.6,
+      "seconds": 77.1,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"a plain seal never joins a claim that owes a final record\""
       ],
-      "log_sha256": "adf9ab30368b3d6d35a21c12e2fe9c5c4cae48dd35a5a25cf67ac980babb5e3b",
+      "log_sha256": "fd3c1ca3163127b51d9b23c4cdfba6d7b74985daf00efd198fa89015034503cf",
       "mutated": {
         "src/application/lifecycle/claims.rs": {
           "baseline": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 139.5,
+      "seconds": 76.7,
       "verdict": "fail"
     },
     {
@@ -38,7 +38,7 @@
       "failed_checks": [
         "\"only the claim's own operation, or a plain seal joining a claim that owes no final record, renews it\""
       ],
-      "log_sha256": "45a50e3f1a27f1f29b83c92682a31a781ead47257b2cb01e3707e7f3cb6677fd",
+      "log_sha256": "f5887925803d6e45527d364f6b5db5168f88fe336f40ec3182b209db646b0695",
       "mutated": {
         "src/application/lifecycle/claims.rs": {
           "baseline": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
@@ -46,7 +46,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 218.2,
+      "seconds": 77.8,
       "verdict": "fail"
     },
     {
@@ -57,7 +57,7 @@
       "failed_checks": [
         "a declined step carries no installation"
       ],
-      "log_sha256": "62be1de348677f32327f08cb0a07fb37887c546104cdefd7b8fe0e7248534a68",
+      "log_sha256": "2383b3986eb9b8bb3ec6031b53e8358d4f9905e922fda8b1ded4d27ec6677499",
       "mutated": {
         "src/application/lifecycle/claims.rs": {
           "baseline": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
@@ -65,7 +65,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 248.2,
+      "seconds": 75.3,
       "verdict": "fail"
     }
   ],
@@ -77,8 +77,8 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "2290fd7e52bc46b54f79d60cc98fad4addccb2ff5ff8870556f9d25e728109cd",
-      "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
+      "Cargo.lock": "88d5da53c80e347966960aa3e47a314016df2f5e0b5f90006e0ae5d0ab2a325e",
+      "Cargo.toml": "40c6f797e5a38a80abe4de69d4c2c5feaa4f6cc506bc3085ec30bde7b0995e9e",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -110,10 +110,10 @@
       }
     }
   },
-  "inputs_sha256": "5f7bd848534ec7a802e3961f92ca414eadd7a740533495c7df644a7f3f386585",
+  "inputs_sha256": "4b623033b2e90bb35c145ee79d0b78d4dc71254c8544d0176d8cf527b9438d81",
   "run_on": {
     "dirty_tree": false,
-    "revision": "5d84f29623835e9e217642f0cc25e01990b4df00"
+    "revision": "0bb9bcbd8f9b4bfb348957e94078a594989b382a"
   },
   "schema": 2,
   "tools": {

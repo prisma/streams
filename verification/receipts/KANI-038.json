@@ -6,18 +6,18 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "c5b2d3a63b2a6bc5ede6d11b038ca3831d2f949713ef0ff466a8721453bae2ac",
+      "log_sha256": "b330e449c7bb8d293624c81836bae029e7e61904daec8e19f2f3001db01f0ed4",
       "role": "baseline",
-      "seconds": 48.2,
+      "seconds": 97.5,
       "verdict": "pass"
     },
     {
       "check": "KANI-038/exhausted",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "ef95b197f74dfc2d812002ce45c86dd99f19508a86962a1d0340c5a4b001b19a",
+      "log_sha256": "ba2a412e2d48cf4daa5c49388e160eab0372cee7c6b9884d9848caa75bba4b59",
       "role": "baseline",
-      "seconds": 42.5,
+      "seconds": 109.2,
       "verdict": "pass"
     },
     {
@@ -28,15 +28,15 @@
       "failed_checks": [
         "\"the adjacent sequence is admitted unless the collection is closed\""
       ],
-      "log_sha256": "c189b962331902e054636f0f013cf8e315b2f40c15966a2c439fceac706b9668",
+      "log_sha256": "347f34d73ba91275a24631a3933e69e8eccda22d2f41913fee9ced4e04c971a1",
       "mutated": {
         "src/shard/commit_plan.rs": {
-          "baseline": "037169c780e6ab286f0ddd33d318057c176d006d4bafb1a85f30383f39d78c0b",
-          "control": "71e1eedf5aa999ea70a81acc7cebd338b7a93b5e76775363da0252d0ac89769b"
+          "baseline": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
+          "control": "11a592e0506e3b33a6c0a4ca6c2ec3f6a52b4483dc340a66bf35be5e3c8af71a"
         }
       },
       "role": "negative-control",
-      "seconds": 205.8,
+      "seconds": 73.3,
       "verdict": "fail"
     },
     {
@@ -47,15 +47,15 @@
       "failed_checks": [
         "\"a sequence beyond the successor is a gap naming the successor\""
       ],
-      "log_sha256": "e4cace1f280b6bfeecdaf94d9553116ad9b26499baf0247f67274b00943d251f",
+      "log_sha256": "ef71d393a218e958df2306bbf63477b7c933e0ffabb5073d1427b8a0d12b6ece",
       "mutated": {
         "src/shard/commit_plan.rs": {
-          "baseline": "037169c780e6ab286f0ddd33d318057c176d006d4bafb1a85f30383f39d78c0b",
-          "control": "e7cb3f20d3c827cac1714f6644bf994ee6eb09b60f249b0870da9d10e2737073"
+          "baseline": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
+          "control": "63761c88e6ea62459e1e4e6c660760f96c90ce1ff08910373b9dca1d0a8c6317"
         }
       },
       "role": "negative-control",
-      "seconds": 161.2,
+      "seconds": 143.2,
       "verdict": "fail"
     }
   ],
@@ -68,13 +68,13 @@
       "ASM-PRODUCER-ROW": "bf02f39f80c7bc9a81911b57a7923e77dfc913a0720422f22701974a94ab335c"
     },
     "files": {
-      "Cargo.lock": "2290fd7e52bc46b54f79d60cc98fad4addccb2ff5ff8870556f9d25e728109cd",
-      "Cargo.toml": "b704189088e82e9d6c343e240bd68946fe40a3cadc03e79c0c12fc2903f1c6e4",
+      "Cargo.lock": "88d5da53c80e347966960aa3e47a314016df2f5e0b5f90006e0ae5d0ab2a325e",
+      "Cargo.toml": "40c6f797e5a38a80abe4de69d4c2c5feaa4f6cc506bc3085ec30bde7b0995e9e",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
-      "src/shard/commit_plan.rs": "037169c780e6ab286f0ddd33d318057c176d006d4bafb1a85f30383f39d78c0b",
-      "src/shard/commit_plan/proofs.rs": "e36f40866891e8314a9d4dd4837936484ad4d3a66b945b5c8a0f4329b26e249c",
+      "src/shard/commit_plan.rs": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
+      "src/shard/commit_plan/proofs.rs": "8261cd8738051f9028800b24a54ad0499518c56b4114248b4ed82fff16673c12",
       "verification/kani/controls/KANI-038-gap-names-wrong-successor.patch": "05216c8200f89353e4e075df14e1df17b068ea69fb91bc8c124d7d0780e57c6b",
       "verification/kani/controls/KANI-038-inclusive-gap.patch": "59b968d78c75b4a01aaec4e8c5f15948bda1003455bcea32d5b7d72f90a1160a"
     },
@@ -100,10 +100,10 @@
       }
     }
   },
-  "inputs_sha256": "6f234fd96a3df92f743ec5e71e5bd4d21135606f5eebf267196777f15a5936aa",
+  "inputs_sha256": "b3383d280150395a574881128f77cfba25b4b90b210d4c27a028f4b00429405c",
   "run_on": {
     "dirty_tree": false,
-    "revision": "5d84f29623835e9e217642f0cc25e01990b4df00"
+    "revision": "0bb9bcbd8f9b4bfb348957e94078a594989b382a"
   },
   "schema": 2,
   "tools": {
