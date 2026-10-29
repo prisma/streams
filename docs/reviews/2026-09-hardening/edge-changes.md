@@ -4713,6 +4713,21 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Status:** ratified by the lead under the owner's delegation, 2026-10-28 (step-3 batch 2).
 - **Check against commit:** written with the change.
 
+### #213 (this record's commit) — A read below the sealed boundary that the seal directory does not cover fails as corruption instead of answering an empty page
+
+- **Program item:** layout 6A, package 4 (push 1's rust-quality survivors; ratified by the lead under the owner's delegation, 2026-10-29).
+- **Surface:** client-read.
+- **Endpoint:** every record read that reaches the sealed tier: `GET /v1/streams/{name}/records` (durable and applied delivery, keyed or not), long-poll and SSE reads, and the internal readers built on `ShardEngine::read_stream_window`.
+- **Condition:** a read's window starts below the stream's sealed boundary, and the in-memory seal directory holds no chunk covering the first offset due. By construction this cannot happen: a seal publishes its directory entries before its commit moves the boundary, and the open rebuilds the directory from the `'K'` rows before any read. Only a bug (a lost or unpublished directory entry) reaches it.
+- **Before:** the sealed tier answered no records and no progress, and the read returned an empty page below the boundary; a long-poll or SSE reader waited for records that never came.
+- **After:** the read fails with `RangeReadError::Corrupt(RecordCorruption::Missing { due, to })`, the refusal a read of lost pages already answers at every read surface. It never serves a gap silently.
+- **Retry semantics:** the same read fails the same way until the directory is repaired (a restart rebuilds it from the `'K'` rows); a client retry is safe and idempotent.
+- **Who is affected:** no client in correct operation; under the bug, readers of the affected stream get an error instead of hanging.
+- **Pinning tests:** `shard::seal::read_tests::negative_control_a_directory_published_after_the_commit_leaves_a_hole` (both reads during the hole fail with `Missing { due: 0, to: n }`; after the commit both read everything), `shard::seal::read_tests::a_reader_racing_a_seal_gets_exact_data_at_both_visibilities` (the published directory serves exact data).
+- **Risk reason:** low. Unreachable in correct operation; it turns a silent hang into a loud refusal.
+- **Status:** ratified by the lead under the owner's delegation, 2026-10-29.
+- **Check against commit:** written with the change.
+
 ## Discrepancies
 
 One record has verified=false: its commit did not match the recorded text.

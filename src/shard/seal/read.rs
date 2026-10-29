@@ -216,6 +216,16 @@ impl ShardEngine {
             .map_err(|e| RangeReadError::Store(slatedb::Error::unavailable(e.to_string())))?;
         sp.counters.sealed_reads.fetch_add(1, Ordering::Relaxed);
         let steps = self.plan_sealed(hash, scan, key_filter);
+        if steps.is_empty() && scan.max_bytes != 0 {
+            // A seal publishes its chunks before its commit moves the
+            // boundary, and the open rebuilds them before any read: a window
+            // below the boundary that no chunk covers lost them (#213).
+            return Err(RecordCorruption::Missing {
+                due: scan.from,
+                to: scan.to,
+            }
+            .into());
+        }
         let gets: Vec<_> = steps
             .iter()
             .filter_map(|step| match step {

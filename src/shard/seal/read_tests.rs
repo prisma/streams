@@ -116,7 +116,8 @@ async fn sealed_ranges_read_back_exactly_across_chunks_anchors_and_budgets() {
 
 struct HeldRace {
     oracle: BTreeMap<u64, bytes::Bytes>,
-    during: [ReadPage; 2],
+    /// The reads during the race, as the reader answered them.
+    during: [Result<ReadPage, String>; 2],
     after: [ReadPage; 2],
 }
 
@@ -198,12 +199,8 @@ async fn held_wal_race(late: bool) -> HeldRace {
         before_commit.release();
         wait_applied_not_durable(&handle, n, t0).await;
         let during = [
-            merged(&engine, hash, ReadAt::all(0, 8 << 20), Deliver::Durable)
-                .await
-                .expect("durable read"),
-            merged(&engine, hash, ReadAt::all(0, 8 << 20), Deliver::Applied)
-                .await
-                .expect("applied read"),
+            merged(&engine, hash, ReadAt::all(0, 8 << 20), Deliver::Durable).await,
+            merged(&engine, hash, ReadAt::all(0, 8 << 20), Deliver::Applied).await,
         ];
         // The group-commit pump issues the commit's WAL PUT on its own
         // schedule; the reads above ran while it could not be durable.
@@ -242,7 +239,8 @@ async fn held_wal_race(late: bool) -> HeldRace {
 async fn a_reader_racing_a_seal_gets_exact_data_at_both_visibilities() {
     let race = held_wal_race(false).await;
     let n = race.oracle.len();
-    for page in race.during.iter().chain(&race.after) {
+    let during = race.during.iter().map(|r| r.as_ref().expect("read"));
+    for page in during.chain(&race.after) {
         assert_eq!(check_page(&race.oracle, 0, page).unwrap(), n, "exact data");
         assert!(page.completed, "complete");
     }
@@ -250,24 +248,24 @@ async fn a_reader_racing_a_seal_gets_exact_data_at_both_visibilities() {
 
 /// **The negative control.** The same race with the directory published
 /// only once the commit is durable: the readers find no chunk for the
-/// offsets the boundary says are sealed, and with the honest-partial rule
-/// they serve nothing and claim nothing (the exact-data assertion above
+/// offsets the boundary says are sealed, and both refuse the read as lost
+/// records (#213), never an empty page (the exact-data assertion above
 /// would fail here). After the commit, both read everything.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn negative_control_a_directory_published_after_the_commit_leaves_a_hole() {
     let race = held_wal_race(true).await;
-    for page in &race.during {
+    let n = race.oracle.len() as u64;
+    for read in &race.during {
+        let Err(error) = read else {
+            panic!("the hole is refused, not served");
+        };
         assert!(
-            page.recs.is_empty() && !page.completed && page.last.is_none(),
-            "the hole is an honest partial: delivered {}, completed {}, last {:?}",
-            page.recs.len(),
-            page.completed,
-            page.last
+            error.contains(&format!("Missing {{ due: 0, to: {n} }}")),
+            "the hole is lost records [0, {n}): {error}"
         );
     }
-    let n = race.oracle.len();
     for page in &race.after {
-        assert_eq!(check_page(&race.oracle, 0, page).unwrap(), n);
+        assert_eq!(check_page(&race.oracle, 0, page).unwrap() as u64, n);
     }
 }
 
