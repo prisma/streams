@@ -166,3 +166,26 @@ async fn age_after_a_seal_with_a_stream_applied_during_it(control: bool) -> Opti
     rig.engine.begin_close();
     oldest
 }
+
+/// A quiet engine (nothing pending) outlives the dispatch stall: the
+/// watchdog retires only for a durable group left undispatched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_quiet_engine_outlives_the_dispatch_stall() {
+    let rig = rig("quiet", manual(), Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0x9E7);
+    let hash = hashes(&mut rng, 1)[0];
+    append(&rig.engine, hash, vec![random_bytes(&mut rng, 300)]).await;
+    let stall = rig.engine.layout.seal.settings().dispatch_stall;
+    tokio::time::sleep(stall + Duration::from_secs(1)).await;
+    assert!(!rig.engine.is_closed(), "a quiet engine was retired");
+    assert_eq!(
+        rig.engine
+            .layout
+            .seal
+            .counters
+            .dispatch_stall_warnings
+            .load(Ordering::Relaxed),
+        0
+    );
+    rig.engine.begin_close();
+}
