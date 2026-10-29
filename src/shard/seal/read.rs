@@ -179,14 +179,13 @@ impl ShardEngine {
             }
             from = upto;
         }
-        if from < to {
-            let rest = RingScan {
-                from,
-                to,
-                max_bytes: window.max_bytes,
-            };
-            read_unsealed(&unsealed, &mut part, rest, key_filter)?;
-        }
+        // An empty rest (the window ends at the boundary) reads nothing.
+        let rest = RingScan {
+            from,
+            to,
+            max_bytes: window.max_bytes,
+        };
+        read_unsealed(&unsealed, &mut part, rest, key_filter)?;
         Ok(part.out)
     }
 
@@ -373,9 +372,13 @@ impl Plan {
         let (page, first, start) = entry
             .start_for(due)
             .map_or((0, entry.first, region), |a| (a.page, a.offset, a.byte));
-        let end_anchor = entry.anchors.iter().find(|a| {
-            a.page > page && (a.offset >= upto || u64::from(a.byte.saturating_sub(start)) >= budget)
-        });
+        // An anchor at or before the start holds offsets below `upto` and no
+        // bytes past `start`, so it never ends the plan (the budget is
+        // never zero here).
+        let end_anchor = entry
+            .anchors
+            .iter()
+            .find(|a| a.offset >= upto || u64::from(a.byte.saturating_sub(start)) >= budget);
         let (end, next) = end_anchor.map_or((pages_end, entry.last + 1), |a| (a.byte, a.offset));
         let whole = page == 0 && end_anchor.is_none();
         let (start, end) = if whole {
@@ -419,11 +422,9 @@ fn admit_plan(
     };
     let raw: Vec<(u64, Bytes)> = if plan.whole {
         let chunk = object::decode_chunk(body).map_err(|e| corrupt(format!("{e:?}")))?;
-        if chunk.hash != hash
-            || chunk.first != plan.entry.first
-            || chunk.last != plan.entry.last
-            || chunk.pages.len() != plan.entry.page_count as usize
-        {
+        // The pages are checked against the plan's first and last offsets
+        // below; the stream and the page count only here.
+        if chunk.hash != hash || chunk.pages.len() != plan.entry.page_count as usize {
             return Err(corrupt(
                 "the chunk's header disagrees with its directory entry".into(),
             ));
@@ -466,7 +467,7 @@ fn admit_plan(
 
 /// The unsealed pages holding `[start, to)` from `pending`, oldest first:
 /// enough of them to pass `max_bytes` by one page (a read stops there).
-fn unsealed_pages(
+pub(super) fn unsealed_pages(
     pending: &crate::spill::pending::PendingPages,
     start: u64,
     to: u64,
