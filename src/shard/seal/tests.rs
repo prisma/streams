@@ -643,7 +643,12 @@ async fn a_forced_flush_makes_an_applied_seal_durable_first() {
     let hold = Hold::new();
     *sp.hooks.before_commit.lock().unwrap() = Some(hold.clone());
     let park_wal = async {
+        let t0 = Instant::now();
         while hold.entered.load(Ordering::Acquire) == 0 {
+            assert!(
+                t0.elapsed() < Duration::from_secs(10),
+                "the seal never reached its commit"
+            );
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         rig.fault.hold_class(
@@ -684,7 +689,12 @@ async fn a_forced_flush_makes_an_applied_seal_durable_first() {
 /// Once a seal parks before its commit: hold the shard's WAL PUTs, let the
 /// seal commit, and release the PUTs 300 ms later.
 async fn hold_wal_across_the_commit(hold: &Hold, fault: &crate::dst::FaultStore) {
+    let t0 = Instant::now();
     while hold.entered.load(Ordering::Acquire) == 0 {
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "the seal never reached its commit"
+        );
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
     fault.hold_class(

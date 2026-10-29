@@ -348,3 +348,102 @@ async fn the_sealer_holds_only_the_handle_the_engine_serves() {
     }
     rig.engine.begin_close();
 }
+
+/// **The sealer's loop evicts idle handles.** An engine whose handles idle
+/// out after a millisecond: a stream loaded and left alone (no unsealed
+/// page, so not held) is evicted by the loop's next eviction round.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_sealer_loop_evicts_an_idle_handle() {
+    let store: std::sync::Arc<dyn object_store::ObjectStore> =
+        std::sync::Arc::new(object_store::memory::InMemory::new());
+    let prefix = super::tests::unique("idle-evict");
+    let db = std::sync::Arc::new(
+        crate::keyspace::db_builder(
+            crate::sharddir::shard_db_path(&prefix).as_str(),
+            store.clone(),
+        )
+        .build()
+        .await
+        .unwrap(),
+    );
+    let engine = crate::shard::ShardEngine::start(
+        prefix,
+        db,
+        store,
+        crate::shard::ShardConfig {
+            handle_idle_evict: Duration::from_millis(1),
+            ..Default::default()
+        },
+        None,
+        crate::shard::ShardMaintenance::default(),
+    );
+    engine.seal_ready().await.unwrap();
+    let hash = hashes(&mut StdRng::seed_from_u64(0x1D1E), 1)[0];
+    drop(engine.stream_handle(hash).await.unwrap());
+    assert_eq!(engine.resident_streams(), 1, "the load made it resident");
+    let t0 = Instant::now();
+    while engine.resident_streams() > 0 {
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "the sealer's loop never evicted the idle handle"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    engine.begin_close();
+}
+
+/// **A segment object is never overwritten.** The name the next seal's
+/// object takes already holds bytes: the seal's create-only PUT is refused,
+/// the seal fails, the bytes stay, and the stream's pages stay unsealed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_seal_never_overwrites_an_existing_object() {
+    use object_store::ObjectStoreExt;
+    let rig = rig("create-only", manual(), Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0xC4EA);
+    let hash = hashes(&mut rng, 1)[0];
+    append(&rig.engine, hash, vec![random_bytes(&mut rng, 300)]).await;
+    settle(&rig.engine).await;
+    let sp = &rig.engine.layout.seal;
+    let id = crate::spill::object::ObjectId {
+        epoch: rig.engine.writer_epoch,
+        seq: sp.next_seq.load(Ordering::Relaxed) + 1,
+    };
+    let path = object_store::path::Path::from(crate::spill::object::object_path(&rig.path, id));
+    rig.store
+        .put(&path, Bytes::from_static(b"not this seal's").into())
+        .await
+        .unwrap();
+    let refused = rig.engine.seal_once(Trigger::Requested).await;
+    assert!(matches!(refused, Err(SealError::Store(_))), "{refused:?}");
+    let kept = rig.store.get(&path).await.unwrap().bytes().await.unwrap();
+    assert_eq!(&kept[..], b"not this seal's", "the object was overwritten");
+    let handle = rig.engine.stream_handle(hash).await.unwrap();
+    assert_eq!(
+        handle.state.lock().unwrap().applied.absorbed,
+        0,
+        "nothing sealed"
+    );
+    rig.engine.begin_close();
+}
+
+/// A live engine's task registry answers by role and state: its sealer is
+/// running, a role nobody spawned is not, and an aborted sealer is not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_task_registry_answers_by_role_and_state() {
+    let rig = rig("roles", manual(), Duration::from_millis(2)).await;
+    let tasks = &rig.engine.tasks;
+    assert!(tasks.running("sealer"), "the sealer runs");
+    assert!(tasks.running("committer"), "the committer runs");
+    assert!(!tasks.running("no-such-role"), "nobody spawned this role");
+    let sealer = rig.engine.test_abort_task("sealer");
+    let t0 = Instant::now();
+    while !sealer.is_finished() {
+        assert!(
+            t0.elapsed() < Duration::from_secs(5),
+            "the sealer never stopped"
+        );
+        tokio::task::yield_now().await;
+    }
+    assert!(!tasks.running("sealer"), "an aborted sealer is not running");
+    rig.engine.begin_close();
+}

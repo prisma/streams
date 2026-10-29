@@ -6,7 +6,7 @@
 //! flight and fetches at most 256 chunks (HIS-017).
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rand::{SeedableRng, rngs::StdRng};
 
@@ -117,7 +117,12 @@ async fn a_sealed_read_has_eight_gets_in_flight_and_fetches_at_most_256_chunks()
     *sp.hooks.get_hold.lock().unwrap() = Some(hold.clone());
     let gets = get(&sp.counters.sealed_gets);
     let peak = async {
+        let t0 = Instant::now();
         while hold.entered.load(Ordering::Acquire) < 8 {
+            assert!(
+                t0.elapsed() < Duration::from_secs(10),
+                "the read never had eight GETs in flight"
+            );
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         // Long enough for a ninth GET to start if the reader allowed one.

@@ -629,7 +629,7 @@ impl ShardEngine {
         let sp = self.seal_state();
         let _one_at_a_time = sp.flush_lock.lock().await;
         #[cfg(test)]
-        let with_7a = with_7a && !sp.skips_7a();
+        let with_7a = sp.takes_7a(with_7a);
         if with_7a {
             self.wal_flush().await.map_err(|e| e.to_string())?;
         }

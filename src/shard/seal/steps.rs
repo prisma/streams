@@ -352,7 +352,7 @@ impl ShardEngine {
         sp.check_abort(super::test_hooks::SealStep::Applied)?;
         // (7a) The commit is applied; make it durable and published.
         #[cfg(test)]
-        let with_7a = !sp.skips_7a();
+        let with_7a = sp.takes_7a(true);
         #[cfg(not(test))]
         let with_7a = true;
         if with_7a {

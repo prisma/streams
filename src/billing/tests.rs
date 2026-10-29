@@ -270,3 +270,20 @@ fn a_system_page_without_a_position_is_refused_never_checkpointed_as_empty() {
         Ok("00000000000000000000000004")
     );
 }
+
+/// A shard owes the sweep a visit for billing rows or for any maintenance
+/// backlog, each on its own.
+#[test]
+fn either_debt_class_alone_is_debt() {
+    let debt = |billing, maintenance| {
+        super::Debt {
+            billing,
+            maintenance,
+        }
+        .any()
+    };
+    assert!(!debt(false, 0), "no debt");
+    assert!(debt(true, 0), "billing rows alone");
+    assert!(debt(false, 1), "one maintenance byte alone");
+    assert!(debt(true, 7));
+}

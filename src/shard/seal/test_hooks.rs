@@ -153,8 +153,10 @@ impl SealState {
         self.hooks.late_directory.load(Ordering::Relaxed)
     }
 
-    pub(super) fn skips_7a(&self) -> bool {
-        self.hooks.skip_7a.load(Ordering::Relaxed)
+    /// Whether a flush its caller wants with step 7a (`wanted`) takes it:
+    /// the F2 control skips it.
+    pub(super) fn takes_7a(&self, wanted: bool) -> bool {
+        wanted && !self.hooks.skip_7a.load(Ordering::Relaxed)
     }
 
     pub(crate) fn prebuilt_remainder(&self) -> bool {
