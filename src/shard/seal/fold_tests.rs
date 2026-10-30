@@ -120,11 +120,27 @@ async fn read_all(rig: &Rig, oracle: &Oracle, what: &str) {
     }
 }
 
+/// Every consolidation a read offered has finished: one in flight publishes
+/// its entry before its `'K'` row commits (as a seal does), which the
+/// tiling check would read as an entry no row names.
+async fn consolidations_done(rig: &Rig) {
+    let c = &rig.engine.layout.seal.fold.consolidator;
+    let t0 = std::time::Instant::now();
+    while get(&c.done) + get(&c.skipped) + get(&c.failed) < get(&c.offered) {
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "the consolidator never finished"
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+}
+
 /// The tiling invariant across the directory and the run-index objects:
 /// the chunks a read picks tile `[0, absorbed)` with no gap, and every
 /// directory entry is still named by a `'K'` row.
 async fn check_tiling(rig: &Rig, streams: &[[u8; 16]], what: &str) {
     settle(&rig.engine).await;
+    consolidations_done(rig).await;
     let rows = directory_rows(rig).await;
     for hash in streams {
         let handle = rig.engine.stream_handle(*hash).await.unwrap();
