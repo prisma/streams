@@ -99,12 +99,18 @@ impl UsageRollup {
             computed: BTreeMap::new(),
         };
         let prefix = k_month_prefix(month);
-        let mut streams = self.db.scan_prefix(&prefix[..], ..).await?;
+        let mut streams = self
+            .db
+            .scan_prefix_with_options(&prefix[..], .., &crate::rollup::telemetry_scan())
+            .await?;
         while let Some(row) = streams.next().await? {
             reconciliation.stream(&row.key, &row.value);
         }
         let prefix = format!("project/{month}/").into_bytes();
-        let mut projects = self.db.scan_prefix(&prefix[..], ..).await?;
+        let mut projects = self
+            .db
+            .scan_prefix_with_options(&prefix[..], .., &crate::rollup::telemetry_scan())
+            .await?;
         while let Some(row) = projects.next().await? {
             reconciliation.project(&row.key, &row.value);
         }

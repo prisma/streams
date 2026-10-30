@@ -196,7 +196,10 @@ impl UsageRollup {
     /// without a `stored/` one.
     pub(crate) async fn publish_stored_into(&self, table: &StoredTable) -> anyhow::Result<()> {
         let mut figures = Vec::new();
-        let mut rows = self.db.scan_prefix(&b"stored/"[..], ..).await?;
+        let mut rows = self
+            .db
+            .scan_prefix_with_options(&b"stored/"[..], .., &crate::rollup::telemetry_scan())
+            .await?;
         while let Some(kv) = rows.next().await? {
             let key = String::from_utf8_lossy(&kv.key);
             let project = key
@@ -224,7 +227,10 @@ impl UsageRollup {
     }
 
     async fn has_rows(&self, prefix: &[u8]) -> anyhow::Result<bool> {
-        let mut rows = self.db.scan_prefix(prefix, ..).await?;
+        let mut rows = self
+            .db
+            .scan_prefix_with_options(prefix, .., &crate::rollup::telemetry_scan())
+            .await?;
         Ok(rows.next().await?.is_some())
     }
 }

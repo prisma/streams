@@ -3,7 +3,7 @@
 use super::{ReadSpool, ResidentRows};
 use crate::billing::{BillingIdentity, MeterSource, ReadBatch, ReadRow};
 use proptest::{prelude::any, prop_assert_eq};
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
 fn batch(seq: u64) -> ReadBatch {
     ReadBatch {
@@ -75,7 +75,7 @@ async fn persisted_sizes_and_zero_budget_reads_follow_the_exact_backlog() {
 #[test]
 fn replacement_and_repeated_removal_do_not_inflate_resident_bytes() {
     let mut resident = ResidentRows {
-        sizes: HashMap::new(),
+        sizes: BTreeMap::new(),
         bytes: 0,
     };
     let key = vec![1];
@@ -92,7 +92,7 @@ proptest::proptest! {
     fn resident_totals_equal_the_retained_key_inventory(
         operations in proptest::collection::vec((0u8..16, proptest::option::of(any::<u32>())), 0..129),
     ) {
-        let mut resident = ResidentRows { sizes: HashMap::new(), bytes: 0 };
+        let mut resident = ResidentRows { sizes: BTreeMap::new(), bytes: 0 };
         for (key, value) in operations {
             let key = vec![key];
             match value {
@@ -117,7 +117,7 @@ fn quality_loom_replacement_and_removal_publish_consistent_totals() {
     model.max_duration = None;
     crate::loom_check::check(&model, || {
         let state = Arc::new(Mutex::new(ResidentRows {
-            sizes: HashMap::from([(vec![1], 5)]),
+            sizes: BTreeMap::from([(vec![1], 5)]),
             bytes: 5,
         }));
         let insert = state.clone();
@@ -274,4 +274,103 @@ async fn injected_fault_counts_successful_rounds_and_can_be_disabled() {
         .collect();
     assert_eq!(recovered, [1, 2, 4]);
     spool.close_for_tests().await;
+}
+
+/// A spool over a GET-counting store whose telemetry cache the test can
+/// release, after `rounds` drain rounds that each persist one batch and
+/// acknowledge the previous round's (every persist flushes an L0, so each
+/// round leaves a table of puts and tombstones). The last round's batch
+/// stays resident unless `drain_last`.
+async fn drained_spool(
+    rounds: u64,
+    drain_last: bool,
+) -> (
+    ReadSpool,
+    Arc<crate::rollup::scan_cache_tests::TableGets>,
+    Arc<crate::runtime::block_cache::BlockCache>,
+) {
+    let store = Arc::new(crate::rollup::scan_cache_tests::TableGets::default());
+    let cache = Arc::new(crate::runtime::block_cache::BlockCache::with_capacity(
+        16 << 20,
+    ));
+    let spool = ReadSpool::open_with_cache(
+        store.clone(),
+        "",
+        "drain-rounds",
+        &crate::rollup::scan_cache_tests::config(),
+        cache.clone(),
+    )
+    .await
+    .unwrap();
+    let mut previous: Vec<Vec<u8>> = Vec::new();
+    for seq in 0..rounds {
+        let keys = spool.persist_all(&[batch(seq)]).await.unwrap();
+        spool.remove(&previous).await.unwrap();
+        previous = keys;
+    }
+    if drain_last {
+        spool.remove(&previous).await.unwrap();
+        spool.db.flush().await.unwrap();
+    }
+    (spool, store, cache)
+}
+
+/// With no resident batch a drain round reads nothing: the ledger holds
+/// every unacknowledged key, so there is nothing to scan for, whatever the
+/// tables hold of acknowledged rows and their tombstones.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_drain_round_with_nothing_resident_reads_no_table() {
+    let (spool, store, cache) = drained_spool(30, true).await;
+    assert_eq!(spool.resident(), (0, 0));
+    cache.release();
+    let before = store.count();
+    assert!(spool.pending(16).await.unwrap().is_empty());
+    assert_eq!(store.count() - before, 0);
+    spool.close_for_tests().await;
+}
+
+/// A drain round reads from the oldest resident batch on, never the
+/// tombstones of the acknowledged ones below it, and keeps what it read:
+/// after the cache dropped every block, the first round reads the resident
+/// batch's table and the next round reads nothing from the store.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_drain_round_reads_the_resident_batches_once() {
+    let (spool, store, cache) = drained_spool(30, false).await;
+    assert_eq!(spool.resident().0, 1);
+    cache.release();
+    let before = store.count();
+    let pending = spool.pending(16).await.unwrap();
+    let first = store.count() - before;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].1.seq, 29);
+    let before = store.count();
+    assert_eq!(spool.pending(16).await.unwrap().len(), 1);
+    let second = store.count() - before;
+    assert_eq!(second, 0, "the second round reads from the cache");
+    assert!(
+        first <= 2 * 2,
+        "the first round read {first} tables' blocks"
+    );
+    spool.close_for_tests().await;
+}
+
+/// A poisoned resident ledger still drains every durable batch: the round
+/// scans from the prefix's start instead of trusting the ledger's oldest key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_poisoned_ledger_drains_every_durable_batch() {
+    let (spool, _store, _cache) = drained_spool(3, false).await;
+    spool.persist_all(&[batch(3)]).await.unwrap();
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _resident = spool.resident.lock().unwrap();
+        panic!("interrupted resident size accounting");
+    }));
+    assert!(poisoned.is_err());
+    let seqs: Vec<u64> = spool
+        .pending(16)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(_, b)| b.seq)
+        .collect();
+    assert_eq!(seqs, vec![2, 3]);
 }

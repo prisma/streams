@@ -47,7 +47,10 @@ impl UsageRollup {
                 // fresh marker must not skip a backlog that predates
                 // it. `month/` keys sort by month string, so the first
                 // key names the oldest.
-                let mut it = self.db.scan_prefix(&b"month/"[..], ..).await?;
+                let mut it = self
+                    .db
+                    .scan_prefix_with_options(&b"month/"[..], .., &crate::rollup::telemetry_scan())
+                    .await?;
                 match it.next().await? {
                     Some(kv) => std::str::from_utf8(&kv.key)?
                         .split('/')
@@ -125,7 +128,11 @@ impl MonthClose<'_> {
         let mut iter = self
             .rollup
             .db
-            .scan_prefix(prefix, close_scan_range(prefix, after)?)
+            .scan_prefix_with_options(
+                prefix,
+                close_scan_range(prefix, after)?,
+                &crate::rollup::telemetry_scan(),
+            )
             .await?;
         while let Some(row) = iter.next().await? {
             self.rollup

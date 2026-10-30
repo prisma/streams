@@ -1,6 +1,6 @@
 //! Durable custody of sealed read batches and their resident size ledger.
 use super::{ReadBatch, telemetry_settings};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, atomic::AtomicU64};
 
 /// Sealed read batches enter durable custody here before the usage ledger;
@@ -100,12 +100,15 @@ impl ReadSpool {
         // corruption alert survives restarts until an operator clears
         // the quarantine explicitly.
         let mut prior = 0u64;
-        let mut it = db.scan_prefix(&b"quarantine/"[..], ..).await?;
+        let scan = crate::rollup::telemetry_scan();
+        let mut it = db
+            .scan_prefix_with_options(&b"quarantine/"[..], .., &scan)
+            .await?;
         while (it.next().await?).is_some() {
             prior += 1;
         }
-        let mut sizes = HashMap::new();
-        let mut it = db.scan_prefix(&b"rb/"[..], ..).await?;
+        let mut sizes = BTreeMap::new();
+        let mut it = db.scan_prefix_with_options(&b"rb/"[..], .., &scan).await?;
         while let Some(kv) = it.next().await? {
             sizes.insert(kv.key.to_vec(), kv.value.len() as u64);
         }
@@ -193,7 +196,10 @@ impl ReadSpool {
         Ok(keys)
     }
 
-    /// Oldest pending batches (recovered across restarts). A row that
+    /// Oldest pending batches (recovered across restarts), read from the
+    /// oldest resident row on: the rows below it are acknowledged and
+    /// deleted, so the scan never walks their tombstones, and with no
+    /// resident row there is no scan. A row that
     /// does not decode is QUARANTINED (round-22 item 2c): moved to
     /// `quarantine/<key>` in one batch — preserved for forensics,
     /// never re-parsed, never silently skipped — counted, logged at
@@ -201,12 +207,15 @@ impl ReadSpool {
     /// Scan/store faults still propagate as errors (fail closed);
     /// only decode failures quarantine.
     pub(crate) async fn pending(&self, max: usize) -> anyhow::Result<Vec<(Vec<u8>, ReadBatch)>> {
-        if max == 0 {
+        let Some(oldest) = self.oldest_resident().filter(|_| max > 0) else {
             return Ok(Vec::new());
-        }
+        };
         let mut out = Vec::new();
         let mut corrupt: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-        let mut iter = self.db.scan_prefix(&b"rb/"[..], ..).await?;
+        let mut iter = self
+            .db
+            .scan_prefix_with_options(&b"rb/"[..], oldest.., &crate::rollup::telemetry_scan())
+            .await?;
         while let Some(kv) = iter.next().await? {
             match serde_json::from_slice(&kv.value) {
                 Ok(b) => {
@@ -228,6 +237,21 @@ impl ReadSpool {
         }
         self.quarantine(&corrupt).await?;
         Ok(out)
+    }
+
+    /// The oldest resident row's key below `rb/` (scan subranges are
+    /// suffix-relative); every row the ledger has not acknowledged is at or
+    /// above it. A poisoned ledger answers the prefix's start, so the scan
+    /// reads every row.
+    fn oldest_resident(&self) -> Option<Vec<u8>> {
+        match self.resident.lock() {
+            Ok(resident) => resident
+                .sizes
+                .keys()
+                .next()
+                .map(|key| key[b"rb/".len()..].to_vec()),
+            Err(_) => Some(Vec::new()),
+        }
     }
 
     /// Persist quarantine before removing its rows from the resident ledger.
@@ -333,7 +357,7 @@ impl ReadSpool {
 
 /// Byte totals change under the same lock as their exact key inventory.
 struct ResidentRows {
-    sizes: HashMap<Vec<u8>, u64>,
+    sizes: BTreeMap<Vec<u8>, u64>,
     bytes: u64,
 }
 

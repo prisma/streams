@@ -403,6 +403,25 @@ pub(crate) struct UsageRollup {
     close_rows_visited: std::sync::atomic::AtomicU64,
 }
 
+/// Bytes a telemetry scan reads per GET once it misses: 64 of the
+/// telemetry DBs' 4 KiB blocks.
+const TELEMETRY_READ_AHEAD: usize = 256 << 10;
+
+/// The scans of the telemetry databases (this rollup's and the read
+/// spool's). SlateDB's default scan neither caches the blocks it reads nor
+/// reads ahead, and the default cache policy caches compaction output's
+/// index and filters only, so every drain round and outbox scan re-read
+/// every sorted-run block under its prefix, one GET per block (S-GAP step
+/// 1: half of S's Class B at 200 tenants). A scan caches what it reads,
+/// in the telemetry cache, and reads 256 KiB a GET.
+pub(crate) fn telemetry_scan() -> slatedb::config::ScanOptions {
+    slatedb::config::ScanOptions {
+        cache_blocks: true,
+        read_ahead_bytes: TELEMETRY_READ_AHEAD,
+        ..slatedb::config::ScanOptions::default()
+    }
+}
+
 /// SlateDB scan_prefix subranges are SUFFIX-relative. Exclude the exact
 /// persisted cursor and let SlateDB enforce the prefix's upper bound.
 type CloseScanRange = (std::ops::Bound<Vec<u8>>, std::ops::Bound<Vec<u8>>);
@@ -643,7 +662,10 @@ impl UsageRollup {
     ) -> anyhow::Result<Vec<SegmentState>> {
         let pfx = format!("segment/{account}/{project}/{stream_id}/").into_bytes();
         let mut out = Vec::new();
-        let mut iter = self.db.scan_prefix(&pfx[..], ..).await?;
+        let mut iter = self
+            .db
+            .scan_prefix_with_options(&pfx[..], .., &crate::rollup::telemetry_scan())
+            .await?;
         while let Some(kv) = iter.next().await? {
             out.push(decode_json(&kv.value)?);
         }
@@ -661,7 +683,14 @@ impl UsageRollup {
         max: usize,
     ) -> anyhow::Result<Vec<(Vec<u8>, String, String, String, MonthRow)>> {
         let mut out = Vec::new();
-        let mut iter = self.db.scan_prefix(&b"artifact-pending/"[..], ..).await?;
+        let mut iter = self
+            .db
+            .scan_prefix_with_options(
+                &b"artifact-pending/"[..],
+                ..,
+                &crate::rollup::telemetry_scan(),
+            )
+            .await?;
         while let Some(kv) = iter.next().await? {
             if let Some((month, project, stream_id, row)) = pending_artifact_row(&kv.key, &kv.value)
             {
@@ -706,7 +735,10 @@ impl UsageRollup {
         max: usize,
     ) -> anyhow::Result<Vec<(Vec<u8>, String, String, String, String, Vec<u8>)>> {
         let mut out = Vec::new();
-        let mut iter = self.db.scan_prefix(&b"corr-pending/"[..], ..).await?;
+        let mut iter = self
+            .db
+            .scan_prefix_with_options(&b"corr-pending/"[..], .., &crate::rollup::telemetry_scan())
+            .await?;
         while let Some(kv) = iter.next().await? {
             let k = std::str::from_utf8(&kv.key).unwrap_or("").to_string();
             let parts: Vec<&str> = k.splitn(6, '/').collect();
@@ -858,7 +890,10 @@ impl UsageRollup {
         let cutoff = now_ms - OPS_RAW_RETENTION_MS;
         let mut wb = WriteBatch::new();
         let mut n = 0usize;
-        let mut iter = self.db.scan_prefix(&b"ops/raw/"[..], ..).await?;
+        let mut iter = self
+            .db
+            .scan_prefix_with_options(&b"ops/raw/"[..], .., &crate::rollup::telemetry_scan())
+            .await?;
         while let Some(kv) = iter.next().await? {
             if n >= max_deletes {
                 break;
@@ -884,3 +919,6 @@ mod accounting_failure_tests;
 
 #[cfg(test)]
 mod close_seek_tests;
+
+#[cfg(test)]
+pub(crate) mod scan_cache_tests;

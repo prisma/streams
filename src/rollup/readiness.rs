@@ -102,7 +102,14 @@ impl UsageRollup {
         max_publishable: usize,
     ) -> anyhow::Result<ArtifactOutbox> {
         let mut outbox = ArtifactOutbox::default();
-        let mut iter = self.db.scan_prefix(&b"artifact-pending/"[..], ..).await?;
+        let mut iter = self
+            .db
+            .scan_prefix_with_options(
+                &b"artifact-pending/"[..],
+                ..,
+                &crate::rollup::telemetry_scan(),
+            )
+            .await?;
         while let Some(kv) = iter.next().await? {
             outbox.total += 1;
             if pending_artifact_row(&kv.key, &kv.value).is_some() {
