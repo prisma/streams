@@ -130,3 +130,37 @@ async fn a_second_outbox_scan_reads_no_table_from_the_store() {
     );
     rollup.db.close().await.unwrap();
 }
+
+/// The ops raw tier's sweep deletes exactly the points past retention, at
+/// most `max_deletes` a call, and answers how many it deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn the_ops_raw_sweep_deletes_only_points_past_retention_and_counts_them() {
+    let store = Arc::new(TableGets::default());
+    let cache = Arc::new(BlockCache::with_capacity(16 << 20));
+    let rollup = super::UsageRollup::open_with_cache(store, "", &config(), cache)
+        .await
+        .unwrap();
+    let now = 10 * super::OPS_RAW_RETENTION_MS;
+    let cutoff = now - super::OPS_RAW_RETENTION_MS;
+    let old = cutoff - 1;
+    for ts in [old - 2, old - 1, old, cutoff, now] {
+        rollup
+            .db
+            .put(&super::k_ops_raw("i", ts), b"{}")
+            .await
+            .unwrap();
+    }
+    assert_eq!(rollup.sweep_ops_raw(now, 2).await.unwrap(), 2);
+    assert_eq!(rollup.sweep_ops_raw(now, 10).await.unwrap(), 1);
+    assert_eq!(rollup.sweep_ops_raw(now, 10).await.unwrap(), 0);
+    let mut left = Vec::new();
+    let mut rows = rollup.db.scan_prefix(&b"ops/raw/"[..], ..).await.unwrap();
+    while let Some(kv) = rows.next().await.unwrap() {
+        left.push(kv.key.to_vec());
+    }
+    assert_eq!(
+        left,
+        vec![super::k_ops_raw("i", cutoff), super::k_ops_raw("i", now)]
+    );
+    rollup.db.close().await.unwrap();
+}
