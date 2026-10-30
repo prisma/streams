@@ -1,8 +1,9 @@
 #![cfg(test)]
 //! The seal path's acceptance, in process (in-memory store):
 //! - **flushdrop**: one seal's L0 holds a few percent of the sealed bytes;
-//!   a flush without a seal writes the values; REVIEW-6A F2's control (no
-//!   step 7a) writes them too;
+//!   a flush without a seal writes the values; a seal whose WAL PUTs are
+//!   parked across its commit writes no more (REVIEW-6A F2, without the
+//!   awaited WAL flush step 7a once took);
 //! - **tiling with aborts**: after every seal, stopped at any step or not,
 //!   the directory tiles `[0, absorbed)`, the `'K'` rows rebuild exactly
 //!   it, the stored pending row tiles `[absorbed, next)` (no page below the
@@ -555,11 +556,10 @@ async fn seal_l0(rig: &Rig) -> (super::SealReport, u64) {
 /// **flushdrop**: 4 MiB of pages on 8 streams, one seal, and the L0 its
 /// flush wrote: at most 5% of the sealed page bytes (the seal's puts of
 /// empty remainders, the tails, the `'K'` row). A control: a flush without a
-/// seal writes the values. And a seal whose flush skips step 7a (REVIEW-6A
-/// F2), its WAL PUTs parked so the put that shadows the pages is not durable
-/// when the memtable freezes, writes no more: the flush's retention boundary
-/// is the memtable's last sequence (slatedb/slatedb#2208), not the WAL's
-/// progress.
+/// seal writes the values. And a seal whose WAL PUTs are parked across its
+/// commit writes no more (REVIEW-6A F2): no seal awaits a WAL flush of its
+/// own, and the flush's retention boundary is the memtable's last sequence
+/// (slatedb/slatedb#2208), not the WAL's progress.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn flushdrop() {
     let rig = rig("flushdrop", manual(), Duration::from_millis(5)).await;
@@ -603,12 +603,10 @@ async fn flushdrop() {
         control >= unsealed,
         "without the seal the values reach the L0"
     );
-    // F2 without 7a: a seal of fresh pages whose flush skips 7a, with the
-    // WAL PUTs parked from the commit on, so the seal's put is not durable
-    // when the memtable freezes.
+    // F2: a seal of fresh pages with the WAL PUTs parked from the commit on;
+    // the seal takes no WAL flush of its own.
     rig.engine.seal_once(Trigger::Requested).await.unwrap();
     fill(&rig.engine, &streams, 3).await;
-    sp.hooks.skip_7a.store(true, Ordering::Relaxed);
     let hold = Hold::new();
     *sp.hooks.before_commit.lock().unwrap() = Some(hold.clone());
     let before = rig.metrics.counter(db_stats::L0_FLUSH_BYTES);
@@ -619,28 +617,28 @@ async fn flushdrop() {
     let report = report.unwrap();
     let l0 = rig.metrics.counter(db_stats::L0_FLUSH_BYTES) - before;
     *sp.hooks.before_commit.lock().unwrap() = None;
-    sp.hooks.skip_7a.store(false, Ordering::Relaxed);
     eprintln!(
-        "flushdrop F2 (seal without 7a): sealed {} B; L0 {l0} B: {:.3}%",
+        "flushdrop F2 (WAL parked across the commit): sealed {} B; L0 {l0} B: {:.3}%",
         report.page_bytes,
         100.0 * l0 as f64 / report.page_bytes as f64,
     );
     assert!(
         l0 * 100 <= report.page_bytes * 5,
-        "without 7a the L0 holds {l0} B of {} B sealed",
+        "with the WAL parked across the commit the L0 holds {l0} B of {} B sealed",
         report.page_bytes
     );
     rig.engine.begin_close();
 }
 
-/// **A forced flush takes step 7a** (REVIEW-6A F2): a seal applied but not
-/// durable (stopped after its commit, the shard's WAL PUTs parked from the
-/// commit on), then a forced memtable flush, as the deadline and the queue
-/// collector take it. Its awaited WAL flush makes the seal's puts durable
-/// before the memtable freezes, so the L0 holds at most 5% of the sealed
-/// page bytes; without it the shadowed operands reach the L0.
+/// **A forced flush drops the operands an applied seal shadowed**
+/// (REVIEW-6A F2): a seal applied but not durable (stopped after its
+/// commit, the shard's WAL PUTs parked from the commit on), then a forced
+/// memtable flush, as the deadline and the queue collector take it, with no
+/// WAL flush of its own. The flush keeps versions only above the memtable's
+/// last sequence (slatedb/slatedb#2208), so the L0 holds at most 5% of the
+/// sealed page bytes, durable or not.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
-async fn a_forced_flush_makes_an_applied_seal_durable_first() {
+async fn a_forced_flush_drops_the_operands_an_applied_seal_shadowed() {
     let rig = rig("forced-7a", manual(), Duration::from_millis(5)).await;
     let sp = &rig.engine.layout.seal;
     let mut rng = StdRng::seed_from_u64(0x07A);
@@ -685,7 +683,7 @@ async fn a_forced_flush_makes_an_applied_seal_durable_first() {
     flushed.unwrap();
     let l0 = rig.metrics.counter(db_stats::L0_FLUSH_BYTES) - before;
     eprintln!(
-        "forced 7a: sealed {page_bytes} B applied, not durable; the forced flush's L0 {l0} B"
+        "forced flush: sealed {page_bytes} B applied, not durable; the forced flush's L0 {l0} B"
     );
     assert!(
         l0 * 100 <= page_bytes * 5,

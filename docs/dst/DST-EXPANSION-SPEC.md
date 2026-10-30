@@ -1000,9 +1000,8 @@ and `put_delay`; `fail_next_group` (fail the next commit group that stages
 a seal); the read holds `window_hold` (after a read captured its boundary
 and unsealed pages) and `get_hold` (before each sealed-range GET); and the
 per-shard sealer-open fault (`seal_open_faults`). The negative controls
-`prebuilt_remainder` (REVIEW-6A F1), `late_directory` (publish after the
-commit is durable) and `skip_7a` (REVIEW-6A F2) are mutation switches, not
-failpoints. Segment objects have no collector yet, so the `gc.*` points
+`prebuilt_remainder` (REVIEW-6A F1) and `late_directory` (publish after the
+commit is durable) are mutation switches, not failpoints. Segment objects have no collector yet, so the `gc.*` points
 apply to SlateDB's collector only.
 
 ### Fleet and ownership

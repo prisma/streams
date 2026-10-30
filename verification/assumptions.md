@@ -203,19 +203,25 @@ actions to these contracts.
 
 ### ASM-SLATEDB-FLUSH-RETENTION
 
-- **Scope:** TLA-016 (the F2 property only).
-- **Statement:** a memtable flush keeps every version above
-  `min(last_remote_persisted_seq, min active snapshot seq, min active txn
-  seq)`; at or below it, it keeps merge operands down to and including the
-  newest put or delete and drops everything older. The model takes the
-  boundary to be the durable sequence: no older snapshot or transaction is
-  active during a forced flush.
-- **Origin:** pinned SlateDB `flush.rs` (`iter_imm_table`),
-  `retention_iterator.rs`.
-- **Enforcement / evidence:** `shard::seal::tests::flushdrop` and its two
-  controls (a flush without a seal, a seal without step 7a).
-- **Invalidation:** a SlateDB upgrade; a long-lived snapshot or transaction on
-  the shard log.
+- **Scope:** TLA-016 (the F2 properties only).
+- **Statement:** with the WAL enabled, a memtable flush keeps every version
+  above `min(max(last_remote_persisted_seq, the frozen memtable's last seq),
+  min active snapshot seq, min active txn seq)`; at or below it, it keeps
+  merge operands down to and including the newest put or delete and drops
+  everything older. Its L0 publishes only once the WAL is durable through
+  that last seq. The model takes the boundary to be the memtable's last
+  sequence: no older snapshot or transaction is active during a forced flush.
+- **Origin:** the pinned SlateDB (`sorenbs/slatedb` `c39d0e8d`, upstream main
+  plus slatedb/slatedb#2208): `memtable_flusher/uploader.rs`
+  (`compute_flush_retention_seq`), `flush.rs`, `retention_iterator.rs`,
+  `memtable_flusher/manifest_writer.rs` (#1255).
+- **Enforcement / evidence:** `shard::seal::tests::flushdrop` (a seal; a
+  flush without a seal as the control; a seal with its WAL PUTs parked
+  across the commit) and
+  `shard::seal::tests::a_forced_flush_drops_the_operands_an_applied_seal_shadowed`;
+  #2208's own tests upstream.
+- **Invalidation:** a SlateDB upgrade (in particular one without #2208); a
+  long-lived snapshot or transaction on the shard log.
 - **Standing:** upstream source inspection plus repository tests.
 
 ### ASM-SEAL-OBJECT-IMMUTABLE

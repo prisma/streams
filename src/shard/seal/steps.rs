@@ -140,12 +140,8 @@ impl ShardEngine {
         // (7b), after (7a) in `seal_windows`, every `seals_per_flush` seals.
         #[cfg(test)]
         sp.check_abort(super::test_hooks::SealStep::Durable)?;
-        // An empty seal's memtable (queue rows, a degraded window's
-        // operands) takes step 7a in the flush itself: REVIEW-6A F2.
         if self.flush_after_seal(trigger) {
-            self.forced_flush(windows.is_empty())
-                .await
-                .map_err(SealError::Store)?;
+            self.forced_flush().await.map_err(SealError::Store)?;
         }
         for w in &windows {
             self.layout.release_sealed(&w.handle.hash);
@@ -367,17 +363,9 @@ impl ShardEngine {
             .saturating_sub(remainder_before);
         #[cfg(test)]
         sp.check_abort(super::test_hooks::SealStep::Applied)?;
-        // (7a) The commit is applied; make it durable and published.
-        #[cfg(test)]
-        let with_7a = sp.takes_7a(true);
-        #[cfg(not(test))]
-        let with_7a = true;
-        if with_7a {
-            self.wal_flush()
-                .await
-                .map_err(|e| SealError::Store(e.to_string()))?;
-            self.wait_sealed_durable(windows).await?;
-        }
+        // (7a) The commit is applied; wait until the pump's WAL flush made
+        // it durable and dispatch published it: a seal returns settled.
+        self.wait_sealed_durable(windows).await?;
         if late {
             self.publish_directory(&entries);
         }

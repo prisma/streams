@@ -2223,7 +2223,7 @@
       "kind": "tla",
       "title": "Seal spill: pending operands, snapshot, object, directory and remainder commit",
       "status": "pass-with-recorded-scope",
-      "owner": "the sealer (seal_once: the durable snapshot, the object PUT, the directory publication before the commit and its withdrawal, 7a before every forced memtable flush), the committer's seal staging (the all-or-nothing live-tail check, the remainder put built from the live stream, the 'K' rows in the same batch), the pending row's merge operand and its applied publication, and the open's directory rebuild and pending-row load",
+      "owner": "the sealer (seal_once: the durable snapshot, the object PUT, the directory publication before the commit and its withdrawal, every forced memtable flush with no WAL flush of its own), the committer's seal staging (the all-or-nothing live-tail check, the remainder put built from the live stream, the 'K' rows in the same batch), the pending row's merge operand and its applied publication, and the open's directory rebuild and pending-row load",
       "source_paths": [
         "src/shard/seal.rs",
         "src/shard/seal/steps.rs",
@@ -2263,7 +2263,7 @@
         "shard::seal::tests::flushdrop",
         "shard::seal::tests::tiling_with_an_abort_between_every_pair_of_steps"
       ],
-      "input_scope": "one shard log, one stream of 3 one-record offsets (small) or 4 (expanded), or two streams of 2 offsets sealed in one commit (two-streams); records identified by offset and the incarnation that appended them; each commit group one WriteBatch, applied in order and durable as a prefix (WAL flushes of any prefix, or an L0 flush of the whole memtable); durable dispatch in group order, a record acknowledged when its group's durable tail is published; the sealer one seal at a time: the snapshot of the durable unsealed pages from memory (a stream that does not tile is skipped), one object of one chunk per stream, its PUT (may fail), directory publication, the committer's all-or-nothing live-tail check, the remainder put (the applied pages at or above the boundary plus the group's own page; a delete when empty) and the 'K' rows in the same group, which may also append one record to a sealed stream; 7a (WAL flush, wait for dispatch) and 7b (forced memtable flush) under the flush lock; 2 seals (small, two-streams) or 3 (expanded); 1 crash with restart from the durable prefix (directory from 'K' rows, tail and pending row per stream); 1 seal group dropped whole; 1 seal failure (the PUT, or 7a after the commit applied); 1 deadline flush whose 7a and memtable flush are separate steps; SlateDB's memtable-flush retention modelled at the durable seq with no older snapshot or transaction. No GC, eviction, queues, ledger, liveness, symmetry or constraints.",
+      "input_scope": "one shard log, one stream of 3 one-record offsets (small) or 4 (expanded), or two streams of 2 offsets sealed in one commit (two-streams); records identified by offset and the incarnation that appended them; each commit group one WriteBatch, applied in order and durable as a prefix (WAL flushes of any prefix, or an L0 flush of the whole memtable); durable dispatch in group order, a record acknowledged when its group's durable tail is published; the sealer one seal at a time: the snapshot of the durable unsealed pages from memory (a stream that does not tile is skipped), one object of one chunk per stream, its PUT (may fail), directory publication, the committer's all-or-nothing live-tail check, the remainder put (the applied pages at or above the boundary plus the group's own page; a delete when empty) and the 'K' rows in the same group, which may also append one record to a sealed stream; 7b (forced memtable flush) under the flush lock, as soon as the commit applied (the code's 7a dispatch wait over-approximated away); 2 seals (small, two-streams) or 3 (expanded); 1 crash with restart from the durable prefix (directory from 'K' rows, tail and pending row per stream); 1 seal group dropped whole; 1 seal failure (the PUT, or after the commit applied); 1 deadline flush, one step at any point of a seal; SlateDB's memtable-flush retention modelled at the frozen memtable's last seq (slatedb/slatedb#2208) with no older snapshot or transaction. No GC, eviction, queues, ledger, liveness, symmetry or constraints.",
       "checks": [
         {
           "id": "TLA-016/baseline-small",
@@ -2306,10 +2306,10 @@
           }
         },
         {
-          "id": "TLA-016/nc-skip-7a",
+          "id": "TLA-016/nc-durable-boundary",
           "role": "negative-control",
           "spec": "verification/tla/spill/MC_SealSpill.tla",
-          "config": "verification/tla/spill/MC_SealSpill_nc_skip_7a.cfg",
+          "config": "verification/tla/spill/MC_SealSpill_nc_durable_boundary.cfg",
           "expect": {
             "result": "violation",
             "property": "F2_SealFlushLeavesNoSealedPage"
@@ -2353,16 +2353,6 @@
           "expect": {
             "result": "violation",
             "property": "Witness_CrashAfterSealRecovered"
-          }
-        },
-        {
-          "id": "TLA-016/witness-DeadlineCarriesSealedPages",
-          "role": "witness",
-          "spec": "verification/tla/spill/MC_SealSpill.tla",
-          "config": "verification/tla/spill/MC_SealSpill_w_DeadlineCarriesSealedPages.cfg",
-          "expect": {
-            "result": "violation",
-            "property": "Witness_DeadlineCarriesSealedPages"
           }
         }
       ]

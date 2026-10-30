@@ -19,33 +19,34 @@ they do not verify SlateDB.
 | `Publish` | `publish_directory` (step 5, before step 6) |
 | `Commit(A)`: live check, all or nothing; remainder put (`del` when empty); 'K' rows; drop or refusal withdraws | `transaction/seal.rs` `stage_seal`, `moved_since_snapshot`; `finalize.rs` `stage_remainder`; `withdraw_directory` |
 | `RemainderBase` (mutation point F1) | `stage_remainder`: `st.pending.from(sealed.upto)` |
-| `Seal7a`, `Seal7b`, `AbortApplied` | `seal_windows` 7a (`wal_flush` + `wait_sealed_durable`), `seal_steps` 7b (`forced_flush(false)`) |
-| `DeadlineWal`, `DeadlineMem` (flush lock across both) | `deadline_flush` -> `forced_flush(true)` |
-| `Takes7a` (mutation point F2) | `SealHooks::skip_7a` |
-| `L0Pages` | SlateDB `flush.rs` `iter_imm_table` retention (boundary = `last_remote_persisted_seq`) |
+| `Seal7b`, `AbortApplied` | `seal_steps` 7b (`forced_flush()`, no WAL flush of its own); the code's 7a (`wait_sealed_durable`, a settlement contract) is over-approximated away: the model's 7b may overtake it |
+| `Deadline` (one step under the flush lock) | `deadline_flush` -> `forced_flush()` |
+| `FlushBoundary` (mutation point F2) | SlateDB `memtable_flusher/uploader.rs` `compute_flush_retention_seq` (slatedb/slatedb#2208): the frozen memtable's last seq with the WAL enabled |
+| `L0Pages` | SlateDB `flush.rs` retention at `FlushBoundary` |
 | `CrashRestart` | `seal/open.rs` `seal_open` (directory from 'K' rows), `handle_load.rs` `load_tail` (`PendingPages::tiled`) |
 
 Invariants: `I1_AckedReadableAfterRestart` (every acknowledged record is in
 the durable store exactly once, in its place: one durable chunk whose object
 holds it, or its position in the durable pending row), `I2_PendingRowTiles`,
 `I3_DirectoryTiles`, `MemoryMirrorsStore`, `MemoryDirectoryCovers`,
-`F2_SealFlushLeavesNoSealedPage`.
+`F2_SealFlushLeavesNoSealedPage`, `F2_DeadlineFlushLeavesNoSealedPage`.
+Negative control `MutDurableBoundary` (SlateDB before #2208: retention at
+the durable seq) violates `F2_SealFlushLeavesNoSealedPage`.
 
 The committer's live-tail refusal is a defensive check: it is unreachable
 in this scope. Absorbed moves only through serial seals, next only grows,
 and the snapshot skips a stream whose applied boundary passed its durable
-one (a seal that applied and then failed 7a). The model keeps the refusal
+one (a seal that applied and then failed). The model keeps the refusal
 branch and its directory withdrawal, but no check claims it is reached
 (`Witness_SealRefused` is a definition only).
 
-TLA-016-F5, accepted as a cost (owner, 2026-10-28):
-Witness_DeadlineCarriesSealedPages is reachable. A deadline flush whose 7a
-runs before a seal's commit applies, and whose memtable flush runs after,
-writes that seal's sealed operands to an L0. The remainder put sits above
-the retention boundary, so the older operands are kept. They stay there
-until compaction; every read sees the put, so nothing is lost. `seal.rs`'s
-module comment states this. The witness stays as the record of the
-accepted behaviour.
+TLA-016-F5 (accepted as a cost by the owner, 2026-10-28) is closed by the
+pin bump of 2026-10-30: a deadline flush that raced a seal's commit used to
+keep that seal's sealed operands in an L0, because the remainder put sat
+above the durable retention boundary. With slatedb/slatedb#2208 the
+boundary is the memtable's last seq, the put shadows them at the flush, and
+`F2_DeadlineFlushLeavesNoSealedPage` replaces the witness that recorded the
+cost (the lead's gate decision, hardening README).
 
 ## TLA-018: `SealRead.tla`
 

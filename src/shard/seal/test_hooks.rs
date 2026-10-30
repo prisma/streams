@@ -90,8 +90,6 @@ pub(crate) struct SealHooks {
     /// The race DST's negative control: publish the directory entries only
     /// after the commit is durable.
     pub(crate) late_directory: AtomicBool,
-    /// REVIEW-6A F2 control: skip step 7a.
-    pub(crate) skip_7a: AtomicBool,
     /// Fail the next commit group that stages a seal (R25-D).
     pub(crate) fail_next_group: AtomicBool,
     /// Seal commits handed to the committer.
@@ -174,12 +172,6 @@ impl SealState {
 
     pub(super) fn late_directory(&self) -> bool {
         self.hooks.late_directory.load(Ordering::Relaxed)
-    }
-
-    /// Whether a flush its caller wants with step 7a (`wanted`) takes it:
-    /// the F2 control skips it.
-    pub(super) fn takes_7a(&self, wanted: bool) -> bool {
-        wanted && !self.hooks.skip_7a.load(Ordering::Relaxed)
     }
 
     pub(crate) fn prebuilt_remainder(&self) -> bool {

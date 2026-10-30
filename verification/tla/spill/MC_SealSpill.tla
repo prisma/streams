@@ -14,8 +14,9 @@ EXTENDS SealSpill
 \* the pending row the put leaves.
 MutRemainderFromSnapshot(s, w) == w.rem
 
-\* NC skip 7a (REVIEW-6A F2; the test build's `SealHooks::skip_7a`): no
-\* forced memtable flush is preceded by an awaited WAL flush, and a seal
-\* does not wait for its group's dispatch before 7b.
-MutSkip7a == FALSE
+\* NC durable boundary (REVIEW-6A F2; SlateDB before slatedb/slatedb#2208):
+\* a memtable flush keeps every version above the WAL's durable progress,
+\* so a flush that overtakes the WAL keeps the operands a not yet durable
+\* remainder put shadows.
+MutDurableBoundary == dur
 =============================================================================

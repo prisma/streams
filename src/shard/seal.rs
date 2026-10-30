@@ -20,20 +20,20 @@
 //!    against its live tail, moves its boundary, puts its pending row's
 //!    remainder (every page above the boundary at that moment, REVIEW-6A
 //!    F1) and stages the seal's `'K'` and `'R'` rows, in one group;
-//! 7. (a) one awaited WAL flush and a wait until durable dispatch published
-//!    each sealed stream's new boundary; (b) every `seals_per_flush` seals
+//! 7. (a) a wait until the pump's WAL flush made the commit durable and
+//!    durable dispatch published each sealed stream's new boundary; (b)
+//!    every `seals_per_flush` seals
 //!    (or at the memtable trigger, a deadline, or a requested seal) one
 //!    forced memtable flush: a later seal's remainder shadows the earlier
 //!    seals' page operands, so that flush drops them all.
 //!
-//! Step 7a precedes **every** forced memtable flush (REVIEW-6A F2): the
-//! deadlines', the idle release's and the queue collector's too. SlateDB's
-//! memtable flush does not await its WAL, so without it the flush's
-//! retention boundary misses the newest operands and their merge chains
-//! reach the L0. A deadline flush that races a seal's commit (its 7a before
-//! the commit, its memtable flush after) still carries that seal's pages
-//! into an L0, where the remainder put shadows them: a storage cost until
-//! compaction, never a data loss (TLA-016's successor, SealSpill).
+//! No forced memtable flush awaits a WAL flush first (REVIEW-6A F2): with
+//! the WAL enabled, SlateDB keeps the versions a memtable shadows only above
+//! the memtable's own last sequence (slatedb/slatedb#2208), since its L0
+//! publishes once the WAL is durable through it. A remainder put drops the
+//! page operands below it at the flush, durable or not, so no flush (a
+//! seal's, a deadline's, the idle release's or the queue collector's)
+//! carries sealed pages into an L0 (TLA-016, SealSpill).
 //!
 //! The loop (`seal_loop`) rebuilds the directory and loads every unsealed
 //! stream at open, then evaluates the triggers every `tick` and when a
@@ -778,16 +778,12 @@ impl ShardEngine {
             .await
     }
 
-    /// One forced memtable flush, after step 7a (an awaited WAL flush)
-    /// unless the caller's seal already took it.
-    async fn forced_flush(&self, with_7a: bool) -> Result<(), String> {
+    /// One forced memtable flush. It takes no WAL flush of its own: SlateDB
+    /// drops the versions the memtable shadows whether or not its WAL is
+    /// durable yet (slatedb/slatedb#2208).
+    async fn forced_flush(&self) -> Result<(), String> {
         let sp = self.seal_state();
         let _one_at_a_time = sp.flush_lock.lock().await;
-        #[cfg(test)]
-        let with_7a = sp.takes_7a(with_7a);
-        if with_7a {
-            self.wal_flush().await.map_err(|e| e.to_string())?;
-        }
         self.reset_baseline();
         sp.wal_at_seal.store(0, Ordering::Relaxed);
         sp.seals_since_flush.store(0, Ordering::Relaxed);
@@ -813,7 +809,7 @@ impl ShardEngine {
                 .deadline_flushes_during_seal
                 .fetch_add(1, Ordering::Relaxed);
         }
-        if let Err(e) = self.forced_flush(true).await {
+        if let Err(e) = self.forced_flush().await {
             tracing::warn!(shard = %self.prefix, ?kind, "deadline memtable flush failed: {e}");
         }
     }
@@ -872,8 +868,8 @@ impl ShardEngine {
     }
 
     /// A memtable flush another part of the engine asks for (the queue
-    /// collector): it takes step 7a like every forced flush.
+    /// collector), like every forced flush.
     pub(crate) async fn flush_memtable(&self) -> Result<(), String> {
-        self.forced_flush(true).await
+        self.forced_flush().await
     }
 }

@@ -25,10 +25,11 @@
 (*       pages >= upto ++ this group's own pages of the stream (REVIEW-6A  *)
 (*       F1; a delete when empty), and stages the 'K' (and 'R') rows in    *)
 (*       the same batch; a refused or dropped group withdraws the entries; *)
-(*   (7a) an awaited WAL flush, then a wait until dispatch published the   *)
-(*       seal's group; (7b) a forced memtable flush.                       *)
-(* A deadline flush (and every other forced flush) also takes 7a first     *)
-(* (REVIEW-6A F2) and holds the flush lock across 7a and its flush.        *)
+(*   (7a) a wait until dispatch published the seal's group (no WAL flush   *)
+(*       of its own; not modelled: 7b over-approximates it, below);        *)
+(*       (7b) a forced memtable flush.                                     *)
+(* A deadline flush (and every other forced flush) is one step under the   *)
+(* flush lock, with no WAL flush of its own (REVIEW-6A F2).                *)
 (* Step 1 (WAL flush + bounded wait) is not a separate step: WalFlush is   *)
 (* free at all times and the snapshot reads whatever dispatch published    *)
 (* (the wait times out after 1 s in production).                           *)
@@ -37,17 +38,19 @@
 (* handle_load.rs) rebuilds the directory from the durable 'K' rows and    *)
 (* loads each stream's tail and pending row.                               *)
 (*                                                                         *)
-(* F2 needs SlateDB's memtable-flush retention (flush.rs iter_imm_table):  *)
-(* entries above the boundary min(last_remote_persisted_seq, active        *)
-(* snapshots, active txns) are all kept; at or below it, merge operands    *)
+(* F2 needs SlateDB's memtable-flush retention (flush.rs, uploader.rs):    *)
+(* entries above the boundary are all kept; at or below it, merge operands *)
 (* are kept down to the newest put, which shadows every older version.    *)
-(* Here the boundary is `dur` (no active snapshot or transaction holds an  *)
-(* older seq: an assumption, see README.md).                               *)
+(* With the WAL enabled the boundary is the frozen memtable's last seq     *)
+(* (slatedb/slatedb#2208: the L0 publishes only once the WAL is durable    *)
+(* through it), so `FlushBoundary` is Len(wal) whatever `dur` is (no       *)
+(* active snapshot or transaction holds an older seq: an assumption, see   *)
+(* README.md).                                                             *)
 (*                                                                         *)
 (* Records are one-record pages [o, e]: offset o appended by incarnation e *)
 (* (the crash count), so an offset re-used after a crash is a different    *)
 (* record.  Mutation points (MC_SealSpill.tla): RemainderBase (F1),        *)
-(* Takes7a (F2).                                                           *)
+(* FlushBoundary (F2).                                                     *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
@@ -57,7 +60,7 @@ CONSTANTS
     MaxCrashes,     \* crash + restart budget
     MaxSeals,       \* seals the sealer starts (empty ones included)
     MaxRejects,     \* seal groups the committer drops whole (finish's reject)
-    MaxAborts,      \* seals that fail at a step: the PUT, or 7a after apply
+    MaxAborts,      \* seals that fail at a step: the PUT, or after apply
     MaxDeadlines,   \* deadline memtable flushes
     PairAppend      \* a seal's group may also append to a stream it seals
 
@@ -94,7 +97,6 @@ VARIABLES
     objs,     \* PUT objects: set of [id, s, f, pg] (one chunk per stream)
     sl,       \* the sealer
     mstart,   \* groups 1..mstart are no longer in the memtable
-    dl,       \* deadline flush: "idle" | "wal" (between its 7a and its flush)
     acked,    \* acknowledged records: set of <<s, page>>
     f2,       \* pages a seal's own 7b wrote to an L0: <<s, o, upto>>
     dl0,      \* sealed pages a deadline flush wrote to an L0: <<s, o>>
@@ -102,7 +104,7 @@ VARIABLES
     refused,  \* a seal was refused by the live-tail check
     cnt       \* budgets used
 
-vars == <<wal, dur, pub, app, dtl, pend, inc, dir, objs, sl, mstart, dl,
+vars == <<wal, dur, pub, app, dtl, pend, inc, dir, objs, sl, mstart,
           acked, f2, dl0, late, refused, cnt>>
 
 Idle == [ph |-> "idle", id |-> 0, w |-> {}, g |-> 0]
@@ -138,8 +140,9 @@ Covering(K, s, o) == {c \in K : c.s = s /\ c.f <= o /\ o <= c.l}
 \* the new boundary when the committer stages the group.
 RemainderBase(s, w) == From(pend[s], w.u)
 
-\* Every forced memtable flush is preceded by an awaited WAL flush (7a).
-Takes7a == TRUE
+\* The retention boundary of a memtable flush: the frozen memtable's last
+\* sequence (slatedb/slatedb#2208), not the WAL's durable progress.
+FlushBoundary == Len(wal)
 
 -----------------------------------------------------------------------------
 (* SlateDB's memtable flush: the pages of stream s it writes to the L0,     *)
@@ -164,7 +167,6 @@ Init ==
     /\ objs = {}
     /\ sl = Idle
     /\ mstart = 0
-    /\ dl = "idle"
     /\ acked = {}
     /\ f2 = {}
     /\ dl0 = {}
@@ -183,14 +185,14 @@ AppendRec(s) ==
        IN /\ wal' = Append(wal, g)
           /\ app' = [app EXCEPT ![s].n = @ + 1]
           /\ pend' = [pend EXCEPT ![s] = Append(@, p)]
-    /\ UNCHANGED <<dur, pub, dtl, inc, dir, objs, sl, mstart, dl, acked, f2, dl0,
+    /\ UNCHANGED <<dur, pub, dtl, inc, dir, objs, sl, mstart, acked, f2, dl0,
                    late, refused, cnt>>
 
 (* A WAL flush (the pump, step 1, or anyone's): a longer durable prefix. *)
 WalFlush ==
     /\ dur < Len(wal)
     /\ \E d \in (dur + 1)..Len(wal) : dur' = d
-    /\ UNCHANGED <<wal, pub, app, dtl, pend, inc, dir, objs, sl, mstart, dl, acked,
+    /\ UNCHANGED <<wal, pub, app, dtl, pend, inc, dir, objs, sl, mstart, acked,
                    f2, dl0, late, refused, cnt>>
 
 (* Durable dispatch publishes the next durable group's tails; its records *)
@@ -202,7 +204,7 @@ Dispatch ==
                                     ELSE dtl[s]]
        /\ acked' = acked \cup UNION {{<<s, p>> : p \in Range(g.ap[s])} : s \in Streams}
     /\ pub' = pub + 1
-    /\ UNCHANGED <<wal, dur, app, pend, inc, dir, objs, sl, mstart, dl, f2, dl0,
+    /\ UNCHANGED <<wal, dur, app, pend, inc, dir, objs, sl, mstart, f2, dl0,
                    late, refused, cnt>>
 
 (* (2) The snapshot of every stream's durable unsealed pages, from memory. *)
@@ -210,19 +212,17 @@ Window(s) == [s |-> s, f |-> dtl[s].a, u |-> dtl[s].n,
               pg |-> Below(From(pend[s], dtl[s].a), dtl[s].n),
               rem |-> From(pend[s], dtl[s].n)]
 Snapshot ==
-    /\ sl.ph = "idle" /\ dl = "idle"
+    /\ sl.ph = "idle"
     /\ cnt.seal < MaxSeals
     /\ LET W == {Window(s) : s \in {t \in Streams :
                     /\ dtl[t].a < dtl[t].n
                     /\ Tiles(Below(From(pend[t], dtl[t].a), dtl[t].n), dtl[t].a, dtl[t].n)}}
        IN IF W = {}
-          THEN \* An empty seal: 7a, then 7b (seal_steps).
-               /\ dur' = IF Takes7a THEN Len(wal) ELSE dur
-               /\ sl' = [ph |-> "flushed", id |-> cnt.seal + 1, w |-> {}, g |-> 0]
-          ELSE /\ sl' = [ph |-> "snap", id |-> cnt.seal + 1, w |-> W, g |-> 0]
-               /\ UNCHANGED dur
+          THEN \* An empty seal: 7b (seal_steps).
+               sl' = [ph |-> "flushed", id |-> cnt.seal + 1, w |-> {}, g |-> 0]
+          ELSE sl' = [ph |-> "snap", id |-> cnt.seal + 1, w |-> W, g |-> 0]
     /\ cnt' = [cnt EXCEPT !.seal = @ + 1]
-    /\ UNCHANGED <<wal, pub, app, dtl, pend, inc, dir, objs, mstart, dl, acked, f2, dl0,
+    /\ UNCHANGED <<wal, dur, pub, app, dtl, pend, inc, dir, objs, mstart, acked, f2, dl0,
                    late, refused>>
 
 (* (3)(4) The object's PUT. *)
@@ -230,7 +230,7 @@ Put ==
     /\ sl.ph = "snap"
     /\ objs' = objs \cup {[id |-> sl.id, s |-> w.s, f |-> w.f, pg |-> w.pg] : w \in sl.w}
     /\ sl' = [sl EXCEPT !.ph = "put"]
-    /\ UNCHANGED <<wal, dur, pub, app, dtl, pend, inc, dir, mstart, dl, acked, f2, dl0,
+    /\ UNCHANGED <<wal, dur, pub, app, dtl, pend, inc, dir, mstart, acked, f2, dl0,
                    late, refused, cnt>>
 
 PutFails ==
@@ -238,7 +238,7 @@ PutFails ==
     /\ cnt.abort < MaxAborts
     /\ sl' = Idle
     /\ cnt' = [cnt EXCEPT !.abort = @ + 1]
-    /\ UNCHANGED <<wal, dur, pub, app, dtl, pend, inc, dir, objs, mstart, dl, acked,
+    /\ UNCHANGED <<wal, dur, pub, app, dtl, pend, inc, dir, objs, mstart, acked,
                    f2, dl0, late, refused>>
 
 Entries(s0) == {[s |-> w.s, f |-> w.f, l |-> w.u - 1, id |-> s0.id] : w \in s0.w}
@@ -248,7 +248,7 @@ Publish ==
     /\ sl.ph = "put"
     /\ dir' = dir \cup Entries(sl)
     /\ sl' = [sl EXCEPT !.ph = "pub"]
-    /\ UNCHANGED <<wal, dur, pub, app, dtl, pend, inc, objs, mstart, dl, acked, f2, dl0,
+    /\ UNCHANGED <<wal, dur, pub, app, dtl, pend, inc, objs, mstart, acked, f2, dl0,
                    late, refused, cnt>>
 
 (* (6) The committer stages the seal against the live tails, in a group    *)
@@ -300,58 +300,42 @@ Commit(A) ==
                 /\ late' = (late \/ \E w \in sl.w : Len(From(pend[w.s], w.u)) > Len(w.rem))
                 /\ sl' = [sl EXCEPT !.ph = "applied", !.g = Len(wal) + 1]
           /\ UNCHANGED <<dir, refused, cnt>>
-    /\ UNCHANGED <<dur, pub, dtl, inc, objs, mstart, dl, acked, f2, dl0>>
+    /\ UNCHANGED <<dur, pub, dtl, inc, objs, mstart, acked, f2, dl0>>
 
-(* The seal fails after its group applied (7a's WAL flush fails, or a test *)
-(* abort): the entries stay, the boundary moved in memory.                 *)
+(* The seal fails after its group applied (its memtable flush fails, or a  *)
+(* test abort): the entries stay, the boundary moved in memory.            *)
 AbortApplied ==
     /\ sl.ph = "applied"
     /\ cnt.abort < MaxAborts
     /\ sl' = Idle
     /\ cnt' = [cnt EXCEPT !.abort = @ + 1]
-    /\ UNCHANGED <<wal, dur, pub, app, dtl, pend, inc, dir, objs, mstart, dl, acked,
+    /\ UNCHANGED <<wal, dur, pub, app, dtl, pend, inc, dir, objs, mstart, acked,
                    f2, dl0, late, refused>>
 
-(* (7a) An awaited WAL flush. *)
-Seal7a ==
-    /\ sl.ph = "applied" /\ Takes7a
-    /\ dur' = Len(wal)
-    /\ sl' = [sl EXCEPT !.ph = "flushed"]
-    /\ UNCHANGED <<wal, pub, app, dtl, pend, inc, dir, objs, mstart, dl, acked, f2, dl0,
-                   late, refused, cnt>>
-
-(* (7b) After the wait for dispatch (or straight after the commit without  *)
-(* 7a), one forced memtable flush under the flush lock.                    *)
+(* (7b) One forced memtable flush under the flush lock, as soon as the     *)
+(* commit applied: the code waits for dispatch first (7a), a settlement   *)
+(* contract F2 does not rest on, so the model lets the flush overtake it.  *)
+(* The flush publishes once its WAL prefix is durable.                     *)
 Seal7b ==
-    /\ \/ sl.ph = "flushed" /\ pub >= sl.g
-       \/ sl.ph = "applied" /\ ~Takes7a
-    /\ dl = "idle"
-    /\ f2' = f2 \cup UNION {{<<w.s, p.o, w.u>> : p \in L0Pages(w.s, dur)} : w \in sl.w}
+    /\ sl.ph \in {"applied", "flushed"}
+    /\ f2' = f2 \cup UNION {{<<w.s, p.o, w.u>> : p \in L0Pages(w.s, FlushBoundary)} : w \in sl.w}
     /\ mstart' = Len(wal)
     /\ dur' = Len(wal)
     /\ sl' = Idle
-    /\ UNCHANGED <<wal, pub, app, dtl, pend, inc, dir, objs, dl, acked, dl0, late,
+    /\ UNCHANGED <<wal, pub, app, dtl, pend, inc, dir, objs, acked, dl0, late,
                    refused, cnt>>
 
-(* A deadline flush: 7a, then (a separate step, under the flush lock) the  *)
-(* memtable flush.  Groups may apply in between.                           *)
-DeadlineWal ==
-    /\ dl = "idle" /\ cnt.dead < MaxDeadlines
-    /\ dur' = IF Takes7a THEN Len(wal) ELSE dur
-    /\ dl' = "wal"
-    /\ cnt' = [cnt EXCEPT !.dead = @ + 1]
-    /\ UNCHANGED <<wal, pub, app, dtl, pend, inc, dir, objs, sl, mstart, acked, f2, dl0,
-                   late, refused>>
-
-DeadlineMem ==
-    /\ dl = "wal"
+(* A deadline flush: one forced memtable flush under the flush lock, at any *)
+(* point of a seal (it may race the seal's commit).                        *)
+Deadline ==
+    /\ cnt.dead < MaxDeadlines
     /\ LET F == Fold(wal) IN
-       dl0' = dl0 \cup UNION {{<<s, q.o>> : q \in {r \in L0Pages(s, dur) : r.o < F[s].a}} : s \in Streams}
+       dl0' = dl0 \cup UNION {{<<s, q.o>> : q \in {r \in L0Pages(s, FlushBoundary) : r.o < F[s].a}} : s \in Streams}
     /\ mstart' = Len(wal)
     /\ dur' = Len(wal)
-    /\ dl' = "idle"
+    /\ cnt' = [cnt EXCEPT !.dead = @ + 1]
     /\ UNCHANGED <<wal, pub, app, dtl, pend, inc, dir, objs, sl, acked, f2, late,
-                   refused, cnt>>
+                   refused>>
 
 (* A crash and the restart: the durable prefix survives; the directory is  *)
 (* rebuilt from its 'K' rows and each stream loads its tail and pending    *)
@@ -369,11 +353,10 @@ CrashRestart ==
     /\ inc' = inc + 1
     /\ sl' = Idle
     /\ mstart' = Min(mstart, dur)
-    /\ dl' = "idle"
     /\ cnt' = [cnt EXCEPT !.crash = @ + 1]
     /\ UNCHANGED <<dur, objs, acked, f2, dl0, late, refused>>
 
-Quiet == sl.ph = "idle" /\ dl = "idle" /\ pub = dur
+Quiet == sl.ph = "idle" /\ pub = dur
 Terminated == Quiet /\ UNCHANGED vars
 
 Next ==
@@ -381,8 +364,8 @@ Next ==
     \/ WalFlush \/ Dispatch
     \/ Snapshot \/ Put \/ PutFails \/ Publish
     \/ \E A \in SUBSET Streams : Commit(A)
-    \/ AbortApplied \/ Seal7a \/ Seal7b
-    \/ DeadlineWal \/ DeadlineMem
+    \/ AbortApplied \/ Seal7b
+    \/ Deadline
     \/ CrashRestart
     \/ Terminated
 
@@ -394,7 +377,6 @@ Spec == Init /\ [][Next]_vars
 TypeOK ==
     /\ dur \in 0..Len(wal) /\ pub \in 0..dur /\ mstart \in 0..Len(wal)
     /\ sl.ph \in {"idle", "snap", "put", "pub", "applied", "flushed"}
-    /\ dl \in {"idle", "wal"}
     /\ \A s \in Streams : /\ app[s].a <= app[s].n /\ app[s].n <= N
                           /\ dtl[s].a <= dtl[s].n /\ dtl[s].n <= app[s].n
 
@@ -452,6 +434,10 @@ MemoryDirectoryCovers ==
 F2_SealFlushLeavesNoSealedPage ==
     \A x \in f2 : x[2] >= x[3]
 
+\* (F2) Nor does a deadline flush, even one that races a seal's commit: the
+\* remainder put shadows the sealed pages below the flush's boundary.
+F2_DeadlineFlushLeavesNoSealedPage == dl0 = {}
+
 -----------------------------------------------------------------------------
 (* Reachability witnesses (each must be violated on the baseline).         *)
 
@@ -466,11 +452,6 @@ Witness_RemainderCarriesLatePage == ~late
 Witness_CrashAfterSealRecovered ==
     ~(cnt.crash >= 1 /\ \E s \in Streams : 0 < app[s].a /\ app[s].a < app[s].n
                                            /\ \E x \in acked : x[1] = s /\ x[2].o >= app[s].a)
-
-\* A deadline flush racing a seal's commit (applied after the deadline's
-\* 7a, before its memtable flush) writes that seal's sealed pages to an L0
-\* (a cost, not a loss: the put shadows them for every read).
-Witness_DeadlineCarriesSealedPages == dl0 = {}
 
 \* A seal's group also appended to the stream it sealed: the remainder put
 \* carries the group's own page.
