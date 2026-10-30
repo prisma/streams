@@ -43,6 +43,7 @@ const CLASS: Readonly<Record<number, string>> = {
   14: "PAGE", 15: "NOTIFY / PAGE", 16: "PAGE / NOTIFY", 17: "NOTIFY", 18: "NOTIFY",
   19: "PAGE", 20: "NOTIFY", 21: "PAGE", 22: "PAGE", 23: "NOTIFY", 24: "NOTIFY", 25: "NOTIFY",
   26: "NOTIFY", 27: "NOTIFY", 28: "NOTIFY", 29: "NOTIFY", 30: "PAGE", 31: "PAGE", 32: "NOTIFY",
+  33: "PAGE / NOTIFY",
 };
 /// Where each class goes: §7.5's "Who answers" names them.
 const TO: Readonly<Record<string, string>> = { PAGE: "`<on-call>`", NOTIFY: "`<notify channel>`" };
@@ -56,12 +57,12 @@ describe("RUNBOOK.md's What to alert on", () => {
     expect(header).toEqual(["#", "rule", "class", "where", "alert when", "paged by"]);
   });
 
-  test("holds rows 1 to 32 once each but row 13 (retired with the history tier), in order, each saying where and when", () => {
+  test("holds rows 1 to 33 once each but row 13 (retired with the history tier), in order, each saying where and when", () => {
     expect(rows.map((c) => c[0])).toEqual(ROWS.map(String));
     for (const c of rows) expect([c[0], c.length, (c[3] ?? "") !== "", (c[4] ?? "") !== ""]).toEqual([c[0], 6, true, true]);
   });
 
-  test("names the rule RULES runs for rows 3 to 32, the level rules marked, and the paging tool's checks for 1 and 2", () => {
+  test("names the rule RULES runs for rows 3 to 33, the level rules marked, and the paging tool's checks for 1 and 2", () => {
     expect([cells(1)[1], cells(2)[1]]).toEqual(["uptime check", "heartbeat"]);
     for (const r of RULES) expect([r.row, cells(r.row)[1]]).toEqual([r.row, `\`${r.id}\`${r.level ? " (level)" : ""}`]);
   });

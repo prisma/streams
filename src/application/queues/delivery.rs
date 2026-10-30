@@ -77,6 +77,19 @@ impl QueueService {
         key: &QueueKey,
         messages: Vec<crate::native_queue::SendMessage>,
     ) -> Result<Vec<SendResult>, QueueFailure> {
+        // The L0 watermark (`shard::layout::l0_watermark`), as for appends:
+        // a send waits while the shard's log nears SlateDB's L0 stall; the
+        // consumers' claims and settles, which drain it, stay admitted.
+        if let Some(retry) = t.engine.shed_l0_write() {
+            return Err(QueueFailure {
+                retry_after: Some(retry),
+                ..fail(
+                    FailureClass::Unavailable,
+                    "shard_l0_backpressure",
+                    "the shard's log is at its L0 watermark; retry after compaction drains it",
+                )
+            });
+        }
         let op = NqOp::Send {
             messages,
             subkey: key.subkey,

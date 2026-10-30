@@ -226,6 +226,7 @@ is `docs/refactor/WIRE-MATRIX.md` §0 and §2.
 | `subscription_capacity` | The server holds its 1,200 live subscriptions | true | 5 |
 | `temporarily_unavailable` | Storage could not be read for this request, or the stream's shard is opening (a deploy or a restart) | true | 1 |
 | `maintenance_backpressure` | The stream's storage maintenance is behind | true | when given |
+| `shard_l0_backpressure` | An append or a queue send while the stream's or queue's storage shard waits for compaction to catch up; reads, claims and settles are served | true | 2 |
 | `project_tracker_capacity` | The server tracks too many projects at once | true | no |
 | `policy_stale`, `grants_stale`, `keys_stale` | The server's copy of the access policy is too old | true | 1 |
 | `outcome_unknown` | A plain append was in flight when its shard moved (a deploy or a restart): it may or may not have been written | **false** | 1 |

@@ -4487,6 +4487,94 @@
       "path": "src/shard/seal/gc/pass_tests.rs",
       "reason": "Expression selection between a collector loop of the test's own and the test's body, which ends it (layout 6A package 6); the compiler checks the expansion and both branches are plain futures of this function.",
       "syntax": "tokio::select"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::l0_watermark",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The shard log's L0 watermark end to end (edge #234): with compaction held back the shed engages at the high mark below SlateDB's L0 stall, refuses appends and queue sends with a retryable 503 while reads, settles and the control plane are served, admits everything below the mark and releases once compaction catches up; its negative control meets the stall; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/l0_watermark.rs\""
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::L0_LINE",
+      "path": "src/backpressure.rs",
+      "reason": "The shard log's l0_max_ssts as this process runs it (edge #234): boot sets it once from the CLI where the shard settings are built (bootstrap::shard_config), every engine's L0 watermark derives its marks from it; a setting, no runtime or tenant state.",
+      "syntax": "AtomicUsize"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::rig",
+      "path": "src/dst/tests/l0_watermark.rs",
+      "reason": "Exact request documents and expected wire answers of the L0 watermark's DST (edge #234): appends, queue sends and settles, and the 503 shard_l0_backpressure answers; serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::call_headers",
+      "path": "src/dst/tests/l0_watermark.rs",
+      "reason": "Exact request documents and expected wire answers of the L0 watermark's DST (edge #234): appends, queue sends and settles, and the 503 shard_l0_backpressure answers; serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::append",
+      "path": "src/dst/tests/l0_watermark.rs",
+      "reason": "Exact request documents and expected wire answers of the L0 watermark's DST (edge #234): appends, queue sends and settles, and the 503 shard_l0_backpressure answers; serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::send_headers",
+      "path": "src/dst/tests/l0_watermark.rs",
+      "reason": "Exact request documents and expected wire answers of the L0 watermark's DST (edge #234): appends, queue sends and settles, and the 503 shard_l0_backpressure answers; serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::maintenance_shards_json",
+      "path": "src/http/maintenance_view.rs",
+      "reason": "Operator-debug JSON document (`/v1/debug/load` maintenance_shards: each shard's backlog, maintenance shed and L0 watermark, edge #234), moved out of src/http.rs; serde macro output is compiled and its fields are asserted by the L0 watermark DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::L0Watermark::json",
+      "path": "src/shard/layout/l0_watermark.rs",
+      "reason": "Operator-debug JSON document (one engine's L0 watermark: count, marks, shed state and counters, edge #234); serde macro output is compiled and pinned by the watermark's unit tests and DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::crate :: shard :: ShardEngine::l0_watch_loop",
+      "path": "src/shard/layout/l0_watermark.rs",
+      "reason": "Expression selection between the watermark's tick and the engine's close (edge #234); the compiler checks the expansion and both branches are plain futures of this function.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::writes_are_shed",
+      "path": "src/dst/tests/l0_watermark.rs",
+      "reason": "Exact request documents and expected wire answers of the L0 watermark's DST (edge #234): appends, queue sends and settles, and the 503 shard_l0_backpressure answers; serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::the_rest_is_served",
+      "path": "src/dst/tests/l0_watermark.rs",
+      "reason": "Exact request documents and expected wire answers of the L0 watermark's DST (edge #234): appends, queue sends and settles, and the 503 shard_l0_backpressure answers; serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
     }
   ]
 }

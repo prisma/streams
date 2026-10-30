@@ -58,6 +58,18 @@ pub(super) async fn submit(
             )
             .map_err(|e| e.retry(5));
         }
+        // The L0 watermark (`shard::layout::l0_watermark`): a shard whose
+        // log nears SlateDB's L0 stall takes no new records until
+        // compaction drains it, so its settles and control plane never
+        // meet the stall.
+        if let Some(retry) = engine.shed_l0_write() {
+            return fail(
+                FailureClass::Unavailable,
+                AppendCode::ShardL0Backpressure,
+                "the shard's log is at its L0 watermark; retry after compaction drains it",
+            )
+            .map_err(|e| e.retry(retry));
+        }
     }
     // Wedge shed: if the shard's durability pipeline is stalled — either
     // the commit db.write is blocked (unflushed-full) or committed groups

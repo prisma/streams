@@ -55,6 +55,12 @@ pub(super) fn render_product_append_error(error: AppendFailure) -> Response {
             None,
             true,
         ),
+        C::ShardL0Backpressure => (
+            "shard_l0_backpressure",
+            "the shard's log is at its L0 watermark; retry after compaction drains it",
+            None,
+            true,
+        ),
         C::ShardMoving if error.outcome_unknown() => (
             "outcome_unknown",
             "the shard moved while this append was in flight; it may or may not have been written; retry only if a second copy is acceptable, or append through a producer",

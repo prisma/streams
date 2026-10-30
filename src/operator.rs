@@ -131,6 +131,15 @@ pub(crate) async fn data(
         "gc_inexact_decrements": state.shards.engines().iter().map(|e| e.gc_inexact()).sum::<u64>(),
         "gc_unreclaimed_incarnations": state.shards.engines().iter().map(|e| e.gc_reclaim_lag().0).sum::<u64>(),
         "gc_oldest_unreclaimed_late_secs": state.shards.engines().iter().map(|e| e.gc_reclaim_lag().1).max().unwrap_or(0),
+        // The shard logs' L0 watermark (edge #234; cell-watch row 33):
+        // the most L0s any local shard log holds against the line, the
+        // shards shedding appends and queue sends now, the writes shed and
+        // the collector passes not started since each engine opened.
+        "l0_max": state.shards.engines().iter().map(|e| e.l0_gauge().count).max().unwrap_or(0),
+        "l0_line": crate::backpressure::l0_line(),
+        "l0_shards_shedding": state.shards.engines().iter().filter(|e| e.l0_gauge().shedding).count(),
+        "l0_write_sheds": state.shards.engines().iter().map(|e| e.l0_gauge().sheds).sum::<u64>(),
+        "l0_collector_yields": state.shards.engines().iter().map(|e| e.l0_gauge().yields).sum::<u64>(),
         // per-op-class store latency, sentinels, steal — non-destructive read
         "store": crate::store_timing::snapshot(60, false, &state.runtime.store_io, &shard_opens),
     });

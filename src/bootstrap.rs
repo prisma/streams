@@ -118,6 +118,9 @@ fn shard_config(args: &crate::config::CliArgs) -> ShardConfig {
     // equivalent mutant.
     config.wal_gather_skip_reqs = crate::config::EngineConfig::WAL_GATHER_SKIP_REQS;
     config.wal_gather_skip_bytes = crate::config::EngineConfig::WAL_GATHER_SKIP_BYTES;
+    // The shard log's `l0_max_ssts` reaches each engine's L0 watermark as
+    // the process's line.
+    crate::backpressure::set_l0_line(args.l0_max_ssts);
     config
 }
 

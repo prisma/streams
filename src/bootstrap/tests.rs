@@ -78,6 +78,21 @@ fn the_parsed_shard_settings_reach_every_shard_engine() {
     );
 }
 
+/// The shard log's `l0_max_ssts` is the line every engine's L0 watermark
+/// derives its marks from (`shard::layout::l0_watermark`): the shard
+/// configuration's build hands it to the process. (Another test's engine
+/// sees 48 only while this one runs, which can only delay its shed.)
+#[test]
+fn the_shard_logs_l0_line_reaches_the_l0_watermark() {
+    let cli = crate::config::CliArgs::deterministic();
+    let mut tuned = cli.clone();
+    tuned.l0_max_ssts = 48;
+    shard_config(&tuned);
+    assert_eq!(crate::backpressure::l0_line(), 48);
+    shard_config(&cli);
+    assert_eq!(crate::backpressure::l0_line(), 32, "the CLI default");
+}
+
 /// The sealer posture every engine of a server that sets nothing runs (no
 /// sealer knob comes from the command line): a seal once 24 MiB is unsealed,
 /// 42 WAL objects were written since the last seal or the oldest page is

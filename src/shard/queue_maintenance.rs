@@ -256,6 +256,8 @@ impl ShardEngine {
         });
         let collector = self.clone();
         self.spawn_required("seal-gc", async move { collector.gc_loop().await });
+        let watch = self.clone();
+        self.spawn_required("l0-watch", async move { watch.l0_watch_loop().await });
     }
 
     /// Waits for the next tick; false once the engine closes.
@@ -371,11 +373,19 @@ impl ShardEngine {
     /// waited out another collects what is left then, and nothing when the
     /// other cleared it, so it never rewrites the run that pass just wrote
     /// and then waits on garbage collection for it.
+    ///
+    /// No pass starts while the shard log's L0s are at the watermark's
+    /// yield mark (checked once the pass holds the permit, so a pass that
+    /// waited out another checks then): the scheduler has the compaction
+    /// slot to itself until they drain (`layout::l0_watermark`).
     async fn maybe_collect(&self) -> Result<(), String> {
         if self.due_debt().await?.is_none() {
             return Ok(());
         }
         let _permit = PASS_PERMIT.acquire().await.map_err(|e| e.to_string())?;
+        if self.layout.l0.collector_yields() {
+            return Ok(());
+        }
         let Some(due) = self.due_debt().await? else {
             return Ok(());
         };

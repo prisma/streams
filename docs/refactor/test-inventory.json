@@ -9258,6 +9258,17 @@
     ]
   },
   {
+    "name": "the_l0_watermark_sheds_writes_before_the_stall_and_resumes_after_catch_up",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "099ef16e87a24845de10b8b76d694a7ac79c12d4969bfd49e278a577ad78ac13",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/l0_watermark.rs",
+    "scenarios": []
+  },
+  {
     "name": "the_largest_creatable_descriptor_with_a_full_segment_map_fits_the_catalog_guard",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -9818,6 +9829,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/quota_enforcement.rs",
+    "scenarios": []
+  },
+  {
+    "name": "without_the_shed_the_climb_meets_slatedbs_l0_stall",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "aa357c7224864077b2b716f753b126b51a8de4e6390036b1b440b781484e1f1e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/l0_watermark.rs",
     "scenarios": []
   },
   {

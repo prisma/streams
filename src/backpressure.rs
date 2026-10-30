@@ -31,7 +31,23 @@
 //!    snapshot; the request path reads one atomic. Walking the lag map
 //!    per request would put the overload on the hot path.
 
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+
+/// The shard log's `l0_max_ssts` as this process runs it (the CLI default
+/// until boot sets it): the line every engine's L0 watermark derives its
+/// marks from (`shard::layout::l0_watermark`). The shard settings hand it
+/// to SlateDB, which does not hand it back.
+static L0_LINE: AtomicUsize = AtomicUsize::new(32);
+
+/// Boot sets the process's L0 line (`bootstrap::shard_config`).
+pub(crate) fn set_l0_line(line: usize) {
+    L0_LINE.store(line, Ordering::Relaxed);
+}
+
+/// The process's L0 line.
+pub(crate) fn l0_line() -> usize {
+    L0_LINE.load(Ordering::Relaxed)
+}
 
 /// Thresholds. Zero disables an individual bound.
 ///

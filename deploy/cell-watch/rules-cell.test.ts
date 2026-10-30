@@ -573,6 +573,35 @@ describe("row 32: gc reclaim lag", () => {
   });
 });
 
+describe("row 33: the L0 watermark", () => {
+  const l0 = (edits: Record<string, Json>) =>
+    data(Object.fromEntries(Object.entries(edits).map(([k, v]) => [`local.${k}`, v])));
+
+  test("pages while a shard sheds or on writes shed, notifies from five eighths of the line", () => {
+    const cases: [Record<string, Json>, Class | undefined][] = [
+      [{ l0_max: 24, l0_shards_shedding: 1 }, "PAGE"],
+      [{ l0_max: 20 }, "NOTIFY"],
+      [{ l0_max: 40, l0_line: 64 }, "NOTIFY"],
+      [{ l0_max: 19 }, undefined],
+      [{ l0_max: 39, l0_line: 64 }, undefined],
+    ];
+    for (const [edits, want] of cases) {
+      const w = new Watch();
+      w.poll(l0(edits));
+      expect([edits, fired(w, 33).map((e) => e.class)]).toEqual([edits, want === undefined ? [] : [want]]);
+    }
+    const w = new Watch();
+    w.polls(MIN_POLLS, l0({ l0_write_sheds: 5 }));
+    expect(fired(w, 33)).toEqual([]);
+    w.poll(l0({ l0_write_sheds: 9 }));
+    expect(fired(w, 33).map((e) => [e.class, e.values])).toEqual([
+      ["PAGE", { l0_max: 2, l0_line: 32, l0_shards_shedding: 0, l0_write_sheds_growth: 4 }],
+    ]);
+    w.polls(MIN_POLLS, l0({ l0_write_sheds: 9 }));
+    expect(row(w, 33)).toEqual([["trigger", "PAGE"], ["resolve", "PAGE"]]);
+  });
+});
+
 describe("row 26: usage overflow", () => {
   test("notifies on any overflow admit", () => {
     const w = new Watch();

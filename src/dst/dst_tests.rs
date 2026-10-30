@@ -30,6 +30,8 @@ mod billing_closure_owners;
 
 #[path = "tests/billing_late_close.rs"]
 mod billing_late_close;
+#[path = "tests/l0_watermark.rs"]
+mod l0_watermark;
 #[path = "tests/purge_lifecycle.rs"]
 mod purge_lifecycle;
 

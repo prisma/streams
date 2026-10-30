@@ -176,6 +176,14 @@ OWNERS = (
     owner('spill_cache', 'src/spill/cache.rs', 'spill::cache_tests:: shard::seal::read_tests::only_a_whole_chunk_is_cached shard::seal::consolidate_tests::'),
     owner('spill_budget', 'src/spill/budget.rs', 'config::tests::layout6_index_and_read_budgets spill::cache_tests:: shard::seal::memory_tests:: shard::seal::fold_tests::'),
     owner('transaction_seal', 'src/shard/transaction/seal.rs', 'shard::seal:: shard::commit_plan::'),
+    # The L0 watermark (edge #234): its marks, the tick, the shed and the
+    # collector's yield, and the debug view that reports it.
+    owner('shard_l0_watermark', 'src/shard/layout/l0_watermark.rs',
+          'shard::layout::l0_watermark:: dst_tests::l0_watermark:: '
+          'native_queue_collection_yields_while_the_l0s_are_at_the_yield_mark '
+          'bootstrap::tests::the_shard_logs_l0_line_reaches_the_l0_watermark'),
+    owner('http_maintenance_view', 'src/http/maintenance_view.rs',
+          'dst_tests::l0_watermark:: dst_tests::admission_maintenance::'),
     owner('shard_layout', 'src/shard/layout.rs', 'shard::billing_read_tests:: shard::bounded_outbox_tests:: dst_tests::billing_restart:: dst_tests::billing_usage:: shard::seal::gc_tests::'),
     owner('shard_billing_ops', 'src/shard/billing_ops.rs', 'shard:: dst_tests::billing_walk_custody::'),
     owner('bootstrap', 'src/bootstrap.rs', 'bootstrap::'),
@@ -377,7 +385,8 @@ OWNERS = (
         ('product::', 'dst_tests::product_lifecycle::', 'dst_tests::product_descriptor_reads::',
          'dst_tests::security_operations::', 'dst_tests::security_routes::',
          'dst_tests::admission_memory::project_memory_pressure_throttles_new_appends_only',
-         'dst_tests::queue_overload::a_queue_write_is_held_to_its_projects_memory_line'),
+         'dst_tests::queue_overload::a_queue_write_is_held_to_its_projects_memory_line',
+         'dst_tests::l0_watermark::'),
     ),
     owner('product_usage', 'src/product/usage.rs',
           'dst_tests::security_usage:: dst_tests::billing_usage:: dst_tests::billing_attribution:: '
@@ -460,7 +469,7 @@ OWNERS = (
           'application::append:: dst_tests::append_application:: dst_tests::topology_lifecycle::'),
     owner('append_submit', 'src/application/append/submit.rs',
           'application::append:: dst_tests::append_application:: dst_tests::durability_failures:: '
-          'dst_tests::persistence_faults::'),
+          'dst_tests::persistence_faults:: dst_tests::l0_watermark::'),
     # Production files under a critical prefix that the planner listed as
     # unregistered (NEXT-WORK §10): a push that changes one was refused.
     owner('read_range', 'src/application/read_range.rs',

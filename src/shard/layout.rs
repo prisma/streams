@@ -17,10 +17,14 @@
 //! - **The unsealed set**: every stream whose handle holds unsealed pages.
 //! - **The sealer's state** (`shard::seal`): its directory, triggers and
 //!   counters.
+//! - **The L0 watermark** (`l0_watermark`): the shard log's L0 count, the
+//!   collector's yield and the write shed it decides.
 
 use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::sync::Mutex;
+
+pub(crate) mod l0_watermark;
 
 /// A stream's static billing meta as its handle holds it (layout 6, f3):
 /// not yet read, or read (or written) with zero counters, `None` for a
@@ -56,6 +60,8 @@ pub(crate) struct LayoutState {
     unsealed: Mutex<BTreeMap<[u8; 16], std::sync::Arc<super::StreamHandle>>>,
     /// The sealer's state (`shard::seal`).
     pub(crate) seal: super::seal::SealState,
+    /// The L0 watermark (`l0_watermark`).
+    pub(crate) l0: l0_watermark::L0Watermark,
 }
 
 /// The usage dirty set.

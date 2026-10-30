@@ -17,22 +17,22 @@ const slug = (heading: string) =>
   heading.trim().toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, "").replace(/\s/g, "-");
 
 describe("the table", () => {
-  test("holds rows 3 to 32 once each but row 13 (retired with the history tier), every anchor a RUNBOOK heading, the level rules 8, 10, 12 and 14 to 16", () => {
-    const rows = Array.from({ length: 30 }, (_, i) => i + 3).filter((row) => row !== 13);
+  test("holds rows 3 to 33 once each but row 13 (retired with the history tier), every anchor a RUNBOOK heading, the level rules 8, 10, 12, 14 to 16 and 33", () => {
+    const rows = Array.from({ length: 31 }, (_, i) => i + 3).filter((row) => row !== 13);
     expect(RULES.map((r) => r.row)).toEqual(rows);
-    expect(new Set(RULES.map((r) => r.id)).size).toBe(29);
+    expect(new Set(RULES.map((r) => r.id)).size).toBe(30);
     for (const r of RULES) expect(r.id).toMatch(new RegExp(`^r${String(r.row).padStart(2, "0")}_[a-z0-9_]+$`));
     const runbook = readFileSync(join(import.meta.dir, "..", "..", "RUNBOOK.md"), "utf8");
     const anchors = new Set(
       runbook.split("\n").filter((l) => /^#{1,6} /.test(l)).map((l) => `RUNBOOK.md#${slug(l.replace(/^#+ /, ""))}`),
     );
     for (const r of RULES) expect([r.id, anchors.has(r.anchor)]).toEqual([r.id, true]);
-    expect(RULES.filter((r) => r.level).map((r) => r.row)).toEqual([8, 10, 12, 14, 15, 16]);
+    expect(RULES.filter((r) => r.level).map((r) => r.row)).toEqual([8, 10, 12, 14, 15, 16, 33]);
   });
 
   test("the issuer's rows run only with ISSUER_ORIGIN, row 5 only with EXPECTED_GIT", () => {
     const on = (cfg: typeof CFG) => RULES.filter((r) => r.enabled(cfg)).map((r) => r.row);
-    expect(on(CFG)).toEqual([3, 4, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20, 23, 24, 25, 26, 29, 30, 31, 32]);
+    expect(on(CFG)).toEqual([3, 4, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20, 23, 24, 25, 26, 29, 30, 31, 32, 33]);
     expect(on(ALL_ROWS)).toEqual(RULES.map((r) => r.row));
   });
 });
@@ -268,6 +268,10 @@ function lacedData(i: number): Json {
     "local.sealed_index_corrupt_rows": 1,
     "local.gc_inexact_decrements": 1,
     "local.gc_oldest_unreclaimed_late_secs": 7200,
+    "local.l0_max": 30,
+    "local.l0_line": 32,
+    "local.l0_shards_shedding": 1,
+    "local.l0_write_sheds": i,
     "ops.cell": laced,
     "ops.counters.unowned_meter_events_total": i,
     "ops.counters.ingest_bytes_total": i * 1000,

@@ -4847,6 +4847,21 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Status:** ratified by the lead under the owner's delegation, 2026-10-30.
 - **Check against commit:** written with the change.
 
+### #234 (this record's commit) — A shard whose log nears SlateDB's L0 stall refuses appends and queue sends with a retryable 503 `shard_l0_backpressure` until compaction drains it
+
+- **Program item:** the owner's L0-watermark fail-safe (approved 2026-10-30; built under the lead's delegation after layout 6A package 6).
+- **Surface:** append (raw and product, single and batch); native queue send; operator and debug surfaces.
+- **Endpoint:** `POST /v1/stream/{name}`, `POST /v1/streams/{name}/records`, `records:batch` and every other path into the shared append core (`application/append/submit.rs`); `POST /v1/queues/{name}/messages` and `messages:batch` (`QueueService::send_sealed`); `GET /operator/data.json` `local`; `GET /v1/debug/load` `maintenance_shards`.
+- **Condition:** the stream's or queue's shard engine has its L0 shed engaged: its tick (once a second, from the in-memory manifest) read at least three quarters of the shard log's `l0_max_ssts` L0 SSTs in some tree (24 of 32), and has not since read fewer than half (16). The marks are derived from `L0_MAX_SSTS`. A close-only request and appends to reserved system streams are exempt, as from the maintenance shed.
+- **Before:** appends and sends were admitted until the L0s reached `l0_max_ssts`; the next memtable flush then stalled every write of the shard (SlateDB), settles, deletes and the control plane included, until compaction freed a slot; the queue collector could hold the compaction slot through it.
+- **After:** while engaged, an append answers 503 `shard_l0_backpressure` "the shard's log is at its L0 watermark; retry after compaction drains it" with `retry-after: 2` (raw; the product surface keeps the code and the header, retryable), and a queue send the same code in the queue envelope with `Retry-After: 2`. Reads, claims, settles, deletes, creates and every control-plane call are served. From half the line the queue collector starts no pass, so the scheduler has the compaction slot. Operator fields `local.l0_max`, `l0_line`, `l0_shards_shedding`, `l0_write_sheds`, `l0_collector_yields`; `/v1/debug/load` adds `maintenance_shards.l0_shards_shedding`, `l0_max` and each shard's `l0` (`l0, max_seen, line, yield_at, high, low, shedding, engages, sheds, collector_yields`); cell-watch row 33.
+- **Retry semantics:** retryable; nothing was written. A producer-keyed append retries with the same triple.
+- **Who is affected:** writers to a shard whose compaction falls behind its flushes; they see a short 503 instead of a stalled shard. Nothing below the high mark is refused.
+- **Pinning tests:** `dst::dst_tests::l0_watermark::the_l0_watermark_sheds_writes_before_the_stall_and_resumes_after_catch_up` (raw and product append, queue send, read, settle, create, delete, the release after catch-up); negative control `without_the_shed_the_climb_meets_slatedbs_l0_stall`; the marks `shard::layout::l0_watermark::tests` (16/24/16 at 32, derived from the line); `bootstrap::tests::the_shard_logs_l0_line_reaches_the_l0_watermark`; cell-watch `rules-cell.test.ts` row 33. No cell-watch drill: a deployed cell has no switch that holds compaction back, and the fail-safe adds none.
+- **Risk reason:** medium. A new client-visible refusal on the write path, bounded to a shard already headed for a full stall.
+- **Status:** ratified by the lead under the owner's delegation, 2026-10-30.
+- **Check against commit:** written with the change.
+
 ## Discrepancies
 
 One record has verified=false: its commit did not match the recorded text.

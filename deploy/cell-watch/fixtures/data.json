@@ -256,6 +256,11 @@
     "gc_inexact_decrements": 0,
     "gc_unreclaimed_incarnations": 0,
     "gc_oldest_unreclaimed_late_secs": 0,
+    "l0_max": 2,
+    "l0_line": 32,
+    "l0_shards_shedding": 0,
+    "l0_write_sheds": 0,
+    "l0_collector_yields": 0,
     "wedge_shed": 0
   },
   "ops": {

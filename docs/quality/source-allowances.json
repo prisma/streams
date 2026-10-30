@@ -2565,13 +2565,6 @@
     {
       "category": "macro-dsl",
       "count": 1,
-      "owner": "crate::maintenance_shards_json",
-      "path": "src/http.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
       "owner": "crate::spawn_runtime_watchdog",
       "path": "src/http.rs",
       "syntax": "tokio::select"

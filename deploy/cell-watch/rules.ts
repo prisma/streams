@@ -752,6 +752,24 @@ function gcReclaimLag(c: Ctx): Answer {
   return late > 3600 ? fire("NOTIFY", { gc_oldest_unreclaimed_late_secs: late }) : "clean";
 }
 
+/// The shard logs' L0 watermark (edge #234): `local.l0_max` L0s against
+/// `local.l0_line` (`l0_max_ssts`). PAGE while a local shard sheds appends
+/// and queue sends (`local.l0_shards_shedding`, from three quarters of the
+/// line) or shed any since the last poll; NOTIFY from five eighths of the
+/// line (20 of 32), before the shed: compaction is falling behind.
+function l0Watermark(c: Ctx): Answer {
+  const l0 = num(get(c.poll.data, "local", "l0_max"));
+  const line = num(get(c.poll.data, "local", "l0_line"));
+  const shedding = num(get(c.poll.data, "local", "l0_shards_shedding"));
+  const sheds = num(get(c.poll.data, "local", "l0_write_sheds"));
+  if (l0 === null || line === null || shedding === null || sheds === null) return "skip";
+  const g = c.growth("local.l0_write_sheds", sheds);
+  const values = { l0_max: l0, l0_line: line, l0_shards_shedding: shedding, l0_write_sheds_growth: g };
+  if (shedding > 0 || g > 0) return fire("PAGE", values);
+  if (l0 * 8 >= line * 5) return fire("NOTIFY", values);
+  return "clean";
+}
+
 /// /v1/admin/metrics `cache_age_secs` (deploy/issuer/ops.ts).
 function issuerCacheAge(c: Ctx): Answer {
   const age = num(get(c.poll.issuerMetrics, "cache_age_secs"));
@@ -827,6 +845,7 @@ export const RULES: readonly Rule[] = [
   rule(30, "sealed_index_corrupt", RUNBOOK.store, sealedIndexCorrupt),
   rule(31, "gc_inexact", RUNBOOK.store, gcInexact),
   rule(32, "gc_reclaim_lag", RUNBOOK.store, gcReclaimLag),
+  rule(33, "l0_watermark", RUNBOOK.shared, l0Watermark, { level: true }),
 ];
 
 // ---- the step --------------------------------------------------------------

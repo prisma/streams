@@ -580,47 +580,6 @@ pub(crate) fn resolve_error_response(e: crate::shard_directory::ResolveError) ->
     }
 }
 
-/// Per-engine maintenance state for /v1/debug/load (R25-C).
-fn maintenance_shards_json(state: &AppState) -> serde_json::Value {
-    let engines: Vec<Arc<ShardEngine>> = state.shards.engines();
-    let now = crate::shard::now_ms();
-    let shards_engaged = engines
-        .iter()
-        .filter(|e| {
-            e.maintenance_shard_shed
-                .load(std::sync::atomic::Ordering::Relaxed)
-        })
-        .count();
-    serde_json::json!({
-        "owned_shards": engines.len(),
-        // R27-1: the per-shard machine's engaged count, reported next
-        // to (not merged with) the instance machine's state.
-        "shards_engaged": shards_engaged,
-        // R26-7: the exact cumulative frame-byte totals (actual
-        // quantities per R26-2 — a mixed group counts both sides), so a
-        // campaign can compute the corrected absorption ratio from the
-        // field instead of a payload-unit artifact. Committed and
-        // retired here are the SAME unit as unabsorbed_frame_bytes:
-        // encoded frame bytes.
-        "ingest_frame_bytes_total": crate::shard::INGEST_FRAME_BYTES_TOTAL
-            .load(std::sync::atomic::Ordering::Relaxed),
-        "absorbed_frame_bytes_total": crate::shard::ABSORBED_FRAME_BYTES_TOTAL
-            .load(std::sync::atomic::Ordering::Relaxed),
-        "shards": engines.iter().map(|e| {
-            let m = e.maintenance_snapshot();
-            serde_json::json!({
-                "prefix": e.prefix,
-                "unabsorbed_frame_bytes": m.unabsorbed_frame_bytes,
-                "backlog_started_ms": m.backlog_started_ms,
-                "last_progress_ms": m.last_progress_ms,
-                "no_progress_secs": m.no_progress_secs(now),
-                "shard_shed": e.maintenance_shard_shed
-                    .load(std::sync::atomic::Ordering::Relaxed),
-            })
-        }).collect::<Vec<_>>(),
-    })
-}
-
 /// The raw surface's body buffering (`admission::body::buffer_within`)
 /// with no memory line: Err(()) = the limit was exceeded (the caller
 /// answers 413).
@@ -856,7 +815,7 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
         },
         "shed_line_mb": adm.rss_shed_mb,
         "maintenance_backpressure": state.admission.maintenance_stats_json(),
-        "maintenance_shards": maintenance_shards_json(&state),
+        "maintenance_shards": maintenance_view::maintenance_shards_json(&state),
         // R26-7: the ORDINARY per-stream limiter's refusals, by code —
         // so a throughput plateau is attributed to the right mechanism.
         "rate_limit_refusals": crate::usage::limit_refusals_json(),
@@ -2830,6 +2789,7 @@ async fn internal_segment_read(
 mod close_identity;
 mod debug;
 mod internal_routes;
+mod maintenance_view;
 #[path = "http/read.rs"]
 mod read_adapter;
 mod serve;
