@@ -36,6 +36,9 @@ pub(crate) fn shard_settings(args: &CliArgs, engine: &crate::config::EngineConfi
         } else {
             Duration::from_millis(args.flush_interval_ms)
         }),
+        // zstd shard SSTs: transfer in -11%, storage -9% per tenant, codec CPU
+        // +0.9% (package 4 A/B on PACK-S-MUX-0200, adopted 2026-10-30).
+        compression_codec: Some(slatedb::config::CompressionCodec::Zstd),
         l0_sst_size_bytes: args.l0_sst_size_bytes,
         max_unflushed_bytes: args.max_unflushed_bytes,
         l0_max_ssts: args.l0_max_ssts,

@@ -236,6 +236,23 @@ mod config_validation_tests {
         .expect("default shard settings must open");
     }
 
+    /// Shard SSTs are written zstd-compressed, as the billing DB's are:
+    /// package 4's A/B (PACK-S-MUX-0200) measured −3.1% per tenant-month at
+    /// the confirmed basis, its codec CPU included.
+    #[test]
+    fn shard_ssts_are_zstd_compressed() {
+        let args = CliArgs::parse_from(["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"]);
+        let settings = shard_settings(&args, &crate::config::EngineConfig::default());
+        assert!(
+            matches!(
+                settings.compression_codec,
+                Some(slatedb::config::CompressionCodec::Zstd)
+            ),
+            "shard SSTs must be zstd-compressed, got {:?}",
+            settings.compression_codec
+        );
+    }
+
     fn configured(
         release: bool,
         profile: Option<&str>,
