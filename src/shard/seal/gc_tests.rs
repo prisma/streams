@@ -279,7 +279,7 @@ async fn whole_chunks(rig: &Rig, hash: [u8; 16]) -> Vec<(DirEntry, Bytes)> {
     out
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_purge_reclaims_exactly_its_streams_chunks_and_their_objects() {
     let rig = gc_rig("gc-purge").await;
     let mut rng = StdRng::seed_from_u64(0x6C01);
@@ -364,7 +364,7 @@ async fn a_purge_reclaims_exactly_its_streams_chunks_and_their_objects() {
     rig.engine.begin_close();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn objects_put_without_their_commit_are_swept_and_objects_in_flight_are_not() {
     let rig = gc_rig("gc-orphans").await;
     let mut rng = StdRng::seed_from_u64(0x6C02);
@@ -472,7 +472,7 @@ async fn rounds_failing(rig: &Rig, rng: &mut StdRng, streams: &[[u8; 16]], oracl
     assert!(rig.engine.seal_once(Trigger::Requested).await.is_err());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fenced_writers_object_is_swept_by_the_new_owner() {
     let rig = gc_rig("gc-fence").await;
     let mut rng = StdRng::seed_from_u64(0x6C03);
@@ -531,7 +531,7 @@ async fn a_fenced_writers_object_is_swept_by_the_new_owner() {
     rig.engine.begin_close();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn garbage_outlives_a_restart_and_waits_a_grace_from_it() {
     let rig = gc_rig("gc-restart").await;
     let mut rng = StdRng::seed_from_u64(0x6C04);
@@ -582,7 +582,7 @@ async fn garbage_outlives_a_restart_and_waits_a_grace_from_it() {
     rig.engine.begin_close();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_read_that_planned_with_a_chunk_keeps_its_object_until_it_ends() {
     let rig = gc_rig("gc-pin").await;
     let hash = [0x41; 16];
@@ -658,7 +658,7 @@ async fn a_read_that_planned_with_a_chunk_keeps_its_object_until_it_ends() {
     rig.engine.begin_close();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_consolidation_offered_before_a_purge_supersedes_nothing_after_it() {
     let rig = gc_rig("gc-race").await;
     let mut rng = StdRng::seed_from_u64(0x6C06);
@@ -691,7 +691,7 @@ async fn a_consolidation_offered_before_a_purge_supersedes_nothing_after_it() {
     rig.engine.begin_close();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_purge_waits_for_the_ledger_and_for_its_own_group() {
     let rig = gc_rig("gc-refuse").await;
     let mut rng = StdRng::seed_from_u64(0x6C07);
@@ -790,7 +790,7 @@ fn late_append(hash: [u8; 16]) -> crate::shard::AppendReq {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_physical_size_is_exact_through_consolidation_and_purge() {
     let rig = gc_rig("gc-g10").await;
     let hash = [0x52; 16];
@@ -845,7 +845,7 @@ async fn the_physical_size_is_exact_through_consolidation_and_purge() {
     rig.engine.begin_close();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_reclaim_runs_in_bounded_batches_and_resumes_after_a_failed_one() {
     let rig = gc_rig("gc-batches").await;
     rig.engine.gc_state().configure(|s| s.reclaim_batch = 3);
@@ -898,7 +898,7 @@ async fn a_reclaim_runs_in_bounded_batches_and_resumes_after_a_failed_one() {
     rig.engine.begin_close();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_purge_racing_a_seal_in_flight_counts_nothing_the_seal_never_committed() {
     let rig = gc_rig("gc-inflight").await;
     let mut rng = StdRng::seed_from_u64(0x6C0A);

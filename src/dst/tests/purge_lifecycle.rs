@@ -119,7 +119,7 @@ async fn counted_chunks(engine: &Engine, id: [u8; 16]) -> usize {
         .count()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_deleted_stream_is_purged_and_its_objects_reclaimed() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let (state, addr) = http_rig(mem()).await;
@@ -214,7 +214,7 @@ async fn a_deleted_stream_is_purged_and_its_objects_reclaimed() {
     engine_shutdown(&state).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_expired_stream_is_not_purged_within_its_tombstone_delay_and_a_recreation_purges_it() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let (state, addr) = http_rig(mem()).await;
@@ -262,7 +262,7 @@ async fn an_expired_stream_is_not_purged_within_its_tombstone_delay_and_a_recrea
     engine_shutdown(&state).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_source_its_fork_reads_is_never_purged_until_the_fork_is_deleted() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let (state, addr) = http_rig(mem()).await;
@@ -363,7 +363,7 @@ async fn land_renewal(state: &State, seen: &crate::registry::StreamDesc) {
     .expect("the renewal's mutation runs");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_renewal_that_lands_before_the_expiry_tombstone_keeps_the_stream_alive() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let (state, addr) = http_rig(mem()).await;
@@ -404,7 +404,7 @@ async fn a_renewal_that_lands_before_the_expiry_tombstone_keeps_the_stream_alive
     engine_shutdown(&state).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_renewal_that_lands_after_the_expiry_tombstone_is_refused_and_the_stream_purged() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let (state, addr) = http_rig(mem()).await;
@@ -436,7 +436,7 @@ async fn a_renewal_that_lands_after_the_expiry_tombstone_is_refused_and_the_stre
     engine_shutdown(&state).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fork_anchored_before_the_expiry_tombstone_retains_its_source() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let (state, addr) = http_rig(mem()).await;
