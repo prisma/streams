@@ -3,15 +3,14 @@
 //! one place: after the body returns or panics, it stops the runtime within
 //! [`TEARDOWN_BOUND`] instead of joining its threads for ever.
 //!
-//! foyer-memory 0.22.3 can deadlock a worker on itself while its runtime
-//! closes (docs/OPS-RELEASE.md §1, foyer#1345): a SlateDB cache miss polled
-//! during the close spawns its fetch into the closed task list, and tokio
-//! drops that fetch on the same thread while `get_or_fetch` still holds the
-//! in-flight lock the fetch's destructor takes. Under tokio's own test
-//! runtime the test thread then joins that worker for ever and the test
-//! hangs. Here the worker is abandoned, the test reports what its body
-//! asserted, and the process ends the thread at exit. Production bounds the
-//! same teardown with `bootstrap::service_runtime`'s `TEARDOWN_BOUND`.
+//! A runtime thread still running at the bound fails the test: a test that
+//! leaves a worker that cannot stop has a defect (foyer-memory 0.22.3's
+//! self-deadlock on a closing runtime was one, fixed by the pinned
+//! foyer#1345: docs/OPS-RELEASE.md §1). Under tokio's own test runtime the
+//! test thread would join that worker for ever and hang the suite; here the
+//! test fails with its name, a panic in its body still wins, and the
+//! process ends the thread at exit. Production bounds the same teardown
+//! with `bootstrap::service_runtime`'s `TEARDOWN_BOUND`.
 
 pub(crate) use tokio::pin;
 
@@ -60,20 +59,21 @@ pub(crate) mod runtime {
     impl Runtime {
         /// Runs `body` to completion, then stops the runtime within
         /// [`super::TEARDOWN_BOUND`], also when `body` panicked. A panic
-        /// resumes only after that teardown, so the test still fails.
+        /// resumes only after that teardown, so the test still fails; a
+        /// body that returned fails the test when a thread outlived the
+        /// bound.
         pub(crate) fn block_on<F: std::future::Future>(self, body: F) -> F::Output {
             let outcome =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.0.block_on(body)));
             let teardown = std::time::Instant::now();
             self.0.shutdown_timeout(super::TEARDOWN_BOUND);
-            if teardown.elapsed() >= super::TEARDOWN_BOUND {
-                tracing::warn!(
-                    bound = ?super::TEARDOWN_BOUND,
-                    "test runtime threads were still running at the teardown bound; \
-                     the test process abandons them"
-                );
-            }
+            let overran = teardown.elapsed() >= super::TEARDOWN_BOUND;
             match outcome {
+                Ok(_) if overran => panic!(
+                    "test runtime threads were still running at the teardown bound ({:?}): \
+                     a thread the test left could not stop",
+                    super::TEARDOWN_BOUND
+                ),
                 Ok(output) => output,
                 Err(panic) => std::panic::resume_unwind(panic),
             }
@@ -108,19 +108,30 @@ mod tests {
     )]
     fn teardown_returns_while_a_runtime_thread_cannot_stop() {
         let (done, finished) = mpsc::channel();
-        std::thread::spawn(move || {
-            let runtime = Builder::new_multi_thread()
-                .worker_threads(1)
-                .enable_all()
-                .build()
-                .expect("test runtime");
-            runtime.block_on(async { park_a_thread_for_ever() });
-            done.send(()).expect("the test waits for teardown");
-        });
-        assert!(
-            finished.recv_timeout(Duration::from_secs(10)).is_ok(),
-            "a test runtime's teardown must return within its bound while a thread cannot stop"
+        std::thread::spawn(move || done.send(teardown_fails()).expect("the test waits"));
+        assert_eq!(
+            finished.recv_timeout(Duration::from_secs(10)),
+            Ok(true),
+            "a test runtime's teardown must return within its bound, failing the test, while a thread cannot stop"
         );
+    }
+
+    /// Whether a body that returned fails its test when a runtime thread
+    /// cannot stop.
+    fn teardown_fails() -> bool {
+        let runtime = Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime.block_on(async { park_a_thread_for_ever() })
+        }));
+        failed.is_err_and(|panic| {
+            panic
+                .downcast_ref::<String>()
+                .is_some_and(|m| m.contains("could not stop"))
+        })
     }
 
     #[tokio::test(crate = "crate::test_rt")]
