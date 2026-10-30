@@ -202,7 +202,10 @@ async fn a_claim_on_a_cold_backlog_waits_for_no_block_its_predecessors_read() {
             compactor_options: None,
             ..Default::default()
         })
-        .with_db_cache(cache.clone())
+        .with_db_cache(
+            cache.clone(),
+            crate::runtime::block_cache::scope_of("nq-cold-walk"),
+        )
         .build()
         .await
         .unwrap();

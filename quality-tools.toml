@@ -11,7 +11,20 @@ cargo-mutants = "27.1.0"
 
 [slatedb]
 git = "https://github.com/slatedb/slatedb.git"
-rev = "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+rev = "0c22c032bb1af4e53d92b2098c83a34b11d2d710"
+
+# A fork pin (docs/quality/dependencies.md): `rev` must be `base` plus exactly
+# the upstream pull-request commits `carries` names, in order; config.py
+# checks the history (gate change decided by the lead, 2026-10-30).
+[foyer]
+git = "https://github.com/sorenbs/foyer.git"
+rev = "87d21072a1926106f983c6b5f01527cf7e635cee"
+upstream = "https://github.com/foyer-rs/foyer.git"
+base = "dd46245c45071d1036331e4e2c48e15386017b96"
+carries = [
+  { pr = 1345, commit = "d136c08bb565cd29a7a95cd07b2b321a66e1d64b" },
+  { pr = 1382, commit = "ce21552d0dd5b2e91258fcd1d9af330d1fc977b3" },
+]
 
 [actionlint-sha256]
 darwin_amd64 = "5b44c3bc2255115c9b69e30efc0fecdf498fdb63c5d58e17084fd5f16324c644"

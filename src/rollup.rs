@@ -591,7 +591,7 @@ impl UsageRollup {
         let db = crate::bootstrap::on_slatedb_rt(async move {
             Db::builder(path.as_str(), store)
                 .with_settings(settings)
-                .with_db_cache(cache)
+                .with_db_cache(cache, crate::runtime::block_cache::scope_of(path.as_str()))
                 .with_metrics_recorder(recorder)
                 .build()
                 .await

@@ -38,12 +38,12 @@ The workspace lock contained neither banned package nor `openssl-sys`.
   exceptions move from 1.0.8 to 1.0.10 with them (same crates, same license);
   nothing else in the gate's configuration changed. The separate lockfiles of
   `bench/probe` and `bench/awsbench` were not changed.
-- `bincode` 1.3.3, through pinned SlateDB → foyer-common 0.22.3:
+- `bincode` 1.3.3, through pinned SlateDB → foyer-common 0.22.6:
   [RUSTSEC-2025-0141](https://rustsec.org/advisories/RUSTSEC-2025-0141) reports
   discontinued maintenance and no safe upgrade. Retain this exact inherited
   storage-format dependency while tracking an upstream migration. Changing the
   serialization format requires its own compatibility review.
-- `paste` 1.0.15, through pinned SlateDB → foyer-memory 0.22.3:
+- `paste` 1.0.15, through pinned SlateDB → foyer-memory 0.22.6:
   [RUSTSEC-2024-0436](https://rustsec.org/advisories/RUSTSEC-2024-0436) reports
   discontinued maintenance and no safe upgrade. Retain this build-time macro
   dependency while tracking upstream replacement.
@@ -54,18 +54,11 @@ The workspace lock contained neither banned package nor `openssl-sys`.
   `Settings` only through `Settings::default()`; SlateDB itself never calls its
   `from_file`, `from_env` or `load` providers, so the YAML parser is linked but
   unreached. Remove the exception when SlateDB drops or gates the provider.
-- `zstd` 0.13.3 / `zstd-safe` 7.2.4 / `zstd-sys`, through Streams itself, pinned
-  SlateDB and foyer (owner decision of 2026-10-26: a time-boxed ignore until
-  2026-12-31, while slatedb/slatedb#2193 and foyer-rs/foyer#1382 bump zstd to
-  0.14): RUSTSEC-2026-0391 (an abandoned stream leaks into the next on a reused
-  `with_context` encoder; Streams compresses with `bulk::compress`, a fresh
-  context per call, SlateDB with bulk / `decode_all`, foyer with plain
-  `Encoder::new` / `Decoder::new`), RUSTSEC-2026-0398 (`Seekable::decompress`;
-  the seekable feature is not enabled), RUSTSEC-2026-0403 (`stream::write::Decoder`
-  only; Streams decodes with `read::Decoder`, `bulk::Decompressor` and
-  `decode_all`) and RUSTSEC-2026-0410 (wasm32 only). Remove the four at the pin
-  bump that takes the upstream PRs, and no later than 2026-12-31.
-  These seven named advisory exceptions do not exempt a new vulnerability
+- `zstd` 0.14.3 / `zstd-safe` 8.2.0 / `zstd-sys` 2.1.2: Streams, SlateDB
+  (slatedb/slatedb#2193, on main) and the carried foyer (foyer-rs/foyer#1382) all take
+  zstd 0.14.3 since the 2026-10-30 pin bump, which removed the owner's
+  time-boxed ignores of RUSTSEC-2026-0391, -0398, -0403 and -0410 (2026-10-26).
+  These three named advisory exceptions do not exempt a new vulnerability
   advisory.
 - `webpki-roots` and `webpki-root-certs`, each exactly 1.0.8, contain certificate
   data under CDLA-Permissive-2.0. `deny.toml` permits that license only for these
@@ -80,9 +73,30 @@ The workspace lock contained neither banned package nor `openssl-sys`.
 The owner for these adoption dispositions is the repository maintainer via this
 policy migration. Revisit the three maintenance exceptions whenever SlateDB/foyer
 is updated; unknown advisories, Git sources and registries fail the gate. The
-source gate independently requires every Git lock entry to match the exact
-SlateDB revision, since cargo-deny's source allowlist alone pins only the
-repository and the kind of Git specifier.
+source gate independently requires every Git lock entry to match an exact
+revision pinned in `quality-tools.toml` (SlateDB main, and the foyer fork
+below), since cargo-deny's source allowlist alone pins only the repository and
+the kind of Git specifier.
+
+foyer is carried from `sorenbs/foyer` at `87d21072` (branch
+`streams/v0.22.6-1345-1382`): v0.22.6 plus exactly foyer-rs/foyer#1345 (the
+fetch spawned under the in-flight lock self-deadlocked a worker on a closing
+runtime, `docs/OPS-RELEASE.md` §1) and foyer-rs/foyer#1382 (zstd 0.14.3).
+Exit: once a foyer release carries both, `cargo update -p foyer` and remove
+the five `[patch.crates-io]` lines, the `[foyer]` pin and the `allow-git`
+entry.
+
+A fork pin records its upstream base and the upstream pull-request commits it
+carries (`upstream`, `base`, `carries` in `quality-tools.toml`), and the
+source gate checks that the pinned revision is that base plus exactly those
+commits (`scripts/quality/config.py::fork_problems`; lead's gate decision of
+2026-10-30 in the hardening README).
+
+SlateDB is pinned at upstream main `0c22c032` (2026-10-31), which carries our
+merged slatedb/slatedb#2193 and #2208; no SlateDB fork is carried. Should one
+of our open SlateDB PRs ever be carried, it goes on `sorenbs/slatedb` under
+the same rule, with this exit: the PR merged and released (or on the main we
+pin), then drop the fork.
 
 The test-only `libfuzzer-sys` 0.4.13 additionally requires NCSA for its LLVM
 runtime; this exact package has a named license exception. The fuzz package's

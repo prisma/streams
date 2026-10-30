@@ -24,7 +24,7 @@ impl ShardEngine {
         if self.gc_state().purged(hash) {
             return Err(purged());
         }
-        let snapshot = self.db.snapshot().await?;
+        let snapshot = self.db.snapshot()?;
         for (key, native_queue) in [(tail_key(hash), false), (queue_tail_key(hash), true)] {
             let Some(raw) = snapshot.get(key).await? else {
                 continue;

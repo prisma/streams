@@ -179,7 +179,7 @@ async fn open(store: Arc<dyn ObjectStore>, cache: Arc<dyn DbCache>) -> slatedb::
             compactor_options: None,
             ..Default::default()
         })
-        .with_db_cache(cache)
+        .with_db_cache(cache, super::scope_of("block-cache"))
         .build()
         .await
         .unwrap()
@@ -438,7 +438,7 @@ async fn a_cached_entry() -> CachedEntry {
 async fn every_lookup_answers_from_the_generation_in_force() {
     let entry = a_cached_entry().await;
     let cache = BlockCache::new(options(4 << 20));
-    let key: CachedKey = (slatedb::manifest::SsTableId::Wal(7), 0).into();
+    let key: CachedKey = (slatedb::manifest::SsTableId::new(Default::default()), 0).into();
     cache.insert(key.clone(), entry.clone()).await;
     assert_eq!(cache.inserted_bytes(), entry.size() as u64);
     assert!(cache.get_block(&key).await.unwrap().is_some());
@@ -466,4 +466,22 @@ fn a_cache_with_a_capacity_is_bounded_at_the_bytes_asked_for() {
     let cache = BlockCache::with_capacity(bytes);
     assert_eq!(cache.options.max_capacity, bytes);
     assert_eq!(cache.options.shards, default.shards);
+}
+
+/// Every database sharing the process cache reads under its own scope, and
+/// a database reopened at the same path finds its entries under the same one.
+#[test]
+fn each_database_path_names_its_own_cache_scope() {
+    let shard = "streams/shards/0007/log";
+    assert_eq!(super::scope_of(shard), super::scope_of(shard));
+    let scopes: std::collections::HashSet<u64> = [
+        shard,
+        "streams/shards/0008/log",
+        "telemetry/read-spool/solo",
+        "rollup",
+    ]
+    .into_iter()
+    .map(super::scope_of)
+    .collect();
+    assert_eq!(scopes.len(), 4);
 }

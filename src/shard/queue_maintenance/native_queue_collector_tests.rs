@@ -207,10 +207,7 @@ async fn native_queue_collection_compacts_every_l0_into_the_last_run_and_names_w
     };
     r.db.flush_with_options(memtable).await.unwrap();
     let views = log_l0(&r.db.manifest());
-    let l0: Vec<String> = views
-        .iter()
-        .map(|v| v.sst.id.unwrap_compacted_id().to_string())
-        .collect();
+    let l0: Vec<String> = views.iter().map(|v| v.sst.id.value().to_string()).collect();
     assert!(!l0.is_empty(), "the flush wrote an L0 SST");
     let l0_bytes: u64 = views.iter().map(|v| v.estimate_size()).sum();
     let pass = tokio::time::timeout(STEP_WITHIN, r.engine.compact_shard_log());
@@ -251,7 +248,7 @@ async fn native_queue_collection_compacts_stream_rows_with_queue_rows_in_one_tre
     assert!(before.segments().is_empty(), "no segment tree");
     let l0: Vec<String> = log_l0(&before)
         .iter()
-        .map(|v| v.sst.id.unwrap_compacted_id().to_string())
+        .map(|v| v.sst.id.value().to_string())
         .collect();
     assert_eq!(l0.len(), 1, "one flush wrote one L0 for both families");
     let pass = tokio::time::timeout(STEP_WITHIN, r.engine.compact_shard_log());
@@ -613,11 +610,7 @@ async fn regular_job_into_the_last_run(
     let runs = log_runs(&manifest(r).await);
     assert_eq!(runs.iter().map(|run| run.id).collect::<Vec<_>>(), [1, 0]);
     let tables = runs.iter().flat_map(|run| run.sst_views().iter());
-    store.hold(
-        tables
-            .map(|v| v.sst.id.unwrap_compacted_id().to_string())
-            .collect(),
-    );
+    store.hold(tables.map(|v| v.sst.id.value().to_string()).collect());
     let both = vec![SourceId::SortedRun(1), SourceId::SortedRun(0)];
     let regular = submit(admin, &log_spec(both, 0)).await;
     let running = async {

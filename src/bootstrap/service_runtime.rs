@@ -10,12 +10,8 @@ use std::time::{Duration, Instant};
 ///
 /// A clean `run` has already joined every supervised task and every shard
 /// engine before it returns, so an idle runtime stops in milliseconds. The
-/// bound matters only when a thread cannot stop. foyer-memory 0.22.3 is one
-/// such case (docs/OPS-RELEASE.md §1). A cache miss that a worker polls while
-/// the runtime is closing spawns its fetch into the closed task list. Tokio
-/// then drops that fetch on the same thread, while `get_or_fetch` still holds
-/// the in-flight lock that the fetch's destructor takes. The thread never
-/// returns, and an unbounded runtime drop joins it for ever.
+/// bound matters only when a thread cannot stop: an unbounded runtime drop
+/// would join it for ever.
 const TEARDOWN_BOUND: Duration = Duration::from_secs(5);
 
 /// How often the thread that runs the served future checks for a requested
@@ -118,11 +114,11 @@ mod tests {
 
     /// The part of an absorber scan that the race needs. The scan's poll is
     /// running on a worker when the runtime closes, and the same poll then
-    /// takes a cache miss in the production block cache. In the observed
-    /// hang, `Absorber::run` had moved on to the next table's index fetch
-    /// (`FoyerCache::fetch_index`). Here the poll is held by a read, so the
-    /// close overtakes it every time rather than in about one run in two
-    /// hundred.
+    /// takes a cache miss in the production block cache. In the hang foyer
+    /// 0.22.3 had (foyer#1345), `Absorber::run` had moved on to the next
+    /// table's index fetch (`FoyerCache::fetch_index`). Here the poll is held
+    /// by a read, so the close overtakes it every time rather than in about
+    /// one run in two hundred.
     #[expect(
         clippy::disallowed_methods,
         reason = "held_scan; the probe and the scan must be ordinary tasks in the service runtime's own task list, which is what the runtime's close drops; a supervised task would be joined before the close and never race it"
@@ -139,7 +135,7 @@ mod tests {
         tokio::spawn(async move {
             held_read(entered, closed).await;
             reports.released.send(()).expect("the helper is alive");
-            let key = (slatedb::manifest::SsTableId::Wal(1), 0).into();
+            let key = a_block_key();
             let loader: slatedb::db_cache::CacheLoader = Box::new(|| {
                 Box::pin(std::future::pending::<
                     Result<slatedb::db_cache::CachedEntry, slatedb::Error>,
@@ -152,8 +148,13 @@ mod tests {
         reached.await.expect("the scan reached its held read");
     }
 
-    /// Subject of `a_scan_on_a_cache_miss_cannot_hold_process_exit`. It is
-    /// inert unless the parent set the marker.
+    /// A block cache key no table has.
+    fn a_block_key() -> slatedb::db_cache::CachedKey {
+        (slatedb::manifest::SsTableId::new(Default::default()), 0).into()
+    }
+
+    /// Subject of `a_cache_miss_on_a_closing_runtime_returns`. It is inert
+    /// unless the parent set the marker.
     #[test]
     fn held_scan_teardown_helper() {
         if ProcessEnvironment.get(HELPER_MARKER).is_none() {
@@ -172,26 +173,24 @@ mod tests {
         released_rx
             .try_recv()
             .expect("the closing runtime released the held read");
-        // The canary for the upstream defect: if the miss returns, foyer no
-        // longer deadlocks a closing runtime. Revisit TEARDOWN_BOUND's
-        // rationale and the ledger row in docs/OPS-RELEASE.md §1.
+        // foyer#1345 (carried by the foyer pin): the fetch's destructor no
+        // longer takes the in-flight lock its spawner holds, so the miss
+        // returns and the worker stops with the runtime.
+        fetched_rx
+            .try_recv()
+            .expect("the cache miss returned on the closing runtime");
         assert!(
-            fetched_rx.try_recv().is_err(),
-            "the cache miss returned on a closing runtime, so no worker deadlocked"
-        );
-        assert!(
-            elapsed >= TEARDOWN_BOUND,
-            "teardown returned in {elapsed:?} although a worker is deadlocked"
+            elapsed < TEARDOWN_BOUND,
+            "teardown took {elapsed:?}: a worker could not stop"
         );
     }
 
-    /// A scan inside a foyer cache miss while the runtime closes deadlocks
-    /// its worker thread (foyer-memory 0.22.3). The process must still exit.
-    /// The child process runs the production teardown and leaves one worker
-    /// deadlocked, then exits. An unbounded runtime drop would wait on that
-    /// worker for ever, and this parent would kill the child at the deadline.
+    /// A scan inside a block cache miss while the runtime closes returns, and
+    /// the production teardown stops every worker within its bound. With
+    /// foyer-memory 0.22.3 the miss deadlocked its worker on the in-flight
+    /// lock and only the bound let the process exit (foyer#1345).
     #[tokio::test(crate = "crate::test_rt")]
-    async fn a_scan_on_a_cache_miss_cannot_hold_process_exit() {
+    async fn a_cache_miss_on_a_closing_runtime_returns() {
         let exe = std::env::current_exe().expect("test binary path");
         let child = tokio::process::Command::new(exe)
             .args([HELPER_TEST, "--exact", "--nocapture", "--test-threads=1"])
@@ -221,8 +220,8 @@ mod tests {
             "the helper never reached its teardown:\n{transcript}"
         );
         assert!(
-            transcript.contains("still running at the teardown bound"),
-            "the overrun teardown logged no warning:\n{transcript}"
+            !transcript.contains("still running at the teardown bound"),
+            "a worker outlived the teardown:\n{transcript}"
         );
         assert!(
             transcript.contains("1 passed"),

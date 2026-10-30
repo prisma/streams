@@ -24,7 +24,7 @@
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use slatedb::db_cache::foyer::{FoyerCache, FoyerCacheOptions};
-use slatedb::db_cache::{CacheLoader, CachedEntry, CachedKey, DbCache};
+use slatedb::db_cache::{CacheFetch, CacheLoader, CachedEntry, CachedKey, DbCache};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -101,6 +101,16 @@ impl BlockCache {
     }
 }
 
+/// The block cache scope of the database at `path`: SlateDB keys a shared
+/// cache's entries by scope, so every database names its own, the same one
+/// at every open in the process.
+pub(crate) fn scope_of(path: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Every call reads through the generation in force and holds it until the
 /// call completes, across a fetch's load included.
 #[async_trait]
@@ -146,7 +156,7 @@ impl DbCache for BlockCache {
         &self,
         key: CachedKey,
         loader: CacheLoader,
-    ) -> Result<CachedEntry, slatedb::Error> {
+    ) -> Result<CacheFetch, slatedb::Error> {
         self.current
             .load_full()
             .cache
@@ -158,7 +168,7 @@ impl DbCache for BlockCache {
         &self,
         key: CachedKey,
         loader: CacheLoader,
-    ) -> Result<CachedEntry, slatedb::Error> {
+    ) -> Result<CacheFetch, slatedb::Error> {
         self.current
             .load_full()
             .cache
@@ -170,7 +180,7 @@ impl DbCache for BlockCache {
         &self,
         key: CachedKey,
         loader: CacheLoader,
-    ) -> Result<CachedEntry, slatedb::Error> {
+    ) -> Result<CacheFetch, slatedb::Error> {
         self.current
             .load_full()
             .cache
@@ -182,7 +192,7 @@ impl DbCache for BlockCache {
         &self,
         key: CachedKey,
         loader: CacheLoader,
-    ) -> Result<CachedEntry, slatedb::Error> {
+    ) -> Result<CacheFetch, slatedb::Error> {
         self.current
             .load_full()
             .cache

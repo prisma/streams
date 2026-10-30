@@ -554,10 +554,12 @@ async fn seal_l0(rig: &Rig) -> (super::SealReport, u64) {
 
 /// **flushdrop**: 4 MiB of pages on 8 streams, one seal, and the L0 its
 /// flush wrote: at most 5% of the sealed page bytes (the seal's puts of
-/// empty remainders, the tails, the `'K'` row). Two controls: a flush
-/// without a seal writes the values; and a seal whose flush skips step 7a
-/// (REVIEW-6A F2) writes them too, because the put that shadows them is
-/// above the flush's durable boundary.
+/// empty remainders, the tails, the `'K'` row). A control: a flush without a
+/// seal writes the values. And a seal whose flush skips step 7a (REVIEW-6A
+/// F2), its WAL PUTs parked so the put that shadows the pages is not durable
+/// when the memtable freezes, writes no more: the flush's retention boundary
+/// is the memtable's last sequence (slatedb/slatedb#2208), not the WAL's
+/// progress.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn flushdrop() {
     let rig = rig("flushdrop", manual(), Duration::from_millis(5)).await;
@@ -601,9 +603,9 @@ async fn flushdrop() {
         control >= unsealed,
         "without the seal the values reach the L0"
     );
-    // Control 2 (F2): a seal of fresh pages whose flush skips 7a, with the
-    // WAL PUTs parked from the commit on, so the flush's durable boundary
-    // is the one before the seal's put.
+    // F2 without 7a: a seal of fresh pages whose flush skips 7a, with the
+    // WAL PUTs parked from the commit on, so the seal's put is not durable
+    // when the memtable freezes.
     rig.engine.seal_once(Trigger::Requested).await.unwrap();
     fill(&rig.engine, &streams, 3).await;
     sp.hooks.skip_7a.store(true, Ordering::Relaxed);
@@ -619,12 +621,13 @@ async fn flushdrop() {
     *sp.hooks.before_commit.lock().unwrap() = None;
     sp.hooks.skip_7a.store(false, Ordering::Relaxed);
     eprintln!(
-        "flushdrop F2 control (seal without 7a): sealed {} B; L0 {l0} B",
-        report.page_bytes
+        "flushdrop F2 (seal without 7a): sealed {} B; L0 {l0} B: {:.3}%",
+        report.page_bytes,
+        100.0 * l0 as f64 / report.page_bytes as f64,
     );
     assert!(
-        l0 * 2 >= report.page_bytes,
-        "without 7a the shadowed operands reach the L0 ({l0} of {})",
+        l0 * 100 <= report.page_bytes * 5,
+        "without 7a the L0 holds {l0} B of {} B sealed",
         report.page_bytes
     );
     rig.engine.begin_close();

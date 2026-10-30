@@ -105,12 +105,10 @@ fn superseded_ids<'a>(
     l0: impl Iterator<Item = &'a slatedb::manifest::SsTableView>,
     runs: &[slatedb::manifest::SortedRun],
 ) -> Vec<String> {
-    let mut ids: Vec<String> = l0
-        .map(|v| v.sst.id.unwrap_compacted_id().to_string())
-        .collect();
+    let mut ids: Vec<String> = l0.map(|v| v.sst.id.value().to_string()).collect();
     for run in runs {
         let tables = run.sst_views().iter();
-        ids.extend(tables.map(|v| v.sst.id.unwrap_compacted_id().to_string()));
+        ids.extend(tables.map(|v| v.sst.id.value().to_string()));
     }
     ids
 }
@@ -646,15 +644,20 @@ impl ShardEngine {
 
     /// Stage 4: every superseded SST is gone from the bucket, except the
     /// one the manifest names as the last compacted L0 (D22's residual: GC
-    /// keeps the newest compacted L0 until a newer L0 exists). An unsegmented
-    /// manifest records that L0's SST id itself (layout 7).
+    /// keeps the newest compacted L0 until a newer L0 exists, slatedb#2190).
+    /// SlateDB names that L0 by its view's id (#2194) and its SST id only on
+    /// older manifests; the shard log's L0 views each cover one whole SST, so
+    /// the view's id is the SST's.
     async fn await_collection(&self, superseded: &[String]) -> Result<(), String> {
         let deadline = std::time::Instant::now() + GC_WAIT;
         loop {
             let manifest = self.queue_admin().read_manifest(None).await.ok().flatten();
             let residual = manifest
                 .as_ref()
-                .and_then(|m| m.last_compacted_l0_sst_id())
+                .and_then(|m| {
+                    m.last_compacted_l0_sst_id()
+                        .or(m.last_compacted_l0_sst_view_id())
+                })
                 .map(|u| u.to_string());
             let left = self.superseded_left(superseded, residual.as_ref()).await;
             if left == 0 {

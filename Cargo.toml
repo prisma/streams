@@ -29,16 +29,16 @@ serde = { version = "1", features = ["derive"] }
 # creation::json_record_tests pins all three.
 serde_json = { version = "1", features = ["float_roundtrip", "raw_value"] }
 sha2 = "0.10"
-slatedb = { version = "0.15.0", features = ["zstd", "wal_disable"] }
+slatedb = { version = "0.17.0", features = ["zstd", "wal_disable"] }
 # SlateDB's metrics recorder and its trait, which slatedb does not
 # re-export (the sealer reads the memtable's write counters, layout 6): the
 # crate slatedb already builds, patched to the same rev below.
-slatedb-common = "0.15.0"
+slatedb-common = "0.17.0"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1.89"
-zstd = "0.13"
+zstd = "0.14.3"
 futures-core = "0.3.32"
 futures-util = "0.3.32"
 aes-gcm = "0.10"
@@ -119,17 +119,25 @@ name = "cryptobench"
 path = "src/bin/cryptobench.rs"
 
 [patch.crates-io]
-# UPSTREAM main, pinned by rev — the fork is retired (2026-08-05).
-# Contains everything we carried: #1964 yield points (merged), #1993
-# 10-minute default GC interval (upstream chose this over our #1991
-# adaptive backoff), #1968 probe-cached latest reads, #1894 concurrent
-# GC deletes. Our GC listing-reuse/inventory patches are dropped in
-# favor of tuned static intervals (see main.rs GC block + the A/B in
-# docs/COST-CAMPAIGN-2.md addendum). Move to a crates.io version when
-# a release after v0.15.0 ships. Fork history preserved at
-# sorenbs/slatedb (tags pin-014-final, and the final pin rev 323bc1b).
-slatedb = { git = "https://github.com/slatedb/slatedb.git", rev = "0717cc1e4e9bad10a4773760f66bac4264ecf05e" }
-slatedb-common = { git = "https://github.com/slatedb/slatedb.git", rev = "0717cc1e4e9bad10a4773760f66bac4264ecf05e" }
+# UPSTREAM main, pinned by rev (2026-10-31): our slatedb/slatedb#2193 (zstd
+# 0.14.3) and #2208 (a memtable flush drops the versions it shadows when the
+# WAL is enabled, so the sealer needs no awaited WAL flush), #2181 (a panic
+# no longer corrupts the database), #2120, #2063. Move to a crates.io version
+# when a release after v0.17.0 ships with them. Fork history preserved at
+# sorenbs/slatedb.
+slatedb = { git = "https://github.com/slatedb/slatedb.git", rev = "0c22c032bb1af4e53d92b2098c83a34b11d2d710" }
+slatedb-common = { git = "https://github.com/slatedb/slatedb.git", rev = "0c22c032bb1af4e53d92b2098c83a34b11d2d710" }
+# foyer v0.22.6 plus exactly two unreleased upstream fixes, carried on a
+# fork until a foyer release has both (then `cargo update -p foyer` and drop
+# these lines): foyer-rs/foyer#1345 (release the inflight lock before
+# spawning a fetch: a miss polled on a closing runtime deadlocked its
+# worker, docs/OPS-RELEASE.md section 1) and foyer-rs/foyer#1382 (zstd
+# 0.14.3, the same four advisories). Branch streams/v0.22.6-1345-1382.
+foyer = { git = "https://github.com/sorenbs/foyer.git", rev = "87d21072a1926106f983c6b5f01527cf7e635cee" }
+foyer-common = { git = "https://github.com/sorenbs/foyer.git", rev = "87d21072a1926106f983c6b5f01527cf7e635cee" }
+foyer-memory = { git = "https://github.com/sorenbs/foyer.git", rev = "87d21072a1926106f983c6b5f01527cf7e635cee" }
+foyer-storage = { git = "https://github.com/sorenbs/foyer.git", rev = "87d21072a1926106f983c6b5f01527cf7e635cee" }
+foyer-tokio = { git = "https://github.com/sorenbs/foyer.git", rev = "87d21072a1926106f983c6b5f01527cf7e635cee" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

@@ -23,7 +23,7 @@ pub(crate) fn shard_log_builder(
     path: &str,
     store: Arc<dyn object_store::ObjectStore>,
     mut settings: slatedb::config::Settings,
-) -> slatedb::DbBuilder<object_store::path::Path> {
+) -> ShardLogBuilder {
     let compactor = settings.compactor_options.take().map(|options| {
         slatedb::CompactorBuilder::new(object_store::path::Path::from(path), store.clone())
             .with_options(options)
@@ -31,9 +31,35 @@ pub(crate) fn shard_log_builder(
     });
     crate::spill::metrics::for_log(path).note_freeze_bytes(settings.l0_sst_size_bytes);
     let builder = crate::keyspace::db_builder(path, store).with_settings(settings);
-    match compactor {
+    let builder = match compactor {
         Some(compactor) => builder.with_compactor_builder(compactor),
         None => builder,
+    };
+    ShardLogBuilder {
+        builder,
+        scope: crate::runtime::block_cache::scope_of(path),
+    }
+}
+
+/// A shard log's builder whose shared block cache is scoped to its path, so
+/// two logs sharing the process cache never share an entry.
+pub(crate) struct ShardLogBuilder {
+    builder: slatedb::DbBuilder<object_store::path::Path>,
+    scope: u64,
+}
+
+impl ShardLogBuilder {
+    /// The builder reads through `cache` under the log's scope.
+    pub(crate) fn with_db_cache(self, cache: Arc<dyn slatedb::db_cache::DbCache>) -> Self {
+        Self {
+            builder: self.builder.with_db_cache(cache, self.scope),
+            scope: self.scope,
+        }
+    }
+
+    /// Opens the shard log.
+    pub(crate) async fn build(self) -> Result<slatedb::Db, slatedb::Error> {
+        self.builder.build().await
     }
 }
 
