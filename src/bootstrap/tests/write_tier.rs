@@ -98,18 +98,20 @@ impl Rig {
     /// One acknowledged append, and how long its producer waited for it.
     async fn append(&self, body: &str) -> Duration {
         let sent = Instant::now();
-        let outcome = self
-            .workload
-            .attempt_with_deadline(
-                &self.engine,
-                [9u8; 16],
-                &crate::crypto::StreamKey([7u8; 32]),
-                "tier",
-                body,
-                None,
-                None,
-            )
-            .await;
+        let attempt = self.workload.attempt_with_deadline(
+            &self.engine,
+            [9u8; 16],
+            &crate::crypto::StreamKey([7u8; 32]),
+            "tier",
+            body,
+            None,
+            None,
+        );
+        // An append here takes a gap and a WAL write at most; one that
+        // waits on SlateDB's own flush timer (no pump) fails at once.
+        let outcome = tokio::time::timeout(Duration::from_secs(5), attempt)
+            .await
+            .unwrap_or_else(|_| panic!("{body}: no ack within 5 s"));
         assert!(
             matches!(
                 outcome,
