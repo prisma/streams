@@ -49,7 +49,7 @@ async fn held<T>(
     clippy::too_many_lines,
     reason = "durability fence scenario; the held close, the entered-and-pending takeover observation and the durable postconditions describe one causal interleaving; splitting the phases into pass-through helpers would hide which state the fence answered from"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fence_waits_for_durability_before_reporting_closed() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -207,7 +207,7 @@ async fn a_fence_waits_for_durability_before_reporting_closed() {
     clippy::too_many_lines,
     reason = "takeover reservation scenario; two reservations against one lapsed claim and the install verdicts form one ordered sequence; separating them would hide the generation comparison being proved"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_lower_takeover_reservation_cannot_install() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -364,7 +364,7 @@ async fn a_lower_takeover_reservation_cannot_install() {
 /// The fence survives handle eviction: it lives on the ENGINE, not on
 /// the evictable StreamHandle, because a stale queued append carries
 /// only the stream hash and would meet a freshly-reborn handle.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fence_survives_handle_eviction() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -461,7 +461,7 @@ async fn a_fence_survives_handle_eviction() {
     clippy::disallowed_methods,
     reason = "durability barrier fixture; the original, its exact duplicate and both idempotent closes are joined after each release; the pending checks require the requests to run concurrently with the held dispatch"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn idempotent_successes_wait_for_durability() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -577,7 +577,7 @@ async fn idempotent_successes_wait_for_durability() {
     clippy::disallowed_methods,
     reason = "definitive-conflict fixture; the original write and the reuse verdict are joined after dispatch is released; the conflict can only be observed pending while the judged state is held pre-durability"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn state_dependent_conflicts_wait_for_durability() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -660,7 +660,7 @@ async fn state_dependent_conflicts_wait_for_durability() {
 /// safe wall-clock expiry while the queue it protects has no maximum
 /// residence. (The round-10 six-hour pruning was removed for exactly
 /// this reason; this test pins the property against its return.)
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fence_outlives_the_maintenance_sweep() {
     let store = mem();
     let (state, addr) = http_rig(store).await;

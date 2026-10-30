@@ -14,7 +14,7 @@ use std::time::Duration;
     clippy::too_many_lines,
     reason = "r09 active telemetry cancellation; the entered holds, the stop and the release-and-retry must stay one visible sequence so the stop's side is evident for every batch; a helper phase would hide which side of the stop a batch was on"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r09_active_telemetry_cancels_entered_storage_and_preserves_debt() {
     // A nonzero latency plan selects the instrumented listing path; the
     // explicit hold below, rather than elapsed sleep, proves LIST entry.
@@ -208,7 +208,7 @@ async fn usage_ingest(state: &Arc<crate::http::AppState>, stream: &str) -> Vec<(
 /// `_usage` at the next one, a whole cadence after the start and before a
 /// third round, exactly once. The usage answers read what the rollup took
 /// from `_usage`, so this is how stale they may be.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_append_after_a_drain_round_reaches_the_ledger_one_default_cadence_later() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
@@ -252,7 +252,7 @@ async fn an_append_after_a_drain_round_reaches_the_ledger_one_default_cadence_la
 /// other supervised loop is cancelled in the same instant as in
 /// production; the window younger than the flush interval must still be
 /// sealed, spooled and appended before the loop reports itself finished.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn graceful_stop_seals_and_drains_the_active_read_window() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
@@ -323,7 +323,7 @@ async fn graceful_stop_seals_and_drains_the_active_read_window() {
     rig.shutdown().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r09_tombstone_walk_advances_one_catalog_page_per_pass() {
     let (state, addr) = http_rig(mem()).await;
     assert_eq!(
@@ -371,7 +371,7 @@ async fn r09_tombstone_walk_advances_one_catalog_page_per_pass() {
 /// again, so the walk is their only closer: it must zero both gauges and leave
 /// the live stream's alone. The walk used to page only the deployment tenant's
 /// catalog, so both gauges stayed nonzero and the rollup carried them monthly.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn tombstone_walk_closes_clean_terminal_rows_of_every_project() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let (_svc, state, addr) = auth_rig("proj-walk", "ws_walk", &["c_walk"], None).await;
@@ -466,7 +466,7 @@ async fn tombstone_walk_closes_clean_terminal_rows_of_every_project() {
 /// removes the debt, and the new incarnation's gauge is untouched. Also:
 /// a debt a recreation wrote before losing its race to a renewal (the
 /// incarnation is still stored and live) is dropped, never acted on.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_recreation_over_an_idle_expired_incarnation_still_closes_its_storage() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let (_svc, state, addr) = auth_rig("proj-recreate", "ws_rec", &["c_rec"], None).await;
@@ -585,7 +585,7 @@ async fn gauge_closes(engine: &crate::shard::ShardEngine, identity: [u8; 16]) ->
 /// before the cursor: the replaced incarnation behind 65 waiting debts kept
 /// its gauge through every pass. Now each pass resumes after the last debt
 /// it finished and wraps at the end, so it is reached on the next sweep.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_closure_debt_pass_reaches_a_debt_behind_waiting_ones() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let (_svc, state, addr) = auth_rig("proj-starve", "ws_starve", &["c_st"], None).await;
@@ -709,7 +709,7 @@ async fn stop_entered_rollup(
     assert_eq!(report.outcomes[0].1, crate::tasks::TaskOutcome::Finished);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r09_active_rollup_cancels_entered_read_and_replays_ledger_once() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let source_store = FaultStore::uniform(mem(), 911, FaultPlan::CLEAN);
@@ -778,7 +778,7 @@ async fn r09_active_rollup_cancels_entered_read_and_replays_ledger_once() {
     engine_shutdown(&state).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r09_active_rollup_cancels_entered_publication_and_retains_artifact_debt() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let publication_store = FaultStore::uniform(mem(), 912, FaultPlan::CLEAN);
@@ -848,7 +848,7 @@ async fn r09_active_rollup_cancels_entered_publication_and_retains_artifact_debt
 /// The snapshot retirement helper cannot be a terminal boundary: a pending
 /// opener is absent from the snapshot. The real gate must retain that opener
 /// until it finishes, then close it without publishing a new resident.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn billing_terminal_shutdown_waits_for_a_late_open() {
     use std::future::Future;
     use std::task::{Context, Waker};
@@ -908,7 +908,7 @@ async fn rollup_rows(db: &slatedb::Db) -> Vec<(Vec<u8>, Vec<u8>)> {
 /// Review item 49: an unreadable `_ops_metrics` checkpoint fails the ops
 /// step. It never reads as the start of the ledger, which would merge
 /// every snapshot into the minute tier a second time.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_unreadable_ops_checkpoint_fails_the_step_instead_of_restarting_the_ledger() {
     let (state, _) = http_rig(mem()).await;
     let rollup = Arc::new(
@@ -966,7 +966,7 @@ async fn an_unreadable_ops_checkpoint_fails_the_step_instead_of_restarting_the_l
 /// The owner's round-6 call 16: a metrics point the ledger refuses (here a
 /// shed write, as in Q0's drain window) is sent again at the next drain
 /// round, 8 s on and before the next point is due at 60 s, not lost.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_refused_metrics_point_is_sent_again_at_the_next_drain_round() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;

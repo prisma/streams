@@ -173,7 +173,7 @@ mod tests {
     /// closed month, a pending correction and one blocked artifact row; the
     /// age is whole seconds since the last apply, truncated. `stored` is
     /// null until the rollup first publishes.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
     async fn the_report_member_reads_the_rollup_and_ages_the_last_apply() {
         let db = Arc::new(
             Db::builder("readiness", Arc::new(object_store::memory::InMemory::new()))
@@ -239,7 +239,7 @@ mod tests {
     /// `stored` totals every published project's figures, dates them, and
     /// lists the ten that wrote the most, largest first and ties by project
     /// id; a later publication moves them.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
     async fn the_stored_member_totals_the_figures_and_lists_the_ten_that_wrote_most() {
         let db = Arc::new(
             Db::builder("stored", Arc::new(object_store::memory::InMemory::new()))

@@ -48,7 +48,7 @@ fn month_math_round_trips() {
 /// injection it reads between two real-clock reads around it, and an
 /// injected instant is what it reads. The billing clock's exclusive side
 /// keeps every other month-sensitive test out while the injection lasts.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn billing_now_ms_reads_real_time_unless_a_test_injects_one() {
     let _exclusive = billing_clock_lock().write().await;
     let before = crate::shard::now_ms();
@@ -169,7 +169,7 @@ fn test_batch(seq: u64) -> ReadBatch {
 /// ONE all-or-nothing WriteBatch (one flush). On a store fault the
 /// WHOLE drained set requeues in order — nothing is dropped and
 /// nothing is half-durable; on success the whole round lands.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn spool_fault_requeues_the_whole_round() {
     let store: std::sync::Arc<dyn object_store::ObjectStore> =
         std::sync::Arc::new(object_store::memory::InMemory::new());
@@ -216,7 +216,7 @@ async fn spool_fault_requeues_the_whole_round() {
 /// Round-22 item 2c: a corrupt spool row is quarantined (moved,
 /// preserved, counted — the count survives reopen), never
 /// silently skipped, and never blocks the healthy rows.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn spool_quarantines_corrupt_rows() {
     let store: std::sync::Arc<dyn object_store::ObjectStore> =
         std::sync::Arc::new(object_store::memory::InMemory::new());

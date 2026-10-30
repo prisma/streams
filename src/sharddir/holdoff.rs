@@ -160,7 +160,7 @@ mod tests {
     /// every cycle earned a strike, strikes never decayed, and cold shards
     /// drifted to the 60 s ceiling. A release the runtime chose is not evidence:
     /// the base holdoff, and the ledger exactly as it was.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
     async fn a_sweep_eviction_or_shutdown_leaves_the_strike_ledger_alone() {
         let dir = directory();
         let cycles = [
@@ -191,7 +191,7 @@ mod tests {
 
     /// The storm signature still escalates: an engine that dies, or that the ring
     /// moves or the fleet evicts while young, is a strike every time.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
     async fn a_young_engine_that_dies_or_is_moved_away_still_strikes() {
         let dir = directory();
         let inc = open(&dir).await;

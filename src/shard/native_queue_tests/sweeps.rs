@@ -25,7 +25,7 @@ fn clear_counts(s: &mut StateRow) {
     s.debt_bytes = 0;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn the_roster_holds_a_queue_while_any_one_count_or_its_debt_is_pending() {
     let (e, db, c) = clocked("nq-roster-counts", QueueConfig::default()).await;
     assert_eq!(
@@ -65,7 +65,7 @@ async fn the_roster_holds_a_queue_while_any_one_count_or_its_debt_is_pending() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_sweep_that_moves_nothing_leaves_the_state_row_untouched() {
     // On the wall clock: a sweep that moved something would advance the
     // queue clock to now.
@@ -78,7 +78,7 @@ async fn a_sweep_that_moves_nothing_leaves_the_state_row_untouched() {
     assert_eq!(db.get(keys::state(&HASH)).await.unwrap(), before);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_sweep_reports_the_exact_next_deadline_and_parks_the_roster_there() {
     let (e, db, c) = clocked("nq-next-deadline", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
@@ -108,7 +108,7 @@ async fn a_sweep_reports_the_exact_next_deadline_and_parks_the_roster_there() {
     assert_eq!(roster(&db).await, Some(c + HOUR_MS));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_subscribed_queue_with_nothing_due_looks_again_in_a_minute() {
     let (e, db, c) = clocked("nq-next-notify", QueueConfig::default()).await;
     op(
@@ -135,7 +135,7 @@ async fn a_subscribed_queue_with_nothing_due_looks_again_in_a_minute() {
     assert_eq!(roster(&db).await, Some(c + 60_000));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_wake_up_fires_at_its_backoff_exactly_and_doubles_it_while_unanswered() {
     let (e, db, c) = clocked("nq-wake-backoff", QueueConfig::default()).await;
     let url = Some("https://example.com/w".to_owned());
@@ -176,7 +176,7 @@ async fn a_wake_up_fires_at_its_backoff_exactly_and_doubles_it_while_unanswered(
     assert!(swept(&e).await.1.is_none(), "a paused queue wakes nobody");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn an_untaken_message_enters_the_gap_at_its_retention_end_exactly() {
     let (e, db, c) = clocked("nq-untaken-expiry", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
@@ -198,7 +198,7 @@ async fn an_untaken_message_enters_the_gap_at_its_retention_end_exactly() {
     assert!(!has(&db, meta).await, "the expired message is deleted");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_failed_message_is_discarded_at_its_failure_expiry_exactly() {
     let (e, db, c) = clocked("nq-failure-expiry", QueueConfig::default()).await;
     let expiry = c + QueueConfig::default().failure_retention_ms;
@@ -222,7 +222,7 @@ async fn a_failed_message_is_discarded_at_its_failure_expiry_exactly() {
     assert!(!has(&db, meta).await, "the discarded message is deleted");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_dedup_entry_is_deleted_at_its_window_end_exactly_and_a_younger_one_stays() {
     let (e, db, c) = clocked("nq-dedup-expiry", QueueConfig::default()).await;
     let tagged = |tag: u8| SendMessage {
@@ -265,7 +265,7 @@ async fn failures(e: &super::ShardEngine) -> Vec<(u64, &'static str)> {
         .collect()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_retry_due_at_its_cycle_deadline_fails_in_a_sweep_at_that_millisecond() {
     let (e, db, c) = clocked("nq-retry-due-at-cycle", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
@@ -292,7 +292,7 @@ async fn a_retry_due_at_its_cycle_deadline_fails_in_a_sweep_at_that_millisecond(
     assert_eq!(failures(&e).await, vec![(0, "retention")]);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_sweep_that_runs_after_a_retrys_cycle_deadline_still_fails_it() {
     let (e, db, c) = clocked("nq-retry-late-sweep", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
@@ -315,7 +315,7 @@ async fn a_sweep_that_runs_after_a_retrys_cycle_deadline_still_fails_it() {
     assert_eq!(failures(&e).await, vec![(0, "retention")]);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_sweep_that_fills_its_step_looks_again_in_a_second() {
     let mut cfg = QueueConfig::default();
     cfg.group.max_batch = 1_000;
@@ -355,7 +355,7 @@ async fn a_sweep_that_fills_its_step_looks_again_in_a_second() {
     assert_eq!(items[0].failure.as_ref().unwrap().cause, "retention");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn dedup_and_retention_sweeps_that_fill_their_step_look_again_in_a_second() {
     let (e, db, c) = clocked("nq-sweep-steps", QueueConfig::default()).await;
     let n = crate::native_queue::SWEEP_STEP;

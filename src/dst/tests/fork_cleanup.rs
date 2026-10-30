@@ -22,7 +22,7 @@ use super::fixture_storage::mem;
     clippy::disallowed_methods,
     reason = "crashed creator fixture; the parked creator is released and joined before shutdown; its outcome is irrelevant because the world is repaired around it, but it must park concurrently at the crash point"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_crashed_creators_late_reference_is_repaired_by_delete_retry() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -145,7 +145,7 @@ async fn a_crashed_creators_late_reference_is_repaired_by_delete_retry() {
 /// its incarnation fence means a release against a replaced source is
 /// conclusive (nothing pinned) rather than evaluating that stranger's
 /// lifecycle. Driven at the registry level with the real helper.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stale_fork_release_does_not_touch_a_recreated_source() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -249,7 +249,7 @@ async fn park_reached(fp: crate::failpoints::Fp, name: &str, past: usize) {
     clippy::disallowed_methods,
     reason = "crashed creator fixture; the parked creator is released and joined before shutdown; it must park concurrently at the crash point while the service repairs the world around it"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_crashed_creators_late_reference_is_released_without_a_client_retry() {
     let _serial = gap_lock().lock().await;
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
@@ -396,7 +396,7 @@ async fn indexed_debts(state: &std::sync::Arc<crate::http::AppState>) -> usize {
     clippy::disallowed_methods,
     reason = "live creator race fixture; both parked creator handles are released and joined before shutdown; they must park concurrently while reconciler passes interleave with them"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_reconciler_never_releases_a_reference_a_live_creator_or_new_child_holds() {
     let _serial = gap_lock().lock().await;
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
@@ -569,7 +569,7 @@ async fn stage_crashed_child_delete(
 /// the debt of a child DELETE that died after its tombstone write. Nothing
 /// durable changes, and a reconciler in the next process over the same store
 /// completes the repair.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_interrupted_reconcile_pass_is_completed_after_a_restart() {
     let _serial = gap_lock().lock().await;
     let store = mem();

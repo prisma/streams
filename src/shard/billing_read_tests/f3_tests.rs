@@ -14,7 +14,7 @@ use super::{
 /// no store read; the usage dirty set holds the newest version until the
 /// ledger acknowledges it, and a fresh engine over the same store rebuilds
 /// it from the tails and the same meta from the static row and the tail.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn f3_billing_counters_ride_the_tail_and_the_static_row_is_written_once_a_month() {
     let rig = CloseRig::start("f3-tail", None).await;
     let (staged_before, read_before) = test_support::billing_row_io_on(&rig.db);
@@ -100,7 +100,7 @@ async fn f3_billing_counters_ride_the_tail_and_the_static_row_is_written_once_a_
 /// the segment dirty, but `load_billing_meta`, the drain's read, answers the
 /// durable version 1; an acknowledgement through 1 leaves the segment dirty;
 /// once the write is durable the drain reads version 2.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn the_usage_drain_meters_only_durable_counters() {
     let store = crate::dst::FaultStore::new(
         Arc::new(object_store::memory::InMemory::new()),
@@ -171,7 +171,7 @@ async fn the_usage_drain_meters_only_durable_counters() {
 /// with it, and deletes none of the month finals it named: a fresh engine
 /// over the store holds the finals and marks the segment dirty again, so
 /// the drain emits both once more (the rollup ignores what it holds).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn an_ack_in_a_rejected_group_leaves_its_finals_and_the_segment_is_emitted_again() {
     let rig = CloseRig::start("f3-rejected-ack", Some(&open_row())).await;
     let _october = ClockAt::set(crate::billing::month_start_ms(2026, 10) + HOUR).await;
@@ -221,7 +221,7 @@ async fn an_ack_in_a_rejected_group_leaves_its_finals_and_the_segment_is_emitted
 /// The meta of a stream no handle holds is read at durable visibility: a
 /// newer tail the shard log applied but has not made durable (its WAL PUT
 /// parked) is not reported.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_cold_streams_meta_is_read_at_durable_visibility() {
     let inner: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let fault = crate::dst::FaultStore::uniform(inner, 0xD0B1, crate::dst::FaultPlan::CLEAN);

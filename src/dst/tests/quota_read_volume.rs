@@ -11,7 +11,7 @@ use super::fixture_requests::{PRISMA_KEY, preq};
 /// bucket as `GET records`: the project is admitted at entry only
 /// while the bucket is not in debt, a served page is debited by its
 /// framed body bytes, and a refused page (wrong key) is never debited.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn scan_pages_draw_on_the_read_byte_quota() {
     let (svc, state, addr) = auth_rig("proj-rv", "ws-rv", &["c-rv"], None).await;
     // Policy v2: an 8 B/s read budget, published before the first request
@@ -97,7 +97,7 @@ async fn scan_pages_draw_on_the_read_byte_quota() {
 /// page route: admitted at entry only while the bucket is not in debt,
 /// and debited by the framed batch it serves. A project in read debt
 /// could keep draining its queues while every page route refused it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn consumer_pulls_draw_on_the_read_byte_quota() {
     let (svc, state, addr) = auth_rig("proj-rp", "ws-rp", &["c-rp"], None).await;
     let mut policy = rig_policy("proj-rp", "ws-rp", 1, 2);

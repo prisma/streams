@@ -41,7 +41,7 @@ type Ending = (fn() -> TaskResult, TaskOutcome);
 /// T1. A critical loop's end, however it ends (`Done` included), stops the
 /// process root and names the loop, and the join report still carries the
 /// same end.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_critical_exit_stops_the_process_root_and_names_its_cause() {
     let cases: [Ending; 3] = [
         (|| TaskResult::Done, TaskOutcome::Finished),
@@ -87,7 +87,7 @@ async fn a_critical_exit_stops_the_process_root_and_names_its_cause() {
 /// T2. Only an unrequested critical exit on the process root is a cause: a
 /// noncritical end stops nothing, an owner's supervisor keeps its readiness
 /// verdict, and a loop ending in answer to a requested stop is no cause.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn only_an_unrequested_critical_exit_on_the_process_root_is_a_cause() {
     let root = test_root();
     root.spawn("hygiene", Policy::Noncritical, |_| async {
@@ -139,7 +139,7 @@ async fn only_an_unrequested_critical_exit_on_the_process_root_is_a_cause() {
 /// T3. Held interleaving: the first critical exit is the cause; a critical
 /// loop that ends because of the stop it requested, and a later request,
 /// are its consequences. The join report names both failures.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn the_first_critical_exit_is_the_cause_and_later_exits_its_consequences() {
     let root = test_root();
     let (release, held) = tokio::sync::oneshot::channel();
@@ -188,7 +188,7 @@ async fn the_first_critical_exit_is_the_cause_and_later_exits_its_consequences()
 /// the verdict. A requested stop reports the resources' own result; a
 /// critical exit fails the stop with its cause, which outranks a resource
 /// failure.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn the_ordered_stop_fails_with_the_critical_cause_after_the_whole_sequence() {
     let requested = test_root();
     polite(&requested, "fleet");
@@ -239,7 +239,7 @@ async fn the_ordered_stop_fails_with_the_critical_cause_after_the_whole_sequence
 /// T5. End to end through the real accept loop: under the process root a
 /// critical loop's exit ends `serve_h1`, and the ordered stop then fails
 /// naming the loop.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_critical_exit_ends_the_accept_loop_and_fails_the_ordered_stop() {
     let tasks = test_root();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -376,7 +376,7 @@ async fn helper_exit(how: &str, stderr: Stderr) -> (Option<i32>, String) {
 /// binary's own root answers a critical exit, and a root whose only executor
 /// thread is then blocked for good still exits 1 at its deadline. Its
 /// escalation logs the cause, name and outcome, before the executor wedges.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn the_process_root_bounds_its_stop_off_the_executor() {
     let (code, transcript) = helper_exit("critical", Stderr::Read).await;
     assert_eq!(code, Some(1), "{transcript}");
@@ -389,7 +389,7 @@ async fn the_process_root_bounds_its_stop_off_the_executor() {
 /// T7. Owner decision D1: a termination signal's request arms the same
 /// bound, so a requested stop whose executor is blocked for good also exits
 /// 1 at its deadline.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_requested_stop_of_the_process_root_is_bounded_off_the_executor() {
     let (code, transcript) = helper_exit("request", Stderr::Read).await;
     assert_eq!(code, Some(1), "{transcript}");
@@ -401,7 +401,7 @@ async fn a_requested_stop_of_the_process_root_is_bounded_off_the_executor() {
 /// T10. The bound does not depend on its message: with the helper's stderr
 /// closed, the deadline's write fails (EPIPE) and the process still exits 1
 /// at its deadline instead of losing the bound with the write.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn the_stop_deadline_exits_even_when_stderr_is_closed() {
     let (code, transcript) = helper_exit("request", Stderr::Closed).await;
     assert_eq!(code, Some(1), "{transcript}");
@@ -411,7 +411,7 @@ async fn the_stop_deadline_exits_even_when_stderr_is_closed() {
 /// T11. Nor does it wait for a message that cannot be written: with the
 /// helper's stderr a full pipe nobody reads, the deadline's write blocks,
 /// and the process still exits 1 shortly after its deadline.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn the_stop_deadline_exits_even_when_stderr_is_full() {
     let (code, transcript) = helper_exit("request", Stderr::Full).await;
     assert_eq!(code, Some(1), "{transcript}");
@@ -423,7 +423,7 @@ async fn the_stop_deadline_exits_even_when_stderr_is_full() {
 /// 200 ms root stops for one; with "request", a 200 ms root is asked to stop
 /// as the signal task asks. Either way the only executor thread then blocks.
 /// The log goes to stdout, as the binary's does.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn stop_deadline_helper() {
     let Some(how) = ProcessEnvironment.get(HELPER_MARKER) else {
         return;

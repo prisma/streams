@@ -48,7 +48,7 @@ async fn drain_billing_clean(state: &Arc<crate::http::AppState>, prefixes: &[&st
 /// it on a later sweep once the ledger reaches zero. Before this fix
 /// the sweep closed it as "debt-free" after checking only billing rows,
 /// and the backlog sat until customer traffic happened to reopen it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn cold_shard_maintenance_debt_survives_the_sweep_and_drains() {
     let _serial = sweep_lock().lock().await;
     let store = mem();
@@ -136,7 +136,7 @@ async fn cold_shard_maintenance_debt_survives_the_sweep_and_drains() {
 /// R27-2b: many cold indebted shards must not all stay resident — the
 /// bound (SWEEP_MAINT_RESIDENT=2) holds, and the rotation gives a
 /// DIFFERENT residency window on the next sweep so no shard starves.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn sweep_residency_bound_rotates_over_many_indebted_shards() {
     let _serial = sweep_lock().lock().await;
     let store = mem();
@@ -248,7 +248,7 @@ async fn sweep_residency_bound_rotates_over_many_indebted_shards() {
 /// exceed the budget — the R27-2 version opened every owned shard to
 /// discover debt and only bounded the post-sweep survivors, which
 /// reproduced the cross-DB residency overlap during the sweep itself.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn sweep_peak_open_never_exceeds_the_budget() {
     let _serial = sweep_lock().lock().await;
     let store = mem();
@@ -330,7 +330,7 @@ async fn sweep_peak_open_never_exceeds_the_budget() {
 /// out from under in-flight traffic. engine_for bumps the touch
 /// counter inside the shards-map read guard; the close re-checks
 /// after taking the write lock.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn customer_race_into_a_sweep_opened_engine_prevents_its_close() {
     let _serial = sweep_lock().lock().await;
     let store = mem();
@@ -425,7 +425,7 @@ async fn customer_race_into_a_sweep_opened_engine_prevents_its_close() {
 /// window), or who coalesced into the sweep's own in-flight open —
 /// makes custody installation DECLINE. The scheduler never closes an
 /// engine it could not take custody of.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn custody_declines_on_prior_external_use() {
     let _serial = sweep_lock().lock().await;
     let store = mem();
@@ -506,7 +506,7 @@ async fn custody_declines_on_prior_external_use() {
 /// stamp adoption — a sweep-held engine touched by maintenance stays
 /// under scheduler control and still closes when its debt drains or
 /// its quantum expires, instead of leaking out of the rotation.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn internal_touch_does_not_leak_an_engine_from_the_rotation() {
     let _serial = sweep_lock().lock().await;
     let store = mem();
@@ -601,7 +601,7 @@ async fn serial_on_the_real_clock() -> (
 }
 
 /// While a walk scenario runs, no scenario can inject a billing clock.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_walk_scenario_excludes_an_injected_billing_clock() {
     let _serial = serial_on_the_real_clock().await;
     assert!(crate::billing::billing_clock_lock().try_write().is_err());
@@ -612,7 +612,7 @@ async fn a_walk_scenario_excludes_an_injected_billing_clock() {
 /// physical shard used to open one engine per route for the whole
 /// page and only bound afterwards; now over-budget routes defer to
 /// the next sweep and the peak gauge covers walk opens too.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn tombstone_walk_peak_residency_stays_under_the_budget() {
     let _serial = serial_on_the_real_clock().await;
     let store = mem();
@@ -714,7 +714,7 @@ async fn tombstone_walk_peak_residency_stays_under_the_budget() {
     clippy::excessive_nesting,
     reason = "tombstone_walk_fairness_under_occupied_budget; the fixture nests the pin request inside the first-seen check of the shard walk; flattening it would separate the pin from the shard it occupies"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn tombstone_walk_fairness_under_occupied_budget() {
     let _serial = serial_on_the_real_clock().await;
     let store = mem();
@@ -841,7 +841,7 @@ fn WALK_CLOSE_SUBMITS_SNAPSHOT() -> u64 {
 /// engine Arc stays in the map with no empty-slot window (the close
 /// holds one write guard through remove -> CAS -> reinsert), so no
 /// second open can start.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn revoked_close_keeps_the_identical_engine_with_no_new_open() {
     let _serial = sweep_lock().lock().await;
     let store = mem();

@@ -190,7 +190,7 @@ mod tests {
     /// The child process runs the production teardown and leaves one worker
     /// deadlocked, then exits. An unbounded runtime drop would wait on that
     /// worker for ever, and this parent would kill the child at the deadline.
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn a_scan_on_a_cache_miss_cannot_hold_process_exit() {
         let exe = std::env::current_exe().expect("test binary path");
         let child = tokio::process::Command::new(exe)

@@ -211,7 +211,7 @@ async fn database_rows(db: &Db) -> Vec<(Vec<u8>, Vec<u8>)> {
 /// close corrects January down to the expiry, February's carry is reversed
 /// by its own correction, March carries nothing, and the bystander segment
 /// in the same rows keeps every floor byte for byte.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_close_after_two_closed_months_corrects_the_first_and_reverses_the_carried_one() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let r = rollup("late-two").await;
@@ -267,7 +267,7 @@ async fn a_close_after_two_closed_months_corrects_the_first_and_reverses_the_car
 /// Re-delivery in the same page or a later one, an older snapshot after the
 /// close, and a later zero-gauge version (a retention toggle) after March
 /// was carried: January and February are corrected exactly once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_late_close_corrects_once_whatever_its_delivery() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let r = closed_through_february("late-once").await;
@@ -308,7 +308,7 @@ async fn a_late_close_corrects_once_whatever_its_delivery() {
 
 /// A later zero-gauge version that reaches the rollup before the close
 /// settles the same books, and the close then changes nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_later_zero_gauge_version_first_settles_the_same_books() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let r = closed_through_february("late-toggle-first").await;
@@ -342,7 +342,7 @@ async fn a_later_zero_gauge_version_first_settles_the_same_books() {
 /// February's close stopped after its carry committed and before its
 /// freeze: the late close lowers February's floor and both aggregates in
 /// place with no correction, so the resumed freeze bills 0 once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_close_between_a_months_carry_and_its_freeze_lowers_that_month_in_place() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let r = rollup("late-window").await;
@@ -384,7 +384,7 @@ async fn a_close_between_a_months_carry_and_its_freeze_lowers_that_month_in_plac
 /// January's own close stopped after its carry: the close lands on the open
 /// row, whose floor already takes the figure; the aggregates lose the
 /// carry's excess with it, so the freeze and the project agree.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_close_inside_its_own_months_carry_window_lowers_the_aggregates_too() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let r = rollup("late-own-window").await;
@@ -416,7 +416,7 @@ async fn a_close_inside_its_own_months_carry_window_lowers_the_aggregates_too() 
 /// second close (and the live snapshot after them), in either order of the
 /// finals: each month is corrected once, never by both its own final and
 /// the reversal.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_close_carried_only_by_month_finals_corrects_every_carried_month() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let jan = month_final(live(2, "2026-01", OWED, 0, month_start_ms(2026, 2)));
@@ -451,7 +451,7 @@ async fn a_close_carried_only_by_month_finals_corrects_every_carried_month() {
 
 /// A carried month the page cannot read fails the late close whole; the
 /// fault is one-shot, and the retried page settles the same books.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_carried_month_the_page_cannot_read_fails_the_late_close_whole() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let r = closed_through_february("late-read-fault").await;
@@ -479,7 +479,7 @@ async fn a_carried_month_the_page_cannot_read_fails_the_late_close_whole() {
 /// segment closed: January's correction is positive, and both delivery
 /// orders settle the same books. The rise alone still keeps the upward-only
 /// rule and the carried gauge (owner follow-up (c) is not in this change).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_gauge_rise_and_a_close_settle_the_same_books_in_either_order() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let jan20 = month_start_ms(2026, 1) + 19 * DAY;
@@ -522,7 +522,7 @@ async fn a_gauge_rise_and_a_close_settle_the_same_books_in_either_order() {
 /// A late snapshot that still owns bytes is not a close: a lower figure
 /// corrects no storage, keeps the carried floor and leaves the state the
 /// carries read, so February is carried as before.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_late_snapshot_that_does_not_close_keeps_the_upward_only_rule() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let r = rollup("late-open").await;
@@ -550,7 +550,7 @@ async fn a_late_snapshot_that_does_not_close_keeps_the_upward_only_rule() {
 /// A state accounted more than 600 months past the close's month is not a
 /// carry the month close could have made: the late close fails its page
 /// before reading any month, and nothing is written.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_carried_span_beyond_the_month_close_cap_fails_the_late_close() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let r = rollup("late-cap").await;
@@ -576,7 +576,7 @@ async fn a_carried_span_beyond_the_month_close_cap_fails_the_late_close() {
 
 /// A carried month whose floor is not what the carry billed from the
 /// superseded state is refused rather than reversed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_carried_month_whose_floor_the_carry_did_not_bill_fails_the_late_close() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let r = closed_through_february("late-foreign-floor").await;

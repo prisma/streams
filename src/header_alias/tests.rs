@@ -111,7 +111,7 @@ fn a_preflight_that_allows_a_prisma_name_allows_its_alias() {
 
 /// The refusal is byte for byte what the product surface's `perr`
 /// renders, plus the CORS origin a browser needs to read it.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn the_conflict_refusal_has_the_product_error_shape() {
     let (alias, name) = REQUEST_ALIASES[0];
     let refusal = conflict(alias, name);

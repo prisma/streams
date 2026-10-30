@@ -26,7 +26,7 @@ fn take(service: &AuditJournal) -> Result<PendingAudit<'_>, String> {
     PendingAudit::take(&service.queue, &service.dropped, &service.gap, LIMIT, gap)
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn byte_bounded_audit_batches_preserve_unselected_and_cancelled_order() {
     let service = AuditJournal::new();
     service
@@ -94,7 +94,7 @@ async fn byte_bounded_audit_batches_preserve_unselected_and_cancelled_order() {
     assert_eq!(service.gap.load(Ordering::Relaxed), 0);
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn oversized_audit_event_becomes_visible_gap_without_wedging_followers() {
     let service = AuditJournal::new();
     service
@@ -264,7 +264,7 @@ fn deny(service: &AuditJournal, n: u64) {
 /// anonymous flood adds one aggregate per (code, status) and drain attempt
 /// to the queue and never an event per denial. The first drain that
 /// appends takes them all.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_failed_drain_adds_only_its_aggregates() {
     let service = AuditJournal::new();
     deny(&service, 5);

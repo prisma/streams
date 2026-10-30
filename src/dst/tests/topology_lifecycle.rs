@@ -8,7 +8,7 @@ use super::fixture_storage::mem;
 
 /// Scaling decisions and TTL slides are incarnation-fenced like every
 /// other name-scoped background mutation.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn stale_scaler_and_ttl_decisions_decline_after_recreate() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -105,7 +105,7 @@ async fn stale_scaler_and_ttl_decisions_decline_after_recreate() {
 /// decision carries the epoch of the traffic that justified it, and
 /// run_seal's terminal proof refuses to bless a different operation's
 /// terminal state.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn scaler_heat_and_terminal_proof_are_incarnation_scoped() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -215,7 +215,7 @@ async fn scaler_heat_and_terminal_proof_are_incarnation_scoped() {
     clippy::disallowed_methods,
     reason = "merge under sealing fixture; the pending merge is joined after the seal is resolved; it must run concurrently to be declined under the sealing collection"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn merge_phase_b_declines_under_sealing() {
     let _l = gap_lock().lock().await;
     let store = mem();
@@ -413,7 +413,7 @@ async fn merge_phase_b_declines_under_sealing() {
     clippy::disallowed_methods,
     reason = "concurrent finals fixture; the first final is joined after the second is answered; they must run concurrently to contend for one claim"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn concurrent_finals_with_different_coordination_do_not_share_a_claim() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -526,7 +526,7 @@ async fn concurrent_finals_with_different_coordination_do_not_share_a_claim() {
     clippy::disallowed_methods,
     reason = "parked fork fixture; the creator is released and joined before the source pin is checked; it must park concurrently before its source reference"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_child_deleted_before_the_source_ref_cannot_pin_the_source() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -618,7 +618,7 @@ async fn a_child_deleted_before_the_source_ref_cannot_pin_the_source() {
 /// NON-DEPLOYMENT project's pending split resumes under its own ref.
 /// Pre-sweep, resume(name) resolved the deployment tenant and the
 /// pending transition never completed for any other project.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn nondeployment_pending_split_resumes() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read";

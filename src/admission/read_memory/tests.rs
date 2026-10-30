@@ -50,7 +50,7 @@ fn the_read_memory_is_a_quarter_of_the_shed_line() {
 /// A hold's two ledgers move together: the reservation, its release while
 /// the request waits, the first rendered page replacing it exactly, a
 /// second page adding to it, and the drop releasing everything.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_hold_reserves_releases_while_waiting_and_settles_to_its_pages() {
     let ctl = ctl(500);
     let registry = QuotaRegistry::default();
@@ -76,7 +76,7 @@ async fn a_hold_reserves_releases_while_waiting_and_settles_to_its_pages() {
 /// Over a 1 MiB budget, a 768 KiB read waits while another holds 512 KiB
 /// and is admitted when it releases; a read alone is admitted whatever its
 /// size.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn a_read_waits_for_the_instance_memory_another_read_releases() {
     let ctl = ctl(4);
     assert_eq!(ctl.read_memory(), (0, MIB));
@@ -100,7 +100,7 @@ async fn a_read_waits_for_the_instance_memory_another_read_releases() {
 /// that ledger, with nothing reserved in either: the instance's memory
 /// held by another read, or its project's line held by its own. A refusal
 /// at the line is one of the project's memory sheds.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn a_read_is_refused_for_the_ledger_that_stayed_full_for_the_wait() {
     let ctl = ctl(4);
     let registry = QuotaRegistry::default();
@@ -159,7 +159,7 @@ fn a_reservation_that_does_not_wait_takes_both_ledgers_or_neither() {
 
 /// A read waiting at its project's line is admitted when the project's own
 /// read releases, and only then.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn a_read_waits_at_its_projects_line_for_its_own_reads() {
     let ctl = ctl(500);
     let registry = QuotaRegistry::default();
@@ -188,7 +188,7 @@ async fn a_read_waits_at_its_projects_line_for_its_own_reads() {
 /// not at all when no room comes by its deadline, which takes nothing and
 /// counts one memory shed when the project's line refused it. A rendered
 /// hold, and one no admission reserved, take nothing.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn a_woken_wait_takes_its_reservation_again_or_ends_at_its_deadline() {
     let ctl = ctl(500);
     let line = 12 * MIB;
@@ -265,7 +265,7 @@ async fn a_woken_wait_takes_its_reservation_again_or_ends_at_its_deadline() {
 /// woke but not for what arrived since leaves it waiting, so its project
 /// never passes its line, and a release with room for all of it lets it
 /// take all of it.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn a_woken_wait_takes_what_its_measure_asks_when_room_comes() {
     let ctl = ctl(500);
     let line = 12 * MIB;
@@ -334,7 +334,7 @@ async fn a_woken_wait_takes_what_its_measure_asks_when_room_comes() {
 /// yields frames of at most 64 KiB, and releases the hold only when it is
 /// dropped. A hold that rendered nothing is released when the response is
 /// answered.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_rendered_hold_rides_its_body_and_an_unrendered_one_is_released() {
     let ctl = ctl(500);
     let page = Bytes::from(vec![7u8; 200 * 1024]);
@@ -377,7 +377,7 @@ fn shared_cell_profile_line() -> u64 {
 /// budgets (4 x 8 MiB) of one project at once, so a compliant project
 /// reads four default pages together; a fifth, with the four still held
 /// (cold reads), waits its 2 s and is refused as the project's.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn the_shared_cell_line_admits_four_default_reads_of_one_project_at_once() {
     let line = shared_cell_profile_line();
     let ctl = ctl(500);

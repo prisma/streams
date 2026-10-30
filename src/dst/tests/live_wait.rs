@@ -144,7 +144,7 @@ async fn counts(state: &State, name: &str) -> crate::billing::RowDelta {
 /// Red at 63139112 (no route): `404 != 200`. Every subscription from
 /// `now` is answered at once with a cursor pinned at its stream's tail and
 /// no records, so the gap between two requests is never lost.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn subscriptions_from_now_are_answered_at_once_with_pinned_cursors() {
     let (state, addr) = http_rig(mem()).await;
     for s in ["n1", "n2"] {
@@ -172,7 +172,7 @@ async fn subscriptions_from_now_are_answered_at_once_with_pinned_cursors() {
 /// subscription with exactly that record and a cursor past it; the other
 /// two stay out of the answer with their cursors the client's. Waiting
 /// again from every cursor answers empty at the deadline, not earlier.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_append_wakes_exactly_its_tail_and_an_idle_wait_answers_empty_at_its_deadline() {
     let (state, addr) = http_rig(mem()).await;
     let streams = ["w1", "w2", "w3"];
@@ -223,7 +223,7 @@ async fn an_append_wakes_exactly_its_tail_and_an_idle_wait_answers_empty_at_its_
 /// one byte budget split evenly between the ready tails: the stream with
 /// more than its share answers `upToDate: false` and continues from its
 /// cursor; an idle one stays out.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn ready_tails_are_answered_in_request_order_within_one_shared_budget() {
     let (state, addr) = http_rig(mem()).await;
     let streams = ["p1", "p2", "p3"];
@@ -260,7 +260,7 @@ async fn ready_tails_are_answered_in_request_order_within_one_shared_budget() {
 /// One answer covering three tails meters ONE read operation, on the first
 /// answered tail's stream, and each stream's own records and bytes; an
 /// empty answer meters one operation on the first tail's stream.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn one_answer_meters_one_read_operation_and_each_streams_bytes() {
     let (state, addr) = http_rig(mem()).await;
     let streams = ["m1", "m2", "m3"];
@@ -318,7 +318,7 @@ async fn one_answer_meters_one_read_operation_and_each_streams_bytes() {
 /// A wait watching twenty streams parks once: one place in the live pool,
 /// however many streams it watches. More subscriptions than a request
 /// carries are refused whole, 429 `live_subscription_limit`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_wait_on_twenty_streams_parks_once_and_too_many_subscriptions_are_refused() {
     let (state, addr) = http_rig(mem()).await;
     let names: Vec<String> = (0..20).map(|i| format!("pool-{i}")).collect();
@@ -355,7 +355,7 @@ async fn a_wait_on_twenty_streams_parks_once_and_too_many_subscriptions_are_refu
 /// before its first delivery and after it settled everything, a whole
 /// wait commits nothing (no configuration read, no Receive); an append
 /// wakes it with the record leased to it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_drained_group_waits_without_walking_and_an_append_wakes_it_leased() {
     let (state, addr) = http_rig(mem()).await;
     create(addr, "q1", br#"{"format":{"kind":"json"}}"#).await;
@@ -411,7 +411,7 @@ async fn a_drained_group_waits_without_walking_and_an_append_wakes_it_leased() {
 /// A lease the wait delivered and the client never settled is delivered
 /// again through the next wait at its deadline, attempt 2: an expiry
 /// commits nothing, so only the lease deadline the group watches wakes it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_unsettled_lease_is_redelivered_through_the_wait_at_its_deadline() {
     let (state, addr) = http_rig(mem()).await;
     create(addr, "q2", br#"{"format":{"kind":"json"}}"#).await;
@@ -436,7 +436,7 @@ async fn an_unsettled_lease_is_redelivered_through_the_wait_at_its_deadline() {
 /// a whole 4 MiB coverage: with all but 512 KiB of the instance's read
 /// memory held elsewhere it still delivers at once, where a whole-coverage
 /// reservation would wait out the deadline and answer empty.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_woken_group_reserves_what_was_appended_not_a_whole_coverage() {
     let (state, addr) = http_rig(mem()).await;
     create(addr, "q3", br#"{"format":{"kind":"json"}}"#).await;
@@ -468,7 +468,7 @@ async fn a_woken_group_reserves_what_was_appended_not_a_whole_coverage() {
 
 /// A watch from `now` is answered at once with the journal's cursor; from
 /// that cursor, a matching append answers it invalidated, `changed`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_watch_pins_its_cursor_and_a_matching_append_invalidates_it() {
     let (state, addr) = http_rig(mem()).await;
     create(
@@ -561,7 +561,7 @@ async fn per_stream_refusal(addr: SocketAddr, bearer: &str, name: &str) -> (u16,
 /// with a wrong key are each answered with exactly the refusal their
 /// per-stream route gives that token, while the covered one is served. A
 /// path naming another project is the usage route's 404.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn every_subscription_is_held_to_the_tokens_grants_and_answered_its_own_refusal() {
     let (svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &[], None).await;
     let (full, under_a, pull_only) = bearers(&svc);
@@ -608,7 +608,7 @@ async fn every_subscription_is_held_to_the_tokens_grants_and_answered_its_own_re
 /// read answers while the shard reopens), and the client's replay, made as
 /// the SDK makes it, waits on the replacement engine and is answered with
 /// exactly the next record.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_retired_engine_answers_its_wait_retryably_and_the_replay_gets_the_next_record() {
     let (state, addr) = http_rig(mem()).await;
     create(addr, "er", br#"{"format":{"kind":"json"}}"#).await;
@@ -687,7 +687,7 @@ async fn append_past_503(addr: SocketAddr, name: &str, record: &Value) {
 /// hop to the successor (a moved cursor, no records), and the client's
 /// wait from there gets the first record appended under its routing key,
 /// all well before one deadline.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_tail_waiting_through_a_splits_seal_window_follows_it_to_the_first_record_after() {
     let _l = super::fixture_failpoints::gap_lock().lock().await;
     let (state, addr, _guard, split) = super::fixture_http::rig_in_seal_gap("sgap", 3).await;
@@ -742,7 +742,7 @@ async fn follow_gap_tail(addr: SocketAddr, project: String, mut cursor: String) 
 /// A wait reserves its answer, `maxBytes`, as a page read reserves its
 /// page: with the instance's read memory held elsewhere it is refused
 /// 503 `read_memory_busy` (retryable) after the reservation's wait.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_wait_reserves_its_answer_and_is_refused_when_read_memory_is_held() {
     let (state, addr) = http_rig(mem()).await;
     create(addr, "rm", br#"{"format":{"kind":"json"}}"#).await;
@@ -766,7 +766,7 @@ async fn a_wait_reserves_its_answer_and_is_refused_when_read_memory_is_held() {
 /// was appended: its walk waits for room rather than reading past it, so
 /// with 64 KiB free and 160 KiB appended the wait answers empty at its
 /// deadline, the messages still unleased for the next wait.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_woken_group_waits_for_room_for_what_was_appended() {
     let (state, addr) = http_rig(mem()).await;
     create(addr, "q4", br#"{"format":{"kind":"json"}}"#).await;
@@ -814,7 +814,7 @@ async fn a_woken_group_waits_for_room_for_what_was_appended() {
 /// A tail polling through a split's seal window holds its answer's read
 /// reservation only while it reads: between polls it waits with nothing
 /// reserved, as a parked wait does.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_tail_polling_through_a_seal_window_releases_its_reservation_between_polls() {
     let _l = super::fixture_failpoints::gap_lock().lock().await;
     let (state, addr, _guard, split) = super::fixture_http::rig_in_seal_gap("sgrel", 2).await;
@@ -856,7 +856,7 @@ fn gap_tail_of(stream: &str, cursor: &str) -> Value {
 /// first walk of a group with a backlog that waits for read memory waits
 /// parked, outside the write gate's active requests, so a cell full of
 /// such waits never sheds its writers.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_wait_waiting_for_read_memory_on_its_first_walk_waits_parked() {
     let (state, addr) = http_rig(mem()).await;
     create(addr, "q5", br#"{"format":{"kind":"json"}}"#).await;
@@ -888,7 +888,7 @@ async fn a_wait_waiting_for_read_memory_on_its_first_walk_waits_parked() {
 /// ~120 B: 20 x (120 + 64) + 4 KiB), not a whole 4 MiB coverage: with all
 /// but 16 KiB of the read memory held elsewhere, a first wait leases its
 /// backlog at once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_group_with_a_small_backlog_reserves_its_backlog_not_a_whole_coverage() {
     let (state, addr) = http_rig(mem()).await;
     create(addr, "q6", br#"{"format":{"kind":"json"}}"#).await;

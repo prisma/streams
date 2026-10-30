@@ -29,7 +29,7 @@ use super::fixture_storage::mem;
     clippy::too_many_lines,
     reason = "seal generation scenario; arrangement takeover and durable postconditions describe one causal interleaving; splitting the phases into pass-through helpers would obscure the fence proof"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_superseded_close_cannot_write_or_close() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -158,7 +158,7 @@ async fn a_superseded_close_cannot_write_or_close() {
 /// takeover must complete the OLD operation's transition instead of
 /// stealing the claim — its record is durable and must not be
 /// stranded behind an unmarked intent.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_takeover_completes_an_old_close_that_won() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -258,7 +258,7 @@ async fn a_takeover_completes_an_old_close_that_won() {
 /// An exact retry RENEWS its lease — fresh timestamp, fresh
 /// generation — so an actively retrying owner can neither be taken
 /// over by wall clock nor fenced out by an aborted reservation.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_exact_retry_renews_its_lease() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -357,7 +357,7 @@ async fn an_exact_retry_renews_its_lease() {
     clippy::disallowed_methods,
     reason = "seal incarnation fixture; the held marking request is released and joined before examining the replacement; running it inline cannot expose deletion between acknowledgement and mark"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_resumed_mark_never_seals_a_later_incarnation() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -442,7 +442,7 @@ async fn a_resumed_mark_never_seals_a_later_incarnation() {
     clippy::disallowed_methods,
     reason = "seal operation-identity fixture; the held valid close is released and joined after the competing invalid request; serializing the requests would remove the identity race"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_wrong_content_type_close_cannot_join_the_valid_intent() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -556,7 +556,7 @@ async fn a_wrong_content_type_close_cannot_join_the_valid_intent() {
 /// sealer died: the lapsed claim goes through the takeover protocol
 /// (the old write is fenced first), and the old operation's late retry
 /// finds the collection sealed by someone else — never resurrected.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn seal_only_takes_over_an_abandoned_final_claim() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -649,7 +649,7 @@ async fn seal_only_takes_over_an_abandoned_final_claim() {
     clippy::disallowed_methods,
     reason = "seal fence replacement fixture; the held close is released and joined before the winning claim and stored records are checked; running it inline cannot hold it across the takeover and the engine replacement"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fence_survives_engine_replacement() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -758,7 +758,7 @@ async fn a_fence_survives_engine_replacement() {
 /// it over. X's own final used to carry the snapshot's Sealing refusal:
 /// the committer refused it as Closed, X answered 409 Stream-Closed for
 /// an open stream, and released the claim it had just installed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_raw_close_that_takes_over_an_abandoned_final_claim_seals_with_its_record() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -834,7 +834,7 @@ async fn a_raw_close_that_takes_over_an_abandoned_final_claim_seals_with_its_rec
 /// replacement engine, finding no fence row, let P's first attempt close
 /// the segment with no claim standing. The refusal now waits for its group,
 /// a failed group leaves no cached fence, and P's claim survives.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_superseded_final_waits_for_its_fence_to_be_durable() {
     let _serial = gap_lock().lock().await;
     let (state, addr) = http_rig(mem()).await;

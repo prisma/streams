@@ -770,7 +770,7 @@ mod cancellation_tests {
             recent: VecDeque::new(),
         })
     }
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn cancelled_ops_append_restores_batch_order_and_retry_ids() {
         let queue = local_queue();
         let dropped = AtomicU64::new(0);

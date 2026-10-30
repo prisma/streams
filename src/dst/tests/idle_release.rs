@@ -75,7 +75,7 @@ async fn records(addr: std::net::SocketAddr) -> Vec<Vec<u8>> {
     all
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_idle_instance_releases_its_caches_and_the_next_read_refills_them() {
     let store = FaultStore::new(mem(), 7, FaultProfile::clean());
     let rig = http_rig_build(store.clone(), RigRuntime::first(), idle_rig_options()).await;
@@ -139,7 +139,7 @@ async fn an_idle_instance_releases_its_caches_and_the_next_read_refills_them() {
 /// drain) stays in its memtable at idle unless something flushes it. The idle
 /// release's seal flushes every shard's memtable to an L0 table before it
 /// empties the caches.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_idle_release_flushes_what_the_shard_memtables_hold() {
     let trace = TraceStore::verbatim(mem());
     let rig = http_rig_build(trace.clone(), RigRuntime::first(), idle_rig_options()).await;
@@ -184,7 +184,7 @@ async fn an_idle_release_flushes_what_the_shard_memtables_hold() {
 /// A request that arrives while a release flushes the shard memtables ends
 /// the quiet period: the release is dropped, so the caches are not emptied
 /// under that client's first requests, and the next quiet period releases.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_read_during_the_release_flush_drops_that_release() {
     let store = FaultStore::new(mem(), 7, FaultProfile::clean());
     let rig = http_rig_build(store.clone(), RigRuntime::first(), idle_rig_options()).await;
@@ -313,7 +313,7 @@ async fn read_prefixes(addr: std::net::SocketAddr, done: &std::sync::atomic::Ato
 /// move every shard's sealed boundary each round, and every reader sees
 /// exactly its key's records, in order, with no gap or repeat: during the
 /// load a prefix, after it all of them (mem2 review L5).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn pressure_releases_beside_live_keyed_reads_keep_every_record() {
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
     let (state, addr, clock) = (rig.state.clone(), rig.addr, rig.clock.clone());

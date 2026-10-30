@@ -52,7 +52,7 @@ fn batch_starts(handle: &StreamHandle) -> Vec<u64> {
 /// ITS eviction slot: the other streams keep theirs, so budget pressure
 /// still evicts them in publish order while the reset stream's later
 /// batches survive behind them.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn gap_reset_keeps_the_other_streams_eviction_slots() {
     let engine = engine(3 * 1024).await;
     let a = engine.stream_handle([1; 16]).await.unwrap();
@@ -97,7 +97,7 @@ fn sealed_page(offset: u64) -> Bytes {
 /// 2, holds a page that fails admission. The control: the window [0, 3),
 /// which reaches that page, is refused, so the served window never
 /// admitted it.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_ring_read_inspects_no_batch_from_its_window_end() {
     let engine = engine(1 << 20).await;
     let handle = engine.stream_handle([3; 16]).await.unwrap();
@@ -127,7 +127,7 @@ async fn a_ring_read_inspects_no_batch_from_its_window_end() {
 /// that claims offset 2 and fails admission. The control: the window
 /// [1, 3), which starts inside that batch, inspects the entry and is
 /// refused.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_ring_read_inspects_no_batch_that_ends_at_its_window_start() {
     let engine = engine(1 << 20).await;
     let handle = engine.stream_handle([4; 16]).await.unwrap();

@@ -116,7 +116,7 @@ mod tests {
 
     /// A Db whose WAL write failed closed itself with its own reason; its
     /// close skips the flush, answers Ok and keeps that reason.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
     async fn the_close_of_a_db_that_failed_on_its_own_answers_ok_and_keeps_its_reason() {
         let failpoints = Arc::new(fail_parallel::FailPointRegistry::new());
         let db = db("close-verdict-failed", failpoints.clone()).await;
@@ -138,7 +138,7 @@ mod tests {
 
     /// A healthy Db whose final flush fails: the close had marked it closed,
     /// so the reason is Clean and the storage close is failed.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
     async fn a_failed_final_flush_on_a_healthy_db_leaves_the_reason_clean_and_the_close_failed() {
         let failpoints = Arc::new(fail_parallel::FailPointRegistry::new());
         let db = db("close-verdict-healthy", failpoints.clone()).await;
@@ -149,7 +149,7 @@ mod tests {
     }
 
     /// A clean close records Clean, and a second close of that Db is a close.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
     async fn a_clean_close_records_clean() {
         let db = db(
             "close-verdict-clean",

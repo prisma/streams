@@ -47,7 +47,7 @@ async fn redrive(e: &super::ShardEngine, offset: u64) -> (u64, u64, bool) {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_queue_seeds_its_jitter_from_its_hash_and_a_change_advances_its_clock() {
     let (e, db) = engine("nq-jitter-clock").await;
     create(&e, QueueConfig::default()).await;
@@ -58,7 +58,7 @@ async fn a_queue_seeds_its_jitter_from_its_hash_and_a_change_advances_its_clock(
     assert!(state(&db).await.clock > created.clock, "the clock advanced");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_send_fills_the_byte_budget_exactly_and_no_further() {
     let cfg = QueueConfig {
         max_queued_bytes: 10,
@@ -84,7 +84,7 @@ async fn a_send_fills_the_byte_budget_exactly_and_no_further() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_send_fills_the_dedup_budget_and_schedules_up_to_retention_exactly() {
     let cfg = QueueConfig {
         max_dedup_entries: 2,
@@ -121,7 +121,7 @@ async fn a_send_fills_the_dedup_budget_and_schedules_up_to_retention_exactly() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_redrive_reserves_a_message_slot_and_stops_at_a_full_queue() {
     let cfg = QueueConfig {
         max_queued_messages: 2,
@@ -141,7 +141,7 @@ async fn a_redrive_reserves_a_message_slot_and_stops_at_a_full_queue() {
     assert_eq!(state(&db).await.counters.redriven, 1);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_redrive_fills_the_byte_budget_exactly() {
     let cfg = QueueConfig {
         max_queued_bytes: 10,
@@ -161,7 +161,7 @@ async fn a_redrive_fills_the_byte_budget_exactly() {
     assert_eq!((s.queued_messages, s.queued_bytes), (2, 10));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn failed_and_peeked_messages_page_by_offset_with_a_cursor_only_on_a_full_page() {
     let (e, db, _c) = clocked("nq-pages", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), msg("b"), msg("c")]))
@@ -177,7 +177,7 @@ async fn failed_and_peeked_messages_page_by_offset_with_a_cursor_only_on_a_full_
     assert_eq!(page(&e, peek(Some(1))).await, (vec![2], None));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_claim_takes_due_retries_within_the_byte_limit_and_never_early_ones() {
     let (e, _db, _c) = clocked("nq-claim-retries", QueueConfig::default()).await;
     let body = |n: usize| msg(&"x".repeat(n));
@@ -230,7 +230,7 @@ async fn claim_within(e: &super::ShardEngine, max_bytes: u64) -> Vec<u64> {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_claim_leases_a_first_untaken_message_larger_than_its_byte_limit_alone() {
     let (e, _db, _c) = clocked("nq-claim-first-big", QueueConfig::default()).await;
     let body = |n: usize| msg(&"x".repeat(n));
@@ -243,7 +243,7 @@ async fn a_claim_leases_a_first_untaken_message_larger_than_its_byte_limit_alone
     assert_eq!(claim_within(&e, 200).await, vec![1]);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_claim_of_untaken_messages_fills_its_byte_limit_exactly_and_no_further() {
     let (e, _db, _c) = clocked("nq-claim-new-bytes", QueueConfig::default()).await;
     let body = |n: usize| msg(&"x".repeat(n));
@@ -260,7 +260,7 @@ async fn a_claim_of_untaken_messages_fills_its_byte_limit_exactly_and_no_further
     assert_eq!(claim_within(&e, 200).await, vec![4], "the cursor stayed");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_claim_marks_the_message_taken_and_skips_one_past_its_retention_end() {
     let (e, db, c) = clocked("nq-claim-meta", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), msg("b")])).await.unwrap();
@@ -280,7 +280,7 @@ async fn a_claim_marks_the_message_taken_and_skips_one_past_its_retention_end() 
     assert!(gone.is_none(), "the expired message is deleted");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn settles_discard_and_retry_up_to_the_cycle_deadline_exactly() {
     let (e, db, c) = clocked("nq-settle-retry", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), msg("b")])).await.unwrap();
@@ -312,7 +312,7 @@ async fn settles_discard_and_retry_up_to_the_cycle_deadline_exactly() {
     assert_eq!((row.state, row.due_at), (DState::Retrying, c + RETENTION));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_policy_retry_waits_its_jittered_backoff_and_fails_once_attempts_are_spent() {
     let mut cfg = QueueConfig::default();
     cfg.group.max_attempts = 2;
@@ -339,7 +339,7 @@ async fn a_policy_retry_waits_its_jittered_backoff_and_fails_once_attempts_are_s
     assert_eq!(row.cause.map(|c| c.name()), Some("exhausted"));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn debt_ages_from_its_first_deletion_and_a_pass_clears_what_it_captured() {
     let (e, db, c) = clocked("nq-debt", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), msg("bb")])).await.unwrap();
@@ -375,7 +375,7 @@ async fn debt_ages_from_its_first_deletion_and_a_pass_clears_what_it_captured() 
     assert_eq!((s.debt_bytes, s.debt_oldest_at), (0, 0));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_retry_scheduled_later_is_not_claimed_before_its_time_nor_failed_by_a_sweep() {
     let (e, db, c) = clocked("nq-retry-later", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();

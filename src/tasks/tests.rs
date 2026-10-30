@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError, TryLockError};
 use std::{future::pending, sync::Arc, time::Duration};
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn readiness_changes_after_each_kind_of_critical_exit() {
     let outcomes: [fn() -> TaskResult; 3] = [
         || TaskResult::Done,
@@ -51,7 +51,7 @@ async fn critical_exit_case(outcome: fn() -> TaskResult) {
     assert_eq!(monitor.unready_reason().as_deref(), Some("runtime stopped"));
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn readiness_ignores_best_effort_exit_and_recoverable_loop_errors() {
     let supervisor = TaskSupervisor::new();
     let monitor = supervisor.monitor();
@@ -90,7 +90,7 @@ async fn readiness_ignores_best_effort_exit_and_recoverable_loop_errors() {
 /// ignores cancellation is aborted AND joined; the report names
 /// both; a second shutdown has nothing left to stop; nothing can be
 /// spawned afterwards.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn shutdown_is_ordered_bounded_and_joins_everything() {
     let sup = TaskSupervisor::new();
     let ticks = Arc::new(AtomicUsize::new(0));
@@ -146,7 +146,7 @@ async fn shutdown_is_ordered_bounded_and_joins_everything() {
     clippy::disallowed_methods,
     reason = "Registration-race fixture; all eight spawners are joined and return only after supervisor refusal; supervising them would prevent the race under test"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn registration_cannot_race_shutdown() {
     for _round in 0..20 {
         let sup = TaskSupervisor::new();
@@ -173,7 +173,7 @@ async fn registration_cannot_race_shutdown() {
 
 /// An aborted task's resources are gone BEFORE shutdown returns: the
 /// drop probe inside the stubborn future has fired.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn aborted_tasks_are_destroyed_before_shutdown_returns() {
     let sup = TaskSupervisor::new();
     let dropped = Arc::new(AtomicBool::new(false));
@@ -197,7 +197,7 @@ async fn aborted_tasks_are_destroyed_before_shutdown_returns() {
 /// exists for; a noncritical exit is not; a panic and a typed
 /// failure are reported as such; the monitor sees the same facts
 /// without owning anything.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn critical_exits_failures_and_panics_are_reported() {
     let sup = TaskSupervisor::new();
     let mon = sup.monitor();
@@ -239,7 +239,7 @@ async fn critical_exits_failures_and_panics_are_reported() {
 
 /// `cancel` alone closes registration and signals every loop; the
 /// later `shutdown` completes the join.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn cancel_closes_registration_before_the_join() {
     let sup = TaskSupervisor::new();
     let seen = Arc::new(AtomicBool::new(false));
@@ -269,7 +269,7 @@ async fn cancel_closes_registration_before_the_join() {
     clippy::disallowed_methods,
     reason = "Concurrent-shutdown fixture; both request tasks are joined and compared after the bounded worker drain; serial calls would not exercise concurrent observers"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn concurrent_shutdowns_share_one_run_and_one_report() {
     let sup = TaskSupervisor::new();
     let alive = Arc::new(AtomicUsize::new(0));
@@ -311,7 +311,7 @@ async fn concurrent_shutdowns_share_one_run_and_one_report() {
 /// dropped after the drain has begun; the handles belong to the
 /// driver, not to that future, so a later caller still waits for
 /// real termination and the task's resources are gone.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn dropping_a_waiting_shutdown_cannot_detach_the_tasks() {
     let sup = TaskSupervisor::new();
     let dropped = Arc::new(AtomicBool::new(false));
@@ -345,7 +345,7 @@ async fn dropping_a_waiting_shutdown_cannot_detach_the_tasks() {
 
 /// PR 6.1.1-A: outcomes are in REGISTRATION order, whatever order
 /// the tasks happen to end in.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn outcomes_are_reported_in_registration_order() {
     let sup = TaskSupervisor::new();
     sup.spawn("first-stubborn", Policy::Noncritical, |_| async {
@@ -428,7 +428,7 @@ fn cancellation_refuses_poisoned_registration_state() {
     assert!(!supervisor.cancellation().is_cancelled());
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_panicking_builder_poison_prevents_health_claims_and_later_spawns() {
     let supervisor = TaskSupervisor::new();
     let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

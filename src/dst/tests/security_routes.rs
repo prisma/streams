@@ -31,7 +31,7 @@ async fn http_rig_auth(
 /// matched as SUFFIXES. Searching for the first `/records/` in the path
 /// split `customers/records/2026/records` after `customers` — writing
 /// to a collection nobody asked for, or 404ing when it did not exist.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn hierarchical_names_do_not_shadow_subresources() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -156,7 +156,7 @@ async fn hierarchical_names_do_not_shadow_subresources() {
 /// subresource, skipped the account token entirely. Records could be
 /// read with the encryption key alone, which is exactly the credential
 /// separation the product surface exists to keep.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn only_the_exact_signed_watch_route_skips_the_token() {
     let store = mem();
     let (state, addr) = http_rig_auth(store, "tok").await;
@@ -270,7 +270,7 @@ async fn only_the_exact_signed_watch_route_skips_the_token() {
 
 /// CORS that only answers preflights is not CORS: the browser passes
 /// the OPTIONS and then blocks the response it was asking about.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_responses_carry_cors_not_just_preflights() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -339,7 +339,7 @@ async fn product_responses_carry_cors_not_just_preflights() {
 /// without ever writing the record. The wire refuses the reserved
 /// prefix, and a duplicate that did not close is never accepted as a
 /// final.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn internal_producer_identities_are_unreachable_from_the_wire() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -444,7 +444,7 @@ async fn internal_producer_identities_are_unreachable_from_the_wire() {
 /// operation when configured. The encryption key is a separate
 /// credential and never substitutes for it. The one exception is the
 /// signed watch observation URL — an explicit delegated capability.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_requires_the_account_token() {
     let store = mem();
     let (state, addr) = http_rig_auth(store, "s3cret").await;
@@ -560,7 +560,7 @@ async fn product_requires_the_account_token() {
 /// its own and the other method, a path nothing routes, the bare
 /// prefix) refuses a caller without the token before a handler, a 404
 /// or a 405 can say what exists.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn debug_surface_refuses_every_path_without_the_token() {
     let (state, addr) = http_rig_auth(mem(), "s3cret").await;
     let routed = [
@@ -615,7 +615,7 @@ async fn debug_surface_refuses_every_path_without_the_token() {
 /// handler unchanged, judged by each handler's own answer (an empty 200
 /// is a failure), and an authorized caller keeps the bare 404 for an
 /// unrouted path and the 405 for a wrong method.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn debug_surface_serves_every_handler_with_the_token() {
     let (state, addr) = http_rig_auth(mem(), "s3cret").await;
     // A published policy gives /v1/debug/auth a feed age to report.
@@ -713,7 +713,7 @@ async fn debug_json(
 /// information; the typed tarpitted 429 answers only AFTER bearer +
 /// stream-key auth; pre-auth keeps only the catastrophic survival
 /// bound (4x the cap; instant, generic).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn inflight_admission_answers_only_after_authentication() {
     let store = mem();
     let (state, addr) = http_rig_auth(store, "tok").await;
@@ -788,7 +788,7 @@ async fn inflight_admission_answers_only_after_authentication() {
 /// itself, before any route. It carries the marks every answer of this
 /// server does: the origin marker (the pilot's proxy tells a server's
 /// answer from the platform edge's by it) and `nosniff`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_survival_refusal_is_marked_as_this_servers_answer() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -822,7 +822,7 @@ async fn the_survival_refusal_is_marked_as_this_servers_answer() {
 /// the refusal the raw append gets, and so do the queue list, a queue send
 /// and a claim (layout 6A package 1); a route that is not a stream or queue
 /// path is served; and at exactly 2,048 in flight nothing is refused.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_survival_refusal_covers_reads_and_the_product_surface_at_the_default_caps() {
     const STREAM_PATHS: [(&str, &str); 9] = [
         ("POST", "/v1/stream/any"),
@@ -889,7 +889,7 @@ async fn the_survival_refusal_covers_reads_and_the_product_surface_at_the_defaul
 /// Every answer of the router carries the origin marker and `nosniff`: a
 /// handler's, an unmatched path's 404 and a wrong method's 405. The platform
 /// edge answers for a dead or unpublished service with an unmarked 404.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn every_answer_is_marked_as_this_servers() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -921,7 +921,7 @@ async fn every_answer_is_marked_as_this_servers() {
 /// of P bytes takes the full 1 B bucket to P - 1 B of debt: the project's
 /// next read is refused 429 `project_rate_limit`, retryable after P - 1 s
 /// (less any whole second the test took since the page).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_served_page_is_debited_and_held_until_its_body_ends() {
     use hyper::service::Service as _;
     let mut spec = CellSpec::open(1);

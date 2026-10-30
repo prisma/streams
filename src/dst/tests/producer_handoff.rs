@@ -29,7 +29,7 @@ use std::sync::Arc;
     clippy::too_many_lines,
     reason = "producer handoff scenario; establishing producer state, handing off and retrying duplicates form one causal sequence; helper phases would hide which state the successor failed to inherit"
 )]
-#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn producer_state_survives_a_handoff_and_suppresses_duplicates() {
     for seed in [5u64, 21] {
         let inner = mem();
@@ -210,7 +210,7 @@ async fn producer_state_survives_a_handoff_and_suppresses_duplicates() {
     clippy::too_many_lines,
     reason = "ambiguous commit scenario; the durable commit with a lost response, the handoff and the deduplicated retry form one causal sequence; helper phases would hide which boundary lost or duplicated the record"
 )]
-#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn ambiguous_commit_survives_handoff_and_dedupes() {
     let inner = mem();
     let slow_wal = FaultPlan {
@@ -346,7 +346,7 @@ async fn ambiguous_commit_survives_handoff_and_dedupes() {
 ///
 /// The resolution is the same contract as everywhere else: retry
 /// idempotently once storage heals, and exactly one operation exists.
-#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn storage_latency_creates_client_ambiguity_resolved_by_idempotence() {
     let inner = mem();
     // Every WAL write takes 3-6 simulated seconds: far beyond the client

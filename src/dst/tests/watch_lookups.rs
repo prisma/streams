@@ -116,7 +116,7 @@ fn last_event(trace: &TraceStore) -> u64 {
 /// whose slot holds a fresh absence, are all `403` with no descriptor GET,
 /// and none is `429` though 64 passes the project's burst of 40: a check
 /// against what the cell holds spends no budget.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fresh_entry_refuses_a_capability_without_a_lookup() {
     let trace = TraceStore::verbatim(mem());
     let cell = open_cell(CellSpec {
@@ -152,7 +152,7 @@ async fn a_fresh_entry_refuses_a_capability_without_a_lookup() {
 /// cache's read; no lookup); the current incarnation's capability against
 /// the expired stale entry 1 + 1 (the lookup, then the cache's read), and
 /// it observes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_expired_entry_is_checked_against_the_store_under_budget() {
     let trace = TraceStore::verbatim(mem());
     let cell = open_cell(CellSpec {
@@ -202,7 +202,7 @@ async fn an_expired_entry_is_checked_against_the_store_under_budget() {
 /// project on names of their own fetches at least the cell's burst of 200
 /// (far past the project's 40) and at most what its 100 a second refills
 /// meanwhile; the rest are `429 watch_lookup_busy`, `Retry-After: 1`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_claim_under_a_stale_feed_spends_only_the_cells_lookups() {
     let cell = open_cell(CellSpec::open(2)).await;
     let stale_at = crate::shard::now_ms() / 1000 - crate::auth::POLICY_STALENESS_MAX_SECS - 1;
@@ -231,7 +231,7 @@ fn assert_cell_budget((fetched, spent, took): (usize, usize, std::time::Duration
 /// the claim is checked before the key is (phase B step 15), where before
 /// the key alone observed (#141). The key alone still observes,
 /// and garbage claims spend only the cell's budget.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn off_enforce_a_key_beside_a_capability_that_does_not_verify_is_refused() {
     let (state, addr) = http_rig(mem()).await;
     let key = [("prisma-encryption-key", PRISMA_KEY)];

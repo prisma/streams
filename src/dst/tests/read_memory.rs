@@ -233,7 +233,7 @@ fn pressure(cell: &Cell, i: usize) -> String {
 /// and releases them when the client leaves; a scan's page and a consumer
 /// pull's batch are held the same way, and a client that reads its page
 /// leaves nothing held. Before: nothing was held once the handler returned.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_page_is_held_until_its_client_reads_it_or_leaves() {
     let cell = open_cell(CellSpec::open(1)).await;
     let page = big_stream(&cell, 0).await;
@@ -291,7 +291,7 @@ async fn a_page_is_held_until_its_client_reads_it_or_leaves() {
 /// pages plus one page budget, a project's third unread page still fits
 /// and its fourth read does not. Before: every read was admitted at once,
 /// whatever its project's bodies held.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_project_at_its_memory_line_waits_and_is_refused_and_its_neighbour_is_not() {
     let cell = open_cell(CellSpec::open(2)).await;
     let page = big_stream(&cell, 0).await;
@@ -356,7 +356,7 @@ async fn a_project_at_its_memory_line_waits_and_is_refused_and_its_neighbour_is_
 /// asking for 4 KiB fits beside them at once, and a read that is waiting
 /// when a page is released is admitted then. Before: every read was
 /// admitted at once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_read_waits_for_the_instance_read_memory_and_is_refused_after_the_wait() {
     let cell = open_cell(CellSpec::open(2)).await;
     let page = big_stream(&cell, 0).await;
@@ -410,7 +410,7 @@ async fn a_read_waits_for_the_instance_read_memory_and_is_refused_after_the_wait
 /// page budget, four waiting long-polls leave both ledgers at zero and a
 /// read beside them is admitted at once; the append that wakes them is
 /// served to each and released when each body ends.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn waiting_long_polls_hold_no_read_memory() {
     let cell = open_cell(CellSpec::open(1)).await;
     let created = cell
@@ -449,7 +449,7 @@ async fn waiting_long_polls_hold_no_read_memory() {
 /// version 2): three parked long-polls on an idle stream are exactly
 /// 3 x 48 KiB, and nothing once they end. Before: parked waits weighed
 /// nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn parked_waits_weigh_in_their_projects_pressure() {
     let cell = open_cell(CellSpec::open(1)).await;
     let created = cell
@@ -551,7 +551,7 @@ pub(super) async fn append_to_lp(cell: &Cell, n: usize) {
 /// parked; on macOS project 0 held 18,092,778 B against its line of
 /// 6,358,702 B and project 1 was refused 503 `read_memory_busy`, while
 /// Linux, taking each page whole, showed only the two unread pages.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_projects_woken_long_polls_stay_inside_its_line_and_its_neighbour_reads() {
     woken_at_a_full_line(12, "waitMs=20000&maxBytes=1048576", 15).await;
 }
@@ -564,7 +564,7 @@ async fn a_projects_woken_long_polls_stay_inside_its_line_and_its_neighbour_read
 /// most its line and project 1 reads at once beside it. Before: the woken
 /// pages were charged unreserved and sent, so all 32 answered and none
 /// stayed parked (on macOS project 0 held 37,758,798 B).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn woken_default_long_polls_stay_inside_their_projects_line_and_its_neighbour_reads() {
     woken_at_a_full_line(32, "waitMs=20000", 48).await;
 }
@@ -576,7 +576,7 @@ async fn woken_default_long_polls_stay_inside_their_projects_line_and_its_neighb
 /// holds (its project's line could not be: the append that wakes the
 /// poll would latch, phase B item B8). Before: the woken page was rendered
 /// and served (200) past the line.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_woken_long_poll_without_room_ends_its_wait_as_a_timeout_holding_its_cursor() {
     let cell = open_cell(CellSpec::open(1)).await;
     let page = big_stream(&cell, 0).await;
@@ -632,7 +632,7 @@ async fn a_woken_long_poll_without_room_ends_its_wait_as_a_timeout_holding_its_c
 /// 25,271,096 B against the line of 8,388,608 B, past the instance's read
 /// memory of 25,165,824 B, and project 1 was refused 503
 /// `read_memory_busy`).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_projects_pulls_reserve_their_coverage_inside_its_line_and_its_neighbour_reads() {
     const Q: &str = "cq";
     let cell = open_cell(CellSpec::open(2)).await;
@@ -704,7 +704,7 @@ async fn a_projects_pulls_reserve_their_coverage_inside_its_line_and_its_neighbo
 /// before its wait ends, answers empty and leases nothing, and the message
 /// is pulled once the line has room. Before: a woken pull walked
 /// unreserved and leased the message past the line.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_woken_pull_without_room_for_its_coverage_answers_empty_and_leases_nothing() {
     let cell = open_cell(CellSpec::open(1)).await;
     let page = big_stream(&cell, 0).await;
@@ -791,7 +791,7 @@ async fn a_woken_pull_without_room_for_its_coverage_answers_empty_and_leases_not
 /// fits and it leases its message at once. Before: the body was buffered
 /// beside the pull's own 4 MiB reservation and refused 429
 /// `project_memory_pressure` at once, no shed counted.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_pulls_own_coverage_reservation_never_refuses_its_body() {
     let cell = open_cell(CellSpec::open(1)).await;
     let json = &br#"{"format":{"kind":"json"}}"#[..];
@@ -889,7 +889,7 @@ pub(super) async fn until(ready: impl Fn() -> bool) {
 /// the start). With the shard's dispatch held, r1 is applied but not
 /// durable when the poll starts from the applied tail, and r2 wakes it;
 /// once dispatch resumes, a read from that durable cursor serves r1 and r2.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_woken_long_poll_on_applied_records_without_room_keeps_its_durable_cursor_at_the_frontier()
  {
     const LP: &str = "/v1/streams/lp/records";
@@ -946,7 +946,7 @@ async fn a_woken_long_poll_on_applied_records_without_room_keeps_its_durable_cur
 /// A long-poll whose stream is sealed while it waits with no read memory
 /// left answers the seal at once: a seal brings no records past its cursor, so
 /// it takes no reservation again and never waits for room.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_woken_long_poll_sealed_while_it_waits_at_the_line_answers_the_seal_at_once() {
     let cell = open_cell(CellSpec::open(1)).await;
     let poll = "/v1/streams/lp/records:long-poll?cursor=now&waitMs=1500";

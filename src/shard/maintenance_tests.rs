@@ -98,7 +98,7 @@ fn maintenance_refusals_keep_their_words() {
 /// decode, or whose boundary is past its next offset, is left out (its
 /// stream fails alone at its handle load), and a queue's tail is not a
 /// stream's.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn load_or_rebuild_covers_present_missing_and_corrupt() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let unsealed = |bytes: u64| {
@@ -355,7 +355,7 @@ async fn refused_beside_an_append(
 /// append commits; the ledger then holds exactly the bytes of
 /// [absorbed, next). The stream's next seal from the boundary retires
 /// exactly what it seals.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_advance_that_overlaps_the_boundary_retires_nothing_and_fails_no_append() {
     let (engine, _store) = rig("overlap-advance").await;
     let h = [0x2a; 16];
@@ -402,7 +402,7 @@ async fn an_advance_that_overlaps_the_boundary_retires_nothing_and_fails_no_appe
 /// Committer layer: a seal that starts past the boundary would leave
 /// [0, 1) unretired forever (a phantom backlog); it is refused whole, the
 /// boundary stays 0 and the append beside it commits.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_advance_that_skips_offsets_is_dropped_whole() {
     let (engine, _store) = rig("skip-advance").await;
     let h2 = [0x2b; 16];
@@ -443,7 +443,7 @@ async fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
 /// settled: `seal_once` returns only once durable dispatch has published
 /// the stream's new boundary and ledger (step 7a), so nothing that follows
 /// a seal (its memtable flush) runs ahead of its durability.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_receipted_advance_settles_only_after_its_group_is_durable() {
     let (engine, store) = rig("settle-durable").await;
     let h = [0x2c; 16];
@@ -494,7 +494,7 @@ async fn a_receipted_advance_settles_only_after_its_group_is_durable() {
 /// Settlement: a seal whose group is refused settles with the refusal:
 /// `seal_once` fails, and the boundary, the ledgers and the pending pages
 /// do not move; the next seal takes them.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_refused_advance_settles_with_its_group() {
     let (engine, _store) = rig("settle-refused").await;
     let h = [0x2d; 16];

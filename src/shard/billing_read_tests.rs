@@ -12,7 +12,7 @@ use crate::spill::pending::{parse_pages, pending_key};
     clippy::let_underscore_must_use,
     reason = "r13_failed_accounting_reads_preserve_group_and_newer_dirty_version; the fixture ignores a delivery or join result whose only failure is the shutdown it stages itself; treating it as fallible would add branches the pinned sequence never takes"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r13_failed_accounting_reads_preserve_group_and_newer_dirty_version() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let db = Arc::new(
@@ -440,7 +440,7 @@ fn unbilled_append() -> (CommitOp, oneshot::Receiver<Result<AppendAck, AppendErr
 /// row's gauge by exactly the bytes of the four pages they stored, far
 /// below their payload, while ingest stays metered on payload bytes and
 /// records.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn the_retention_gauge_is_the_sum_of_the_stored_page_bytes() {
     let rig = CloseRig::start("gauge-pages", None).await;
     let large: Vec<Bytes> = (0..3u8).map(|n| Bytes::from(vec![n; 40 << 10])).collect();
@@ -487,7 +487,7 @@ async fn the_retention_gauge_is_the_sum_of_the_stored_page_bytes() {
 
 /// Two closers enqueued their close before either applied: the row is
 /// closed once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn two_closes_in_one_group_close_the_row_once() {
     let rig = CloseRig::start("close-one-group", Some(&open_row())).await;
     rig.commit(vec![close(CLOSED), close(CLOSED)]).await;
@@ -501,7 +501,7 @@ async fn two_closes_in_one_group_close_the_row_once() {
 
 /// A close of a row that an earlier group closed through its instant writes
 /// nothing: no version, no dirty marker, no row at all.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_close_of_a_row_closed_in_an_earlier_group_writes_nothing() {
     let rig = CloseRig::start("close-two-groups", Some(&open_row())).await;
     rig.commit(vec![close(CLOSED)]).await;
@@ -527,7 +527,7 @@ async fn a_close_of_a_row_closed_in_an_earlier_group_writes_nothing() {
 }
 
 /// A later instant on a closed row still moves the clock, at gauge 0.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_later_instant_on_a_closed_row_still_moves_the_clock() {
     let rig = CloseRig::start("close-later", Some(&closed_row())).await;
     rig.commit(vec![close(LATER)]).await;
@@ -542,7 +542,7 @@ async fn a_later_instant_on_a_closed_row_still_moves_the_clock() {
 
 /// An open gauge always closes, whatever the instant: before its clock or
 /// on it, the clock and the byte-time stay and the gauge goes to zero.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_close_of_an_open_gauge_at_or_before_its_clock_still_closes() {
     let row = Meta {
         storage_accounted_through_ms: CLOSED,
@@ -567,7 +567,7 @@ async fn a_close_of_an_open_gauge_at_or_before_its_clock_still_closes() {
 
 /// A skipped close after an append in its group: the append's row is
 /// written and marked, and the first close of the two closed it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_skipped_close_after_an_append_in_its_group_leaves_the_row_dirty_and_written() {
     let _clock = ClockAt::set(CLOSED).await;
     let rig = CloseRig::start("close-after-append", Some(&open_row())).await;
@@ -600,7 +600,7 @@ async fn a_skipped_close_after_an_append_in_its_group_leaves_the_row_dirty_and_w
 /// An unbilled append needs no billing row, so a group of them reads none: a
 /// billing read that would fail cannot refuse it, and the stored row stays as
 /// it was, unmarked.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_group_of_unbilled_appends_reads_no_billing_row() {
     let rig = CloseRig::start("unbilled-append", Some(&open_row())).await;
     billing_read_faults()
@@ -635,7 +635,7 @@ async fn a_group_of_unbilled_appends_reads_no_billing_row() {
 /// A skip never touches the mark an earlier op of its group set: the
 /// retained flag's version is written although the close after it changes
 /// nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_skipped_close_keeps_the_mark_an_earlier_op_of_its_group_set() {
     let rig = CloseRig::start("close-after-retained", Some(&closed_row())).await;
     rig.commit(vec![
@@ -657,7 +657,7 @@ async fn a_skipped_close_keeps_the_mark_an_earlier_op_of_its_group_set() {
 }
 
 /// A close that carries no instant closes at the billing clock.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_close_without_an_instant_closes_at_the_billing_clock() {
     let _clock = ClockAt::set(LATER).await;
     let rig = CloseRig::start("close-at-clock", Some(&open_row())).await;
@@ -674,7 +674,7 @@ async fn a_close_without_an_instant_closes_at_the_billing_clock() {
 }
 
 /// A close that crosses a month boundary stages the closed month's final.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_close_across_a_month_boundary_stages_the_closed_months_final() {
     let october = crate::billing::month_start_ms(2026, 10);
     let at = october + HOUR;
@@ -716,7 +716,7 @@ async fn a_close_across_a_month_boundary_stages_the_closed_months_final() {
 }
 
 /// A close of a segment that has no billing row writes nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_close_of_a_segment_without_a_billing_row_writes_nothing() {
     let rig = CloseRig::start("close-no-row", None).await;
     let before = rig.rows().await;
@@ -736,7 +736,7 @@ async fn a_close_of_a_segment_without_a_billing_row_writes_nothing() {
 /// `BILLING_OPS_REFUSED` also takes every concurrent test's dropped op (the
 /// walk's and the debt pass's refusal DSTs drop one each), so a drop is
 /// checked only to move it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_billing_op_is_refused_once_when_a_retiring_committer_drops_it_and_answered_once_applied()
 {
     for retained in [false, true] {

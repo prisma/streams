@@ -74,7 +74,7 @@ async fn create_lp(cell: &Cell) {
 /// with it within 1 s. Before: each took its whole 8 MiB budget again,
 /// none fit, and all 16 answered 204 at their deadline with the record
 /// waiting.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_woken_long_poll_reserves_what_was_appended_while_it_waited() {
     let cell = open_cell(CellSpec::open(1)).await;
     big_stream(&cell, 0).await;
@@ -142,7 +142,7 @@ async fn a_woken_long_poll_reserves_what_was_appended_while_it_waited() {
 /// waiter's page is read from its socket, not from the ledgers: a woken
 /// page is at most 1 MiB (`tail_max_bytes`), which Linux takes whole from
 /// the server, ending its body and its hold, though its client never reads.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_woken_long_poll_held_out_of_room_never_takes_the_read_memory_past_its_capacity() {
     let cell = open_cell(CellSpec::open(1)).await;
     let page = big_stream(&cell, 0).await;
@@ -372,7 +372,7 @@ async fn fill_the_line_and_wake(cell: &Cell, n: usize, page: u64, line: u64) -> 
 /// a record and 4 KiB a page: woken by two records beside an unread page
 /// that leaves the read memory exactly that much room, it answers them at
 /// once; with one byte less, it answers 204 at its deadline.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_woken_long_poll_takes_what_was_appended_with_its_framing_and_no_more() {
     const BATCH: &str = r#"[{"n":1},{"n":22}]"#;
     let cell = open_cell(CellSpec::open(1)).await;
@@ -506,7 +506,7 @@ async fn peak_while<T>(cell: &Cell, work: impl Future<Output = T>) -> (T, (u64, 
 /// Before (D′ on forks): each waiter took 5 KiB, the record and its
 /// framing, and all eight rendered the 6 MiB: the ledgers held 50,353,536 B
 /// against the 32 MiB line and the 9 MiB read memory.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_woken_fork_long_poll_takes_its_whole_page_budget_again() {
     let store = FaultStore::new(mem(), 808, FaultProfile::clean());
     let cell = open_cell(CellSpec {
@@ -590,7 +590,7 @@ async fn a_woken_fork_long_poll_takes_its_whole_page_budget_again() {
 /// their whole 8 MiB again in turn, render the 1 KiB record and, their
 /// clients reading, release it, so all eight answer it within 1 s of its
 /// append.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn woken_fork_long_polls_beside_no_held_page_all_answer_their_record() {
     let cell = open_cell(CellSpec::open(1)).await;
     fork_of_src(&cell).await;
@@ -636,7 +636,7 @@ async fn woken_fork_long_polls_beside_no_held_page_all_answer_their_record() {
 /// 14-47 records, at most 1 MiB. Before: it reserved 8 MiB and was refused
 /// 503. The held page is larger than either kernel takes from a client that
 /// never reads (Linux about 1.7 MB, macOS 0.65 MB), so it stays held on both.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_shared_cells_default_page_reserves_one_mib_and_renders_at_most_that() {
     let mut spec = CellSpec::open(1);
     spec.cli = |cli| cli.project_share_k = 8;

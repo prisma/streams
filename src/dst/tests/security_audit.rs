@@ -10,7 +10,7 @@ use super::fixture_storage::mem;
 /// with its VERIFIED project attached; a garbage token lands with no
 /// project (unverified claims are never identity); the journal lives
 /// under the system project where no customer credential reaches it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn enforce_denials_journal_to_audit_events() {
     // Deliberately NO streams.records.read: the read leg must deny.
     let scopes = "streams.create streams.records.append";
@@ -194,7 +194,7 @@ async fn audit_events(state: &std::sync::Arc<crate::http::AppState>) -> Vec<serd
     clippy::too_many_lines,
     reason = "shared-cell certification; isolation, suspension, revocation and books share one ordered runtime; splitting the scenario would hide their common state and before/after assertions"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn shared_cell_certification_smoke() {
     let _xr = crate::billing::billing_clock_lock().read().await;
     const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");
@@ -485,7 +485,7 @@ async fn shared_cell_certification_smoke() {
 /// ceiling (from its third append) are journaled to the neighbour alone;
 /// and a weight never widens what a project reads: each reads exactly the
 /// records it was answered 200 for, its own.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_weighted_projects_refusals_are_journaled_to_it_alone() {
     use super::fixture_cell::{CREATE, CellSpec, error_code, journal, open_cell, project};
     let mut spec = CellSpec::open(2);

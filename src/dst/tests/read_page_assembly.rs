@@ -5,7 +5,7 @@ use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_storage::{mem, skey};
 use crate::application::read::{ReadCommand, ReadMode, ReadPosition, ReadStart};
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r06a_fork_page_keeps_the_child_record_withheld_after_ancestor_bytes() {
     let (state, addr) = http_rig(mem()).await;
     let payload = format!("\"{}\"", "f".repeat((6 << 10) - 2));
@@ -86,7 +86,7 @@ async fn r06a_fork_page_keeps_the_child_record_withheld_after_ancestor_bytes() {
     engine_shutdown(&state).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r06a_collection_scan_shares_one_budget_across_frozen_segments() {
     use crate::application::read_scan::ScanCommand;
     let (state, addr) = http_rig(mem()).await;
@@ -159,7 +159,7 @@ async fn r06a_collection_scan_shares_one_budget_across_frozen_segments() {
 
 /// A page whose budget fills on a segment's last record steps past that
 /// segment: the scan is complete, and no cursor hands the record out again.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r06a_a_scan_page_filled_by_its_last_record_completes_the_scan() {
     use crate::application::read_scan::ScanCommand;
     let (state, addr) = http_rig(mem()).await;

@@ -185,7 +185,7 @@ async fn derive_from_segments(db: &Db) -> BTreeMap<String, u64> {
 /// publish nothing, nor does a newer one that moves no gauge; on a version
 /// tie the later storage clock wins, in either order of a rollover's
 /// month-final and live snapshot.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn the_figure_is_the_latest_gauge_of_each_live_segment() {
     let r = rollup("stored-latest").await;
     let p1 = Seg { segment: 1, ..P0 };
@@ -220,7 +220,7 @@ async fn the_figure_is_the_latest_gauge_of_each_live_segment() {
 /// once, by its latest snapshot, in order and in one page out of order. A
 /// snapshot under another account that is not later than the one the index
 /// holds (the same version and clock) moves nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_workspace_change_counts_a_segment_once() {
     let r = rollup("stored-workspace").await;
     let under_a = apply(&r, [P0.at(3, 30, 300)], "c1").await.unwrap();
@@ -254,7 +254,7 @@ async fn a_workspace_change_counts_a_segment_once() {
 
 /// T3(c): a close gives its segment's bytes back and `written` keeps them:
 /// on the live path, and as a late close of a month already closed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_close_gives_its_bytes_back_and_written_keeps_them() {
     // July 2026 closes only on the real clock: a scenario that injects the
     // billing clock holds the write lock while it does.
@@ -281,7 +281,7 @@ async fn a_close_gives_its_bytes_back_and_written_keeps_them() {
 /// rounds at once), in the segment state's order: a growth and its close,
 /// one arriving after the other across a workspace change, and a fall
 /// between two growths.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn written_adds_each_increase_one_page_holds() {
     let r = rollup("stored-in-page").await;
     let grown_and_closed = apply(&r, [P0.at(1, 10, 100), P0.at(2, 20, 0)], "c1");
@@ -323,7 +323,7 @@ fn random_history(rng: &mut rand::rngs::StdRng, seg: Seg) -> (Vec<SegmentSnapsho
 /// each project's durable and last published figures are the sum of its
 /// segments' last gauges and of their gauge increases, wherever the pages
 /// cut.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn written_does_not_depend_on_where_pages_cut_the_ledger() {
     for seed in 0..16u64 {
         let r = rollup(&format!("stored-cut-{seed}")).await;
@@ -420,7 +420,7 @@ fn next_of(
 
 /// T3(d): a page whose index read fails commits nothing (no row, no cursor)
 /// and answers no figure to publish; its replay applies it whole.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_failed_page_stages_nothing_and_publishes_nothing() {
     let r = rollup("stored-fault").await;
     apply(&r, [P0.at(1, 10, 100)], "c1").await.unwrap();
@@ -439,7 +439,7 @@ async fn a_failed_page_stages_nothing_and_publishes_nothing() {
 
 /// A project row holding less than a closing segment gives back is corrupt:
 /// the page fails whole and its rows stay as they were.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_project_row_below_a_closing_segment_fails_the_page() {
     let r = rollup("stored-corrupt").await;
     apply(&r, [P0.at(1, 10, 100)], "c1").await.unwrap();
@@ -455,7 +455,7 @@ async fn a_project_row_below_a_closing_segment_fails_the_page() {
 
 /// A snapshot whose project is no project id is not indexed, and says so;
 /// the rest of its page applies.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_snapshot_of_no_project_id_is_reported_and_not_indexed() {
     let r = rollup("stored-bad-id").await;
     let bad = Seg {
@@ -498,7 +498,7 @@ fn random_snapshot(rng: &mut rand::rngs::StdRng) -> SegmentSnapshot {
 /// (replays, older versions, closes, pages of one to five snapshots), each
 /// project's durable and last published figure equals the derivation from
 /// the segment rows.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn the_index_equals_the_segment_rows_derivation() {
     for seed in 0..16u64 {
         let r = rollup(&format!("stored-random-{seed}")).await;
@@ -526,7 +526,7 @@ async fn the_index_equals_the_segment_rows_derivation() {
 
 /// T3(f): a reopened rollup publishes its durable figures, and the time,
 /// into admission's table.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_reopened_rollup_publishes_its_durable_figures() {
     let store = Arc::new(object_store::memory::InMemory::new());
     let first = rollup_on(store.clone(), "stored-reopen").await;
@@ -548,7 +548,7 @@ async fn a_reopened_rollup_publishes_its_durable_figures() {
 /// D3: a database with segment rows and no index predates the index. Its
 /// install publishes nothing and says so; it is never backfilled. A
 /// database with the index, or with no rows, says nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_database_that_predates_the_index_is_reported_never_backfilled() {
     let r = rollup("stored-predates").await;
     let table = StoredTable::default();
@@ -584,7 +584,7 @@ async fn a_database_that_predates_the_index_is_reported_never_backfilled() {
 /// and deleted before any append, the close its segment's first snapshot)
 /// has `segment/` and `stored-seg/` rows and no `stored/` row, and its
 /// reopened install publishes nothing and says nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn an_index_of_closes_alone_is_not_reported_as_predating_it() {
     let store = Arc::new(object_store::memory::InMemory::new());
     let first = rollup_on(store.clone(), "stored-closes-only").await;

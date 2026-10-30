@@ -56,7 +56,7 @@ fn check_page(
 
 /// Sealed ranges read back exactly from random offsets with random budgets
 /// at both visibilities, then after a restart.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn sealed_ranges_read_back_exactly_across_chunks_anchors_and_budgets() {
     let mut settings = manual();
     settings.max_pages_per_chunk = 48;
@@ -235,7 +235,7 @@ async fn held_wal_race(late: bool) -> HeldRace {
 
 /// A reader racing a seal's commit gets exact data at both visibilities:
 /// the seal published its chunks before the commit moved the boundary.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_reader_racing_a_seal_gets_exact_data_at_both_visibilities() {
     let race = held_wal_race(false).await;
     let n = race.oracle.len();
@@ -251,7 +251,7 @@ async fn a_reader_racing_a_seal_gets_exact_data_at_both_visibilities() {
 /// offsets the boundary says are sealed, and both refuse the read as lost
 /// records (#213), never an empty page (the exact-data assertion above
 /// would fail here). After the commit, both read everything.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn negative_control_a_directory_published_after_the_commit_leaves_a_hole() {
     let race = held_wal_race(true).await;
     let n = race.oracle.len() as u64;
@@ -272,7 +272,7 @@ async fn negative_control_a_directory_published_after_the_commit_leaves_a_hole()
 /// A keyed read of sealed data skips every chunk its key summary excludes
 /// without a GET (those offsets still count as consumed), fetches only the
 /// chunks of its key, and serves exactly its key's records.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_keyed_read_skips_chunks_the_summary_excludes_without_a_get() {
     let mut settings = manual();
     settings.max_pages_per_chunk = 4;
@@ -338,7 +338,7 @@ async fn a_keyed_read_skips_chunks_the_summary_excludes_without_a_get() {
 /// A keyed read whose window ends inside a chunk the summary excludes
 /// consumes that chunk only up to the window's last offset: the offset at
 /// the window's end belongs to the next read.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_keyed_skip_stops_at_the_window_end_inside_its_chunk() {
     let mut settings = manual();
     settings.max_pages_per_chunk = 4;
@@ -376,7 +376,7 @@ async fn a_keyed_skip_stops_at_the_window_end_inside_its_chunk() {
 /// A chunk of more keys than a summary names gets a bloom; a key the bloom
 /// wrongly admits costs one GET that serves nothing, and its offsets are
 /// still consumed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_bloom_false_positive_costs_one_get_that_serves_nothing() {
     let rig = rig_with("bloom", manual(), 0, Duration::from_millis(2)).await;
     let mut rng = StdRng::seed_from_u64(0xB100);
@@ -431,7 +431,7 @@ async fn a_bloom_false_positive_costs_one_get_that_serves_nothing() {
 /// A seal moves a stream's boundary and nothing its waiters wait for: a
 /// durable or applied waiter parked on the stream is not woken by it, and
 /// is woken by the next append (the control).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_seal_wakes_no_waiter_of_the_stream() {
     let rig = rig("nowake", manual(), Duration::from_millis(2)).await;
     let mut rng = StdRng::seed_from_u64(0x3A4E);
@@ -475,7 +475,7 @@ async fn a_seal_wakes_no_waiter_of_the_stream() {
 
 /// A sealed chunk whose bytes were altered surfaces as corruption, at both
 /// visibilities: never as a page with records missing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_corrupt_sealed_chunk_surfaces_as_corruption() {
     let rig = rig_with("corrupt", manual(), 0, Duration::from_millis(2)).await;
     let mut rng = StdRng::seed_from_u64(0xC0C0);
@@ -522,7 +522,7 @@ async fn a_corrupt_sealed_chunk_surfaces_as_corruption() {
 /// commits still serves exact data. The read takes the boundary and the
 /// unsealed pages above it under one lock; the seal then drops those pages
 /// from memory, and the read must not look for them there again.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_read_that_captured_its_boundary_before_a_seal_commits_serves_exact_data() {
     let rig = rig_with("captured", manual(), 0, Duration::from_millis(2)).await;
     let mut rng = StdRng::seed_from_u64(0xF4);
@@ -574,7 +574,7 @@ async fn a_read_that_captured_its_boundary_before_a_seal_commits_serves_exact_da
 /// A read the tail ring serves through the sealed boundary carries on into
 /// the unsealed pages in the same call: one window from 0 returns every
 /// record, the sealed ones from the ring and the rest from memory.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_ring_read_through_the_boundary_continues_into_the_unsealed_pages() {
     let rig = rig("ring-through", manual(), Duration::from_millis(2)).await;
     let mut rng = StdRng::seed_from_u64(0x7149);
@@ -637,7 +637,7 @@ async fn a_ring_read_through_the_boundary_continues_into_the_unsealed_pages() {
 
 /// A closed engine serves nothing from memory: a read of a stream whose
 /// records are all in memory meets the close as a store read would.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_closed_engine_refuses_a_read_it_could_serve_from_memory() {
     let rig = rig("closed-read", manual(), Duration::from_millis(2)).await;
     let mut rng = StdRng::seed_from_u64(0xC105);
@@ -665,7 +665,7 @@ async fn a_closed_engine_refuses_a_read_it_could_serve_from_memory() {
 
 /// A sealed read stops planning at its window's end: a window ending at a
 /// chunk boundary fetches that chunk alone, never the next.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_window_ending_at_a_chunk_boundary_fetches_no_further_chunk() {
     let mut settings = manual();
     settings.max_pages_per_chunk = 4;
@@ -699,7 +699,7 @@ async fn a_window_ending_at_a_chunk_boundary_fetches_no_further_chunk() {
 
 /// One sealed read fetches at most 256 chunks: of 300 one-page chunks, a
 /// read from 0 fetches the first 256 and ends at the last offset they hold.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_sealed_read_fetches_at_most_256_chunks() {
     let mut settings = manual();
     settings.max_pages_per_chunk = 1;
@@ -732,7 +732,7 @@ async fn a_sealed_read_fetches_at_most_256_chunks() {
 
 /// A sealed-range GET the store keeps failing is tried three times, then
 /// the read fails as the store's unavailability, at once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_failing_chunk_get_is_tried_three_times_then_the_read_fails() {
     let inner: std::sync::Arc<dyn ObjectStore> =
         std::sync::Arc::new(object_store::memory::InMemory::new());
@@ -783,7 +783,7 @@ async fn a_failing_chunk_get_is_tried_three_times_then_the_read_fails() {
 
 /// A read whose budget covers a whole chunk past several anchors fetches
 /// it in one GET and serves every record of it in one call.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_budget_past_every_anchor_reads_the_whole_chunk_at_once() {
     let rig = rig_with("whole-chunk", manual(), 0, Duration::from_millis(2)).await;
     let mut rng = StdRng::seed_from_u64(0xA9C);
@@ -841,7 +841,7 @@ async fn a_budget_past_every_anchor_reads_the_whole_chunk_at_once() {
 /// A whole-chunk GET whose chunk header disagrees with the directory entry
 /// that planned it is refused as corruption, never served: an entry that
 /// names another stream's chunk, or another page count.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_chunk_whose_header_disagrees_with_its_entry_is_refused() {
     let rig = rig_with("header-check", manual(), 0, Duration::from_millis(2)).await;
     let mut rng = StdRng::seed_from_u64(0x4EAD);

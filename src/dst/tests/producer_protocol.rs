@@ -76,7 +76,7 @@ impl LaneSender<'_> {
 /// ROUTING-V3 §3.6: Stream-Seq is scoped to the ROUTING KEY. Two keys
 /// advance independent lanes on one segment; a regression within one
 /// key still conflicts.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn stream_seq_is_scoped_to_the_routing_key() {
     let inner = mem();
     let store = FaultStore::uniform(inner.clone(), 108, FaultPlan::new(0, 0, 0));
@@ -125,7 +125,7 @@ async fn stream_seq_is_scoped_to_the_routing_key() {
 /// committed on the SEALED PARENT segment must be recognized by the
 /// child through the predecessor chain — duplicate ack carrying the
 /// parent's committed offset, and NO offset consumed on the child.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn producer_retries_across_a_split_commit_once() {
     let inner = mem();
     let store = FaultStore::uniform(inner.clone(), 109, FaultPlan::new(0, 0, 0));
@@ -195,7 +195,7 @@ async fn producer_retries_across_a_split_commit_once() {
 /// Review blocker 4: a sequence the PARENT accepted must conflict on
 /// the child — Stream-Seq resolves through the sealed predecessor
 /// chain (nearest identity wins), and the next sequence continues.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn stream_seq_resolves_through_predecessors() {
     let store = mem();
     let key = skey();
@@ -252,7 +252,7 @@ async fn stream_seq_resolves_through_predecessors() {
 /// Review finding 5: producer sessions are scoped per ROUTING KEY. One
 /// producer id runs independent sequence lanes on two keys of one
 /// segment, and each lane follows ITS key through a split.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn producer_lanes_scoped_per_routing_key() {
     let store = mem();
     let key = skey();
@@ -329,7 +329,7 @@ async fn producer_lanes_scoped_per_routing_key() {
 /// stores ONE message (arrays stay array-valued records), appendMany
 /// stores element-wise, both through the one committer path, with the
 /// product response contract.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_append_and_append_many() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -423,7 +423,7 @@ async fn product_append_and_append_many() {
 
 /// Stage 4 §7: a duplicate producer request through the product route
 /// returns duplicate: true and stores nothing twice.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_append_producer_duplicate() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -485,7 +485,7 @@ async fn product_append_producer_duplicate() {
 /// same tuple with a different request is 409 producer_sequence_reused;
 /// gaps and stale epochs carry the product taxonomy. The raw standards
 /// route never compares bodies (pinned protocol).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_producer_hash_discipline() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -580,7 +580,7 @@ async fn product_producer_hash_discipline() {
 /// Stage 5 §8: the request hash follows the routing key's predecessor
 /// chain — after a split, an exact retry on the successor deduplicates
 /// and a reused sequence with a different body still conflicts.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_producer_hash_survives_split() {
     let _l = gap_lock().lock().await;
     let store = mem();

@@ -150,7 +150,7 @@ fn reached(cell: &Cell, i: usize) -> usize {
 /// and is refused nothing. A restarted server refuses P on its first
 /// append, from the index its rollup publishes at install; once P deletes
 /// its largest stream and the drain and the rollup step, it appends again.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_project_at_its_stored_cap_is_refused_and_its_neighbour_is_not() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let cell = open(spec()).await;

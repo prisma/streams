@@ -122,7 +122,7 @@ fn exact(out: &ReadPage) -> bool {
 /// inside a page publishes exactly the records before it; a page that does
 /// not authenticate fails the whole read and publishes nothing, but a page
 /// the budget never reaches is never opened.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn o2b_mixed_compressed_pages_preserve_failure_and_withholding_boundaries() {
     let fixture = Pages::new();
     let compressed: Vec<bool> = fixture

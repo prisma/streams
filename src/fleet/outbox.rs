@@ -123,7 +123,7 @@ mod tests {
         clippy::excessive_nesting,
         reason = "cancelled_fleet_append_keeps_durable_outbox_and_same_retry_id; the fixture nests the drained-body assertions inside the drain callback inside the pinned drain; flattening them would separate the assertions from the body they judge"
     )]
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn cancelled_fleet_append_keeps_durable_outbox_and_same_retry_id() {
         let repository =
             FleetRepository::new(Some(Arc::new(object_store::memory::InMemory::new())));
@@ -167,7 +167,7 @@ mod tests {
     /// Review item 57: a refused append is the drain's failure, reported to
     /// the telemetry loop, never a silent `Ok(0)` behind which a stuck
     /// outbox grows unseen. The outbox keeps the events for the retry.
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn a_refused_fleet_append_is_reported_and_keeps_the_outbox() {
         let repository =
             FleetRepository::new(Some(Arc::new(object_store::memory::InMemory::new())));
@@ -186,7 +186,7 @@ mod tests {
     /// The overrides document carries the same outbox contract as the
     /// desired one: exactly the drained ids are cleared, and the document's
     /// own entries survive the clear.
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn an_overrides_outbox_clears_exactly_what_it_appended() {
         let repository =
             FleetRepository::new(Some(Arc::new(object_store::memory::InMemory::new())));
@@ -226,7 +226,7 @@ mod tests {
             "the entries survive the clear"
         );
     }
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn cancelled_fleet_clear_follows_append_and_retains_retry_source() {
         use crate::dst::{FaultPlan, FaultStore, ObjClass, StoreOp};
         let store = FaultStore::uniform(

@@ -13,7 +13,7 @@ use super::fixture_storage::mem;
 /// used to return only a boolean and DISCARD the verified principal's
 /// `expires_at`, so `GET ...?live=sse` parked forever after the JWT
 /// died — permanent read authority from a temporary credential.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn raw_sse_terminates_at_workload_token_expiry() {
     // LEASE_TERMINATIONS is process-global; serialize with the other
     // expiry tests that move it (gap_lock convention).
@@ -67,7 +67,7 @@ async fn raw_sse_terminates_at_workload_token_expiry() {
 /// Round-4 finding 2 (companion): /v1/internal/segment-read is a
 /// bounded relay PAGE route; live semantics are refused outright so
 /// no parked subscription can hang off an internal page route.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn internal_segment_read_refuses_live_semantics() {
     let scopes = "streams.create streams.records.append streams.records.read";
     let (_state, addr, _tok) = sr_rig("proj-rlv", "ws_rlv", "c_rlv", "rlv-1", scopes).await;
@@ -100,7 +100,7 @@ async fn internal_segment_read_refuses_live_semantics() {
 /// SCOPE what the token can do. Today every gate reduces verification
 /// to a boolean, so a token minted for nothing at all — or for
 /// segment reads only — is a cell-wide administrator credential.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn workload_jwt_operations_scope_the_internal_surface() {
     let scopes = "streams.create streams.records.append streams.records.read";
     let (_state, addr, _tok) = sr_rig("proj-opsc", "ws_opsc", "c_opsc", "opsc-1", scopes).await;
@@ -171,7 +171,7 @@ async fn workload_jwt_operations_scope_the_internal_surface() {
 /// PUT and DELETE need `raw-lifecycle`, POST needs `raw-append`, and every
 /// other method `raw-read`; a token for one of them opens none of the
 /// others.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn raw_surface_operations_follow_the_request_method() {
     let scopes = "streams.create streams.records.append streams.records.read";
     let (_state, addr, _tok) = sr_rig("proj-rmo", "ws_rmo", "c_rmo", "rmo-1", scopes).await;
@@ -212,7 +212,7 @@ async fn raw_surface_operations_follow_the_request_method() {
 /// the owner using a workload JWT from its token source — §14.1
 /// outbound identity, end to end through the receiver's
 /// operation-scoped gate.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn jwt_only_fleet_relay_succeeds() {
     const PUB: &str = include_str!("../fixtures/mt-test-rsa.pub.pem");
     let now = crate::shard::now_ms() / 1000;
@@ -313,7 +313,7 @@ async fn jwt_only_fleet_relay_succeeds() {
 /// RED (review finding 1, rotation): the sender's first token is
 /// EXPIRED — the peer 401s, the source is force-refreshed exactly
 /// once, and the retried relay succeeds.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn rotated_workload_jwt_refreshes_and_retries() {
     const PUB: &str = include_str!("../fixtures/mt-test-rsa.pub.pem");
     let now = crate::shard::now_ms() / 1000;
@@ -414,7 +414,7 @@ async fn rotated_workload_jwt_refreshes_and_retries() {
 /// must not authorize internal routes, or the "release posture has no
 /// permanent shared credential" claim is configuration-dependent
 /// fiction. The workload JWT keeps working.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn static_token_is_dead_in_workload_mode() {
     const PUB: &str = include_str!("../fixtures/mt-test-rsa.pub.pem");
     let now = crate::shard::now_ms() / 1000;
@@ -570,7 +570,7 @@ fn telemetry_append_source() -> crate::peer::FleetTokenSource {
 /// unreachable until the owner happened to create the stream itself.
 /// (`_audit_events` routes to shard `00`, the one the rig's override
 /// governs; `_ops_events` lands in the empty prefix by rendezvous.)
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn unprimed_system_append_relays_its_first_batch_to_the_owner() {
     let (state_a, state_b) = jwt_only_fleet(telemetry_append_source()).await;
     // NO owner-side prime: `_audit_events` exists nowhere yet.
@@ -606,7 +606,7 @@ async fn unprimed_system_append_relays_its_first_batch_to_the_owner() {
 /// creation's ownership refusal, 409 not_ring_owner + Streams-Replay-To,
 /// not mask it as "exists" and report the append's 404 not_found. The
 /// `__ds` root stays refused before any identity is constructed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn telemetry_append_receiver_reports_ownership_not_absence() {
     let (state, addr) = http_rig_build(
         mem(),
@@ -682,7 +682,7 @@ async fn telemetry_append_receiver_reports_ownership_not_absence() {
 /// RED (review rank 21, diagnostics): a sender with no route to the
 /// owner reports the owner's typed refusal (code and message), never a
 /// flattened `404 Not Found` that hides which step refused.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn system_append_without_a_peer_reports_the_typed_refusal() {
     let (state, _addr) = http_rig_build(
         mem(),
@@ -717,7 +717,7 @@ async fn system_append_without_a_peer_reports_the_typed_refusal() {
 /// Only a MISSING stream creates: a system append under a key the
 /// stream was not created with is the append's own `wrong_key`
 /// refusal, never a re-creation attempt under the new key.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_rotated_system_key_is_the_appends_refusal_never_a_recreate() {
     const OTHER_KEY: &str = "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=";
     let (state, _addr) = http_rig_build(
@@ -766,7 +766,7 @@ async fn a_rotated_system_key_is_the_appends_refusal_never_a_recreate() {
 /// ring assigns it to rig-c. The owner-side receiver refuses the relay
 /// 409 not_ring_owner and the sender REPORTS that refusal: one hop, and a
 /// refused relay is never counted as landed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_relay_the_skewed_owner_refuses_is_reported_not_counted_as_landed() {
     let (state_a, state_b) = jwt_only_fleet(telemetry_append_source()).await;
     state_a
@@ -828,7 +828,7 @@ fn telemetry_append_request(
 /// `body: Bytes`, so axum buffered the upload under its implicit 2 MiB
 /// default BEFORE the fleet-credential check: an unauthenticated 3 MiB
 /// POST was read past 2 MiB and answered 413, never 401.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn telemetry_append_refuses_an_unauthenticated_body_unread() {
     use futures_util::StreamExt as _;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -858,7 +858,7 @@ async fn telemetry_append_refuses_an_unauthenticated_body_unread() {
 /// 2 MiB: a relayed batch between the two was refused on the owner and
 /// requeued by its sender every round. Over the configured limit the
 /// refusal is the append contract's typed `too_large`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn telemetry_append_reads_to_the_configured_limit_after_authentication() {
     const AXUM_DEFAULT: usize = 2 * 1024 * 1024;
     const CONFIGURED: usize = 4 * 1024 * 1024;

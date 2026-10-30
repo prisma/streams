@@ -11,7 +11,7 @@ use slatedb::config::DurabilityLevel;
     clippy::let_underscore_must_use,
     reason = "r03_close_and_fence_wait_for_write_remote_durability_and_dispatch; the fixture ignores a delivery or join result whose only failure is the shutdown it stages itself; treating it as fallible would add branches the pinned sequence never takes"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r03_close_and_fence_wait_for_write_remote_durability_and_dispatch() {
     let store = crate::dst::FaultStore::new(
         Arc::new(object_store::memory::InMemory::new()),
@@ -161,7 +161,7 @@ async fn r03_close_and_fence_wait_for_write_remote_durability_and_dispatch() {
     clippy::let_underscore_must_use,
     reason = "r03_failed_group_discards_close_and_fence_effects_together; the fixture ignores a delivery or join result whose only failure is the shutdown it stages itself; treating it as fallible would add branches the pinned sequence never takes"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r03_failed_group_discards_close_and_fence_effects_together() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let db = Arc::new(

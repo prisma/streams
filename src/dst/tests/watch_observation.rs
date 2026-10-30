@@ -27,7 +27,7 @@ use super::fixture_storage::{mem, skey};
     clippy::too_many_lines,
     reason = "watch routing scenario; two parked waiters, the touches routed by route hash versus storage hash and their wake verdicts form one causal sequence; helper phases would hide which hash woke which waiter"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn touch_close_shard_matches_route_hash_not_storage_hash() {
     let store = mem();
     // 1-bit prefixes: every hash belongs to "0" or "1".
@@ -206,7 +206,7 @@ async fn touch_close_shard_matches_route_hash_not_storage_hash() {
     clippy::too_many_lines,
     reason = "product watch scenario; arranging the capability, parking the waiter, appending matching and non-matching records and checking the wake are one causal sequence; helper phases would hide which record woke the waiter"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_watch_wakes_on_matching_append() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -418,7 +418,7 @@ async fn product_watch_wakes_on_matching_append() {
 /// a collection nobody has appended to in days. The second rig here is
 /// exactly that stranger: same store, cold caches, no key ever
 /// presented to it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn watch_urls_verify_on_a_process_that_never_saw_the_key() {
     let store = mem();
     let (state, addr) = http_rig(store.clone()).await;
@@ -491,7 +491,7 @@ async fn watch_urls_verify_on_a_process_that_never_saw_the_key() {
 /// credential for its project, but the wait path never consults the
 /// CURRENT project policy — a capability keeps working after the
 /// project is suspended, until its own expiry.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn watch_capability_respects_project_suspension() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read streams.watches.manage";
@@ -577,7 +577,7 @@ async fn watch_capability_respects_project_suspension() {
     clippy::disallowed_methods,
     reason = "admission ceiling fixture; the long waiter is joined after the refused second waiter is observed; it must hold the project's admission slot concurrently"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn watch_capability_waits_occupy_project_admission() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read streams.watches.manage";
@@ -670,7 +670,7 @@ async fn watch_capability_waits_occupy_project_admission() {
 /// Today status_and_quotas reads the last-loaded snapshot without a
 /// freshness check, so capability traffic keeps serving on a policy
 /// that may be minutes past a suspension the cell never heard about.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn stale_policy_fails_watch_capabilities_closed() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read streams.watches.manage";
@@ -843,7 +843,7 @@ impl WatchPair {
 /// the router no 409 to converge on. The misrouted wait must be replayed
 /// to the owner, must not open (and so fence) the owner's shard, and the
 /// owner must keep delivering.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn watch_wait_on_a_non_owner_replays_to_the_ring_owner() {
     let pair = WatchPair::start().await;
 
@@ -895,7 +895,7 @@ async fn watch_wait_on_a_non_owner_replays_to_the_ring_owner() {
 /// it: a re-wait there would be silent forever. It replays to the new
 /// owner, where the old owner's cursor is a foreign epoch and so an
 /// explicit resync: no invalidation can be missed across the handoff.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn watch_wait_follows_the_ring_when_the_shard_moves() {
     let pair = WatchPair::start().await;
     let (st, _, owned) = pair.wait(pair.addr_a, "now", 150).await;

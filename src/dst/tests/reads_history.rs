@@ -84,7 +84,7 @@ async fn append_op(
 /// responses, with no per-offset GET pattern: each chunk of only the
 /// default key is skipped by its key summary without a GET, and each chunk
 /// of the key costs exactly one.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn sparse_key_reads_page_with_bounded_spans() {
     let key = skey();
     let hash = [0xB1u8; 16];
@@ -125,7 +125,7 @@ async fn sparse_key_reads_page_with_bounded_spans() {
 /// whose bytes were altered in the store must never surface as a page
 /// with records missing, completed or not. A keyed read of the key the
 /// chunk holds fails loudly as corruption, at both visibilities.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn corrupt_postings_fall_back_to_the_envelope() {
     let key = skey();
     let hash = [0xB3u8; 16];
@@ -231,7 +231,7 @@ async fn keyed_offsets(
 /// A cold directory load (restart, ownership move) knows the chunks its
 /// rebuild found. Records of the same key sealed afterwards into a second
 /// object must reach a catch-up reader resuming from its old cursor.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn keyed_catch_up_after_a_cold_index_load_sees_later_absorbed_records() {
     let key = skey();
     let hash = [0xC7u8; 16];
@@ -275,7 +275,7 @@ async fn keyed_catch_up_after_a_cold_index_load_sees_later_absorbed_records() {
 /// its later records never leak into the fork), then continues with the
 /// fork's own records. Without a ring the parent's records come from the
 /// segment object.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fork_reads_its_parent_history_up_to_a_boundary_inside_a_page() {
     use super::fixture_http::{HttpRigOptions, cold_sealer, engine_shutdown, http_rig_build};
     use super::fixture_requests::hreq;
@@ -349,7 +349,7 @@ async fn a_fork_reads_its_parent_history_up_to_a_boundary_inside_a_page() {
 /// unsealed (nothing sealed) reads the parent exactly up to the boundary
 /// from the unsealed pages, with and without a ring, then the fork's own
 /// records; the parent still reads whole.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fork_inside_an_unabsorbed_parent_page_reads_to_its_boundary() {
     use super::fixture_http::{HttpRigOptions, cold_sealer, engine_shutdown, http_rig_build};
     use super::fixture_requests::hreq;

@@ -50,7 +50,7 @@ fn refused(code: &str, retry: &str) -> (u16, Option<String>, Option<String>) {
 /// served, past it every append is shed `429 rate_limited` as before; under
 /// the line both are served again. Before: the compliant project's first append over the
 /// line was refused `429 rate_limited` with the flooder's.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn over_the_shed_line_the_project_over_its_share_is_refused_before_its_neighbour() {
     let mut spec = CellSpec::open(2);
     spec.cli = |cli| cli.project_share_k = 8;
@@ -153,7 +153,7 @@ const CAP: i64 = 8;
 /// append is refused `429 rate_limited` as before; under the cap both are
 /// served again. Before: the compliant project's first append at the cap was
 /// refused with the flooder's, and the flooder's reads were served.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn at_the_inflight_cap_the_project_over_its_share_is_refused_before_its_neighbour() {
     let mut spec = CellSpec::open(2);
     spec.cli = |cli| cli.project_share_k = 8;

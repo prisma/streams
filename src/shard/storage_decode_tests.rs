@@ -103,7 +103,7 @@ fn r12_byte_compatibility_does_not_bypass_stored_state_validation() {
     clippy::let_underscore_must_use,
     reason = "r12_corrupt_tail_refuses_open_without_overwriting_records; the fixture ignores a delivery or join result whose only failure is the shutdown it stages itself; treating it as fallible would add branches the pinned sequence never takes"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r12_corrupt_tail_refuses_open_without_overwriting_records() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let db = Arc::new(
@@ -173,7 +173,7 @@ async fn lane_engine(name: &str) -> (Arc<ShardEngine>, Arc<Db>) {
 /// Review item 55: a producer row that exists but does not decode is
 /// corruption. Read as missing it reopened the lane at producer seq 0, or
 /// served an older predecessor's state in its place.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r12_undecodable_producer_rows_are_corruption_not_absence() {
     let (engine, db) = lane_engine("r12-producer-rows").await;
     let (own, parent, key) = ([12; 16], [13; 16], [14; 16]);
@@ -218,7 +218,7 @@ async fn r12_undecodable_producer_rows_are_corruption_not_absence() {
 
 /// A Stream-Seq row that is not UTF-8 is corruption, never an unset
 /// sequence that would accept any value for the routing key.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r12_non_utf8_stream_seq_row_is_corruption_not_absence() {
     let (engine, db) = lane_engine("r12-seq-rows").await;
     let (own, parent, key) = ([12; 16], [13; 16], [14; 16]);
@@ -343,7 +343,7 @@ fn r53_the_tail_copies_a_stream_seq_only_while_its_length_fits() {
 
 /// A fork's first tail starts its record space at the fork boundary under
 /// the route it names, and a retried seed leaves the stored tail as it is.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_seeded_fork_tail_holds_its_boundary_and_route() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let db = Arc::new(

@@ -10,7 +10,7 @@ use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 /// reloads and CAS-mutates state.deployment.raw_adapter_sref(name) — the DEPLOYMENT tenant.
 /// D-is-A variant: the deployment tenant also owns "orders", so the
 /// bug deletes A and leaves B alive behind a 204.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn delete_stays_inside_the_requesting_project() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read streams.lifecycle.manage";
@@ -79,7 +79,7 @@ async fn delete_stays_inside_the_requesting_project() {
 /// — the DEPLOYMENT tenant — and adopts it without any project/epoch
 /// revalidation. With A and B same-named and (validly) sharing an
 /// encryption key, B's append lands durably in A's stream.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn transition_append_stays_inside_the_requesting_project() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read";
@@ -182,7 +182,7 @@ async fn transition_append_stays_inside_the_requesting_project() {
     clippy::too_many_lines,
     reason = "lineage isolation fixture; the complete conflicting maps and signed cursor are the oracle inputs; splitting their declarations would hide the cross-project mismatch under test"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn stale_lineage_read_stays_inside_the_requesting_project() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read";
@@ -344,7 +344,7 @@ fn stale_jwks_maps_to_retryable_503() {
 /// tenant. A non-deployment project's active stream fails the epoch
 /// fence and expires despite traffic; same-name projects suppress one
 /// another's slides through the global name-keyed in-flight set.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn ttl_slide_stays_inside_the_owning_project() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read";
@@ -403,7 +403,7 @@ async fn ttl_slide_stays_inside_the_owning_project() {
 /// the WRONG (or no) descriptor and the seal machinery reports "the
 /// collection no longer exists" for a perfectly healthy stream — the
 /// D-has-no-orders fixture variant that detects silent misdirection.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn seal_fence_resolves_the_owning_project() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read streams.lifecycle.manage";

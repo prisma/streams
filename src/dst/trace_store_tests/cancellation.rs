@@ -12,7 +12,7 @@ use std::sync::Arc;
 /// `Pending` and then dropped records `Cancelled`, leaves no active
 /// entry, and reset succeeds. Pre-3.2.1 the plain id never reached
 /// `finish()` and the trace was poisoned forever.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn dropping_a_pending_point_operation_records_cancelled() {
     use futures_util::FutureExt;
     let s = TraceStore::verbatim(Arc::new(PendingStore));
@@ -49,7 +49,7 @@ async fn dropping_a_pending_point_operation_records_cancelled() {
 /// UNPOLLED (the guard was captured at dispatch) and a multipart
 /// complete polled to `Pending` then dropped both record `Cancelled`;
 /// reset works afterwards.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn dropping_multipart_futures_records_cancelled() {
     use futures_util::FutureExt;
     let s = TraceStore::verbatim(Arc::new(PendingStore));
@@ -86,7 +86,7 @@ async fn dropping_multipart_futures_records_cancelled() {
 /// Required cancellation test 7 (acceptance 6): normal completion
 /// retires exactly once — the guard's later drop cannot overwrite a
 /// recorded outcome with Cancelled.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn completed_operation_is_never_overwritten_by_cancellation() {
     let s = TraceStore::verbatim(mem());
     let p = ObjPath::from("shards/x/wal/1.sst");
@@ -104,7 +104,7 @@ async fn completed_operation_is_never_overwritten_by_cancellation() {
 /// async_trait the body (including `begin_operation`) runs on first
 /// poll, so a never-started operation is absent from the trace — the
 /// trace records operations that STARTED. Reset stays clean.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn unpolled_point_operation_records_nothing() {
     let s = TraceStore::verbatim(Arc::new(PendingStore));
     let p = ObjPath::from("a/1.sst");

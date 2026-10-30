@@ -140,7 +140,7 @@ async fn held<T>(
 /// Wrong ingress, credentials: only the fleet token or a workload JWT
 /// naming exactly `seal-fence` may place a fence, and a refused request
 /// reaches neither the registry nor the engine.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn seal_fence_receiver_demands_its_exact_operation() {
     let scopes = "streams.create streams.records.append streams.records.read";
     let (state, addr, _tok) = sr_rig("proj-sfr", "ws_sfr", "c_sfr", "sfr-1", scopes).await;
@@ -187,7 +187,7 @@ async fn seal_fence_receiver_demands_its_exact_operation() {
 /// Wrong ingress, target: every refusal of the target or the generation
 /// is decided before the engine, and only the bound target at a reserved
 /// generation places the fence.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn seal_fence_receiver_binds_target_and_generation() {
     let (state, addr) = http_rig(mem()).await;
     let desc = stage(&state, addr, "sfb", FLEET).await;
@@ -288,7 +288,7 @@ async fn seal_fence_receiver_binds_target_and_generation() {
 /// Wrong ingress, owner: a receiver the ring does not assign the shard to
 /// answers the directory's redirect and opens no writer, however often it
 /// is asked.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn seal_fence_receiver_on_a_non_owner_redirects_without_opening_a_writer() {
     let (state, addr) = http_rig_named(mem(), "inst-a").await;
     let desc = stage(&state, addr, "sfo", FLEET).await;
@@ -334,7 +334,7 @@ async fn seal_fence_receiver_on_a_non_owner_redirects_without_opening_a_writer()
     clippy::disallowed_methods,
     reason = "seal-fence durability fixture; the fence request is proven to have entered the engine and to be pending behind the held dispatch, and it is joined after the release; running it inline would deadlock behind the barrier"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn seal_fence_receiver_answers_after_durability_and_is_idempotent() {
     let (state, addr) = http_rig(mem()).await;
     let desc = stage(&state, addr, "sfd", FLEET).await;
@@ -388,7 +388,7 @@ async fn seal_fence_receiver_answers_after_durability_and_is_idempotent() {
     clippy::disallowed_methods,
     reason = "seal-fence failed-group fixture; the append and the fence are proven to have entered the held committer before the failure is armed, and both are joined after the release; running either inline would deadlock behind the held commit"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn seal_fence_receiver_never_answers_closed_for_a_failed_group() {
     let (state, addr) = http_rig(mem()).await;
     let desc = stage(&state, addr, "sff", FLEET).await;

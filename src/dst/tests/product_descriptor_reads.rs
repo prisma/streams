@@ -51,7 +51,7 @@ async fn answer(
 /// retryable, since a retry reads the same bytes. Red before: both answered
 /// 500 `internal` `retryable: true`, which the SDK does not retry, for a
 /// store blip, and invited retries of corruption.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_product_descriptor_read_the_store_fails_is_retryable_and_corruption_is_not() {
     use object_store::ObjectStoreExt;
     let (state, addr) = http_rig(mem()).await;

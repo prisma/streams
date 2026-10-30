@@ -502,7 +502,7 @@ mod drain_ownership_tests {
     use super::*;
     use crate::billing::MeterSource;
 
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn r09_cancelled_optional_read_drain_requeues_owned_batches() {
         let source = MeterSource {
             cell: "c".into(),
@@ -553,7 +553,7 @@ mod drain_ownership_tests {
 mod drain_fairness_tests {
     use super::*;
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
     async fn r09_budget_exhaustion_on_first_engine_still_rotates_every_engine() {
         let service = BillingService::new(
             None,

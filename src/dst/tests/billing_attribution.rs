@@ -16,7 +16,7 @@ use super::fixture_storage::mem;
     clippy::too_many_lines,
     reason = "cross-project attribution scenario; same-named streams in two projects are driven through append, read and rollup on one rig; helper phases would hide which project a row was attributed to"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn same_name_cross_project_usage_attributes_exactly() {
     let _xr = crate::billing::billing_clock_lock().read().await;
     const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");
@@ -235,7 +235,7 @@ async fn same_name_cross_project_usage_attributes_exactly() {
     clippy::too_many_lines,
     reason = "invoice reconciliation scenario; balancing, late usage and injected corruption are checked against the same frozen invoice base; helper phases would hide which reconciliation step detected the corruption"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn invoice_reconciliation_balances_and_detects_corruption() {
     let _xr = crate::billing::billing_clock_lock().read().await;
     const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");

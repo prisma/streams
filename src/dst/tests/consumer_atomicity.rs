@@ -8,7 +8,7 @@ use super::fixture_storage::mem;
 /// receive whose group write FAILS must leave no phantom lease in
 /// memory — the exact retry gets the same records, with fresh leases,
 /// exactly once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_failed_queue_write_leaves_no_phantom_leases() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -108,7 +108,7 @@ async fn a_failed_queue_write_leaves_no_phantom_leases() {
 /// QUE-004: a settlement whose group write fails must leave no
 /// phantom acks — the lease tokens remain valid, and the exact settle
 /// retry acknowledges every one of them.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_failed_settle_leaves_no_phantom_acks() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -225,7 +225,7 @@ async fn a_failed_settle_leaves_no_phantom_acks() {
     clippy::too_many_lines,
     reason = "group-local delete scenario; arranging two consumers, deleting one and checking the survivor's leases and rows is one atomicity argument; helpers would separate the rows from the group that wrote them"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn queue_config_delete_is_group_local() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -388,7 +388,7 @@ async fn queue_config_delete_is_group_local() {
     clippy::too_many_lines,
     reason = "same-group receive/delete scenario; staging both operations under one held commit and counting durable rows afterwards is one atomicity argument; splitting it would hide which group buried the lease"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn receive_then_delete_in_one_group_leaves_no_stale_lease() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -517,7 +517,7 @@ async fn receive_then_delete_in_one_group_leaves_no_stale_lease() {
     clippy::too_many_lines,
     reason = "same-group settle/delete scenario; leasing, settling and deleting under one held commit before counting rows is one atomicity argument; splitting it would hide which group buried the acknowledgement"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn settle_then_delete_in_one_group_leaves_no_stale_rows() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -665,7 +665,7 @@ async fn settle_then_delete_in_one_group_leaves_no_stale_rows() {
     clippy::too_many_lines,
     reason = "same-group delete/receive scenario; the ordering, the refusal and the absence of re-staged rows are one argument; splitting it would hide the overlay check being proved"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_receive_after_delete_in_the_same_group_is_refused() {
     let store = mem();
     let (state, addr) = http_rig(store).await;

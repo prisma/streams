@@ -14,7 +14,7 @@ use std::sync::atomic::Ordering;
 
 /// I1+I2+I3 for a single writer under the full fault set — errors, lost
 /// responses and realistic latency, not latency alone.
-#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn acked_records_survive_store_faults() {
     for seed in [1u64, 7, 99] {
         let inner = mem();
@@ -61,7 +61,7 @@ async fn acked_records_survive_store_faults() {
 /// that made the eu-central-1 wedge invisible until client timeouts fired:
 /// nothing failed, everything just took longer than anyone would wait
 /// (docs/SOAK-REGIONS.md).
-#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn store_errors_surface_as_latency_not_as_failed_appends() {
     let inner = mem();
     // 95 % of WAL writes fail before dispatch.
@@ -101,7 +101,7 @@ async fn store_errors_surface_as_latency_not_as_failed_appends() {
 /// ledger of writes attempted through the fenced owner and then never
 /// looked at it, so an old owner that acknowledged every one of them would
 /// still have passed. The assertion is the test.
-#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn a_fenced_owner_acknowledges_nothing() {
     for seed in [2u64, 13] {
         let inner = mem();
@@ -164,7 +164,7 @@ async fn a_fenced_owner_acknowledges_nothing() {
     clippy::disallowed_methods,
     reason = "handoff fixture; the in-flight append task is joined before its outcome is reconciled with the successor's log; it must run concurrently with the engine handoff"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_handoff_with_an_append_in_flight_resolves_safely() {
     let inner = mem();
     let store = FaultStore::uniform(inner.clone(), 31, FaultPlan::CLEAN);
@@ -359,7 +359,7 @@ fn delivered_records(complete: &str) -> Vec<u64> {
     clippy::excessive_nesting,
     reason = "cut_resume_never_skips_a_durable_record; the fixture nests the gap diagnostics inside the per-subscriber failure report; flattening them would separate the context lines from the gap they explain"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8, crate = "crate::test_rt")]
 async fn cut_resume_never_skips_a_durable_record() {
     let _l = gap_lock().lock().await;
     let store: Arc<dyn ObjectStore> =

@@ -104,7 +104,7 @@ async fn settle(addr: std::net::SocketAddr, queue: &str, ops: Value) -> Vec<Stri
 
 /// Create → send → claim (the body decrypted) → ack: the page and rows of
 /// the acked message are gone and a replayed or foreign token is stale.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_sent_message_is_claimed_decrypted_and_acked() {
     let (state, addr) = http_rig(mem()).await;
     let (st, v) = q(addr, "PUT", "/v1/queues/jobs", Value::Null).await;
@@ -199,7 +199,7 @@ async fn a_sent_message_is_claimed_decrypted_and_acked() {
 
 /// Bytes sent in URL-safe base64 without padding come back standard and
 /// padded, and the queue list names the project's queues.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn bytes_come_back_as_padded_base64_and_the_list_names_the_queue() {
     let (state, addr) = http_rig(mem()).await;
     assert_eq!(q(addr, "PUT", "/v1/queues/jobs", Value::Null).await.0, 201);
@@ -231,7 +231,7 @@ async fn bytes_come_back_as_padded_base64_and_the_list_names_the_queue() {
 /// A retried delivery comes back with its next attempt, and an expired
 /// lease does once the sweep moved it and its backoff passed; the expired
 /// token is then stale.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn retry_and_an_expired_lease_redeliver_with_the_next_attempt() {
     let (state, addr) = http_rig(mem()).await;
     assert_eq!(q(addr, "PUT", "/v1/queues/rq", Value::Null).await.0, 201);
@@ -282,7 +282,7 @@ async fn retry_and_an_expired_lease_redeliver_with_the_next_attempt() {
 
 /// Dedup answers the original id; the envelope limit, the body rule,
 /// scheduling past retention and the admission budget refuse exactly.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn dedup_answers_the_original_and_refusals_are_exact() {
     let (state, addr) = http_rig(mem()).await;
     let cfg = json!({ "maxQueuedMessages": 3 });
@@ -325,7 +325,7 @@ async fn dedup_answers_the_original_and_refusals_are_exact() {
 
 /// A failed delivery is listed with its envelope and cause, redriven into
 /// a new cycle, and reclaimed once acked.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_failed_message_is_listed_and_redriven() {
     let (state, addr) = http_rig(mem()).await;
     assert_eq!(q(addr, "PUT", "/v1/queues/fq", Value::Null).await.0, 201);
@@ -398,7 +398,7 @@ async fn a_failed_message_is_listed_and_redriven() {
 
 /// Peek, cancel, republish (with lineage) and discard act on exactly the
 /// messages they name.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn peek_cancel_republish_and_discard_act_on_the_named_messages() {
     let (state, addr) = http_rig(mem()).await;
     assert_eq!(q(addr, "PUT", "/v1/queues/oq", Value::Null).await.0, 201);
@@ -480,7 +480,7 @@ async fn peek_cancel_republish_and_discard_act_on_the_named_messages() {
 
 /// Pause holds claims at once; after resume a parked claim takes a message
 /// sent while it waits.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn pause_holds_claims_and_a_parked_claim_takes_a_late_message() {
     let (state, addr) = http_rig(mem()).await;
     assert_eq!(q(addr, "PUT", "/v1/queues/oq", Value::Null).await.0, 201);
@@ -540,7 +540,7 @@ async fn pause_holds_claims_and_a_parked_claim_takes_a_late_message() {
 
 /// DELETE fences sends at once; the cleanup leaves no queue row and no
 /// page, the queue is then gone, and its name can be created again.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_deleted_queue_is_fenced_then_gone_without_rows() {
     let (state, addr) = http_rig(mem()).await;
     assert_eq!(q(addr, "PUT", "/v1/queues/zq", Value::Null).await.0, 201);
@@ -590,7 +590,7 @@ async fn a_deleted_queue_is_fenced_then_gone_without_rows() {
 
 /// A queue stream is refused on every stream surface, a stream is not a
 /// queue, and the first release has one group.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn queue_streams_are_refused_on_the_stream_surfaces() {
     let (state, addr) = http_rig(mem()).await;
     assert_eq!(q(addr, "PUT", "/v1/queues/sq", Value::Null).await.0, 201);

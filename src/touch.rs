@@ -539,7 +539,7 @@ mod tests {
     use super::{BUCKET_KEY_CAP, HISTORY_BUCKETS, TouchJournal, WaitOutcome};
     use std::time::Duration;
 
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn live_overflow_does_not_claim_a_matching_key() {
         let journal = TouchJournal::start(&crate::runtime::OsEntropy);
         let mut wait = Box::pin(journal.wait("now", vec![u32::MAX], Duration::from_secs(1)));
@@ -554,7 +554,7 @@ mod tests {
         journal.close();
     }
 
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn live_matching_key_is_proven() {
         let journal = TouchJournal::start(&crate::runtime::OsEntropy);
         let mut wait = Box::pin(journal.wait("now", vec![7], Duration::from_secs(1)));
@@ -572,7 +572,7 @@ mod tests {
         journal.close();
     }
 
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn closing_drains_registered_waiters_and_refuses_later_ones() {
         let journal = TouchJournal::start(&crate::runtime::OsEntropy);
         let mut wait = Box::pin(journal.wait("now", vec![7], Duration::from_secs(1)));
@@ -588,7 +588,7 @@ mod tests {
         assert!(inner.key_index.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn malformed_and_foreign_cursors_never_register() {
         let journal = TouchJournal::start(&crate::runtime::OsEntropy);
         for cursor in [
@@ -606,7 +606,7 @@ mod tests {
         journal.close();
     }
 
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn catch_up_uses_the_first_relevant_bucket() {
         let journal = TouchJournal::start(&crate::runtime::OsEntropy);
         journal.ingest(&[7], 1);
@@ -634,7 +634,7 @@ mod tests {
         journal.close();
     }
 
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn catch_up_distinguishes_missing_history_from_an_unmatched_key() {
         let journal = TouchJournal::start(&crate::runtime::OsEntropy);
         assert_eq!(journal.inner.lock().unwrap().catch_up(0, &[99]), None);
@@ -652,7 +652,7 @@ mod tests {
         }
         journal.close();
     }
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn overlapping_waiters_keep_distinct_delivery_and_retirement_ownership() {
         let journal = std::sync::Arc::new(TouchJournal {
             epoch: "distinct-waiters".into(),

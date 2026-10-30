@@ -120,7 +120,7 @@ impl ObjectStore for HeldDocument {
     clippy::excessive_nesting,
     reason = "r09_fleet_cancels_entered_documents_without_partial_authority_or_lost_retry; the fixture nests the entered wait and the desired-state poll inside the timeouts that bound them; flattening them would separate the waits from the bounds they must respect"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r09_fleet_cancels_entered_documents_without_partial_authority_or_lost_retry() {
     for (path, write) in [
         ("fleet/streams-1.json", true),
@@ -293,7 +293,7 @@ fn assert_reason_ends_with_rate_and_live(reason: &str) {
 /// the ring and peer table stayed stale, a shard the ring had moved away was
 /// never yielded, return-home never ran, cell-wide, for as long as the file
 /// persisted. Only the desired CAS may wait on that read.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_unreadable_router_report_defers_only_the_desired_publication() {
     let inner = mem();
     // Ring of two, shard 00 overridden to streams-2 long enough ago that
@@ -443,7 +443,7 @@ async fn seed_ring_of_two(store: &Arc<dyn ObjectStore>, entries: &[(&str, &str)]
 /// (`effective_owner`, the router mirror), so that target must never open
 /// the shard: the open would fence the ring's real owner, the next tick
 /// yields it, and after the holdoff the open fires again, indefinitely.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_override_the_ring_ignores_is_never_opened_by_its_target() {
     let inner = mem();
     seed_ring_of_two(&inner, &[("00", "streams-9")]).await;
@@ -514,7 +514,7 @@ async fn an_override_the_ring_ignores_is_never_opened_by_its_target() {
 /// The idlest heartbeat outside it (a scale-in leftover, a non-ordinal
 /// name) would receive an override every reader ignores, so the move would
 /// only evict the shard from the laggard and strike its holdoff.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_lagging_owner_moves_its_shard_only_to_an_active_member() {
     let inner = mem();
     seed_ring_of_two(&inner, &[]).await;
@@ -596,7 +596,7 @@ async fn a_lagging_owner_moves_its_shard_only_to_an_active_member() {
 /// its next tick (the eager handoff fences the previous holder's db), both
 /// for a move-in the ring honours and for a shard whose override names a
 /// non-member, which the ring gives to its rendezvous home.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_rings_owner_opens_every_overridden_shard_it_is_assigned_at_the_tick() {
     let inner = mem();
     seed_ring_of_two(&inner, &[("00", "streams-9"), ("10", "streams-1")]).await;
@@ -666,7 +666,7 @@ async fn seed_ring_of_one(store: &Arc<dyn ObjectStore>) {
 /// never answers that document) keeps publishing its liveness every beat,
 /// while the progress it publishes stays at the tick's last completed pass:
 /// peers see a live process whose controller is not progressing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stuck_tick_keeps_its_heartbeat_but_not_its_progress() {
     let inner = mem();
     seed_ring_of_one(&inner).await;
@@ -742,7 +742,7 @@ async fn a_stuck_tick_keeps_its_heartbeat_but_not_its_progress() {
 /// Item 40: the heartbeat PUT is no longer the tick's first step, so a
 /// publication the store holds cannot keep the controller from reading its
 /// authority and publishing its ownership view.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_held_heartbeat_does_not_stop_the_tick() {
     let inner = mem();
     seed_ring_of_one(&inner).await;
@@ -800,7 +800,7 @@ async fn a_held_heartbeat_does_not_stop_the_tick() {
 /// The heartbeat keeps its own cadence, the progress deadline is derived
 /// from the budgets a pass may use, so neither instance ever leaves the
 /// other's ring.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_store_brownout_slows_the_tick_without_churning_the_ring() {
     let inner = mem();
     seed_ring_of_two(&inner, &[]).await;
@@ -894,7 +894,7 @@ async fn published(store: &Arc<dyn ObjectStore>, instance: &str) -> serde_json::
 /// its own included, drops it within a pass, not after the 30 s liveness
 /// window. (Under the process root the same loss cancels every task; the
 /// heartbeat's last beat then carries the withdrawal, as the next test pins.)
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_critical_loop_failure_withdraws_the_instance_from_every_ring() {
     let inner = mem();
     seed_ring_of_two(&inner, &[]).await;
@@ -946,7 +946,7 @@ async fn a_critical_loop_failure_withdraws_the_instance_from_every_ring() {
 /// Item 40: a stopping runtime does not simply go quiet and leave its peers
 /// to wait out the liveness window. Its heartbeat's last beat, bounded,
 /// withdraws it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stopping_runtime_publishes_its_withdrawal() {
     let inner = mem();
     seed_ring_of_one(&inner).await;

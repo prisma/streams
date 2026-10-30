@@ -259,7 +259,7 @@ fn parse_head(head: &[u8]) -> (u16, usize) {
     clippy::too_many_lines,
     reason = "split capacity scenario; the warm-up, the single-segment plateau, the split and the two-child plateau are one measured sequence on one rig; helper phases would hide which topology each window measured"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn split_children_land_on_distinct_engines() {
     let _l = gap_lock().lock().await;
     let store = mem();
@@ -374,7 +374,7 @@ async fn split_children_land_on_distinct_engines() {
 /// uniform store latency, one segment plateaus at one committer's
 /// throughput; after the split, two children on two engines must
 /// deliver >= 1.8x — with zero client-visible errors and exact counts.
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8, crate = "crate::test_rt")]
 async fn post_split_throughput_scales() {
     // A capacity RATIO is only valid when the measurement owns the
     // machine: run serialized against the other heavy tests (the
@@ -531,7 +531,7 @@ async fn post_split_throughput_scales() {
     clippy::too_many_lines,
     reason = "merge lineage scenario; appending across the split, cooling the children, merging and checking per-key order and counts form one causal sequence; helper phases would hide which lineage step lost or duplicated a record"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn merge_rejoins_cold_children_with_exact_lineage() {
     let _l = gap_lock().lock().await;
     let store = mem();
@@ -765,7 +765,7 @@ async fn split_at_half(state: &Arc<crate::http::AppState>, name: &str) {
     assert!(crate::scaler3::execute_split(state, &sref, 0, 0x8000_0000_0000_0000).await);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_append_routed_by_a_pre_split_descriptor_lands_on_the_child() {
     let (state, addr) = keyed_collection("stalesplit").await;
     let pre_split = fresh_desc(&state, "stalesplit").await;
@@ -784,7 +784,7 @@ async fn an_append_routed_by_a_pre_split_descriptor_lands_on_the_child() {
     engine_shutdown(&state).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_append_routed_by_a_pre_merge_descriptor_lands_on_the_merged_segment() {
     let (state, addr) = keyed_collection("stalemerge").await;
     let sref = state.deployment.raw_adapter_sref("stalemerge");
@@ -812,7 +812,7 @@ async fn an_append_routed_by_a_pre_merge_descriptor_lands_on_the_merged_segment(
 /// the seal, so the first attempt meets the split-away parent's engine
 /// and the retry meets a sealed descriptor, whose closure names the
 /// empty key's segment: for `gb` that is not the segment it routes to.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_append_routed_by_a_pre_seal_descriptor_is_still_refused_as_sealed() {
     let (state, addr) = keyed_collection("staleseal").await;
     let pre_split = fresh_desc(&state, "staleseal").await;
@@ -882,18 +882,18 @@ async fn a_split_is_refused_with_the_allocator_at(name: &str, next_seg_id: u32) 
     engine_shutdown(&state).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_split_the_allocator_cannot_number_keeps_its_intent_pending() {
     // Both children get ids; the allocator has none left to advance to.
     a_split_is_refused_with_the_allocator_at("spentsplit", u32::MAX - 1).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_split_with_no_id_for_its_high_child_keeps_its_intent_pending() {
     a_split_is_refused_with_the_allocator_at("spentsplitmax", u32::MAX).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_merge_the_segment_map_refuses_keeps_its_intent_pending() {
     let (state, _addr) = keyed_collection("refusedmerge").await;
     split_at_half(&state, "refusedmerge").await;

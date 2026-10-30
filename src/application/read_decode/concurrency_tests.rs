@@ -277,14 +277,14 @@ async fn race_round(seed: u64, ring: usize) {
     engine.begin_close();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8, crate = "crate::test_rt")]
 async fn concurrent_absorb_and_trim_never_skip_or_repeat_a_record_for_mid_page_pagers() {
     race_round(0x9e37_79b9_7f4a_7c15, 0).await;
 }
 
 /// The same race with a 48 KiB tail ring, so pagers are served from ring
 /// slices that eviction keeps cutting.
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8, crate = "crate::test_rt")]
 async fn concurrent_absorb_and_trim_with_an_evicting_ring_never_skip_or_repeat_a_record() {
     race_round(0xdead_beef_cafe_f00d, 48 << 10).await;
 }
@@ -345,7 +345,7 @@ async fn one_byte_pager(engine: &Arc<ShardEngine>, from: u64, selector: Option<&
 /// Reads from both sides of that edge, from the first and last record of
 /// the full page, sealed and unsealed, serve exactly the records
 /// from there, and a one-byte pager crosses the edge one record per read.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_request_past_the_page_record_cap_reads_exactly_across_its_page_edge() {
     const STARTS: [u64; 12] = [
         0, 1, 4094, 4095, 4096, 4097, 4999, 5000, 5001, 9095, 9096, 9999,
@@ -429,7 +429,7 @@ async fn offsets_from(
 /// 15..=39, also once the WAL write lands. The appends are durable before
 /// the hold, so the seal's first WAL flush has nothing to write and the
 /// first WAL PUT the hold parks is the seal's commit.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_applied_read_from_inside_a_page_its_trim_deleted_rereads_it_from_history() {
     let store = crate::dst::FaultStore::new(
         Arc::new(object_store::memory::InMemory::new()),

@@ -60,7 +60,7 @@ fn request(rig: &HttpRig, target: &InternalTarget) -> reqwest::RequestBuilder {
     request
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn o2c_old_scan_headers_preserve_records_progress_and_physical_frontier() {
     let rig = http_rig_build(
         mem(),
@@ -154,7 +154,7 @@ async fn legacy_scan(
     crate::product::internal_segment_scan(state, path, headers).await
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn o2c_new_sender_clips_legacy_pages_across_owner_upgrade_and_rollback() {
     let store = mem();
     let owner = http_rig_build(
@@ -250,7 +250,7 @@ async fn o2c_new_sender_clips_legacy_pages_across_owner_upgrade_and_rollback() {
     owner.tasks.shutdown(Duration::from_secs(5)).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn o2c_unauthorized_scan_does_not_wait_for_request_body() {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
     let rig = http_rig_build(
@@ -315,7 +315,7 @@ async fn answer(request: reqwest::RequestBuilder) -> (u16, String, Option<bool>)
 /// 404 that means "no descriptor": the sealed-span SSE sender reads 404 as
 /// the incarnation being gone and disconnects every subscriber of a feed
 /// whose stream still exists.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn o2c_registry_store_error_on_a_receiver_is_retryable_not_gone() {
     let rig = http_rig_build(
         mem(),

@@ -11,7 +11,7 @@ use object_store::{GetOptions, ObjectStore, PutMultipartOptions, PutOptions, Put
 /// same operations in the same order. For a single sequential client
 /// with no streams, ids happen to be dense from 0 — but the CONTRACT
 /// is unique + strictly increasing, not dense (see `StoreTraceEvent`).
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn events_are_ordered_by_dispatch_seq() {
     let s = TraceStore::verbatim(mem());
     let pa = ObjPath::from("shards/x/wal/1.sst");
@@ -44,7 +44,7 @@ async fn events_are_ordered_by_dispatch_seq() {
     assert!(s.events().is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn put_records_byte_count() {
     let s = TraceStore::new(mem());
     let p = ObjPath::from("shards/x/wal/1.sst");
@@ -58,7 +58,7 @@ async fn put_records_byte_count() {
     assert_eq!(evs[0].bytes, Some(1234));
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn ranged_get_records_span() {
     let inner = mem();
     let p = ObjPath::from("a/b/1.sst");
@@ -90,7 +90,7 @@ async fn ranged_get_records_span() {
 /// Redaction is the default: no tenant-derived segment survives, the
 /// path still classifies identically, and payload bytes are never
 /// retained.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn redaction_hashes_paths_and_never_stores_payload_bytes_by_default() {
     let s = TraceStore::new(mem());
     let p = ObjPath::from("acme-corp/shards/secret-stream-name/wal/00000042.sst");
@@ -132,7 +132,7 @@ async fn redaction_hashes_paths_and_never_stores_payload_bytes_by_default() {
     assert!(!e2.path.contains("root-3"));
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn hash_on_mode_records_content_hashes() {
     let s = TraceStore::with_options(mem(), true, true);
     let payload = b"stream-payload-bytes".to_vec();
@@ -150,7 +150,7 @@ async fn hash_on_mode_records_content_hashes() {
     assert_eq!(e.content_hash.as_deref(), Some(want.as_str()));
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn outcome_is_recorded_on_error() {
     let s = TraceStore::new(mem());
     let p = ObjPath::from("shards/x/wal/nope.sst");
@@ -164,7 +164,7 @@ async fn outcome_is_recorded_on_error() {
 
 /// The session is Put events all the way down: open, one per part
 /// with byte counts, and a complete that notes how many parts landed.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn multipart_session_is_traced() {
     let s = TraceStore::verbatim(mem());
     let p = ObjPath::from("shards/x/wal/big.sst");

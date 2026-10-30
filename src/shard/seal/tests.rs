@@ -558,7 +558,7 @@ async fn seal_l0(rig: &Rig) -> (super::SealReport, u64) {
 /// without a seal writes the values; and a seal whose flush skips step 7a
 /// (REVIEW-6A F2) writes them too, because the put that shadows them is
 /// above the flush's durable boundary.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn flushdrop() {
     let rig = rig("flushdrop", manual(), Duration::from_millis(5)).await;
     let sp = &rig.engine.layout.seal;
@@ -636,7 +636,7 @@ async fn flushdrop() {
 /// collector take it. Its awaited WAL flush makes the seal's puts durable
 /// before the memtable freezes, so the L0 holds at most 5% of the sealed
 /// page bytes; without it the shadowed operands reach the L0.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_forced_flush_makes_an_applied_seal_durable_first() {
     let rig = rig("forced-7a", manual(), Duration::from_millis(5)).await;
     let sp = &rig.engine.layout.seal;
@@ -777,7 +777,7 @@ async fn check_shard(rig: &Rig, streams: &[[u8; 16]], orphans: usize, seed: u64)
 /// seal seals everything; then the engine is reopened (the directory
 /// rebuilt from the `'K'` rows, the unsealed pages from the pending rows)
 /// and every record reads back exactly once, in order, at both visibilities.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn tiling_with_an_abort_between_every_pair_of_steps() {
     let mut aborted_at = [0usize; 5];
     for seed in 0..8u64 {
@@ -935,7 +935,7 @@ async fn appended_between_snapshot_and_commit(prebuilt: bool) -> Result<(), Stri
 /// the committer a ready-made batch would; the put then shadows the later
 /// pages, and after a restart they are gone (the stream fails to load, or
 /// the read misses them).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_append_committed_between_the_snapshot_and_the_commit_survives() {
     appended_between_snapshot_and_commit(false).await.unwrap();
     let control = appended_between_snapshot_and_commit(true).await;

@@ -78,7 +78,7 @@ impl ObjectStore for BodyFault {
     }
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn r09_fleet_document_body_failures_and_sizes_preserve_authority() {
     let inner: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let fault = Arc::new(BodyFault {
@@ -140,7 +140,7 @@ async fn r09_fleet_document_body_failures_and_sizes_preserve_authority() {
     );
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn r09_fleet_document_deadlines_leave_cas_source_retryable() {
     use crate::dst::{FaultPlan, FaultStore, ObjClass, StoreOp};
     let inner: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
@@ -228,7 +228,7 @@ fn r09_fleet_configuration_cannot_publish_an_unreadable_population() {
     clippy::too_many_lines,
     reason = "r09_fleet_write_caps_preserve_readable_document_and_exact_cas_version; the fixture stages the oversized, exact-cap and versioned writes against one repository so the CAS version is judged across them; splitting it would separate the writes from the version they share"
 )]
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn r09_fleet_write_caps_preserve_readable_document_and_exact_cas_version() {
     let inner: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let repository = FleetRepository::new(Some(inner.clone()));
@@ -355,7 +355,7 @@ async fn r09_fleet_write_caps_preserve_readable_document_and_exact_cas_version()
     }
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn r09_fleet_population_budget_includes_its_coordination_documents() {
     let inner: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let repository = FleetRepository::new(Some(inner.clone()));

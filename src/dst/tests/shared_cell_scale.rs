@@ -25,7 +25,7 @@ use serde_json::Value;
 /// stream, and the catalog lists exactly its own three names. Idle
 /// projects read `[]`. A customer credential cannot fork on either
 /// surface, so no project gains a stream.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn every_project_reads_exactly_its_own_records() {
     let cell = open_cell(CellSpec::open(cell_scale())).await;
     cell.create_everywhere().await;
@@ -123,7 +123,7 @@ async fn fork_attempt_creates_nothing(cell: &Cell, i: usize) {
 /// `orders` drains exactly its own records, and producer `p-1` at
 /// sequence 0 is new in every project once and a duplicate only within
 /// its own project afterwards.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn consumer_groups_and_producers_stay_inside_their_project() {
     let cell = open_cell(CellSpec::open(cell_scale())).await;
     cell.create_everywhere().await;
@@ -274,7 +274,7 @@ fn sse_markers(transcript: &str) -> Vec<String> {
 /// project's markers in order: history, live records, fence. Every
 /// project's watch list holds exactly its own definitions, and a
 /// neighbour's matching append never wakes a watch wait.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn live_subscribers_and_watches_see_only_their_project() {
     let cell = open_cell(CellSpec::open(cell_scale())).await;
     cell.create_everywhere().await;
@@ -389,7 +389,7 @@ async fn read_every_key_once(cell: &Cell, i: usize) {
 /// unknown_project`; each workspace's rows sum exactly its projects'
 /// ledgers and hold no other project's row; nothing bills to the
 /// deployment account; and the month reconciles.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn books_are_exact_per_project_and_workspace() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let cell = open_cell(CellSpec::open(cell_scale())).await;
@@ -550,7 +550,7 @@ const REFUSAL: [&str; 8] = [
 /// paced projects see no refusal at all, the journal holds exactly the
 /// refusals each project saw, and afterwards up to 100 projects that
 /// never spoke are admitted on their first request.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn quotas_refuse_only_their_project() {
     let mut spec = CellSpec::open(cell_scale());
     spec.quotas = |i| hostile(i).map_or_else(roomy, tight);

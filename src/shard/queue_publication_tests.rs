@@ -19,7 +19,7 @@ async fn commit(engine: &ShardEngine, ops: Vec<CommitOp>) {
     clippy::let_underscore_must_use,
     reason = "r03_queue_refusal_from_staged_generation_shares_group_failure_and_dispatch; the fixture ignores a delivery or join result whose only failure is the shutdown it stages itself; treating it as fallible would add branches the pinned sequence never takes"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r03_queue_refusal_from_staged_generation_shares_group_failure_and_dispatch() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let db = Arc::new(

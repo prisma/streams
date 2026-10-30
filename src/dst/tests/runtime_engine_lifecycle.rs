@@ -53,7 +53,7 @@ async fn ready_rig() -> super::fixture_http::HttpRig {
     clippy::excessive_nesting,
     reason = "r17a_each_required_engine_exit_changes_real_health_and_readyz; the fixture nests the exit wait inside the timeout that bounds it inside the test; flattening it would separate the wait from the bound it must respect"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r17a_each_required_engine_exit_changes_real_health_and_readyz() {
     let independent = ready_rig().await;
     for role in ["committer", "acker", "pump", "sealer", "seal-deadlines"] {

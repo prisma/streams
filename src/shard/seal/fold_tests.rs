@@ -169,7 +169,7 @@ async fn check_tiling(rig: &Rig, streams: &[[u8; 16]], what: &str) {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fold_moves_every_directory_row_into_one_object() {
     let rig = cold_rig("fold-one").await;
     let mut rng = StdRng::seed_from_u64(0xF01D);
@@ -280,7 +280,7 @@ async fn fold_stopped(stop: Option<FoldStep>, seed: u64) {
     rig.engine.begin_close();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fold_stopped_at_any_step_leaves_the_rows_or_the_pointer() {
     for (i, stop) in [
         Some(FoldStep::Put),
@@ -299,7 +299,7 @@ async fn a_fold_stopped_at_any_step_leaves_the_rows_or_the_pointer() {
 /// log (fencing the first): its batch fails, its engine closes, and its
 /// object is referenced by no pointer row; the new owner reads everything
 /// and folds the same rows under its own epoch.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fenced_folders_object_is_an_orphan() {
     let rig = cold_rig("fold-fence").await;
     let mut rng = StdRng::seed_from_u64(0xFE7C);
@@ -380,7 +380,7 @@ fn configure_merges(rig: &Rig) {
     });
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn merges_make_hourly_and_daily_objects_and_retire_their_inputs() {
     let mut rig = cold_rig("merge").await;
     configure_merges(&rig);
@@ -492,7 +492,7 @@ async fn keyed(rig: &Rig, hash: [u8; 16], key: &str) -> crate::application::read
 /// chunk GET) and consumes the offsets; a key a run bloom wrongly admits
 /// costs that run's GET and no chunk GET (the chunk summaries are exact
 /// fingerprints) and serves nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn keyed_reads_skip_runs_their_bloom_excludes_and_survive_false_positives() {
     let rig = cold_rig("fold-keyed").await;
     let hash = [0x42; 16];
@@ -563,7 +563,7 @@ async fn keyed_reads_skip_runs_their_bloom_excludes_and_survive_false_positives(
 /// pages.** Random appends, seals, folds and merges, each fold or merge
 /// stopped at a random step; after each, the tiling invariant; at the end
 /// a restart and every record read back at both visibilities.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn tiling_across_directory_run_index_and_pending_with_stopped_folds() {
     for seed in 0..4u64 {
         tiling_seed(seed).await;
@@ -632,7 +632,7 @@ async fn tiling_seed(seed: u64) {
 
 /// A pointer row that does not decode is skipped and counted at the open;
 /// every other object is served.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_corrupt_index_row_is_skipped_and_counted() {
     let rig = cold_rig("fold-corrupt").await;
     let mut rng = StdRng::seed_from_u64(0xBAD);
@@ -719,7 +719,7 @@ async fn read_result(
 /// a pointer row: after a fold, the pointer row is overwritten, and A's
 /// folded offsets answer corruption while a stream sealed afterwards reads
 /// exactly.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_gap_a_corrupt_index_row_leaves_answers_corruption_and_nothing_else_does() {
     let rig = cold_rig("fold-gap").await;
     let mut rng = StdRng::seed_from_u64(0x222);

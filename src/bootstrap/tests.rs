@@ -175,7 +175,7 @@ fn a_server_that_sets_nothing_admits_256_concurrent_appends_to_one_stream() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn process_bootstrap_cannot_be_an_empty_success() {
     let validated = crate::config::ServerConfig::load(
         crate::config::CliArgs::deterministic(),

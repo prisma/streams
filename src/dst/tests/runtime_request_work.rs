@@ -63,7 +63,7 @@ async fn entered(count: &std::sync::atomic::AtomicU64) {
     .expect("the actual registry conditional PUT must enter");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r09a_request_ttl_jobs_bound_retained_keys_across_projects() {
     let (rig, store, descriptors) = setup(160).await;
     let service = rig.state.creation_service();
@@ -123,7 +123,7 @@ async fn r09a_request_ttl_jobs_bound_retained_keys_across_projects() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r09a_runtime_shutdown_owns_the_entered_request_cas() {
     let (rig, store, descriptors) = setup(1).await;
     let service = rig.state.creation_service();
@@ -202,7 +202,7 @@ async fn r09a_runtime_shutdown_owns_the_entered_request_cas() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r09a_old_ttl_cas_cannot_mutate_or_suppress_a_recreated_incarnation() {
     let (rig, store, descriptors) = setup(1).await;
     let service = rig.state.creation_service();
@@ -259,7 +259,7 @@ async fn r09a_old_ttl_cas_cannot_mutate_or_suppress_a_recreated_incarnation() {
         .unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r09a_ttl_overflow_returns_retryable_http_refusals_before_append_effects() {
     use super::fixture_requests::hreq;
     let (rig, store, descriptors) = setup(160).await;

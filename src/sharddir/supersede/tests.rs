@@ -104,7 +104,7 @@ fn only_a_record_naming_another_boot_supersedes() {
 
 /// A record read slower than its bound answers nothing at the bound: the
 /// verdict is in before the 3 s base holdoff could let an open through.
-#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn a_read_slower_than_its_bound_answers_nothing_at_the_bound() {
     let started = tokio::time::Instant::now();
     assert_eq!(super::bounded(std::future::pending::<()>()).await, None);
@@ -116,7 +116,7 @@ async fn a_read_slower_than_its_bound_answers_nothing_at_the_bound() {
 /// Each boot's registration is read back at once: the first boot is the
 /// newest until the second registers, then the second is and the first is
 /// superseded by it. Nothing registered reads as unknown.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn the_last_registered_boot_is_the_newest() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let (dir_a, _) = directory();
@@ -144,7 +144,7 @@ async fn the_last_registered_boot_is_the_newest() {
 
 /// A boot whose record cannot be written retries after 1, 2, 4 and 8 s and
 /// then gives up, never yielding; a stop during a retry ends it at once.
-#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn a_registration_that_keeps_failing_gives_up_after_its_retries() {
     let failing: Arc<dyn ObjectStore> = crate::dst::FaultStore::uniform(
         Arc::new(object_store::memory::InMemory::new()),
@@ -169,7 +169,7 @@ async fn a_registration_that_keeps_failing_gives_up_after_its_retries() {
 
 /// Only an engine that died wakes the checker: a retirement does not, and
 /// neither does a late close of an engine already gone.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn only_an_engine_that_died_wakes_the_checker() {
     let (dir, _) = directory();
     let supersession = dir.supersession();
@@ -198,7 +198,7 @@ async fn only_an_engine_that_died_wakes_the_checker() {
 /// A yielded directory opens nothing: a prefix without a resident answers
 /// `shard_closing` with `Retry-After: 1` and its opener is never called, its
 /// resident keeps serving, and readiness names the supersession.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_yielded_directory_refuses_every_open_and_reports_superseded() {
     let (dir, opens) = directory();
     assert_eq!(dir.unready_reason(), None);
@@ -259,7 +259,7 @@ fn runtime(seed: u64) -> crate::runtime::RuntimeCaps {
 /// Two boots of one cell, started as bootstrap starts them with fleet off:
 /// each registers; the older yields at its engine's death, the newer does not
 /// at its own; both checkers end with the stop.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn the_older_boot_yields_at_an_engine_death_and_the_newest_does_not() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let mut boots = HashMap::new();
@@ -315,7 +315,7 @@ fn the_mark_decides_yes_at_once_and_no_only_after_the_wait() {
 
 /// The record a boot reads before it writes its own is its predecessor; the
 /// first boot of a store has none, and a boot never names itself.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_registering_boot_learns_the_boot_the_record_named() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let tasks = TaskSupervisor::new();
@@ -351,7 +351,7 @@ async fn a_registering_boot_learns_the_boot_the_record_named() {
 /// A replaced boot's mark names it, written once a newer boot is registered
 /// and not before; the next boot's answer is a yes, and a decided answer is
 /// kept without another read.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_replaced_boot_marks_itself_and_the_next_boot_keeps_the_answer() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let tasks = TaskSupervisor::new();
@@ -392,7 +392,7 @@ async fn a_replaced_boot_marks_itself_and_the_next_boot_keeps_the_answer() {
 
 /// An unreadable record leaves nothing to mark: a boot that cannot tell it was
 /// replaced writes no mark, as a crashed one wrote none.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn an_unread_record_leaves_no_mark() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let (dir, _) = directory();

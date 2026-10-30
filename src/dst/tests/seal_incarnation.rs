@@ -13,7 +13,7 @@ use super::fixture_storage::mem;
     clippy::disallowed_methods,
     reason = "seal claim fixture; the request held before claim is released and joined before checking the recreated collection; running it inline cannot expose the validation-to-claim gap"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_product_seal_never_binds_to_a_recreated_incarnation() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -100,7 +100,7 @@ async fn a_product_seal_never_binds_to_a_recreated_incarnation() {
 /// answer is correct, and the claim it installed comes down with it.
 /// Leaving the intent held the collection Sealing behind an
 /// undeliverable promise.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_non_closing_duplicate_releases_its_own_intent() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -177,7 +177,7 @@ async fn a_non_closing_duplicate_releases_its_own_intent() {
     clippy::too_many_lines,
     reason = "seal final-record scenario; the held request recreation and replacement read/write assertions form one incarnation proof; hiding phases behind one-use helpers would obscure the causal sequence"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_product_final_never_writes_into_a_recreated_incarnation() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -308,7 +308,7 @@ async fn a_product_final_never_writes_into_a_recreated_incarnation() {
     clippy::too_many_lines,
     reason = "seal producer-epoch scenario; raw and product requests must both prove immediate release of permanently refused finals; adapter-specific assertions stay adjacent to their protocol inputs"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stale_epoch_final_releases_its_intent_on_both_surfaces() {
     let store = mem();
     let (state, addr) = http_rig(store).await;

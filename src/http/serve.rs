@@ -311,7 +311,7 @@ mod tests {
 
     /// A connection that never completes a request head is closed at the
     /// deadline: a descriptor and a task are never held for ever.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
     async fn headless_connection_is_closed_at_the_deadline() {
         let (addr, tasks) = serve(DEADLINE).await;
         let started = tokio::time::Instant::now();
@@ -341,7 +341,7 @@ mod tests {
 
     /// The deadline covers only the wait for a request head: a response
     /// that takes longer than the deadline to produce still arrives.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
     async fn in_flight_response_outlives_the_deadline() {
         let (addr, tasks) = serve(DEADLINE).await;
         let mut sock = TcpStream::connect(addr).await.unwrap();
@@ -361,7 +361,7 @@ mod tests {
     /// Between requests the same deadline is the idle keep-alive bound: a
     /// request inside it is served on the same connection, a connection
     /// idle past it is closed by the server.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
     async fn idle_keep_alive_is_served_inside_and_closed_past_the_deadline() {
         let (addr, tasks) = serve(DEADLINE).await;
         let mut sock = TcpStream::connect(addr).await.unwrap();
@@ -385,7 +385,7 @@ mod tests {
     /// and the accept loop that reaps the task counts it on the runtime's task
     /// record exactly once. A connection the shutdown aborts mid-request is
     /// cancelled, not panicked, and is not counted.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
     async fn a_panicking_handler_is_counted_once_and_an_aborted_connection_is_not() {
         let (addr, tasks) = serve(DEADLINE).await;
         // Served once (so it is certainly accepted), then parked in a handler
@@ -424,7 +424,7 @@ mod tests {
 
     /// #180: a request in flight when the stop begins is answered, not reset,
     /// and its connection then closes; the stop waits for it, inside the drain.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
     async fn a_request_in_flight_at_the_stop_is_answered_before_its_connection_closes() {
         let (addr, tasks) = serve(DEADLINE).await;
         let mut sock = TcpStream::connect(addr).await.unwrap();
@@ -454,7 +454,7 @@ mod tests {
 
     /// #180: at the stop an idle keep-alive closes at once, and a request
     /// still running when the drain ends is reset then; the stop ends there.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
     async fn the_stop_closes_idle_connections_at_once_and_resets_the_rest_at_the_drain() {
         let (addr, tasks) = serve(BOUND).await;
         let mut idle = TcpStream::connect(addr).await.unwrap();
@@ -546,7 +546,7 @@ mod tests {
     /// (1,024 in a common Linux shell; the standard library raises it only
     /// on Apple targets) it skips with a message rather than failing on
     /// `connect: Too many open files`, which would read as a product fault.
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     #[cfg_attr(
         not(target_os = "linux"),
         ignore = "only Linux's loopback queues a burst before the accept loop runs"
@@ -608,7 +608,7 @@ mod tests {
     /// queued on it before is the one its next accept takes. It does not
     /// check the queue's depth (macOS caps it at `kern.ipc.somaxconn`); the
     /// Linux burst test above does.
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn listening_again_keeps_the_address_and_a_queued_connection() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -648,7 +648,7 @@ mod tests {
 
     /// A 401 gains the bearer challenge; any other status does not, and a
     /// challenge a handler already set is kept.
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn only_a_401_is_challenged_and_an_existing_challenge_is_kept() {
         use axum::http::{HeaderValue, StatusCode, header::WWW_AUTHENTICATE};
         use axum::response::IntoResponse;

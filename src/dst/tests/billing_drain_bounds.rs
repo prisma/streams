@@ -20,7 +20,7 @@ use std::time::Duration;
 /// rig's shards, one of which holds more than 256 of them: the first
 /// round emits exactly min(rows, 256) snapshots of each shard and, once
 /// its acknowledgements apply, the second round the rest.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn one_drain_round_takes_up_to_256_dirty_rows_of_each_shard() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     // The sealer is not the subject (and the rig's fast one keeps a
@@ -67,7 +67,7 @@ async fn one_drain_round_takes_up_to_256_dirty_rows_of_each_shard() {
 /// default 8 s cadence the stop of a drain parked on a held spool write
 /// ends cooperatively after 5 s, so a cadence of 10 s or more no longer
 /// reaches the supervisor's 10 s grace either.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_graceful_stop_cuts_a_wedged_terminal_round_at_five_seconds() {
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
     let state = rig.state.clone();
@@ -122,7 +122,7 @@ async fn a_graceful_stop_cuts_a_wedged_terminal_round_at_five_seconds() {
 /// same spooled batch forever: no usage of any project on the cell reached
 /// the ledger again. The drain empties the spool and the rollup bills every
 /// stream's reads exactly once, and another project's reads of the window.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn reads_of_a_thousand_streams_in_one_window_bill_once_each() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let rig = billed_rig("billcap-1k").await;
@@ -152,7 +152,7 @@ async fn reads_of_a_thousand_streams_in_one_window_bill_once_each() {
 /// A read batch already in the spool over the record ceiling (sealed by a
 /// binary that sealed at an estimated 1 MiB) drains too, and a second
 /// emission of it, as after a lost spool delete, bills nothing twice.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_oversized_spooled_read_batch_drains_and_bills_once() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let rig = billed_rig("billcap-legacy").await;

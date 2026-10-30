@@ -8,7 +8,7 @@ use object_store::{ObjectStore, PutOptions, PutPayload};
 
 /// reset() refuses to run while an operation is in flight — the
 /// alternative is silent misattribution of the late completion.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 #[should_panic(expected = "while operations are active")]
 #[expect(
     clippy::disallowed_methods,
@@ -29,7 +29,7 @@ async fn reset_refuses_while_in_flight() {
 
 /// After completions land, reset is clean and the id space keeps
 /// moving: a later event cannot be mistaken for an earlier one.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn reset_after_completion_is_clean_and_ids_stay_monotonic() {
     let s = TraceStore::new(mem());
     let p = ObjPath::from("shards/x/wal/1.sst");
@@ -53,7 +53,7 @@ async fn reset_after_completion_is_clean_and_ids_stay_monotonic() {
 /// A list stream the consumer abandons is recorded Cancelled (and
 /// its lifetime retired, so reset still works) — not left Pending
 /// forever and not silently treated as successful.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn abandoned_list_stream_is_marked_cancelled() {
     let s = TraceStore::new(mem());
     {
@@ -72,7 +72,7 @@ async fn abandoned_list_stream_is_marked_cancelled() {
 /// error is still ALIVE, so reset must refuse. Pre-3.2 the item
 /// error retired the operation and the documented "refuses while
 /// anything is in flight" claim was false for exactly this case.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 #[should_panic(expected = "while operations are active")]
 async fn reset_refuses_while_an_errored_list_stream_is_still_open() {
     use futures_util::StreamExt;
@@ -89,7 +89,7 @@ async fn reset_refuses_while_an_errored_list_stream_is_still_open() {
 /// then completes — the first fact (the error) is the recorded
 /// outcome, exhaustion retires the lifetime exactly once, and reset
 /// then works.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn errored_list_stream_serves_on_and_retires_at_exhaustion() {
     use futures_util::StreamExt;
     let spy = list_spy_with_one_object().await;
@@ -112,7 +112,7 @@ async fn errored_list_stream_serves_on_and_retires_at_exhaustion() {
 /// operation — reset must refuse while it is alive. Pre-3.2 delete
 /// streams had no lifetime at all and reset would clear the trace
 /// under a stream still appending observations.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 #[should_panic(expected = "while operations are active")]
 async fn reset_refuses_while_a_delete_stream_is_active() {
     let (sp, _, _) = spy(vec![Ok(ObjPath::from("a/1.sst"))]);
@@ -125,7 +125,7 @@ async fn reset_refuses_while_a_delete_stream_is_active() {
 
 /// Required test 4: dropping a delete stream midway retires its
 /// lifetime exactly once — reset works afterwards, repeatedly.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn dropped_delete_stream_retires_exactly_once() {
     let (sp, _, _) = spy(vec![
         Ok(ObjPath::from("a/1.sst")),

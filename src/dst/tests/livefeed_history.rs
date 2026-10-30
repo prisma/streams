@@ -16,7 +16,7 @@ use std::sync::Arc;
 /// The source record predates the ceiling ("created under a different
 /// profile"); the oversized partial must refuse the fork with NO
 /// externally visible child, and a compliant partial must still work.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn fork_materialized_partial_respects_the_record_ceiling() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -82,7 +82,7 @@ async fn fork_materialized_partial_respects_the_record_ceiling() {
     clippy::excessive_nesting,
     reason = "livefeed_remote_sealed_predecessor_streams_through_owner; the fixture nests the per-prefix owner choice inside the override loop of its two-instance layout; flattening it would separate the choice from the prefix it assigns"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_remote_sealed_predecessor_streams_through_owner() {
     let store = mem();
     let (state_a, addr_a) = http_rig_owner(store.clone(), "inst-a").await;
@@ -233,7 +233,7 @@ async fn livefeed_remote_sealed_predecessor_streams_through_owner() {
 /// ride LiveFeed across a split IN PLACE — product cursor vocabulary,
 /// exactly-once delivery, no false terminal. (The singular raw SSE
 /// surface is keyless by design; keyed live subscriptions live here.)
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_rawkey_records_sse_survives_split() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -331,7 +331,7 @@ async fn lf7_split_stream(
 
 /// Connect at `cursor=beginning` on an ALREADY-split stream: the full
 /// lineage (predecessor + successor) drains through LiveFeed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_connect_already_split_beginning_drains_lineage() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -360,7 +360,7 @@ async fn livefeed_connect_already_split_beginning_drains_lineage() {
 
 /// Connect at `cursor=now` on an already-split stream: only records
 /// written after the connect arrive.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_connect_already_split_now() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -380,7 +380,7 @@ async fn livefeed_connect_already_split_now() {
 
 /// Connect with a SIGNED cursor inside a sealed predecessor: the
 /// predecessor remainder plus the successor tail arrive exactly once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_connect_already_split_cursor_in_sealed_predecessor() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -417,7 +417,7 @@ async fn livefeed_connect_already_split_cursor_in_sealed_predecessor() {
 /// Connect with a signed cursor in the live tail and exactly at a span
 /// boundary; a cursor beyond a sealed cap is a 400; an unknown segment
 /// is a 400.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_connect_already_split_cursor_positions() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -484,7 +484,7 @@ async fn livefeed_connect_already_split_cursor_positions() {
 
 /// Connect at beginning on a SEALED split stream: full lineage, then
 /// exactly one terminal control, then EOF.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_connect_already_split_sealed_stream() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -511,7 +511,7 @@ async fn livefeed_connect_already_split_sealed_stream() {
 
 /// Two sequential splits before connect: the three-span lineage
 /// drains in order.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_connect_after_two_sequential_splits() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -562,7 +562,7 @@ async fn livefeed_connect_after_two_sequential_splits() {
     clippy::too_many_lines,
     reason = "merge continuation scenario; splitting, appending on a child, merging and appending on the successor while one subscriber follows form one causal sequence; helper phases would hide which topology step broke continuity"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_merge_continuation_in_place() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -695,7 +695,7 @@ async fn livefeed_merge_continuation_in_place() {
 /// split must not hand a new subscriber a stale frontier. `cursor=now`
 /// binds to the RECONCILED source — records durable before the
 /// subscribe are never delivered under "now".
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_cursor_now_uses_the_reconciled_source() {
     let store = mem();
     let (state, addr) = http_rig(store).await;

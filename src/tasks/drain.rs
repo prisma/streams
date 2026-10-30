@@ -172,7 +172,7 @@ mod tests {
         drained.send(cancellation.is_cancelled()).unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn a_requested_stop_runs_the_registered_drain_before_it_cancels() {
         let supervisor = TaskSupervisor::new();
         polite(&supervisor, "http");
@@ -197,7 +197,7 @@ mod tests {
         assert!(report.outcomes.contains(&("http", TaskOutcome::Finished)));
     }
 
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn a_drain_that_outlives_its_budget_is_cut_and_the_stop_follows() {
         let supervisor = TaskSupervisor::new();
         polite(&supervisor, "http");
@@ -218,7 +218,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn the_first_drain_registered_is_the_one_that_runs_and_it_runs_once() {
         let supervisor = TaskSupervisor::new();
         let runs = Arc::new(AtomicUsize::new(0));
@@ -243,7 +243,7 @@ mod tests {
         assert_eq!(runs.load(Ordering::SeqCst), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn a_second_request_during_the_drain_stops_at_once() {
         let supervisor = TaskSupervisor::new();
         polite(&supervisor, "http");
@@ -266,7 +266,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn a_stop_with_no_drain_registered_cancels_at_once() {
         let supervisor = TaskSupervisor::new();
         supervisor.shutdown_request().request();
@@ -287,7 +287,7 @@ mod tests {
     /// A draining runtime's readiness says it drains. Its signal loop has
     /// ended (it asked for the drain), and `unready_reason` alone would name
     /// that loop as a terminated critical task.
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn a_draining_runtime_answers_readiness_as_draining() {
         let supervisor = TaskSupervisor::new();
         polite(&supervisor, "http");
@@ -318,7 +318,7 @@ mod tests {
     /// A failing critical loop during a drain is still a failure on the
     /// readiness answer, and once the stop begins the supervisor's own
     /// answer holds again.
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn a_drain_does_not_mask_a_failure_or_the_stop() {
         let supervisor = TaskSupervisor::new();
         let monitor = supervisor.monitor();
@@ -361,7 +361,7 @@ mod tests {
     }
 
     /// A drain that panics still ends in the stop it was run for.
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn a_panicking_drain_still_stops_the_runtime() {
         let supervisor = TaskSupervisor::new();
         polite(&supervisor, "http");
@@ -385,7 +385,7 @@ mod tests {
     /// On the process root: the drain's budget extends the stop's bound; the
     /// signal loop's own end (it requested the drain) does not stop the
     /// runtime, but a loop that fails during the drain does, at once.
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn on_a_process_root_only_a_failure_cuts_a_drain_short() {
         let root = TaskSupervisor::new().bounded_root(Duration::from_secs(86_400));
         let (_release, held) = tokio::sync::oneshot::channel::<()>();

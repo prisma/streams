@@ -419,7 +419,7 @@ impl FleetDocument {
 mod population_tests {
     use super::*;
 
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn population_reads_are_ordered_and_corruption_is_not_empty_membership() {
         let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         let repository = FleetRepository::new(Some(store.clone()));
@@ -449,7 +449,7 @@ mod population_tests {
         assert!(repository.read_router_reports().await.is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn population_object_and_byte_budgets_fail_closed() {
         let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         let repository = FleetRepository::new(Some(store.clone()));
@@ -491,7 +491,7 @@ mod population_tests {
     /// The heartbeat namespace holds at most MAX_MEMBERS beats and the
     /// three coordination documents: a full fleet reads all its beats,
     /// and one object more fails the pass.
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn a_full_fleet_reads_and_one_object_more_fails() {
         let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         let repository = FleetRepository::new(Some(store.clone()));
@@ -550,7 +550,7 @@ mod viewed_tests {
     /// view read, so only the tick's read may record them, and only live
     /// draining beats are recorded (a stopped instance's last document stays
     /// behind, draining, for good).
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn only_the_ticks_read_records_the_draining_beats_its_view_read() {
         let store = Arc::new(InMemory::new());
         let now = crate::shard::now_ms();

@@ -100,7 +100,7 @@ async fn wait_ledger_empty(engine: &crate::shard::ShardEngine) -> bool {
 /// outside references must evict, and a later touch must reload the
 /// same durable state from the shard DB. A handle holding unsealed pages
 /// is held by the sealer's unsealed set, so the streams are sealed first.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn idle_stream_handles_evict_and_reload() {
     let store: Arc<dyn ObjectStore> = FaultStore::uniform(mem(), 95, FaultPlan::new(0, 0, 0));
     let key = skey();
@@ -165,7 +165,7 @@ async fn paced_append_p99_ms(
 /// keeps append p99 within 4x the baseline plus 150 ms, on a store with
 /// Tigris-like latency. The sealer's own triggers are off, so the
 /// baseline is clean and the wave is the one seal the test starts.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn sparse_absorption_wave_bounds_append_latency() {
     let plan = FaultPlan {
         error_pct: 0,
@@ -222,7 +222,7 @@ async fn sparse_absorption_wave_bounds_append_latency() {
 /// sealer's open loads every stream whose durable tail holds unsealed
 /// pages, and the fast cadence seals it; the test waits on the shard's
 /// ledger, which it can read without touching the stream.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn untouched_streams_absorb_after_restart() {
     let store: Arc<dyn ObjectStore> = FaultStore::uniform(mem(), 94, FaultPlan::new(0, 0, 0));
     let hash = [0xA4u8; 16];
@@ -259,7 +259,7 @@ async fn untouched_streams_absorb_after_restart() {
 /// starts by waiting on that dispatch. The dispatch gate is held until the
 /// age trigger is long due, so the published tail must stay (0, 1), and
 /// must reach (1, 1) once dispatch resumes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_large_record_absorbs_after_restart_under_default_policy() {
     let store: Arc<dyn ObjectStore> = FaultStore::uniform(mem(), 98, FaultPlan::new(0, 0, 0));
     let hash = [0xA7u8; 16];
@@ -303,7 +303,7 @@ async fn a_large_record_absorbs_after_restart_under_default_policy() {
 /// streams for good (no signal, no handle, no rediscovery path). The first
 /// two opens on this shard fail; the third loads the stream, which then
 /// seals.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn dirty_scan_retries_until_it_succeeds() {
     let store: Arc<dyn ObjectStore> = FaultStore::uniform(mem(), 99, FaultPlan::new(0, 0, 0));
     let hash = [0xA9u8; 16];
@@ -332,7 +332,7 @@ async fn dirty_scan_retries_until_it_succeeds() {
 /// permanently deferred residual stalls the no-progress clock into the
 /// instance latch. Every byte trigger is out of reach, so only the age
 /// trigger can seal the 512 B record.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn sparse_records_rediscovered_after_restart_are_absorbed() {
     let store: Arc<dyn ObjectStore> = FaultStore::uniform(mem(), 100, FaultPlan::new(0, 0, 0));
     let hash = [0xABu8; 16];
@@ -359,7 +359,7 @@ async fn sparse_records_rediscovered_after_restart_are_absorbed() {
 /// handle_max_resident the ticker must evict oldest-touched
 /// unreferenced handles immediately — referenced ones never. The burst
 /// is sealed first: a handle holding unsealed pages is never evictable.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn handle_capacity_cap_evicts_oldest_first() {
     let store: Arc<dyn ObjectStore> = FaultStore::uniform(mem(), 102, FaultPlan::new(0, 0, 0));
     let key = skey();

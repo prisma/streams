@@ -138,7 +138,7 @@ mod tests {
     /// (a shard opening or failing to open here, a peer read that failed)
     /// carries `Retry-After: 1`, so the SDK's restart ride-through (#177)
     /// covers reads as it covers appends.
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn a_read_temporarily_unavailable_asks_for_a_retry_after_one_second() {
         let opening = ResolveError::Opening {
             prefix: "000".into(),
@@ -166,7 +166,7 @@ mod tests {
 
     /// An append refused `temporarily_unavailable` with no delay of its own
     /// asks for one second; a stated delay is kept.
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn an_append_temporarily_unavailable_asks_for_a_retry() {
         let bare = || AppendFailure::new(FailureClass::Unavailable, AppendCode::Internal, "x");
         let response = super::super::render_product_append_error(bare());

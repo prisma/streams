@@ -29,7 +29,7 @@ fn chunked(chunks: usize) -> Body {
 /// charges exactly its bytes until it drops; beside 6 KiB the project's
 /// other request holds, a body is refused at the chunk that would take
 /// the project past its 8 KiB line, leaving only those 6 KiB charged.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_body_is_buffered_alone_past_the_line_and_refused_beside_other_bytes() {
     let registry = QuotaRegistry::default();
     let entry = project(&registry);
@@ -60,7 +60,7 @@ async fn a_body_is_buffered_alone_past_the_line_and_refused_beside_other_bytes()
 /// Without a line a body grows to the limit beside anything; one byte past
 /// the limit is refused as too large, and so is a body whose stream fails;
 /// a body with no project buffers uncharged.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn the_limit_bounds_a_body_and_no_line_is_no_line() {
     let registry = QuotaRegistry::default();
     let entry = project(&registry);
@@ -83,7 +83,7 @@ async fn the_limit_bounds_a_body_and_no_line_is_no_line() {
 /// bounds, and given up past `limit` bytes, at a chunk that fails, or past
 /// `wait`: 16 KiB ends under a 16 KiB limit and not under 15 KiB, and a body
 /// that never ends is given up when the wait passes.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_discarded_body_ends_inside_its_bounds_or_is_given_up() {
     let wait = std::time::Duration::from_millis(200);
     assert!(discard_within(chunked(16), 16 * 1024, wait).await);

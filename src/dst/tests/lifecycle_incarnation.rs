@@ -21,7 +21,7 @@ use super::fixture_storage::mem;
     clippy::too_many_lines,
     reason = "fork release scenario; parking the release, deleting and recreating underneath it and checking the replacement form one causal sequence; helper phases would hide which incarnation the release touched"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_release_parked_across_recreation_cannot_touch_the_replacement() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -167,7 +167,7 @@ async fn a_release_parked_across_recreation_cannot_touch_the_replacement() {
     clippy::disallowed_methods,
     reason = "parked creation fixture; both creators are released and joined before their verdicts are compared; both must be parked in the same readiness window at once"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_parked_create_never_publishes_readiness_for_a_later_incarnation() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -288,7 +288,7 @@ async fn parked_epoch(
     clippy::too_many_lines,
     reason = "seal incarnation scenario; the parked seal, the delete and recreate underneath it and the replacement's open state form one causal sequence; helper phases would hide which incarnation the seal closed"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_seal_in_flight_never_closes_a_later_incarnation() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -421,7 +421,7 @@ async fn a_seal_in_flight_never_closes_a_later_incarnation() {
     clippy::disallowed_methods,
     reason = "parked deletion fixture; the parked deleter is released and joined before the replacement is examined; running it inline cannot park it before its decision"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_parked_delete_never_removes_a_later_incarnation() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -507,7 +507,7 @@ async fn a_parked_delete_never_removes_a_later_incarnation() {
 /// on the child by a CAS; if the child is deleted and recreated while
 /// that stamp is in flight, the stamp must not land on the replacement
 /// and pin a source it was never forked from.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fork_stamp_never_lands_on_a_later_incarnation() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -614,7 +614,7 @@ async fn a_fork_stamp_never_lands_on_a_later_incarnation() {
     clippy::disallowed_methods,
     reason = "parked fork creation fixture; the creator is released and joined before its status is checked; it must be parked before readiness while the source is deleted"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn creation_does_not_report_success_after_a_concurrent_delete() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -702,7 +702,7 @@ async fn creation_does_not_report_success_after_a_concurrent_delete() {
 /// The recreate CAS ignored `fork_children`, so an expired source whose fork
 /// was anchored after the snapshot got a fresh epoch, and every read of the
 /// fork then failed as "a different incarnation".
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_raw_recreate_never_replaces_an_expired_source_its_forks_read() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -789,7 +789,7 @@ async fn a_raw_recreate_never_replaces_an_expired_source_its_forks_read() {
 /// soft-deleted winner too, and the declined arm compared every winner as a
 /// live stream: a raw PUT whose snapshot was the name's previous tombstone
 /// answered 200 for a name that was deleted and is retained for its fork.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_raw_put_behind_a_stale_tombstone_never_revives_a_deleted_source() {
     let store = mem();
     let (state, addr) = http_rig(store).await;

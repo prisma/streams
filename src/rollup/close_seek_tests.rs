@@ -4,7 +4,7 @@ use super::{SegmentState, UsageRollup, close_scan_range, k_segment, month_start_
 use slatedb::{Db, WriteBatch};
 use std::sync::Arc;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r23_seek_boundaries_are_exclusive_and_prefix_bounded() {
     let db = Db::builder(
         "r23-boundary",
@@ -38,7 +38,7 @@ async fn r23_seek_boundaries_are_exclusive_and_prefix_bounded() {
     db.close().await.unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r23_close_visits_scale_linearly_across_chunk_restart() {
     // July 2026 closes only on the real clock: a scenario that injects the
     // billing clock holds the write lock while it does.

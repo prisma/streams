@@ -19,7 +19,7 @@ fn mem() -> Arc<dyn ObjectStore> {
 /// sequential RNG — the obvious implementation, and the one this harness
 /// used before — fails this outright, because the Nth random number goes
 /// to whichever operation arrived Nth.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn fault_placement_is_a_pure_function_of_the_seed() {
     async fn decisions(seed: u64, order: &[u64]) -> Vec<(u64, bool)> {
         let s = FaultStore::uniform(mem(), seed, FaultPlan::new(25, 15, 30));
@@ -55,7 +55,7 @@ async fn fault_placement_is_a_pure_function_of_the_seed() {
     clippy::let_underscore_must_use,
     reason = "faults_actually_fire; the fixture issues puts only to make the fault plan fire and counts the injections afterwards; each put's own outcome is the fault under test"
 )]
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn faults_actually_fire() {
     let s = FaultStore::uniform(mem(), 7, FaultPlan::new(20, 20, 30));
     for i in 0..300u64 {
@@ -76,7 +76,7 @@ async fn faults_actually_fire() {
 /// error, and the object is nonetheless there. If this ever regressed to
 /// "error and no write", every ambiguity scenario below would quietly
 /// become a plain-error scenario.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_lost_response_still_wrote_the_object() {
     let inner = mem();
     // 100% lost-response: every put applies and every caller sees an error.
@@ -93,7 +93,7 @@ async fn a_lost_response_still_wrote_the_object() {
 /// Faults must reach every verb we can fault. Deletes are the GC path —
 /// the one that removed live SSTs under a zombie DB in ladder pass 3 — and
 /// they went unfaulted in the first version of this harness.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn deletes_and_reads_are_faulted_too() {
     use futures_util::StreamExt;
     let inner = mem();
@@ -146,7 +146,7 @@ async fn deletes_and_reads_are_faulted_too() {
     clippy::let_underscore_must_use,
     reason = "lost_response_counter_tracks_applied_behaviour_only; the fixture issues a multipart put only to prove the lost-response fault cannot apply to it; the put's outcome is not the claim"
 )]
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn lost_response_counter_tracks_applied_behaviour_only() {
     let inner = mem();
     // 100 % lost-response, but only multipart is exercised — and multipart

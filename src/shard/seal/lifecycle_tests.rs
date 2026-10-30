@@ -24,7 +24,7 @@ use crate::spill::pending::pending_key;
 /// batch) and handles evicted down to one resident as fast as possible:
 /// every stream with unsealed pages stays resident, every seal's snapshot
 /// finds its pages in memory, and after a restart everything reads back.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn unsealed_pages_are_never_evicted() {
     let mut rig = rig_with("noevict", manual(), 1024, Duration::from_millis(2)).await;
     let mut rng = StdRng::seed_from_u64(0xE71C);
@@ -75,7 +75,7 @@ async fn unsealed_pages_are_never_evicted() {
 /// A stream whose pending row does not tile its tail fails alone at the
 /// open: the sealer opens, every other stream reads back, the stream's own
 /// load meets the corruption, and the open counts it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_corrupt_pending_row_fails_only_its_stream_at_the_open() {
     let mut rig = rig("corrupt-open", manual(), Duration::from_millis(2)).await;
     let mut rng = StdRng::seed_from_u64(0xC0DE);
@@ -151,7 +151,7 @@ async fn a_corrupt_pending_row_fails_only_its_stream_at_the_open() {
 /// log is at its L0 cap) and the engine closes: the sealer and deadline
 /// loops leave it at once, so the engine terminates well inside the
 /// workers' 5 s grace instead of at the grace's abort.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_close_leaves_a_seal_in_flight_at_once() {
     let rig = rig("close-inflight", manual(), Duration::from_millis(2)).await;
     let sp = &rig.engine.layout.seal;
@@ -189,7 +189,7 @@ async fn a_close_leaves_a_seal_in_flight_at_once() {
 /// streams sealed whole, then one of them appended to: after a restart the
 /// open made that one stream resident and left the two sealed ones to their
 /// first touch.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_open_loads_only_streams_holding_unsealed_pages() {
     let mut rig = rig("open-loads", manual(), Duration::from_millis(2)).await;
     let mut rng = StdRng::seed_from_u64(0x0BE7);
@@ -211,7 +211,7 @@ async fn the_open_loads_only_streams_holding_unsealed_pages() {
 /// read a stream's tail while a seal takes the stream's only page: the load
 /// still sees a tail and a pending row of one moment, before the seal or
 /// after it, never the tail before and the row after.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_handle_load_racing_a_seal_reads_one_state() {
     let rig = rig("load-race", manual(), Duration::from_millis(2)).await;
     let mut rng = StdRng::seed_from_u64(0x10AD);
@@ -243,7 +243,7 @@ async fn a_handle_load_racing_a_seal_reads_one_state() {
 /// stages the seal fails: the seal reports that its group was not applied,
 /// the directory holds none of its chunks, the stream's boundary has not
 /// moved, and the next seal takes the same pages and publishes them once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_seal_whose_group_fails_publishes_nothing() {
     let rig = rig("group-fails", manual(), Duration::from_millis(2)).await;
     let mut rng = StdRng::seed_from_u64(0xFA11);
@@ -281,7 +281,7 @@ async fn a_seal_whose_group_fails_publishes_nothing() {
 /// open finished answers a sealed read's readiness wait at once, naming the
 /// missing task, instead of leaving the read waiting for an open no task
 /// will finish.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn readiness_without_a_sealer_task_fails_at_once() {
     let store: std::sync::Arc<dyn object_store::ObjectStore> =
         std::sync::Arc::new(object_store::memory::InMemory::new());
@@ -327,7 +327,7 @@ async fn readiness_without_a_sealer_task_fails_at_once() {
 /// when requests load the streams while the sealer's open does: a load
 /// holds nothing itself, so the sealer never seals a handle the committer
 /// does not write to.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_sealer_holds_only_the_handle_the_engine_serves() {
     let mut rig = rig("one-handle", manual(), Duration::from_millis(2)).await;
     let mut rng = StdRng::seed_from_u64(0x0AE1);
@@ -393,7 +393,7 @@ async fn evicted_down_to(engine: &crate::shard::ShardEngine, left: usize) {
 /// **The sealer's loop evicts idle handles.** An engine whose handles idle
 /// out after a millisecond: a stream loaded and left alone (no unsealed
 /// page, so not held) is evicted by the loop's next eviction round.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_sealer_loop_evicts_an_idle_handle() {
     let engine = eviction_engine(
         "idle-evict",
@@ -413,7 +413,7 @@ async fn the_sealer_loop_evicts_an_idle_handle() {
 /// **With idle eviction off, the cap still evicts.** An engine that never
 /// evicts by age but keeps at most one resident handle: of three loaded
 /// streams, the loop's next round leaves one.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_sealer_loop_evicts_down_to_the_cap_with_idle_eviction_off() {
     let engine = eviction_engine(
         "cap-evict",
@@ -435,7 +435,7 @@ async fn the_sealer_loop_evicts_down_to_the_cap_with_idle_eviction_off() {
 /// **A segment object is never overwritten.** The name the next seal's
 /// object takes already holds bytes: the seal's create-only PUT is refused,
 /// the seal fails, the bytes stay, and the stream's pages stay unsealed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_seal_never_overwrites_an_existing_object() {
     use object_store::ObjectStoreExt;
     let rig = rig("create-only", manual(), Duration::from_millis(2)).await;
@@ -468,7 +468,7 @@ async fn a_seal_never_overwrites_an_existing_object() {
 
 /// A live engine's task registry answers by role and state: its sealer is
 /// running, a role nobody spawned is not, and an aborted sealer is not.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_task_registry_answers_by_role_and_state() {
     let rig = rig("roles", manual(), Duration::from_millis(2)).await;
     let tasks = &rig.engine.tasks;

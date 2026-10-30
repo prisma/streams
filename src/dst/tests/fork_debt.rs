@@ -108,7 +108,7 @@ async fn released(state: &State, src_ref: &Ref) {
 /// A debt-bearing tombstone written before the fork-debt index existed has
 /// no marker. The reconciler's one-time backfill finds it, and the source it
 /// pins is released and tombstoned without any client DELETE.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_tombstone_older_than_the_index_is_backfilled_and_released() {
     let _serial = gap_lock().lock().await;
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
@@ -137,7 +137,7 @@ async fn a_tombstone_older_than_the_index_is_backfilled_and_released() {
 /// it carried, and the backfill then finds only the new, live incarnation.
 /// The recreation must index the overwritten debt first, so the reconciler
 /// pays it from the marker and the source it pinned is tombstoned.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_recreated_name_keeps_the_debt_of_the_unindexed_tombstone_it_replaced() {
     let _serial = gap_lock().lock().await;
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
@@ -170,7 +170,7 @@ async fn a_recreated_name_keeps_the_debt_of_the_unindexed_tombstone_it_replaced(
 /// name overwrites that incarnation. The recreation must index the release
 /// it still owes, so the reconciler pays it and the source it pinned is
 /// tombstoned.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_recreated_name_releases_the_reference_its_expired_fork_held() {
     let _serial = gap_lock().lock().await;
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
@@ -225,7 +225,7 @@ async fn a_recreated_name_releases_the_reference_its_expired_fork_held() {
 /// The backfill resumes from its durable progress after a restart: the next
 /// process indexes only what the first had not yet walked, then completes,
 /// and its reconciler releases both sources.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_backfill_resumes_after_a_restart() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -278,7 +278,7 @@ async fn the_backfill_resumes_after_a_restart() {
 /// A debt whose release stays inconclusive outlives three reconciler
 /// circles: the ops snapshot reports it as pending with its age, and the
 /// `fork_debt_stale` alert opens. Paying it resolves the alert.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_debt_that_outlives_its_circles_raises_the_stale_alert() {
     let _serial = gap_lock().lock().await;
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;

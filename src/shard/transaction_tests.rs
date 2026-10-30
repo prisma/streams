@@ -253,7 +253,7 @@ impl Fixture {
     clippy::excessive_nesting,
     reason = "r03a_mixed_transaction_preserves_every_row_reply_and_publication; the fixture nests the per-reply and per-stream assertions inside the retired and applied phases it stages; flattening them would separate the assertions from the phase they judge"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r03a_mixed_transaction_preserves_every_row_reply_and_publication() {
     let fixture = Fixture::new().await;
     let final_key = crate::billing::usage_month_final_key(&HASH, 2026, 7);
@@ -452,7 +452,7 @@ async fn append_over_planted_row(
 /// Review item 55: an undecodable producer row refuses the append as
 /// internal and writes nothing: no offset is consumed, and no ack claims a
 /// lane state the store does not hold.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r12_an_undecodable_producer_row_refuses_the_append_and_writes_nothing() {
     let (result, unchanged) =
         append_over_planted_row(producer_key(&HASH, &KEY, "writer"), &[1u8; 15]).await;
@@ -464,7 +464,7 @@ async fn r12_an_undecodable_producer_row_refuses_the_append_and_writes_nothing()
 }
 
 /// The same for a Stream-Seq row that is not UTF-8.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r12_an_undecodable_stream_seq_row_refuses_the_append_and_writes_nothing() {
     let (result, unchanged) = append_over_planted_row(seq_key(&HASH, &KEY), &[0xffu8]).await;
     assert!(
@@ -478,7 +478,7 @@ async fn r12_an_undecodable_stream_seq_row_refuses_the_append_and_writes_nothing
 /// behind a u16 length. A longer header wrapped that length, and every
 /// later load of the stream refused the row for good; the lane's own row
 /// still holds the whole sequence.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r53_a_stream_seq_past_the_tail_rows_u16_leaves_the_stream_openable() {
     let fixture = Fixture::new().await;
     let long = "s".repeat(usize::from(u16::MAX) + 1);

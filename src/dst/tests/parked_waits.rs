@@ -136,7 +136,7 @@ async fn idle_pull_commits(state: &State, addr: SocketAddr, name: &str, wait_ms:
 /// the walk at its deadline. Four such pulls at once on one consumer walk
 /// exactly as often each: a walk that leases nothing wakes no other pull.
 /// Before: a walk every 50 ms, about 20 more per second waited.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_idle_pull_walks_twice_more_while_it_waits_and_wakes_no_other_pull() {
     let (state, addr) = http_rig(mem()).await;
     queue(addr, "idle", b"{}").await;
@@ -164,7 +164,7 @@ async fn an_idle_pull_walks_twice_more_while_it_waits_and_wakes_no_other_pull() 
 /// the deadline rather than walking the lineage again without end. Bounded
 /// at three seconds, so a wait that always walks again fails here by name
 /// instead of holding the pull open.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_idle_pull_answers_empty_at_its_wait_deadline() {
     let (state, addr) = http_rig(mem()).await;
     queue(addr, "deadline", b"{}").await;
@@ -183,7 +183,7 @@ async fn an_idle_pull_answers_empty_at_its_wait_deadline() {
 
 /// A record appended while a pull waits reaches it at once, not at the
 /// pull's deadline.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_append_reaches_a_waiting_pull_at_once() {
     let (state, addr) = http_rig(mem()).await;
     queue(addr, "wake", b"{}").await;
@@ -201,7 +201,7 @@ async fn an_append_reaches_a_waiting_pull_at_once() {
 /// A lease that expires while another pull of the consumer waits reaches
 /// that pull at the lease's deadline: an expiry commits nothing, so only
 /// the deadline the waiting pull reads from the consumer's leases wakes it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_expired_lease_reaches_a_waiting_pull_at_its_deadline() {
     let (state, addr) = http_rig(mem()).await;
     queue(addr, "expiry", br#"{"visibilityTimeoutMs":1000}"#).await;
@@ -218,7 +218,7 @@ async fn an_expired_lease_reaches_a_waiting_pull_at_its_deadline() {
 /// consumer: the settle moves the consumer's queue state. The first pull
 /// takes `max` 1, so a/1 stays behind a/0's lease (a larger `max` leases
 /// the run a/0, a/1, edge change #123).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_ack_that_unblocks_a_key_wakes_a_waiting_pull() {
     let (state, addr) = http_rig(mem()).await;
     queue(addr, "fifo", br#"{"visibilityTimeoutMs":60000}"#).await;
@@ -256,7 +256,7 @@ async fn an_ack_that_unblocks_a_key_wakes_a_waiting_pull() {
 /// A record committed after a pull's first walk read the stream, and
 /// before that walk's receive, reaches the pull at once: the first wait
 /// always walks again.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_record_committed_during_the_first_walk_reaches_the_pull() {
     use crate::failpoints::{Fp, parked};
     let (state, addr) = http_rig(mem()).await;
@@ -283,7 +283,7 @@ async fn a_record_committed_during_the_first_walk_reaches_the_pull() {
 /// A long-poll, a consumer pull and a watch wait that are waiting are
 /// parked: in flight, exactly as parked, and the write gate at an
 /// in-flight cap of 2 admits an append beside the three of them.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn waiting_reads_pulls_and_watches_are_parked_and_leave_the_write_gate() {
     let (state, addr) = http_rig(mem()).await;
     let watched = br#"{"format":{"kind":"json"},"watches":[{"name":"w","fields":["/k"]}]}"#;
@@ -377,7 +377,7 @@ async fn held_long_polls(cell: &Cell, count: usize, projects: usize) -> (i64, i6
 /// 2: of its 4 waiting long-polls exactly 2 are parked, and the other 2
 /// wait as active requests. Two projects at their shares in a pool sized
 /// 3 park exactly 3 waits between them.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_projects_waits_park_only_within_its_share_and_the_pool() {
     let bounds = SharedBounds {
         subscriptions: 16,
@@ -433,7 +433,7 @@ async fn beat_after(state: &State, since_ms: i64) -> crate::fleet::Heartbeat {
 /// waits: 400 waits in flight wanted four servers (cost review 2.3). The
 /// desired count itself also follows the process's CPU, which the suite's
 /// own load moves, so the beat is what this leg pins.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn parked_pulls_never_reach_the_heartbeat() {
     let fleet = mem();
     let rig = http_rig_build(

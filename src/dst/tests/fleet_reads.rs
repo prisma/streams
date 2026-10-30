@@ -235,7 +235,7 @@ fn passes_before_read(trace: &TraceStore, member: &str) -> usize {
 /// member whose document has not changed answers 304 at every pass after the
 /// one that first read it, and a FLEET_MAX of 4096 with four members booted
 /// asks for no other heartbeat.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_tick_lists_its_members_only_to_discover_them() {
     let (inner, _, trace) = Gated::over_mem();
     seed_count(&inner, 2).await;
@@ -324,7 +324,7 @@ async fn the_tick_lists_its_members_only_to_discover_them() {
 /// count names, and so does the ring of the first pass that reads a rise.
 /// Each ring is the one its pass published: the next pass waits at its
 /// overrides read.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_count_beyond_fleet_max_names_its_members_in_the_pass_that_reads_it() {
     let (inner, gated, trace) = Gated::over_mem();
     gated.answered.store(1, Ordering::SeqCst);
@@ -358,7 +358,7 @@ async fn a_count_beyond_fleet_max_names_its_members_in_the_pass_that_reads_it() 
 /// it) changes the ring at the first pass that starts after its document
 /// lands, the bound the listing gave: only a pass already in flight may miss
 /// it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_member_that_boots_or_stops_is_read_by_the_next_pass() {
     let trace = TraceStore::verbatim(mem());
     let fleet: Arc<dyn ObjectStore> = trace.clone();

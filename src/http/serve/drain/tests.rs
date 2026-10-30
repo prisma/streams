@@ -201,7 +201,7 @@ fn a_client_that_catches_up_closes_its_window() {
 /// The production serve loop with a 300 ms window: a client that sends a
 /// request and never reads the 16 MiB response is disconnected and the
 /// response body dropped; a client that reads it receives every byte.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn the_serve_loop_drops_a_body_its_client_never_reads() {
     use crate::tasks::{Policy, TaskResult, TaskSupervisor};
     const BODY: usize = 16 << 20;
@@ -331,7 +331,7 @@ impl tokio::io::AsyncWrite for Recorder {
 /// as vectored writes (hyper keeps its queued write strategy) and a socket
 /// without them is reported as one; flushes, reads, the shutdown that ends
 /// a response and the socket's options pass through.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn the_floor_passes_the_sockets_own_operations_through() {
     let floor = DrainFloor::of(&HttpConfig::default());
     let plain = DrainStream::new(Recorder::default(), floor);

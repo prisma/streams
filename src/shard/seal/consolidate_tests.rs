@@ -41,7 +41,7 @@ async fn wait_done(engine: &Arc<ShardEngine>, n: u64) {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_cold_walk_consolidates_small_chunks_and_counts_the_orphans() {
     let rig = rig_with("consolidate", manual(), 0, Duration::from_millis(2)).await;
     let hash = [0x37; 16];
@@ -128,7 +128,7 @@ async fn a_cold_walk_consolidates_small_chunks_and_counts_the_orphans() {
 /// Appends and seals on one task, cold walks on three, folds on another,
 /// consolidations behind the walks; then a restart and every record read
 /// back exactly at both visibilities.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn consolidations_racing_reads_seals_and_folds_lose_nothing() {
     let rig = rig_with("consolidate-race", manual(), 0, Duration::from_millis(2)).await;
     let mut rng = StdRng::seed_from_u64(0xC0A1);

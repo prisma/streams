@@ -126,7 +126,7 @@ mod tests {
     /// in-flight marker clears, the strike and holdoff arm, health records
     /// the prefix, no phantom open is pending at shutdown, and the next
     /// attempt consults the opener again and installs its engine.
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    #[tokio::test(start_paused = true, crate = "crate::test_rt")]
     async fn a_panicking_opener_fails_its_open_and_the_next_attempt_installs() {
         let calls = Arc::new(AtomicUsize::new(0));
         let shards = Arc::new(RwLock::new(HashMap::new()));
@@ -202,7 +202,7 @@ mod tests {
     }
 
     /// A panic while the opener BUILDS its future is the same failed open.
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    #[tokio::test(start_paused = true, crate = "crate::test_rt")]
     async fn a_synchronous_opener_panic_is_the_same_failed_open() {
         let calls = Arc::new(AtomicUsize::new(0));
         let gate = OpenGate::new(

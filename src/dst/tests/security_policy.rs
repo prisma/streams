@@ -14,7 +14,7 @@ use super::fixture_storage::mem;
 /// when the publisher misbehaves: remove, replay, reintroduce lower,
 /// and reactivate-at-dead-version are all refused; a full identical
 /// replay is idempotent.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn feed_high_water_survives_removal_and_replay() {
     let svc = crate::auth::AuthService::new(
         crate::auth::AuthMode::Enforce,
@@ -138,7 +138,7 @@ fn unknown_kid_nudge_is_rate_limited() {
 /// fleet credential and a short-lived workload JWT (§14.1, aud
 /// prisma-streams-internal) are the only raw principals. The operator
 /// surface requires a bearer in every non-Off mode.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn raw_and_operator_surfaces_are_internal_under_enforce() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read";
@@ -252,7 +252,7 @@ async fn raw_and_operator_surfaces_are_internal_under_enforce() {
     clippy::too_many_lines,
     reason = "stored reference scenario; fork parentage and dead-letter targets are bound inside the referring project across the same requests; helper phases would hide which reference crossed the project"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn stored_references_bind_inside_the_referring_project() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -439,7 +439,7 @@ async fn stored_references_bind_inside_the_referring_project() {
 /// at the SAME version must refuse. Today the high-water loops only
 /// inspect IDs PRESENT in the incoming snapshot, so omitted-then-
 /// replayed entries walk straight back in.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn active_credential_omitted_then_same_version_active_is_refused() {
     let svc = crate::auth::AuthService::new(
         crate::auth::AuthMode::Enforce,
@@ -500,7 +500,7 @@ async fn active_credential_omitted_then_same_version_active_is_refused() {
 /// RED (review finding 2, project leg): same omission rule for the
 /// policy snapshot — a project dropped from the feed cannot return at
 /// an unchanged version pair.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn project_omitted_then_same_policy_version_is_refused() {
     let svc = crate::auth::AuthService::new(
         crate::auth::AuthMode::Enforce,
@@ -560,7 +560,7 @@ async fn project_omitted_then_same_policy_version_is_refused() {
 /// DIFFERENT content is a publisher defect — versions must pin bytes.
 /// Identical replay at the same version stays accepted (at-least-once
 /// feeds re-send).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn same_version_with_changed_content_is_refused() {
     let svc = crate::auth::AuthService::new(
         crate::auth::AuthMode::Enforce,
@@ -748,7 +748,7 @@ fn same_feed_generation_cannot_gain_entries() {
 /// refresher iterations must not be lost. notify_one stores a permit
 /// for the next waiter; notify_waiters does not — the nudge
 /// evaporated and the rotated key waited out the polling interval.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn kid_nudge_fired_before_the_waiter_is_not_lost() {
     let svc = crate::auth::AuthService::new(
         crate::auth::AuthMode::Enforce,
@@ -845,7 +845,7 @@ fn publish_rejects_workspace_change_hidden_behind_omission() {
 /// NEW workspace at the unchanged ownership version must NOT verify —
 /// ownership never moved, so both the old credential keeps working and
 /// the new workspace gains nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn omit_reintroduce_owner_swap_gains_no_authority() {
     let (svc, _state, addr) = auth_rig("proj-orx", "ws-old", &["c1"], None).await;
     let tok_old = mint_token("c1", "proj-orx", "ws-old", 1, 1, "orx1", 600);

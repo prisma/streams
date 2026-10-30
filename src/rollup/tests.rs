@@ -111,7 +111,7 @@ fn snap(
 /// Round-22 item 3: THREE segments of one stream, idle months —
 /// every month bills the SUM of all three (nothing last-put-wins),
 /// and name/project aggregates match.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn multi_segment_idle_carry_sums_all_segments() {
     let _clock = ClockGuard::at(crate::billing::month_start_ms(2026, 12)).await;
     let r = UsageRollup::open(mem_store(), "mseg", &test_cfg())
@@ -181,7 +181,7 @@ async fn multi_segment_idle_carry_sums_all_segments() {
 /// share a usage version; whichever applies second must still
 /// advance the global segment state, and the NEXT month's carry
 /// uses the NEW gauge exactly.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn same_version_live_snapshot_advances_segment_state() {
     let _clock = ClockGuard::at(crate::billing::month_start_ms(2026, 11)).await;
     let r = UsageRollup::open(mem_store(), "svtie", &test_cfg())
@@ -250,7 +250,7 @@ async fn same_version_live_snapshot_advances_segment_state() {
 /// Round-22 item 5: integer month allocation is exact — the sum of
 /// per-month allocations equals the original for every dimension,
 /// across two AND four month spans.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn read_batch_month_split_is_exact() {
     let r = UsageRollup::open(mem_store(), "split", &test_cfg())
         .await
@@ -395,7 +395,7 @@ async fn read_operations(r: &UsageRollup, month: &str) -> u64 {
 /// spans 600 applies, and one that spans 601 fails its page whole, so
 /// nothing of it commits and the cursor stays, the fail-closed policy a
 /// carried storage span past the same cap follows (edge change #139).
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_read_batch_spanning_more_months_than_the_close_cap_fails_its_page() {
     let r = mem_rollup("cap").await;
     let (from, to) = (month_start_ms(1970, 1) + 1, month_start_ms(2020, 1));
@@ -421,7 +421,7 @@ async fn a_read_batch_spanning_more_months_than_the_close_cap_fails_its_page() {
 /// boundaries closes every overdue month IN ORDER from the
 /// persisted oldest-unclosed marker, and the marker survives so
 /// the next tick starts where this one stopped.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn missed_months_catch_up_in_order() {
     let _clock = ClockGuard::at(crate::billing::month_start_ms(2026, 12)).await;
     let r = UsageRollup::open(mem_store(), "catchup", &test_cfg())
@@ -488,7 +488,7 @@ async fn missed_months_catch_up_in_order() {
 /// accrue the correct storage byte-time, each produce one artifact,
 /// and the gauge must never read as zero. Re-closing any month is a
 /// no-op.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn idle_retained_months_accrue_storage() {
     // Months close only after their boundary on the TRUSTED clock —
     // inject December so July-September are all closeable.
@@ -554,7 +554,7 @@ async fn idle_retained_months_accrue_storage() {
     clippy::too_many_lines,
     reason = "rollup invoice lifecycle fixture; one ordered scenario follows frozen totals through late corrections and artifact publication; splitting it would duplicate durable state and weaken the cross-phase assertions"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn rollup_applies_deltas_and_closes_months() {
     // July 2026 closes only on the real clock: a scenario that injects the
     // billing clock holds the write lock while it does.
@@ -889,7 +889,7 @@ async fn rollup_applies_deltas_and_closes_months() {
 /// other writer does: the usage API authorizes a prior incarnation's
 /// `?streamId=` by either. Red before: an empty `stream_name` and an
 /// empty `incarnations` list.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_correction_that_writes_a_month_row_first_names_its_incarnation() {
     let r = UsageRollup::open(mem_store(), "corr-first", &test_cfg())
         .await

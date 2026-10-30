@@ -33,7 +33,7 @@ fn r08_only_precondition_conflicts_are_retried() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn r04_invalid_descriptors_cannot_reach_storage() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let registry = Registry::new(
@@ -222,7 +222,7 @@ pub(super) fn desc(name: &str, epoch: &str, deleted: bool) -> PersistedDescripto
 /// Pre-launch clean switch: a descriptor written by the previous
 /// experimental layout (no layout_version, or any other value) is
 /// REFUSED — never decoded, translated, or rewritten.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn layout_gate_refuses_foreign_namespaces() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let reg = Registry::new(
@@ -361,7 +361,7 @@ impl ObjectStore for CountingStore {
     }
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn r08_mutation_preserves_conditional_metadata_and_classifies_ambiguous_completion() {
     use std::sync::atomic::Ordering::SeqCst;
     let inner: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
@@ -449,7 +449,7 @@ async fn r08_mutation_preserves_conditional_metadata_and_classifies_ambiguous_co
 /// the CAS to a concurrent install of child D. Attempt 2 removes C,
 /// sees D remain, decides NOT to tombstone. The result must be
 /// "removed, not tombstoned"; the source must survive for D.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn typed_mutation_never_leaks_a_lost_attempts_decision() {
     let inner: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let conflict = Arc::new(ConflictOnceStore {
@@ -599,7 +599,7 @@ impl ObjectStore for ConflictOnceStore {
 /// A TTL refresh of an unchanged descriptor must be a conditional GET
 /// answered 304 (uncharged on Tigris), never a billable body fetch —
 /// and a genuinely changed descriptor must still come through.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn ttl_refresh_of_unchanged_descriptor_is_a_free_304() {
     use std::sync::atomic::Ordering::Relaxed;
     let counting = Arc::new(CountingStore {
@@ -672,7 +672,7 @@ async fn ttl_refresh_of_unchanged_descriptor_is_a_free_304() {
     assert!(reg.get(&ts("s")).await.unwrap().unwrap().deleted);
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn catalog_provider_progress_survives_empty_filtered_pages_and_prefetch() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let reg = Registry::new(
@@ -732,7 +732,7 @@ async fn catalog_provider_progress_survives_empty_filtered_pages_and_prefetch() 
 /// stamp durably, and the RAW catalog page — the reconciler's view
 /// — returns tombstoned and expired descriptors that the customer
 /// catalog hides.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn tombstone_stamp_persists_and_raw_page_sees_terminals() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let reg = Registry::new(
@@ -781,7 +781,7 @@ async fn tombstone_stamp_persists_and_raw_page_sees_terminals() {
 
 /// A corrupt descriptor must surface as an ERROR — treating it as
 /// absent lets a create/recreate overwrite a live stream's identity.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn corrupt_descriptor_fails_closed() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let reg = Registry::new(
@@ -800,7 +800,7 @@ async fn corrupt_descriptor_fails_closed() {
 /// A corrupt descriptor's read failure is typed, so a caller can fail
 /// closed on it and retry a store failure (NEXT-WORK item 3): only a
 /// descriptor that was read but does not decode is `CorruptDescriptor`.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn only_a_corrupt_descriptor_reads_as_corrupt() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let reg = Registry::new(
@@ -830,7 +830,7 @@ async fn only_a_corrupt_descriptor_reads_as_corrupt() {
 /// downstream `expect` panic, never a silent repair. Each case
 /// starts from a VALID descriptor and corrupts one field, so the
 /// refusal is attributable to that invariant alone.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn corrupt_stored_identities_fail_closed_at_decode() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let reg = Registry::new(
@@ -913,7 +913,7 @@ async fn corrupt_stored_identities_fail_closed_at_decode() {
 
 /// A corrupt topology must abort boot, never panic and NEVER be treated
 /// as missing (re-initializing re-shards the whole keyspace).
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn corrupt_topology_fails_closed() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     store
@@ -946,7 +946,7 @@ async fn corrupt_topology_fails_closed() {
 
 /// Racing recreators of a dead incarnation: exactly one winner; the
 /// loser observes the winner's descriptor instead of overwriting it.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn recreate_race_has_one_winner() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let reg = Registry::new(

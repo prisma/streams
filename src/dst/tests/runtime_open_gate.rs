@@ -142,7 +142,7 @@ async fn naive_get_or_open(
     clippy::let_underscore_must_use,
     reason = "reopen_storm_reproduces_the_eu_central_wedge; the fixture drops each client's future at its timeout on purpose, exactly as the handler does; the outcome it discards is the disconnect under test"
 )]
-#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn reopen_storm_reproduces_the_eu_central_wedge() {
     let inner = mem();
     seed_untrimmed_wal(inner.clone(), "dst-storm", 120).await;
@@ -199,7 +199,7 @@ async fn reopen_storm_reproduces_the_eu_central_wedge() {
 /// get retryable 503s while it runs; the engine lands in the serving map
 /// even though every client that asked for it had already given up; WAL
 /// read amplification is ~1×.
-#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn open_gate_survives_impatient_clients_without_a_storm() {
     use crate::sharddir::{OpenGate, OpenOutcome};
     let inner = mem();
@@ -315,7 +315,7 @@ async fn open_gate_survives_impatient_clients_without_a_storm() {
     clippy::too_many_lines,
     reason = "idle cost scenario; opening the engine, idling on the paused clock and counting store traffic against the poll cadence form one causal sequence; helper phases would hide which poll issued the extra traffic"
 )]
-#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn idle_engine_store_traffic_is_bounded_by_the_poll_cadence() {
     // The posture VALUES are part of the pin — the budget below scales
     // with the constants, so without this a reverted default would
@@ -451,7 +451,7 @@ async fn idle_engine_store_traffic_is_bounded_by_the_poll_cadence() {
 /// credentials and an unreachable endpoint all land here — the process
 /// binds, `/health` says `ok`, and every append 500s forever while the
 /// load balancer keeps sending traffic.
-#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn health_reports_unready_when_no_shard_has_ever_opened() {
     use crate::sharddir::OpenGate;
 
@@ -513,7 +513,7 @@ async fn health_reports_unready_when_no_shard_has_ever_opened() {
     clippy::excessive_nesting,
     reason = "open_gate_escalates_holdoff_for_engines_that_die_young; the fixture nests the retry sleep inside the wait arm of its open loop; flattening it would separate the sleep from the holdoff it honours"
 )]
-#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn open_gate_escalates_holdoff_for_engines_that_die_young() {
     use crate::sharddir::{OpenGate, OpenOutcome};
     let inner = mem();
@@ -585,7 +585,7 @@ async fn open_gate_escalates_holdoff_for_engines_that_die_young() {
     clippy::let_underscore_must_use,
     reason = "a_hung_open_is_deadlined_and_its_late_engine_reaped; the permit is the park itself and is released the moment the test grants it; a held permit would keep the opener parked after release"
 )]
-#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn a_hung_open_is_deadlined_and_its_late_engine_reaped() {
     use crate::sharddir::{OpenGate, OpenOutcome};
     let inner = mem();
@@ -706,7 +706,7 @@ fn open_counts(opens: &serde_json::Value) -> [i64; 7] {
 /// that opened its shard reports exactly that open. The sampler's
 /// `?swap=1` resets the outbound peak and never the cumulative open
 /// counters, and the operator dashboard carries the same object.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn debug_store_reports_this_runtimes_shard_opens() {
     // Store ops only raise the process peak (fetch_max); the sampler's
     // swap is the one thing that lowers it, and no real gauge gets here.

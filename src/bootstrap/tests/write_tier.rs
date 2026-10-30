@@ -149,7 +149,7 @@ impl Rig {
 /// least 6 x 1 + 5 x 100 + 50 = 556 ms, and less than the 806 ms the gap
 /// would need if it ran from the end of each WAL write. Every append is
 /// its own WAL object and its own pump flush.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn an_isolated_append_waits_for_one_wal_write_and_the_rest_of_the_gap() {
     let rig = Rig::open().await;
     // The engine's open leaves its maintenance row in the WAL buffer: one
@@ -209,7 +209,7 @@ async fn an_isolated_append_waits_for_one_wal_write_and_the_rest_of_the_gap() {
 /// every second, each tick found such commits in the buffer and wrote them
 /// as a WAL object of its own, one object more per tick than the pump
 /// flushed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_busy_shard_writes_one_wal_object_per_pump_flush() {
     let rig = Rig::open().await;
     // The open leaves the maintenance row in the WAL buffer: one append

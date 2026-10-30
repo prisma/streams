@@ -19,7 +19,7 @@ use std::sync::Arc;
 /// closed is not the same as asserting its tasks actually exited, and only
 /// the second one catches a leak. The fenced owner's sealer exits, and it
 /// writes no segment object once the new owner holds the log.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fenced_owners_absorber_exits() {
     let inner = mem();
     let store = FaultStore::uniform(inner.clone(), 23, FaultPlan::CLEAN);
@@ -107,7 +107,7 @@ async fn objects_under(store: &Arc<dyn ObjectStore>, dir: &str) -> Vec<String> {
     clippy::disallowed_methods,
     reason = "engine close fixture; every queued append is joined under a deadline after the close begins; the burst must queue concurrently behind the slow commit"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn closing_an_engine_answers_queued_appends_and_ends_every_task() {
     let inner = mem();
     // Slow WAL writes so requests pile up behind the in-flight commit.
@@ -164,7 +164,7 @@ async fn closing_an_engine_answers_queued_appends_and_ends_every_task() {
 /// PR 4.1.1 proof: the fixture's clock IS the runtime's clock — a test
 /// drives deterministic time through the returned handle, in both
 /// domains.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn rig_clock_is_the_runtime_clock() {
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
     assert_eq!(rig.state.runtime.clock.now().ms(), RIG_START_MS);
@@ -238,7 +238,7 @@ async fn observe_rig_identities(runtime: RigRuntime) -> RigIdentities {
 /// on separate stores under the same schedule, reproduce every
 /// migrated identity — boot id, stream epoch, touch-journal epoch —
 /// and the registry-class store trace.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn same_incarnation_reproduces_identities_epochs_and_registry_trace() {
     let a = observe_rig_identities(RigRuntime::incarnation(0)).await;
     let b = observe_rig_identities(RigRuntime::incarnation(0)).await;
@@ -262,7 +262,7 @@ async fn same_incarnation_reproduces_identities_epochs_and_registry_trace() {
 /// yields distinct process identities — and the values are PINNED, so
 /// a change to the seed derivation or the draw order shows up here
 /// instead of silently re-keying every restart test.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn distinct_incarnations_have_distinct_pinned_identities() {
     let a = observe_rig_identities(RigRuntime::incarnation(0)).await;
     let b = observe_rig_identities(RigRuntime::incarnation(1)).await;
@@ -302,7 +302,7 @@ async fn distinct_incarnations_have_distinct_pinned_identities() {
 /// overwritten by whichever runtime started last — one runtime then
 /// published the other's events through its own identity and billing
 /// pipeline.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn two_runtimes_never_share_fleet_state() {
     let fleet_a = mem();
     let fleet_b = mem();
@@ -458,7 +458,7 @@ async fn fleet_instance_docs(store: &Arc<dyn ObjectStore>) -> Vec<String> {
 /// address is free for a replacement IMMEDIATELY (the accept loop
 /// released the listener and joined every connection before the
 /// supervisor returned).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn shutdown_releases_the_listener_for_immediate_rebinding() {
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
     let addr = rig.addr;
@@ -475,7 +475,7 @@ async fn shutdown_releases_the_listener_for_immediate_rebinding() {
 /// PR 6.1-A: a keep-alive connection is a CHILD of the accept loop —
 /// it is closed before shutdown returns, not left parked on a runtime
 /// that no longer exists.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn shutdown_terminates_a_live_keep_alive_connection() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
@@ -509,7 +509,7 @@ async fn shutdown_terminates_a_live_keep_alive_connection() {
 
 /// PR 6.1-A: a live subscription — the longest-lived connection a
 /// runtime serves — ends when the runtime shuts down.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn shutdown_terminates_a_live_sse_subscription() {
     use tokio::io::AsyncWriteExt;
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
@@ -544,7 +544,7 @@ async fn shutdown_terminates_a_live_sse_subscription() {
 /// new rig incarnation over the same persisted store) recreates the
 /// in-memory journal under a new epoch, so the old cursor gets the
 /// existing stale answer: an explicit RESYNC, never a silent false.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn restart_invalidates_process_local_touch_cursors() {
     let store = mem();
     let rig_a = http_rig_build(
@@ -630,7 +630,7 @@ async fn restart_invalidates_process_local_touch_cursors() {
 /// An ordinary restart (new incarnation, same store) serves the same
 /// epoch; hard deletion followed by recreation is a new resource, and
 /// under the new incarnation its epoch differs from the old one.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn stream_epoch_survives_restart_but_not_recreation() {
     let store = mem();
     let rig_a = http_rig_build(

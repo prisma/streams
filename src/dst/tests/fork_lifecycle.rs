@@ -9,7 +9,7 @@ use super::fixture_storage::mem;
 /// Stitched reads passed no key filter at all, so a raw fork of a
 /// collection that product clients had written keyed records to
 /// replayed every one of them through the standards surface.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn raw_forks_show_only_the_default_key() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -70,7 +70,7 @@ async fn raw_forks_show_only_the_default_key() {
 /// reference. A crash in between left the parent pinning data for a
 /// fork that no longer exists — and a retry bounced off the
 /// already-dead check before it could finish the job.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_half_deleted_fork_finishes_its_cleanup() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -162,7 +162,7 @@ async fn a_half_deleted_fork_finishes_its_cleanup() {
     clippy::too_many_lines,
     reason = "fork binding scenario; claiming the initialization against one source incarnation, replacing the source and checking the claim form one causal sequence; helper phases would hide which incarnation the fork bound to"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fork_initialization_is_bound_to_its_source_incarnation() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -289,7 +289,7 @@ async fn a_fork_initialization_is_bound_to_its_source_incarnation() {
 /// C hard-deletes B, which then owes A a release. A crash in between
 /// used to strand that reference forever: B is dead, so its CAS refuses,
 /// and a retried delete of C reported success having released nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_crashed_fork_cascade_can_be_resumed() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -404,7 +404,7 @@ async fn a_crashed_fork_cascade_can_be_resumed() {
     clippy::disallowed_methods,
     reason = "fork serialization fixture; the source deletion is joined after the fork creation it races; both must run concurrently to serialize on the source"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn fork_creation_and_source_deletion_serialize() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -474,7 +474,7 @@ async fn fork_creation_and_source_deletion_serialize() {
 /// in that window it soft-deletes (data kept precisely for this child),
 /// and the retry used to be refused with `fork_source_gone` — leaving
 /// the child permanently Initializing over data preserved to serve it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fork_initialization_resumes_against_a_retained_source() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -568,7 +568,7 @@ async fn a_fork_initialization_resumes_against_a_retained_source() {
 /// Pinned DS fork contract (regression net for the conformance suite):
 /// stitched reads across the boundary, source independence, sub-offset
 /// materialization, soft-delete 410s, and the reference cascade.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn fork_lifecycle_and_stitched_reads() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -655,7 +655,7 @@ async fn fork_lifecycle_and_stitched_reads() {
     clippy::too_many_lines,
     reason = "fork lifecycle scenario; installing and releasing references by identity, retrying and epoch-checking each step form one causal sequence; helper phases would hide which retry double-installed or released"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn fork_lifecycle_is_idempotent_and_epoch_checked() {
     let _l = gap_lock().lock().await;
     let store = mem();
@@ -811,7 +811,7 @@ async fn fork_lifecycle_is_idempotent_and_epoch_checked() {
     clippy::excessive_nesting,
     reason = "r05_unknown_child_state_preserves_its_source_reference; the fixture nests the park wait inside its timeout and the child's descriptor stamp inside its mutation; flattening them would separate the wait from its bound and the stamp from the descriptor it alters"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r05_unknown_child_state_preserves_its_source_reference() {
     let _serial = gap_lock().lock().await;
     for after_install in [true, false] {
@@ -910,7 +910,7 @@ async fn r05_unknown_child_state_preserves_its_source_reference() {
 
 /// A typed creation command cannot pair one project's child with another
 /// project's source. The same-project control must still anchor durably.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r05_typed_fork_keeps_source_and_child_in_one_project() {
     use crate::application::creation::{CreateCommand, CreationFailure, ForkCommand};
     let (state, addr) = http_rig(mem()).await;

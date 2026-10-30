@@ -32,7 +32,7 @@ const PAGE_OVERHEAD: u64 = 1 << 10;
 /// budgets from one byte to 1 MiB: every read's GETs ask for at most the
 /// bytes of the pages it served plus two anchor spans and two pages, while
 /// for a read of up to 64 KiB the whole chunk is at least eight times that.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_sealed_read_fetches_at_most_an_anchor_span_beyond_its_pages() {
     let mut settings = manual();
     settings.max_pages_per_chunk = 1024;
@@ -99,7 +99,7 @@ async fn a_sealed_read_fetches_at_most_an_anchor_span_beyond_its_pages() {
 /// a ring and with every GET parked: exactly eight are in flight at once;
 /// released, the read fetches 256 chunks and serves their 256 records, and
 /// the next read goes on from there.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_sealed_read_has_eight_gets_in_flight_and_fetches_at_most_256_chunks() {
     let mut settings = manual();
     settings.max_pages_per_chunk = 1;

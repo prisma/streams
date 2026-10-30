@@ -100,7 +100,7 @@ async fn dead_letters(addr: SocketAddr, stream: &str) -> Vec<String> {
         .collect()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_pull_delivers_a_run_of_one_routing_key_with_one_lease_token_per_record() {
     let (state, addr) = http_rig(mem()).await;
     stream(addr, "runs1", &["o", "o", "p", "o", "o", "o"], b"{}").await;
@@ -139,7 +139,7 @@ async fn a_pull_delivers_a_run_of_one_routing_key_with_one_lease_token_per_recor
     engine_shutdown(&state).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_consumer_that_stops_part_way_gets_the_unacked_rest_again_in_offset_order() {
     let (state, addr) = http_rig(mem()).await;
     stream(addr, "runs2", &["o", "o", "o", "o", "o"], b"{}").await;
@@ -178,7 +178,7 @@ async fn a_consumer_that_stops_part_way_gets_the_unacked_rest_again_in_offset_or
     engine_shutdown(&state).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_run_that_reaches_max_attempts_is_dead_lettered_in_offset_order() {
     let (state, addr) = http_rig(mem()).await;
     let dlq = "/v1/streams/runs3-dlq";

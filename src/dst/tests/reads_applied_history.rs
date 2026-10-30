@@ -468,12 +468,12 @@ async fn raw_continuation_resynchronises(
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stale_unfiltered_continuation_is_refused_after_the_replacement_tail_passes_it() {
     stale_continuation_after_replacement("").await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stale_keyed_continuation_is_refused_after_the_replacement_tail_passes_it() {
     stale_continuation_after_replacement("k").await;
 }
@@ -483,7 +483,7 @@ async fn a_stale_keyed_continuation_is_refused_after_the_replacement_tail_passes
 /// new instance, a different writer history, takes over. The session cursor
 /// is verified against what the client observed and continues without a
 /// resynchronisation, and the durable cursor replays across the change.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_owner_change_that_loses_nothing_keeps_the_continuation() {
     let store = FaultStore::uniform(mem(), 0xF4, FaultPlan::CLEAN);
     let dyn_store: Arc<dyn ObjectStore> = store.clone();
@@ -615,7 +615,7 @@ async fn second_provisional_page(
 /// continuation still proves record 1 (`second_provisional_page`). Once both
 /// records are durable, a new writer verifies that continuation by reading
 /// both records back, and continues it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_continuation_carries_across_provisional_pages_and_is_verified_over_both() {
     let store = FaultStore::uniform(mem(), 0xF5, FaultPlan::CLEAN);
     let dyn_store: Arc<dyn ObjectStore> = store.clone();
@@ -678,7 +678,7 @@ fn replaced(recover: u64) -> String {
 /// segment, an epoch-qualified offset of the child once a split has given
 /// it a lineage. A continuation that cannot belong to the offset it
 /// arrives with is an invalid cursor, never a history check.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_relayed_continuation_refusal_uses_the_stream_offset_vocabulary() {
     let _serial = super::fixture_failpoints::gap_lock().lock().await;
     let store: Arc<dyn ObjectStore> = mem();

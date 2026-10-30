@@ -14,7 +14,7 @@ use super::fixture_storage::{mem, skey};
 /// policy on a durable, cursor-addressable stream is DISCONNECT and
 /// resume-from-cursor, never unbounded buffering. Paused time makes
 /// the 10 s deadline instant.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn sse_send_disconnects_a_stalled_subscriber() {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::sse::auth::SseChunk>(4);
     for _ in 0..4 {
@@ -41,7 +41,7 @@ async fn sse_send_disconnects_a_stalled_subscriber() {
     clippy::excessive_nesting,
     reason = "sse_follows_lineage_across_split; the fixture nests the line scan inside the chunk scan of each read; flattening it would separate the control frames from the chunk that carries them"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn sse_follows_lineage_across_split() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let _l = gap_lock().lock().await;
@@ -176,7 +176,7 @@ async fn sse_follows_lineage_across_split() {
     clippy::excessive_nesting,
     reason = "product_sse_controls_carry_signed_cursors; the fixture nests the line scan inside the chunk scan of each read; flattening it would separate the control frames from the chunk that carries them"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_sse_controls_carry_signed_cursors() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let store = mem();
@@ -297,7 +297,7 @@ async fn product_sse_controls_carry_signed_cursors() {
 // reads termination-by-reason telemetry, so the count must be exactly
 // one per invalidated subscription.
 // ------------------------------------------------------------------
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn termination_reasons_count_exactly_once_per_subscription() {
     let _serial = gap_lock().lock().await; // exact LEASE_TERMINATIONS delta below
     let (_svc, _state, addr) = auth_rig("proj-tc1", "ws_tc", &["c1"], None).await;
@@ -429,7 +429,7 @@ async fn default_lane_feed(
 /// a product one; the last window also pins the per-surface framing
 /// after a shared RECORD (raw: ONE paired control carrying upToDate,
 /// product: bare control + standalone status).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn shared_raw_subscriber_gets_up_to_date_after_a_match_free_batch() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -561,7 +561,7 @@ fn assert_raw_pairing(window: &str, records: usize, next: u64, leg: &str) {
 /// control of the last record at the frontier, never an earlier one, and
 /// no standalone status follows. The rank-13 test above sends one record
 /// per window, which cannot tell the last record from the first.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn raw_up_to_date_rides_only_the_last_record_of_a_multi_record_window() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -680,12 +680,12 @@ async fn live_read_fault_is_retried(
     engine_shutdown(&state).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_failed_live_read_is_retried_without_another_append() {
     live_read_fault_is_retried("source-failed", |s| &s.fail_reads).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_empty_live_read_is_retried_without_another_append() {
     live_read_fault_is_retried("no-progress", |s| &s.empty_pages).await;
 }
@@ -758,12 +758,12 @@ async fn catch_up_fault_is_retried(
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_failed_catch_up_read_is_read_again_after_a_bounded_wait() {
     catch_up_fault_is_retried("catch-up-failed", |s| &s.fail_reads).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_empty_catch_up_page_is_read_again_after_a_bounded_wait() {
     catch_up_fault_is_retried("catch-up-empty", |s| &s.empty_pages).await;
 }

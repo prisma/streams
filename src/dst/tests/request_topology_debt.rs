@@ -14,7 +14,7 @@ use std::{sync::atomic::Ordering, time::Duration};
     clippy::excessive_nesting,
     reason = "r09a_cancelled_topology_job_leaves_exact_debt_for_a_fresh_read_owner; the fixture nests the settled-topology verdict inside the descriptor poll loop; flattening it would separate the verdict from the descriptor it reads"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r09a_cancelled_topology_job_leaves_exact_debt_for_a_fresh_read_owner() {
     let store = FaultStore::new(mem(), 911, FaultProfile::clean());
     let opts = || HttpRigOptions {

@@ -36,7 +36,7 @@ fn r06a_wire_metadata_record_and_required_progress_limits() {
     clippy::disallowed_methods,
     reason = "r06a_actual_receiver_refuses_declared_wire_overflow_before_reading_body; the fixture spawns the one-shot server it releases and joins itself; a supervised spawn would tie the fixture's teardown to a supervisor it never builds"
 )]
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn r06a_actual_receiver_refuses_declared_wire_overflow_before_reading_body() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

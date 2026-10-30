@@ -49,7 +49,7 @@ async fn append(addr: std::net::SocketAddr, name: &str) {
 /// Two billed streams, drained and rolled up; a restart over the same store
 /// re-emits both (the drain emits again with no new write) and every total
 /// is unchanged; one more write after the restart adds exactly its bytes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_restart_re_emits_every_billed_segment_and_the_rollup_bills_it_once() {
     let _xr = crate::billing::billing_clock_lock().read().await;
     let store = mem();

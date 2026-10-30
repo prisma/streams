@@ -17,7 +17,7 @@ use super::fixture_storage::mem;
     clippy::too_many_lines,
     reason = "stale cleanup replay scenario; deleting the generation, recreating it and replaying the stale cleanup form one causal sequence; helper phases would hide which generation the replay erased"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stale_cleanup_replay_never_touches_a_recreated_generation() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -195,7 +195,7 @@ async fn a_stale_cleanup_replay_never_touches_a_recreated_generation() {
     clippy::too_many_lines,
     reason = "stale delete retry scenario; the version token, the replacement consumer and the retried delete form one causal sequence; helper phases would hide which incarnation the retry deleted"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stale_delete_retry_cannot_delete_the_replacement_consumer() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -365,7 +365,7 @@ async fn a_stale_delete_retry_cannot_delete_the_replacement_consumer() {
     clippy::disallowed_methods,
     reason = "parked saga fixture; the deletion saga is released and joined before the replacement is examined; it must park before its descriptor refresh while the stream is recreated"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_parked_saga_never_touches_a_recreated_stream() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -515,7 +515,7 @@ async fn a_parked_saga_never_touches_a_recreated_stream() {
     clippy::cast_possible_truncation,
     reason = "a_bounded_cleanup_drains_residue_without_touching_the_live_generation; the fixture's row counts and budgets are small whole numbers it chose; checked conversions would only restate the fixture"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_bounded_cleanup_drains_residue_without_touching_the_live_generation() {
     let store = mem();
     let (state, addr) = http_rig(store).await;

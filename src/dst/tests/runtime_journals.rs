@@ -16,7 +16,7 @@ async fn journal(state: &Arc<crate::http::AppState>, stream: &str) -> Vec<serde_
     serde_json::from_slice(&body).unwrap()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r10_runtime_journals_and_alerts_do_not_cross_drain_or_resolve() {
     let mut states = Vec::new();
     for incarnation in [1, 2] {
@@ -116,7 +116,7 @@ async fn r10_runtime_journals_and_alerts_do_not_cross_drain_or_resolve() {
     engine_shutdown(b).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r10_runtime_body_limits_apply_to_each_collector_and_preflight() {
     let mut rigs = Vec::new();
     for (incarnation, limit) in [(1, 64 * 1024), (2, 128 * 1024)] {
@@ -217,7 +217,7 @@ async fn r10_runtime_body_limits_apply_to_each_collector_and_preflight() {
 /// would swap the snapshot's drained peaks to 0 under the ledger), beside
 /// the feed ages, the shed breakdown, the maintenance latch and the
 /// overflow admits the cell watch alerts on.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r10_operator_data_serves_the_cached_ops_snapshot_without_recollecting() {
     let auth = Arc::new(
         crate::auth::AuthService::new(
@@ -267,7 +267,7 @@ async fn r10_operator_data_serves_the_cached_ops_snapshot_without_recollecting()
 
 /// A metrics batch reaches `_ops_metrics` as exactly the points it carries,
 /// in order.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r10_a_metrics_batch_reaches_the_ops_metrics_journal_in_order() {
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
     let mut points = vec![crate::ops::collect_snapshot(&rig.state); 2];
@@ -333,7 +333,7 @@ async fn stop_paused_rig(rig: HttpRig) {
 /// exactly 10 in ten minutes, not the 38 of a 15 s cadence (one every
 /// 16 s). Between 10 s and 600 s this rig measured 22 WAL PUTs and 116
 /// PUTs in all at 60 s, against 78 and 340 at 15 s.
-#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn an_idle_server_stores_one_ops_metrics_point_a_minute() {
     let store = FaultStore::uniform(mem(), 1601, FaultPlan::CLEAN);
     let data: Arc<dyn object_store::ObjectStore> = store.clone();
@@ -363,7 +363,7 @@ async fn an_idle_server_stores_one_ops_metrics_point_a_minute() {
 /// `ops_event_drops` at the 32 s round, not at the 24 s round (which runs
 /// no rules) nor at the next point (64 s), while `_ops_metrics` still holds
 /// the first point alone; the 64 s point then carries the drop.
-#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn alerts_run_every_16_s_between_minute_points() {
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
     let state = rig.state.clone();

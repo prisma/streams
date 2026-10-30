@@ -147,7 +147,7 @@ fn mutate(
 /// completed seal lands while the reply is on its way back. The read answers
 /// the claim it fetched; the read after it must see the completed seal, not
 /// the claim for a whole TTL.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_read_that_raced_a_write_never_publishes_the_pre_write_descriptor() {
     let (reg, store) = rig();
     let mut claimed = desc("s", EPOCH, false);
@@ -179,7 +179,7 @@ async fn a_read_that_raced_a_write_never_publishes_the_pre_write_descriptor() {
 /// Shape B: an expired entry revalidates with its ETag, the store answers
 /// 304, and the write lands while the 304 is on its way back. The renewed
 /// entry must not outlive the write it raced.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_renewed_304_never_outlives_the_write_it_raced() {
     let (reg, store) = rig();
     reg.create(desc("r", EPOCH, false)).await.unwrap();
@@ -202,7 +202,7 @@ async fn a_renewed_304_never_outlives_the_write_it_raced() {
 /// Shape C: a read of a stream that does not exist yet fetches its absence;
 /// the stream is created while the reply is on its way back. The read
 /// answers absent; the read after it must see the created stream.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_read_that_raced_a_create_never_publishes_the_absence() {
     let (reg, store) = rig();
     store.arm(Box::pin({
@@ -226,7 +226,7 @@ async fn a_read_that_raced_a_create_never_publishes_the_absence() {
 /// Shape D: the recreate's loser reads the live incarnation somebody else
 /// installed; a transition of that incarnation lands in its reply. The
 /// loser used to publish what it read.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_recreate_loser_never_publishes_the_incarnation_it_lost_to() {
     let (reg, store) = rig();
     reg.create(desc("d", EPOCH, false)).await.unwrap();
@@ -250,7 +250,7 @@ async fn a_recreate_loser_never_publishes_the_incarnation_it_lost_to() {
 /// CONTROL (green before and after): the guard is per stream. A cache-wide
 /// generation fails here, and would turn every overlapping write into a
 /// billable GET on an unrelated stream.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_write_to_another_stream_leaves_a_read_free_to_publish() {
     let (reg, store) = rig();
     reg.create(desc("a", EPOCH, false)).await.unwrap();
@@ -279,7 +279,7 @@ async fn a_write_to_another_stream_leaves_a_read_free_to_publish() {
 /// The cache alone (exists to kill the mutants of `settle` and `stamp`): a
 /// fetch whose slot moved underneath it answers but does not publish; one
 /// whose slot held still publishes; a hit never fetches.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn fill_publishes_only_against_the_generation_it_read() {
     let cache = DescriptorCache::new(Duration::from_secs(5));
     let sref = ts("u");
@@ -340,7 +340,7 @@ async fn fill_publishes_only_against_the_generation_it_read() {
 /// flight has to see. The read claims its slot before fetching and the
 /// purge keeps every slot touched within a TTL, so the read finds the
 /// generation moved and keeps its answer to itself; the next read fetches.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_cap_purge_never_erases_the_invalidation_a_read_in_flight_must_see() {
     let cache = DescriptorCache::bounded(Duration::from_secs(5), 2, REGISTRY_CACHE_MAX_BYTES);
     let raced = ts("raced");
@@ -414,7 +414,7 @@ fn filled(name: &str) -> CachedDesc {
 /// The cap counts every slot, emptied ones included, and it purges only
 /// for a key the cache does not hold: below the cap nothing is evicted,
 /// and a re-fill of a held key evicts nothing even at the cap.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn the_cap_purges_only_for_a_new_key_at_the_cap() {
     let cache = DescriptorCache::bounded(Duration::from_secs(5), 3, REGISTRY_CACHE_MAX_BYTES);
     cache.insert(ts("a"), filled("a"));
@@ -431,7 +431,7 @@ async fn the_cap_purges_only_for_a_new_key_at_the_cap() {
 /// At the cap a new key purges the slots untouched for a TTL first, and
 /// keeps every young one; only when that frees nothing does the least
 /// recently touched slot fall out.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn the_cap_evicts_stale_slots_first_then_the_least_recently_touched() {
     let cache = DescriptorCache::bounded(Duration::from_secs(5), 2, REGISTRY_CACHE_MAX_BYTES);
     cache.insert(ts("old"), filled("old"));
@@ -593,7 +593,7 @@ fn holding(cache: &DescriptorCache, names: &[&'static str]) -> Vec<&'static str>
 /// touched one at a time until the new slot fits; a slot a read fills is
 /// held to it too, without evicting itself, and an invalidation gives a
 /// descriptor's bytes back. A slot larger than the budget is held alone.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn the_cache_holds_its_byte_budget() {
     const FAT: usize = 4_096;
     const EMPTY: usize = super::SLOT_BYTES;
@@ -762,7 +762,7 @@ fn a_slot_is_charged_for_what_it_allocates() {
 
 /// A cold miss with no write in flight publishes: the claim it made is
 /// the generation it publishes against, so the second read is a hit.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_cold_miss_with_no_write_in_flight_publishes() {
     let cache = DescriptorCache::new(Duration::from_secs(5));
     let sref = ts("cold");
@@ -783,7 +783,7 @@ async fn a_cold_miss_with_no_write_in_flight_publishes() {
 /// At the cap, a read in flight keeps its slot (claimed or captured)
 /// through a purge another key triggers: an expired entry's free 304
 /// still renews it, and a cold claim still publishes.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_read_in_flight_keeps_its_slot_through_a_cap_purge() {
     let cache = DescriptorCache::bounded(Duration::from_secs(5), 2, REGISTRY_CACHE_MAX_BYTES);
     cache.insert(ts("expired"), filled("expired"));
@@ -832,7 +832,7 @@ async fn a_read_in_flight_keeps_its_slot_through_a_cap_purge() {
 /// An invalidation of a stream with no slot leaves the cache as it was:
 /// write-only streams do not grow it, and no read could be in flight
 /// against a slot that does not exist.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn an_invalidation_of_an_unknown_stream_is_a_no_op() {
     let cache = DescriptorCache::new(Duration::from_secs(5));
     cache.insert(ts("known"), filled("known"));
@@ -850,7 +850,7 @@ async fn an_invalidation_of_an_unknown_stream_is_a_no_op() {
 /// published either when the winner was ANOTHER instance: nothing on
 /// this process invalidates, so only the loser's own discipline keeps
 /// the dead descriptor it cached from being confirmed over the live one.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_recreate_loser_on_another_instances_win_reads_the_live_incarnation_next() {
     let (reg, store) = rig();
     reg.create(desc("x", EPOCH, true)).await.unwrap();
@@ -891,7 +891,7 @@ fn the_ttl_window_ends_exactly_at_the_ttl() {
 /// included, and claims nothing: a create's fill is held fresh and then
 /// expired, a read's absence likewise, and an unknown stream or an
 /// emptied slot holds nothing, with no slot added for the peek.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_peek_reports_what_the_cache_holds_and_claims_nothing() {
     let (reg, _) = rig();
     reg.create(desc("p", EPOCH, false)).await.unwrap();
@@ -916,7 +916,7 @@ async fn a_peek_reports_what_the_cache_holds_and_claims_nothing() {
 /// A fetch for a caller that proved nothing answers what the store holds
 /// and publishes nothing: the slot a write emptied stays empty, and a
 /// stream the cache never held gets no slot.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn an_unpublished_fetch_answers_and_fills_nothing() {
     let (reg, _) = rig();
     reg.create(desc("f", EPOCH, false)).await.unwrap();

@@ -124,7 +124,7 @@ fn each_deadline_fires_at_its_setting_and_not_below() {
     assert_eq!(both.deadline(&S), Some(Deadline::WalObjects));
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_failed_seal_holds_seals_off_for_a_doubling_wait_until_one_succeeds() {
     let sp = SealState::default();
     sp.configure(|s| *s = S);
@@ -148,7 +148,7 @@ async fn a_failed_seal_holds_seals_off_for_a_doubling_wait_until_one_succeeds() 
     assert!(!sp.backing_off(), "free once the wait passed");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_forced_flush_restarts_the_memtable_count() {
     let rig = rig("baseline", manual(), Duration::from_millis(2)).await;
     let mut rng = StdRng::seed_from_u64(0xBA5E);
@@ -168,7 +168,7 @@ async fn a_forced_flush_restarts_the_memtable_count() {
 
 /// The seal stats a shard serves (`GET /v1/debug/timings`) count what the
 /// sealer did: one seal of four pages, its directory, no stall.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn the_seal_stats_count_what_the_sealer_did() {
     let rig = rig("stats", manual(), Duration::from_millis(2)).await;
     let mut rng = StdRng::seed_from_u64(0x57A7);

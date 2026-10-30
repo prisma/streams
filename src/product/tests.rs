@@ -336,7 +336,7 @@ fn a_routing_key_is_admitted_exactly_when_a_header_reads_it_back() {
 
 /// Item 65: every request refusal keeps its status, body, retry hint,
 /// placement header and journal tag, whichever owner classifies it.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn every_auth_refusal_keeps_its_response() {
     use crate::auth::AuthError as E;
     use crate::project_policy::{CredentialStatus, ProjectStatus};
@@ -566,7 +566,7 @@ fn watch_refusals() -> Vec<(crate::application::watch::WatchFailure, &'static st
 /// project, and nothing else is journaled. A storage
 /// failure carries its message; a routing failure keeps the one resolve
 /// mapping, which has no `retryable` field.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn every_watch_refusal_keeps_its_response() {
     for (failure, want) in watch_refusals() {
         assert_eq!(watch_wire(failure).await, want);
@@ -582,7 +582,7 @@ async fn every_watch_refusal_keeps_its_response() {
 /// when the project stores less or its quota grows, not at a time a client
 /// can wait for), its details the dimension, the quota and the figure it
 /// was refused at.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn the_stored_cap_refusal_states_the_quota_and_the_figure() {
     let refusal = crate::quota::QuotaRefusal::StoredBytes {
         limit: 262_144,
@@ -609,7 +609,7 @@ async fn the_stored_cap_refusal_states_the_quota_and_the_figure() {
 /// A transient append refusal keeps its wait on the product surface: the
 /// per-stream limiter's 429 carries `retry-after` in decimal seconds and
 /// `retryable: true` (pins `render_product_append_error`'s header value).
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_transient_append_refusal_keeps_its_retry_after() {
     use crate::application::append::{AppendCode, AppendFailure, FailureClass};
     let code = AppendCode::RateLimited("limit_bytes_per_sec");
@@ -633,7 +633,7 @@ async fn a_transient_append_refusal_keeps_its_retry_after() {
 /// `payload_too_large` with its limit in `details`, not retryable, no
 /// `retry-after` (external review §5). This is the backstop arm a producer
 /// request reaches, and the only renderer of the seal's final record.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_core_capacity_refusal_renders_the_stable_413() {
     use crate::application::append::AppendFailure;
     let refusal = crate::usage::CapacityRefusal::new("records", 100.0, 101);
@@ -815,7 +815,7 @@ fn append_class_rows() -> Vec<(crate::application::append::AppendFailure, serde_
 /// WIRE-MATRIX §2.7): each typed failure the shared append path returns, with
 /// the exact status, body, `retry-after`, replay target and denial tag a
 /// client and the audit journal receive.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn every_append_failure_renders_its_product_row() {
     for (failure, want) in append_code_rows().into_iter().chain(append_class_rows()) {
         let label = failure.to_string();
@@ -829,7 +829,7 @@ async fn every_append_failure_renders_its_product_row() {
 /// body's shape 400s and the §17.2 volume debit): a sealed collection refuses
 /// every append, a sealing one every append but its seal's own final record,
 /// an active one none.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_sealed_or_sealing_collection_refuses_the_append_in_the_handler() {
     let desc = |edit: fn(&mut crate::registry::PersistedDescriptor)| {
         let mut persisted = desc_with("orders", &"11".repeat(16)).to_persisted();
@@ -965,7 +965,7 @@ proptest::proptest! {
 /// A creation document is parsed up to exactly 64 KiB (65,536 bytes,
 /// `MAX_CONFIG_BODY`); one byte more is refused `400 invalid_config`,
 /// "configuration body exceeds 64 KiB", before it is parsed.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_creation_document_is_parsed_up_to_exactly_64_kib() {
     let doc = |len: usize| {
         let shell = r#"{"format":{"kind":"json"},"watches":[{"name":"w","fields":["/"]}]}"#;

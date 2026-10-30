@@ -22,7 +22,7 @@ use super::fixture_storage::mem;
     clippy::too_many_lines,
     reason = "livefeed movement regression; four sequential ownership phases must share the same stream lineage and subscribers; separate tests would discard the transition history"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
     let store = mem();
     let (state_a, addr_a) = http_rig_owner(store.clone(), "inst-a").await;
@@ -183,7 +183,7 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
 /// window on a REAL release binary. The knob must actually hold the
 /// publication open for the configured window — and the seal must
 /// still complete (the delay is a wider gap, not a broken seal).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn certification_seal_publish_delay_widens_the_gap() {
     let store = mem();
     let (state, addr) = http_rig_owner(store, "inst-b").await;
@@ -235,7 +235,7 @@ async fn certification_seal_publish_delay_widens_the_gap() {
 /// pending=merge with every instance refusing every connect. The
 /// refusal must HELP the transition along (spawn the idempotent
 /// resume) so retrying clients converge.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_pending_transition_connect_drives_resume() {
     let _serial = gap_lock().lock().await;
     let _release = FailpointGuard("xpend".to_string());
@@ -317,7 +317,7 @@ async fn livefeed_pending_transition_connect_drives_resume() {
 /// possession-yield), but begin_close woke no parked readers: the
 /// certification harness held a moved-away session on keep-alives
 /// for 40 s with the new owner already serving.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_parked_live_session_is_cut_off_by_engine_close() {
     let store = mem();
     let (state_b, addr_b) = http_rig_owner(store, "inst-b").await;
@@ -574,7 +574,7 @@ async fn reopened_sealed_span_serves_catch_up(steps: StallSteps) {
 /// owns them), must not cancel other subscribers, must cancel its
 /// in-flight page on final client drop (feed teardown), and must
 /// recover in place when the peer returns.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_blackholed_peer_never_suppresses_heartbeats() {
     let store = mem();
     let (state_a, addr_a) = http_rig_owner(store.clone(), "inst-a").await;
@@ -660,7 +660,7 @@ async fn livefeed_blackholed_peer_never_suppresses_heartbeats() {
 /// Round-11.1 (red): a delayed seal publication over a parked FAN-OUT
 /// creates ONE feed retry task, never a per-session timer herd — and
 /// still converges promptly on release.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_seal_retry_is_one_task_per_feed_at_fanout() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -742,7 +742,7 @@ async fn livefeed_seal_retry_is_one_task_per_feed_at_fanout() {
 /// the request-body ceiling — a batch of many small records passes
 /// while ONE record over the ceiling is refused 413, on both the
 /// plain-append and the create-with-content paths.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn record_ceiling_refuses_one_oversized_record_not_the_batch() {
     let store = mem();
     let (state, addr) = http_rig(store).await;

@@ -28,7 +28,7 @@ async fn http_rig_park(
 /// over its bound sheds; a sibling under it admits. This is the
 /// split-children property at the level where it is decided: admit()
 /// consults only the resolved engine.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn overloaded_engine_sheds_while_sibling_admits() {
     let store = mem();
     let hot = open_engine(store.clone(), "dst-iso-hot").await;
@@ -224,7 +224,7 @@ async fn drain_backlog(engine: &Arc<crate::shard::ShardEngine>) {
 /// R26-5a: a RAW append to a hierarchical wildcard name receives the
 /// typed refusal — 503, code `maintenance_backpressure`, retry-after —
 /// while reads stay admitted, and recovery readmits.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn raw_hierarchical_append_sheds_typed_503_under_backlog() {
     let (state, addr) = backlog_rig(HttpRigOptions::default()).await;
     let ct = [("content-type", "application/json")];
@@ -393,7 +393,7 @@ async fn split_admission() -> SplitAdmission {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn split_child_sheds_while_sibling_child_admits() {
     let _l = gap_lock().lock().await;
     let SplitAdmission {
@@ -483,7 +483,7 @@ async fn split_child_sheds_while_sibling_child_admits() {
 /// pointing at the owner — never a stale 503 about a backlog that now
 /// belongs to someone else. (R25-C placed admission after engine_for
 /// precisely for this; here is the route-level proof.)
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn ownership_replay_wins_over_a_latched_local_engine() {
     let (state, addr) = backlog_rig(HttpRigOptions {
         instance: Some("inst-a".into()),
@@ -576,7 +576,7 @@ async fn hand_over_an_over_bound_row(store: Arc<dyn ObjectStore>) -> String {
 /// over-bound unsealed backlog on its durable tails; rig 2 reopens the
 /// namespace with restoration parked: the request stays unanswered, then
 /// gets the 503 of the ledger rebuilt from the tails.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn first_request_waits_for_restoration_then_sees_the_restored_ledger() {
     let store = mem();
     let ct = [("content-type", "application/json")];
@@ -614,7 +614,7 @@ async fn first_request_waits_for_restoration_then_sees_the_restored_ledger() {
 /// deadlock on its own system-of-record writes — proved via the
 /// fleet-internal telemetry-append route, which funnels into the same
 /// append_core as everything else.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn reserved_streams_append_through_a_latched_engine() {
     let (state, addr) = backlog_rig(HttpRigOptions::default()).await;
     let ct = [("content-type", "application/json")];
@@ -677,7 +677,7 @@ fn records_body(n: usize) -> Vec<u8> {
 /// The limiter is tripped by a DRAINED bucket under a manual clock: a
 /// request that fits a fresh bucket but not the current one is the
 /// transient refusal the limiter exists for.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn debug_load_reports_typed_limiter_and_frame_totals() {
     let usage = Arc::new(crate::usage::UsageService::new(
         &crate::config::AdmissionConfig::default(),
@@ -761,7 +761,7 @@ async fn debug_load_reports_typed_limiter_and_frame_totals() {
 /// is a permanent 413 with no Retry-After: a 429 would name a wait no wait
 /// can honour (review item 25). The refusal leaves nothing behind: the
 /// stream stays writable.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn over_capacity_record_count_is_a_permanent_413_not_a_429() {
     let (_state, addr) = http_rig(mem()).await;
     let ct = [("content-type", "application/json")];
@@ -805,7 +805,7 @@ async fn over_capacity_record_count_is_a_permanent_413_not_a_429() {
 /// its limit in `details`), and exactly the capacity is still admitted
 /// afterwards because the refusal consumed nothing (the rig's usage clock
 /// never refills between the two).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn product_batch_over_record_capacity_is_413_without_retry_after() {
     let usage = Arc::new(crate::usage::UsageService::new(
         &crate::config::AdmissionConfig {
@@ -880,7 +880,7 @@ async fn product_batch_over_record_capacity_is_413_without_retry_after() {
 /// still answers the duplicate/invalid producer request as it always did,
 /// so an over-capacity body with a deferred verdict is that verdict (400
 /// invalid_body for a missing content type), never a 413.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_deferred_producer_verdict_outranks_the_capacity_refusal() {
     let usage = Arc::new(crate::usage::UsageService::new(
         &crate::config::AdmissionConfig {
@@ -926,7 +926,7 @@ async fn a_deferred_producer_verdict_outranks_the_capacity_refusal() {
 /// producer request, whose duplicate is recognized before any later
 /// validation refusal (Stage 4 §5): the core decides it, and its deferred
 /// verdict (a record over the ceiling) outranks the stored-bytes 413.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn the_product_capacity_413_precedes_the_key_but_not_a_producer_verdict() {
     let usage = Arc::new(crate::usage::UsageService::new(
         &crate::config::AdmissionConfig {

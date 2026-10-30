@@ -518,7 +518,7 @@ mod tests {
     /// PR 4 proof 2: deterministic tests control time per runtime —
     /// a sleep completes exactly when ITS clock advances past the
     /// deadline, with no process-global clock lock anywhere.
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn manual_clock_sleep_completes_on_advance() {
         use futures_util::FutureExt;
         let clock = ManualClock::at(0);
@@ -533,7 +533,7 @@ mod tests {
     /// PR 4.1: sleep deadlines live in the MONOTONIC domain — a wall
     /// jump of an hour in either direction neither completes nor
     /// delays a pending sleep; only monotonic advance does.
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn sleep_deadlines_are_monotonic_not_wall() {
         use futures_util::FutureExt;
         let clock = ManualClock::at(1_000);

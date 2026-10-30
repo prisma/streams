@@ -20,7 +20,7 @@ const DAY: i64 = 24 * HOUR;
 /// February were invoiced. January nets to the expiry, February's carry of
 /// the open gauge is reversed by its own correction, and March carries
 /// nothing; every corrected row keeps frozen + corrections == its floors.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_close_that_reaches_the_rollup_after_february_closed_reverses_february() {
     let _clock = crate::billing::billing_clock_lock().write().await;
     let _reset = ClockReset;

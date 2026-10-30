@@ -152,7 +152,7 @@ async fn corrupt_sealed_page(
 /// a stored row: in the pending row the stream's load fails, and in a
 /// sealed chunk both the read and the range read beneath it fail with a
 /// Data error, leaving the directory as it was.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r08a_database_record_corruption_refuses_progress_without_mutation() {
     let wanted = encoded_record(1, "wanted");
     let cases = [
@@ -238,7 +238,7 @@ async fn sealed_corruption_is_refused(label: &str, bad: &Bytes) {
 /// A keyed read of pages of another key serves nothing and still consumes
 /// them (its progress is their last record), unsealed and sealed; an
 /// unkeyed read serves them.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r08a_valid_filtered_miss_keeps_legitimate_progress() {
     let pages = [encoded_record(0, "other"), encoded_record(1, "other")];
     let (engine, _store) = scan_fixture("r08a-valid-miss", &pages, 2, 0).await;
@@ -309,7 +309,7 @@ fn r08a_record_boundary_validates_namespace_extent_and_offset() {
 /// and a broken copy of its pages in the ring, the ring refuses the window
 /// for every selector, and the read falls back to the segment object and
 /// serves the stored page, consuming only through it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r08a_invalid_ring_copy_retries_storage_without_false_filtered_progress() {
     let wanted = encoded_record(1, "wanted");
     let pages = [encoded_record(0, "other"), wanted.clone()];

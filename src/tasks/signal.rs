@@ -229,7 +229,7 @@ mod tests {
 
     /// Subject of `each_termination_signal_reaches_a_prepared_source` —
     /// inert unless the parent set the marker.
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn termination_signal_helper() {
         if ProcessEnvironment.get(HELPER_MARKER).is_none() {
             return;

@@ -108,7 +108,7 @@ async fn round(engine: &Arc<ShardEngine>, streams: &[[u8; 16]], rng: &mut StdRng
     .await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn many_engines_hold_unsealed_pages_near_the_trigger_and_bounded_directory_entries() {
     let mut settings = manual();
     settings.auto = true;

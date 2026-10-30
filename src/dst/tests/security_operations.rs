@@ -267,7 +267,7 @@ async fn refused_by_route(answer: Response) -> bool {
 /// Item 73: each operation the entry dispatches is refused without its §6.1
 /// scope and passes the gate with that scope alone. The watch wait carries
 /// no scope: its handler verifies a capability instead.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn every_dispatched_operation_demands_exactly_its_scope() {
     let (svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &[CREDENTIAL], None).await;
     let mut grant_version = 1;
@@ -306,7 +306,7 @@ async fn every_dispatched_operation_demands_exactly_its_scope() {
 /// Item 73: a request that names no operation is still authenticated before
 /// the entry refuses its route, so an anonymous caller learns nothing about
 /// the route table. Grammar refusals come first, from the route parser.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_request_naming_no_operation_authenticates_before_its_404_or_405() {
     let (svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &[CREDENTIAL], None).await;
     let consumer = "/v1/streams/opgrid/consumers/c:x";
@@ -338,7 +338,7 @@ async fn a_request_naming_no_operation_authenticates_before_its_404_or_405() {
 /// dispatched request therefore never escapes the gate's scope check, and
 /// no scope is demanded of a request nothing serves. OPTIONS is answered
 /// before both and is left out.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_entry_dispatches_exactly_the_resolved_operations() {
     let (state, _addr) = http_rig(mem()).await;
     let purge = Method::from_bytes(b"PURGE").unwrap();
@@ -387,7 +387,7 @@ async fn the_entry_dispatches_exactly_the_resolved_operations() {
 /// Item 73 (D1): a request that names no product operation has no scope to
 /// lack. An authenticated credential without the scope a neighbouring
 /// operation demands gets the route's own refusal, not 403 missing_scope.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_request_naming_no_operation_is_refused_by_route_not_by_scope() {
     let (svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &[CREDENTIAL], None).await;
     let mut grant_version = 1;
@@ -408,7 +408,7 @@ async fn a_request_naming_no_operation_is_refused_by_route_not_by_scope() {
 /// RFC 9110 §15.5.2: a 401 names how to authenticate. Every credential this
 /// server takes is a bearer token (RFC 6750), on the product, raw and
 /// operator surfaces alike.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn every_401_carries_its_bearer_challenge() {
     let (_svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &[CREDENTIAL], None).await;
     let forged: &[(&str, &str)] = &[("authorization", "Bearer not-a-token")];

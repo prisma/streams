@@ -32,7 +32,7 @@ async fn billing_report(addr: std::net::SocketAddr) -> (Value, Value) {
 /// enforced it; /health, the readiness report and the drain read a copy
 /// of the environment and so reported `off`. With one reader, all three
 /// stay closed until the read spool opens.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn argv_billing_mode_required_holds_readiness_until_the_spool_opens() {
     let options = HttpRigOptions {
         cli: |cli| cli.billing_mode = "required".into(),
@@ -64,7 +64,7 @@ async fn argv_billing_mode_required_holds_readiness_until_the_spool_opens() {
 /// Item 32: `--rollup 1` on argv alone. A required-mode rollup owner is
 /// not ready until its rollup database is installed; the environment
 /// copy saw no ROLLUP and waived the check.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn argv_rollup_owner_is_unready_until_its_rollup_installs() {
     let options = HttpRigOptions {
         cli: |cli| {
@@ -99,7 +99,7 @@ async fn argv_rollup_owner_is_unready_until_its_rollup_installs() {
 /// `--path-prefix pp` on argv alone. The read spool took its prefix from a
 /// copy of the environment and opened outside the prefix the stores and
 /// the rollup use. With one reader it opens under the prefix.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn argv_path_prefix_places_the_read_spool_under_the_prefix() {
     use futures_util::TryStreamExt;
     let store = mem();
@@ -126,7 +126,7 @@ async fn argv_path_prefix_places_the_read_spool_under_the_prefix() {
 
 /// Pin: with no --billing-mode anywhere the report shows clap's `off`
 /// default and the instance is ready without a spool, as it always was.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn default_billing_mode_reports_off_and_ready_without_a_spool() {
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
     assert_eq!(health(rig.addr).await, (200, "ok".to_string()));
@@ -140,7 +140,7 @@ async fn default_billing_mode_reports_off_and_ready_without_a_spool() {
 /// never published, so `pendingArtifacts` never counted it and an operator
 /// could not see it; the report now counts it as blocked, and the total.
 /// `pendingArtifacts` keeps its value, and the other members theirs.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_rollup_report_splits_pending_artifacts_by_publishability() {
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
     let store = rig.state.data_store.clone();
@@ -209,7 +209,7 @@ async fn the_rollup_report_splits_pending_artifacts_by_publishability() {
 /// holds into admission's table as it installs, so a restarted server
 /// admits by the figures its last life left; before that the table is
 /// empty and undated.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_opened_rollup_publishes_the_stored_index_it_holds() {
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
     let store = rig.state.data_store.clone();
@@ -260,7 +260,7 @@ async fn owned_now(cell: &Cell, i: usize) -> (usize, u64) {
 /// most, largest first. Twelve projects of one cell store different
 /// volumes and delete nothing: each wrote what it stores, which is what
 /// its stream's usage says it stores.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_rollup_report_states_the_stored_figures_admission_holds() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let cell = open_cell(CellSpec::open(12)).await;

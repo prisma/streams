@@ -15,7 +15,7 @@ use super::fixture_storage::mem;
 /// Review round 3 F3 replacement (1): the billing resolver uses the
 /// CURRENT workspace-at-event state — a valid transfer (ownership
 /// bump) moves the billed workspace; nothing else can.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn identity_of_resolves_the_workspace_at_event() {
     let (svc, state, addr) = auth_rig("proj-idw", "ws_ida", &["c1"], None).await;
     let tok = mint_token("c1", "proj-idw", "ws_ida", 1, 1, "idw", 600);
@@ -48,7 +48,7 @@ async fn identity_of_resolves_the_workspace_at_event() {
 /// pre-transfer delivery bills workspace A, the ownership version
 /// increments and the old subscription terminates, a new credential
 /// opens a new subscription, post-transfer delivery bills workspace B.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn valid_transfer_bills_each_workspace_on_its_own_side() {
     let _xr = crate::billing::billing_clock_lock().read().await;
     let (svc, state, addr) = auth_rig("proj-vtx", "ws_vta", &["c1"], None).await;
@@ -167,7 +167,7 @@ async fn valid_transfer_bills_each_workspace_on_its_own_side() {
     clippy::too_many_lines,
     reason = "subscription transfer scenario; establishing delivery, transferring the workspace and checking termination on both sides form one causal sequence; helper phases would hide which side kept delivering"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn transfer_terminates_established_subscriptions() {
     let _xr = crate::billing::billing_clock_lock().read().await;
     const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");
@@ -343,7 +343,7 @@ async fn transfer_terminates_established_subscriptions() {
     clippy::too_many_lines,
     reason = "subscription expiry scenario; establishing the subscription, advancing past token expiry and checking termination and billing form one causal sequence; helper phases would hide which boundary ended delivery"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn subscription_terminates_at_token_expiry() {
     let _xr = crate::billing::billing_clock_lock().read().await;
     // LEASE_TERMINATIONS is process-global; serialize with the other
@@ -489,7 +489,7 @@ async fn subscription_terminates_at_token_expiry() {
     clippy::too_many_lines,
     reason = "subscription suspension scenario; establishing delivery, suspending the project and checking termination and billing form one causal sequence; helper phases would hide which policy change ended delivery"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn suspension_terminates_established_subscriptions() {
     let _xr = crate::billing::billing_clock_lock().read().await;
     const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");
@@ -702,7 +702,7 @@ async fn assert_no_frames_after_pre_establishment_invalidation(
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn lineage_sse_refuses_authorization_invalidated_before_body_construction() {
     let _serial = gap_lock().lock().await;
     let (svc, state, addr) = auth_rig("proj-f1l", "ws_f1", &["c1"], None).await;

@@ -77,7 +77,7 @@ async fn cancel_a_wait(journal: &Arc<TouchJournal>) {
     assert!(futures_util::poll!(wait.as_mut()).is_pending());
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_woken_timed_out_or_closed_wait_answers_the_epoch_and_the_generation_it_saw() {
     let journal = fixed("cursor-epoch");
     let mut touched = Box::pin(journal.wait("now", vec![7], LONG));
@@ -105,7 +105,7 @@ async fn a_woken_timed_out_or_closed_wait_answers_the_epoch_and_the_generation_i
     assert_eq!(render(closed.await), "stale cursor-epoch:2");
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_woken_waiter_leaves_every_other_waiter_indexed_under_its_keys() {
     let journal = fixed("index-epoch");
     let mut first = Box::pin(journal.wait("now", vec![7], LONG));
@@ -138,7 +138,7 @@ async fn a_woken_waiter_leaves_every_other_waiter_indexed_under_its_keys() {
     assert_eq!(waiter_ids(&journal), [0u64; 0]);
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn reaping_a_cancelled_waiter_unindexes_that_waiter_alone() {
     let journal = fixed("reap-epoch");
     let mut live = Box::pin(journal.wait("now", vec![7, 11], LONG));
@@ -165,7 +165,7 @@ async fn reaping_a_cancelled_waiter_unindexes_that_waiter_alone() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn history_holds_exactly_its_key_budget_and_evicts_the_oldest_bucket_only_above_it() {
     let journal = fixed("budget-epoch");
     let buckets = 32;
@@ -187,7 +187,7 @@ async fn history_holds_exactly_its_key_budget_and_evicts_the_oldest_bucket_only_
     assert_eq!(inner.catch_up(1, &[99]), Some(true));
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn history_past_its_bucket_count_keeps_the_keys_of_the_buckets_it_retains() {
     let journal = fixed("count-epoch");
     for offset in 1..=u64::try_from(HISTORY_BUCKETS + 2).unwrap() {
@@ -200,7 +200,7 @@ async fn history_past_its_bucket_count_keeps_the_keys_of_the_buckets_it_retains(
     );
 }
 
-#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn the_flusher_reaps_cancelled_waiters_on_every_fortieth_tick_and_on_no_other() {
     let origin = tokio::time::Instant::now();
     let journal = TouchJournal::start(&crate::runtime::OsEntropy);
@@ -226,7 +226,7 @@ async fn the_flusher_reaps_cancelled_waiters_on_every_fortieth_tick_and_on_no_ot
     journal.close();
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn closing_a_shard_closes_and_forgets_exactly_the_journals_whose_route_is_in_its_prefix() {
     let registry = TouchRegistry::with_entropy(Arc::new(crate::runtime::OsEntropy));
     // Route bits 0100.. are in shard "01"; storage bits 0000.. are not.
@@ -272,7 +272,7 @@ async fn closing_a_shard_closes_and_forgets_exactly_the_journals_whose_route_is_
 /// (its waiter wakes stale), forgets it so its flusher ends and the next
 /// journal for the identity is a fresh one, and leaves every other journal
 /// waiting; retiring an identity with no journal changes nothing.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn retiring_an_identity_closes_and_forgets_exactly_its_journal() {
     let registry = TouchRegistry::with_entropy(Arc::new(crate::runtime::OsEntropy));
     let route = RouteHash([0x40; 16]);
@@ -307,7 +307,7 @@ async fn retiring_an_identity_closes_and_forgets_exactly_its_journal() {
 /// A journal with a parked waiter, or touched within the ten minutes,
 /// stays. The test holds no journal it expects retired: a held one is
 /// kept (the next test).
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn a_journal_idle_for_ten_minutes_is_retired_and_its_watchers_resynchronise() {
     let registry = TouchRegistry::with_entropy(Arc::new(crate::runtime::OsEntropy));
     let route = RouteHash([0x40; 16]);
@@ -363,7 +363,7 @@ async fn a_journal_idle_for_ten_minutes_is_retired_and_its_watchers_resynchronis
 /// request still holds (here an admitted append's touch feed) is not idle,
 /// however long it sat quiet before: the sweep keeps it, so the touch
 /// reaches the journal a watcher arriving in between finds.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn a_journal_an_admitted_append_holds_is_kept_until_its_touch_lands() {
     let registry = TouchRegistry::with_entropy(Arc::new(crate::runtime::OsEntropy));
     let (hash, route) = ([0x01; 16], RouteHash([0x40; 16]));
@@ -393,7 +393,7 @@ async fn a_journal_an_admitted_append_holds_is_kept_until_its_touch_lands() {
 /// that goes on; once the waits stop it is retired ten minutes after the
 /// last one. A journal built here has no flusher: the test's own handle
 /// stands where the flusher's would, so the journal counts as unheld.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn a_journal_waited_on_between_looks_stays_until_ten_minutes_after_the_last_wait() {
     let hash = [0x01; 16];
     let journal = fixed("polled");
@@ -428,7 +428,7 @@ async fn a_journal_waited_on_between_looks_stays_until_ten_minutes_after_the_las
 /// and the touch published, each is retired ten minutes later. A journal
 /// built here has no flusher: the test's own handle stands where the
 /// flusher's would, so each journal counts as unheld.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn a_journal_with_a_parked_waiter_or_an_unpublished_touch_is_never_idle() {
     let (parked_hash, unpublished_hash) = ([0x01; 16], [0x02; 16]);
     let (parked, unpublished) = (fixed("parked"), fixed("unpublished"));

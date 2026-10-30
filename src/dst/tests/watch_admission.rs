@@ -3,7 +3,7 @@ use super::fixture_auth::{rig_policy, rig_publish_policy, sr_rig};
 use super::fixture_http::engine_shutdown;
 use super::fixture_requests::{PRISMA_KEY, preq};
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn account_watch_wait_charges_one_request_and_releases_its_subscription() {
     let (state, addr, bearer) = sr_rig(
         "watch-once",

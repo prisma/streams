@@ -19,7 +19,7 @@ async fn hub_append(addr: std::net::SocketAddr, name: &str, body: &str) {
     assert!(st == 200 || st == 204, "append {st}");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_park_appends_seal_matches_golden_semantics() {
     let store = mem();
     let (_state, addr) = http_rig(store).await;
@@ -59,7 +59,7 @@ async fn livefeed_park_appends_seal_matches_golden_semantics() {
     assert!(eof, "EOF after the sealed control");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_catches_up_from_beginning_cursor() {
     let store = mem();
     let (_state, addr) = http_rig(store).await;
@@ -89,7 +89,7 @@ async fn livefeed_catches_up_from_beginning_cursor() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_two_subscribers_share_one_feed_and_one_source_read() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -152,7 +152,7 @@ async fn livefeed_two_subscribers_share_one_feed_and_one_source_read() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_revocation_terminates_the_subscription() {
     let (_svc, _state, addr) = auth_rig("proj-lfr", "ws_lf", &["c1"], None).await;
     let tok = mint_token("c1", "proj-lfr", "ws_lf", 1, 1, "lf1", 600);
@@ -189,7 +189,7 @@ async fn livefeed_revocation_terminates_the_subscription() {
 /// single-segment stream rides its own LiveFeed lane: it receives only
 /// its key's records, foreign-key-only windows advance the cursor, and
 /// two subscribers of the same key share one preparation.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_keyed_lane_scopes_records_and_shares_preparation() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -262,7 +262,7 @@ async fn livefeed_keyed_lane_scopes_records_and_shares_preparation() {
 /// Stage 5: FORKS. A fork's SSE subscription rides the LiveFeed with
 /// stitched ancestor reads — same wire vocabulary the legacy fork
 /// producer used (raw scalar), same record sequence.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_fork_subscriptions_stitch_the_ancestor_chain() {
     let store = mem();
     let (_state, addr) = http_rig(store).await;
@@ -338,7 +338,7 @@ async fn livefeed_fork_subscriptions_stitch_the_ancestor_chain() {
 /// RAW scalar vocabulary (streamNextOffset / streamCursor /
 /// streamClosed), byte-shaped like the legacy producer, and carries
 /// the workload-JWT expiry lease when opened under enforce mode.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_raw_surface_uses_the_raw_vocabulary() {
     let store = mem();
     let (_state, addr) = http_rig(store).await;
@@ -384,7 +384,7 @@ async fn livefeed_raw_surface_uses_the_raw_vocabulary() {
 /// at a failpoint until the whole 640-KiB window is durable, so the
 /// driver really faces one oversized durable window, then must take
 /// MORE THAN ONE bounded source read to drain it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_singleton_large_window_delivers_everything_exactly_once() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -463,7 +463,7 @@ async fn livefeed_singleton_large_window_delivers_everything_exactly_once() {
 /// Finding 2 red (singleton): an ALL-FOREIGN historical range on a
 /// keyed lane is pure scanned progress — the subscriber receives
 /// upToDate WITHOUT being lag-disconnected, and later matches flow.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_keyed_all_foreign_history_is_progress_not_lag() {
     let store = mem();
     let (_state, addr) = http_rig(store).await;
@@ -527,7 +527,7 @@ async fn livefeed_keyed_all_foreign_history_is_progress_not_lag() {
 /// status flags on record controls, exactly ONE standalone upToDate at
 /// the open frontier — raw and product vocabulary, RAW-first creation
 /// order (the product-first direction is the next test).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_exact_framing_mixed_surfaces_share_one_lane() {
     let store = mem();
     let (_state, addr) = http_rig(store).await;
@@ -605,7 +605,7 @@ async fn livefeed_exact_framing_mixed_surfaces_share_one_lane() {
 /// feed, RAW joins second. Same canonical framing assertions as the
 /// raw-first leg — feed creation order must not change the wire shape
 /// or cross the vocabularies.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_exact_framing_mixed_surfaces_product_first() {
     let store = mem();
     let (_state, addr) = http_rig(store).await;
@@ -679,7 +679,7 @@ async fn livefeed_exact_framing_mixed_surfaces_product_first() {
 /// atomic subscribe and the session's first state read. The captured
 /// join_head bounds Phase A; the live phase delivers what landed after
 /// it — every record exactly once, no duplicates across the boundary.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_handoff_feed_advances_between_subscribe_and_session_start() {
     let store = mem();
     let (_state, addr) = http_rig(store).await;
@@ -738,7 +738,7 @@ async fn livefeed_handoff_feed_advances_between_subscribe_and_session_start() {
 /// session start. That is NOT lag: the session performs durable
 /// re-catch-up and delivers everything from its cursor — no
 /// disconnect, no skipped records.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_ring_wrap_during_initial_handoff_recatchups() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -802,7 +802,7 @@ async fn livefeed_ring_wrap_during_initial_handoff_recatchups() {
 /// consumed progress for the default lane — the subscriber is NOT
 /// stuck rescanning it, and the default record behind the window
 /// flows.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_fork_foreign_only_window_is_progress() {
     let store = mem();
     let (state, addr) = http_rig(store).await;

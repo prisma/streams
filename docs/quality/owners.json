@@ -2451,6 +2451,22 @@
     {
       "category": "effect",
       "count": 1,
+      "owner": "crate::tests::park_a_thread_for_ever",
+      "path": "src/test_rt.rs",
+      "reason": "Test runtime teardown regression: one blocking task parks for ever on a channel whose only sender it holds, standing in for a foyer-deadlocked worker; the bounded teardown abandons it and the test process ends it at exit.",
+      "syntax": "tokio::task::spawn_blocking"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tests::teardown_returns_while_a_runtime_thread_cannot_stop",
+      "path": "src/test_rt.rs",
+      "reason": "Test runtime teardown regression: the runtime under test runs on its own thread so that an unbounded teardown fails the test at a 10 s deadline instead of hanging the suite; the thread ends when the teardown returns.",
+      "syntax": "std::thread::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
       "owner": "crate::tests::a_panic_resumes_only_after_the_runtime_is_torn_down",
       "path": "src/bootstrap/service_runtime.rs",
       "reason": "Teardown regression spawns one idle probe into the served runtime; the bounded teardown drops it before the panic resumes, which is what the test observes.",

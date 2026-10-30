@@ -70,7 +70,7 @@ async fn held_wal() -> (Arc<ShardEngine>, Arc<crate::dst::FaultStore>) {
     clippy::let_underscore_must_use,
     reason = "r17a_shutdown_timeout_keeps_authority_over_the_held_wal_task; the fixture closes the database on the way out; a failed close leaves nothing the assertions depend on"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r17a_shutdown_timeout_keeps_authority_over_the_held_wal_task() {
     let (engine, store) = held_wal().await;
     engine.begin_close();
@@ -94,7 +94,7 @@ async fn r17a_shutdown_timeout_keeps_authority_over_the_held_wal_task() {
     clippy::let_underscore_must_use,
     reason = "r17a_cancelling_a_shutdown_observer_cannot_detach_engine_tasks; the fixture closes the database on the way out; a failed close leaves nothing the assertions depend on"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r17a_cancelling_a_shutdown_observer_cannot_detach_engine_tasks() {
     let (engine, store) = held_wal().await;
     engine.begin_close();
@@ -123,7 +123,7 @@ async fn r17a_cancelling_a_shutdown_observer_cannot_detach_engine_tasks() {
     clippy::excessive_nesting,
     reason = "r17a_unexpected_required_engine_role_exit_fences_serving; the fixture nests the exit wait inside the timeout that bounds it inside the test; flattening it would separate the wait from the bound it must respect"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r17a_unexpected_required_engine_role_exit_fences_serving() {
     for role in [
         "committer",
@@ -156,7 +156,7 @@ async fn r17a_unexpected_required_engine_role_exit_fences_serving() {
     clippy::excessive_nesting,
     reason = "r17a_runtime_shutdown_retains_held_engine_and_refuses_replacement; the fixture nests the scripted opener inside the factory closure inside the rig it builds; flattening it would separate the opener from the rig that installs it"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r17a_runtime_shutdown_retains_held_engine_and_refuses_replacement() {
     let (engine, store) = held_wal().await;
     let opened = engine.clone();
@@ -201,7 +201,7 @@ async fn r17a_runtime_shutdown_retains_held_engine_and_refuses_replacement() {
     assert!(engine.termination_complete());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r17a_fenced_final_flush_releases_only_after_the_owned_close_joins() {
     let (engine, store) = fixture().await;
     let hash = [19; 16];
@@ -273,7 +273,7 @@ fn serving(engine: &Arc<ShardEngine>) -> crate::shard_directory::ShardDirectory 
 /// Item 38: a failed storage close is final, so the directory stop answers
 /// at once, with the report that names it, and the owner keeps its fence
 /// and readiness failure.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_failed_storage_close_ends_the_directory_stop_at_once() {
     let (engine, _store) = fixture().await;
     let directory = serving(&engine);
@@ -315,7 +315,7 @@ async fn a_failed_storage_close_ends_the_directory_stop_at_once() {
 /// still closing as pending, and its joined reports hold only closes that
 /// settled (a failed one is never dropped beside a pending one): an engine
 /// whose close is still running has no report yet.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_directory_stop_past_its_grace_carries_the_joined_reports() {
     let (engine, store) = held_wal().await;
     let directory = serving(&engine);
@@ -350,7 +350,7 @@ async fn a_directory_stop_past_its_grace_carries_the_joined_reports() {
 /// is carried in the joined reports: the directory stop names the failure
 /// and counts the running engine as pending (review of da06acad: T9 alone
 /// no longer pinned this, since its only engine is still closing).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_failed_close_beside_a_pending_one_is_reported_at_the_deadline() {
     let (held, store) = held_wal().await;
     let (failed, _) = fixture_named("r17a-failed", 1718).await;
@@ -409,7 +409,7 @@ async fn a_failed_close_beside_a_pending_one_is_reported_at_the_deadline() {
 /// What a stop still owes, as a planned drain reads it
 /// (`ShardDirectory::pending_work`): an idle directory owes nothing, and an
 /// open still running is owed.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn pending_work_counts_an_open_still_running() {
     use crate::shard_directory::{Adoption, OpenTiming, ShardDirectory};
     let opener: crate::sharddir::OpenFn = Box::new(

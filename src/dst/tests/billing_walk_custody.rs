@@ -178,7 +178,7 @@ fn gauge_closed(row: &Meta) -> bool {
 /// for the same segments or stopped at their holdoff, and never reached it.
 /// The production sweep must close that gauge at its persisted expiry, and
 /// must not keep the empty streams' shards after the walk.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_shard_the_walk_opened_for_nothing_to_close_is_handed_back_before_the_next_segment() {
     let _serial = sweep_lock().lock().await;
     let _clock = crate::billing::billing_clock_lock().read().await;
@@ -264,7 +264,7 @@ async fn a_shard_the_walk_opened_for_nothing_to_close_is_handed_back_before_the_
 /// whole catalog pass later, which could lose it the same way. A committer
 /// that gathers for two seconds makes that order certain. The walk must keep
 /// the shard until the close is applied, once, at the persisted expiry.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_close_the_walk_submits_on_a_shard_it_opened_is_applied_before_the_shard_is_handed_back()
 {
     let _serial = sweep_lock().lock().await;
@@ -322,7 +322,7 @@ async fn a_close_the_walk_submits_on_a_shard_it_opened_is_applied_before_the_sha
 /// still reads, on a shard it cold-opened, and handed the shard back before
 /// the committer applied it. The walk must keep the shard until the flag is
 /// on the row, once, moving no billed figure.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_retention_flag_the_walk_submits_on_a_shard_it_opened_is_applied_before_the_shard_is_handed_back()
  {
     let _serial = sweep_lock().lock().await;
@@ -376,7 +376,7 @@ async fn a_retention_flag_the_walk_submits_on_a_shard_it_opened_is_applied_befor
 /// it exactly as it is: no second close, so no clock moved past the expiry,
 /// no version bump, no dirty row for the drain to emit and no submission
 /// counted.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_row_the_walk_closed_at_its_expiry_is_not_closed_again_at_its_later_tombstone() {
     let _serial = sweep_lock().lock().await;
     let _clock = crate::billing::billing_clock_lock().read().await;
@@ -443,7 +443,7 @@ async fn a_row_the_walk_closed_at_its_expiry_is_not_closed_again_at_its_later_to
 /// The pass must keep the shard until the close is applied at the debt's
 /// instant; the next pass then settles the debt and forgets it without a
 /// second close.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_close_the_debt_pass_submits_on_a_shard_it_opened_is_applied_before_the_shard_is_handed_back()
  {
     let _serial = sweep_lock().lock().await;
@@ -576,7 +576,7 @@ async fn refused_under(
 /// moves `y`'s shard away while `y`'s close waits in the queue: the walk
 /// applies nothing after it, both rows stay as they were, and the next walk
 /// replays the page and closes both, once each, at their expiries.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_close_the_shard_refuses_stops_the_walk_and_the_next_walk_applies_it() {
     let _serial = sweep_lock().lock().await;
     let _clock = crate::billing::billing_clock_lock().read().await;
@@ -629,7 +629,7 @@ async fn a_close_the_shard_refuses_stops_the_walk_and_the_next_walk_applies_it()
 /// rows and both debts stay as they were; the next pass resumes at the
 /// refused debt and closes both rows at their debts' instants, and the pass
 /// after forgets both debts.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_close_the_shard_refuses_stops_the_debt_pass_and_the_next_pass_applies_it() {
     let _serial = sweep_lock().lock().await;
     let _clock = crate::billing::billing_clock_lock().read().await;

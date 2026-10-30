@@ -201,7 +201,7 @@ fn config() -> ConsumerConfig {
 /// does a group between them that bills nothing let go of it: the engine
 /// reads the stream's static row from the store once, and the second
 /// group's counters carry both appends' totals.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_group_bills_on_the_row_its_predecessor_left_on_the_handle() {
     let rig = Rig::start("resident-billing").await;
     assert_eq!(rig.append(b"payload").await.unwrap().next_offset, 1);
@@ -232,7 +232,7 @@ async fn a_group_bills_on_the_row_its_predecessor_left_on_the_handle() {
 /// A group refused before its write leaves the handle's rows as the last
 /// written group left them: the next group bills two appends, not three,
 /// and the consumer the refused group created does not exist.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_refused_group_leaves_no_billing_row_on_the_handle() {
     let rig = Rig::start("resident-billing-refused").await;
     rig.append(b"payload").await.unwrap();
@@ -263,7 +263,7 @@ async fn a_refused_group_leaves_no_billing_row_on_the_handle() {
 /// A record a config read loaded, and one a group wrote, are answered from
 /// the handle afterwards; a lifecycle change replaces the held record, and
 /// a deleted one is let go of.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_consumer_record_stays_on_the_handle_after_its_group() {
     let rig = Rig::start("resident-config").await;
     let stored = ConsumerRecord {
@@ -335,7 +335,7 @@ async fn a_consumer_record_stays_on_the_handle_after_its_group() {
 
 /// A consumer with no record is not held: a record that appears in the store
 /// afterwards is read.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_consumer_without_a_record_is_read_again() {
     let rig = Rig::start("resident-config-absent").await;
     assert_eq!(rig.config("c").await, None);
@@ -357,7 +357,7 @@ async fn a_consumer_without_a_record_is_read_again() {
 
 /// A group that writes nothing still leaves the row it read on the handle:
 /// the next group reads no row and bills on the planted totals.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_group_that_writes_nothing_leaves_its_billing_row_on_the_handle() {
     let rig = Rig::start("resident-billing-no-write").await;
     rig.plant(&SEGMENT).await;
@@ -381,7 +381,7 @@ async fn a_group_that_writes_nothing_leaves_its_billing_row_on_the_handle() {
 /// A handle made resident by a group that bills nothing holds no billing
 /// meta: the first billed group reads the stream's static row, once, and
 /// bills from it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_resident_handle_without_a_billing_row_reads_the_store() {
     let rig = Rig::start("resident-billing-unheld").await;
     rig.plant(&SEGMENT).await;
@@ -406,7 +406,7 @@ async fn a_resident_handle_without_a_billing_row_reads_the_store() {
 /// A group of cold streams reads their billing rows together, not one
 /// after another on the serial commit path: with every read held open,
 /// all eight are in flight at once, and each stream bills on its own row.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_group_reads_its_cold_streams_billing_rows_together() {
     const STREAMS: u8 = 8;
     let rig = Rig::start("resident-cold").await;
@@ -452,7 +452,7 @@ async fn a_group_reads_its_cold_streams_billing_rows_together() {
 
 /// A group reads no billing row for a stream it does not bill: with every
 /// read held open, an unbilled append and a config read still complete.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_group_reads_no_billing_row_for_a_stream_it_does_not_bill() {
     let rig = Rig::start("resident-unbilled").await;
     let held = super::test_support::hold_billing_reads("resident-unbilled");
@@ -482,7 +482,7 @@ async fn a_group_reads_no_billing_row_for_a_stream_it_does_not_bill() {
 /// queue scan and record read held open, all eight streams' are in flight
 /// at once, two config reads of one consumer on a stream read its record
 /// once, and each answers the stored record.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_group_loads_its_cold_streams_queue_state_together() {
     const STREAMS: u8 = 8;
     let rig = Rig::start("resident-cold-queue").await;

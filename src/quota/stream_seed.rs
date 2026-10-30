@@ -61,7 +61,7 @@ mod tests {
     /// returns, a later create finds it seeded and never polls its walk,
     /// and the reservations count from the seed: at `max_streams` 6 a
     /// seeded five takes one more and refuses the next.
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn one_completed_walk_seeds_the_count_for_every_later_create() {
         let r = QuotaRegistry::default();
         let project = ProjectId::new("seeded").unwrap();

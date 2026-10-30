@@ -279,7 +279,7 @@ fn fresh(offsets: &[u64]) -> Granted {
     offsets.iter().map(|&off| (off, 1, 1)).collect()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_pull_leases_a_run_of_one_key_up_to_max_under_one_lease_per_record() {
     let rig = Rig::new("run-lease-max", "aaaaaa").await;
     let (leased, poisoned) = rig.pull(4, HOLD_MS, 5).await;
@@ -300,7 +300,7 @@ async fn a_pull_leases_a_run_of_one_key_up_to_max_under_one_lease_per_record() {
     rig.close().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_leased_run_blocks_its_key_for_every_other_pull_until_its_last_ack() {
     // a0 a1 a2 b3 a4 b5
     let rig = Rig::new("run-lease-block", "aaabab").await;
@@ -323,7 +323,7 @@ async fn a_leased_run_blocks_its_key_for_every_other_pull_until_its_last_ack() {
     rig.close().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_crash_after_a_partial_ack_redelivers_from_the_lowest_unacked_offset() {
     let rig = Rig::new("run-lease-crash", "aaaaaaaa").await;
     assert_eq!(rig.pull(6, BRIEF_MS, 5).await.0, fresh(&[0, 1, 2, 3, 4, 5]));
@@ -360,7 +360,7 @@ async fn a_crash_after_a_partial_ack_redelivers_from_the_lowest_unacked_offset()
     rig.close().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn max_one_leases_one_record_per_pull_and_blocks_its_key_as_before() {
     let rig = Rig::new("run-lease-one", "aab").await;
     assert_eq!(rig.pull(1, HOLD_MS, 5).await.0, fresh(&[0]));
@@ -375,7 +375,7 @@ async fn max_one_leases_one_record_per_pull_and_blocks_its_key_as_before() {
     rig.close().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn mixed_keys_lease_every_open_key_run_in_offset_order() {
     // c0 a1 b2 a3 c4 b5 a6 c7
     let rig = Rig::new("run-lease-mixed", "cabacbac").await;
@@ -395,7 +395,7 @@ async fn mixed_keys_lease_every_open_key_run_in_offset_order() {
     rig.close().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn max_deliveries_poison_is_judged_per_record_inside_a_run() {
     let rig = Rig::new("run-lease-poison", "aaa").await;
     assert_eq!(rig.pull(3, BRIEF_MS, 2).await.0, fresh(&[0, 1, 2]));
@@ -419,7 +419,7 @@ async fn max_deliveries_poison_is_judged_per_record_inside_a_run() {
     rig.close().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn an_expired_record_waits_while_a_record_of_its_run_is_still_leased() {
     let rig = Rig::new("run-lease-extend", "aab").await;
     assert_eq!(rig.pull(3, BRIEF_MS, 1).await.0, fresh(&[0, 1, 2]));
@@ -440,7 +440,7 @@ async fn an_expired_record_waits_while_a_record_of_its_run_is_still_leased() {
     rig.close().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_record_delivered_twice_goes_alone_until_settled_and_its_run_resumes_after_it() {
     let rig = Rig::new("run-lease-isolate", "aaaaaa").await;
     assert_eq!(rig.pull(4, BRIEF_MS, 5).await.0, fresh(&[0, 1, 2, 3]));
@@ -476,7 +476,7 @@ async fn a_record_delivered_twice_goes_alone_until_settled_and_its_run_resumes_a
     rig.close().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_newer_generation_starts_the_consumer_afresh_and_fences_the_older_one() {
     let rig = Rig::new("run-lease-generation", "aa").await;
     assert_eq!(
@@ -510,7 +510,7 @@ async fn a_newer_generation_starts_the_consumer_afresh_and_fences_the_older_one(
     rig.close().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_pull_never_leases_at_or_past_the_tail_whatever_coverage_it_is_handed() {
     let rig = Rig::new("run-lease-tail", "ab").await;
     let mut keys = rig.keys.clone();
@@ -524,7 +524,7 @@ async fn a_pull_never_leases_at_or_past_the_tail_whatever_coverage_it_is_handed(
     rig.close().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_pull_walks_at_most_eight_offsets_per_max_plus_4096() {
     // a0..a4102 b4103 c4104; with max 1 a pull walks at most 1 * 8 + 4096
     // = 4104 offsets, the 4103 of a and b.
@@ -546,7 +546,7 @@ async fn a_pull_walks_at_most_eight_offsets_per_max_plus_4096() {
     rig.close().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_pull_reports_every_unsettled_record_past_the_cursor_as_backlog() {
     let rig = Rig::new("run-lease-backlog", "aaaaa").await;
     assert_eq!(rig.pull(3, HOLD_MS, 5).await.0, fresh(&[0, 1, 2]));

@@ -9,7 +9,7 @@ use super::fixture_storage::mem;
     clippy::too_many_lines,
     reason = "dead-letter commit scenario; the failed commit, the retained source lease and the exact retry settling once form one causal sequence; helper phases would hide which step could settle twice"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r07_failed_dlq_commit_retains_source_lease_and_exact_retry_settles_once() {
     let (state, addr) = http_rig(mem()).await;
     let key = [("prisma-encryption-key", PRISMA_KEY)];
@@ -271,7 +271,7 @@ async fn bounded_pull(addr: std::net::SocketAddr, source: &str, doc: &[u8]) -> s
 /// A poisoned lease whose dead-letter handoff is blocked keeps only its own
 /// key blocked. The pull still answers by its deadline, and the leases the
 /// same Receive granted to other keys are delivered rather than dropped.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_blocked_dead_letter_handoff_neither_wedges_the_pull_nor_drops_other_keys_leases() {
     let (state, addr) = http_rig(mem()).await;
     let token = source_with_expired_poison(addr, "b4-blocked", "b4-blocked-dlq").await;
@@ -359,7 +359,7 @@ async fn a_blocked_dead_letter_handoff_neither_wedges_the_pull_nor_drops_other_k
 /// handoff healthy those leases are still this pull's to deliver: dropping
 /// them costs each record an attempt no consumer was ever given, and at
 /// `maxAttempts = 1` dead-letters it undelivered.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_settled_dead_letter_handoff_still_delivers_the_same_receives_leases() {
     let (state, addr) = http_rig(mem()).await;
     source_with_expired_poison(addr, "b4-settled", "b4-settled-dlq").await;
@@ -391,7 +391,7 @@ async fn a_settled_dead_letter_handoff_still_delivers_the_same_receives_leases()
 /// envelope re-encoded the value), the target answers `ProducerSeqReused`.
 /// That producer names this one message, so a committed sequence 0 is the
 /// delivery: the pass settles instead of retaining the lease forever.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_committed_but_unsettled_dead_letter_copy_settles_on_the_next_pass() {
     let (state, addr) = http_rig(mem()).await;
     let token = source_with_expired_poison(addr, "dl-crash", "dl-crash-dlq").await;
@@ -571,7 +571,7 @@ fn assert_held(deadline_ms: i64, (before, after): (i64, i64), held_ms: i64, aske
 /// The longest `delayMs` a `u64` carries is held to twelve hours. Unbounded,
 /// the committer's `now + delay as i64` wraps to `now - 1` and the very next
 /// pull redelivers the record.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_retry_asking_for_the_longest_delay_is_not_redelivered_at_once() {
     let (state, addr) = http_rig(mem()).await;
     let token = leased_once(addr, "lw-retry-max").await;
@@ -599,7 +599,7 @@ async fn a_retry_asking_for_the_longest_delay_is_not_redelivered_at_once() {
 /// `maxAttempts`, never dead-letters, and its key stays blocked. A settle
 /// holds the delay to the twelve hours a pull already keeps and passes the
 /// rest through unchanged.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_retry_delay_beyond_the_lease_window_is_held_to_twelve_hours() {
     let (state, addr) = http_rig(mem()).await;
     let token = leased_once(addr, "lw-retry").await;
@@ -625,7 +625,7 @@ async fn a_retry_delay_beyond_the_lease_window_is_held_to_twelve_hours() {
 
 /// The longest `visibilityMs` a `u64` carries is held to twelve hours on an
 /// extend too; unbounded it wraps and the next pull redelivers.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_extend_asking_for_the_longest_visibility_is_not_redelivered_at_once() {
     let (state, addr) = http_rig(mem()).await;
     let token = leased_once(addr, "lw-extend-max").await;
@@ -650,7 +650,7 @@ async fn an_extend_asking_for_the_longest_visibility_is_not_redelivered_at_once(
 
 /// An extend's `visibilityMs` is held to the same one second to twelve hours
 /// as a pull's, and defaults to the consumer's configured timeout.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_extended_visibility_is_held_between_one_second_and_twelve_hours() {
     let (state, addr) = http_rig(mem()).await;
     let token = leased_once(addr, "lw-extend").await;
@@ -681,7 +681,7 @@ async fn an_extended_visibility_is_held_between_one_second_and_twelve_hours() {
 
 /// Control: a pull already keeps the window. Its clamp moves onto the shared
 /// owner in this change and must keep answering the same.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_pulled_visibility_beyond_the_lease_window_is_held_to_twelve_hours() {
     let (state, addr) = http_rig(mem()).await;
     let (status, _, body) = preq(

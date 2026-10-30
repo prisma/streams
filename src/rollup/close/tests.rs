@@ -15,7 +15,7 @@ const DAY_MS: i64 = 86_400_000;
 const GRACE_MS: i64 = 2 * 3_600_000;
 const CARRY_CURSOR: &[u8] = b"meta/close-seg-cursor/2026-07";
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn byte_bound_pages_resume_exclusively_and_always_make_progress() {
     let db = Arc::new(
         Db::builder(
@@ -239,7 +239,7 @@ async fn put_segment(rollup: &UsageRollup, stream: &str, segment: u32, state: &S
 /// A first walk over an empty rollup has neither a marker nor a month index
 /// to start from, so it starts at the month before the clock's own. In
 /// mid-year that is the previous month of the same year, closed alone.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_first_walk_without_data_closes_only_the_previous_month_in_mid_year() {
     let _clock = ClockGuard::at(month_start_ms(2026, 7) + 3 * DAY_MS).await;
     let rollup = quick_rollup("walk-mid-year").await;
@@ -251,7 +251,7 @@ async fn a_first_walk_without_data_closes_only_the_previous_month_in_mid_year() 
 }
 
 /// In January the month before the clock's is December of the year before.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_first_walk_without_data_in_january_closes_december_of_the_year_before() {
     let _clock = ClockGuard::at(month_start_ms(2027, 1) + 3 * DAY_MS).await;
     let rollup = quick_rollup("walk-january").await;
@@ -266,7 +266,7 @@ async fn a_first_walk_without_data_in_january_closes_december_of_the_year_before
 /// out. A millisecond short it closes nothing and writes nothing, not even
 /// the marker; at the grace exactly it freezes the row, stages its artifact
 /// and moves the marker to the next month.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn the_walk_closes_a_month_only_after_the_grace_past_its_boundary() {
     let boundary = month_start_ms(2026, 7);
     let clock = ClockGuard::at(boundary + GRACE_MS - 1).await;
@@ -301,7 +301,7 @@ async fn the_walk_closes_a_month_only_after_the_grace_past_its_boundary() {
 /// `close_month` itself refuses a month inside its grace, whoever calls it: a
 /// millisecond short it reports nothing closed and writes nothing; at the
 /// grace exactly it freezes the row and stages its artifact.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn close_month_refuses_a_month_still_inside_its_grace() {
     let boundary = month_start_ms(2026, 7);
     let clock = ClockGuard::at(boundary + GRACE_MS - 1).await;
@@ -330,7 +330,7 @@ async fn close_month_refuses_a_month_still_inside_its_grace() {
 /// they recorded. An open one adds its gauge times the time from where it was
 /// accounted (or the month's start, if earlier) to the boundary onto what it
 /// had. The frozen totals sum every segment; the outbox holds the same bytes.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn finalize_extends_only_open_segments_to_the_boundary_and_freezes_the_sums() {
     let rollup = quick_rollup("finalize-row").await;
     let (start, boundary) = (month_start_ms(2026, 7), month_start_ms(2026, 8));
@@ -395,7 +395,7 @@ async fn finalize_extends_only_open_segments_to_the_boundary_and_freezes_the_sum
 /// month segment there, and adds the same byte-ms to the stream's name and
 /// project aggregates. The name aggregate lists the incarnation once, however
 /// many of its segments the page carries.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn carry_bills_retained_segments_to_the_boundary_and_names_the_incarnation_once() {
     let rollup = quick_rollup("carry-retained").await;
     let (start, boundary) = (month_start_ms(2026, 7), month_start_ms(2026, 8));
@@ -446,7 +446,7 @@ async fn carry_bills_retained_segments_to_the_boundary_and_names_the_incarnation
 /// A segment that retains no bytes still closes its month segment at the
 /// boundary (gauge zero, final), but bills nothing: no byte-ms is recorded,
 /// not even zero, and no name or project aggregate is written for it.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn carry_closes_an_empty_segment_without_billing_or_naming_it() {
     let rollup = quick_rollup("carry-empty").await;
     let (start, boundary) = (month_start_ms(2026, 7), month_start_ms(2026, 8));
@@ -477,7 +477,7 @@ async fn carry_closes_an_empty_segment_without_billing_or_naming_it() {
 /// A segment whose storage is already accounted through the boundary is left
 /// alone: carry writes no month row and no aggregate for it and keeps its
 /// state's bytes; only the phase's resume cursor is written.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn carry_leaves_a_segment_accounted_through_the_boundary_alone() {
     let rollup = quick_rollup("carry-accounted").await;
     let boundary = month_start_ms(2026, 8);

@@ -5,7 +5,7 @@ use crate::queue::{self, QueueOp};
     clippy::let_underscore_must_use,
     reason = "r08_corrupt_queue_rows_refuse_without_replacing_persisted_state; the fixture closes the database on the way out; a failed close leaves nothing the assertions depend on"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r08_corrupt_queue_rows_refuse_without_replacing_persisted_state() {
     for case in 0..6 {
         let store: Arc<dyn object_store::ObjectStore> =

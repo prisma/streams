@@ -24,7 +24,7 @@ fn data_frames(s: &str) -> usize {
     s.matches("event: data").count()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn subscription_terminates_when_only_the_grant_feed_goes_stale() {
     let (svc, _state, addr) = auth_rig("proj-st2", "ws_st", &["c1"], Some(3)).await;
     let tok = mint_token("c1", "proj-st2", "ws_st", 1, 1, "s2", 600);
@@ -42,7 +42,7 @@ async fn subscription_terminates_when_only_the_grant_feed_goes_stale() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn subscription_survives_when_both_feeds_refresh_before_the_deadline() {
     // Real TCP delivery/publication smoke. The owned-clock V01 tests separately
     // prove refresh-before-deadline and age == / > window without scheduler races.
@@ -78,7 +78,7 @@ async fn subscription_survives_when_both_feeds_refresh_before_the_deadline() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn off_mode_subscriptions_are_untouched_by_staleness() {
     // No auth service: Off posture, no lease. Parked hub subscriber
     // stays open indefinitely regardless of any feed notion.
@@ -90,7 +90,7 @@ async fn off_mode_subscriptions_are_untouched_by_staleness() {
     assert!(!eof, "Off mode: no lease, no staleness termination");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn revocation_interrupts_active_direct_delivery() {
     // Same deterministic interleaving as the hub leg, on the DIRECT
     // producer path.
@@ -155,7 +155,7 @@ async fn revocation_interrupts_active_direct_delivery() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn token_expiry_interrupts_slowly_progressing_delivery() {
     // LEASE_TERMINATIONS is process-global; serialize with the other
     // expiry tests that move it (gap_lock convention).
@@ -205,7 +205,7 @@ async fn token_expiry_interrupts_slowly_progressing_delivery() {
 /// credential is revoked, the body resumes: EOF with zero data frames
 /// and a ZERO read-billing delta — billing rides the authoritative
 /// yield, never the enqueue.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn queued_frame_is_discarded_and_unbilled_at_revocation() {
     let (svc, state, addr) = auth_rig("proj-rvq", "ws_rv", &["c1", "c2"], None).await;
     let tok1 = mint_token("c1", "proj-rvq", "ws_rv", 1, 1, "q1", 600);
@@ -267,7 +267,7 @@ async fn queued_frame_is_discarded_and_unbilled_at_revocation() {
 /// revoked subscriber yields ZERO post-cutoff frames and terminates;
 /// the survivor receives every record exactly once and stays open —
 /// the body gate is PER SUBSCRIBER, not per feed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_shared_feed_revocation_gates_one_subscriber_only() {
     let (svc, state, addr) = auth_rig("proj-rv3", "ws_rv", &["c1", "c2"], None).await;
     let tok1 = mint_token("c1", "proj-rv3", "ws_rv", 1, 1, "s1", 600);
@@ -353,7 +353,7 @@ async fn livefeed_shared_feed_revocation_gates_one_subscriber_only() {
 /// revoked. Zero post-cutoff frames, no fabricated terminal, EOF —
 /// the swapped source must not carry an outdated authorization
 /// binding past the cutoff.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_source_swap_revocation_yields_zero_post_cutoff_frames() {
     let (svc, state, addr) = auth_rig("proj-rv4", "ws_rv", &["c1", "c2"], None).await;
     let tok1 = mint_token("c1", "proj-rv4", "ws_rv", 1, 1, "w1", 600);

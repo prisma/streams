@@ -43,7 +43,7 @@ async fn consumer_version_with(
     clippy::disallowed_methods,
     reason = "saga refresh fixture; the deletion is joined after its injected refresh failure; it must run concurrently with the fault window it is parked in"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_saga_refresh_failure_is_retryable_not_stable() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -154,7 +154,7 @@ async fn a_saga_refresh_failure_is_retryable_not_stable() {
     clippy::disallowed_methods,
     reason = "vanished collection fixture; the deletion is joined after the collection vanishes underneath it; it must run concurrently with that removal"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_saga_vanished_collection_is_idempotent_success() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -220,7 +220,7 @@ async fn a_saga_vanished_collection_is_idempotent_success() {
 /// retryable 503 — a false 204 here would strand rows on children the
 /// map has not published yet. Releasing the gap and retrying with the
 /// SAME token completes collection-wide across parent AND children.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_saga_never_finalizes_under_a_pending_transition() {
     let _l = gap_lock().lock().await;
     let (state, addr, guard, split) = rig_in_seal_gap("qc18c", 2).await;
@@ -297,7 +297,7 @@ async fn a_saga_never_finalizes_under_a_pending_transition() {
 /// before key validation: the old client holds the old key, and the
 /// honest answer about its vanished target does not require the new
 /// one. The replacement (new key) is untouched.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stale_delete_after_cross_key_recreation_is_untouched_204() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -400,7 +400,7 @@ async fn a_stale_delete_after_cross_key_recreation_is_untouched_204() {
     clippy::too_many_lines,
     reason = "consumer fence scenario; the in-flight pull, the fencing delete, the ownership move and the cleanup form one causal sequence; helper phases would hide which owner the fence survived"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn consumer_fence_survives_ownership_move() {
     let store = mem();
     let (state, addr) = http_rig(store).await;

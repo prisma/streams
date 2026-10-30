@@ -232,7 +232,7 @@ async fn dab_seed(
 /// transition, both foreign views must be byte-identical to their
 /// baselines: no transition may touch, reroute, or resurrect a
 /// same-named foreign stream.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn dab_transitions_matrix_leaves_foreign_streams_byte_identical() {
     let (state, addr, _svc, jwt_a, jwt_b) = dab_rig("tmx", DAB_SCOPES).await;
     let auth_a = format!("Bearer {jwt_a}");
@@ -328,7 +328,7 @@ async fn dab_transitions_matrix_leaves_foreign_streams_byte_identical() {
 /// bodies — must be IDENTICAL in both worlds: B's view is a pure
 /// function of B's own operations, whatever A does and whatever
 /// happens to A's project.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn dab_noninterference_property() {
     for seed in [3u64, 17, 29] {
         dab_noninterference_for_seed(seed).await;
@@ -453,7 +453,7 @@ async fn dab_noninterference_for_seed(seed: u64) {
 /// execution stops dead after persisting the seal intent, exactly the
 /// worst moment — leaves B's same-named, same-key stream untouched,
 /// and A recovers to a completed seal after the "restart".
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn dab_seal_intent_crash_leaves_foreign_stream_intact() {
     let (_state, addr, _svc, jwt_a, jwt_b) = dab_rig("fpx", DAB_SCOPES).await;
     let auth_a = format!("Bearer {jwt_a}");

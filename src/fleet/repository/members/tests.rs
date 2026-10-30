@@ -162,7 +162,7 @@ fn names(beats: &[Heartbeat]) -> Vec<(&str, i64)> {
 /// Each copy it holds is revalidated, so an unchanged member answers 304 and
 /// reads as before; an ordinal that boots is read at the next read, and a
 /// document that disappears is absent from it on.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn the_tick_names_the_counted_ordinals_and_itself_and_revalidates_each_copy() {
     let store = Recording::default();
     let members = Members::default();
@@ -250,7 +250,7 @@ async fn the_tick_names_the_counted_ordinals_and_itself_and_revalidates_each_cop
 /// (`FleetRepository::join`, as its heartbeat starts): an instance no count
 /// names whose first beat lands after the first listing is read by the next
 /// read, not by the next listing.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn the_repository_reads_the_instance_that_joined_it() {
     let store = Arc::new(Recording::default());
     let shared: Arc<dyn ObjectStore> = store.clone();
@@ -281,7 +281,7 @@ async fn the_repository_reads_the_instance_that_joined_it() {
 /// read at once, never a pass later. A smaller count, or a document that does
 /// not validate (no count, zero, beyond the 4096-member budget), names only
 /// the first ordinal, and the members read before are still read.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn the_count_a_read_finds_names_its_members_in_that_read() {
     let store = Recording::default();
     let members = Members::default();
@@ -332,7 +332,7 @@ async fn the_count_a_read_finds_names_its_members_in_that_read() {
 /// ordinals are asked for by name, and from ten on the read lists instead.
 /// No count read before is kept as a high-water mark, and a count that falls
 /// back to the members that exist is read by name again, without a listing.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn absent_members_never_cost_more_than_a_listing() {
     let store = Recording::default();
     let members = Members::default();
@@ -379,7 +379,7 @@ async fn absent_members_never_cost_more_than_a_listing() {
 /// the listing on the `LIST_EVERY`th read after the last, and is read at
 /// every read from then on; a listing reads no coordination document and no
 /// object that is not JSON as a member.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_member_no_count_names_is_found_by_the_next_listing() {
     let store = Recording::default();
     let members = Members::default();
@@ -427,7 +427,7 @@ async fn a_member_no_count_names_is_found_by_the_next_listing() {
 /// `LIST_EVERY`th after it; the reads between revalidate the reports the
 /// listing found, so a new report waits for the next listing and a vanished
 /// one is dropped at once.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn router_reports_are_listed_once_every_list_every_reads() {
     let store = Recording::default();
     let members = Members::default();
@@ -478,7 +478,7 @@ async fn router_reports_are_listed_once_every_list_every_reads() {
 /// read; a population at the byte ceiling is read and one member more fails
 /// it; a corrupt member fails it too. None reads as an absent member, and the
 /// copies held before survive a failed read.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn ceilings_and_corruption_fail_the_read_instead_of_dropping_a_member() {
     let store = Recording::default();
     let members = Members::default();
@@ -531,7 +531,7 @@ async fn ceilings_and_corruption_fail_the_read_instead_of_dropping_a_member() {
 /// name one document more lists the namespace instead and reads what is
 /// there, at every read while that holds; only a listing of one object more
 /// fails, and the read after the namespace is back within its bound succeeds.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_read_asks_for_no_more_documents_than_the_namespace_holds() {
     let store = Recording::default();
     let members = Members::default();
@@ -582,7 +582,7 @@ async fn a_read_asks_for_no_more_documents_than_the_namespace_holds() {
 /// GET the documents the last listing found. The due listing fails, and so
 /// does every read after it, each listing again, until the namespace is
 /// back within its bound.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_namespace_over_its_bound_fails_every_read_from_its_next_listing() {
     let store = Recording::default();
     let members = Members::default();
@@ -618,7 +618,7 @@ async fn a_namespace_over_its_bound_fails_every_read_from_its_next_listing() {
 
 /// A member read the store never answers fails at the document deadline, so
 /// the pass that asked keeps its prior view.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn a_read_the_store_never_answers_fails_at_the_document_deadline() {
     let store = Arc::new(Recording::default());
     let members = Members::default();

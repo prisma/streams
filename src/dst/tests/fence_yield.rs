@@ -130,7 +130,7 @@ fn refused(answers: &[Answer]) -> bool {
 /// append and read 503 `shard_closing` with `Retry-After: 1`, and reports
 /// itself superseded, while B keeps its one engine and reads back exactly the
 /// acknowledged records.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fenced_older_boot_never_retakes() {
     let store = mem();
     let a = boot(&store, 1).await;
@@ -164,7 +164,7 @@ async fn a_fenced_older_boot_never_retakes() {
 /// started before B registered lands after B's): A fences B. B is the boot
 /// the record names, so it stays ready and re-takes at its next request, and
 /// A yields at its next lost engine: in the end exactly one serves.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stray_older_open_does_not_unseat_the_newest() {
     let store = mem();
     let a = boot(&store, 1).await;
@@ -198,7 +198,7 @@ async fn a_stray_older_open_does_not_unseat_the_newest() {
 /// B fences A, then stops without closing anything (a crash). C, a fresh boot,
 /// registers, serves every acknowledged record and keeps appending; A, still
 /// superseded, opens nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_restarted_newest_serves_and_the_superseded_stays_out() {
     let store = mem();
     let a = boot(&store, 1).await;
@@ -227,7 +227,7 @@ async fn a_restarted_newest_serves_and_the_superseded_stays_out() {
 /// read A metered, before and after B started, and the appends of both,
 /// reach the rollup once, after B's sweeps and drains, also when an import
 /// whose delete was lost imports the handed-off window a second time.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_superseded_boots_last_read_window_is_billed_once() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let store = mem();
@@ -362,7 +362,7 @@ fn boot_id(rig: &HttpRig) -> String {
 /// B reports the predecessor superseded (a planned replacement, not a crash).
 /// The first boot of a cell has no predecessor, and a boot's origin is not on
 /// `/health`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_boot_names_the_boot_it_replaced_and_learns_it_was_superseded() {
     let store = mem();
     let a = boot(&store, 1).await;
@@ -395,7 +395,7 @@ async fn a_boot_names_the_boot_it_replaced_and_learns_it_was_superseded() {
 
 /// A replaced process that never lost an engine (it holds no shard) still
 /// leaves its mark, at its stop, because a newer boot is registered by then.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_idle_replaced_boot_marks_itself_at_its_stop() {
     let store = mem();
     let a = boot(&store, 1).await;
@@ -415,7 +415,7 @@ async fn an_idle_replaced_boot_marks_itself_at_its_stop() {
 /// A predecessor that stopped while its record still named it (no newer boot
 /// had registered: a crash, an OOM kill, a loop that exits) leaves no mark,
 /// so the next boot names it and never reports it superseded.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_predecessor_that_went_before_the_next_boot_leaves_no_mark() {
     let store = mem();
     let a = boot(&store, 1).await;

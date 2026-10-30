@@ -93,7 +93,7 @@ fn row_of(answer: &serde_json::Value) -> (Option<&str>, Option<u64>) {
 /// not an incarnation of the URL's name is 404 `not_found`, for every
 /// credential. Controls: a prior incarnation of the same name (delete,
 /// recreate) and the live id named explicitly are still served.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_usage_stream_id_is_served_only_for_an_incarnation_of_the_url_name() {
     // usage/current is month-sensitive on the real clock.
     let _clock = crate::billing::billing_clock_lock().read().await;
@@ -187,7 +187,7 @@ fn previous(month: &str) -> String {
 /// only): the prior incarnation's past month answered 404. The foreign
 /// probes kill the two mutants a review planted: serving any id when the
 /// name has no aggregate, and checking only the current month.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_usage_stream_id_is_authorized_by_the_name_the_rollup_recorded() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let (svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &["c-full", "c-pfx"], None).await;
@@ -260,7 +260,7 @@ async fn a_usage_stream_id_is_authorized_by_the_name_the_rollup_recorded() {
 /// project's totals. Now 403 `prefix_denied` with no usage in the body,
 /// while its per-stream usage for a/mine stays readable and `c-full` still
 /// reads the totals.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn project_usage_totals_need_an_unrestricted_stream_grant() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let (svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &["c-full", "c-pfx"], None).await;
@@ -293,7 +293,7 @@ async fn project_usage_totals_need_an_unrestricted_stream_grant() {
 /// A month is four ASCII digits, a dash and two: a signed field ("2026-+9",
 /// "+026-09", "-026-09") parsed as a number and answered a zero row (200).
 /// Now both usage routes answer 400 `invalid_month`, as for "2026-13".
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_signed_month_is_refused_on_both_usage_routes() {
     let (svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &["c-full", "c-pfx"], None).await;
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)

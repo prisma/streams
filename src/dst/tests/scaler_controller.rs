@@ -10,7 +10,7 @@ use std::time::Duration;
     clippy::too_many_lines,
     reason = "scaler cancellation scenario; cancelling, deadlining and rotating work while preserving intent form one causal sequence; helper phases would hide which step lost the intent"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r09_scaler_cancellation_and_deadlines_preserve_intent_and_rotate_work() {
     let _lock = gap_lock().lock().await;
     let (state, addr) = http_rig(mem()).await;

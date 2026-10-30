@@ -26,7 +26,7 @@ fn command(desc: &crate::registry::StreamDesc) -> ReadCommand {
         refresh: true,
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r06_empty_filtered_page_has_one_position_across_application_and_protocols() {
     let (state, addr) = http_rig(mem()).await;
     let credentials = [("prisma-encryption-key", PRISMA_KEY)];
@@ -121,7 +121,7 @@ async fn r06_empty_filtered_page_has_one_position_across_application_and_protoco
     );
     engine_shutdown(&state).await;
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r06_refresh_rejects_same_name_recreation() {
     let (state, addr) = http_rig(mem()).await;
     let credentials = [("prisma-encryption-key", PRISMA_KEY)];
@@ -167,7 +167,7 @@ async fn r06_refresh_rejects_same_name_recreation() {
     engine_shutdown(&state).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r06_cross_owner_replay_and_scan_share_typed_pages_and_bill_once() {
     use super::fixture_http::{http_rig_owner, http_rig_owner_at};
     use super::fixture_livefeed::{hub_append_lf, read_billing_sum, split_and_await};
@@ -254,7 +254,7 @@ async fn r06_cross_owner_replay_and_scan_share_typed_pages_and_bill_once() {
     engine_shutdown(&b).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r06_peer_target_is_bound_before_peer_resolution() {
     use crate::application::read_remote::{InternalTarget, RemoteSpanError, remote_span_page};
     let (state, addr) = http_rig(mem()).await;
@@ -366,7 +366,7 @@ async fn relay_tail_rig() -> (super::fixture_http::HttpRig, crate::registry::Str
 /// SDK rewinds to its durable cursor); the coordinator used to rebuild a
 /// `ChangedIncarnation` from the bare 409, breaking the rewind contract on
 /// every cross-owner applied replay.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn relayed_applied_read_beyond_the_tail_keeps_the_owner_verdict() {
     let (rig, desc) = relay_tail_rig().await;
     let state = &rig.state;
@@ -402,7 +402,7 @@ async fn relayed_applied_read_beyond_the_tail_keeps_the_owner_verdict() {
 /// The page route (`streams-internal-read-page: 1`) answers a decided
 /// verdict as its typed body; the public route never speaks that
 /// vocabulary, header or not, and keeps the public error envelope.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_page_route_types_its_refusal_and_the_public_route_keeps_its_envelope() {
     let (rig, desc) = relay_tail_rig().await;
     let addr = rig.addr;
@@ -492,7 +492,7 @@ async fn the_page_route_types_its_refusal_and_the_public_route_keeps_its_envelop
 /// 2^64-1 silently started at the live tail. It now takes the past-the-tail
 /// rule every position beyond the tail takes, locally and through the relay,
 /// while a genuine "now" still starts at the tail.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn scan_index_u64_max_is_a_position_not_now_locally_and_relayed() {
     let (rig, desc) = relay_tail_rig().await;
     let state = &rig.state;
@@ -564,7 +564,7 @@ async fn scan_index_u64_max_is_a_position_not_now_locally_and_relayed() {
 /// The raw, product and page-route adapters admit a rawSeq of 2^64-1 as a
 /// position: nothing past the tail, a resume cursor that keeps the position,
 /// and an applied read refused as beyond the tail. Their "now" is unchanged.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn adapters_never_serve_a_u64_max_token_as_the_live_tail() {
     let (rig, desc) = relay_tail_rig().await;
     let addr = rig.addr;
@@ -670,7 +670,7 @@ async fn adapters_never_serve_a_u64_max_token_as_the_live_tail() {
 /// A position minted at a span's live tail sits at that span's sealed end
 /// once a split seals it. The read passes over the exhausted span and serves
 /// its successor from the successor's first record.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_position_at_a_sealed_span_end_continues_in_its_successor() {
     let _serial = super::fixture_failpoints::gap_lock().lock().await;
     let (state, addr) = http_rig(mem()).await;
@@ -769,7 +769,7 @@ async fn a_position_at_a_sealed_span_end_continues_in_its_successor() {
 /// the one that published it). A keyed read follows the lineage anyway:
 /// the parent's records first, and `now` at the live child, never at the
 /// sealed parent as if the stream were closed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_keyed_read_follows_the_lineage_when_the_clocks_disagree() {
     let (state, addr) = http_rig(mem()).await;
     let credentials = [("prisma-encryption-key", PRISMA_KEY)];
@@ -983,18 +983,18 @@ async fn a_refreshed_long_poll_waits_one_budget(surface: Surface, name: &str, wa
     engine_shutdown(&state).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_raw_long_poll_refreshed_across_a_split_waits_one_budget() {
     a_refreshed_long_poll_waits_one_budget(Surface::Raw, "deadline-raw", 2).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_product_long_poll_refreshed_across_a_split_waits_one_budget() {
     a_refreshed_long_poll_waits_one_budget(Surface::Product, "deadline-product", 2).await;
 }
 
 /// `waitMs` is unclamped: a 60 s long-poll's two waits take the 25 s cap.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_product_long_poll_over_the_cap_refreshed_across_a_split_waits_25_s() {
     a_refreshed_long_poll_waits_one_budget(Surface::Product, "deadline-cap", 60).await;
 }

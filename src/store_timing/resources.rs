@@ -177,7 +177,7 @@ mod tests {
     use std::sync::Arc;
     use std::task::Poll;
 
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn runtime_store_concurrency_is_shared_locally_and_independent_of_first_access() {
         let early = StoreResources::new(&crate::config::StorageConfig {
             bulk_inflight_max_bytes: 0,
@@ -238,7 +238,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn runtime_bulk_capacity_cancellation_and_exempt_paths_keep_their_own_owner() {
         let a = Arc::new(StoreResources::new(&crate::config::StorageConfig {
             bulk_inflight_max_bytes: 4,
@@ -289,7 +289,7 @@ mod tests {
         assert_eq!(a.bulk_stats()["inflight_bytes"], 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn configured_bulk_bounds_and_zero_length_io_keep_exact_capacity() {
         let disabled = StoreResources::new(&crate::config::StorageConfig {
             bulk_inflight_max_bytes: 0,

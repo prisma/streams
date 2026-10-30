@@ -12,7 +12,7 @@ use super::fixture_storage::{mem, skey};
     clippy::too_many_lines,
     reason = "product paging scenario; signed cursors bound to stream and key, exact reassembly and the response headers form one causal sequence; helper phases would hide which page broke the binding"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_read_pages_and_binds_cursors() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -207,7 +207,7 @@ async fn product_read_pages_and_binds_cursors() {
 /// Stage 6: product cursors survive a split — pagination hands the
 /// cursor across the sealed parent into the successor and reassembles
 /// the key's sequence exactly.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_read_follows_split_lineage() {
     let _l = gap_lock().lock().await;
     let store = mem();
@@ -301,7 +301,7 @@ async fn product_read_follows_split_lineage() {
     clippy::disallowed_methods,
     reason = "product long-poll fixture; the parked poll is joined after the waking append; it must be parked concurrently before the append is issued"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_long_poll_times_out_and_wakes() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -391,7 +391,7 @@ async fn product_long_poll_times_out_and_wakes() {
     clippy::too_many_lines,
     reason = "snapshot scan scenario; the records at snapshot creation, later appends and expiry form one causal sequence; helper phases would hide which record leaked into or out of the snapshot"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_scan_is_snapshot_exact() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -589,7 +589,7 @@ async fn product_scan_is_snapshot_exact() {
 /// decoder's refusals cannot swap two of them: identity is judged before
 /// expiry (a foreign, expired cursor is invalid, not gone), another token
 /// class is named as such, and only an authentic expired snapshot is 410.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_scan_answers_each_cursor_verdict() {
     let (state, addr) = http_rig(mem()).await;
     let key = [("prisma-encryption-key", PRISMA_KEY)];
@@ -670,7 +670,7 @@ async fn product_scan_answers_each_cursor_verdict() {
 
 /// Stage 6: scan traverses split lineage — sealed parent + both
 /// children, every record exactly once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_scan_traverses_split_lineage() {
     let _l = gap_lock().lock().await;
     let store = mem();
@@ -766,7 +766,7 @@ async fn product_scan_traverses_split_lineage() {
 }
 
 /// Stage 6: bytes-stream scan encodes values as base64.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_scan_bytes_stream() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -846,7 +846,7 @@ async fn floor_batch(addr: std::net::SocketAddr, key: &str, from: u64, to: u64) 
 /// between them. Every read but the last serves exactly four records, so
 /// most reads end inside a page, and the next read resumes at the next
 /// record: all 110 records come back once, in order.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_product_pager_at_the_byte_floor_resumes_inside_pages() {
     use super::fixture_http::{HttpRigOptions, cold_sealer, http_rig_build};
     let rig = http_rig_build(

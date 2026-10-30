@@ -15,7 +15,7 @@ use super::fixture_storage::mem;
 /// then refused the very record it was sealing with (live 409
 /// `sealed`). The sibling test above passes its own producer headers
 /// and never reaches this branch.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_seal_final_needs_no_caller_producer() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -62,7 +62,7 @@ async fn product_seal_final_needs_no_caller_producer() {
 /// seal-with-final used to close every segment and publish Sealed —
 /// dropping the final record permanently, with both requests reporting
 /// success.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_plain_seal_cannot_finish_someone_elses_final() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -160,7 +160,7 @@ async fn a_plain_seal_cannot_finish_someone_elses_final() {
 /// genuinely new sequence through as well: the descriptor said Sealing
 /// while a novel producer write landed. The refusal now rides with the
 /// request and the committer applies it after duplicate detection.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn producers_cannot_write_new_records_while_sealing() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -224,7 +224,7 @@ async fn producers_cannot_write_new_records_while_sealing() {
 /// The scaler must not publish a new writable child while a seal is in
 /// flight: the seal snapshots the live segments, so a successor created
 /// after that snapshot outlives the seal.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn topology_transitions_are_fenced_by_sealing() {
     let _l = gap_lock().lock().await;
     let store = mem();
@@ -315,7 +315,7 @@ async fn topology_transitions_are_fenced_by_sealing() {
     clippy::too_many_lines,
     reason = "seal topology scenario; the parked split and raw/keyed terminal write assertions form one publication proof; one-use phase wrappers would hide the causal relationship"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_parked_split_cannot_publish_under_a_sealed_collection() {
     let _l = gap_lock().lock().await;
     let store = mem();
@@ -476,7 +476,7 @@ async fn a_parked_split_cannot_publish_under_a_sealed_collection() {
 /// one, the operation identity concatenated record and routing key
 /// without lengths, and the intent went durable before the key was
 /// checked.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn seal_requests_are_identified_and_validated_exactly() {
     const OTHER_KEY: &str = "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=";
     let store = mem();
@@ -592,7 +592,7 @@ async fn seal_requests_are_identified_and_validated_exactly() {
 /// an EMPTY seal intent for it meant a crash after the intent let a
 /// later close-only finish the seal without them — and a request that
 /// failed validation left the collection sealing forever.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_raw_close_with_content_owes_its_records() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -669,7 +669,7 @@ async fn a_raw_close_with_content_owes_its_records() {
 /// owing a record nobody could deliver. That header was also accepted
 /// from the wire, which let any caller smuggle a record into a sealing
 /// collection.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_crashed_raw_final_close_is_resumed_by_an_ordinary_retry() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -783,7 +783,7 @@ async fn a_crashed_raw_final_close_is_resumed_by_an_ordinary_retry() {
 /// an exact replay and a plain seal stay 200 and a raw close-only a no-op.
 /// It answered 500 `internal`, retryable, so clients retried a refusal no
 /// retry can lift.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn another_operation_on_a_sealed_collection_is_refused_definitively() {
     let (state, addr) = http_rig(mem()).await;
     let key = [("prisma-encryption-key", PRISMA_KEY)];
@@ -848,7 +848,7 @@ async fn another_operation_on_a_sealed_collection_is_refused_definitively() {
 /// per-stream capacity refuses (the final was owed under a larger
 /// LIMIT_BYTES_PER_SEC than the restarted process runs with) is a 413 that
 /// leaves the owed claim exactly as the crash left it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_refused_owed_final_retry_leaves_its_claim_unrenewed() {
     async fn claim(state: &crate::http::AppState) -> Option<u64> {
         let sref = state.deployment.raw_adapter_sref("owedcap");

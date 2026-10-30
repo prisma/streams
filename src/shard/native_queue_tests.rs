@@ -143,7 +143,7 @@ fn settle(items: Vec<(u64, u32, SettleKind)>) -> NqOp {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_sent_message_is_claimed_acked_and_its_rows_and_page_are_deleted() {
     let (e, db) = engine("nq-ack").await;
     create(&e, QueueConfig::default()).await;
@@ -226,7 +226,7 @@ async fn a_sent_message_is_claimed_acked_and_its_rows_and_page_are_deleted() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_queue_tail_is_absorbed_in_place_and_never_marked_for_absorption() {
     let (e, db) = engine("nq-tail").await;
     create(&e, QueueConfig::default()).await;
@@ -251,7 +251,7 @@ async fn a_queue_tail_is_absorbed_in_place_and_never_marked_for_absorption() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn an_empty_claim_writes_nothing() {
     let (e, db) = engine("nq-empty").await;
     create(&e, QueueConfig::default()).await;
@@ -261,7 +261,7 @@ async fn an_empty_claim_writes_nothing() {
     assert_eq!(db.get(keys::state(&HASH)).await.unwrap(), before);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_duplicate_dedup_key_returns_the_original_and_the_budget_refuses_past_it() {
     let (e, _db) = engine("nq-dedup").await;
     let cfg = QueueConfig {
@@ -287,7 +287,7 @@ async fn a_duplicate_dedup_key_returns_the_original_and_the_budget_refuses_past_
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn exhausted_attempts_fail_keylessly_and_redrive_starts_a_new_cycle() {
     let (e, db) = engine("nq-fail").await;
     let mut cfg = QueueConfig::default();
@@ -347,7 +347,7 @@ async fn exhausted_attempts_fail_keylessly_and_redrive_starts_a_new_cycle() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn an_expired_lease_is_moved_by_the_sweep_and_a_late_extend_is_refused() {
     let (e, db) = engine("nq-lease").await;
     create(&e, QueueConfig::default()).await;
@@ -403,7 +403,7 @@ async fn an_expired_lease_is_moved_by_the_sweep_and_a_late_extend_is_refused() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_deleted_queue_leaves_no_row_and_no_page() {
     let (e, db) = engine("nq-delete").await;
     create(&e, QueueConfig::default()).await;
@@ -450,7 +450,7 @@ async fn a_deleted_queue_leaves_no_row_and_no_page() {
     assert!(db.get(keys::roster(&HASH)).await.unwrap().is_none());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn the_roster_driven_sweeper_moves_an_expired_lease_without_any_request() {
     let (e, db) = engine("nq-sweeper").await;
     create(&e, QueueConfig::default()).await;
@@ -487,7 +487,7 @@ async fn the_roster_driven_sweeper_moves_an_expired_lease_without_any_request() 
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_subscribed_queue_with_due_work_wakes_its_receiver_with_backoff_until_a_useful_claim() {
     let (e, db) = engine("nq-wake").await;
     create(&e, QueueConfig::default()).await;
@@ -534,7 +534,7 @@ async fn a_subscribed_queue_with_due_work_wakes_its_receiver_with_backoff_until_
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn cancel_deletes_untaken_and_held_messages_and_discard_deletes_only_failed_ones() {
     let (e, db) = engine("nq-cancel").await;
     let mut cfg = QueueConfig::default();
@@ -608,7 +608,7 @@ async fn cancel_deletes_untaken_and_held_messages_and_discard_deletes_only_faile
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn release_gives_the_attempt_back_twice_then_counts_and_extend_moves_the_deadline() {
     let (e, db) = engine("nq-release").await;
     create(&e, QueueConfig::default()).await;
@@ -669,7 +669,7 @@ async fn release_gives_the_attempt_back_twice_then_counts_and_extend_moves_the_d
     assert_eq!(v.lease_gen, d[0].lease_gen, "an extend keeps the lease");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn an_explicit_retry_past_retention_fails_and_a_scheduled_message_waits_for_its_time() {
     let (e, db) = engine("nq-retention").await;
     let cfg = QueueConfig {
@@ -733,7 +733,7 @@ async fn an_explicit_retry_past_retention_fails_and_a_scheduled_message_waits_fo
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_claim_respects_bytes_in_flight_and_pause() {
     let (e, db) = engine("nq-limits").await;
     let mut cfg = QueueConfig::default();
@@ -788,7 +788,7 @@ async fn a_claim_respects_bytes_in_flight_and_pause() {
     assert!(state(&db).await.paused);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_sweep_with_nothing_due_parks_the_roster_at_the_next_deadline() {
     let (e, db) = engine("nq-roster").await;
     create(&e, QueueConfig::default()).await;

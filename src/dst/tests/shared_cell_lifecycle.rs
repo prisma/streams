@@ -71,7 +71,7 @@ async fn refusal(cell: &Cell, bearer: &str) -> (u16, Option<String>) {
 /// index 8k) sees a byte-identical view, and the target answers as its
 /// new state requires. A signing-key rotation then keeps every view
 /// identical under the new key and refuses the retired one everywhere.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn transitions_leave_every_neighbour_byte_identical() {
     let mut cell = open_cell(CellSpec::open(cell_scale())).await;
     cell.create_everywhere().await;
@@ -339,7 +339,7 @@ fn absorption(cell: &Cell) -> String {
 /// idle handles are evicted back to the boot baseline by the shard
 /// ticker (`handle_idle_evict` shortened to 1 s); nothing is left
 /// inflight.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn per_project_state_is_bounded_and_released() {
     // Billing time moved by another test pins metered handles until the
     // real clock passes it; residency is measured on real billing time.
@@ -519,7 +519,7 @@ async fn closes_within(bound: fn(usize) -> usize) {
 /// walk, which pages 256 descriptors per pass across every project: on
 /// a cell of D descriptors every close lands within ceil(D / 256) + 1
 /// passes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn expired_streams_close_within_one_walk_circle() {
     closes_within(|d| d.div_ceil(256) + 1).await;
 }
@@ -527,7 +527,7 @@ async fn expired_streams_close_within_one_walk_circle() {
 /// A4 (L4): one project's closes do not wait on every other project's
 /// descriptors: they land within two walk passes however many streams
 /// the cell holds.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 #[ignore = "red until shared-cells phase B step 17: owner-scheduled billing closes"]
 async fn expired_streams_close_within_two_walk_passes() {
     closes_within(|_| 2).await;
@@ -692,7 +692,7 @@ async fn wake(aged: Aged) -> (u64, usize) {
 /// every project is served again. The cadence is an hour and tokio time
 /// never advances, so only a refusal can start that pass. Each feed in
 /// turn: policies, grants, keys.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_woken_cell_refreshes_on_its_first_stale_refusal() {
     let (mut shown, mut want) = (Vec::new(), Vec::new());
     for aged in [Aged::Policies, Aged::Grants, Aged::Keys] {

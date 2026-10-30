@@ -127,7 +127,7 @@ async fn assert_split_published(
 /// and the pass that follows executes it before the pass deadline. A loop
 /// that never starts, or whose pass deadline is already behind it when the
 /// pass begins, never splits.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_loop_splits_a_hot_segment_at_its_load_weighted_median() {
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
     let state = &rig.state;

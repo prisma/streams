@@ -8,7 +8,7 @@ use object_store::path::Path as ObjPath;
 
 /// Three inputs, three scripted results: one inner call, everything
 /// passes through, input and result both traced.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn delete_stream_delegates_exactly_once_and_traces_both_sides() {
     let (sp, calls, _consumed) = spy(vec![
         Ok(ObjPath::from("a/1.sst")),
@@ -58,7 +58,7 @@ async fn delete_stream_delegates_exactly_once_and_traces_both_sides() {
 /// The inner store returns FEWER results than inputs (batching stores
 /// coalesce): the client sees exactly what the store returned — the
 /// trace layer must not invent completions.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn delete_stream_never_fabricates_results() {
     let (sp, calls, _) = spy(vec![Ok(ObjPath::from("a/1.sst"))]);
     let s = TraceStore::verbatim(sp);
@@ -88,7 +88,7 @@ async fn delete_stream_never_fabricates_results() {
 }
 
 /// Input errors pass through untouched (and are traced as such).
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn delete_stream_preserves_input_errors() {
     let (sp, calls, _) = spy(vec![Ok(ObjPath::from("a/2.sst"))]);
     let s = TraceStore::verbatim(sp);
@@ -124,7 +124,7 @@ async fn delete_stream_preserves_input_errors() {
 }
 
 /// Inner failures pass through unchanged (and are traced as such).
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn delete_stream_preserves_inner_failures() {
     let (sp, calls, _) = spy(vec![Ok(ObjPath::from("a/1.sst")), Err(delete_err())]);
     let s = TraceStore::verbatim(sp);
@@ -148,7 +148,7 @@ async fn delete_stream_preserves_inner_failures() {
 /// Dropping the consumer mid-stream does not trigger extra delegated
 /// calls — the one invocation happened at dispatch, and nothing
 /// retries or replays behind the client's back.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn delete_stream_dropped_consumer_triggers_no_extra_calls() {
     let (sp, calls, consumed) = spy(vec![
         Ok(ObjPath::from("a/1.sst")),
@@ -182,7 +182,7 @@ async fn delete_stream_dropped_consumer_triggers_no_extra_calls() {
 /// Acceptance 8 (the double-count finding): one ordinary successful
 /// delete = ONE attempted operation in the ledger, even though the
 /// diagnostic trace holds both the input and the result observation.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn ordinary_delete_counts_once_in_the_operation_ledger() {
     let (sp, _, _) = spy(vec![Ok(ObjPath::from("a/1.sst"))]);
     let s = TraceStore::verbatim(sp);

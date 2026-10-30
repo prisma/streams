@@ -62,7 +62,7 @@ fn move_prefix(rigs: [&HttpRig; 2], prefix: &str, to: &str) {
 /// the production sweep: the replaced descriptor is gone from the catalog,
 /// so the pass is the only closer here, and driving it pins which instance
 /// runs each step and lets the settled set be read between them.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn each_instance_closes_only_the_replaced_segments_it_owns() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let (a, b) = owner_pair().await;
@@ -172,7 +172,7 @@ fn names_on_two_shards(a: &HttpRig) -> [(String, String); 2] {
 /// no drain runs in these rigs, which leaves the pass their only closer;
 /// driving it alone keeps the walk's own handling of foreign shards (the
 /// last test here) out of this verdict.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn closure_debts_owned_by_different_instances_all_settle() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let (a, b) = owner_pair().await;
@@ -248,7 +248,7 @@ async fn closure_debts_owned_by_different_instances_all_settle() {
 /// debt write. The production sweeps on both instances must close both
 /// gauges at the expiry, and the crash-left debt keeps waiting (its
 /// incarnation is still stored).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_crash_left_debt_is_walked_closed_behind_another_instances_dead_stream() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let (a, b) = owner_pair().await;

@@ -104,7 +104,7 @@ fn feed_identity_is_the_storage_hash() {
 /// Finding 10 coverage: bytes_out accounts EXACTLY the emitted
 /// frame bytes — one counter increment per body chunk, no more,
 /// no less (deterministic: a private Counters, no global state).
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn bytes_out_accounts_exactly_the_emitted_frames() {
     let usage = std::sync::Arc::new(crate::usage::Counters::default());
     let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
@@ -254,7 +254,7 @@ fn raw_controls_name_the_resume_position_cursor_and_flags() {
 /// Item 86: a catch-up read that advanced nothing is answered at one
 /// owner. A fatal cutoff ends the session at once; a failed read and an
 /// empty page each wait the bounded retry before the next read.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn a_stalled_catch_up_read_owes_its_pass_one_verdict() {
     let empty = crate::sse::feed::SourceBatch {
         scan_from: 4,
@@ -290,7 +290,7 @@ async fn a_stalled_catch_up_read_owes_its_pass_one_verdict() {
 
 /// Item 87 (red on eb742c42: the retried cause was dropped): a failed
 /// catch-up read logs its cause before the bounded wait.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn a_failed_catch_up_read_logs_its_cause() {
     let log = crate::sse::test_log::ErrorLog::capture();
     let failed = crate::sse::feed::SourceReadError::Retryable(anyhow::anyhow!("injected"));

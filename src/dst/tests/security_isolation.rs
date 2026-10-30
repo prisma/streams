@@ -14,7 +14,7 @@ use super::fixture_storage::mem;
     clippy::too_many_lines,
     reason = "two-project isolation scenario; the verified principals, cross-project requests and each project's private view form one causal sequence; helper phases would hide which boundary leaked"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn one_cell_serves_two_projects_with_full_isolation() {
     const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");
     const PUB: &str = include_str!("../fixtures/mt-test-rsa.pub.pem");
@@ -232,7 +232,7 @@ async fn one_cell_serves_two_projects_with_full_isolation() {
     clippy::excessive_nesting,
     reason = "noisy_neighbor_cannot_degrade_a_compliant_project; the fixture nests each tenant's request loop inside the task that runs it concurrently with the other tenant; flattening them would separate the loops from the concurrency under test"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn noisy_neighbor_cannot_degrade_a_compliant_project() {
     const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");
     const PUB: &str = include_str!("../fixtures/mt-test-rsa.pub.pem");

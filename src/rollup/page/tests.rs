@@ -47,7 +47,7 @@ async fn database_rows(db: &Db) -> Vec<(Vec<u8>, Vec<u8>)> {
     rows
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn one_page_shares_dedupe_month_and_aggregate_state() {
     let db = Arc::new(
         Db::builder(
@@ -114,7 +114,7 @@ async fn one_page_shares_dedupe_month_and_aggregate_state() {
     db.close().await.unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_later_envelope_failure_discards_all_earlier_staged_rows() {
     let db = Arc::new(
         Db::builder(

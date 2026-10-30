@@ -20,7 +20,7 @@ use std::sync::atomic::Ordering;
     clippy::disallowed_methods,
     reason = "ack-dispatch regression; the concurrent request is joined after the held dispatcher releases; sequential execution could not observe its blocked acknowledgement"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_gather_window_waits_for_ack_dispatch() {
     let inner = mem();
     let store = FaultStore::uniform(inner.clone(), 87, FaultPlan::new(0, 0, 30));
@@ -94,7 +94,7 @@ async fn the_gather_window_waits_for_ack_dispatch() {
     clippy::disallowed_methods,
     reason = "flush-generation regression; every staggered request is joined under its deadline; concurrency is the input needed to cross in-flight durability groups"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn commits_during_a_flush_do_not_extend_its_barrier() {
     let inner = mem();
     let slow_wal = FaultPlan {
@@ -161,7 +161,7 @@ async fn commits_during_a_flush_do_not_extend_its_barrier() {
 /// finds B (large) already pending. Threshold 4 must record a busy-skip;
 /// threshold-disabled must gather instead. The knob is the only
 /// difference, so the counters prove the mechanism, not scheduling luck.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_busy_next_generation_skips_the_gather_window() {
     for (skip_reqs, expect_skips) in [(4u32, true), (u32::MAX, false)] {
         let store = FaultStore::uniform(mem(), 91, FaultPlan::new(0, 0, 20));
@@ -256,7 +256,7 @@ async fn busy_generation_case(store: Arc<FaultStore>, skip_reqs: u32, expect_ski
 /// Also pins the idle contract: after quiet, a single append must not
 /// wait a gather window it has no herd to gather (regression guard for
 /// "gather only after a flush that dispatched work").
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn gather_pump_preserves_invariants_under_faults() {
     let mut total_gathers = 0u64;
     for seed in [3u64, 17, 41] {

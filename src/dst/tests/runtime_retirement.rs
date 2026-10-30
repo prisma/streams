@@ -81,7 +81,7 @@ fn plain_opener(
 /// prefix the instant it was evicted. A late notification from the
 /// retired incarnation must then be an idempotent no-op that cannot
 /// touch the replacement.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn retirement_arms_the_holdoff_and_a_stale_close_cannot_evict_a_replacement() {
     let store = mem();
     let st = store.clone();
@@ -166,7 +166,7 @@ async fn retirement_arms_the_holdoff_and_a_stale_close_cannot_evict_a_replacemen
 /// under the same write guard — no empty-slot window, no holdoff, no
 /// close. This is the R30 sweep's custody CAS losing to customer
 /// adoption.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_declined_retirement_keeps_the_engine_and_arms_nothing() {
     let store = mem();
     let st = store.clone();
@@ -238,7 +238,7 @@ async fn a_declined_retirement_keeps_the_engine_and_arms_nothing() {
     clippy::disallowed_methods,
     reason = "gate lock-order fixture; each side needs a runtime of its own so it can block on the other's lock, and both threads are joined after their completion channels report; a shared runtime could not hold the forced interleaving"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn retirement_and_opening_take_the_gate_locks_in_one_order() {
     use std::sync::mpsc;
     let store = mem();
@@ -350,7 +350,7 @@ async fn retirement_and_opening_take_the_gate_locks_in_one_order() {
 /// tests took their restart boundary from that. This characterizes what
 /// the helper guarantees: residents removed and close INITIATED — it
 /// signals the engine-owned loops to stop, it does not join them.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn engine_shutdown_really_retires_and_closes_every_resident() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -394,7 +394,7 @@ async fn engine_shutdown_really_retires_and_closes_every_resident() {
 /// `shard_moving` with a Retry-After of up to a minute. The reason now
 /// reaches the gate: a sweep close arms the base holdoff and leaves the
 /// strike ledger alone (the ledger itself is pinned in `sharddir::holdoff`).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_sweep_eviction_arms_only_the_base_holdoff() {
     let store = mem();
     let st = store.clone();
@@ -473,7 +473,7 @@ fn at_its_l0_cap(state: &crate::http::AppState) -> Option<Arc<slatedb::Db>> {
 /// at the cap, the stop settles every engine once the compactor frees a
 /// slot (within 30 s, not a manifest poll), the log closes Clean, and the
 /// next process reads every acknowledged record.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_shard_whose_log_is_at_its_l0_cap_closes_and_loses_nothing() {
     let store = mem();
     let rig = http_rig_build(

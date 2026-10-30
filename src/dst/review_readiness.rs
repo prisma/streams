@@ -11,7 +11,7 @@ use std::time::Duration;
     clippy::excessive_nesting,
     reason = "readiness_endpoint_refuses_each_permanent_critical_exit; the fixture nests the unready wait inside the timeout that bounds it inside the test; flattening it would separate the wait from the bound it must respect"
 )]
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn readiness_endpoint_refuses_each_permanent_critical_exit() {
     for outcome in 0..3 {
         let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;

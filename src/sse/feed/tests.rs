@@ -257,7 +257,7 @@ fn read_cap_is_two_thirds_of_the_ring_within_its_bounds() {
 /// Budget model B (red): retention reserves the ACTUAL retained
 /// bytes; extra subscribers cost nothing; teardown returns the
 /// budget to exactly zero.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn shared_retention_reserves_actual_bytes_only() {
     let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
     let (feed, _src) = feed_with(3, 8, 1 << 20, &budget);
@@ -287,7 +287,7 @@ async fn shared_retention_reserves_actual_bytes_only() {
 
 /// Model B: retained bytes come back when the feed is dropped at
 /// zero subscribers — budget returns EXACTLY to zero.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn retained_bytes_return_to_zero_at_teardown() {
     let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
     let (feed, _src) = feed_with(3, 8, 1 << 20, &budget);
@@ -307,7 +307,7 @@ async fn retained_bytes_return_to_zero_at_teardown() {
 /// Model B: a process budget too small for the batch admits the
 /// shared feed but retains NOTHING — the honest uncached posture,
 /// never a phantom reservation.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn budget_exhaustion_publishes_without_retention() {
     let budget = Arc::new(FeedMemoryBudget::new_for_test(16));
     let (feed, _src) = feed_with(2, 8, 1 << 20, &budget);
@@ -327,7 +327,7 @@ async fn budget_exhaustion_publishes_without_retention() {
 /// WITHOUT retention — it can never be evicted before anyone
 /// consumed it. Subscribers below the new floor take the typed lag
 /// path and resume durably.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn oversized_batch_is_never_self_evicted() {
     let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
     // Ring far below one batch's prepared charge (508 > 500).
@@ -347,7 +347,7 @@ async fn oversized_batch_is_never_self_evicted() {
 
 /// Eviction releases exactly the evicted batch's reservation; the
 /// surviving batch stays reserved and consumable.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn eviction_releases_exactly_the_evicted_charge() {
     let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
     // Ring fits roughly one small batch.
@@ -375,7 +375,7 @@ async fn eviction_releases_exactly_the_evicted_charge() {
 /// Finding 4 (red): on 2 -> 1 the survivor keeps the retained ring —
 /// an unread batch must remain consumable, never a lag disconnect
 /// caused by ANOTHER subscriber leaving.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn survivor_drains_retained_batches_after_drop_to_one() {
     let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
     let (feed, src) = feed_with(3, 8, 1 << 20, &budget);
@@ -441,7 +441,7 @@ async fn survivor_drains_retained_batches_after_drop_to_one() {
 
 /// Finding 6 (red): a no-progress partial page changes nothing —
 /// no head movement, NO version bump (no wake-storm, no spin).
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn no_progress_page_never_bumps_the_version() {
     let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
     let (feed, src) = feed_with(10, 8, 1 << 20, &budget);
@@ -460,7 +460,7 @@ async fn no_progress_page_never_bumps_the_version() {
 
 /// Finding 6 (red): a failed source read changes nothing and bumps
 /// nothing; a later healthy read proceeds normally.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn source_failure_is_typed_and_recoverable() {
     let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
     let (feed, src) = feed_with(4, 8, 1 << 20, &budget);
@@ -488,7 +488,7 @@ async fn source_failure_is_typed_and_recoverable() {
 /// Finding 5 (red): Idle and Closed version semantics. Nothing
 /// durable beyond the head means NO state change and NO bump; the
 /// close transition bumps EXACTLY once.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn idle_never_bumps_and_closed_bumps_exactly_once() {
     let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
     let (feed, src) = feed_with(2, 8, 1 << 20, &budget);
@@ -522,7 +522,7 @@ async fn idle_never_bumps_and_closed_bumps_exactly_once() {
 /// Finding 5 (red): retained batches drain back-to-back — the
 /// session loop consumes every visible batch with NO further source
 /// reads and exactly one version bump per real publication.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn retained_batches_drain_without_extra_reads() {
     let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
     let (feed, src) = feed_with(0, 8, 1 << 20, &budget);
@@ -563,7 +563,7 @@ async fn retained_batches_drain_without_extra_reads() {
     clippy::disallowed_methods,
     reason = "abort fixture owns the driver; cancellation is observed through its joined handle; supervised service tasks cannot exercise direct task abort"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn aborted_drive_releases_the_permit() {
     let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
     let (feed, src) = feed_with(4, 8, 1 << 20, &budget);
@@ -609,7 +609,7 @@ async fn aborted_drive_releases_the_permit() {
     clippy::disallowed_methods,
     reason = "permit fixture owns both drivers; both handles are joined after the controlled interleaving; serial drives cannot exercise permit theft"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn driver_permit_releases_exactly_once() {
     let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
     let (feed, src) = feed_with(1, 8, 4096, &budget);
@@ -661,7 +661,7 @@ async fn driver_permit_releases_exactly_once() {
 /// return the map to its steady state (entries live only while a
 /// project has live feeds), and an ACTIVE project's entry is never
 /// evicted by other projects' churn.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn project_retention_tracker_is_bounded_under_churn() {
     let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
     // A long-lived feed pins its project's entry across the churn.
@@ -714,7 +714,7 @@ async fn project_retention_tracker_is_bounded_under_churn() {
     clippy::disallowed_methods,
     reason = "reconciliation fixture owns the parked driver; its handle is joined after releasing the source; serial execution cannot exercise competing installation"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn reconcile_and_driver_install_bump_generation_once() {
     let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
     let (feed, src) = feed_with(0, 8, 4096, &budget);
@@ -755,7 +755,7 @@ async fn reconcile_and_driver_install_bump_generation_once() {
 /// the new publication replaces the old batch's reservation
 /// net-of-release; the cap is never exceeded and no uncached
 /// publication occurs.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn full_ring_rolls_forward_at_full_global_cap() {
     // One 1-record batch charges 340; ring 500 fits exactly one.
     let budget = Arc::new(FeedMemoryBudget::new_for_test(340));
@@ -789,7 +789,7 @@ async fn full_ring_rolls_forward_at_full_global_cap() {
 /// Rollover (red): EXTERNAL budget exhaustion — the feed's next
 /// publication cannot reserve, so its now-unreachable retained ring
 /// is cleared and released; another feed's retention is untouched.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn external_exhaustion_clears_unreachable_ring() {
     // Room for exactly two 340 batches, held by two DIFFERENT feeds.
     let budget = Arc::new(FeedMemoryBudget::new_for_test(680));
@@ -839,7 +839,7 @@ async fn external_exhaustion_clears_unreachable_ring() {
 /// Rollover (red): an oversized batch after ordinary retained
 /// batches clears the old ring and its reservation too — not just
 /// the new batch.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn oversized_batch_clears_the_old_ring() {
     let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
     // Ring 500: a 1-record batch (340) fits; a 3-record batch (588)
@@ -870,7 +870,7 @@ async fn oversized_batch_clears_the_old_ring() {
     clippy::disallowed_methods,
     reason = "retention fixture owns all 32 drivers; all handles are joined before assertions; sequential futures cannot exercise simultaneous reservation pressure"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8, crate = "crate::test_rt")]
 async fn concurrent_retention_never_exceeds_cap() {
     const MAX: u64 = 8 * 340; // room for 8 of 32 concurrent batches
     let budget = Arc::new(FeedMemoryBudget::new_for_test(MAX));

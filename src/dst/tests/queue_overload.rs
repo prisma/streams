@@ -86,7 +86,7 @@ async fn every_route_refused(cell: &Cell, code: &str, retry: &str) {
 /// stored, inside line x 9/8 too, and past it shed `429 rate_limited` as an
 /// append is; under the line both are served again. Before: queue requests
 /// were never judged, so the flooder's sends were served over the line.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn over_the_shed_line_the_queue_project_over_its_share_is_refused_before_its_neighbour() {
     let cell = flooded_cell().await;
     let admission = &cell.state.admission;
@@ -133,7 +133,7 @@ async fn over_the_shed_line_the_queue_project_over_its_share_is_refused_before_i
 /// Retry-After 1, on every queue route, while its neighbour's sends are
 /// served and stored up to cap x 5/4 and refused as appends are past it.
 /// Before: the flooder's queue requests were served at the cap.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn at_the_inflight_cap_the_queue_project_over_its_share_is_refused_before_its_neighbour() {
     let cell = flooded_cell().await;
     let admission = &cell.state.admission;
@@ -184,7 +184,7 @@ const PROJECT_LINE: u64 = 256 * 1024;
 /// line and is refused, the same message with nothing held is sent.
 /// Before: queue writes passed the latch and buffered their bodies
 /// uncharged, so both were sent.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_queue_write_is_held_to_its_projects_memory_line() {
     let cell = open_cell(CellSpec::open(1)).await;
     cell.state
@@ -280,7 +280,7 @@ async fn a_queue_write_is_held_to_its_projects_memory_line() {
 /// sent reads the refusal. A claim and the queue's stats are served, and
 /// under the line the send is served. Before: queue writes never met the
 /// RSS shed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn over_the_shed_line_queue_sends_are_shed_before_their_bodies() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let cell = open_cell(CellSpec::open(1)).await;
@@ -338,7 +338,7 @@ async fn over_the_shed_line_queue_sends_are_shed_before_their_bodies() {
 /// queue send and a settle are refused `429 rate_limited`, Retry-After 1,
 /// as an append is, while a claim and the queue's stats are served; under
 /// the cap the send is served. Before: queue writes never met the gate.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn at_the_inflight_cap_queue_sends_and_settles_are_refused_as_appends_are() {
     let cell = open_cell(CellSpec::open(1)).await;
     assert_eq!(ask(&cell, 0, "PUT", "/v1/queues/jobs", "").await.0, 201);
@@ -392,7 +392,7 @@ const COMMIT_QUEUE: usize = 2;
 /// bound before); once the committer is released the reads are answered
 /// and the refused send stored nothing. Before: the send waited for room
 /// until the committer moved.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_queue_operation_on_a_full_committer_is_answered_at_once() {
     let mut spec = CellSpec::open(1);
     spec.shard.queue_reqs = COMMIT_QUEUE;
@@ -462,7 +462,7 @@ async fn parked(admission: &crate::admission::AdmissionController, n: i64) -> bo
 /// a send is still admitted beside it, and the send wakes it with the
 /// message. Before: the claim waited as an active request, so the send
 /// was the ninth active and refused `429 rate_limited`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_waiting_claim_parks_and_leaves_the_write_gate_to_sends() {
     let cell = open_cell(CellSpec::open(1)).await;
     assert_eq!(ask(&cell, 0, "PUT", "/v1/queues/parking", "").await.0, 201);
@@ -518,7 +518,7 @@ const READ_MEMORY: u64 = 64 * 1024;
 /// it reserves what it returns, never its budget; and a claim waiting for
 /// work holds nothing. Before: claims reserved nothing, so the first claim
 /// was served over the full read memory.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_claim_reserves_read_memory_only_for_what_it_returns() {
     use crate::admission::read_memory::ReadHold;
     let cell = open_cell(CellSpec::open(1)).await;
@@ -602,7 +602,7 @@ async fn settle_one(cell: &Cell, token: &str, op: &str) -> (Answer, Option<Strin
 /// that extends a lease is refused `429 rate_limited` as an append is, and
 /// past the hard line every settle is. Under the line the last lease is
 /// acked. Before: every settle was refused over the line.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn over_the_shed_line_a_settle_that_ends_leases_passes_until_the_hard_line() {
     let cell = open_cell(CellSpec::open(1)).await;
     assert_eq!(ask(&cell, 0, "PUT", "/v1/queues/jobs", "").await.0, 201);

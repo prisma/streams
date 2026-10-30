@@ -98,7 +98,7 @@ async fn stream_owned_by(rig: &HttpRig) -> (String, String) {
 /// drain still runs (the peer's open fences the draining writer: fencing,
 /// not heartbeat freshness, is what rules out two writers), and the outcome
 /// is a handoff.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_planned_drain_hands_every_shard_to_its_peer_before_the_stop() {
     let (data, fleet) = (mem(), mem());
     seed_ring(&fleet, 2).await;
@@ -170,7 +170,7 @@ async fn a_planned_drain_hands_every_shard_to_its_peer_before_the_stop() {
 
 /// A drain whose peer never publishes a view without it runs out of budget
 /// and says who still routes to it; it is never reported as a handoff.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_drain_a_peer_never_acknowledges_times_out_and_names_it() {
     let (data, fleet) = (mem(), mem());
     seed_ring(&fleet, 2).await;
@@ -209,7 +209,7 @@ async fn a_drain_a_peer_never_acknowledges_times_out_and_names_it() {
 /// routing to a draining instance, so no drain begins: the drain says so at
 /// once and never announces itself, and the instance stops as it did before
 /// drains existed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_peer_of_an_earlier_version_means_no_drain() {
     let (data, fleet) = (mem(), mem());
     seed_ring(&fleet, 2).await;
@@ -244,7 +244,7 @@ async fn a_peer_of_an_earlier_version_means_no_drain() {
 
 /// A fleet of one has no peer to take its ownership: its drain says so at
 /// once instead of waiting out its budget.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fleet_of_one_has_no_peer_to_hand_off_to() {
     let (data, fleet) = (mem(), mem());
     seed_ring(&fleet, 1).await;
@@ -269,7 +269,7 @@ async fn a_fleet_of_one_has_no_peer_to_hand_off_to() {
 /// heartbeat is published while the runtime still runs (it also says
 /// withdrawn: the ended signal loop is a critical loop), its peer drops it,
 /// and only then does the stop follow.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_requested_stop_drains_the_fleet_runtime_first() {
     let (data, fleet) = (mem(), mem());
     seed_ring(&fleet, 2).await;
@@ -499,7 +499,7 @@ impl ObjectStore for RiggedFleet {
 /// never publishes a view that read the drain (parked in a coordination
 /// read, heartbeat still live) keeps the drain from completing, and the
 /// drain says so when its budget runs out; it never reports a handoff.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_drain_a_live_peer_never_reads_times_out_and_names_it() {
     let (data, fleet) = (mem(), mem());
     seed_ring(&fleet, 2).await;
@@ -548,7 +548,7 @@ async fn a_drain_a_live_peer_never_reads_times_out_and_names_it() {
 /// there is no peer at once, announces nothing, and does not wait out its
 /// budget. The count is pinned: the rigs report the whole test process's
 /// CPU, so a busy run would otherwise scale the fleet out.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_sole_member_within_the_count_has_no_peer_to_hand_off_to() {
     let data = mem();
     let seeded = mem();
@@ -611,7 +611,7 @@ async fn reachable_until_told(data: &Arc<dyn ObjectStore>) -> (HttpRig, Arc<Atom
 /// A fleet that cannot be read before anything is announced: the drain gives
 /// up at one document deadline, well inside its budget, announces nothing,
 /// and names what it could not read.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_unreadable_fleet_times_out_before_anything_is_announced() {
     let data = mem();
     let (member, unreachable) = reachable_until_told(&data).await;
@@ -648,7 +648,7 @@ async fn an_unreadable_fleet_times_out_before_anything_is_announced() {
 /// A read error before the document deadline is retried: once the fleet
 /// reads again, the drain reaches its real outcome (a fleet of one has no
 /// peer), not a timeout.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_passing_read_error_before_announcing_is_retried() {
     let data = mem();
     let (member, unreachable) = reachable_until_told(&data).await;
@@ -692,7 +692,7 @@ async fn beats(fleet: &Arc<dyn ObjectStore>, instance: &str) -> bool {
 /// at every pass, so the peer publishes a view that read its drain, and the
 /// drain hands off instead of waiting out its budget. The count is pinned:
 /// the rigs report the whole test process's CPU.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_drain_beyond_the_count_is_read_by_its_peer() {
     let data = mem();
     let seeded = mem();

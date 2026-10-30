@@ -240,7 +240,7 @@ async fn raw_ttl_stream(state: &State, addr: Addr, name: &str) -> (Desc, Engine,
 /// the PRODUCTION sweep (`sweep_owned_outboxes`: walk, then the debt pass)
 /// closes its acked-clean row exactly at the persisted expiry, once, then
 /// forgets the debt. The new incarnation's gauge is not the debt's.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_raw_recreation_over_an_idle_expired_incarnation_closes_at_its_expiry() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let (state, addr) = http_rig(mem()).await;
@@ -306,7 +306,7 @@ async fn a_raw_recreation_over_an_idle_expired_incarnation_closes_at_its_expiry(
 /// sweep far less often, so the drain meets the replaced row first. The debt
 /// carries the persisted expiry, and the owner's requirement is that
 /// storage closes exactly there; whichever closer runs first must honour it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_dirty_row_of_a_replaced_incarnation_still_closes_at_its_expiry() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let (state, addr) = http_rig(mem()).await;
@@ -465,7 +465,7 @@ pub(super) async fn recreate_and_settle(case: &IdleJanuary) -> Meta {
 /// gauge up to the expiry, and February's carry bills nothing for the
 /// replaced incarnation. A close at settlement time would have rolled the
 /// row into February and billed January to its boundary.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_month_crossing_recreation_bills_storage_only_up_to_the_expiry_instant() {
     let _clock = crate::billing::billing_clock_lock().write().await;
     let _reset = ClockReset;
@@ -510,7 +510,7 @@ async fn a_month_crossing_recreation_bills_storage_only_up_to_the_expiry_instant
 /// January expiry then reaches the rollup late. The owner's requirement is
 /// unchanged: January bills up to the expiry, and February (and every later
 /// month) carries nothing for an incarnation whose storage closed in January.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_month_closed_before_settlement_still_bills_only_up_to_the_expiry_instant() {
     let _clock = crate::billing::billing_clock_lock().write().await;
     let _reset = ClockReset;
@@ -565,7 +565,7 @@ fn sibling_on_shard(state: &State, desc: &Desc) -> String {
 /// walk closes it at its expiry; the debt still waits. A later real
 /// recreation keeps the existing debt, and a new process (no in-memory
 /// cursor) settles and deletes it without a second close.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_debt_written_before_a_crashed_replacement_waits_for_the_walk_and_settles_later() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let store = mem();
@@ -674,7 +674,7 @@ async fn parked_within(engaged: &std::sync::atomic::AtomicU64, bound: Duration) 
 /// loses, re-reads, finds the incarnation live and replaces nothing. Once
 /// the debt's own descriptor reads expired but the stored one does not, the
 /// pass drops the debt and leaves the live gauge untouched.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_recreation_that_loses_its_cas_to_a_ttl_renewal_leaves_a_debt_the_pass_drops() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let store = FaultStore::new(mem(), 505, FaultProfile::clean());
@@ -768,7 +768,7 @@ async fn a_recreation_that_loses_its_cas_to_a_ttl_renewal_leaves_a_debt_the_pass
 /// and 1 and settles only 2, never a segment in the pass that submitted its
 /// close; the next pass settles 0 and 1, and only that last settlement
 /// deletes the debt.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_split_incarnation_settles_segment_by_segment_and_only_then_forgets_its_debt() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let (state, addr) = http_rig(mem()).await;
@@ -925,7 +925,7 @@ async fn assert_retained_and_billed(state: &State, addr: Addr, forked: &Forked) 
 /// Owner requirement "fork retention", soft-deleted source: deleting a
 /// source its fork reads retains it; neither surface replaces it, no debt is
 /// written, and its storage line stays active with `retained_by_forks`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_soft_deleted_source_is_never_replaced_and_keeps_billing() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let (state, addr) = http_rig(mem()).await;
@@ -945,7 +945,7 @@ async fn a_soft_deleted_source_is_never_replaced_and_keeps_billing() {
 /// soft-deleted source's (above), stops billing at the expiry: the walk
 /// closes the row exactly at the persisted instant and does not flag it
 /// retained.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_expired_source_its_fork_reads_is_never_replaced_and_stops_billing_at_expiry() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let (state, addr) = http_rig(mem()).await;

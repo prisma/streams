@@ -14,7 +14,7 @@ use super::fixture_storage::mem;
     clippy::too_many_lines,
     reason = "split-consumer deletion scenario; leasing on both segments, failing one segment's cleanup and retrying to a clean state form one causal sequence; helper phases would hide which segment retained rows"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_split_consumers_deletion_fails_one_segment_then_retries_clean() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -234,7 +234,7 @@ async fn a_split_consumers_deletion_fails_one_segment_then_retries_clean() {
     clippy::disallowed_methods,
     reason = "parked pull fixture; the pull is released and joined before its lease verdict is checked; it must park before settlement while the generation is deleted"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_parked_pull_cannot_lease_after_its_generation_was_deleted() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -364,7 +364,7 @@ async fn a_parked_pull_cannot_lease_after_its_generation_was_deleted() {
 /// nothing — no error may be swallowed into a partial deletion that
 /// reports success. The failure is injected at the scan boundary (the
 /// deterministic stand-in for a store error mid-enumeration).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_failed_config_scan_aborts_the_delete_untouched() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -482,7 +482,7 @@ async fn a_failed_config_scan_aborts_the_delete_untouched() {
     clippy::disallowed_methods,
     reason = "same-group configuration fixture; both configuration puts are joined after the held commit is released; they must be staged concurrently to share one write group"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn same_group_config_puts_see_each_other() {
     let store = mem();
     let (state, addr) = http_rig(store).await;

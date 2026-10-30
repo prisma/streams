@@ -28,7 +28,7 @@ fn filed(project: &str, name: &str, deleted: bool) -> PersistedDescriptor {
 /// descriptors, terminals included, come back exactly once, each bound to the
 /// project in its OWN key, across a cursor that lands mid-project; the
 /// customer catalog still sees one project's live streams only.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn reconciliation_page_reaches_terminals_of_every_project_in_key_order() {
     let (_store, reg) = registry();
     let mut expected = Vec::new();
@@ -63,7 +63,7 @@ async fn reconciliation_page_reaches_terminals_of_every_project_in_key_order() {
     assert_eq!(visible.streams[0].project_id, b);
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn reconciliation_page_fails_closed_on_a_key_it_cannot_bind() {
     // A descriptor filed under ANOTHER project's key is corruption, not a row.
     let (store, reg) = registry();
@@ -108,7 +108,7 @@ async fn stored_at(store: &Arc<dyn ObjectStore>, reg: &Registry, name: &str, len
 /// descriptors with no variable parts, stored at 128 KiB less a decoded
 /// descriptor's size (so each counts exactly 128 KiB), list as a page of
 /// 32 (4 MiB to the byte) continued after the 32nd, then a final page of 8.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_catalog_page_holds_at_most_4_mib_of_descriptors() {
     let (store, reg) = registry();
     let stored = 128 * 1024 - std::mem::size_of::<crate::registry::StreamDesc>();
@@ -130,7 +130,7 @@ async fn a_catalog_page_holds_at_most_4_mib_of_descriptors() {
 /// return, and 64 more: a page of one stream behind 72 tombstones ends
 /// after the 72nd, empty and not exhausted, and the page continued after
 /// it serves the live stream.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_catalog_page_scans_eight_descriptors_a_stream_and_64_more() {
     let (_store, reg) = registry();
     for n in 0..72 {
@@ -160,7 +160,7 @@ async fn a_catalog_page_scans_eight_descriptors_a_stream_and_64_more() {
 /// definitions adds beyond their text, and stops at 4 MiB of that: 120
 /// descriptors of 64 watches of 16 one-byte pointers (about 6 KB stored,
 /// about 42 KB decoded each) list as a page of as many as fit, not 120.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_catalog_page_counts_its_descriptors_as_decoded() {
     let (store, reg) = registry();
     let watches: Vec<crate::registry::WatchDefinition> = (0..64)
@@ -220,7 +220,7 @@ fn a_catalog_page_reserves_its_page_and_what_it_fetches_ahead() {
 /// C4 (c): a descriptor over 128 KiB fails its page closed, the project's
 /// catalog and the cell's reconciliation alike; one of exactly 128 KiB is
 /// served.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_descriptor_over_128_kib_fails_its_catalog_page_closed() {
     let (store, reg) = registry();
     stored_at(&store, &reg, "at", 128 * 1024).await;

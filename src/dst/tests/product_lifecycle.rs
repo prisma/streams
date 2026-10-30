@@ -6,7 +6,7 @@ use super::fixture_storage::mem;
 
 /// Typed creation, idempotence, config conflict, metadata shape, and the
 /// collection's watch answers, which no cache may store.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_create_metadata_roundtrip() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -128,7 +128,7 @@ async fn assert_watch_answer(
 
 /// The clean switch rejects experimental product inputs; __ds is
 /// reserved on both surfaces.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_clean_switch_rejections() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -196,7 +196,7 @@ async fn product_clean_switch_rejections() {
 
 /// Product seal is durable, idempotent, collection-wide, and the RAW
 /// default-key view observes it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_seal_collection_wide() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -259,7 +259,7 @@ async fn product_seal_collection_wide() {
 /// inputs are rejected (never translated), removed routes are unknown,
 /// and the descriptor no longer carries profile fields (enforced at
 /// compile time by their absence; this test pins the wire behavior).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn profiles_are_removed_from_every_surface() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -330,7 +330,7 @@ async fn profiles_are_removed_from_every_surface() {
     clippy::too_many_lines,
     reason = "dual creation scenario; the raw idempotent PUT and the product create resolve against one incarnation in order; helper phases would hide which surface created a second incarnation"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn typed_creation_dual_contract() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -493,7 +493,7 @@ async fn typed_creation_dual_contract() {
 
 /// Stage 8 §7.2 + §10: seal with an atomic final append (deduped under
 /// a producer retry), and the paginated catalog list.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_seal_final_append_and_catalog() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -583,7 +583,7 @@ async fn product_seal_final_append_and_catalog() {
     clippy::too_many_lines,
     reason = "dual-surface corpus scenario; the twelve equivalent operation pairs are checked against one stream in order; helper phases would hide which pair diverged"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn dual_surface_equivalence_corpus() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -791,7 +791,7 @@ async fn dual_surface_equivalence_corpus() {
 /// record under the DEFAULT key, where a reader of the named key never
 /// finds it. fetch sends such text as Latin-1 and curl as UTF-8, so any
 /// decode would be a guess. Both append routes share the handler.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_append_key_that_is_not_header_text_is_refused_not_filed_under_the_default_key() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -867,7 +867,7 @@ async fn an_append_key_that_is_not_header_text_is_refused_not_filed_under_the_de
 /// answered 409 `gone` ("retained for live forks") for any winner holding a
 /// child reference: a serving collection another instance had recreated and
 /// forked while this instance still cached the previous tombstone.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_product_create_that_loses_to_a_live_forked_incarnation_is_idempotent() {
     let store = mem();
     let (state, addr) = http_rig(store).await;

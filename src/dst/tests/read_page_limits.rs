@@ -24,7 +24,7 @@ fn command(desc: &crate::registry::StreamDesc, from: u64) -> ReadCommand {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r06a_compressed_local_and_peer_pages_have_identical_complete_sequences() {
     let rig = http_rig_build(
         mem(),

@@ -75,7 +75,7 @@ fn is_cores_over(desired: &crate::fleet::Desired, util: f64) -> bool {
 /// more want four instances and more. A controller that multiplied would
 /// publish three, and one that took the remainder would leave the fleet of
 /// one alone.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_fleet_grows_to_the_cores_in_use_over_the_scale_out_target() {
     let desired = first_publication(1, |cli| cli.fleet_max = 512).await;
     assert_eq!(
@@ -102,7 +102,7 @@ async fn the_fleet_grows_to_the_cores_in_use_over_the_scale_out_target() {
 /// target so the fleet does not flap: three cores in use and more keep six
 /// instances and more. A controller that multiplied would keep two, and one
 /// that took the remainder would shrink to one.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_fleet_shrinks_to_the_cores_in_use_over_the_scale_in_ceiling() {
     let desired = first_publication(512, |cli| {
         cli.fleet_max = 512;

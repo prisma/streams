@@ -100,7 +100,7 @@ async fn park_append<T: Send + 'static>(
 /// its answer makes the NAME resolve to the successor. The count belongs
 /// to the incarnation the append committed to, never to whatever the name
 /// resolves to afterwards.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_append_straddling_a_recreate_counts_on_the_incarnation_it_committed_to() {
     let (state, addr) = http_rig(mem()).await;
     let committed = product_stream(&state, addr, "opcrecreate").await;
@@ -137,7 +137,7 @@ async fn an_append_straddling_a_recreate_counts_on_the_incarnation_it_committed_
 
 /// Red: the count is taken from the outcome, so a descriptor store that
 /// fails right after the commit cannot lose it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_append_counts_when_its_descriptor_cannot_be_read_again() {
     let (state, addr) = http_rig(mem()).await;
     let desc = product_stream(&state, addr, "opcreread").await;
@@ -163,7 +163,7 @@ async fn an_append_counts_when_its_descriptor_cannot_be_read_again() {
 }
 
 /// Red, raw surface: the same outcome-held count for `POST /v1/stream`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn raw_append_counts_when_its_descriptor_cannot_be_read_again() {
     let (state, addr) = http_rig(mem()).await;
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/opcrawreread", &JSON, b"").await;
@@ -197,7 +197,7 @@ async fn raw_append_counts_when_its_descriptor_cannot_be_read_again() {
 
 /// Pin: the product append answer is JSON that is never cached, with
 /// exactly the documented keys.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_product_append_answers_json_that_is_never_cached() {
     let (state, addr) = http_rig(mem()).await;
     product_stream(&state, addr, "opcwire").await;
@@ -225,7 +225,7 @@ async fn a_product_append_answers_json_that_is_never_cached() {
 
 /// Pin: one count per accepted product request (a producer duplicate
 /// included, a batch once), none for a refusal.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_append_counts_follow_the_typed_outcome() {
     let (state, addr) = http_rig(mem()).await;
     let epoch = product_stream(&state, addr, "opcproduct")
@@ -280,7 +280,7 @@ async fn product_append_counts_follow_the_typed_outcome() {
 
 /// Pin: one count per accepted raw request (a producer duplicate and a
 /// close included), none for a refusal.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn raw_append_counts_follow_the_typed_outcome() {
     let (state, addr) = http_rig(mem()).await;
     let path = "/v1/stream/opcrawcount";
@@ -341,7 +341,7 @@ async fn raw_append_counts_follow_the_typed_outcome() {
     clippy::disallowed_methods,
     reason = "abandoned-append fixture; the handler is aborted while durability dispatch is held and joined before release; run inline the test could not drop it between the commit and its answer"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_append_its_handler_never_answered_is_not_counted() {
     let (state, addr) = http_rig(mem()).await;
     let desc = product_stream(&state, addr, "opcgone").await;
@@ -397,7 +397,7 @@ async fn an_append_its_handler_never_answered_is_not_counted() {
 
 /// Pin: a recreated name is a new incarnation, and each incarnation's
 /// appends are counted on its own identity.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_recreated_stream_counts_each_incarnation_on_its_own_identity() {
     let (state, addr) = http_rig(mem()).await;
     let records = "/v1/streams/opcreborn/records";
@@ -451,7 +451,7 @@ async fn pulled(
 /// Red: a settle that dead-letters appends to its DLQ target, and the
 /// count is taken from the settle's own outcome, so a source descriptor
 /// store that fails right after the settle cannot lose it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_settle_counts_when_its_descriptor_cannot_be_read_again() {
     let (state, addr) = http_rig(mem()).await;
     product_stream(&state, addr, "opcdlqtgt").await;
@@ -490,7 +490,7 @@ async fn a_settle_counts_when_its_descriptor_cannot_be_read_again() {
 
 /// Pin: one queue operation per accepted settle (an all-stale settle
 /// included), none for a refusal; the settle answer's exact bytes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn settle_counts_follow_the_typed_outcome() {
     let (state, addr) = http_rig(mem()).await;
     let config = br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#;
@@ -590,7 +590,7 @@ fn account_rows(
 /// miss of its own, so the pair is taken again, 10 ms apart, until one runs
 /// in a window nothing else counted in: a pair that meters its two reads
 /// counts two in every window.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn idle_rollup_steps_count_no_unowned_meter_event() {
     use crate::billing::UNOWNED_METER_EVENTS;
     use std::sync::atomic::Ordering::Relaxed;

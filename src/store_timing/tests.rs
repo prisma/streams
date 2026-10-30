@@ -86,7 +86,7 @@ fn http_op_mapping() {
     clippy::disallowed_methods,
     reason = "bulk-gate concurrency fixture; every spawned task is joined within the test; independent waiters are required to exercise occupied capacity"
 )]
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn bulk_gate_bounds_concurrent_bytes() {
     use std::sync::Arc;
     use std::sync::atomic::AtomicI64;
@@ -125,7 +125,7 @@ async fn bulk_gate_bounds_concurrent_bytes() {
 /// An op larger than the whole cap clamps to the cap: it serializes
 /// against everything else but always completes (no starvation, no
 /// arithmetic overflow of the semaphore).
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn bulk_gate_oversized_op_clamps_and_completes() {
     let gate = BulkGate::new(std::num::NonZeroU32::new(4 << 20).unwrap());
     {
@@ -140,7 +140,7 @@ async fn bulk_gate_oversized_op_clamps_and_completes() {
 /// Only sst-class ops are gated: WAL (ack path), manifest (CAS
 /// liveness), fleet and other must return no permit even when a
 /// gate is configured — they can never queue behind compaction.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn bulk_gate_exempts_non_sst_classes() {
     let resources = StoreResources::new(&crate::config::StorageConfig {
         bulk_inflight_max_bytes: 8 << 20,
@@ -172,7 +172,7 @@ async fn bulk_gate_exempts_non_sst_classes() {
     clippy::disallowed_methods,
     reason = "bulk-gate concurrency fixture; every spawned task is joined within the test; independent waiters are required to exercise occupied capacity"
 )]
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn bulk_gate_waiter_proceeds_when_holder_releases() {
     use std::sync::Arc;
     let gate = Arc::new(BulkGate::new(std::num::NonZeroU32::new(8 << 20).unwrap()));
@@ -270,7 +270,7 @@ async fn drive_every_outcome(store: &impl object_store::ObjectStore) {
 /// also carry the bytes put and got. Other tests in this process may run
 /// wrapped operations of their own, so these growths are lower bounds; the
 /// observation tests pin the exact counts on a private `StoreStats`.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn debug_store_totals_count_every_wrapped_operation_by_billed_outcome() {
     let config = crate::config::StorageConfig::default();
     let resources = std::sync::Arc::new(StoreResources::new(&config));
@@ -368,7 +368,7 @@ async fn weigh_every_operation(
 /// nothing; nothing outside the registry) and debited from its bound
 /// project's store budget once the request is served. Store work outside
 /// a served request is charged to no one.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_served_requests_registry_work_is_weighed_for_its_project() {
     use crate::admission::{AdmissionController, AdmissionKnobs, SubscriptionCapacity};
     let config = crate::config::StorageConfig::default();

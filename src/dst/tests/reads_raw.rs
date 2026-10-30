@@ -12,7 +12,7 @@ use std::sync::Arc;
 /// GET during the seal gap: records + resume cursor, never closure,
 /// never a final Up-To-Date; after release, the same client drains the
 /// full lineage.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn seal_gap_get_never_reports_closure() {
     let _l = gap_lock().lock().await;
     let (state, addr, _guard, split) = rig_in_seal_gap("gapget", 6).await;
@@ -60,7 +60,7 @@ async fn seal_gap_get_never_reports_closure() {
 }
 
 /// HEAD during the gap must not report closure.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn seal_gap_head_no_closure() {
     let _l = gap_lock().lock().await;
     let (state, addr, _guard, split) = rig_in_seal_gap("gaphead", 3).await;
@@ -84,7 +84,7 @@ async fn seal_gap_head_no_closure() {
     clippy::disallowed_methods,
     reason = "seal-gap poll fixture; the parked poll and the held split are both joined after the wake is checked; they must run concurrently to wake the poll inside the gap"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn seal_gap_long_poll_wakes_without_closure() {
     let _l = gap_lock().lock().await;
     let store = mem();
@@ -157,7 +157,7 @@ async fn seal_gap_long_poll_wakes_without_closure() {
 }
 
 /// A read STARTING inside the gap (cold client, offset 0).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn seal_gap_cold_read_mid_gap() {
     let _l = gap_lock().lock().await;
     let (state, addr, _guard, split) = rig_in_seal_gap("gapcold", 4).await;
@@ -177,7 +177,7 @@ async fn seal_gap_cold_read_mid_gap() {
 }
 
 /// A client that vanishes mid-request during the gap, then retries.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn seal_gap_cancel_then_retry() {
     let _l = gap_lock().lock().await;
     let (state, addr, _guard, split) = rig_in_seal_gap("gapcancel", 4).await;
@@ -217,7 +217,7 @@ async fn seal_gap_cancel_then_retry() {
     clippy::disallowed_methods,
     reason = "stale descriptor fixture; the held split is joined after the redispatch is checked; it must run concurrently to hold the rig inside the gap"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn seal_gap_stale_descriptor_redispatches() {
     let _l = gap_lock().lock().await;
     let store = mem();
@@ -374,7 +374,7 @@ async fn seal_all(engine: &Arc<crate::shard::ShardEngine>, hash: [u8; 16]) {
 /// One record far larger than the page budget, surrounded by small
 /// records of another key, all sealed: it must be served (allow-first),
 /// and the drain must complete with exact contents.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn oversized_keyed_record_pages_through() {
     let store = mem();
     let key = skey();
@@ -419,7 +419,7 @@ async fn oversized_keyed_record_pages_through() {
 /// A contiguous single-key run larger than the 16 MiB plan budget AND
 /// the page budget, sealed into a segment object: sub-run planning + span
 /// truncation page it through.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn long_keyed_run_pages_with_progress() {
     let store = mem();
     let key = skey();
@@ -479,7 +479,7 @@ async fn long_keyed_run_pages_with_progress() {
     clippy::too_many_lines,
     reason = "default-key route scenario; the raw route stays one strict sequence across the product's splits; helper phases would hide which split reordered the raw view"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn raw_route_is_the_default_key_view_across_splits() {
     let _l = gap_lock().lock().await;
     let store = mem();
@@ -618,7 +618,7 @@ async fn raw_route_is_the_default_key_view_across_splits() {
 /// falls outside a fixed window), pages never restart from the
 /// beginning, and a page's descriptor GETs are bounded by the page
 /// size — not by the catalog size.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn catalog_pages_without_scanning_the_world() {
     let inner = mem();
     let counting = FaultStore::uniform(inner, 7, FaultPlan::new(0, 0, 0));
@@ -755,7 +755,7 @@ fn wire_frames(
 /// frame per record, in order, from the cursor on. Every frame is version 4
 /// (uncompressed), the 600 B records zstd would shrink included: no
 /// response length depends on how well a record compresses.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn format_frames_reencrypts_each_record_of_a_paged_stream() {
     use super::fixture_http::{HttpRigOptions, cold_sealer, http_rig_build};
     let rig = http_rig_build(

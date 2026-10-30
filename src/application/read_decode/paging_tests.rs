@@ -173,7 +173,7 @@ const SELECTORS: [Option<&str>; 3] = [None, Some("a"), Some("b")];
 /// A read from any offset, the first and last of a page, a record inside
 /// one, either side of the sealed boundary, serves exactly the records
 /// from there to the end, unfiltered and for each key.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn reads_from_inside_pages_cross_page_edges_in_history_and_tail() {
     const STARTS: [u64; 18] = [
         0, 1, 19, 20, 24, 25, 26, 27, 28, 33, 37, 38, 41, 44, 45, 60, 74, 75,
@@ -222,7 +222,7 @@ async fn page_through(
 /// offset plus one: every record of the key comes back exactly once, in
 /// order, and every read makes progress. A budget of one byte serves
 /// exactly one record per unfiltered read.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_budget_cut_inside_a_page_resumes_at_the_next_record() {
     for ring in [0, 8 << 20] {
         let engine = stream(&format!("paging-budget-{ring}"), ring).await;

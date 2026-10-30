@@ -141,7 +141,7 @@ fn native_queue_collection_starts_on_size_or_age_and_never_without_debt() {
     ));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn native_queue_collection_captures_every_roster_queue_with_debt_and_only_those() {
     let r = rig("nqc-capture", None).await;
     let oldest = crate::shard::now_ms();
@@ -168,7 +168,7 @@ async fn native_queue_collection_captures_every_roster_queue_with_debt_and_only_
     assert_eq!(got, vec![([1; 16], 7, 300, oldest)]);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn native_queue_maintenance_stops_ticking_once_its_close_signal_is_raised() {
     let r = rig("nqc-tick", None).await;
     let (tx, mut closed) = tokio::sync::watch::channel(false);
@@ -181,7 +181,7 @@ async fn native_queue_maintenance_stops_ticking_once_its_close_signal_is_raised(
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn native_queue_collection_waits_until_every_superseded_sst_but_the_residual_is_gone() {
     let r = rig("nqc-gc", None).await;
     let base = crate::sharddir::shard_db_path("nqc-gc");
@@ -209,7 +209,7 @@ async fn native_queue_collection_waits_until_every_superseded_sst_but_the_residu
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn native_queue_collection_compacts_every_l0_into_the_last_run_and_names_what_it_superseded()
 {
     let r = rig(
@@ -241,7 +241,7 @@ async fn native_queue_collection_compacts_every_l0_into_the_last_run_and_names_w
 /// Layout 6A's point: a pass compacts the queue tree alone. A stream row's
 /// L0 table is neither named, rewritten nor superseded, and the stream
 /// tree's runs are untouched.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn native_queue_collection_never_names_or_rewrites_the_stream_tree() {
     let r = rig(
         "t/nqc-trees",
@@ -323,7 +323,7 @@ fn native_queue_collection_splits_a_pass_that_would_reach_the_l0_line() {
 
 /// A split pass: the L0s into a fresh run, then every run into the last
 /// run; the queue tree ends in one run and every source is superseded.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn native_queue_collection_split_pass_ends_in_the_last_run() {
     let r = rig(
         "t/nqc-split",
@@ -352,7 +352,7 @@ async fn native_queue_collection_split_pass_ends_in_the_last_run() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn native_queue_collection_reads_a_failed_compaction_as_failed_and_a_trimmed_one_as_finished()
 {
     let busy = rig(
@@ -373,7 +373,7 @@ async fn native_queue_collection_reads_a_failed_compaction_as_failed_and_a_trimm
     assert_eq!(trimmed, Ok(true));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn native_queue_collection_waits_for_a_compaction_no_compactor_has_taken() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let db = Db::builder("t/nqc-idle", store.clone())
@@ -429,7 +429,7 @@ async fn manifest(r: &Rig) -> slatedb::VersionedManifest {
     manifest.unwrap().expect("a manifest")
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn native_queue_collection_leaves_debt_that_is_not_due_and_compacts_nothing() {
     let every = compactor_every(Duration::from_millis(100));
     let r = rig("t/nqc-not-due", Some(every)).await;
@@ -443,7 +443,7 @@ async fn native_queue_collection_leaves_debt_that_is_not_due_and_compacts_nothin
     assert!(queue_runs(&m).is_empty(), "nothing was compacted");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn native_queue_collection_of_due_debt_compacts_the_log_and_clears_the_debt_it_captured() {
     let every = compactor_every(Duration::from_millis(100));
     let r = rig("t/nqc-due", Some(every)).await;
@@ -637,7 +637,7 @@ async fn regular_job_into_the_last_run(
 /// the worker's executor asserts that no running job writes the same run: the
 /// compaction worker panics and the shard log closes. The pass must wait the
 /// regular job out and then compact everything into the last run.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn native_queue_collection_waits_out_a_compaction_into_the_last_run_before_it_submits() {
     let store = Arc::new(HeldTables::default());
     let every = Some(compactor_every(Duration::from_millis(100)));
@@ -676,7 +676,7 @@ async fn native_queue_collection_waits_out_a_compaction_into_the_last_run_before
 /// job, but before the pass read the compactions file, still cannot run
 /// beside it: the spec fails, the shard log stays open and the regular job
 /// completes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn native_queue_collection_spec_beside_a_live_compaction_is_refused_by_the_shard_log_compactor()
  {
     let store = Arc::new(HeldTables::default());
@@ -724,7 +724,7 @@ async fn flush_both(r: &Rig, i: u32) {
 /// The scheduler never compacts the queue tree (it does compact the
 /// stream tree), and the collector merges the queue tree's L0s once they
 /// reach the trigger (16).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn native_queue_collection_merges_queue_l0s_at_the_trigger_and_the_scheduler_leaves_them() {
     // The shard log's L0 line (32, `config::validation`): SlateDB's
     // default would stall the queue tree's ninth flush below the trigger.

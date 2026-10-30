@@ -281,7 +281,7 @@ fn resumable(outcome: &Result<EnterSeal, SealError>, contains: &str) {
 
 /// Wrong ingress, product surface: a plain `:seal` handled by the non-owner
 /// takes the lapsed claim over through the owner's durable fence and seals.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_non_owner_seal_takes_over_through_the_owners_fence() {
     let _serial = gap_lock().lock().await;
     let p = pair(mem()).await;
@@ -313,7 +313,7 @@ async fn a_non_owner_seal_takes_over_through_the_owners_fence() {
 /// Wrong ingress, raw surface: a close with another final, handled by the
 /// non-owner, installs its claim through the owner's fence and then meets
 /// the existing ownership answer; its exact retry at the owner completes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_non_owner_raw_close_takeover_installs_then_redirects() {
     let _serial = gap_lock().lock().await;
     let p = pair(mem()).await;
@@ -351,7 +351,7 @@ async fn a_non_owner_raw_close_takeover_installs_then_redirects() {
 /// Competing operations, the old one won first: its close committed before
 /// the takeover, so the relayed fence reports closed and the coordinator
 /// completes the old operation's transition from the foreign instance.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_relayed_fence_reports_an_old_close_that_already_won() {
     let _serial = gap_lock().lock().await;
     let p = pair(mem()).await;
@@ -379,7 +379,7 @@ async fn a_relayed_fence_reports_an_old_close_that_already_won() {
     clippy::disallowed_methods,
     reason = "queued-ahead relay fixture; the old close and the relayed takeover are proven to have entered the held committer in that order, and both are joined after the release; running either inline would deadlock behind the held commit"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_relayed_fence_is_decided_after_the_old_final_queued_ahead_of_it() {
     let _serial = gap_lock().lock().await;
     let p = pair(mem()).await;
@@ -419,7 +419,7 @@ async fn a_relayed_fence_is_decided_after_the_old_final_queued_ahead_of_it() {
 /// Competing operations, the old final arrives after the relayed fence:
 /// closed=false was a barrier, so the old close is refused and cannot
 /// close the segment under the installed claim.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_relayed_fence_refuses_the_old_final_that_arrives_after_it() {
     let _serial = gap_lock().lock().await;
     let p = pair(mem()).await;
@@ -463,7 +463,7 @@ async fn a_relayed_fence_refuses_the_old_final_that_arrives_after_it() {
 /// and the owner's. The owner's 409 is resumable and is not chased; the
 /// claim is untouched, the retry after convergence installs, and the
 /// durable fence outlives a later move of the shard to the coordinator.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_second_ownership_move_leaves_the_takeover_resumable_and_unchased() {
     let _serial = gap_lock().lock().await;
     let p = pair(mem()).await;
@@ -505,7 +505,7 @@ async fn a_second_ownership_move_leaves_the_takeover_resumable_and_unchased() {
 
 /// Wrong ingress, the sender's side: without the owner's URL, and with a
 /// credential the owner refuses, the takeover is resumable and nothing moves.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_relay_without_a_peer_url_or_credential_leaves_the_claim_untouched() {
     let _serial = gap_lock().lock().await;
     let p = pair(mem()).await;
@@ -545,7 +545,7 @@ async fn a_relay_without_a_peer_url_or_credential_leaves_the_claim_untouched() {
     clippy::disallowed_methods,
     reason = "failed-group relay fixture; the old close and the relayed takeover are proven to have entered the held committer before the failure is armed, and both are joined after the release; running either inline would deadlock behind the held commit"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_relayed_fence_in_a_failed_owner_group_never_installs() {
     let _serial = gap_lock().lock().await;
     let p = pair(mem()).await;
@@ -598,7 +598,7 @@ async fn a_relayed_fence_in_a_failed_owner_group_never_installs() {
     clippy::disallowed_methods,
     reason = "lost-reply relay fixture; the relayed takeover is proven to have entered the owner's engine and to be pending behind the held dispatch, and it is joined after the owner's shutdown and the release; running it inline would deadlock behind the barrier"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_durable_relayed_fence_whose_reply_is_lost_survives_the_owners_restart() {
     let _serial = gap_lock().lock().await;
     let store = mem();

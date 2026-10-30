@@ -18,7 +18,7 @@ use super::fixture_storage::mem;
     clippy::too_many_lines,
     reason = "shadow mode scenario; every product bearer runs through the same verification in order while nothing is refused; helper phases would hide which observation became an enforcement"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn shadow_mode_observes_without_enforcing() {
     const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");
     const PUB: &str = include_str!("../fixtures/mt-test-rsa.pub.pem");
@@ -216,7 +216,7 @@ async fn shadow_mode_observes_without_enforcing() {
     clippy::too_many_lines,
     reason = "enforce mode scenario; the route-scope matrix and the prefix grant gate are driven against real product routes in order; helper phases would hide which route escaped the gate"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn enforce_mode_gates_the_product_surface() {
     const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");
     const PUB: &str = include_str!("../fixtures/mt-test-rsa.pub.pem");

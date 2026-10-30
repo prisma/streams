@@ -73,7 +73,7 @@ async fn claim_after(e: &ShardEngine, first: NqOp, max: usize) -> Vec<DeliveryVi
     deliveries(reply(claim_rx).await)
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_claim_that_takes_the_due_work_raises_the_floor_to_the_next_entry() {
     let (e, db, c) = clocked("nq-floor-next", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), due_at("b", c + 60_000)]))
@@ -106,7 +106,7 @@ async fn a_claim_that_takes_the_due_work_raises_the_floor_to_the_next_entry() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_claim_reads_no_availability_entry_below_a_future_floor() {
     let (e, db, c) = clocked("nq-floor-skip", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), due_at("b", c + 60_000)]))
@@ -139,7 +139,7 @@ async fn a_claim_reads_no_availability_entry_below_a_future_floor() {
     assert_eq!(db.get(&key).await.unwrap().as_deref(), Some(&planted[..]));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_put_below_a_raised_floor_lowers_it_and_the_next_claim_takes_it() {
     let (e, db, c) = clocked("nq-floor-lowered", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), due_at("b", c + 60_000)]))
@@ -171,7 +171,7 @@ async fn a_put_below_a_raised_floor_lowers_it_and_the_next_claim_takes_it() {
     assert_eq!((f.avail, f.retries), (c + 60_000, i64::MAX));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_claim_cut_short_leaves_the_floor_at_the_first_entry_it_did_not_take() {
     let (e, db, c) = clocked("nq-floor-cut", QueueConfig::default()).await;
     for i in 0..4_i64 {
@@ -203,7 +203,7 @@ async fn a_claim_cut_short_leaves_the_floor_at_the_first_entry_it_did_not_take()
     assert_eq!(state(&db).await.floors.retries, i64::MAX);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_claim_raises_the_floor_past_an_entry_its_group_cancelled() {
     let (e, db, c) = clocked("nq-floor-cancel", QueueConfig::default()).await;
     let later = vec![msg("a"), due_at("b", c + 60_000), due_at("c", c + 120_000)];
@@ -229,7 +229,7 @@ async fn a_claim_raises_the_floor_past_an_entry_its_group_cancelled() {
     assert_eq!(offsets(&claim(&e, 10).await), vec![2]);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_claim_raises_the_floor_to_a_later_entry_its_group_sent() {
     let (e, db, c) = clocked("nq-floor-staged-send", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
@@ -240,7 +240,7 @@ async fn a_claim_raises_the_floor_to_a_later_entry_its_group_sent() {
     assert_eq!(offsets(&claim(&e, 10).await), vec![1]);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_claim_raises_the_retry_floor_past_a_retry_its_group_cancelled() {
     let (e, db, c) = clocked("nq-floor-retry-cancel", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), msg("b"), msg("c")]))
@@ -268,7 +268,7 @@ async fn a_claim_raises_the_retry_floor_past_a_retry_its_group_cancelled() {
     assert_eq!(offsets(&claim(&e, 10).await), vec![2]);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_claim_cut_short_by_expired_entries_never_passes_an_entry_it_did_not_read() {
     let (e, db, c) = clocked("nq-floor-expired", QueueConfig::default()).await;
     op(
@@ -289,7 +289,7 @@ async fn a_claim_cut_short_by_expired_entries_never_passes_an_entry_it_did_not_r
     assert_eq!((s.counters.expired, s.floors.avail), (25, i64::MAX));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_due_retry_waiting_for_a_claim_does_not_delay_an_earlier_lease_expiry() {
     let (e, db, c) = clocked("nq-floor-lease-first", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), msg("b")])).await.unwrap();
@@ -309,7 +309,7 @@ async fn a_due_retry_waiting_for_a_claim_does_not_delay_an_earlier_lease_expiry(
     assert_eq!((s.leased, s.retrying), (0, 2), "the lease expired on time");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn claims_and_acks_leave_a_parked_roster_where_the_sweep_put_it() {
     let (e, db, c) = clocked("nq-floor-quiet", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), msg("b"), msg("c")]))
@@ -334,7 +334,7 @@ async fn claims_and_acks_leave_a_parked_roster_where_the_sweep_put_it() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn floors_fall_with_every_put_and_rise_with_the_scans_that_find_the_heads() {
     let (e, db, c) = clocked("nq-floor-exact", QueueConfig::default()).await;
     assert_eq!(state(&db).await.floors, Floors::EMPTY, "a new queue");
@@ -373,7 +373,7 @@ async fn floors_fall_with_every_put_and_rise_with_the_scans_that_find_the_heads(
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_waiting_retry_is_swept_only_at_its_cycle_deadline() {
     let (e, db, c) = clocked("nq-floor-cycle", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();

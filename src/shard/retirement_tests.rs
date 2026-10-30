@@ -310,20 +310,20 @@ async fn duplicate_order(retire: bool, attach_first: bool) {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r17b_retirement_before_duplicate_attachment_cannot_erase_remote_dependency() {
     duplicate_order(true, false).await;
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r17b_retirement_after_duplicate_attachment_owns_every_reply() {
     duplicate_order(true, true).await;
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r17b_live_duplicate_waits_for_actual_remote_durability() {
     duplicate_order(false, true).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r17b_durable_dispatch_claim_before_retirement_keeps_its_completion() {
     let fixture = Fixture::new("r17b-durable-claim").await;
     let engine = &fixture.engine;
@@ -384,7 +384,7 @@ async fn r17b_durable_dispatch_claim_before_retirement_keeps_its_completion() {
     clippy::too_many_lines,
     reason = "r17b_late_successful_write_settles_without_publishing_retired_effects; the fixture stages the retirement, the late write and the settlement in the order the race requires; splitting it would separate the stages from the race they set up"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r17b_late_successful_write_settles_without_publishing_retired_effects() {
     let fixture = Fixture::new("r17b-late-write").await;
     let engine = fixture.engine.clone();
@@ -695,7 +695,7 @@ async fn post_apply_write_error(
 }
 
 /// One test owns the process log facade, and runs both forms through it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn tla005_f5_a_failed_write_answers_nothing_from_its_batch() {
     let exit = ExitSlot::default();
     log::set_boxed_logger(Box::new(WriterExit(exit.clone())))

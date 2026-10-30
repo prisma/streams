@@ -192,7 +192,7 @@ mod tests {
         assert_eq!(standing.viewed(), beat(7), "a read alone publishes nothing");
     }
 
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn a_drain_marks_every_later_beat_and_asks_for_one_at_once() {
         let standing = Standing::default();
         assert_eq!((standing.next_beat(), standing.next_beat()), (1, 2));

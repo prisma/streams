@@ -354,7 +354,7 @@ mod tests {
         clippy::excessive_nesting,
         reason = "r05_cancelled_ttl_attempt_releases_only_its_owned_slot; the fixture nests the drain wait inside the timeout that bounds it inside the test; flattening it would separate the wait from the bound it must respect"
     )]
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn r05_cancelled_ttl_attempt_releases_only_its_owned_slot() {
         let project = crate::tenant::ProjectId::new("creation-test").unwrap();
         let source = Key {

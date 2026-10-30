@@ -50,7 +50,7 @@ async fn closed(engine: &ShardEngine) {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_dispatch_that_leaves_a_durable_group_pending_retires_the_engine() {
     let rig = rig("dispatch-stall", manual(), Duration::from_millis(2)).await;
     rig.engine
@@ -78,7 +78,7 @@ async fn a_dispatch_that_leaves_a_durable_group_pending_retires_the_engine() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_seal_waits_for_dispatch_to_publish_what_its_wal_flush_made_durable() {
     let rig = rig("catch-up", parked_dispatch(), Duration::from_millis(2)).await;
     let sp = &rig.engine.layout.seal;
@@ -109,7 +109,7 @@ async fn a_seal_waits_for_dispatch_to_publish_what_its_wal_flush_made_durable() 
 /// A stream first appended while a seal runs (applied and held, not yet
 /// durable when the seal ends) keeps the shard's oldest-unsealed stamp, so
 /// the age trigger and deadline still reach its pages.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stream_applied_during_a_seal_keeps_the_age_clock_running() {
     let oldest = age_after_a_seal_with_a_stream_applied_during_it(false).await;
     assert!(oldest.is_some(), "B's unsealed page is aged");
@@ -117,7 +117,7 @@ async fn a_stream_applied_during_a_seal_keeps_the_age_clock_running() {
 
 /// **The negative control.** The same race, counting only durable pages as
 /// left over: B's applied page loses the shard's age stamp.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn negative_control_durable_only_leftovers_drop_the_age_clock() {
     let oldest = age_after_a_seal_with_a_stream_applied_during_it(true).await;
     assert!(oldest.is_none(), "the control drops the age of B's page");
@@ -179,7 +179,7 @@ async fn age_after_a_seal_with_a_stream_applied_during_it(control: bool) -> Opti
 
 /// A quiet engine (nothing pending) outlives the dispatch stall: the
 /// watchdog retires only for a durable group left undispatched.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_quiet_engine_outlives_the_dispatch_stall() {
     let rig = rig("quiet", manual(), Duration::from_millis(2)).await;
     let mut rng = StdRng::seed_from_u64(0x9E7);

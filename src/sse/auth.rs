@@ -531,7 +531,7 @@ mod tests {
 
     /// A refused subscription answers its reason's class status and names
     /// the reason; the oracle lists every reason by name.
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn lease_refusals_answer_their_class_status() {
         for reason in R::ALL {
             let expected = match reason {

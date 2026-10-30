@@ -21,7 +21,7 @@ use super::fixture_storage::mem;
     clippy::disallowed_methods,
     reason = "failed duplicate regression; both requests are joined after the entered-counter proof and group failure; serial requests would not share the failed group"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_failed_group_write_fails_its_duplicate_too() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -113,7 +113,7 @@ async fn a_failed_group_write_fails_its_duplicate_too() {
     clippy::disallowed_methods,
     reason = "failed reuse regression; both competing bodies are joined after the entered-counter proof; concurrent staging is the invariant under test"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_reuse_verdict_dies_with_its_failed_group() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -210,7 +210,7 @@ async fn a_reuse_verdict_dies_with_its_failed_group() {
     clippy::disallowed_methods,
     reason = "failed close regression; both closes are joined under the existing watchdog after group release; serialization would discard the shared-group retry case"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_failed_group_fails_the_close_and_its_retry_together() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -323,7 +323,7 @@ async fn a_failed_group_fails_the_close_and_its_retry_together() {
     clippy::too_many_lines,
     reason = "close-fence recovery regression; the durable intent, forced failed group and exact retry must share one incarnation and claim generation; separate cases would remove that causal history"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fence_in_a_failed_group_reports_failure_not_closed() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -468,7 +468,7 @@ async fn a_fence_in_a_failed_group_reports_failure_not_closed() {
     clippy::disallowed_methods,
     reason = "stream-sequence regression; the first competing request is joined before the durable conflict probe; concurrent staging is required to test the verdict boundary"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stream_seq_verdict_is_grounded_in_durable_state() {
     let store = mem();
     let (state, addr) = http_rig(store).await;

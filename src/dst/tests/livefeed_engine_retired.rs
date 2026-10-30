@@ -63,7 +63,7 @@ fn engine_retired_cutoffs() -> u64 {
 /// take the typed EngineRetired cutoff (nonterminal EOF), the feed must
 /// tear down, and a reconnect through the same route must land on a NEW
 /// engine incarnation and see new data.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_engine_retired_under_the_same_owner_cuts_a_parked_session() {
     let store = mem();
     let (state, addr) = http_rig_owner(store, "inst-b").await;
@@ -177,7 +177,7 @@ async fn livefeed_engine_retired_under_the_same_owner_cuts_a_parked_session() {
 /// engine under the same owner must cut the parked session with
 /// EngineRetired; the sealed predecessor's engine is not the tail and
 /// re-resolves per page, so only the tail decides.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_engine_retired_under_the_same_owner_cuts_a_parked_lineage_session() {
     let store = mem();
     let (state, addr) = http_rig_owner(store, "inst-b").await;
@@ -243,7 +243,7 @@ async fn livefeed_engine_retired_under_the_same_owner_cuts_a_parked_lineage_sess
 /// never a page served from a dead engine's ring (the record resumes
 /// from the replacement). Forced with the drive failpoint so the
 /// interleaving is exact, not raced.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_engine_retired_before_a_drive_is_a_typed_read_cutoff() {
     let store = mem();
     let (state, addr) = http_rig_owner(store, "inst-b").await;

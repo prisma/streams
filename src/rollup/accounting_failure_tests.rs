@@ -51,7 +51,7 @@ async fn snapshot(db: &Db) -> Vec<(Vec<u8>, Vec<u8>)> {
     rows
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r14_required_read_failures_leave_every_row_and_checkpoint_unchanged() {
     let db = Arc::new(
         Db::builder("r14-reads", Arc::new(object_store::memory::InMemory::new()))
@@ -99,7 +99,7 @@ async fn r14_required_read_failures_leave_every_row_and_checkpoint_unchanged() {
     db.close().await.unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r14_corrupt_watermarks_rows_and_close_keys_block_progress() {
     // July 2026 closes only on the real clock: a scenario that injects the
     // billing clock holds the write lock while it does.
@@ -201,7 +201,7 @@ fn provisional_storage_handles_the_full_signed_clock_range() {
 /// Review item 49: the ops checkpoint is read through the same repository
 /// path as the usage checkpoint, so a read failure is an error, never
 /// "no checkpoint yet" (which would re-merge every snapshot).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn an_ops_checkpoint_read_failure_is_an_error_never_the_start_of_the_ledger() {
     let db = Arc::new(
         Db::builder(
@@ -275,7 +275,7 @@ fn an_unwritten_byte_time_keeps_its_empty_wire() {
 
 /// Item 27: a late read into a finalized month is corrected with a WRITTEN
 /// zero byte-time, while an aggregate only reads touched keeps the empty one.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_late_read_correction_carries_a_written_zero_byte_time() {
     let db = Arc::new(
         Db::builder("late-read", Arc::new(object_store::memory::InMemory::new()))
@@ -341,7 +341,7 @@ fn late_snapshot(usage_version: u64, storage_byte_ms_month: String) -> UsageEnve
 /// difference wider than a correction's signed 128 bits. A late snapshot
 /// that claims one fails its page before any floor moves, instead of
 /// committing a correction that makes the month row unreadable.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_late_byte_time_no_correction_can_carry_fails_its_page() {
     let db = Arc::new(
         Db::builder("late-wide", Arc::new(object_store::memory::InMemory::new()))
@@ -375,7 +375,7 @@ async fn a_late_byte_time_no_correction_can_carry_fails_its_page() {
 /// Item 27: a pending monthly artifact whose key or body does not decode is
 /// never published and never counted as pending, so every scan logs it; it
 /// stays in the outbox for an operator.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn an_undecodable_pending_artifact_is_logged_and_stays_pending() {
     let db = Arc::new(
         Db::builder(
@@ -424,7 +424,7 @@ async fn an_undecodable_pending_artifact_is_logged_and_stays_pending() {
 /// row as the publisher does and stops at the row where the publisher's
 /// capped scan stops, so `pendingArtifacts` keeps its value and its cap
 /// while the blocked rows before that row are counted beside it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn the_outbox_count_stops_where_the_publisher_scan_stops() {
     let db = Arc::new(
         Db::builder(

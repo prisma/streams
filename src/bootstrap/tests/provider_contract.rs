@@ -194,7 +194,7 @@ fn production_stores(config: &ServerConfig) -> (Arc<dyn ObjectStore>, Arc<dyn Ob
     (ops, shard)
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn in_memory_store_meets_the_provider_contract() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let config = local_config("http://127.0.0.1:1", None);
@@ -204,7 +204,7 @@ async fn in_memory_store_meets_the_provider_contract() {
     assert!(!observed.etag_repeats_for_identical_content);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn s3lite_through_the_production_client_meets_the_provider_contract() {
     let s3lite = s3lite_harness::S3lite::bind().await;
     let faults = s3lite.faults();
@@ -227,7 +227,7 @@ async fn s3lite_through_the_production_client_meets_the_provider_contract() {
 
 /// The SlateDB cases hold on the reference store under the tick and under
 /// the pump, and under each the pipeline itself makes a write durable.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn in_memory_store_meets_the_slatedb_contract_under_each_commit_pipeline() {
     for (group_commit, timer) in PIPELINES {
         let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
@@ -243,7 +243,7 @@ async fn in_memory_store_meets_the_slatedb_contract_under_each_commit_pipeline()
 /// The SlateDB and HTTP cases hold through the production client under the
 /// tick and under the pump. s3lite returns no put-id metadata, so this is
 /// where a lost WAL reply must report `Fenced` under an explicit flush.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn s3lite_meets_the_slatedb_and_http_contract_under_each_commit_pipeline() {
     for (group_commit, timer) in PIPELINES {
         let s3lite = s3lite_harness::S3lite::bind().await;
@@ -267,7 +267,7 @@ async fn s3lite_meets_the_slatedb_and_http_contract_under_each_commit_pipeline()
 /// server's own environment (`SLATE_S3_*`, `PATH_PREFIX`, the storage
 /// knobs) through the server's parser and builds the stores with the
 /// server's builder, so it qualifies the configuration it is given.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 #[ignore = "qualifies a real object store; needs STREAMS_PROVIDER_CONTRACT=1 and a dedicated bucket/prefix (docs/PROVIDER-CONTRACT.md)"]
 async fn real_provider_meets_the_provider_contract() {
     use clap::Parser;
@@ -302,7 +302,7 @@ async fn real_provider_meets_the_provider_contract() {
 /// `--path-prefix`: an object put through it is at `<fleet prefix>/<key>`
 /// in the bucket, where the instance's own store, prefixed by
 /// `--path-prefix`, does not see it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_fleet_store_exists_only_with_a_fleet_prefix_and_writes_under_it() {
     let s3lite = s3lite_harness::S3lite::bind().await;
     let mut config = local_config(&s3lite.endpoint(), None);
@@ -359,7 +359,7 @@ async fn the_fleet_store_exists_only_with_a_fleet_prefix_and_writes_under_it() {
 /// repository's sweeps delete one key per call), a delete of a key that
 /// holds nothing and a two-key delete stream each send one DELETE per key,
 /// and each succeeds.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn s3lite_receives_every_delete_as_one_keyed_delete_request() {
     let s3lite = s3lite_harness::S3lite::bind().await;
     let ledger = s3lite.ledger();

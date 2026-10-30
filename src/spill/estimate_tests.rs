@@ -156,7 +156,7 @@ async fn freeze_point(seed: u64, mix: &[Row]) -> (u64, u64, u64, u64) {
 
 /// The estimator names the row SlateDB froze at, for pages, lease rows,
 /// tombstones and a mix of all three.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_memtable_estimate_matches_slatedbs_own_freeze() {
     let mixes: [(&str, &[Row]); 4] = [
         ("pages", &[Row::Page]),

@@ -452,7 +452,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test(start_paused = true, crate = "crate::test_rt")]
     async fn slow_keys_do_not_delay_other_publications_and_pass_is_bounded() {
         let svc = AuthService::new(crate::auth::AuthMode::Shadow, "issuer".into(), "cell").unwrap();
         let pass = refresh_once(&svc, &ParkedKeys, &EmptyPolicies, &EmptyGrants);
@@ -471,7 +471,7 @@ mod tests {
         assert_eq!(report.grants, RefreshOutcome::Published);
     }
 
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn cancelling_refresh_does_not_wait_for_source_deadline() {
         let svc = Arc::new(
             AuthService::new(crate::auth::AuthMode::Shadow, "issuer".into(), "cell").unwrap(),
@@ -495,7 +495,7 @@ mod tests {
         clippy::let_underscore_must_use,
         reason = "refresh_once_publishes_from_files_and_survives_a_broken_one; the fixture removes its temporary directory on the way out; a failed removal leaves nothing the assertions depend on"
     )]
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn refresh_once_publishes_from_files_and_survives_a_broken_one() {
         let dir = std::env::temp_dir().join(format!("mt-feed-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -562,7 +562,7 @@ mod tests {
     /// A file feed's freshness is its last successful read, not its
     /// author's liveness: a failed read refreshes nothing, and the same
     /// generation read again is fresh although its author wrote nothing.
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn file_feed_freshness_means_last_successful_read_not_publisher_liveness() {
         let dir = std::env::temp_dir().join(format!("mt-feed-freshness-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -660,7 +660,7 @@ mod tests {
     /// Item 93: freshness belongs to the refresher. An ancient source stamp
     /// would refuse fresh data; a post-dated one would keep a dead feed
     /// authorizing past the fail-closed window.
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn the_refresher_not_the_source_stamps_feed_freshness() {
         for stamp in [1, unix_now() + 86_400] {
             let svc =

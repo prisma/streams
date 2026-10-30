@@ -28,7 +28,7 @@ fn error_code(body: &[u8]) -> String {
 /// create/get/delete saga, every request naming its headers only in the
 /// `Streams-` form: each answers as the `Prisma-` form does, and the
 /// record lands under the routing key the alias carried.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn streams_named_request_headers_serve_the_product_surface() {
     let (state, addr) = http_rig(mem()).await;
     let key = [("streams-encryption-key", PRISMA_KEY)];
@@ -94,7 +94,7 @@ async fn streams_named_request_headers_serve_the_product_surface() {
 
 /// Both forms with different values are refused before any handler runs
 /// (no stream, no record); both forms with one value are one header.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn differing_prisma_and_streams_values_are_refused() {
     let (state, addr) = http_rig(mem()).await;
     let both = [
@@ -163,7 +163,7 @@ async fn differing_prisma_and_streams_values_are_refused() {
 
 /// A browser may send the `Streams-` forms: the product preflight allows
 /// each of them beside its `Prisma-` form.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_product_preflight_allows_the_streams_forms() {
     let (state, addr) = http_rig(mem()).await;
     let (st, h, _) = preq(addr, "OPTIONS", "/v1/streams/pf/records", &[], b"").await;
@@ -207,7 +207,7 @@ fn assert_mirrored(what: &str, headers: &HashMap<String, String>, expected: &[&s
 /// The edge strips `Prisma-*` response headers too (edge change #176):
 /// each product answer that carries a `Prisma-<Name>` header carries
 /// `Streams-<Name>` with the same value, and a browser may read both.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_answers_send_each_prisma_response_header_as_its_streams_name() {
     let (state, addr) = http_rig(mem()).await;
     let key = [("streams-encryption-key", PRISMA_KEY)];
@@ -267,7 +267,7 @@ async fn product_answers_send_each_prisma_response_header_as_its_streams_name() 
 
 /// The mirror is the server's, not the product route's: the listing, the
 /// raw surface and an unrouted path send it too.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn every_surface_sends_its_prisma_response_headers_as_streams_names() {
     let (state, addr) = http_rig(mem()).await;
     let key = [("prisma-encryption-key", PRISMA_KEY)];

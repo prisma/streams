@@ -10,7 +10,7 @@ use super::fixture_storage::mem;
 /// creator died mid-write started serving as complete — the original
 /// field anomaly with a delay. A stale claim decides who may REDO the
 /// work; it never publishes half-built content.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stale_initialization_never_becomes_visible() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -74,7 +74,7 @@ async fn a_stale_initialization_never_becomes_visible() {
     clippy::excessive_nesting,
     reason = "an_initialization_cannot_be_resumed_with_another_key; the fixture nests the planted init claim inside the descriptor mutation inside the planting closure; flattening it would separate the claim from the descriptor it is planted on"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_initialization_cannot_be_resumed_with_another_key() {
     const OTHER_KEY: &str = "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=";
     let store = mem();
@@ -158,7 +158,7 @@ async fn an_initialization_cannot_be_resumed_with_another_key() {
 /// half-built streams comes back underfull. That used to be read as
 /// "end of catalog", which made every live stream after the run
 /// unreachable — the walk continues while the PROVIDER has more.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn catalog_paging_survives_dense_dead_entries() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -213,7 +213,7 @@ async fn catalog_paging_survives_dense_dead_entries() {
     clippy::disallowed_methods,
     reason = "creation recovery fixture; the parked creator is released and joined before the recovered body is checked; it must park concurrently at the failed initial write"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn create_replay_recovers_from_a_failed_initial_write() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -308,7 +308,7 @@ async fn create_replay_recovers_from_a_failed_initial_write() {
     clippy::disallowed_methods,
     reason = "creation replay fixture; both racing creators are joined before their bodies are compared; they must race concurrently to replay the same creation"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn create_replay_never_loses_the_initial_body() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -413,7 +413,7 @@ async fn create_replay_never_loses_the_initial_body() {
 /// goes first: it is a clean 201 in every profile, whereas
 /// `9223372036854776` panics the handler under overflow checks and the
 /// client sees a closed socket, not a status.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_idle_window_past_the_ceiling_is_refused_and_creates_nothing() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -459,7 +459,7 @@ async fn an_idle_window_past_the_ceiling_is_refused_and_creates_nothing() {
 /// The ceiling itself is a legal window on both surfaces, and HEAD reports
 /// it back exactly. (A pin, green before and after: it guards the boundary
 /// against an off-by-one in either parser.)
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_longest_idle_window_is_admitted_and_reported() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -501,7 +501,7 @@ async fn the_longest_idle_window_is_admitted_and_reported() {
 /// a fork inherits it without passing a parser. Its expiry must saturate
 /// to "never"; it used to wrap into the past, so the child was born dead
 /// and the fork answered "retry" forever.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fork_inheriting_a_legacy_window_is_born_alive() {
     let store = mem();
     let (state, addr) = http_rig(store).await;

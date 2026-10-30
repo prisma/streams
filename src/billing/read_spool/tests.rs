@@ -31,7 +31,7 @@ fn batch(seq: u64) -> ReadBatch {
     }
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn persisted_sizes_and_zero_budget_reads_follow_the_exact_backlog() {
     let config = crate::config::ServerConfig::load(
         crate::config::CliArgs::deterministic(),
@@ -138,7 +138,7 @@ fn quality_loom_replacement_and_removal_publish_consistent_totals() {
     });
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn cancelled_open_guard_closes_and_releases_its_database() {
     let config = crate::config::ServerConfig::load(
         crate::config::CliArgs::deterministic(),
@@ -179,7 +179,7 @@ async fn cancelled_open_guard_closes_and_releases_its_database() {
     .unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn restart_preserves_spool_sequence_and_observable_durable_backlog() {
     let config = crate::config::ServerConfig::load(
         crate::config::CliArgs::deterministic(),
@@ -230,7 +230,7 @@ async fn restart_preserves_spool_sequence_and_observable_durable_backlog() {
     spool.close_for_tests().await;
 }
 
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn injected_fault_counts_successful_rounds_and_can_be_disabled() {
     use std::sync::atomic::Ordering;
     let config = crate::config::ServerConfig::load(

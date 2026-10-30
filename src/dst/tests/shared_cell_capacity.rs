@@ -177,7 +177,7 @@ async fn at_rest<T: PartialEq + Copy>(probe: impl Fn() -> T) -> T {
 /// the line, plus the chunks in flight. Before: nothing refused a body
 /// past the line, and the project held 25,165,824 body bytes (in
 /// production, 64 uploads of 32 MiB: 2 GiB on a 1 GiB instance).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn concurrent_uploads_share_their_projects_memory_line() {
     const UPLOADS: usize = 4;
     const DECLARED: u64 = 8 * MIB;
@@ -225,7 +225,7 @@ async fn concurrent_uploads_share_their_projects_memory_line() {
 /// count where it was. Before: each deleted incarnation kept its journal
 /// and flusher for the life of the process (35 tasks before, 67 after),
 /// attributed to no project, and only a shard fence or move closed them.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn deleted_watched_streams_leave_no_touch_journal_running() {
     const STREAMS: usize = 32;
     let cell = open_cell(CellSpec::open(1)).await;
@@ -286,7 +286,7 @@ impl Drop for BillingClockReset {
 /// one-shard cell) nor ten idle minutes later. 32 watched streams that
 /// expire, appended to once each, leave the alive task count where it was
 /// once one walk pass has closed them.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn expired_watched_streams_leave_no_touch_journal_after_the_walk() {
     const STREAMS: usize = 32;
     let _clock = crate::billing::billing_clock_lock().write().await;
@@ -339,7 +339,7 @@ async fn expired_watched_streams_leave_no_touch_journal_after_the_walk() {
 /// of 64 KiB and one byte are each refused 400 `invalid_config` and store
 /// nothing; one of exactly 64 KiB is created and listed (its descriptor,
 /// about 66 KB, is within the catalog's per-descriptor guard).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn descriptor_bytes_are_held_to_a_byte_bound() {
     const CREATES: usize = 16;
     let cell = open_cell(CellSpec {
@@ -425,7 +425,7 @@ fn longest_map(n: usize) -> crate::segmap::SegmentMap {
 /// `registry::catalog::tests::a_descriptor_over_128_kib_fails_its_catalog_page_closed`),
 /// so no map the scaler can grow fails the project's catalog or the cell's
 /// reconciliation page.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_largest_creatable_descriptor_with_a_full_segment_map_fits_the_catalog_guard() {
     use crate::application::topology::SEGMENT_BUDGET;
     use crate::tenant::{CanonicalStreamName, ID_MAX_BYTES, NAME_MAX_BYTES, TenantStreamRef};
@@ -460,7 +460,7 @@ async fn the_largest_creatable_descriptor_with_a_full_segment_map_fits_the_catal
 /// A walk that leased nothing now pays its coverage, debt allowed. Pass:
 /// the project is refused (429) before eight empty pulls (after the
 /// leasing pull, two empty walks take it into debt).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn empty_pulls_are_held_to_their_projects_read_quota_by_what_they_read() {
     let cell = open_cell(CellSpec {
         quotas: |_| ProjectQuotas {
@@ -547,7 +547,7 @@ fn enqueued(cell: &Cell) -> u64 {
 /// walk; before, 9 against 2): its walk puts its project (512 KiB/s of reads) in
 /// read debt for about 5 s, and it does not walk again while in debt, but
 /// answers empty at its deadline; the project's next pull is refused (429).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_parked_pull_of_a_project_in_read_debt_does_not_walk_again() {
     let cell = open_cell(CellSpec {
         quotas: |_| ProjectQuotas {
@@ -627,7 +627,7 @@ async fn a_parked_pull_of_a_project_in_read_debt_does_not_walk_again() {
 /// is released it lists all 61 streams, in two pages since a page counts
 /// its descriptors decoded (about 98 KB each here), and leaves nothing
 /// held.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_catalog_page_is_held_to_its_projects_memory_line_as_a_read_is() {
     const STREAMS: usize = 60;
     let cell = open_cell(CellSpec::open(1)).await;
@@ -700,7 +700,7 @@ async fn a_catalog_page_is_held_to_its_projects_memory_line_as_a_read_is() {
 /// read bytes are exactly what a page of up to 1,000 streams reserves
 /// (`Registry::catalog_page_bytes`, 5 MiB); released, the listing answers
 /// its four streams and the project holds nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_listing_holds_its_reservation_until_it_has_answered() {
     let store = FaultStore::new(mem(), 808, FaultProfile::clean());
     let cell = open_cell(CellSpec {
@@ -809,7 +809,7 @@ async fn held_at_append<T>(
 /// settle poisoning record 1 dead-letters nothing and the project's read
 /// bytes never pass the line; the page released, the first pull after the
 /// lease expired dead-letters record 1, and nothing stays held.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_poisoning_settle_reads_only_what_its_project_can_hold() {
     let cell = open_cell(CellSpec::open(1)).await;
     big_stream(&cell, 0, "page", 96).await;

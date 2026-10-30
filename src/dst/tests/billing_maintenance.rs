@@ -14,7 +14,7 @@ use std::sync::Arc;
     clippy::let_underscore_must_use,
     reason = "expiry_closes_the_storage_gauge; the fixture drains billing debt until the gauge closes, and each pass's own result is irrelevant to the closure it polls for; a handled result would only restate the poll"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn expiry_closes_the_storage_gauge() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -124,7 +124,7 @@ async fn durable_tail(
 /// fictional backlog. Whatever the compression setting, encoding means
 /// frame bytes != payload bytes, so asserting exact equality with the
 /// tail gauge and inequality with the payload total kills the class.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn maintenance_uses_frame_bytes_not_payload_bytes() {
     let store = mem();
     let engine = open_engine(store.clone(), "dst-frameunit").await;
@@ -174,7 +174,7 @@ async fn maintenance_uses_frame_bytes_not_payload_bytes() {
 /// engine's published ledger untouched. This is phantom backlog's
 /// mechanism-level test — through the real committer and the real
 /// group-failure path, not a mirror unit.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn maintenance_failed_append_group_is_noop() {
     let store = mem();
     let engine = open_engine(store.clone(), "dst-mnoop").await;
@@ -228,7 +228,7 @@ async fn maintenance_failed_append_group_is_noop() {
 /// the seal commits, the backlog must remain outstanding — and when that
 /// group is made to FAIL, boundary and ledger must both stay put, then
 /// advance TOGETHER on the retry. A restart then rebuilds a zero ledger.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn absorbed_boundary_and_maintenance_retire_atomically() {
     let store = mem();
     let engine = open_engine(store.clone(), "dst-matomic").await;
@@ -355,7 +355,7 @@ async fn rider_and_seal_in_one_group(
 /// ingest slightly above retirement would ride a false LagSecs latch into
 /// an instance-wide shed. Composed deterministically with the commit gate:
 /// one group carrying a client append AND a seal of the earlier backlog.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn mixed_append_absorb_group_refreshes_the_progress_clock() {
     let store = mem();
     let engine = open_engine(store.clone(), "dst-mixed").await;
@@ -436,7 +436,7 @@ async fn mixed_append_absorb_group_refreshes_the_progress_clock() {
 /// move the ledger's version and refresh the progress clock. Under net
 /// accounting it vanished entirely: no write, no refresh, a false stall
 /// while maintenance was keeping exact pace with ingest.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn balanced_append_absorb_group_still_writes_progress() {
     let store = mem();
     let engine = open_engine(store.clone(), "dst-balanced").await;
@@ -487,7 +487,7 @@ async fn balanced_append_absorb_group_still_writes_progress() {
 /// A's late shutdown cannot damage B's state — structurally, because
 /// each engine OWNS its state and there is no global map for a stale
 /// task to delete from.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn ownership_handoff_moves_backlog_without_aba() {
     let store = mem();
     let engine_a = open_engine(store.clone(), "dst-handoff").await;

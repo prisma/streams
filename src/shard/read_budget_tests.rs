@@ -117,7 +117,7 @@ async fn compressed_fixture() -> (Arc<ShardEngine>, StreamKey) {
     (engine, key)
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r06a_compressed_database_pages_bound_plaintext_without_skipping() {
     let (engine, key) = compressed_fixture().await;
     let handle = engine.stream_handle([8; 16]).await.unwrap();
@@ -214,7 +214,7 @@ async fn mixed_fixture(
     clippy::cast_possible_truncation,
     reason = "r06a_budget_matrix_preserves_filtered_history_ring_and_visibility_progress; the fixture's offsets index its own small record table; a checked conversion would only restate the fixture"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r06a_budget_matrix_preserves_filtered_history_ring_and_visibility_progress() {
     let records = vec![
         ("wanted".into(), 6),
@@ -295,7 +295,7 @@ async fn r06a_budget_matrix_preserves_filtered_history_ring_and_visibility_progr
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r06a_metadata_and_individual_decompression_are_bounded() {
     let lane = "\u{1}".repeat(u16::MAX as usize);
     let records = vec![(lane.clone(), 1); 3];
@@ -351,7 +351,7 @@ async fn r06a_metadata_and_individual_decompression_are_bounded() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r06a_zero_payload_and_filtered_miss_pages_bound_record_and_scan_work() {
     let records = vec![("wanted".into(), 0); 5000];
     // Unsealed, sealed and served from the ring, sealed and served from the

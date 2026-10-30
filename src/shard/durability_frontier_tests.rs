@@ -14,7 +14,7 @@ use tokio::sync::oneshot;
     clippy::too_many_lines,
     reason = "r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier; the fixture stages the prior group, the close retry and the fence wait against one remote frontier; splitting it would separate the stages from the frontier they wait on"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier() {
     let store = crate::dst::FaultStore::new(
         Arc::new(object_store::memory::InMemory::new()),
@@ -177,7 +177,7 @@ async fn r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier() 
 /// replacement engine on the same storage reloads the durable fence row, so
 /// a close carrying the superseded generation is refused there as well,
 /// while the fenced generation still closes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_seal_fence_survives_engine_replacement() {
     let store = crate::dst::FaultStore::new(
         Arc::new(object_store::memory::InMemory::new()),
@@ -267,7 +267,7 @@ async fn fence_engine(prefix: &str, store: &Arc<crate::dst::FaultStore>) -> Arc<
 /// group's durability. While the fence's WAL write is held the superseded
 /// close has no answer; the engine then retires with the fence never
 /// durable, and the close is answered `Moved`, which keeps the claim.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_superseded_close_waits_for_its_fence_to_be_durable() {
     let store = crate::dst::FaultStore::new(
         Arc::new(object_store::memory::InMemory::new()),
@@ -324,7 +324,7 @@ async fn a_superseded_close_waits_for_its_fence_to_be_durable() {
 /// TLA-002-F2: a commit group that is never written leaves no fence row, so
 /// neither its own superseded close nor a later one may be refused on the
 /// strength of the engine cache it raised.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_failed_fence_group_refuses_nothing() {
     let store = crate::dst::FaultStore::new(
         Arc::new(object_store::memory::InMemory::new()),
@@ -424,7 +424,7 @@ fn seal_append(hash: [u8; 16], finish: AppendFinish, seal_gen: Option<u64>) -> (
 /// fence ever named; the fenced segment itself still refuses its superseded
 /// generation there, tagged or not, while its untagged ordinary appends
 /// remain no seal decision.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_seal_fence_refuses_only_its_own_segment() {
     let store = crate::dst::FaultStore::new(
         Arc::new(object_store::memory::InMemory::new()),
@@ -546,7 +546,7 @@ async fn until(what: &str, mut done: impl FnMut() -> bool) {
 /// boundary has moved, but the durable boundary still names the previous
 /// seal, and a durable read from 0 still serves every record exactly once;
 /// once the write lands, the durable boundary catches up.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn durable_reads_see_only_the_remote_frontier() {
     let store = crate::dst::FaultStore::new(
         Arc::new(object_store::memory::InMemory::new()),

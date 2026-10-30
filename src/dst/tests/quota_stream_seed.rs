@@ -76,7 +76,7 @@ async fn weighed_create(cell: &Cell, name: &str) -> (u16, Option<String>, f64) {
 
 /// Three creates on a fresh cell: the first, which walks the empty catalog
 /// to seed the count (its LIST weighs 10), weighs 11 like the others.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn every_served_create_weighs_11_its_seed_walk_included() {
     let cell = open_cell(CellSpec {
         store: timed(mem()),
@@ -100,7 +100,7 @@ async fn every_served_create_weighs_11_its_seed_walk_included() {
 /// the same store: its first create walks six tombstones past an empty
 /// descriptor cache and still weighs 11, so at 11 requests a second its next
 /// create, right after it, is admitted.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_first_create_after_a_restart_weighs_11_whatever_names_the_project_held() {
     let store = timed(mem());
     let cell = open_cell(CellSpec {
@@ -138,7 +138,7 @@ async fn the_first_create_after_a_restart_weighs_11_whatever_names_the_project_h
 /// answers `503 catalog_unavailable` and stays charged: the create weighs
 /// its 404 and the walk's LIST. Once the key is gone the next create's walk
 /// completes, and that create weighs 11.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_seed_walk_that_fails_its_page_stays_charged() {
     let inner = mem();
     let stray = object_store::path::Path::from(format!("{}/stray", catalog_prefix()));
@@ -169,7 +169,7 @@ async fn a_seed_walk_that_fails_its_page_stays_charged() {
 /// takes 200 ms, walk the project's catalog once between them: the first
 /// walks and seeds the count, and the others wait for its result instead of
 /// each making the cell walk, uncharged, again. All eight are created.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn concurrent_first_creates_walk_the_catalog_once() {
     let slow_list = FaultPlan {
         latency_pct: 100,

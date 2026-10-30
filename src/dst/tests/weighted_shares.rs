@@ -49,7 +49,7 @@ async fn stored(cell: &Cell, i: usize) -> usize {
 /// 257,500 B/s ceiling at its third append, `429 project_rate_limit`.
 /// Before: every project's ceiling was bound / 8, so M's third append was
 /// refused (79% of profile M's writes, docs/STREAMS-COST-LEVERS-2026-10.md).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_weighted_project_appends_at_its_weighted_ceiling_beside_a_unit_project() {
     let mut spec = CellSpec::open(2);
     spec.cli = |cli| cli.project_share_k = 8;
@@ -100,7 +100,7 @@ async fn append(cell: &Cell, i: usize) -> (u16, Option<String>) {
 /// served; project 1 at weight 1 sent 150 (60%, over its one eighth) and
 /// is refused `429 project_memory_pressure`. Before: blame compared every
 /// project with 1/8, so project 0 was blamed and refused too.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn over_the_shed_line_blame_follows_the_weighted_share() {
     let mut spec = CellSpec::open(2);
     spec.cli = |cli| cli.project_share_k = 8;
@@ -168,7 +168,7 @@ async fn hold(cell: &Cell, i: usize, bytes: u64) -> crate::admission::read_memor
 /// same for each one's catalog page (5.3 MiB on the same ledger); with
 /// 70 MiB held project 0 is refused too, the cap. Before: every project's line was 32 MiB, so project 0 was
 /// refused at 40 MiB.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_weighted_projects_memory_line_scales_leaving_two_unit_lines_beside_it() {
     let mut spec = CellSpec::open(2);
     spec.cli = |cli| cli.project_share_k = 8;

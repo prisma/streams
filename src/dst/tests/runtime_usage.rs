@@ -5,7 +5,7 @@ use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
 use std::sync::{Arc, atomic::Ordering};
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r10_append_admission_and_committed_counters_share_only_their_runtime() {
     let mut rigs = Vec::new();
     for (incarnation, limit) in [(41, 10.0), (42, 20.0)] {

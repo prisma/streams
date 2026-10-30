@@ -87,7 +87,7 @@ mod tests {
         clippy::disallowed_methods,
         reason = "abandoned_open_closes_its_late_database_and_live_handoff_stays_open; the fixture spawns the caller it then abandons mid-handoff; a supervised spawn would tie the fixture's teardown to a supervisor it never builds"
     )]
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn abandoned_open_closes_its_late_database_and_live_handoff_stays_open() {
         let db = on_slatedb_rt(async {
             slatedb::Db::builder(
@@ -116,7 +116,7 @@ mod tests {
         expect_closed(&observer).await;
     }
 
-    #[tokio::test]
+    #[tokio::test(crate = "crate::test_rt")]
     async fn abandoning_an_already_queued_database_result_also_closes_it() {
         let db = on_slatedb_rt(async {
             slatedb::Db::builder(

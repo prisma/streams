@@ -9,7 +9,7 @@ use std::time::Duration;
     clippy::too_many_lines,
     reason = "history lifecycle regression; one stream is read, deleted and recreated to prove the incarnation transition; splitting the scenario would disconnect its before/after assertions"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn history_reads_keep_key_checks_and_delete_recreate_isolation() {
     let rig = http_rig_build(
         mem(),

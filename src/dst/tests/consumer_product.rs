@@ -7,7 +7,7 @@ use super::fixture_storage::mem;
 
 /// Stage 2a: consumer config lifecycle — idempotent create, conflict,
 /// get, delete.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_consumer_config_lifecycle() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -116,7 +116,7 @@ async fn product_consumer_config_lifecycle() {
 /// Stage 2a §2.3: per-key FIFO — a key with an active lease blocks its
 /// later records for every other pull (the run one pull leases is
 /// `consumer_runs`); other keys flow; the ack unblocks.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_consumer_per_key_fifo() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -222,7 +222,7 @@ async fn product_consumer_per_key_fifo() {
 
 /// Stage 2a §2.7: visibility expiry redelivers with attempts+1; a stale
 /// (superseded) lease token is counted and cannot settle.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_consumer_expiry_and_stale_fencing() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -316,7 +316,7 @@ async fn product_consumer_expiry_and_stale_fencing() {
 /// Stage 2a §2.8: exceeding maxAttempts appends ONE record to the
 /// dead-letter stream (durable before the source settles) and the
 /// source message leaves the queue.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_consumer_dlq_flow() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -425,7 +425,7 @@ async fn product_consumer_dlq_flow() {
     clippy::excessive_nesting,
     reason = "product_consumer_drains_lineage_across_split; the fixture nests the drained verdict inside the empty-page branch of its pull loop; flattening it would separate the verdict from the page that proves it"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn product_consumer_drains_lineage_across_split() {
     let _l = gap_lock().lock().await;
     let store = mem();
@@ -551,7 +551,7 @@ async fn product_consumer_drains_lineage_across_split() {
 /// is at configuration time, where the caller can still act on it —
 /// otherwise the mismatch surfaces much later as a poisoned key that
 /// can never drain, with every DLQ append refused in silence.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn dead_letter_link_requires_a_shared_key() {
     const OTHER_KEY: &str = "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=";
     let store = mem();
@@ -726,7 +726,7 @@ async fn drain(addr: std::net::SocketAddr, acked: &mut Vec<(String, u64)>) {
 /// stops without acking it (a crash); after the lease expires a/5 is
 /// delivered again, and every record of both keys is acked exactly once, in
 /// offset order per key.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_consumer_settles_part_of_a_page_and_resumes_inside_it() {
     let (state, addr) = http_rig(mem()).await;
     paged_queue(addr).await;

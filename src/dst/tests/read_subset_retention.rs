@@ -25,7 +25,7 @@ async fn rig() -> super::fixture_http::HttpRig {
     clippy::too_many_lines,
     reason = "frozen scan retention scenario; retaining owners across segments, compacting and reading form one causal sequence; helper phases would hide which segment retained or dropped an owner"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn o2a_frozen_scan_compacts_retained_owners_across_segments_and_reads() {
     let rig = rig().await;
     let state = &rig.state;
@@ -139,7 +139,7 @@ async fn o2a_frozen_scan_compacts_retained_owners_across_segments_and_reads() {
     );
     assert_eq!(doubled, 4);
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn o2a_clipped_fork_body_holds_only_selected_storage_until_cancel() {
     let rig = rig().await;
     let state = &rig.state;

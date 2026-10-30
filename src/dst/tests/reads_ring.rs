@@ -63,7 +63,7 @@ async fn durable_frames(
     clippy::cast_possible_truncation,
     reason = "ring_ordering_paging_and_duplicates_at_offset_level; the fixture's frame counts are small offsets it published itself; a checked conversion would only restate the fixture"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn ring_ordering_paging_and_duplicates_at_offset_level() {
     let inner = mem();
     let store = FaultStore::uniform(inner.clone(), 93, FaultPlan::CLEAN);
@@ -204,7 +204,7 @@ async fn ring_ordering_paging_and_duplicates_at_offset_level() {
 /// full I1–I7 audit runs over the production merged reader. Anti-vacuity:
 /// the run must have produced hits AND evictions, or the scenario proves
 /// nothing about the ring.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn tail_ring_serves_live_reads_and_survives_eviction() {
     for seed in [9u64, 33] {
         let inner = mem();
@@ -252,7 +252,7 @@ async fn tail_ring_serves_live_reads_and_survives_eviction() {
 /// sealed boundary, so the range is sealed first. Also pins
 /// publish-before-ack: immediately after an ack returns, the ring already
 /// covers the acked offset.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn tail_ring_matches_the_db_scan_and_restarts_cold() {
     let inner = mem();
     let store = FaultStore::uniform(inner.clone(), 13, FaultPlan::CLEAN);
@@ -326,7 +326,7 @@ async fn tail_ring_matches_the_db_scan_and_restarts_cold() {
 /// the DB scan path, so the "ring-preferring" claim was false. The
 /// filtered ring read must also return the CONSUMED offset over
 /// trailing non-matching frames (scanned progress, F3).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn keyed_tail_reads_serve_from_ring() {
     let store = mem();
     let db = crate::keyspace::db_builder("ringkeyed", store.clone() as Arc<dyn ObjectStore>)
@@ -475,7 +475,7 @@ async fn woken_read_table_gets(tail_ring_bytes: usize) -> (Vec<u64>, u64) {
 /// compute-1g.env and shared-cell.env), which serves only sealed offsets.
 /// Layout 5 needed the ring for this (the cost report of 2026-10-24, lever
 /// 6): its shard-log scan merged the sorted run's block from the store.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_woken_read_takes_an_unsealed_record_from_memory_without_a_store_get() {
     let profile =
         crate::config::shared_cell_profile(&[("SLATE_S3_ENDPOINT", "http://127.0.0.1:1")]);

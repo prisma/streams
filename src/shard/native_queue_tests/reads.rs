@@ -183,7 +183,7 @@ async fn claim_within(e: &ShardEngine) -> Option<Vec<DeliveryView>> {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_claim_on_a_cold_backlog_waits_for_no_block_its_predecessors_read() {
     let store = Arc::new(HeldTables {
         inner: InMemory::new(),

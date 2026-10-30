@@ -137,7 +137,7 @@ async fn queue_counts(cell: &Cell, i: usize) -> (u64, u64, u64) {
 /// class's writes alike (`429 rate_limited`) while claims are still
 /// served; under the line everything is served again. Each tenant stores
 /// exactly what it was answered for, and the queue's counters agree.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_mixed_cell_under_pressure_sheds_its_flooder_and_starves_no_class() {
     let cell = mixed_cell().await;
     let admission = &cell.state.admission;
@@ -259,7 +259,7 @@ async fn mixed_cell() -> Cell {
 /// its 515,000 B/s at its fifth and a unit project its 257,500 B/s at its
 /// third (`429 project_rate_limit`), and every project reads only its own
 /// records.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn every_project_on_a_weighted_cell_holds_its_own_weighted_ceilings() {
     let mut spec = CellSpec::open(cell_scale());
     spec.cli = |cli| cli.project_share_k = 8;

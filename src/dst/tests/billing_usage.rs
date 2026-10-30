@@ -13,7 +13,7 @@ use std::sync::Arc;
 /// No customer credential — even a fully valid one — may create, read,
 /// or append to a reserved system stream on either public surface, and
 /// creation captures the billing tenant identity in the descriptor.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn reserved_namespace_refuses_customer_credentials() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -75,7 +75,7 @@ async fn reserved_namespace_refuses_customer_credentials() {
     clippy::too_many_lines,
     reason = "read metering matrix scenario; every delivery mode, cursor shape and byte accounting case is checked against one rig and one ledger; splitting the matrix into helpers would hide which case charged which bytes"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn read_meter_covers_the_matrix_exactly() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -272,7 +272,7 @@ impl Drop for ClockGuard {
     clippy::too_many_lines,
     reason = "billing metadata scenario; the exact, durable and acknowledgeable properties are proved on one append sequence through restart; helper phases would hide which boundary the metadata survived"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn billing_meta_is_exact_durable_and_ackable() {
     let _xw = crate::billing::billing_clock_lock().write().await;
     let _reset = ClockGuard;
@@ -443,7 +443,7 @@ async fn billing_meta_is_exact_durable_and_ackable() {
     clippy::too_many_lines,
     reason = "usage pipeline scenario; appends, rollup absorption, restart and the exactly-once totals form one causal sequence on one rig; splitting the phases would hide which boundary could double count"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn usage_pipeline_end_to_end_exactly_once() {
     // Month-sensitive on the REAL clock: hold the read side so the
     // clock-injecting tests cannot move billing months mid-assert.
@@ -602,7 +602,7 @@ async fn usage_pipeline_end_to_end_exactly_once() {
 /// surface. A raw create/delete emits lifecycle events; the drain
 /// appends them to the reserved stream; a customer credential still
 /// cannot read that stream.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn ops_events_journal_end_to_end() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -682,7 +682,7 @@ async fn ops_events_journal_end_to_end() {
 /// materializes raw + 1-minute tiers behind its own exactly-once
 /// cursor, and the alert evaluator opens and resolves with durable
 /// alert events.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn ops_metrics_and_alerts_flow() {
     let store = mem();
     let (state, _addr) = http_rig(store).await;
@@ -778,7 +778,7 @@ async fn ops_metrics_and_alerts_flow() {
     clippy::too_many_lines,
     reason = "telemetry crash-point scenario; each crash point and cost gate is exercised against the same pipeline state; helper phases would hide which crash point the gate protected"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn telemetry_crash_points_and_cost_gates() {
     // Month-sensitive on the REAL clock: hold the read side so the
     // clock-injecting tests cannot move billing months mid-assert.
@@ -910,7 +910,7 @@ async fn telemetry_crash_points_and_cost_gates() {
 /// keeps rotating. The restart drains through its own handle: opening it
 /// fences the dropped one, whose compactor closes it with "detected newer
 /// DB client" at its next manifest poll (5 s in `telemetry_settings`).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn read_batches_survive_crash_in_the_spool() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -969,7 +969,7 @@ async fn read_batches_survive_crash_in_the_spool() {
 /// memory, what a hard process loss can drop: its window seals at the first
 /// drain round after the 10 s flush interval and that round spools it, so
 /// the interval plus one drain cadence, 18 s at the default 8 s.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn the_usage_answer_states_the_read_loss_window_of_the_drain_cadence() {
     let (state, addr) = http_rig(mem()).await;
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config);

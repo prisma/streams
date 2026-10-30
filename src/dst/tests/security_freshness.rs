@@ -97,7 +97,7 @@ impl LeaseRig {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn v01_owned_time_refreshes_survive_every_preceding_deadline() {
     let _serial = gap_lock().lock().await;
     let mut rig = LeaseRig::new().await;
@@ -132,7 +132,7 @@ async fn v01_owned_time_refreshes_survive_every_preceding_deadline() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn v01_owned_time_staleness_refuses_each_unrefreshed_feed_at_the_boundary() {
     let _serial = gap_lock().lock().await;
     for missing_policy in [true, false] {

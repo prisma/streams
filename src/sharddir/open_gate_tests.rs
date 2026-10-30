@@ -223,7 +223,7 @@ fn the_unready_exit_window_is_the_configured_seconds() {
 /// Kills `spawn_unready_watchdog with ()`: an enabled watchdog is one
 /// critical task named `unready-watchdog` that ends when its supervisor
 /// stops; a zero window spawns nothing.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "current_thread", crate = "crate::test_rt")]
 async fn the_unready_watchdog_is_one_critical_task_and_only_when_enabled() {
     let (_release, released) = watch::channel(true);
     let opener = scripted_opener(Script::Open, Arc::new(AtomicUsize::new(0)), released);
@@ -272,7 +272,7 @@ async fn the_unready_watchdog_is_one_critical_task_and_only_when_enabled() {
 /// `Some(String::new())`, `Some("xyzzy".into())`): a gate is ready until three
 /// distinct prefixes failed to open while none ever opened; then it names the
 /// count and the last error; the first open that succeeds makes it ready.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "current_thread", crate = "crate::test_rt")]
 async fn readiness_names_three_failed_prefixes_until_one_opens() {
     let rig = Rig::new(Script::FailFirst(3), OPEN_DEADLINE);
     assert_eq!(rig.gate.unready_reason(), None, "a fresh gate is ready");
@@ -310,7 +310,7 @@ async fn readiness_names_three_failed_prefixes_until_one_opens() {
 /// deadline fails its caller, strikes and arms the escalated holdoff, and its
 /// reaper owns the prefix: a stop counts it as a pending open, and no second
 /// open starts while it runs, even once the holdoff is gone.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "current_thread", crate = "crate::test_rt")]
 async fn a_deadlined_open_strikes_and_its_reaper_holds_the_prefix() {
     let rig = Rig::new(Script::Held, SHORT_DEADLINE);
     assert_eq!(
@@ -357,7 +357,7 @@ async fn a_deadlined_open_strikes_and_its_reaper_holds_the_prefix() {
 /// Kills `shutdown_pending -> (vec![], 0)` from the engine side: the reaper
 /// closes the engine a deadlined open produces late, a stop owes that close,
 /// and the prefix reopens, as a new incarnation, only after it terminated.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "current_thread", crate = "crate::test_rt")]
 async fn the_reaper_closes_a_late_engine_and_the_prefix_reopens_after_it() {
     let rig = Rig::new(Script::Held, SHORT_DEADLINE);
     assert_eq!(
@@ -405,7 +405,7 @@ async fn the_reaper_closes_a_late_engine_and_the_prefix_reopens_after_it() {
 /// Kills `> with <` in `wait_retired` and `< with >` in `get_or_open`: a
 /// holdoff that has run out turns no caller away at either check, and the
 /// next caller opens at once.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "current_thread", crate = "crate::test_rt")]
 async fn a_holdoff_that_ran_out_admits_the_next_open() {
     let rig = Rig::new(Script::FailFirst(1), OPEN_DEADLINE);
     assert_eq!(
@@ -440,7 +440,7 @@ async fn a_holdoff_that_ran_out_admits_the_next_open() {
 /// Kills `> with ==` and `> with <` in `wait_retired`: an armed holdoff answers
 /// `shard_moving` at once, before the caller would wait on the engine the
 /// retirement left closing.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "current_thread", crate = "crate::test_rt")]
 async fn an_armed_holdoff_answers_before_any_wait_on_the_retired_engine() {
     let rig = Rig::new(Script::Open, OPEN_DEADLINE);
     let engine = ready(rig.gate.get_or_open(PREFIX, OPEN_WAIT).await);
@@ -465,7 +465,7 @@ async fn an_armed_holdoff_answers_before_any_wait_on_the_retired_engine() {
 /// Kills `< with ==` and `< with >` in `get_or_open`'s holdoff check: a holdoff
 /// armed while a caller waited on the retiring engine still turns that caller
 /// away once the engine terminated, and the caller starts no open.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "current_thread", crate = "crate::test_rt")]
 async fn a_holdoff_armed_while_a_caller_waits_on_the_retiring_engine_turns_it_away() {
     let rig = Rig::new(Script::Open, OPEN_DEADLINE);
     let engine = ready(rig.gate.get_or_open(PREFIX, OPEN_WAIT).await);
@@ -508,7 +508,7 @@ async fn a_holdoff_armed_while_a_caller_waits_on_the_retiring_engine_turns_it_aw
 /// Kills the match guard `r.incarnation == incarnation` -> `true` in
 /// `notify_closed`: the late close of a replaced incarnation evicts nothing
 /// and arms nothing; the replacement keeps serving.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "current_thread", crate = "crate::test_rt")]
 async fn a_late_close_of_a_replaced_incarnation_leaves_the_replacement_serving() {
     let rig = Rig::new(Script::Open, OPEN_DEADLINE);
     ready(rig.gate.get_or_open(PREFIX, OPEN_WAIT).await);
@@ -543,7 +543,7 @@ async fn a_late_close_of_a_replaced_incarnation_leaves_the_replacement_serving()
 /// `shutdown_pending` both `(vec![], 0)` and `|| with &&`: an open in flight
 /// is pending; a stopped gate starts no open; the open that lands after the
 /// stop is refused, closed and owed to the stop, never installed.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "current_thread", crate = "crate::test_rt")]
 async fn a_stopped_gate_starts_no_open_and_refuses_the_one_in_flight() {
     let rig = Rig::new(Script::Held, OPEN_DEADLINE);
     let patience = Duration::from_millis(20);
@@ -597,7 +597,7 @@ async fn a_stopped_gate_starts_no_open_and_refuses_the_one_in_flight() {
 /// Kills `|| with &&` in `publish_open` from its other side: an engine that
 /// closed while its open ran is refused and closed, never served, and a stop
 /// owes its close.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "current_thread", crate = "crate::test_rt")]
 async fn an_engine_closed_before_its_open_lands_is_refused() {
     let rig = Rig::new(Script::ClosedOnArrival, OPEN_DEADLINE);
     assert_eq!(
@@ -723,7 +723,7 @@ async fn join_the_sweeps_open<'a>(
 /// The customer's interest ends with its call: the prefix's next open, with
 /// no customer waiting, is the sweep's to take. Kills `PrefixGate::published`
 /// with its stamp skipped (`> with <`) and `ExternalInterest::drop with ()`.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "current_thread", crate = "crate::test_rt")]
 async fn a_customer_that_joins_the_sweeps_open_keeps_the_engine_and_the_sweep_cannot_take_custody()
 {
     let (dir, release) = held_directory();
@@ -776,7 +776,7 @@ async fn a_customer_that_joins_the_sweeps_open_keeps_the_engine_and_the_sweep_ca
 /// prefix's refusal, `shard_closing` with Retry-After 1, as a caller that
 /// arrives during the close does. Kills the residency check in
 /// `OpenGate::get_or_open_as` (`Arc::ptr_eq` -> `true` with the replacement).
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "current_thread", crate = "crate::test_rt")]
 async fn a_customer_is_never_handed_an_engine_retired_before_it_resumed() {
     for replaced in [false, true] {
         let (dir, release) = held_directory();
@@ -816,7 +816,7 @@ async fn a_customer_is_never_handed_an_engine_retired_before_it_resumed() {
 /// joins the sweep's open never stamps, even once it holds the engine, so the
 /// engine stays in the sweep's rotation. Kills `PrefixGate::published`'s
 /// `> with >=` and `> with ==`, and `delete !` in `OpenGate::get_or_open_as`.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "current_thread", crate = "crate::test_rt")]
 async fn an_internal_resolution_that_joins_the_sweeps_open_leaves_custody_to_the_sweep() {
     let (dir, release) = held_directory();
     let (engine, internal) = join_the_sweeps_open(&dir, &release, Adoption::Internal).await;

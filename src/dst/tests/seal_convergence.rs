@@ -20,7 +20,7 @@ use std::sync::Arc;
 // runs, load-sensitive). The conflict is benign: re-decide from a
 // fresh read.
 // ------------------------------------------------------------------
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_benign_descriptor_conflict_never_fails_a_seal() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -107,7 +107,7 @@ async fn wait_seal_terminal(
 /// A seal interrupted AFTER every segment close is durable must be
 /// resumable by a plain retry, and the subscriber protocol must hold:
 /// exactly ONE sealed control, then EOF.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_seal_interrupted_before_publication_resumes_on_retry() {
     let _serial = gap_lock().lock().await;
     let (state, addr, _promoter, mut sck) = hub_rig_stream("sbr").await;
@@ -193,7 +193,7 @@ async fn a_seal_interrupted_before_publication_resumes_on_retry() {
 /// one observes the other's terminal state — never a stuck Sealing,
 /// never two terminal transitions, exactly one sealed control per
 /// subscriber.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn concurrent_plain_seals_serialize_into_one_terminal_transition() {
     let (state, addr, _promoter, mut sck) = hub_rig_stream("csr").await;
     let (a, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
@@ -260,7 +260,7 @@ async fn concurrent_plain_seals_serialize_into_one_terminal_transition() {
     clippy::too_many_lines,
     reason = "seal convergence scenario; entered failure proofs bounded retries and the single terminal SSE control form one fault history; fragmenting it would hide the relationship between retry and delivery"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn seal_converges_through_transient_commit_group_failures() {
     let (state, addr, _promoter, mut sck) = hub_rig_stream("scv").await;
     let (a, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
@@ -404,7 +404,7 @@ async fn seal_converges_through_transient_commit_group_failures() {
 /// close. A segment-read token must NOT open it; a valid request
 /// closes the local segment and a retry answers the same frozen
 /// offset.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn segment_close_receiver_scopes_authorizes_and_is_idempotent() {
     let scopes = "streams.create streams.records.append streams.records.read";
     let (state, addr, _tok) = sr_rig("proj-scl", "ws_scl", "c_scl", "scl-1", scopes).await;
@@ -496,7 +496,7 @@ async fn segment_close_receiver_scopes_authorizes_and_is_idempotent() {
 /// overrides the shard's owner to B and carries B's peer URL. The
 /// stream is created through A; the collection seal must complete
 /// even though its segment close resolves foreign.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn collection_seal_relays_segment_closes_to_the_foreign_owner() {
     let store = mem();
     let (state_a, _addr_a) = http_rig_named(store.clone(), "inst-a").await;

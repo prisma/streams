@@ -82,6 +82,8 @@ mod sse;
 mod store_timing;
 mod tasks;
 mod tenant;
+#[cfg(test)]
+mod test_rt;
 mod touch;
 mod touch_keys;
 mod usage;

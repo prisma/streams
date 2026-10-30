@@ -24,7 +24,7 @@ use std::sync::Arc;
 /// subscribers must receive the record IN PLACE — no EOF, no lag
 /// disconnect. Multitenancy contract: only the offending project is
 /// constrained.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_budget_noisy_project_cannot_evict_another() {
     let (svc, state, addr) = auth_rig("proj-noisy", "ws_iso", &["ca"], None).await;
     // Second project in the same cell: republish policies + grants at
@@ -132,7 +132,7 @@ async fn livefeed_budget_noisy_project_cannot_evict_another() {
 /// foreign-key appends advance a lane's scanned position without
 /// delivering records; a DELAYED reader of the same lane must
 /// converge to exactly the cursor the live subscriber holds.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_delayed_reader_lands_on_the_current_scan_head() {
     let store = mem();
     let (_state, addr) = http_rig(store).await;
@@ -200,7 +200,7 @@ async fn livefeed_delayed_reader_lands_on_the_current_scan_head() {
 /// LiveFeed subscribers dropped at once — connections AND feeds reach
 /// zero within the teardown deadline (drop detaches; the last leave
 /// evicts the feed).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_mass_disconnect_tears_down_within_deadline() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -379,7 +379,7 @@ async fn pm_enforce_rig(
 /// `project_memory_pressure` on NEW appends ONLY — reads continue,
 /// the refusal is project-scoped, and dropping below the release
 /// point restores appends (hysteresis pinned at the unit level).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn project_memory_pressure_throttles_new_appends_only() {
     let (state, addr, bearer, pid) = pm_enforce_rig(mem(), RigRuntime::first(), None).await;
     state
@@ -459,7 +459,7 @@ async fn project_memory_pressure_throttles_new_appends_only() {
 /// it to zero. (Battery 10's owner-movement release is the
 /// same Drop path, pinned at the unit level; the fleet leg exercises
 /// it in the field.)
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn frame_debt_survives_restart_via_tail_seed() {
     let _l = gap_lock().lock().await;
     let store = mem();

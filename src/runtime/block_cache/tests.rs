@@ -216,7 +216,7 @@ async fn read(db: &slatedb::Db, i: u32) {
     assert_eq!(got.as_ref(), value(i).as_slice(), "key {i}");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_release_frees_the_generation_that_held_the_blocks() {
     let cache = Arc::new(BlockCache::new(options(4 << 20)));
     let db = open(Arc::new(InMemory::new()), cache.clone()).await;
@@ -237,7 +237,7 @@ async fn a_release_frees_the_generation_that_held_the_blocks() {
     db.close().await.unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn the_first_read_after_a_release_reads_the_store_once_and_the_next_hits() {
     let store = table_gets();
     let cache = Arc::new(BlockCache::new(options(4 << 20)));
@@ -282,7 +282,7 @@ async fn sweep(db: &slatedb::Db, store: &TableGets) -> (u64, u64) {
 /// full admits one entry at a time: its second pass would read the store
 /// again. A released cache holds a working set of half its capacity, every
 /// time it is released: after writes overfilled it, and after reads did.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_released_cache_admits_a_full_generation_again() {
     let store = table_gets();
     let cache = Arc::new(BlockCache::new(options(256 << 10)));
@@ -346,7 +346,7 @@ async fn settled(alive: &AtomicUsize) -> usize {
 /// GET reply: a cached block or index would keep the whole reply buffer
 /// alive for as long as it stays cached. Point gets fill the cache through
 /// `fetch_*`, a scan that caches its blocks through `insert`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_cached_read_keeps_no_reply_buffer_alive() {
     let alive = Arc::new(AtomicUsize::new(0));
     let store = Arc::new(TableGets {
@@ -434,7 +434,7 @@ async fn a_cached_entry() -> CachedEntry {
     entries.first().expect("the flush cached its table").clone()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn every_lookup_answers_from_the_generation_in_force() {
     let entry = a_cached_entry().await;
     let cache = BlockCache::new(options(4 << 20));

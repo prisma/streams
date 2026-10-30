@@ -24,7 +24,7 @@ use crate::shard::Deliver;
 /// budget, seal after seal, until it is all sealed; every seal stays within
 /// the budget, the directory and the pending row tile at every step, and
 /// every record reads back once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_oversized_stream_seals_within_the_object_budget() {
     const BUDGET: u64 = 20 << 10;
     let mut settings = manual();
@@ -73,7 +73,7 @@ async fn an_oversized_stream_seals_within_the_object_budget() {
 /// Eight streams under a budget of three streams per seal: each seal takes
 /// three, starting after the last one the seal before took, so three seals
 /// seal every stream once (3, 3, 2) and none is left behind.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn many_streams_seal_under_the_streams_budget_in_turn() {
     let mut settings = manual();
     settings.max_streams = 3;
@@ -110,7 +110,7 @@ async fn many_streams_seal_under_the_streams_budget_in_turn() {
 /// loop runs at its next evaluation with no trigger due: one requested seal
 /// of five streams under a two-stream budget, and the sealer finishes the
 /// other three by itself.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_seal_its_budget_cut_short_completes_at_the_next_evaluation() {
     let mut settings = manual();
     settings.max_streams = 2;
@@ -172,7 +172,7 @@ async fn a_seal_its_budget_cut_short_completes_at_the_next_evaluation() {
 /// the budget cuts short defers the rest to the next seal, which starts
 /// after it, and leaves the shard's oldest unsealed page counted; a seal
 /// that takes everything defers nothing and leaves no age behind.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_exact_fit_is_taken_and_a_cut_defers_the_rest() {
     let rig = rig("budget-exact", manual(), Duration::from_millis(2)).await;
     let sp = &rig.engine.layout.seal;

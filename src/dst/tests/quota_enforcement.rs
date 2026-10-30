@@ -13,7 +13,7 @@ use super::fixture_storage::{mem, skey};
     clippy::too_many_lines,
     reason = "rate backstop scenario; verifying the project, exhausting the admission budget and reading the refusal on the wire form one causal sequence; helper phases would hide which request crossed the budget"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn project_rate_quota_backstop_answers_429() {
     const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");
     const PUB: &str = include_str!("../fixtures/mt-test-rsa.pub.pem");
@@ -155,7 +155,7 @@ async fn project_rate_quota_backstop_answers_429() {
     clippy::too_many_lines,
     reason = "volume metering scenario; appends with exact parsed counts, reads and the metered totals form one causal sequence; helper phases would hide which request was metered inexactly"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn volume_quotas_meter_appends_and_reads() {
     const PRIV: &str = include_str!("../fixtures/mt-test-rsa.pem");
     const PUB: &str = include_str!("../fixtures/mt-test-rsa.pub.pem");
@@ -471,7 +471,7 @@ async fn quota_rig(
     clippy::disallowed_methods,
     reason = "stream quota fixture; the racing creation is joined before the quota verdicts are compared; it must run concurrently to contend for the last slot"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn max_streams_is_enforced_at_create() {
     let quotas = crate::project_policy::ProjectQuotas {
         max_streams: 3,
@@ -562,7 +562,7 @@ async fn max_streams_is_enforced_at_create() {
 /// the append is DECIDED. A 1-byte budget refuses even one small
 /// append; a modest budget survives many sequential appends whose
 /// TOTAL far exceeds it (release works — a leak would wedge).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn queued_append_bytes_charge_and_release() {
     let scopes = "streams.create streams.records.append streams.records.read";
     let tiny = crate::project_policy::ProjectQuotas {
@@ -645,7 +645,7 @@ async fn queued_append_bytes_charge_and_release() {
     clippy::disallowed_methods,
     reason = "subscription pool fixture; the long watch is joined after the refused second wait is observed; it must hold a pool slot concurrently"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn watch_waits_occupy_the_subscription_pool() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read streams.watches.manage";
@@ -710,7 +710,7 @@ async fn watch_waits_occupy_the_subscription_pool() {
 /// with '#'. It must COUNT against max_streams (after a reseed) and
 /// its hard delete must RELEASE the slot — no name-syntax
 /// classification of resource kinds.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn customer_streams_with_hash_count_and_release() {
     let quotas = crate::project_policy::ProjectQuotas {
         max_streams: 2,
@@ -753,7 +753,7 @@ async fn customer_streams_with_hash_count_and_release() {
 /// RED (round-3 finding 2.1): a catalog failure during the max_streams
 /// seed fails CLOSED with a retryable 503 — a partial count must
 /// never seed the limiter.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn catalog_failure_fails_the_stream_seed_closed() {
     let quotas = crate::project_policy::ProjectQuotas {
         max_streams: 5,
@@ -800,7 +800,7 @@ async fn catalog_failure_fails_the_stream_seed_closed() {
     clippy::let_underscore_must_use,
     reason = "fork_cascade_hard_delete_releases_the_stream_slot; the fixture admits once only to seed the project's tracked slot; the guard it returns is dropped on purpose so the seed occupies nothing"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn fork_cascade_hard_delete_releases_the_stream_slot() {
     let (state, addr) = http_rig(mem()).await;
     let ct = ("content-type", "application/json");
@@ -869,7 +869,7 @@ async fn fork_cascade_hard_delete_releases_the_stream_slot() {
 /// Quota transition: max_streams 0 (unlimited) -> nonzero seeds from
 /// the catalog at the FIRST limited create, counting what unlimited
 /// mode already made.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn max_streams_transition_seeds_from_reality() {
     let scopes = "streams.create streams.records.append streams.records.read";
     let unlimited = crate::project_policy::ProjectQuotas::default();
@@ -937,7 +937,7 @@ async fn max_streams_transition_seeds_from_reality() {
 /// handler or, for a producer request, by the core; the next valid append
 /// owes nothing, and while the bucket refills the refusal is still the
 /// permanent 413, never a 429 naming a wait.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_unadmittable_append_leaves_the_project_volume_quota_untouched() {
     let quotas = crate::project_policy::ProjectQuotas {
         append_bytes_per_sec: 1,

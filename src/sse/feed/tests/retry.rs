@@ -35,7 +35,7 @@ async fn expect_solo(feed: &LiveFeed, from: u64, to: u64) {
 
 /// Scenario A (red): a singleton parked AT the head across a split
 /// must not be lag-cut because the retry task read its records.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn retry_install_leaves_the_successor_read_to_the_singleton() {
     let budget = budget();
     let (feed, src) = feed_with(0, 8, 1 << 20, &budget);
@@ -74,7 +74,7 @@ async fn retry_install_leaves_the_successor_read_to_the_singleton() {
 /// survivor's next read must start exactly at the old head. A solo
 /// read by the retry leaves the floor alone (the ring is non-empty),
 /// so no typed lag fires and the offsets it read are never sent.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn retry_never_skips_the_survivor_past_a_retained_ring() {
     let budget = budget();
     let (feed, src) = feed_with(3, 8, 1 << 20, &budget);
@@ -112,7 +112,7 @@ async fn retry_never_skips_the_survivor_past_a_retained_ring() {
 /// an already-installed open source with a fresh append is enough.
 /// The tick must leave the read to the session AND wake it: a session
 /// that lost the permit to this tick has no other wake.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn retry_tick_on_a_readable_tail_wakes_the_session_and_reads_nothing() {
     let budget = budget();
     let (feed, src) = feed_with(0, 8, 1 << 20, &budget);
@@ -141,7 +141,7 @@ async fn retry_tick_on_a_readable_tail_wakes_the_session_and_reads_nothing() {
 /// yet. The retry must not read it, must wake the session, and must
 /// KEEP ticking - the transition is still unresolved - then settle the
 /// close once the subscriber has read to the cap.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn retry_keeps_ticking_while_a_closed_tail_is_still_unread() {
     let budget = budget();
     let (feed, src) = feed_with(0, 8, 1 << 20, &budget);
@@ -172,7 +172,7 @@ async fn retry_keeps_ticking_while_a_closed_tail_is_still_unread() {
 /// The loop contract (green pin): a contended permit and an in-flight
 /// transition (`RetryLater`) keep the ONE task ticking; a settled one
 /// ends it.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn retry_keeps_ticking_until_the_transition_settles() {
     let budget = budget();
     let (feed, src) = feed_with(0, 8, 4096, &budget);
@@ -218,7 +218,7 @@ async fn retry_keeps_ticking_until_the_transition_settles() {
 /// Characterization pin (green): an incompatible successor is a typed
 /// cutoff - one bump at the transition itself, a repeatable outcome
 /// for every later drive, and the retry ends.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn retry_cuts_the_feed_off_on_an_incompatible_successor() {
     let budget = budget();
     let (feed, src) = feed_with(0, 8, 1 << 20, &budget);
@@ -247,7 +247,7 @@ async fn retry_cuts_the_feed_off_on_an_incompatible_successor() {
 /// `Unresolved`, so the task ticks again and the next hold continues
 /// it. The budget was `swap_attempts >= 4` before it became this
 /// loop's bound, and nothing pinned it on either side.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn a_swap_storm_is_continued_by_the_next_attempt() {
     let budget = budget();
     let (feed, src) = feed_with(0, 8, 4096, &budget);
@@ -295,7 +295,7 @@ async fn a_swap_storm_is_continued_by_the_next_attempt() {
 
 /// The task is the feed's own: it ends when nobody is left to wake, and
 /// it must not settle a transition on behalf of subscribers who left.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn retry_ends_when_the_last_subscriber_leaves() {
     let budget = budget();
     let (feed, src) = feed_with(0, 8, 4096, &budget);
@@ -317,7 +317,7 @@ async fn retry_ends_when_the_last_subscriber_leaves() {
 
 /// Teardown does not wait out the tick: firing the feed's cancel flag
 /// ends the task at once, mid-sleep.
-#[tokio::test(start_paused = true)]
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn retry_ends_at_once_when_the_feed_is_cancelled() {
     let budget = budget();
     let (feed, src) = feed_with(0, 8, 4096, &budget);

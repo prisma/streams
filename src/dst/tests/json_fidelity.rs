@@ -49,7 +49,7 @@ async fn append(
 /// re-encoding expanded (`3e23`, `1e15`) are admitted on their own length; a
 /// body larger than the ingest capacity only by whitespace is admitted; and
 /// the billed ingest bytes are the stored lengths.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn json_records_are_admitted_measured_and_billed_on_their_stored_text() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let admission = crate::config::AdmissionConfig {
@@ -146,7 +146,7 @@ async fn json_records_are_admitted_measured_and_billed_on_their_stored_text() {
 /// `producer_sequence_reused` by design. A seal's operation covers its
 /// final's stored text, so a retry with the same final (re-spaced or not)
 /// completes idempotently, and a different final is refused.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn json_request_identities_cover_the_client_bytes() {
     let (state, addr) = http_rig(mem()).await;
     create(addr, "idem").await;
@@ -195,7 +195,7 @@ async fn json_request_identities_cover_the_client_bytes() {
 /// every read surface: a product read, a raw read, a scan, SSE (one event on
 /// one `data:` line), the peer segment-scan wire a cross-node read decodes,
 /// a consumer Receive's `value`, and the dead-letter copy's `value`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn every_read_surface_serves_the_minified_client_text() {
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
     let (state, addr) = (rig.state.clone(), rig.addr);

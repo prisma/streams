@@ -165,7 +165,7 @@ fn applied(handle: &StreamHandle) -> TailFields {
 /// cannot share a 64 KiB page, ten small records share one. Every page opens to exactly its request's records, the
 /// tail's unabsorbed gauge and the stored-byte meter are the sum of the page
 /// bytes, and ingest stays metered on payload bytes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_request_is_stored_as_pages_keyed_by_their_last_offset() {
     let engine = engine("pages-stored", 0).await;
     let large = records(3, 40 << 10);
@@ -202,7 +202,7 @@ async fn a_request_is_stored_as_pages_keyed_by_their_last_offset() {
 /// A commit group counts the payload bytes of the records it appends, not
 /// their stored page bytes: one request of a 100-byte and a 23-byte record
 /// is a group of one request, two records and 123 bytes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_commit_group_counts_its_records_payload_bytes() {
     let engine = engine("group-payload", 0).await;
     append(&engine, &[vec![1; 100], vec![2; 23]]).await.unwrap();
@@ -220,7 +220,7 @@ async fn a_commit_group_counts_its_records_payload_bytes() {
 /// A request whose pages refuse to seal stages nothing, even in a group that
 /// writes: no page, no sequence row, no advance; it is refused as a bad
 /// body, and the request committed beside it takes its offsets.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_request_that_cannot_be_sealed_stages_nothing() {
     let engine = engine("pages-refused", 0).await;
     let oversized = vec![
@@ -302,7 +302,7 @@ async fn two_pages(engine: &ShardEngine) {
 /// A request split over several pages is atomic: when its group's write
 /// fails, none of its pages is stored, the stream does not advance and no
 /// page reaches the ring; the retried request stores every page.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_request_split_over_several_pages_is_atomic() {
     let engine = engine("pages-atomic", 1 << 20).await;
     let large = records(3, 40 << 10);
@@ -340,7 +340,7 @@ async fn a_request_split_over_several_pages_is_atomic() {
 /// `from`: the records before `from` are neither served nor counted, from
 /// the segment object and from the ring alike (the ring serves only below
 /// the sealed boundary), and the decoded read resumes there.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_scan_starting_mid_page_serves_from_its_first_offset() {
     for ring in [0, 1 << 20] {
         let engine = engine("pages-mid-start", ring).await;
@@ -397,7 +397,7 @@ async fn a_scan_starting_mid_page_serves_from_its_first_offset() {
 /// a page that starts at `to` is not returned at all: the consumed progress
 /// is `to - 1`, never a record past the window. The same from the unsealed
 /// pages and, sealed, from the segment object and from the ring.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_scan_ending_mid_page_stops_at_its_last_offset() {
     for (ring, sealed) in [(0, false), (1 << 20, false), (0, true), (1 << 20, true)] {
         let engine = engine("pages-mid-end", ring).await;
@@ -440,7 +440,7 @@ async fn a_scan_ending_mid_page_stops_at_its_last_offset() {
 /// A keyed scan skips another lane's page from its clear header without
 /// decrypting it, and still counts its records as consumed progress; the
 /// byte budget ends the scan after the page that reaches it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_keyed_scan_skips_other_lanes_pages_and_a_budget_ends_on_a_page() {
     let engine = engine("pages-keyed", 0).await;
     let all = records(20, 100);
@@ -511,7 +511,7 @@ async fn a_keyed_scan_skips_other_lanes_pages_and_a_budget_ends_on_a_page() {
 /// A read budget that ends inside a page stops at the last admitted
 /// record, and the next read resumes inside the same page: every record is
 /// served exactly once and in order.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_budget_cut_inside_a_page_resumes_there() {
     let engine = engine("pages-budget", 1 << 20).await;
     two_pages(&engine).await;
@@ -552,7 +552,7 @@ async fn a_budget_cut_inside_a_page_resumes_there() {
 /// pages, and every record reads back once. A pending row missing page 20,
 /// or holding an authentic page [11, 20] that overlaps the page [10, 19]
 /// before it, fails the stream's load.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn tail_repair_counts_records_per_page_after_a_restart() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let engine = engine_on(store.clone(), "pages-repair", 0).await;
@@ -648,7 +648,7 @@ async fn planted_load_error(store: &Arc<dyn ObjectStore>, name: &str, pending: B
 /// after a seal's commit (its directory rows and the pending row's
 /// remainder, no page) turns durable, the ring holds the two batches the
 /// appends published, with their bytes, and the publish count is unchanged.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_commit_that_stores_no_page_publishes_nothing_to_the_ring() {
     let engine = engine("pages-ring-quiet", 1 << 20).await;
     two_pages(&engine).await;
@@ -683,7 +683,7 @@ async fn a_commit_that_stores_no_page_publishes_nothing_to_the_ring() {
 /// before the seal a durable and an applied read of a window the ring holds
 /// are both served from the unsealed pages, without a ring hit; after it
 /// each is served from the ring, one hit each; all serve the same records.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn only_a_sealed_window_is_served_from_the_ring() {
     let engine = engine("pages-ring-sealed", 1 << 20).await;
     two_pages(&engine).await;
@@ -718,7 +718,7 @@ async fn only_a_sealed_window_is_served_from_the_ring() {
 /// windows ending at u64::MAX, starting inside, at the first and at the
 /// last record of the top pages, are served exactly, from the unsealed
 /// pages and, once sealed, from the segment object.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn scans_at_the_top_of_the_offset_space_are_exact() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let cipher = PageCipher::new(&subkey(), &HASH);
@@ -795,7 +795,7 @@ async fn scans_at_the_top_of_the_offset_space_are_exact() {
 /// and the old owner's answer is no acknowledgement; released before the
 /// replacement opens, the request is acknowledged and the replacement finds
 /// all three pages and the tail past them.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_multi_page_request_is_all_or_nothing_across_a_crash() {
     use crate::dst::{FaultProfile, FaultStore, ObjClass, StoreOp};
     for lands in [false, true] {

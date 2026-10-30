@@ -12,7 +12,7 @@ use super::fixture_storage::{mem, skey};
 
 /// 6.5: a split landing DURING initial catch-up — every record exactly
 /// once, no disconnect (failpoint-parked between attach and start).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_split_during_initial_catchup_delivers_everything() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -61,7 +61,7 @@ async fn livefeed_split_during_initial_catchup_delivers_everything() {
 }
 
 /// 6.5: a KEYED lane rides a split in place with its isolation intact.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_keyed_lane_survives_split() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -111,7 +111,7 @@ async fn livefeed_keyed_lane_survives_split() {
 /// 6.4/6.5 fallback: the RAW surface takes the typed disconnect on a
 /// split (scalar cursors cannot name segments) — EOF, never a
 /// streamClosed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_raw_disconnects_without_terminal_on_split() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -148,7 +148,7 @@ async fn livefeed_raw_disconnects_without_terminal_on_split() {
 
 /// 6.5: two SEQUENTIAL splits continue in place — the source swaps
 /// twice and every record lands exactly once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_two_sequential_splits_continue_in_place() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -215,7 +215,7 @@ async fn livefeed_two_sequential_splits_continue_in_place() {
 /// path: nothing about a delete closes the old segment's handle, and
 /// a key-leased session has no deadline pressure — what MUST hold is
 /// that the incarnations share nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_delete_recreate_isolates_incarnations() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -311,7 +311,7 @@ async fn livefeed_delete_recreate_isolates_incarnations() {
 /// Round-4 blocker 1 (red): the cursor emitted after a split must
 /// name the successor segment AND the SEGMENT-LOCAL offset — and it
 /// must be usable to resume with no gap and no duplicate.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_split_cursor_decodes_to_segment_local_and_resumes() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -388,7 +388,7 @@ async fn livefeed_split_cursor_decodes_to_segment_local_and_resumes() {
     clippy::excessive_nesting,
     reason = "livefeed_split_shared_subscribers_swap_once_deliver_twice; the fixture nests the frame rendering inside the read of each split child inside the subscriber check; flattening it would separate the rendering from the child it renders"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_split_shared_subscribers_swap_once_deliver_twice() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -498,7 +498,7 @@ async fn livefeed_split_shared_subscribers_swap_once_deliver_twice() {
     clippy::disallowed_methods,
     reason = "held publication fixture; the split is joined after the subscriber's prompt handoff is observed; it must run concurrently to hold publication while the subscriber waits"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_split_held_publication_handoff_is_prompt() {
     let _gap = gap_lock().lock().await;
     let store = mem();
@@ -589,7 +589,7 @@ async fn livefeed_split_held_publication_handoff_is_prompt() {
 /// before the session refreshes — the session must drain the full
 /// successor lineage FIRST, then emit exactly one terminal control.
 /// With TWO shared subscribers.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_split_seal_before_refresh_drains_then_terminates() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -673,7 +673,7 @@ async fn livefeed_split_seal_before_refresh_drains_then_terminates() {
 /// Round-5 blocker 3 (red): a RAW request that attaches AFTER the
 /// lane's feed swapped takes the typed fallback — immediate EOF,
 /// never a scalar control over lineage data, never a terminal.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_raw_late_attach_after_swap_gets_no_lineage_scalars() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -730,7 +730,7 @@ async fn livefeed_raw_late_attach_after_swap_gets_no_lineage_scalars() {
 /// LIVEFEED BUILD ITSELF — no customer request ever touches the empty
 /// successor (round-6 correction: the old version appended first,
 /// which itself stamped the engine and masked the implementation).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_swap_externally_adopts_child_engines() {
     let _serial = sweep_lock().lock().await;
     let store = mem();
@@ -823,7 +823,7 @@ async fn livefeed_swap_externally_adopts_child_engines() {
 /// Round-6 raw gate second level (red): the swap lands BETWEEN the
 /// compatibility peek and the atomic attach — the atomically captured
 /// join generation (not the peek) is what must refuse the raw session.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_raw_swap_between_peek_and_attach_is_refused() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -881,7 +881,7 @@ async fn livefeed_raw_swap_between_peek_and_attach_is_refused() {
 /// must be picked up by a later refresh with a stale descriptor and
 /// signature — the unconditional re-read installs the lineage (the
 /// resume boolean is never treated as evidence of no change).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_refresh_installs_after_external_completion() {
     let store = mem();
     let (state, addr) = http_rig(store).await;

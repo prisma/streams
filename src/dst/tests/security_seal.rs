@@ -116,7 +116,7 @@ async fn state_of(addr: std::net::SocketAddr, bearer: &str, name: &str) -> (usiz
 /// and the refused request's producer triple is still unused. A body
 /// without `final` is a plain seal and needs lifecycle alone; an append
 /// credential never gets lifecycle authority through a final record.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_final_record_seal_needs_append_as_well_as_lifecycle() {
     let (svc, state, addr) = auth_rig(
         PROJECT.0,

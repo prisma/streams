@@ -47,7 +47,7 @@ async fn sentinel_request(
     response
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r15_bodyless_and_unauthorized_requests_never_poll_the_body() {
     use axum::http::{Method, StatusCode};
     let rig = http_rig_build(
@@ -151,7 +151,7 @@ async fn r15_bodyless_and_unauthorized_requests_never_poll_the_body() {
     clippy::excessive_nesting,
     reason = "r16_unauthorized_watch_shapes_are_independent_of_existence; the fixture nests the deleted-versus-initializing stamp inside its descriptor mutation and the query sweep inside the cursor and key sweeps; flattening them would separate each shape from the descriptor and the shapes it is compared against"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r16_unauthorized_watch_shapes_are_independent_of_existence() {
     use axum::http::{Method, StatusCode};
     let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;

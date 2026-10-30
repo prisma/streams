@@ -306,7 +306,7 @@ async fn successor(store: &Arc<FaultStore>, retired: &Retired) -> HttpRig {
 /// record exactly once; the exact retry of the same producer tuple is a
 /// duplicate at the original position, not a second copy; and the producer
 /// continues from the successor.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stranded_producer_append_is_moved_then_held_once_by_the_successor_and_its_retry_is_a_duplicate()
  {
     let store = FaultStore::new(mem(), 2026, FaultProfile::clean());
@@ -418,7 +418,7 @@ fn assert_owed(desc: &crate::registry::StreamDesc, operation: &str, generation: 
 /// successor; the successor holds the final exactly once with the segment
 /// closed; the exact retry of the close is the committed final's duplicate,
 /// marks it and publishes Sealed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stranded_final_record_keeps_its_owed_seal_and_the_exact_retry_completes_it_on_the_successor()
  {
     let store = FaultStore::new(mem(), 2027, FaultProfile::clean());
@@ -501,7 +501,7 @@ fn assert_sealed(desc: &crate::registry::StreamDesc) {
 /// successor holds the final exactly once; the exact retry of the seal
 /// completes it and seals the collection, answered 200 `{"sealed":true}`
 /// with `Cache-Control: no-store` (WIRE-MATRIX §2.5).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stranded_product_seal_final_stays_owed_and_its_exact_retry_seals_on_the_successor() {
     let store = FaultStore::new(mem(), 2028, FaultProfile::clean());
     let name = "f2-seal";
@@ -562,7 +562,7 @@ async fn a_stranded_product_seal_final_stays_owed_and_its_exact_retry_seals_on_t
 /// as the same append: it is answered 503 `outcome_unknown`, not retryable,
 /// with `Retry-After: 1` and no cursor (edge change #153), and the
 /// successor runtime holds the record exactly once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stranded_plain_product_append_is_answered_outcome_unknown_and_held_once_by_the_successor()
  {
     let store = FaultStore::new(mem(), 2029, FaultProfile::clean());
@@ -612,7 +612,7 @@ async fn a_stranded_plain_product_append_is_answered_outcome_unknown_and_held_on
 /// shard's retryable answer, 503 `temporarily_unavailable`: the successor
 /// holds the record once, and the exact retry of the same producer tuple is
 /// answered from the original commit as a duplicate, storing nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stranded_keyed_product_append_keeps_the_retryable_answer_and_its_retry_is_a_duplicate() {
     let store = FaultStore::new(mem(), 2030, FaultProfile::clean());
     let name = "f2-keyed";

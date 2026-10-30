@@ -14,7 +14,7 @@ use crate::application::lifecycle::{
     clippy::disallowed_methods,
     reason = "seal cancellation fixture; the test aborts and joins the entered final operation before retrying its retained claim; a detached request would make the retry race with unknown work"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn cancelled_final_preserves_claim_and_only_definitive_retry_releases_it() {
     let (state, addr) = http_rig(mem()).await;
     let (status, _, _) = hreq(
@@ -107,7 +107,7 @@ async fn cancelled_final_preserves_claim_and_only_definitive_retry_releases_it()
 /// client text without its insignificant whitespace, number literals kept
 /// digit for digit. `ceilfloat`'s client text is longer than the ceiling,
 /// but only its whitespace; its stored record is one byte over.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_over_ceiling_product_final_is_refused_before_its_seal_intent() {
     let _serial = gap_lock().lock().await;
     let (state, addr) = http_rig(mem()).await;
@@ -212,7 +212,7 @@ async fn seal_is_refused_before_its_intent(
 /// its own generation. The retry used to renew the claim before its content
 /// was validated: A's durable final then failed its mark (503) and the
 /// collection stayed Sealing under a lease the refused retry had refreshed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_ingest_refused_exact_retry_leaves_the_claim_to_its_original() {
     let _serial = gap_lock().lock().await;
     let admission = crate::config::AdmissionConfig {
@@ -230,7 +230,7 @@ async fn an_ingest_refused_exact_retry_leaves_the_claim_to_its_original() {
 /// proves nothing about A's attempt, which A's own ceiling admitted. It must
 /// neither renew nor release A's claim. It used to do both: the release left
 /// A's final to close the segment with no claim standing, answered 503.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_ceiling_refused_exact_retry_leaves_the_claim_to_its_original() {
     let _serial = gap_lock().lock().await;
     let refused = original_survives_a_refused_retry("ceilskew", None, Some(8)).await;
@@ -245,7 +245,7 @@ async fn a_ceiling_refused_exact_retry_leaves_the_claim_to_its_original() {
 /// per-record ceiling is below the record. The retry must not be refused
 /// ahead of the committer's duplicate decision: it is acknowledged as the
 /// committed final, marks it under the claim it observed, and seals.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_ceiling_limited_exact_retry_still_completes_a_committed_final() {
     let _serial = gap_lock().lock().await;
     let (name, path) = ("ceilreplay", "/v1/stream/ceilreplay");
@@ -405,7 +405,7 @@ async fn two_record_close(
     clippy::disallowed_methods,
     reason = "plain-append identity fixture; the parked close is spawned and joined after the plain append answers; running it inline cannot hold it at its failpoint while the append runs"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_plain_append_with_the_owed_finals_body_is_refused_during_sealing() {
     let _serial = gap_lock().lock().await;
     let name = "plainfinal";

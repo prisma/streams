@@ -56,7 +56,7 @@ async fn victim_turn(cell: &Cell, victim: usize) -> ((u16, Option<String>), u16)
 /// tenant, is admitted to append and read. The plan's "k + 1 tenants at
 /// their ceilings" cannot leave room at ceiling = bound / k, so the crowd
 /// is k - 1 (step 1 notes).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_compliant_crowd_at_its_ceilings_leaves_the_victim_admitted() {
     let bounds = SharedBounds {
         inflight: u64::try_from(BOUND).unwrap(),
@@ -116,7 +116,7 @@ async fn create_streams(cell: &Cell, i: usize, count: usize) -> Vec<(u16, Option
 /// all before the ceiling) each create twice their ceiling under distinct
 /// names. Each holds exactly bound / k = 8 streams, every further create
 /// is its own `429 stream_limit`, and the victim still creates.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_crowd_without_stream_quotas_holds_exactly_its_share_of_the_stream_maps() {
     let bounds = SharedBounds {
         streams: 64,
@@ -148,7 +148,7 @@ async fn a_crowd_without_stream_quotas_holds_exactly_its_share_of_the_stream_map
 /// twice their ceiling and hold what they are given. Each holds exactly
 /// 16 / k = 2, every other attempt is its own `429
 /// project_concurrency_limit`, and the victim subscribes beside them.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_crowd_without_subscription_quotas_holds_exactly_its_share_of_live_connections() {
     let bounds = SharedBounds {
         subscriptions: 16,
@@ -191,7 +191,7 @@ async fn a_crowd_without_subscription_quotas_holds_exactly_its_share_of_live_con
 /// cell serves its 2 projects and reports 3 dropped): the deployment and
 /// account tokens are refused as for a project the cell does not serve
 /// (`421 wrong_cell`).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn reserved_ids_are_dropped_from_the_feed() {
     let mut cell = open_cell(CellSpec::open(2)).await;
     let deployment = cell
@@ -249,7 +249,7 @@ async fn reserved_ids_are_dropped_from_the_feed() {
 /// consumer pulls each (192 parked against an instance bound of 64).
 /// Parked waits are not writes in flight: the victim's append and its
 /// own long-poll are admitted.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_parked_crowd_never_sheds_the_victims_writes() {
     let cell = open_cell(CellSpec::open(5)).await;
     cell.state.admission.set_max_inflight(BOUND);
@@ -310,7 +310,7 @@ async fn a_parked_crowd_never_sheds_the_victims_writes() {
 /// The restart here is a fresh runtime and authorization service over the
 /// same store; step 4 replaces it with its boot path that seeds the
 /// persisted high-water marks.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 #[ignore = "red until shared-cells phase A step 4: accepted feed versions persist across restarts"]
 async fn a_feed_rollback_after_a_restart_keeps_a_revoked_credential_refused() {
     let mut cell = open_cell(CellSpec::open(2)).await;
@@ -393,7 +393,7 @@ async fn internal_segment_read(
 /// key). The same request under a kid the feed pins to the fleet
 /// audience reads exactly the victim's record, so the refusal is the
 /// pin, not the route.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_internal_token_signed_by_a_customer_key_is_refused() {
     let cell = open_cell(CellSpec::open(2)).await;
     assert_eq!(
@@ -442,7 +442,7 @@ async fn an_internal_token_signed_by_a_customer_key_is_refused() {
 /// uniform `403 watch_unauthorized`: a key never substitutes for both a
 /// principal and a verified capability. The same key beside B's token,
 /// and B's verified capability with no key and no token, still observe.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_capability_carrier_with_only_a_key_is_refused() {
     let cell = open_cell(CellSpec::open(2)).await;
     let watched = br#"{"format":{"kind":"json"},"watches":[{"name":"by-customer","fields":["/customerId"]}]}"#;
@@ -490,7 +490,7 @@ async fn a_capability_carrier_with_only_a_key_is_refused() {
 /// past its unsealed-bytes line (1 KiB here, every sealer off). The
 /// victim's append is still admitted; the shed lands on the
 /// contributors.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 #[ignore = "red until multi-shard cells (phase B step 12; one-shard cells are bounded by the memory line, pinned in cell-admin's profile test)"]
 async fn names_ground_onto_the_victims_shard_never_shed_the_victim() {
     let mut admission = crate::config::ServerConfig::load(
@@ -566,7 +566,7 @@ async fn names_ground_onto_the_victims_shard_never_shed_the_victim() {
 /// The flood journals no single event: one aggregate event counts every
 /// denial and carries the first one's route and method as its sample
 /// (phase B step 14(a), the owner's round-3 call 5 (b')).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_anonymous_denial_flood_never_drops_the_victims_denial() {
     const FLOOD: usize = 4_200;
     let cell = open_cell(CellSpec::open(2)).await;
@@ -626,7 +626,7 @@ async fn an_anonymous_denial_flood_never_drops_the_victims_denial() {
 /// each followed by one 100 ms victim watch; every victim watch, before and
 /// through 40 rounds, must answer, and the first round fetches exactly the
 /// project's fresh budget.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_capability_flood_never_starves_the_victims_watch() {
     let cell = open_cell(CellSpec::open(2)).await;
     let watched = br#"{"format":{"kind":"json"},"watches":[{"name":"by-customer","fields":["/customerId"]}]}"#;
@@ -703,7 +703,7 @@ const GARBAGE_KEY: &str = "00000000000000c4";
 /// served project on distinct names leaves the cache holding exactly the
 /// slots it held, so a flood neither evicts tenants' entries nor makes
 /// its own names resident.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn unverified_capability_lookups_never_fill_the_descriptor_cache() {
     let cell = open_cell(CellSpec::open(2)).await;
     assert_eq!(cell.call(1, "PUT", "/v1/streams/w", CREATE).await.0, 201);
@@ -720,7 +720,7 @@ async fn unverified_capability_lookups_never_fill_the_descriptor_cache() {
 /// A11 (M2): under enforce, a capability naming a project the cell does
 /// not serve is refused before any descriptor read, so a flood of
 /// invented project ids costs the store nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_capability_naming_an_unserved_project_reads_no_descriptor() {
     let trace = TraceStore::verbatim(mem());
     let cell = open_cell(CellSpec {
@@ -756,7 +756,7 @@ async fn a_capability_naming_an_unserved_project_reads_no_descriptor() {
 /// creates weigh the same) and the rate is set to it, so the first create
 /// spends the burst, the second is admitted at zero and leaves one
 /// create's debt, and the third is refused unless a second has passed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_create_pays_for_its_registry_writes() {
     let trace = TraceStore::verbatim(mem());
     let traced: Arc<dyn object_store::ObjectStore> = trace.clone();
@@ -828,7 +828,7 @@ async fn a_create_pays_for_its_registry_writes() {
 /// streams with no rate, is republished at 20 requests a second and waits
 /// a second, so its budget is full at 20: one listing of the 120 leaves it
 /// exactly 110 in debt, which takes five and a half seconds to clear.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_listing_pays_for_the_descriptors_it_reads() {
     const STREAMS: usize = 120;
     let io = Arc::new(StoreResources::new(&crate::config::StorageConfig::default()));
@@ -924,7 +924,7 @@ async fn capability(cell: &Cell, i: usize, khex: &str) -> String {
 /// client uploading 1 MiB reads the same 429 and keeps its connection, the
 /// body read and dropped, and the next append on it is served under the
 /// line; a read is served over the line.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_append_over_the_shed_line_is_refused_before_its_body_is_read() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let cell = open_cell(CellSpec::open(1)).await;

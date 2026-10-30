@@ -162,7 +162,7 @@ fn splits_committed(state: &crate::http::AppState) -> usize {
 /// split: the stream keeps its one segment and no split is committed, and
 /// once its bucket is spent its next append is refused 429 with the bytes
 /// limit's code and nothing of it is stored. The other server holds nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_hot_stream_on_a_two_server_ring_never_splits_and_meets_its_limit() {
     let store = mem();
     let a = instance(store.clone(), "inst-a", 1).await;
@@ -224,7 +224,7 @@ async fn live_owners(state: &crate::http::AppState) -> Vec<String> {
 /// idles, a peer drains or goes dark) the controller declines the split
 /// too: a child on the other shard would be another server's once the ring
 /// grows. When `inst-b` joins, the whole stream is still `inst-a`'s.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_hot_stream_on_a_one_server_ring_never_splits_so_a_grown_ring_keeps_it_on_its_owner() {
     let store = mem();
     let a = instance(store.clone(), "inst-a", 1).await;
@@ -252,7 +252,7 @@ async fn a_hot_stream_on_a_one_server_ring_never_splits_so_a_grown_ring_keeps_it
 /// A server with no fleet ring (fleet off, the launch shape) still splits
 /// the hot stream at the scaler's median: the parent is sealed and both
 /// children are live, all on the one server.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_hot_stream_on_a_server_without_a_fleet_ring_still_splits() {
     let a = instance(mem(), "inst-a", 1).await;
     let split = hot_stream(&a).await;
@@ -320,7 +320,7 @@ async fn planted(rig: &HttpRig, map: SegmentMap) -> (Decision, SegmentMap) {
 /// in phase A and no debt is kept: the map is exactly as stored and no
 /// split is committed. The project's catalog and the cell's
 /// reconciliation page still read the stream.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stream_that_has_split_63_times_declines_its_next_split_and_keeps_its_map() {
     let a = instance(mem(), "inst-a", 1).await;
     let (split, before) = planted(&a, split_map(63)).await;
@@ -355,7 +355,7 @@ async fn a_stream_that_has_split_63_times_declines_its_next_split_and_keeps_its_
 /// predecessor) it holds 126 segments, 64 live, so one more split fits and
 /// commits. It leaves 128 segments, 65 live, which merges can take to
 /// exactly 192.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_map_whose_root_was_pruned_has_room_for_one_more_split() {
     let a = instance(mem(), "inst-a", 1).await;
     let mut map = split_map(63);

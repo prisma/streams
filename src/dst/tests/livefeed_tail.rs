@@ -16,7 +16,7 @@ use super::fixture_storage::mem;
 /// the process-global usage map overflows into a shared aggregate
 /// under a parallel suite, so an HTTP-level counter equality would be
 /// flaky by construction.)
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_binary_base64_header_and_exact_bytes_out() {
     let store = mem();
     let (_state, addr) = http_rig(store).await;
@@ -67,7 +67,7 @@ async fn livefeed_binary_base64_header_and_exact_bytes_out() {
 /// Terminal transcript (exact): the final data record, its bare cursor
 /// control, then EXACTLY ONE sealed control and EOF — and NO open
 /// upToDate status at the terminal position preceding it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_seal_transcript_exact_tail() {
     let store = mem();
     let (_state, addr) = http_rig(store).await;
@@ -127,7 +127,7 @@ async fn livefeed_seal_transcript_exact_tail() {
 /// 6.5 headline leg: a subscriber PARKED at upToDate rides a split in
 /// place — no EOF, no sealed control, and records on the successor
 /// segment flow exactly once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_split_parked_subscriber_continues_in_place() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -185,7 +185,7 @@ async fn livefeed_split_parked_subscriber_continues_in_place() {
 /// touches no feed state, so ONLY the session's own bounded re-drive
 /// can deliver the terminal: with a dead heartbeat ticker and the
 /// 3600-s no-lease nap, the pre-fix park wedged forever.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_seal_publication_race_converges_without_heartbeat() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -264,7 +264,7 @@ async fn livefeed_seal_publication_race_converges_without_heartbeat() {
 /// Replaces `off_mode_subscriptions_are_untouched_by_staleness`:
 /// AuthMode::Off means no lease — a parked LiveFeed subscriber stays
 /// open indefinitely (no staleness notion applies) and stays LIVE.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_off_mode_subscription_ignores_staleness() {
     let store = mem();
     let (_state, addr) = http_rig(store).await;
@@ -291,7 +291,7 @@ async fn livefeed_off_mode_subscription_ignores_staleness() {
 
 /// Replaces `hub_empty_seal_single_final_control`: sealing an EMPTY
 /// stream emits exactly ONE terminal control, then EOF — no data ever.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_empty_seal_single_final_control() {
     let store = mem();
     let (_state, addr) = http_rig(store).await;
@@ -328,7 +328,7 @@ async fn livefeed_empty_seal_single_final_control() {
 /// a statement about the DURABLE stream — while durable records exist
 /// that the feed has not yet driven, no upToDate may be claimed. The
 /// drive is held at its failpoint with a durable backlog behind it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_no_up_to_date_while_backlog_is_undriven() {
     let store = mem();
     let (_state, addr) = http_rig(store).await;
@@ -381,7 +381,7 @@ async fn livefeed_no_up_to_date_while_backlog_is_undriven() {
 /// frontier — retained batches can never carry a stale claim
 /// (LiveFeed record frames are structurally bare; this pins the
 /// SESSION's status honesty over the ring-drain path).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_late_attach_never_claims_stale_up_to_date() {
     let store = mem();
     let (_state, addr) = http_rig(store).await;
@@ -438,7 +438,7 @@ async fn livefeed_late_attach_never_claims_stale_up_to_date() {
 /// their emitted cursor delivers the record exactly once. That
 /// disconnect-and-resume trade (vs the hub's in-place uncached
 /// catch-up) is the documented bounded-memory design.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_oversized_record_solo_in_place_shared_resumes_durably() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -508,7 +508,7 @@ async fn livefeed_oversized_record_solo_in_place_shared_resumes_durably() {
 /// a resumable EOF (typed reason server-side only; no terminal, no
 /// loss) and, once budget exists again, resume durably with no gap
 /// and no duplicate.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_budget_exhaustion_publishes_uncached_and_resumes() {
     let store = mem();
     let (state, addr) = http_rig(store).await;

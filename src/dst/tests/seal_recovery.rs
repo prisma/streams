@@ -19,7 +19,7 @@ use super::fixture_storage::mem;
     clippy::too_many_lines,
     reason = "seal transition scenario; the held topology operation and resumability observations must stay visible together; splitting into one-use helpers would obscure the forbidden overlapping intents"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_seal_never_installs_over_a_pending_transition() {
     let _l = gap_lock().lock().await;
     let store = mem();
@@ -169,7 +169,7 @@ async fn a_seal_never_installs_over_a_pending_transition() {
 /// path will always refuse — that leaves the collection sealing
 /// forever, owing something undeliverable. Every deterministic refusal
 /// is decided first.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_impossible_final_never_publishes_an_intent() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -287,7 +287,7 @@ async fn an_impossible_final_never_publishes_an_intent() {
 /// committer's closed-stream check — which only forgives an empty
 /// close-only — and was refused forever, leaving the collection Sealing
 /// over records it already held.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_raw_final_close_resumes_after_its_records_are_durable() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -368,7 +368,7 @@ async fn a_raw_final_close_resumes_after_its_records_are_durable() {
     clippy::too_many_lines,
     reason = "seal abandonment scenario; refusal retained intent expiry and takeover are one lifecycle sequence; one-use helpers would hide which operation still owns the final promise"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_ordering_verdict_keeps_its_intent_until_the_claim_is_abandoned() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -498,7 +498,7 @@ async fn an_ordering_verdict_keeps_its_intent_until_the_claim_is_abandoned() {
 /// may still be admitted (see
 /// `a_transient_producer_gap_does_not_lose_the_promised_record`), and
 /// is released by the claim timeout instead.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_refused_raw_close_does_not_strand_the_collection() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -592,7 +592,7 @@ async fn a_refused_raw_close_does_not_strand_the_collection() {
     clippy::too_many_lines,
     reason = "seal producer-gap scenario; the out-of-order predecessor and exactly-once final readback form one retry proof; separating the phases would hide the producer sequence dependency"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_transient_producer_gap_does_not_lose_the_promised_record() {
     let _serial = gap_lock().lock().await;
     let store = mem();
@@ -721,7 +721,7 @@ async fn a_transient_producer_gap_does_not_lose_the_promised_record() {
     clippy::too_many_lines,
     reason = "seal recovery scenario; both wire surfaces and descriptor authority must agree before and after resumption; adjacent protocol assertions keep that transition inspectable"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn seal_is_a_resumable_transition() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -863,7 +863,7 @@ async fn seal_is_a_resumable_transition() {
 /// append read the key back with `to_str` (refuses them) and defaulted the
 /// failure to "": the intent named one key, the record was filed under
 /// the default key, and the collection could never be written again.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_final_key_the_append_header_cannot_carry_is_refused_before_the_intent() {
     let store = mem();
     let (state, addr) = http_rig(store).await;

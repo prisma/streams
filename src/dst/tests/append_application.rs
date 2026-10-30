@@ -40,7 +40,7 @@ fn command(
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r02_typed_append_preserves_original_duplicate_offsets() {
     let (state, addr) = http_rig(mem()).await;
     let (status, _, _) = preq(
@@ -108,7 +108,7 @@ async fn r02_typed_append_preserves_original_duplicate_offsets() {
     engine_shutdown(&state).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r02_append_target_fence_rejects_same_name_recreation() {
     let (state, addr) = http_rig(mem()).await;
     let path = "/v1/streams/typed-target";
@@ -168,7 +168,7 @@ async fn r02_append_target_fence_rejects_same_name_recreation() {
 /// A refresh that cannot be read proves nothing. The closure a
 /// split-away parent's engine reports must then reach the writer as
 /// retryable, never as the collection's own, and the retry lands.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r02_a_closure_the_refresh_cannot_confirm_is_retryable_not_final() {
     let (state, addr) = http_rig(mem()).await;
     let create = br#"{"format":{"kind":"json"}}"#;
@@ -205,7 +205,7 @@ async fn r02_a_closure_the_refresh_cannot_confirm_is_retryable_not_final() {
 /// the closure check's cannot: the append, refused as closed by every
 /// attempt and so uncommitted, answers the same retryable 503, never a
 /// 500, and its retry lands once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r02_a_reprepare_the_registry_cannot_read_is_retryable_not_internal() {
     use super::fixture_livefeed::wait_parked;
     use crate::application::append::FailureClass;
@@ -268,7 +268,7 @@ async fn r02_a_reprepare_the_registry_cannot_read_is_retryable_not_internal() {
 /// resets within an incarnation and freezes the map, so its route cannot
 /// be stale. The engine's refusal must cost no descriptor refresh (a
 /// refresh here would meet the armed store failure and answer 503).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r02_a_sealed_descriptors_closure_costs_no_refresh() {
     let (state, addr) = http_rig(mem()).await;
     let create = br#"{"format":{"kind":"json"}}"#;
@@ -296,7 +296,7 @@ async fn r02_a_sealed_descriptors_closure_costs_no_refresh() {
 /// The refresh is fenced on the incarnation, as the reads' is: a closure
 /// met through a descriptor of the PREVIOUS incarnation says nothing
 /// about the stream that now holds the name.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r02_a_closure_from_a_replaced_incarnation_is_not_the_new_streams() {
     let (state, addr) = http_rig(mem()).await;
     let path = "/v1/streams/typed-replaced";
@@ -326,7 +326,7 @@ async fn r02_a_closure_from_a_replaced_incarnation_is_not_the_new_streams() {
 /// final's takeover re-reading the descriptor to fence it) decided
 /// nothing: the close answers the retryable 503 `seal_incomplete` its
 /// completion answers, and its retry closes the collection.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn r02_a_close_whose_intent_cannot_read_the_registry_is_retryable_not_sealed() {
     use crate::application::append::FailureClass;
     let (state, addr) = http_rig(mem()).await;
@@ -422,7 +422,7 @@ async fn r02_a_close_whose_intent_cannot_read_the_registry_is_retryable_not_seal
 /// that was read but is corrupt stays a fail-closed 500, since a retry
 /// reads the same bytes. Red before: the store failure answered
 /// `(Internal, Internal, None)` like corruption.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn r02_a_first_read_the_store_fails_is_retryable_and_a_corrupt_descriptor_is_not() {
     use crate::application::append::FailureClass;
     use object_store::ObjectStoreExt;
@@ -549,7 +549,7 @@ fn keyed(
 /// across two splits must meet the row its first attempt wrote in the
 /// child: a producer retry answers as the duplicate it is, and a Stream-Seq
 /// retry is refused as a conflict, instead of either being written twice.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_retry_across_two_splits_meets_its_row_when_the_clocks_disagree() {
     let (state, addr) = http_rig(mem()).await;
     let app = state.append_service();
@@ -657,7 +657,7 @@ fn answer(reply: &Reply) -> (u16, Option<&str>, serde_json::Value) {
 /// and the holdoff after it are), never as a rate limit. Nothing was
 /// written: the retry is the stream's first record. Red before: 429
 /// `overloaded` "append queue full" with no `Retry-After`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_append_whose_engine_closes_between_resolve_and_enqueue_is_answered_as_a_moved_shard() {
     use super::fixture_requests::hreq;
     let (state, addr) = http_rig(mem()).await;
@@ -694,7 +694,7 @@ async fn an_append_whose_engine_closes_between_resolve_and_enqueue_is_answered_a
 /// 503 `temporarily_unavailable`, retryable, `Retry-After: 1`, as every
 /// other raw 503; the retry lands once. Red before: 429 `rate_limited`
 /// "admission or rate limit" with no `Retry-After`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_product_append_whose_engine_closes_between_resolve_and_enqueue_is_temporarily_unavailable()
  {
     let (state, addr) = http_rig(mem()).await;
@@ -735,7 +735,7 @@ async fn a_product_append_whose_engine_closes_between_resolve_and_enqueue_is_tem
 /// (edge change #183): a raw append over the shed line is refused
 /// 429 with `Retry-After: 2` and writes nothing, and under the line the
 /// same append is the stream's first record.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_raw_append_over_the_shed_line_is_refused_by_the_append_paths_gate() {
     use super::fixture_requests::hreq;
     let (state, addr) = http_rig(mem()).await;

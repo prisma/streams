@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 /// Item 87 pin: a fatal read retires the lifecycle with its typed reason
 /// and bumps the version exactly once, at the transition, so parked
 /// sessions wake to disconnect; nothing is delivered.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_fatal_source_read_retires_the_feed_once() {
     let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
     let (feed, src) = feed_with(4, 8, 1 << 20, &budget);
@@ -31,7 +31,7 @@ async fn a_fatal_source_read_retires_the_feed_once() {
 
 /// Item 87 (red on eb742c42: the retried cause was dropped): a transient
 /// failure is counted and retried with its cause logged, once per drive.
-#[tokio::test]
+#[tokio::test(crate = "crate::test_rt")]
 async fn a_retryable_source_read_logs_its_cause_once_per_drive() {
     let log = crate::sse::test_log::ErrorLog::capture();
     let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));

@@ -55,7 +55,7 @@ async fn copy_store(src: &Arc<dyn ObjectStore>, dst: &Arc<dyn ObjectStore>) {
     clippy::disallowed_methods,
     reason = "applied-read fixture; the held write, the parked long-poll and the waking write are all joined after the frozen dispatch is released; they must overlap to observe applied delivery before durability"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_applied_read_and_long_poll_serve_the_tail_before_durability() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
@@ -285,7 +285,7 @@ async fn a_applied_read_and_long_poll_serve_the_tail_before_durability() {
     clippy::excessive_nesting,
     reason = "applied-read regression; mutex assertion block ends before await; keeping the interleaving and its assertions together makes the safety argument reviewable"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_lost_applied_suffix_rewinds_to_the_durable_frontier() {
     let store = mem();
     let key = skey();
@@ -438,7 +438,7 @@ async fn a_lost_applied_suffix_rewinds_to_the_durable_frontier() {
     clippy::too_many_lines,
     reason = "crash-restart cursor scenario; minting the cursor beyond durability, losing the suffix and presenting the cursor to the restarted server is one causal sequence; helper phases would hide which frontier refused it"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stale_applied_cursor_is_refused_after_crash_restart() {
     let store = mem();
     // Phase 1: create + one durable record, quiesce, snapshot the store
@@ -565,7 +565,7 @@ async fn a_stale_applied_cursor_is_refused_after_crash_restart() {
 /// never consume offset 0 without delivering it: both cursors would then
 /// move past a durable, acknowledged record. The directory is published
 /// before the commit, so every read here serves all three records.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn applied_keyed_read_never_skips_rows_trimmed_by_a_non_durable_advance() {
     let store = FaultStore::uniform(mem(), 1818, FaultPlan::new(0, 0, 0));
     let key = skey();

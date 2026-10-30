@@ -67,7 +67,7 @@ async fn read_all(
 /// still be readable — through the production merged reader — after the
 /// sealer has moved them into segment objects, while later records are
 /// still unsealed pages.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn acked_records_survive_absorption_into_history() {
     let store = FaultStore::uniform(mem(), 17, FaultPlan::new(0, 0, 10));
     let cov = store.coverage();
@@ -106,7 +106,7 @@ async fn acked_records_survive_absorption_into_history() {
 /// six 100 KiB records (each past the 64 KiB page target, so a page each):
 /// one requested seal must move the boundary to next across six chunks,
 /// and every record must read back byte for byte from the object.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn absorber_drains_records_larger_than_the_per_stream_gather_cap() {
     let store = FaultStore::uniform(mem(), 77, FaultPlan::CLEAN);
     let key = skey();
@@ -184,7 +184,7 @@ async fn absorber_drains_records_larger_than_the_per_stream_gather_cap() {
 /// key, and both filters must work over the sealed chunks. (v1 required
 /// the key server-side and stranded key-expired backlogs;
 /// docs/COST-WIDE1.md §2.)
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn v2_absorbs_without_customer_keys() {
     let store = FaultStore::uniform(mem(), 61, FaultPlan::new(0, 0, 10));
     let cov = store.coverage();
@@ -232,7 +232,7 @@ async fn v2_absorbs_without_customer_keys() {
 /// from the `'K'` rows the old owner's seals committed, and serves every
 /// acked record — sealed by either owner or still unsealed — without any
 /// customer key reaching a sealer.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn v2_history_survives_engine_handoff() {
     let store = FaultStore::uniform(mem(), 67, FaultPlan::CLEAN);
     let cov = store.coverage();
@@ -282,7 +282,7 @@ async fn v2_history_survives_engine_handoff() {
 /// fat one are written; then every byte trigger is put out of reach and
 /// the age made immediate. BOTH streams must age-seal and the shard's
 /// maintenance ledger must return to zero.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch() {
     let store = FaultStore::uniform(mem(), 57, FaultPlan::CLEAN);
     let cov = store.coverage();
