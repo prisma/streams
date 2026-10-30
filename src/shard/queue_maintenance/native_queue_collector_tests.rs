@@ -439,8 +439,9 @@ async fn native_queue_collection_of_due_debt_compacts_the_log_and_clears_the_deb
 
 /// The L0 watermark's collector yield (edge #234): while the shard log
 /// holds the yield mark's L0s (half its line), a due pass does not start,
-/// so the scheduler keeps the compaction slot; its debt waits. With no
-/// compactor here, a pass that started would wait on its compaction.
+/// so the scheduler keeps the compaction slot; its debt waits, and the
+/// yield waits for no other pass's permit. With no compactor here, a pass
+/// that started would wait on its compaction.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn native_queue_collection_yields_while_the_l0s_are_at_the_yield_mark() {
     let settings = slatedb::config::Settings {
@@ -462,8 +463,12 @@ async fn native_queue_collection_yields_while_the_l0s_are_at_the_yield_mark() {
         .await
         .expect("the watermark's tick read the two L0s");
     let yields = r.engine.l0_gauge().yields;
+    // Another queue's pass holds the instance's permit meanwhile: the
+    // yield does not wait for it (CI's red of d9ecdf04, where one did).
+    let other = super::PASS_PERMIT.acquire().await.unwrap();
     let pass = tokio::time::timeout(Duration::from_secs(5), r.engine.maybe_collect());
     assert_eq!(pass.await, Ok(Ok(())), "the due pass yields at once");
+    drop(other);
     assert_eq!(stored(&r, [7; 16]).await, before, "its debt waits");
     assert_eq!(r.engine.l0_gauge().yields, yields + 1);
 }
