@@ -32,14 +32,17 @@ use crate::spill::runindex::format::{self, FooterEntry, ObjectWriter};
 use crate::spill::runindex::{self, Orphans, Pointer};
 
 /// One input, read whole and checked.
-struct Input {
-    pointer: Pointer,
-    body: Bytes,
-    footer: Vec<FooterEntry>,
+pub(super) struct Input {
+    pub(super) pointer: Pointer,
+    pub(super) body: Bytes,
+    pub(super) footer: Vec<FooterEntry>,
 }
 
 /// The inputs of the next merge, oldest first, if one is due.
-fn merge_inputs(set: &BTreeMap<ObjectId, Pointer>, s: &FoldSettings) -> Option<Vec<Pointer>> {
+pub(super) fn merge_inputs(
+    set: &BTreeMap<ObjectId, Pointer>,
+    s: &FoldSettings,
+) -> Option<Vec<Pointer>> {
     let item_cap = s.merge_bytes / 4;
     for level in 0..format::MAX_LEVEL {
         let fan_in = s
@@ -77,9 +80,7 @@ impl ShardEngine {
             let Err(e) = result else {
                 continue;
             };
-            if !self.is_closed() {
-                tracing::warn!(shard = %self.prefix, "run-index merge failed: {e}");
-            }
+            tracing::warn!(shard = %self.prefix, closed = self.is_closed(), "run-index merge failed: {e}");
             return;
         }
     }
@@ -214,7 +215,7 @@ fn input_run(input: &Input, f: &FooterEntry) -> Result<Vec<DirEntry>, FoldError>
 
 /// The merged object: every stream of every input, in stream order, one
 /// stream's runs decoded at a time; `None` when no entry is left.
-fn merged(
+pub(super) fn merged(
     id: ObjectId,
     level: u8,
     inputs: &[Input],

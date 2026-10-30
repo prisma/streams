@@ -1,13 +1,13 @@
 diff --git a/src/spill/runindex/tiling.rs b/src/spill/runindex/tiling.rs
-index cd12bb6da..f2e254622 100644
+index 0576d4f0a..d34cbefc8 100644
 --- a/src/spill/runindex/tiling.rs
 +++ b/src/spill/runindex/tiling.rs
 @@ -47,7 +47,7 @@ pub(crate) fn tile(spans: &[Span], from: u64, to: u64, max: usize) -> Vec<usize>
+                 best = Some((i, s));
              }
-             next += 1;
          }
--        let Some(pick) = best.filter(|b| spans.get(*b).is_some_and(|s| s.last >= due)) else {
-+        let Some(pick) = best.filter(|b| spans.get(*b).is_some_and(|s| s.last > due)) else {
+-        let Some((pick, span)) = best.filter(|(_, s)| s.last >= due) else {
++        let Some((pick, span)) = best.filter(|(_, s)| s.last > due) else {
              break;
          };
          out.push(pick);

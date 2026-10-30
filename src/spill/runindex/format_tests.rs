@@ -266,6 +266,27 @@ fn an_orphan_row_round_trips() {
     let raw = encode_orphans(o);
     assert_eq!(decode_orphans(&raw), Some(o));
     assert!(decode_orphans(&raw[..raw.len() - 1]).is_none());
+    let mut trailing = raw.clone();
+    trailing.push(0);
+    assert!(decode_orphans(&trailing).is_none(), "a trailing byte");
+    let mut version = raw;
+    version[0] += 1;
+    assert!(decode_orphans(&version).is_none(), "another version");
+    assert_eq!(
+        o.add(Orphans {
+            chunks: 2,
+            bytes: 5
+        })
+        .add(Orphans {
+            chunks: u64::MAX,
+            bytes: 0
+        }),
+        Orphans {
+            chunks: u64::MAX,
+            bytes: (1 << 20) + 5
+        },
+        "counters add, saturating"
+    );
     assert_eq!(
         parse_sentinel_key(ORPHAN_TAG, &orphan_key(ObjectId { epoch: 1, seq: 2 })),
         Some(ObjectId { epoch: 1, seq: 2 })
@@ -291,3 +312,188 @@ fn every_index_tag_sorts_below_the_usage_finals() {
         );
     }
 }
+
+// ---- refusal of every malformed layer (mutation coverage, package 5) ----
+
+use super::format::{bloom_holds, decode_trailer};
+use crate::spill::crc32c::crc32c;
+
+/// An object's parts: its runs, its footer and its trailer fields.
+struct Parts {
+    runs: Vec<u8>,
+    footer: Vec<u8>,
+    t: [u8; 32],
+}
+
+/// The parts of `sample()`'s object.
+fn parts() -> Parts {
+    let (bytes, _) = sample();
+    let n = bytes.len();
+    let (_, crc) = decode_trailer(&bytes[n - TRAILER_LEN..]).unwrap();
+    let footer_off = usize::try_from(u64::from_le_bytes(
+        bytes[n - TRAILER_LEN..n - TRAILER_LEN + 8]
+            .try_into()
+            .unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(crc32c(&bytes[footer_off..n - TRAILER_LEN]), crc);
+    Parts {
+        runs: bytes[..footer_off].to_vec(),
+        footer: bytes[footer_off..n - TRAILER_LEN].to_vec(),
+        t: bytes[n - TRAILER_LEN..n - 8].try_into().unwrap(),
+    }
+}
+
+impl Parts {
+    /// The object again, the footer's length, CRC and the trailer CRC
+    /// recomputed unless `keep_crc`.
+    fn object(&self, keep_crc: bool) -> Vec<u8> {
+        let mut t = self.t;
+        t[8..12].copy_from_slice(&u32::try_from(self.footer.len()).unwrap().to_le_bytes());
+        if !keep_crc {
+            t[28..32].copy_from_slice(&crc32c(&self.footer).to_le_bytes());
+        }
+        let mut out = self.runs.clone();
+        out.extend_from_slice(&self.footer);
+        out.extend_from_slice(&t);
+        out.extend_from_slice(&crc32c(&t).to_le_bytes());
+        out.extend_from_slice(b"L6ri");
+        out
+    }
+
+    /// Footer entry `i`'s start (both sample blooms are 2 B and 0 B long).
+    fn entry(&self, i: usize) -> usize {
+        let first_len =
+            51 + usize::from(u16::from_le_bytes(self.footer[49..51].try_into().unwrap()));
+        i * first_len
+    }
+}
+
+#[test]
+fn the_crafted_object_decodes_as_written() {
+    assert!(decode_object(&parts().object(false)).is_some());
+}
+
+#[test]
+fn every_inconsistent_footer_entry_is_refused() {
+    type Change = fn(&mut Parts);
+    let cases: [(&str, Change); 7] = [
+        ("a run hash repeated", |p| {
+            let (a, b) = (p.entry(0), p.entry(1));
+            let h: [u8; 16] = p.footer[a..a + 16].try_into().unwrap();
+            p.footer[b..b + 16].copy_from_slice(&h);
+        }),
+        ("runs out of hash order", |p| {
+            let (a, b) = (p.entry(0), p.entry(1));
+            let h0: [u8; 16] = p.footer[a..a + 16].try_into().unwrap();
+            let h1: [u8; 16] = p.footer[b..b + 16].try_into().unwrap();
+            p.footer[a..a + 16].copy_from_slice(&h1);
+            p.footer[b..b + 16].copy_from_slice(&h0);
+        }),
+        ("a run of no entry", |p| {
+            p.footer[44..48].copy_from_slice(&0u32.to_le_bytes())
+        }),
+        ("a run off its offset", |p| {
+            let b = p.entry(1);
+            let off = u64::from_le_bytes(p.footer[b + 16..b + 24].try_into().unwrap()) + 1;
+            p.footer[b + 16..b + 24].copy_from_slice(&off.to_le_bytes());
+        }),
+        ("a span whose first passes its last", |p| {
+            p.footer[28..36].copy_from_slice(&u64::MAX.to_le_bytes())
+        }),
+        ("an unknown flag", |p| p.footer[48] |= 2),
+        ("a trailing byte in the footer", |p| p.footer.push(0)),
+    ];
+    for (what, change) in cases {
+        let mut p = parts();
+        change(&mut p);
+        assert!(decode_object(&p.object(false)).is_none(), "{what} decoded");
+    }
+}
+
+#[test]
+fn a_footer_must_match_its_trailer() {
+    let p = parts();
+    let mut bad = p.object(false);
+    let at = p.runs.len();
+    bad[at + 20] ^= 1;
+    assert!(
+        decode_object(&bad).is_none(),
+        "a footer byte flipped under an intact trailer CRC"
+    );
+    let mut q = parts();
+    q.footer[0] ^= 1;
+    assert!(
+        decode_object(&q.object(true)).is_none(),
+        "a footer whose CRC the trailer does not store"
+    );
+    let mut short = parts();
+    short.t[16..24].copy_from_slice(&5u64.to_le_bytes());
+    assert!(
+        decode_object(&short.object(false)).is_none(),
+        "entries that do not sum to the trailer's"
+    );
+}
+
+#[test]
+fn every_trailer_field_out_of_range_is_refused() {
+    type Change = fn(&mut [u8; 32]);
+    let cases: [(&str, Change); 4] = [
+        ("version 2", |t| {
+            t[24..26].copy_from_slice(&2u16.to_le_bytes())
+        }),
+        ("a level past daily", |t| t[26] = 3),
+        ("a flag", |t| t[27] = 1),
+        ("no run", |t| t[12..16].copy_from_slice(&0u32.to_le_bytes())),
+    ];
+    for (what, change) in cases {
+        let mut p = parts();
+        change(&mut p.t);
+        assert!(decode_object(&p.object(false)).is_none(), "{what} decoded");
+    }
+}
+
+#[test]
+fn every_level_up_to_daily_is_written_and_none_past_it() {
+    for level in 0..=2u8 {
+        let mut w = ObjectWriter::new();
+        w.push([1; 16], &[entry(1, 0, 3, fps(&[1]))]).unwrap();
+        let (bytes, trailer) = w.finish(level).unwrap().unwrap();
+        assert_eq!(trailer.level, level);
+        assert_eq!(decode_object(&bytes).unwrap().0.level, level);
+    }
+    let mut w = ObjectWriter::new();
+    w.push([1; 16], &[entry(1, 0, 3, fps(&[1]))]).unwrap();
+    assert!(matches!(w.finish(3), Err(FormatError::Level)));
+}
+
+#[test]
+fn a_summary_naming_a_fingerprint_twice_is_refused() {
+    let raw = encode_run(&[entry(1, 0, 3, KeySummary::Keys(vec![5, 5]))]).unwrap();
+    assert!(decode_run(&raw).is_none());
+}
+
+#[test]
+fn a_run_bloom_at_its_byte_cap_decodes() {
+    let n = (MAX_RUN_BLOOM_BYTES * 8 / RUN_BLOOM_BITS_PER_KEY) as u64;
+    let entries: Vec<DirEntry> = (0..n).map(|i| entry(i, i, i, fps(&[i]))).collect();
+    assert_eq!(run_bloom(&entries).len(), MAX_RUN_BLOOM_BYTES);
+    let mut w = ObjectWriter::new();
+    w.push([1; 16], &entries).unwrap();
+    let (bytes, _) = w.finish(0).unwrap().unwrap();
+    let (_, runs) = decode_object(&bytes).expect("a bloom of exactly the cap decodes");
+    assert_eq!(runs[0].0.bloom.len(), MAX_RUN_BLOOM_BYTES);
+}
+
+/// The bloom's probe positions are part of the format: these bytes are
+/// pinned for fingerprints 1 to 40.
+#[test]
+fn a_run_bloom_is_pinned_byte_for_byte() {
+    let entries: Vec<DirEntry> = (1..=40u64).map(|i| entry(i, i, i, fps(&[i]))).collect();
+    let bloom = run_bloom(&entries);
+    let hex: String = bloom.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(hex, PINNED_BLOOM);
+    assert!((1..=40u64).all(|fp| bloom_holds(&bloom, fp)));
+}
+
+const PINNED_BLOOM: &str = "ffffffffff9d0c3116abb1f14670ab38806f8b1e268c724a9ac5c1d5a5507d35050d6f12c0709dc823a8ea0ef2152eb3359c";

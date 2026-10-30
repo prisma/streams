@@ -21,6 +21,9 @@ use crate::spill::directory::DirEntry;
 use crate::spill::runindex::Pointer;
 use crate::spill::runindex::format::{self, FooterEntry, TRAILER_LEN};
 
+#[cfg(test)]
+mod runs_tests;
+
 /// Attempts per GET on a transient store error (not on a 404).
 const GET_ATTEMPTS: u32 = 3;
 

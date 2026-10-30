@@ -5,25 +5,28 @@
 //!   orphans durably (the `'O'` row, then the fold's pointer row, then a
 //!   restart), and every record reads back exactly;
 //! - consolidations racing appends, seals, folds and other reads lose and
-//!   duplicate nothing;
-//! - which runs of a read's chunks are worth consolidating.
+//!   duplicate nothing; a consolidation never overwrites a stored object;
+//! - which runs of a read's chunks are worth consolidating, and that their
+//!   chunks must continue each other exactly as their entries say.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use object_store::ObjectStoreExt;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use super::Trigger;
-use super::consolidate::{MIN_CHUNKS, SMALL_CHUNK, runs_to_consolidate};
+use super::consolidate::{MIN_CHUNKS, SMALL_CHUNK, consolidated_input, runs_to_consolidate};
 use super::tests::{
     Oracle, ReadAt, append_recorded, hashes, manual, merged, random_bytes, read_back, reopen,
     rig_with,
 };
 use crate::shard::{Deliver, ShardEngine};
 use crate::spill::directory::{DirEntry, KeySummary};
-use crate::spill::object::ObjectId;
+use crate::spill::object::{ChunkInput, ObjectId};
+use crate::spill::test_pages::keyed_page;
 
 fn get(c: &AtomicU64) -> u64 {
     c.load(Ordering::Relaxed)
@@ -125,6 +128,48 @@ async fn a_cold_walk_consolidates_small_chunks_and_counts_the_orphans() {
     rig.engine.begin_close();
 }
 
+/// The consolidated chunk is put only where no object is: an object
+/// already at its claimed path (a sequence another writer used) fails the
+/// job and stays as it was, and the read stays exact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_consolidation_never_overwrites_a_stored_object() {
+    let rig = rig_with("consolidate-create", manual(), 0, Duration::from_millis(2)).await;
+    let hash = [0x38; 16];
+    let oracle = Mutex::new(Oracle::new());
+    let mut rng = StdRng::seed_from_u64(0xD1);
+    for _ in 0..MIN_CHUNKS {
+        append_recorded(
+            &rig.engine,
+            &oracle,
+            hash,
+            vec![random_bytes(&mut rng, 500)],
+        )
+        .await;
+        rig.engine.seal_once(Trigger::Requested).await.unwrap();
+    }
+    let next = ObjectId {
+        epoch: rig.engine.writer_epoch,
+        seq: rig.engine.layout.seal.next_seq.load(Ordering::Relaxed) + 1,
+    };
+    let path = object_store::path::Path::from(crate::spill::object::object_path(&rig.path, next));
+    let planted = Bytes::from_static(b"another writer's object");
+    rig.store.put(&path, planted.clone().into()).await.unwrap();
+    let oracle = oracle.into_inner().unwrap();
+    read_back(&rig.engine, hash, &oracle[&hash], Deliver::Durable)
+        .await
+        .unwrap();
+    wait_done(&rig.engine, 1).await;
+    let c = &rig.engine.layout.seal.fold.consolidator;
+    assert_eq!((get(&c.offered), get(&c.done), get(&c.failed)), (1, 0, 1));
+    let kept = rig.store.get(&path).await.unwrap().bytes().await.unwrap();
+    assert_eq!(kept, planted);
+    assert_eq!(rig.engine.layout.seal.fold.orphans().chunks, 0);
+    read_back(&rig.engine, hash, &oracle[&hash], Deliver::Durable)
+        .await
+        .unwrap();
+    rig.engine.begin_close();
+}
+
 /// Appends and seals on one task, cold walks on three, folds on another,
 /// consolidations behind the walks; then a restart and every record read
 /// back exactly at both visibilities.
@@ -202,7 +247,12 @@ async fn walk(
 ) {
     let end = snapshot.keys().next_back().map_or(0, |l| l + 1);
     let mut from = 0;
+    let t0 = Instant::now();
     while from < end {
+        assert!(
+            t0.elapsed() < Duration::from_secs(30),
+            "the walk stalled at {from} of {end}"
+        );
         let page = merged(engine, hash, ReadAt::all(from, 256 << 10), Deliver::Durable)
             .await
             .unwrap();
@@ -275,4 +325,69 @@ fn only_contiguous_runs_of_enough_small_chunks_are_offered() {
         runs.iter()
             .all(|r| r.iter().map(|(e, _)| u64::from(e.chunk_len)).sum::<u64>() <= 1 << 20)
     );
+}
+
+/// One stored chunk of `hash`: offsets `first..first + n`, one page each,
+/// as its own object, and the entry that names it (`entry_first` and
+/// `entry_last` as the entry claims them).
+fn stored(hash: [u8; 16], first: u64, n: u64, claim: Option<(u64, u64)>) -> (DirEntry, Bytes) {
+    let input = ChunkInput {
+        hash,
+        first,
+        max_ts: i64::try_from(first).unwrap(),
+        pages: (first..first + n)
+            .map(|o| keyed_page(&hash, "k", o, &[vec![u8::try_from(o).unwrap()]], 1))
+            .collect(),
+    };
+    let object = crate::spill::object::encode(std::slice::from_ref(&input)).unwrap();
+    let c = object.chunks.first().unwrap();
+    let body = object.to_bytes();
+    let at = usize::try_from(c.entry.offset).unwrap();
+    let body = body.slice(at..at + usize::try_from(c.entry.len).unwrap());
+    let mut e = DirEntry::of(
+        ObjectId {
+            epoch: 1,
+            seq: first,
+        },
+        c,
+        KeySummary::of(&input).unwrap(),
+    );
+    if let Some((f, l)) = claim {
+        (e.first, e.last) = (f, l);
+    }
+    (e, body)
+}
+
+#[test]
+fn a_consolidation_takes_only_chunks_that_continue_as_their_entries_say() {
+    let h = [0x41; 16];
+    let ok = [stored(h, 3, 2, None), stored(h, 5, 3, None)];
+    let input = consolidated_input(h, &ok).unwrap();
+    assert_eq!((input.hash, input.first, input.max_ts), (h, 3, 5));
+    assert_eq!(
+        input
+            .pages
+            .iter()
+            .map(|(last, _)| *last)
+            .collect::<Vec<_>>(),
+        vec![3, 4, 5, 6, 7]
+    );
+    let refused = [
+        (
+            "another stream's chunk",
+            [stored(h, 3, 2, None), stored([0x42; 16], 5, 3, None)],
+        ),
+        ("a gap", [stored(h, 3, 2, None), stored(h, 6, 3, None)]),
+        (
+            "an entry naming another first",
+            [stored(h, 3, 2, None), stored(h, 5, 3, Some((4, 7)))],
+        ),
+        (
+            "an entry naming another last",
+            [stored(h, 3, 2, None), stored(h, 5, 3, Some((5, 8)))],
+        ),
+    ];
+    for (what, chunks) in refused {
+        assert!(consolidated_input(h, &chunks).is_err(), "{what}");
+    }
 }

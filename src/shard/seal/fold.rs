@@ -52,6 +52,8 @@ use crate::spill::runindex::{
 
 mod merge;
 #[cfg(test)]
+mod merge_tests;
+#[cfg(test)]
 pub(crate) mod test_hooks;
 
 /// When the fold and its merges run.
@@ -325,31 +327,33 @@ impl ShardEngine {
     /// Whether a fold is due: the period passed with anything in the
     /// directory, or this shard's directory or the process's directories
     /// are past their lines (this shard then holding more than its share).
-    fn fold_due(&self) -> bool {
+    pub(super) fn fold_due(&self) -> bool {
         let s = self.fold_state().settings();
         let (bytes, entries) = match self.layout.seal.directory.read() {
             Ok(d) => (d.bytes(), d.entries()),
             Err(_) => return false,
         };
         let elapsed = lock(&self.fold_state().last_fold).is_none_or(|t| t.elapsed() >= s.period);
-        let process = directory::process_bytes();
-        let unfolded_orphans = !lock(&self.fold_state().unfolded_orphans).is_empty();
-        (elapsed && (entries > 0 || unfolded_orphans))
-            || bytes >= s.directory_bytes
-            || (process >= PROCESS_DIRECTORY_BYTES && bytes >= DIRECTORY_FOLD_BYTES / 8)
+        let unfolded = entries > 0 || !lock(&self.fold_state().unfolded_orphans).is_empty();
+        fold_rule(
+            elapsed && unfolded,
+            bytes,
+            directory::process_bytes(),
+            s.directory_bytes,
+        )
     }
 
-    async fn fold_logged(self: &Arc<Self>) {
+    /// Folds until nothing is left for the next (`max_rows`).
+    pub(super) async fn fold_logged(self: &Arc<Self>) {
         loop {
             match self.fold_once().await {
                 Ok(r) if r.more => continue,
                 Ok(r) => {
                     tracing::debug!(shard = %self.prefix, object = ?r.object, rows = r.rows, entries = r.entries, bytes = r.bytes, "folded");
                 }
-                Err(e) if !self.is_closed() => {
-                    tracing::warn!(shard = %self.prefix, "fold failed: {e}");
+                Err(e) => {
+                    tracing::warn!(shard = %self.prefix, closed = self.is_closed(), "fold failed: {e}");
                 }
-                Err(_) => {}
             }
             return;
         }
@@ -628,6 +632,15 @@ impl ShardEngine {
         *lock(&fs.unfolded_orphans) = orphans;
         Ok(())
     }
+}
+
+/// Whether a fold is due: the period passed with anything unfolded, the
+/// shard's directory holds `directory_bytes`, or the process's directories
+/// are past their line and this shard holds more than an eighth of its own.
+pub(super) fn fold_rule(period_due: bool, bytes: u64, process: u64, directory_bytes: u64) -> bool {
+    period_due
+        || bytes >= directory_bytes
+        || (process >= PROCESS_DIRECTORY_BYTES && bytes >= DIRECTORY_FOLD_BYTES / 8)
 }
 
 /// Each dead stream's `reclaimed` offset.

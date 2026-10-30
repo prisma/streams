@@ -348,7 +348,11 @@ async fn a_purge_reclaims_exactly_its_streams_chunks_and_their_objects() {
         report.object, None,
         "a fold of dead entries writes no object"
     );
-    while let Some(r) = rig.engine.merge_once().await {
+    for round in 0.. {
+        assert!(round < 64, "the merges never settle");
+        let Some(r) = rig.engine.merge_once().await else {
+            break;
+        };
         r.expect("merge");
     }
     rig.engine.collect().await.unwrap();
@@ -396,9 +400,7 @@ async fn objects_put_without_their_commit_are_swept_and_objects_in_flight_are_no
     )
     .await;
     let sweep = async {
-        while hold.entered.load(Ordering::Acquire) == 0 {
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
+        hold.wait_entered().await;
         let report = rig.engine.sweep_orphans().await.unwrap();
         hold.release();
         report
@@ -491,9 +493,7 @@ async fn a_fenced_writers_object_is_swept_by_the_new_owner() {
     let hold = Hold::new();
     *rig.engine.layout.seal.hooks.before_commit.lock().unwrap() = Some(hold.clone());
     let fence = async {
-        while hold.entered.load(Ordering::Acquire) == 0 {
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
+        hold.wait_entered().await;
         let fresh = open(
             rig.store.clone(),
             &rig.prefix,
@@ -542,7 +542,11 @@ async fn garbage_outlives_a_restart_and_waits_a_grace_from_it() {
         rig.engine.fold_once().await.unwrap();
         rounds(&rig, &mut rng, &streams, &oracle, 1).await;
     }
-    while let Some(r) = rig.engine.merge_once().await {
+    for round in 0.. {
+        assert!(round < 64, "the merges never settle");
+        let Some(r) = rig.engine.merge_once().await else {
+            break;
+        };
         r.expect("merge");
     }
     purge_now(&rig.engine, streams[0]).await;
@@ -598,9 +602,7 @@ async fn a_read_that_planned_with_a_chunk_keeps_its_object_until_it_ends() {
     *rig.engine.layout.seal.hooks.get_hold.lock().unwrap() = Some(hold.clone());
     let o = oracle[&hash].clone();
     let consolidate = async {
-        while hold.entered.load(Ordering::Acquire) == 0 {
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
+        hold.wait_entered().await;
         // The consolidation supersedes every original: each one-chunk
         // object reaches zero.
         rig.engine.offer_consolidation(hash, job);
@@ -919,9 +921,7 @@ async fn a_purge_racing_a_seal_in_flight_counts_nothing_the_seal_never_committed
     *rig.engine.layout.seal.hooks.after_publish.lock().unwrap() = Some(hold.clone());
     let victim = streams[0];
     let purge = async {
-        while hold.entered.load(Ordering::Acquire) == 0 {
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
+        hold.wait_entered().await;
         let out = purge_now(&rig.engine, victim).await;
         *rig.engine.layout.seal.hooks.after_publish.lock().unwrap() = None;
         hold.release();

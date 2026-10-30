@@ -925,3 +925,56 @@ fn a_read_captures_only_the_unsealed_pages_it_can_reach() {
     );
     assert_eq!(captured(0, u64::MAX, 1 << 20).len(), 10);
 }
+
+/// Only a whole chunk is cached: a read of part of it leaves the chunk
+/// cache without it; a whole read caches it and the next costs no GET.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn only_a_whole_chunk_is_cached() {
+    let rig = rig_with("chunk-cache", manual(), 0, Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0xCAC);
+    let hash = hashes(&mut rng, 1)[0];
+    for _ in 0..12 {
+        let records = vec![random_bytes(&mut rng, 64 << 10)];
+        append_lane(&rig.engine, hash, "", records).await;
+    }
+    rig.engine.seal_once(Trigger::Requested).await.unwrap();
+    let entry = rig
+        .engine
+        .layout
+        .seal
+        .directory
+        .read()
+        .unwrap()
+        .from(&hash, 0, 2);
+    let [entry] = &entry[..] else {
+        panic!("one chunk: {entry:?}")
+    };
+    let path = crate::spill::object::object_path(&rig.path, entry.object);
+    let key = rig.engine.layout.seal.fold.cache_scope.key(&path);
+    let cached = || crate::spill::cache::chunk_cache().get(&key, entry.chunk_off);
+    let handle = rig.engine.stream_handle(hash).await.unwrap();
+    let c = &rig.engine.layout.seal.counters;
+    let read = |max_bytes| {
+        let window = crate::shard::tail_ring::RingScan {
+            from: 0,
+            to: u64::MAX,
+            max_bytes,
+        };
+        rig.engine
+            .read_stream_window(&handle, window, None, Deliver::Durable)
+    };
+    read(100 << 10).await.unwrap();
+    assert!(cached().is_none(), "part of a chunk");
+    let gets = get(&c.sealed_gets);
+    assert_eq!(read(64 << 20).await.unwrap().last_offset, Some(11));
+    assert_eq!(get(&c.sealed_gets) - gets, 1);
+    assert_eq!(cached().map(|b| b.len()), Some(entry.chunk_len as usize));
+    let hits = get(&c.chunk_cache_hits);
+    assert_eq!(read(64 << 20).await.unwrap().last_offset, Some(11));
+    assert_eq!(
+        (get(&c.sealed_gets) - gets, get(&c.chunk_cache_hits) - hits),
+        (1, 1),
+        "the next whole read is a cache hit"
+    );
+    rig.engine.begin_close();
+}

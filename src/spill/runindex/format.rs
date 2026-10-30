@@ -57,8 +57,6 @@ use crate::spill::object::{Anchor, ObjectId};
 pub(crate) const RUN_INDEX_MAGIC: [u8; 4] = *b"L6ri";
 pub(crate) const RUN_INDEX_VERSION: u16 = 1;
 pub(crate) const TRAILER_LEN: usize = 40;
-/// A footer entry's fixed part, before its bloom.
-pub(crate) const FOOTER_FIXED_LEN: usize = 16 + 8 + 4 + 8 + 8 + 4 + 1 + 2;
 /// Footer flag: the run's entries tile its span with no gap.
 pub(crate) const DENSE: u8 = 1;
 pub(crate) const RUN_CRC_LEN: usize = 4;
@@ -507,7 +505,7 @@ impl ObjectWriter {
             return Ok(None);
         }
         let footer_off = self.ready.len() as u64;
-        let mut footer = Vec::with_capacity(self.footer.len() * (FOOTER_FIXED_LEN + 16));
+        let mut footer = Vec::new();
         for f in &self.footer {
             put_footer_entry(&mut footer, f);
         }

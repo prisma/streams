@@ -44,6 +44,9 @@ use crate::spill::object::{self, CHUNK_CRC_LEN, CHUNK_HEADER_LEN, DIR_ENTRY_LEN}
 use crate::spill::pending::PendingPage;
 use crate::spill::runindex::tiling::{Span, tile};
 
+#[cfg(test)]
+mod plan_tests;
+
 /// The most ranged GETs one read has in flight.
 const MAX_IN_FLIGHT: usize = 8;
 /// The most chunks one read fetches (a stream sealed in one-page chunks

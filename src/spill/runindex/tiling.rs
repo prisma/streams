@@ -38,23 +38,20 @@ fn better(a: Span, b: Span) -> bool {
 /// `to`, at `max` picks, or before the first offset no span holds.
 pub(crate) fn tile(spans: &[Span], from: u64, to: u64, max: usize) -> Vec<usize> {
     let mut out = Vec::new();
-    let (mut due, mut next) = (from, 0usize);
-    let mut best: Option<usize> = None;
+    let mut due = from;
+    let mut seen = spans.iter().copied().enumerate().peekable();
+    let mut best: Option<(usize, Span)> = None;
     while due < to && out.len() < max {
-        while let Some(s) = spans.get(next).copied().filter(|s| s.first <= due) {
-            if best
-                .and_then(|b| spans.get(b))
-                .is_none_or(|b| better(s, *b))
-            {
-                best = Some(next);
+        while let Some((i, s)) = seen.next_if(|(_, s)| s.first <= due) {
+            if best.is_none_or(|(_, b)| better(s, b)) {
+                best = Some((i, s));
             }
-            next += 1;
         }
-        let Some(pick) = best.filter(|b| spans.get(*b).is_some_and(|s| s.last >= due)) else {
+        let Some((pick, span)) = best.filter(|(_, s)| s.last >= due) else {
             break;
         };
         out.push(pick);
-        let Some(after) = spans.get(pick).and_then(|s| s.last.checked_add(1)) else {
+        let Some(after) = span.last.checked_add(1) else {
             break;
         };
         due = after;

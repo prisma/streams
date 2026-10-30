@@ -78,3 +78,9 @@ fn both_rules_match_a_brute_force_reference() {
         }
     }
 }
+
+#[test]
+fn of_identical_spans_the_first_is_picked() {
+    let spans = [s(0, 9), s(0, 9), s(10, 19), s(10, 19)];
+    assert_eq!(tile(&spans, 0, 20, 10), vec![0, 2]);
+}

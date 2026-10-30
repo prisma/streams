@@ -213,6 +213,10 @@ fn the_memory_gauge_is_the_sum_of_the_entries_through_inserts_and_removals() {
     directory.insert([2; 16], entries[1].clone());
     assert_eq!(directory.bytes(), sum(&directory));
     assert!(
+        super::directory::process_bytes() >= directory.bytes(),
+        "the process gauge counts this directory"
+    );
+    assert!(
         directory.bytes() - one > one,
         "the bloom entry counts its bloom"
     );

@@ -27,8 +27,8 @@ use object_store::ObjectStore;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use super::Trigger;
-use super::fold::FoldError;
 use super::fold::test_hooks::FoldStep;
+use super::fold::{FoldError, fold_rule};
 use super::test_hooks::Hold;
 use super::tests::{
     Oracle, ReadAt, Rig, append_lane, append_recorded, directory_rows, hashes, manual, merged,
@@ -326,9 +326,7 @@ async fn a_fenced_folders_object_is_an_orphan() {
     let hold = Hold::new();
     *rig.engine.layout.seal.fold.hooks.batch_hold.lock().unwrap() = Some(hold.clone());
     let fence = async {
-        while hold.entered.load(Ordering::Acquire) == 0 {
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
+        hold.wait_entered().await;
         let orphan = index_objects(&rig).await;
         assert_eq!(orphan.len(), 1, "the fold's PUT landed before the fence");
         let fresh = open(
@@ -416,6 +414,7 @@ async fn merges_make_hourly_and_daily_objects_and_retire_their_inputs() {
     while let Some(r) = rig.engine.merge_once().await {
         r.expect("merge");
         merges += 1;
+        assert!(merges < 64, "the merges never settle");
     }
     assert_eq!(
         merges, 3,
@@ -823,5 +822,62 @@ async fn a_gap_a_corrupt_index_row_leaves_answers_corruption_and_nothing_else_do
     read_back(&rig.engine, d, &o, Deliver::Durable)
         .await
         .unwrap();
+    rig.engine.begin_close();
+}
+
+#[test]
+fn a_fold_is_due_by_its_period_its_directory_or_the_processs() {
+    use crate::spill::budget::{DIRECTORY_FOLD_BYTES, PROCESS_DIRECTORY_BYTES};
+    let line = DIRECTORY_FOLD_BYTES;
+    assert!(fold_rule(true, 0, 0, line));
+    assert!(!fold_rule(
+        false,
+        line - 1,
+        PROCESS_DIRECTORY_BYTES - 1,
+        line
+    ));
+    assert!(fold_rule(false, line, 0, line), "the shard's line");
+    let share = DIRECTORY_FOLD_BYTES / 8;
+    assert!(
+        fold_rule(false, share, PROCESS_DIRECTORY_BYTES, line),
+        "the process's line, this shard holding an eighth of its own"
+    );
+    assert!(!fold_rule(false, share - 1, PROCESS_DIRECTORY_BYTES, line));
+    assert!(!fold_rule(false, share, PROCESS_DIRECTORY_BYTES - 1, line));
+}
+
+/// The loop's fold step is due only by its rules, and folds until nothing
+/// is left (`max_rows` per fold), then stops.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn the_fold_step_folds_until_nothing_is_left_once_due() {
+    let rig = cold_rig("fold-due").await;
+    let fs = &rig.engine.layout.seal.fold;
+    fs.configure(|s| {
+        s.period = Duration::from_secs(3600);
+        s.max_rows = 2;
+    });
+    rig.engine.fold_once().await.unwrap();
+    assert!(!rig.engine.fold_due(), "nothing unfolded");
+    let mut rng = StdRng::seed_from_u64(0xD0E);
+    let streams = hashes(&mut rng, 2);
+    let oracle = std::sync::Mutex::new(Oracle::new());
+    sealed_rounds(&rig, &mut rng, &streams, &oracle, 5).await;
+    assert!(!rig.engine.fold_due(), "within the period, under the line");
+    fs.configure(|s| s.directory_bytes = 1);
+    assert!(rig.engine.fold_due(), "the directory's line");
+    fs.configure(|s| {
+        s.directory_bytes = crate::spill::budget::DIRECTORY_FOLD_BYTES;
+        s.period = Duration::ZERO;
+    });
+    assert!(rig.engine.fold_due(), "the period passed");
+    let folds = get(&fs.counters.folds);
+    tokio::time::timeout(Duration::from_secs(10), rig.engine.fold_logged())
+        .await
+        .expect("the folds stop once nothing is left");
+    assert_eq!(get(&fs.counters.folds) - folds, 3, "two rows per fold");
+    assert!(directory_rows(&rig).await.is_empty());
+    assert!(!rig.engine.fold_due(), "nothing left");
+    assert_eq!(fs.json()["objects_by_level"], serde_json::json!([3, 0, 0]));
+    read_all(&rig, &oracle.into_inner().unwrap(), "after the folds").await;
     rig.engine.begin_close();
 }

@@ -36,6 +36,19 @@ impl Hold {
         self.release.send_replace(true);
     }
 
+    /// Wait until something parked here; a test whose code under test
+    /// never reaches the hold fails within ten seconds instead of hanging.
+    pub(crate) async fn wait_entered(&self) {
+        let t0 = std::time::Instant::now();
+        while self.entered.load(Ordering::Acquire) == 0 {
+            assert!(
+                t0.elapsed() < Duration::from_secs(10),
+                "nothing reached the hold"
+            );
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    }
+
     pub(crate) async fn park(&self) {
         self.entered.fetch_add(1, Ordering::AcqRel);
         let mut released = self.release.subscribe();

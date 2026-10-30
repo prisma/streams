@@ -311,7 +311,10 @@ impl ShardEngine {
 
 /// The consolidated chunk's input: every page of `chunks`, which must
 /// continue each other from the first chunk's first offset.
-fn consolidated_input(hash: [u8; 16], chunks: &[(DirEntry, Bytes)]) -> Result<ChunkInput, String> {
+pub(super) fn consolidated_input(
+    hash: [u8; 16],
+    chunks: &[(DirEntry, Bytes)],
+) -> Result<ChunkInput, String> {
     let mut pages = Vec::new();
     let mut max_ts = i64::MIN;
     let first = chunks.first().map_or(0, |(e, _)| e.first);
