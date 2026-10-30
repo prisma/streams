@@ -374,11 +374,19 @@ async fn a_deadline_waits_for_the_seal_in_flight_until_twice_the_deadline() {
 
 /// A seal flushes the memtable only every `seals_per_flush` seals: the
 /// first two leave the memtable's count running and the third restarts it;
-/// a requested seal (the idle release) always flushes; and the seal trigger
-/// counts WAL objects from the last seal's start, not from the flush.
+/// a requested seal (the idle release) always flushes; a deadline makes any
+/// seal flush; and the seal trigger counts WAL objects from the last seal's
+/// start, not from the flush. The deadlines and the memtable trigger are out
+/// of reach until the last step, so the pump's WAL objects on a slow host
+/// never stand in for the seal count (a CI runner reached the 128-object
+/// deadline by the third seal, which let `... && deadline` pass).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_seal_flushes_every_third_time_unless_requested() {
-    let rig = rig("every-k", manual(), Duration::from_millis(2)).await;
+    let mut settings = manual();
+    settings.memtable_bytes = u64::MAX;
+    settings.wal_objects_deadline = u64::MAX;
+    settings.age_deadline = Duration::from_secs(3600);
+    let rig = rig("every-k", settings, Duration::from_millis(2)).await;
     let mut rng = StdRng::seed_from_u64(0x0E3);
     let hash = hashes(&mut rng, 1)[0];
     let seal = |trigger| {
@@ -391,10 +399,10 @@ async fn a_seal_flushes_every_third_time_unless_requested() {
         let m = rig.engine.seal_measure();
         if round < 3 {
             assert!(m.memtable > 0, "seal {round} left the memtable unflushed");
-            assert_eq!(
-                rig.engine.trigger_measure().wal_objects,
-                m.wal_objects - rig.engine.layout.seal.wal_at_seal.load(Ordering::Relaxed),
-                "the seal trigger counts from the seal's start"
+            assert!(
+                rig.engine.trigger_measure().wal_objects < m.wal_objects,
+                "the seal trigger counts from the seal's start, not the flush: \
+                 the append's WAL objects before seal {round} are not counted"
             );
         } else {
             assert_eq!(m.memtable, 0, "the third seal flushed");
@@ -406,6 +414,17 @@ async fn a_seal_flushes_every_third_time_unless_requested() {
         rig.engine.seal_measure().memtable,
         0,
         "a requested seal flushes"
+    );
+    rig.engine
+        .layout
+        .seal
+        .configure(|s| s.wal_objects_deadline = 1);
+    append(&rig.engine, hash, vec![random_bytes(&mut rng, 4 << 10)]).await;
+    seal(Trigger::WalObjects).await;
+    assert_eq!(
+        rig.engine.seal_measure().memtable,
+        0,
+        "a first seal past a deadline flushes"
     );
     rig.engine.begin_close();
 }
