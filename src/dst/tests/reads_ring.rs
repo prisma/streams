@@ -428,9 +428,7 @@ async fn compacted_shard(
         engine.db.flush_with_options(flush).await.expect("flush");
     }
     eventually("the L0 tables compact into a sorted run", || {
-        let manifest = engine.db.manifest();
-        let stream_tree = manifest.segment(&[crate::keyspace::STREAM]);
-        stream_tree.is_some_and(|tree| !tree.compacted().is_empty())
+        !engine.db.manifest().compacted().is_empty()
     })
     .await;
     (store, engine)

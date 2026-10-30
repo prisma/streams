@@ -17,8 +17,7 @@ use slatedb::compactor::{
 };
 
 /// The shard log's database builder: `settings`' compactor options run under
-/// the guarded scheduler, and every key is routed to its segment's tree by
-/// the shard log's segment extractor (layout 6, `crate::keyspace`), and the
+/// the guarded scheduler (layout 7: one tree, `crate::keyspace`), and the
 /// log's memtable freeze size is recorded for its sealer.
 pub(crate) fn shard_log_builder(
     path: &str,
@@ -55,18 +54,8 @@ struct Guarded {
 }
 
 impl CompactionScheduler for Guarded {
-    /// The size-tiered scheduler's proposals for the queue tree are
-    /// dropped: that tree is compacted only by the queue collector (its L0
-    /// merges and its debt passes, `shard::queue_maintenance`), so a mixed
-    /// cell runs one stream of scheduler jobs, not one per tree (spike A2:
-    /// the queue tree's marginal cost on a mixed cell fell from $3.95 to
-    /// $0.25 per shard-month at -50% list).
     fn propose(&self, state: &CompactorStateView) -> Vec<CompactionSpec> {
-        self.inner
-            .propose(state)
-            .into_iter()
-            .filter(|spec| spec.segment().as_ref() != crate::keyspace::QUEUE)
-            .collect()
+        self.inner.propose(state)
     }
 
     fn validate(
@@ -93,10 +82,7 @@ impl CompactionScheduler for Guarded {
     }
 }
 
-/// Every sorted run and SST view a spec reads or writes. Sorted-run ids are
-/// global across segments (RFC 0024: one counter; a fresh destination must
-/// exceed every tree's runs) and views are ULIDs, so two specs in different
-/// segments never share an id and the comparison needs no segment.
+/// Every sorted run and SST view a spec reads or writes.
 fn footprint(spec: &CompactionSpec) -> HashSet<SourceId> {
     let destination = spec.destination().map(SourceId::SortedRun);
     spec.sources().iter().copied().chain(destination).collect()

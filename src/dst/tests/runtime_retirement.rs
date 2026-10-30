@@ -446,17 +446,12 @@ async fn a_sweep_eviction_arms_only_the_base_holdoff() {
     }
 }
 
-/// An open shard whose log holds its L0 cap of tables in one tree (the cap
-/// is per tree; the shard log keeps one per key segment), if any: the
-/// sealer's next forced memtable flush waits for the compactor to free a
-/// slot.
+/// An open shard whose log holds its L0 cap of tables (layout 7: one
+/// tree), if any: the sealer's next forced memtable flush waits for the
+/// compactor to free a slot.
 fn at_its_l0_cap(state: &crate::http::AppState) -> Option<Arc<slatedb::Db>> {
     let cap = slatedb::config::Settings::default().l0_max_ssts;
-    let fullest = |db: &slatedb::Db| {
-        let manifest = db.manifest();
-        let segments = manifest.segments().iter().map(|s| s.l0().len());
-        segments.chain([manifest.l0().len()]).max().unwrap_or(0)
-    };
+    let fullest = |db: &slatedb::Db| db.manifest().l0().len();
     state
         .shards
         .engines()

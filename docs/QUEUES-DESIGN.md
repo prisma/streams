@@ -298,7 +298,12 @@ of messages plus about 100 MiB of dedup entries), queues per shard =
 `floor(B ÷ 356 MiB)`: 5 at a 2 GiB bound, 22 at 8 GiB. The bound `B` is
 physical (live plus awaiting reclamation, about 2-3× the reservation within
 the completion deadline) and is itself limited by how long a collection pass
-may run (§8.2), so Q0 sets it. The control plane alone has 18 queues, and a
+may run (§8.2), so Q0 sets it. Under layout 7 (§8.2) the bytes awaiting reclamation are at most the
+256 MiB trigger plus one pass's accrual, and a pass also rewrites the
+shard's stream rows, so its length (and the L0 line it must finish under)
+counts those too: at the step-2 seal cadence a flush comes every 7.6-12.8 s,
+which leaves 213-358 s, 5-8.6 GB at 24 MB/s, against 0.16-0.9 GB a pass
+rewrites on S and M cells. The control plane alone has 18 queues, and a
 caller cannot choose its shard (placement is by storage hash over a fixed
 prefix code, `src/registry.rs:1332-1340`). The recommendation (D21) is
 smaller default budgets with an opt-up at creation, decided with Q0's numbers;
@@ -639,6 +644,16 @@ writing the last run, so a quiet shard never collects. The design adds a
   compaction, checkpoint protection and GC inside it. Q0 measures a pass's
   duration and sets the launch age to `deadline − p99 pass duration − margin`
   (first estimate 15 minutes).
+- **Layout 7 (2026-10-30, the lead's ruling under the owner's delegation;
+  QUEUE-TREE-DECISION appendix A):** queue and stream rows share one tree, so
+  a pass rewrites the whole shard log, and the trigger is only the amount
+  (256 MiB of debt on the shard) or the maximum interval (24 h): the launch
+  age, the 16 MiB floor and the twentieth-of-the-log floor are gone, because
+  each pass now also rewrites the stream rows (about 0.13 GB on a 200-S
+  cell, 0.6 GB on an M×2 cell at the step-2 seal cadence). The completion
+  deadline is therefore 24 h for debt below 256 MiB, and a shard's bytes
+  awaiting reclamation stay under 256 MiB plus what accrues during one pass,
+  so the physical bound of §5.7 does not grow.
 - **Coverage rule.** A pass covers a defined set of work, and the deletions
   that implement it, before it clears anything:
   1. choose a cutoff `T`: the pass covers every `X` entry retired at or

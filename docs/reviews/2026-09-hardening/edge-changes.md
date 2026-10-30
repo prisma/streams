@@ -4832,6 +4832,21 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Status:** ratified by the lead under the owner's delegation, 2026-10-30 (#232 reserved and ratified).
 - **Check against commit:** written with the change.
 
+### #233 (this record's commit) — A binary reads only storage layout 7, whose shard log keeps the family-tagged keys in one compaction tree: a namespace written under layout 6 is refused as unsupported_storage_layout
+
+- **Program item:** S-gap step 2 with the queue-tree decision (the lead's ruling of 2026-10-30 under the owner's delegation, after Fable 5.1's QUEUE-TREE-DECISION appendix A: under the step-2 cadence one tree with the collector trigger re-tuned meets the 1x/10x/100x bars, two trees miss 1x by 9-19%).
+- **Surface:** both.
+- **Endpoint:** every route that opens a stream's descriptor (`registry::decode_desc`, `validate_descriptor`), as #204. A shard log created by a layout 6 binary carries the segment extractor `prisma-streams/shard-log-segments/v1` in its manifest, and a layout 7 binary (no extractor) refuses to open it.
+- **Condition:** the bucket and `PATH_PREFIX` hold descriptors or shard logs written by a layout 6 binary, that is, every existing deployment.
+- **Before:** layout 6 descriptors opened; the shard log kept one compaction tree for `'S'` rows and one for `'Q'‖gen` rows, and the queue collector compacted only the queue tree.
+- **After:** a layout 6 descriptor is refused with `unsupported_storage_layout: descriptor '<name>' has layout 6 (this binary reads only 7); …` through the existing refusal path (no new status or code). New descriptors are written with `"layout_version":7`. Every key keeps its layout 6 tag and bytes (`'S'`, `'Q' ‖ generation u32`), so no codec or key golden changes; the shard log has no segment extractor, its rows share one tree, the size-tiered scheduler compacts all of it, and the queue collector's pass compacts the whole log (its trigger re-tuned to 256 MiB of debt or 24 h; QUEUES-DESIGN §5.7).
+- **Retry semantics:** none; the refusal is permanent for that namespace.
+- **Who is affected:** every running deployment, which needs a fresh bucket or `PATH_PREFIX`, the six-region Tigris observatory included (the owner's to move, never stopped or redeployed without him). The k2cost and queue benchmark rigs deploy fresh namespaces per run.
+- **Pinning tests:** `golden_tests::descriptor_json::golden_layout7_descriptor_{full_json,minimal_json,foreign_layout_rejected}` (renamed from `golden_layout6_*`; the foreign set is 3, 4, 5, 6, 8 and missing, with the exact text for 6); `registry::tests::layout_gate_refuses_foreign_namespaces` (a complete layout 6 descriptor refused through `Registry::get` with the exact text); `keyspace::tests::stream_and_queue_keys_carry_their_family_tags`; the collector's whole-log tests in `shard::queue_maintenance::native_queue_collector_tests`. Red on the unchanged tree: the goldens print `"layout_version":6`, and the refusal tests panic on `expect_err` because layout 6 decodes.
+- **Risk reason:** high. Every request against an existing namespace fails permanently after the deploy; the cutover is the design (no compatibility before launch), and nothing is lost once a deployment moves to a fresh namespace.
+- **Status:** ratified by the lead under the owner's delegation, 2026-10-30.
+- **Check against commit:** written with the change.
+
 ## Discrepancies
 
 One record has verified=false: its commit did not match the recorded text.

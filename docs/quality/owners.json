@@ -3971,14 +3971,6 @@
     {
       "category": "macro-dsl",
       "count": 2,
-      "owner": "crate::kani_098_a_key_and_every_prefix_of_it_name_one_segment",
-      "path": "src/keyspace/proofs.rs",
-      "reason": "Kani proof harness for KANI-098 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
-      "syntax": "kani::cover"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 2,
       "owner": "crate::kani_099_a_bloom_admits_every_key_it_holds",
       "path": "src/spill/directory/proofs.rs",
       "reason": "Kani proof harness for KANI-099 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",

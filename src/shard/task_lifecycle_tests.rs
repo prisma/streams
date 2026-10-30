@@ -131,7 +131,7 @@ async fn r17a_unexpected_required_engine_role_exit_fences_serving() {
         "pump",
         "queue-sweeper",
         "queue-collector",
-        "queue-l0-merger",
+        "seal-fold",
         "sealer",
         "seal-deadlines",
     ] {

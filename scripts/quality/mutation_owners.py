@@ -246,7 +246,6 @@ OWNERS = (
     owner('commit_op', 'src/shard/commit_op.rs', 'shard::'),
     owner('queue_maintenance', 'src/shard/queue_maintenance.rs', 'native_queue'),
     owner('nq_submit', 'src/shard/native_queue_submit.rs', 'native_queue queue_overload::'),
-    owner('queue_l0_merge', 'src/shard/queue_maintenance/l0_merge.rs', 'native_queue_collection'),
     owner('nq_admin', 'src/shard/transaction/native_queue/admin.rs', 'native_queue'),
     owner('nq_claim', 'src/shard/transaction/native_queue/claim.rs', 'native_queue'),
     owner('nq_deliveries', 'src/shard/transaction/native_queue/deliveries.rs', 'native_queue'),
@@ -640,7 +639,7 @@ SIZES_COMMAND = 'python3 scripts/quality/mutation_driver.py --measure-sizes'
 SCHEDULE_JOBS = 8
 SCHEDULE_CAP_MINUTES = 270.0
 NIGHT_MINUTES = {'harness-lib': (1.0, 0.25)}  # target: (baseline, each mutant)
-DEFAULT_NIGHT_MINUTES = (7.5, 5.0)
+DEFAULT_NIGHT_MINUTES = (7.5, 5.1)
 
 
 @dataclass(frozen=True)

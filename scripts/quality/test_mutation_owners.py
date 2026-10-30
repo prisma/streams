@@ -277,14 +277,14 @@ class MutationOwnership(unittest.TestCase):
         harness = MutationOwner('harness', ('src/harness.rs',), ('harness::',), 'harness-lib')
         minutes = mutation_owners.night_minutes
         self.assertEqual(minutes(service, 0), 0)
-        self.assertEqual(minutes(service, 1), 7.5 + 5)
-        self.assertEqual(minutes(service, 9, jobs=4), 7.5 + 3 * 5)
-        self.assertEqual(minutes(service, 9, parts=2, jobs=4), 7.5 + 2 * 5)
+        self.assertEqual(minutes(service, 1), 7.5 + 5.1)
+        self.assertEqual(minutes(service, 9, jobs=4), 7.5 + 3 * 5.1)
+        self.assertEqual(minutes(service, 9, parts=2, jobs=4), 7.5 + 2 * 5.1)
         self.assertEqual(minutes(harness, 9, jobs=4), 1 + 3 * 0.25)
         # The job's default width, eight runners: 17 mutants are 3 on runner 0.
         self.assertEqual(mutation_owners.SCHEDULE_JOBS, 8)
-        self.assertEqual(minutes(service, 17), 7.5 + 3 * 5)
-        self.assertEqual(minutes(service, 17, parts=2), 7.5 + 2 * 5)
+        self.assertEqual(minutes(service, 17), 7.5 + 3 * 5.1)
+        self.assertEqual(minutes(service, 17, parts=2), 7.5 + 2 * 5.1)
 
     def test_an_owner_too_large_for_one_night_is_dealt_over_several_nights(self):
         big = MutationOwner('big', ('src/big.rs',), ('big::',))

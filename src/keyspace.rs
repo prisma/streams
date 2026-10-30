@@ -1,39 +1,34 @@
-//! Layout 6's segmented shard-log keyspace (DESIGN-6A §1, §3).
-//!
-//! Every shard-log key starts with a segment tag, and SlateDB (RFC 0024)
-//! keeps one compaction tree per segment:
+//! The shard log's keyspace (layout 7; DESIGN-6A §1, §3, the lead's ruling of
+//! 2026-10-30 under the owner's delegation): every shard-log key starts with
+//! a family tag, in ONE compaction tree.
 //!
 //! - `'S'` (one byte): stream state — tails, producers and sequences,
 //!   seal fences, pending rows (unsealed pages), consumer-group rows,
 //!   billing rows, and the seal directory and refcount rows under the
 //!   sentinel;
-//! - `'Q' ‖ gen u32` (five bytes, generation 0 only in phase 1): every
-//!   native-queue row — state, meta, availability, delivery, lease, retry,
-//!   failure and dedup rows, the roster, the queue's message pages and the
-//!   queue stream's tail.
+//! - `'Q' ‖ gen u32` (five bytes, generation 0): every native-queue row —
+//!   state, meta, availability, delivery, lease, retry, failure and dedup
+//!   rows, the roster, the queue's message pages and the queue stream's
+//!   tail.
 //!
-//! The extractor is attached when the shard log is created and never
-//! changes (its name is persisted in the manifest). A key that starts with
-//! neither tag, or a `'Q'` key shorter than its five-byte prefix, has no
-//! segment and SlateDB refuses its write.
+//! Layout 6 kept one tree per tag (a SlateDB segment extractor, RFC 0024);
+//! the queue tree then paid an L0, its merges and their manifest writes on
+//! every memtable flush, above today's reference (QUEUE-TREE-DECISION). The
+//! tags stay, so every key layout and codec is layout 6's; the shard log
+//! has no extractor, and the queue collector compacts the whole log.
 
 use std::sync::Arc;
 
-use slatedb::{PrefixExtractor, PrefixTarget};
-
-#[cfg(kani)]
-mod proofs;
-
-/// The stream-state segment's tag (and its whole prefix).
+/// The stream-state family's tag (and its whole prefix).
 pub(crate) const STREAM: u8 = b'S';
-/// The queue segment's tag.
+/// The queue family's tag.
 pub(crate) const QUEUE_TAG: u8 = b'Q';
-/// The queue segment prefix of generation 0: the tag and the generation,
+/// The queue family prefix of generation 0: the tag and the generation,
 /// big-endian.
 pub(crate) const QUEUE: [u8; QUEUE_PREFIX_LEN] = [QUEUE_TAG, 0, 0, 0, 0];
-/// The width of a queue segment prefix.
+/// The width of a queue family prefix.
 pub(crate) const QUEUE_PREFIX_LEN: usize = 5;
-/// The stream segment's sentinel: `'S'` and sixteen 0xFF bytes. Its rows
+/// The stream family's sentinel: `'S'` and sixteen 0xFF bytes. Its rows
 /// (the seal directory and refcount rows, the usage outbox) sort after
 /// every stream's rows, so each family is one range scan.
 pub(crate) const SENTINEL: [u8; 17] = {
@@ -60,44 +55,9 @@ pub(crate) fn queue_row(hash: &[u8; 16], extra: usize) -> Vec<u8> {
     k
 }
 
-/// The shard log's segment extractor (one name, fixed at creation).
-pub(crate) struct ShardLogSegments;
-
-/// The persisted extractor name; a shard log created with another name (or
-/// none) refuses to open with this one.
-const EXTRACTOR_NAME: &str = "prisma-streams/shard-log-segments/v1";
-
-/// The segment prefix width of `bytes`, or `None` when it has none.
-fn segment_len(bytes: &[u8]) -> Option<usize> {
-    match bytes.first() {
-        Some(&STREAM) => Some(1),
-        Some(&QUEUE_TAG) if bytes.len() >= QUEUE_PREFIX_LEN => Some(QUEUE_PREFIX_LEN),
-        _ => None,
-    }
-}
-
-impl PrefixExtractor for ShardLogSegments {
-    fn name(&self) -> &str {
-        EXTRACTOR_NAME
-    }
-
-    fn prefix_len(&self, target: &PrefixTarget) -> Option<usize> {
-        match target {
-            PrefixTarget::Point(key) => segment_len(key),
-            PrefixTarget::Prefix(prefix) => segment_len(prefix),
-        }
-    }
-}
-
-/// The extractor every shard log is built with.
-pub(crate) fn extractor() -> Arc<dyn PrefixExtractor> {
-    Arc::new(ShardLogSegments)
-}
-
-/// A shard log's database builder at `path`: the segment extractor, the
-/// pending rows' merge operator (the builder hands it to its compactor
-/// too) and the log's metrics recorder (`spill::metrics`) attached,
-/// nothing else set.
+/// A shard log's database builder at `path`: the pending rows' merge
+/// operator (the builder hands it to its compactor too) and the log's
+/// metrics recorder (`spill::metrics`) attached, nothing else set.
 pub(crate) fn db_builder<P: Into<object_store::path::Path>>(
     path: P,
     store: Arc<dyn object_store::ObjectStore>,
@@ -105,32 +65,31 @@ pub(crate) fn db_builder<P: Into<object_store::path::Path>>(
     let path: object_store::path::Path = path.into();
     let metrics = crate::spill::metrics::for_log(path.as_ref());
     slatedb::Db::builder(path, store)
-        .with_segment_extractor(extractor())
         .with_merge_operator(crate::spill::pending::merge_operator())
         .with_metrics_recorder(metrics.recorder())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        PrefixExtractor, PrefixTarget, QUEUE, STREAM, ShardLogSegments, queue_row, stream_row,
-    };
-    use bytes::Bytes;
-
-    fn point(key: &[u8]) -> Option<usize> {
-        ShardLogSegments.prefix_len(&PrefixTarget::Point(Bytes::copy_from_slice(key)))
-    }
+    use super::{QUEUE, QUEUE_PREFIX_LEN, SENTINEL, STREAM, queue_row, stream_row};
 
     #[test]
-    fn stream_and_queue_keys_map_to_their_segments() {
-        assert_eq!(point(&stream_row(&[7; 16], 1)), Some(1));
-        assert_eq!(point(&queue_row(&[7; 16], 1)), Some(5));
-        assert_eq!(point(b"S"), Some(1));
-        assert_eq!(point(b"Q\0\0\0"), None);
-        assert_eq!(point(b"x"), None);
-        assert_eq!(point(b""), None);
-        let prefix = ShardLogSegments.prefix_len(&PrefixTarget::Prefix(Bytes::from_static(&QUEUE)));
-        assert_eq!(prefix, Some(QUEUE.len()));
+    fn stream_and_queue_keys_carry_their_family_tags() {
+        assert_eq!(
+            stream_row(&[7; 16], 1)[..],
+            [&[STREAM][..], &[7; 16]].concat()[..]
+        );
+        assert_eq!(
+            queue_row(&[7; 16], 1)[..],
+            [&QUEUE[..], &[7; 16]].concat()[..]
+        );
+        assert_eq!(QUEUE, [b'Q', 0, 0, 0, 0]);
+        assert_eq!(QUEUE_PREFIX_LEN, QUEUE.len());
+        assert_eq!(
+            stream_row(&[0xFF; 16], 0),
+            SENTINEL.to_vec(),
+            "the sentinel is the last hash"
+        );
         assert_eq!(crate::queue::config_key(&[7; 16], "c")[0], STREAM);
     }
 }

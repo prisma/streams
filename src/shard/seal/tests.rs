@@ -70,7 +70,7 @@ pub(super) fn manual() -> SealSettings {
 }
 
 /// An engine at `prefix` on `store`, its shard log built as production
-/// builds it (`keyspace::db_builder`: the segment extractor, the pending
+/// builds it (`keyspace::db_builder`: one tree (layout 7), the pending
 /// rows' merge operator, the metrics recorder), the group-commit pump at
 /// `gap`, a ring of `ring_bytes` and no compactor (the tests inspect L0
 /// SSTs; the L0 caps are raised so none stalls). Waits for the sealer's

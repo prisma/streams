@@ -10,7 +10,7 @@ use object_store::ObjectStore;
 use slatedb::Db;
 use slatedb::compactor::{CompactionSpec, SourceId};
 
-use super::{QUEUE_TREE, pass_due, single_pass_fits};
+use super::{pass_due, single_pass_fits};
 use crate::native_queue::rows::StateRow;
 use crate::native_queue::{NqOp, QueueConfig, keys};
 use crate::shard::{ShardConfig, ShardEngine};
@@ -21,36 +21,29 @@ const HOUR: i64 = crate::native_queue::HOUR_MS;
 /// How long a test waits on a collector step that should finish quickly.
 const STEP_WITHIN: Duration = Duration::from_secs(30);
 
-/// A raw key in the queue segment's tree (layout 6).
+/// A raw queue-family key (layout 7: one tree).
 fn qk(name: &[u8]) -> Vec<u8> {
-    [&QUEUE_TREE[..], name].concat()
+    [&crate::keyspace::QUEUE[..], name].concat()
 }
 
-/// A raw key in the stream segment's tree.
+/// A raw stream-family key.
 fn sk(name: &[u8]) -> Vec<u8> {
     [&[crate::keyspace::STREAM][..], name].concat()
 }
 
-/// The queue tree's L0 view ids in `manifest` (none before its first
-/// flush).
-fn queue_l0(manifest: &slatedb::VersionedManifest) -> Vec<slatedb::manifest::SsTableView> {
-    manifest
-        .segment(&QUEUE_TREE)
-        .map(|t| t.l0().iter().cloned().collect())
-        .unwrap_or_default()
+/// The shard log's L0 views in `manifest`.
+fn log_l0(manifest: &slatedb::VersionedManifest) -> Vec<slatedb::manifest::SsTableView> {
+    manifest.l0().iter().cloned().collect()
 }
 
-/// The queue tree's sorted runs in `manifest`.
-fn queue_runs(manifest: &slatedb::VersionedManifest) -> Vec<slatedb::manifest::SortedRun> {
-    manifest
-        .segment(&QUEUE_TREE)
-        .map(|t| t.compacted().clone())
-        .unwrap_or_default()
+/// The shard log's sorted runs in `manifest`.
+fn log_runs(manifest: &slatedb::VersionedManifest) -> Vec<slatedb::manifest::SortedRun> {
+    manifest.compacted().clone()
 }
 
-/// A tiered spec in the queue tree.
-fn queue_spec(sources: Vec<SourceId>, destination: u32) -> CompactionSpec {
-    CompactionSpec::for_segment(bytes::Bytes::from_static(&QUEUE_TREE), sources, destination)
+/// A tiered spec in the shard log.
+fn log_spec(sources: Vec<SourceId>, destination: u32) -> CompactionSpec {
+    CompactionSpec::new(sources, destination)
 }
 
 struct Rig {
@@ -121,24 +114,15 @@ async fn submit(
 #[test]
 fn native_queue_collection_starts_on_size_or_age_and_never_without_debt() {
     let now = 100 * HOUR;
-    assert!(!pass_due(0, None, now, 0), "no debt, no pass");
-    assert!(pass_due(256 * MIB, Some(now), now, 0), "256 MiB at once");
-    assert!(!pass_due(256 * MIB - 1, Some(now), now, 0));
-    // 16 MiB once 15 minutes old.
-    assert!(pass_due(16 * MIB, Some(now - 15 * MIN), now, 0));
-    assert!(!pass_due(16 * MIB, Some(now - 15 * MIN + 1), now, 0));
-    assert!(!pass_due(16 * MIB - 1, Some(now - 15 * MIN), now, 0));
-    // Smaller debt waits a day.
-    assert!(pass_due(1, Some(now - 24 * HOUR), now, 0));
-    assert!(!pass_due(1, Some(now - 24 * HOUR + 1), now, 0));
-    // The age trigger's floor rises to a twentieth of the compacted log.
-    assert!(pass_due(100 * MIB, Some(now - 20 * MIN), now, 1_024 * MIB));
-    assert!(!pass_due(
-        100 * MIB,
-        Some(now - 20 * MIN),
-        now,
-        20_480 * MIB
-    ));
+    assert!(!pass_due(0, None, now), "no debt, no pass");
+    assert!(pass_due(256 * MIB, Some(now), now), "256 MiB at once");
+    assert!(!pass_due(256 * MIB - 1, Some(now), now));
+    // Layout 7: a pass rewrites the whole log, so smaller debt waits a day
+    // whatever its size or age below it (layout 6's 16 MiB after 15
+    // minutes is gone).
+    assert!(!pass_due(255 * MIB, Some(now - 15 * MIN), now));
+    assert!(pass_due(1, Some(now - 24 * HOUR), now));
+    assert!(!pass_due(255 * MIB, Some(now - 24 * HOUR + 1), now));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
@@ -200,9 +184,9 @@ async fn native_queue_collection_waits_until_every_superseded_sst_but_the_residu
     let left = e.superseded_left(&three, residual.as_ref()).await;
     assert_eq!(left, 2, "the residual does not count");
     let (gone, kept) = (ids(&["gone"]), ids(&["a"]));
-    let done = tokio::time::timeout(STEP_WITHIN, e.await_collection(&gone, &[]));
+    let done = tokio::time::timeout(STEP_WITHIN, e.await_collection(&gone));
     assert_eq!(done.await.unwrap(), Ok(()), "nothing left: done at once");
-    let present = tokio::time::timeout(Duration::from_secs(1), e.await_collection(&kept, &[]));
+    let present = tokio::time::timeout(Duration::from_secs(1), e.await_collection(&kept));
     assert!(
         present.await.is_err(),
         "an SST still present keeps it waiting"
@@ -222,27 +206,36 @@ async fn native_queue_collection_compacts_every_l0_into_the_last_run_and_names_w
         flush_type: slatedb::config::FlushType::MemTable,
     };
     r.db.flush_with_options(memtable).await.unwrap();
-    let l0: Vec<String> = queue_l0(&r.db.manifest())
+    let views = log_l0(&r.db.manifest());
+    let l0: Vec<String> = views
         .iter()
         .map(|v| v.sst.id.unwrap_compacted_id().to_string())
         .collect();
     assert!(!l0.is_empty(), "the flush wrote an L0 SST");
-    let pass = tokio::time::timeout(STEP_WITHIN, r.engine.compact_queue_tree());
-    let superseded = pass.await.unwrap().unwrap().superseded;
+    let l0_bytes: u64 = views.iter().map(|v| v.estimate_size()).sum();
+    let pass = tokio::time::timeout(STEP_WITHIN, r.engine.compact_shard_log());
+    let report = pass.await.unwrap().unwrap();
+    assert!(l0_bytes > 0);
+    assert_eq!(
+        report.rewritten_bytes, l0_bytes,
+        "the pass reads every L0 byte"
+    );
+    let superseded = report.superseded;
     for id in &l0 {
         assert!(superseded.contains(id), "{id} is named superseded");
     }
     let manifest = r.engine.queue_admin().read_manifest(None).await;
     let manifest = manifest.unwrap().expect("a manifest");
-    assert!(queue_l0(&manifest).is_empty(), "every L0 SST was compacted");
-    assert_eq!(queue_runs(&manifest).len(), 1, "into one sorted run");
+    assert!(log_l0(&manifest).is_empty(), "every L0 SST was compacted");
+    assert_eq!(log_runs(&manifest).len(), 1, "into one sorted run");
 }
 
-/// Layout 6A's point: a pass compacts the queue tree alone. A stream row's
-/// L0 table is neither named, rewritten nor superseded, and the stream
-/// tree's runs are untouched.
+/// Layout 7 (the lead's ruling of 2026-10-30, flipping layout 6's "never
+/// names or rewrites the stream tree"): queue and stream rows share one
+/// tree, so a pass names, rewrites and supersedes the stream rows' L0
+/// table with the queue rows', and both read back from the one run.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
-async fn native_queue_collection_never_names_or_rewrites_the_stream_tree() {
+async fn native_queue_collection_compacts_stream_rows_with_queue_rows_in_one_tree() {
     let r = rig(
         "t/nqc-trees",
         Some(compactor_every(Duration::from_millis(100))),
@@ -255,49 +248,19 @@ async fn native_queue_collection_never_names_or_rewrites_the_stream_tree() {
     };
     r.db.flush_with_options(memtable).await.unwrap();
     let before = r.db.manifest();
-    let stream = before
-        .segment(&[crate::keyspace::STREAM])
-        .expect("a stream tree");
-    let stream_l0: Vec<String> = stream
-        .l0()
+    assert!(before.segments().is_empty(), "no segment tree");
+    let l0: Vec<String> = log_l0(&before)
         .iter()
         .map(|v| v.sst.id.unwrap_compacted_id().to_string())
         .collect();
-    assert_eq!(
-        stream_l0.len(),
-        1,
-        "one flush wrote one L0 per touched tree"
-    );
-    assert_eq!(queue_l0(&before).len(), 1);
-    let pass = tokio::time::timeout(STEP_WITHIN, r.engine.compact_queue_tree());
+    assert_eq!(l0.len(), 1, "one flush wrote one L0 for both families");
+    let pass = tokio::time::timeout(STEP_WITHIN, r.engine.compact_shard_log());
     let report = pass.await.unwrap().unwrap();
     assert_eq!((report.l0s, report.runs, report.steps), (1, 0, 1));
-    for id in &stream_l0 {
-        assert!(
-            !report.superseded.contains(id),
-            "the stream L0 is not superseded"
-        );
-    }
+    assert_eq!(report.superseded, l0, "the shared L0 is superseded");
     let after = manifest(&r).await;
-    let stream = after
-        .segment(&[crate::keyspace::STREAM])
-        .expect("a stream tree");
-    let kept: Vec<String> = stream
-        .l0()
-        .iter()
-        .map(|v| v.sst.id.unwrap_compacted_id().to_string())
-        .collect();
-    assert_eq!(kept, stream_l0, "the stream tree's L0 is untouched");
-    assert!(
-        stream.compacted().is_empty(),
-        "and no stream run was written"
-    );
-    assert!(queue_l0(&after).is_empty());
-    assert_eq!(queue_runs(&after).len(), 1);
-    assert!(
-        after.l0().is_empty() && after.compacted().is_empty(),
-        "the root tree is empty"
-    );
+    assert!(log_l0(&after).is_empty());
+    assert_eq!(log_runs(&after).len(), 1, "both families in one run");
     for key in [qk(b"queue-row"), sk(b"stream-row")] {
         assert_eq!(r.db.get(&key).await.unwrap().as_deref(), Some(&b"v"[..]));
     }
@@ -322,7 +285,7 @@ fn native_queue_collection_splits_a_pass_that_would_reach_the_l0_line() {
 }
 
 /// A split pass: the L0s into a fresh run, then every run into the last
-/// run; the queue tree ends in one run and every source is superseded.
+/// run; the log ends in one run and every source is superseded.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn native_queue_collection_split_pass_ends_in_the_last_run() {
     let r = rig(
@@ -331,7 +294,8 @@ async fn native_queue_collection_split_pass_ends_in_the_last_run() {
     )
     .await;
     let admin = r.engine.queue_admin();
-    flushed_into_run(&r, &admin, &qk(b"a"), 0).await;
+    // Run 4: the split's fresh run must lie above it (5), not just above 0.
+    flushed_into_run(&r, &admin, &qk(b"a"), 4).await;
     r.db.put(qk(b"b"), b"v").await.unwrap();
     r.db.put(sk(b"s"), b"v").await.unwrap();
     let memtable = slatedb::config::FlushOptions {
@@ -339,14 +303,14 @@ async fn native_queue_collection_split_pass_ends_in_the_last_run() {
     };
     r.db.flush_with_options(memtable).await.unwrap();
     // One byte a second: no single pass fits.
-    let pass = tokio::time::timeout(STEP_WITHIN, r.engine.compact_flushed_queue_tree(1));
+    let pass = tokio::time::timeout(STEP_WITHIN, r.engine.compact_flushed_shard_log(1));
     let report = pass.await.unwrap().unwrap();
     assert!(report.split);
     assert_eq!((report.steps, report.l0s), (2, 1));
     let m = manifest(&r).await;
-    assert!(queue_l0(&m).is_empty());
-    let runs: Vec<u32> = queue_runs(&m).iter().map(|run| run.id).collect();
-    assert_eq!(runs, [0], "into the last run");
+    assert!(log_l0(&m).is_empty());
+    let runs: Vec<u32> = log_runs(&m).iter().map(|run| run.id).collect();
+    assert_eq!(runs, [4], "into the last run");
     for key in [qk(b"a"), qk(b"b"), sk(b"s")] {
         assert_eq!(r.db.get(&key).await.unwrap().as_deref(), Some(&b"v"[..]));
     }
@@ -439,8 +403,8 @@ async fn native_queue_collection_leaves_debt_that_is_not_due_and_compacts_nothin
     assert_eq!(pass.await, Ok(Ok(())), "a pass that is not due returns");
     assert_eq!(stored(&r, [5; 16]).await, before, "the debt is untouched");
     let m = manifest(&r).await;
-    assert!(queue_l0(&m).is_empty(), "nothing was flushed");
-    assert!(queue_runs(&m).is_empty(), "nothing was compacted");
+    assert!(log_l0(&m).is_empty(), "nothing was flushed");
+    assert!(log_runs(&m).is_empty(), "nothing was compacted");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
@@ -469,12 +433,12 @@ async fn native_queue_collection_of_due_debt_compacts_the_log_and_clears_the_deb
     let roster = r.db.get(keys::roster(&hash)).await.unwrap();
     assert!(roster.is_none(), "nothing pending: off the roster");
     let m = manifest(&r).await;
-    assert!(queue_l0(&m).is_empty(), "the flushed L0 SST was compacted");
-    assert_eq!(queue_runs(&m).len(), 1, "into one sorted run");
+    assert!(log_l0(&m).is_empty(), "the flushed L0 SST was compacted");
+    assert_eq!(log_runs(&m).len(), 1, "into one sorted run");
 }
 
 fn missing_run() -> CompactionSpec {
-    queue_spec(vec![SourceId::SortedRun(4_242)], 4_242)
+    log_spec(vec![SourceId::SortedRun(4_242)], 4_242)
 }
 
 /// An in-memory store whose reads of the held tables wait until the test
@@ -576,12 +540,12 @@ async fn flushed_into_run(r: &Rig, admin: &slatedb::admin::Admin, key: &[u8], ru
         flush_type: slatedb::config::FlushType::MemTable,
     };
     r.db.flush_with_options(memtable).await.unwrap();
-    let l0 = queue_l0(&r.db.manifest())
+    let l0 = log_l0(&r.db.manifest())
         .iter()
         .map(|v| v.id)
         .collect::<Vec<_>>();
     assert_eq!(l0.len(), 1, "one flushed L0 table");
-    let spec = queue_spec(vec![SourceId::SstView(l0[0])], run);
+    let spec = log_spec(vec![SourceId::SstView(l0[0])], run);
     let compaction = submit(admin, &spec).await;
     let done = ShardEngine::await_compaction(admin, &compaction);
     assert_eq!(tokio::time::timeout(STEP_WITHIN, done).await, Ok(true));
@@ -605,7 +569,7 @@ async fn regular_job_into_the_last_run(
 ) -> slatedb::compactor::Compaction {
     flushed_into_run(r, admin, &qk(b"a"), 0).await;
     flushed_into_run(r, admin, &qk(b"b"), 1).await;
-    let runs = queue_runs(&manifest(r).await);
+    let runs = log_runs(&manifest(r).await);
     assert_eq!(runs.iter().map(|run| run.id).collect::<Vec<_>>(), [1, 0]);
     let tables = runs.iter().flat_map(|run| run.sst_views().iter());
     store.hold(
@@ -614,7 +578,7 @@ async fn regular_job_into_the_last_run(
             .collect(),
     );
     let both = vec![SourceId::SortedRun(1), SourceId::SortedRun(0)];
-    let regular = submit(admin, &queue_spec(both, 0)).await;
+    let regular = submit(admin, &log_spec(both, 0)).await;
     let running = async {
         while admin
             .read_compaction(regular.id(), None)
@@ -656,13 +620,13 @@ async fn native_queue_collection_waits_out_a_compaction_into_the_last_run_before
         assert_eq!(live_compactions(&admin).await, [regular.id().to_string()]);
         store.release();
     };
-    let both = futures_util::future::join(r.engine.compact_queue_tree(), meanwhile);
+    let both = futures_util::future::join(r.engine.compact_shard_log(), meanwhile);
     let (pass, ()) = tokio::time::timeout(STEP_WITHIN, both).await.unwrap();
     let superseded = pass.unwrap().superseded;
     assert!(!superseded.is_empty(), "the pass names what it superseded");
     let m = manifest(&r).await;
-    assert!(queue_l0(&m).is_empty(), "every L0 table was compacted");
-    let runs: Vec<u32> = queue_runs(&m).iter().map(|run| run.id).collect();
+    assert!(log_l0(&m).is_empty(), "every L0 table was compacted");
+    let runs: Vec<u32> = log_runs(&m).iter().map(|run| run.id).collect();
     assert_eq!(runs, [0], "into the last run");
     assert!(live_compactions(&admin).await.is_empty());
     for key in [qk(b"a"), qk(b"b"), qk(b"c"), qk(b"probe")] {
@@ -689,7 +653,7 @@ async fn native_queue_collection_spec_beside_a_live_compaction_is_refused_by_the
         flush_type: slatedb::config::FlushType::MemTable,
     };
     r.db.flush_with_options(memtable).await.unwrap();
-    let l0 = queue_l0(&r.db.manifest())
+    let l0 = log_l0(&r.db.manifest())
         .iter()
         .map(|v| v.id)
         .collect::<Vec<_>>();
@@ -699,7 +663,7 @@ async fn native_queue_collection_spec_beside_a_live_compaction_is_refused_by_the
         SourceId::SortedRun(1),
         SourceId::SortedRun(0),
     ];
-    let refused = submit(&admin, &queue_spec(everything, 0)).await;
+    let refused = submit(&admin, &log_spec(everything, 0)).await;
     let outcome = ShardEngine::await_compaction(&admin, &refused);
     let outcome = tokio::time::timeout(STEP_WITHIN, outcome).await;
     assert_eq!(outcome, Ok(false), "the compactor fails the spec");
@@ -711,7 +675,7 @@ async fn native_queue_collection_spec_beside_a_live_compaction_is_refused_by_the
     assert_eq!(tokio::time::timeout(STEP_WITHIN, done).await, Ok(true));
 }
 
-/// Flush one row into the queue tree and one into the stream tree.
+/// Flush one queue row and one stream row.
 async fn flush_both(r: &Rig, i: u32) {
     r.db.put(qk(&i.to_be_bytes()), b"v").await.unwrap();
     r.db.put(sk(&i.to_be_bytes()), b"v").await.unwrap();
@@ -721,65 +685,32 @@ async fn flush_both(r: &Rig, i: u32) {
     r.db.flush_with_options(memtable).await.unwrap();
 }
 
-/// The scheduler never compacts the queue tree (it does compact the
-/// stream tree), and the collector merges the queue tree's L0s once they
-/// reach the trigger (16).
+/// Layout 7: the size-tiered scheduler compacts queue rows with stream
+/// rows (no queue tree it leaves alone, no queue L0 merger), so the log's
+/// L0s become a run without a collection pass.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
-async fn native_queue_collection_merges_queue_l0s_at_the_trigger_and_the_scheduler_leaves_them() {
-    // The shard log's L0 line (32, `config::validation`): SlateDB's
-    // default would stall the queue tree's ninth flush below the trigger.
+async fn native_queue_collection_leaves_routine_compaction_to_the_scheduler() {
     let settings = slatedb::config::Settings {
         l0_max_ssts: 32,
         l0_max_ssts_per_key: 32,
         ..compactor_every(Duration::from_millis(100))
     };
     let r = rig("t/nqc-merge", Some(settings)).await;
-    for i in 0..15 {
+    for i in 0..8 {
         flush_both(&r, i).await;
     }
-    let stream_compacted = || {
-        let m = r.db.manifest();
-        let stream = m
-            .segment(&[crate::keyspace::STREAM])
-            .expect("a stream tree");
-        !stream.compacted().is_empty()
-    };
-    let stream_compacted = async {
-        while !stream_compacted() {
+    let compacted = async {
+        while log_runs(&r.db.manifest()).is_empty() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     };
-    tokio::time::timeout(STEP_WITHIN, stream_compacted)
+    tokio::time::timeout(STEP_WITHIN, compacted)
         .await
-        .expect("the scheduler compacts the stream tree");
-    // Two merger ticks after the stream tree compacted: below the trigger
-    // the queue tree's L0s are never merged, by the scheduler or the merger.
-    tokio::time::sleep(Duration::from_secs(4)).await;
-    let m = r.db.manifest();
-    assert_eq!(
-        queue_l0(&m).len(),
-        15,
-        "below the trigger nothing merges the queue L0s"
-    );
-    assert!(
-        queue_runs(&m).is_empty(),
-        "the scheduler wrote no queue-tree run"
-    );
-    flush_both(&r, 15).await;
-    let merged_now = || {
-        let m = r.db.manifest();
-        queue_l0(&m).is_empty() && !queue_runs(&m).is_empty()
-    };
-    let merged = async {
-        while !merged_now() {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+        .expect("the scheduler compacts the log's L0s");
+    assert!(log_l0(&r.db.manifest()).len() < 8, "L0s left the log");
+    for i in 0..8u32 {
+        for key in [qk(&i.to_be_bytes()), sk(&i.to_be_bytes())] {
+            assert_eq!(r.db.get(&key).await.unwrap().as_deref(), Some(&b"v"[..]));
         }
-    };
-    tokio::time::timeout(STEP_WITHIN, merged)
-        .await
-        .expect("the L0s merge");
-    for i in 0..16u32 {
-        let v = r.db.get(qk(&i.to_be_bytes())).await.unwrap();
-        assert_eq!(v.as_deref(), Some(&b"v"[..]));
     }
 }

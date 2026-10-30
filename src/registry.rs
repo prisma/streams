@@ -186,9 +186,9 @@ pub(crate) struct PersistedDescriptor {
 }
 
 /// The storage-layout generation this binary writes and the ONLY one it
-/// reads; no layout bridges (pre-launch hard cutover). Layout 6 tags every
-/// shard-log key with its segment (`crate::keyspace`): layout 5 is refused.
-pub(crate) const LAYOUT_VERSION: u32 = 6;
+/// reads; no layout bridges (pre-launch hard cutover). Layout 7 keeps the
+/// tagged keys in one tree (`crate::keyspace`, #233); layout 6 is refused.
+pub(crate) const LAYOUT_VERSION: u32 = 7;
 
 /// Seal-in-progress marker (audit P0). Present = Sealing: normal
 /// appends are refused, only the matching seal operation may write its

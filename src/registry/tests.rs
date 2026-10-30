@@ -244,13 +244,13 @@ async fn layout_gate_refuses_foreign_namespaces() {
         err.to_string().contains("unsupported_storage_layout"),
         "wrong refusal: {err}"
     );
-    // A complete layout 5 descriptor (the unsegmented shard log, the layout
-    // before 6) is refused with the operator's diagnostic.
+    // A complete layout 6 descriptor (the segmented shard log, the layout
+    // before 7) is refused with the operator's diagnostic.
     let mut framed = desc("framed", "00000000000000000000000000000002", false);
-    framed.layout_version = 5;
+    framed.layout_version = 6;
     put_raw(&store, "framed", &serde_json::to_vec(&framed).unwrap()).await;
-    let err = reg.get(&ts("framed")).await.expect_err("layout 5 refused");
-    let refusal = "'framed' has layout 5 (this binary reads only 6)";
+    let err = reg.get(&ts("framed")).await.expect_err("layout 6 refused");
+    let refusal = "'framed' has layout 6 (this binary reads only 7)";
     assert!(err.to_string().contains(refusal), "wrong refusal: {err}");
     // A current-layout descriptor round-trips.
     let d = desc("fresh", "00000000000000000000000000000001", false);

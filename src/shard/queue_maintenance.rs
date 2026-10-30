@@ -1,19 +1,17 @@
 //! The shard's native-queue maintenance (docs/QUEUES-DESIGN.md §6.8, §8.2):
 //! a sweeper that serves every queue whose roster deadline has come, and a
 //! collector that turns deletion debt into physically freed storage with
-//! an explicit compaction of the queue segment's tree (layout 6: every
-//! queue row lives under `'Q' ‖ gen`, `crate::keyspace`) — every L0 file
-//! and sorted run of that tree into its last run, so tombstones drop — then
-//! waits for garbage collection to delete what the compaction superseded
-//! before it clears the debt it covered. Stream rows live in their own
-//! tree, which the collector never names, reads or rewrites.
+//! an explicit compaction of the shard log (layout 7: queue rows under
+//! `'Q' ‖ gen` and stream rows under `'S'` share one tree, `crate::keyspace`)
+//! — every L0 file and sorted run into the last run, so tombstones drop —
+//! then waits for garbage collection to delete what the compaction
+//! superseded before it clears the debt it covered.
 //!
-//! A pass that names the tree's L0s holds the tree's L0 lane (SlateDB runs
-//! one L0 compaction per tree at a time), and a flush that touches a tree
-//! at `l0_max_ssts` stalls every write of the shard (DESIGN-6A F5). A pass
-//! whose rewrite would let the L0s arriving meanwhile reach the line is
-//! split: the L0s into a fresh run first, then the runs into the last run,
-//! which holds no L0 lane.
+//! A pass that names the L0s holds the log's L0 lane (SlateDB runs one L0
+//! compaction at a time), and a flush into a log at `l0_max_ssts` stalls
+//! every write of the shard (DESIGN-6A F5). A pass whose rewrite would let
+//! the L0s arriving meanwhile reach the line is split: the L0s into a fresh
+//! run first, then the runs into the last run, which holds no L0 lane.
 use super::*;
 use crate::native_queue::rows::StateRow;
 use crate::native_queue::{NqOp, keys};
@@ -24,18 +22,11 @@ const SWEEP_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 const COLLECT_TICK: std::time::Duration = std::time::Duration::from_secs(30);
 /// Debt that starts a pass at once (efficient under load).
 const FORCE_BYTES: u64 = 256 << 20;
-/// The trigger floor (§8.2, Fable rev-7 H1): below it the age trigger
-/// waits for `MAX_INTERVAL_MS`.
-const MIN_PASS_BYTES: u64 = 16 << 20;
-/// Launch age: how old the oldest debt may get before a pass starts.
-const LAUNCH_AGE_MS: i64 = 15 * 60_000;
-/// The longest any debt waits for a pass, however small (Fable code
-/// review H5: a pass rewrites every run of the shard, so small debt waits
-/// for a day rather than costing a full rewrite every two hours).
+/// The longest any debt waits for a pass, however small: a pass rewrites
+/// the whole shard log, stream rows included (layout 7), so small debt
+/// waits for a day rather than costing a whole-log rewrite every hour
+/// (QUEUE-TREE-DECISION §2; QUEUES-DESIGN §5.7's bound).
 const MAX_INTERVAL_MS: i64 = 24 * crate::native_queue::HOUR_MS;
-/// Below the size trigger, the age trigger also needs debt worth this
-/// fraction (1/RELATIVE_DENOM) of the shard's compacted bytes.
-const RELATIVE_DENOM: u64 = 20;
 /// How long a pass waits for the compactor to hold no live job before it
 /// defers to the next tick, and how often it looks.
 const QUIET_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
@@ -45,15 +36,14 @@ const COMPACTION_WAIT: std::time::Duration = std::time::Duration::from_secs(600)
 const GC_WAIT: std::time::Duration = std::time::Duration::from_mins(45);
 /// Roster entries read per tick.
 const ROSTER_PAGE: usize = 4_096;
-/// The queue segment's tree prefix (generation 0).
-const QUEUE_TREE: [u8; crate::keyspace::QUEUE_PREFIX_LEN] = crate::keyspace::QUEUE;
-/// The shard log's per-tree L0 line (`l0_max_ssts`, the CLI default the
+/// The shard log's L0 line (`l0_max_ssts`, the CLI default the
 /// shard log runs with): a flush into a tree holding this many L0s stalls.
 const L0_LINE: usize = 32;
 /// L0 slots a pass leaves free below the line.
 const L0_MARGIN: usize = 4;
 /// The shard's memtable flush cadence (the engine's flush ticker): one L0
-/// per touched tree arrives this often while a pass runs.
+/// arrives this often while a pass runs (at most: the seal cadence flushes
+/// less often).
 const FLUSH_SECS: u64 = 5;
 /// The rewrite rate a pass is planned with before one has been measured.
 const INITIAL_RATE_BPS: u64 = 30 << 20;
@@ -84,33 +74,30 @@ struct DueDebt {
 }
 
 /// Whether captured debt calls for a pass (§8.2 trigger): `total` bytes
-/// whose oldest was recorded at `oldest`, on a shard log of `compacted`
-/// compacted bytes, at `now`.
-fn pass_due(total: u64, oldest: Option<i64>, now: i64, compacted: u64) -> bool {
-    let floor = MIN_PASS_BYTES.max(compacted / RELATIVE_DENOM);
-    oldest.is_some_and(|oldest| {
-        total >= FORCE_BYTES
-            || (total >= floor && now - oldest >= LAUNCH_AGE_MS)
-            || now - oldest >= MAX_INTERVAL_MS
-    })
+/// whose oldest was recorded at `oldest`, at `now`.
+fn pass_due(total: u64, oldest: Option<i64>, now: i64) -> bool {
+    oldest.is_some_and(|oldest| total >= FORCE_BYTES || now - oldest >= MAX_INTERVAL_MS)
 }
 
-/// Whether the compactor holds no live job in the queue tree. A database
-/// whose compactor has not yet written its compactions file is not quiet:
-/// nothing would take a submission. Jobs in other trees never conflict with
-/// a queue pass (their sources, destinations and L0 lanes are disjoint), so
-/// the stream tree's steady compactions do not starve it.
+/// Whether the compactor holds no live job. A database whose compactor has
+/// not yet written its compactions file is not quiet: nothing would take a
+/// submission.
 fn quiet(view: &slatedb::compactor::CompactorStateView) -> bool {
-    view.compactions().is_some_and(|file| {
-        !file
-            .recent_compactions()
-            .any(|c| c.active() && c.spec().segment().as_ref() == QUEUE_TREE)
-    })
+    view.compactions()
+        .is_some_and(|file| !file.recent_compactions().any(|c| c.active()))
 }
 
-/// The queue tree of `manifest`: `None` until a flush wrote a queue row.
-fn queue_tree(manifest: &slatedb::VersionedManifest) -> Option<&slatedb::manifest::Segment> {
-    manifest.segment(&QUEUE_TREE)
+/// The shard log's one tree: its L0 views and sorted runs.
+struct Tree<'a> {
+    l0: &'a std::collections::VecDeque<slatedb::manifest::SsTableView>,
+    runs: &'a [slatedb::manifest::SortedRun],
+}
+
+fn shard_tree(manifest: &slatedb::VersionedManifest) -> Tree<'_> {
+    Tree {
+        l0: manifest.l0(),
+        runs: manifest.compacted(),
+    }
 }
 
 /// The SST ids a set of L0 views and runs supersede.
@@ -128,41 +115,21 @@ fn superseded_ids<'a>(
     ids
 }
 
-/// A tree's L0 views as (view id, SST id).
-fn l0_views(tree: &slatedb::manifest::Segment) -> Vec<(String, String)> {
-    tree.l0()
-        .iter()
-        .map(|v| (v.id.to_string(), v.sst.id.unwrap_compacted_id().to_string()))
-        .collect()
-}
-
-/// One compaction of a pass over the queue tree.
+/// One compaction of a pass over the shard log.
 struct Step {
     sources: Vec<slatedb::compactor::SourceId>,
     destination: u32,
     superseded: Vec<String>,
-    /// Each L0 view it names: (view id, SST id).
-    l0_views: Vec<(String, String)>,
     /// The bytes it reads (and at most rewrites).
     bytes: u64,
     l0s: usize,
     runs: usize,
 }
 
-/// A fresh sorted-run id: above every run of every tree and every live
-/// compaction's destination (run ids are global across segments, RFC 0024).
+/// A fresh sorted-run id: above every run and every live compaction's
+/// destination.
 fn fresh_run_id(view: &slatedb::compactor::CompactorStateView) -> u32 {
-    let manifest = view.manifest();
-    let committed = manifest
-        .compacted()
-        .iter()
-        .chain(
-            manifest
-                .segments()
-                .iter()
-                .flat_map(|s| s.compacted().iter()),
-        )
-        .map(|run| run.id);
+    let committed = view.manifest().compacted().iter().map(|run| run.id);
     let live = view.compactions().into_iter().flat_map(|file| {
         file.recent_compactions()
             .filter(|c| c.active())
@@ -175,85 +142,74 @@ fn fresh_run_id(view: &slatedb::compactor::CompactorStateView) -> u32 {
         .map_or(0, |id| id.saturating_add(1))
 }
 
-/// The coverage rule's sources in the queue tree: every L0 view in tree
+/// The coverage rule's sources in the shard log: every L0 view in tree
 /// order, then every sorted run, into the last run (a fresh run when the
-/// tree has none, which is then its last).
+/// log has none, which is then its last).
 fn everything(view: &slatedb::compactor::CompactorStateView) -> Option<Step> {
     use slatedb::compactor::SourceId;
-    let tree = queue_tree(view.manifest())?;
-    let mut sources: Vec<SourceId> = tree.l0().iter().map(|v| SourceId::SstView(v.id)).collect();
-    sources.extend(
-        tree.compacted()
-            .iter()
-            .map(|run| SourceId::SortedRun(run.id)),
-    );
+    let tree = shard_tree(view.manifest());
+    let mut sources: Vec<SourceId> = tree.l0.iter().map(|v| SourceId::SstView(v.id)).collect();
+    sources.extend(tree.runs.iter().map(|run| SourceId::SortedRun(run.id)));
     if sources.is_empty() {
         return None;
     }
-    let destination = match tree.compacted().last() {
+    let destination = match tree.runs.last() {
         Some(run) => run.id,
         None => fresh_run_id(view),
     };
     Some(Step {
         sources,
         destination,
-        superseded: superseded_ids(tree.l0().iter(), tree.compacted()),
-        l0_views: l0_views(tree),
-        bytes: tree.l0().iter().map(|v| v.estimate_size()).sum::<u64>()
-            + tree
-                .compacted()
-                .iter()
-                .map(|r| r.estimate_size())
-                .sum::<u64>(),
-        l0s: tree.l0().len(),
-        runs: tree.compacted().len(),
+        superseded: superseded_ids(tree.l0.iter(), tree.runs),
+        bytes: tree.l0.iter().map(|v| v.estimate_size()).sum::<u64>()
+            + tree.runs.iter().map(|r| r.estimate_size()).sum::<u64>(),
+        l0s: tree.l0.len(),
+        runs: tree.runs.len(),
     })
 }
 
-/// The first half of a split pass: every L0 view of the queue tree into a
+/// The first half of a split pass: every L0 view of the shard log into a
 /// fresh run.
 fn l0s_only(view: &slatedb::compactor::CompactorStateView) -> Option<Step> {
     use slatedb::compactor::SourceId;
-    let tree = queue_tree(view.manifest())?;
-    if tree.l0().is_empty() {
+    let tree = shard_tree(view.manifest());
+    if tree.l0.is_empty() {
         return None;
     }
     Some(Step {
-        sources: tree.l0().iter().map(|v| SourceId::SstView(v.id)).collect(),
+        sources: tree.l0.iter().map(|v| SourceId::SstView(v.id)).collect(),
         destination: fresh_run_id(view),
-        superseded: superseded_ids(tree.l0().iter(), &[]),
-        l0_views: l0_views(tree),
-        bytes: tree.l0().iter().map(|v| v.estimate_size()).sum(),
-        l0s: tree.l0().len(),
+        superseded: superseded_ids(tree.l0.iter(), &[]),
+        bytes: tree.l0.iter().map(|v| v.estimate_size()).sum(),
+        l0s: tree.l0.len(),
         runs: 0,
     })
 }
 
-/// The second half of a split pass: every sorted run of the queue tree into
+/// The second half of a split pass: every sorted run of the shard log into
 /// its last run. It names no L0, so the scheduler keeps compacting the
-/// tree's new L0s beside it.
+/// log's new L0s beside it.
 fn runs_only(view: &slatedb::compactor::CompactorStateView) -> Option<Step> {
     use slatedb::compactor::SourceId;
-    let tree = queue_tree(view.manifest())?;
-    let last = tree.compacted().last()?;
+    let tree = shard_tree(view.manifest());
+    let last = tree.runs.last()?;
     Some(Step {
         sources: tree
-            .compacted()
+            .runs
             .iter()
             .map(|r| SourceId::SortedRun(r.id))
             .collect(),
         destination: last.id,
-        superseded: superseded_ids(std::iter::empty(), tree.compacted()),
-        l0_views: Vec::new(),
-        bytes: tree.compacted().iter().map(|r| r.estimate_size()).sum(),
+        superseded: superseded_ids(std::iter::empty(), tree.runs),
+        bytes: tree.runs.iter().map(|r| r.estimate_size()).sum(),
         l0s: 0,
-        runs: tree.compacted().len(),
+        runs: tree.runs.len(),
     })
 }
 
 /// Whether one pass naming `l0s` L0s and reading `bytes` at `rate_bps`
-/// keeps the queue tree under the L0 line: the L0s it names stay in the
-/// tree until it commits, and one more arrives every flush meanwhile.
+/// keeps the shard log under the L0 line: the L0s it names stay in the
+/// log until it commits, and one more arrives every flush meanwhile.
 fn single_pass_fits(l0s: usize, bytes: u64, rate_bps: u64) -> bool {
     if rate_bps == 0 {
         return false;
@@ -267,7 +223,6 @@ fn single_pass_fits(l0s: usize, bytes: u64, rate_bps: u64) -> bool {
 #[derive(Default)]
 struct PassReport {
     superseded: Vec<String>,
-    l0_views: Vec<(String, String)>,
     rewritten_bytes: u64,
     l0s: usize,
     runs: usize,
@@ -275,7 +230,6 @@ struct PassReport {
     split: bool,
 }
 
-mod l0_merge;
 #[cfg(test)]
 mod native_queue_collector_tests;
 
@@ -286,10 +240,6 @@ impl ShardEngine {
         let collector = self.clone();
         self.spawn_required("queue-collector", async move {
             collector.collector_loop().await
-        });
-        let merger = self.clone();
-        self.spawn_required("queue-l0-merger", async move {
-            merger.queue_l0_merger_loop().await
         });
         let sealer = self.clone();
         self.spawn_required("sealer", async move { sealer.seal_loop().await });
@@ -430,12 +380,12 @@ impl ShardEngine {
             return Ok(());
         };
         let started = std::time::Instant::now();
-        let pass = self.compact_queue_tree().await?;
+        let pass = self.compact_shard_log().await?;
         let compacted = started.elapsed();
         Self::note_rate(pass.rewritten_bytes, compacted);
         let compacted_secs = compacted.as_secs_f64();
         let superseded = pass.superseded;
-        self.await_collection(&superseded, &pass.l0_views).await?;
+        self.await_collection(&superseded).await?;
         let (captured, total) = (due.captured, due.total);
         for c in &captured {
             let op = NqOp::ClearDebt {
@@ -472,7 +422,7 @@ impl ShardEngine {
         let total: u64 = captured.iter().map(|c| c.0.bytes).sum();
         let oldest = captured.iter().map(|c| c.1).min();
         let at = now_ms();
-        if !pass_due(total, oldest, at, self.compacted_bytes()) {
+        if !pass_due(total, oldest, at) {
             return Ok(None);
         }
         let captured = captured.into_iter().map(|(c, _)| c).collect();
@@ -511,16 +461,6 @@ impl ShardEngine {
         Ok(out)
     }
 
-    /// The queue tree's compacted bytes, from the shard log's manifest (the
-    /// stream tree is not the collector's to rewrite, so its bytes do not
-    /// raise the pass floor).
-    fn compacted_bytes(&self) -> u64 {
-        let manifest = self.db.manifest();
-        queue_tree(&manifest).map_or(0, |tree| {
-            tree.compacted().iter().map(|run| run.estimate_size()).sum()
-        })
-    }
-
     /// Fold a pass's measured rewrite rate into the running mean; a pass
     /// under 64 MiB measures its fixed costs, not its rate.
     fn note_rate(bytes: u64, elapsed: std::time::Duration) {
@@ -543,28 +483,28 @@ impl ShardEngine {
     }
 
     /// Steps 4-5 of the coverage rule: flush the memtable so every captured
-    /// deletion is in an SST, wait until the compactor holds no live job in
-    /// the queue tree, then compact every L0 view and every sorted run of
-    /// that tree into its last run — in one compaction when the L0s arriving
-    /// meanwhile keep the tree under the L0 line, else the L0s into a fresh
-    /// run first and then the runs into the last run. Returns the superseded
+    /// deletion is in an SST, wait until the compactor holds no live job,
+    /// then compact every L0 view and every sorted run of the shard log into
+    /// its last run — in one compaction when the L0s arriving meanwhile keep
+    /// the log under the L0 line, else the L0s into a fresh run first and
+    /// then the runs into the last run. Returns the superseded
     /// SST ids and what was rewritten. A pass whose compactor stays busy,
     /// whose spec is refused, or whose compaction fails or outlasts its wait
     /// returns an error, and the next tick starts over: a pass never submits
-    /// beside a live job in its tree, its own earlier one included.
-    async fn compact_queue_tree(&self) -> Result<PassReport, String> {
+    /// beside a live job, its own earlier one included.
+    async fn compact_shard_log(&self) -> Result<PassReport, String> {
         use std::sync::atomic::Ordering;
         self.flush_memtable().await?;
-        self.compact_flushed_queue_tree(PASS_RATE_BPS.load(Ordering::Relaxed))
+        self.compact_flushed_shard_log(PASS_RATE_BPS.load(Ordering::Relaxed))
             .await
     }
 
     /// The pass after its flush, planned at `rate` bytes per second.
-    async fn compact_flushed_queue_tree(&self, rate: u64) -> Result<PassReport, String> {
+    async fn compact_flushed_shard_log(&self, rate: u64) -> Result<PassReport, String> {
         let admin = self.queue_admin();
         let view = Self::await_quiet(&admin)
             .await
-            .ok_or("the compactor held a live job in the queue tree throughout the wait")?;
+            .ok_or("the compactor held a live job throughout the wait")?;
         let mut report = PassReport::default();
         let Some(whole) = everything(&view) else {
             return Ok(report);
@@ -579,7 +519,7 @@ impl ShardEngine {
         }
         let view = Self::await_quiet(&admin)
             .await
-            .ok_or("the compactor held a live job in the queue tree throughout the wait")?;
+            .ok_or("the compactor held a live job throughout the wait")?;
         if let Some(step) = runs_only(&view) {
             self.run_step(&admin, step, &mut report).await?;
         }
@@ -593,11 +533,7 @@ impl ShardEngine {
         step: Step,
         report: &mut PassReport,
     ) -> Result<(), String> {
-        let spec = slatedb::compactor::CompactionSpec::for_segment(
-            bytes::Bytes::from_static(&QUEUE_TREE),
-            step.sources,
-            step.destination,
-        );
+        let spec = slatedb::compactor::CompactionSpec::new(step.sources, step.destination);
         let compaction = admin
             .submit_compaction(spec)
             .await
@@ -606,7 +542,6 @@ impl ShardEngine {
             return Err("the collection compaction did not complete".to_owned());
         }
         report.superseded.extend(step.superseded);
-        report.l0_views.extend(step.l0_views);
         report.rewritten_bytes += step.bytes;
         report.l0s += step.l0s;
         report.runs += step.runs;
@@ -699,32 +634,17 @@ impl ShardEngine {
     }
 
     /// Stage 4: every superseded SST is gone from the bucket, except the
-    /// one the manifest names as the queue tree's last compacted L0 (D22's
-    /// residual: GC keeps the newest compacted L0 until a newer L0 exists).
-    /// A segmented manifest records that L0 by its view id only, so the
-    /// pass's `l0_views` map it to its SST.
-    async fn await_collection(
-        &self,
-        superseded: &[String],
-        l0_views: &[(String, String)],
-    ) -> Result<(), String> {
+    /// one the manifest names as the last compacted L0 (D22's residual: GC
+    /// keeps the newest compacted L0 until a newer L0 exists). An unsegmented
+    /// manifest records that L0's SST id itself (layout 7).
+    async fn await_collection(&self, superseded: &[String]) -> Result<(), String> {
         let deadline = std::time::Instant::now() + GC_WAIT;
         loop {
-            let tree = self.queue_admin().read_manifest(None).await.ok().flatten();
-            let tree = tree.as_ref().and_then(queue_tree);
-            let by_sst = tree
-                .and_then(|t| t.last_compacted_l0_sst_id())
+            let manifest = self.queue_admin().read_manifest(None).await.ok().flatten();
+            let residual = manifest
+                .as_ref()
+                .and_then(|m| m.last_compacted_l0_sst_id())
                 .map(|u| u.to_string());
-            let by_view = tree
-                .and_then(|t| t.last_compacted_l0_sst_view_id())
-                .and_then(|view| {
-                    let view = view.to_string();
-                    l0_views
-                        .iter()
-                        .find(|(v, _)| *v == view)
-                        .map(|(_, sst)| sst.clone())
-                });
-            let residual = by_sst.or(by_view);
             let left = self.superseded_left(superseded, residual.as_ref()).await;
             if left == 0 {
                 return Ok(());
