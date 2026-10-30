@@ -21,7 +21,10 @@
 //!    remainder (every page above the boundary at that moment, REVIEW-6A
 //!    F1) and stages the seal's `'K'` and `'R'` rows, in one group;
 //! 7. (a) one awaited WAL flush and a wait until durable dispatch published
-//!    each sealed stream's new boundary; (b) one forced memtable flush.
+//!    each sealed stream's new boundary; (b) every `seals_per_flush` seals
+//!    (or at the memtable trigger, a deadline, or a requested seal) one
+//!    forced memtable flush: a later seal's remainder shadows the earlier
+//!    seals' page operands, so that flush drops them all.
 //!
 //! Step 7a precedes **every** forced memtable flush (REVIEW-6A F2): the
 //! deadlines', the idle release's and the queue collector's too. SlateDB's
@@ -35,12 +38,13 @@
 //! The loop (`seal_loop`) rebuilds the directory and loads every unsealed
 //! stream at open, then evaluates the triggers every `tick` and when a
 //! durable group wakes it. A trigger starts a seal; a deadline flushes the
-//! memtable whatever a seal does (the pending rows' operands then reach the
-//! L0, and the next seal's remainder put shadows them). A failed seal
+//! memtable, seal or no seal (the pending rows' operands then reach the
+//! L0, and the next seal's remainder put shadows them), waiting for a seal
+//! in flight, whose own flush restarts the count, until twice the deadline. A failed seal
 //! blocks the next for a backoff that doubles per failure.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use slatedb::config::{FlushOptions, FlushType};
@@ -90,19 +94,28 @@ pub(crate) use steps::{SealAdvance, SealBatch, SealCommit, SealError, SealReport
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SealSettings {
     /// Seal at this L0 estimate of the memtable's writes since the last
-    /// forced flush (SlateDB's own units, `spill::estimate`): below the
-    /// 8 MiB at which SlateDB freezes the memtable by itself.
+    /// forced flush (SlateDB's own units, `spill::estimate`):
+    /// `memtable_trigger` of the `L0_SST_SIZE_BYTES` at which SlateDB
+    /// freezes the memtable by itself.
     pub(crate) memtable_bytes: u64,
     /// Seal at this many unsealed page bytes on the shard: the pages a
     /// seal takes are held in memory until it does.
     pub(crate) unsealed_bytes: u64,
-    /// Seal at this many WAL objects since the last forced flush.
+    /// Seal at this many WAL objects since the last seal started.
     pub(crate) wal_objects_seal: u64,
-    /// Flush the memtable at this many, seal or no seal (the replay bound).
+    /// Flush the memtable after this many seals, or sooner at the memtable
+    /// trigger, a deadline or a requested seal: each later seal's remainder
+    /// put shadows the earlier seals' page operands, which the flush then
+    /// drops instead of writing them to an L0 (S-gap step 2, k = 3).
+    pub(crate) seals_per_flush: u64,
+    /// Flush the memtable at this many, seal or no seal (the replay
+    /// bound): a seal in flight is waited for (its own flush restarts the
+    /// count) until twice this many.
     pub(crate) wal_objects_deadline: u64,
     /// Seal when the shard's oldest unsealed page is this old.
     pub(crate) age_seal: Duration,
-    /// Flush the memtable when it has held an unsealed page this long.
+    /// Flush the memtable when it has held an unsealed page this long (a
+    /// seal in flight is waited for until twice this long).
     pub(crate) age_deadline: Duration,
     /// How often the triggers are evaluated besides a durable group's wake.
     pub(crate) tick: Duration,
@@ -147,10 +160,11 @@ pub(crate) const TEST_DISPATCH_STALL: Duration = Duration::from_secs(1);
 impl Default for SealSettings {
     fn default() -> Self {
         Self {
-            memtable_bytes: 6 << 20,
+            memtable_bytes: memtable_trigger(8 << 20),
             unsealed_bytes: 24 << 20,
-            wal_objects_seal: 48,
-            wal_objects_deadline: 64,
+            wal_objects_seal: 42,
+            seals_per_flush: 3,
+            wal_objects_deadline: 128,
             age_seal: Duration::from_secs(45),
             age_deadline: Duration::from_secs(60),
             tick: Duration::from_millis(250),
@@ -170,6 +184,14 @@ impl Default for SealSettings {
             dispatch_stall: TEST_DISPATCH_STALL,
         }
     }
+}
+
+/// The sealer's memtable trigger for a shard log whose SlateDB freezes its
+/// memtable at `l0_sst_size_bytes`: three quarters of it, so a seal starts
+/// before SlateDB's own freeze would carry the unsealed pages into an L0
+/// (6 MiB at the 8 MiB default, 24 MiB at the shared cell's 32 MiB).
+pub(crate) fn memtable_trigger(l0_sst_size_bytes: usize) -> u64 {
+    u64::try_from(l0_sst_size_bytes / 4 * 3).unwrap_or(u64::MAX)
 }
 
 /// Why a seal started.
@@ -206,9 +228,12 @@ pub(crate) struct SealCounters {
     /// seal left in the log, metered beside the object bytes).
     pub(crate) remainder_bytes: AtomicU64,
     pub(crate) deadline_flushes: AtomicU64,
-    /// Deadline flushes that ran while a seal was in flight: each may carry
-    /// that seal's pages into an L0 until compaction (TLA-016-F5).
+    /// Deadline flushes that ran while a seal was in flight (one waited
+    /// past twice its deadline): each may carry that seal's pages into an
+    /// L0 until compaction (TLA-016-F5).
     pub(crate) deadline_flushes_during_seal: AtomicU64,
+    /// Deadlines that found a seal in flight and waited for its flush.
+    pub(crate) deadline_flushes_deferred: AtomicU64,
     pub(crate) flush_errors: AtomicU64,
     pub(crate) open_failures: AtomicU64,
     /// Streams a snapshot skipped because their unsealed pages did not
@@ -249,6 +274,7 @@ impl SealCounters {
             "remainder_bytes": n(&self.remainder_bytes),
             "deadline_flushes": n(&self.deadline_flushes),
             "deadline_flushes_during_seal": n(&self.deadline_flushes_during_seal),
+            "deadline_flushes_deferred": n(&self.deadline_flushes_deferred),
             "flush_errors": n(&self.flush_errors),
             "open_failures": n(&self.open_failures),
             "snapshot_gaps": n(&self.snapshot_gaps),
@@ -305,6 +331,11 @@ pub(crate) struct SealState {
     /// after it.
     cursor: Mutex<Option<[u8; 16]>>,
     baseline: Mutex<Baseline>,
+    /// The WAL objects since the last forced flush when the last seal
+    /// started (0 at the flush): the seal trigger counts from there.
+    wal_at_seal: AtomicU64,
+    /// Seals since the last forced flush.
+    seals_since_flush: AtomicU64,
     /// When the shard's oldest unsealed page was committed (or earlier);
     /// None while nothing is unsealed.
     oldest_unsealed: Mutex<Option<Instant>>,
@@ -324,6 +355,15 @@ pub(crate) struct SealState {
 }
 
 impl SealState {
+    /// Seal at the memtable trigger of a shard log that freezes its
+    /// memtable at `freeze_bytes` (`memtable_trigger`).
+    fn follow_freeze_bytes(&self, freeze_bytes: usize) {
+        self.settings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .memtable_bytes = memtable_trigger(freeze_bytes);
+    }
+
     /// The settings in force.
     #[expect(
         clippy::unwrap_used,
@@ -462,6 +502,12 @@ impl Measure {
             None
         }
     }
+
+    /// Past twice a deadline: the flush no longer waits for a seal.
+    fn overdue(&self, s: &SealSettings) -> bool {
+        self.wal_objects >= s.wal_objects_deadline.saturating_mul(2)
+            || self.memtable_age.is_some_and(|a| a >= s.age_deadline * 2)
+    }
 }
 
 /// How often the loop evicts idle handles.
@@ -474,13 +520,16 @@ impl ShardEngine {
 
     /// The sealer: the open's rebuild (retried until it succeeds), then the
     /// triggers, one seal at a time, and idle handle eviction. The
-    /// deadlines run beside it (`deadline_loop`), so a slow seal never
-    /// holds a deadline flush back.
+    /// deadlines run beside it (`deadline_loop`), so a slow seal holds a
+    /// deadline flush back by at most the deadline again.
     pub(super) async fn seal_loop(self: Arc<Self>) {
         let sp = self.seal_state();
-        sp.metrics.get_or_init(|| {
+        let metrics = sp.metrics.get_or_init(|| {
             crate::spill::metrics::of_log(&crate::sharddir::shard_db_path(&self.prefix))
         });
+        if let Some(freeze) = metrics.as_ref().and_then(|m| m.freeze_bytes()) {
+            sp.follow_freeze_bytes(freeze);
+        }
         self.reset_baseline();
         let mut closed = self.close_tx.subscribe();
         let mut retry = Duration::from_millis(50);
@@ -513,26 +562,51 @@ impl ShardEngine {
                 .deferred
                 .swap(false, Ordering::AcqRel)
                 .then_some(Trigger::Deferred);
-            if let Some(trigger) = deferred.or_else(|| self.seal_measure().trigger(&settings)) {
+            if let Some(trigger) = deferred.or_else(|| self.trigger_measure().trigger(&settings)) {
                 self.until_closed(self.seal_triggered(trigger)).await;
             }
         }
     }
 
-    /// The deadlines: flush the memtable whatever a seal does.
+    /// The deadlines: flush the memtable, seal or no seal. A seal in
+    /// flight flushes at its end when a deadline is reached (step 7b), which
+    /// restarts the count, so a deadline waits for it rather than flush
+    /// mid-seal, until twice the deadline (a stuck seal never holds the
+    /// replay bound back further).
     pub(super) async fn deadline_loop(self: Arc<Self>) {
         let sp = self.seal_state();
         sp.wait_ready().await;
         let mut closed = self.close_tx.subscribe();
+        let mut deferring = false;
         while self.seal_wait(&mut closed).await {
             let settings = sp.settings();
             if !settings.auto {
                 continue;
             }
-            if let Some(kind) = self.seal_measure().deadline(&settings) {
-                self.until_closed(self.deadline_flush(kind)).await;
+            let measure = self.seal_measure();
+            let Some(kind) = measure.deadline(&settings) else {
+                deferring = false;
+                continue;
+            };
+            if self.defer_deadline(&measure, &settings, &mut deferring) {
+                continue;
             }
+            self.until_closed(self.deadline_flush(kind)).await;
         }
+    }
+
+    /// Whether a reached deadline waits for the seal in flight (none past
+    /// twice the deadline); the wait is counted once.
+    fn defer_deadline(&self, measure: &Measure, s: &SealSettings, deferring: &mut bool) -> bool {
+        let sp = self.seal_state();
+        let defer = sp.serial.try_lock().is_err() && !measure.overdue(s);
+        if defer && !*deferring {
+            sp.counters
+                .deadline_flushes_deferred
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        *deferring = defer;
+        defer
     }
 
     /// `work` unless the engine closes first. A close leaves a seal or a
@@ -642,6 +716,39 @@ impl ShardEngine {
         }
     }
 
+    /// The trigger dimensions with the WAL objects counted since the last
+    /// seal started, not since the last flush (a seal flushes only every
+    /// `seals_per_flush`).
+    fn trigger_measure(&self) -> Measure {
+        let m = self.seal_measure();
+        let since = self.seal_state().wal_at_seal.load(Ordering::Relaxed);
+        Measure {
+            wal_objects: m.wal_objects.saturating_sub(since),
+            ..m
+        }
+    }
+
+    /// Whether the seal that just finished ends in a forced flush: every
+    /// `seals_per_flush` seals, at the memtable trigger or a deadline, and
+    /// for a seal another part of the process asked for (the idle release
+    /// closes the engine after it, so its log must not need a replay).
+    pub(super) fn flush_after_seal(&self, trigger: Trigger) -> bool {
+        let sp = self.seal_state();
+        let s = sp.settings();
+        let seals = sp.seals_since_flush.fetch_add(1, Ordering::Relaxed) + 1;
+        let m = self.seal_measure();
+        trigger == Trigger::Requested
+            || seals >= s.seals_per_flush
+            || m.memtable >= s.memtable_bytes
+            || m.deadline(&s).is_some()
+    }
+
+    /// A seal starts: the seal trigger counts WAL objects from here.
+    pub(super) fn note_seal_start(&self) {
+        let wal = self.seal_measure().wal_objects;
+        self.seal_state().wal_at_seal.store(wal, Ordering::Relaxed);
+    }
+
     /// One awaited WAL flush.
     async fn wal_flush(&self) -> Result<(), slatedb::Error> {
         self.db
@@ -662,6 +769,8 @@ impl ShardEngine {
             self.wal_flush().await.map_err(|e| e.to_string())?;
         }
         self.reset_baseline();
+        sp.wal_at_seal.store(0, Ordering::Relaxed);
+        sp.seals_since_flush.store(0, Ordering::Relaxed);
         let flushed = self
             .db
             .flush_with_options(FlushOptions {

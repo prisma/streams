@@ -4817,6 +4817,21 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Status:** ratified by the lead under the owner's delegation, 2026-10-28 (R2).
 - **Check against commit:** written with the change.
 
+### #232 (this record's commit) — The seal stats count the deadlines that waited for a seal in flight (`deadline_flushes_deferred`)
+
+- **Program item:** S-gap step 2, the seal cadence (the lead's rulings under the owner's delegation, 2026-10-30; call 11).
+- **Surface:** operator debug (`GET /v1/debug/timings`, each shard's `seal`).
+- **Endpoint:** `GET /v1/debug/timings`, debug-gated like every debug route.
+- **Condition:** a shard's memtable deadline (WAL objects or age) is reached while a seal holds the shard.
+- **Before:** the deadline flushed at once, beside the seal; a flush that raced the seal's commit carried its pages into an L0 (accepted as a cost and counted, `deadline_flushes_during_seal`, F5).
+- **After:** the deadline waits for the seal, which flushes the memtable at its end when a deadline is reached (step 7b; a seal otherwise flushes every third time, S-gap step 2), until twice the deadline; `deadline_flushes_deferred` counts each such wait once. `deadline_flushes_during_seal` keeps its meaning and now counts only the flushes that ran past twice the deadline. Every other field is unchanged.
+- **Retry semantics:** none; a counter.
+- **Who is affected:** operators and the cost rigs reading the seal stats (an additive field).
+- **Pinning tests:** `shard::seal::trigger_tests::a_deadline_waits_for_the_seal_in_flight_until_twice_the_deadline`, `a_deadline_is_overdue_at_twice_its_setting`.
+- **Risk reason:** low. An additive operator-debug counter; the deferral is bounded by twice the deadline.
+- **Status:** ratified by the lead under the owner's delegation, 2026-10-30 (#232 reserved and ratified).
+- **Check against commit:** written with the change.
+
 ## Discrepancies
 
 One record has verified=false: its commit did not match the recorded text.

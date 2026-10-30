@@ -11,6 +11,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use slatedb_common::metrics::{DefaultMetricsRecorder, MetricValue, MetricsRecorder};
 
+/// The gauge holding the shard log's memtable freeze size.
+const FREEZE_BYTES: &str = "prisma_streams.shard_log.freeze_bytes";
+
 /// One shard log's recorder.
 pub(crate) struct ShardLogMetrics {
     recorder: Arc<DefaultMetricsRecorder>,
@@ -20,6 +23,28 @@ impl ShardLogMetrics {
     /// The recorder the shard log's builder takes.
     pub(crate) fn recorder(&self) -> Arc<dyn MetricsRecorder> {
         self.recorder.clone()
+    }
+
+    /// Record the size at which this shard log's SlateDB freezes its
+    /// memtable by itself (`L0_SST_SIZE_BYTES`), for the sealer's memtable
+    /// trigger (`seal::memtable_trigger`); the shard log builder records it.
+    pub(crate) fn note_freeze_bytes(&self, bytes: usize) {
+        let gauge =
+            self.recorder
+                .register_gauge(FREEZE_BYTES, "the memtable size SlateDB freezes at", &[]);
+        gauge.set(i64::try_from(bytes).unwrap_or(i64::MAX));
+    }
+
+    /// The freeze size the builder recorded, if it did.
+    pub(crate) fn freeze_bytes(&self) -> Option<usize> {
+        self.recorder
+            .snapshot()
+            .by_name(FREEZE_BYTES)
+            .iter()
+            .find_map(|m| match m.value {
+                MetricValue::Gauge(v) => usize::try_from(v).ok(),
+                _ => None,
+            })
     }
 
     /// A counter's value now (0 before SlateDB registers it).

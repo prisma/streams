@@ -109,7 +109,8 @@ impl ShardEngine {
         let sp = &self.layout.seal;
         let _serial = sp.serial.lock().await;
         tracing::trace!(shard = %self.prefix, ?trigger, "seal starts");
-        let result = self.seal_steps(sp).await;
+        self.note_seal_start();
+        let result = self.seal_steps(sp, trigger).await;
         let counter = match &result {
             Ok(r) if r.object.is_none() => &sp.counters.empty_seals,
             Ok(_) => &sp.counters.seals,
@@ -120,7 +121,11 @@ impl ShardEngine {
         result
     }
 
-    async fn seal_steps(self: &Arc<Self>, sp: &SealState) -> Result<SealReport, SealError> {
+    async fn seal_steps(
+        self: &Arc<Self>,
+        sp: &SealState,
+        trigger: Trigger,
+    ) -> Result<SealReport, SealError> {
         // (1)
         self.catch_up_durable().await?;
         #[cfg(test)]
@@ -132,14 +137,16 @@ impl ShardEngine {
         if !windows.is_empty() {
             self.seal_windows(sp, &windows, &mut report).await?;
         }
-        // (7b), after (7a) in `seal_windows`.
+        // (7b), after (7a) in `seal_windows`, every `seals_per_flush` seals.
         #[cfg(test)]
         sp.check_abort(super::test_hooks::SealStep::Durable)?;
         // An empty seal's memtable (queue rows, a degraded window's
         // operands) takes step 7a in the flush itself: REVIEW-6A F2.
-        self.forced_flush(windows.is_empty())
-            .await
-            .map_err(SealError::Store)?;
+        if self.flush_after_seal(trigger) {
+            self.forced_flush(windows.is_empty())
+                .await
+                .map_err(SealError::Store)?;
+        }
         for w in &windows {
             self.layout.release_sealed(&w.handle.hash);
         }

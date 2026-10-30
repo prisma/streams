@@ -80,8 +80,9 @@ fn the_parsed_shard_settings_reach_every_shard_engine() {
 
 /// The sealer posture every engine of a server that sets nothing runs (no
 /// sealer knob comes from the command line): a seal once 24 MiB is unsealed,
-/// 48 WAL objects were written or the oldest page is 45 s old, the age
-/// deadline at 60 s, evaluated every 250 ms.
+/// 42 WAL objects were written since the last seal or the oldest page is
+/// 45 s old, the memtable flushed every third seal and at the 128-object or
+/// 60 s deadline, evaluated every 250 ms.
 #[test]
 fn a_server_that_sets_nothing_seals_by_age_after_forty_five_seconds() {
     let shipped = crate::shard::seal::SealSettings::default();
@@ -91,7 +92,11 @@ fn a_server_that_sets_nothing_seals_by_age_after_forty_five_seconds() {
             shipped.age_deadline,
             shipped.unsealed_bytes,
             shipped.memtable_bytes,
-            (shipped.wal_objects_seal, shipped.wal_objects_deadline),
+            (
+                shipped.wal_objects_seal,
+                shipped.seals_per_flush,
+                shipped.wal_objects_deadline,
+            ),
             shipped.tick,
             shipped.auto,
         ),
@@ -100,7 +105,7 @@ fn a_server_that_sets_nothing_seals_by_age_after_forty_five_seconds() {
             Duration::from_secs(60),
             24 * 1024 * 1024,
             6 * 1024 * 1024,
-            (48, 64),
+            (42, 3, 128),
             Duration::from_millis(250),
             true,
         )

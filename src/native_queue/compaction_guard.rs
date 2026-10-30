@@ -18,7 +18,8 @@ use slatedb::compactor::{
 
 /// The shard log's database builder: `settings`' compactor options run under
 /// the guarded scheduler, and every key is routed to its segment's tree by
-/// the shard log's segment extractor (layout 6, `crate::keyspace`).
+/// the shard log's segment extractor (layout 6, `crate::keyspace`), and the
+/// log's memtable freeze size is recorded for its sealer.
 pub(crate) fn shard_log_builder(
     path: &str,
     store: Arc<dyn object_store::ObjectStore>,
@@ -29,6 +30,7 @@ pub(crate) fn shard_log_builder(
             .with_options(options)
             .with_scheduler_supplier(Arc::new(GuardedSupplier))
     });
+    crate::spill::metrics::for_log(path).note_freeze_bytes(settings.l0_sst_size_bytes);
     let builder = crate::keyspace::db_builder(path, store).with_settings(settings);
     match compactor {
         Some(compactor) => builder.with_compactor_builder(compactor),
