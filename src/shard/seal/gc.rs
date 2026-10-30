@@ -36,8 +36,12 @@ use crate::shard::ShardEngine;
 use crate::spill::gc::{self, Decrements, Garbage, ObjectKind, Refcount};
 use crate::spill::object::ObjectId;
 
+#[cfg(test)]
+mod pass_tests;
 pub(crate) mod purge;
 mod sweep;
+#[cfg(test)]
+mod sweep_tests;
 
 /// When the garbage collector runs and how long it waits.
 #[derive(Clone, Copy, Debug)]
@@ -108,6 +112,12 @@ pub(crate) struct GcCounters {
     pub(crate) inexact: AtomicU64,
     /// `'G'`, `'H'` or `'R'` rows that did not decode (left in place).
     pub(crate) corrupt_rows: AtomicU64,
+    /// `'H'` rows folds and merges read (`reclaimed_heads`): none while no
+    /// `'H'` row exists.
+    pub(crate) head_reads: AtomicU64,
+    /// A purged stream's other rows deleted, and the batches that did.
+    pub(crate) rows_deleted: AtomicU64,
+    pub(crate) row_batches: AtomicU64,
 }
 
 /// The collector's state on one engine (part of `SealState`).

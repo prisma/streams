@@ -451,7 +451,8 @@ impl ShardEngine {
     /// The `reclaimed` offset of each of `hashes` that is a dead stream
     /// (`spill::gc`): a fold or merge drops the entries ending below it,
     /// every one of them already decremented. One point read per stream
-    /// (an absent `'H'` row costs a bloom probe).
+    /// (an absent `'H'` row costs a bloom probe; the gc's `head_reads`),
+    /// none on a shard with no `'H'` row.
     pub(crate) async fn reclaimed_heads(
         &self,
         hashes: impl IntoIterator<Item = [u8; 16]>,
@@ -461,11 +462,15 @@ impl ShardEngine {
             return Ok(out);
         }
         for hash in hashes {
+            self.gc_state()
+                .counters
+                .head_reads
+                .fetch_add(1, Ordering::Relaxed);
             let head = self
                 .head_row(&hash)
                 .await
                 .map_err(|e| FoldError::Store(e.to_string()))?;
-            if let Some(h) = head.filter(|h| h.reclaimed > 0) {
+            if let Some(h) = head {
                 out.insert(hash, h.reclaimed);
             }
         }

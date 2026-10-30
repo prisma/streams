@@ -166,3 +166,19 @@ fn a_refcount_row_holds_its_live_bytes_chunks_creation_and_length_at_pinned_byte
     });
     assert_eq!(crate::crypto::hex(&row), "01ac02028080b3c19c33a403");
 }
+
+/// A head owes reclamation exactly while `reclaimed` is below `head`.
+#[test]
+fn a_head_owes_while_reclaimed_is_below_head() {
+    let at = |head, reclaimed| Head {
+        state: HeadState::Purged,
+        not_before_ms: 0,
+        head,
+        reclaimed,
+    };
+    assert!(at(10, 9).owes());
+    assert!(at(10, 0).owes());
+    assert!(!at(10, 10).owes(), "everything below the head is reclaimed");
+    assert!(!at(0, 0).owes(), "an empty stream owes nothing");
+    assert!(!Head::requested(5).owes(), "a request owes nothing yet");
+}

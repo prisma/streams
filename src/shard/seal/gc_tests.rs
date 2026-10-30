@@ -49,7 +49,7 @@ fn get(c: &AtomicU64) -> u64 {
 
 /// A rig with no ring (sealed reads go to the objects), small chunks, and
 /// the fold, merges and collector driven by the test, at grace zero.
-async fn gc_rig(label: &str) -> Rig {
+pub(super) async fn gc_rig(label: &str) -> Rig {
     let mut settings = manual();
     settings.max_pages_per_chunk = 4;
     let rig = rig_with(label, settings, 0, Duration::from_millis(2)).await;
@@ -57,7 +57,7 @@ async fn gc_rig(label: &str) -> Rig {
     rig
 }
 
-fn quiet(engine: &Arc<ShardEngine>) {
+pub(super) fn quiet(engine: &Arc<ShardEngine>) {
     engine.layout.seal.fold.configure(|s| {
         s.auto = false;
         s.fan_in = [2, 2];
@@ -70,7 +70,7 @@ fn quiet(engine: &Arc<ShardEngine>) {
 }
 
 /// The store's objects under `dir` (`hseg` or `ridx`), by id, with sizes.
-async fn stored(rig: &Rig, dir: &str) -> BTreeMap<ObjectId, u64> {
+pub(super) async fn stored(rig: &Rig, dir: &str) -> BTreeMap<ObjectId, u64> {
     let prefix = object_store::path::Path::from(format!("{}/{dir}", rig.path));
     let mut out = BTreeMap::new();
     let mut list = rig.store.list(Some(&prefix));
@@ -174,7 +174,7 @@ async fn audit(rig: &Rig, orphans: &BTreeSet<ObjectId>, what: &str) -> Audit {
 }
 
 /// `rounds` rounds of appends to each of `streams`, each round sealed.
-async fn rounds(
+pub(super) async fn rounds(
     rig: &Rig,
     rng: &mut StdRng,
     streams: &[[u8; 16]],
@@ -206,7 +206,7 @@ async fn read_all(rig: &Rig, oracle: &Oracle, skip: &BTreeSet<[u8; 16]>, what: &
     }
 }
 
-async fn purge_now(engine: &Arc<ShardEngine>, hash: [u8; 16]) -> u64 {
+pub(super) async fn purge_now(engine: &Arc<ShardEngine>, hash: [u8; 16]) -> u64 {
     engine.request_purge(hash, 0).await.unwrap();
     match engine.purge_stream(hash).await.unwrap() {
         PurgeOutcome::Reclaimed { chunks } => chunks,
@@ -765,7 +765,7 @@ async fn a_purge_waits_for_the_ledger_and_for_its_own_group() {
     rig.engine.begin_close();
 }
 
-fn late_append(hash: [u8; 16]) -> crate::shard::AppendReq {
+pub(super) fn late_append(hash: [u8; 16]) -> crate::shard::AppendReq {
     let (resp, _) = tokio::sync::oneshot::channel();
     crate::shard::AppendReq {
         enqueued_at: Instant::now(),

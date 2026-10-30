@@ -29,6 +29,9 @@ use bytes::Bytes;
 use object_store::{PutMode, PutOptions, PutPayload};
 use slatedb::WriteBatch;
 
+#[cfg(test)]
+mod picked_tests;
+
 use crate::shard::{RingScan, ShardEngine};
 use crate::spill::directory::{self, DirEntry, KeySummary};
 use crate::spill::gc::{self, Decrements};

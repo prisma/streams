@@ -129,12 +129,9 @@ impl ShardEngine {
     /// Returns how many dead incarnations still wait (not yet due, refused,
     /// or owing).
     pub(crate) async fn purge_due(&self) -> Result<u64, GcError> {
-        let now = crate::shard::now_ms().unsigned_abs();
         let mut waiting = 0;
         for (hash, head) in self.head_rows().await? {
-            let due = head.state == HeadState::Requested && head.not_before_ms <= now;
-            if !due && !head.owes() {
-                waiting += u64::from(head.state == HeadState::Requested);
+            if head.state != HeadState::Requested && !head.owes() {
                 continue;
             }
             match self.purge_stream(hash).await {
@@ -152,13 +149,24 @@ impl ShardEngine {
 
     /// Purge `hash` if its time came, then reclaim what it owes.
     pub(crate) async fn purge_stream(&self, hash: [u8; 16]) -> Result<PurgeOutcome, GcError> {
+        self.purge_stream_at(hash, crate::shard::now_ms().unsigned_abs())
+            .await
+    }
+
+    /// `purge_stream` at `now_ms`: a purge whose `not_before` is after it
+    /// waits.
+    pub(crate) async fn purge_stream_at(
+        &self,
+        hash: [u8; 16],
+        now_ms: u64,
+    ) -> Result<PurgeOutcome, GcError> {
         let gc = self.gc_state();
         let _refs = gc.refs.lock().await;
         let Some(mut head) = self.head_row(&hash).await? else {
             return Ok(PurgeOutcome::NotDue);
         };
         if head.state == HeadState::Requested {
-            if head.not_before_ms > crate::shard::now_ms().unsigned_abs() {
+            if head.not_before_ms > now_ms {
                 return Ok(PurgeOutcome::NotDue);
             }
             if self.billing_open(hash).await? || !self.purge_step(hash, head).await? {
@@ -293,20 +301,21 @@ impl ShardEngine {
 
     /// Delete every row of a purged stream but its billing row (the ledger
     /// owns it), at most `reclaim_batch` keys per batch: producers, seq
-    /// lanes, the seal fence. Nothing writes them once the stream is purged
-    /// (its load fails), so this races no committer group.
-    async fn delete_stream_rows(&self, hash: [u8; 16]) -> Result<u64, GcError> {
+    /// lanes, the seal fence (the gc's `rows_deleted`, `row_batches`).
+    /// Nothing writes them once the stream is purged (its load fails), so
+    /// this races no committer group.
+    async fn delete_stream_rows(&self, hash: [u8; 16]) -> Result<(), GcError> {
         let store = |e: slatedb::Error| GcError::Store(e.to_string());
         if hash == [0xFF; 16] {
             // Its rows' prefix is the sentinel's: never scanned for deletes.
-            return Ok(0);
+            return Ok(());
         }
+        let c = &self.gc_state().counters;
         let batch_max = self.gc_state().settings().reclaim_batch.max(1);
-        let mut deleted = 0u64;
         loop {
             let keys = self.stream_row_keys(hash, batch_max).await.map_err(store)?;
             if keys.is_empty() {
-                return Ok(deleted);
+                return Ok(());
             }
             let mut batch = WriteBatch::new();
             for k in &keys {
@@ -315,7 +324,9 @@ impl ShardEngine {
             self.write_index_batch(batch)
                 .await
                 .map_err(|e| GcError::Store(e.to_string()))?;
-            deleted += keys.len() as u64;
+            c.rows_deleted
+                .fetch_add(keys.len() as u64, Ordering::Relaxed);
+            c.row_batches.fetch_add(1, Ordering::Relaxed);
         }
     }
 

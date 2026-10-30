@@ -4479,6 +4479,22 @@
       "path": "src/shard/seal/consolidate_tests.rs",
       "reason": "The appender, the walkers and the folder run concurrently in one test task so consolidations race reads, seals and folds; the compiler checks the join's expansion and every future borrows the test's rig.",
       "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::the_totals_are_the_rows_sums",
+      "path": "src/shard/seal/gc/pass_tests.rs",
+      "reason": "The expected document of the collector's stored totals (seal.gc.stored, layout 6A package 6), computed from the 'R' and 'G' rows the test reads; serde macro output is compiled and compared by the test.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::the_loop_recounts_and_sweeps_at_their_cadences",
+      "path": "src/shard/seal/gc/pass_tests.rs",
+      "reason": "Expression selection between a collector loop of the test's own and the test's body, which ends it (layout 6A package 6); the compiler checks the expansion and both branches are plain futures of this function.",
+      "syntax": "tokio::select"
     }
   ]
 }
