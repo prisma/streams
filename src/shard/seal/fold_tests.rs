@@ -855,6 +855,7 @@ async fn the_fold_step_folds_until_nothing_is_left_once_due() {
     fs.configure(|s| {
         s.period = Duration::from_secs(3600);
         s.max_rows = 2;
+        s.auto = false;
     });
     rig.engine.fold_once().await.unwrap();
     assert!(!rig.engine.fold_due(), "nothing unfolded");

@@ -22,6 +22,11 @@ fn a_consolidated_chunk_is_preferred_and_gaps_stop_the_tiling() {
     assert_eq!(tile(&spans, 30, 100, 10), Vec::<usize>::new());
     assert_eq!(tile(&spans, 40, 45, 10), vec![4]);
     assert_eq!(tile(&spans, 0, 100, 1), vec![1]);
+    assert_eq!(
+        tile(&spans, 0, 20, 10),
+        vec![1],
+        "a window ending where a pick ends takes nothing past it"
+    );
 }
 
 #[test]
