@@ -451,7 +451,6 @@ async fn native_queue_collection_yields_while_the_l0s_are_at_the_yield_mark() {
     let r = rig("t/nqc-yield", Some(settings)).await;
     r.engine.set_l0_line(4);
     assert_eq!(r.engine.l0_marks().yield_at, 2);
-    let before = indebted(&r, [7; 16], 256 * MIB).await;
     flush_both(&r, 1).await;
     flush_both(&r, 2).await;
     let read = async {
@@ -462,6 +461,11 @@ async fn native_queue_collection_yields_while_the_l0s_are_at_the_yield_mark() {
     tokio::time::timeout(STEP_WITHIN, read)
         .await
         .expect("the watermark's tick read the two L0s");
+    // With nothing due, a tick at the mark is not a yield.
+    let idle = r.engine.l0_gauge().yields;
+    assert_eq!(r.engine.maybe_collect().await, Ok(()));
+    assert_eq!(r.engine.l0_gauge().yields, idle, "nothing was due");
+    let before = indebted(&r, [7; 16], 256 * MIB).await;
     let yields = r.engine.l0_gauge().yields;
     // Another queue's pass holds the instance's permit meanwhile: the
     // yield does not wait for it (CI's red of d9ecdf04, where one did).
@@ -470,7 +474,8 @@ async fn native_queue_collection_yields_while_the_l0s_are_at_the_yield_mark() {
     assert_eq!(pass.await, Ok(Ok(())), "the due pass yields at once");
     drop(other);
     assert_eq!(stored(&r, [7; 16]).await, before, "its debt waits");
-    assert_eq!(r.engine.l0_gauge().yields, yields + 1);
+    // The engine's own loop may yield too meanwhile (its debt is due).
+    assert!(r.engine.l0_gauge().yields > yields, "the yield is counted");
 }
 
 fn missing_run() -> CompactionSpec {

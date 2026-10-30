@@ -375,15 +375,12 @@ impl ShardEngine {
     /// and then waits on garbage collection for it.
     ///
     /// No pass starts while the shard log's L0s are at the watermark's
-    /// yield mark (checked before it waits for the instance's permit, and
-    /// again once it holds it, after waiting out another pass): the
+    /// yield mark (a due pass checks before it waits for the instance's
+    /// permit, and again once it holds it, after waiting out another): the
     /// scheduler has the compaction slot to itself until they drain
-    /// (`layout::l0_watermark`).
+    /// (`layout::l0_watermark`). Only a due pass counts as a yield.
     async fn maybe_collect(&self) -> Result<(), String> {
-        if self.layout.l0.collector_yields() {
-            return Ok(());
-        }
-        if self.due_debt().await?.is_none() {
+        if self.due_debt().await?.is_none() || self.layout.l0.collector_yields() {
             return Ok(());
         }
         let _permit = PASS_PERMIT.acquire().await.map_err(|e| e.to_string())?;
