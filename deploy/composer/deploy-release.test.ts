@@ -306,9 +306,9 @@ describe("deploy-release.sh", () => {
       writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), ...change }));
       return dir;
     };
-    const layout = edited("rc-2", { layout_version: 7 });
+    const layout = edited("rc-2", { layout_version: 8 });
     refusedBeforeDeploy(w, await deploy(w, "production", layout, withCell(w)),
-      "release rc-2 has layout_version 7, the running cell's release rc-1 6: a deploy never crosses a layout");
+      "release rc-2 has layout_version 8, the running cell's release rc-1 7: a deploy never crosses a layout");
     const keys = edited("rc-3", { keys_contract: "r8" });
     refusedBeforeDeploy(w, await deploy(w, "production", keys, withCell(w)),
       "release rc-3 has keys contract r8, the running cell's release rc-1 r7: the keys feed and the binary change together (RUNBOOK), never by a deploy alone");
@@ -407,10 +407,10 @@ describe("deploy-release.sh", () => {
     })}\n`);
     const { dir } = release(w, "rc-2");
     const path = join(dir, "deploy", "release.json");
-    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), layout_version: 7 }));
+    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), layout_version: 8 }));
     const r = await deploy(w, "production", dir);
     expect([r.code, r.err.trim(), prismaRuns(w).length]).toEqual([
-      1, "deploy-release: release rc-2 has layout_version 7, the running cell's release rc-1 6: a deploy never crosses a layout", 0,
+      1, "deploy-release: release rc-2 has layout_version 8, the running cell's release rc-1 7: a deploy never crosses a layout", 0,
     ]);
     expect(r.out).toContain("deploy-release: no cell answers; deploy-log.jsonl last deployed release rc-1 to production");
   }, 30_000);
@@ -466,7 +466,7 @@ describe("deploy-release.sh", () => {
     expect(log(w).map((e) => [e.stage, e.tag, e.result])).toEqual([["cert", "rc-1", "unchecked"], ["cert", "rc-1", "destroyed"]]);
     const { dir: next } = release(w, "rc-2");
     const path = join(next, "deploy", "release.json");
-    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), layout_version: 7 }));
+    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), layout_version: 8 }));
     const fresh = await deploy(w, "cert", next, ["--branch", branch]);
     expect([fresh.code, fresh.err]).toEqual([3, ""]);
     expect(fresh.out).toContain("deploy-release: no cell yet: nothing answers for cert and the deploy log holds no live deploy of it");
