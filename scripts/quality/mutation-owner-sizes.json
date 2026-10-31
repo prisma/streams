@@ -1,6 +1,6 @@
 {
   "command": "python3 scripts/quality/mutation_driver.py --measure-sizes",
-  "commit": "61c23542a3223c9bb7590710ea8ed1487ce57f8c",
+  "commit": "b157431e94d15725850f175be929e44e1d72b43e",
   "measured_on": "2026-10-31",
   "owners": {
     "admission_body": 14,
@@ -52,7 +52,8 @@
     "crypto_page_varint": 24,
     "cursors": 61,
     "durability_frontier_tests": 0,
-    "fleet": 202,
+    "fleet": 203,
+    "fleet_count_balance": 33,
     "fleet_document_tests": 0,
     "fleet_drain": 52,
     "fleet_heartbeat": 73,

@@ -16,6 +16,7 @@ use object_store::UpdateVersion;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+mod count_balance;
 /// This runtime's planned drain, run before a requested stop.
 pub(crate) mod drain;
 mod heartbeat;
@@ -835,15 +836,14 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                 let cooled = last_move
                     .map(|t| t.elapsed().as_secs() >= rebalance_cooldown)
                     .unwrap_or(true);
-                if lag_hot_ticks >= 2 && cooled {
-                    // Move my laggiest shard to the coolest HEALTHY peer.
-                    // A peer that is itself lagging must not receive more
-                    // work: under global backlog every instance breaches
-                    // the threshold and unguarded moves just hand the
-                    // backlog around (ladder p3: 7 moves in 10 min, shard
-                    // ping-pong, zero net absorption gained).
-                    let target = pick_move_target(&peer_load, &active, &cfg.instance, rebalance_lag_secs);
-                    if target.is_none() {
+                let lagging = lag_hot_ticks >= 2;
+                if cooled {
+                    // Lagging: move my laggiest shard to the coolest HEALTHY peer. A lagging peer must
+                    // not receive more work: under global backlog unguarded moves hand the backlog
+                    // around (ladder p3: 7 moves in 10 min, zero absorption gained). Not lagging: move
+                    // a shard past the fair share to the member with the fewest (count_balance).
+                    let target = lagging.then(|| pick_move_target(&peer_load, &active, &cfg.instance, rebalance_lag_secs)).flatten();
+                    if lagging && target.is_none() {
                         tracing::info!(
                             "rebalancer: lag {my_lag}s but no healthy peer; holding shards"
                         );
@@ -863,7 +863,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                                 }
                             })
                     };
-                    if let (Some(to), Some(prefix)) = (target, victim) {
+                    if let Some((prefix, to)) = victim.zip(target).or_else(|| (!lagging).then(|| count_balance::plan((&state.shards, &state.ownership), &active, &cfg.instance, &peer_load, rebalance_lag_secs)).flatten()) {
                         if ov.pending_events.len() < 64 {
                             ov.pending_events.push(
                                 crate::ops::OpsEvent::new(
@@ -889,7 +889,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                         match committed {
                             true => {
                                 tracing::info!(
-                                    "rebalancer: moving shard {prefix} -> {to} (absorb lag {my_lag}s)"
+                                    "rebalancer: moving shard {prefix} -> {to} (lag {my_lag}s, or past the fair share)"
                                 );
                                 state.ownership.set_override(&prefix, &to);
                                 // Stop serving immediately and fail all
