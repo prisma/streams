@@ -57,3 +57,23 @@ impl FoldState {
         Ok(())
     }
 }
+
+/// Tests: an index batch is durable once its own awaited WAL flush returns,
+/// so a test fails it when it is not (a missed flush) instead of waiting
+/// out the rig's 60 s failsafe flush. Bounded by yields, not a timer, so a
+/// paused test clock cannot fire it.
+pub(crate) async fn durable_after_flush(
+    handle: slatedb::WriteHandle,
+) -> Result<(), slatedb::Error> {
+    use futures_util::FutureExt;
+    let mut durable = Box::pin(handle.await_durable());
+    for _ in 0..1_000 {
+        if let Some(outcome) = durable.as_mut().now_or_never() {
+            return outcome;
+        }
+        tokio::task::yield_now().await;
+    }
+    Err(slatedb::Error::unavailable(
+        "an index batch was not durable after its WAL flush".to_string(),
+    ))
+}

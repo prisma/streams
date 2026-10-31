@@ -343,7 +343,7 @@ async fn purge_due_counts_the_incarnations_that_still_wait() {
     for id in &failing_objects {
         rig.engine.db.delete(gc::refcount_key(*id)).await.unwrap();
     }
-    assert_eq!(rig.engine.purge_due().await.unwrap(), 3);
+    assert_eq!(bounded(rig.engine.purge_due()).await.unwrap(), 3);
     let state = |h| state_of(&rig, h);
     assert_eq!(state(due).await.map(|h| h.owes()), Some(false), "purged");
     assert_eq!(
@@ -352,7 +352,7 @@ async fn purge_due_counts_the_incarnations_that_still_wait() {
     );
     rig.engine.layout.clear_usage(refused, None);
     assert_eq!(
-        rig.engine.purge_due().await.unwrap(),
+        bounded(rig.engine.purge_due()).await.unwrap(),
         2,
         "the refused one purged now"
     );
@@ -486,7 +486,7 @@ async fn a_reclaim_stops_below_its_head() {
         reclaimed: 0,
     };
     put_head(&rig, hash, at_head).await;
-    let outcome = rig.engine.purge_stream(hash).await.unwrap();
+    let outcome = bounded(rig.engine.purge_stream(hash)).await.unwrap();
     let below = chunks.iter().filter(|e| e.last < last.last).count() as u64;
     assert_eq!(outcome, PurgeOutcome::Reclaimed { chunks: below });
     let rows: BTreeSet<ObjectId> = rig
@@ -499,6 +499,14 @@ async fn a_reclaim_stops_below_its_head() {
         .collect();
     assert!(rows.contains(&last.object), "the chunk at the head is live");
     rig.engine.begin_close();
+}
+
+/// A purge, bounded: one whose index batches never land fails the test
+/// instead of reclaiming the same rows for ever.
+async fn bounded<T>(purge: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(Duration::from_secs(10), purge)
+        .await
+        .expect("a purge within 10 s")
 }
 
 async fn index_objects(rig: &Rig) -> BTreeSet<ObjectId> {

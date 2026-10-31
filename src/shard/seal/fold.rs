@@ -578,6 +578,9 @@ impl ShardEngine {
         let result = async {
             let handle = self.db.write(batch).await?;
             self.wal_flush().await?;
+            #[cfg(test)]
+            return test_hooks::durable_after_flush(handle).await;
+            #[cfg(not(test))]
             handle.await_durable().await
         }
         .await;
