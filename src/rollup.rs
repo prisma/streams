@@ -401,6 +401,8 @@ impl RollupSlot {
 pub(crate) struct UsageRollup {
     pub db: Arc<Db>,
     close_rows_visited: std::sync::atomic::AtomicU64,
+    /// The rollup database's metrics, its reads attributed by call site.
+    metrics: Arc<crate::spill::metrics::ShardLogMetrics>,
 }
 
 /// Bytes a telemetry scan reads per GET once it misses: 64 of the
@@ -584,10 +586,13 @@ impl UsageRollup {
         };
         let settings =
             crate::billing::telemetry_settings(&cfg.billing, &cfg.engine.compactor_options());
+        let metrics = crate::spill::metrics::for_log(&path);
+        let recorder = metrics.recorder();
         let db = crate::bootstrap::on_slatedb_rt(async move {
             Db::builder(path.as_str(), store)
                 .with_settings(settings)
                 .with_db_cache(cache)
+                .with_metrics_recorder(recorder)
                 .build()
                 .await
         })
@@ -595,10 +600,29 @@ impl UsageRollup {
         Ok(UsageRollup {
             db: Arc::new(db),
             close_rows_visited: Default::default(),
+            metrics,
         })
     }
 
+    /// Tests: a rollup over an open database, its reads attributed to one
+    /// test path.
+    #[cfg(test)]
+    pub(crate) fn over(db: Arc<Db>) -> Self {
+        Self {
+            db,
+            close_rows_visited: Default::default(),
+            metrics: crate::spill::metrics::for_log("tests/usage-rollup"),
+        }
+    }
+
+    /// Attribute this database's reads until the guard drops to `site`
+    /// (S-gap step 0: telemetry SST GETs per call site).
+    pub(crate) fn call_site(&self, site: &'static str) -> crate::spill::metrics::CallSite {
+        self.metrics.call_site(site)
+    }
+
     pub(crate) async fn cursor(&self) -> anyhow::Result<Option<String>> {
+        let _site = self.call_site("rollup_step");
         read_text(&self.db, K_CURSOR).await
     }
 
@@ -610,6 +634,7 @@ impl UsageRollup {
         envelopes: &[UsageEnvelope],
         next_cursor: &str,
     ) -> anyhow::Result<Vec<crate::quota::stored::StoredFigure>> {
+        let _site = self.call_site("rollup_step");
         page::apply(&self.db, envelopes, next_cursor).await
     }
 
@@ -682,6 +707,7 @@ impl UsageRollup {
         &self,
         max: usize,
     ) -> anyhow::Result<Vec<(Vec<u8>, String, String, String, MonthRow)>> {
+        let _site = self.call_site("outbox");
         let mut out = Vec::new();
         let mut iter = self
             .db
@@ -734,6 +760,7 @@ impl UsageRollup {
         &self,
         max: usize,
     ) -> anyhow::Result<Vec<(Vec<u8>, String, String, String, String, Vec<u8>)>> {
+        let _site = self.call_site("outbox");
         let mut out = Vec::new();
         let mut iter = self
             .db
@@ -832,6 +859,7 @@ impl UsageRollup {
     /// step; it never reads as the start of the ledger, which would
     /// merge every snapshot into the minute tier again.
     pub(crate) async fn ops_cursor(&self) -> anyhow::Result<Option<String>> {
+        let _site = self.call_site("ops_rollup_step");
         read_text(&self.db, K_OPS_CURSOR).await
     }
 
@@ -842,6 +870,7 @@ impl UsageRollup {
         snaps: &[crate::ops::OpsSnapshot],
         next_cursor: &str,
     ) -> anyhow::Result<()> {
+        let _site = self.call_site("ops_rollup_step");
         let mut wb = WriteBatch::new();
         let mut m1s: std::collections::HashMap<Vec<u8>, OpsM1> = Default::default();
         for s in snaps {
@@ -887,6 +916,7 @@ impl UsageRollup {
         now_ms: i64,
         max_deletes: usize,
     ) -> anyhow::Result<usize> {
+        let _site = self.call_site("gc");
         let cutoff = now_ms - OPS_RAW_RETENTION_MS;
         let mut wb = WriteBatch::new();
         let mut n = 0usize;

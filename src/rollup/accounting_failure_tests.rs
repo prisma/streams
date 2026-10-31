@@ -59,10 +59,7 @@ async fn r14_required_read_failures_leave_every_row_and_checkpoint_unchanged() {
             .await
             .unwrap(),
     );
-    let r = UsageRollup {
-        db: db.clone(),
-        close_rows_visited: Default::default(),
-    };
+    let r = UsageRollup::over(db.clone());
     r.apply_page(&[batch(0)], "c0").await.unwrap();
     let before = snapshot(&db).await;
     for key in [
@@ -113,10 +110,7 @@ async fn r14_corrupt_watermarks_rows_and_close_keys_block_progress() {
         .await
         .unwrap(),
     );
-    let r = UsageRollup {
-        db: db.clone(),
-        close_rows_visited: Default::default(),
-    };
+    let r = UsageRollup::over(db.clone());
     r.apply_page(&[batch(0)], "c0").await.unwrap();
     for len in [0, 1, 2, 3, 4, 5, 6, 7, 9] {
         db.put(k_source("boot"), vec![0; len]).await.unwrap();
@@ -212,10 +206,7 @@ async fn an_ops_checkpoint_read_failure_is_an_error_never_the_start_of_the_ledge
         .await
         .unwrap(),
     );
-    let r = UsageRollup {
-        db: db.clone(),
-        close_rows_visited: Default::default(),
-    };
+    let r = UsageRollup::over(db.clone());
     assert_eq!(r.ops_cursor().await.unwrap(), None, "no checkpoint yet");
     r.apply_ops_page(&[], "c0").await.unwrap();
     assert_eq!(r.ops_cursor().await.unwrap().as_deref(), Some("c0"));
@@ -283,10 +274,7 @@ async fn a_late_read_correction_carries_a_written_zero_byte_time() {
             .await
             .unwrap(),
     );
-    let r = UsageRollup {
-        db: db.clone(),
-        close_rows_visited: Default::default(),
-    };
+    let r = UsageRollup::over(db.clone());
     let finalized = br#"{"account_id":"a","finalized_at_ms":1}"#;
     db.put(k_month("2026-07", "a", "p", "s"), finalized)
         .await
@@ -349,10 +337,7 @@ async fn a_late_byte_time_no_correction_can_carry_fails_its_page() {
             .await
             .unwrap(),
     );
-    let r = UsageRollup {
-        db: db.clone(),
-        close_rows_visited: Default::default(),
-    };
+    let r = UsageRollup::over(db.clone());
     let finalized = concat!(
         r#"{"account_id":"a","finalized_at_ms":1,"#,
         r#""segments":{"0":{"usage_version":1,"storage_byte_ms":"5"}}}"#,
@@ -386,10 +371,7 @@ async fn an_undecodable_pending_artifact_is_logged_and_stays_pending() {
         .await
         .unwrap(),
     );
-    let r = UsageRollup {
-        db: db.clone(),
-        close_rows_visited: Default::default(),
-    };
+    let r = UsageRollup::over(db.clone());
     let not_json = "artifact-pending/2026-07/a/p/not-json";
     for (key, body) in [
         ("artifact-pending/2026-07/a/p/good", "{}"),
@@ -435,10 +417,7 @@ async fn the_outbox_count_stops_where_the_publisher_scan_stops() {
         .await
         .unwrap(),
     );
-    let r = UsageRollup {
-        db: db.clone(),
-        close_rows_visited: Default::default(),
-    };
+    let r = UsageRollup::over(db.clone());
     for (key, body) in [
         ("artifact-pending/2026-07/a/p/s1", "{}"),
         ("artifact-pending/2026-07/a/p/s2", "not json"),

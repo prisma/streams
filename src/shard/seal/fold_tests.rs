@@ -882,3 +882,40 @@ async fn the_fold_step_folds_until_nothing_is_left_once_due() {
     read_all(&rig, &oracle.into_inner().unwrap(), "after the folds").await;
     rig.engine.begin_close();
 }
+
+/// Step 0 of the S-gap plan: the engine's forced WAL flushes are counted
+/// by cause. A seal flushes the WAL itself (steps 1 and 7a); a fold's index
+/// batch flushes it once; a deadline's memtable flush takes step 7a.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn forced_wal_flushes_are_counted_by_cause() {
+    let rig = cold_rig("fold-flushes").await;
+    let c = &rig.engine.layout.seal.counters;
+    let mut rng = StdRng::seed_from_u64(0xF1);
+    let oracle = std::sync::Mutex::new(Oracle::new());
+    let streams = hashes(&mut rng, 2);
+    sealed_rounds(&rig, &mut rng, &streams, &oracle, 1).await;
+    let (all, memtable, index) = (
+        get(&c.wal_flushes),
+        get(&c.wal_flushes_memtable),
+        get(&c.wal_flushes_index),
+    );
+    assert!(
+        all >= 2 && memtable == 0 && index == 0,
+        "a seal's own flushes: {all} {memtable} {index}"
+    );
+    rig.engine.fold_once().await.unwrap();
+    assert_eq!(get(&c.wal_flushes_index), 1, "one index batch, one flush");
+    rig.engine.flush_memtable().await.unwrap();
+    assert_eq!(
+        get(&c.wal_flushes_memtable),
+        1,
+        "a forced memtable flush takes step 7a"
+    );
+    assert_eq!(get(&c.wal_flushes), all + 2);
+    let attributed = crate::spill::metrics::attribution();
+    assert!(
+        attributed.get(rig.path.as_str()).is_some(),
+        "the shard log is attributed by its path"
+    );
+    rig.engine.begin_close();
+}

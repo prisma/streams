@@ -93,10 +93,7 @@ fn by_project(mut figures: Vec<StoredFigure>) -> Vec<StoredFigure> {
 }
 
 async fn rollup_on(store: Arc<object_store::memory::InMemory>, name: &str) -> UsageRollup {
-    UsageRollup {
-        db: Arc::new(Db::builder(name, store).build().await.unwrap()),
-        close_rows_visited: Default::default(),
-    }
+    UsageRollup::over(Arc::new(Db::builder(name, store).build().await.unwrap()))
 }
 
 async fn rollup(name: &str) -> UsageRollup {

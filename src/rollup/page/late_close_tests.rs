@@ -83,10 +83,7 @@ fn bystander() -> SegmentSnapshot {
 async fn rollup(name: &str) -> UsageRollup {
     let store = Arc::new(object_store::memory::InMemory::new());
     let db = Db::builder(name, store).build().await.unwrap();
-    UsageRollup {
-        db: Arc::new(db),
-        close_rows_visited: Default::default(),
-    }
+    UsageRollup::over(Arc::new(db))
 }
 
 async fn apply(

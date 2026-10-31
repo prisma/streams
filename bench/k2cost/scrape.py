@@ -147,11 +147,13 @@ def shape_store(body: dict) -> dict:
 
 def shape_timings(body):
     """/v1/debug/timings per shard: the cumulative pump counters (flushes =
-    WAL PUTs the pump issued; barrier_acked, flushed reqs/records/bytes)
-    and the tail ring's; the recent group samples are dropped."""
+    WAL PUTs the pump issued; barrier_acked, flushed reqs/records/bytes),
+    the tail ring's, and the sealer's (its fold, caches, forced WAL flushes
+    by cause and every database's request attribution); the recent group
+    samples are dropped."""
     if not isinstance(body, dict):
         return None
-    return {shard: {k: v[k] for k in ("pump", "tail_ring") if k in v}
+    return {shard: {k: v[k] for k in ("pump", "tail_ring", "seal") if k in v}
             for shard, v in body.items() if isinstance(v, dict)}
 
 

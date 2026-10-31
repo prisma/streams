@@ -8,6 +8,9 @@ use std::sync::{Arc, Mutex, atomic::AtomicU64};
 /// one bounded cache between this database and its usage rollup.
 pub(crate) struct ReadSpool {
     db: Arc<slatedb::Db>,
+    /// The spool database's metrics, its drain scans attributed
+    /// (`spill::metrics::CallSite`).
+    metrics: Arc<crate::spill::metrics::ShardLogMetrics>,
     next: AtomicU64,
     /// Corrupt rows moved to `quarantine/` since open (plus any found
     /// at open) — nonzero means reads may be under-billed and an
@@ -82,10 +85,13 @@ impl ReadSpool {
             format!("{prefix}/telemetry/read-spool/{inst}")
         };
         let settings = telemetry_settings(&cfg.billing, &cfg.engine.compactor_options());
+        let metrics = crate::spill::metrics::for_log(&path);
+        let recorder = metrics.recorder();
         let db = crate::bootstrap::on_slatedb_rt(async move {
             slatedb::Db::builder(path.as_str(), store)
                 .with_settings(settings)
                 .with_db_cache(cache)
+                .with_metrics_recorder(recorder)
                 .build()
                 .await
         })
@@ -99,6 +105,7 @@ impl ReadSpool {
         // Rows quarantined by earlier boots stay on the books: the
         // corruption alert survives restarts until an operator clears
         // the quarantine explicitly.
+        let open_site = metrics.call_site("spool_open");
         let mut prior = 0u64;
         let scan = crate::rollup::telemetry_scan();
         let mut it = db
@@ -112,9 +119,11 @@ impl ReadSpool {
         while let Some(kv) = it.next().await? {
             sizes.insert(kv.key.to_vec(), kv.value.len() as u64);
         }
+        drop(open_site);
         let bytes = sizes.values().sum();
         let sp = ReadSpool {
             db,
+            metrics,
             next: AtomicU64::new(next),
             quarantined: AtomicU64::new(prior),
             resident: Mutex::new(ResidentRows { sizes, bytes }),
@@ -210,6 +219,7 @@ impl ReadSpool {
         let Some(oldest) = self.oldest_resident().filter(|_| max > 0) else {
             return Ok(Vec::new());
         };
+        let _site = self.metrics.call_site("drain_scan");
         let mut out = Vec::new();
         let mut corrupt: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
         let mut iter = self

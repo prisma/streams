@@ -68,10 +68,7 @@ async fn r23_close_visits_scale_linearly_across_chunk_restart() {
             );
         }
         db.write(wb).await.unwrap();
-        let first = UsageRollup {
-            db: db.clone(),
-            close_rows_visited: Default::default(),
-        };
+        let first = UsageRollup::over(db.clone());
         read_faults().lock().unwrap().insert((
             Arc::as_ptr(&db) as usize,
             b"stop-after-close-chunk".to_vec(),
@@ -80,10 +77,7 @@ async fn r23_close_visits_scale_linearly_across_chunk_restart() {
         let visited = first.close_rows_visited();
         assert_eq!(visited, 1000);
         drop(first);
-        let reopened = UsageRollup {
-            db: db.clone(),
-            close_rows_visited: Default::default(),
-        };
+        let reopened = UsageRollup::over(db.clone());
         assert_eq!(reopened.close_month(2026, 7, 0).await.unwrap(), 1);
         assert_eq!(
             visited + reopened.close_rows_visited(),

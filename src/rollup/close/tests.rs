@@ -36,10 +36,7 @@ async fn byte_bound_pages_resume_exclusively_and_always_make_progress() {
         batch.put(key, value.clone());
     }
     db.write(batch).await.unwrap();
-    let rollup = UsageRollup {
-        db: db.clone(),
-        close_rows_visited: Default::default(),
-    };
+    let rollup = UsageRollup::over(db.clone());
     let close = MonthClose {
         rollup: &rollup,
         month: "2026-07".into(),
@@ -104,10 +101,7 @@ async fn quick_rollup(path: &str) -> UsageRollup {
         .build()
         .await
         .unwrap();
-    UsageRollup {
-        db: Arc::new(db),
-        close_rows_visited: Default::default(),
-    }
+    UsageRollup::over(Arc::new(db))
 }
 
 /// July 2026's close as `close_month` builds it, read at `now`.

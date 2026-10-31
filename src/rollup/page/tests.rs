@@ -58,10 +58,7 @@ async fn one_page_shares_dedupe_month_and_aggregate_state() {
         .await
         .unwrap(),
     );
-    let rollup = UsageRollup {
-        db: db.clone(),
-        close_rows_visited: Default::default(),
-    };
+    let rollup = UsageRollup::over(db.clone());
     let envelopes = [
         batch(0, "first"),
         batch(0, "first"),
@@ -125,10 +122,7 @@ async fn a_later_envelope_failure_discards_all_earlier_staged_rows() {
         .await
         .unwrap(),
     );
-    let rollup = UsageRollup {
-        db: db.clone(),
-        close_rows_visited: Default::default(),
-    };
+    let rollup = UsageRollup::over(db.clone());
     rollup
         .apply_page(&[batch(0, "original")], "before")
         .await

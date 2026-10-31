@@ -131,12 +131,12 @@
         {
           "file": "src/rollup/accounting_failure_tests.rs",
           "name": "r14_required_read_failures_leave_every_row_and_checkpoint_unchanged",
-          "sha256": "a8ceb2127c93edf96560752780c15649d5e3c6408b9ebc15b4d06de3d53c21db"
+          "sha256": "968f735488e749fca1bdceb0831923f4764cc004f770ba6a799d696f833f0ab9"
         },
         {
           "file": "src/rollup/accounting_failure_tests.rs",
           "name": "r14_corrupt_watermarks_rows_and_close_keys_block_progress",
-          "sha256": "672c4972ea290835500d9398900d0bd9dd597e8873395e8b8ba898ad98508bdc"
+          "sha256": "ef17fe93bbf42ffd361aeafc3d26a3492407659a20384788d77dcb90ccc21470"
         }
       ]
     },

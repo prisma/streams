@@ -374,3 +374,54 @@ async fn a_poisoned_ledger_drains_every_durable_batch() {
         .collect();
     assert_eq!(seqs, vec![2, 3]);
 }
+
+/// S-gap step 0: a spool's reads are attributed by call site. After a
+/// restart (an empty memtable, a cold cache) the open's own scans read the
+/// flushed table's 2,000 rows from the store, their GETs counted at `spool_open` and never
+/// more than the database's reader GETs over the open (its other steps and
+/// background tasks read outside them); its readability scan counts one
+/// `drain_scan` call. Two call sites running at once go to `overlap`,
+/// neither to its own site.
+#[tokio::test(crate = "crate::test_rt")]
+async fn a_spools_reads_are_attributed_by_call_site() {
+    let config = crate::config::ServerConfig::load(
+        crate::config::CliArgs::deterministic(),
+        &crate::config::MapEnvironment::empty(),
+    );
+    let store = Arc::new(object_store::memory::InMemory::new());
+    let spool = ReadSpool::open(store.clone(), "", "call-site", &config)
+        .await
+        .unwrap();
+    // Enough rows (~400 KB) that the open's scans read data blocks past
+    // what the open fetches of each table.
+    let batches: Vec<ReadBatch> = (0..2_000).map(batch).collect();
+    spool.persist_all(&batches).await.unwrap();
+    spool.close_for_tests().await;
+    drop(spool);
+    let m = crate::spill::metrics::for_log("telemetry/read-spool/call-site");
+    let (open_calls, open_gets) = m.call_site_counts("spool_open");
+    let (drain_calls, drain_gets) = m.call_site_counts("drain_scan");
+    let reader = m.reader_gets();
+    let spool = ReadSpool::open(store, "", "call-site", &config)
+        .await
+        .unwrap();
+    let read = m.reader_gets() - reader;
+    let (calls, gets) = m.call_site_counts("spool_open");
+    assert_eq!(calls, open_calls + 1, "one open");
+    let site = gets - open_gets;
+    assert!(
+        site > 0 && site <= read,
+        "the open's scans' GETs are its site's: {site} of the open's {read}"
+    );
+    let (calls, gets) = m.call_site_counts("drain_scan");
+    assert_eq!(calls, drain_calls + 1, "the open's readability scan");
+    assert!(gets - drain_gets + site <= read);
+    assert_eq!(spool.pending(16).await.unwrap().len(), 16);
+    {
+        let _a = m.call_site("site-a");
+        let _b = m.call_site("site-b");
+    }
+    assert_eq!(m.call_site_counts("overlap").0, 2);
+    assert_eq!(m.call_site_counts("site-a"), (0, 0));
+    assert_eq!(m.call_site_counts("site-b"), (0, 0));
+}

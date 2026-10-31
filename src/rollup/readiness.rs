@@ -134,6 +134,7 @@ impl UsageRollup {
         last_apply_ms: i64,
         stored: &StoredTable,
     ) -> RollupReadiness {
+        let _site = self.call_site("readiness");
         let outbox = self
             .artifact_outbox(REPORTED_PENDING)
             .await
@@ -188,10 +189,7 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let r = UsageRollup {
-            db: db.clone(),
-            close_rows_visited: Default::default(),
-        };
+        let r = UsageRollup::over(db.clone());
         for (key, body) in [
             ("meta/oldest-unclosed-month", "2026-08"),
             ("corr-pending/2026-07/a/p/s/c1", "{}"),
@@ -254,10 +252,7 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let r = UsageRollup {
-            db: db.clone(),
-            close_rows_visited: Default::default(),
-        };
+        let r = UsageRollup::over(db.clone());
         let figure = |i: u64, bytes, written| StoredFigure {
             project: crate::tenant::ProjectId::new(&format!("p{i:02}")).unwrap(),
             bytes,

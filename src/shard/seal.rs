@@ -258,6 +258,14 @@ pub(crate) struct SealCounters {
     pub(crate) dispatch_stall_warnings: AtomicU64,
     /// Plans served from the chunk cache, without a GET.
     pub(crate) chunk_cache_hits: AtomicU64,
+    /// Forced WAL flushes the engine asked SlateDB for, besides the
+    /// group-commit pump's: all of them, those before a forced memtable
+    /// flush (step 7a of a deadline, the idle release or the queue
+    /// collector), and those of the fold's, merges' and consolidations'
+    /// index batches; the rest are the seals' own (steps 1 and 7a).
+    pub(crate) wal_flushes: AtomicU64,
+    pub(crate) wal_flushes_memtable: AtomicU64,
+    pub(crate) wal_flushes_index: AtomicU64,
 }
 
 impl SealCounters {
@@ -285,6 +293,9 @@ impl SealCounters {
             "summary_misses": n(&self.summary_misses),
             "dispatch_stall_warnings": n(&self.dispatch_stall_warnings),
             "chunk_cache_hits": n(&self.chunk_cache_hits),
+            "wal_flushes": n(&self.wal_flushes),
+            "wal_flushes_memtable": n(&self.wal_flushes_memtable),
+            "wal_flushes_index": n(&self.wal_flushes_index),
         })
     }
 }
@@ -420,6 +431,7 @@ impl SealState {
         j["fold"] = self.fold.json();
         j["consolidation"] = self.fold.consolidator.json();
         j["caches"] = crate::spill::cache::json();
+        j["attribution"] = crate::spill::metrics::attribution();
         j["gc"] = self.gc.json();
         j
     }
@@ -751,6 +763,10 @@ impl ShardEngine {
 
     /// One awaited WAL flush.
     async fn wal_flush(&self) -> Result<(), slatedb::Error> {
+        self.seal_state()
+            .counters
+            .wal_flushes
+            .fetch_add(1, Ordering::Relaxed);
         self.db
             .flush_with_options(FlushOptions {
                 flush_type: FlushType::Wal,
@@ -766,6 +782,9 @@ impl ShardEngine {
         #[cfg(test)]
         let with_7a = sp.takes_7a(with_7a);
         if with_7a {
+            sp.counters
+                .wal_flushes_memtable
+                .fetch_add(1, Ordering::Relaxed);
             self.wal_flush().await.map_err(|e| e.to_string())?;
         }
         self.reset_baseline();

@@ -18,6 +18,8 @@ pub(crate) mod pending;
 pub(crate) mod runindex;
 
 #[cfg(test)]
+mod attribution_tests;
+#[cfg(test)]
 mod cache_tests;
 #[cfg(test)]
 mod crc32c_tests;
