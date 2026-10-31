@@ -2,8 +2,8 @@
 //! The sealer across a handle's and an engine's life: unsealed pages are
 //! never evicted (a ring that holds nothing, handles evicted as fast as
 //! possible, everything read back after a restart); a corrupt pending row
-//! fails only its stream at the open; and a close leaves a seal in flight
-//! at once.
+//! fails only its stream at the open; a close leaves a seal in flight at
+//! once; and an open seals what the engine before it left unsealed.
 
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -16,7 +16,7 @@ use super::tests::{
     Oracle, append, append_recorded, hashes, manual, open, random_bytes, random_record, read_back,
     reopen, rig, rig_with, settle,
 };
-use super::{SealError, Trigger};
+use super::{SealError, SealSettings, Trigger};
 use crate::shard::Deliver;
 use crate::spill::pending::pending_key;
 
@@ -485,5 +485,47 @@ async fn the_task_registry_answers_by_role_and_state() {
         tokio::task::yield_now().await;
     }
     assert!(!tasks.running("sealer"), "an aborted sealer is not running");
+    rig.engine.begin_close();
+}
+
+/// **An open seals what the engine before it left unsealed.** The pages an
+/// engine closes with sit below every trigger, and an open restarts their
+/// age; a fresh engine on the same store seals them at its first
+/// evaluation instead of at the age trigger, so a moved shard's backlog is
+/// not counted as maintenance without progress until then.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn an_open_seals_the_pages_the_engine_before_it_left_unsealed() {
+    let settings = SealSettings {
+        age_seal: Duration::from_secs(3600),
+        age_deadline: Duration::from_secs(7200),
+        tick: Duration::from_millis(10),
+        ..SealSettings::default()
+    };
+    let rig = rig("inherit", settings, Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0x5EA1);
+    for hash in hashes(&mut rng, 4) {
+        append(&rig.engine, hash, vec![random_bytes(&mut rng, 1000)]).await;
+    }
+    let backlog = rig.engine.maintenance_snapshot().unabsorbed_frame_bytes;
+    assert!(backlog > 0, "the appends left a backlog");
+    assert_eq!(
+        rig.engine
+            .layout
+            .seal
+            .counters
+            .seals
+            .load(Ordering::Relaxed),
+        0,
+        "the appends stay below every trigger"
+    );
+    let rig = reopen(rig).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while rig.engine.maintenance_snapshot().unabsorbed_frame_bytes > 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the inherited backlog was not sealed within 5 s"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     rig.engine.begin_close();
 }
