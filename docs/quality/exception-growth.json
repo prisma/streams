@@ -2514,12 +2514,12 @@
       "scope": "function",
       "lint": "clippy::too_many_lines",
       "metrics": {
-        "scope_lines": 440,
+        "scope_lines": 447,
         "nested_items": 2,
-        "syntax_facts": 851
+        "syntax_facts": 877
       },
       "rationale": "The fleet tick runs the count-balance pass when it is not lagging (edge change #236): one condition and one fallback call in the rebalance block; the pass itself lives in src/fleet/count_balance.rs.",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-31 for shard count balancing"
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-31 for shard count balancing; the count-override field under the owner's delegation of 2026-10-31 (\"Ask fable or decide yourself\")"
     },
     {
       "path": "src/fleet.rs",
@@ -2527,12 +2527,12 @@
       "scope": "function",
       "lint": "clippy::excessive_nesting",
       "metrics": {
-        "scope_lines": 440,
+        "scope_lines": 447,
         "nested_items": 2,
-        "syntax_facts": 851
+        "syntax_facts": 877
       },
       "rationale": "The fleet tick runs the count-balance pass when it is not lagging (edge change #236): one condition and one fallback call in the rebalance block; the pass itself lives in src/fleet/count_balance.rs.",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-31 for shard count balancing"
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-31 for shard count balancing; the count-override field under the owner's delegation of 2026-10-31 (\"Ask fable or decide yourself\")"
     },
     {
       "path": "src/fleet.rs",
@@ -2540,9 +2540,9 @@
       "scope": "function",
       "lint": "clippy::unwrap_used",
       "metrics": {
-        "scope_lines": 440,
+        "scope_lines": 447,
         "nested_items": 2,
-        "syntax_facts": 851,
+        "syntax_facts": 877,
         "unwrap_sites": 3,
         "unwrap_site:macro::be987c2cb440ff9d": 1,
         "unwrap_site:macro::2f0c39814bc1185b": 1,
@@ -2566,7 +2566,7 @@
         "unwrap_site:ordinary-call::2a9c28158191f7c3": 1,
         "unwrap_site:ordinary-call::d167ab29146b9399": 1,
         "unwrap_site:ordinary-call::327aca10817c9eeb": 1,
-        "unwrap_site:ordinary-call::f858ceb2598ceb02": 1,
+        "unwrap_site:ordinary-call::ed17736d8bf17152": 1,
         "unwrap_site:ordinary-call::365489f817a172e8": 1,
         "unwrap_site:ordinary-call::91eb7a7c4a198e47": 1,
         "unwrap_site:ordinary-call::4af88df29951a64e": 1,
@@ -2643,13 +2643,13 @@
         "unwrap_site:path::6162591f71d8fe40": 9,
         "unwrap_site:path::b00c2e40580b5eac": 2,
         "unwrap_site:path::8c941a526a0adc76": 2,
-        "unwrap_site:path::358abe520f526f8e": 1,
-        "unwrap_site:path::1f6e56e6d7d48be4": 8,
-        "unwrap_site:path::f6dc1034b093dd79": 3,
+        "unwrap_site:path::cdb5021c4d7243e4": 1,
+        "unwrap_site:path::1f6e56e6d7d48be4": 12,
+        "unwrap_site:path::f6dc1034b093dd79": 4,
         "unwrap_site:path::3a7d613e4be9748f": 1,
         "unwrap_site:path::b062d551b8684b55": 7,
         "unwrap_site:path::602a9a3c83a858d9": 3,
-        "unwrap_site:path::f43e392e2aef5d84": 11,
+        "unwrap_site:path::f43e392e2aef5d84": 14,
         "unwrap_site:path::0772301bfdd7eab9": 1,
         "unwrap_site:path::f3a5441d11e0c900": 2,
         "unwrap_site:path::77539043fbc23a2c": 8,
@@ -2664,7 +2664,7 @@
         "unwrap_site:path::8e19c089304c5dbe": 1,
         "unwrap_site:path::86b17f87900c8a32": 1,
         "unwrap_site:path::cd2ba94c065fa772": 2,
-        "unwrap_site:path::3b3f4326f1571ec2": 5,
+        "unwrap_site:path::3b3f4326f1571ec2": 6,
         "unwrap_site:path::d89c8b0c18939a2b": 1,
         "unwrap_site:path::f36b252d0f06dafe": 1,
         "unwrap_site:path::f3aa3959dbc9b471": 1,
@@ -2693,16 +2693,17 @@
         "unwrap_site:path::33c0a4bc62863368": 1,
         "unwrap_site:path::e1289085fdcaffa7": 3,
         "unwrap_site:path::a94ab1b75555bc19": 1,
-        "unwrap_site:path::40f70298e9067dd5": 2,
+        "unwrap_site:path::40f70298e9067dd5": 3,
         "unwrap_site:path::d0c5785242882817": 1,
         "unwrap_site:path::4903e341e5c7bcb6": 1,
         "unwrap_site:path::7bb6bfde36a125ba": 1,
         "unwrap_site:path::5e9c2e3335ff36a4": 2,
-        "unwrap_site:path::6b32f342dc2c6e01": 1,
+        "unwrap_site:path::6b32f342dc2c6e01": 2,
         "unwrap_site:path::0092f78551634722": 1,
         "unwrap_site:path::cb1bf3bf1af50a61": 2,
-        "unwrap_site:path::7522240745aa3c77": 1,
+        "unwrap_site:path::2ba0bc9bcdb4090b": 1,
         "unwrap_site:path::b6d6fbc58834a3a9": 2,
+        "unwrap_site:path::ca939979168abedc": 1,
         "unwrap_site:path::01c5222e9405d6a8": 1,
         "unwrap_site:path::50fa99d7558afe2e": 1,
         "unwrap_site:path::dff7660caab4b9fc": 4,
@@ -2712,7 +2713,7 @@
         "unwrap_site:path::c41f2c5f8c782b21": 1
       },
       "rationale": "The fleet tick runs the count-balance pass when it is not lagging (edge change #236): one condition and one fallback call in the rebalance block; the pass itself lives in src/fleet/count_balance.rs.",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-31 for shard count balancing"
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-31 for shard count balancing; the count-override field under the owner's delegation of 2026-10-31 (\"Ask fable or decide yourself\")"
     },
     {
       "path": "src/fleet.rs",
@@ -2720,12 +2721,12 @@
       "scope": "function",
       "lint": "clippy::cast_sign_loss",
       "metrics": {
-        "scope_lines": 440,
+        "scope_lines": 447,
         "nested_items": 2,
-        "syntax_facts": 851
+        "syntax_facts": 877
       },
       "rationale": "The fleet tick runs the count-balance pass when it is not lagging (edge change #236): one condition and one fallback call in the rebalance block; the pass itself lives in src/fleet/count_balance.rs.",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-31 for shard count balancing"
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-31 for shard count balancing; the count-override field under the owner's delegation of 2026-10-31 (\"Ask fable or decide yourself\")"
     },
     {
       "path": "src/fleet.rs",
@@ -2733,12 +2734,12 @@
       "scope": "function",
       "lint": "clippy::cast_possible_truncation",
       "metrics": {
-        "scope_lines": 440,
+        "scope_lines": 447,
         "nested_items": 2,
-        "syntax_facts": 851
+        "syntax_facts": 877
       },
       "rationale": "The fleet tick runs the count-balance pass when it is not lagging (edge change #236): one condition and one fallback call in the rebalance block; the pass itself lives in src/fleet/count_balance.rs.",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-31 for shard count balancing"
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-31 for shard count balancing; the count-override field under the owner's delegation of 2026-10-31 (\"Ask fable or decide yourself\")"
     },
     {
       "path": "src/fleet.rs",
@@ -2746,12 +2747,12 @@
       "scope": "function",
       "lint": "clippy::let_underscore_must_use",
       "metrics": {
-        "scope_lines": 440,
+        "scope_lines": 447,
         "nested_items": 2,
-        "syntax_facts": 851
+        "syntax_facts": 877
       },
       "rationale": "The fleet tick runs the count-balance pass when it is not lagging (edge change #236): one condition and one fallback call in the rebalance block; the pass itself lives in src/fleet/count_balance.rs.",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-31 for shard count balancing"
+      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-10-31 for shard count balancing; the count-override field under the owner's delegation of 2026-10-31 (\"Ask fable or decide yourself\")"
     }
   ],
   "schema": 1

@@ -72,9 +72,10 @@ pub(crate) fn pick(
 /// healthy. A count move hands over a share of the work, not a backlog, so
 /// the lag move's stricter half-threshold rule does not apply.
 pub(crate) fn plan(
-    (shards, ownership): (
+    (shards, ownership, overrides): (
         &crate::shard_directory::ShardDirectory,
         &crate::ownership::OwnershipService,
+        &super::Overrides,
     ),
     active: &[String],
     me: &str,
@@ -86,7 +87,6 @@ pub(crate) fn plan(
         .iter()
         .filter_map(|prefix| Some((prefix.clone(), ownership.effective_owner(prefix)?)))
         .collect();
-    let overridden = ownership.overrides();
     pick(
         &owners,
         active,
@@ -96,13 +96,20 @@ pub(crate) fn plan(
                 .get(member)
                 .is_some_and(|(_, lag)| *lag <= lag_threshold_secs)
         },
-        |prefix| !overridden.contains_key(prefix),
+        |prefix| movable(overrides, prefix),
     )
+}
+
+/// Whether a count move may move `prefix`: it has no override, or its
+/// override is a count move's own placement. A lag move's override stays
+/// until return-home drops it.
+fn movable(overrides: &super::Overrides, prefix: &str) -> bool {
+    !overrides.entries.contains_key(prefix) || overrides.counted.contains(prefix)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::pick;
+    use super::{movable, pick};
 
     fn members(n: usize) -> Vec<String> {
         (1..=n).map(|k| format!("streams-{k}")).collect()
@@ -179,6 +186,21 @@ mod tests {
             assert!(largest <= 64_usize.div_ceil(n), "{n} members: {largest}");
             assert!(moves <= 64, "{n} members: {moves} moves");
         }
+    }
+
+    #[test]
+    fn a_count_placement_may_move_again_and_a_lag_move_may_not() {
+        let entry = || super::super::OverrideEntry {
+            to: "streams-2".to_owned(),
+            ms: 0,
+        };
+        let mut overrides = super::super::Overrides::default();
+        overrides.entries.insert("00".to_owned(), entry());
+        overrides.entries.insert("01".to_owned(), entry());
+        overrides.counted.insert("00".to_owned());
+        assert!(movable(&overrides, "00"), "a count move's placement");
+        assert!(!movable(&overrides, "01"), "a lag move's override");
+        assert!(movable(&overrides, "10"), "no override");
     }
 
     #[test]

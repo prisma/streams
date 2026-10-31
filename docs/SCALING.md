@@ -245,8 +245,9 @@ needs a stalled shard. So an instance that is not lagging, and owns more
 than the fair share ceil(shards / members), writes the same override for
 one of its shards (preferring one whose rendezvous home is the target)
 to a member below the share that is not lagging, once per move cooldown,
-until every member is within the share. Only a shard with no override
-moves, so a count move never undoes a lag move. Instances past the share take
+until every member is within the share. `fleet/overrides.json` lists its
+prefix in `counted`: return-home leaves it, and a later count move may move it again, while
+a lag move's override moves only by return-home. Instances past the share take
 different targets at the same tick: each its own rank, by name, among
 them, of the members below the share ordered by fewest shards. Return-home admits a return only
 within the same share, so the two passes never undo each other.

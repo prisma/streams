@@ -21,30 +21,15 @@ mod count_balance;
 pub(crate) mod drain;
 mod heartbeat;
 mod outbox;
+mod overrides;
 mod planning;
 /// PR 6.1.1-C: the coordination store lives in its own module; this file is
 /// the fleet loop's home and must not also be the storage layer.
 pub(crate) mod repository;
 mod standing;
 pub(crate) use heartbeat::Heartbeat;
+pub(crate) use overrides::{OverrideEntry, Overrides};
 pub(crate) use repository::{FleetDocument, FleetRepository};
-/// fleet/overrides.json: rebalancer shard moves, CAS-updated by the
-/// initiating (laggard) instance, read by everyone each fleet tick.
-#[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
-pub(crate) struct Overrides {
-    #[serde(default)]
-    // mt-lint: allow(name-keyed-map): shard prefix -> owner override
-    pub entries: std::collections::HashMap<String, OverrideEntry>,
-    /// Pending-event outbox (§12.4) — same contract as Desired's.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pending_events: Vec<crate::ops::OpsEvent>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
-pub(crate) struct OverrideEntry {
-    pub to: String,
-    pub ms: i64,
-}
 /// Rebalance target: the coolest peer that is HEALTHY and a member of `active`. A lagging
 /// peer only hands the backlog around (ladder pass 3: 7 moves in 10 minutes of ping-pong), and
 /// every ring reader ignores an override to a non-member (`effective_owner`, the router mirror),
@@ -753,7 +738,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                     let mut pending_returns: std::collections::HashMap<String, usize> =
                         std::collections::HashMap::new();
                     for (prefix, e) in ov.entries.iter() {
-                        if now_ms() - e.ms < return_secs * 1000 {
+                        if ov.counted.contains(prefix) || now_ms() - e.ms < return_secs * 1000 {
                             continue;
                         }
                         if active.is_empty() {
@@ -811,6 +796,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                                 );
                             }
                             next.entries.remove(k);
+                            next.counted.remove(k);
                         }
                         if fleet_io!(repository.replace_document(
                                 FleetDocument::Overrides,
@@ -863,7 +849,8 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                                 }
                             })
                     };
-                    if let Some((prefix, to)) = victim.zip(target).or_else(|| (!lagging).then(|| count_balance::plan((&state.shards, &state.ownership), &active, &cfg.instance, &peer_load, rebalance_lag_secs)).flatten()) {
+                    let counted = victim.is_none() || target.is_none();
+                    if let Some((prefix, to)) = victim.zip(target).or_else(|| (!lagging).then(|| count_balance::plan((&state.shards, &state.ownership, &ov), &active, &cfg.instance, &peer_load, rebalance_lag_secs)).flatten()) {
                         if ov.pending_events.len() < 64 {
                             ov.pending_events.push(
                                 crate::ops::OpsEvent::new(
@@ -881,6 +868,11 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                                 ms: now_ms(),
                             },
                         );
+                        if counted {
+                            ov.counted.insert(prefix.clone());
+                        } else {
+                            ov.counted.remove(&prefix);
+                        }
                         let committed = fleet_io!(repository.replace_document(
                                 FleetDocument::Overrides,
                                 serde_json::to_vec(&ov).unwrap(),
