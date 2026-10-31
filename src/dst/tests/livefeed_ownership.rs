@@ -3,8 +3,8 @@
 use super::fixture_failpoints::{FailpointGuard, gap_lock};
 use super::fixture_http::{http_rig, http_rig_owner, http_rig_owner_at, http_rig_owner_whole};
 use super::fixture_livefeed::{
-    StallSteps, hub_append_lf, hub_sse_collect, lf_connect, lf_record_and_status, seal_ok,
-    split_and_await, wait_parked, watched_test,
+    StallSteps, hub_append_lf, hub_sse_collect, lf_connect, lf_connect_unforwarded,
+    lf_record_and_status, seal_ok, split_and_await, wait_parked, watched_test,
 };
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::RigRuntime;
@@ -138,7 +138,7 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
     assert!(a1.contains("\"h\":2"), "sub1 established:\n{a1}");
     state_b.ownership.set_override(&p_child, "inst-a");
     {
-        let mut sub2 = lf_connect(addr_b, "xmv", "?cursor=beginning").await;
+        let mut sub2 = lf_connect_unforwarded(addr_b, "xmv", "?cursor=beginning").await;
         let (acc, _) = hub_sse_collect(&mut sub2, 15, |t| t.contains("HTTP/1.1 409")).await;
         // Round-11.3: the connect-time answer is the TYPED routing
         // refusal (the gateway reroutes the retry; the product

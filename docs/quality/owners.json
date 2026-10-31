@@ -211,6 +211,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::forward_to_owner",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Forwarding to a stream's owner, over two instances and one store: a non-owner forwards a data-plane request once to the owner whose URL the fleet published and answers with the owner's response, a forwarded request is answered with its 409 and never forwarded again, and without the owner's URL or with the owner unreachable the non-owner answers its 409; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/forward_to_owner.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::scaler_loop",
       "path": "src/dst/dst_tests.rs",
       "reason": "The scaler loop's scenario (NEXT-WORK section 10): Scaler::start over a running HTTP rig evaluates a hot segment on its own cadence and splits it at its load-weighted median in the pass that follows, inside the pass deadline; the scaler mutation owner's filter selects it (approved 2026-10-01); compiler and the full DST suite exercise the module.",

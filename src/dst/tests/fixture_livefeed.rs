@@ -166,9 +166,28 @@ pub(super) async fn lf_connect(
     name: &str,
     query: &str,
 ) -> tokio::net::TcpStream {
+    lf_connect_with(addr, name, query, "").await
+}
+
+/// [`lf_connect`] marked as already forwarded, so a non-owner answers it
+/// itself instead of forwarding it to the owner.
+pub(super) async fn lf_connect_unforwarded(
+    addr: std::net::SocketAddr,
+    name: &str,
+    query: &str,
+) -> tokio::net::TcpStream {
+    lf_connect_with(addr, name, query, "streams-forwarded: test\r\n").await
+}
+
+async fn lf_connect_with(
+    addr: std::net::SocketAddr,
+    name: &str,
+    query: &str,
+    extra: &str,
+) -> tokio::net::TcpStream {
     use tokio::io::AsyncWriteExt;
     let req = format!(
-        "GET /v1/streams/{name}/records:sse{query} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
+        "GET /v1/streams/{name}/records:sse{query} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n{extra}\r\n"
     );
     let connect = async {
         let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();

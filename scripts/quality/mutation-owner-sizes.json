@@ -64,6 +64,7 @@
     "http": 252,
     "http_close_identity": 4,
     "http_debug": 6,
+    "http_forward": 50,
     "http_internal_routes": 15,
     "http_maintenance_view": 1,
     "http_read": 106,
