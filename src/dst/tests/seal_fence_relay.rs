@@ -319,7 +319,10 @@ async fn a_non_owner_raw_close_takeover_installs_then_redirects() {
     let p = pair(mem()).await;
     let old = stage_owed(&p, "rly2", false).await;
     let fin_b = br#"[{"fin":"b"}]"#;
-    let (st, headers, body) = hreq(p.addr_a, "POST", "/v1/stream/rly2", &[CT, CLOSE], fin_b).await;
+    // Marked as already forwarded, so A answers the redirect itself.
+    let unforwarded = ("streams-forwarded", "test");
+    let headers = [CT, CLOSE, unforwarded];
+    let (st, headers, body) = hreq(p.addr_a, "POST", "/v1/stream/rly2", &headers, fin_b).await;
     assert_eq!(st, 409, "{}", String::from_utf8_lossy(&body));
     assert_eq!(
         headers.get("streams-replay-to").map(String::as_str),
@@ -345,6 +348,39 @@ async fn a_non_owner_raw_close_takeover_installs_then_redirects() {
         "{held:?}"
     );
     no_writer(&p.a, "rly2").await;
+    engine_shutdown(&p.b).await;
+}
+
+/// The same takeover, forwarded: A installs the new claim through B's
+/// fence and forwards the close to B, which writes the final once and
+/// completes the seal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_non_owner_raw_close_takeover_installs_then_forwards() {
+    let _serial = gap_lock().lock().await;
+    let p = pair(mem()).await;
+    stage_owed(&p, "rly2f", false).await;
+    let fin_b = br#"[{"fin":"b"}]"#;
+    let (st, headers, body) = hreq(p.addr_a, "POST", "/v1/stream/rly2f", &[CT, CLOSE], fin_b).await;
+    assert!(
+        st == 200 || st == 204,
+        "{st} {}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(
+        headers.get("streams-forwarded-to").map(String::as_str),
+        Some("inst-b")
+    );
+    assert!(
+        claim(&p.b, "rly2f").await.is_none(),
+        "the forwarded close completed the takeover's seal"
+    );
+    let held = records(p.addr_b, "rly2f").await;
+    assert_eq!(
+        (count_fin(&held, "a"), count_fin(&held, "b")),
+        (0, 1),
+        "{held:?}"
+    );
+    no_writer(&p.a, "rly2f").await;
     engine_shutdown(&p.b).await;
 }
 
