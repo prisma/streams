@@ -527,6 +527,10 @@ async fn ownership_handoff_moves_backlog_without_aba() {
         None,
         maint_b,
     );
+    // B's open seals the backlog it inherited at its first evaluation;
+    // paused, B's own sealer leaves the backlog where A's cleanup could
+    // reach it, which is what this test watches.
+    engine_b.pause_seal(true);
 
     // A's LATE shutdown — after B is serving — must not move B's state.
     engine_a.begin_close();
