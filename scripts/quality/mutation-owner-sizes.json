@@ -1,7 +1,7 @@
 {
   "command": "python3 scripts/quality/mutation_driver.py --measure-sizes",
-  "commit": "cd8e0a9113df2caf106341e2f0cc96be334c211e",
-  "measured_on": "2026-10-30",
+  "commit": "61c23542a3223c9bb7590710ea8ed1487ce57f8c",
+  "measured_on": "2026-10-31",
   "owners": {
     "admission_body": 14,
     "admission_fair_shed": 50,
@@ -64,6 +64,7 @@
     "http": 252,
     "http_close_identity": 4,
     "http_debug": 6,
+    "http_forward": 50,
     "http_internal_routes": 15,
     "http_maintenance_view": 1,
     "http_read": 106,
@@ -106,7 +107,7 @@
     "queue_config": 19,
     "queue_dispatch": 14,
     "queue_load": 23,
-    "queue_maintenance": 124,
+    "queue_maintenance": 125,
     "queue_receive": 41,
     "queue_settle": 34,
     "quota": 21,

@@ -125,7 +125,7 @@ use serde_json::json;
 use crate::crypto::{FrameHeader, StreamKey, derive_subkey, encrypt_frame};
 use crate::product::{
     internal_queue_cursor, internal_segment_scan, internal_sref, internal_sweep_segment,
-    verify_internal_target,
+    live_wait::data_plane, verify_internal_target,
 };
 use crate::registry::{Registry, StreamDesc};
 use crate::shard::{ShardEngine, now_ms};
@@ -598,7 +598,7 @@ async fn track_inflight(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let path_is_stream = crate::product::live_wait::data_plane(req.uri().path());
+    let path_is_stream = data_plane(req.uri().path());
     let ticket = state.admission.enter(path_is_stream);
     let cur = ticket.current();
     // Round-13 (review): the ORDINARY inflight admission gate moved
@@ -1038,23 +1038,16 @@ async fn debug_usage_reconcile(
 pub(crate) fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health_axum))
-        // R23-5 / R24-E: separate the two questions a platform asks.
-        //
-        // /livez  — is the process alive? (restart me if not)
-        // /readyz — INITIAL data-plane dependencies validated, and this
-        //           instance is not in a never-ready failure state.
-        //
-        // Deliberately narrower than "is storage usable?", which is what
-        // this comment used to claim. After one successful shard open,
-        // mid-life registry or storage failures do NOT unready the
-        // instance — that is intentional fleet behaviour (a store blip
-        // must not cascade every instance out of rotation), but it means
-        // /readyz is a BOOT readiness signal, not a live dependency
-        // probe. The startup canary behind it validates PUT and GET on
-        // the ops/shard/data buckets; it does not validate delete
-        // permission, LIST or range semantics, conditional puts, or
-        // every prefix the fleet and telemetry paths use. Mid-life
-        // degradation is surfaced through /v1/debug/store instead.
+        // R23-5 / R24-E: separate the two questions a platform asks. /livez: is the process
+        // alive (restart me if not)? /readyz: are the INITIAL data-plane dependencies validated,
+        // and is this instance out of every never-ready failure state? Deliberately narrower than
+        // "is storage usable?", which is what this comment used to claim. After one successful
+        // shard open, mid-life registry or storage failures do NOT unready the instance — that is
+        // intentional fleet behaviour (a store blip must not cascade every instance out of
+        // rotation), but it means /readyz is a BOOT readiness signal, not a live dependency probe.
+        // The startup canary behind it validates PUT and GET on the ops/shard/data buckets; it
+        // does not validate delete permission, LIST or range semantics, conditional puts, or every
+        // prefix the fleet and telemetry paths use. Mid-life degradation: /v1/debug/store.
         .route("/livez", get(|| async { "alive" }))
         .route("/readyz", get(health_axum))
         .route("/operator/billing.json", get(billing_readiness_axum))
@@ -1083,6 +1076,11 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
             crate::product::queues::guard_raw(&state, any(stream_entry)),
         )
         .merge(crate::product::queues::routes().merge(crate::product::live_wait::routes()))
+        // A request its stream's owner should serve is forwarded there once.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            forward::to_owner,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             track_inflight,
@@ -2788,6 +2786,7 @@ async fn internal_segment_read(
 
 mod close_identity;
 mod debug;
+mod forward;
 mod internal_routes;
 mod maintenance_view;
 #[path = "http/read.rs"]
