@@ -130,4 +130,12 @@ fn a_call_site_counts_exactly_the_reader_gets_while_it_runs() {
         (1, 23),
         "a later call is alone"
     );
+    // A gauge (the database's SST count) is attributed at its value.
+    recorder
+        .register_gauge("slatedb.db.sst_count", "test", &[])
+        .set(3);
+    let a = attribution();
+    let db = &a["tests/call-site-exact"];
+    assert_eq!(db["slatedb.db.sst_count{}"], 3, "{db}");
+    assert_eq!(db["prisma_streams.call_site.calls{site=site-b}"], 1, "{db}");
 }

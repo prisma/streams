@@ -577,11 +577,6 @@ impl ShardEngine {
         self.fold_state().before_batch().await?;
         let result = async {
             let handle = self.db.write(batch).await?;
-            self.layout
-                .seal
-                .counters
-                .wal_flushes_index
-                .fetch_add(1, Ordering::Relaxed);
             self.wal_flush().await?;
             handle.await_durable().await
         }
