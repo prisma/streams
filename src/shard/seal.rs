@@ -203,7 +203,8 @@ pub(crate) enum Trigger {
     Age,
     /// The idle release, or a test.
     Requested,
-    /// The previous seal left pages behind for its budget.
+    /// The previous seal left pages behind for its budget, or the open
+    /// found pages a previous owner left unsealed.
     Deferred,
 }
 
@@ -324,7 +325,8 @@ pub(crate) struct SealState {
     /// consecutive failure.
     retry_after: Mutex<Option<(Instant, Duration)>>,
     next_seq: AtomicU64,
-    /// Set by a seal its budget cut short: the loop seals again at its next
+    /// Set by a seal its budget cut short, or by an open that found pages a
+    /// previous owner left unsealed: the loop seals again at its next
     /// evaluation, whatever the triggers say.
     deferred: std::sync::atomic::AtomicBool,
     /// The last stream a budget-capped seal took: the next snapshot starts
@@ -400,6 +402,15 @@ impl SealState {
             .lock()
             .unwrap()
             .get_or_insert_with(Instant::now);
+    }
+
+    /// Seal at the loop's next evaluation, whatever the triggers say: the
+    /// open found pages a previous owner left unsealed. Their age restarts
+    /// at the open, so the age trigger alone would leave a moved shard's
+    /// backlog unsealed, counted as maintenance without progress, for
+    /// `age_seal`.
+    pub(crate) fn seal_inherited(&self) {
+        self.deferred.store(true, Ordering::Release);
     }
 
     /// Wait until the open's rebuild of the directory finished.

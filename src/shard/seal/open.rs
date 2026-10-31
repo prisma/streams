@@ -35,6 +35,7 @@ impl ShardEngine {
         sp.publish_directory_rebuilt(dir);
         if !self.layout.unsealed().is_empty() {
             sp.note_unsealed();
+            sp.seal_inherited();
         }
         Ok(())
     }

@@ -6746,7 +6746,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "5aedb2b77a218dce8bfad0e56cbf68c5f159b345ff446d5974cba899d42abb5b",
+    "function_sha256": "098c55014c1d41e9ee9a0c53b1d1b21ef1d0a3ac3e97020536fc0b91aefc292d",
     "mechanisms": [],
     "configuration": [
       "let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();"
