@@ -46,7 +46,7 @@ impl AdmissionController {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{AdmissionController, ForwardTicket, Ordering};
 
     fn controller(max_inflight: i64) -> AdmissionController {
         AdmissionController::new(crate::admission::AdmissionKnobs {

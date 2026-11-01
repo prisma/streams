@@ -7,7 +7,13 @@
 //! token; SR3-1 makes the two EXCLUSIVE at runtime.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
+use std::time::Duration;
+
+/// How long a forward to a stream's owner waits to connect (edge change
+/// #235): past it nothing was sent, and the client gets the non-owner's
+/// `409` to replay.
+pub(crate) const FORWARD_CONNECT: Duration = Duration::from_secs(1);
 
 /// An expiry-aware workload-token source: `force_refresh` re-reads the
 /// rotated credential (peer 401) instead of serving the cache.
@@ -24,6 +30,9 @@ struct Inner {
     // mt-lint: allow(name-keyed-map): instance name -> base URL
     peer_urls: RwLock<HashMap<String, String>>,
     credentials: PeerCredentials,
+    /// The transport of forwards to a stream's owner, built at the first
+    /// forward; `None` inside when it could not be built.
+    forward: OnceLock<Option<reqwest::Client>>,
 }
 
 /// Workload identity takes precedence at construction. The static bridge
@@ -48,6 +57,7 @@ impl PeerClient {
             inner: Arc::new(Inner {
                 peer_urls: RwLock::new(HashMap::new()),
                 credentials,
+                forward: OnceLock::new(),
             }),
         }
     }
@@ -77,6 +87,25 @@ impl PeerClient {
             .peer_urls
             .read()
             .map_or(true, |peers| !peers.is_empty())
+    }
+
+    /// The transport of forwards to a stream's owner (`http::forward`): the
+    /// peer pool's settings (HTTP/1.1, idle connections closed within 4 s,
+    /// nodelay) with a [`FORWARD_CONNECT`] connect bound, one per instance.
+    /// `None` when it cannot be built; a forward then answers its `409`.
+    pub(crate) fn forward_client(&self) -> Option<&reqwest::Client> {
+        self.inner
+            .forward
+            .get_or_init(|| {
+                reqwest::Client::builder()
+                    .http1_only()
+                    .pool_idle_timeout(Duration::from_secs(4))
+                    .tcp_nodelay(true)
+                    .connect_timeout(FORWARD_CONNECT)
+                    .build()
+                    .ok()
+            })
+            .as_ref()
     }
 
     /// Replace the trusted peer table (the fleet loop, every tick).

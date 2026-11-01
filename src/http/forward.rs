@@ -35,7 +35,8 @@
 //!   is answered `503 forward_failed` with `Retry-After: 1`, never with the
 //!   `409` a client would replay as new. It is not marked `retryable`: the
 //!   SDK then treats a plain append's outcome as unknown, which it is.
-//! - **Bounded.** The owner has 1 s to accept the connection; past it
+//! - **Bounded.** The owner has 1 s to accept the connection
+//!   (`peer::FORWARD_CONNECT`, one transport per instance); past it
 //!   nothing was sent and the client gets the `409`. Its answer must begin
 //!   within its shard-open wait, the request's own wait and 5 s
 //!   ([`answer_bound`]); past that, `503 forward_failed`. Forwards waiting
@@ -47,7 +48,7 @@
 //!   next time.
 
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -70,10 +71,6 @@ const FORWARDED_TO: &str = "streams-forwarded-to";
 /// The most body bytes a request keeps for a forward once its handler has
 /// read them: 64 KiB, about 32 MiB at the default 512 requests in flight.
 const KEPT_BYTES: usize = 64 << 10;
-
-/// How long a forward waits to connect to the owner. Past it nothing was
-/// sent, and the client gets this instance's `409` to replay.
-const CONNECT_BOUND: Duration = Duration::from_secs(1);
 
 /// How long, past the owner's shard-open wait and the request's own wait, a
 /// forward waits for the owner's answer to begin. Past it the owner may
@@ -248,7 +245,7 @@ async fn forward(
     (owner, base): (&str, &str),
     refused: Response,
 ) -> Response {
-    let Some(client) = client() else {
+    let Some(client) = state.peer.forward_client() else {
         return refused;
     };
     let open_wait = Duration::from_millis(state.config.shard.open_wait_ms);
@@ -297,24 +294,6 @@ fn failed() -> Response {
     failed
 }
 
-/// The forwarding transport: the peer pool's (HTTP/1.1, idle connections
-/// closed within 4 s), with the connect bound. `None` when it cannot be
-/// built; a forward then answers its `409`.
-fn client() -> Option<&'static reqwest::Client> {
-    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .http1_only()
-                .pool_idle_timeout(Duration::from_secs(4))
-                .tcp_nodelay(true)
-                .connect_timeout(CONNECT_BOUND)
-                .build()
-                .ok()
-        })
-        .as_ref()
-}
-
 /// How long the owner may take to begin its answer to a request for `uri`:
 /// its shard-open wait, the request's own wait, and the margin.
 fn answer_bound(uri: &Uri, open_wait: Duration) -> Duration {
@@ -330,10 +309,9 @@ fn requested_wait(uri: &Uri) -> Duration {
     let path = uri.path();
     let query = uri.query().unwrap_or("");
     let waits = query.split('&').any(|pair| pair == "live=long-poll")
-        || matches!(
-            crate::product::strip_verb(path).1,
-            Some("long-poll" | "pull")
-        )
+        || path
+            .rsplit_once(':')
+            .is_some_and(|(_, verb)| matches!(verb, "long-poll" | "pull"))
         || (path.contains("/watches/") && path.contains("/keys/"));
     if !waits {
         return Duration::ZERO;
@@ -390,7 +368,8 @@ fn hop_by_hop(name: &HeaderName) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{ANSWER_MARGIN, Body, Duration, FORWARDED, HeaderName, Request, answer_bound};
+    use super::{engaged, hop_by_hop};
 
     /// The layer takes part only in a stream request not forwarded already,
     /// and only on an instance the fleet gave peers: a fleet-off

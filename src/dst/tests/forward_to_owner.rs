@@ -389,10 +389,11 @@ async fn an_owner_that_drops_a_forwarded_request_unanswered_is_answered_503() {
     let (owner, url) = owner_stand_in().await;
     p.a.peer.set_peer("inst-b", &url);
 
-    let ((status, headers, body), ()) = tokio::join!(
+    let ((status, headers, body), ()) = futures_util::future::join(
         hreq(p.addr_a, "POST", "/v1/stream/fwd6", &[CT], br#"[{"n":1}]"#),
         async { drop(accept_unanswered(&owner).await) },
-    );
+    )
+    .await;
     assert_eq!(
         (
             status,
@@ -435,13 +436,14 @@ async fn a_silent_owner_is_answered_503_within_the_forward_bound() {
     let bound = answer_bound(&p.a);
 
     let started = Instant::now();
-    let (answer, _held) = tokio::join!(
+    let (answer, _held) = futures_util::future::join(
         tokio::time::timeout(
             bound + Duration::from_secs(5),
             hreq(p.addr_a, "POST", "/v1/stream/fwd7", &[CT], br#"[{"n":1}]"#),
         ),
         accept_unanswered(&owner),
-    );
+    )
+    .await;
     let elapsed = started.elapsed();
     let Ok((status, headers, body)) = answer else {
         panic!(
@@ -559,7 +561,8 @@ async fn forwards_to_a_silent_owner_leave_the_non_owners_own_streams_served() {
         let answer = hreq(addr, "POST", &path, &[CT], br#"[{"n":2}]"#).await;
         (held, answer)
     };
-    let (statuses, (_held, (status, _, body))) = tokio::join!(forwards, own_append);
+    let (statuses, (_held, (status, _, body))) =
+        futures_util::future::join(forwards, own_append).await;
     assert!(
         status == 200 || status == 204,
         "the non-owner's own append is served beside the waiting forwards: {status} {}",
