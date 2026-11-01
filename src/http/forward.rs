@@ -279,13 +279,16 @@ fn relayed(answer: reqwest::Response, owner: &str) -> Response {
     response
 }
 
-/// The headers that describe one connection, not the request: never
-/// carried across a forward. `content-length` is carried: the body passes
-/// through unchanged, and its declared length is what the receiver checks.
+/// The headers that describe one connection, not the request (RFC 9110
+/// §7.6.1, with the proxy credentials and the host the client addressed):
+/// never carried across a forward. `content-length` is carried: the body
+/// passes through unchanged, and its declared length is what the receiver
+/// checks.
 fn hop_by_hop(name: &HeaderName) -> bool {
     matches!(
         name.as_str(),
         "connection"
+            | "proxy-connection"
             | "keep-alive"
             | "proxy-authenticate"
             | "proxy-authorization"
@@ -295,4 +298,51 @@ fn hop_by_hop(name: &HeaderName) -> bool {
             | "upgrade"
             | "host"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// RFC 9110 §7.6.1: the fields that describe one connection, and the
+    /// host the client addressed, are never carried across a forward; the
+    /// body's length and the request's credentials are.
+    #[test]
+    fn only_connection_fields_and_the_host_are_hop_by_hop() {
+        let dropped = [
+            "connection",
+            "proxy-connection",
+            "keep-alive",
+            "proxy-authenticate",
+            "proxy-authorization",
+            "te",
+            "trailer",
+            "transfer-encoding",
+            "upgrade",
+            "host",
+        ];
+        let carried = [
+            "content-length",
+            "content-type",
+            "authorization",
+            "stream-encryption-key",
+            "prisma-encryption-key",
+            "streams-replay-to",
+            "stream-next-offset",
+        ];
+        let named = |names: &[&'static str]| -> Vec<(String, bool)> {
+            names
+                .iter()
+                .map(|name| (name.to_string(), hop_by_hop(&HeaderName::from_static(name))))
+                .collect()
+        };
+        assert_eq!(
+            named(&dropped),
+            dropped.map(|name| (name.to_string(), true)).to_vec()
+        );
+        assert_eq!(
+            named(&carried),
+            carried.map(|name| (name.to_string(), false)).to_vec()
+        );
+    }
 }
