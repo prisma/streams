@@ -33,9 +33,11 @@
 //!   ownership, so a forward sends at most the 64 KiB already read, from
 //!   memory: a client's upload is never inside the forward's answer bound.
 //! - **What a failure means.** The owner's unreachable socket answers the
-//!   original `409`, so the client can still replay. A forward that fails
-//!   after the request was sent may have been applied by the owner, so it
-//!   is answered `503 forward_failed` with `Retry-After: 1`, never with the
+//!   original `409`, so the client can still replay, and so does a read
+//!   (`GET`, `HEAD`) that fails or times out after it was sent: it has no
+//!   side effect. Any other forward that fails after the request was sent
+//!   may have been applied by the owner, so it is answered
+//!   `503 forward_failed` with `Retry-After: 1`, never with the
 //!   `409` a client would replay as new. It is not marked `retryable`: the
 //!   SDK then treats a plain append's outcome as unknown, which it is.
 //! - **Bounded.** The owner has 1 s to accept the connection
@@ -253,6 +255,7 @@ async fn forward(
     };
     let open_wait = Duration::from_millis(state.config.shard.open_wait_ms);
     let bound = answer_bound(&held.uri, open_wait);
+    let read = matches!(held.method, Method::GET | Method::HEAD);
     let target = held
         .uri
         .path_and_query()
@@ -274,13 +277,21 @@ async fn forward(
         }
         Ok(Err(error)) => {
             tracing::warn!(%owner, "forward to the stream's owner failed: {error}");
-            failed()
+            unanswered(read, refused)
         }
         Err(_) => {
             tracing::warn!(%owner, "the stream's owner did not answer a forward within {bound:?}");
-            failed()
+            unanswered(read, refused)
         }
     }
+}
+
+/// The answer to a forward the owner did not answer after it was sent: a
+/// read (`GET`, `HEAD`) has no side effect, so its `409` is safe to replay;
+/// anything else the owner may have applied, so the client is told to
+/// retry, never to replay it as new.
+fn unanswered(read: bool, refused: Response) -> Response {
+    if read { refused } else { failed() }
 }
 
 /// A forward that failed after it was sent: the owner may have applied it,

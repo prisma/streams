@@ -422,6 +422,37 @@ async fn an_owner_that_drops_a_forwarded_request_unanswered_is_answered_503() {
     engine_shutdown(&p.b).await;
 }
 
+/// A read has no side effect, so a forwarded read the owner drops
+/// unanswered is safe to replay: the non-owner answers its own `409` with
+/// `Streams-Replay-To` (the owner's decision of 2026-11-01), not
+/// `503 forward_failed`. A raw long-poll here: a non-owner serves no wait.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_forwarded_read_the_owner_drops_keeps_its_409() {
+    let p = pair().await;
+    create(p.addr_b, "fwd11").await;
+    let (owner, url) = owner_stand_in().await;
+    p.a.peer.set_peer("inst-b", &url);
+
+    let target = "/v1/stream/fwd11?offset=-1&live=long-poll&timeout=1s";
+    let ((status, headers, body), ()) =
+        futures_util::future::join(hreq(p.addr_a, "GET", target, &[], b""), async {
+            drop(accept_unanswered(&owner).await)
+        })
+        .await;
+    assert_eq!(
+        (
+            status,
+            headers.get("streams-replay-to").map(String::as_str),
+            headers.get("streams-forwarded-to"),
+        ),
+        (409, Some("inst-b"), None),
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    assert!(String::from_utf8_lossy(&body).contains("not_ring_owner"));
+    engine_shutdown(&p.b).await;
+}
+
 /// An owner that accepts a forward and never answers (a stopped process, or
 /// a stale URL another listener now holds) holds it no longer than the
 /// forward's bound, the owner's shard-open wait and 5 s for a request that
