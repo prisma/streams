@@ -128,6 +128,47 @@ class ForkPins(unittest.TestCase):
     def test_a_commit_that_differs_from_upstream_fails(self):
         self.assertEqual(self.problems(self.altered), [f'dep fork commit {self.altered} is not upstream {self.fix}'])
 
+    def listed_fork(self, listing, touch='fork/sync.sh', extra=None):
+        """A fork of base: a docs commit touching `touch`, then the PR's
+        patch, then (when `extra`) a fork-only commit; FORK.md says
+        `listing`."""
+        run(self.fork, 'checkout', '--quiet', '-B', 'listed', self.base)
+        (self.fork / touch).parent.mkdir(parents=True, exist_ok=True)
+        (self.fork / 'FORK.md').write_text(listing)
+        (self.fork / touch).write_text('docs\n')
+        run(self.fork, 'add', '.'); run(self.fork, 'commit', '--quiet', '-m', 'docs')
+        docs = run(self.fork, 'rev-parse', 'HEAD')
+        run(self.fork, 'cherry-pick', self.fix)
+        pr = run(self.fork, 'rev-parse', 'HEAD')
+        shas = [docs, pr]
+        if extra:
+            (self.fork / 'e.txt').write_text(extra)
+            run(self.fork, 'add', '.'); run(self.fork, 'commit', '--quiet', '-m', 'ours')
+            shas.append(run(self.fork, 'rev-parse', 'HEAD'))
+        return shas
+
+    def test_a_listed_fork_passes(self):
+        docs, pr, own = self.listed_fork('carries PR #7 and issue #9\n', extra='e\n')
+        carries = [{'docs': True, 'fork': docs}, {'pr': 7, 'pr_diff': True, 'fork': pr},
+                   {'issue': 9, 'fork': own}]
+        self.assertEqual(self.problems(own, carries), [])
+
+    def test_a_docs_commit_that_touches_code_fails(self):
+        docs, pr = self.listed_fork('PR #7\n', touch='src/x.rs')
+        problems = self.problems(pr, [{'docs': True}, {'pr': 7, 'pr_diff': True}])
+        self.assertEqual(problems, [f"dep docs commit {docs} touches ['FORK.md', 'src/x.rs']"])
+
+    def test_a_fork_only_commit_must_be_named_and_listed(self):
+        docs, pr, own = self.listed_fork('PR #7\n', extra='e\n')
+        problems = self.problems(own, [{'docs': True}, {'pr': 7, 'pr_diff': True}, {'issue': 9}])
+        self.assertEqual(problems, ['dep: FORK.md does not list #9',
+                                    f'dep fork commit {own} must be named: it matches no upstream commit'])
+
+    def test_a_commit_that_is_not_its_prs_diff_fails(self):
+        docs, pr, own = self.listed_fork('PR #7\n', extra='e\n')
+        problems = self.problems(own, [{'docs': True}, {'pr': 7}, {'pr': 7, 'pr_diff': True}])
+        self.assertIn(f'dep fork commit {own} is not upstream PR #7', problems)
+
     def test_a_named_commit_outside_its_pr_fails(self):
         problems = self.problems(self.good, [{'pr': 7, 'commit': self.unrelated}])
         self.assertIn(f'dep: {self.unrelated} is not a commit of upstream PR #7', problems)

@@ -92,16 +92,22 @@ def git(cache, *args):
 
 
 def fork_problems(name, pin, cache):
-    """A fork pin's revision is its upstream base plus exactly the upstream
-    commits it names, in order, each one a commit of the upstream pull
-    request it names (compared by `git patch-id --stable`, so a
-    cherry-pick's added trailer does not count). Fetches into `cache`."""
+    """A fork pin's revision is its upstream base plus exactly the commits
+    `carries` lists, in order, none a merge. An entry may name the fork
+    commit itself (`fork`), and says what it is: `docs` (it touches only
+    FORK.md and fork/), or an upstream `pr` or `issue`. A `commit` is an
+    upstream commit of that PR whose patch (`git patch-id --stable`, so a
+    cherry-pick's trailer does not count) the fork commit must equal;
+    `pr_diff` asks the fork commit to equal the PR's whole diff. An entry
+    with neither must name its fork commit. When the fork has a FORK.md,
+    every PR or issue it carries is listed there. Fetches into `cache`."""
     carries = pin.get('carries', [])
     try:
         if not cache.exists():
             subprocess.run(['git', 'init', '--quiet', '--bare', str(cache)], check=True)
-        heads = [f"+refs/pull/{c['pr']}/head:refs/pr/{c['pr']}" for c in carries]
-        named = [c['commit'] for c in carries]
+        prs = sorted({c['pr'] for c in carries if 'pr' in c})
+        heads = [f"+refs/pull/{n}/head:refs/pr/{n}" for n in prs]
+        named = [c['commit'] for c in carries if 'commit' in c]
         git(cache, 'fetch', '--quiet', '--no-tags', pin['upstream'], pin['base'], *named, *heads)
         git(cache, 'fetch', '--quiet', '--no-tags', pin['git'], pin['rev'])
         carried = git(cache, 'rev-list', '--reverse', '--first-parent',
@@ -110,24 +116,55 @@ def fork_problems(name, pin, cache):
             return [f"{name} fork revision does not descend from its upstream base {pin['base']}"]
         if len(carried) != len(carries):
             return [f'{name} fork carries {len(carried)} commits over its base, not the {len(carries)} it names']
+        listing = subprocess.run(['git', '--git-dir', str(cache), 'show', f"{pin['rev']}:FORK.md"],
+                                 capture_output=True, text=True)
+        fork_md = listing.stdout if listing.returncode == 0 else None
         problems = []
-        for commit, named in zip(carried, carries):
-            if git(cache, 'rev-list', '--count', '--merges', f'{commit}^!') != '0':
-                problems.append(f'{name} fork commit {commit} is a merge')
-                continue
-            in_pr = subprocess.run(['git', '--git-dir', str(cache), 'merge-base', '--is-ancestor',
-                                    named['commit'], f"refs/pr/{named['pr']}"]).returncode == 0
-            if not in_pr:
-                problems.append(f"{name}: {named['commit']} is not a commit of upstream PR #{named['pr']}")
-            if patch_id(cache, commit) != patch_id(cache, named['commit']):
-                problems.append(f"{name} fork commit {commit} is not upstream {named['commit']}")
+        for commit, entry in zip(carried, carries):
+            problems.extend(carried_problems(name, cache, pin, commit, entry, fork_md))
         return problems
     except subprocess.CalledProcessError as error:
         return [f'{name} fork history could not be verified: {error.cmd}: {error.stderr.strip()}']
 
 
+def carried_problems(name, cache, pin, commit, entry, fork_md):
+    if git(cache, 'rev-list', '--count', '--merges', f'{commit}^!') != '0':
+        return [f'{name} fork commit {commit} is a merge']
+    problems = []
+    if 'fork' in entry and git(cache, 'rev-parse', entry['fork']) != commit:
+        problems.append(f"{name} fork commit {commit} is not the named {entry['fork']}")
+    if entry.get('docs'):
+        touched = git(cache, 'diff-tree', '--no-commit-id', '--name-only', '-r', commit).split()
+        if any(p != 'FORK.md' and not p.startswith('fork/') for p in touched):
+            problems.append(f'{name} docs commit {commit} touches {touched}')
+        return problems
+    ref = entry.get('pr') or entry.get('issue')
+    if ref is None:
+        return problems + [f'{name} fork commit {commit} names no upstream PR or issue']
+    if fork_md is not None and f'#{ref}' not in fork_md:
+        problems.append(f'{name}: FORK.md does not list #{ref}')
+    if 'commit' in entry:
+        in_pr = subprocess.run(['git', '--git-dir', str(cache), 'merge-base', '--is-ancestor',
+                                entry['commit'], f"refs/pr/{entry['pr']}"]).returncode == 0
+        if not in_pr:
+            problems.append(f"{name}: {entry['commit']} is not a commit of upstream PR #{entry['pr']}")
+        if patch_id(cache, commit) != patch_id(cache, entry['commit']):
+            problems.append(f"{name} fork commit {commit} is not upstream {entry['commit']}")
+    elif entry.get('pr_diff'):
+        head = f"refs/pr/{entry['pr']}"
+        whole = git(cache, 'diff', git(cache, 'merge-base', pin['base'], head), head)
+        if patch_id(cache, commit) != patch_id_of(whole):
+            problems.append(f"{name} fork commit {commit} is not upstream PR #{entry['pr']}")
+    elif 'fork' not in entry:
+        problems.append(f'{name} fork commit {commit} must be named: it matches no upstream commit')
+    return problems
+
+
 def patch_id(cache, commit):
-    diff = git(cache, 'show', '--format=', commit)
+    return patch_id_of(git(cache, 'show', '--format=', commit))
+
+
+def patch_id_of(diff):
     out = subprocess.run(['git', 'patch-id', '--stable'], input=diff + '\n', check=True,
                          capture_output=True, text=True).stdout.split()
     return out[0] if out else ''
