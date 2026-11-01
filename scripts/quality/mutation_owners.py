@@ -117,6 +117,12 @@ OWNERS = (
     # windows and verdicts, and the leg that sheds the flooder first.
     owner('admission_fair_shed', 'src/admission/fair_shed.rs',
           'admission::fair_shed:: dst_tests::fair_shed:: dst_tests::weighted_shares::'),
+    # The cap on forwards waiting for their owners (edge change #235): the
+    # places a cap gives, and the leg where a silent owner's forwards leave
+    # the non-owner's own streams served.
+    owner('admission_forwards', 'src/admission/forwards.rs',
+          'admission::forwards:: '
+          'dst_tests::forward_to_owner::forwards_to_a_silent_owner_leave_the_non_owners_own_streams_served'),
     owner('quota_offered', 'src/quota/offered.rs',
           'quota::offered:: dst_tests::fair_shed:: dst_tests::weighted_shares::'),
     owner('consumer_pull_wait', 'src/application/consumer/pull_wait.rs',

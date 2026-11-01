@@ -5,6 +5,7 @@
   "owners": {
     "admission_body": 14,
     "admission_fair_shed": 50,
+    "admission_forwards": 11,
     "admission_limits": 27,
     "admission_park": 31,
     "admission_read_memory": 87,
@@ -65,7 +66,7 @@
     "http": 252,
     "http_close_identity": 4,
     "http_debug": 6,
-    "http_forward": 50,
+    "http_forward": 66,
     "http_internal_routes": 15,
     "http_maintenance_view": 1,
     "http_read": 106,
