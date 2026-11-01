@@ -527,10 +527,15 @@ async fn inherited(label: &str) -> (Rig, std::sync::Mutex<Oracle>) {
     (reopen(rig).await, oracle)
 }
 
-/// Wait until the engine has no unsealed backlog, failing after `within`.
+/// Wait until the engine has no unsealed backlog and has counted the seal
+/// that retired it (the backlog drops before the seal's counters move),
+/// failing after `within`.
 async fn wait_sealed(rig: &Rig, within: Duration) {
     let deadline = Instant::now() + within;
-    while rig.engine.maintenance_snapshot().unabsorbed_frame_bytes > 0 {
+    let seals = &rig.engine.layout.seal.counters.seals;
+    while rig.engine.maintenance_snapshot().unabsorbed_frame_bytes > 0
+        || seals.load(Ordering::Relaxed) == 0
+    {
         assert!(
             Instant::now() < deadline,
             "the inherited backlog was not sealed within {within:?}"
