@@ -1285,7 +1285,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "34a50fe7c6cc1875569a030fd5249433cf832ad8d392da18ccff5a8f017dc272",
+    "function_sha256": "ceedf3a9410cd337de87ffef0eed5b61ff0261c647268cb5ceee0d25c9ee351e",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/forward_to_owner.rs",
@@ -1296,7 +1296,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "ca316e43c2f7515541c585ff7ea7c0572aff36e8ad733bd680804140a0925c50",
+    "function_sha256": "f0e72aadb415ee60870d00597662e2e7b57321cf91f43fb45833c0bb21ccb3c9",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/forward_to_owner.rs",
@@ -2408,6 +2408,17 @@
     "scenarios": [
       "SEL-017"
     ]
+  },
+  {
+    "name": "a_second_owner_bounce_is_relayed_with_its_replay_target",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "d3136070c5bf49d0ddf382f768b1258b0fa20f94bbfb83553b03b93b90e89bdb",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/forward_to_owner.rs",
+    "scenarios": []
   },
   {
     "name": "a_second_ownership_move_leaves_the_takeover_resumable_and_unchased",

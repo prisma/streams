@@ -43,7 +43,7 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::Response;
-use hyper::body::{Body as _, Frame, SizeHint};
+use hyper::body::Frame;
 
 use super::AppState;
 
@@ -163,15 +163,11 @@ fn lock(slot: &Mutex<Slot>) -> MutexGuard<'_, Slot> {
 struct Deferred {
     slot: Arc<Mutex<Slot>>,
     taken: Option<Body>,
-    end: bool,
-    hint: SizeHint,
 }
 
 impl Deferred {
     fn new(body: Body) -> Self {
         Self {
-            end: body.is_end_stream(),
-            hint: body.size_hint(),
             slot: Arc::new(Mutex::new(Slot {
                 body: Some(body),
                 ..Slot::default()
@@ -206,17 +202,6 @@ impl hyper::body::Body for Deferred {
         polled
     }
 
-    fn is_end_stream(&self) -> bool {
-        self.taken
-            .as_ref()
-            .map_or(self.end, hyper::body::Body::is_end_stream)
-    }
-
-    fn size_hint(&self) -> SizeHint {
-        self.taken
-            .as_ref()
-            .map_or_else(|| self.hint.clone(), hyper::body::Body::size_hint)
-    }
 }
 
 /// Send `held` to the owner `(name, base URL)`, once. `refused` is this

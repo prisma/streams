@@ -98,6 +98,20 @@ async fn a_non_owner_forwards_an_append_to_the_owner_once() {
         vec![serde_json::json!({"n": 1})],
         "the owner holds the record exactly once"
     );
+    let (_, at_owner, _) = hreq(
+        p.addr_b,
+        "GET",
+        "/v1/stream/fwd1",
+        &[("streams-forwarded", "test")],
+        b"",
+    )
+    .await;
+    assert_eq!(
+        headers.get("stream-next-offset"),
+        at_owner.get("stream-next-offset"),
+        "the owner's answer is relayed with its headers: the append's next offset"
+    );
+    assert!(at_owner.contains_key("stream-next-offset"));
 
     // A non-owner already serves reads through the owner's segment-read
     // relay, so a read needs no forward and is answered here.
@@ -120,8 +134,12 @@ async fn a_non_owner_forwards_a_product_append_to_the_owner() {
         preq(p.addr_a, "POST", "/v1/streams/fwdp/records", &key, b"x").await;
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
     assert_eq!(
-        headers.get("streams-forwarded-to").map(String::as_str),
-        Some("inst-b")
+        (
+            headers.get("streams-forwarded-to").map(String::as_str),
+            headers.get("content-type").map(String::as_str),
+        ),
+        (Some("inst-b"), Some("application/json")),
+        "the owner's JSON answer is relayed with its content type"
     );
     let (status, headers, body) =
         preq(p.addr_b, "POST", "/v1/streams/fwdp/records", &key, b"y").await;
@@ -176,6 +194,39 @@ async fn a_forwarded_request_is_answered_with_its_409_and_never_forwarded_again(
     assert!(
         records_at(p.addr_b, "fwd2").await.is_empty(),
         "a refused forward writes nothing"
+    );
+    engine_shutdown(&p.b).await;
+}
+
+/// The owner a non-owner forwards to may itself have lost the stream: B's
+/// ring says C owns it. B answers the forwarded request with its own 409
+/// and never forwards it again, and A relays that 409 as B answered it, so
+/// the client sees the owner B names in `Streams-Replay-To` and replays
+/// there; `Streams-Forwarded-To` names B, which answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_second_owner_bounce_is_relayed_with_its_replay_target() {
+    let p = pair().await;
+    create(p.addr_b, "fwd5").await;
+    let members = ["inst-a", "inst-b", "inst-c"].map(str::to_string).to_vec();
+    p.b.ownership.set_ring_active(members);
+    p.b.ownership.set_override("00", "inst-c");
+    p.b.ownership.set_override("", "inst-c");
+
+    let (status, headers, body) =
+        hreq(p.addr_a, "POST", "/v1/stream/fwd5", &[CT], br#"[{"n":1}]"#).await;
+    let body = String::from_utf8_lossy(&body);
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(
+        (
+            headers.get("streams-replay-to").map(String::as_str),
+            headers.get("streams-forwarded-to").map(String::as_str),
+            headers.get("content-type").map(String::as_str),
+        ),
+        (Some("inst-c"), Some("inst-b"), Some("application/json"))
+    );
+    assert!(
+        body.contains("not_ring_owner") && body.contains("inst-c"),
+        "{body}"
     );
     engine_shutdown(&p.b).await;
 }
