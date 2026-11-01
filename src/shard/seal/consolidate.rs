@@ -297,7 +297,7 @@ impl ShardEngine {
     }
 
     /// Publish (or withdraw) a consolidated chunk's directory entry.
-    fn publish_consolidated(&self, hash: [u8; 16], entry: &DirEntry, publish: bool) {
+    pub(super) fn publish_consolidated(&self, hash: [u8; 16], entry: &DirEntry, publish: bool) {
         let mut dir = self
             .layout
             .seal

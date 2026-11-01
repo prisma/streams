@@ -7,14 +7,17 @@
 (*                                                                         *)
 (* Two seal objects S1 = {a1, b1} and S2 = {a2, b2} hold chunks of streams *)
 (* A and B; a consolidation object K = {ka} supersedes a1 and a2; a third  *)
-(* seal object O = {b3} may be put by a writer that is then fenced.  Each  *)
-(* object's 'R' row (rc, -1 when absent) counts its unreclaimed chunks;    *)
+(* seal object O = {b3} may be put by a writer that is then fenced; the    *)
+(* segment cleaner's copy C = {ca1} copies a1 alone (`gc/clean.rs`: the    *)
+(* same span, which the newer object wins in reads, folds and reclaims).   *)
+(* Each object's 'R' row (rc, -1 when absent) counts its unreclaimed chunks;    *)
 (* a decrement to zero deletes the row and writes a 'G' row stamped with   *)
 (* the pin clock.                                                          *)
 (*                                                                         *)
 (* Actions: a seal's PUT and commit (refused for a purged stream), the     *)
 (* consolidation's PUT and its commit under the refcount lock (re-check:   *)
-(* its chunks are still the picks and its stream is not dead), a purge in  *)
+(* its chunks are still the picks and its stream is not dead), the         *)
+(* cleaner's PUT and commit under the same lock and re-check, a purge in   *)
 (* two steps (the committer's purge, then the reclaim under the lock,      *)
 (* which decrements the stream's maximal indexed chunks), a fold or merge  *)
 (* dropping decremented entries, the collector's delete of a 'G' object    *)
@@ -35,12 +38,14 @@ CONSTANTS Readers, MaxClock
 
 Streams == {"A", "B"}
 SealObjs == {"S1", "S2", "O"}
-Objs == SealObjs \cup {"K"}
-Chunks == {"a1", "b1", "a2", "b2", "b3", "ka"}
-Obj == [a1 |-> "S1", b1 |-> "S1", a2 |-> "S2", b2 |-> "S2", b3 |-> "O", ka |-> "K"]
-Strm == [a1 |-> "A", b1 |-> "B", a2 |-> "A", b2 |-> "B", b3 |-> "B", ka |-> "A"]
-\* The chunks a chunk supersedes (a consolidation copies whole chunks).
-Covers(c) == IF c = "ka" THEN {"a1", "a2"} ELSE {}
+Objs == SealObjs \cup {"K", "C"}
+Chunks == {"a1", "b1", "a2", "b2", "b3", "ka", "ca1"}
+Obj == [a1 |-> "S1", b1 |-> "S1", a2 |-> "S2", b2 |-> "S2", b3 |-> "O", ka |-> "K", ca1 |-> "C"]
+Strm == [a1 |-> "A", b1 |-> "B", a2 |-> "A", b2 |-> "B", b3 |-> "B", ka |-> "A", ca1 |-> "A"]
+\* The chunks a chunk supersedes: a consolidation copies whole chunks into
+\* one that covers strictly more; the cleaner's copy ca1 has a1's span and
+\* wins it as the newer object (`tiling`'s tie-break).
+Covers(c) == CASE c = "ka" -> {"a1", "a2"} [] c = "ca1" -> {"a1"} [] OTHER -> {}
 In(o) == {c \in Chunks : Obj[c] = o}
 \* Each reader reads one stream.
 RStream(r) == IF r = 1 THEN "A" ELSE "B"
@@ -73,8 +78,18 @@ Counted(o) == {c \in In(o) : committed[o] /\ ~Superseded(c) /\ ~Reclaimed(c)}
 Maximal(s) == {c \in indexed : Strm[c] = s /\ ~\E d \in indexed : c \in Covers(d)}
 
 \* ---- hooks the negative controls substitute ----
+\* The code chooses between ca1 and a1 (equal spans) in three places, each
+\* its own hook: `tile` (Picks), `sort_for_drop` (KeepCovered) and
+\* `live_entries` (ReclaimPicks).
 \* A reader's picks.
 Picks(s) == Maximal(s)
+\* A reclaim's picks.
+ReclaimPicks(s) == Maximal(s)
+\* A fold or merge may drop `c`: an indexed chunk covers it.
+KeepCovered(c) == \E d \in indexed : c \in Covers(d)
+\* The cleaner's re-check under the lock: the chunk it copies is still a
+\* pick of its stream and the stream has no 'H' row.
+CleanAdmits == "a1" \in Maximal("A") /\ dead["A"] = "live"
 \* The collector may delete `o`: no running read started at or before its
 \* zeroing.
 PinOK(o) == \A r \in Readers : rd[r].phase \in {"started", "planned"} => rd[r].start > zeroAt[o]
@@ -126,7 +141,7 @@ Decrement(by) ==
        /\ clock' = IF zero = {} THEN clock ELSE clock + 1
 
 Put(o) ==
-    /\ o \in SealObjs \/ (o = "K" /\ {"a1", "a2"} \subseteq indexed)
+    /\ o \in SealObjs \/ (o = "K" /\ {"a1", "a2"} \subseteq indexed) \/ (o = "C" /\ "a1" \in indexed)
     /\ ~stored[o] /\ ~committed[o] /\ o \notin swept
     /\ stored' = [stored EXCEPT ![o] = TRUE]
     /\ inflight' = inflight \cup {o}
@@ -170,6 +185,24 @@ ConsCommit ==
                       THEN clock + 1 ELSE clock
     /\ UNCHANGED <<stored, epochOf, epoch, dead, rd, swept>>
 
+\* The cleaner's commit, under the refcount lock (atomic here): the copy
+\* ca1 indexed and counted, a1 decremented from S1 (released when nothing
+\* else counts in it).
+CleanCommit ==
+    /\ "C" \in inflight /\ epochOf["C"] = epoch
+    /\ CleanAdmits
+    /\ committed' = [committed EXCEPT !["C"] = TRUE]
+    /\ indexed' = indexed \cup {"ca1"}
+    /\ inflight' = inflight \ {"C"}
+    /\ rc["S1"] >= 1
+    /\ rc' = [o \in Objs |-> IF o = "C" THEN 1
+                             ELSE IF o = "S1" THEN (IF rc["S1"] = 1 THEN -1 ELSE rc["S1"] - 1)
+                             ELSE rc[o]]
+    /\ garb' = [garb EXCEPT !["S1"] = garb["S1"] \/ rc["S1"] = 1]
+    /\ zeroAt' = [zeroAt EXCEPT !["S1"] = IF rc["S1"] = 1 THEN clock ELSE zeroAt["S1"]]
+    /\ clock' = IF rc["S1"] = 1 THEN clock + 1 ELSE clock
+    /\ UNCHANGED <<stored, epochOf, epoch, dead, rd, swept>>
+
 \* A dead incarnation (deleted or replaced: irrevocable).
 Request(s) ==
     /\ dead[s] = "live"
@@ -188,7 +221,7 @@ PurgeStep(s) ==
 \* stream decremented once.
 Reclaim(s) ==
     /\ dead[s] = "purged"
-    /\ LET by == [o \in Objs |-> Cardinality({c \in Maximal(s) : Obj[c] = o})]
+    /\ LET by == [o \in Objs |-> Cardinality({c \in ReclaimPicks(s) : Obj[c] = o})]
        IN /\ \A o \in Objs : by[o] > 0 => rc[o] >= by[o]
           /\ Decrement(by)
     /\ dead' = [dead EXCEPT ![s] = "reclaimed"]
@@ -198,7 +231,7 @@ Reclaim(s) ==
 \* indexed consolidated chunk, or of a reclaimed stream).
 Drop(c) ==
     /\ c \in indexed
-    /\ (\E d \in indexed : c \in Covers(d)) \/ Reclaimed(c)
+    /\ KeepCovered(c) \/ Reclaimed(c)
     /\ indexed' = indexed \ {c}
     /\ UNCHANGED <<stored, committed, inflight, epochOf, epoch, rc, garb, zeroAt, clock, dead, rd, swept>>
 
@@ -250,6 +283,7 @@ RAgain(r) ==
 Next ==
     \/ \E o \in Objs : Put(o) \/ SealCommit(o) \/ Abort(o) \/ Collect(o) \/ Sweep(o)
     \/ ConsCommit
+    \/ CleanCommit
     \/ \E s \in Streams : Request(s) \/ PurgeStep(s) \/ Reclaim(s)
     \/ \E c \in Chunks : Drop(c)
     \/ Fence
@@ -278,6 +312,10 @@ Witness_GarbageDeleted == ~\E o \in Objs : committed[o] /\ ~stored[o] /\ o \noti
 Witness_OrphanSwept == swept = {}
 Witness_FencedOrphanSwept == ~\E o \in swept : epochOf[o] < epoch
 Witness_PurgeReclaimed == ~\E s \in Streams : dead[s] = "reclaimed"
+\* S1 released by the cleaner while A stays readable through the copy.
+Witness_CleanedObjectDeleted ==
+    ~(committed["C"] /\ committed["S1"] /\ ~stored["S1"] /\ "S1" \notin swept
+      /\ \E r \in Readers : rd[r].phase = "done" /\ RStream(r) = "A" /\ "ca1" \in rd[r].plan)
 Witness_PinnedReadServed ==
     ~\E r \in Readers : rd[r].phase = "done" /\ \E c \in rd[r].plan : garb[Obj[c]]
 =============================================================================

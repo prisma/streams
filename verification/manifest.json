@@ -2541,6 +2541,8 @@
         "src/shard/seal/gc/sweep.rs",
         "src/spill/gc.rs",
         "src/shard/seal/consolidate.rs",
+        "src/spill/object_table.rs",
+        "src/shard/seal/gc/clean.rs",
         "src/shard/seal/read.rs",
         "src/billing/walk.rs",
         "src/billing/replaced.rs",
@@ -2582,7 +2584,7 @@
         "ASM-HISTORY-ACTORS",
         "ASM-OBJSTORE-CAS"
       ],
-      "input_scope": "RefGC: two seal objects S1 = {a1, b1} and S2 = {a2, b2} of streams A and B, a consolidation object K = {ka} superseding a1 and a2, a third seal object O = {b3} that a fenced writer may orphan; one fence (two openings); two readers, one per stream, each reading again after a served read; purges of either stream in two steps (the committer's purge, the reclaim under the refcount lock); fold and merge drops of decremented entries; the collector's delete of a 'G' object behind reader pins; the orphan sweep; the pin clock to 4. Time is abstracted: the purge delay outlasts a read admitted before the stream's death (ASM-PURGE-DELAY) and the grace covers reads outside the process and of a fenced opening (ASM-HSEG-GRACE). No liveness. ForkPin: one source name with 2 incarnations; safety and witnesses with 3 fork-child incarnations (F3 recreates F1's name after F1's tombstone), liveness with 2 (distinct names, or one recreated name); creator installs racing child deletion, source deletion and recreation, 1 request crash (creator or DELETE); the write-ahead fork-debt marker, the background reconciler (weakly fair per marker in the reconciler liveness checks) and client DELETE retries (weakly fair only in the client-retry liveness check); legacy shapes where deletes before the rollout write no marker, the one-time backfill indexes them, and a child name may be recreated over such a tombstone before or after the rollout (the recreate CAS indexes the debt it overwrites; debt the old binary overwrote before the rollout is excluded from the properties). No symmetry, no state or action constraints.",
+      "input_scope": "RefGC: two seal objects S1 = {a1, b1} and S2 = {a2, b2} of streams A and B, a consolidation object K = {ka} superseding a1 and a2, the segment cleaner's copy C = {ca1} of a1 alone (the same span, which the newer object wins in reads, folds and merges, and reclaims; its commit re-checks under the refcount lock that a1 is still a pick and A has no 'H' row), a third seal object O = {b3} that a fenced writer may orphan; one fence (two openings); two readers, one per stream, each reading again after a served read; purges of either stream in two steps (the committer's purge, the reclaim under the refcount lock); fold and merge drops of decremented entries; the collector's delete of a 'G' object behind reader pins; the orphan sweep; the pin clock to 4. Time is abstracted: the purge delay outlasts a read admitted before the stream's death (ASM-PURGE-DELAY) and the grace covers reads outside the process and of a fenced opening (ASM-HSEG-GRACE). No liveness. ForkPin: one source name with 2 incarnations; safety and witnesses with 3 fork-child incarnations (F3 recreates F1's name after F1's tombstone), liveness with 2 (distinct names, or one recreated name); creator installs racing child deletion, source deletion and recreation, 1 request crash (creator or DELETE); the write-ahead fork-debt marker, the background reconciler (weakly fair per marker in the reconciler liveness checks) and client DELETE retries (weakly fair only in the client-retry liveness check); legacy shapes where deletes before the rollout write no marker, the one-time backfill indexes them, and a child name may be recreated over such a tombstone before or after the rollout (the recreate CAS indexes the debt it overwrites; debt the old binary overwrote before the rollout is excluded from the properties). No symmetry, no state or action constraints.",
       "checks": [
         {
           "id": "TLA-019/baseline",
@@ -2645,6 +2647,56 @@
           }
         },
         {
+          "id": "TLA-019/nc-tie-read",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_RefGC.tla",
+          "config": "verification/tla/history/MC_RefGC_nc_tie_read.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReadsServed"
+          }
+        },
+        {
+          "id": "TLA-019/nc-tie-reclaim",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_RefGC.tla",
+          "config": "verification/tla/history/MC_RefGC_nc_tie_reclaim.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RefcountExact"
+          }
+        },
+        {
+          "id": "TLA-019/nc-tie-keep",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_RefGC.tla",
+          "config": "verification/tla/history/MC_RefGC_nc_tie_keep.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReadsServed"
+          }
+        },
+        {
+          "id": "TLA-019/nc-clean-ignores-dead",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_RefGC.tla",
+          "config": "verification/tla/history/MC_RefGC_nc_clean_ignores_dead.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RefcountExact"
+          }
+        },
+        {
+          "id": "TLA-019/nc-clean-ignores-pick",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_RefGC.tla",
+          "config": "verification/tla/history/MC_RefGC_nc_clean_ignores_pick.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RefcountExact"
+          }
+        },
+        {
           "id": "TLA-019/witness-GarbageDeleted",
           "role": "witness",
           "spec": "verification/tla/history/MC_RefGC.tla",
@@ -2692,6 +2744,16 @@
           "expect": {
             "result": "violation",
             "property": "Witness_PinnedReadServed"
+          }
+        },
+        {
+          "id": "TLA-019/witness-CleanedObjectDeleted",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_RefGC.tla",
+          "config": "verification/tla/history/MC_RefGC_w_CleanedObjectDeleted.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CleanedObjectDeleted"
           }
         },
         {
@@ -2994,6 +3056,10 @@
         "shard::seal::gc_tests::a_consolidation_offered_before_a_purge_supersedes_nothing_after_it",
         "shard::seal::gc_tests::objects_put_without_their_commit_are_swept_and_objects_in_flight_are_not",
         "shard::seal::gc_tests::a_purge_waits_for_the_ledger_and_for_its_own_group",
+        "shard::seal::gc::clean::tests::a_crash_after_the_copys_put_leaves_an_orphan_the_sweep_deletes",
+        "shard::seal::gc::clean::tests::a_read_started_before_the_copy_keeps_the_old_objects",
+        "shard::seal::gc::clean::tests::a_purge_request_mid_pass_abandons_the_copy",
+        "shard::seal::gc::clean::tests::a_consolidation_queued_with_the_old_chunks_skips",
         "dst::dst_tests::purge_lifecycle::a_renewal_that_lands_before_the_expiry_tombstone_keeps_the_stream_alive",
         "dst::dst_tests::fork_cleanup::a_crashed_creators_late_reference_is_repaired_by_delete_retry",
         "dst::dst_tests::fork_cleanup::a_crashed_creators_late_reference_is_released_without_a_client_retry",

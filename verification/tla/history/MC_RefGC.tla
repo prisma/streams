@@ -29,4 +29,33 @@ MutSweepAll(o) == TRUE
 \* REPOSITORY NC (zombie seal, Fable 5.1 S2-1): the committer admits a
 \* seal's chunk of a purged stream.
 MutSealAlways(o) == TRUE
+
+\* The segment cleaner's copy ca1 has a1's span; the controls below make one
+\* of the three equal-span choices prefer the older object, or drop half of
+\* the cleaner's re-check.
+OlderFirst(set) ==
+    IF {"a1", "ca1"} \subseteq indexed /\ "ca1" \in set
+    THEN (set \ {"ca1"}) \cup {"a1"}
+    ELSE set
+
+\* REPOSITORY NC (tie read): a read picks the older of two equal spans.
+MutTieReadPicks(s) == OlderFirst(Maximal(s))
+
+\* REPOSITORY NC (tie reclaim): a reclaim decrements the older of two equal
+\* spans.
+MutTieReclaimPicks(s) == OlderFirst(Maximal(s))
+
+\* REPOSITORY NC (tie keep): a fold or merge keeps the older of two equal
+\* spans and drops the copy.
+MutTieKeepCovered(c) ==
+    IF c = "ca1" THEN "a1" \in indexed
+    ELSE \E d \in indexed \ {"ca1"} : c \in Covers(d)
+
+\* REPOSITORY NC (cleaner ignores a purge): the cleaner's re-check ignores
+\* the stream's 'H' row.
+MutCleanIgnoresDead == "a1" \in Maximal("A")
+
+\* REPOSITORY NC (cleaner ignores the picks): the cleaner's re-check ignores
+\* whether its chunk is still a pick (a consolidation superseded it).
+MutCleanIgnoresPick == dead["A"] = "live"
 =============================================================================

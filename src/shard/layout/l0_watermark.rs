@@ -133,6 +133,13 @@ impl L0Watermark {
         yields
     }
 
+    /// Whether the shard log is at the yield mark now (the segment cleaner
+    /// stands down too; not counted).
+    pub(crate) fn at_yield_mark(&self) -> bool {
+        self.read.load(Ordering::Relaxed)
+            && self.count.load(Ordering::Relaxed) >= self.marks().yield_at
+    }
+
     pub(crate) fn count(&self) -> usize {
         self.count.load(Ordering::Relaxed)
     }

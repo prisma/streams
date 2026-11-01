@@ -14,6 +14,7 @@ pub(crate) mod estimate;
 pub(crate) mod gc;
 pub(crate) mod metrics;
 pub(crate) mod object;
+pub(crate) mod object_table;
 pub(crate) mod pending;
 pub(crate) mod runindex;
 
@@ -29,6 +30,8 @@ mod directory_tests;
 mod estimate_tests;
 #[cfg(test)]
 mod gc_tests;
+#[cfg(test)]
+mod object_table_tests;
 #[cfg(test)]
 mod object_tests;
 #[cfg(test)]

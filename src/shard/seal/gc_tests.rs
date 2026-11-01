@@ -93,17 +93,17 @@ pub(super) async fn stored(rig: &Rig, dir: &str) -> BTreeMap<ObjectId, u64> {
 
 /// What the audit found.
 #[derive(Debug, Default)]
-struct Audit {
-    live_objects: usize,
-    live_chunks: u64,
-    garbage: usize,
+pub(super) struct Audit {
+    pub(super) live_objects: usize,
+    pub(super) live_chunks: u64,
+    pub(super) garbage: usize,
 }
 
 /// The refcount audit: every `'R'` row equals the object's unreclaimed
 /// chunks the index holds (count and bytes), every object with such a
 /// chunk has a row, and every segment and run-index object in the store is
 /// named by a row (`'R'`/`'X'`/`'G'`) unless listed in `orphans`.
-async fn audit(rig: &Rig, orphans: &BTreeSet<ObjectId>, what: &str) -> Audit {
+pub(super) async fn audit(rig: &Rig, orphans: &BTreeSet<ObjectId>, what: &str) -> Audit {
     settle(&rig.engine).await;
     let engine = &rig.engine;
     let mut streams: BTreeSet<[u8; 16]> = directory_rows(rig).await.into_keys().collect();
@@ -262,7 +262,7 @@ async fn try_append(engine: &Arc<ShardEngine>, hash: [u8; 16]) -> Result<u64, St
 
 /// The stream's chunks as one consolidation job would carry them: each
 /// whole chunk's bytes from the store.
-async fn whole_chunks(rig: &Rig, hash: [u8; 16]) -> Vec<(DirEntry, Bytes)> {
+pub(super) async fn whole_chunks(rig: &Rig, hash: [u8; 16]) -> Vec<(DirEntry, Bytes)> {
     let mut out = Vec::new();
     for e in rig.engine.live_chunks(hash).await.unwrap() {
         let path = crate::spill::object::object_path(&rig.path, e.object);
@@ -454,7 +454,7 @@ async fn named(rig: &Rig, id: ObjectId) -> bool {
 }
 
 /// The stored objects under `dirs` no row names.
-async fn unnamed(rig: &Rig, dirs: &[&str]) -> BTreeSet<ObjectId> {
+pub(super) async fn unnamed(rig: &Rig, dirs: &[&str]) -> BTreeSet<ObjectId> {
     let mut out = BTreeSet::new();
     for dir in dirs {
         for id in stored(rig, dir).await.into_keys() {

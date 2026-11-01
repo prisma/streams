@@ -409,8 +409,12 @@ was death (§3.6).
   `seal.caches.index_cache`, serves repeats), `seal.chunk_cache_hits` the
   chunks served from the chunk cache. A walker over many small chunks
   consolidates them (`seal.consolidation`); the chunks it superseded are
-  counted, still stored, in `seal.fold.orphan_bytes` until garbage
-  collection exists.
+  counted, still stored, in `seal.fold.orphan_bytes` until the collector
+  releases their objects. The segment cleaner rewrites an object whose live
+  chunks are a minority of its bytes once its dead bytes pay for the copy
+  (`seal.gc.cleaned`, `cleaned_chunks`, `clean_copied_bytes`,
+  `clean_candidates`; `clean_abandoned` counts copies a purge or a
+  consolidation overtook, left to the orphan sweep).
 - `seal.directory_bytes` climbing past 4 MiB on a shard, or
   `seal.fold.failures` rising → the fold is not keeping up: the directory
   (memory) then grows at the seal rate. Look for the fold's warnings

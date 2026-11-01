@@ -520,9 +520,12 @@ lives, encryption, retention, erasure as built, backups) is
   keyed request follows.
 - **L4 Segment objects are reclaimed by reference count**: each object's
   refcount row counts its live chunks; an object a consolidation or a purge
-  leaves with none is deleted after a 10 min grace (C6). An object mixing a
-  consolidated stream's superseded chunks with live chunks of other streams
-  stays until those die too (no repack yet).
+  leaves with none is deleted after a 10 min grace (C6). An object whose
+  live chunks are under half its bytes is rewritten by the segment cleaner
+  once its dead bytes pay for the copy within a month (about 295 KB at the
+  −50% price basis): the live chunks are copied into a new object and the
+  old one is released the same way. Below that floor, dead bytes stay
+  until the object's last live chunk dies.
 - **L5 Shard-log compression is per request** (layout 5): a request's
   records are compressed together in pages of up to 64 KiB before they are
   encrypted, and the segment objects hold the same pages. Requests of one small record,

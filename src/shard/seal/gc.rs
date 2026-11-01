@@ -36,6 +36,7 @@ use crate::shard::ShardEngine;
 use crate::spill::gc::{self, Decrements, Garbage, ObjectKind, Refcount};
 use crate::spill::object::ObjectId;
 
+pub(crate) mod clean;
 #[cfg(test)]
 mod pass_tests;
 pub(crate) mod purge;
@@ -69,6 +70,8 @@ pub(crate) struct GcSettings {
     pub(crate) wrap_every: Duration,
     /// Whether the loop runs by itself.
     pub(crate) auto: bool,
+    /// The cleaner's rewrite rule (`clean::clean_pays`).
+    pub(crate) clean_pays: clean::Rule,
 }
 
 impl Default for GcSettings {
@@ -84,6 +87,7 @@ impl Default for GcSettings {
             reclaim_batch: 2048,
             wrap_every: Duration::from_secs(24 * 3600),
             auto: true,
+            clean_pays: clean::clean_pays,
         }
     }
 }
@@ -118,6 +122,14 @@ pub(crate) struct GcCounters {
     /// A purged stream's other rows deleted, and the batches that did.
     pub(crate) rows_deleted: AtomicU64,
     pub(crate) row_batches: AtomicU64,
+    /// The cleaner (`clean`): old objects its copies released, the chunks
+    /// it copied, its copy objects' bytes, its passes that wrote one, and
+    /// those whose copy a change under the lock abandoned.
+    pub(crate) cleaned: AtomicU64,
+    pub(crate) cleaned_chunks: AtomicU64,
+    pub(crate) clean_copied_bytes: AtomicU64,
+    pub(crate) clean_passes: AtomicU64,
+    pub(crate) clean_abandoned: AtomicU64,
 }
 
 /// The collector's state on one engine (part of `SealState`).
@@ -165,6 +177,36 @@ pub(crate) struct GcState {
     /// due no sooner than one grace later (a fenced owner's reads).
     opened_ms: AtomicU64,
     pub(crate) counters: GcCounters,
+    /// The cleaner's candidates (`clean`).
+    pub(crate) clean: clean::Candidates,
+    /// Tests: where a clean stops after its copy's PUT.
+    #[cfg(test)]
+    pub(crate) clean_hook: Mutex<Option<CleanHook>>,
+}
+
+/// Tests: a clean stopped after its copy's PUT, before the lock.
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) enum CleanHook {
+    /// It fails there (a crash after the PUT).
+    Abort,
+    /// It parks there until released.
+    Hold(Arc<super::test_hooks::Hold>),
+}
+
+#[cfg(test)]
+impl GcState {
+    pub(crate) async fn after_clean_put(&self) -> Result<(), GcError> {
+        let hook = lock(&self.clean_hook).clone();
+        match hook {
+            Some(CleanHook::Abort) => Err(GcError::Store("a test stopped the clean".into())),
+            Some(CleanHook::Hold(h)) => {
+                h.park().await;
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    }
 }
 
 // The collector's locks guard plain maps whose every update is one insert
@@ -300,6 +342,12 @@ impl GcState {
             "orphan_bytes": n(&c.orphan_bytes),
             "inexact": n(&c.inexact),
             "corrupt_rows": n(&c.corrupt_rows),
+            "cleaned": n(&c.cleaned),
+            "cleaned_chunks": n(&c.cleaned_chunks),
+            "clean_copied_bytes": n(&c.clean_copied_bytes),
+            "clean_passes": n(&c.clean_passes),
+            "clean_abandoned": n(&c.clean_abandoned),
+            "clean_candidates": self.clean.len(),
             "readers": self.readers(),
             "unreclaimed_incarnations": self.unreclaimed.load(Ordering::Relaxed),
             "oldest_unreclaimed_due_ms": self.oldest_due_ms.load(Ordering::Relaxed),
@@ -418,7 +466,9 @@ impl ShardEngine {
                     "object {id:?}: row {current:?} cannot take {by:?}"
                 )));
             };
+            let gc = self.gc_state();
             if next.live_chunks == 0 {
+                gc.clean.forget(*id);
                 batch.delete(&key);
                 let g = Garbage {
                     kind: ObjectKind::Segment,
@@ -428,6 +478,8 @@ impl ShardEngine {
                 batch.put(gc::garbage_key(*id), gc::encode_garbage(&g));
                 zeroed.push(*id);
             } else {
+                let now = crate::shard::now_ms().unsigned_abs();
+                gc.clean.offer(*id, next, now, gc.settings().clean_pays);
                 batch.put(&key, gc::encode_refcount(&next));
             }
         }
@@ -539,9 +591,26 @@ impl ShardEngine {
             gc.oldest_due_ms
                 .store(owing.iter().copied().min().unwrap_or(0), Ordering::Relaxed);
         }
+        self.seed_clean().await;
         match self.gc_totals().await {
             Ok(t) => *lock(&self.gc_state().totals) = Some(t),
             Err(e) => tracing::debug!(shard = %self.prefix, "gc totals not recounted: {e}"),
+        }
+    }
+
+    /// The recount offers the cleaner every row it does not know yet (rows
+    /// from before this opening, or evicted).
+    async fn seed_clean(&self) {
+        let gc = self.gc_state();
+        let (now, pays) = (
+            crate::shard::now_ms().unsigned_abs(),
+            gc.settings().clean_pays,
+        );
+        let Ok(rows) = self.refcount_rows().await else {
+            return;
+        };
+        for (id, row) in rows.into_iter().filter_map(|(id, r)| Some((id, r?))) {
+            gc.clean.seed(id, row, now, pays);
         }
     }
 
@@ -570,6 +639,9 @@ impl ShardEngine {
                 Ok(_) => {}
                 Err(e) => tracing::warn!(shard = %self.prefix, "garbage pass stopped: {e}"),
             }
+        }
+        if let Err(e) = self.clean_pass().await {
+            tracing::warn!(shard = %self.prefix, "clean pass stopped: {e}");
         }
     }
 
