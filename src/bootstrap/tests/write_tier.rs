@@ -87,6 +87,13 @@ impl Rig {
             None,
             maintenance,
         );
+        // The sealer's open seals whatever it finds unsealed (pages a
+        // previous owner left): wait for it before any append, so the WAL
+        // tier this rig measures carries no seal's forced flushes.
+        tokio::time::timeout(Duration::from_secs(10), engine.seal_ready())
+            .await
+            .expect("the sealer opened within 10 s")
+            .expect("the sealer's open");
         let workload = Workload::new(store.coverage());
         Rig {
             store,
