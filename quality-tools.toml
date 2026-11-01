@@ -10,12 +10,25 @@ cargo-fuzz = "0.13.2"
 cargo-mutants = "27.1.0"
 
 [slatedb]
-git = "https://github.com/slatedb/slatedb.git"
-rev = "0c22c032bb1af4e53d92b2098c83a34b11d2d710"
+git = "https://github.com/prisma/slatedb.git"
+rev = "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28"
+upstream = "https://github.com/slatedb/slatedb.git"
+base = "0c22c032bb1af4e53d92b2098c83a34b11d2d710"
+# Tag streams-20261102-18f17fe: FORK.md, then the five patches it lists.
+carries = [
+  { docs = true, fork = "e3d264361ecab59d149dd872514679b282855e67" },
+  { pr = 2190, pr_diff = true, fork = "50f739e02e716b822f4fe40f1c09291a771646f8" },
+  { pr = 2191, pr_diff = true, fork = "fdbe878d46d3abe0f487900180574db65faf122b" },
+  { pr = 2010, fork = "cda85233fd6c8d6c98696e7ba1d0186977335b19" },
+  { issue = 2211, fork = "533a9851d422e29f35824a2634ab980a50de74f7" },
+  { issue = 2213, fork = "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28" },
+]
 
 # A fork pin (docs/quality/dependencies.md): `rev` must be `base` plus exactly
-# the upstream pull-request commits `carries` names, in order; config.py
-# checks the history (gate change decided by the lead, 2026-10-30).
+# the commits `carries` lists, in order, each an upstream PR's patch, a fork
+# commit FORK.md lists by its upstream PR or issue, or the fork's docs commit;
+# config.py checks the history (gate changes decided by the lead, 2026-10-30
+# and 2026-11-01).
 [foyer]
 git = "https://github.com/sorenbs/foyer.git"
 rev = "87d21072a1926106f983c6b5f01527cf7e635cee"

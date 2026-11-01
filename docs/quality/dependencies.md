@@ -86,17 +86,24 @@ Exit: once a foyer release carries both, `cargo update -p foyer` and remove
 the five `[patch.crates-io]` lines, the `[foyer]` pin and the `allow-git`
 entry.
 
-A fork pin records its upstream base and the upstream pull-request commits it
-carries (`upstream`, `base`, `carries` in `quality-tools.toml`), and the
-source gate checks that the pinned revision is that base plus exactly those
-commits (`scripts/quality/config.py::fork_problems`; lead's gate decision of
-2026-10-30 in the hardening README).
+A fork pin records its upstream base and every commit it carries
+(`upstream`, `base`, `carries` in `quality-tools.toml`), and the source gate
+checks that the pinned revision is that base plus exactly those commits, in
+order (`scripts/quality/config.py::fork_problems`; the lead's gate decisions
+of 2026-10-30 and 2026-11-01 in the hardening README). Each commit is an
+upstream PR's patch (equal by `git patch-id`), a fork commit the fork's
+FORK.md lists by its upstream PR or issue (named by SHA), or the fork's docs
+commit (FORK.md and `fork/` only).
 
-SlateDB is pinned at upstream main `0c22c032` (2026-10-31), which carries our
-merged slatedb/slatedb#2193 and #2208; no SlateDB fork is carried. Should one
-of our open SlateDB PRs ever be carried, it goes on `sorenbs/slatedb` under
-the same rule, with this exit: the PR merged and released (or on the main we
-pin), then drop the fork.
+SlateDB is pinned at Prisma's public fork `prisma/slatedb` (owner's direction,
+2026-11-01), tag `streams-20261102-18f17fe`: upstream main `0c22c032` (our
+merged #2193 and #2208), FORK.md, and the patches FORK.md lists: #2190 and
+#2191 (equal to their PRs), #2010 (rebased), the uncached-run coalescing of
+issue #2211 and the bounded point-lookup lookahead of issue #2213 (upstream PR
+creation is limited to collaborators). A new
+`streams` tag is pinned only after the measurements FORK.md names, against the
+current pin on the same day. Exit: every patch merged upstream, then pin
+`slatedb/slatedb` main or a release and remove the `allow-git` entry.
 
 The test-only `libfuzzer-sys` 0.4.13 additionally requires NCSA for its LLVM
 runtime; this exact package has a named license exception. The fuzz package's

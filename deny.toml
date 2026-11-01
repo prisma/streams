@@ -44,6 +44,7 @@ unknown-git = "deny"
 required-git-spec = "rev"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # cargo-deny checks the repository/spec kind; quality config checks the EXACT
-# revision in both Cargo.toml and every Git entry in Cargo.lock (SlateDB main;
-# foyer v0.22.6 + #1345 + #1382 on the owner's fork until a release has both).
-allow-git = ["https://github.com/slatedb/slatedb.git", "https://github.com/sorenbs/foyer.git"]
+# revision in both Cargo.toml and every Git entry in Cargo.lock (SlateDB from
+# Prisma's fork prisma/slatedb, FORK.md; foyer v0.22.6 + #1345 + #1382 on the
+# owner's fork until a release has both).
+allow-git = ["https://github.com/prisma/slatedb.git", "https://github.com/sorenbs/foyer.git"]

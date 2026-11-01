@@ -119,14 +119,14 @@ name = "cryptobench"
 path = "src/bin/cryptobench.rs"
 
 [patch.crates-io]
-# UPSTREAM main, pinned by rev (2026-10-31): our slatedb/slatedb#2193 (zstd
-# 0.14.3) and #2208 (a memtable flush drops the versions it shadows when the
-# WAL is enabled, so the sealer needs no awaited WAL flush), #2181 (a panic
-# no longer corrupts the database), #2120, #2063. Move to a crates.io version
-# when a release after v0.17.0 ships with them. Fork history preserved at
-# sorenbs/slatedb.
-slatedb = { git = "https://github.com/slatedb/slatedb.git", rev = "0c22c032bb1af4e53d92b2098c83a34b11d2d710" }
-slatedb-common = { git = "https://github.com/slatedb/slatedb.git", rev = "0c22c032bb1af4e53d92b2098c83a34b11d2d710" }
+# Prisma's public SlateDB fork (prisma/slatedb, owner's direction 2026-11-01),
+# tag streams-20261102-18f17fe: upstream main 0c22c032 (our merged #2193 and
+# #2208; #2181; #2120; #2063) plus FORK.md and the patches it lists: #2190,
+# #2191, #2010, the uncached-run coalescing of issue #2211 and the bounded
+# point-lookup lookahead of issue #2213. Every change goes upstream; FORK.md
+# says how a pin moves.
+slatedb = { git = "https://github.com/prisma/slatedb.git", rev = "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28" }
+slatedb-common = { git = "https://github.com/prisma/slatedb.git", rev = "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28" }
 # foyer v0.22.6 plus exactly two unreleased upstream fixes, carried on a
 # fork until a foyer release has both (then `cargo update -p foyer` and drop
 # these lines): foyer-rs/foyer#1345 (release the inflight lock before
