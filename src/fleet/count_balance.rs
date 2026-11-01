@@ -138,7 +138,7 @@ fn document_owners(
 /// the move cooldown from its boot and from each of its moves, the
 /// cooldown again after a read that found no move, and the rest of the
 /// cooldown of the fleet's newest override. A move also needs the imbalance
-/// seen by [`SETTLED_PASSES`] consecutive reads.
+/// seen by [`SETTLED_PASSES`] consecutive reads; a hold restarts the count.
 #[derive(Debug)]
 struct Pacing {
     cooldown: Duration,
@@ -193,6 +193,9 @@ impl Pacing {
         let young = newest_override_age_ms.map(|age| cooldown_ms.saturating_sub(age));
         match young.filter(|rest| *rest > 0) {
             Some(rest) => {
+                // The reads after the hold count afresh: the two that found
+                // the move must be consecutive.
+                self.streak = 0;
                 self.hold_for(now, Duration::from_millis(rest.unsigned_abs()));
                 false
             }
@@ -754,13 +757,32 @@ mod tests {
         clock.advance_monotonic(Duration::from_millis(1));
         assert!(pacing.may_read(clock.monotonic()));
         assert!(
-            !pacing.due(clock.monotonic(), Some(59_999)),
-            "a millisecond short"
+            !pacing.due(clock.monotonic(), None),
+            "the two reads count again after the hold"
         );
+        assert!(pacing.due(clock.monotonic(), None));
+    }
+
+    #[test]
+    fn an_override_a_cooldown_old_holds_nothing() {
+        let (clock, mut pacing) = pacing(COOLDOWN);
+        assert!(!pacing.due(clock.monotonic(), None));
         assert!(
             pacing.due(clock.monotonic(), Some(60_000)),
             "a cooldown old"
         );
+        let (clock, mut pacing) = self::pacing(COOLDOWN);
+        assert!(!pacing.due(clock.monotonic(), None));
+        assert!(
+            !pacing.due(clock.monotonic(), Some(59_999)),
+            "a millisecond short"
+        );
+        assert!(
+            !pacing.may_read(clock.monotonic()),
+            "held for that millisecond"
+        );
+        clock.advance_monotonic(Duration::from_millis(1));
+        assert!(pacing.may_read(clock.monotonic()));
     }
 
     #[test]
