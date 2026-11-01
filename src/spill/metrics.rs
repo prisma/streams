@@ -153,7 +153,10 @@ const ATTRIBUTED: [&str; 6] = [
 ];
 
 /// A call site's share of its database's reader GETs, by `site` (`overlap`
-/// for calls that ran beside another call site of the same database).
+/// for calls that ran beside another call site of the same database). A
+/// lower bound on the GETs the site causes: a block SlateDB's own tasks
+/// fetch first (and the site then finds in flight or cached) counts outside
+/// every site, in the database's residual.
 const CALL_SITE_GETS: &str = "prisma_streams.call_site.sst_gets";
 /// A call site's guarded calls, by `site` as `CALL_SITE_GETS`: a rollup
 /// step counts its cursor read and its page apply, the outbox each of its
