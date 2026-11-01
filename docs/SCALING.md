@@ -245,7 +245,8 @@ needs a stalled shard. So each instance runs a count-balance task beside
 its fleet tick, on the tick's period. An instance that is not lagging and
 owns more than the fair share ceil(shards / members), with owners read
 from `fleet/overrides.json` itself, writes the same override a lag move
-writes for one of its shards that has no override, to an active member
+writes for one of its shards that has no override naming a member (an
+override to a non-member is void), to an active member
 below the share whose lag is under half the lag threshold (the lag move's
 target rule). It moves only after two consecutive passes saw the
 imbalance, once its own move cooldown has passed (counted from its boot

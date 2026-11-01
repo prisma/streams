@@ -58,8 +58,8 @@ fn past_share(owned: usize, shards: usize, members: usize) -> bool {
 /// the share move at the same ticks, so each takes a different target: the
 /// one at its own rank, by name, among the members past the share, of the
 /// members below it ordered by fewest shards. Only a shard `movable` admits
-/// moves: one with no override, so a count move never undoes a lag move
-/// or another count move. None when `me` is within the share, or no member
+/// moves: one with no override that names a member, so a count move never
+/// undoes a lag move or another count move. None when `me` is within the share, or no member
 /// is below it, or none of its shards may move.
 pub(crate) fn pick(
     owners: &[(String, String)],
@@ -297,7 +297,14 @@ impl FleetRead {
                     .get(member)
                     .is_some_and(|lag| well_under(*lag, lag_threshold_secs))
             },
-            |prefix| !self.overrides.entries.contains_key(prefix),
+            // An override to a non-member is void (every reader ignores it),
+            // so its shard moves as one with none.
+            |prefix| {
+                self.overrides
+                    .entries
+                    .get(prefix)
+                    .is_none_or(|entry| !self.active.contains(&entry.to))
+            },
         )
     }
 
@@ -412,8 +419,8 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
 #[cfg(test)]
 mod tests {
     use super::{
-        Heartbeat, OverrideEntry, Overrides, Pacing, document_owners, fair_share, fold, may_shed,
-        moved_document, past_share, pick, well_under,
+        FleetRead, Heartbeat, OverrideEntry, Overrides, Pacing, document_owners, fair_share, fold,
+        may_shed, moved_document, past_share, pick, well_under,
     };
     use crate::runtime::{Clock, ManualClock};
     use std::time::Duration;
@@ -611,6 +618,40 @@ mod tests {
             pick(&owners, &active, "streams-1", |_| true, |_| true),
             Some(("0000".to_owned(), "streams-2".to_owned())),
             "the first of its shards by name"
+        );
+    }
+
+    /// An override naming a member outside the ring is void: every reader
+    /// gives the shard to its rendezvous home, so the count balance may move
+    /// it and rewrite the entry. A void override must not pin its shard after
+    /// a scale-in.
+    #[test]
+    fn a_shard_whose_override_names_a_non_member_may_move() {
+        let entry = |to: &str| OverrideEntry {
+            to: to.to_owned(),
+            ms: 0,
+        };
+        let read = FleetRead {
+            active: members(2),
+            lags: [("streams-2".to_owned(), 0)].into_iter().collect(),
+            overrides: Overrides {
+                entries: [
+                    ("00", "streams-9"),
+                    ("01", "streams-9"),
+                    ("10", "streams-1"),
+                    ("11", "streams-1"),
+                ]
+                .into_iter()
+                .map(|(prefix, to)| (prefix.to_owned(), entry(to)))
+                .collect(),
+                ..Default::default()
+            },
+            version: None,
+        };
+        let prefixes: Vec<String> = ["00", "01", "10", "11"].map(str::to_owned).to_vec();
+        assert_eq!(
+            read.plan(&prefixes, "streams-1", 60),
+            Some(("00".to_owned(), "streams-2".to_owned()))
         );
     }
 
