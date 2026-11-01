@@ -36,8 +36,9 @@
 //!   next time.
 
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{Request, State};
@@ -58,6 +59,15 @@ const FORWARDED_TO: &str = "streams-forwarded-to";
 /// The most body bytes a request keeps for a forward once its handler has
 /// read them: 64 KiB, about 32 MiB at the default 512 requests in flight.
 const KEPT_BYTES: usize = 64 << 10;
+
+/// How long a forward waits to connect to the owner. Past it nothing was
+/// sent, and the client gets this instance's `409` to replay.
+const CONNECT_BOUND: Duration = Duration::from_secs(1);
+
+/// How long, past the owner's shard-open wait and the request's own wait, a
+/// forward waits for the owner's answer to begin. Past it the owner may
+/// have applied the request: `503 forward_failed`.
+const ANSWER_MARGIN: Duration = Duration::from_secs(5);
 
 /// The request body, until the handler or a forward takes it, and the
 /// frames the handler read.
@@ -202,7 +212,6 @@ impl hyper::body::Body for Deferred {
         }
         polled
     }
-
 }
 
 /// Send `held` to the owner `(name, base URL)`, once. `refused` is this
@@ -213,11 +222,16 @@ async fn forward(
     (owner, base): (&str, &str),
     refused: Response,
 ) -> Response {
+    let Some(client) = client() else {
+        return refused;
+    };
+    let open_wait = Duration::from_millis(state.config.shard.open_wait_ms);
+    let bound = answer_bound(&held.uri, open_wait);
     let target = held
         .uri
         .path_and_query()
         .map_or("/", |target| target.as_str());
-    let mut request = crate::peer::client().request(held.method, format!("{base}{target}"));
+    let mut request = client.request(held.method, format!("{base}{target}"));
     for (name, value) in &held.headers {
         if !hop_by_hop(name) {
             request = request.header(name, value);
@@ -226,25 +240,87 @@ async fn forward(
     let request = request
         .header(FORWARDED, state.origin_marker.as_str())
         .body(reqwest::Body::wrap_stream(held.body.into_data_stream()));
-    match request.send().await {
-        Ok(answer) => relayed(answer, owner),
-        Err(error) if error.is_connect() => {
+    match tokio::time::timeout(bound, request.send()).await {
+        Ok(Ok(answer)) => relayed(answer, owner),
+        Ok(Err(error)) if error.is_connect() => {
             tracing::warn!(%owner, "forward to the stream's owner could not connect: {error}");
             refused
         }
-        Err(error) => {
+        Ok(Err(error)) => {
             tracing::warn!(%owner, "forward to the stream's owner failed: {error}");
-            let mut failed = super::err_resp(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "forward_failed",
-                "the stream's owner did not answer the forwarded request; retry",
-            );
-            failed
-                .headers_mut()
-                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
-            failed
+            failed()
+        }
+        Err(_) => {
+            tracing::warn!(%owner, "the stream's owner did not answer a forward within {bound:?}");
+            failed()
         }
     }
+}
+
+/// A forward that failed after it was sent: the owner may have applied it,
+/// so the client is told to retry, never to replay it as new.
+fn failed() -> Response {
+    let mut failed = super::err_resp(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "forward_failed",
+        "the stream's owner did not answer the forwarded request; retry",
+    );
+    failed
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    failed
+}
+
+/// The forwarding transport: the peer pool's (HTTP/1.1, idle connections
+/// closed within 4 s), with the connect bound. `None` when it cannot be
+/// built; a forward then answers its `409`.
+fn client() -> Option<&'static reqwest::Client> {
+    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .http1_only()
+                .pool_idle_timeout(Duration::from_secs(4))
+                .tcp_nodelay(true)
+                .connect_timeout(CONNECT_BOUND)
+                .build()
+                .ok()
+        })
+        .as_ref()
+}
+
+/// How long the owner may take to begin its answer to a request for `uri`:
+/// its shard-open wait, the request's own wait, and the margin.
+fn answer_bound(uri: &Uri, open_wait: Duration) -> Duration {
+    open_wait + requested_wait(uri) + ANSWER_MARGIN
+}
+
+/// The wait a request asks of its owner: a long-poll's `timeout` (raw) or
+/// `waitMs`, a watch's `timeoutMs`, at most the longest any route grants
+/// (25 s), and that longest when a waiting request names none (a consumer
+/// pull carries its wait in its body). Any other request waits for
+/// nothing, a live feed included: its owner answers the head at once.
+fn requested_wait(uri: &Uri) -> Duration {
+    let path = uri.path();
+    let query = uri.query().unwrap_or("");
+    let waits = query.split('&').any(|pair| pair == "live=long-poll")
+        || matches!(
+            crate::product::strip_verb(path).1,
+            Some("long-poll" | "pull")
+        )
+        || (path.contains("/watches/") && path.contains("/keys/"));
+    if !waits {
+        return Duration::ZERO;
+    }
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find_map(|(name, value)| match name {
+            "waitMs" | "timeoutMs" => value.parse().ok().map(Duration::from_millis),
+            "timeout" => super::parse_duration(value),
+            _ => None,
+        })
+        .map_or(super::MAX_LONG_POLL, |wait| wait.min(super::MAX_LONG_POLL))
 }
 
 /// The owner's answer as this instance's response, its body streamed.
@@ -289,6 +365,37 @@ fn hop_by_hop(name: &HeaderName) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A forward waits for the owner's shard open, the request's own wait
+    /// (at most 25 s, all of it when the request names none), and 5 s.
+    #[test]
+    fn the_answer_bound_adds_the_requests_own_wait() {
+        let open = Duration::from_secs(10);
+        let bound = |target: &str| answer_bound(&target.parse().expect("a target"), open);
+        let secs = |s: u64| open + ANSWER_MARGIN + Duration::from_secs(s);
+        let millis = |ms: u64| open + ANSWER_MARGIN + Duration::from_millis(ms);
+        let cases = [
+            ("/v1/stream/s", secs(0)),
+            ("/v1/stream/s?offset=-1&timeout=7s", secs(0)),
+            ("/v1/stream/s?offset=-1&live=sse", secs(0)),
+            ("/v1/stream/s?offset=-1&live=long-poll&timeout=7s", secs(7)),
+            (
+                "/v1/stream/s?offset=-1&live=long-poll&timeout=250ms",
+                millis(250),
+            ),
+            ("/v1/stream/s?offset=-1&live=long-poll&timeout=2m", secs(25)),
+            ("/v1/stream/s?offset=-1&live=long-poll", secs(25)),
+            ("/v1/streams/a/records", secs(0)),
+            ("/v1/streams/a/records:sse", secs(0)),
+            ("/v1/streams/a/records:long-poll?waitMs=1500", millis(1500)),
+            ("/v1/streams/a/records:long-poll?waitMs=99000", secs(25)),
+            ("/v1/streams/a/consumers/c:pull", secs(25)),
+            ("/v1/streams/a/watches/w/keys/k?timeoutMs=100", millis(100)),
+        ];
+        for (target, expected) in cases {
+            assert_eq!(bound(target), expected, "{target}");
+        }
+    }
 
     /// RFC 9110 §7.6.1: the fields that describe one connection, and the
     /// host the client addressed, are never carried across a forward; the

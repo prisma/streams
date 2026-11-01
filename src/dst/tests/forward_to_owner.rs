@@ -15,6 +15,7 @@ use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 type State = Arc<crate::http::AppState>;
 type Addr = std::net::SocketAddr;
@@ -91,6 +92,33 @@ async fn owner_stand_in() -> (tokio::net::TcpListener, String) {
         .expect("bind a port");
     let url = format!("http://{}", listener.local_addr().expect("its address"));
     (listener, url)
+}
+
+/// A loopback listener whose accept queue is full, so a new connection to
+/// it never completes, its URL, and the connections that fill it.
+async fn saturated_stand_in() -> (tokio::net::TcpListener, String, Vec<tokio::net::TcpStream>) {
+    let socket = tokio::net::TcpSocket::new_v4().expect("a socket");
+    socket
+        .bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .expect("bind a port");
+    let listener = socket.listen(1).expect("listen");
+    let addr = listener.local_addr().expect("its address");
+    let mut fillers = Vec::new();
+    for _ in 0..64 {
+        let connect = tokio::net::TcpStream::connect(addr);
+        match tokio::time::timeout(Duration::from_millis(200), connect).await {
+            Ok(Ok(filler)) => fillers.push(filler),
+            Ok(Err(error)) => panic!("a filler connection was refused: {error}"),
+            Err(_) => return (listener, format!("http://{addr}"), fillers),
+        }
+    }
+    panic!("64 connections did not fill the accept queue");
+}
+
+/// The longest a forward that does not wait waits for the owner's answer to
+/// begin: the owner's shard-open wait, and 5 s.
+fn answer_bound(state: &State) -> Duration {
+    Duration::from_millis(state.config.shard.open_wait_ms) + Duration::from_secs(5)
 }
 
 /// Read one request's head and its body, sized or chunked.
@@ -355,6 +383,83 @@ async fn an_owner_that_drops_a_forwarded_request_unanswered_is_answered_503() {
     let again = tokio::time::timeout(std::time::Duration::from_millis(200), owner.accept()).await;
     assert!(again.is_err(), "the request was sent once, never again");
     assert!(records_at(p.addr_b, "fwd6").await.is_empty());
+    engine_shutdown(&p.b).await;
+}
+
+/// An owner that accepts a forward and never answers (a stopped process, or
+/// a stale URL another listener now holds) holds it no longer than the
+/// forward's bound, the owner's shard-open wait and 5 s for a request that
+/// does not wait. The non-owner then answers `503 forward_failed`: the
+/// owner may have applied it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_silent_owner_is_answered_503_within_the_forward_bound() {
+    let p = pair().await;
+    create(p.addr_b, "fwd7").await;
+    let (owner, url) = owner_stand_in().await;
+    p.a.peer.set_peer("inst-b", &url);
+    let bound = answer_bound(&p.a);
+
+    let started = Instant::now();
+    let (answer, _held) = tokio::join!(
+        tokio::time::timeout(
+            bound + Duration::from_secs(5),
+            hreq(p.addr_a, "POST", "/v1/stream/fwd7", &[CT], br#"[{"n":1}]"#),
+        ),
+        accept_unanswered(&owner),
+    );
+    let elapsed = started.elapsed();
+    let Ok((status, headers, body)) = answer else {
+        panic!(
+            "a forward to a silent owner was not answered in {elapsed:?}; its bound is {bound:?}"
+        );
+    };
+    let error = serde_json::from_slice::<serde_json::Value>(&body).expect("a JSON error");
+    assert_eq!(
+        (
+            status,
+            error["error"]["code"].as_str(),
+            headers.get("retry-after").map(String::as_str),
+            headers.get("streams-replay-to"),
+        ),
+        (503, Some("forward_failed"), Some("1"), None)
+    );
+    assert!(
+        elapsed >= bound && elapsed < bound + Duration::from_secs(3),
+        "answered after {elapsed:?}; the bound is {bound:?}"
+    );
+    engine_shutdown(&p.b).await;
+}
+
+/// An owner whose listener never completes a connection (its accept queue
+/// full, its host gone) is given 1 s to connect. Nothing was sent, so the
+/// non-owner answers its own `409` and the client replays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn an_owner_that_never_connects_leaves_the_409_within_a_second() {
+    let p = pair().await;
+    create(p.addr_b, "fwd8").await;
+    let (_owner, url, _fillers) = saturated_stand_in().await;
+    p.a.peer.set_peer("inst-b", &url);
+
+    let started = Instant::now();
+    let answer = tokio::time::timeout(
+        Duration::from_secs(10),
+        hreq(p.addr_a, "POST", "/v1/stream/fwd8", &[CT], br#"[{"n":1}]"#),
+    )
+    .await;
+    let elapsed = started.elapsed();
+    let Ok((status, headers, body)) = answer else {
+        panic!("a forward to an owner that never connects was not answered in {elapsed:?}");
+    };
+    assert_eq!(status, 409, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        headers.get("streams-replay-to").map(String::as_str),
+        Some("inst-b")
+    );
+    assert!(
+        elapsed >= Duration::from_secs(1) && elapsed < Duration::from_secs(3),
+        "answered after {elapsed:?}; the connect bound is 1 s"
+    );
+    assert!(records_at(p.addr_b, "fwd8").await.is_empty());
     engine_shutdown(&p.b).await;
 }
 
