@@ -146,7 +146,9 @@ export function produceSpec(o: Opts, required: boolean): ProduceSpec | null {
   if (records < 1 || records > 10_000) throw new Error("--records must be 1..10000");
   if (payload === "bytes" && records !== 1) throw new Error("--payload bytes takes singles only (:batch is JSON only)");
   if (payload === "corpus" && recordBytes < 128) throw new Error("--payload corpus needs --record-bytes >= 128");
-  if (payload === "oracle" && recordBytes < 192) throw new Error("--payload oracle needs --record-bytes >= 192");
+  if ((payload === "oracle" || payload === "oracle-corpus") && recordBytes < 192) {
+    throw new Error(`--payload ${payload} needs --record-bytes >= 192`);
+  }
   return spec;
 }
 

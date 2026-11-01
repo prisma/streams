@@ -17,13 +17,13 @@
 // user agents and event names are fixed tables independent of the seed.
 
 import { Opts, Rng, Zipf, round3 } from "./common.ts";
-import { type Owner, oracleOverhead, oracleRecord } from "./oracle.ts";
+import { type Owner, oracleOverhead, oracleRecord, oracleTextRecord } from "./oracle.ts";
 
-export type PayloadKind = "corpus" | "b64rand" | "bytes" | "oracle";
+export type PayloadKind = "corpus" | "b64rand" | "bytes" | "oracle" | "oracle-corpus";
 
 export function payloadKind(s: string): PayloadKind {
-  if (s === "corpus" || s === "b64rand" || s === "bytes" || s === "oracle") return s;
-  throw new Error(`--payload must be corpus|b64rand|bytes|oracle, got ${s}`);
+  if (s === "corpus" || s === "b64rand" || s === "bytes" || s === "oracle" || s === "oracle-corpus") return s;
+  throw new Error(`--payload must be corpus|b64rand|bytes|oracle|oracle-corpus, got ${s}`);
 }
 
 // ---------------------------------------------------------------- tables
@@ -243,18 +243,26 @@ export class PayloadGen {
     private readonly owner?: Owner,
   ) {
     this.r = new Rng(seed, tag + 1000);
-    if (kind === "corpus") this.corpus = new CorpusGen(seed, tag);
-    if (kind === "oracle" && !owner) throw new Error("--payload oracle needs an owning project (tenants.ts)");
+    if (kind === "corpus" || kind === "oracle-corpus") this.corpus = new CorpusGen(seed, tag);
+    if ((kind === "oracle" || kind === "oracle-corpus") && !owner) {
+      throw new Error(`--payload ${kind} needs an owning project (tenants.ts)`);
+    }
   }
   get isJson(): boolean {
     return this.kind !== "bytes";
   }
-  /** One JSON record's text (corpus, b64rand or oracle). */
+  /** One JSON record's text (corpus, b64rand, oracle or oracle-corpus). */
   json(): string {
-    if (this.corpus) return this.corpus.next(this.recordBytes);
+    if (this.corpus && this.kind === "corpus") return this.corpus.next(this.recordBytes);
     this.seq++;
     this.clock += 1 + Math.round(this.r.exp(50));
     const ts = new Date(this.clock).toISOString();
+    if (this.owner && this.corpus) {
+      // The oracle's fields around a corpus record as its data: JSON that
+      // compresses as the profiles' payloads do (c about 4), still checked.
+      const target = Math.max(96, Math.round((this.recordBytes - oracleOverhead(this.owner, this.seq, ts)) / 1.13));
+      return oracleTextRecord(this.owner, this.seq, ts, this.corpus.next(target));
+    }
     if (this.owner && this.kind === "oracle") {
       const chars = Math.max(4, this.recordBytes - oracleOverhead(this.owner, this.seq, ts));
       return oracleRecord(this.owner, this.seq, ts, this.r.fill(new Uint8Array(Math.floor(chars / 4) * 3)));

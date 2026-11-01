@@ -47,6 +47,12 @@ export function oracleRecord(owner: Owner, id: number, ts: string, raw: Uint8Arr
   return `{"o":"${owner.project}","id":${id},"ts":"${ts}","m":"${oracleMac(owner, id, ts, data)}","data":"${data}"}`;
 }
 
+/** An oracle record whose data is text (a corpus record, `--payload
+ * oracle-corpus`), escaped as a JSON string; the MAC covers the text. */
+export function oracleTextRecord(owner: Owner, id: number, ts: string, text: string): string {
+  return `{"o":"${owner.project}","id":${id},"ts":"${ts}","m":"${oracleMac(owner, id, ts, text)}","data":${JSON.stringify(text)}}`;
+}
+
 /** Bytes of an oracle record around its base64 data. */
 export function oracleOverhead(owner: Owner, id: number, ts: string): number {
   return `{"o":"${owner.project}","id":${id},"ts":"${ts}","m":"","data":""}`.length + 32;

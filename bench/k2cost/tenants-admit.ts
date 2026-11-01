@@ -14,8 +14,8 @@
 // admit runs cell-admin's own CLI (deploy/cell-admin/cell-admin.ts main):
 // `init` when DIR holds no cell yet (with the ids given), then `admit`
 // for every project of the manifest the state does not hold, with its
-// workspace and its class's quota set as --quota flags (none: the cell's
-// ceilings). A rerun admits only what is missing; no cell-admin command
+// workspace, its class's quota set as --quota flags (none: the cell's
+// ceilings) and its class's weights as --weight flags (edge #196). A rerun admits only what is missing; no cell-admin command
 // grows for this. Publish the bundle afterwards (publish, or the operator's
 // own upload): a project is served once the cell has its policy.
 //
@@ -98,6 +98,7 @@ export async function admit(plan: Plan, o: Opts, say: Say): Promise<{ admitted: 
     if (held.has(p.id)) continue;
     const argv = ["admit", "--state", dir, "--project", p.id, "--workspace", p.workspace];
     for (const q of p.quotaFlags) argv.push("--quota", q);
+    for (const w of p.weightFlags) argv.push("--weight", w);
     if ((await cli(argv, say)) === 0) admitted++;
     else failed.push(p.id);
     if (stop.signal.aborted) break;

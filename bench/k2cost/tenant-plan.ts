@@ -77,6 +77,9 @@ export interface ClassSpec {
   count: number;
   role: Role;
   quotas?: string;
+  /** Weighted shares (edge #196, cell-admin `admit --weight`): the
+   * request and byte weights the class's projects are admitted with. */
+  weights?: { request?: number; bytes?: number };
   streams?: number;
   prefix?: string;
   /** Sockets of the class's keep-alive pool (tenants.ts). */
@@ -115,6 +118,8 @@ export interface Project {
   /** The project's record key (Streams-Encryption-Key), base64. */
   recordKey: string;
   quotaFlags: string[];
+  /** cell-admin `--weight` values, `request=N` / `bytes=N`. */
+  weightFlags: string[];
 }
 
 export interface Plan {
@@ -155,7 +160,7 @@ function checkPhase(cls: ClassSpec, ph: PhaseSpec, i: number, duration: number):
     if (!flags!.includes(k)) fail(`${where}: ${ph.mode} takes no --${k}`);
   }
   const payload = ph.args?.payload;
-  if (["produce", "churn"].includes(ph.mode) && payload !== undefined && payload !== "oracle") {
+  if (["produce", "churn"].includes(ph.mode) && payload !== undefined && payload !== "oracle" && payload !== "oracle-corpus") {
     fail(`${where}: a tenant writes --payload oracle (got ${payload}), so every read can be checked for leaks`);
   }
   if (["walk", "tail", "group", "subs", "mux"].includes(ph.mode) && ["rate", "mbps", "concurrency"].some((k) => k in (ph.args ?? {}))) {
@@ -187,6 +192,10 @@ export function checkManifest(m: Manifest): void {
     if (!Number.isSafeInteger(c.count) || c.count < 1 || c.count > 9999) fail(`class ${c.class}: count must be 1..9999`);
     if (!(ROLES as readonly string[]).includes(c.role)) fail(`class ${c.class}: role must be one of ${ROLES.join(", ")}`);
     if (c.quotas !== undefined && !(m.quota_sets ?? {})[c.quotas]) fail(`class ${c.class}: no quota set ${c.quotas}`);
+    for (const [k, v] of Object.entries(c.weights ?? {})) {
+      if (k !== "request" && k !== "bytes") fail(`class ${c.class}: unknown weight ${k}`);
+      if (!Number.isSafeInteger(v) || (v as number) < 1) fail(`class ${c.class}: weight ${k} must be a positive integer`);
+    }
     if (c.streams !== undefined && (!Number.isSafeInteger(c.streams) || c.streams < 1)) fail(`class ${c.class}: streams must be >= 1`);
     // Half of macOS's 16,383 ephemeral ports: the pool's sockets stay open
     // for the run, beside every other class's and the scrape's.
@@ -239,6 +248,7 @@ export function expand(m: Manifest, sha256: string, scale = 1): Plan {
   for (const cls of m.classes) {
     const set = cls.quotas ? m.quota_sets![cls.quotas]! : {};
     const quotaFlags = Object.entries(set).map(([k, v]) => `${k}=${v}`);
+    const weightFlags = Object.entries(cls.weights ?? {}).map(([k, v]) => `${k}=${v}`);
     for (let i = 0; i < cls.count; i++) {
       const id = `proj_${m.name}_${cls.class}_${String(i).padStart(4, "0")}`.replaceAll("-", "_");
       projects.push({
@@ -251,6 +261,7 @@ export function expand(m: Manifest, sha256: string, scale = 1): Plan {
         owner: ownerOf(secret, id),
         recordKey: createHmac("sha256", keyRoot).update(id).digest("base64"),
         quotaFlags,
+        weightFlags,
       });
     }
   }

@@ -1,0 +1,121 @@
+{
+ "name": "ml-m-shared",
+ "seed": 19,
+ "duration": 1640,
+ "comment": "6A's last measurement (the lead, 2026-11-01): profile M beside 48 unit S tenants on one launch cell (k = 8), M admitted with weighted shares (request 2, bytes 6: edge #196; at bytes 5 its 1,287,500 B/s ceiling refused 22% of its appends in the smoke, a token bucket at 97% load), against pack-s-mux-0048 alone the same day for M's marginal. pack-s-mux-0048's schedule and verdict window ('steady' 360-1,560 s).",
+ "periods": {
+  "steady": [
+   360,
+   1560
+  ]
+ },
+ "classes": [
+  {
+   "class": "s",
+   "count": 48,
+   "role": "compliant",
+   "streams": 20,
+   "prefix": "s/",
+   "pool": 252,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 120,
+     "args": {
+      "stagger": 0.1
+     }
+    },
+    {
+     "mode": "produce",
+     "at": 180,
+     "spread": 60,
+     "secs": 1380,
+     "args": {
+      "rate": 2,
+      "records": 1,
+      "record-bytes": 1024
+     }
+    },
+    {
+     "mode": "mux",
+     "at": 180,
+     "spread": 60,
+     "args": {
+      "group": "s-cg",
+      "group-streams": 5,
+      "pull": 10,
+      "settle": "every",
+      "wait-ms": 25000
+     }
+    }
+   ]
+  },
+  {
+   "class": "m",
+   "count": 1,
+   "role": "compliant",
+   "streams": 10,
+   "prefix": "m/",
+   "pool": 96,
+   "weights": {
+    "request": 2,
+    "bytes": 6
+   },
+   "comment": "Profile M, medium CDC (streams-cost report 2026-10-24 section 4.1): 100 GiB/day as 100 x 1 KiB JSON records per request under 64 routing keys at 12.1 req/s over 10 streams, two consumer groups (pull max 100, settle each pull), a long-poll tail per stream on routing key k0; oracle-corpus records (corpus JSON inside the oracle's fields, c about 4).",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0
+    },
+    {
+     "mode": "produce",
+     "at": 180,
+     "secs": 1380,
+     "args": {
+      "rate": 12.1,
+      "records": 100,
+      "record-bytes": 1024,
+      "routing-keys": 64,
+      "payload": "oracle-corpus"
+     }
+    },
+    {
+     "mode": "group",
+     "at": 180,
+     "secs": 1380,
+     "args": {
+      "group": "cdc-a",
+      "pull": 100,
+      "consumers": 1,
+      "settle": "every",
+      "wait-ms": 20000
+     }
+    },
+    {
+     "mode": "group",
+     "at": 180,
+     "secs": 1380,
+     "args": {
+      "group": "cdc-b",
+      "pull": 100,
+      "consumers": 1,
+      "settle": "every",
+      "wait-ms": 20000
+     }
+    },
+    {
+     "mode": "tail",
+     "at": 180,
+     "secs": 1380,
+     "args": {
+      "via": "long-poll",
+      "readers": 1,
+      "routing-keys": 1,
+      "wait-ms": 20000
+     }
+    }
+   ]
+  }
+ ]
+}

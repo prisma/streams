@@ -63,6 +63,32 @@ test("an oracle record verifies only for its own project and only intact", () =>
   expect(() => new PayloadGen("oracle", 300, 1, 3)).toThrow("needs an owning project");
 });
 
+test("an oracle-corpus record carries a corpus record as its data, compresses as JSON does and verifies", () => {
+  const g1 = new PayloadGen("oracle-corpus", 1024, 1, 3, A);
+  const g2 = new PayloadGen("oracle-corpus", 1024, 1, 3, A);
+  const recs = Array.from({ length: 200 }, () => g1.json());
+  expect(Array.from({ length: 200 }, () => g2.json())).toEqual(recs);
+  for (const r of recs) {
+    const v = JSON.parse(r);
+    expect(verifyOracle(A, v)).toBe("ok");
+    expect(verifyOracle(B, v)).toBe("foreign");
+    expect(typeof JSON.parse(v.data)).toBe("object");
+  }
+  const mean = recs.reduce((n, r) => n + r.length, 0) / recs.length;
+  expect(mean).toBeGreaterThan(1024 * 0.85);
+  expect(mean).toBeLessThan(1024 * 1.15);
+  const all = Buffer.from(recs.join("\n"));
+  const random = new PayloadGen("oracle", 1024, 1, 3, A);
+  const oracle = Buffer.from(Array.from({ length: 200 }, () => random.json()).join("\n"));
+  const ratio = (b: Buffer) => b.length / Bun.gzipSync(b).length;
+  expect(ratio(all)).toBeGreaterThan(3);
+  expect(ratio(oracle)).toBeLessThan(1.5);
+  const changed = JSON.parse(recs[0]!);
+  changed.data = changed.data.replace(/\d/, (d: string) => String((Number(d) + 1) % 10));
+  expect(verifyOracle(A, changed)).toBe("bad_mac");
+  expect(() => new PayloadGen("oracle-corpus", 1024, 1, 3)).toThrow("needs an owning project");
+});
+
 test("every read path counts a leaked and a corrupted record, and audit flags both", async () => {
   // Proj A writes 40 oracle records over two streams; B writes into its own
   // stream of the same name; then one of B's records and one tampered copy

@@ -1,0 +1,91 @@
+{
+ "name": "ml-l-shared",
+ "seed": 19,
+ "duration": 1640,
+ "comment": "6A's last measurement: profile L beside 48 unit S tenants on one launch cell (k = 8), L admitted with byte weight 7 (k - 1, the most a project may hold: edge #196), whose append ceiling (1,802,500 B/s) is below the profile's ~1.82 MB/s, and at 1.70 req/s the bucket would run at 97% load, so L runs at 1.40 req/s here (about 80%) (its cost scaled to the profile by produced bytes); against pack-s-mux-0048 alone the same day for L's marginal.",
+ "periods": {
+  "steady": [
+   360,
+   1560
+  ]
+ },
+ "classes": [
+  {
+   "class": "s",
+   "count": 48,
+   "role": "compliant",
+   "streams": 20,
+   "prefix": "s/",
+   "pool": 252,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 120,
+     "args": {
+      "stagger": 0.1
+     }
+    },
+    {
+     "mode": "produce",
+     "at": 180,
+     "spread": 60,
+     "secs": 1380,
+     "args": {
+      "rate": 2,
+      "records": 1,
+      "record-bytes": 1024
+     }
+    },
+    {
+     "mode": "mux",
+     "at": 180,
+     "spread": 60,
+     "args": {
+      "group": "s-cg",
+      "group-streams": 5,
+      "pull": 10,
+      "settle": "every",
+      "wait-ms": 25000
+     }
+    }
+   ]
+  },
+  {
+   "class": "l",
+   "count": 1,
+   "role": "compliant",
+   "streams": 50,
+   "prefix": "l/",
+   "pool": 64,
+   "weights": {
+    "bytes": 7
+   },
+   "comment": "Profile L, large sink (section 4.1): 1,000 x 1 KiB JSON records per request at 1.4 req/s over 50 streams (the profile is 1.78 req/s, 150 GiB/day), no live readers, one catch-up walk from the earliest offset of every stream at 1,260 s (the run's 'day'); oracle-corpus records.",
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0
+    },
+    {
+     "mode": "produce",
+     "at": 180,
+     "secs": 1380,
+     "args": {
+      "rate": 1.4,
+      "records": 1000,
+      "record-bytes": 1024,
+      "payload": "oracle-corpus"
+     }
+    },
+    {
+     "mode": "walk",
+     "at": 1260,
+     "args": {
+      "parallel": 8
+     }
+    }
+   ]
+  }
+ ]
+}

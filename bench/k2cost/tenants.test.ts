@@ -40,7 +40,7 @@ const manifest = (): Manifest => ({
       { mode: "walk", at: 0.3, secs: 3.4, args: { from: "lag:0.5" } },
       { mode: "tail", at: 0.3, secs: 3.4, args: { via: "sse", readers: 1 } },
     ] },
-    { class: "flood", count: 1, role: "hostile", quotas: "q-hostile", streams: 1, phases: [
+    { class: "flood", count: 1, role: "hostile", quotas: "q-hostile", weights: { request: 2, bytes: 5 }, streams: 1, phases: [
       { mode: "setup", at: 0 },
       { mode: "produce", at: 0.3, secs: 3, args: { rate: 30, "record-bytes": 256 } },
     ] },
@@ -61,6 +61,7 @@ test("a manifest expands into projects with their own ids, seeds, keys and quota
   expect(new Set(plan.projects.map((p) => p.recordKey)).size).toBe(6);
   expect(plan.projects[2]!.quotaFlags).toEqual(["requests_per_sec=20", "max_streams=50"]);
   expect(plan.projects[0]!.quotaFlags).toEqual([]);
+  expect(plan.projects.map((p) => p.weightFlags)).toEqual([[], [], ["request=2", "bytes=5"], [], [], []]);
   const cold = plan.projects.slice(3);
   expect(cold.map((p) => phaseStart(plan, p, p.cls.phases[0]!))).toEqual([0, 1 / 6, 2 / 6]);
   expect(Object.fromEntries(phaseFlags(plan.projects[0]!, plan.projects[0]!.cls.phases[1]!))).toEqual({
