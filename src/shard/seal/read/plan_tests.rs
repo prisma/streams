@@ -6,11 +6,12 @@
 //! cannot hold its pages.
 
 use super::{
-    Candidate, MAX_CHUNKS_LOOKED_AT, MAX_CHUNKS_PER_READ, Step, plan_steps, whole_last_groups,
+    Candidate, MAX_CHUNKS_LOOKED_AT, MAX_CHUNKS_PER_READ, Step, directory_window, plan_steps,
+    whole_last_groups,
 };
 use crate::shard::RingScan;
 use crate::shard::seal::SealCounters;
-use crate::spill::directory::{DirEntry, KeySummary};
+use crate::spill::directory::{DirEntry, Directory, KeySummary};
 use crate::spill::object::ObjectId;
 use crate::spill::runindex::tiling::Span;
 
@@ -159,4 +160,34 @@ fn the_directory_cut_never_splits_a_chunk_from_its_copy() {
         "nothing cut"
     );
     assert_eq!(seqs(whole_last_groups(dir, 9)).len(), 4);
+}
+
+/// A sealed read's directory window reads one entry past its cap, so the
+/// cut sees that the last group continues and drops it whole.
+#[test]
+fn the_directory_window_drops_a_group_its_cap_would_split() {
+    let at = |seq, last| DirEntry {
+        object: ObjectId { epoch: 1, seq },
+        chunk_off: 0,
+        chunk_len: 10,
+        first: last - 9,
+        last,
+        page_count: 1,
+        keys: KeySummary::Keys(Vec::new()),
+        anchors: Vec::new(),
+    };
+    let hash = [7; 16];
+    let mut dir = Directory::default();
+    for e in [at(1, 9), at(1, 19), at(2, 19), at(1, 29)] {
+        dir.insert(hash, e);
+    }
+    let got = |max| -> Vec<(u64, u64)> {
+        directory_window(&dir, &hash, 0, max)
+            .iter()
+            .map(|e| (e.object.seq, e.last))
+            .collect()
+    };
+    assert_eq!(got(2), [(1, 9)], "the 19 group dropped whole");
+    assert_eq!(got(3), [(1, 9), (1, 19), (2, 19)]);
+    assert_eq!(got(4).len(), 4, "nothing cut");
 }

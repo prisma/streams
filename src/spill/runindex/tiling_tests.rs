@@ -112,3 +112,29 @@ fn of_two_equal_spans_the_newer_objects_is_picked_and_kept() {
         assert_eq!(kept, [2], "drop_covered of {spans:?}");
     }
 }
+
+/// A rank orders objects by (epoch, seq): a newer epoch outranks every seq
+/// of an older one.
+#[test]
+fn a_rank_is_the_objects_epoch_then_seq() {
+    use crate::spill::object::ObjectId;
+    assert_eq!(
+        super::tiling::rank_of(ObjectId { epoch: 2, seq: 3 }),
+        (2u128 << 64) + 3
+    );
+    assert!(
+        super::tiling::rank_of(ObjectId { epoch: 1, seq: 0 })
+            > super::tiling::rank_of(ObjectId {
+                epoch: 0,
+                seq: u64::MAX
+            })
+    );
+}
+
+/// The rank breaks only a tie of both offsets: of two spans ending at one
+/// offset, the one starting first is picked even when the other is newer.
+#[test]
+fn a_newer_span_starting_later_loses_to_the_one_starting_first() {
+    let spans = [r(0, 9, 1), r(3, 9, 9)];
+    assert_eq!(tile(&spans, 5, 10, 4), vec![0]);
+}

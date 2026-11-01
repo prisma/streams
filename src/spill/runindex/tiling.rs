@@ -35,7 +35,7 @@ pub(crate) struct Span {
 
 /// A chunk's rank: its object's (epoch, seq), newer larger.
 pub(crate) fn rank_of(id: crate::spill::object::ObjectId) -> u128 {
-    (u128::from(id.epoch) << 64) | u128::from(id.seq)
+    (u128::from(id.epoch) << 64) + u128::from(id.seq)
 }
 
 /// Whether `a` is the better pick than `b` for an offset both hold.

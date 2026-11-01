@@ -39,7 +39,7 @@ use crate::crypto_page::{CheckedPage, page_extent};
 use crate::shard::record::{FrameReadResult, PageSlice, RangeReadError, RecordCorruption};
 use crate::shard::{Deliver, RingScan, ShardEngine, StreamHandle};
 use crate::spill::cache::{CHUNK_CACHE_MAX_ITEM, chunk_cache};
-use crate::spill::directory::DirEntry;
+use crate::spill::directory::{DirEntry, Directory};
 use crate::spill::object::{self, CHUNK_CRC_LEN, CHUNK_HEADER_LEN, DIR_ENTRY_LEN};
 use crate::spill::pending::PendingPage;
 use crate::spill::runindex::tiling::{Span, tile};
@@ -336,14 +336,15 @@ impl ShardEngine {
         scan: RingScan,
         key_filter: Option<&str>,
     ) -> Result<Candidates, RangeReadError> {
-        let entries = self
-            .layout
-            .seal
-            .directory
-            .read()
-            .map_err(|_| sealed_corrupt("the seal directory's lock is poisoned"))?
-            .from(&hash, scan.from, MAX_CHUNKS_LOOKED_AT + 1);
-        let entries = whole_last_groups(entries, MAX_CHUNKS_LOOKED_AT);
+        let entries = {
+            let directory = self
+                .layout
+                .seal
+                .directory
+                .read()
+                .map_err(|_| sealed_corrupt("the seal directory's lock is poisoned"))?;
+            directory_window(&directory, &hash, scan.from, MAX_CHUNKS_LOOKED_AT)
+        };
         let mut candidates: Vec<Candidate> = entries.into_iter().map(Candidate::Chunk).collect();
         candidates.sort_by_key(|c| c.span().first);
         if Reach::of(&candidates, scan).done(scan) {
@@ -540,6 +541,12 @@ impl Plan {
 /// object), cut only between two last offsets: a cut inside a group of one
 /// last offset could keep a chunk and drop its newer copy (a cleaner's,
 /// `seal::gc::clean`), whose original's object is released.
+/// The directory's entries of `hash` from `from`: at most `max`, read one
+/// past it so a cut never splits a group of one last offset.
+fn directory_window(dir: &Directory, hash: &[u8; 16], from: u64, max: usize) -> Vec<DirEntry> {
+    whole_last_groups(dir.from(hash, from, max + 1), max)
+}
+
 fn whole_last_groups(mut entries: Vec<DirEntry>, max: usize) -> Vec<DirEntry> {
     if let Some(cut) = entries.get(max).map(|e| e.last) {
         entries.truncate(max);
