@@ -40,9 +40,21 @@ const LOAD_FRESH_MS: i64 = 10_000;
 /// The outbox bound the fleet tick keeps on the overrides document.
 const MAX_PENDING_EVENTS: usize = 64;
 
+/// The fair share of `shards` over `members`: ceil(shards / members), and
+/// every shard while there is no member.
+fn fair_share(shards: usize, members: usize) -> usize {
+    shards.div_ceil(members.max(1))
+}
+
+/// Whether a member owning `owned` of `shards` is past the fair share over
+/// `members`.
+fn past_share(owned: usize, shards: usize, members: usize) -> bool {
+    owned > fair_share(shards, members)
+}
+
 /// The move that brings `me` one shard closer to the fair share, given each
-/// shard's owner: one of `me`'s shards, preferring one whose rendezvous home
-/// is the target, to a healthy active member below the share. Members past
+/// shard's owner: the first by name of `me`'s shards, to a healthy active
+/// member below the share. Members past
 /// the share move at the same ticks, so each takes a different target: the
 /// one at its own rank, by name, among the members past the share, of the
 /// members below it ordered by fewest shards. Only a shard `movable` admits
@@ -56,10 +68,7 @@ pub(crate) fn pick(
     healthy: impl Fn(&str) -> bool,
     movable: impl Fn(&str) -> bool,
 ) -> Option<(String, String)> {
-    if active.is_empty() {
-        return None;
-    }
-    let share = owners.len().div_ceil(active.len());
+    let share = fair_share(owners.len(), active.len());
     let mut counts: HashMap<&str, usize> = active.iter().map(|m| (m.as_str(), 0)).collect();
     for (_, owner) in owners {
         if let Some(count) = counts.get_mut(owner.as_str()) {
@@ -67,15 +76,13 @@ pub(crate) fn pick(
         }
     }
     let count = |member: &str| counts.get(member).copied().unwrap_or(0);
-    if count(me) <= share {
-        return None;
-    }
     let mut over: Vec<&str> = active
         .iter()
         .map(String::as_str)
         .filter(|m| count(m) > share)
         .collect();
     over.sort_unstable();
+    // A member within the share, or none of the ring, has no rank.
     let rank = over.iter().position(|m| *m == me)?;
     let mut below: Vec<&String> = active
         .iter()
@@ -83,17 +90,12 @@ pub(crate) fn pick(
         .collect();
     below.sort_unstable_by_key(|m| (count(m), m.as_str()));
     let to = *below.get(rank % below.len().max(1))?;
-    let mut mine: Vec<&str> = owners
+    let prefix = owners
         .iter()
         .filter(|(prefix, owner)| owner == me && movable(prefix))
-        .map(|(prefix, _)| prefix.as_str())
-        .collect();
-    mine.sort_unstable();
-    let homeward = mine
-        .iter()
-        .find(|prefix| active[crate::ownership::ring_pick(prefix, active)] == *to);
-    let prefix = homeward.or(mine.first())?;
-    Some(((*prefix).to_owned(), to.clone()))
+        .map(|(prefix, _)| prefix)
+        .min()?;
+    Some((prefix.clone(), to.clone()))
 }
 
 /// Whether this instance may give a shard away: it is not lagging. The fleet
@@ -337,7 +339,7 @@ fn past_share_in_mirror(state: &AppState, me: &str) -> bool {
         .iter()
         .filter(|prefix| state.ownership.effective_owner(prefix).as_deref() == Some(me))
         .count();
-    !active.is_empty() && owned > prefixes.len().div_ceil(active.len())
+    past_share(owned, prefixes.len(), active.len())
 }
 
 /// One pass: read the fleet when this instance may be past the share, and
@@ -410,8 +412,8 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
 #[cfg(test)]
 mod tests {
     use super::{
-        Heartbeat, OverrideEntry, Overrides, Pacing, document_owners, fold, may_shed,
-        moved_document, pick, well_under,
+        Heartbeat, OverrideEntry, Overrides, Pacing, document_owners, fair_share, fold, may_shed,
+        moved_document, past_share, pick, well_under,
     };
     use crate::runtime::{Clock, ManualClock};
     use std::time::Duration;
@@ -590,27 +592,25 @@ mod tests {
         );
     }
 
-    /// Of the shards that may move, one whose rendezvous home is the target
-    /// goes first: the ring then agrees with the placement.
+    /// 5 shards over 2 members: a share of 3. A member at 3 is within it, so
+    /// it neither moves nor reads; at 4 it is past it.
     #[test]
-    fn a_shard_whose_home_is_the_target_moves_first() {
+    fn the_fair_share_rounds_up() {
+        assert_eq!(fair_share(5, 2), 3);
+        assert_eq!(fair_share(5, 0), 5, "no member");
+        assert!(!past_share(3, 5, 2), "a member at the share reads nothing");
+        assert!(past_share(4, 5, 2));
         let active = members(2);
-        let homes: Vec<usize> = ["00", "01", "10", "11"]
-            .iter()
-            .map(|p| crate::ownership::ring_pick(p, &active))
-            .collect();
+        let owners = owned(&active, &[3, 2]);
         assert_eq!(
-            homes,
-            [0, 0, 1, 1],
-            "00 and 01 are streams-1's, 10 and 11 streams-2's"
+            pick(&owners, &active, "streams-1", |_| true, |_| true),
+            None
         );
-        let skewed: Vec<(String, String)> = ["00", "01", "10", "11"]
-            .iter()
-            .map(|p| ((*p).to_owned(), active[0].clone()))
-            .collect();
+        let owners = owned(&active, &[4, 1]);
         assert_eq!(
-            pick(&skewed, &active, "streams-1", |_| true, |_| true),
-            Some(("10".to_owned(), "streams-2".to_owned()))
+            pick(&owners, &active, "streams-1", |_| true, |_| true),
+            Some(("0000".to_owned(), "streams-2".to_owned())),
+            "the first of its shards by name"
         );
     }
 
