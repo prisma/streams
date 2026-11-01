@@ -1,4 +1,4 @@
-//! Forwarding a data-plane request to its stream's owner.
+//! Forwarding a stream request to its stream's owner.
 //!
 //! A request that reaches an instance which does not own its stream's
 //! shard is answered `409 not_ring_owner` with `Streams-Replay-To`, and a

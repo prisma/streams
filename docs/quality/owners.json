@@ -213,7 +213,7 @@
       "count": 1,
       "owner": "crate::forward_to_owner",
       "path": "src/dst/dst_tests.rs",
-      "reason": "Forwarding to a stream's owner, over two instances and one store: a non-owner forwards a data-plane request once to the owner whose URL the fleet published and answers with the owner's response, a forwarded request is answered with its 409 and never forwarded again, and without the owner's URL or with the owner unreachable the non-owner answers its 409; compiler and the full DST suite exercise the module.",
+      "reason": "Forwarding to a stream's owner, over two instances and one store, and owner stand-ins that drop or never answer a forward: a non-owner forwards a stream request once to the owner whose URL the fleet published and answers with the owner's response, a forwarded request is answered with its 409 and never forwarded again, without the owner's URL or with the owner unreachable the non-owner answers its 409, and a forward that fails after it was sent, or is not answered within its bound, answers 503 forward_failed within the forward cap; compiler and the full DST suite exercise the module.",
       "syntax": "path = \"tests/forward_to_owner.rs\""
     },
     {
