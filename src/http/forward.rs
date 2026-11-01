@@ -28,7 +28,10 @@
 //!   read whole within that bound, as an extractor does before the handler
 //!   runs, is forwarded from those frames, which share the handler's bytes.
 //!   A handler that read a larger body, or part of one, keeps its `409`,
-//!   and the client replays it.
+//!   and the client replays it. Every route that takes a body today (raw
+//!   and product appends and creates) reads it whole before it resolves
+//!   ownership, so a forward sends at most the 64 KiB already read, from
+//!   memory: a client's upload is never inside the forward's answer bound.
 //! - **What a failure means.** The owner's unreachable socket answers the
 //!   original `409`, so the client can still replay. A forward that fails
 //!   after the request was sent may have been applied by the owner, so it

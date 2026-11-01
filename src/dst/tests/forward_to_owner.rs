@@ -607,6 +607,30 @@ async fn a_body_read_past_the_kept_bound_keeps_its_409() {
     engine_shutdown(&p.b).await;
 }
 
+/// A raw append reads its whole body at the non-owner before ownership
+/// resolves (the body is buffered, then the shard is resolved), as a product
+/// append does: one past 64 KiB keeps its `409`, and nothing reaches the
+/// owner. So a forward never streams a client's body upload: what it sends
+/// is the at most 64 KiB the handler already read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_raw_append_read_past_the_kept_bound_keeps_its_409() {
+    let p = pair().await;
+    create(p.addr_b, "fwdr").await;
+    let past = format!(r#"[{{"pad":"{}"}}]"#, "k".repeat(64 << 10));
+    let (status, headers, body) =
+        hreq(p.addr_a, "POST", "/v1/stream/fwdr", &[CT], past.as_bytes()).await;
+    assert_eq!(status, 409, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        (
+            headers.get("streams-replay-to").map(String::as_str),
+            headers.get("streams-forwarded-to"),
+        ),
+        (Some("inst-b"), None)
+    );
+    assert!(records_at(p.addr_b, "fwdr").await.is_empty());
+    engine_shutdown(&p.b).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_non_owner_forwards_a_live_feed_connect_to_the_owner() {
     let p = pair().await;
