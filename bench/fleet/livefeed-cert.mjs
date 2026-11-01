@@ -253,14 +253,22 @@ leg("streams-1 serves outside fleet mode with no ring",
   JSON.stringify((await debug("streams-1"))?.ring ?? null));
 
 // SSE collector over fetch streaming.
-async function sseCollect(url, { headers = {}, ms = 10000, until = () => false } = {}) {
+// Every leg below asserts what ONE instance does, so a subscription opts
+// out of forwarding to the owner (edge change #235) with the
+// Streams-Forwarded request header: a non-owner then answers its typed
+// 409 itself instead of sending the request on. The forwarding leg passes
+// `forward: true` to measure the forward.
+const PINNED = { "streams-forwarded": "cert" };
+async function sseCollect(url, { headers = {}, ms = 10000, until = () => false, forward = false } = {}) {
   const ctl = new AbortController();
   const out = { text: "", eof: false, status: 0 };
   const timer = setTimeout(() => ctl.abort(), ms);
   try {
-    const r = await fetch(url, { headers: { ...H(), accept: "text/event-stream", ...headers }, signal: ctl.signal });
+    const pin = forward ? {} : PINNED;
+    const r = await fetch(url, { headers: { ...H(), accept: "text/event-stream", ...pin, ...headers }, signal: ctl.signal });
     out.status = r.status;
     out.replayTo = r.headers.get("streams-replay-to");
+    out.forwardedTo = r.headers.get("streams-forwarded-to");
     if (!r.body) { out.eof = true; return out; }
     const reader = r.body.getReader();
     const dec = new TextDecoder();
@@ -412,7 +420,7 @@ const mkWedge = async (url) => {
   let r;
   const t0 = Date.now();
   for (;;) {
-    r = await fetch(url, { headers: { ...H(), accept: "text/event-stream" } });
+    r = await fetch(url, { headers: { ...H(), accept: "text/event-stream", ...PINNED } });
     if (r.status === 200 || Date.now() - t0 > 60000) break;
     await r.body?.cancel?.().catch(() => {});
     await sleep(1500);
@@ -446,9 +454,12 @@ const waitFor = async (pred, ms) => {
 
 // ---- Leg group A: replay via EVERY instance (initial ownership) -----
 // Exactly one instance owns the live tail and serves the full lineage;
-// the others answer the TYPED routing refusal carrying the owner name
-// (round-11.4 field finding: without Streams-Replay-To the product
-// translator renders the bounce as non-retryable cursor_beyond_tail).
+// the others, asked not to forward, answer the TYPED routing refusal
+// carrying the owner name (round-11.4 field finding: without
+// Streams-Replay-To the product translator renders the bounce as
+// non-retryable cursor_beyond_tail). Without the opt-out a non-owner
+// forwards the replay once to that owner and relays its full lineage,
+// naming it in Streams-Forwarded-To (edge change #235).
 let initialOwner = null;
 {
   const results = {};
@@ -479,6 +490,19 @@ let initialOwner = null;
       leg(`replay via ${n}: typed routing refusal names the owner`,
         nr.status === 409 && nr.replayTo === initialOwner && !nr.text.includes("cursor_beyond_tail"),
         `status=${nr.status} replayTo=${nr.replayTo} body=${nr.text.slice(0, 160)}`);
+      let fr;
+      for (let i = 0; i < 20; i++) {
+        fr = await sseCollect(`${base(n)}/v1/streams/certsplit/records:sse?routingKey=hot0`, {
+          ms: 20000, until: (t) => t.includes('"upToDate":true'), forward: true,
+        });
+        if (fr.status !== 503) break;
+        await sleep(1000);
+      }
+      const fseeds = count(fr.text, '"seed":0');
+      leg(`replay via ${n}, forwarded: the owner (${initialOwner}) serves the full lineage through it`,
+        fr.status === 200 && fr.forwardedTo === initialOwner && fr.replayTo === null
+          && fr.text.includes('"upToDate":true') && fseeds === 1,
+        `status=${fr.status} forwardedTo=${fr.forwardedTo} replayTo=${fr.replayTo} seed0x${fseeds}`);
     }
   }
 }
