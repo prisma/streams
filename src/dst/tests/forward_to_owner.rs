@@ -76,6 +76,51 @@ async fn records_at(addr: Addr, name: &str) -> Vec<serde_json::Value> {
     serde_json::from_slice(&body).expect("a JSON array of records")
 }
 
+/// An owner stand-in at `listener`: accept one connection, read the
+/// request on it whole, and hand the connection back unanswered.
+async fn accept_unanswered(listener: &tokio::net::TcpListener) -> tokio::net::TcpStream {
+    let (mut socket, _) = listener.accept().await.expect("accept a forward");
+    read_request(&mut socket).await;
+    socket
+}
+
+/// A loopback listener for an owner stand-in, and its URL.
+async fn owner_stand_in() -> (tokio::net::TcpListener, String) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind a port");
+    let url = format!("http://{}", listener.local_addr().expect("its address"));
+    (listener, url)
+}
+
+/// Read one request's head and its body, sized or chunked.
+async fn read_request(socket: &mut tokio::net::TcpStream) {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        let head = buf.windows(4).position(|w| w == b"\r\n\r\n");
+        if let Some(end) = head {
+            let text = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+            let length = text
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .and_then(|v| v.trim().parse::<usize>().ok());
+            let whole = match length {
+                Some(n) => buf.len() >= end + 4 + n,
+                None => !text.contains("chunked") || buf.ends_with(b"0\r\n\r\n"),
+            };
+            if whole {
+                return;
+            }
+        }
+        match socket.read(&mut chunk).await {
+            Ok(0) | Err(_) => return,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_non_owner_forwards_an_append_to_the_owner_once() {
     let p = pair().await;
@@ -266,6 +311,50 @@ async fn an_unreachable_owner_leaves_the_non_owner_answering_409() {
         Some("inst-b")
     );
     assert!(records_at(p.addr_b, "fwd4").await.is_empty());
+    engine_shutdown(&p.b).await;
+}
+
+/// An owner that read the forwarded append and closed the connection
+/// without answering may have applied it: the non-owner answers exactly
+/// `503 forward_failed` with `Retry-After: 1`, not marked retryable, and
+/// never the `409` with `Streams-Replay-To` a router would replay as a new
+/// append. The owner stand-in read the request once: nothing retried it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn an_owner_that_drops_a_forwarded_request_unanswered_is_answered_503() {
+    let p = pair().await;
+    create(p.addr_b, "fwd6").await;
+    let (owner, url) = owner_stand_in().await;
+    p.a.peer.set_peer("inst-b", &url);
+
+    let ((status, headers, body), ()) = tokio::join!(
+        hreq(p.addr_a, "POST", "/v1/stream/fwd6", &[CT], br#"[{"n":1}]"#),
+        async { drop(accept_unanswered(&owner).await) },
+    );
+    assert_eq!(
+        (
+            status,
+            serde_json::from_slice::<serde_json::Value>(&body).expect("a JSON error")["error"]
+                .clone(),
+        ),
+        (
+            503,
+            serde_json::json!({
+                "code": "forward_failed",
+                "message": "the stream's owner did not answer the forwarded request; retry",
+            })
+        )
+    );
+    assert_eq!(
+        (
+            headers.get("retry-after").map(String::as_str),
+            headers.get("streams-replay-to"),
+            headers.get("streams-forwarded-to"),
+        ),
+        (Some("1"), None, None)
+    );
+    let again = tokio::time::timeout(std::time::Duration::from_millis(200), owner.accept()).await;
+    assert!(again.is_err(), "the request was sent once, never again");
+    assert!(records_at(p.addr_b, "fwd6").await.is_empty());
     engine_shutdown(&p.b).await;
 }
 

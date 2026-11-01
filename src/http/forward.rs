@@ -28,8 +28,9 @@
 //! - **What a failure means.** The owner's unreachable socket answers the
 //!   original `409`, so the client can still replay. A forward that fails
 //!   after the request was sent may have been applied by the owner, so it
-//!   is answered with a retryable `503 forward_failed`, never with the
-//!   `409` a client would replay as new.
+//!   is answered `503 forward_failed` with `Retry-After: 1`, never with the
+//!   `409` a client would replay as new. It is not marked `retryable`: the
+//!   SDK then treats a plain append's outcome as unknown, which it is.
 //! - **What the client sees.** The owner's status, headers and body, with
 //!   `Streams-Forwarded-To` naming the owner, so a client can address it
 //!   next time.
