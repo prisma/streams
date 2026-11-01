@@ -537,7 +537,8 @@ async fn an_owner_that_never_connects_leaves_the_409_within_a_second() {
 /// share of the non-owner's active requests, and the streams the non-owner
 /// owns itself keep being served: eight appends forwarded to a silent owner
 /// leave two waiting and six answered `409`, and an append to a stream of
-/// the non-owner's own is then admitted and applied.
+/// the non-owner's own is then admitted and applied. The two then fail
+/// `503 forward_failed` when the stand-in drops them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn forwards_to_a_silent_owner_leave_the_non_owners_own_streams_served() {
     const SENT: usize = 8;
@@ -590,10 +591,17 @@ async fn forwards_to_a_silent_owner_leave_the_non_owners_own_streams_served() {
         }
         let path = format!("/v1/stream/{mine}");
         let answer = hreq(addr, "POST", &path, &[CT], br#"[{"n":2}]"#).await;
-        (held, answer)
+        // The stand-in then drops the forwards it held: each fails after it
+        // was sent, a 503 at once rather than at the end of its bound.
+        drop(held);
+        answer
     };
-    let (statuses, (_held, (status, _, body))) =
-        futures_util::future::join(forwards, own_append).await;
+    let started = Instant::now();
+    let (statuses, (status, _, body)) = futures_util::future::join(forwards, own_append).await;
+    assert!(
+        started.elapsed() < answer_bound(&a),
+        "the held forwards ended when the stand-in dropped them"
+    );
     assert!(
         status == 200 || status == 204,
         "the non-owner's own append is served beside the waiting forwards: {status} {}",

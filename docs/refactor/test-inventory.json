@@ -5274,7 +5274,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "d75ad54dcfec0a114e1e429b5c02b398b986d364d43a1d3a897abd4be8c30305",
+    "function_sha256": "4377d9ca083232a44cd7b98796c2e4c07ef5768774d747203300a6e3b2a00a9b",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/forward_to_owner.rs",
