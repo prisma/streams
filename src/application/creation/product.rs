@@ -29,19 +29,8 @@ impl CreationService {
         quotas: Option<&crate::project_policy::ProjectQuotas>,
     ) -> Result<(bool, StreamDesc), ProductCreateError> {
         let project = sref.project_id();
-        let prefix = self
-            .shards
-            .prefix_for(&crate::crypto::RouteHash::for_stream(&sref).0);
-        if let Some(owner) = self.ownership.foreign_owner(&prefix) {
-            return Err(CreationError {
-                owner: Some(owner.clone()),
-                ..CreationError::new(
-                    CreationFailure::Conflict,
-                    "not_ring_owner",
-                    &format!("shard {prefix} belongs to {owner}"),
-                )
-            }
-            .into());
+        if let Some(refusal) = self.foreign_create(&sref) {
+            return Err(refusal.into());
         }
         // One fail-closed snapshot determines whether this attempt needs a
         // reservation. The reservation rolls back if an idempotent winner wins.

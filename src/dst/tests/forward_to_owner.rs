@@ -246,6 +246,40 @@ async fn a_non_owner_forwards_a_create_to_the_owner() {
     engine_shutdown(&p.b).await;
 }
 
+/// A non-owner that forwarded a create holds no stale absence for the new
+/// stream: the append that follows at once, at the same non-owner, is
+/// forwarded and applied, through both surfaces.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn an_append_right_after_a_forwarded_create_reaches_the_new_stream() {
+    let p = pair().await;
+    let (status, _, body) = hreq(p.addr_a, "PUT", "/v1/stream/fwd9", &[CT], b"").await;
+    assert_eq!(status, 201, "{}", String::from_utf8_lossy(&body));
+    let (status, _, body) = hreq(p.addr_a, "POST", "/v1/stream/fwd9", &[CT], br#"[{"n":1}]"#).await;
+    assert_eq!(
+        status,
+        204,
+        "raw append after the forwarded create: {}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(
+        records_at(p.addr_b, "fwd9").await,
+        vec![serde_json::json!({"n": 1})]
+    );
+
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let format = br#"{"format":{"kind":"bytes"}}"#;
+    let (status, _, body) = preq(p.addr_a, "PUT", "/v1/streams/fwdq", &key, format).await;
+    assert_eq!(status, 201, "{}", String::from_utf8_lossy(&body));
+    let (status, _, body) = preq(p.addr_a, "POST", "/v1/streams/fwdq/records", &key, b"x").await;
+    assert_eq!(
+        status,
+        200,
+        "product append after the forwarded create: {}",
+        String::from_utf8_lossy(&body)
+    );
+    engine_shutdown(&p.b).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_forwarded_request_is_answered_with_its_409_and_never_forwarded_again() {
     let p = pair().await;

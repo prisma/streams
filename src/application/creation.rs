@@ -100,6 +100,29 @@ pub(crate) use product::{ProductCreateConfig, ProductCreateError};
 pub(crate) use reconcile::{ForkDebtStatus, spawn_fork_debt_reconciler};
 
 impl CreationService {
+    /// The `409 not_ring_owner` for a create of `sref` whose shard another
+    /// instance owns, or `None` when this instance may create it. A refused
+    /// create also drops what this instance cached of the stream: the owner
+    /// may create it now (a forward does at once, edge change #235), and an
+    /// absence read here before the refusal (the queue guards read every
+    /// request's descriptor) would answer the next request `404` for the
+    /// cache's 5 s.
+    fn foreign_create(&self, sref: &crate::tenant::TenantStreamRef) -> Option<CreationError> {
+        let prefix = self
+            .shards
+            .prefix_for(&crate::crypto::RouteHash::for_stream(sref).0);
+        let owner = self.ownership.foreign_owner(&prefix)?;
+        self.registry.invalidate(sref);
+        Some(CreationError {
+            owner: Some(owner.clone()),
+            ..CreationError::new(
+                CreationFailure::Conflict,
+                "not_ring_owner",
+                &format!("shard {prefix} belongs to {owner}"),
+            )
+        })
+    }
+
     pub(crate) async fn resolve(
         &self,
         route: &[u8; 16],

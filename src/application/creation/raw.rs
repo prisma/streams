@@ -17,17 +17,8 @@ impl CreationService {
             body,
             fork,
         } = command;
-        let route = crate::crypto::RouteHash::for_stream(&sref);
-        let prefix = self.shards.prefix_for(&route.0);
-        if let Some(owner) = self.ownership.foreign_owner(&prefix) {
-            return Err(CreationError {
-                owner: Some(owner.clone()),
-                ..CreationError::new(
-                    CreationFailure::Conflict,
-                    "not_ring_owner",
-                    &format!("shard {prefix} belongs to {owner}"),
-                )
-            });
+        if let Some(refusal) = self.foreign_create(&sref) {
+            return Err(refusal);
         }
         let ct_hdr_present = content_type.is_some();
         let prepared = fork::prepare(

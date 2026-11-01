@@ -3487,6 +3487,17 @@
     "scenarios": []
   },
   {
+    "name": "an_append_right_after_a_forwarded_create_reaches_the_new_stream",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "bdb16600fd5ad0bb3af98fcb6eb00dfc917192cbdbfd3d00a6bae41a1f08b504",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/forward_to_owner.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_append_routed_by_a_pre_merge_descriptor_lands_on_the_merged_segment",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
