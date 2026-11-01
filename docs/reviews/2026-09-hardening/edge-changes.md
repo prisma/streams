@@ -4862,7 +4862,7 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Status:** ratified by the lead under the owner's delegation, 2026-10-30.
 - **Check against commit:** written with the change.
 
-### #235 (this record's commit) — The collector rewrites a segment object whose live chunks are a minority and whose dead bytes pay for the copy within a month, so a long-lived stream's chunk no longer pins its dead neighbours' bytes
+### #237 (this record's commit) — The collector rewrites a segment object whose live chunks are a minority and whose dead bytes pay for the copy within a month, so a long-lived stream's chunk no longer pins its dead neighbours' bytes
 
 - **Program item:** layout 6A package 6, the segment cleaner (the lead's decision under the owner's delegation, 2026-11-01, after the combined soak failed at hour 4: about 55% of purged generations' objects survived because they share seals with the never-expiring usage ledger).
 - **Surface:** operator debug (`GET /v1/debug/timings`, each shard's `seal.gc`); the storage bill.
@@ -4874,7 +4874,7 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Who is affected:** operators and the cost rigs reading the GC stats (additive fields); the storage bill of a shard mixing long-lived and short-lived streams.
 - **Pinning tests:** `shard::seal::gc::clean::tests::` (the rule pinned to its dollar derivation; a pass that rewrites ledger-pinned objects and releases them with exact refcounts; a crash after the copy's PUT; a restart after the commit; a read started before the copy; a purge request, a fold and a queued consolidation racing the copy; back-off of objects only dead streams pin; the quiet period and the yield mark); TLA-019's cleaner controls `nc-tie-read`, `nc-tie-reclaim`, `nc-tie-keep`, `nc-clean-ignores-dead`, `nc-clean-ignores-pick` and witness `CleanedObjectDeleted`.
 - **Risk reason:** low. No client answer changes; additive operator counters. The copy reuses the consolidation's reclamation path and its lock-held re-check; the residual cost is one ranged GET of the table and one GET per live chunk per rewrite, bounded per pass.
-- **Status:** awaiting the lead's ratification under the owner's delegation (#235 reserved).
+- **Status:** awaiting the lead's ratification under the owner's delegation (#237 reserved; first written as #235 in f84208fdf, renumbered because #235 is the owner-ratified forwarding record).
 - **Check against commit:** written with the change.
 
 ## Discrepancies
