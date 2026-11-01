@@ -78,11 +78,23 @@ async fn records_at(addr: Addr, name: &str) -> Vec<serde_json::Value> {
     serde_json::from_slice(&body).expect("a JSON array of records")
 }
 
+/// How long an owner stand-in waits for the forward it expects. A forward
+/// reaches it within milliseconds; a non-owner that does not forward fails
+/// the test by name here instead of holding it without end.
+const FORWARD_ARRIVES: Duration = Duration::from_secs(10);
+
 /// An owner stand-in at `listener`: accept one connection, read the
 /// request on it whole, and hand the connection back unanswered.
 async fn accept_unanswered(listener: &tokio::net::TcpListener) -> tokio::net::TcpStream {
-    let (mut socket, _) = listener.accept().await.expect("accept a forward");
-    read_request(&mut socket).await;
+    let accepted = tokio::time::timeout(FORWARD_ARRIVES, async {
+        let (mut socket, _) = listener.accept().await.expect("accept a forward");
+        read_request(&mut socket).await;
+        socket
+    })
+    .await;
+    let Ok(socket) = accepted else {
+        panic!("no forward reached the owner stand-in within {FORWARD_ARRIVES:?}");
+    };
     socket
 }
 
