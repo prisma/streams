@@ -25,6 +25,7 @@ use crate::backpressure::GlobalLatch;
 
 pub(crate) mod body;
 pub(crate) mod fair_shed;
+pub(crate) mod forwards;
 pub(crate) mod live_units;
 pub(crate) mod park;
 pub(crate) mod read_memory;
@@ -132,6 +133,8 @@ struct Inner {
     /// Requests in flight that are parked in a wait (a subset of
     /// `inflight`, each held by a `ParkedTicket`).
     parked: AtomicI64,
+    /// Forwards to a stream's owner waiting for its answer (`forwards`).
+    forwards: AtomicI64,
     /// The peak of active requests (in flight minus parked) since the
     /// heartbeat last swapped it.
     active_peak: AtomicI64,
@@ -274,6 +277,7 @@ impl AdmissionController {
                 inflight: AtomicI64::new(0),
                 inflight_peak: AtomicI64::new(0),
                 parked: AtomicI64::new(0),
+                forwards: AtomicI64::new(0),
                 active_peak: AtomicI64::new(0),
                 live_pool: AtomicU64::new(knobs.subscriptions.effective),
                 max_inflight: AtomicI64::new(knobs.max_inflight),

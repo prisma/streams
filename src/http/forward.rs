@@ -31,6 +31,13 @@
 //!   is answered `503 forward_failed` with `Retry-After: 1`, never with the
 //!   `409` a client would replay as new. It is not marked `retryable`: the
 //!   SDK then treats a plain append's outcome as unknown, which it is.
+//! - **Bounded.** The owner has 1 s to accept the connection; past it
+//!   nothing was sent and the client gets the `409`. Its answer must begin
+//!   within its shard-open wait, the request's own wait and 5 s
+//!   ([`answer_bound`]); past that, `503 forward_failed`. Forwards waiting
+//!   for their owners at once hold at most a quarter of the in-flight cap
+//!   (`admission::forwards`); past it the client gets the `409`, so an
+//!   owner that never answers cannot take the non-owner's capacity.
 //! - **What the client sees.** The owner's status, headers and body, with
 //!   `Streams-Forwarded-To` naming the owner, so a client can address it
 //!   next time.
@@ -150,6 +157,9 @@ pub(super) async fn to_owner(
         return answer;
     };
     let Some(body) = lock(&slot).replay() else {
+        return answer;
+    };
+    let Some(_waiting) = state.admission.enter_forward() else {
         return answer;
     };
     let held = Held {

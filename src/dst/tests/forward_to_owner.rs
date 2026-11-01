@@ -8,13 +8,14 @@
 //! Two instances over one store: the ring gives the rig's shards to B, and
 //! requests arrive at A.
 
-use super::fixture_http::{engine_shutdown, http_rig_named, http_rig_named_at};
+use super::fixture_http::{engine_shutdown, http_rig_named, http_rig_named_at, http_rig_owner};
 use super::fixture_livefeed::{hub_sse_collect, lf_connect};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 type State = Arc<crate::http::AppState>;
@@ -461,6 +462,88 @@ async fn an_owner_that_never_connects_leaves_the_409_within_a_second() {
     );
     assert!(records_at(p.addr_b, "fwd8").await.is_empty());
     engine_shutdown(&p.b).await;
+}
+
+/// Forwards waiting for their owners' answers hold at most a quarter of the
+/// non-owner's in-flight cap (2 of 8 here). Past that a non-owner answers
+/// its `409` at once, so an owner that never answers holds no more than that
+/// share of the non-owner's active requests, and the streams the non-owner
+/// owns itself keep being served: eight appends forwarded to a silent owner
+/// leave two waiting and six answered `409`, and an append to a stream of
+/// the non-owner's own is then admitted and applied.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn forwards_to_a_silent_owner_leave_the_non_owners_own_streams_served() {
+    const SENT: usize = 8;
+    const HELD: usize = 2;
+    let (a, addr) = http_rig_owner(mem(), "inst-a").await;
+    let prefix_of = |name: &str| {
+        let sref = a.deployment.raw_adapter_sref(name);
+        a.shards
+            .prefix_for(&crate::crypto::RouteHash::for_stream(&sref).0)
+    };
+    let theirs = "fwd-theirs";
+    let moved = prefix_of(theirs);
+    let mine = (0..)
+        .map(|i| format!("fwd-mine-{i}"))
+        .find(|name| prefix_of(name) != moved)
+        .expect("a name on another shard");
+    let on_a: HashMap<String, String> = ["00", "01", "10", "11"]
+        .map(|prefix| (prefix.to_string(), "inst-a".to_string()))
+        .into();
+    let members = ["inst-a", "inst-b"].map(str::to_string).to_vec();
+    a.ownership.set_view(members, on_a);
+    create(addr, theirs).await;
+    create(addr, &mine).await;
+    let (owner, url) = owner_stand_in().await;
+    a.peer.set_peer("inst-b", &url);
+    a.ownership.set_override(&moved, "inst-b");
+    a.admission.set_max_inflight(8);
+
+    let answered = AtomicUsize::new(0);
+    let forwards = futures_util::future::join_all((0..SENT).map(|_| async {
+        let answer = hreq(
+            addr,
+            "POST",
+            "/v1/stream/fwd-theirs",
+            &[CT],
+            br#"[{"n":1}]"#,
+        )
+        .await;
+        answered.fetch_add(1, Ordering::SeqCst);
+        answer.0
+    }));
+    let own_append = async {
+        let mut held = Vec::new();
+        for _ in 0..HELD {
+            held.push(accept_unanswered(&owner).await);
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while answered.load(Ordering::SeqCst) < SENT - HELD && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let path = format!("/v1/stream/{mine}");
+        let answer = hreq(addr, "POST", &path, &[CT], br#"[{"n":2}]"#).await;
+        (held, answer)
+    };
+    let (statuses, (_held, (status, _, body))) = tokio::join!(forwards, own_append);
+    assert!(
+        status == 200 || status == 204,
+        "the non-owner's own append is served beside the waiting forwards: {status} {}",
+        String::from_utf8_lossy(&body)
+    );
+    let count = |code: u16| statuses.iter().filter(|s| **s == code).count();
+    assert_eq!(
+        (count(409), count(503)),
+        (SENT - HELD, HELD),
+        "{statuses:?}"
+    );
+    let (status, _, body) = hreq(addr, "GET", &format!("/v1/stream/{mine}"), &[], b"").await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        serde_json::from_slice::<Vec<serde_json::Value>>(&body).expect("records"),
+        vec![serde_json::json!({"n": 2})]
+    );
+    engine_shutdown(&a).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
