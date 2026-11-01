@@ -137,3 +137,21 @@ fn an_engine_without_its_own_line_reads_the_process_line() {
         "{marks:?}"
     );
 }
+
+/// The segment cleaner reads the yield mark from the same readings as the
+/// queue collector, without counting a yield.
+#[test]
+fn the_cleaner_reads_the_yield_mark_without_counting_it() {
+    let w = L0Watermark::default();
+    w.set_line(8);
+    assert!(!w.at_yield_mark(), "no reading yet");
+    w.observe(3);
+    assert!(!w.at_yield_mark(), "3 is below the yield mark (4)");
+    w.observe(4);
+    assert!(w.at_yield_mark(), "the yield mark");
+    assert_eq!(
+        w.yields.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "not counted"
+    );
+}

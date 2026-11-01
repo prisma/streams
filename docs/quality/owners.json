@@ -458,6 +458,14 @@
     },
     {
       "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_consolidation_landing_mid_pass_abandons_the_copy",
+      "path": "src/shard/seal/gc/clean/tests.rs",
+      "reason": "The cleaner's pass and the consolidation that supersedes its chunks run concurrently in one test task, so the consolidation lands while the pass waits after its PUT; the compiler checks the join's expansion and both futures borrow the test's rig.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
       "count": 2,
       "owner": "crate::a_deleted_queue_is_fenced_then_gone_without_rows",
       "path": "src/dst/tests/queue_product.rs",
