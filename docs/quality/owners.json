@@ -42,6 +42,14 @@
     },
     {
       "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::run",
+      "path": "src/fleet/count_balance.rs",
+      "reason": "The count-balance task selects between supervised cancellation and its pass timer, then between cancellation and its deadline-bounded pass; compiler checks expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
       "count": 1,
       "owner": "crate::Inner::begin_drain",
       "path": "src/tasks/drain.rs",
@@ -3503,6 +3511,14 @@
       "path": "src/dst/dst_tests.rs",
       "reason": "Usage-route authorization scenarios; a ?streamId= is served only for an incarnation of the URL's name, under a prefix grant and an every-name grant, over real HTTP against an enforce-mode rig with a rollup; compiled and executed with DST.",
       "syntax": "path = \"tests/security_usage.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::count_balance",
+      "path": "src/dst/tests/fleet_controller.rs",
+      "reason": "The count-balance scenarios (edge change #236: an instance past the fair share moves one shard to a member below it only after its boot cooldown, never to a member at half the lag threshold or outside the ring, never in a ring of one, and never while any override is younger than the cooldown, and an instance within the share lists no heartbeats for it) use the controller scenarios' private settling helper, and their module path is selected by the count-balance mutation owner's filter; the file they would grow has 14 lines of headroom. Compiled and executed with DST.",
+      "syntax": "path = \"fleet_count_balance.rs\""
     },
     {
       "category": "by-path-module",

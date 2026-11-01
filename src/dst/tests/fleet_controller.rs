@@ -10,6 +10,8 @@ use std::sync::{
 };
 use std::time::Duration;
 
+#[path = "fleet_count_balance.rs"]
+mod count_balance;
 #[path = "fleet_desired.rs"]
 mod desired;
 #[path = "fleet_reads.rs"]

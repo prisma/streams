@@ -16,6 +16,7 @@ use object_store::UpdateVersion;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+mod count_balance;
 /// This runtime's planned drain, run before a requested stop.
 pub(crate) mod drain;
 mod heartbeat;
@@ -364,6 +365,7 @@ pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskS
     };
     state.fleet.standing().mark_progress();
     heartbeat::start(state.clone(), cfg.instance.clone(), tasks);
+    count_balance::start(state.clone(), cfg.instance.clone(), tasks);
     let (drained, instance) = (state.clone(), cfg.instance.clone());
     tasks.set_stop_preface(drain::SUPERVISED, move || {
         Box::pin(drain::run(drained, instance))

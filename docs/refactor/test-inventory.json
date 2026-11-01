@@ -313,6 +313,17 @@
     "scenarios": []
   },
   {
+    "name": "a_count_move_waits_out_the_boot_cooldown_then_moves_one_shard",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "581c8a2eb8d57d952a80abc7b6884c769a38426c6c3555c977c12535423eeb86",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_count_balance.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_crash_left_debt_is_walked_closed_behind_another_instances_dead_stream",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -960,6 +971,17 @@
     "scenarios": []
   },
   {
+    "name": "a_fresh_override_anywhere_holds_the_count_move",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "8f063faa97cc183eaa5cbb23be751f252d88cddb610cfcaccbd4fb2a2730e592",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_count_balance.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_graceful_stop_cuts_a_wedged_terminal_round_at_five_seconds",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -1014,6 +1036,17 @@
       "DUR-001",
       "DUR-012"
     ]
+  },
+  {
+    "name": "a_heartbeat_outside_the_ring_receives_no_count_move",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "fc16462f5f68a5c5f454ab22c756319c172caaf1d0392047d6ecc8bb7f302561",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_count_balance.rs",
+    "scenarios": []
   },
   {
     "name": "a_held_heartbeat_does_not_stop_the_tick",
@@ -1191,6 +1224,17 @@
     "scenarios": []
   },
   {
+    "name": "a_member_at_half_the_lag_threshold_receives_no_count_move",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "702c8e8a93a390d7a7a5cbd2289b8d9037bf018c4d82cb035746bb8428347fbc",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_count_balance.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_member_that_boots_or_stops_is_read_by_the_next_pass",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -1199,6 +1243,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_reads.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_member_within_the_share_reads_nothing_for_the_count_balance",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "a4f39bb607833c4e6c2a67ad009c218ed50fe78f12c0d9443e63e1dfad251bdc",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_count_balance.rs",
     "scenarios": []
   },
   {
@@ -2289,6 +2344,17 @@
     "scenarios": [
       "DUR-006"
     ]
+  },
+  {
+    "name": "a_ring_of_one_makes_no_count_move",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "3b6861a552ac098be00b9c83fe4af88efd5fa5c8c6c105103eb45734cfe35a2f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_count_balance.rs",
+    "scenarios": []
   },
   {
     "name": "a_rotated_system_key_is_the_appends_refusal_never_a_recreate",

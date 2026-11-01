@@ -310,6 +310,8 @@ OWNERS = (
     owner('fleet_drain', 'src/fleet/drain.rs', 'fleet:: dst_tests::fleet_drain::'),
     owner('fleet_document_tests', 'src/fleet/repository/document_tests.rs', 'fleet::'),
     owner('fleet_planning', 'src/fleet/planning.rs', 'fleet::'),
+    owner('fleet_count_balance', 'src/fleet/count_balance.rs',
+          'fleet::count_balance:: dst_tests::fleet_controller::count_balance::'),
     owner('fleet_standing', 'src/fleet/standing.rs', 'fleet::'),
     # The beat loop and the tick's pressure reading are proven by the rigs.
     owner('fleet_heartbeat', 'src/fleet/heartbeat.rs',

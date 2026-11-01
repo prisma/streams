@@ -238,6 +238,27 @@ its target never opens the shard. The instance the ring assigns an
 overridden shard opens it at its next tick (eager handoff), fencing the
 previous holder's shard log — existing R2/R3 machinery.
 
+Count balance (edge change #236): the rendezvous hash spreads shards
+unevenly over members whose names differ in one digit (FNV-1a scores are
+correlated: 64 shards over 8 members gave one member 33), and a lag move
+needs a stalled shard. So each instance runs a count-balance task beside
+its fleet tick, on the tick's period. An instance that is not lagging and
+owns more than the fair share ceil(shards / members), with owners read
+from `fleet/overrides.json` itself, writes the same override a lag move
+writes for one of its shards that has no override, to an active member
+below the share whose lag is under half the lag threshold (the lag move's
+target rule). It moves only after two consecutive passes saw the
+imbalance, once its own move cooldown has passed (counted from its boot
+until its first move), and while no override in the document is younger
+than the cooldown, so the whole fleet makes at most one move, count or
+lag, per cooldown. An instance within the share in its mirror of the ring
+reads nothing for it, and a read that finds no move holds the next for a
+cooldown. Instances past the share take different targets: each
+its own rank, by name, among them, of the members below the share
+ordered by fewest shards. Return-home admits a return only within the
+same share, so the two passes never undo each other.
+`src/fleet/count_balance.rs`.
+
 ## 8. Validation plan
 
 Docker ladder (all on this machine, 1 GB-limited containers to mirror
