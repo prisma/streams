@@ -25,8 +25,14 @@ fn spans(len: usize) -> [Span; N] {
     for s in out.iter_mut().take(len) {
         let first: u64 = kani::any_where(|f: &u64| *f < D);
         let last: u64 = kani::any_where(|l: &u64| *l < D && *l >= first);
-        let rank: u128 = kani::any_where(|r: &u128| *r < N as u128);
-        *s = Span { first, last, rank };
+        // A small rank, widened: the comparisons keep their u128 width, the
+        // solver only the bits a rank below `N` can set.
+        let rank: u8 = kani::any_where(|r: &u8| usize::from(*r) < N);
+        *s = Span {
+            first,
+            last,
+            rank: u128::from(rank),
+        };
     }
     out
 }
@@ -79,40 +85,35 @@ fn kani_105_tile_covers_every_offset_until_none_holds_one() {
     );
 }
 
-/// KANI-105 (b): over spans in `sort_for_drop`'s order (first ascending,
-/// last descending, rank descending: as every fold, merge and reclaim sorts
-/// them), `drop_covered` keeps spans whose first and last offsets both
-/// increase strictly, of equal spans the newest, and every offset an input
-/// span holds is held by a kept one.
+/// Spans in `sort_for_drop`'s order: first ascending, last descending, rank
+/// descending (as every fold, merge and reclaim sorts them).
+fn in_drop_order(s: &[Span]) -> bool {
+    s.windows(2).all(|w| {
+        w[0].first < w[1].first
+            || (w[0].first == w[1].first && w[0].last > w[1].last)
+            || (w[0].first == w[1].first && w[0].last == w[1].last && w[0].rank >= w[1].rank)
+    })
+}
+
+/// KANI-105 (b): over spans in `sort_for_drop`'s order, `drop_covered`
+/// keeps spans whose first and last offsets both increase strictly, and
+/// every offset an input span holds is held by a kept one.
 #[kani::proof]
 #[kani::unwind(6)]
 fn kani_105_drop_covered_keeps_every_offset() {
     let len = kani::any_where(|n: &usize| *n <= N);
     let all = spans(len);
     let s = &all[..len];
-    kani::assume(s.windows(2).all(|w| {
-        w[0].first < w[1].first
-            || (w[0].first == w[1].first && w[0].last > w[1].last)
-            || (w[0].first == w[1].first && w[0].last == w[1].last && w[0].rank >= w[1].rank)
-    }));
+    kani::assume(in_drop_order(s));
     let kept = drop_covered(s);
-    for w in kept.windows(2) {
-        assert!(w[0] < w[1], "kept in input order");
-        assert!(
-            s[w[0]].first < s[w[1]].first,
-            "first offsets increase strictly"
-        );
-        assert!(
-            s[w[0]].last < s[w[1]].last,
-            "last offsets increase strictly"
-        );
-    }
-    for &k in &kept {
-        for other in s {
-            if other.first == s[k].first && other.last == s[k].last {
-                assert!(other.rank <= s[k].rank, "of equal spans the newest is kept");
-            }
-        }
+    // Any adjacent pair of kept spans: one nondeterministic index, not a
+    // loop over the pairs (which outgrew the CI runner's memory).
+    let i: usize = kani::any_where(|i: &usize| *i < N);
+    if i + 1 < kept.len() {
+        let (a, b) = (kept[i], kept[i + 1]);
+        assert!(a < b, "kept in input order");
+        assert!(s[a].first < s[b].first, "first offsets increase strictly");
+        assert!(s[a].last < s[b].last, "last offsets increase strictly");
     }
     let offset: u64 = kani::any_where(|o: &u64| *o < D);
     if s.iter().any(|x| holds(*x, offset)) {
@@ -122,9 +123,33 @@ fn kani_105_drop_covered_keeps_every_offset() {
         );
     }
     kani::cover!(kept.len() < len, "a contained span dropped");
+    kani::cover!(kept.len() == len && len == N, "nothing to drop");
+}
+
+/// KANI-105 (c): over spans in `sort_for_drop`'s order, of equal spans
+/// `drop_covered` keeps the newest (a cleaner's copy, never the chunk it
+/// copied). Its own harness: inside (b) the check outgrew the CI runner's
+/// memory.
+#[kani::proof]
+#[kani::unwind(6)]
+fn kani_105_drop_covered_keeps_the_newest_of_equal_spans() {
+    let len = kani::any_where(|n: &usize| *n <= N);
+    let all = spans(len);
+    let s = &all[..len];
+    kani::assume(in_drop_order(s));
+    let kept = drop_covered(s);
+    let (pick, other): (usize, usize) = (kani::any(), kani::any());
+    if pick < kept.len() && other < len {
+        let k = kept[pick];
+        if s[other].first == s[k].first && s[other].last == s[k].last {
+            assert!(
+                s[other].rank <= s[k].rank,
+                "of equal spans the newest is kept"
+            );
+        }
+    }
     kani::cover!(
         len >= 2 && s[0].first == s[1].first && s[0].last == s[1].last && s[0].rank > s[1].rank,
         "an older equal span dropped"
     );
-    kani::cover!(kept.len() == len && len == N, "nothing to drop");
 }

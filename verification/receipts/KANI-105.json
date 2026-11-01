@@ -6,20 +6,31 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "9bb8e49a96b2e892c5acc7d084e8bd3bed99117cc98d4e85654b09647b45852c",
+      "log_sha256": "6deee73090e8ee221c6b5ca4240b5504f71d90e03fc3955aeb1ca6537bbbbec5",
       "role": "baseline",
-      "seconds": 420.0,
+      "seconds": 283.8,
       "verdict": "pass"
     },
     {
       "check": "KANI-105/drop-covered",
-      "covers": 3,
-      "covers_satisfied": 3,
+      "covers": 2,
+      "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "b648c84f9fc0b249999281546807f66e2445152b49d38bf2dd83233dae182c69",
+      "log_sha256": "c611f748e937677cba54f495d50e993afc368163e67892b579d0ee24edd24d81",
       "role": "baseline",
-      "seconds": 438.8,
+      "seconds": 108.4,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-105/drop-newest",
+      "covers": 1,
+      "covers_satisfied": 1,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "2d37dc362b680434eaf5892e22a9e1cadba48625b18fb81ac310d1b80ed8c9e1",
+      "role": "baseline",
+      "seconds": 56.0,
       "verdict": "pass"
     },
     {
@@ -30,15 +41,15 @@
       "failed_checks": [
         "\"a read stops only where no span holds the offset\""
       ],
-      "log_sha256": "217082dd9f67be168de65a18a88d89ed5bb6a1b2ec6255a1bd014e6f50986087",
+      "log_sha256": "c28b3c2d9d5a7f95b63ebe21f6533931ec4f928b7c3350a08113c06ac7e2a804",
       "mutated": {
         "src/spill/runindex/tiling.rs": {
-          "baseline": "b306c9aecfbbbd808e3b81a31b9495a4d19e0cc5b2a7ae7a6ae1a4f5ea5f5efb",
-          "control": "a0ea46fb99f844c3355762de807352914fc4ca8c1db816c327f234dfb4e0224d"
+          "baseline": "0be2a861425a87867da9f668cc8b7bfb9f9dcdcac29863eab3e69ac45a12735f",
+          "control": "0180c3b2dd83af6aa2c95580e1132d5ca615efc9a83c7ab46b2340b484130b33"
         }
       },
       "role": "negative-control",
-      "seconds": 390.7,
+      "seconds": 346.6,
       "verdict": "fail"
     },
     {
@@ -49,35 +60,35 @@
       "failed_checks": [
         "\"each pick is the best holder of its offset\""
       ],
-      "log_sha256": "50104001629d02a1fbe10928821db41758747354ee05ef6f647bc745874f0965",
+      "log_sha256": "23b45f02d6d6fc70c2297588b87f5e58040047dc08d441c24bd70ab8ae8d4b8b",
       "mutated": {
         "src/spill/runindex/tiling.rs": {
-          "baseline": "b306c9aecfbbbd808e3b81a31b9495a4d19e0cc5b2a7ae7a6ae1a4f5ea5f5efb",
-          "control": "c5b60c0de73c31edda82eee4db58ae44fed1c117b8e267b4ec27db35480356d6"
+          "baseline": "0be2a861425a87867da9f668cc8b7bfb9f9dcdcac29863eab3e69ac45a12735f",
+          "control": "b2f8515fdfe923fbd3d5ff4f8bfeafcf9763370ce42d3e64e407f38261c248b4"
         }
       },
       "role": "negative-control",
-      "seconds": 428.8,
+      "seconds": 303.9,
       "verdict": "fail"
     },
     {
       "check": "KANI-105/nc-keep-a-contained-span",
-      "covers": 3,
+      "covers": 2,
       "covers_satisfied": 2,
       "expected": "fail:last offsets increase strictly",
       "failed_checks": [
         "\"first offsets increase strictly\"",
         "\"last offsets increase strictly\""
       ],
-      "log_sha256": "9748b2f817d120d43182e60da77401ce7267b8342e6e0651ee4fe8b6aca715f7",
+      "log_sha256": "c669719b6d52d1ca1b01e8178958d24ae53795bc432e69e16166947ffb328746",
       "mutated": {
         "src/spill/runindex/tiling.rs": {
-          "baseline": "b306c9aecfbbbd808e3b81a31b9495a4d19e0cc5b2a7ae7a6ae1a4f5ea5f5efb",
-          "control": "e2eec612818546dc1d571e29b5aa9fa9c4ae50800bf5c63d78f9614b514b64dd"
+          "baseline": "0be2a861425a87867da9f668cc8b7bfb9f9dcdcac29863eab3e69ac45a12735f",
+          "control": "ea67f3b9b1eb86a8336799de86c8227588ff08d4fb334da448cbb34f0b83a6ee"
         }
       },
       "role": "negative-control",
-      "seconds": 504.9,
+      "seconds": 137.5,
       "verdict": "fail"
     },
     {
@@ -88,15 +99,34 @@
       "failed_checks": [
         "\"each pick is the best holder of its offset\""
       ],
-      "log_sha256": "49bdf8e67f7253c1418852de2425812d2580fd4454dbc41798ebf2759d060691",
+      "log_sha256": "85c895912c8ffa645a7e0f6d588413fdd0a8d606fc4857aa4fbd6b8e789c72e1",
       "mutated": {
         "src/spill/runindex/tiling.rs": {
-          "baseline": "b306c9aecfbbbd808e3b81a31b9495a4d19e0cc5b2a7ae7a6ae1a4f5ea5f5efb",
-          "control": "b4c89f6aab855e0c071cacdfc900b65265fc8d843d2e099599f180c38b5b6a1f"
+          "baseline": "0be2a861425a87867da9f668cc8b7bfb9f9dcdcac29863eab3e69ac45a12735f",
+          "control": "bfc0bb2cc42d61a863f4a272ca7e80256231c38fefb99afb1c033d0fb3a77ad5"
         }
       },
       "role": "negative-control",
-      "seconds": 436.5,
+      "seconds": 340.7,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-105/nc-tie-older-kept",
+      "covers": 1,
+      "covers_satisfied": 1,
+      "expected": "fail:of equal spans the newest is kept",
+      "failed_checks": [
+        "\"of equal spans the newest is kept\""
+      ],
+      "log_sha256": "7947efec3e87bacf512eed1a4583f71a191a991df6343c9ebac91631e7cdf50c",
+      "mutated": {
+        "src/spill/runindex/tiling.rs": {
+          "baseline": "0be2a861425a87867da9f668cc8b7bfb9f9dcdcac29863eab3e69ac45a12735f",
+          "control": "ea67f3b9b1eb86a8336799de86c8227588ff08d4fb334da448cbb34f0b83a6ee"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 62.5,
       "verdict": "fail"
     }
   ],
@@ -113,14 +143,14 @@
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
-      "src/spill/runindex/tiling.rs": "b306c9aecfbbbd808e3b81a31b9495a4d19e0cc5b2a7ae7a6ae1a4f5ea5f5efb",
-      "src/spill/runindex/tiling/proofs.rs": "e4d9f203b5aaae2b1682ec028fe56c6bc4b767bffa5dc92cd84683645655669f",
+      "src/spill/runindex/tiling.rs": "0be2a861425a87867da9f668cc8b7bfb9f9dcdcac29863eab3e69ac45a12735f",
+      "src/spill/runindex/tiling/proofs.rs": "978c3bcfdc6b716e54e440139d85a01d3b361dec1651c91efbe3921c40a29e2f",
       "verification/kani/controls/KANI-105-keep-a-contained-span.patch": "93069869d543ef70f94d9c5ac54a08cda330cfbc6a12f3eb8a4dee43ba87f7f6",
       "verification/kani/controls/KANI-105-prefer-the-later-first.patch": "5da127aa489f4e67afeb29bb568cd5b0b0f10cf675f49cdb934c8461274fc2c2",
       "verification/kani/controls/KANI-105-stop-before-a-held-offset.patch": "ae4d0440cf081b21b9ca4ebe22934d9a5b2c7f6ee71c7afddcad568a0c7b7622",
       "verification/kani/controls/KANI-105-tie-older-pick.patch": "0026b6f0cd30862c24d9cd45b284ae5911370b07c0b0902f98a1fb9cf0e55aa7"
     },
-    "manifest_entry": "efa9bf323cf85d1b9d6f583731bac15fc5355257a1265720956fb81950f9c76a",
+    "manifest_entry": "a1d521e1490abb6c10ea36b6ebe7ec5de522d1a5a18097108cfca0282224281e",
     "pins": {
       "formal": {
         "cbmc": "6.11.0",
@@ -142,10 +172,10 @@
       }
     }
   },
-  "inputs_sha256": "e055b7470188cc4f721dd64671b639ed8997ba8fe6854c4423c1fca154c83069",
+  "inputs_sha256": "8578949210cd360c252ac404a401587cf711688dff167344b17f58f109a0312e",
   "run_on": {
     "dirty_tree": true,
-    "revision": "3aebca4a8c993f986a6eee8c7cc7a2957064f9ba"
+    "revision": "dac0557dbcd34499c088719d1ac40bb1515a09cf"
   },
   "schema": 2,
   "tools": {

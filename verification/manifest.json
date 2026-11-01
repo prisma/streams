@@ -1302,6 +1302,14 @@
           }
         },
         {
+          "id": "KANI-105/drop-newest",
+          "role": "baseline",
+          "harness": "spill::runindex::tiling::proofs::kani_105_drop_covered_keeps_the_newest_of_equal_spans",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
           "id": "KANI-105/nc-stop-before-a-held-offset",
           "role": "negative-control",
           "harness": "spill::runindex::tiling::proofs::kani_105_tile_covers_every_offset_until_none_holds_one",
@@ -1339,6 +1347,16 @@
           "expect": {
             "result": "fail",
             "property": "each pick is the best holder of its offset"
+          }
+        },
+        {
+          "id": "KANI-105/nc-tie-older-kept",
+          "role": "negative-control",
+          "harness": "spill::runindex::tiling::proofs::kani_105_drop_covered_keeps_the_newest_of_equal_spans",
+          "patch": "verification/kani/controls/KANI-105-keep-a-contained-span.patch",
+          "expect": {
+            "result": "fail",
+            "property": "of equal spans the newest is kept"
           }
         }
       ]
