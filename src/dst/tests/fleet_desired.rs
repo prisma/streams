@@ -38,6 +38,9 @@ async fn first_publication(
         rig.state.clone(),
         &rig.tasks
     ));
+    // A fleet that did not start fails here at once, not after its waits.
+    let tasks = rig.tasks.monitor().snapshot();
+    assert!(tasks.iter().any(|t| t.name == "fleet"), "the fleet tick runs");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
     let mut desired = desired_doc(&rig.state).await;
     while desired.epoch < 2 && tokio::time::Instant::now() < deadline {
