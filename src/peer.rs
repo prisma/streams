@@ -69,6 +69,16 @@ impl PeerClient {
         self.inner.peer_urls.read().unwrap().contains_key(instance)
     }
 
+    /// Whether the fleet published any peer's URL: never on a fleet-off
+    /// cell. A poisoned table answers yes, so the reader that needs a URL
+    /// meets the poison where it reads one.
+    pub(crate) fn has_peers(&self) -> bool {
+        self.inner
+            .peer_urls
+            .read()
+            .map_or(true, |peers| !peers.is_empty())
+    }
+
     /// Replace the trusted peer table (the fleet loop, every tick).
     #[expect(
         clippy::unwrap_used,

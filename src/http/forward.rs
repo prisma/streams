@@ -9,6 +9,10 @@
 //! reads and live feeds are forwarded like any other request: the forward
 //! holds a connection on both instances while it waits.
 //!
+//! - **Fleet-off cells pay nothing.** The layer takes part only on stream
+//!   routes of an instance whose peer table is not empty ([`engaged`]); a
+//!   standalone cell has none, so its requests reach their handlers as they
+//!   arrived, at the cost of one read of the empty table.
 //! - **One hop.** The forwarded request carries `Streams-Forwarded`, and an
 //!   instance never forwards a request that carries it: a second owner
 //!   bounce is answered with its `409`, so ownership churn cannot build a
@@ -136,7 +140,7 @@ pub(super) async fn to_owner(
     request: Request,
     next: Next,
 ) -> Response {
-    if !super::data_plane(request.uri().path()) || request.headers().contains_key(FORWARDED) {
+    if !engaged(&state.peer, &request) {
         return next.run(request).await;
     }
     let (parts, body) = request.into_parts();
@@ -169,6 +173,18 @@ pub(super) async fn to_owner(
         body,
     };
     forward(&state, held, (&owner, &base), answer).await
+}
+
+/// Whether the layer takes part in serving `request`: a request on a stream
+/// route (`/v1/stream*`; the multiplexed wait answers each subscription
+/// itself and is never forwarded), not forwarded already, on an instance
+/// the fleet has given peers. A fleet-off cell, which has none, passes
+/// every request to its handler untouched: no copies of its head, no
+/// deferred body, no kept frames.
+fn engaged(peers: &crate::peer::PeerClient, request: &Request) -> bool {
+    request.uri().path().starts_with("/v1/stream")
+        && !request.headers().contains_key(FORWARDED)
+        && peers.has_peers()
 }
 
 fn lock(slot: &Mutex<Slot>) -> MutexGuard<'_, Slot> {
@@ -375,6 +391,43 @@ fn hop_by_hop(name: &HeaderName) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The layer takes part only in a stream request not forwarded already,
+    /// and only on an instance the fleet gave peers: a fleet-off
+    /// cell passes every request to its handler untouched, with no copies
+    /// and no deferred body.
+    #[test]
+    fn only_stream_requests_on_an_instance_with_peers_engage() {
+        let request = |target: &str, forwarded: bool| {
+            let mut request = Request::builder().uri(target);
+            if forwarded {
+                request = request.header(FORWARDED, "inst-c");
+            }
+            request.body(Body::empty()).expect("a request")
+        };
+        let targets = [
+            ("/v1/stream/s", false),
+            ("/v1/streams/a/records", false),
+            ("/v1/projects/p/live:wait", false),
+            ("/v1/stream/s", true),
+            ("/v1/queues/q/messages", false),
+            ("/health", false),
+        ];
+        let engaging = |peers: &crate::peer::PeerClient| -> Vec<bool> {
+            targets
+                .iter()
+                .map(|(target, forwarded)| engaged(peers, &request(target, *forwarded)))
+                .collect()
+        };
+        let peers = crate::peer::PeerClient::new(None, None);
+        assert_eq!(engaging(&peers), [false; 6], "a fleet-off cell");
+        peers.set_peer("inst-b", "http://inst-b:1");
+        assert_eq!(
+            engaging(&peers),
+            [true, true, false, false, false, false],
+            "an instance with a peer"
+        );
+    }
 
     /// A forward waits for the owner's shard open, the request's own wait
     /// (at most 25 s, all of it when the request names none), and 5 s.
