@@ -13,8 +13,8 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use super::test_hooks::Hold;
 use super::tests::{
-    Oracle, append, append_recorded, hashes, manual, open, random_bytes, random_record, read_back,
-    reopen, rig, rig_with, settle,
+    Oracle, Rig, append, append_recorded, hashes, manual, open, random_bytes, random_record,
+    read_back, reopen, rig, rig_with, settle,
 };
 use super::{SealError, SealSettings, Trigger};
 use crate::shard::Deliver;
@@ -488,6 +488,72 @@ async fn the_task_registry_answers_by_role_and_state() {
     rig.engine.begin_close();
 }
 
+/// Settings under which no trigger fires within a test: only an open's
+/// inherited seal (or a test) seals.
+fn quiet() -> SealSettings {
+    SealSettings {
+        age_seal: Duration::from_secs(3600),
+        age_deadline: Duration::from_secs(7200),
+        tick: Duration::from_millis(50),
+        ..SealSettings::default()
+    }
+}
+
+/// An engine closed with pages below every trigger, the engine that opened
+/// after it on the same store, and the records the first one acked.
+async fn inherited(label: &str) -> (Rig, std::sync::Mutex<Oracle>) {
+    let rig = rig(label, quiet(), Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0x5EA1);
+    let oracle = std::sync::Mutex::new(Oracle::default());
+    for hash in hashes(&mut rng, 4) {
+        append_recorded(
+            &rig.engine,
+            &oracle,
+            hash,
+            vec![random_bytes(&mut rng, 1000)],
+        )
+        .await;
+    }
+    let backlog = rig.engine.maintenance_snapshot().unabsorbed_frame_bytes;
+    assert!(backlog > 0, "the appends left a backlog");
+    let seals = rig
+        .engine
+        .layout
+        .seal
+        .counters
+        .seals
+        .load(Ordering::Relaxed);
+    assert_eq!(seals, 0, "the appends stay below every trigger");
+    (reopen(rig).await, oracle)
+}
+
+/// Wait until the engine has no unsealed backlog, failing after `within`.
+async fn wait_sealed(rig: &Rig, within: Duration) {
+    let deadline = Instant::now() + within;
+    while rig.engine.maintenance_snapshot().unabsorbed_frame_bytes > 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the inherited backlog was not sealed within {within:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// The new engine's seal counters: seals, empty seals, failures, objects.
+fn seal_counts(rig: &Rig) -> [u64; 4] {
+    let c = &rig.engine.layout.seal.counters;
+    [&c.seals, &c.empty_seals, &c.failures, &c.objects].map(|n| n.load(Ordering::Relaxed))
+}
+
+async fn read_all(rig: &Rig, oracle: &std::sync::Mutex<Oracle>) {
+    let oracle = oracle.lock().unwrap().clone();
+    for (hash, records) in &oracle {
+        read_back(&rig.engine, *hash, records, Deliver::Durable)
+            .await
+            .unwrap();
+    }
+}
+
 /// **An open seals what the engine before it left unsealed.** The pages an
 /// engine closes with sit below every trigger, and an open restarts their
 /// age; a fresh engine on the same store seals them at its first
@@ -495,37 +561,60 @@ async fn the_task_registry_answers_by_role_and_state() {
 /// not counted as maintenance without progress until then.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_open_seals_the_pages_the_engine_before_it_left_unsealed() {
-    let settings = SealSettings {
-        age_seal: Duration::from_secs(3600),
-        age_deadline: Duration::from_secs(7200),
-        tick: Duration::from_millis(10),
-        ..SealSettings::default()
-    };
-    let rig = rig("inherit", settings, Duration::from_millis(2)).await;
-    let mut rng = StdRng::seed_from_u64(0x5EA1);
-    for hash in hashes(&mut rng, 4) {
-        append(&rig.engine, hash, vec![random_bytes(&mut rng, 1000)]).await;
+    let (rig, oracle) = inherited("inherit").await;
+    wait_sealed(&rig, Duration::from_secs(5)).await;
+    assert_eq!(seal_counts(&rig), [1, 0, 0, 1], "one seal, one object");
+    read_all(&rig, &oracle).await;
+    rig.engine.begin_close();
+}
+
+/// **A failed inherited seal is retried at its backoff.** The first seal
+/// the open asks for fails at its object PUT; the next one runs once the
+/// backoff ends, not at the age trigger the open restarted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_failed_inherited_seal_is_retried_at_its_backoff() {
+    let (rig, oracle) = inherited("inherit-retry").await;
+    let seal = &rig.engine.layout.seal;
+    seal.hooks.fail_puts.store(true, Ordering::Relaxed);
+    let t0 = Instant::now();
+    while seal.counters.failures.load(Ordering::Relaxed) == 0 {
+        assert!(t0.elapsed() < Duration::from_secs(5), "no seal failed");
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    let backlog = rig.engine.maintenance_snapshot().unabsorbed_frame_bytes;
-    assert!(backlog > 0, "the appends left a backlog");
+    seal.hooks.fail_puts.store(false, Ordering::Relaxed);
+    wait_sealed(&rig, Duration::from_secs(3)).await;
     assert_eq!(
-        rig.engine
-            .layout
-            .seal
-            .counters
-            .seals
-            .load(Ordering::Relaxed),
-        0,
-        "the appends stay below every trigger"
+        seal_counts(&rig),
+        [1, 0, 1, 1],
+        "one failure, then one seal"
     );
-    let rig = reopen(rig).await;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while rig.engine.maintenance_snapshot().unabsorbed_frame_bytes > 0 {
-        assert!(
-            Instant::now() < deadline,
-            "the inherited backlog was not sealed within 5 s"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
+    read_all(&rig, &oracle).await;
+    rig.engine.begin_close();
+}
+
+/// **An open with nothing unsealed seals nothing.** An engine that sealed
+/// everything before it closed leaves its successor no seal to run, so a
+/// cell's restart adds no object PUT.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn an_open_with_nothing_unsealed_seals_nothing() {
+    let rig = rig("inherit-none", quiet(), Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0x5EA2);
+    let oracle = std::sync::Mutex::new(Oracle::default());
+    for hash in hashes(&mut rng, 4) {
+        append_recorded(
+            &rig.engine,
+            &oracle,
+            hash,
+            vec![random_bytes(&mut rng, 1000)],
+        )
+        .await;
     }
+    rig.engine.seal_once(Trigger::Requested).await.unwrap();
+    let backlog = rig.engine.maintenance_snapshot().unabsorbed_frame_bytes;
+    assert_eq!(backlog, 0, "the requested seal took every page");
+    let rig = reopen(rig).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(seal_counts(&rig), [0, 0, 0, 0], "the open sealed nothing");
+    read_all(&rig, &oracle).await;
     rig.engine.begin_close();
 }

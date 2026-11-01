@@ -662,7 +662,15 @@ impl ShardEngine {
                 "sealed"
             ),
             Err(SealError::Closed) => {}
-            Err(e) => tracing::warn!(shard = %self.prefix, ?trigger, "seal failed: {e}"),
+            Err(e) => {
+                // A deferred seal that failed seals again once its backoff
+                // ends: the triggers alone would leave an inherited backlog,
+                // whose age restarted at the open, until `age_seal`.
+                if matches!(trigger, Trigger::Deferred) {
+                    sp.deferred.store(true, Ordering::Release);
+                }
+                tracing::warn!(shard = %self.prefix, ?trigger, "seal failed: {e}");
+            }
         }
     }
 
