@@ -131,6 +131,12 @@ async fn started(
         rig.state.clone(),
         &rig.tasks
     ));
+    // A fleet that did not start fails here at once, not after its waits.
+    let tasks = rig.tasks.monitor().snapshot();
+    assert!(
+        tasks.iter().any(|t| t.name == "fleet"),
+        "the fleet tick runs"
+    );
     settled(Duration::from_secs(20), || {
         rig.state.ownership.ring_active().len() == members
     })

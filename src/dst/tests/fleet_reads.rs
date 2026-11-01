@@ -175,6 +175,12 @@ async fn tick_over(fleet: Arc<dyn ObjectStore>, cli: fn(&mut crate::config::CliA
         rig.state.clone(),
         &rig.tasks
     ));
+    // A fleet that did not start fails here at once, not after its waits.
+    let tasks = rig.tasks.monitor().snapshot();
+    assert!(
+        tasks.iter().any(|t| t.name == "fleet"),
+        "the fleet tick runs"
+    );
     rig
 }
 
