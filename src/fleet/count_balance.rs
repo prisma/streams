@@ -12,9 +12,9 @@
 //! the overrides document it is about to replace, never from the mirror, so
 //! one pass cannot move a shard twice. A move waits out this instance's own
 //! move cooldown (counted from its boot), any override younger than the
-//! cooldown anywhere in the fleet (lag moves included, so the fleet makes at
-//! most one move per cooldown), and an imbalance seen by two consecutive
-//! passes. It reads nothing while its mirror of the ring keeps it within the
+//! cooldown anywhere in the fleet (lag moves included: the fleet makes at
+//! most one count move per cooldown, and none within a cooldown of any
+//! move), and an imbalance seen by two consecutive reads. It reads nothing while its mirror of the ring keeps it within the
 //! share, and a read that finds no move holds the next for a cooldown.
 //! Return-home admits a return only within the same share
 //! ([`super::return_home_allowed`]), so the two passes never undo each other.

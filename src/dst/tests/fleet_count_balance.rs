@@ -177,23 +177,39 @@ async fn stop(rig: HttpRig) {
 
 /// The positive path and its boot cooldown: nothing moves until this
 /// instance's own cooldown has run from its boot, then exactly one shard,
-/// 00, moves to the member below the share, and the next waits a cooldown.
+/// 00, moves to the member below the share, and the next waits a cooldown:
+/// the mover reads nothing more (it lists no heartbeats), though it still
+/// owns three of a share of two. The tick's own possession yield would close
+/// 00 without the mover's retirement, so only the reads show the mover took
+/// its committed move as made.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_count_move_waits_out_the_boot_cooldown_then_moves_one_shard() {
-    let fleet = mem();
-    seed_count(&fleet, 2, 1).await;
-    seed_overrides(&fleet, [AGED_MS, AGED_MS]).await;
-    beat(&fleet, "streams-2", 0).await;
-    let rig = started(fleet, 2, |_| {}).await;
+    let inner = mem();
+    seed_count(&inner, 2, 1).await;
+    seed_overrides(&inner, [AGED_MS, AGED_MS]).await;
+    beat(&inner, "streams-2", 0).await;
+    let fleet = Arc::new(Listings {
+        inner,
+        fleet: AtomicU64::new(0),
+    });
+    let rig = started(fleet.clone(), 2, |_| {}).await;
     let seeded = entries(&rig).await;
     assert_eq!(seeded.keys().collect::<Vec<_>>(), ["10", "11"]);
     holds(&rig, &seeded, "no move within the boot cooldown").await;
     rig.clock.advance_monotonic(Duration::from_secs(61));
+    let deadline = tokio::time::Instant::now() + MOVE_BUDGET;
+    while !entries(&rig).await.contains_key("00") && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let listed = fleet.fleet.load(Ordering::SeqCst);
     moves_00(&rig, &seeded).await;
-    // streams-1 still owns three of a share of two, but its own cooldown and
-    // the fleet's new override hold the next move.
     tokio::time::sleep(QUIET).await;
     assert_eq!(entries(&rig).await.len(), 3, "one move per cooldown");
+    assert_eq!(
+        fleet.fleet.load(Ordering::SeqCst),
+        listed,
+        "a committed move holds the mover's reads for a cooldown"
+    );
     stop(rig).await;
 }
 
@@ -335,19 +351,20 @@ async fn a_ring_of_one_makes_no_count_move() {
 }
 
 /// A heartbeat from an instance no desired count names is no ring member,
-/// so it receives no shard however idle it is. Once the member streams-2
-/// beats, 00 moves to it.
+/// so it receives no shard however idle it is: `pick` draws its targets from
+/// the active members only. streams-10 beats beside streams-2, idle as it
+/// is, and sorts before it by name, so a target drawn from the heartbeats
+/// would be streams-10; 00 moves to streams-2.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_heartbeat_outside_the_ring_receives_no_count_move() {
     let fleet = mem();
     seed_count(&fleet, 2, 1).await;
     seed_overrides(&fleet, [AGED_MS, AGED_MS]).await;
-    beat(&fleet, "streams-9", 0).await;
-    let rig = started(fleet.clone(), 1, |_| {}).await;
+    beat(&fleet, "streams-10", 0).await;
+    beat(&fleet, "streams-2", 0).await;
+    let rig = started(fleet, 2, |_| {}).await;
     let seeded = entries(&rig).await;
     rig.clock.advance_monotonic(Duration::from_secs(61));
-    holds(&rig, &seeded, "only a non-member beats").await;
-    beat(&fleet, "streams-2", 0).await;
     moves_00(&rig, &seeded).await;
     stop(rig).await;
 }

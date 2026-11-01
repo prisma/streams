@@ -317,7 +317,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "581c8a2eb8d57d952a80abc7b6884c769a38426c6c3555c977c12535423eeb86",
+    "function_sha256": "3d790b937ae6ceabc0fefbd061c02953eee2437835a687b826776099675dfe38",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_count_balance.rs",
@@ -1042,7 +1042,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "fc16462f5f68a5c5f454ab22c756319c172caaf1d0392047d6ecc8bb7f302561",
+    "function_sha256": "18acbcd6b6b80ed7781d153543ace5ea05edb8ae367c7d2c2e4a0dffda536f59",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_count_balance.rs",

@@ -248,11 +248,13 @@ from `fleet/overrides.json` itself, writes the same override a lag move
 writes for one of its shards that has no override naming a member (an
 override to a non-member is void), to an active member
 below the share whose lag is under half the lag threshold (the lag move's
-target rule). It moves only after two consecutive passes saw the
-imbalance, once its own move cooldown has passed (counted from its boot
+target rule). It moves only after two consecutive reads saw the
+imbalance (a hold restarts the count), once its own move cooldown has passed (counted from its boot
 until its first move), and while no override in the document is younger
-than the cooldown, so the whole fleet makes at most one move, count or
-lag, per cooldown. An instance within the share in its mirror of the ring
+than the cooldown: the fleet makes at most one count move per cooldown,
+and no count move within a cooldown of any move (a lag move keys on its
+own mover's last move only). Targets are drawn from the active members
+only, so a heartbeat outside the ring never receives a shard. An instance within the share in its mirror of the ring
 reads nothing for it, and a read that finds no move holds the next for a
 cooldown. Instances past the share take different targets: each
 its own rank, by name, among them, of the members below the share
