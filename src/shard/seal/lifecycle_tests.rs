@@ -500,9 +500,10 @@ fn quiet() -> SealSettings {
 }
 
 /// An engine closed with pages below every trigger, the engine that opened
-/// after it on the same store, and the records the first one acked.
-async fn inherited(label: &str) -> (Rig, std::sync::Mutex<Oracle>) {
-    let rig = rig(label, quiet(), Duration::from_millis(2)).await;
+/// after it on the same store (sealing only when `sealing`), and the
+/// records the first one acked.
+async fn inherited(label: &str, sealing: bool) -> (Rig, std::sync::Mutex<Oracle>) {
+    let mut rig = rig(label, quiet(), Duration::from_millis(2)).await;
     let mut rng = StdRng::seed_from_u64(0x5EA1);
     let oracle = std::sync::Mutex::new(Oracle::default());
     for hash in hashes(&mut rng, 4) {
@@ -524,6 +525,7 @@ async fn inherited(label: &str) -> (Rig, std::sync::Mutex<Oracle>) {
         .seals
         .load(Ordering::Relaxed);
     assert_eq!(seals, 0, "the appends stay below every trigger");
+    rig.settings.auto = sealing;
     (reopen(rig).await, oracle)
 }
 
@@ -566,7 +568,7 @@ async fn read_all(rig: &Rig, oracle: &std::sync::Mutex<Oracle>) {
 /// not counted as maintenance without progress until then.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_open_seals_the_pages_the_engine_before_it_left_unsealed() {
-    let (rig, oracle) = inherited("inherit").await;
+    let (rig, oracle) = inherited("inherit", true).await;
     wait_sealed(&rig, Duration::from_secs(5)).await;
     assert_eq!(seal_counts(&rig), [1, 0, 0, 1], "one seal, one object");
     read_all(&rig, &oracle).await;
@@ -578,9 +580,12 @@ async fn an_open_seals_the_pages_the_engine_before_it_left_unsealed() {
 /// backoff ends, not at the age trigger the open restarted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_failed_inherited_seal_is_retried_at_its_backoff() {
-    let (rig, oracle) = inherited("inherit-retry").await;
+    // The new engine opens with sealing off, so the PUT fails from its
+    // first seal on, however soon after the open the sealer evaluates.
+    let (rig, oracle) = inherited("inherit-retry", false).await;
     let seal = &rig.engine.layout.seal;
     seal.hooks.fail_puts.store(true, Ordering::Relaxed);
+    seal.configure(|s| s.auto = true);
     let t0 = Instant::now();
     while seal.counters.failures.load(Ordering::Relaxed) == 0 {
         assert!(t0.elapsed() < Duration::from_secs(5), "no seal failed");
