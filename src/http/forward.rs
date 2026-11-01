@@ -447,6 +447,9 @@ mod tests {
             ("/v1/streams/a/records:long-poll?waitMs=99000", secs(25)),
             ("/v1/streams/a/consumers/c:pull", secs(25)),
             ("/v1/streams/a/watches/w/keys/k?timeoutMs=100", millis(100)),
+            // A watch itself, or a collection named `keys`, waits for nothing.
+            ("/v1/streams/a/watches/w?timeoutMs=100", secs(0)),
+            ("/v1/streams/keys/k?timeoutMs=100", secs(0)),
         ];
         for (target, expected) in cases {
             assert_eq!(bound(target), expected, "{target}");
