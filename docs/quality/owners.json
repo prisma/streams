@@ -4362,10 +4362,10 @@
     },
     {
       "category": "macro-dsl",
-      "count": 2,
+      "count": 3,
       "owner": "crate::kani_105_drop_covered_keeps_every_offset",
       "path": "src/spill/runindex/tiling/proofs.rs",
-      "reason": "Kani proof harness for KANI-105 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "reason": "Kani proof harness for KANI-105 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state; the third cover reaches an older equal span dropped (the newest-object tie-break).",
       "syntax": "kani::cover"
     },
     {

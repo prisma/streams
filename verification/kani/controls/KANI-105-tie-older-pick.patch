@@ -1,0 +1,12 @@
+diff --git a/src/spill/runindex/tiling.rs b/src/spill/runindex/tiling.rs
+--- a/src/spill/runindex/tiling.rs
++++ b/src/spill/runindex/tiling.rs
+@@ -42,7 +42,7 @@
+ fn better(a: Span, b: Span) -> bool {
+     a.last > b.last
+         || (a.last == b.last && a.first < b.first)
+-        || (a.last == b.last && a.first == b.first && a.rank > b.rank)
++        || (a.last == b.last && a.first == b.first && a.rank < b.rank)
+ }
+ 
+ /// The spans that tile `[from, to)`, by index into `spans` (sorted by

@@ -5,7 +5,9 @@
 //! the byte budget, the fetch cap, the look-at cap or an entry whose sizes
 //! cannot hold its pages.
 
-use super::{Candidate, MAX_CHUNKS_LOOKED_AT, MAX_CHUNKS_PER_READ, Step, plan_steps};
+use super::{
+    Candidate, MAX_CHUNKS_LOOKED_AT, MAX_CHUNKS_PER_READ, Step, plan_steps, whole_last_groups,
+};
 use crate::shard::RingScan;
 use crate::shard::seal::SealCounters;
 use crate::spill::directory::{DirEntry, KeySummary};
@@ -112,6 +114,7 @@ fn a_skip_consumes_offsets_only_up_to_the_windows_end() {
     let run = Candidate::Skip(Span {
         first: 0,
         last: 100,
+        rank: 0,
     });
     assert_eq!(
         plan(&[run], window, Some("k")),
@@ -122,4 +125,38 @@ fn a_skip_consumes_offsets_only_up_to_the_windows_end() {
         (vec![(false, 9, 10)], None),
         "a chunk the key summary excludes"
     );
+}
+
+/// The directory's cut keeps whole groups of one last offset: a chunk is
+/// never kept without its newer copy (a cleaner's, ordered after it).
+#[test]
+fn the_directory_cut_never_splits_a_chunk_from_its_copy() {
+    let at = |seq, last| DirEntry {
+        object: ObjectId { epoch: 1, seq },
+        chunk_off: 0,
+        chunk_len: 10,
+        first: last - 9,
+        last,
+        page_count: 1,
+        keys: KeySummary::Keys(Vec::new()),
+        anchors: Vec::new(),
+    };
+    let seqs = |v: Vec<DirEntry>| v.iter().map(|e| (e.object.seq, e.last)).collect::<Vec<_>>();
+    // Ordered by (last, object): the original 1 then its copy 2 at 19.
+    let dir = vec![at(1, 9), at(1, 19), at(2, 19), at(1, 29)];
+    assert_eq!(
+        seqs(whole_last_groups(dir.clone(), 2)),
+        [(1, 9)],
+        "the 19 group split: dropped whole"
+    );
+    assert_eq!(
+        seqs(whole_last_groups(dir.clone(), 3)),
+        [(1, 9), (1, 19), (2, 19)]
+    );
+    assert_eq!(
+        seqs(whole_last_groups(dir.clone(), 4)).len(),
+        4,
+        "nothing cut"
+    );
+    assert_eq!(seqs(whole_last_groups(dir, 9)).len(), 4);
 }

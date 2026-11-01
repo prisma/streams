@@ -110,9 +110,18 @@ fn live_entries_drop_superseded_and_duplicate_chunks() {
     assert_eq!(spans, vec![(9, 0, 79), (5, 80, 89)]);
 }
 
+/// Two chunks of one span (a cleaner's copy and the chunk it copied)
+/// resolve to the newer object's, in either order; two of one object stay
+/// refused (no writer makes them).
 #[test]
-fn two_chunks_of_one_span_are_refused() {
-    let err = live_entries(vec![entry(1, 0, 0, 9, 10), entry(2, 0, 0, 9, 10)]).unwrap_err();
+fn two_chunks_of_one_span_resolve_to_the_newer_object() {
+    let (old, copy) = (entry(1, 0, 0, 9, 10), entry(2, 0, 0, 9, 10));
+    for entries in [vec![old.clone(), copy.clone()], vec![copy, old]] {
+        let live = live_entries(entries).unwrap();
+        let objects: Vec<u64> = live.iter().map(|e| e.object.seq).collect();
+        assert_eq!(objects, [2]);
+    }
+    let err = live_entries(vec![entry(1, 0, 0, 9, 10), entry(1, 50, 0, 9, 10)]).unwrap_err();
     assert!(err.contains("two chunks hold [0, 9]"), "{err}");
 }
 

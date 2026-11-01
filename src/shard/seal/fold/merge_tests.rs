@@ -188,3 +188,43 @@ async fn the_merge_step_merges_until_none_is_due() {
     assert_eq!(levels(&rig.engine), vec![2]);
     rig.engine.begin_close();
 }
+
+/// The run of `hash` a built object holds, read back.
+fn run_of(built: &super::Built, hash: [u8; 16]) -> Vec<DirEntry> {
+    let body = &built.bytes;
+    let split = body.len() - TRAILER_LEN;
+    let (trailer, crc) = format::decode_trailer(&body[split..]).unwrap();
+    let start = usize::try_from(trailer.footer_off).unwrap();
+    let footer = format::checked_footer(&body[start..split], &trailer, crc).unwrap();
+    let f = footer
+        .iter()
+        .find(|f| f.hash == hash)
+        .expect("a run of the stream");
+    let at = usize::try_from(f.run_off).unwrap();
+    format::decode_run(&body[at..at + f.run_len as usize]).unwrap()
+}
+
+/// Of a chunk and a copy of it (one span, two objects: the cleaner,
+/// `seal::gc::clean`), a fold and a merge keep the copy, whichever comes
+/// first in their input.
+#[test]
+fn a_fold_and_a_merge_keep_the_newer_of_two_chunks_of_one_span() {
+    for (x, y) in [(5, 9), (9, 5)] {
+        let (kept, dropped) = super::kept_entries(vec![entry(x, 0, 7), entry(y, 0, 7)], 0);
+        let objects: Vec<u64> = kept.iter().map(|e| e.object.seq).collect();
+        assert_eq!((objects, dropped), (vec![9], 1), "fold of {x}, {y}");
+        let a = [0xC3; 16];
+        let none = Orphans {
+            chunks: 0,
+            bytes: 0,
+        };
+        let inputs = [
+            input(20, 1, none, &[(a, vec![entry(x, 0, 7)])]),
+            input(21, 1, none, &[(a, vec![entry(y, 0, 7)])]),
+        ];
+        let id = ObjectId { epoch: 1, seq: 22 };
+        let built = merged(id, 1, &inputs, &Reclaimed::new()).unwrap().unwrap();
+        let objects: Vec<u64> = run_of(&built, a).iter().map(|e| e.object.seq).collect();
+        assert_eq!((objects, built.dropped), (vec![9], 1), "merge of {x}, {y}");
+    }
+}

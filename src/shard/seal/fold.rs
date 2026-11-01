@@ -678,6 +678,7 @@ pub(crate) fn span_of(e: &DirEntry) -> Span {
     Span {
         first: e.first,
         last: e.last,
+        rank: crate::spill::runindex::tiling::rank_of(e.object),
     }
 }
 

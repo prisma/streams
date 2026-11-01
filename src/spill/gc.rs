@@ -226,17 +226,19 @@ pub(crate) fn sweep_key(kind: ObjectKind) -> Vec<u8> {
 }
 
 /// The live chunks among a stream's index entries (the directory's and
-/// every live run-index object's): equal entries counted once, and every
-/// entry another contains dropped (a consolidated chunk supersedes the
-/// chunks it copied). Two different chunks of the same span are not a
-/// state any writer makes: an error.
+/// every live run-index object's): equal entries counted once, every entry
+/// another contains dropped (a consolidated chunk supersedes the chunks it
+/// copied), and of two chunks of one span the newer object's kept (a
+/// cleaner's copy supersedes its original, `seal::gc::clean`). Two chunks
+/// of one span in one object are not a state any writer makes: an error.
 pub(crate) fn live_entries(mut entries: Vec<DirEntry>) -> Result<Vec<DirEntry>, String> {
     sort_for_drop(&mut entries, span_of);
     let mut distinct: Vec<DirEntry> = Vec::with_capacity(entries.len());
     for e in entries {
         match distinct.last() {
-            Some(prev) if span_of(prev) == span_of(&e) => {
-                if prev.object != e.object || prev.chunk_off != e.chunk_off {
+            Some(prev) if (prev.first, prev.last) == (e.first, e.last) => {
+                // Sorted newest first: `prev` is the copy, or `e` itself.
+                if prev.object == e.object && prev.chunk_off != e.chunk_off {
                     return Err(format!(
                         "two chunks hold [{}, {}]: {:?} and {:?}",
                         e.first, e.last, prev.object, e.object
@@ -261,6 +263,7 @@ fn span_of(e: &DirEntry) -> Span {
     Span {
         first: e.first,
         last: e.last,
+        rank: crate::spill::runindex::tiling::rank_of(e.object),
     }
 }
 

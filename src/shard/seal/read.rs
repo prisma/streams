@@ -342,7 +342,8 @@ impl ShardEngine {
             .directory
             .read()
             .map_err(|_| sealed_corrupt("the seal directory's lock is poisoned"))?
-            .from(&hash, scan.from, MAX_CHUNKS_LOOKED_AT);
+            .from(&hash, scan.from, MAX_CHUNKS_LOOKED_AT + 1);
+        let entries = whole_last_groups(entries, MAX_CHUNKS_LOOKED_AT);
         let mut candidates: Vec<Candidate> = entries.into_iter().map(Candidate::Chunk).collect();
         candidates.sort_by_key(|c| c.span().first);
         if Reach::of(&candidates, scan).done(scan) {
@@ -376,6 +377,7 @@ impl ShardEngine {
                 candidates.push(Candidate::Skip(Span {
                     first: footer.first,
                     last: footer.last,
+                    rank: 0,
                 }));
                 continue;
             }
@@ -532,6 +534,20 @@ impl Plan {
             next,
         })
     }
+}
+
+/// At most `max` of the directory's `entries` (ordered by last offset, then
+/// object), cut only between two last offsets: a cut inside a group of one
+/// last offset could keep a chunk and drop its newer copy (a cleaner's,
+/// `seal::gc::clean`), whose original's object is released.
+fn whole_last_groups(mut entries: Vec<DirEntry>, max: usize) -> Vec<DirEntry> {
+    if let Some(cut) = entries.get(max).map(|e| e.last) {
+        entries.truncate(max);
+        while entries.last().is_some_and(|e| e.last == cut) {
+            entries.pop();
+        }
+    }
+    entries
 }
 
 /// One chunk a sealed read may fetch, or a dense run of chunks a keyed

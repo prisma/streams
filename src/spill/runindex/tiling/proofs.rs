@@ -7,19 +7,26 @@
 //! reader resumes from the same offset); a dropped chunk whose offsets no
 //! kept chunk covers would lose sealed records from every later read.
 //!
-//! The harnesses take up to `N` spans over offsets below `D`, sorted as each
-//! function's caller sorts them, and check every offset by brute force.
+//! The harnesses take up to `N` spans over offsets below `D`, ranked below
+//! `N` (a chunk's object id: of two equal spans the newer one wins, a
+//! cleaner's copy over its original), sorted as each function's caller
+//! sorts them, and check every offset by brute force.
 use super::{Span, drop_covered, tile};
 
 const N: usize = 4;
 const D: u64 = 8;
 
 fn spans(len: usize) -> [Span; N] {
-    let mut out = [Span { first: 0, last: 0 }; N];
+    let mut out = [Span {
+        first: 0,
+        last: 0,
+        rank: 0,
+    }; N];
     for s in out.iter_mut().take(len) {
         let first: u64 = kani::any_where(|f: &u64| *f < D);
         let last: u64 = kani::any_where(|l: &u64| *l < D && *l >= first);
-        *s = Span { first, last };
+        let rank: u128 = kani::any_where(|r: &u128| *r < N as u128);
+        *s = Span { first, last, rank };
     }
     out
 }
@@ -50,7 +57,10 @@ fn kani_105_tile_covers_every_offset_until_none_holds_one() {
         for (j, other) in s.iter().enumerate() {
             if j != p && holds(*other, due) {
                 let worse = other.last < s[p].last
-                    || (other.last == s[p].last && other.first >= s[p].first);
+                    || (other.last == s[p].last && other.first > s[p].first)
+                    || (other.last == s[p].last
+                        && other.first == s[p].first
+                        && other.rank <= s[p].rank);
                 assert!(worse, "each pick is the best holder of its offset");
             }
         }
@@ -69,20 +79,22 @@ fn kani_105_tile_covers_every_offset_until_none_holds_one() {
     );
 }
 
-/// KANI-105 (b): `drop_covered` keeps spans whose first and last offsets
-/// both increase strictly, and every offset an input span holds is held by
-/// a kept one.
+/// KANI-105 (b): over spans in `sort_for_drop`'s order (first ascending,
+/// last descending, rank descending: as every fold, merge and reclaim sorts
+/// them), `drop_covered` keeps spans whose first and last offsets both
+/// increase strictly, of equal spans the newest, and every offset an input
+/// span holds is held by a kept one.
 #[kani::proof]
 #[kani::unwind(6)]
 fn kani_105_drop_covered_keeps_every_offset() {
     let len = kani::any_where(|n: &usize| *n <= N);
     let all = spans(len);
     let s = &all[..len];
-    kani::assume(
-        s.windows(2).all(|w| {
-            w[0].first < w[1].first || (w[0].first == w[1].first && w[0].last >= w[1].last)
-        }),
-    );
+    kani::assume(s.windows(2).all(|w| {
+        w[0].first < w[1].first
+            || (w[0].first == w[1].first && w[0].last > w[1].last)
+            || (w[0].first == w[1].first && w[0].last == w[1].last && w[0].rank >= w[1].rank)
+    }));
     let kept = drop_covered(s);
     for w in kept.windows(2) {
         assert!(w[0] < w[1], "kept in input order");
@@ -95,6 +107,13 @@ fn kani_105_drop_covered_keeps_every_offset() {
             "last offsets increase strictly"
         );
     }
+    for &k in &kept {
+        for other in s {
+            if other.first == s[k].first && other.last == s[k].last {
+                assert!(other.rank <= s[k].rank, "of equal spans the newest is kept");
+            }
+        }
+    }
     let offset: u64 = kani::any_where(|o: &u64| *o < D);
     if s.iter().any(|x| holds(*x, offset)) {
         assert!(
@@ -103,5 +122,9 @@ fn kani_105_drop_covered_keeps_every_offset() {
         );
     }
     kani::cover!(kept.len() < len, "a contained span dropped");
+    kani::cover!(
+        len >= 2 && s[0].first == s[1].first && s[0].last == s[1].last && s[0].rank > s[1].rank,
+        "an older equal span dropped"
+    );
     kani::cover!(kept.len() == len && len == N, "nothing to drop");
 }

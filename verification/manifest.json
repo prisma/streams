@@ -1279,7 +1279,7 @@
         "ASM-KANI-SCOPE",
         "ASM-KANI-COMPILER"
       ],
-      "input_scope": "tile over up to 4 spans with offsets below 8 (any overlap, nesting or gap) sorted by first offset, any window [from, to) with to <= 8 and any pick cap up to 5; drop_covered over up to 4 such spans sorted by first ascending then last descending, checked at every offset below 8. The candidates' gathering from the directory and the run-index objects (seal::read::sealed_candidates) and the run format's order check are outside the proof; the fold tests and the brute-force regression pin them",
+      "input_scope": "tile over up to 4 spans with offsets below 8 (any overlap, nesting or gap) and ranks below 4 (a chunk's object id: of two equal spans the newer wins) sorted by first offset, any window [from, to) with to <= 8 and any pick cap up to 5; drop_covered over up to 4 such spans in sort_for_drop's order (first ascending, last descending, rank descending), checked at every offset below 8 and for the newest of every group of equal spans. The candidates' gathering from the directory and the run-index objects (seal::read::sealed_candidates, its directory cut by whole last-offset groups) and the run format's order check are outside the proof; sort_for_drop's own order, the fold, merge and live_entries tests and the brute-force regression pin them",
       "regressions": [
         "spill::runindex::tiling_tests::both_rules_match_a_brute_force_reference",
         "shard::seal::fold_tests::tiling_across_directory_run_index_and_pending_with_stopped_folds"
@@ -1329,6 +1329,16 @@
           "expect": {
             "result": "fail",
             "property": "last offsets increase strictly"
+          }
+        },
+        {
+          "id": "KANI-105/nc-tie-older-pick",
+          "role": "negative-control",
+          "harness": "spill::runindex::tiling::proofs::kani_105_tile_covers_every_offset_until_none_holds_one",
+          "patch": "verification/kani/controls/KANI-105-tie-older-pick.patch",
+          "expect": {
+            "result": "fail",
+            "property": "each pick is the best holder of its offset"
           }
         }
       ]

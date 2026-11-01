@@ -5,7 +5,11 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 use super::tiling::{Span, drop_covered, sort_for_drop, tile};
 
 fn s(first: u64, last: u64) -> Span {
-    Span { first, last }
+    r(first, last, 0)
+}
+
+fn r(first: u64, last: u64, rank: u128) -> Span {
+    Span { first, last, rank }
 }
 
 #[test]
@@ -88,4 +92,23 @@ fn both_rules_match_a_brute_force_reference() {
 fn of_identical_spans_the_first_is_picked() {
     let spans = [s(0, 9), s(0, 9), s(10, 19), s(10, 19)];
     assert_eq!(tile(&spans, 0, 20, 10), vec![0, 2]);
+}
+
+/// Of two chunks of one span (a cleaner's copy and the chunk it copied),
+/// the newer object's is picked and kept, whatever order the index gave
+/// them (`seal::gc::clean`).
+#[test]
+fn of_two_equal_spans_the_newer_objects_is_picked_and_kept() {
+    for spans in [vec![r(0, 9, 1), r(0, 9, 2)], vec![r(0, 9, 2), r(0, 9, 1)]] {
+        let picks = tile(&spans, 0, 10, 4);
+        let picked: Vec<u128> = picks.iter().map(|&i| spans[i].rank).collect();
+        assert_eq!(picked, [2], "tile of {spans:?}");
+        let mut sorted = spans.clone();
+        sort_for_drop(&mut sorted, |x| *x);
+        let kept: Vec<u128> = drop_covered(&sorted)
+            .iter()
+            .map(|&i| sorted[i].rank)
+            .collect();
+        assert_eq!(kept, [2], "drop_covered of {spans:?}");
+    }
 }
