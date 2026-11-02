@@ -6,9 +6,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "8363377c05f491d90fcb4659b79bb949cdf359061bdf304ef950ffd779290ca6",
+      "log_sha256": "7366f1d098a20958cec7e130ff1a951e7b23df0270aafe43bda8511fed652385",
       "role": "baseline",
-      "seconds": 426.5,
+      "seconds": 394.5,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "140b12f733f8bbbe74ac48839f907cfd4c41996bebfdb85a17f07927205694e4",
+      "log_sha256": "c6832e515406526511a130d74dfc45ae5502baede138a15cea1121dab022597c",
       "role": "baseline",
-      "seconds": 162.2,
+      "seconds": 187.2,
       "verdict": "pass"
     },
     {
@@ -28,9 +28,9 @@
       "covers_satisfied": 1,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "33ec8730fe4a6b79d0f2aee514c7706b51f1b6b91fcd54702d644c70e9ae3052",
+      "log_sha256": "49144aae772a100e376409fd0c492ad67ca702457b1104f2471439798f6059f0",
       "role": "baseline",
-      "seconds": 89.9,
+      "seconds": 107.1,
       "verdict": "pass"
     },
     {
@@ -41,7 +41,7 @@
       "failed_checks": [
         "\"a read stops only where no span holds the offset\""
       ],
-      "log_sha256": "57752b5a591ff07c26298ba83344012f0afd7447bb14fc60bfa49f654622fa6a",
+      "log_sha256": "ca9534dd9bd0586b9b9ee1618f968c632aa5029a8c6ee2a682c7e2f70ec41a0f",
       "mutated": {
         "src/spill/runindex/tiling.rs": {
           "baseline": "0be2a861425a87867da9f668cc8b7bfb9f9dcdcac29863eab3e69ac45a12735f",
@@ -49,7 +49,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 342.2,
+      "seconds": 365.5,
       "verdict": "fail"
     },
     {
@@ -60,7 +60,7 @@
       "failed_checks": [
         "\"each pick is the best holder of its offset\""
       ],
-      "log_sha256": "7c7381b3de3c63a8571dda5a8828652e501f41f61bbf676f8d889eac07bb3baa",
+      "log_sha256": "2a1101af7bfbc60f3a58d256ab50f51ff8c5fd06d3b2e7a4132d8ef207fa414a",
       "mutated": {
         "src/spill/runindex/tiling.rs": {
           "baseline": "0be2a861425a87867da9f668cc8b7bfb9f9dcdcac29863eab3e69ac45a12735f",
@@ -68,7 +68,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 328.1,
+      "seconds": 356.1,
       "verdict": "fail"
     },
     {
@@ -80,7 +80,7 @@
         "\"first offsets increase strictly\"",
         "\"last offsets increase strictly\""
       ],
-      "log_sha256": "7505531f8df8f52bb8f42b21d5b2d551bcc1e84b6b003495c7caa7ead0665463",
+      "log_sha256": "905e55ffd1e33813580e918e3cc6aa563c33411fef2e6ab21941a00db0b3c8ca",
       "mutated": {
         "src/spill/runindex/tiling.rs": {
           "baseline": "0be2a861425a87867da9f668cc8b7bfb9f9dcdcac29863eab3e69ac45a12735f",
@@ -88,7 +88,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 165.3,
+      "seconds": 239.7,
       "verdict": "fail"
     },
     {
@@ -99,7 +99,7 @@
       "failed_checks": [
         "\"each pick is the best holder of its offset\""
       ],
-      "log_sha256": "d637924ce116c8f8bdc2ae9974f62b2f4d77e56a1d84593ac9727a5a89e9da23",
+      "log_sha256": "9006193e28e3dc120409d0ec643fe5477a8b33aab962416ec7005fd8537405b5",
       "mutated": {
         "src/spill/runindex/tiling.rs": {
           "baseline": "0be2a861425a87867da9f668cc8b7bfb9f9dcdcac29863eab3e69ac45a12735f",
@@ -107,7 +107,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 346.2,
+      "seconds": 406.7,
       "verdict": "fail"
     },
     {
@@ -118,7 +118,7 @@
       "failed_checks": [
         "\"of equal spans the newest is kept\""
       ],
-      "log_sha256": "f72c2f903903e3b75d7ba211cedb02da34633e5b0b559b61e1bf787f6c4a788e",
+      "log_sha256": "42bdcb91556149d400a63afd51e7ca1e34b3359d704b6d883c55300ae442f062",
       "mutated": {
         "src/spill/runindex/tiling.rs": {
           "baseline": "0be2a861425a87867da9f668cc8b7bfb9f9dcdcac29863eab3e69ac45a12735f",
@@ -126,7 +126,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 75.3,
+      "seconds": 107.3,
       "verdict": "fail"
     }
   ],
@@ -138,8 +138,8 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "db13303285d21f78602a40dc950c37a929715ad5c7f4a5502910585411b16395",
-      "Cargo.toml": "591efd05a80b64a6a64a8eb563b7ebd6d598587983c8e903cd446588522f321e",
+      "Cargo.lock": "c92f2cbd158ef4d67864896bb2977da34b90ff325c86fc0a729f4b180014b3bc",
+      "Cargo.toml": "c4e12f701dae96c271ca8c2a5d264bc5224835eeee6622e806a87fd127f59faf",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -171,41 +171,45 @@
         "carries": [
           {
             "docs": true,
-            "fork": "e3d264361ecab59d149dd872514679b282855e67"
+            "fork": "ab50eaf52c6a244d806ab58c6f6e564773e76e10"
           },
           {
-            "fork": "50f739e02e716b822f4fe40f1c09291a771646f8",
+            "fork": "609038fdb2ce137ebf90a75e1c173717fb2e4c32",
             "pr": 2190,
             "pr_diff": true
           },
           {
-            "fork": "fdbe878d46d3abe0f487900180574db65faf122b",
+            "fork": "f39b48f048f83d72e4afadaec94a756e67eca495",
             "pr": 2191,
             "pr_diff": true
           },
           {
-            "fork": "cda85233fd6c8d6c98696e7ba1d0186977335b19",
+            "fork": "d8e6694592f68cda28cb8d7a362ed9decee01d4a",
             "pr": 2010
           },
           {
-            "fork": "533a9851d422e29f35824a2634ab980a50de74f7",
+            "fork": "efa388f911de6e4ddd23c8827c1e4074b203e5e5",
             "issue": 2211
           },
           {
-            "fork": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+            "fork": "e533a050a49d325cca5b49c3e44e84243e2024cd",
             "issue": 2213
+          },
+          {
+            "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
+            "issue": 2215
           }
         ],
         "git": "https://github.com/prisma/slatedb.git",
-        "rev": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+        "rev": "b10b0e87b12602875b19f2b1500694372cb0f620",
         "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "fe94216c2b90f06531191ce2ff729c5c74e1189ee7debc9d1f2305fa858baca7",
+  "inputs_sha256": "79e10bae6270680ba936f0bcf3c1148298502b92996fcb5a9b4c8c341cc83e50",
   "run_on": {
     "dirty_tree": false,
-    "revision": "82bbd6e78a47c3241078d09d1a8ec54aaf8af735"
+    "revision": "da3008f569fea77e2e8408d28bef5abe7b1e3f19"
   },
   "schema": 2,
   "tools": {

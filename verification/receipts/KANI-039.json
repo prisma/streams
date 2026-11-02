@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "ba41aa45ec06f0ab189700527afb2cb75117285a5ccce9d6af832ca650ee7f2c",
+      "log_sha256": "0366e0a4387d6b918eb5c4652e794248d47aef6651350656f5d8a171d23bb428",
       "role": "baseline",
-      "seconds": 71.2,
+      "seconds": 41.8,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"a tagged operation is authorized exactly at or above the fence\""
       ],
-      "log_sha256": "fbf3330e706343864cfd401b92f12cd4c1d49111499e454b057a6f2a4ba55f23",
+      "log_sha256": "f3788a4ed87438153ac1ab91e8433922bd47195845e708aaa560a8f16d41d315",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 139.4,
+      "seconds": 117.2,
       "verdict": "fail"
     },
     {
@@ -38,7 +38,7 @@
       "failed_checks": [
         "\"an untagged close is refused once a fence exists\""
       ],
-      "log_sha256": "95db21bf09f5234aba4b4be3fd35fcf6ee40ac40ce0c7f90c64dfa084f3dae12",
+      "log_sha256": "678dc36eac0f443e28ab79fe5cc46bc9f7191086618bf2e10252c7fdb55df61f",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
@@ -46,7 +46,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 127.2,
+      "seconds": 115.4,
       "verdict": "fail"
     }
   ],
@@ -58,8 +58,8 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "db13303285d21f78602a40dc950c37a929715ad5c7f4a5502910585411b16395",
-      "Cargo.toml": "591efd05a80b64a6a64a8eb563b7ebd6d598587983c8e903cd446588522f321e",
+      "Cargo.lock": "c92f2cbd158ef4d67864896bb2977da34b90ff325c86fc0a729f4b180014b3bc",
+      "Cargo.toml": "c4e12f701dae96c271ca8c2a5d264bc5224835eeee6622e806a87fd127f59faf",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -89,41 +89,45 @@
         "carries": [
           {
             "docs": true,
-            "fork": "e3d264361ecab59d149dd872514679b282855e67"
+            "fork": "ab50eaf52c6a244d806ab58c6f6e564773e76e10"
           },
           {
-            "fork": "50f739e02e716b822f4fe40f1c09291a771646f8",
+            "fork": "609038fdb2ce137ebf90a75e1c173717fb2e4c32",
             "pr": 2190,
             "pr_diff": true
           },
           {
-            "fork": "fdbe878d46d3abe0f487900180574db65faf122b",
+            "fork": "f39b48f048f83d72e4afadaec94a756e67eca495",
             "pr": 2191,
             "pr_diff": true
           },
           {
-            "fork": "cda85233fd6c8d6c98696e7ba1d0186977335b19",
+            "fork": "d8e6694592f68cda28cb8d7a362ed9decee01d4a",
             "pr": 2010
           },
           {
-            "fork": "533a9851d422e29f35824a2634ab980a50de74f7",
+            "fork": "efa388f911de6e4ddd23c8827c1e4074b203e5e5",
             "issue": 2211
           },
           {
-            "fork": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+            "fork": "e533a050a49d325cca5b49c3e44e84243e2024cd",
             "issue": 2213
+          },
+          {
+            "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
+            "issue": 2215
           }
         ],
         "git": "https://github.com/prisma/slatedb.git",
-        "rev": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+        "rev": "b10b0e87b12602875b19f2b1500694372cb0f620",
         "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "a2811ab03050d03d97f3f3b8f2c9427763059142093e94a189594f954ee2e74c",
+  "inputs_sha256": "2879da3b2bdc3011c37c17d34ea2292d8e954ac1d3f015167f38f37527f85a8b",
   "run_on": {
     "dirty_tree": false,
-    "revision": "82bbd6e78a47c3241078d09d1a8ec54aaf8af735"
+    "revision": "da3008f569fea77e2e8408d28bef5abe7b1e3f19"
   },
   "schema": 2,
   "tools": {

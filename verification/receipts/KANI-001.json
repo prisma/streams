@@ -6,18 +6,18 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "1f6223ad03c60d67044823b9fe2305fd38c1db7acf668009da772f5b23de9cda",
+      "log_sha256": "a3e70f49508847d44b8ee7001823a107deda1655166306a5903335f361371dfa",
       "role": "baseline",
-      "seconds": 464.4,
+      "seconds": 453.5,
       "verdict": "pass"
     },
     {
       "check": "KANI-001/canonical-digits",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "10825f89a166b8899fc8360c0217770cf38473b05aca493ac1fbc76300a095c1",
+      "log_sha256": "37f736714da28527ac18216cf900b2dce03b008a237f28af42a963abf4e4c4ac",
       "role": "baseline",
-      "seconds": 278.0,
+      "seconds": 309.1,
       "verdict": "pass"
     },
     {
@@ -28,7 +28,7 @@
       "failed_checks": [
         "\"epoch and next survive the round trip\""
       ],
-      "log_sha256": "5a2ee865b3ddca50c9d6585320f251561b6e1a22644ba4a061cce02f52c6b9c6",
+      "log_sha256": "9fb0b112a1f53dc0faf4028a0e77f5a4a16fd1e84ac30d4681f420984d048890",
       "mutated": {
         "src/offsets.rs": {
           "baseline": "7f5bfa2ef61b991c1919aea7b51a9d587c7117f3c53f2184f4916a3ba54fd43c",
@@ -36,7 +36,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 370.6,
+      "seconds": 412.5,
       "verdict": "fail"
     }
   ],
@@ -49,8 +49,8 @@
       "ASM-OFFSET-DOMAIN": "aef34325e54b8193d77cf768b07426056852471934347bda2d6476cdd90cc297"
     },
     "files": {
-      "Cargo.lock": "db13303285d21f78602a40dc950c37a929715ad5c7f4a5502910585411b16395",
-      "Cargo.toml": "591efd05a80b64a6a64a8eb563b7ebd6d598587983c8e903cd446588522f321e",
+      "Cargo.lock": "c92f2cbd158ef4d67864896bb2977da34b90ff325c86fc0a729f4b180014b3bc",
+      "Cargo.toml": "c4e12f701dae96c271ca8c2a5d264bc5224835eeee6622e806a87fd127f59faf",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -79,41 +79,45 @@
         "carries": [
           {
             "docs": true,
-            "fork": "e3d264361ecab59d149dd872514679b282855e67"
+            "fork": "ab50eaf52c6a244d806ab58c6f6e564773e76e10"
           },
           {
-            "fork": "50f739e02e716b822f4fe40f1c09291a771646f8",
+            "fork": "609038fdb2ce137ebf90a75e1c173717fb2e4c32",
             "pr": 2190,
             "pr_diff": true
           },
           {
-            "fork": "fdbe878d46d3abe0f487900180574db65faf122b",
+            "fork": "f39b48f048f83d72e4afadaec94a756e67eca495",
             "pr": 2191,
             "pr_diff": true
           },
           {
-            "fork": "cda85233fd6c8d6c98696e7ba1d0186977335b19",
+            "fork": "d8e6694592f68cda28cb8d7a362ed9decee01d4a",
             "pr": 2010
           },
           {
-            "fork": "533a9851d422e29f35824a2634ab980a50de74f7",
+            "fork": "efa388f911de6e4ddd23c8827c1e4074b203e5e5",
             "issue": 2211
           },
           {
-            "fork": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+            "fork": "e533a050a49d325cca5b49c3e44e84243e2024cd",
             "issue": 2213
+          },
+          {
+            "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
+            "issue": 2215
           }
         ],
         "git": "https://github.com/prisma/slatedb.git",
-        "rev": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+        "rev": "b10b0e87b12602875b19f2b1500694372cb0f620",
         "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "682db2d8d8638f89534cea8ad736bfc4b4be3c44d73ab3b574b0823195e6bbdd",
+  "inputs_sha256": "1dcee333dec4abc00b5cc1a35da5ecaa8e69a184cd8072f4d26f9b01bd26a567",
   "run_on": {
     "dirty_tree": false,
-    "revision": "82bbd6e78a47c3241078d09d1a8ec54aaf8af735"
+    "revision": "da3008f569fea77e2e8408d28bef5abe7b1e3f19"
   },
   "schema": 2,
   "tools": {

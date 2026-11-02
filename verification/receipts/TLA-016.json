@@ -5,10 +5,10 @@
       "depth": 24,
       "distinct_states": 102027,
       "expected": "pass",
-      "log_sha256": "e7b2f7a47efb0184c5540341073137572022e9147303f6ce2d433ebf70aac450",
+      "log_sha256": "b97b850bc8f8af4a407387f0e4eef5f308ba1e449a0d54288d936e4553b60cbd",
       "property": null,
       "role": "baseline",
-      "seconds": 4.4,
+      "seconds": 4.5,
       "states_generated": 271927,
       "states_left": 0,
       "verdict": "pass"
@@ -18,10 +18,10 @@
       "depth": 27,
       "distinct_states": 2168636,
       "expected": "pass",
-      "log_sha256": "2a702e0ff7f6021b4cd2fb3a6a709ccbd0822d7f41ab5ae4c020fc07afc6f2bb",
+      "log_sha256": "5e2ae5ee8f877b1d9937dae134f352294d5d9bacb970f59d46ae2b3adea3ea86",
       "property": null,
       "role": "baseline",
-      "seconds": 112.7,
+      "seconds": 112.9,
       "states_generated": 6154503,
       "states_left": 0,
       "verdict": "pass"
@@ -31,10 +31,10 @@
       "depth": 33,
       "distinct_states": 3130346,
       "expected": "pass",
-      "log_sha256": "991ca7cae68cf19e0ab0efb26cc3b979a8144d652f4e3203f9cf04e26ebd2c5e",
+      "log_sha256": "98be4de1d873c652a55fc40f7bb9c896fa20b13264701e6708d7171bfc5aba5e",
       "property": null,
       "role": "baseline",
-      "seconds": 111.5,
+      "seconds": 113.5,
       "states_generated": 8313250,
       "states_left": 0,
       "verdict": "pass"
@@ -42,79 +42,79 @@
     {
       "check": "TLA-016/nc-prebuilt-remainder",
       "depth": 11,
-      "distinct_states": 4859,
+      "distinct_states": 4816,
       "expected": "violation:I1_AckedReadableAfterRestart",
-      "log_sha256": "8eef602c17eeeee39f7ab0619537570b58a6f0269b42ceaba0d759c53db6f9dd",
+      "log_sha256": "9c744b3b5e1d9b789644a6af9c92393e8f4a8782e6d45263c69059342895f0e8",
       "property": "I1_AckedReadableAfterRestart",
       "role": "negative-control",
-      "seconds": 1.2,
-      "states_generated": 10211,
-      "states_left": 2210,
+      "seconds": 1.4,
+      "states_generated": 10145,
+      "states_left": 2190,
       "verdict": "violation"
     },
     {
       "check": "TLA-016/nc-durable-boundary",
       "depth": 9,
-      "distinct_states": 1388,
+      "distinct_states": 1432,
       "expected": "violation:F2_SealFlushLeavesNoSealedPage",
-      "log_sha256": "d22f87fd5a8249b105c145da133195c79531cfd873b9fac5cf1d062de4161435",
+      "log_sha256": "03268afd1d95f951f4ea6e8aa6a2b6d05a203e994c48b0daca070e4c7a6b4331",
       "property": "F2_SealFlushLeavesNoSealedPage",
       "role": "negative-control",
       "seconds": 1.0,
-      "states_generated": 2748,
-      "states_left": 714,
+      "states_generated": 2818,
+      "states_left": 738,
       "verdict": "violation"
     },
     {
       "check": "TLA-016/witness-SealDurable",
       "depth": 10,
-      "distinct_states": 2889,
+      "distinct_states": 2676,
       "expected": "violation:Witness_SealDurable",
-      "log_sha256": "81e50a8e107820afb9da424a48080e220161ff4959d3b479c5249e536f9db385",
+      "log_sha256": "64ea10ecba93a473f07f8dc4099d061dc8e5ee2b23a436021ddaa984a85327d0",
       "property": "Witness_SealDurable",
       "role": "witness",
       "seconds": 1.1,
-      "states_generated": 5898,
-      "states_left": 1382,
+      "states_generated": 5471,
+      "states_left": 1285,
       "verdict": "violation"
     },
     {
       "check": "TLA-016/witness-RemainderCarriesLatePage",
       "depth": 9,
-      "distinct_states": 1618,
+      "distinct_states": 1650,
       "expected": "violation:Witness_RemainderCarriesLatePage",
-      "log_sha256": "68b95298f3ba83ac2e50ab0b917fe477a68c7e4afbb32aa4829de88311939eb6",
+      "log_sha256": "cd88d95f95ba68e1304a837ce323ba5af3e0c52d0d1e8c75594b4db8ff550c86",
       "property": "Witness_RemainderCarriesLatePage",
       "role": "witness",
-      "seconds": 1.0,
-      "states_generated": 3203,
-      "states_left": 831,
+      "seconds": 1.1,
+      "states_generated": 3260,
+      "states_left": 847,
       "verdict": "violation"
     },
     {
       "check": "TLA-016/witness-SealGroupCarriesAppend",
       "depth": 8,
-      "distinct_states": 731,
+      "distinct_states": 761,
       "expected": "violation:Witness_SealGroupCarriesAppend",
-      "log_sha256": "dbffc027bd853a69a53405ec137019082e4104c81b4a32ed83785e3e87e07610",
+      "log_sha256": "1e60c34073e8a4661d6092b91b44295f7398e7784c9905e311aa48c4108dd401",
       "property": "Witness_SealGroupCarriesAppend",
       "role": "witness",
-      "seconds": 0.9,
-      "states_generated": 1371,
-      "states_left": 407,
+      "seconds": 1.1,
+      "states_generated": 1422,
+      "states_left": 422,
       "verdict": "violation"
     },
     {
       "check": "TLA-016/witness-CrashAfterSealRecovered",
       "depth": 10,
-      "distinct_states": 3246,
+      "distinct_states": 3508,
       "expected": "violation:Witness_CrashAfterSealRecovered",
-      "log_sha256": "df36fa68dd0aaa7f45ef847b3be31554cea10c5e8e0efd3e36b60150ffde07ae",
+      "log_sha256": "d5507c557a5e262394086c2a2333de50f2dd5dd50a05d86eda3536976f6b9cbd",
       "property": "Witness_CrashAfterSealRecovered",
       "role": "witness",
-      "seconds": 1.1,
-      "states_generated": 6685,
-      "states_left": 1546,
+      "seconds": 1.2,
+      "states_generated": 7232,
+      "states_left": 1669,
       "verdict": "violation"
     }
   ],
@@ -129,8 +129,8 @@
       "ASM-SLATEDB-MERGE": "afbf38d680268f74202a5a0c1354980421ea0fc62bec7ff5964624c1140b96c0"
     },
     "files": {
-      "Cargo.lock": "db13303285d21f78602a40dc950c37a929715ad5c7f4a5502910585411b16395",
-      "Cargo.toml": "591efd05a80b64a6a64a8eb563b7ebd6d598587983c8e903cd446588522f321e",
+      "Cargo.lock": "c92f2cbd158ef4d67864896bb2977da34b90ff325c86fc0a729f4b180014b3bc",
+      "Cargo.toml": "c4e12f701dae96c271ca8c2a5d264bc5224835eeee6622e806a87fd127f59faf",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
       "src/shard/commit_plan.rs": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
       "src/shard/handle_load.rs": "41eb4c5f9f6dcfd7b43230fb7b1397db8e9ad2defd2547ba35c0e1591627206f",
@@ -176,41 +176,45 @@
         "carries": [
           {
             "docs": true,
-            "fork": "e3d264361ecab59d149dd872514679b282855e67"
+            "fork": "ab50eaf52c6a244d806ab58c6f6e564773e76e10"
           },
           {
-            "fork": "50f739e02e716b822f4fe40f1c09291a771646f8",
+            "fork": "609038fdb2ce137ebf90a75e1c173717fb2e4c32",
             "pr": 2190,
             "pr_diff": true
           },
           {
-            "fork": "fdbe878d46d3abe0f487900180574db65faf122b",
+            "fork": "f39b48f048f83d72e4afadaec94a756e67eca495",
             "pr": 2191,
             "pr_diff": true
           },
           {
-            "fork": "cda85233fd6c8d6c98696e7ba1d0186977335b19",
+            "fork": "d8e6694592f68cda28cb8d7a362ed9decee01d4a",
             "pr": 2010
           },
           {
-            "fork": "533a9851d422e29f35824a2634ab980a50de74f7",
+            "fork": "efa388f911de6e4ddd23c8827c1e4074b203e5e5",
             "issue": 2211
           },
           {
-            "fork": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+            "fork": "e533a050a49d325cca5b49c3e44e84243e2024cd",
             "issue": 2213
+          },
+          {
+            "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
+            "issue": 2215
           }
         ],
         "git": "https://github.com/prisma/slatedb.git",
-        "rev": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+        "rev": "b10b0e87b12602875b19f2b1500694372cb0f620",
         "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "86bd1c5c9253a7dc6c1efba7451fb0ef805fe5de5f7a516967cfde8fe75b10e0",
+  "inputs_sha256": "c17d91e2e09f8b43fbc7da2f6a8a704f787818a2dad1d5e03ffc904c309f85ea",
   "run_on": {
     "dirty_tree": false,
-    "revision": "82bbd6e78a47c3241078d09d1a8ec54aaf8af735"
+    "revision": "da3008f569fea77e2e8408d28bef5abe7b1e3f19"
   },
   "schema": 2,
   "tools": {

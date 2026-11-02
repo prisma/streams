@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "df561026652b1fef8a6426c3fbce732a3ed895fdceda09cc7e9f6fd886003978",
+      "log_sha256": "85a727990926a2ba4e17a13b5a2e3b71ceba260322da68fc580fdbcd34c4af66",
       "role": "baseline",
-      "seconds": 74.1,
+      "seconds": 181.5,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"a plain seal never joins a claim that owes a final record\""
       ],
-      "log_sha256": "d0377445bd391a8f12df1038ff21a03fcdd079d8f828e8eb47b40b3172a49d29",
+      "log_sha256": "5ecdd3e6102b8fe2e7e708c4eba49caffd348c0061ba65bdcde3aff2f7e77711",
       "mutated": {
         "src/application/lifecycle/claims.rs": {
           "baseline": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 99.9,
+      "seconds": 120.2,
       "verdict": "fail"
     },
     {
@@ -38,7 +38,7 @@
       "failed_checks": [
         "\"only the claim's own operation, or a plain seal joining a claim that owes no final record, renews it\""
       ],
-      "log_sha256": "5c7634fd6d4b46ebfcbd10d0a39221abd255f51548532ea6ad970c633890a3d5",
+      "log_sha256": "3ce045903aad1156aa12df8d4e89a644f68124448671d2d49a8c6b56e39a9e5b",
       "mutated": {
         "src/application/lifecycle/claims.rs": {
           "baseline": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
@@ -46,7 +46,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 105.8,
+      "seconds": 193.3,
       "verdict": "fail"
     },
     {
@@ -57,7 +57,7 @@
       "failed_checks": [
         "a declined step carries no installation"
       ],
-      "log_sha256": "22e5fe1e156f60fd343cd43b298f76eb5b63386afef37815ab286893fddaff9b",
+      "log_sha256": "f85c93d685d9fe2111d942a69a5cb92fd0dcd27dcaedd5fbf60472ee0354518d",
       "mutated": {
         "src/application/lifecycle/claims.rs": {
           "baseline": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
@@ -65,7 +65,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 145.6,
+      "seconds": 193.4,
       "verdict": "fail"
     }
   ],
@@ -77,8 +77,8 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "db13303285d21f78602a40dc950c37a929715ad5c7f4a5502910585411b16395",
-      "Cargo.toml": "591efd05a80b64a6a64a8eb563b7ebd6d598587983c8e903cd446588522f321e",
+      "Cargo.lock": "c92f2cbd158ef4d67864896bb2977da34b90ff325c86fc0a729f4b180014b3bc",
+      "Cargo.toml": "c4e12f701dae96c271ca8c2a5d264bc5224835eeee6622e806a87fd127f59faf",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -109,41 +109,45 @@
         "carries": [
           {
             "docs": true,
-            "fork": "e3d264361ecab59d149dd872514679b282855e67"
+            "fork": "ab50eaf52c6a244d806ab58c6f6e564773e76e10"
           },
           {
-            "fork": "50f739e02e716b822f4fe40f1c09291a771646f8",
+            "fork": "609038fdb2ce137ebf90a75e1c173717fb2e4c32",
             "pr": 2190,
             "pr_diff": true
           },
           {
-            "fork": "fdbe878d46d3abe0f487900180574db65faf122b",
+            "fork": "f39b48f048f83d72e4afadaec94a756e67eca495",
             "pr": 2191,
             "pr_diff": true
           },
           {
-            "fork": "cda85233fd6c8d6c98696e7ba1d0186977335b19",
+            "fork": "d8e6694592f68cda28cb8d7a362ed9decee01d4a",
             "pr": 2010
           },
           {
-            "fork": "533a9851d422e29f35824a2634ab980a50de74f7",
+            "fork": "efa388f911de6e4ddd23c8827c1e4074b203e5e5",
             "issue": 2211
           },
           {
-            "fork": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+            "fork": "e533a050a49d325cca5b49c3e44e84243e2024cd",
             "issue": 2213
+          },
+          {
+            "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
+            "issue": 2215
           }
         ],
         "git": "https://github.com/prisma/slatedb.git",
-        "rev": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+        "rev": "b10b0e87b12602875b19f2b1500694372cb0f620",
         "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "27e70c2bb0498b126ca87f9fe7a1a4aa0697dca48069012b7d93ab6906aed8c5",
+  "inputs_sha256": "202e40ee50a3bdb150c49bf36c088849d061adf84eda53af709600f403052b19",
   "run_on": {
     "dirty_tree": false,
-    "revision": "82bbd6e78a47c3241078d09d1a8ec54aaf8af735"
+    "revision": "da3008f569fea77e2e8408d28bef5abe7b1e3f19"
   },
   "schema": 2,
   "tools": {

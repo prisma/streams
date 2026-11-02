@@ -6,9 +6,9 @@
       "covers_satisfied": 4,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "52e77af23dbb5afa29fc1fcfb5795b1a5a8e9032aaab38a5ad79ceaf1d8dc03b",
+      "log_sha256": "7cd0ba1ea6258bb5b0525bfa8eceab683cd57129f4e1bf7f5ada77fdee6bb507",
       "role": "baseline",
-      "seconds": 88.4,
+      "seconds": 116.1,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"a sealed span below the tail holds only positions before its end\""
       ],
-      "log_sha256": "8a4edb81b5d538fffa04833649984f4e21b121dac1ac64827939d42a8608b461",
+      "log_sha256": "74b04b9bed61f588c429986e7851a8d6eee0f21ce44a1f886e39d456319bc170",
       "mutated": {
         "src/sse/source/spans.rs": {
           "baseline": "a23a4ffcd7726ef863cda91e7e86e3d9cc560d100756dc887a21201e27bb5fec",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 165.3,
+      "seconds": 123.2,
       "verdict": "fail"
     },
     {
@@ -38,7 +38,7 @@
       "failed_checks": [
         "\"the local offset is relative to its span's start\""
       ],
-      "log_sha256": "231e706c1dc74c72bb4e5d3d57dffc6a80e92efbdc83a46f4b8e23d879461fab",
+      "log_sha256": "f0921a92cb4c328a39909f98c5616c05c3b4e79fb839a6aaee5f5a04ae609d9c",
       "mutated": {
         "src/sse/source/spans.rs": {
           "baseline": "a23a4ffcd7726ef863cda91e7e86e3d9cc560d100756dc887a21201e27bb5fec",
@@ -46,7 +46,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 173.0,
+      "seconds": 151.7,
       "verdict": "fail"
     }
   ],
@@ -59,8 +59,8 @@
       "ASM-LINEAGE-CONTRACT": "ce6f37d8d180ff751216f81cd4f7df089b1a743437c7fd52e895f1266c41ad90"
     },
     "files": {
-      "Cargo.lock": "db13303285d21f78602a40dc950c37a929715ad5c7f4a5502910585411b16395",
-      "Cargo.toml": "591efd05a80b64a6a64a8eb563b7ebd6d598587983c8e903cd446588522f321e",
+      "Cargo.lock": "c92f2cbd158ef4d67864896bb2977da34b90ff325c86fc0a729f4b180014b3bc",
+      "Cargo.toml": "c4e12f701dae96c271ca8c2a5d264bc5224835eeee6622e806a87fd127f59faf",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -90,41 +90,45 @@
         "carries": [
           {
             "docs": true,
-            "fork": "e3d264361ecab59d149dd872514679b282855e67"
+            "fork": "ab50eaf52c6a244d806ab58c6f6e564773e76e10"
           },
           {
-            "fork": "50f739e02e716b822f4fe40f1c09291a771646f8",
+            "fork": "609038fdb2ce137ebf90a75e1c173717fb2e4c32",
             "pr": 2190,
             "pr_diff": true
           },
           {
-            "fork": "fdbe878d46d3abe0f487900180574db65faf122b",
+            "fork": "f39b48f048f83d72e4afadaec94a756e67eca495",
             "pr": 2191,
             "pr_diff": true
           },
           {
-            "fork": "cda85233fd6c8d6c98696e7ba1d0186977335b19",
+            "fork": "d8e6694592f68cda28cb8d7a362ed9decee01d4a",
             "pr": 2010
           },
           {
-            "fork": "533a9851d422e29f35824a2634ab980a50de74f7",
+            "fork": "efa388f911de6e4ddd23c8827c1e4074b203e5e5",
             "issue": 2211
           },
           {
-            "fork": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+            "fork": "e533a050a49d325cca5b49c3e44e84243e2024cd",
             "issue": 2213
+          },
+          {
+            "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
+            "issue": 2215
           }
         ],
         "git": "https://github.com/prisma/slatedb.git",
-        "rev": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+        "rev": "b10b0e87b12602875b19f2b1500694372cb0f620",
         "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "fab78c71cadfbc05f20d654da51d9c97a33c083ab74c61efaaa4be2fca891570",
+  "inputs_sha256": "e6ec199418fb4a22a54e4493ce096f1cbae1f3e642cd788f79a9295bd07c3675",
   "run_on": {
     "dirty_tree": false,
-    "revision": "82bbd6e78a47c3241078d09d1a8ec54aaf8af735"
+    "revision": "da3008f569fea77e2e8408d28bef5abe7b1e3f19"
   },
   "schema": 2,
   "tools": {
