@@ -3155,6 +3155,30 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::serve",
+      "path": "src/bin/s3lite/emulator.rs",
+      "reason": "The emulator's listener (HTTP/1.1 and HTTP/2 with prior knowledge, its HTTP/2 windows and reset allowances) lives beside the dispatcher it serves; declared by path because the emulator file is itself included by path from the binary and the provider contract suite, which so serve through the same listener.",
+      "syntax": "path = \"serve.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::serve",
+      "path": "src/bin/s3lite/serve.rs",
+      "reason": "The listener's accept loop selects between a new connection and a finished connection task, which it reaps so the JoinSet never grows with completed entries.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::serve",
+      "path": "src/bin/s3lite/serve.rs",
+      "reason": "The s3lite listener owns one task per accepted connection in its JoinSet, reaps each as it ends, and aborts the rest when accepting fails and the listener returns. Typed Clippy checks the method call.",
+      "syntax": "tokio::task::JoinSet::spawn"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::tests",
       "path": "src/bin/s3lite/emulator.rs",
       "reason": "The emulator observation owner renders its fixed JSON schema; request/status/tier totals and live-object census have executable controls. The directly cfg(test) child keeps protocol fixtures outside production dispatch.",

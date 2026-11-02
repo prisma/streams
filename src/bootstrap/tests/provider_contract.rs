@@ -223,6 +223,42 @@ async fn s3lite_through_the_production_client_meets_the_provider_contract() {
         "s3lite stores no user metadata; the SlateDB lost-reply case relies on knowing that"
     );
     assert!(!observed.etag_repeats_for_identical_content);
+    let (http2, http1) = faults.versions();
+    assert_eq!(http2, 0, "the production client speaks HTTP/1.1 by default");
+    assert!(http1 > 0);
+}
+
+/// s3lite answers HTTP/2 with prior knowledge on the same listener as
+/// HTTP/1.1.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn s3lite_answers_http2_with_prior_knowledge_beside_http1() {
+    let s3lite = s3lite_harness::S3lite::bind().await;
+    let faults = s3lite.faults();
+    let stats = format!("{}/_s3lite/stats", s3lite.endpoint());
+    let versions = s3lite
+        .serve_while(async {
+            let mut versions = Vec::new();
+            for client in [
+                reqwest::Client::builder().http1_only().build(),
+                reqwest::Client::builder().http2_prior_knowledge().build(),
+            ] {
+                let answer = client
+                    .expect("build a client")
+                    .get(&stats)
+                    .send()
+                    .await
+                    .expect("s3lite answers");
+                assert!(answer.status().is_success(), "{}", answer.status());
+                versions.push(answer.version());
+            }
+            versions
+        })
+        .await;
+    assert_eq!(
+        versions,
+        [reqwest::Version::HTTP_11, reqwest::Version::HTTP_2]
+    );
+    assert_eq!(faults.versions(), (1, 1));
 }
 
 /// The SlateDB cases hold on the reference store under the tick and under
