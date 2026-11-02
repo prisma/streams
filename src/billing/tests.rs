@@ -287,3 +287,14 @@ fn either_debt_class_alone_is_debt() {
     assert!(debt(false, 1), "one maintenance byte alone");
     assert!(debt(true, 7));
 }
+
+/// A telemetry point lookup probes one older source at a time: a lookahead
+/// probe the lookup drops still fetches its blocks through a detached cache
+/// loader, a GET with no counted miss (1.39 GETs per miss on PACK-S-MUX-0200
+/// at SlateDB's default of four).
+#[test]
+fn telemetry_point_lookups_probe_one_older_source_at_a_time() {
+    let cfg = test_cfg();
+    let settings = telemetry_settings(&cfg.billing, &cfg.engine.compactor_options());
+    assert_eq!(settings.point_lookup_parallelism, 1);
+}

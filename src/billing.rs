@@ -1403,11 +1403,10 @@ pub(crate) fn spawn_rollup(
 // Durable read spool (round-21 blocker 3)
 // ---------------------------------------------------------------------
 
-/// Telemetry databases use a shared, runtime-owned cache supplied by their
-/// caller. Their settings remain bounded separately from shard/history DBs.
-/// Telemetry DBs are tiny and quiet next to shard/history DBs: small
-/// memtables, small L0 targets, long metadata polls, and the same slow
-/// GC cadence as history. Never SlateDB defaults.
+/// Telemetry DBs share a runtime-owned cache from their caller and stay
+/// bounded apart from the shard/history DBs, next to which they are tiny and
+/// quiet: small memtables and L0 targets, long metadata polls, history's slow
+/// GC cadence, one older source per point-lookup probe. Never SlateDB defaults.
 pub(crate) fn telemetry_settings(
     _cfg: &crate::config::BillingConfig,
     compactor: &slatedb::config::CompactorOptions,
@@ -1446,6 +1445,7 @@ pub(crate) fn telemetry_settings(
         l0_sst_size_bytes: 2 * 1024 * 1024,
         l0_max_ssts: 32,
         l0_max_ssts_per_key: 32,
+        point_lookup_parallelism: 1,
         compactor_options: Some(co),
         ..Default::default()
     }
