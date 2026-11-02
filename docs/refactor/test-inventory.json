@@ -6736,7 +6736,7 @@
     "attributes": [
       "#[tokio::test(start_paused = true, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "9c556be8122065e192d32c790dc11dbdbafd39bd03bccc61df9428a658c37105",
+    "function_sha256": "c997c276df69b437f6cc29de1f4322c2e5d1f2e07a08c262a99e2f744773ceeb",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/runtime_open_gate.rs",

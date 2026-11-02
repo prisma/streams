@@ -194,11 +194,13 @@ async fn reopen_storm_reproduces_the_eu_central_wedge() {
     );
 }
 
-/// **The fix.** Same sick store, same impatient clients, through
+/// **The fix.** A sicker store, the same impatient clients, through
 /// `OpenGate`: one open, started once, owning its own completion. Clients
 /// get retryable 503s while it runs; the engine lands in the serving map
 /// even though every client that asked for it had already given up; WAL
-/// read amplification is ~1×.
+/// read amplification is ~1×. On the pinned SlateDB (upstream main) one
+/// open at the storm's 40–80 ms finishes before the third client arrives;
+/// at 400–800 ms it outlasts all twelve, as the soak's did.
 #[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn open_gate_survives_impatient_clients_without_a_storm() {
     use crate::sharddir::{OpenGate, OpenOutcome};
@@ -209,7 +211,7 @@ async fn open_gate_survives_impatient_clients_without_a_storm() {
         error_pct: 0,
         lost_response_pct: 0,
         latency_pct: 100,
-        latency_ms: (40, 80),
+        latency_ms: (400, 800),
     };
     let store = FaultStore::uniform(inner.clone(), 61, plan);
 
@@ -261,12 +263,16 @@ async fn open_gate_survives_impatient_clients_without_a_storm() {
     assert_eq!(completed, 1);
     assert_eq!(failed, 0);
     assert_eq!(in_flight, 0, "the one open is no longer in flight");
-    assert!(coalesced >= 10, "later callers must join the first open");
+    assert!(
+        coalesced >= 10,
+        "later callers must join the first open: {}",
+        gate.stats_json()
+    );
 
-    // One replay costs ~5 store ops per WAL SST (existence probes arrive
+    // One replay costs a few store ops per WAL SST (existence probes arrive
     // as HEAD-flavoured GETs, plus content reads, plus noise from the
-    // fenced seeding db's background tasks) — measured 616 here against
-    // the naive path's 7,503. The ceiling is 8/SST: an order of magnitude
+    // fenced seeding db's background tasks) — measured 256 here against
+    // the naive path's thousands. The ceiling is 8/SST: an order of magnitude
     // under the storm, comfortably above one honest replay.
     let wal_gets = store.count(StoreOp::Get, ObjClass::Wal);
     assert!(
