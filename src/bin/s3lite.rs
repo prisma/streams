@@ -53,6 +53,6 @@ async fn main() -> anyhow::Result<()> {
         "s3lite listening on {} (latency {}ms per op)",
         args.listen, args.latency_ms
     );
-    axum::serve(listener, app).await?;
+    emulator::serve::serve(listener, app).await?;
     Ok(())
 }
