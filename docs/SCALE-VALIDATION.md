@@ -166,7 +166,7 @@ forwarded once to the owner (`src/http/forward.rs`; the wire contract is in
 - Bounds: the owner has 1 s to accept the connection (else the 409); its
   answer must begin within the shard-open wait (10 s) plus the request's own
   wait (at most 25 s) plus 5 s (else `503 forward_failed`). At most a
-  quarter of `ADMIT_MAX_INFLIGHT` forwards (128 at the default 512) wait for
+  quarter of `ADMIT_MAX_INFLIGHT` forwards (1,024 at the default 4,096) wait for
   owners at once; past that the client gets the 409.
 - The 409 `not_ring_owner` with `Streams-Replay-To` stays when the owner's
   URL is unknown, the owner does not accept within 1 s, the forward cap is

@@ -372,8 +372,8 @@ pub struct CliArgs {
 
     /// Per-stream inflight append cap (0 = off): one hot stream cannot
     /// occupy every admission slot of its shard owner (scoped 429).
-    /// Default 256, what the deployments set, half the default instance
-    /// cap. Set it below ADMIT_MAX_INFLIGHT where that is lowered.
+    /// Default 256, what the deployments set, a sixteenth of the default
+    /// instance cap. Set it below ADMIT_MAX_INFLIGHT where that is lowered.
     #[arg(long, env = "ADMIT_MAX_INFLIGHT_PER_STREAM", default_value_t = 256)]
     pub(crate) admit_max_inflight_per_stream: i64,
 
@@ -381,11 +381,16 @@ pub struct CliArgs {
     /// authenticated append gets 429 + Retry-After: 1 after a 25 ms tarpit
     /// (0 = off); reads, creates and deletes are not shed by the cap. Keeps
     /// the durable path from queue collapse under overload; clients must
-    /// honor Retry-After. Default 512, what the deployments set. The count
-    /// covers every request on every route, so parked long-polls use it up;
-    /// above four times the cap every /v1/stream and /v1/streams request is
-    /// refused with 503 before authentication.
-    #[arg(long, env = "ADMIT_MAX_INFLIGHT", default_value_t = 512)]
+    /// honor Retry-After. Default 4,096 (edge change #239; 512 before): a
+    /// platform that carries many clients' requests to one instance on a
+    /// few HTTP/2 connections holds thousands in flight, and at 512 the cap
+    /// refused its sends near 2,000/s while the instance held 5,000/s on
+    /// the 1 GiB profile at 4,096. Shared cells state their own (512 in
+    /// deploy/profiles/shared-cell.env). The count covers every request on
+    /// every route except waits parked for data; above four times the cap
+    /// every /v1/stream, /v1/streams and /v1/queues request is refused with
+    /// 503 before authentication.
+    #[arg(long, env = "ADMIT_MAX_INFLIGHT", default_value_t = 4_096)]
     pub(crate) admit_max_inflight: i64,
 
     /// k, the number of projects this cell is shared by (shared-cells
@@ -524,7 +529,7 @@ impl CliArgs {
             admit_rss_shed_mb: 500,
             sse_max_connections: 1_200,
             admit_max_inflight_per_stream: 256,
-            admit_max_inflight: 512,
+            admit_max_inflight: 4_096,
             project_share_k: 1,
             cell_envelope_requests_per_sec: 0,
             cell_envelope_append_bytes_per_sec: 0,

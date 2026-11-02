@@ -839,7 +839,7 @@ async fn the_survival_refusal_covers_reads_and_the_product_surface_at_the_defaul
     let (state, addr) = http_rig_auth(store, "tok").await;
     let cap = crate::config::CliArgs::deterministic().admit_max_inflight;
     state.admission.set_max_inflight(cap);
-    // 2,048 held: the request that arrives is the 2,049th in flight.
+    // Four times the cap held: the request that arrives is one past it.
     state.admission.add_inflight_for_test(4 * cap);
     for (method, path) in STREAM_PATHS {
         let (st, h, body) = hreq(addr, method, path, &[], b"").await;
@@ -867,10 +867,10 @@ async fn the_survival_refusal_covers_reads_and_the_product_surface_at_the_defaul
     let seen = state.admission.snapshot();
     assert_eq!(
         (st, seen.max_inflight, seen.shed.survival, seen.shed.total),
-        (200, 512, 9, 9),
+        (200, cap, 9, 9),
         "a route that is not a stream or queue path is served, and each refusal is counted once"
     );
-    // 2,047 held: the request that arrives is the 2,048th, at the bound.
+    // One fewer held: the request that arrives is at the bound.
     state.admission.add_inflight_for_test(-1);
     for (method, path) in STREAM_PATHS {
         let (st, _, body) = hreq(addr, method, path, &[], b"").await;
