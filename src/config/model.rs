@@ -219,7 +219,8 @@ pub struct HttpConfig {
     /// it limits memory per connection and does not bound header values.
     pub h1_max_buf: usize,
     /// SSE_H1_HEADER_TIMEOUT_MS, default 120_000 — the request-head and
-    /// idle keep-alive deadline (`http::serve::h1_builder`); 0/unparseable =
+    /// idle keep-alive deadline (`http::serve::connection_builder`), and the
+    /// HTTP/2 keep-alive ping interval and timeout; 0/unparseable =
     /// default. Never disabled: hyper without it holds a headless socket
     /// for ever.
     pub h1_header_timeout: std::time::Duration,

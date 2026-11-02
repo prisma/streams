@@ -4,9 +4,9 @@
 //! instead of pinned for as long as the client keeps the socket.
 //!
 //! hyper has no write deadline: its only deadline never runs while a
-//! response is written (`h1_builder`), and once its write buffer is full
-//! it stops polling the body, so nothing in the body can notice a client
-//! that has stopped. The floor therefore sits under hyper, on the
+//! response is written (`connection_builder`), and once its write buffer
+//! is full it stops polling the body, so nothing in the body can notice a
+//! client that has stopped. The floor therefore sits under hyper, on the
 //! connection's socket. A write the socket cannot take opens a window
 //! (`HttpConfig::drain_window`); a write that takes everything offered
 //! closes it. If, when a window ends, the client has accepted fewer than
@@ -93,6 +93,12 @@ pub(crate) struct DrainStream<S> {
 impl DrainStream<TcpStream> {
     pub(crate) fn set_nodelay(&self, nodelay: bool) -> io::Result<()> {
         self.inner.set_nodelay(nodelay)
+    }
+
+    /// The bytes the peer has sent and the connection has not read yet,
+    /// left for it to read.
+    pub(crate) async fn peek(&self, buf: &mut [u8]) -> io::Result<usize> {
+        self.inner.peek(buf).await
     }
 }
 

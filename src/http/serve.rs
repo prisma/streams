@@ -1,4 +1,5 @@
-//! The h1 serve loop and its connection posture: what every accepted socket is served with.
+//! The serve loop and its connection posture: what every accepted socket is served with,
+//! HTTP/1.1 or HTTP/2 with prior knowledge.
 //!
 //! One builder, cloned per connection, so production and every rig serve
 //! with the same bounded read buffer and the same request-head deadline
@@ -11,7 +12,11 @@ use super::{NOFILE_HARD, NOFILE_SOFT, raise_nofile, spawn_runtime_watchdog};
 mod drain;
 
 /// The hyper builder every connection is served with; cloned per accept
-/// (an `Arc` bump and a parser-config copy).
+/// (an `Arc` bump and a parser-config copy). A connection that opens with
+/// the HTTP/2 connection preface is served HTTP/2, any other HTTP/1.1, on
+/// the one listener.
+///
+/// HTTP/1.1:
 ///
 /// hyper 1.x documents a 30 s `header_read_timeout` default and drops it
 /// silently unless the builder is also given a timer: `Time::check`
@@ -33,13 +38,55 @@ mod drain;
 /// axum::serve's default hyper posture measured ~53 KB resident per
 /// parked connection; the bounded buffer holds the same fleet at ~44 KB,
 /// the floor now dominated by task/future/slab overhead).
-pub(crate) fn h1_builder(http: &HttpConfig) -> hyper::server::conn::http1::Builder {
-    let mut b = hyper::server::conn::http1::Builder::new();
-    b.timer(hyper_util::rt::TokioTimer::new())
+///
+/// HTTP/2 (a platform that carries many clients' requests on a few
+/// connections, as Habanero does to an instance that binds `http2`): at
+/// most [`HTTP2_STREAMS`] requests at once per connection, and a
+/// connection window of [`HTTP2_CONNECTION_WINDOW`]. h2 closes a connection
+/// with GOAWAY ENHANCE_YOUR_CALM once the small DATA frames it holds unread
+/// pass half the connection window; at hyper's default of 1 MiB, thousands
+/// of small append and send bodies in flight pass it. A keep-alive ping
+/// every `h1_header_timeout` closes a connection whose peer stopped
+/// answering, as the head deadline closes a silent HTTP/1.1 socket.
+pub(crate) fn connection_builder(
+    http: &HttpConfig,
+) -> hyper_util::server::conn::auto::Builder<hyper_util::rt::TokioExecutor> {
+    let mut b = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
+    b.http1()
+        .timer(hyper_util::rt::TokioTimer::new())
         .header_read_timeout(http.h1_header_timeout)
         .max_buf_size(http.h1_max_buf);
+    b.http2()
+        .timer(hyper_util::rt::TokioTimer::new())
+        .max_concurrent_streams(HTTP2_STREAMS)
+        .initial_connection_window_size(HTTP2_CONNECTION_WINDOW)
+        .keep_alive_interval(Some(http.h1_header_timeout))
+        .keep_alive_timeout(http.h1_header_timeout);
     b
 }
+
+/// What each accepted connection is served with: the builder, and the
+/// head deadline its protocol is read under (`serve_one`).
+#[derive(Clone)]
+struct Posture {
+    builder: hyper_util::server::conn::auto::Builder<hyper_util::rt::TokioExecutor>,
+    head: std::time::Duration,
+}
+
+impl Posture {
+    fn of(http: &HttpConfig) -> Self {
+        Self {
+            builder: connection_builder(http),
+            head: http.h1_header_timeout,
+        }
+    }
+}
+
+/// The most requests one HTTP/2 connection carries at once.
+pub(crate) const HTTP2_STREAMS: u32 = 1_024;
+
+/// The receive window of each HTTP/2 connection.
+pub(crate) const HTTP2_CONNECTION_WINDOW: u32 = 16 << 20;
 
 /// A reaped connection's verdict (item 37). hyper does not catch a panic in
 /// the service or its response body, so a panicking handler unwinds the
@@ -80,9 +127,10 @@ fn with_accept_backlog(
     tokio::net::TcpSocket::from_std_stream(std::net::TcpStream::from(socket)).listen(ACCEPT_BACKLOG)
 }
 
-/// #269: the one h1 serve entry — production and every test rig serve
-/// through THIS function, so the suite exercises the real connection
-/// path; what each connection is served with is `serve::h1_builder` over
+/// #269: the one serve entry, HTTP/1.1 and HTTP/2 with prior knowledge on
+/// one listener — production and every test rig serve through THIS
+/// function, so the suite exercises the real connection path; what each
+/// connection is served with is `serve::connection_builder` over
 /// a socket under the drain floor (`drain`), and every response it serves
 /// passes `challenge`. Production and every rig bind with Tokio's
 /// default queue and hand the listener here, which listens again with
@@ -126,7 +174,7 @@ async fn serve_connections(
     tasks: crate::tasks::TaskSupervisor,
 ) -> std::io::Result<()> {
     let svc = hyper_util::service::TowerToHyperService::new(app);
-    let h1 = h1_builder(http);
+    let posture = Posture::of(http);
     let limits = raise_nofile();
     let (soft, hard) = (
         limits.soft.map_or(0, |n| n.get()),
@@ -150,7 +198,7 @@ async fn serve_connections(
             accepted = listener.accept() => match accepted {
                 Ok((sock, _peer)) => {
                     let _ = sock.set_nodelay(true);
-                    conns.spawn(serve_one(sock, svc.clone(), h1.clone(), cancel.clone()));
+                    conns.spawn(serve_one(sock, svc.clone(), posture.clone(), cancel.clone()));
                 }
                 Err(e) => {
                     // Transient accept errors (EMFILE bursts, aborted
@@ -175,13 +223,39 @@ async fn serve_connections(
 /// the connection; an idle keep-alive closes at once. Errors are routine
 /// client behaviour (resets, half-closed keep-alives, head deadlines), not
 /// server faults.
+///
+/// The connection's protocol is read from its first bytes under the head
+/// deadline (`opening`), so a socket that never sends one is closed at the
+/// deadline as before; an HTTP/1.1 connection's head deadline is what is
+/// left of it.
 async fn serve_one(
     sock: drain::DrainStream<tokio::net::TcpStream>,
     svc: hyper_util::service::TowerToHyperService<axum::Router>,
-    h1: hyper::server::conn::http1::Builder,
+    posture: Posture,
     stop: crate::tasks::Cancellation,
 ) {
-    let mut conn = Box::pin(h1.serve_connection(hyper_util::rt::TokioIo::new(sock), svc));
+    let Posture { builder, head } = posture;
+    let deadline = tokio::time::Instant::now() + head;
+    let opened = tokio::select! {
+        opened = tokio::time::timeout_at(deadline, opening(&sock)) => opened,
+        () = stop.cancelled() => return,
+    };
+    let builder = match opened {
+        Ok(Ok(Opening::Http2)) => builder.http2_only(),
+        Ok(Ok(Opening::Http1)) => {
+            let mut builder = builder;
+            builder.http1().header_read_timeout(
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+            );
+            builder.http1_only()
+        }
+        Ok(Err(error)) => {
+            tracing::debug!("connection ended before its first request: {error}");
+            return;
+        }
+        Err(_elapsed) => return,
+    };
+    let mut conn = Box::pin(builder.serve_connection(hyper_util::rt::TokioIo::new(sock), svc));
     let served = tokio::select! {
         served = conn.as_mut() => served,
         () = stop.cancelled() => {
@@ -191,6 +265,37 @@ async fn serve_one(
     };
     if let Err(error) = served {
         tracing::debug!("connection ended: {error}");
+    }
+}
+
+/// The bytes an HTTP/2 connection with prior knowledge opens with.
+const HTTP2_PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+/// How long `opening` waits between looks at a preface that has arrived in
+/// part: a look returns at once while the bytes it saw wait unread.
+const PREFACE_LOOK: std::time::Duration = std::time::Duration::from_millis(5);
+
+/// The protocol a connection opened with.
+#[derive(Debug, PartialEq, Eq)]
+enum Opening {
+    Http1,
+    Http2,
+}
+
+/// The protocol `sock` speaks, read from its first bytes without taking
+/// them: HTTP/2 once the whole preface has arrived, HTTP/1.1 as soon as a
+/// byte departs from it or the peer closes.
+async fn opening(sock: &drain::DrainStream<tokio::net::TcpStream>) -> std::io::Result<Opening> {
+    let mut seen = [0u8; HTTP2_PREFACE.len()];
+    loop {
+        let n = sock.peek(&mut seen).await?;
+        if n == 0 || seen[..n] != HTTP2_PREFACE[..n] {
+            return Ok(Opening::Http1);
+        }
+        if n == HTTP2_PREFACE.len() {
+            return Ok(Opening::Http2);
+        }
+        tokio::time::sleep(PREFACE_LOOK).await;
     }
 }
 
@@ -321,6 +426,8 @@ mod tests {
             .write_all(b"GET /fast HTTP/1.1\r\nhost: rig\r\n")
             .await
             .unwrap();
+        let mut preface = TcpStream::connect(addr).await.unwrap();
+        preface.write_all(b"PRI * HTTP/2.0\r\n").await.unwrap();
         assert_eq!(
             closed_within(&mut silent, BOUND).await,
             Ok(()),
@@ -330,6 +437,11 @@ mod tests {
             closed_within(&mut partial, BOUND).await,
             Ok(()),
             "partial head"
+        );
+        assert_eq!(
+            closed_within(&mut preface, BOUND).await,
+            Ok(()),
+            "partial HTTP/2 preface"
         );
         let held = started.elapsed();
         assert!(
@@ -490,6 +602,99 @@ mod tests {
         assert!(report.aborted.is_empty(), "{report:?}");
     }
 
+    /// An HTTP/2 connection to the rig with prior knowledge, and the
+    /// connection future to drive beside its requests; it ends when the
+    /// server closes the connection.
+    async fn http2(
+        addr: std::net::SocketAddr,
+    ) -> (
+        hyper::client::conn::http2::SendRequest<axum::body::Body>,
+        hyper::client::conn::http2::Connection<
+            hyper_util::rt::TokioIo<TcpStream>,
+            axum::body::Body,
+            hyper_util::rt::TokioExecutor,
+        >,
+    ) {
+        let sock = TcpStream::connect(addr).await.unwrap();
+        hyper::client::conn::http2::handshake(
+            hyper_util::rt::TokioExecutor::new(),
+            hyper_util::rt::TokioIo::new(sock),
+        )
+        .await
+        .unwrap()
+    }
+
+    fn get(addr: std::net::SocketAddr, path: &str) -> axum::http::Request<axum::body::Body> {
+        axum::http::Request::get(format!("http://{addr}{path}"))
+            .body(axum::body::Body::empty())
+            .unwrap()
+    }
+
+    /// A connection that opens with the HTTP/2 preface is served HTTP/2 on
+    /// the listener that serves HTTP/1.1, several requests at once on it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+    async fn http2_with_prior_knowledge_is_served_beside_http1() {
+        let (addr, tasks) = serve(DEADLINE).await;
+        let mut h1 = TcpStream::connect(addr).await.unwrap();
+        h1.write_all(b"GET /fast HTTP/1.1\r\nhost: rig\r\n\r\n")
+            .await
+            .unwrap();
+        let head = response_head(&mut h1).await;
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        let (send, conn) = http2(addr).await;
+        let requests = futures_util::future::join_all(
+            (0..8).map(|_| send.clone().send_request(get(addr, "/fast"))),
+        );
+        let answers = tokio::time::timeout(
+            BOUND,
+            futures_util::future::select(Box::pin(requests), conn),
+        )
+        .await
+        .expect("the answers within the bound");
+        let futures_util::future::Either::Left((answers, _conn)) = answers else {
+            panic!("the connection ended before its answers");
+        };
+        for answer in answers {
+            let answer = answer.unwrap();
+            assert_eq!(answer.status(), 200);
+            assert_eq!(answer.version(), axum::http::Version::HTTP_2);
+        }
+        tasks.shutdown(Duration::from_secs(5)).await;
+    }
+
+    /// #180 over HTTP/2: a request in flight when the stop begins is
+    /// answered, and the connection then closes; the stop waits for it,
+    /// inside the drain.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+    async fn the_stop_answers_an_http2_request_in_flight_then_closes_its_connection() {
+        let (addr, tasks) = serve(DEADLINE).await;
+        let (mut send, conn) = http2(addr).await;
+        let client = futures_util::future::join(
+            send.send_request(get(addr, "/slow")),
+            tokio::time::timeout(BOUND * 2, conn),
+        );
+        let stop = async {
+            tokio::time::sleep(DEADLINE / 5).await;
+            let started = tokio::time::Instant::now();
+            let report = tasks.shutdown(Duration::from_secs(5)).await;
+            (report, started.elapsed())
+        };
+        let ((answer, closed), (report, stopped)) = futures_util::future::join(client, stop).await;
+        let answer = answer.expect("the request in flight is answered, not reset");
+        assert_eq!(answer.status(), 200);
+        assert!(
+            closed
+                .expect("the connection closes after the answer")
+                .is_ok(),
+            "the server closes the connection cleanly"
+        );
+        assert!(report.aborted.is_empty(), "{report:?}");
+        assert!(
+            stopped >= DEADLINE * 2,
+            "the stop ended before the answer: {stopped:?}"
+        );
+    }
+
     /// Simultaneous connects: four times the 128 the standard library, mio
     /// and Tokio bind with, and half of the queue `serve_h1` listens with.
     const BURST: usize = 512;
@@ -629,7 +834,7 @@ mod tests {
     fn the_validated_buffer_floor_is_the_one_hyper_asserts() {
         let builds = |n: usize| {
             std::panic::catch_unwind(move || {
-                drop(super::h1_builder(&HttpConfig {
+                drop(super::connection_builder(&HttpConfig {
                     h1_max_buf: n,
                     ..HttpConfig::default()
                 }));
