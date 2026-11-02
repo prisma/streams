@@ -359,6 +359,13 @@ mod tests {
             .route("/hang", axum::routing::get(std::future::pending::<()>))
             .route("/panic", axum::routing::get(panicking_handler))
             .route(
+                "/hold",
+                axum::routing::post(move |body: axum::body::Body| async move {
+                    tokio::time::sleep(deadline / 2).await;
+                    drop(body);
+                }),
+            )
+            .route(
                 "/slow",
                 axum::routing::get(move || async move {
                     tokio::time::sleep(deadline * 5 / 2).await;
@@ -659,6 +666,39 @@ mod tests {
             assert_eq!(answer.status(), 200);
             assert_eq!(answer.version(), axum::http::Version::HTTP_2);
         }
+        tasks.shutdown(Duration::from_secs(5)).await;
+    }
+
+    /// One-byte DATA frames a handler holds unread: 4,096 of them cost h2's
+    /// small-frame budget about 1 MiB, past half of hyper's default 1 MiB
+    /// connection window, where h2 sends GOAWAY ENHANCE_YOUR_CALM, and well
+    /// inside half of [`super::HTTP2_CONNECTION_WINDOW`].
+    const SMALL_FRAMES: usize = 4_096;
+
+    /// A connection carrying thousands of small body frames its handlers
+    /// have not read yet keeps serving: the connection window sets h2's
+    /// budget for them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+    async fn http2_holds_thousands_of_small_unread_body_frames() {
+        let (addr, tasks) = serve(DEADLINE).await;
+        let (mut send, conn) = http2(addr).await;
+        let frames = futures_util::stream::iter(
+            (0..SMALL_FRAMES)
+                .map(|_| Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"x"))),
+        );
+        let request = axum::http::Request::post(format!("http://{addr}/hold"))
+            .body(axum::body::Body::from_stream(frames))
+            .unwrap();
+        let answer = tokio::time::timeout(
+            BOUND,
+            futures_util::future::select(Box::pin(send.send_request(request)), conn),
+        )
+        .await
+        .expect("the answer within the bound");
+        let futures_util::future::Either::Left((answer, _conn)) = answer else {
+            panic!("the connection ended before its answer");
+        };
+        assert_eq!(answer.expect("answered, not reset").status(), 200);
         tasks.shutdown(Duration::from_secs(5)).await;
     }
 
