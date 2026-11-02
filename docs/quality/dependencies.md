@@ -96,11 +96,12 @@ FORK.md lists by its upstream PR or issue (named by SHA), or the fork's docs
 commit (FORK.md and `fork/` only).
 
 SlateDB is pinned at Prisma's public fork `prisma/slatedb` (owner's direction,
-2026-11-01), tag `streams-20261102-18f17fe`: upstream main `0c22c032` (our
+2026-11-01), tag `streams-20261102-b10b0e8`: upstream main `0c22c032` (our
 merged #2193 and #2208), FORK.md, and the patches FORK.md lists: #2190 and
 #2191 (equal to their PRs), #2010 (rebased), the uncached-run coalescing of
-issue #2211 and the bounded point-lookup lookahead of issue #2213 (upstream PR
-creation is limited to collaborators). A new
+issue #2211, the bounded point-lookup lookahead of issue #2213 and the single
+WAL freeze per explicit flush of issue #2215 (upstream PR creation is limited
+to collaborators). A new
 `streams` tag is pinned only after the measurements FORK.md names, against the
 current pin on the same day. Exit: every patch merged upstream, then pin
 `slatedb/slatedb` main or a release and remove the `allow-git` entry.
