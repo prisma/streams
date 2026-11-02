@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "a754fddcc584b8b8f31223501652a7aeb1b475007b7292b04f17b1fe2bbd46bd",
+      "log_sha256": "28c60847de9348beadad3bff4e6e6d4323d217f1738a0fe201fbdabfbd8486a0",
       "role": "baseline",
-      "seconds": 43.5,
+      "seconds": 42.0,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"token byte order is position order\""
       ],
-      "log_sha256": "261efef3d1336a725bcf5331c9524b8137779fdb3e376d769929c2e46a7c46bc",
+      "log_sha256": "d38ae4083e168ee63dd99dde0c576cd378ea21e8ea466a16dc6eac359722fb43",
       "mutated": {
         "src/offsets.rs": {
           "baseline": "7f5bfa2ef61b991c1919aea7b51a9d587c7117f3c53f2184f4916a3ba54fd43c",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 71.4,
+      "seconds": 126.6,
       "verdict": "fail"
     }
   ],
@@ -40,8 +40,8 @@
       "ASM-OFFSET-DOMAIN": "aef34325e54b8193d77cf768b07426056852471934347bda2d6476cdd90cc297"
     },
     "files": {
-      "Cargo.lock": "88d5da53c80e347966960aa3e47a314016df2f5e0b5f90006e0ae5d0ab2a325e",
-      "Cargo.toml": "40c6f797e5a38a80abe4de69d4c2c5feaa4f6cc506bc3085ec30bde7b0995e9e",
+      "Cargo.lock": "db13303285d21f78602a40dc950c37a929715ad5c7f4a5502910585411b16395",
+      "Cargo.toml": "591efd05a80b64a6a64a8eb563b7ebd6d598587983c8e903cd446588522f321e",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -66,15 +66,45 @@
         "tlc": "2.19"
       },
       "slatedb": {
-        "git": "https://github.com/slatedb/slatedb.git",
-        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+        "base": "0c22c032bb1af4e53d92b2098c83a34b11d2d710",
+        "carries": [
+          {
+            "docs": true,
+            "fork": "e3d264361ecab59d149dd872514679b282855e67"
+          },
+          {
+            "fork": "50f739e02e716b822f4fe40f1c09291a771646f8",
+            "pr": 2190,
+            "pr_diff": true
+          },
+          {
+            "fork": "fdbe878d46d3abe0f487900180574db65faf122b",
+            "pr": 2191,
+            "pr_diff": true
+          },
+          {
+            "fork": "cda85233fd6c8d6c98696e7ba1d0186977335b19",
+            "pr": 2010
+          },
+          {
+            "fork": "533a9851d422e29f35824a2634ab980a50de74f7",
+            "issue": 2211
+          },
+          {
+            "fork": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+            "issue": 2213
+          }
+        ],
+        "git": "https://github.com/prisma/slatedb.git",
+        "rev": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+        "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "524d4bf9dd59d271f26e8b269b7a285ce81309971a7533ea80166ab34934a4f3",
+  "inputs_sha256": "e1c858dfca6aa5f407eda9ff4e4ef4ca0c74f464a47e4428e25ca3a3d406a84d",
   "run_on": {
     "dirty_tree": false,
-    "revision": "0bb9bcbd8f9b4bfb348957e94078a594989b382a"
+    "revision": "82bbd6e78a47c3241078d09d1a8ec54aaf8af735"
   },
   "schema": 2,
   "tools": {

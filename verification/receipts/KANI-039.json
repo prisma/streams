@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "d256ea25322abb23d7a3f295fad480218219a4056c867e04c2d47ab7cde48fce",
+      "log_sha256": "ba41aa45ec06f0ab189700527afb2cb75117285a5ccce9d6af832ca650ee7f2c",
       "role": "baseline",
-      "seconds": 40.0,
+      "seconds": 71.2,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"a tagged operation is authorized exactly at or above the fence\""
       ],
-      "log_sha256": "69b7abf3c43f350ed011894446f9609e8b4a9627f70c207e2b2afe27a1670db4",
+      "log_sha256": "fbf3330e706343864cfd401b92f12cd4c1d49111499e454b057a6f2a4ba55f23",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 50.3,
+      "seconds": 139.4,
       "verdict": "fail"
     },
     {
@@ -38,7 +38,7 @@
       "failed_checks": [
         "\"an untagged close is refused once a fence exists\""
       ],
-      "log_sha256": "e96d684f090b819df52e0633b640ef7260040bbace2438c13fc79ef42bac68c4",
+      "log_sha256": "95db21bf09f5234aba4b4be3fd35fcf6ee40ac40ce0c7f90c64dfa084f3dae12",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
@@ -46,7 +46,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 70.7,
+      "seconds": 127.2,
       "verdict": "fail"
     }
   ],
@@ -58,8 +58,8 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "88d5da53c80e347966960aa3e47a314016df2f5e0b5f90006e0ae5d0ab2a325e",
-      "Cargo.toml": "40c6f797e5a38a80abe4de69d4c2c5feaa4f6cc506bc3085ec30bde7b0995e9e",
+      "Cargo.lock": "db13303285d21f78602a40dc950c37a929715ad5c7f4a5502910585411b16395",
+      "Cargo.toml": "591efd05a80b64a6a64a8eb563b7ebd6d598587983c8e903cd446588522f321e",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -85,15 +85,45 @@
         "tlc": "2.19"
       },
       "slatedb": {
-        "git": "https://github.com/slatedb/slatedb.git",
-        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+        "base": "0c22c032bb1af4e53d92b2098c83a34b11d2d710",
+        "carries": [
+          {
+            "docs": true,
+            "fork": "e3d264361ecab59d149dd872514679b282855e67"
+          },
+          {
+            "fork": "50f739e02e716b822f4fe40f1c09291a771646f8",
+            "pr": 2190,
+            "pr_diff": true
+          },
+          {
+            "fork": "fdbe878d46d3abe0f487900180574db65faf122b",
+            "pr": 2191,
+            "pr_diff": true
+          },
+          {
+            "fork": "cda85233fd6c8d6c98696e7ba1d0186977335b19",
+            "pr": 2010
+          },
+          {
+            "fork": "533a9851d422e29f35824a2634ab980a50de74f7",
+            "issue": 2211
+          },
+          {
+            "fork": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+            "issue": 2213
+          }
+        ],
+        "git": "https://github.com/prisma/slatedb.git",
+        "rev": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+        "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "559718a2241995a0021308fa10d6d5017a1a20eae668a7e1cc46a238a4a2ddce",
+  "inputs_sha256": "a2811ab03050d03d97f3f3b8f2c9427763059142093e94a189594f954ee2e74c",
   "run_on": {
     "dirty_tree": false,
-    "revision": "0bb9bcbd8f9b4bfb348957e94078a594989b382a"
+    "revision": "82bbd6e78a47c3241078d09d1a8ec54aaf8af735"
   },
   "schema": 2,
   "tools": {

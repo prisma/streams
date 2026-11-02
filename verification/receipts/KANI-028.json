@@ -6,9 +6,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "731a5bf57d9802da5d3f4aa9834bbf6938d5b129ce2c050cd26949b6443cf61c",
+      "log_sha256": "4f134c43099bd06cbac4af8579acb144c135b0e9b0d390fbd0fa4efbddc69d1a",
       "role": "baseline",
-      "seconds": 44.9,
+      "seconds": 72.9,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "cb1eb14a0ce1462397cdc0fdc1f5fdddc6dcecfb95fe9bda9b01d63587b6f04d",
+      "log_sha256": "4090cab0788efb6b3dd666686b930817f6194ebbf62787c6e93c1c48ba3f4d88",
       "role": "baseline",
-      "seconds": 85.9,
+      "seconds": 84.9,
       "verdict": "pass"
     },
     {
@@ -28,9 +28,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "b79b520e9464fdcdaeb4354e9b456cf47eacee0879884702810ac3c746e26a74",
+      "log_sha256": "6c7f64b7d398bf422a302a7615799c6b58d8bef5c1b1afc2e289704833c53e7b",
       "role": "baseline",
-      "seconds": 78.0,
+      "seconds": 60.4,
       "verdict": "pass"
     },
     {
@@ -39,9 +39,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "bd7ffafdec32e172699443da88996d09b540fcb0cc9405bab391e4545ae8a98e",
+      "log_sha256": "8f96caefb02b1f7f3fd49303c93c688909e97638d016de0330056d38dff80cc1",
       "role": "baseline",
-      "seconds": 120.3,
+      "seconds": 71.0,
       "verdict": "pass"
     },
     {
@@ -52,7 +52,7 @@
       "failed_checks": [
         "\"every key lies in exactly one terminal segment\""
       ],
-      "log_sha256": "6f707a6fdc71260d7c2d597ef0a3c006d38fe994bc3cb8973b763d1ac1ef29f4",
+      "log_sha256": "7f03e996bf04927a52499edd9d12cf7d6c48e08688b044e25d099ce578a9ebeb",
       "mutated": {
         "src/segmap.rs": {
           "baseline": "82ca57379a09ee725edc6dfcc21eab18574712e95a8ed834920227ad62edd202",
@@ -60,7 +60,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 57.8,
+      "seconds": 77.7,
       "verdict": "fail"
     },
     {
@@ -71,7 +71,7 @@
       "failed_checks": [
         "\"every key lies in exactly one terminal segment\""
       ],
-      "log_sha256": "12035ee158051947b42d2143f683e7c59768a285de704d4bfa0053e86f640aa7",
+      "log_sha256": "f068736e5d242ecbd2130d786a1aa7901ee93f2218558d5da708878d12c82cac",
       "mutated": {
         "src/segmap.rs": {
           "baseline": "82ca57379a09ee725edc6dfcc21eab18574712e95a8ed834920227ad62edd202",
@@ -79,7 +79,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 94.5,
+      "seconds": 59.7,
       "verdict": "fail"
     },
     {
@@ -90,7 +90,7 @@
       "failed_checks": [
         "\"the route answers every key with the segment that holds it\""
       ],
-      "log_sha256": "5abb651d9ecd5c64577f400ad5777a3937ffd62b6614c6ac64baa952385e886c",
+      "log_sha256": "e680ecb58a9ec74bfec4da4999ef5d86c2d1e99f1b3a305c3d6e246d4800de0b",
       "mutated": {
         "src/segmap.rs": {
           "baseline": "82ca57379a09ee725edc6dfcc21eab18574712e95a8ed834920227ad62edd202",
@@ -98,7 +98,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 142.9,
+      "seconds": 71.1,
       "verdict": "fail"
     }
   ],
@@ -110,8 +110,8 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "88d5da53c80e347966960aa3e47a314016df2f5e0b5f90006e0ae5d0ab2a325e",
-      "Cargo.toml": "40c6f797e5a38a80abe4de69d4c2c5feaa4f6cc506bc3085ec30bde7b0995e9e",
+      "Cargo.lock": "db13303285d21f78602a40dc950c37a929715ad5c7f4a5502910585411b16395",
+      "Cargo.toml": "591efd05a80b64a6a64a8eb563b7ebd6d598587983c8e903cd446588522f321e",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -138,15 +138,45 @@
         "tlc": "2.19"
       },
       "slatedb": {
-        "git": "https://github.com/slatedb/slatedb.git",
-        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+        "base": "0c22c032bb1af4e53d92b2098c83a34b11d2d710",
+        "carries": [
+          {
+            "docs": true,
+            "fork": "e3d264361ecab59d149dd872514679b282855e67"
+          },
+          {
+            "fork": "50f739e02e716b822f4fe40f1c09291a771646f8",
+            "pr": 2190,
+            "pr_diff": true
+          },
+          {
+            "fork": "fdbe878d46d3abe0f487900180574db65faf122b",
+            "pr": 2191,
+            "pr_diff": true
+          },
+          {
+            "fork": "cda85233fd6c8d6c98696e7ba1d0186977335b19",
+            "pr": 2010
+          },
+          {
+            "fork": "533a9851d422e29f35824a2634ab980a50de74f7",
+            "issue": 2211
+          },
+          {
+            "fork": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+            "issue": 2213
+          }
+        ],
+        "git": "https://github.com/prisma/slatedb.git",
+        "rev": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+        "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "c20fe4bb96dde093c7114a9e7243900052212d7429904a5cf1b2673a9fa5ba50",
+  "inputs_sha256": "21ba4e846a954ee6361ef11cc858e82a4a2f1662a80959838ac39594a8d5186a",
   "run_on": {
     "dirty_tree": false,
-    "revision": "0bb9bcbd8f9b4bfb348957e94078a594989b382a"
+    "revision": "82bbd6e78a47c3241078d09d1a8ec54aaf8af735"
   },
   "schema": 2,
   "tools": {

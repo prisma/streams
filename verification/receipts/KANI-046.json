@@ -6,9 +6,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "03e2f759e28b1f74a057a2a95e5419f1ac6d881bd44dec8c8d29e913a66664a6",
+      "log_sha256": "747c342c8d6462ef4682dd27867adf1d575be3f03cb8308821890939330dc8af",
       "role": "baseline",
-      "seconds": 91.1,
+      "seconds": 58.7,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"the boundary moves forward from the snapshot's boundary within the log\""
       ],
-      "log_sha256": "cd5579e22f70d059786cb6d5a0c4d5a96ab1bca3c22437811a30c032782155b8",
+      "log_sha256": "fe36b39391e8bda6b924c9a8b1360205c441b4cfe7d596f781f4ffa1982fd751",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 93.4,
+      "seconds": 99.8,
       "verdict": "fail"
     },
     {
@@ -38,7 +38,7 @@
       "failed_checks": [
         "\"the boundary moves forward from the snapshot's boundary within the log\""
       ],
-      "log_sha256": "07d491709c648acce9bfc6e815fb1e062379b5a26788a9a233514c2e17210ae8",
+      "log_sha256": "5981fd8d074583d6e9685c135b56bbf48d6f3cf6ce4b3fa6e6d64ea734750ad1",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
@@ -46,7 +46,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 40.9,
+      "seconds": 107.7,
       "verdict": "fail"
     },
     {
@@ -57,7 +57,7 @@
       "failed_checks": [
         "attempt to subtract with overflow"
       ],
-      "log_sha256": "8ab45e98fb640d5b410722d00686dffc50c3af57f7b15555b4224d4e19dd59a1",
+      "log_sha256": "8e9d10e9f2ae56ab11f50f4ad68c667ce0a09d55f826427515dde6d25f09656d",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
@@ -65,7 +65,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 41.6,
+      "seconds": 143.4,
       "verdict": "fail"
     }
   ],
@@ -77,8 +77,8 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "88d5da53c80e347966960aa3e47a314016df2f5e0b5f90006e0ae5d0ab2a325e",
-      "Cargo.toml": "40c6f797e5a38a80abe4de69d4c2c5feaa4f6cc506bc3085ec30bde7b0995e9e",
+      "Cargo.lock": "db13303285d21f78602a40dc950c37a929715ad5c7f4a5502910585411b16395",
+      "Cargo.toml": "591efd05a80b64a6a64a8eb563b7ebd6d598587983c8e903cd446588522f321e",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -106,15 +106,45 @@
         "tlc": "2.19"
       },
       "slatedb": {
-        "git": "https://github.com/slatedb/slatedb.git",
-        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+        "base": "0c22c032bb1af4e53d92b2098c83a34b11d2d710",
+        "carries": [
+          {
+            "docs": true,
+            "fork": "e3d264361ecab59d149dd872514679b282855e67"
+          },
+          {
+            "fork": "50f739e02e716b822f4fe40f1c09291a771646f8",
+            "pr": 2190,
+            "pr_diff": true
+          },
+          {
+            "fork": "fdbe878d46d3abe0f487900180574db65faf122b",
+            "pr": 2191,
+            "pr_diff": true
+          },
+          {
+            "fork": "cda85233fd6c8d6c98696e7ba1d0186977335b19",
+            "pr": 2010
+          },
+          {
+            "fork": "533a9851d422e29f35824a2634ab980a50de74f7",
+            "issue": 2211
+          },
+          {
+            "fork": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+            "issue": 2213
+          }
+        ],
+        "git": "https://github.com/prisma/slatedb.git",
+        "rev": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+        "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "27261992007fbffeefd0f63208229862faf4562fdd2045ca569738ed7d166c3b",
+  "inputs_sha256": "6c8db156025c2f01583a674833d64723e2e3572de17fe3a518f80f4ac5bad7d6",
   "run_on": {
     "dirty_tree": false,
-    "revision": "c45b146389ab96b1738e9a2f54c8838a404c02d5"
+    "revision": "82bbd6e78a47c3241078d09d1a8ec54aaf8af735"
   },
   "schema": 2,
   "tools": {

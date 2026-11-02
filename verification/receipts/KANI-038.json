@@ -6,18 +6,18 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "b330e449c7bb8d293624c81836bae029e7e61904daec8e19f2f3001db01f0ed4",
+      "log_sha256": "745c3d783a0a49319044ddfc7d20d9a92428055bccf881fc4c73d411ec5c58ce",
       "role": "baseline",
-      "seconds": 97.5,
+      "seconds": 40.8,
       "verdict": "pass"
     },
     {
       "check": "KANI-038/exhausted",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "ba2a412e2d48cf4daa5c49388e160eab0372cee7c6b9884d9848caa75bba4b59",
+      "log_sha256": "9266b0c6a38e1cd8d613baaa86074e5dd86b2cc7f380a1fc7a2a387dd701dfdc",
       "role": "baseline",
-      "seconds": 109.2,
+      "seconds": 39.2,
       "verdict": "pass"
     },
     {
@@ -28,7 +28,7 @@
       "failed_checks": [
         "\"the adjacent sequence is admitted unless the collection is closed\""
       ],
-      "log_sha256": "347f34d73ba91275a24631a3933e69e8eccda22d2f41913fee9ced4e04c971a1",
+      "log_sha256": "2ecdddae1ff6e33b312348ddd13d9310920bc8d03ab9cfecebc9df972b3843bf",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
@@ -36,7 +36,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 73.3,
+      "seconds": 123.0,
       "verdict": "fail"
     },
     {
@@ -47,7 +47,7 @@
       "failed_checks": [
         "\"a sequence beyond the successor is a gap naming the successor\""
       ],
-      "log_sha256": "ef71d393a218e958df2306bbf63477b7c933e0ffabb5073d1427b8a0d12b6ece",
+      "log_sha256": "7e3d32cc47e07d23b44cf22721e895cc46007300a8b71ab499cea0282dd853ed",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
@@ -55,7 +55,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 143.2,
+      "seconds": 72.2,
       "verdict": "fail"
     }
   ],
@@ -68,8 +68,8 @@
       "ASM-PRODUCER-ROW": "bf02f39f80c7bc9a81911b57a7923e77dfc913a0720422f22701974a94ab335c"
     },
     "files": {
-      "Cargo.lock": "88d5da53c80e347966960aa3e47a314016df2f5e0b5f90006e0ae5d0ab2a325e",
-      "Cargo.toml": "40c6f797e5a38a80abe4de69d4c2c5feaa4f6cc506bc3085ec30bde7b0995e9e",
+      "Cargo.lock": "db13303285d21f78602a40dc950c37a929715ad5c7f4a5502910585411b16395",
+      "Cargo.toml": "591efd05a80b64a6a64a8eb563b7ebd6d598587983c8e903cd446588522f321e",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -95,15 +95,45 @@
         "tlc": "2.19"
       },
       "slatedb": {
-        "git": "https://github.com/slatedb/slatedb.git",
-        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+        "base": "0c22c032bb1af4e53d92b2098c83a34b11d2d710",
+        "carries": [
+          {
+            "docs": true,
+            "fork": "e3d264361ecab59d149dd872514679b282855e67"
+          },
+          {
+            "fork": "50f739e02e716b822f4fe40f1c09291a771646f8",
+            "pr": 2190,
+            "pr_diff": true
+          },
+          {
+            "fork": "fdbe878d46d3abe0f487900180574db65faf122b",
+            "pr": 2191,
+            "pr_diff": true
+          },
+          {
+            "fork": "cda85233fd6c8d6c98696e7ba1d0186977335b19",
+            "pr": 2010
+          },
+          {
+            "fork": "533a9851d422e29f35824a2634ab980a50de74f7",
+            "issue": 2211
+          },
+          {
+            "fork": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+            "issue": 2213
+          }
+        ],
+        "git": "https://github.com/prisma/slatedb.git",
+        "rev": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+        "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "b3383d280150395a574881128f77cfba25b4b90b210d4c27a028f4b00429405c",
+  "inputs_sha256": "1332d70d841acd65ed2bce46400b082a50c85c1e3fa0e10e272c8cb6486e01c0",
   "run_on": {
     "dirty_tree": false,
-    "revision": "0bb9bcbd8f9b4bfb348957e94078a594989b382a"
+    "revision": "82bbd6e78a47c3241078d09d1a8ec54aaf8af735"
   },
   "schema": 2,
   "tools": {

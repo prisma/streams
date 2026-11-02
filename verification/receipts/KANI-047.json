@@ -6,9 +6,9 @@
       "covers_satisfied": 1,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "b639cae39b0884715a396822c84cc511e566770939ab6a261ea7c0ada5759209",
+      "log_sha256": "7417ba61c27b29df40c301249d1a1c57697ed8febd9582fea9a6b3b295f2dfda",
       "role": "baseline",
-      "seconds": 37.8,
+      "seconds": 102.4,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "130626d043a477386959ad82a20a9d79d5c94768abd5192f4ce7d0dcfe152440",
+      "log_sha256": "1d5b2b6c09613ede315aa0f1a9df4ea929104e20963b9a7c7e2ee773ea2da47d",
       "role": "baseline",
-      "seconds": 38.0,
+      "seconds": 36.2,
       "verdict": "pass"
     },
     {
@@ -30,7 +30,7 @@
       "failed_checks": [
         "\"a delta moves the backlog by exactly its bytes\""
       ],
-      "log_sha256": "e39ae71dffceaca08685fdcdbb34aacaf185c3297b2b1e4b1aec5d65c3e954ff",
+      "log_sha256": "bcaa68589f32a45cabed8997c558503b94c7de44ed3939f73a78d8cd7b40da17",
       "mutated": {
         "src/shard/maintenance_row.rs": {
           "baseline": "7dc0dd913032aecc3bb304a83df685995b29ccec27b82c9f5baffb6f3eaff9a4",
@@ -38,7 +38,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 36.8,
+      "seconds": 104.0,
       "verdict": "fail"
     },
     {
@@ -49,7 +49,7 @@
       "failed_checks": [
         "attempt to subtract with overflow"
       ],
-      "log_sha256": "92992502ee9513b7298d1d48ca7dfef824dbf1f5a892ae629621467362fc6cde",
+      "log_sha256": "7a5c92c81c17d243c4d34d402ab9c713d80b402449f0d54bc8605ff6b250a3db",
       "mutated": {
         "src/shard/maintenance_row.rs": {
           "baseline": "7dc0dd913032aecc3bb304a83df685995b29ccec27b82c9f5baffb6f3eaff9a4",
@@ -57,7 +57,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 70.9,
+      "seconds": 134.6,
       "verdict": "fail"
     }
   ],
@@ -69,8 +69,8 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "88d5da53c80e347966960aa3e47a314016df2f5e0b5f90006e0ae5d0ab2a325e",
-      "Cargo.toml": "40c6f797e5a38a80abe4de69d4c2c5feaa4f6cc506bc3085ec30bde7b0995e9e",
+      "Cargo.lock": "db13303285d21f78602a40dc950c37a929715ad5c7f4a5502910585411b16395",
+      "Cargo.toml": "591efd05a80b64a6a64a8eb563b7ebd6d598587983c8e903cd446588522f321e",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -97,15 +97,45 @@
         "tlc": "2.19"
       },
       "slatedb": {
-        "git": "https://github.com/slatedb/slatedb.git",
-        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+        "base": "0c22c032bb1af4e53d92b2098c83a34b11d2d710",
+        "carries": [
+          {
+            "docs": true,
+            "fork": "e3d264361ecab59d149dd872514679b282855e67"
+          },
+          {
+            "fork": "50f739e02e716b822f4fe40f1c09291a771646f8",
+            "pr": 2190,
+            "pr_diff": true
+          },
+          {
+            "fork": "fdbe878d46d3abe0f487900180574db65faf122b",
+            "pr": 2191,
+            "pr_diff": true
+          },
+          {
+            "fork": "cda85233fd6c8d6c98696e7ba1d0186977335b19",
+            "pr": 2010
+          },
+          {
+            "fork": "533a9851d422e29f35824a2634ab980a50de74f7",
+            "issue": 2211
+          },
+          {
+            "fork": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+            "issue": 2213
+          }
+        ],
+        "git": "https://github.com/prisma/slatedb.git",
+        "rev": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+        "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "f0f5230ec9cd6f0a07b4504e27da390abff78f4760001961d20c42fcccd96c50",
+  "inputs_sha256": "14d3e109994f15a442f211f77cf863053e6982fecad2e74e8186caec6260d267",
   "run_on": {
     "dirty_tree": false,
-    "revision": "0bb9bcbd8f9b4bfb348957e94078a594989b382a"
+    "revision": "82bbd6e78a47c3241078d09d1a8ec54aaf8af735"
   },
   "schema": 2,
   "tools": {

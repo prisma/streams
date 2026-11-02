@@ -5,10 +5,10 @@
       "depth": 26,
       "distinct_states": 36695,
       "expected": "pass",
-      "log_sha256": "387002c0be0628d8ceb95ae2f7c433163c5762227b697098fd81db64e081b0fb",
+      "log_sha256": "58b0dbcc4b6a156de8d6d7afb36c757ead3dc0be6d6a3ddb789568e378b1c0bc",
       "property": null,
       "role": "baseline",
-      "seconds": 2.0,
+      "seconds": 1.6,
       "states_generated": 126457,
       "states_left": 0,
       "verdict": "pass"
@@ -18,10 +18,10 @@
       "depth": 26,
       "distinct_states": 175364,
       "expected": "pass",
-      "log_sha256": "11225d15a2db8380208ca4b5e10b58dfde39866a272b896130b4bafd88a8a345",
+      "log_sha256": "8742a551860f5e8548c46bcd596ab527f3a8cbc3c87e4550e74e51f11c7ed5b4",
       "property": null,
       "role": "baseline",
-      "seconds": 2.7,
+      "seconds": 2.6,
       "states_generated": 605294,
       "states_left": 0,
       "verdict": "pass"
@@ -31,7 +31,7 @@
       "depth": 26,
       "distinct_states": 40034,
       "expected": "pass",
-      "log_sha256": "6c82bd5dcf19f29b82f8c38325edee42ffd453e6b154e60b3249b023298838e7",
+      "log_sha256": "81c2f54ccfc4c232b5fa12316bab7dd1567eff15bfb9bd3e6ffd22c9be666d13",
       "property": null,
       "role": "baseline",
       "seconds": 1.4,
@@ -44,10 +44,10 @@
       "depth": 26,
       "distinct_states": 184223,
       "expected": "pass",
-      "log_sha256": "e99d0069d2f527c771128f4dfa9941b9c2d35500c72a735866d1670904fb26ab",
+      "log_sha256": "35de372b22fc412c0d54eb6aa5f4f48b09fcc7647b9040b71e69938d0eb30191",
       "property": null,
       "role": "baseline",
-      "seconds": 3.0,
+      "seconds": 2.8,
       "states_generated": 635795,
       "states_left": 0,
       "verdict": "pass"
@@ -57,10 +57,10 @@
       "depth": 36,
       "distinct_states": 2384983,
       "expected": "pass",
-      "log_sha256": "0fb38aa2eb5c7ebaa0288e7c4ad1ce31084451428069b0825b522ffa006f89b1",
+      "log_sha256": "149737d1e99683185e6205b2e2d9ffb9caf4850633c31c4cc454c5d68b5f55be",
       "property": null,
       "role": "baseline",
-      "seconds": 23.6,
+      "seconds": 22.9,
       "states_generated": 9456693,
       "states_left": 0,
       "verdict": "pass"
@@ -68,105 +68,105 @@
     {
       "check": "TLA-018/nc-late-directory",
       "depth": 9,
-      "distinct_states": 730,
+      "distinct_states": 738,
       "expected": "violation:NoShortRead",
-      "log_sha256": "a31b3fa409a830455262c93da1bb2428e30d93eefa271ed554ef7067e28def93",
+      "log_sha256": "fb3a34f6bc59a949175f6d3610e4d6b839c4742b319304269f36941066c65cb6",
       "property": "NoShortRead",
       "role": "negative-control",
       "seconds": 0.9,
-      "states_generated": 1534,
-      "states_left": 376,
+      "states_generated": 1577,
+      "states_left": 374,
       "verdict": "violation"
     },
     {
       "check": "TLA-018/nc-hole-consumed",
       "depth": 10,
-      "distinct_states": 1369,
+      "distinct_states": 1370,
       "expected": "violation:NoSkip",
-      "log_sha256": "62cb192b692b00aa5f44c3b6874dceda3e543a78782628c2495a7e509da3b740",
+      "log_sha256": "4f94992a43d4164ee1bd1c811acb6dd958f9ff76bb7b8b901d2a832384406dce",
       "property": "NoSkip",
       "role": "negative-control",
       "seconds": 0.9,
-      "states_generated": 3013,
-      "states_left": 635,
+      "states_generated": 3026,
+      "states_left": 632,
       "verdict": "violation"
     },
     {
       "check": "TLA-018/nc-summary-under",
       "depth": 10,
-      "distinct_states": 1387,
+      "distinct_states": 1363,
       "expected": "violation:NoSkip",
-      "log_sha256": "63d5f73df4a9ba16c67b49c2ed5f1db407c5b5a0a238f69a54532a3029ec8e48",
+      "log_sha256": "4a6db8eadf69d6f3af98d2b9d584048803d5edffc642a8aecb687bbd5d03a7ea",
       "property": "NoSkip",
       "role": "negative-control",
       "seconds": 0.9,
-      "states_generated": 3094,
-      "states_left": 660,
+      "states_generated": 3029,
+      "states_left": 651,
       "verdict": "violation"
     },
     {
       "check": "TLA-018/nc-second-lock",
       "depth": 8,
-      "distinct_states": 443,
+      "distinct_states": 497,
       "expected": "violation:NoReadError",
-      "log_sha256": "ae03ecc426938de0a7367fe6526aef3af6e3f2cade5736e59e09c1e5a2709abc",
+      "log_sha256": "4327bc6aa3fad06c4dce559efa3ccfe463a321c99482059d872cdf5df23ec632",
       "property": "NoReadError",
       "role": "negative-control",
-      "seconds": 1.1,
-      "states_generated": 886,
-      "states_left": 227,
+      "seconds": 0.8,
+      "states_generated": 986,
+      "states_left": 255,
       "verdict": "violation"
     },
     {
       "check": "TLA-018/witness-ReadSpansBoundary",
       "depth": 11,
-      "distinct_states": 2246,
+      "distinct_states": 2130,
       "expected": "violation:Witness_ReadSpansBoundary",
-      "log_sha256": "569bfd48f671d6cd837380c11afb832173159e3e5c15b7ce587d14a3850e9652",
+      "log_sha256": "7f2da40491304b20f66acf4802809a75b169654dc9c9efd7f3684dab8c01adec",
       "property": "Witness_ReadSpansBoundary",
       "role": "witness",
-      "seconds": 0.9,
-      "states_generated": 5237,
-      "states_left": 950,
+      "seconds": 1.0,
+      "states_generated": 4897,
+      "states_left": 913,
       "verdict": "violation"
     },
     {
       "check": "TLA-018/witness-RingServed",
       "depth": 9,
-      "distinct_states": 543,
+      "distinct_states": 552,
       "expected": "violation:Witness_RingServed",
-      "log_sha256": "152bfdcba3b567dae14e56d34fbea8c9a582653d139ae8d0c18524c79629cd07",
+      "log_sha256": "4de6ad1dd1d402856de15728d266db12bbe482a27cd28761613a79b0df36aa04",
       "property": "Witness_RingServed",
       "role": "witness",
-      "seconds": 0.9,
-      "states_generated": 1126,
-      "states_left": 284,
+      "seconds": 1.0,
+      "states_generated": 1131,
+      "states_left": 292,
       "verdict": "violation"
     },
     {
       "check": "TLA-018/witness-SummarySkip",
       "depth": 12,
-      "distinct_states": 8805,
+      "distinct_states": 9869,
       "expected": "violation:Witness_SummarySkip",
-      "log_sha256": "f48c80466fe2bccd2d0cbb2162cd22777f96194f7c253263ff962b94a88febc3",
+      "log_sha256": "bc187a7a24a45e60d53e360e4551e12b3f57d9c030dc7ed22afa857650d01ae3",
       "property": "Witness_SummarySkip",
       "role": "witness",
       "seconds": 1.1,
-      "states_generated": 21518,
-      "states_left": 3821,
+      "states_generated": 23966,
+      "states_left": 4359,
       "verdict": "violation"
     },
     {
       "check": "TLA-018/witness-UnsealedReadRacesSeal",
       "depth": 8,
-      "distinct_states": 502,
+      "distinct_states": 520,
       "expected": "violation:Witness_UnsealedReadRacesSeal",
-      "log_sha256": "8620cd0b5649c755df45952b5f623e6366fd3e000914022c52aec915594ac7f4",
+      "log_sha256": "a0af1cf20dade29d7e783658fa33f9de6eee6aec8ea98af70014a9aa7a788b04",
       "property": "Witness_UnsealedReadRacesSeal",
       "role": "witness",
       "seconds": 0.9,
-      "states_generated": 1014,
-      "states_left": 253,
+      "states_generated": 1037,
+      "states_left": 265,
       "verdict": "violation"
     }
   ],
@@ -179,13 +179,13 @@
       "ASM-SLATEDB-DURABLE": "3de897ef389f93ed0b1366a6a0aec12ae1e8fbe1c4c04c79470f40413be152a9"
     },
     "files": {
-      "Cargo.lock": "88d5da53c80e347966960aa3e47a314016df2f5e0b5f90006e0ae5d0ab2a325e",
-      "Cargo.toml": "40c6f797e5a38a80abe4de69d4c2c5feaa4f6cc506bc3085ec30bde7b0995e9e",
+      "Cargo.lock": "db13303285d21f78602a40dc950c37a929715ad5c7f4a5502910585411b16395",
+      "Cargo.toml": "591efd05a80b64a6a64a8eb563b7ebd6d598587983c8e903cd446588522f321e",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
       "src/application/read.rs": "a882698d160851683c4a90e47edc69bb4669ee61ede5184415c6faaa27b2247a",
       "src/shard/record.rs": "a2ae8660c5d19532026f43064eda81c94cdfc26e36128c5df46295937f05ab80",
       "src/shard/seal/read.rs": "ade6d029751e0b9980f94c581a28a8d9b6ce7e9a27cc38b6c873d2aa3bbdf32b",
-      "src/shard/seal/steps.rs": "b0bb9d5852bcac847217da6dbd38dad3504b6d918de1bbb2e1eedbc7e571dccc",
+      "src/shard/seal/steps.rs": "7c02dc43fe8d4e8c74877e4a6304f374c8650820b72295132a5e030617863190",
       "src/shard/tail_ring.rs": "fcfe522fedbe7e41eb55dda1274dff590643b82c4e650fac7a54468779b8af67",
       "src/shard/transaction/overlay.rs": "ecee27e6ad3b2fab9cfb2ff72926016adb9854dbea4755ccae3d21d6862f8642",
       "src/spill/directory.rs": "0eb78cac7038179a2f6c8e0442411e81b3ba09868806d03f74c435a7a1aa47af",
@@ -223,15 +223,45 @@
         "tlc": "2.19"
       },
       "slatedb": {
-        "git": "https://github.com/slatedb/slatedb.git",
-        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+        "base": "0c22c032bb1af4e53d92b2098c83a34b11d2d710",
+        "carries": [
+          {
+            "docs": true,
+            "fork": "e3d264361ecab59d149dd872514679b282855e67"
+          },
+          {
+            "fork": "50f739e02e716b822f4fe40f1c09291a771646f8",
+            "pr": 2190,
+            "pr_diff": true
+          },
+          {
+            "fork": "fdbe878d46d3abe0f487900180574db65faf122b",
+            "pr": 2191,
+            "pr_diff": true
+          },
+          {
+            "fork": "cda85233fd6c8d6c98696e7ba1d0186977335b19",
+            "pr": 2010
+          },
+          {
+            "fork": "533a9851d422e29f35824a2634ab980a50de74f7",
+            "issue": 2211
+          },
+          {
+            "fork": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+            "issue": 2213
+          }
+        ],
+        "git": "https://github.com/prisma/slatedb.git",
+        "rev": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+        "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "2ec5f7c33bde35bed939bee268fd97916b98ae75bbbff68ad77dd84a3452c14a",
+  "inputs_sha256": "e91741105fe9fc50e9b3658a876bf0af1028e13b7c7f8cc7763c33b2bd3305d1",
   "run_on": {
     "dirty_tree": false,
-    "revision": "7a4d8725b025e526858db4d7d912b3134e02e855"
+    "revision": "82bbd6e78a47c3241078d09d1a8ec54aaf8af735"
   },
   "schema": 2,
   "tools": {

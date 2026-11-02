@@ -2,132 +2,119 @@
   "checks": [
     {
       "check": "TLA-016/baseline-small",
-      "depth": 27,
-      "distinct_states": 163889,
+      "depth": 24,
+      "distinct_states": 102027,
       "expected": "pass",
-      "log_sha256": "5752a8540b3114f49f05b19a76d3e17a9b72d45366c91e5795c4faf9f9d0d8a2",
+      "log_sha256": "e7b2f7a47efb0184c5540341073137572022e9147303f6ce2d433ebf70aac450",
       "property": null,
       "role": "baseline",
-      "seconds": 6.4,
-      "states_generated": 411364,
+      "seconds": 4.4,
+      "states_generated": 271927,
       "states_left": 0,
       "verdict": "pass"
     },
     {
       "check": "TLA-016/baseline-two-streams",
-      "depth": 30,
-      "distinct_states": 3462902,
+      "depth": 27,
+      "distinct_states": 2168636,
       "expected": "pass",
-      "log_sha256": "a380d0e68be83f8a0ab4d17729cc8dd685cbfeb239072724d4b2df24e52b591f",
+      "log_sha256": "2a702e0ff7f6021b4cd2fb3a6a709ccbd0822d7f41ab5ae4c020fc07afc6f2bb",
       "property": null,
       "role": "baseline",
-      "seconds": 171.9,
-      "states_generated": 9228198,
+      "seconds": 112.7,
+      "states_generated": 6154503,
       "states_left": 0,
       "verdict": "pass"
     },
     {
       "check": "TLA-016/baseline-expanded",
-      "depth": 37,
-      "distinct_states": 5066022,
+      "depth": 33,
+      "distinct_states": 3130346,
       "expected": "pass",
-      "log_sha256": "f41d541197e69e0b9df9cd7c9355cd5afe0bbbf6bf681c253bc4b6d60bb7896e",
+      "log_sha256": "991ca7cae68cf19e0ab0efb26cc3b979a8144d652f4e3203f9cf04e26ebd2c5e",
       "property": null,
       "role": "baseline",
-      "seconds": 168.9,
-      "states_generated": 12627495,
+      "seconds": 111.5,
+      "states_generated": 8313250,
       "states_left": 0,
       "verdict": "pass"
     },
     {
       "check": "TLA-016/nc-prebuilt-remainder",
       "depth": 11,
-      "distinct_states": 6359,
+      "distinct_states": 4859,
       "expected": "violation:I1_AckedReadableAfterRestart",
-      "log_sha256": "03fc3d0068013d9ed595d57f58067aa1d7f3a15ba509df0bd171ecbcbc294be4",
+      "log_sha256": "8eef602c17eeeee39f7ab0619537570b58a6f0269b42ceaba0d759c53db6f9dd",
       "property": "I1_AckedReadableAfterRestart",
       "role": "negative-control",
-      "seconds": 1.5,
-      "states_generated": 13378,
-      "states_left": 2803,
+      "seconds": 1.2,
+      "states_generated": 10211,
+      "states_left": 2210,
       "verdict": "violation"
     },
     {
-      "check": "TLA-016/nc-skip-7a",
+      "check": "TLA-016/nc-durable-boundary",
       "depth": 9,
-      "distinct_states": 1774,
+      "distinct_states": 1388,
       "expected": "violation:F2_SealFlushLeavesNoSealedPage",
-      "log_sha256": "d67d0f247f6daf0787037120ff999d8dd3d5039ec6fcd65aedaef2b35885e179",
+      "log_sha256": "d22f87fd5a8249b105c145da133195c79531cfd873b9fac5cf1d062de4161435",
       "property": "F2_SealFlushLeavesNoSealedPage",
       "role": "negative-control",
       "seconds": 1.0,
-      "states_generated": 3445,
-      "states_left": 919,
+      "states_generated": 2748,
+      "states_left": 714,
       "verdict": "violation"
     },
     {
       "check": "TLA-016/witness-SealDurable",
       "depth": 10,
-      "distinct_states": 3676,
+      "distinct_states": 2889,
       "expected": "violation:Witness_SealDurable",
-      "log_sha256": "95cbbdef5ba8d7015ab733a7e320c52d58cb6a1e4032821b1f6cd98c40af5b7e",
+      "log_sha256": "81e50a8e107820afb9da424a48080e220161ff4959d3b479c5249e536f9db385",
       "property": "Witness_SealDurable",
       "role": "witness",
-      "seconds": 1.0,
-      "states_generated": 7427,
-      "states_left": 1725,
+      "seconds": 1.1,
+      "states_generated": 5898,
+      "states_left": 1382,
       "verdict": "violation"
     },
     {
       "check": "TLA-016/witness-RemainderCarriesLatePage",
       "depth": 9,
-      "distinct_states": 2091,
+      "distinct_states": 1618,
       "expected": "violation:Witness_RemainderCarriesLatePage",
-      "log_sha256": "7f6d35a1ec8bd1f4482355d91f4994f6bbc29a9d692c79fc3af95bd81a85bcc9",
+      "log_sha256": "68b95298f3ba83ac2e50ab0b917fe477a68c7e4afbb32aa4829de88311939eb6",
       "property": "Witness_RemainderCarriesLatePage",
       "role": "witness",
       "seconds": 1.0,
-      "states_generated": 4013,
-      "states_left": 1059,
+      "states_generated": 3203,
+      "states_left": 831,
       "verdict": "violation"
     },
     {
       "check": "TLA-016/witness-SealGroupCarriesAppend",
       "depth": 8,
-      "distinct_states": 867,
+      "distinct_states": 731,
       "expected": "violation:Witness_SealGroupCarriesAppend",
-      "log_sha256": "e21acbebea862e8abb3c3ab0e1c2da6df5e896dc8a12f87b491d3648c50638ef",
+      "log_sha256": "dbffc027bd853a69a53405ec137019082e4104c81b4a32ed83785e3e87e07610",
       "property": "Witness_SealGroupCarriesAppend",
       "role": "witness",
       "seconds": 0.9,
-      "states_generated": 1555,
-      "states_left": 484,
+      "states_generated": 1371,
+      "states_left": 407,
       "verdict": "violation"
     },
     {
       "check": "TLA-016/witness-CrashAfterSealRecovered",
       "depth": 10,
-      "distinct_states": 4295,
+      "distinct_states": 3246,
       "expected": "violation:Witness_CrashAfterSealRecovered",
-      "log_sha256": "04d4109f3d3199fe2d0a24a9cfc1f3f34ca6bcdfbacd8f6aa7749a121fd5b6f4",
+      "log_sha256": "df36fa68dd0aaa7f45ef847b3be31554cea10c5e8e0efd3e36b60150ffde07ae",
       "property": "Witness_CrashAfterSealRecovered",
       "role": "witness",
       "seconds": 1.1,
-      "states_generated": 8798,
-      "states_left": 2002,
-      "verdict": "violation"
-    },
-    {
-      "check": "TLA-016/witness-DeadlineCarriesSealedPages",
-      "depth": 10,
-      "distinct_states": 3618,
-      "expected": "violation:Witness_DeadlineCarriesSealedPages",
-      "log_sha256": "78f5d7302309600b1568fc5189bccee0e0d41f96f1352dd0fab073f44a158b6b",
-      "property": "Witness_DeadlineCarriesSealedPages",
-      "role": "witness",
-      "seconds": 1.2,
-      "states_generated": 7288,
-      "states_left": 1699,
+      "states_generated": 6685,
+      "states_left": 1546,
       "verdict": "violation"
     }
   ],
@@ -138,38 +125,37 @@
       "ASM-SEAL-COMMITTER-SERIAL": "a393241360fe7ac63ddaa209189e408d7791fe1f2d477c387941dad5dbc8716c",
       "ASM-SEAL-OBJECT-IMMUTABLE": "619e34fef3fc27987ce008627c857f5c6bca78bd20f6bfb8506506d8b4f63d16",
       "ASM-SLATEDB-DURABLE": "3de897ef389f93ed0b1366a6a0aec12ae1e8fbe1c4c04c79470f40413be152a9",
-      "ASM-SLATEDB-FLUSH-RETENTION": "cb084829923a1a95262f852c5d96dce7a648c79879462d2fbf2a7a0698bd953a",
+      "ASM-SLATEDB-FLUSH-RETENTION": "0466cf9ff47319451ca1a63c29cb28ab532e6a38e5951612f9d5e7918289ba14",
       "ASM-SLATEDB-MERGE": "afbf38d680268f74202a5a0c1354980421ea0fc62bec7ff5964624c1140b96c0"
     },
     "files": {
-      "Cargo.lock": "88d5da53c80e347966960aa3e47a314016df2f5e0b5f90006e0ae5d0ab2a325e",
-      "Cargo.toml": "40c6f797e5a38a80abe4de69d4c2c5feaa4f6cc506bc3085ec30bde7b0995e9e",
+      "Cargo.lock": "db13303285d21f78602a40dc950c37a929715ad5c7f4a5502910585411b16395",
+      "Cargo.toml": "591efd05a80b64a6a64a8eb563b7ebd6d598587983c8e903cd446588522f321e",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
       "src/shard/commit_plan.rs": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
-      "src/shard/handle_load.rs": "825a497c545e7f1b622f665b880b5603a07a285a446277c7d72a8e1e26ff6da3",
-      "src/shard/seal.rs": "53deff75a36d9fe9234310703a3c8150bed9a3d363bca6b74bc018a7b8ed135f",
+      "src/shard/handle_load.rs": "41eb4c5f9f6dcfd7b43230fb7b1397db8e9ad2defd2547ba35c0e1591627206f",
+      "src/shard/seal.rs": "53ecbdae9b5981d5af8b0129b3fbb830560e21e5c0d71ffd558fca9bd265e740",
       "src/shard/seal/open.rs": "069b7c6af5c17f35ff08f9bdfbb02df06a87188cc30e48aa7da917de6b1a2c13",
-      "src/shard/seal/steps.rs": "b0bb9d5852bcac847217da6dbd38dad3504b6d918de1bbb2e1eedbc7e571dccc",
+      "src/shard/seal/steps.rs": "7c02dc43fe8d4e8c74877e4a6304f374c8650820b72295132a5e030617863190",
       "src/shard/transaction/finalize.rs": "52ed852bdca5857e928fa60e8452cca5a4cc10787c4a7e22afd11f33f8648fd5",
       "src/shard/transaction/overlay.rs": "ecee27e6ad3b2fab9cfb2ff72926016adb9854dbea4755ccae3d21d6862f8642",
       "src/shard/transaction/seal.rs": "52268b0c7814a8dbadb96f110dd3c7b0ab7d59522fcabd51737b0669eb6792c5",
       "src/spill/directory.rs": "0eb78cac7038179a2f6c8e0442411e81b3ba09868806d03f74c435a7a1aa47af",
       "src/spill/directory/row.rs": "2afc798be7e7e2aa0306eb6ce5685e06b0b0d5bbd746c9865c819a77ccd7c77c",
       "src/spill/pending.rs": "66951393d37349abc08d935d31b636a5599214702204941332784ec1aadb0e4e",
-      "verification/tla/spill/MC_SealSpill.tla": "e88ad0b7bc54847f1a83e3dd789ef32c41ba9719c3f3f3cb10e6f45d5efcc3db",
-      "verification/tla/spill/MC_SealSpill_expanded.cfg": "4c222792fa74693fa65a6b2acf7607545fc4a138da7ee4f932af45307aa1faf6",
+      "verification/tla/spill/MC_SealSpill.tla": "e882f85553d39fbbebc9c1d2fae38f3c82f87c4f60dc0f925ff16ae186fe50f3",
+      "verification/tla/spill/MC_SealSpill_expanded.cfg": "074fa9ed39af63b3a95de40c943810d29a80c94894b9ff7ce14a80c137217c41",
+      "verification/tla/spill/MC_SealSpill_nc_durable_boundary.cfg": "a11c4c1b9b80f56e0dd8be312694dfabd432571fd929d1be514707483486a593",
       "verification/tla/spill/MC_SealSpill_nc_prebuilt_remainder.cfg": "605a1e3ee7590ad5421c9f98d7c18a07f7071b93f6a3ae7f9639687e66194bcb",
-      "verification/tla/spill/MC_SealSpill_nc_skip_7a.cfg": "589063fe29ca8f0224c0d3406b34886b92a6915acff8cdc64d7e43a8a69eabbb",
-      "verification/tla/spill/MC_SealSpill_small.cfg": "fa73097c990bf75d1fc69ed5e450bf90d6be6a589b51d43bcc0fb457f5ce88a0",
-      "verification/tla/spill/MC_SealSpill_two_streams.cfg": "a506c0afffa2caac6e28127d57e625cd4c41fc4113157025908d74af6f659cb4",
+      "verification/tla/spill/MC_SealSpill_small.cfg": "75879df54fd8750ec93ebc41801f0617ff9078876335869f34ca9b7804c72c3a",
+      "verification/tla/spill/MC_SealSpill_two_streams.cfg": "5b6ed7bf7847c7f2e8fb699fa909bfadffbb1c5437d582b145bec42204391d41",
       "verification/tla/spill/MC_SealSpill_w_CrashAfterSealRecovered.cfg": "591681106b857d445cbd76a1af6c6fa9c7d9ea8454865251d7215dd36e6cf58f",
-      "verification/tla/spill/MC_SealSpill_w_DeadlineCarriesSealedPages.cfg": "3efde0d760081ba4c62d3dcb28e5520757c5364477977d1eabe8a003a2550e10",
       "verification/tla/spill/MC_SealSpill_w_RemainderCarriesLatePage.cfg": "da35e50cd6e990a3c5984b82775f68f0c2c9c2163d708080346dc65b47235cea",
       "verification/tla/spill/MC_SealSpill_w_SealDurable.cfg": "66bb1541e888cfccc02f12f8760152a4d1b394df2e2f0ee107baf5b2d285f799",
       "verification/tla/spill/MC_SealSpill_w_SealGroupCarriesAppend.cfg": "30460c654e2294dc3ae42a157591928508ddb3bc056c9617121f3d78298073d1",
-      "verification/tla/spill/SealSpill.tla": "69a430f6f38096d261a0adb570f8b34fec2da32777609834b9c33b643fdab35f"
+      "verification/tla/spill/SealSpill.tla": "ce36dd2f3622a0d89726d179a20a8b2db6ab88988aa4509d8c9ceaa923cba896"
     },
-    "manifest_entry": "6ee597805f996af18c07325581394c6d401d62a84e5ad5cf2bdc2b5e9cc27370",
+    "manifest_entry": "7a167e5fc2b3a17764fe4f72bf9fa374bdf20f626e6bb6b8b8fa3917d2a612bc",
     "pins": {
       "formal": {
         "cbmc": "6.11.0",
@@ -186,15 +172,45 @@
         "tlc": "2.19"
       },
       "slatedb": {
-        "git": "https://github.com/slatedb/slatedb.git",
-        "rev": "0717cc1e4e9bad10a4773760f66bac4264ecf05e"
+        "base": "0c22c032bb1af4e53d92b2098c83a34b11d2d710",
+        "carries": [
+          {
+            "docs": true,
+            "fork": "e3d264361ecab59d149dd872514679b282855e67"
+          },
+          {
+            "fork": "50f739e02e716b822f4fe40f1c09291a771646f8",
+            "pr": 2190,
+            "pr_diff": true
+          },
+          {
+            "fork": "fdbe878d46d3abe0f487900180574db65faf122b",
+            "pr": 2191,
+            "pr_diff": true
+          },
+          {
+            "fork": "cda85233fd6c8d6c98696e7ba1d0186977335b19",
+            "pr": 2010
+          },
+          {
+            "fork": "533a9851d422e29f35824a2634ab980a50de74f7",
+            "issue": 2211
+          },
+          {
+            "fork": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+            "issue": 2213
+          }
+        ],
+        "git": "https://github.com/prisma/slatedb.git",
+        "rev": "18f17feb86d7b8d7a90ad37a276c9d5e9aa4dc28",
+        "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "75c1211aa30b9c3930d98e8be8ffa4c2271373fe9130386da69b88db4200d0ba",
+  "inputs_sha256": "86bd1c5c9253a7dc6c1efba7451fb0ef805fe5de5f7a516967cfde8fe75b10e0",
   "run_on": {
     "dirty_tree": false,
-    "revision": "f06cffe6a1522ef8f099e68515c42f4b13a57141"
+    "revision": "82bbd6e78a47c3241078d09d1a8ec54aaf8af735"
   },
   "schema": 2,
   "tools": {
