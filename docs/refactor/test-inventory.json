@@ -9635,7 +9635,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "36f8d16f1ed7b9b13824adbb1b0e758bba4c0ebc129ccc668e584a9d255a7ae3",
+    "function_sha256": "1dd4beca1736ce64f58a52725e327729dc16d58f2361359d788865a926c03260",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_routes.rs",

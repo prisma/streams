@@ -146,9 +146,9 @@ fn default_admission() -> crate::admission::AdmissionController {
 }
 
 #[test]
-fn a_server_that_sets_nothing_sheds_writes_above_512_in_flight() {
+fn a_server_that_sets_nothing_sheds_writes_above_4096_in_flight() {
     let admission = default_admission();
-    admission.add_inflight_for_test(512);
+    admission.add_inflight_for_test(4_096);
     assert_eq!(admission.admit_write_inflight(), Ok(()));
     admission.add_inflight_for_test(1);
     assert_eq!(
@@ -157,9 +157,9 @@ fn a_server_that_sets_nothing_sheds_writes_above_512_in_flight() {
     );
     assert_eq!(
         (
-            admission.survival_refused(2048, "/v1/stream/a"),
-            admission.survival_refused(2049, "/v1/stream/a"),
-            admission.survival_refused(2049, "/health"),
+            admission.survival_refused(16_384, "/v1/stream/a"),
+            admission.survival_refused(16_385, "/v1/stream/a"),
+            admission.survival_refused(16_385, "/health"),
         ),
         (false, true, false)
     );
@@ -171,7 +171,7 @@ fn a_server_that_sets_nothing_sheds_writes_above_512_in_flight() {
             seen.shed.inflight,
             seen.shed.survival
         ),
-        (512, 2, 1, 1)
+        (4_096, 2, 1, 1)
     );
 }
 
