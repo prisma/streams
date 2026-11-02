@@ -47,6 +47,11 @@ impl crate::config::ServerConfig {
         let options = object_store::ClientOptions::new()
             .with_allow_http(true) // ClientOptions REPLACES the builder's allow_http
             .with_pool_idle_timeout(Duration::from_secs(self.storage.pool_idle_secs));
+        let options = if self.storage.http2_only {
+            options.with_http2_only()
+        } else {
+            options
+        };
         S3Store::build(builder, options).context("build s3 object store")
     }
 

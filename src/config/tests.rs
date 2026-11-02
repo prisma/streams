@@ -335,6 +335,7 @@ fn default_values_are_pinned() {
     let c = load_with(&[]);
     assert_eq!(c.runtime.tokio_workers, None);
     assert_eq!(c.storage.pool_idle_secs, 4);
+    assert!(!c.storage.http2_only);
     assert_eq!(c.storage.bulk_inflight_max_bytes, 32 * 1024 * 1024);
     assert_eq!(c.storage.bulk_nominal_get_bytes, 32 * 1024 * 1024);
     assert_eq!(c.engine.compactor_poll_ms, 2500);
@@ -904,4 +905,10 @@ fn the_shared_cells_load_working_set_leaves_room_under_the_shed_line() {
         caches / mib,
         c.cli.admit_rss_shed_mb
     );
+}
+
+#[test]
+fn store_http2_selects_http2_to_the_object_store() {
+    assert!(load_with(&[("STORE_HTTP2", "1")]).storage.http2_only);
+    assert!(!load_with(&[("STORE_HTTP2", "0")]).storage.http2_only);
 }

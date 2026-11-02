@@ -261,6 +261,29 @@ async fn s3lite_answers_http2_with_prior_knowledge_beside_http1() {
     assert_eq!(faults.versions(), (1, 1));
 }
 
+/// With STORE_HTTP2, the production client speaks HTTP/2 to s3lite with
+/// prior knowledge, and the contract holds the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn s3lite_over_http2_through_the_production_client_meets_the_provider_contract() {
+    let s3lite = s3lite_harness::S3lite::bind().await;
+    let faults = s3lite.faults();
+    let mut config = local_config(&s3lite.endpoint(), None);
+    config.storage.http2_only = true;
+    let (ops, shard) = production_stores(&config);
+    let b = Backend::new("s3lite over HTTP/2", ops, shard, &config, true);
+    let observed = s3lite
+        .serve_while(async {
+            let observed = run_contract(&b).await;
+            http_cases::run(&b, &faults).await;
+            observed
+        })
+        .await;
+    assert!(!observed.etag_repeats_for_identical_content);
+    let (http2, http1) = faults.versions();
+    assert_eq!(http1, 0, "with STORE_HTTP2 every request is HTTP/2");
+    assert!(http2 > 0);
+}
+
 /// The SlateDB cases hold on the reference store under the tick and under
 /// the pump, and under each the pipeline itself makes a write durable.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
