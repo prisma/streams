@@ -958,6 +958,8 @@ async fn complete_multipart(
 
 #[path = "census.rs"]
 mod census;
+#[path = "serve.rs"]
+pub(crate) mod serve;
 
 #[cfg(test)]
 #[path = "tests.rs"]

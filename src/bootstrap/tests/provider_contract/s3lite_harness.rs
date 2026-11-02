@@ -35,6 +35,9 @@ struct Armed {
 pub(super) struct HttpFaults {
     armed: Mutex<Option<Armed>>,
     fired: AtomicU64,
+    /// Requests that arrived over HTTP/2, and over any earlier version.
+    http2: AtomicU64,
+    http1: AtomicU64,
 }
 
 impl HttpFaults {
@@ -56,6 +59,11 @@ impl HttpFaults {
 
     pub(super) fn fired(&self) -> u64 {
         self.fired.load(SeqCst)
+    }
+
+    /// The requests the emulator received over HTTP/2, and over HTTP/1.x.
+    pub(super) fn versions(&self) -> (u64, u64) {
+        (self.http2.load(SeqCst), self.http1.load(SeqCst))
     }
 
     fn take(&self, request: &Request) -> Option<HttpFault> {
@@ -88,6 +96,12 @@ async fn fault_layer(
     request: Request,
     next: Next,
 ) -> Response {
+    let version = if request.version() == axum::http::Version::HTTP_2 {
+        &faults.http2
+    } else {
+        &faults.http1
+    };
+    version.fetch_add(1, SeqCst);
     match faults.take(&request) {
         None => next.run(request).await,
         Some(HttpFault::FailBeforeCommit) => server_error(),
@@ -136,6 +150,8 @@ impl S3lite {
             faults: Arc::new(HttpFaults {
                 armed: Mutex::new(None),
                 fired: AtomicU64::new(0),
+                http2: AtomicU64::new(0),
+                http1: AtomicU64::new(0),
             }),
         }
     }
@@ -162,7 +178,7 @@ impl S3lite {
         ));
         let listener = self.listener;
         tokio::select! {
-            served = async move { axum::serve(listener, router).await } => {
+            served = emulator::serve::serve(listener, router) => {
                 panic!("the in-process s3lite stopped: {served:?}")
             }
             done = work => done,

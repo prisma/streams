@@ -15,6 +15,7 @@ impl ServerConfig {
         serde_json::json!({
             "storage": {
                 "pool_idle_secs": self.storage.pool_idle_secs,
+                "http2_only": self.storage.http2_only,
                 "bulk_inflight_max_bytes": self.storage.bulk_inflight_max_bytes,
                 "bulk_nominal_get_bytes": self.storage.bulk_nominal_get_bytes,
             },
