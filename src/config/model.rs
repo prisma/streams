@@ -47,6 +47,12 @@ pub struct StorageConfig {
     /// across scale-to-zero snapshot/restore; keep under the platform's
     /// 5 s idle threshold (EXPERIMENT-PILOT.md).
     pub pool_idle_secs: u64,
+    /// STORE_HTTP2=1, default off: speak HTTP/2 to the object store, with
+    /// prior knowledge over http, so each store client carries its
+    /// requests in flight on one connection instead of one connection per
+    /// request. For a store that bounds its connections, such as one in a
+    /// microVM behind a guest's connection bound.
+    pub http2_only: bool,
     /// STORE_BULK_INFLIGHT_MAX_BYTES, default 32 MiB (0 = off).
     /// Readers: the bulk gate in store_timing (clamped to u32 at use)
     /// and the compactor profile JSON (raw u64).
@@ -381,6 +387,7 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             pool_idle_secs: 4,
+            http2_only: false,
             bulk_inflight_max_bytes: 32 * 1024 * 1024,
             bulk_nominal_get_bytes: 32 * 1024 * 1024,
         }

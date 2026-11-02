@@ -80,6 +80,12 @@
       "old_semantics": "no stored-bytes quota: the policy feed had no max_stored_bytes (a feed carrying one was refused whole), and a project could own any number of stored bytes",
       "commit": null,
       "edge_record": 156
+    },
+    {
+      "new": "storage.http2_only",
+      "old_semantics": "the server spoke HTTP/1.1 to the object store, one connection per request in flight",
+      "commit": "the commit that adds STORE_HTTP2",
+      "edge_record": null
     }
   ],
   "removed": [

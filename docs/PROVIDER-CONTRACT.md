@@ -89,7 +89,7 @@ scripts/test-leg.sh target/provider-contract/real.log \
   -- --ignored --exact bootstrap::tests::provider_contract::real_provider_meets_the_provider_contract --nocapture
 ```
 
-Set any storage knob the deployment sets (`POOL_IDLE_SECS`,
+Set any storage knob the deployment sets (`POOL_IDLE_SECS`, `STORE_HTTP2`,
 `STORE_BULK_INFLIGHT_MAX_BYTES`, ...) the same way; the runner reads them as
 the server does. Old global buckets live on `fly.storage.tigris.dev`, and a
 global bucket is a different configuration from a single-region one:
