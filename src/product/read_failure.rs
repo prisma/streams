@@ -120,3 +120,23 @@ fn failure_response(error: crate::application::read::ReadFailure) -> Response {
     }
     response
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::application::read::ReadFailure;
+
+    /// Only a wrong key's answer is tagged for the audit journal as a
+    /// `wrong_key` denial; any other failure carries no tag.
+    #[test]
+    fn only_a_wrong_key_is_tagged_for_the_audit() {
+        let tag = |error| {
+            super::failure_response(error)
+                .extensions()
+                .get::<crate::audit::DenialTag>()
+                .map(|t| t.code)
+        };
+        assert_eq!(tag(ReadFailure::WrongKey), Some("wrong_key"));
+        assert_eq!(tag(ReadFailure::MissingKey), None);
+        assert_eq!(tag(ReadFailure::Missing), None);
+    }
+}

@@ -108,7 +108,7 @@ OWNERS = (
           'dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull '
           'dst_tests::fair_shed:: dst_tests::live_wait:: dst_tests::queue_overload:: dst_tests::weighted_shares::'),
     owner('product_read_failure', 'src/product/read_failure.rs',
-          'dst_tests::read_reserve:: product::tests:: dst_tests::read_application::'),
+          'dst_tests::read_reserve:: product::tests:: product::read_failure:: dst_tests::read_application::'),
     owner('product_ownership', 'src/product/ownership.rs',
           'product::ownership:: dst_tests::forward_to_owner:: dst_tests::queue_product::'
           ' dst_tests::product_lifecycle:: dst_tests::quota_tracker:: dst_tests::lifecycle_creation::'),

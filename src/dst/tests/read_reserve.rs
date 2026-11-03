@@ -250,6 +250,13 @@ fn noisy(n: usize) -> String {
 /// `records` incompressible records of 64 KiB appended in one batch, then
 /// a requested seal, until the stream's every durable record is sealed.
 async fn sealed_stream(cell: &Cell, name: &str, records: usize) {
+    let hash = appended_stream(cell, name, records).await;
+    seal_all(cell, &[hash]).await;
+}
+
+/// Project 0's stream `name` with `records` incompressible records of 64
+/// KiB appended in one batch, unsealed; its storage hash.
+async fn appended_stream(cell: &Cell, name: &str, records: usize) -> [u8; 16] {
     let path = format!("/v1/streams/{name}");
     let created = cell
         .call(0, "PUT", &path, br#"{"format":{"kind":"json"}}"#)
@@ -270,20 +277,24 @@ async fn sealed_stream(cell: &Cell, name: &str, records: usize) {
         crate::tenant::ProjectId::new(&project(0)).unwrap(),
         crate::tenant::CanonicalStreamName::new(name).unwrap(),
     );
-    let hash = cell
-        .state
+    cell.state
         .registry
         .get(&sref)
         .await
         .unwrap()
         .expect("live")
-        .storage_hash();
+        .storage_hash()
+}
+
+/// One requested seal on every engine, until every stream of `hashes` is
+/// sealed.
+async fn seal_all(cell: &Cell, hashes: &[[u8; 16]]) {
     for engine in cell.state.shards.engines() {
         engine
             .seal_once(crate::shard::seal::Trigger::Requested)
             .await
             .expect("seal");
-        super::fixture_storage::wait_all_sealed(&engine, &[hash]).await;
+        super::fixture_storage::wait_all_sealed(&engine, hashes).await;
     }
 }
 
@@ -344,6 +355,27 @@ async fn a_reads_first_sealed_chunk_waits_for_the_read_memory_and_is_refused_as_
         "the read memory peaked at {peak} B against {capacity} B and one 512 KiB chunk; \
          the answers {statuses:?}"
     );
+    assert_eq!(cell.state.admission.read_memory().0, 0, "nothing held");
+    engine_shutdown(&cell.state).await;
+}
+
+/// A read's first sealed chunk is claimed before its GET (edge #240): with
+/// 512 KiB of read memory, a read of a stream whose first chunk is over 512
+/// KiB (16 records of 64 KiB of random letters, about 630 KB stored) waits
+/// and is refused exactly 503 `read_memory_busy`, holding nothing after.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_first_chunk_larger_than_the_read_memory_is_refused() {
+    let mut spec = CellSpec::open(1);
+    spec.cli = |c| c.tail_ring_bytes = 0;
+    let cell = open_cell(spec).await;
+    sealed_stream(&cell, "big", 16).await;
+    cell.state.admission.set_read_memory_capacity(512 * 1024);
+    cell.state.registry.sweep_cache();
+    let (status, _, body) = cell.call(0, "GET", "/v1/streams/big/records", b"").await;
+    let code = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v["error"]["code"].as_str().map(str::to_string));
+    assert_eq!((status, code.as_deref()), (503, Some("read_memory_busy")));
     assert_eq!(cell.state.admission.read_memory().0, 0, "nothing held");
     engine_shutdown(&cell.state).await;
 }

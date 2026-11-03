@@ -497,6 +497,11 @@ impl ShardEngine {
 }
 
 impl Plan {
+    /// The bytes of its chunk the plan fetches: its end less its start.
+    fn len(&self) -> u64 {
+        u64::from(self.end - self.start)
+    }
+
     /// The ranged GET of `entry`'s chunk for a read due at `due`: from the
     /// last anchor at or before `due` (or the first page) to the first
     /// anchor past it that starts at or after `upto` or `budget` page bytes
@@ -645,7 +650,7 @@ async fn within_read_memory(steps: Vec<Step>) -> Result<Vec<Step>, RangeReadErro
     let mut kept = Vec::with_capacity(steps.len());
     for step in steps {
         if let Step::Fetch(plan) = &step {
-            let bytes = u64::from(plan.end - plan.start);
+            let bytes = plan.len();
             if first {
                 first_chunk_claimed(bytes).await?;
                 first = false;

@@ -326,3 +326,133 @@ async fn a_lower_retain_budget_sheds_the_least_recently_kept() {
         "the oldest was shed"
     );
 }
+
+/// An entry is charged exactly: the entry, its 16-byte key and one control
+/// byte, plus each raw string's heap rounded up to 8. The production shapes
+/// (hex fingerprint, base64 verifier, quoted hex ETag) carry no heap.
+#[test]
+fn an_entry_is_charged_exactly_its_size_key_control_byte_and_raw_heap() {
+    use base64::Engine;
+    let fixed = super::retained::entry_size() + 16 + 1;
+    let mut d = desc("ex", EPOCH, false);
+    d.key_fingerprint = crate::crypto::hex(&[7u8; 16]);
+    d.watch_sig_key = Some(base64::engine::general_purpose::STANDARD.encode([9u8; 32]));
+    let quoted = "\"0123456789abcdef0123456789abcdef\"";
+    assert_eq!(super::retained::charged(&d, quoted), fixed, "packed shapes");
+    d.key_fingerprint = "f".repeat(17);
+    d.watch_sig_key = Some("w".repeat(3));
+    d.seal_op = Some("s".repeat(33));
+    // 9 -> 16, 17 -> 24, 3 -> 8, 33 -> 40.
+    assert_eq!(
+        super::retained::charged(&d, "W/\"weak1\""),
+        fixed + 16 + 24 + 8 + 40,
+        "raw strings"
+    );
+}
+
+/// A verifier that decodes as base64 but not to 32 bytes is kept as its
+/// text, and so is uppercase hex: both round-trip exactly.
+#[test]
+fn a_short_verifier_and_uppercase_hex_round_trip_as_text() {
+    use base64::Engine;
+    let sref = ts("odd");
+    let mut d = desc("odd", EPOCH, false);
+    d.watch_sig_key = Some(base64::engine::general_purpose::STANDARD.encode([9u8; 31]));
+    d.key_fingerprint = "0123456789ABCDEF0123456789ABCDEF".into();
+    let (back, _) = super::retained::round_trip(&d, "\"0123456789ABCDEF0123456789ABCDEF\"", &sref)
+        .expect("ordinary");
+    assert_eq!(
+        serde_json::to_value(&back).unwrap(),
+        serde_json::to_value(&d).unwrap()
+    );
+}
+
+fn held(name: &str) -> crate::registry::CachedDesc {
+    use base64::Engine;
+    let mut d = desc(name, EPOCH, false);
+    d.key_fingerprint = crate::crypto::hex(&[7u8; 16]);
+    d.watch_sig_key = Some(base64::engine::general_purpose::STANDARD.encode([9u8; 32]));
+    crate::registry::CachedDesc {
+        desc: Some(crate::registry::StreamDesc::try_from(d).unwrap()),
+        at: std::time::Instant::now(),
+        etag: Some("\"0123456789abcdef0123456789abcdef\"".into()),
+    }
+}
+
+/// One entry's charge (every `held` entry is charged the same).
+fn one() -> usize {
+    super::retained::entry_size() + 16 + 1
+}
+
+/// The tier's byte ledger is exact through a keep, a keep that replaces,
+/// a take, a forget, and a budget met exactly (nothing shed at it).
+#[test]
+fn the_ledger_is_exact_through_keep_replace_take_forget_and_an_exact_budget() {
+    let mut tier = super::retained::Retained::new(4 * one());
+    tier.keep(&ts("a"), &held("a"));
+    assert_eq!((tier.len(), tier.bytes()), (1, one()), "kept");
+    tier.keep(&ts("a"), &held("a"));
+    assert_eq!((tier.len(), tier.bytes()), (1, one()), "replaced");
+    assert!(tier.take(&ts("a")).is_some());
+    assert_eq!((tier.len(), tier.bytes()), (0, 0), "taken");
+    tier.keep(&ts("a"), &held("a"));
+    tier.forget(&ts("a"));
+    assert_eq!((tier.len(), tier.bytes()), (0, 0), "forgotten");
+    for name in ["a", "b", "c", "d"] {
+        tier.keep(&ts(name), &held(name));
+    }
+    assert_eq!((tier.len(), tier.bytes()), (4, 4 * one()), "at the budget");
+    tier.set_budget(4 * one());
+    assert_eq!(tier.len(), 4, "a budget met exactly sheds nothing");
+}
+
+/// Over budget a keep sheds exactly the least recently kept eighth: of 16
+/// kept against room for 15, the two oldest go.
+#[test]
+fn a_keep_over_budget_sheds_exactly_the_oldest_eighth() {
+    let mut tier = super::retained::Retained::new(15 * one());
+    let names: Vec<String> = names("k", 16);
+    for name in &names {
+        tier.keep(&ts(name), &held(name));
+    }
+    assert_eq!((tier.len(), tier.bytes()), (14, 14 * one()));
+    assert!(tier.take(&ts(&names[0])).is_none(), "oldest shed");
+    assert!(tier.take(&ts(&names[1])).is_none(), "second oldest shed");
+    assert!(tier.take(&ts(&names[2])).is_some(), "third kept");
+}
+
+/// A lower budget sheds, an eighth at a time, until it is met: 16 entries
+/// against room for 5 leave exactly 5, the newest.
+#[test]
+fn a_lower_budget_sheds_down_to_exactly_the_budget() {
+    let mut tier = super::retained::Retained::new(64 * one());
+    let names: Vec<String> = names("l", 16);
+    for name in &names {
+        tier.keep(&ts(name), &held(name));
+    }
+    tier.set_budget(5 * one());
+    assert_eq!((tier.len(), tier.bytes()), (5, 5 * one()));
+    assert!(tier.take(&ts(&names[10])).is_none(), "older shed");
+    assert!(tier.take(&ts(&names[11])).is_some(), "the newest five kept");
+}
+
+/// The hex form round-trips every byte value: a fingerprint and an ETag of
+/// each 16-byte run of 0..=255 are packed (no heap) and come back exactly.
+#[test]
+fn hex_fingerprints_and_etags_round_trip_every_byte_value() {
+    let sref = ts("hx");
+    let bytes: Vec<u8> = (0..=255).collect();
+    for run in bytes.chunks(16) {
+        let mut d = desc("hx", EPOCH, false);
+        d.key_fingerprint = crate::crypto::hex(run);
+        let etag = format!("\"{}\"", crate::crypto::hex(run));
+        assert_eq!(
+            super::retained::charged(&d, &etag),
+            super::retained::entry_size() + 16 + 1,
+            "packed: {etag}"
+        );
+        let (back, tag) = super::retained::round_trip(&d, &etag, &sref).expect("ordinary");
+        assert_eq!(back.key_fingerprint, d.key_fingerprint);
+        assert_eq!(tag, etag);
+    }
+}

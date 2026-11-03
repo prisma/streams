@@ -69,10 +69,9 @@ fn hex16(text: &str) -> Option<[u8; 16]> {
     if raw.len() != 32 || !raw.iter().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')) {
         return None;
     }
-    let digit = |c: u8| if c <= b'9' { c - b'0' } else { c - b'a' + 10 };
     let mut out = [0u8; 16];
     for (byte, pair) in out.iter_mut().zip(raw.as_chunks::<2>().0) {
-        *byte = (digit(pair[0]) << 4) | digit(pair[1]);
+        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
     }
     Some(out)
 }
@@ -164,11 +163,17 @@ impl Entry {
             interned.insert(held.clone());
             held
         };
-        let flag = |on: bool, bit: u8| if on { bit } else { 0 };
-        let flags = flag(d.deleted, DELETED)
-            | flag(d.soft_deleted, SOFT_DELETED)
-            | flag(d.sealed, SEALED)
-            | flag(d.parent_ref_pending, PARENT_REF_PENDING);
+        // Distinct bits, so their sum is their union.
+        let flags = [
+            (d.deleted, DELETED),
+            (d.soft_deleted, SOFT_DELETED),
+            (d.sealed, SEALED),
+            (d.parent_ref_pending, PARENT_REF_PENDING),
+        ]
+        .into_iter()
+        .filter(|&(on, _)| on)
+        .map(|(_, bit)| bit)
+        .sum();
         Some(Entry {
             etag: Token::of(etag),
             epoch,
@@ -293,10 +298,14 @@ impl Retained {
     }
 
     /// Hold at most `budget` bytes from now on, shedding the least recently
-    /// kept entries while over it.
+    /// kept entries while over it. Each shed takes at least one entry, so
+    /// as many sheds as entries empty the tier: the loop is bounded.
     pub(super) fn set_budget(&mut self, budget: usize) {
         self.budget = budget;
-        while self.bytes > self.budget && !self.by_route.is_empty() {
+        for _ in 0..self.by_route.len() {
+            if self.bytes <= self.budget {
+                break;
+            }
             self.shed();
         }
     }

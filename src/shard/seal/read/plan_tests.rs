@@ -6,7 +6,7 @@
 //! cannot hold its pages.
 
 use super::{
-    Candidate, MAX_CHUNKS_LOOKED_AT, MAX_CHUNKS_PER_READ, Step, directory_window, plan_steps,
+    Candidate, MAX_CHUNKS_LOOKED_AT, MAX_CHUNKS_PER_READ, Plan, Step, directory_window, plan_steps,
     whole_last_groups,
 };
 use crate::shard::RingScan;
@@ -190,4 +190,32 @@ fn the_directory_window_drops_a_group_its_cap_would_split() {
     assert_eq!(got(2), [(1, 9)], "the 19 group dropped whole");
     assert_eq!(got(3), [(1, 9), (1, 19), (2, 19)]);
     assert_eq!(got(4).len(), 4, "nothing cut");
+}
+
+/// A plan due past a chunk's anchor fetches from that anchor to the chunk's
+/// last page byte, and its length (the bytes a read's memory claims for it)
+/// is exactly that span: end less start, never their sum.
+#[test]
+fn a_plan_from_an_anchor_fetches_and_claims_exactly_its_span() {
+    let pages_end = 9_000 - u32::try_from(crate::spill::object::CHUNK_CRC_LEN).unwrap();
+    let entry = DirEntry {
+        object: ObjectId { epoch: 1, seq: 1 },
+        chunk_off: 0,
+        chunk_len: 9_000,
+        first: 0,
+        last: 3,
+        page_count: 4,
+        keys: KeySummary::Keys(Vec::new()),
+        anchors: vec![crate::spill::object::Anchor {
+            page: 2,
+            offset: 2,
+            byte: 5_000,
+        }],
+    };
+    let plan = Plan::of(entry, 3, 4, u64::MAX).expect("a plan");
+    assert_eq!(
+        (plan.start, plan.end, plan.whole),
+        (5_000, pages_end, false)
+    );
+    assert_eq!(plan.len(), u64::from(pages_end - 5_000));
 }

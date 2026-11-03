@@ -878,6 +878,17 @@
     "scenarios": []
   },
   {
+    "name": "a_first_chunk_larger_than_the_read_memory_is_refused",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "c24a33e2d5c608a2737a54d9b28c25f6118e77ee5a5f6d79a1f26fa1d81fa8cf",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_reserve.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_fleet_of_one_has_no_peer_to_hand_off_to",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

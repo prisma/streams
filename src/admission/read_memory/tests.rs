@@ -491,3 +491,41 @@ async fn a_first_chunk_claim_waits_for_room_and_is_refused_after_the_wait() {
     drop(hold);
     assert_eq!(ctl.read_memory().0, 0);
 }
+
+/// In a served request, the first chunk's claim (`park::claim_read_until`)
+/// grows the request's hold to cover the chunk, waiting the full
+/// `READ_MEMORY_WAIT` for room: refused, it answers false at exactly the
+/// wait and keeps the refusal for the read's failure (`read_refused`); a
+/// release during the wait gives it the room.
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
+async fn a_served_requests_first_chunk_claim_covers_it_waits_and_keeps_its_refusal() {
+    use crate::admission::park::{bind_read, claim_read_until, read_refused};
+    let ctl = ctl(4);
+    let response = ctl
+        .enter(true)
+        .serve(async {
+            let other = ReadHold::try_reserve(&ctl, None, 0, 900 * KIB).unwrap();
+            bind_read(ReadHold::try_reserve(&ctl, None, 0, 100 * KIB).unwrap());
+            let started = tokio::time::Instant::now();
+            assert!(
+                !claim_read_until(Claim::Fetched, 300 * KIB).await,
+                "refused"
+            );
+            assert_eq!(tokio::time::Instant::now() - started, READ_MEMORY_WAIT);
+            assert_eq!(read_refused(), Some(ReadRefusal::Instance), "kept");
+            assert_eq!(ctl.read_memory().0, 1000 * KIB, "nothing taken");
+            let release = async {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                drop(other);
+            };
+            let (claimed, ()) =
+                futures_util::future::join(claim_read_until(Claim::Fetched, 300 * KIB), release)
+                    .await;
+            assert!(claimed, "the release gave it room");
+            assert_eq!(ctl.read_memory().0, 300 * KIB, "the hold covers the chunk");
+            Response::new(Body::empty())
+        })
+        .await;
+    drop(response);
+    assert_eq!(ctl.read_memory().0, 0);
+}
