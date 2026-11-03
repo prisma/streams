@@ -355,6 +355,46 @@ export function quotaValues(
   return quotas;
 }
 
+/// The size classes (decision record 2026-11-03, item C): `admit --class`
+/// presets for Fable's profiles M (medium CDC) and L (large sink). Each
+/// caps the stored bytes at (retention days + 1) x stored bytes per day
+/// (one day for the purge delay and the cleaner's lag), rounded up to
+/// 64 GiB: M 8 x 36 GB -> 320 GiB, L 31 x 44 GB -> 1.25 TiB. On a shared
+/// cell M takes weights (2, 6), which the packing rule then holds to one
+/// per cell; L is placed only on a dedicated cell. On a dedicated cell
+/// neither takes a weight.
+const GIB = 1024 ** 3;
+const CLASSES: Record<string, { stored: number; sharedWeights: string[] | null }> = {
+  m: { stored: 320 * GIB, sharedWeights: ["request=2", "bytes=6"] },
+  l: { stored: 1280 * GIB, sharedWeights: null },
+};
+
+/// What `--class` gives a project on this cell: the `--weight` settings
+/// it stands for and its stored-bytes cap; without a class, the `--weight`
+/// settings given and no cap (the profile's default). Refused: an unknown
+/// class, a class beside `--weight`, and L on a shared cell.
+export function classPreset(
+  state: CellState,
+  cls: string | undefined,
+  weights: readonly string[],
+): { weights: readonly string[]; stored?: number } {
+  if (cls === undefined) return { weights };
+  const preset = Object.hasOwn(CLASSES, cls) ? CLASSES[cls] : undefined;
+  if (preset === undefined) throw new AdminError(`--class ${cls} is not m or l`, 2);
+  if (weights.length > 0) {
+    throw new AdminError(`--class ${cls} sets the weights: give --class or --weight, not both`, 2);
+  }
+  const k = state.cell.share_k;
+  if (k === 1) return { weights: [], stored: preset.stored };
+  if (preset.sharedWeights === null) {
+    throw new AdminError(
+      `--class ${cls}: L's 1.82 MB/s exceeds (k - 1)/k of the 2.06 MB/s envelope (k = ${k}): ` +
+        "L is admitted only on a dedicated cell (k = 1, deploy/profiles/dedicated-cell.env)",
+    );
+  }
+  return { weights: preset.sharedWeights, stored: preset.stored };
+}
+
 /// A dedicated cell (k = 1) places one project: every project not
 /// offboarded holds it, as for `max_projects`, which `init` fixes at 1
 /// there too.

@@ -16,6 +16,7 @@ import {
   checkId,
   checkPlacement,
   checkSizing,
+  classPreset,
   isCanary,
   newCredentialId,
   placeCanary,
@@ -153,10 +154,11 @@ export async function admit(f: Flags, io: Io): Promise<void> {
     const { state: first } = await loadChecked(store);
     const sizing = checkSizing(first, readProfiles(profilesOf(f, first.cell.share_k)));
     const { ids: denylist } = await store.readDenylist();
+    const preset = classPreset(first, f.get("class"), f.all("weight"));
     checkPlacement(first, project, workspace, denylist);
-    const weights = weightValues(first, f.all("weight"));
+    const weights = weightValues(first, preset.weights);
     checkPacking(first, weights, sizing);
-    const quotas = admittedQuotas(first, f.all("quota"), sizing.stored_default, weights);
+    const quotas = admittedQuotas(first, f.all("quota"), preset.stored ?? sizing.stored_default, weights);
     const scopes = scopesOf(f.get("scopes"));
     const stream_prefixes = prefixesOf(f.all("prefix"));
     await burnId(store, project);

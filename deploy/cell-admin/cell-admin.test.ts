@@ -76,6 +76,20 @@ const BOUNDS = {
   byte_weight: 1,
 };
 
+/// The size classes' stored-bytes caps: (retention days + 1) x stored
+/// bytes per day, rounded up to 64 GiB (README "Size classes").
+const M_STORED = 320 * 1024 ** 3;
+const L_STORED = 1280 * 1024 ** 3;
+/// `--class m` on the shared cell: request weight 2, byte weight 6.
+const M_SHARED = {
+  ...CEILINGS, requests_per_sec: 352, append_bytes_per_sec: 1545000, read_bytes_per_sec: 22500000,
+  max_inflight_requests: 128, max_live_subscriptions: 300, max_streams: 16384, max_stored_bytes: M_STORED,
+  request_weight: 2, byte_weight: 6,
+};
+const L_ON_SHARED =
+  "cell-admin admit: --class l: L's 1.82 MB/s exceeds (k - 1)/k of the 2.06 MB/s envelope (k = 8): " +
+  "L is admitted only on a dedicated cell (k = 1, deploy/profiles/dedicated-cell.env)";
+
 /// Nothing cell-admin writes to its store may hold private key material
 /// or a token.
 function expectNoSecrets(where: string): void {
@@ -469,6 +483,74 @@ for (const kind of STORES) {
           "cell-admin admit: cell cell_sc1 is dedicated (k = 1): it holds one project, proj_a"]);
         expect(readBundleText(c.state)).toBe(published);
         expect(Object.keys(readState(c.state).projects).sort()).toEqual(["proj_a", "sp_canary_cell_sc1"]);
+      });
+
+      test("--class m on a shared cell is weights (2, 6) and 320 GiB stored, one per cell", async () => {
+        const c = await initCell();
+        const m = await run("admit", "--state", c.state, "--project", "proj_m", "--workspace", "w1", "--class", "m");
+        expect([m.code, m.err]).toEqual([0, ""]);
+        const quotasOf = () =>
+          Object.fromEntries((customerOnly(readBundle(c.state)).policies.projects as any[]).map((p) => [p.project_id, p.quotas]));
+        // Byte weight 6 passes the memory-lines check: lineOf(6) = 63,963,135
+        // (the read memory less two unit lines, less 1) and two unit lines
+        // (67,108,864) stay below the read memory (131,072,000).
+        expect(quotasOf()).toEqual({ proj_m: M_SHARED });
+        expect(validateDocument(readBundle(c.state).policies, schema("project-policies.schema.json"))).toEqual([]);
+        // One M per cell: a second M, or any byte-weighted project, passes k - 1.
+        const second = await run("admit", "--state", c.state, "--project", "proj_m2", "--workspace", "w2", "--class", "m");
+        expect([second.code, second.err]).toEqual([1,
+          "cell-admin admit: --weight bytes=6: the cell's heavy projects would hold 12 byte_weight units, over k - 1 = 7 (they hold 6)"]);
+        const bytes = await run("admit", "--state", c.state, "--project", "proj_b", "--workspace", "w2", "--weight", "bytes=2");
+        expect(bytes.err).toBe(
+          "cell-admin admit: --weight bytes=2: the cell's heavy projects would hold 8 byte_weight units, over k - 1 = 7 (they hold 6)");
+        // And no L beside it: L is never placed on a shared cell.
+        const l = await run("admit", "--state", c.state, "--project", "proj_l", "--workspace", "w2", "--class", "l");
+        expect(l.err).toBe(L_ON_SHARED);
+        const unit = await run("admit", "--state", c.state, "--project", "proj_s", "--workspace", "w2");
+        expect(unit.code).toBe(0);
+        expect(Object.keys(quotasOf()).sort()).toEqual(["proj_m", "proj_s"]);
+      });
+
+      test("--class l is refused on a shared cell and publishes nothing", async () => {
+        const c = await initCell();
+        const before = readBundleText(c.state);
+        const r = await run("admit", "--state", c.state, "--project", "proj_l", "--workspace", "w1", "--class", "l");
+        expect([r.code, r.err]).toEqual([1, L_ON_SHARED]);
+        expect(readBundleText(c.state)).toBe(before);
+        expect(Object.keys(readState(c.state).projects)).toEqual(["sp_canary_cell_sc1"]);
+      });
+
+      test("on a dedicated cell --class m takes no weights and 320 GiB, --class l 1.25 TiB", async () => {
+        for (const [cls, stored] of [["m", M_STORED], ["l", L_STORED]] as const) {
+          const c = await initCell(DEDICATED);
+          const r = await run("admit", "--state", c.state, "--project", `proj_${cls}`, "--workspace", "w1", "--class", cls);
+          expect([r.code, r.err]).toEqual([0, ""]);
+          expect((customerOnly(readBundle(c.state)).policies.projects as any[]).map((p) => p.quotas))
+            .toEqual([{ ...BOUNDS, max_stored_bytes: stored }]);
+        }
+      });
+
+      test("an explicit --quota max_stored_bytes overrides the class's", async () => {
+        const c = await initCell();
+        const r = await run("admit", "--state", c.state, "--project", "proj_m", "--workspace", "w1", "--class", "m",
+          "--quota", "max_stored_bytes=21474836480");
+        expect([r.code, r.err]).toEqual([0, ""]);
+        expect((customerOnly(readBundle(c.state)).policies.projects as any[]).map((p) => p.quotas))
+          .toEqual([{ ...M_SHARED, max_stored_bytes: 21474836480 }]);
+      });
+
+      const classUsage: [string, string[], string][] = [
+        ["an unknown class", ["--class", "xl"], "--class xl is not m or l"],
+        ["a class with --weight", ["--class", "m", "--weight", "request=2"],
+          "--class m sets the weights: give --class or --weight, not both"],
+        ["a class given twice", ["--class", "m", "--class", "m"], "--class given twice"],
+      ];
+      test.each(classUsage)("refuses %s as a usage error and publishes nothing", async (_what, flags, message) => {
+        const c = await initCell();
+        const before = readBundleText(c.state);
+        const r = await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w1", ...flags);
+        expect([r.code, r.err.split("\n")[0]]).toEqual([2, `cell-admin admit: ${message}`]);
+        expect(readBundleText(c.state)).toBe(before);
       });
 
       test("the canary is reserved and hidden: no customer takes its id or workspace, no cap counts it", async () => {
