@@ -481,3 +481,36 @@ convention: $814 at the peak rate ($0.180/M), $625 at the average volume.
 Per message, the busiest hour stays under the ceiling ($0.167 against
 $0.241). The remaining lever is the one section 10 named: the queue commit
 window, so queue writes share WAL uploads.
+
+## 12. Priced on 2 shards (decided 2026-11-03)
+
+Fable 5.1 decided it on 2026-11-03 under the owner's delegation of that
+day ("Please have Fable 5.1 make decisions on those"; decision record
+`~/.streams-k2/analysis/decisions-fable-2026-11-03.md`, item B5; the
+hardening README's "Owner decisions" table).
+
+**The queue product is priced on 2 shards per instance**, the owner's
+posture of 1-2 shards per instance (`docs/SCALE-VALIDATION.md` §1.1). Every
+figure above ran 4 shards on one instance. The WAL term is per busy shard:
+4 shards wrote 139,857 WAL PUTs an hour (section 11), 2 shards cap at
+71,280, so the 100x Class A roughly halves if throughput holds. The 4-shard
+figures are therefore conservative on cost and optimistic on capacity, and
+a price must rest on the deployed shape.
+
+- The scale validation's gated arm is 100x at 2 shards. A 1-shard arm is a
+  ceiling probe (what one shard holds after the scan-fetch fix); the
+  4-shard arm is the Mac cross-check only, reported apart
+  (`docs/SCALE-VALIDATION.md` §3.2).
+- If 2 shards do not hold 100x (the hot drain under 95% of the due rate for
+  5 minutes, or send p99 over 1 s), the rate they hold is the product's
+  per-tenant ceiling and the price rests on it.
+- The cost bars of section 11 and `docs/SCALE-VALIDATION.md` §6 stay as
+  ceilings; the 2-shard result becomes the reference.
+- The decision asks for 100x at 2 shards on the Mac rig before the field
+  run (fail early: the cheapest check first), so the field has an expected
+  figure. It has not run: a 24-hour load-sensitive soak holds the Mac. The
+  field run's 2-shard arm provides the figure instead, and this section
+  records it when it lands.
+- `bench/queues-cost/run-ab.sh` hard-codes `INITIAL_SHARDS=4`; the decision's
+  bench change (`INITIAL_SHARDS=${QUEUE_SHARDS:-2}`, recorded in each arm's
+  `costs.json`) lands in a separate bench commit.

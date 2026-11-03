@@ -484,14 +484,24 @@ node bench/queues-cost/replay.mjs --base $U --auth-file $SECRETS/auth --key-file
     --out $OUT/replay-summary.json --timeline $OUT/replay-timeline.jsonl
 ```
 
-- **Shard count.** Every measured queue figure ran `INITIAL_SHARDS=4` on one
-  instance. The owner's posture is 1 or 2. Before the scan-fetch fix one
-  shard saturated at 589 messages a second with 1.8 s sends
-  (`docs/QUEUES-PRICING-BENCHMARK.md` §11); 1 and 2 shards have not been
-  measured since. Run 100x at 2 shards (the posture's result) and once at 4
-  shards (a reference arm, to compare with the Mac figure only; it breaks
-  the posture, so report it apart), and report the highest send rate each
-  holds. **TODO (owner)**: which shard count the queue product is priced on.
+- **Shard count: the queue product is priced on 2 shards per instance**
+  (decision B5, §8 item 5; `docs/QUEUES-PRICING-BENCHMARK.md` §12). Every
+  measured queue figure so far ran `INITIAL_SHARDS=4` on one instance;
+  before the scan-fetch fix one shard saturated at 589 messages a second
+  with 1.8 s sends (§11 there). Three arms:
+  - **2 shards, 100x: the gated arm.** If 2 shards do not hold 100x (hot
+    drain under 95% of the due rate for 5 minutes, or send p99 over 1 s),
+    the rate they hold is the product's per-tenant ceiling and the price
+    rests on it.
+  - **1 shard: a ceiling probe.** Report what one shard holds after the
+    scan-fetch fix.
+  - **4 shards: the Mac cross-check only**, reported apart; it breaks the
+    posture.
+  The decision asks for a Mac rerun of 100x at 2 shards before the field
+  run, as its expected figure; while the 24 h soak holds the Mac it cannot
+  run, so the field run's 2-shard arm provides the figure. `run-ab.sh`
+  hard-codes `INITIAL_SHARDS=4`; its `QUEUE_SHARDS` variable (default 2,
+  recorded in each arm's `costs.json`) lands in a separate bench commit.
 - **1x and 10x are A/B pairs.** Arm A runs the co-tenant alone, arm B the
   co-tenant plus the replay; each arm on a fresh prefix, with the co-tenant's
   streams named the same in both arms (`run-ab.sh` `BASELINE_PREFIX`: a
@@ -816,7 +826,7 @@ first and dollars second.
 | WAL cost is per busy shard (single WAL writer) | per shard over a 10-minute window: all WAL PUTs ≤ 10.1 a second, and WAL PUTs ÷ pump flushes ≤ 1.02 (the 2% covers a fresh shard's open-time WALs) | a ratio above 1.02: the run is not void and its counts price as measured, but this claim fails; report the finding by name, a WAL writer besides the pump |
 | Fleet scales linearly | ST-2 Class A and B per instance, and cost per tenant, at N = 8 and 16 within ±10% of N = 1 at the same per-instance load | more than ±10%: name the term (heartbeats, forwarding, moves) |
 | The cell anchors hold on Compute | ST-1 Class A and B per tenant within ±10% of the Mac run; ab50 per tenant at most the Mac figure plus its CPU term scaled by the measured factor (S: $0.797 + $0.091 × (factor − 1)) | counts off by more than 10% |
-| The queue costs hold | 100x at most $0.0960 per million sent at ab50; 10x at most $71.61; 1x at most $19.06 (missed by 6.2% on the Mac until slatedb#2208 is in the pin) | 100x above $0.241 per million (the 80% margin line) |
+| The queue costs hold | at 2 shards, the priced shape (§3.2), with the bars unchanged as ceilings: 100x at most $0.0960 per million sent at ab50; 10x at most $71.61; 1x at most $19.06 (missed by 6.2% on the Mac until slatedb#2208 is in the pin). The 2-shard result becomes the reference | 100x above $0.241 per million (the 80% margin line) |
 | The hot queue keeps up | drain at or above the due rate | drain below the due rate for 5 minutes: report the ceiling |
 | Correctness | zero lost, duplicated or foreign records; zero lost messages | any loss voids every cost claim of the run |
 | Counters reconcile with Tigris | ±5% per class per bucket (§4.2 (c)) | a gap over 5% not explained by `err` |
@@ -900,8 +910,10 @@ the hardening README's "Owner decisions" table lists them.
    dedicated $87.88 (K2 $483); ST-3 now confirms them on Compute + Tigris,
    one shared M cell and one dedicated L cell, and L's phase plan is
    `ML.env`'s `l-alone` (§2.1-§2.3, §5.2).
-5. The queue product's shard count: every measured queue figure ran 4
-   shards on one instance; the posture is 1 or 2 (§3.2).
+5. **Closed** (decision B5). The queue product is priced on 2 shards per
+   instance: the gated arm is 100x at 2 shards, 1 shard a ceiling probe, 4
+   shards the Mac cross-check only (§3.2, §6;
+   `docs/QUEUES-PRICING-BENCHMARK.md` §12).
 6. The queue rig has no field mode; its CPU sampler reads a local process.
 7. Re-read the K2 and Cloudflare Queues price pages before the margins are
    used (§5.1).
