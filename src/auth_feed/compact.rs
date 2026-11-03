@@ -1,6 +1,6 @@
 //! The policy and grant feeds parsed straight into their snapshots (tuning
-//! item 3c, step 1): from the file's bytes, with no whole-file `String` and
-//! no list of parsed documents beside the map, and with one shared copy of
+//! item 3c, step 1): as a file is read, with no whole-file copy and no
+//! list of parsed documents beside the map, and with one shared copy of
 //! each distinct cell id, workspace id and (in the grants) project id. The
 //! strict rules are `parse_policies`' and `parse_grants`': an item that
 //! breaks one refuses the whole feed.
@@ -36,9 +36,9 @@ struct Policies(HashMap<ProjectId, ProjectPolicy>);
 // mt-lint: allow(name-keyed-map): credential id -> grant (the feed snapshot itself)
 struct Grants(HashMap<Arc<str>, CredentialGrant>);
 
-/// The policy snapshot `json` holds, unstamped.
-pub(super) fn policies(json: &[u8]) -> anyhow::Result<PolicySnapshot> {
-    let feed: PolicyFeed = serde_json::from_slice(json)?;
+/// The policy snapshot `reader` holds, parsed as it is read, unstamped.
+pub(super) fn read_policies(reader: impl std::io::Read) -> anyhow::Result<PolicySnapshot> {
+    let feed: PolicyFeed = serde_json::from_reader(reader)?;
     Ok(PolicySnapshot {
         projects: feed.projects.0,
         fetched_at_unix: 0,
@@ -46,9 +46,9 @@ pub(super) fn policies(json: &[u8]) -> anyhow::Result<PolicySnapshot> {
     })
 }
 
-/// The grant snapshot `json` holds, unstamped.
-pub(super) fn grants(json: &[u8]) -> anyhow::Result<GrantSnapshot> {
-    let feed: GrantFeed = serde_json::from_slice(json)?;
+/// The grant snapshot `reader` holds, parsed as it is read, unstamped.
+pub(super) fn read_grants(reader: impl std::io::Read) -> anyhow::Result<GrantSnapshot> {
+    let feed: GrantFeed = serde_json::from_reader(reader)?;
     Ok(GrantSnapshot {
         credentials: feed.credentials.0,
         fetched_at_unix: 0,

@@ -159,12 +159,16 @@ pub(crate) fn parse_keys(json: &str) -> anyhow::Result<JwksSnapshot> {
     })
 }
 
+/// A policy document's snapshot, parsed as the files are (`read_policy_file`).
+#[cfg(test)]
 pub(crate) fn parse_policies(json: impl AsRef<[u8]>) -> anyhow::Result<PolicySnapshot> {
-    compact::policies(json.as_ref())
+    compact::read_policies(json.as_ref())
 }
 
+/// A grant document's snapshot, parsed as the files are (`read_grant_file`).
+#[cfg(test)]
 pub(crate) fn parse_grants(json: impl AsRef<[u8]>) -> anyhow::Result<GrantSnapshot> {
-    compact::grants(json.as_ref())
+    compact::read_grants(json.as_ref())
 }
 
 // ---------------------------------------------------------------------
@@ -185,17 +189,42 @@ impl KeySource for FileKeySource {
 #[async_trait::async_trait]
 impl PolicySource for FilePolicySource {
     async fn fetch(&self) -> anyhow::Result<PolicySnapshot> {
-        let raw = tokio::fs::read(&self.0).await?;
-        parse_policies(&raw)
+        let path = self.0.clone();
+        on_a_blocking_thread(move || read_policy_file(&path)).await
     }
 }
 
 #[async_trait::async_trait]
 impl GrantSource for FileGrantSource {
     async fn fetch(&self) -> anyhow::Result<GrantSnapshot> {
-        let raw = tokio::fs::read(&self.0).await?;
-        parse_grants(&raw)
+        let path = self.0.clone();
+        on_a_blocking_thread(move || read_grant_file(&path)).await
     }
+}
+
+/// `read`'s answer, run on a blocking thread and joined: a feed file is
+/// parsed as it is read, which must not hold an executor thread.
+async fn on_a_blocking_thread<T: Send + 'static>(
+    read: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
+) -> anyhow::Result<T> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "auth feed file read; each refresh pass reads each feed file once and joins it, as tokio::fs::read's own blocking read did before the parse moved onto it; a pass past its deadline abandons it as it abandoned that read, and the read ends with the file"
+    )]
+    let read = tokio::task::spawn_blocking(read);
+    read.await?
+}
+
+/// The policy snapshot the file at `path` holds, parsed as it is read on
+/// the calling (blocking) thread: the file is never resident whole.
+pub(crate) fn read_policy_file(path: &std::path::Path) -> anyhow::Result<PolicySnapshot> {
+    compact::read_policies(std::io::BufReader::new(std::fs::File::open(path)?))
+}
+
+/// The grant snapshot the file at `path` holds, parsed as it is read on
+/// the calling (blocking) thread.
+pub(crate) fn read_grant_file(path: &std::path::Path) -> anyhow::Result<GrantSnapshot> {
+    compact::read_grants(std::io::BufReader::new(std::fs::File::open(path)?))
 }
 
 // ---------------------------------------------------------------------
@@ -888,5 +917,36 @@ mod tests {
         });
         assert_eq!((p.projects.len(), g.credentials.len()), (100_000, 100_000));
         assert!(peak <= 60 << 20, "the parse held {peak} bytes at once");
+    }
+
+    /// Tuning item 3c, step 1: reading a 100,000-tenant feed's files
+    /// never holds a whole file: each file's read holds at most what its
+    /// parse holds plus 1 MiB, its snapshot included.
+    #[test]
+    fn a_100k_tenant_feed_file_is_read_without_holding_the_file() {
+        let (policies, grants) = feed_of(100_000);
+        let dir = std::env::temp_dir().join(format!("feed-read-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (pp, gp) = (dir.join("policies.json"), dir.join("grants.json"));
+        std::fs::write(&pp, &policies).unwrap();
+        std::fs::write(&gp, &grants).unwrap();
+        let (parsed, parse_peak) = crate::test_alloc::peak_bytes(|| parse_policies(&policies));
+        let (read, read_peak) = crate::test_alloc::peak_bytes(|| read_policy_file(&pp));
+        let (grants_parsed, grants_parse_peak) =
+            crate::test_alloc::peak_bytes(|| parse_grants(&grants));
+        let (grants_read, grants_read_peak) =
+            crate::test_alloc::peak_bytes(|| read_grant_file(&gp));
+        std::fs::remove_dir_all(&dir).unwrap();
+        let counts =
+            |p: &PolicySnapshot, g: &GrantSnapshot| (p.projects.len(), g.credentials.len());
+        let (parsed, grants_parsed) = (parsed.unwrap(), grants_parsed.unwrap());
+        let (read, grants_read) = (read.unwrap(), grants_read.unwrap());
+        assert_eq!(counts(&read, &grants_read), counts(&parsed, &grants_parsed));
+        assert_eq!(counts(&read, &grants_read), (100_000, 100_000));
+        assert!(
+            read_peak <= parse_peak + (1 << 20)
+                && grants_read_peak <= grants_parse_peak + (1 << 20),
+            "policies: read {read_peak}, parse {parse_peak}; grants: read {grants_read_peak}, parse {grants_parse_peak}"
+        );
     }
 }

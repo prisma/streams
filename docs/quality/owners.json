@@ -3,6 +3,14 @@
     {
       "category": "effect",
       "count": 1,
+      "owner": "crate::on_a_blocking_thread",
+      "path": "src/auth_feed.rs",
+      "reason": "The file auth feeds' one blocking read: each refresh pass reads and parses each feed file once on a blocking thread and joins it (tokio::fs::read was the same blocking read, before the parse moved onto it so the file is never resident whole); a pass past its deadline abandons it as it abandoned that read, and it ends with the file.",
+      "syntax": "tokio::task::spawn_blocking"
+    },
+    {
+      "category": "effect",
+      "count": 1,
       "owner": "crate::run",
       "path": "src/bootstrap/rss.rs",
       "reason": "Canonical supervised RSS sampler; one joined finite pointer-free purge; failure returns TaskResult::Failed.",
