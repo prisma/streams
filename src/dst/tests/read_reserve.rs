@@ -231,3 +231,119 @@ async fn a_read_under_pressure_is_served_a_shorter_page_and_continues_from_its_c
     assert_eq!(cell.state.admission.read_memory().0, 0, "nothing held");
     engine_shutdown(&cell.state).await;
 }
+
+/// Record `n` of 64 KiB that does not compress: a pseudo-random text pad.
+fn noisy(n: usize) -> String {
+    let mut x = (n as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let pad: String = (0..64 * 1024)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            char::from(b'a' + (x % 26) as u8)
+        })
+        .collect();
+    format!(r#"{{"n":{n},"pad":"{pad}"}}"#)
+}
+
+/// Project 0's stream `name`, its records sealed into a segment object:
+/// `records` incompressible records of 64 KiB appended in one batch, then
+/// a requested seal, until the stream's every durable record is sealed.
+async fn sealed_stream(cell: &Cell, name: &str, records: usize) {
+    let path = format!("/v1/streams/{name}");
+    let created = cell
+        .call(0, "PUT", &path, br#"{"format":{"kind":"json"}}"#)
+        .await;
+    assert_eq!(created.0, 201);
+    let batch: Vec<String> = (0..records).map(noisy).collect();
+    let batch = format!("[{}]", batch.join(","));
+    let appended = cell
+        .call(
+            0,
+            "POST",
+            &format!("{path}/records:batch"),
+            batch.as_bytes(),
+        )
+        .await;
+    assert_eq!(appended.0, 200);
+    let sref = crate::tenant::TenantStreamRef::new(
+        crate::tenant::ProjectId::new(&project(0)).unwrap(),
+        crate::tenant::CanonicalStreamName::new(name).unwrap(),
+    );
+    let hash = cell
+        .state
+        .registry
+        .get(&sref)
+        .await
+        .unwrap()
+        .expect("live")
+        .storage_hash();
+    for engine in cell.state.shards.engines() {
+        engine
+            .seal_once(crate::shard::seal::Trigger::Requested)
+            .await
+            .expect("seal");
+        super::fixture_storage::wait_all_sealed(&engine, &[hash]).await;
+    }
+}
+
+/// A read's first sealed chunk is bounded by the read memory as admission
+/// is (Fable 5.1's condition on #240): with 1 MiB of read memory, 16
+/// concurrent reads without `maxBytes` of a stream whose first sealed
+/// chunk is over 512 KiB (16 records of 64 KiB of random letters, about
+/// 630 KB stored) wait for room for it and are then served or refused 503
+/// `read_memory_busy`, never more: the read memory peaks at no more than 1
+/// MiB and 512 KiB, every answer is 200 or that 503, and nothing stays
+/// held. Before: every admitted read's first chunk was claimed whatever the
+/// room, so four reads admitted at 256 KiB each held about 2.5 MB.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_reads_first_sealed_chunk_waits_for_the_read_memory_and_is_refused_as_admission_is() {
+    let mut spec = CellSpec::open(1);
+    // No tail ring: every read of the sealed records fetches their chunk.
+    spec.cli = |c| c.tail_ring_bytes = 0;
+    let cell = open_cell(spec).await;
+    sealed_stream(&cell, "sealed", 16).await;
+    let capacity = MIB;
+    cell.state.admission.set_read_memory_capacity(capacity);
+    cell.state.registry.sweep_cache();
+    let peak = std::sync::atomic::AtomicU64::new(0);
+    let done = AtomicBool::new(false);
+    let sample = async {
+        while !done.load(Ordering::Relaxed) {
+            peak.fetch_max(cell.state.admission.read_memory().0, Ordering::Relaxed);
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    };
+    let reads = async {
+        let reads = (0..16).map(|_| cell.call(0, "GET", "/v1/streams/sealed/records", b""));
+        let answers = futures_util::future::join_all(reads).await;
+        done.store(true, Ordering::Relaxed);
+        answers
+    };
+    let (answers, ()) = futures_util::future::join(reads, sample).await;
+    let mut statuses = std::collections::BTreeMap::new();
+    for (status, _, body) in &answers {
+        let code = (*status == 503)
+            .then(|| serde_json::from_slice::<serde_json::Value>(body).ok())
+            .flatten()
+            .and_then(|v| v["error"]["code"].as_str().map(str::to_string));
+        *statuses.entry((*status, code)).or_insert(0usize) += 1;
+    }
+    let peak = peak.load(Ordering::Relaxed);
+    let allowed: Vec<_> = [
+        (200u16, None),
+        (503u16, Some("read_memory_busy".to_string())),
+    ]
+    .into();
+    assert!(
+        statuses.keys().all(|k| allowed.contains(k)) && statuses.values().sum::<usize>() == 16,
+        "the answers: {statuses:?}"
+    );
+    assert!(
+        peak <= capacity + 512 * 1024,
+        "the read memory peaked at {peak} B against {capacity} B and one 512 KiB chunk; \
+         the answers {statuses:?}"
+    );
+    assert_eq!(cell.state.admission.read_memory().0, 0, "nothing held");
+    engine_shutdown(&cell.state).await;
+}

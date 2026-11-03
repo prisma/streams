@@ -59,6 +59,9 @@ struct Request {
     ticket: InflightTicket,
     share: OnceLock<ParkShare>,
     read: Arc<OnceLock<ReadHold>>,
+    /// Why its read's first sealed chunk was refused (`claim_read_until`),
+    /// which the read's failure then answers.
+    refused: OnceLock<ReadRefusal>,
     /// The weighted registry store work the request's task has made.
     weight: AtomicU64,
     /// The bytes its walks read that it has not paid for yet.
@@ -87,6 +90,7 @@ impl InflightTicket {
             ticket: self,
             share: OnceLock::new(),
             read: read.clone(),
+            refused: OnceLock::new(),
             weight: AtomicU64::new(0),
             coverage: AtomicU64::new(0),
             verdict: OnceLock::new(),
@@ -312,6 +316,39 @@ pub(crate) fn claim_read(claim: Claim, bytes: u64, forced: bool) -> bool {
                 .is_none_or(|hold| hold.claim(claim, bytes, forced))
         })
         .unwrap_or(true)
+}
+
+/// The served request is about to fetch its page's first sealed chunk of
+/// `bytes`: its read hold grows to cover it, waiting for room up to
+/// `READ_MEMORY_WAIT` as admission does (`ReadHold::claim_until`). False
+/// when none came: the refusal is kept for the read's failure to answer
+/// (`read_refused`). True outside a served request or for a request no
+/// admission reserved for.
+pub(crate) async fn claim_read_until(claim: Claim, bytes: u64) -> bool {
+    let Ok(read) = REQUEST.try_with(|request| request.read.clone()) else {
+        return true;
+    };
+    let Some(hold) = read.get() else {
+        return true;
+    };
+    let deadline = tokio::time::Instant::now() + super::read_memory::READ_MEMORY_WAIT;
+    match hold.claim_until(claim, bytes, deadline).await {
+        Ok(()) => true,
+        Err(refusal) => {
+            let _kept = REQUEST.try_with(|request| request.refused.set(refusal).is_ok());
+            false
+        }
+    }
+}
+
+/// Why the served request's read was refused its first sealed chunk, if it
+/// was: its failure answers that refusal (503 `read_memory_busy` or 429
+/// `project_memory_pressure`) rather than a storage failure.
+pub(crate) fn read_refused() -> Option<ReadRefusal> {
+    REQUEST
+        .try_with(|request| request.refused.get().copied())
+        .ok()
+        .flatten()
 }
 
 /// The served request waits again with its read reservation taken back: it

@@ -458,3 +458,36 @@ fn a_hold_grows_to_cover_its_claims_without_waiting() {
     drop(hold);
     assert_eq!(ledgers(), both(0));
 }
+
+/// A read's first chunk claims as admission reserves (Fable 5.1's
+/// condition on #240): with no room it waits `READ_MEMORY_WAIT` and is
+/// refused for the instance, its claim undone and nothing taken; a release
+/// during its wait gives it the room.
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
+async fn a_first_chunk_claim_waits_for_room_and_is_refused_after_the_wait() {
+    let ctl = ctl(4);
+    let other = ReadHold::try_reserve(&ctl, None, 0, 900 * KIB).unwrap();
+    let hold = ReadHold::try_reserve(&ctl, None, 0, 100 * KIB).unwrap();
+    let started = tokio::time::Instant::now();
+    let refused = hold
+        .claim_until(Claim::Fetched, 300 * KIB, started + READ_MEMORY_WAIT)
+        .await;
+    assert_eq!(refused, Err(ReadRefusal::Instance));
+    assert_eq!(
+        tokio::time::Instant::now() - started,
+        READ_MEMORY_WAIT,
+        "after the wait"
+    );
+    assert_eq!(ctl.read_memory().0, 1000 * KIB, "nothing taken");
+    let deadline = tokio::time::Instant::now() + READ_MEMORY_WAIT;
+    let claim = hold.claim_until(Claim::Fetched, 300 * KIB, deadline);
+    let release = async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        drop(other);
+    };
+    let (claimed, ()) = futures_util::future::join(claim, release).await;
+    assert_eq!(claimed, Ok(()), "the release gave it room");
+    assert_eq!(ctl.read_memory().0, 300 * KIB, "its hold covers its claim");
+    drop(hold);
+    assert_eq!(ctl.read_memory().0, 0);
+}

@@ -429,6 +429,46 @@ impl ReadHold {
         }
     }
 
+    /// `claim` as a read's first sealed chunk takes it: what it has claimed
+    /// of `claim` so far plus `bytes`, or of the other kind if larger, must
+    /// fit in its hold, which grows in both ledgers to cover it, waiting for
+    /// room until `deadline` as admission does (`take_until`). `Err` is the
+    /// ledger that stayed full, as admission refuses: the claim is undone and
+    /// the read takes nothing. A rendered hold claims nothing.
+    pub(crate) async fn claim_until(
+        &self,
+        claim: Claim,
+        bytes: u64,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), ReadRefusal> {
+        if self.rendered.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let (mine, other) = match claim {
+            Claim::Fetched => (&self.fetched, &self.decoded),
+            Claim::Decoded => (&self.decoded, &self.fetched),
+        };
+        let claimed = mine.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        let short = claimed
+            .max(other.load(Ordering::Relaxed))
+            .saturating_sub(self.bytes());
+        if short == 0 {
+            return Ok(());
+        }
+        let line = self.ctl.project_memory_line(self.byte_weight);
+        let memory = &self.ctl.inner.read_memory;
+        match Self::take_until(memory, self.project.as_ref(), line, || short, deadline).await {
+            Ok(taken) => {
+                self.bytes.fetch_add(taken, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(refusal) => {
+                mine.fetch_sub(bytes, Ordering::Relaxed);
+                Err(refusal)
+            }
+        }
+    }
+
     /// The request waits for data: nothing is materialized while it waits,
     /// so an unrendered reservation is released.
     pub(crate) fn unreserve(&self) {

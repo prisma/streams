@@ -96,16 +96,18 @@ OWNERS = (
     # legs: an empty pull pays its coverage, and a parked pull of a project
     # in read debt does not walk again.
     owner('admission_read_memory', 'src/admission/read_memory.rs',
-          'admission:: dst_tests::read_memory:: dst_tests::live_wait::'),
+          'dst_tests::read_reserve:: admission:: dst_tests::read_memory:: dst_tests::live_wait::'),
     owner('admission_park', 'src/admission/park.rs',
-          'admission:: dst_tests::parked_waits:: dst_tests::read_memory:: '
+          'dst_tests::read_reserve:: admission:: dst_tests::parked_waits:: dst_tests::read_memory:: '
           'dst_tests::shared_cell_hostile::a_create_pays_for_its_registry_writes '
           'dst_tests::shared_cell_hostile::a_listing_pays_for_the_descriptors_it_reads '
           'dst_tests::quota_stream_seed:: '
           'dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull '
           'dst_tests::fair_shed:: dst_tests::live_wait:: dst_tests::queue_overload:: dst_tests::weighted_shares::'),
+    owner('product_read_failure', 'src/product/read_failure.rs',
+          'dst_tests::read_reserve:: product::tests:: dst_tests::read_application::'),
     owner('product_read_memory', 'src/product/read_memory.rs',
-          'product::read_memory:: dst_tests::read_memory:: dst_tests::shared_cell_capacity:: '
+          'dst_tests::read_reserve:: product::read_memory:: dst_tests::read_memory:: dst_tests::shared_cell_capacity:: '
           'dst_tests::weighted_shares:: '
           'dst_tests::read_memory_wakes::a_shared_cells_default_page_reserves_one_mib '
           'dst_tests::shared_cell_hostile::a_create_pays_for_its_registry_writes '
@@ -163,7 +165,7 @@ OWNERS = (
     owner('shard_seal', 'src/shard/seal.rs', 'shard::seal:: dst_tests::idle_release::'),
     owner('shard_seal_steps', 'src/shard/seal/steps.rs', 'shard::seal::'),
     owner('shard_seal_open', 'src/shard/seal/open.rs', 'shard::seal:: shard::billing_read_tests::'),
-    owner('shard_seal_read', 'src/shard/seal/read.rs', 'shard::seal::read_tests:: shard::seal::read::plan_tests:: shard::seal::runs::runs_tests::a_read_the_directory_tiles_alone_fetches_no_footer shard::seal::fold_tests:: shard::seal::consolidate_tests:: dst_tests::reads_raw:: dst_tests::reads_applied:: shard::seal::gc_tests::'),
+    owner('shard_seal_read', 'src/shard/seal/read.rs', 'dst_tests::read_reserve:: shard::seal::read_tests:: shard::seal::read::plan_tests:: shard::seal::runs::runs_tests::a_read_the_directory_tiles_alone_fetches_no_footer shard::seal::fold_tests:: shard::seal::consolidate_tests:: dst_tests::reads_raw:: dst_tests::reads_applied:: shard::seal::gc_tests::'),
     owner('spill_directory_row', 'src/spill/directory/row.rs', 'spill::directory_tests:: shard::seal::'),
     owner('spill_crc32c', 'src/spill/crc32c.rs', 'spill::crc32c_tests:: spill::object_tests::'),
     owner('spill_directory', 'src/spill/directory.rs', 'spill::directory_tests:: shard::seal::read_tests::'),
@@ -285,7 +287,7 @@ OWNERS = (
     owner('queue_codec_tests', 'src/shard/queue_codec_tests.rs', 'shard::'),
     owner('durability_frontier_tests', 'src/shard/durability_frontier_tests.rs', 'shard::'),
     owner('read_budget', 'src/application/read_budget.rs', 'application::read'),
-    owner('read_decode', 'src/application/read_decode.rs', 'application::read'),
+    owner('read_decode', 'src/application/read_decode.rs', 'dst_tests::read_reserve:: application::read'),
     owner('read_decode_tests', 'src/application/read_decode/tests.rs', 'application::read'),
     owner('read_decode_paging_tests', 'src/application/read_decode/paging_tests.rs', 'application::read'),
     owner('read_keys', 'src/application/read_keys.rs', 'application::read'),

@@ -239,7 +239,7 @@ impl ShardEngine {
             }
             .into());
         }
-        let steps = within_read_memory(steps);
+        let steps = within_read_memory(steps).await?;
         let gets: Vec<_> = steps
             .iter()
             .filter_map(|step| match step {
@@ -618,27 +618,44 @@ impl Reach {
     }
 }
 
+/// The read's first chunk of `bytes` claimed, waiting for room as admission
+/// does; refused, the read fails as the store being unavailable.
+async fn first_chunk_claimed(bytes: u64) -> Result<(), RangeReadError> {
+    let fetched = crate::admission::read_memory::Claim::Fetched;
+    if crate::admission::park::claim_read_until(fetched, bytes).await {
+        return Ok(());
+    }
+    Err(RangeReadError::Store(slatedb::Error::unavailable(
+        "no read memory for the read's first chunk; retry".into(),
+    )))
+}
+
 /// The steps whose stored chunks the served request's read memory covers
-/// while it fetches them: each chunk is claimed before its GET
-/// (`admission::park::claim_read`), the first whatever the room, and the
-/// plan ends before the first chunk the hold cannot grow to cover, so the
-/// page ends there (tuning P1 item 2). The decoded page is claimed again
-/// as it is admitted (`application::read_decode`).
-fn within_read_memory(steps: Vec<Step>) -> Vec<Step> {
+/// while it fetches them: each chunk is claimed before its GET. The first
+/// waits for its room as admission does (`admission::park::claim_read_until`)
+/// and, refused, fails the read as the store being unavailable, which the
+/// request answers with the refusal (503 `read_memory_busy` or 429
+/// `project_memory_pressure`); every later chunk is claimed without waiting
+/// (`claim_read`) and the plan ends before the first the hold cannot grow
+/// to cover, so the page ends there (tuning P1 item 2, edge #240). The
+/// decoded page is claimed again as it is admitted (`application::read_decode`).
+async fn within_read_memory(steps: Vec<Step>) -> Result<Vec<Step>, RangeReadError> {
+    use crate::admission::read_memory::Claim;
     let mut first = true;
     let mut kept = Vec::with_capacity(steps.len());
     for step in steps {
         if let Step::Fetch(plan) = &step {
             let bytes = u64::from(plan.end - plan.start);
-            let fetched = crate::admission::read_memory::Claim::Fetched;
-            if !crate::admission::park::claim_read(fetched, bytes, first) {
+            if first {
+                first_chunk_claimed(bytes).await?;
+                first = false;
+            } else if !crate::admission::park::claim_read(Claim::Fetched, bytes, false) {
                 break;
             }
-            first = false;
         }
         kept.push(step);
     }
-    kept
+    Ok(kept)
 }
 
 /// The read's steps over the candidates (sorted by first offset), in the

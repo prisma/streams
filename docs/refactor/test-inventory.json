@@ -1989,6 +1989,17 @@
     "scenarios": []
   },
   {
+    "name": "a_reads_first_sealed_chunk_waits_for_the_read_memory_and_is_refused_as_admission_is",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "146fadb6574109f2c05e015a948044cbe86473e597b85241060b63463d31c016",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_reserve.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_receive_after_delete_in_the_same_group_is_refused",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

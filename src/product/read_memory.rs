@@ -452,6 +452,17 @@ fn page_bytes(method: &Method, path: &str, query: &str) -> Option<u64> {
     u64::try_from(asked).ok()
 }
 
+/// The answer to a read whose first sealed chunk found no room after its
+/// wait (`admission::park::read_refused`), as admission answers a read
+/// whose reservation found none: 503 `read_memory_busy` or 429
+/// `project_memory_pressure`, both `retry-after: 1`.
+pub(crate) fn refusal_response(refusal: ReadRefusal) -> Response {
+    match refusal {
+        ReadRefusal::Instance => read_memory_busy(),
+        ReadRefusal::Project => memory_pressure(None),
+    }
+}
+
 fn read_memory_busy() -> Response {
     let mut r = perr(
         StatusCode::SERVICE_UNAVAILABLE,

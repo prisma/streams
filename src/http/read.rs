@@ -52,7 +52,10 @@ pub(crate) fn read_failure_response(error: ReadFailure) -> Response {
             "deliver_unsupported_fork",
             "deliver=applied is not supported on forked streams",
         ),
-        E::Storage(message) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &message),
+        E::Storage(message) => match crate::admission::park::read_refused() {
+            Some(refusal) => crate::product::read_memory::refusal_response(refusal),
+            None => err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &message),
+        },
         E::Remote(error) => {
             // Edge change #178: a failed peer read asks for a retry after 1 s.
             let mut response = err_resp(
