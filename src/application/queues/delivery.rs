@@ -44,6 +44,10 @@ pub(crate) struct Settled {
 pub(crate) struct Claimed {
     messages: Vec<Message>,
     paused: bool,
+    /// `"shard_queue_state"` when the shard's queue state bound leased
+    /// nothing new (edge change #246); absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limited: Option<&'static str>,
 }
 
 impl QueueService {
@@ -125,15 +129,23 @@ impl QueueService {
             // the wait is not missed.
             let mut woken = std::pin::pin!(waiter.notified());
             woken.as_mut().enable();
-            let (deliveries, paused) = match self.op(t, op.clone_claim()).await? {
-                NqOut::Claimed { deliveries, paused } => (deliveries, paused),
+            let (deliveries, paused, limited) = match self.op(t, op.clone_claim()).await? {
+                NqOut::Claimed {
+                    deliveries,
+                    paused,
+                    limited,
+                } => (deliveries, paused, limited),
                 other => return Err(unexpected(&other)),
             };
             let now = tokio::time::Instant::now();
             if !deliveries.is_empty() || paused || now >= deadline {
                 self.reserve_leased(t, &deliveries).await?;
                 let messages = self.leased_messages(t, key, &deliveries).await?;
-                return Ok(Claimed { messages, paused });
+                return Ok(Claimed {
+                    messages,
+                    paused,
+                    limited: limited.then_some("shard_queue_state"),
+                });
             }
             let nap = Duration::from_secs(5).min(deadline - now);
             // Parked while it waits (shared cells M1, layout 6A package 1):

@@ -300,6 +300,16 @@ test("a paused group backs off 1 s, then 2 s, before claiming again", async () =
   await worker.stop();
 });
 
+test("a claim the shard's queue state bound limited says so; an ordinary one has no limited", async () => {
+  const limited = cell(() => json({ messages: [], paused: false, limited: "shard_queue_state" }));
+  const got = await limited.queue.claim({ waitMs: 0 });
+  assert.deepEqual(got, { messages: [], paused: false, limited: "shard_queue_state" });
+  const plain = cell(() => json({ messages: [], paused: false }));
+  const none = await plain.queue.claim({ waitMs: 0 });
+  assert.deepEqual(none, { messages: [], paused: false });
+  assert.equal("limited" in none, false);
+});
+
 test("empty claims back off only without a long poll", async () => {
   const polling = cell(() => json({ messages: [] }));
   const longPoll = polling.queue.process(() => {});

@@ -52,6 +52,7 @@ async fn on_each(e: &ShardEngine, op: impl Fn(u8) -> NqOp) -> Vec<NqOut> {
 async fn queues(e: &ShardEngine) {
     on_each(e, |_| NqOp::Create {
         cfg: QueueConfig::default(),
+        project: super::PROJECT,
     })
     .await;
 }

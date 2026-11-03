@@ -117,6 +117,14 @@ impl From<NqRefusal> for QueueFailure {
                     "the queue holds maxScheduledMessages scheduled messages; retry",
                 )
             },
+            NqRefusal::ShardQueueStateFull => QueueFailure {
+                retry_after: Some(5),
+                ..fail(
+                    C::Exhausted,
+                    "shard_queue_state_full",
+                    "the shard's queue state is at its line and this project over its share; retry",
+                )
+            },
             NqRefusal::DeliverAtBeyondRetention => fail(
                 C::Invalid,
                 "deliver_at_beyond_retention",
@@ -314,7 +322,8 @@ impl QueueService {
             }
         }
         let t = self.target(sref).await?;
-        match self.op(&t, NqOp::Create { cfg }).await? {
+        let project = crate::native_queue::keys::project_key(t.desc.project_id.as_str());
+        match self.op(&t, NqOp::Create { cfg, project }).await? {
             NqOut::Config { cfg, created } => Ok((created, cfg)),
             other => Err(unexpected(&other).into()),
         }

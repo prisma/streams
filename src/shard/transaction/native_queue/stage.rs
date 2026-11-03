@@ -8,6 +8,7 @@ use std::ops::Bound;
 use crate::native_queue::range::RangeRow;
 use crate::native_queue::rows::{STATE_ROW_VERSION, StateRow};
 use crate::native_queue::{NqRefusal, keys};
+use crate::shard::layout::queue_gauges;
 
 pub(in crate::shard::transaction) struct NativeStage {
     pub state: StateRow,
@@ -20,6 +21,14 @@ pub(in crate::shard::transaction) struct NativeStage {
     /// the dirty ones are written with the state row.
     pub ranges: BTreeMap<u64, RangeRow>,
     pub ranges_dirty: BTreeSet<u64>,
+    /// Each range row's stored bytes (key, value and the row overhead; 0
+    /// when absent) as the shard log holds it after this group's writes so
+    /// far: what the state row's `range_bytes` counts.
+    pub range_stored: BTreeMap<u64, u64>,
+    /// The queue's bytes per category the shard's gauges hold for it.
+    pub gauged: [u64; queue_gauges::CATEGORIES],
+    /// Whether this queue's operations staged gauge moves in this group.
+    pub gauges_staged: bool,
 }
 
 impl NativeStage {
@@ -59,6 +68,9 @@ impl NativeStage {
             rows: BTreeMap::new(),
             ranges: BTreeMap::new(),
             ranges_dirty: BTreeSet::new(),
+            range_stored: BTreeMap::new(),
+            gauged: [0; queue_gauges::CATEGORIES],
+            gauges_staged: false,
         }
     }
 
@@ -90,8 +102,10 @@ impl NativeStage {
             tracing::error!(queue = %crate::crypto::hex(&hash[..4]), "{why}");
             return Err(NqRefusal::Format(why));
         }
+        let state = StateRow::decode(&raw).map_err(NqRefusal::Internal)?;
         Ok(Self {
-            state: StateRow::decode(&raw).map_err(NqRefusal::Internal)?,
+            gauged: queue_gauges::categories(&state),
+            state,
             exists: true,
             ..Self::absent()
         })
@@ -265,8 +279,9 @@ impl super::super::CommitTransaction<'_> {
         Ok((rows, next.or(ended.then_some(i64::MAX))))
     }
 
-    /// Writes the changed range rows (deleted when empty), then the state
-    /// row if anything changed it.
+    /// Writes the changed range rows (deleted when empty), counting their
+    /// stored bytes, then the shard's queue gauges this operation moved,
+    /// then the state row if anything changed it.
     pub(super) fn nq_flush_state(&mut self, hash: &[u8; 16], st: &mut NativeStage) {
         for index in std::mem::take(&mut st.ranges_dirty) {
             let key = keys::by_offset(hash, keys::RANGE, index);
@@ -275,11 +290,22 @@ impl super::super::CommitTransaction<'_> {
                 .get(&index)
                 .filter(|r| !r.is_empty())
                 .map(RangeRow::encode);
+            let stored = value.as_ref().map_or(0, |v| stored_bytes(&key, v));
+            let before = st.range_stored.insert(index, stored).unwrap_or(0);
+            if before != stored {
+                st.state.range_bytes = st
+                    .state
+                    .range_bytes
+                    .saturating_sub(before)
+                    .saturating_add(stored);
+                st.state_dirty = true;
+            }
             match value {
                 Some(value) => self.nq_put(st, key, value),
                 None => self.nq_delete(st, key),
             }
         }
+        self.nq_flush_gauges(st);
         if st.state_dirty {
             let raw = st.state.encode();
             self.engine.gc_state().gate.mark_touched(hash);
@@ -288,6 +314,11 @@ impl super::super::CommitTransaction<'_> {
             st.state_dirty = false;
         }
     }
+}
+
+/// A row's stored bytes as the queue gauges count them.
+pub(super) fn stored_bytes(key: &[u8], value: &[u8]) -> u64 {
+    u64::try_from(key.len() + value.len()).unwrap_or(u64::MAX) + queue_gauges::ROW_OVERHEAD
 }
 
 /// The time of a time-ordered index key (the eight bytes after

@@ -25,6 +25,7 @@ use std::ops::Bound;
 use std::sync::Mutex;
 
 pub(crate) mod l0_watermark;
+pub(crate) mod queue_gauges;
 
 /// A stream's static billing meta as its handle holds it (layout 6, f3):
 /// not yet read, or read (or written) with zero counters, `None` for a
@@ -62,6 +63,8 @@ pub(crate) struct LayoutState {
     pub(crate) seal: super::seal::SealState,
     /// The L0 watermark (`l0_watermark`).
     pub(crate) l0: l0_watermark::L0Watermark,
+    /// The shard's queue-state gauges (`queue_gauges`).
+    pub(crate) queue_gauges: queue_gauges::QueueGauges,
     /// Where the log lives in the cell's topology, and the topology (S4 route A).
     place: Place,
 }

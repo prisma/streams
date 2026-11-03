@@ -370,6 +370,7 @@ async fn stored(r: &Rig, hash: [u8; 16]) -> StateRow {
 async fn indebted(r: &Rig, hash: [u8; 16], debt: u64) -> StateRow {
     let create = NqOp::Create {
         cfg: QueueConfig::default(),
+        project: [5; 16],
     };
     r.engine.submit_native_queue(hash, create).await.unwrap();
     let mut s = stored(r, hash).await;

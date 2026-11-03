@@ -18,6 +18,7 @@ use super::lane::{AtFrontier, LanePage, at_frontier};
 use super::stage::NativeStage;
 use super::*;
 use crate::native_queue::DeliveryView;
+use crate::shard::layout::queue_gauges;
 use crate::native_queue::rows::{Cause, DState, decode_scheduled};
 
 /// A due candidate.
@@ -143,6 +144,7 @@ impl CommitTransaction<'_> {
             return Ok(NqOut::Claimed {
                 deliveries: Vec::new(),
                 paused: true,
+                limited: false,
             });
         }
         let room = usize::try_from(
@@ -161,6 +163,16 @@ impl CommitTransaction<'_> {
             return Ok(NqOut::Claimed {
                 deliveries: Vec::new(),
                 paused: false,
+                limited: false,
+            });
+        }
+        // Over its project's share at the shard's active or failed line
+        // (S3b-DESIGN §8.2-§8.3): nothing new, and the reply says why.
+        if self.nq_limited(st, queue_gauges::ACTIVE) || self.nq_limited(st, queue_gauges::FAILED) {
+            return Ok(NqOut::Claimed {
+                deliveries: Vec::new(),
+                paused: false,
+                limited: true,
             });
         }
         let (candidates, after) = self.nq_candidates(&hash, st, max, t).await?;
@@ -189,6 +201,7 @@ impl CommitTransaction<'_> {
         Ok(NqOut::Claimed {
             deliveries: out,
             paused: false,
+            limited: false,
         })
     }
 

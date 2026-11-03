@@ -662,3 +662,118 @@ async fn over_the_shed_line_a_settle_that_ends_leases_passes_until_the_hard_line
     );
     engine_shutdown(&cell.state).await;
 }
+
+/// The shard engine holding project `i`'s queue `jobs`.
+async fn jobs_engine(cell: &Cell, i: usize) -> std::sync::Arc<crate::shard::ShardEngine> {
+    let sref = crate::tenant::ProjectId::new(&project(i))
+        .unwrap()
+        .stream_ref("jobs");
+    let desc = cell.state.registry.get(&sref).await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    cell.state
+        .shards
+        .resolve(&seg.shard_route, crate::shard_directory::Adoption::Internal)
+        .await
+        .unwrap()
+}
+
+/// One claim of up to `max` from project `i`'s queue `jobs`: its reply.
+async fn claim_reply(cell: &Cell, i: usize, max: usize) -> serde_json::Value {
+    let path = "/v1/queues/jobs/groups/default:claim";
+    let body = format!(r#"{{"max":{max}}}"#);
+    let (status, _, b) = cell.call(i, "POST", path, body.as_bytes()).await;
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(status, 200, "{v}");
+    v
+}
+
+/// A round of the draining project 1: one send, a claim that leases it
+/// and says nothing of a bound, its ack.
+async fn drain_round(cell: &Cell, n: usize) {
+    assert_eq!(send(cell, 1, n).await, SENT);
+    let v = claim_reply(cell, 1, 10).await;
+    assert_eq!(v["messages"].as_array().map(Vec::len), Some(1), "{v}");
+    assert_eq!(v.get("limited"), None, "the drain is never limited: {v}");
+    let token = v["messages"][0]["token"].as_str().unwrap();
+    let body = format!(r#"{{"ops":[{{"token":"{token}","op":"ack"}}]}}"#);
+    let path = "/v1/queues/jobs/groups/default:settle";
+    let (status, _, b) = cell.call(1, "POST", path, body.as_bytes()).await;
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(
+        (status, &v["results"][0]["outcome"]),
+        (200, &serde_json::json!("ok"))
+    );
+}
+
+/// One send of `{"n": n}` with the dedup key `k<key>` to project 0's
+/// queue `jobs`.
+async fn keyed_send(cell: &Cell, key: usize) -> Answer {
+    let body = format!(r#"{{"body":{{"n":{key}}},"dedupKey":"k{key}"}}"#);
+    ask(cell, 0, "POST", "/v1/queues/jobs/messages", &body).await
+}
+
+/// E4 (edge change #246; S3b-DESIGN §4.4 DST 4): on a shard whose queue
+/// state bound is 10,000 bytes (failed and dedup slices of 2,000), project
+/// 0 fills its queue's dedup slice (twelve keys of 168 bytes) and failed
+/// slice (seven failures of 296) while project 1's queue drains a message
+/// a round: every drain claim leases its message and none says `limited`;
+/// project 0's thirteenth fresh key is `429 shard_queue_state_full`,
+/// Retry-After 5, while its duplicates and plain sends are served; its
+/// claim past the failed line leases nothing and says
+/// `limited: "shard_queue_state"`; and the shard's sums are exact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn one_project_filling_its_dedup_and_failed_slices_leaves_another_projects_drain_unaffected()
+{
+    let cell = open_cell(CellSpec::queues(2)).await;
+    for i in 0..2 {
+        assert_eq!(ask(&cell, i, "PUT", "/v1/queues/jobs", "").await.0, 201);
+    }
+    let engine = jobs_engine(&cell, 0).await;
+    assert!(
+        std::sync::Arc::ptr_eq(&engine, &jobs_engine(&cell, 1).await),
+        "one shard"
+    );
+    let gauges = engine.queue_gauges_for_tests();
+    gauges.set_bound_for_tests(10_000);
+    let mut round = 0..;
+    for key in 0..12 {
+        assert_eq!(keyed_send(&cell, key).await, SENT, "key {key}");
+        drain_round(&cell, round.next().unwrap()).await;
+    }
+    let full = refused("shard_queue_state_full", "5");
+    assert_eq!(keyed_send(&cell, 12).await, full, "2,016 of a 2,000 slice");
+    let dup = keyed_send(&cell, 0).await;
+    assert_eq!(dup, (200, None, None), "a duplicate is served");
+    assert_eq!(send(&cell, 0, 99).await, SENT, "a plain send is served");
+    for n in 0..7 {
+        let token = lease_one(&cell).await;
+        let ((status, ..), outcome) = settle_one(&cell, &token, "fail").await;
+        assert_eq!((status, outcome.as_deref()), (200, Some("ok")), "fail {n}");
+        drain_round(&cell, round.next().unwrap()).await;
+    }
+    let limited = claim_reply(&cell, 0, 1).await;
+    assert_eq!(
+        limited,
+        serde_json::json!({ "messages": [], "paused": false, "limited": "shard_queue_state" }),
+        "2,072 of a 2,000 slice: nothing leased"
+    );
+    drain_round(&cell, round.next().unwrap()).await;
+    assert_eq!(gauges.shard()[..4], [0, 7 * 296, 0, 12 * 168], "exact");
+    let filler = cell.json(0, "GET", "/v1/queues/jobs").await;
+    let drained = cell.json(1, "GET", "/v1/queues/jobs").await;
+    assert_eq!(
+        (
+            &filler["stats"]["failed"],
+            &filler["stats"]["queuedMessages"],
+            &drained["stats"]["counters"]["acked"],
+            &drained["stats"]["queuedMessages"],
+        ),
+        (
+            &serde_json::json!(7),
+            &serde_json::json!(6),
+            &serde_json::json!(20),
+            &serde_json::json!(0),
+        )
+    );
+    engine_shutdown(&cell.state).await;
+}

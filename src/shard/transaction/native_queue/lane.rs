@@ -76,14 +76,14 @@ impl CommitTransaction<'_> {
         if let Some(row) = st.ranges.get(&index) {
             return Ok(row.clone());
         }
-        let raw = self
-            .nq_get(st, &keys::range(hash, offset))
-            .await
-            .map_err(NqRefusal::Internal)?;
-        let row = match raw {
-            Some(raw) => RangeRow::decode(&raw).map_err(NqRefusal::Internal)?,
+        let key = keys::range(hash, offset);
+        let raw = self.nq_get(st, &key).await.map_err(NqRefusal::Internal)?;
+        let row = match &raw {
+            Some(raw) => RangeRow::decode(raw).map_err(NqRefusal::Internal)?,
             None => RangeRow::default(),
         };
+        let stored = raw.map_or(0, |raw| super::stage::stored_bytes(&key, &raw));
+        st.range_stored.insert(index, stored);
         st.ranges.insert(index, row.clone());
         Ok(row)
     }

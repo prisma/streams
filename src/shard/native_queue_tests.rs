@@ -16,11 +16,14 @@ mod cold;
 mod floors;
 mod reads;
 mod roster;
+mod slices;
 mod sweeps;
 mod touched;
 mod unlease;
 
 const HASH: [u8; 16] = [9; 16];
+/// The project the tests' queues belong to, as the shard's gauges key it.
+const PROJECT: [u8; 16] = [5; 16];
 /// How long a test waits for a committer reply: one that never comes fails
 /// the test instead of hanging it.
 const REPLY_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
@@ -107,7 +110,15 @@ fn send_op(msgs: Vec<SendMessage>) -> NqOp {
 }
 
 async fn create(e: &ShardEngine, cfg: QueueConfig) {
-    let out = op(e, NqOp::Create { cfg }).await.unwrap();
+    let out = op(
+        e,
+        NqOp::Create {
+            cfg,
+            project: PROJECT,
+        },
+    )
+    .await
+    .unwrap();
     assert!(matches!(out, NqOut::Config { created: true, .. }));
 }
 
@@ -791,7 +802,9 @@ async fn a_claim_respects_bytes_in_flight_and_pause() {
     .await
     .unwrap()
     {
-        NqOut::Claimed { deliveries, paused } => assert!(deliveries.is_empty() && paused),
+        NqOut::Claimed {
+            deliveries, paused, ..
+        } => assert!(deliveries.is_empty() && paused),
         _ => panic!(),
     }
     assert!(state(&db).await.paused);

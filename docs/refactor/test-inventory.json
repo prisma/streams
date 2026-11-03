@@ -8047,6 +8047,17 @@
     "scenarios": []
   },
   {
+    "name": "one_project_filling_its_dedup_and_failed_slices_leaves_another_projects_drain_unaffected",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "9358dc03d614eef98756eafb834ed34f079524ed836c4ac3e383320a466f89ef",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_overload.rs",
+    "scenarios": []
+  },
+  {
     "name": "one_stream_carrying_a_shards_appends_holds_hot_entity_and_does_not_split",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

@@ -12,6 +12,7 @@ use super::*;
 use crate::crypto_page::SealedPage;
 use crate::native_queue::rows::{decode_dedup, encode_dedup, encode_scheduled};
 use crate::native_queue::{SendMessage, SendResult};
+use crate::shard::layout::queue_gauges;
 
 type SendArgs = (Vec<SendMessage>, [u8; 32], u32, i64);
 
@@ -55,6 +56,14 @@ impl CommitTransaction<'_> {
             .count() as u64;
         if scheduled > 0 && st.state.scheduled + scheduled > cfg.max_scheduled_messages {
             return Err(NqRefusal::ScheduledFull);
+        }
+        // Over its project's share at the shard's delayed or dedup line
+        // (S3b-DESIGN §8.2-§8.3): a batch that would add to that category
+        // is refused whole; an immediate send without a fresh key never.
+        if (scheduled > 0 && self.nq_limited(st, queue_gauges::DELAYED))
+            || (fresh_tags > 0 && self.nq_limited(st, queue_gauges::DEDUP))
+        {
+            return Err(NqRefusal::ShardQueueStateFull);
         }
         // Seal before the budget checks: the gauges count stored pages.
         let pages = self.nq_seal(local, hash, &new, (&subkey, key_version, t))?;

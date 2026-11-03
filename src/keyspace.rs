@@ -113,6 +113,9 @@ pub(crate) mod tag {
     pub(crate) const REPAIR: u8 = b'X';
     /// An ancestor object whose last reference here is gone, until its release is logged (S6).
     pub(crate) const RELEASE: u8 = b'E';
+    /// The queue-state gauges: the shard's and each project's bytes per category, and their
+    /// generation (`shard::layout::queue_gauges`).
+    pub(crate) const QUEUE_GAUGE: u8 = b'N';
 }
 
 /// The home of the shard at `prefix` (S3a-DESIGN §3.1): a static topology's shards are its
@@ -201,7 +204,7 @@ mod tests {
         super::tag::REPAIR,
         b'D', // queue debt index (reserved for #150)
         b'Z', // queue trim hints (S3b)
-        b'N', // queue-state gauges (S3b)
+        super::tag::QUEUE_GAUGE,
         super::tag::RELEASE,
         b'C', // lineage-sweep cursor (S6)
         b'T', // retired parent (S4)

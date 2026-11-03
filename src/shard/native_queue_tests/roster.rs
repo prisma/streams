@@ -44,7 +44,13 @@ async fn the_sweeper_reaches_every_rostered_queue_past_its_first_page() {
     let hashes = (0..DUE).map(due).chain((0..REAL_NOT_DUE).map(not_due));
     let creates = hashes.map(|hash| {
         let cfg = QueueConfig::default();
-        e.submit_native_queue(hash, NqOp::Create { cfg })
+        e.submit_native_queue(
+            hash,
+            NqOp::Create {
+                cfg,
+                project: super::PROJECT,
+            },
+        )
     });
     for created in futures_util::future::join_all(creates).await {
         created.expect("created");
@@ -116,7 +122,13 @@ async fn the_sweeper_sweeps_a_ticks_due_queues_together() {
     let (e, db) = engine("nq-roster-together").await;
     let creates = (0..QUEUES).map(|n| {
         let cfg = QueueConfig::default();
-        e.submit_native_queue(due(n), NqOp::Create { cfg })
+        e.submit_native_queue(
+            due(n),
+            NqOp::Create {
+                cfg,
+                project: super::PROJECT,
+            },
+        )
     });
     for created in futures_util::future::join_all(creates).await {
         created.expect("created");

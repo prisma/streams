@@ -175,6 +175,11 @@ export interface ClaimOptions {
 export interface ClaimResult<T> {
   messages: QueueMessage<T>[];
   paused: boolean;
+  /** Set when the server's shard leased nothing new because its queue
+   * state is at its line and this project over its share; the claim is
+   * empty, nothing was stored, and a later claim is served once the
+   * project's open or failed deliveries shrink. */
+  limited?: "shard_queue_state";
 }
 
 export type SettleOp =
@@ -379,9 +384,12 @@ export class Queue<T = unknown> {
       leaseMs: options.lease === undefined ? undefined : durationMs(options.lease, "lease"),
       waitMs: options.waitMs,
     };
-    const body = await this.json<{ messages: RawMessage[]; paused?: boolean }>("POST", this.group(":claim"),
-      { ...JSON_TYPE, ...this.kh("claim") }, JSON.stringify(doc), false, options.signal);
-    return { messages: body.messages.map((raw) => this.claimed(raw)), paused: body.paused === true };
+    const body = await this.json<{ messages: RawMessage[]; paused?: boolean; limited?: "shard_queue_state" }>(
+      "POST", this.group(":claim"), { ...JSON_TYPE, ...this.kh("claim") }, JSON.stringify(doc), false,
+      options.signal);
+    const result: ClaimResult<T> = { messages: body.messages.map((raw) => this.claimed(raw)), paused: body.paused === true };
+    if (body.limited !== undefined) result.limited = body.limited;
+    return result;
   }
 
   /** Settles leases by token (≤ 1,000 operations); one result per operation. */

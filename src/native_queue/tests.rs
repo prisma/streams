@@ -161,6 +161,8 @@ fn populated_state() -> StateRow {
     s.gap_count = 1_000_011;
     s.scheduled = 1_000_013;
     s.inline_bytes = 1_000_017;
+    s.range_bytes = 1_000_018;
+    s.project = *b"project-sixteen!";
     s.counters = rows::Counters {
         sent: 2_000_001,
         delivered: 2_000_002,
@@ -206,12 +208,17 @@ fn the_state_row_is_a_fixed_binary_layout_that_round_trips_exactly() {
     let raw = row.encode();
     assert_eq!(
         raw.len(),
-        528,
-        "4 version + 112 cfg + 40 clock/cursor/frontier/lane expiry + 1 flags + 72 counts \
-         + 104 counters + 24 debt + (4 + 40) url + (4 + 31) name + 4 wakeup version \
-         + 24 notify + 8 jitter + 48 floors + 8 roster = 528"
+        552,
+        "4 version + 112 cfg + 40 clock/cursor/frontier/lane expiry + 1 flags + 80 counts \
+         + 16 project + 104 counters + 24 debt + (4 + 40) url + (4 + 31) name \
+         + 4 wakeup version + 24 notify + 8 jitter + 48 floors + 8 roster = 552"
     );
     assert_eq!(raw[..4], [4, 0, 0, 0], "the layout's version leads the row");
+    assert_eq!(
+        raw[237..253],
+        *b"project-sixteen!",
+        "the project after the flags and the ten counts"
+    );
     assert_eq!(
         raw[156], 0b1_1001,
         "flags after version, cfg, clock, cursor, frontier and lane expiry: cursor \
@@ -234,7 +241,7 @@ fn the_state_row_is_a_fixed_binary_layout_that_round_trips_exactly() {
         Err("queue state row: version 3".to_owned())
     );
     let mut not_utf8 = raw.clone();
-    not_utf8[357 + 4 + 40 + 4] = 0xFF;
+    not_utf8[381 + 4 + 40 + 4] = 0xFF;
     assert_eq!(
         StateRow::decode(&not_utf8),
         Err("queue row: not UTF-8".to_owned()),
@@ -268,7 +275,7 @@ fn state_row_flags_and_optional_fields_round_trip_distinctly() {
     let flags: Vec<u8> = encoded.iter().map(|raw| raw[156]).collect();
     assert_eq!(flags, [0, 0b1_1000, 0b10, 0b100]);
     let lens: Vec<usize> = encoded.iter().map(Vec::len).collect();
-    assert_eq!(lens, [445 + 31, 445 + 31 + 4 + 8, 476, 476]);
+    assert_eq!(lens, [469 + 31, 469 + 31 + 4 + 8, 500, 500]);
     for (s, raw) in variants.iter().zip(&encoded) {
         assert_eq!(&StateRow::decode(raw).unwrap(), s);
     }

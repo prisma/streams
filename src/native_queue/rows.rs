@@ -29,7 +29,7 @@ use super::{Backoff, GroupConfig, QueueConfig};
 pub(crate) const STATE_ROW_VERSION: u32 = 4;
 /// The state row's length without its variable parts (the wake-up URL and
 /// name bytes, the URL's length, `roster_at`).
-const STATE_ROW_FIXED: usize = 445;
+const STATE_ROW_FIXED: usize = 469;
 const FLAG_CURSOR_STARTED: u8 = 1;
 const FLAG_PAUSED: u8 = 1 << 1;
 const FLAG_DELETING: u8 = 1 << 2;
@@ -135,6 +135,11 @@ pub(crate) struct StateRow {
     pub scheduled: u64,
     /// Bytes of the scheduled pages riding inline in their entries.
     pub inline_bytes: u64,
+    /// Stored bytes of the queue's range rows (keys, values, entry
+    /// overhead).
+    pub range_bytes: u64,
+    /// The queue's project, as the shard's gauges key it.
+    pub project: [u8; 16],
     pub counters: Counters,
     /// Deletion debt (§8.2 stage 2): bytes deleted and not yet collected.
     pub debt_bytes: u64,
@@ -266,10 +271,12 @@ impl StateRow {
                 self.gap_count,
                 self.scheduled,
                 self.inline_bytes,
+                self.range_bytes,
             ]
             .map(u64::to_le_bytes)
             .as_flattened(),
         );
+        v.extend_from_slice(&self.project);
         self.counters.put(&mut v);
         v.extend_from_slice(
             [
@@ -342,6 +349,11 @@ impl StateRow {
         let gap_count = r.u64()?;
         let scheduled = r.u64()?;
         let inline_bytes = r.u64()?;
+        let range_bytes = r.u64()?;
+        let project: [u8; 16] = r
+            .bytes(16)?
+            .try_into()
+            .map_err(|_| "queue state row: project")?;
         let counters = Counters::read(&mut r)?;
         let debt_bytes = r.u64()?;
         let debt_oldest_at = r.i64()?;
@@ -383,6 +395,8 @@ impl StateRow {
             gap_count,
             scheduled,
             inline_bytes,
+            range_bytes,
+            project,
             counters,
             debt_bytes,
             debt_oldest_at,

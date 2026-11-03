@@ -8,6 +8,7 @@ use crate::native_queue::{NqOp, NqOut, NqRefusal, NqResult, keys};
 mod admin;
 mod claim;
 mod deliveries;
+mod gauges;
 mod lane;
 mod send;
 mod settle;
@@ -38,6 +39,10 @@ impl CommitTransaction<'_> {
         // A queue's tail row lives in the queue segment (layout 6): its
         // first operation names it a queue before any row is staged.
         local.handle.native_queue.store(true, Ordering::Relaxed);
+        if let Err(refusal) = self.nq_load_gauges(local).await {
+            self.effects.native_acks.push((resp, Err(refusal)));
+            return;
+        }
         let mut st = match local.queue.native.take() {
             Some(st) => st,
             None => match self.nq_load(&hash).await {
@@ -69,8 +74,8 @@ impl CommitTransaction<'_> {
         st: &mut NativeStage,
         op: NqOp,
     ) -> NqResult {
-        if let NqOp::Create { cfg } = op {
-            return self.nq_create(local, hash, st, cfg);
+        if let NqOp::Create { cfg, project } = op {
+            return self.nq_create(local, hash, st, (cfg, project));
         }
         if !st.exists {
             return Err(NqRefusal::NotFound);

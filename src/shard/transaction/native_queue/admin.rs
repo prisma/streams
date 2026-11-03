@@ -30,8 +30,9 @@ impl CommitTransaction<'_> {
         local: &mut StreamOverlay,
         hash: [u8; 16],
         st: &mut NativeStage,
-        cfg: QueueConfig,
+        create: (QueueConfig, [u8; 16]),
     ) -> NqResult {
+        let (cfg, project) = create;
         cfg.validate().map_err(NqRefusal::InvalidConfig)?;
         if st.exists {
             if st.state.deleting {
@@ -50,6 +51,7 @@ impl CommitTransaction<'_> {
             cfg: cfg.clone(),
             jitter: keys::jitter_seed(&hash),
             frontier: local.fields.next,
+            project,
             ..StateRow::default()
         };
         st.exists = true;
