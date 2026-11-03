@@ -377,3 +377,40 @@ async fn the_floor_passes_the_sockets_own_operations_through() {
     socket.set_nodelay(false).unwrap();
     assert!(!socket.inner.nodelay().unwrap());
 }
+
+/// Looks at `socket` until it has seen `want` bytes.
+async fn look_until(
+    socket: &DrainStream<tokio::net::TcpStream>,
+    seen: &mut [u8],
+    want: usize,
+) -> usize {
+    loop {
+        let n = socket.peek(seen).await.unwrap();
+        if n >= want {
+            return n;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+/// A look at the socket (`DrainStream::peek`, how the serve loop reads a
+/// connection's protocol) sees the bytes the peer sent and leaves them for
+/// the read.
+#[tokio::test(crate = "crate::test_rt")]
+async fn a_look_at_the_socket_leaves_its_bytes_for_the_read() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let listener = super::DrainListener::new(listener, &HttpConfig::default());
+    let (client, accepted) =
+        futures_util::future::join(tokio::net::TcpStream::connect(addr), listener.accept()).await;
+    let (mut socket, _) = accepted.unwrap();
+    client.unwrap().write_all(b"PRI *").await.unwrap();
+    let mut seen = [0u8; 8];
+    let looked = tokio::time::timeout(Duration::from_secs(10), look_until(&socket, &mut seen, 5))
+        .await
+        .expect("the peer's bytes are seen within the bound");
+    assert_eq!(&seen[..looked], b"PRI *", "a look sees what the peer sent");
+    let mut read = [0u8; 5];
+    socket.read_exact(&mut read).await.unwrap();
+    assert_eq!(&read, b"PRI *", "and leaves it for the read");
+}

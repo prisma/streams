@@ -3373,7 +3373,7 @@
       "count": 1,
       "owner": "crate::serve_connections",
       "path": "src/http/serve.rs",
-      "reason": "Each accepted HTTP/1 connection is served by a task the listener's own JoinSet owns and joins at shutdown.",
+      "reason": "Each accepted connection, HTTP/1.1 or HTTP/2, is served by a task the listener's own JoinSet owns and joins at shutdown.",
       "syntax": "tokio::task::JoinSet::spawn"
     },
     {
@@ -3386,10 +3386,10 @@
     },
     {
       "category": "macro-dsl",
-      "count": 1,
+      "count": 2,
       "owner": "crate::serve_one",
       "path": "src/http/serve.rs",
-      "reason": "One connection selects its own end against the stop (edge change #180); the pinned Tokio macro is the await-any form, and the stop arm starts hyper's graceful shutdown and awaits the same connection; the http::serve stop tests drive both arms.",
+      "reason": "One connection selects the read of its protocol under the head deadline, then its own end, against the stop (edge changes #180 and #238); the pinned Tokio macro is the await-any form; a stop during the read closes the connection, and the stop arm of the second starts hyper's graceful shutdown and awaits the same connection; the http::serve deadline and stop tests drive every arm.",
       "syntax": "tokio::select"
     },
     {
