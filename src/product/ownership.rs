@@ -118,6 +118,32 @@ mod tests {
     use super::creation_error;
     use crate::application::creation::{CreationError, CreationFailure};
 
+    /// A wrong-key create is tagged `wrong_key` for the audit journal, as
+    /// the product create tagged it before its rendering moved here; any
+    /// other creation failure is not tagged by this rendering.
+    #[test]
+    fn only_a_wrong_key_create_is_tagged_wrong_key() {
+        let failure = |kind, code| CreationError {
+            kind,
+            code,
+            message: "m".into(),
+            owner: None,
+            retry_after: None,
+        };
+        let tag = |r: &axum::response::Response| {
+            r.extensions()
+                .get::<crate::audit::DenialTag>()
+                .map(|t| t.code)
+        };
+        let wrong = creation_error(failure(CreationFailure::WrongKey, "wrong_key"), None);
+        let conflict = creation_error(failure(CreationFailure::Conflict, "config_mismatch"), None);
+        assert_eq!(
+            (wrong.status().as_u16(), tag(&wrong)),
+            (403, Some("wrong_key"))
+        );
+        assert_eq!((conflict.status().as_u16(), tag(&conflict)), (409, None));
+    }
+
     /// Edge change #242: a product create whose registry read failed answers
     /// 503 `temporarily_unavailable`, retryable, `Retry-After: 1`, tagged
     /// with no project when there is none, as a failed descriptor read.

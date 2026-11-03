@@ -110,8 +110,8 @@ OWNERS = (
     owner('product_read_failure', 'src/product/read_failure.rs',
           'dst_tests::read_reserve:: product::tests:: dst_tests::read_application::'),
     owner('product_ownership', 'src/product/ownership.rs',
-          'dst_tests::forward_to_owner:: dst_tests::queue_product:: dst_tests::product_lifecycle::'
-          ' dst_tests::quota_tracker::'),
+          'product::ownership:: dst_tests::forward_to_owner:: dst_tests::queue_product::'
+          ' dst_tests::product_lifecycle:: dst_tests::quota_tracker:: dst_tests::lifecycle_creation::'),
     owner('product_read_memory', 'src/product/read_memory.rs',
           'dst_tests::read_reserve:: product::read_memory:: dst_tests::read_memory:: dst_tests::shared_cell_capacity:: '
           'dst_tests::weighted_shares:: '
