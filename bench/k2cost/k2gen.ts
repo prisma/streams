@@ -22,6 +22,7 @@ import { group, subs, tail, walk } from "./consume.ts";
 import { churn } from "./churn.ts";
 import { mux } from "./mux.ts";
 import { audit } from "./audit.ts";
+import { touch } from "./touch.ts";
 
 const USAGE = `k2gen <mode> [flags]
 
@@ -108,7 +109,7 @@ try {
   const meter = new Meter();
   const http = new Http(base.replace(/\/+$/, ""), hdrs, meter);
   const walkLag = mode === "walk" && o.str("from", "earliest").startsWith("lag:");
-  const runsToCompletion = mode === "setup" || mode === "drop" || mode === "churn" || mode === "audit" || (mode === "walk" && !walkLag);
+  const runsToCompletion = mode === "setup" || mode === "drop" || mode === "churn" || mode === "audit" || mode === "touch" || (mode === "walk" && !walkLag);
   const ctx: Ctx = {
     http,
     meter,
@@ -134,6 +135,7 @@ try {
     case "subs": result = await subs(ctx, signal); break;
     case "mux": result = await mux(ctx, signal); break;
     case "audit": result = await audit(ctx, signal); break;
+    case "touch": result = await touch(ctx, signal); break;
     default: throw new Error(`unreachable mode ${mode}`);
   }
   const ledger = await rep.finish({

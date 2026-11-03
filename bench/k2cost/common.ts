@@ -508,6 +508,7 @@ export const MODE_FLAGS: Record<string, string[]> = {
   subs: [...COMMON, ...PRODUCER, "count", "via", "connect-rate", "wait-ms"],
   mux: [...COMMON, ...PRODUCER, "project", "wait-ms", "group", "group-streams", "pull", "settle", "visibility-ms"],
   audit: [...COMMON, "parallel", "max-bytes", "expect"],
+  touch: [...COMMON, "rate", "passes", "concurrency", "append", "record-bytes", "max-bytes"],
   "corpus-stats": ["seed", "samples", "sizes", "payloads", "out", "sample"],
 };
 
