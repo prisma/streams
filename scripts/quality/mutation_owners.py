@@ -242,6 +242,7 @@ OWNERS = (
     owner('quota_stream_seed', 'src/quota/stream_seed.rs',
           'quota::stream_seed:: dst_tests::quota_stream_seed::'),
     owner('registry_cache', 'src/registry/cache.rs', 'registry::'),
+    owner('registry_cache_retained', 'src/registry/cache/retained.rs', 'registry::cache::'),
     # The catalog page's byte bounds (phase B item B5); the owner decided the
     # row on 2026-10-12 (OWNER-DECISIONS-2 X1 (b)).
     owner('registry_catalog', 'src/registry/catalog.rs',

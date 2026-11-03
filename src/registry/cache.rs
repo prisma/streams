@@ -28,6 +28,8 @@ use object_store::path::Path as ObjPath;
 
 use super::{CachedDesc, Registry, StreamDesc, decode_desc, desc_path};
 
+mod retained;
+
 /// The descriptor cache previously grew with every distinct name ever
 /// touched (static-audit memory finding: creates alone put 100k entries
 /// in it). At the cap, slots untouched for a TTL purge first (TTL is
@@ -83,6 +85,9 @@ struct Slots {
     /// every read's claim takes the next one, so no two slot states (of
     /// any stream, at any time) share a generation.
     last_generation: u64,
+    /// What filled slots leave as they leave the hot tier: the ETag and a
+    /// compact descriptor a read past the TTL revalidates with.
+    retained: retained::Retained,
 }
 
 /// One stream's slot. `entry` is `None` after an invalidation or under a
@@ -208,6 +213,8 @@ impl Slots {
         if let Some(held) = self.by_ref.remove(&sref) {
             self.bytes -= held.bytes;
         }
+        // The hot slot holds the stream now; nothing retained outlives it.
+        self.retained.forget(&sref);
         self.make_room(bytes);
         let generation = self.stamp();
         self.bytes += bytes;
@@ -276,13 +283,18 @@ impl Slots {
         before - self.by_ref.len()
     }
 
-    /// Removes every slot `goes` names, giving back its bytes.
+    /// Removes every slot `goes` names, giving back its bytes; a filled
+    /// one leaves its descriptor and ETag to the retained tier.
     fn evict(&mut self, goes: impl Fn(&Slot) -> bool) {
         let mut freed = 0;
-        self.by_ref.retain(|_, slot| {
+        let retained = &mut self.retained;
+        self.by_ref.retain(|sref, slot| {
             let gone = goes(slot);
             if gone {
                 freed += slot.bytes;
+                slot.entry
+                    .iter()
+                    .for_each(|entry| retained.keep(sref, entry));
             }
             !gone
         });
@@ -305,6 +317,7 @@ impl DescriptorCache {
                 bytes: 0,
                 sweep_at: SWEEP_FLOOR,
                 last_generation: 0,
+                retained: retained::Retained::new(retained::RETAIN_BYTES),
             }),
         }
     }
@@ -343,11 +356,14 @@ impl DescriptorCache {
 
     /// A write's publication: the slot is emptied under a fresh
     /// generation, never removed, so a read in flight sees the move. A
-    /// stream with no slot has no read in flight to inform.
+    /// stream with no slot has no read in flight to inform; what it has
+    /// retained is dropped, so the next read fetches the body.
     fn invalidate(&self, sref: &crate::tenant::TenantStreamRef) {
         let mut slots = self.slots();
         if slots.by_ref.contains_key(sref) {
             slots.put(sref.clone(), None);
+        } else {
+            slots.retained.forget(sref);
         }
     }
 
@@ -371,10 +387,16 @@ impl DescriptorCache {
         }
         // No slot: claim one, empty, so that a write or an eviction
         // between now and the publish moves the generation this read
-        // compares against. Absence is never a generation.
+        // compares against. Absence is never a generation. What the
+        // retained tier kept of the stream is revalidated as an expired
+        // slot's entry is: its ETag goes to the store as If-None-Match.
+        let held = slots
+            .retained
+            .take(sref)
+            .map(|(etag, desc)| (etag, Some(desc)));
         Lookup::Fetch {
             seen: slots.put(sref.clone(), None),
-            held: None,
+            held,
         }
     }
 
@@ -430,6 +452,17 @@ impl DescriptorCache {
             },
         );
         Ok(desc)
+    }
+
+    #[cfg(test)]
+    fn retain_budget(&self, budget: usize) {
+        self.slots().retained = retained::Retained::new(budget);
+    }
+
+    #[cfg(test)]
+    fn retained(&self) -> (usize, usize) {
+        let slots = self.slots();
+        (slots.retained.len(), slots.retained.bytes())
     }
 
     /// Force a slot past its TTL (its entry's freshness and its
@@ -508,6 +541,18 @@ impl Registry {
                 etag: None,
             },
         );
+    }
+
+    /// Test-only: a retained tier of `budget` bytes, empty.
+    #[cfg(test)]
+    pub(crate) fn retain_budget_for_tests(&self, budget: usize) {
+        self.cache.retain_budget(budget);
+    }
+
+    /// Test-only: (entries, bytes) the retained tier holds.
+    #[cfg(test)]
+    pub(crate) fn retained_for_tests(&self) -> (usize, usize) {
+        self.cache.retained()
     }
 
     /// Test-only: age `sref`'s slot past the TTL, as a quiet stream's
@@ -593,6 +638,8 @@ impl Registry {
     }
 }
 
+#[cfg(test)]
+mod retained_tests;
 #[cfg(test)]
 mod tests;
 

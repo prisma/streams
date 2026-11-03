@@ -271,15 +271,16 @@ async fn put_raw(store: &Arc<dyn ObjectStore>, name: &str, body: &[u8]) {
 /// Wrapper that counts get traffic and how it resolved, so the
 /// conditional-refresh path is provable rather than assumed.
 #[derive(Debug)]
-struct CountingStore {
-    inner: Arc<dyn ObjectStore>,
-    gets: std::sync::atomic::AtomicU64,
-    conditional: std::sync::atomic::AtomicU64,
-    not_modified: std::sync::atomic::AtomicU64,
-    puts: std::sync::atomic::AtomicU64,
-    omit_etag: std::sync::atomic::AtomicBool,
-    lose_put_reply: std::sync::atomic::AtomicBool,
+pub(super) struct CountingStore {
+    pub(super) inner: Arc<dyn ObjectStore>,
+    pub(super) gets: std::sync::atomic::AtomicU64,
+    pub(super) conditional: std::sync::atomic::AtomicU64,
+    pub(super) not_modified: std::sync::atomic::AtomicU64,
+    pub(super) puts: std::sync::atomic::AtomicU64,
+    pub(super) omit_etag: std::sync::atomic::AtomicBool,
+    pub(super) lose_put_reply: std::sync::atomic::AtomicBool,
 }
+
 impl std::fmt::Display for CountingStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "CountingStore")
