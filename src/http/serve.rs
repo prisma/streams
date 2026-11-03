@@ -10,6 +10,7 @@ use crate::config::HttpConfig;
 use super::{NOFILE_HARD, NOFILE_SOFT, raise_nofile, spawn_runtime_watchdog};
 
 mod drain;
+mod http2_bounds;
 
 /// The hyper builder every connection is served with; cloned per accept
 /// (an `Arc` bump and a parser-config copy). A connection that opens with
@@ -65,12 +66,14 @@ pub(crate) fn connection_builder(
     b
 }
 
-/// What each accepted connection is served with: the builder, and the
-/// head deadline its protocol is read under (`serve_one`).
+/// What each accepted connection is served with: the builder, the head
+/// deadline its protocol is read under (`serve_one`), and the listener's
+/// places for HTTP/2 connections.
 #[derive(Clone)]
 struct Posture {
     builder: hyper_util::server::conn::auto::Builder<hyper_util::rt::TokioExecutor>,
     head: std::time::Duration,
+    http2: http2_bounds::Http2Connections,
 }
 
 impl Posture {
@@ -78,6 +81,7 @@ impl Posture {
         Self {
             builder: connection_builder(http),
             head: http.h1_header_timeout,
+            http2: http2_bounds::Http2Connections::new(),
         }
     }
 }
@@ -227,27 +231,35 @@ async fn serve_connections(
 /// The connection's protocol is read from its first bytes under the head
 /// deadline (`opening`), so a socket that never sends one is closed at the
 /// deadline as before; an HTTP/1.1 connection's head deadline is what is
-/// left of it.
+/// left of it. An HTTP/2 connection past the listener's cap is refused
+/// (`http2_bounds::refuse`); one served holds its place until it ends.
 async fn serve_one(
     sock: drain::DrainStream<tokio::net::TcpStream>,
     svc: hyper_util::service::TowerToHyperService<axum::Router>,
     posture: Posture,
     stop: crate::tasks::Cancellation,
 ) {
-    let Posture { builder, head } = posture;
+    let Posture {
+        builder,
+        head,
+        http2,
+    } = posture;
     let deadline = tokio::time::Instant::now() + head;
     let opened = tokio::select! {
         opened = tokio::time::timeout_at(deadline, opening(&sock)) => opened,
         () = stop.cancelled() => return,
     };
-    let builder = match opened {
-        Ok(Ok(Opening::Http2)) => builder.http2_only(),
+    let (builder, _place) = match opened {
+        Ok(Ok(Opening::Http2)) => match http2.admit() {
+            Some(place) => (builder.http2_only(), Some(place)),
+            None => return http2_bounds::refuse(sock, deadline).await,
+        },
         Ok(Ok(Opening::Http1)) => {
             let mut builder = builder;
             builder.http1().header_read_timeout(
                 deadline.saturating_duration_since(tokio::time::Instant::now()),
             );
-            builder.http1_only()
+            (builder.http1_only(), None)
         }
         Ok(Err(error)) => {
             tracing::debug!("connection ended before its first request: {error}");
@@ -336,10 +348,10 @@ mod tests {
 
     /// The rig deadline: short enough to observe, long enough that a
     /// loaded runner's scheduling gap never masquerades as idleness.
-    const DEADLINE: Duration = Duration::from_secs(1);
+    pub(super) const DEADLINE: Duration = Duration::from_secs(1);
     /// Every wait is bounded well past the deadline; a test that waits
     /// this long fails by assertion, it never hangs.
-    const BOUND: Duration = Duration::from_secs(4);
+    pub(super) const BOUND: Duration = Duration::from_secs(4);
     /// The rig's stop drain: past `/slow`'s answer, inside the 5 s grace
     /// the rigs stop their supervisor with.
     const DRAIN: Duration = Duration::from_secs(3);
@@ -351,9 +363,7 @@ mod tests {
     }
 
     /// The production serve loop over the rig's routes, on `deadline`.
-    async fn serve(deadline: Duration) -> (std::net::SocketAddr, TaskSupervisor) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+    pub(super) async fn serve(deadline: Duration) -> (std::net::SocketAddr, TaskSupervisor) {
         let app = axum::Router::new()
             .route("/fast", axum::routing::get(|| async {}))
             .route("/hang", axum::routing::get(std::future::pending::<()>))
@@ -371,6 +381,16 @@ mod tests {
                     tokio::time::sleep(deadline * 5 / 2).await;
                 }),
             );
+        serve_app(deadline, app).await
+    }
+
+    /// The production serve loop over `app`, on `deadline`.
+    pub(super) async fn serve_app(
+        deadline: Duration,
+        app: axum::Router,
+    ) -> (std::net::SocketAddr, TaskSupervisor) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
         let tasks = TaskSupervisor::new();
         let serve_tasks = tasks.clone();
         let http = HttpConfig {
@@ -395,7 +415,7 @@ mod tests {
 
     /// Reads until the server closes. EOF and a reset both mean closed
     /// (a close with unread request bytes queued resets on macOS).
-    async fn closed_within(sock: &mut TcpStream, bound: Duration) -> Result<(), String> {
+    pub(super) async fn closed_within(sock: &mut TcpStream, bound: Duration) -> Result<(), String> {
         let mut buf = [0u8; 64];
         match tokio::time::timeout(bound, sock.read(&mut buf)).await {
             Ok(Ok(0)) => Ok(()),
@@ -407,7 +427,7 @@ mod tests {
     }
 
     /// Reads one response head (the rig's handlers answer without a body).
-    async fn response_head(sock: &mut TcpStream) -> String {
+    pub(super) async fn response_head(sock: &mut TcpStream) -> String {
         let mut buf = Vec::new();
         let mut byte = [0u8; 1];
         while !buf.ends_with(b"\r\n\r\n") {
@@ -612,7 +632,7 @@ mod tests {
     /// An HTTP/2 connection to the rig with prior knowledge, and the
     /// connection future to drive beside its requests; it ends when the
     /// server closes the connection.
-    async fn http2(
+    pub(super) async fn http2(
         addr: std::net::SocketAddr,
     ) -> (
         hyper::client::conn::http2::SendRequest<axum::body::Body>,
@@ -631,7 +651,10 @@ mod tests {
         .unwrap()
     }
 
-    fn get(addr: std::net::SocketAddr, path: &str) -> axum::http::Request<axum::body::Body> {
+    pub(super) fn get(
+        addr: std::net::SocketAddr,
+        path: &str,
+    ) -> axum::http::Request<axum::body::Body> {
         axum::http::Request::get(format!("http://{addr}{path}"))
             .body(axum::body::Body::empty())
             .unwrap()
