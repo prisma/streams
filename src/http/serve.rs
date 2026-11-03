@@ -289,9 +289,15 @@ async fn serve_one(
 /// The bytes an HTTP/2 connection with prior knowledge opens with.
 const HTTP2_PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
-/// How long `opening` waits between looks at a preface that has arrived in
-/// part: a look returns at once while the bytes it saw wait unread.
+/// How long `opening` first waits between looks at a preface that has
+/// arrived in part: a look returns at once while the bytes it saw wait
+/// unread. Each later wait doubles, to at most [`PREFACE_LOOK_MAX`], so a
+/// stalled preface costs about 125 looks in the 120 s head deadline (whose
+/// timeout ends the wait), not one every 5 ms (edge change #238).
 const PREFACE_LOOK: std::time::Duration = std::time::Duration::from_millis(5);
+
+/// The longest wait between two looks at a partial preface.
+const PREFACE_LOOK_MAX: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The protocol a connection opened with.
 #[derive(Debug, PartialEq, Eq)]
@@ -305,6 +311,7 @@ enum Opening {
 /// byte departs from it or the peer closes.
 async fn opening(sock: &drain::DrainStream<tokio::net::TcpStream>) -> std::io::Result<Opening> {
     let mut seen = [0u8; HTTP2_PREFACE.len()];
+    let mut wait = PREFACE_LOOK;
     loop {
         let n = sock.peek(&mut seen).await?;
         if n == 0 || seen[..n] != HTTP2_PREFACE[..n] {
@@ -313,8 +320,15 @@ async fn opening(sock: &drain::DrainStream<tokio::net::TcpStream>) -> std::io::R
         if n == HTTP2_PREFACE.len() {
             return Ok(Opening::Http2);
         }
-        tokio::time::sleep(PREFACE_LOOK).await;
+        tokio::time::sleep(wait).await;
+        wait = look_again(wait);
     }
+}
+
+/// The wait before the look after one that waited `wait`: twice as long, at
+/// most [`PREFACE_LOOK_MAX`].
+fn look_again(wait: std::time::Duration) -> std::time::Duration {
+    wait.saturating_mul(2).min(PREFACE_LOOK_MAX)
 }
 
 /// The stop's drain (#180): every connection began its graceful shutdown at
@@ -445,6 +459,29 @@ mod tests {
             buf.push(byte[0]);
         }
         String::from_utf8(buf).unwrap()
+    }
+
+    /// A preface that stalls part way is looked at after 5 ms, then at
+    /// doubling waits up to 1 s: 127 looks in the default 120 s head
+    /// deadline, where a look every 5 ms made 24,001.
+    #[test]
+    fn a_stalled_preface_is_looked_at_less_and_less_often() {
+        let head = Duration::from_secs(120);
+        let mut waits = vec![super::PREFACE_LOOK];
+        let mut at = Duration::ZERO;
+        let mut looks = 1;
+        // Bounded, so a schedule that never waits fails rather than spins.
+        while looks < 100_000 && at + waits[waits.len() - 1] <= head {
+            at += waits[waits.len() - 1];
+            looks += 1;
+            waits.push(super::look_again(waits[waits.len() - 1]));
+        }
+        let ms: Vec<u128> = waits.iter().take(10).map(Duration::as_millis).collect();
+        assert_eq!(
+            (looks, ms),
+            (127, vec![5, 10, 20, 40, 80, 160, 320, 640, 1_000, 1_000]),
+            "looks in the head deadline, and the first ten waits"
+        );
     }
 
     /// A connection that never completes a request head is closed at the
