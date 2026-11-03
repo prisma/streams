@@ -123,6 +123,10 @@ OWNERS = (
     owner('admission_forwards', 'src/admission/forwards.rs',
           'admission::forwards:: '
           'dst_tests::forward_to_owner::forwards_to_a_silent_owner_leave_the_non_owners_own_streams_served'),
+    # The pre-auth survival bound (edge change #239): four times the cap, at
+    # most what two fifths of the RSS shed line holds.
+    owner('admission_survival', 'src/admission/survival.rs',
+          'admission::tests:: bootstrap::tests::a_server_that_sets_nothing_sheds_writes'),
     owner('quota_offered', 'src/quota/offered.rs',
           'quota::offered:: dst_tests::fair_shed:: dst_tests::weighted_shares::'),
     owner('consumer_pull_wait', 'src/application/consumer/pull_wait.rs',

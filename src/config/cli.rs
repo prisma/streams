@@ -385,11 +385,13 @@ pub struct CliArgs {
     /// platform that carries many clients' requests to one instance on a
     /// few HTTP/2 connections holds thousands in flight, and at 512 the cap
     /// refused its sends near 2,000/s while the instance held 5,000/s on
-    /// the 1 GiB profile at 4,096. Shared cells state their own (512 in
-    /// deploy/profiles/shared-cell.env). The count covers every request on
-    /// every route except waits parked for data; above four times the cap
-    /// every /v1/stream, /v1/streams and /v1/queues request is refused with
-    /// 503 before authentication.
+    /// the 1 GiB profile at 4,096. Shared and dedicated cells state their own
+    /// (512 in deploy/profiles/shared-cell.env and dedicated-cell.env). The count covers every request on
+    /// every route except waits parked for data; above four times the cap,
+    /// or fewer when two fifths of ADMIT_RSS_SHED_MB at 44 KiB a connection
+    /// holds fewer (4,654 at 500 MB; edge change #239), every /v1/stream,
+    /// /v1/streams and /v1/queues request is refused with 503 before
+    /// authentication.
     #[arg(long, env = "ADMIT_MAX_INFLIGHT", default_value_t = 4_096)]
     pub(crate) admit_max_inflight: i64,
 

@@ -127,14 +127,15 @@ fn a_server_that_sets_nothing_seals_by_age_after_forty_five_seconds() {
     );
 }
 
-/// The admission controller of a server that sets nothing: the two caps as
-/// `run` copies them from the parsed settings. The other gates are off.
+/// The admission controller of a server that sets nothing: the two caps and
+/// the RSS shed line as `run` copies them from the parsed settings (no RSS
+/// is sampled, so the line sheds nothing). The other gates are off.
 fn default_admission() -> crate::admission::AdmissionController {
     let cli = crate::config::CliArgs::deterministic();
     crate::admission::AdmissionController::new(crate::admission::AdmissionKnobs {
         max_inflight: cli.admit_max_inflight,
         per_stream_cap: cli.admit_max_inflight_per_stream,
-        rss_shed_mb: 0,
+        rss_shed_mb: cli.admit_rss_shed_mb,
         project_memory_pressure_bytes: 0,
         project_memory_release_pct: 75,
         subscriptions: crate::admission::SubscriptionCapacity {
@@ -157,9 +158,9 @@ fn a_server_that_sets_nothing_sheds_writes_above_4096_in_flight() {
     );
     assert_eq!(
         (
-            admission.survival_refused(16_384, "/v1/stream/a"),
-            admission.survival_refused(16_385, "/v1/stream/a"),
-            admission.survival_refused(16_385, "/health"),
+            admission.survival_refused(4_654, "/v1/stream/a"),
+            admission.survival_refused(4_655, "/v1/stream/a"),
+            admission.survival_refused(4_655, "/health"),
         ),
         (false, true, false)
     );

@@ -9,6 +9,7 @@
     "admission_limits": 27,
     "admission_park": 31,
     "admission_read_memory": 87,
+    "admission_survival": 10,
     "append": 46,
     "append_admission": 3,
     "append_close": 39,

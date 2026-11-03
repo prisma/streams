@@ -29,16 +29,12 @@ pub(crate) mod forwards;
 pub(crate) mod live_units;
 pub(crate) mod park;
 pub(crate) mod read_memory;
+mod survival;
 
 /// Bound on distinct streams tracked by the per-stream admission map:
 /// the map stays proportional to concurrently-active streams and can
 /// never grow without bound (fail OPEN at the bound, never leak).
 const STREAM_INFLIGHT_MAX_TRACKED: usize = 65_536;
-
-/// The pre-auth survival bound is this many times the ordinary cap: a
-/// process at 4x its admission cap is defending its sockets, not
-/// answering capacity questions (Round-13 review).
-const SURVIVAL_MULTIPLIER: i64 = 4;
 
 /// The live-subscription budget: the EFFECTIVE cap the runtime enforces
 /// (resolved against the descriptor ceiling at boot) and the CONFIGURED
@@ -355,8 +351,9 @@ impl AdmissionController {
         Some(ParkedTicket { ctl: self.clone() })
     }
 
-    /// The PRE-AUTH survival bound for a request on `path`: only an
-    /// absolute multiple of the ordinary cap, only on the stream surfaces
+    /// The PRE-AUTH survival bound for a request on `path`: four times the
+    /// ordinary cap, at most what the RSS shed line holds (`survival::bound`,
+    /// edge change #239), only on the stream surfaces
     /// (`/v1/stream*`) and the queue surface (`/v1/queues`, whose sends and
     /// claims hold the same sockets and committer; layout 6A package 1), no
     /// capacity answer — a process this far over its cap is defending its
@@ -366,7 +363,7 @@ impl AdmissionController {
         let cap = self.max_inflight();
         let current = current - self.inner.parked.load(Ordering::Relaxed);
         let data_path = path.starts_with("/v1/stream") || path.starts_with("/v1/queues");
-        let refuse = cap > 0 && data_path && current > cap.saturating_mul(SURVIVAL_MULTIPLIER);
+        let refuse = cap > 0 && data_path && current > survival::bound(cap, self.rss_shed_mb());
         if refuse {
             self.inner.shed_total.fetch_add(1, Ordering::Relaxed);
             self.inner.shed_survival.fetch_add(1, Ordering::Relaxed);
@@ -786,6 +783,26 @@ mod tests {
         assert_eq!(c.admit_write_inflight(), Ok(()));
         let s = c.snapshot().shed;
         assert_eq!((s.total, s.survival, s.inflight), (3, 2, 1), "{s:?}");
+    }
+
+    /// The survival bound is the lower of four times the cap and the
+    /// request-connections two fifths of the RSS shed line holds at 44 KiB
+    /// each: 4,654 on the 1 GiB profile's 500 MB line at a 4,096 cap, four
+    /// times the cap at 1.8 GB or with the line off.
+    #[test]
+    fn the_survival_bound_is_the_lower_of_four_caps_and_the_shed_lines_connections() {
+        let bounds = |cap: i64, line: u64| {
+            let c = ctl(cap, 0, line, 0);
+            let mut held = 0;
+            while !c.survival_refused(held + 1, "/v1/stream/a") && held < 1 << 20 {
+                held += 1;
+            }
+            (held, c.snapshot().shed.survival)
+        };
+        assert_eq!(bounds(4_096, 500), (4_654, 1), "500 MiB x 0.4 / 44 KiB");
+        assert_eq!(bounds(512, 500), (2_048, 1), "4 x 512 under the line");
+        assert_eq!(bounds(4_096, 1_800), (16_384, 1), "4 x 4,096 under 1.8 GB");
+        assert_eq!(bounds(4_096, 0), (16_384, 1), "no line: 4 x the cap");
     }
 
     /// A parked request leaves the write gate, the survival bound and the
