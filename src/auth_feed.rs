@@ -40,10 +40,12 @@ use crate::auth::{
     AUD_CUSTOMER, AUD_INTERNAL, AuthService, JwksKey, JwksSnapshot, KeyAudience, audience_shared,
 };
 use crate::project_policy::{
-    CredentialGrant, CredentialStatus, GrantSnapshot, GrantSource, PolicySnapshot, PolicySource,
-    ProjectPolicy, ProjectQuotas, ProjectStatus,
+    CredentialStatus, GrantSnapshot, GrantSource, PolicySnapshot, PolicySource, ProjectQuotas,
+    ProjectStatus,
 };
-use crate::tenant::{ProjectId, ScopeSet, StreamGrant, WorkspaceId};
+use crate::tenant::{ProjectId, WorkspaceId};
+
+mod compact;
 
 /// Verification keys, mirroring `PolicySource`/`GrantSource`.
 #[async_trait::async_trait]
@@ -80,13 +82,6 @@ struct KeyDoc {
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PoliciesDoc {
-    feed_version: u64,
-    projects: Vec<PolicyDoc>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
 struct PolicyDoc {
     project_id: ProjectId,
     workspace_id: WorkspaceId,
@@ -97,13 +92,6 @@ struct PolicyDoc {
     /// Required, as in the contract (shared-cells R3): a policy without
     /// quotas would be an unlimited project. Each field may be absent.
     quotas: ProjectQuotas,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct GrantsDoc {
-    feed_version: u64,
-    credentials: Vec<GrantDoc>,
 }
 
 #[derive(serde::Deserialize)]
@@ -171,87 +159,12 @@ pub(crate) fn parse_keys(json: &str) -> anyhow::Result<JwksSnapshot> {
     })
 }
 
-pub(crate) fn parse_policies(json: &str) -> anyhow::Result<PolicySnapshot> {
-    let doc: PoliciesDoc = serde_json::from_str(json)?;
-    let mut projects = HashMap::new();
-    for p in doc.projects {
-        crate::tenant::validate_cell_id(&p.cell_id)
-            .map_err(|e| anyhow::anyhow!("project {:?}: bad cell_id: {e}", p.project_id))?;
-        let policy = ProjectPolicy {
-            project_id: p.project_id.clone(),
-            workspace_id: p.workspace_id,
-            cell_id: Arc::from(p.cell_id.as_str()),
-            project_policy_version: p.project_policy_version,
-            ownership_version: p.ownership_version,
-            status: p.status,
-            quotas: p.quotas,
-        };
-        anyhow::ensure!(
-            projects.insert(p.project_id.clone(), policy).is_none(),
-            "duplicate project {:?}",
-            p.project_id
-        );
-    }
-    Ok(PolicySnapshot {
-        projects,
-        fetched_at_unix: 0,
-        feed_version: doc.feed_version,
-    })
+pub(crate) fn parse_policies(json: impl AsRef<[u8]>) -> anyhow::Result<PolicySnapshot> {
+    compact::policies(json.as_ref())
 }
 
-pub(crate) fn parse_grants(json: &str) -> anyhow::Result<GrantSnapshot> {
-    let doc: GrantsDoc = serde_json::from_str(json)?;
-    let mut credentials = HashMap::new();
-    for g in doc.credentials {
-        anyhow::ensure!(!g.credential_id.is_empty(), "credential with empty id");
-        let (scopes, unknown) = ScopeSet::parse(&g.scopes);
-        anyhow::ensure!(
-            unknown == 0,
-            "credential {:?}: {unknown} unknown scope(s) in {:?} — a typo \
-             here silently narrows authority, refuse it at load",
-            g.credential_id,
-            g.scopes
-        );
-        let grant = match g.stream_prefixes {
-            None => StreamGrant::All,
-            Some(v) if v.is_empty() => anyhow::bail!(
-                "credential {:?}: stream_prefixes is an EMPTY array (grants \
-                 nothing); omit the field for all-streams or list prefixes",
-                g.credential_id
-            ),
-            Some(v) => {
-                // Review item 6: the same SET normalizer as tokens —
-                // per-prefix grammar, the 64-prefix cap, and
-                // redundancy pruning.
-                let refs: Vec<&str> = v.iter().map(|s| s.as_str()).collect();
-                let set = crate::tenant::normalize_prefix_set(&refs).map_err(|e| {
-                    anyhow::anyhow!("credential {:?}: stream_prefixes: {e:?}", g.credential_id)
-                })?;
-                StreamGrant::Prefixes(set.into())
-            }
-        };
-        let cred = CredentialGrant {
-            credential_id: Arc::from(g.credential_id.as_str()),
-            project_id: g.project_id,
-            grant_version: g.grant_version,
-            status: g.status,
-            scopes,
-            grant,
-            expires_at: g.expires_at,
-        };
-        anyhow::ensure!(
-            credentials
-                .insert(cred.credential_id.clone(), cred)
-                .is_none(),
-            "duplicate credential {:?}",
-            g.credential_id
-        );
-    }
-    Ok(GrantSnapshot {
-        credentials,
-        fetched_at_unix: 0,
-        feed_version: doc.feed_version,
-    })
+pub(crate) fn parse_grants(json: impl AsRef<[u8]>) -> anyhow::Result<GrantSnapshot> {
+    compact::grants(json.as_ref())
 }
 
 // ---------------------------------------------------------------------
@@ -272,7 +185,7 @@ impl KeySource for FileKeySource {
 #[async_trait::async_trait]
 impl PolicySource for FilePolicySource {
     async fn fetch(&self) -> anyhow::Result<PolicySnapshot> {
-        let raw = tokio::fs::read_to_string(&self.0).await?;
+        let raw = tokio::fs::read(&self.0).await?;
         parse_policies(&raw)
     }
 }
@@ -280,7 +193,7 @@ impl PolicySource for FilePolicySource {
 #[async_trait::async_trait]
 impl GrantSource for FileGrantSource {
     async fn fetch(&self) -> anyhow::Result<GrantSnapshot> {
-        let raw = tokio::fs::read_to_string(&self.0).await?;
+        let raw = tokio::fs::read(&self.0).await?;
         parse_grants(&raw)
     }
 }
@@ -429,6 +342,7 @@ pub(crate) fn spawn_refresher(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tenant::StreamGrant;
 
     struct ParkedKeys;
     #[async_trait::async_trait]
@@ -812,7 +726,7 @@ mod tests {
         let golden = |json: &str| {
             let mut doc: serde_json::Value = serde_json::from_str(json).unwrap();
             doc.as_object_mut().unwrap().remove("_comment");
-            parse_policies(&doc.to_string())
+            parse_policies(doc.to_string())
         };
         let valid = golden(include_str!(
             "../contracts/streams-platform/v1/golden/project-policies.valid.json"
@@ -836,7 +750,7 @@ mod tests {
                 "workspace_id": "ws_789", "cell_id": "fra-cell-07",
                 "project_policy_version": 1, "ownership_version": 1,
                 "status": "active", "quotas": QUOTAS}]}"#;
-            let s = parse_policies(&doc.replace("QUOTAS", quotas)).unwrap();
+            let s = parse_policies(doc.replace("QUOTAS", quotas)).unwrap();
             s.projects[&ProjectId::new("proj_456").unwrap()]
                 .quotas
                 .max_stored_bytes
@@ -859,7 +773,7 @@ mod tests {
                 "quotas": { "requests_per_sec": 100 }
             }]
         });
-        let s = parse_policies(&ok.to_string()).unwrap();
+        let s = parse_policies(ok.to_string()).unwrap();
         let pid = ProjectId::new("proj_456").unwrap();
         assert_eq!(s.projects[&pid].ownership_version, 12);
         assert_eq!(s.projects[&pid].status, ProjectStatus::Active);
@@ -901,7 +815,7 @@ mod tests {
                 "stream_prefixes": ["customers/acme"]
             }]
         });
-        let s = parse_grants(&base.to_string()).unwrap();
+        let s = parse_grants(base.to_string()).unwrap();
         let c = &s.credentials[&Arc::from("strcred_123")];
         assert_eq!(c.grant_version, 7);
         assert!(matches!(&c.grant, StreamGrant::Prefixes(p) if p.len() == 1));
@@ -929,10 +843,50 @@ mod tests {
                 "scopes": "streams.records.read"
             }]
         });
-        let s = parse_grants(&absent.to_string()).unwrap();
+        let s = parse_grants(absent.to_string()).unwrap();
         assert!(matches!(
             s.credentials[&Arc::from("c2")].grant,
             StreamGrant::All
         ));
+    }
+
+    /// A feed of `n` projects, each with one credential, on one cell and
+    /// one quota set, as the policy and grant documents.
+    fn feed_of(n: usize) -> (String, String) {
+        let quotas =
+            r#"{"requests_per_sec":100,"append_bytes_per_sec":1048576,"max_streams":1000}"#;
+        let (mut policies, mut grants) = (Vec::with_capacity(n), Vec::with_capacity(n));
+        for i in 0..n {
+            policies.push(format!(
+                r#"{{"project_id":"proj_{i:08}","workspace_id":"ws_{i:08}","cell_id":"test-cell","project_policy_version":1,"ownership_version":1,"status":"active","quotas":{quotas}}}"#
+            ));
+            grants.push(format!(
+                r#"{{"credential_id":"strcred_{i:08}","project_id":"proj_{i:08}","grant_version":1,"status":"active","scopes":"streams.records.read streams.records.append"}}"#
+            ));
+        }
+        (
+            format!(
+                r#"{{"feed_version":1,"projects":[{}]}}"#,
+                policies.join(",")
+            ),
+            format!(
+                r#"{{"feed_version":1,"credentials":[{}]}}"#,
+                grants.join(",")
+            ),
+        )
+    }
+
+    /// Tuning item 3c, step 1: parsing a 100,000-tenant feed (a policy and
+    /// a credential a project) holds at most 60 MB at once beyond its input,
+    /// the two snapshots it returns included, and returns every entry.
+    #[test]
+    fn a_100k_tenant_feed_parses_within_60_mb() {
+        let (policies, grants) = feed_of(100_000);
+        let ((p, g), peak) = crate::test_alloc::peak_bytes(|| {
+            let p = parse_policies(&policies).unwrap();
+            (p, parse_grants(&grants).unwrap())
+        });
+        assert_eq!((p.projects.len(), g.credentials.len()), (100_000, 100_000));
+        assert!(peak <= 60 << 20, "the parse held {peak} bytes at once");
     }
 }

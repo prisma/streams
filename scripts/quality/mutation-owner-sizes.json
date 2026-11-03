@@ -19,6 +19,7 @@
     "append_submit": 14,
     "audit": 38,
     "auth_ceiling": 60,
+    "auth_feed": 12,
     "auth_signing_key": 39,
     "auth_verified": 19,
     "batch": 35,

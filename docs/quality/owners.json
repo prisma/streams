@@ -2619,6 +2619,22 @@
     {
       "category": "global",
       "count": 1,
+      "owner": "crate::ALLOCATOR",
+      "path": "src/test_alloc.rs",
+      "reason": "The lib test binary's global allocator only (cfg(test); the binary keeps mimalloc in src/main.rs): System, counting each thread's live bytes so test_alloc::peak_bytes measures the most a synchronous step holds at once (auth_feed's 100,000-tenant parse, tuning item 3c); it holds no state of its own.",
+      "syntax": "Counting"
+    },
+    {
+      "category": "global-macro",
+      "count": 1,
+      "owner": "crate::macro(thread_local)",
+      "path": "src/test_alloc.rs",
+      "reason": "Test build only: each thread's live allocated bytes and their peak since test_alloc::peak_bytes last reset it, two isize counters, const-initialised with no destructor so the allocator can touch them on any thread at any time.",
+      "syntax": "thread_local"
+    },
+    {
+      "category": "global",
+      "count": 1,
       "owner": "crate::dirty_scan_faults::M",
       "path": "src/shard/test_support.rs",
       "reason": "Test-only fault injection for the durable dirty-index scan, keyed by shard prefix so concurrent tests cannot poison each other; nothing outside cfg(test) reads it.",

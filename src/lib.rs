@@ -83,6 +83,8 @@ mod store_timing;
 mod tasks;
 mod tenant;
 #[cfg(test)]
+mod test_alloc;
+#[cfg(test)]
 mod test_rt;
 mod touch;
 mod touch_keys;

@@ -68,6 +68,8 @@ OWNERS = (
     owner('system_append', 'src/billing/system_append.rs', 'security_workload:: security_audit:: runtime_journals:: reserved_streams_append'),
     owner('admission_limits', 'src/config/admission_limits.rs', 'config::admission_limits:: usage::runtime_tests:: validation_rejects_a_limit_posture'),
     owner('config_project_tracker', 'src/config/project_tracker.rs', 'config::project_tracker::'),
+    # The policy and grant feeds parsed straight into their snapshots (tuning 3c-1).
+    owner('auth_feed', 'src/auth_feed/compact.rs', 'auth_feed:: auth::'),
     # Body buffering left src/http.rs (a critical prefix) for the admission
     # module; the row keeps it under mutation selection.
     owner('admission_body', 'src/admission/body.rs', 'admission::body:: dst_tests::shared_cell_capacity::concurrent_uploads'),
