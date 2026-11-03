@@ -750,8 +750,13 @@ with Class A and B halved). Its 10.71 WAL PUTs a second predate
 | Streams, at Cloudflare's durable-stream product ("K2") | produced $0.04/GB, consumed $0.04/GB, retained $0.02/GB-month, on uncompressed bytes; fetched 2026-10-24, "billing not yet enabled" | `docs/STREAMS-COST-LEVERS-2026-10.md`; `bench/k2cost/README.md` |
 | Queues, at Cloudflare Queues | $0.40 per million operations, one per 64 KB written, read or deleted; one million a month included; no egress charge | `docs/QUEUES-PRICING-BENCHMARK.md` §1 (pricing page updated 2026-04-21) |
 
-**TODO (owner)**: re-read both price pages before the result is used; K2's
-billing was not enabled when it was read.
+Re-read the K2 and Cloudflare Queues price pages **twice** (decision B7,
+§8 item 7): before the first run and on the day the report is written.
+Record each fetch date, the quoted prices and whether K2 billing is enabled
+in the report's "Against the measured figures" section (§7); K2's billing
+was not enabled when it was last read. A price change never stops a run
+(the cost bars are cost-side): report the margins at both the old and the
+new price. Any re-pricing is the owner's.
 
 A tenant's K2 bill is the three prices on its meters (`bench/k2cost/packing.py`:
 T keeps everything, S keeps 7 days). The queue scenario's Cloudflare bill is
@@ -896,7 +901,8 @@ Boot log: gap_ms=<..> gather_ms=<..> per shard; effective configuration excerpt
 304 probe: billed | not billed | pending (probe date <..>, Class B moved by <n>); margins on the conservative basis until it answers
 
 ### Against the measured figures and revenue
-| Workload | ours ab50 | Mac figure | delta % | revenue | margin $ | margin % |
+Price pages (§5.1): K2 fetched <date> before the first run and <date> at writing, prices <..>, billing enabled yes|no; Cloudflare Queues fetched <date> and <date>, prices <..>
+| Workload | ours ab50 | Mac figure | delta % | revenue | margin $ | margin % | margin % at the new price (if a page changed) |
 
 ### Queues
 | Run | shards | sent/s target | sent/s held | delivered | lost | p99 send ms | drain vs due |
@@ -940,8 +946,10 @@ the hardening README's "Owner decisions" table lists them.
    code only, bounded to one day): `collect.mjs mark|sample --cpu-log FILE
    --server URL --auth-file F` in place of `--pid`; by-hand sampling is the
    fallback, marked "CPU by hand" (§1.4, §3.2).
-7. Re-read the K2 and Cloudflare Queues price pages before the margins are
-   used (§5.1).
+7. **Closed** (decision B7). The validating agent re-reads both price pages
+   twice, before the first run and on the report's day, records fetch
+   dates, prices and K2's billing state, and reports margins at both prices
+   if one changed (§5.1, §7). Re-pricing is held below.
 8. The tolerances in §6 (±10%) are proposals.
 
 Held for the owner (not decided under the delegation):
@@ -949,3 +957,5 @@ Held for the owner (not decided under the delegation):
 - **Price publication** (from item 3): the price page and terms (the $10
   figure, the free tier's limits, K2 parity) are customer-facing and
   financially binding; the decision fixes only the model.
+- **Re-pricing** (from item 7): if a re-read price page differs, re-pricing
+  is the owner's; the agent only reports both margins.
