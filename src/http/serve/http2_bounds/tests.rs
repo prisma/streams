@@ -342,3 +342,18 @@ async fn an_empty_http2_answer_ends_its_stream_with_its_headers() {
     );
     tasks.shutdown(Duration::from_secs(5)).await;
 }
+
+/// A counted response keeps its body's length: hyper sets an HTTP/2
+/// answer's content-length from the exact size hint, so the count a stream
+/// keeps must not hide it.
+#[test]
+fn a_counted_body_keeps_its_exact_length() {
+    use hyper::body::Body as _;
+    let streams = super::Streams::new();
+    let counted = super::Counting {
+        body: axum::body::Body::from("hello"),
+        _open: streams.open(),
+    };
+    assert_eq!(counted.size_hint().exact(), Some(5), "the body's length");
+    assert!(!counted.is_end_stream(), "five bytes are still to come");
+}
