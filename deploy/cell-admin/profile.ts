@@ -1,7 +1,7 @@
-// The shared-cell profile as cell-admin reads it: deploy/profiles/*.env
-// layered in order (later wins, as the deploy scripts pass them), checked
-// for the single-server shared-cell shape, and turned into the quota
-// ceilings `admit` enforces. The ceiling rule mirrors the server's
+// The cell profile as cell-admin reads it: deploy/profiles/*.env layered
+// in order (later wins, as the deploy scripts pass them), checked for the
+// single-server cell shape, shared k ways or, at k = 1, dedicated to one
+// project, and turned into the quota ceilings `admit` enforces. The ceiling rule mirrors the server's
 // (src/auth/ceiling.rs, `CellCeiling::ceiling`): on a bounded axis the
 // ceiling is max(1, floor(bound / k)); an axis with no shared bound has
 // none. The stored-bytes quota has no bound and no ceiling: the profile's
@@ -60,6 +60,9 @@ export interface CellSizing {
   memory_line: number;
   /// The instance read memory: a quarter of ADMIT_RSS_SHED_MB.
   read_memory: number;
+  /// k = 1: one project holds the whole cell, its ceilings the bounds
+  /// (deploy/profiles/dedicated-cell.env).
+  dedicated: boolean;
 }
 
 /// Read KEY=VALUE files in order; a later file's value wins.
@@ -157,10 +160,19 @@ const READ_MEMORY_FILLERS = 4;
 /// bytes line, where every append to the shard is refused (phase B step
 /// 12 on one shard). That is necessary, not the k-tolerance itself: a
 /// project's queued bytes can take it past its line (shared-cell.env).
+/// A dedicated cell (k = 1) has no neighbour: its one project's feed share
+/// need only be below the cell's, as the release posture requires at boot
+/// (src/config/validation.rs), and the fillers rule, about neighbours,
+/// does not apply.
 function checkShares(env: Map<string, string>, k: number): { memory_line: number; read_memory: number } {
   const feedTotal = positive(env, "SSE_FEED_TOTAL_BYTES");
   const feedProject = positive(env, "SSE_FEED_PROJECT_BYTES");
-  if (feedProject !== Math.floor(feedTotal / k)) {
+  if (k === 1 && feedProject >= feedTotal) {
+    throw new AdminError(
+      `profile SSE_FEED_PROJECT_BYTES=${feedProject}: a dedicated cell needs it below SSE_FEED_TOTAL_BYTES = ${feedTotal}`,
+    );
+  }
+  if (k > 1 && feedProject !== Math.floor(feedTotal / k)) {
     throw new AdminError(
       `profile SSE_FEED_PROJECT_BYTES=${feedProject}: a cell shared ${k} ways needs ` +
         `SSE_FEED_TOTAL_BYTES / k = ${Math.floor(feedTotal / k)}`,
@@ -170,7 +182,7 @@ function checkShares(env: Map<string, string>, k: number): { memory_line: number
   // (src/admission/read_memory.rs, READ_MEMORY_SHARE_OF_SHED).
   const readMemory = Math.floor((positive(env, "ADMIT_RSS_SHED_MB") * 1024 * 1024) / 4);
   const line = positive(env, "PROJECT_MEMORY_PRESSURE_BYTES");
-  if ((READ_MEMORY_FILLERS - 1) * line >= readMemory) {
+  if (k > 1 && (READ_MEMORY_FILLERS - 1) * line >= readMemory) {
     throw new AdminError(
       `profile PROJECT_MEMORY_PRESSURE_BYTES=${line}: ${READ_MEMORY_FILLERS - 1} projects at their lines ` +
         `would fill the instance read memory (${readMemory}); the owner accepted ${READ_MEMORY_FILLERS}`,
@@ -178,20 +190,21 @@ function checkShares(env: Map<string, string>, k: number): { memory_line: number
   }
   const shard = positive(env, "MAX_UNABSORBED_BYTES_PER_SHARD");
   if (k * line > shard) {
+    const lines = k === 1 ? `the project's memory line (${line})` : `${k} projects at their memory lines (${k * line})`;
     throw new AdminError(
-      `profile PROJECT_MEMORY_PRESSURE_BYTES=${line}: ${k} projects at their memory lines (${k * line}) ` +
-        `would pass the shard line MAX_UNABSORBED_BYTES_PER_SHARD=${shard}`,
+      `profile PROJECT_MEMORY_PRESSURE_BYTES=${line}: ${lines} would pass the shard line ` +
+        `MAX_UNABSORBED_BYTES_PER_SHARD=${shard}`,
     );
   }
   return { memory_line: line, read_memory: readMemory };
 }
 
-/// Check the layered profile is a single-server shared cell and derive
-/// its ceilings.
+/// Check the layered profile is a single-server cell, shared k ways or
+/// dedicated (k = 1), and derive its ceilings: bound / k, so a dedicated
+/// cell's are the bounds.
 export function cellSizing(env: Map<string, string>): CellSizing {
   checkPosture(env);
   const k = positive(env, "PROJECT_SHARE_K");
-  if (k < 2) throw new AdminError(`profile PROJECT_SHARE_K=${k}: a shared cell needs k >= 2`);
   const memory = checkShares(env, k);
   const bounds: Ceilings = {
     requests_per_sec: positive(env, "CELL_ENVELOPE_REQUESTS_PER_SEC"),
@@ -211,5 +224,6 @@ export function cellSizing(env: Map<string, string>): CellSizing {
     ceilings,
     stored_default: positive(env, "PROJECT_STORED_BYTES_DEFAULT"),
     ...memory,
+    dedicated: k === 1,
   };
 }

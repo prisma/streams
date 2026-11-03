@@ -56,6 +56,26 @@ const CEILINGS = {
   byte_weight: 1,
 };
 
+/// A dedicated cell (k = 1, deploy/profiles/dedicated-cell.env): the one
+/// project's quotas are the profile's bounds themselves.
+const PROFILE_DIR = join(import.meta.dir, "..", "profiles");
+const DEDICATED = [
+  "--profile", join(PROFILE_DIR, "compute-1g.env"), "--profile", join(PROFILE_DIR, "dedicated-cell.env"),
+];
+const BOUNDS = {
+  requests_per_sec: 1411,
+  append_bytes_per_sec: 2060000,
+  append_records_per_sec: 0,
+  read_bytes_per_sec: 30000000,
+  max_inflight_requests: 512,
+  max_live_subscriptions: 1200,
+  max_streams: 65536,
+  queued_append_bytes: 536870912,
+  max_stored_bytes: 10737418240,
+  request_weight: 1,
+  byte_weight: 1,
+};
+
 /// Nothing cell-admin writes to its store may hold private key material
 /// or a token.
 function expectNoSecrets(where: string): void {
@@ -425,6 +445,30 @@ for (const kind of STORES) {
         expect(r.code).not.toBe(0);
         expect(r.err.split("\n")[0]).toContain(message);
         expect(readBundleText(c.state)).toBe(before);
+      });
+
+      // Decision record 2026-11-03, item C: a k = 1 profile is a dedicated cell.
+      test("a dedicated cell takes --max-projects 1 only and places one project at the bounds, with no --weight", async () => {
+        await expect(initCell([...DEDICATED, "--max-projects", "2"])).rejects.toThrow(
+          "init failed: cell-admin init: --max-projects 2: a dedicated cell (k = 1) holds one project; --max-projects must be 1");
+        const c = await initCell(DEDICATED);
+        expect([readState(c.state).cell.share_k, readState(c.state).cell.max_projects]).toEqual([1, 1]);
+        const before = readBundleText(c.state);
+        const weighted = await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w1", "--weight", "bytes=2");
+        expect([weighted.code, weighted.err]).toEqual([1,
+          "cell-admin admit: --weight bytes=2: a dedicated cell (k = 1) takes no weight: its one project holds every bound"]);
+        expect(readBundleText(c.state)).toBe(before);
+        // No --profile: admit takes the shipped dedicated profiles for a k = 1 cell.
+        const a = await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w1");
+        expect([a.code, a.err]).toEqual([0, ""]);
+        const quotas = () => (customerOnly(readBundle(c.state)).policies.projects as any[]).map((p) => [p.project_id, p.quotas]);
+        expect(quotas()).toEqual([["proj_a", BOUNDS]]);
+        const published = readBundleText(c.state);
+        const second = await run("admit", "--state", c.state, "--project", "proj_b", "--workspace", "w2");
+        expect([second.code, second.err]).toEqual([1,
+          "cell-admin admit: cell cell_sc1 is dedicated (k = 1): it holds one project, proj_a"]);
+        expect(readBundleText(c.state)).toBe(published);
+        expect(Object.keys(readState(c.state).projects).sort()).toEqual(["proj_a", "sp_canary_cell_sc1"]);
       });
 
       test("the canary is reserved and hidden: no customer takes its id or workspace, no cap counts it", async () => {

@@ -181,7 +181,7 @@ describe("refusals", () => {
     ["KEEP_AWAKE", undefined, "a shared cell needs KEEP_AWAKE=1"],
     ["KEEP_AWAKE", "0", "a shared cell needs KEEP_AWAKE=1"],
     ["KEEP_AWAKE_UNTIL_MS", "1767225600000", "profile sets KEEP_AWAKE_UNTIL_MS: a shared cell is kept awake for good"],
-    ["PROJECT_SHARE_K", "1", "a shared cell needs k >= 2"],
+    ["PROJECT_SHARE_K", "0", "profile PROJECT_SHARE_K=0 is not a positive integer"],
     ["PROJECT_SHARE_K", undefined, "profile does not set PROJECT_SHARE_K"],
     ["SSE_FEED_PROJECT_BYTES", "33554432", "needs SSE_FEED_TOTAL_BYTES / k = 8388608"],
     ["PROJECT_MEMORY_PRESSURE_BYTES", "43690667", "3 projects at their lines would fill the instance read memory (131072000)"],

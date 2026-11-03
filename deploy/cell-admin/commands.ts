@@ -36,6 +36,9 @@ export interface Io {
 
 const PROFILE_DIR = join(import.meta.dir, "..", "profiles");
 export const DEFAULT_PROFILES = [join(PROFILE_DIR, "compute-1g.env"), join(PROFILE_DIR, "shared-cell.env")];
+/// A dedicated cell's (k = 1): `init` takes them by `--profile`; `admit`
+/// defaults to them for a k = 1 cell.
+export const DEDICATED_PROFILES = [join(PROFILE_DIR, "compute-1g.env"), join(PROFILE_DIR, "dedicated-cell.env")];
 
 export async function init(f: Flags, io: Io): Promise<void> {
   const store = await openStore(f, { create: true });
@@ -56,7 +59,12 @@ export async function init(f: Flags, io: Io): Promise<void> {
     throw new AdminError("give one of --key-file K or --public-key FILE (the public half only)", 2);
   }
   const key = f.has("public-key") ? readPublicKey(resolve(f.must("public-key"))) : loadSigningKey(f.must("key-file")).record;
-  const [workspace_cap, max_projects] = [f.count("workspace-cap", 1), f.count("max-projects", 1000)];
+  const [workspace_cap, max_projects] = [f.count("workspace-cap", 1), f.count("max-projects", sizing.dedicated ? 1 : 1000)];
+  if (sizing.dedicated && max_projects !== 1) {
+    throw new AdminError(
+      `--max-projects ${max_projects}: a dedicated cell (k = 1) holds one project; --max-projects must be 1`,
+    );
+  }
   const denylist = store.denylistAt(f.get("denylist"));
   const state: CellState = {
     format: STATE_FORMAT,
@@ -130,9 +138,12 @@ async function createCell(store: StateStore, state: CellState, detail: string): 
 }
 
 /// The profile files a command reads: `--profile` (repeatable, later
-/// wins), or the two this tool ships with.
-const profilesOf = (f: Flags) =>
-  (f.all("profile").length > 0 ? f.all("profile") : DEFAULT_PROFILES).map((p) => resolve(p));
+/// wins), or the two this tool ships with for the cell's kind: the shared
+/// ones, or the dedicated ones for a cell of k = 1.
+const profilesOf = (f: Flags, shareK?: number) =>
+  (f.all("profile").length > 0 ? f.all("profile") : shareK === 1 ? DEDICATED_PROFILES : DEFAULT_PROFILES).map((p) =>
+    resolve(p),
+  );
 
 export async function admit(f: Flags, io: Io): Promise<void> {
   const store = await openStore(f);
@@ -140,7 +151,7 @@ export async function admit(f: Flags, io: Io): Promise<void> {
   const workspace = f.must("workspace");
   await store.exclusive(async () => {
     const { state: first } = await loadChecked(store);
-    const sizing = checkSizing(first, readProfiles(profilesOf(f)));
+    const sizing = checkSizing(first, readProfiles(profilesOf(f, first.cell.share_k)));
     const { ids: denylist } = await store.readDenylist();
     checkPlacement(first, project, workspace, denylist);
     const weights = weightValues(first, f.all("weight"));

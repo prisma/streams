@@ -214,12 +214,17 @@ const AXIS_WEIGHT: Record<BoundedField, keyof Weights | null> = {
 };
 
 /// The `--weight name=N` settings given (`request`, `bytes`), each once,
-/// each 1 to k - 1; an absent one is 1.
+/// each 1 to k - 1; an absent one is 1. A dedicated cell (k = 1) takes
+/// none: its one project holds every bound, and the server ignores weights
+/// there (src/auth/ceiling.rs).
 export function weightValues(state: CellState, given: readonly string[]): Weights {
   const weights = { ...UNIT_WEIGHTS };
   const seen = new Set<string>();
   const most = state.cell.share_k - 1;
   for (const item of given) {
+    if (state.cell.share_k === 1) {
+      throw new AdminError(`--weight ${item}: a dedicated cell (k = 1) takes no weight: its one project holds every bound`);
+    }
     const m = /^([a-z]+)=([0-9]+)$/.exec(item);
     const field = m ? WEIGHT_FLAGS[m[1]] : undefined;
     if (!m || field === undefined) throw new AdminError(`--weight ${item} is not request=N or bytes=N`, 2);
@@ -350,6 +355,20 @@ export function quotaValues(
   return quotas;
 }
 
+/// A dedicated cell (k = 1) places one project: every project not
+/// offboarded holds it, as for `max_projects`, which `init` fixes at 1
+/// there too.
+export function checkDedicated(state: CellState): void {
+  if (state.cell.share_k !== 1) return;
+  const held = placedProjects(state).map(([id]) => id);
+  if (held.length > 0) {
+    throw new PlacementRefused(
+      "cell_full",
+      `cell ${state.cell.cell_id} is dedicated (k = 1): it holds one project, ${held.join(", ")}`,
+    );
+  }
+}
+
 /// Why a placement is refused, for a caller that answers each its own way
 /// (the issuer's management API); the message is the CLI's.
 export type PlacementRefusal = "reserved_project" | "reserved_workspace" | "id_used" | "cell_full" | "workspace_full";
@@ -399,6 +418,7 @@ export function checkPlacement(
   if (state.projects[project] || denylist.has(project)) {
     throw new PlacementRefused("id_used", `project id ${project} was used before: an id is never placed twice`);
   }
+  checkDedicated(state);
   const placed = placedProjects(state).map(([, p]) => p);
   if (placed.length >= cell.max_projects) {
     throw new PlacementRefused("cell_full", `cell ${cell.cell_id} already holds its ${cell.max_projects} projects`);

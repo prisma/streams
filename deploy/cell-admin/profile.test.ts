@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_PROFILES } from "./commands";
+import { DEDICATED_PROFILES, DEFAULT_PROFILES } from "./commands";
 import { schema } from "./feeds";
 import { cellSizing, QUOTA_FIELDS, readProfiles, STREAM_MAP_ENTRIES } from "./profile";
 import { CUSTOMER_SCOPES, SYSTEM_PROJECT } from "./rules";
@@ -13,6 +13,7 @@ import { MAX_TOKEN_LIFETIME_SECS } from "./tokens";
 const ROOT = join(import.meta.dir, "..", "..");
 const src = (path: string) => readFileSync(join(ROOT, path), "utf8");
 const SHARED = join(ROOT, "deploy", "profiles", "shared-cell.env");
+const DEDICATED = join(ROOT, "deploy", "profiles", "dedicated-cell.env");
 
 /// Every environment name the server binary or its wrapper reads, found
 /// the way bench/k2cost/field/deploy.py's known_names finds them.
@@ -62,6 +63,7 @@ describe("the shared-cell profile", () => {
       stored_default: 10737418240,
       memory_line: 33554432,
       read_memory: 131072000,
+      dedicated: false,
     });
     const env = readProfiles(DEFAULT_PROFILES);
     expect(
@@ -107,7 +109,7 @@ describe("the shared-cell profile", () => {
     ["KEEP_AWAKE", undefined, "a shared cell needs KEEP_AWAKE=1"],
     ["KEEP_AWAKE", "0", "a shared cell needs KEEP_AWAKE=1"],
     ["KEEP_AWAKE_UNTIL_MS", "1767225600000", "profile sets KEEP_AWAKE_UNTIL_MS: a shared cell is kept awake for good"],
-    ["PROJECT_SHARE_K", "1", "a shared cell needs k >= 2"],
+    ["PROJECT_SHARE_K", "0", "profile PROJECT_SHARE_K=0 is not a positive integer"],
     ["PROJECT_SHARE_K", undefined, "profile does not set PROJECT_SHARE_K"],
     ["SSE_FEED_PROJECT_BYTES", "33554432", "needs SSE_FEED_TOTAL_BYTES / k = 8388608"],
     ["PROJECT_MEMORY_PRESSURE_BYTES", "43690667", "3 projects at their lines would fill the instance read memory (131072000)"],
@@ -127,6 +129,13 @@ describe("the shared-cell profile", () => {
     expect(() => cellSizing(env)).toThrow(message);
   });
 
+  test("k = 1 is a dedicated cell, not a refusal: its ceilings are the bounds", () => {
+    const env = readProfiles(DEFAULT_PROFILES);
+    env.set("PROJECT_SHARE_K", "1");
+    const s = cellSizing(env);
+    expect([s.share_k, s.dedicated, s.ceilings]).toEqual([1, true, s.bounds]);
+  });
+
   test("a ceiling is max(1, floor(bound / k)), as the server's", () => {
     const env = readProfiles(DEFAULT_PROFILES);
     env.set("SSE_MAX_CONNECTIONS", "5");
@@ -141,6 +150,57 @@ describe("the shared-cell profile", () => {
     writeFileSync(bad, "# ok\nSSE_MAX_CONNECTIONS = 1200\n");
     expect(() => readProfiles([bad])).toThrow(`${bad}:2: not a space-free KEY=VALUE line`);
     rmSync(dir, { recursive: true });
+  });
+});
+
+describe("the dedicated-cell profile", () => {
+  test("layered on compute-1g.env it is a k = 1 cell whose ceilings are the bounds", () => {
+    const shared = cellSizing(readProfiles(DEFAULT_PROFILES));
+    expect(cellSizing(readProfiles(DEDICATED_PROFILES))).toEqual({
+      share_k: 1,
+      bounds: shared.bounds,
+      ceilings: shared.bounds,
+      stored_default: 10737418240,
+      memory_line: 268435456,
+      read_memory: 131072000,
+      dedicated: true,
+    });
+  });
+
+  test("it is shared-cell.env but for k, the LiveFeed share and the memory line, as ML's dedicated arms ran", () => {
+    const [shared, dedicated] = [readProfiles([SHARED]), readProfiles([DEDICATED])];
+    const keys = [...new Set([...shared.keys(), ...dedicated.keys()])];
+    const differ = keys.filter((k) => shared.get(k) !== dedicated.get(k)).sort();
+    expect(Object.fromEntries(differ.map((k) => [k, dedicated.get(k)]))).toEqual({
+      PROJECT_MEMORY_PRESSURE_BYTES: "268435456",
+      PROJECT_SHARE_K: "1",
+      SSE_FEED_PROJECT_BYTES: "33554432",
+    });
+    // bench/k2cost/points/ML.env's m-alone and l-alone: k = 1 and the memory
+    // line at the shard's unabsorbed line.
+    expect(src("bench/k2cost/points/ML.env")).toContain(
+      'SERVER_ENV_EXTRA="PROJECT_SHARE_K=1 PROJECT_MEMORY_PRESSURE_BYTES=268435456 $SERVER_ENV_EXTRA"',
+    );
+    // The project's feed share is compute-1g.env's own, below the total as the
+    // release posture requires (src/config/validation.rs).
+    const layered = readProfiles(DEDICATED_PROFILES);
+    expect(layered.get("SSE_FEED_PROJECT_BYTES")).toBe(readProfiles([join(ROOT, "deploy", "profiles", "compute-1g.env")]).get("SSE_FEED_PROJECT_BYTES"));
+    expect(src("src/config/validation.rs")).toContain("if project >= global {");
+  });
+
+  test("every name it sets is one the server reads", () => {
+    const reads = namesTheServerReads();
+    expect([...readProfiles([DEDICATED]).keys()].filter((n) => !reads.has(n)).sort()).toEqual([]);
+  });
+
+  const breaks: [string, string, string][] = [
+    ["SSE_FEED_PROJECT_BYTES", "67108864", "profile SSE_FEED_PROJECT_BYTES=67108864: a dedicated cell needs it below SSE_FEED_TOTAL_BYTES = 67108864"],
+    ["PROJECT_MEMORY_PRESSURE_BYTES", "268435457", "the project's memory line (268435457) would pass the shard line MAX_UNABSORBED_BYTES_PER_SHARD=268435456"],
+  ];
+  test.each(breaks)("refuses %s=%s", (name, value, message) => {
+    const env = readProfiles(DEDICATED_PROFILES);
+    env.set(name, value);
+    expect(() => cellSizing(env)).toThrow(message);
   });
 });
 
