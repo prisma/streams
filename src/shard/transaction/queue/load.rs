@@ -29,14 +29,14 @@ impl CommitTransaction<'_> {
         local.queue.state = Some(fresh);
         Ok(())
     }
-    /// Every consumer row of one tag (`'S' ‖ hash ‖ tag`, stream state).
+    /// Every consumer row of one tag (`hash ‖ 'S' ‖ tag`, stream state).
     async fn load_queue_rows(
         &self,
         fresh: &mut QueueState,
         hash: &[u8; 16],
         tag: u8,
     ) -> Result<(), String> {
-        let prefix = [&[crate::keyspace::STREAM][..], hash, &[tag]].concat();
+        let prefix = [&crate::keyspace::stream_row(hash, 1)[..], &[tag]].concat();
         Self::scan_queue_rows(self.engine, fresh, hash, &prefix, tag).await
     }
     /// Every row under `prefix` of one tag, into `fresh`.
@@ -85,7 +85,7 @@ impl CommitTransaction<'_> {
             loaded: true,
         };
         for tag in *b"clx" {
-            let prefix = [&[crate::keyspace::STREAM][..], hash, &[tag]].concat();
+            let prefix = [&crate::keyspace::stream_row(hash, 1)[..], &[tag]].concat();
             Self::scan_queue_rows(engine, &mut fresh, hash, &prefix, tag).await?;
         }
         Ok(fresh)

@@ -26,9 +26,9 @@ fn qk(name: &[u8]) -> Vec<u8> {
     [&crate::keyspace::QUEUE[..], name].concat()
 }
 
-/// A raw stream-family key.
+/// A raw stream-family key (a stream's hash, then the family byte).
 fn sk(name: &[u8]) -> Vec<u8> {
-    [&[crate::keyspace::STREAM][..], name].concat()
+    [&crate::keyspace::stream_row(&[7; 16], 0)[..], name].concat()
 }
 
 /// The shard log's L0 views in `manifest`.

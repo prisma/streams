@@ -299,16 +299,19 @@ describe("deploy-release.sh", () => {
 
   test("refuses a release whose layout, keys contract or body ceiling differs from the running cell's release", async () => {
     const w = await world();
-    runs(w, release(w, "rc-1").release);
+    const rc1 = release(w, "rc-1").release;
+    runs(w, rc1);
+    // Another layout than the tree's own (src/registry.rs), whatever LAYOUT_VERSION is.
+    const other = rc1.layout_version + 1;
     const edited = (tag: string, change: Partial<Release>) => {
       const { dir } = release(w, tag);
       const path = join(dir, "deploy", "release.json");
       writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), ...change }));
       return dir;
     };
-    const layout = edited("rc-2", { layout_version: 8 });
+    const layout = edited("rc-2", { layout_version: other });
     refusedBeforeDeploy(w, await deploy(w, "production", layout, withCell(w)),
-      "release rc-2 has layout_version 8, the running cell's release rc-1 7: a deploy never crosses a layout");
+      `release rc-2 has layout_version ${other}, the running cell's release rc-1 ${rc1.layout_version}: a deploy never crosses a layout`);
     const keys = edited("rc-3", { keys_contract: "r8" });
     refusedBeforeDeploy(w, await deploy(w, "production", keys, withCell(w)),
       "release rc-3 has keys contract r8, the running cell's release rc-1 r7: the keys feed and the binary change together (RUNBOOK), never by a deploy alone");
@@ -407,10 +410,11 @@ describe("deploy-release.sh", () => {
     })}\n`);
     const { dir } = release(w, "rc-2");
     const path = join(dir, "deploy", "release.json");
-    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), layout_version: 8 }));
+    const other = r1.layout_version + 1;
+    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), layout_version: other }));
     const r = await deploy(w, "production", dir);
     expect([r.code, r.err.trim(), prismaRuns(w).length]).toEqual([
-      1, "deploy-release: release rc-2 has layout_version 8, the running cell's release rc-1 7: a deploy never crosses a layout", 0,
+      1, `deploy-release: release rc-2 has layout_version ${other}, the running cell's release rc-1 ${r1.layout_version}: a deploy never crosses a layout`, 0,
     ]);
     expect(r.out).toContain("deploy-release: no cell answers; deploy-log.jsonl last deployed release rc-1 to production");
   }, 30_000);

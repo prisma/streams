@@ -248,7 +248,7 @@ fn a_pointer_row_round_trips_and_is_pinned() {
     bad.level = 3;
     assert!(decode_pointer(p.id, &encode_pointer(&bad)).is_none());
     let key = pointer_key(p.id);
-    assert_eq!(key.len(), 34);
+    assert_eq!(key.len(), 33);
     assert_eq!(parse_sentinel_key(POINTER_TAG, &key), Some(p.id));
     assert_eq!(parse_sentinel_key(ORPHAN_TAG, &key), None);
     assert_eq!(
@@ -302,7 +302,7 @@ fn an_orphan_row_round_trips() {
 #[test]
 fn every_index_tag_sorts_below_the_usage_finals() {
     use crate::spill::directory::{DIRECTORY_TAG, REFCOUNT_TAG};
-    let finals = crate::billing::usage_month_final_key(&[0; 16], 2026, 10)[17];
+    let finals = crate::billing::usage_month_final_key(&[0; 16], 2026, 10)[16];
     assert_eq!(finals, b'V');
     for tag in [DIRECTORY_TAG, REFCOUNT_TAG, POINTER_TAG, ORPHAN_TAG] {
         assert!(

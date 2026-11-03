@@ -8,13 +8,13 @@
 //!   `<shard_db_path>/ridx/<epoch:016x>/<seq:016x>`, named by the writer
 //!   epoch of the shard DB opening that wrote it, so a fenced folder's
 //!   object is never referenced (an orphan for package 6's sweep).
-//! - The pointer row: `'S' ‖ 0xFF×16 ‖ 'I' ‖ epoch BE ‖ seq BE` →
+//! - The pointer row: `0xFF×16 ‖ 'I' ‖ epoch BE ‖ seq BE` →
 //!   `ver:u8=1 level:u8 len:varint footer_off:varint footer_len:varint
 //!   runs:varint entries:varint seals:varint orphan_chunks:varint
 //!   orphan_bytes:varint created_ms:varint`. `seals` counts the directory
 //!   rows the object's lineage folded; `orphan_*` the chunks a consolidation
 //!   superseded (still stored until package 6 frees them).
-//! - The orphan row: `'S' ‖ 0xFF×16 ‖ 'O' ‖ epoch BE ‖ seq BE` →
+//! - The orphan row: `0xFF×16 ‖ 'O' ‖ epoch BE ‖ seq BE` →
 //!   `ver:u8=1 chunks:varint bytes:varint`, written by a consolidation
 //!   beside its directory row (the chunks it superseded) and folded into
 //!   the next pointer row's counters.
@@ -46,7 +46,7 @@ pub(crate) fn run_index_path(shard_db_path: &str, id: ObjectId) -> String {
     format!("{shard_db_path}/ridx/{:016x}/{:016x}", id.epoch, id.seq)
 }
 
-/// `'S' ‖ 0xFF×16 ‖ tag`: every row of that tag.
+/// `0xFF×16 ‖ tag`: every row of that tag.
 pub(crate) fn sentinel_prefix(tag: u8) -> Vec<u8> {
     let mut k = crate::keyspace::SENTINEL.to_vec();
     k.push(tag);

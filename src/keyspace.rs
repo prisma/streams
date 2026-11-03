@@ -1,25 +1,23 @@
-//! The shard log's keyspace (layout 7; DESIGN-6A §1, §3, the lead's ruling of
-//! 2026-10-30 under the owner's delegation): every shard-log key starts with
-//! a family tag, in ONE compaction tree.
+//! The shard log's keyspace (layout 8; S3a-DESIGN rev 3, scaling package 4a):
+//! every per-entity key starts with the entity's hash, then a family byte, so
+//! a shard's rows (a bit prefix of the hash) are one contiguous key range.
 //!
-//! - `'S'` (one byte): stream state — tails, producers and sequences,
-//!   seal fences, pending rows (unsealed pages), consumer-group rows,
-//!   billing rows, and the seal directory and refcount rows under the
-//!   sentinel;
-//! - `'Q' ‖ gen u32` (five bytes, generation 0): every native-queue row —
-//!   state, meta, availability, delivery, lease, retry, failure and dedup
-//!   rows, the roster, the queue's message pages and the queue stream's
-//!   tail.
+//! - `hash16 ‖ 'S'`: stream state — tails, producers and sequences, seal
+//!   fences, pending rows (unsealed pages), consumer-group rows and billing
+//!   rows;
+//! - `'Q' ‖ gen u32 ‖ hash16` (layout 7's order until the queue keys move):
+//!   every native-queue row;
+//! - `FF×16 ‖ tag`: the sentinel, the shard's own rows (the seal directory,
+//!   refcounts, garbage, purge heads, the usage outbox). The hash `FF×16`
+//!   names no entity, so the sentinel sorts after every entity's rows and
+//!   each of its tags is one prefix scan.
 //!
-//! Layout 6 kept one tree per tag (a SlateDB segment extractor, RFC 0024);
-//! the queue tree then paid an L0, its merges and their manifest writes on
-//! every memtable flush, above today's reference (QUEUE-TREE-DECISION). The
-//! tags stay, so every key layout and codec is layout 6's; the shard log
-//! has no extractor, and the queue collector compacts the whole log.
+//! One compaction tree holds every family; the queue collector compacts the
+//! whole log.
 
 use std::sync::Arc;
 
-/// The stream-state family's tag (and its whole prefix).
+/// The stream-state family byte, after the stream's hash.
 pub(crate) const STREAM: u8 = b'S';
 /// The queue family's tag.
 pub(crate) const QUEUE_TAG: u8 = b'Q';
@@ -28,22 +26,27 @@ pub(crate) const QUEUE_TAG: u8 = b'Q';
 pub(crate) const QUEUE: [u8; QUEUE_PREFIX_LEN] = [QUEUE_TAG, 0, 0, 0, 0];
 /// The width of a queue family prefix.
 pub(crate) const QUEUE_PREFIX_LEN: usize = 5;
-/// The stream family's sentinel: `'S'` and sixteen 0xFF bytes. Its rows
-/// (the seal directory and refcount rows, the usage outbox) sort after
-/// every stream's rows, so each family is one range scan.
-pub(crate) const SENTINEL: [u8; 17] = {
-    let mut k = [0xFF; 17];
-    k[0] = STREAM;
-    k
-};
+/// The sentinel: sixteen 0xFF bytes, the hash no entity has. Its rows (the
+/// seal directory and refcount rows, the usage outbox) sort after every
+/// entity's rows, so each of its tags is one range scan.
+pub(crate) const SENTINEL: [u8; 16] = [0xFF; 16];
+/// The tail row's tag after `hash ‖ 'S'`.
+const TAIL_TAG: u8 = b't';
 
-/// A stream-state row key: the `'S'` tag and the stream's hash, with room
-/// for `extra` more bytes.
+/// A stream-state row key: the stream's hash and the `'S'` family byte,
+/// with room for `extra` more bytes.
 pub(crate) fn stream_row(hash: &[u8; 16], extra: usize) -> Vec<u8> {
     let mut k = Vec::with_capacity(17 + extra);
-    k.push(STREAM);
     k.extend_from_slice(hash);
+    k.push(STREAM);
     k
+}
+
+/// The stream whose tail row `key` is (`hash ‖ 'S' ‖ 't'`); `None` for any
+/// other key, the sentinel's included.
+pub(crate) fn tail_hash(key: &[u8]) -> Option<[u8; 16]> {
+    let (hash, rest) = key.split_first_chunk::<16>()?;
+    (rest == [STREAM, TAIL_TAG] && *hash != SENTINEL).then_some(*hash)
 }
 
 /// A queue row key: the generation-0 queue prefix and the queue's hash,
@@ -75,13 +78,13 @@ mod projection_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::{QUEUE, QUEUE_PREFIX_LEN, SENTINEL, STREAM, queue_row, stream_row};
+    use super::{QUEUE, QUEUE_PREFIX_LEN, SENTINEL, STREAM, queue_row, stream_row, tail_hash};
 
     #[test]
     fn stream_and_queue_keys_carry_their_family_tags() {
         assert_eq!(
             stream_row(&[7; 16], 1)[..],
-            [&[STREAM][..], &[7; 16]].concat()[..]
+            [&[7; 16][..], &[STREAM]].concat()[..]
         );
         assert_eq!(
             queue_row(&[7; 16], 1)[..],
@@ -90,10 +93,34 @@ mod tests {
         assert_eq!(QUEUE, [b'Q', 0, 0, 0, 0]);
         assert_eq!(QUEUE_PREFIX_LEN, QUEUE.len());
         assert_eq!(
-            stream_row(&[0xFF; 16], 0),
-            SENTINEL.to_vec(),
+            stream_row(&[0xFF; 16], 0)[..16],
+            SENTINEL[..],
             "the sentinel is the last hash"
         );
-        assert_eq!(crate::queue::config_key(&[7; 16], "c")[0], STREAM);
+        assert_eq!(crate::queue::config_key(&[7; 16], "c")[16], STREAM);
+        assert_eq!(
+            crate::queue::state_prefix(&[7; 16], b'c', "c")[..17],
+            stream_row(&[7; 16], 0)[..],
+            "queue.rs builds its keys inline (a by-path include) in this order"
+        );
+    }
+
+    #[test]
+    fn the_tail_filter_takes_only_tails() {
+        let tail = crate::shard::tail_key(&[7; 16]);
+        assert_eq!(tail_hash(&tail), Some([7; 16]));
+        let mut sentinel_tail = SENTINEL.to_vec();
+        sentinel_tail.extend_from_slice(&[STREAM, b't']);
+        let others = [
+            crate::spill::pending::pending_key(&[7; 16]),
+            crate::queue::config_key(&[7; 16], "t"),
+            sentinel_tail,
+            [&[7; 16][..], b"t"].concat(),
+            [&tail[..], b"x"].concat(),
+            tail[1..].to_vec(),
+        ];
+        for key in others {
+            assert_eq!(tail_hash(&key), None, "{key:02x?}");
+        }
     }
 }

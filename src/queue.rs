@@ -57,18 +57,18 @@ pub(crate) struct QueueState {
 /// dead generation's residue:
 ///
 /// ```text
-/// 'S' <hash16> 'c' <consumer> 0x00 <gen BE>          cursor
-/// 'S' <hash16> 'l' <consumer> 0x00 <gen BE> <off BE> lease
-/// 'S' <hash16> 'x' <consumer> 0x00 <gen BE> <off BE> settled marker
+/// <hash16> 'S' 'c' <consumer> 0x00 <gen BE>          cursor
+/// <hash16> 'S' 'l' <consumer> 0x00 <gen BE> <off BE> lease
+/// <hash16> 'S' 'x' <consumer> 0x00 <gen BE> <off BE> settled marker
 /// ```
 ///
-/// Consumer rows are stream state: every key starts with the stream
-/// segment's tag `'S'` (layout 6, `crate::keyspace::STREAM`).
+/// Consumer rows are stream state: every key is the stream's hash, then
+/// the family byte `'S'` (layout 8, `crate::keyspace::STREAM`).
 ///
 /// `state_prefix` (name + separator, NO generation) covers every
 /// generation — cleanup deletes a consumer's rows across all of them.
 pub(crate) fn state_prefix(hash: &[u8; 16], tag: u8, consumer: &str) -> Vec<u8> {
-    [b"S".as_slice(), hash, &[tag], consumer.as_bytes(), &[0]].concat()
+    [hash.as_slice(), b"S", &[tag], consumer.as_bytes(), &[0]].concat()
 }
 
 pub(crate) fn cursor_key(hash: &[u8; 16], consumer: &str, cgen: u64) -> Vec<u8> {
@@ -100,8 +100,8 @@ pub(crate) fn decode_state_key<'a>(
     key: &'a [u8],
 ) -> Result<(&'a str, u64, Option<u64>), &'static str> {
     let identity_error = "queue key identity mismatch";
-    let rest = key.strip_prefix(b"S").ok_or(identity_error)?;
-    let (prefix, rest) = rest.split_first_chunk::<16>().ok_or(identity_error)?;
+    let (prefix, rest) = key.split_first_chunk::<16>().ok_or(identity_error)?;
+    let rest = rest.strip_prefix(b"S").ok_or(identity_error)?;
     let (kind, rest) = rest.split_first().ok_or(identity_error)?;
     if prefix != hash || *kind != tag {
         return Err(identity_error);
@@ -277,7 +277,7 @@ pub(crate) struct ConsumerRecord {
 }
 
 pub(crate) fn config_key(hash: &[u8; 16], consumer: &str) -> Vec<u8> {
-    [b"S".as_slice(), hash, b"C", consumer.as_bytes()].concat()
+    [hash.as_slice(), b"S", b"C", consumer.as_bytes()].concat()
 }
 
 /// DURABLE consumer-generation fence: `<hash16> 'F' <consumer>` →
@@ -295,7 +295,7 @@ pub(crate) fn config_key(hash: &[u8; 16], consumer: &str) -> Vec<u8> {
 /// The row is tiny, monotonic, and long-lived: new generations are always
 /// above it, so it never needs deleting.
 pub(crate) fn fence_key(hash: &[u8; 16], consumer: &str) -> Vec<u8> {
-    [b"S".as_slice(), hash, b"F", consumer.as_bytes()].concat()
+    [hash.as_slice(), b"S", b"F", consumer.as_bytes()].concat()
 }
 
 pub(crate) enum QueueOp {
@@ -492,7 +492,7 @@ mod tests {
             let identity = decode_state_key(&hash, tag, foreign);
             assert_eq!(identity, Err("queue key identity mismatch"));
         }
-        let missing = [b"S".as_slice(), &hash, b"cworker"].concat();
+        let missing = [hash.as_slice(), b"S", b"cworker"].concat();
         assert_eq!(
             decode_state_key(&hash, b'c', &missing),
             Err("queue key missing separator")
@@ -502,7 +502,7 @@ mod tests {
             decode_state_key(&hash, b'c', &empty),
             Err("queue key name is empty")
         );
-        let invalid_utf8 = [b"S".as_slice(), &hash, &[b'c', 255, 0], &[0; 8]].concat();
+        let invalid_utf8 = [hash.as_slice(), b"S", &[b'c', 255, 0], &[0; 8]].concat();
         assert_eq!(
             decode_state_key(&hash, b'c', &invalid_utf8),
             Err("queue key name is not UTF-8")

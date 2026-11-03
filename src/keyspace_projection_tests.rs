@@ -330,7 +330,7 @@ async fn child_merges_through_compaction(
     db.flush_with_options(memtable()).await.unwrap();
     for (k, v) in want.iter_mut() {
         if k.len() == 18 && k[17] == b'P' {
-            let i = k[16];
+            let i = k[15];
             *v = Bytes::from(format!("a{i};b{i};c{i};"));
         }
     }

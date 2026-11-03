@@ -32,16 +32,16 @@ mod shard_keys {
         // <hash16> 't'
         assert_eq!(
             hex(&tail_key(&H)),
-            concat!("53", "11111111111111111111111111111111", "74")
+            concat!("11111111111111111111111111111111", "53", "74")
         );
     }
 
     #[test]
     fn golden_layout6_pending_key_bytes() {
-        // 'S' <hash16> 'P': the stream's unsealed pages, one row
+        // <hash16> 'S' 'P': the stream's unsealed pages, one row
         assert_eq!(
             hex(&crate::spill::pending::pending_key(&H)),
-            concat!("53", "11111111111111111111111111111111", "50")
+            concat!("11111111111111111111111111111111", "53", "50")
         );
     }
 
@@ -51,8 +51,8 @@ mod shard_keys {
         assert_eq!(
             hex(&seq_key(&H, &K)),
             concat!(
-                "53", // layout 6 stream segment tag
                 "11111111111111111111111111111111",
+                "53", // layout 8 stream family byte
                 "73",
                 "22222222222222222222222222222222"
             )
@@ -65,8 +65,8 @@ mod shard_keys {
         assert_eq!(
             hex(&producer_key(&H, &K, "prod-9")),
             concat!(
-                "53", // layout 6 stream segment tag
                 "11111111111111111111111111111111",
+                "53", // layout 8 stream family byte
                 "71",
                 "22222222222222222222222222222222",
                 "70726f642d39" // "prod-9"
@@ -79,7 +79,7 @@ mod shard_keys {
         // <hash16> 'G' -> u64 LE: the durable seal fence (TLA-002-F1)
         assert_eq!(
             hex(&seal_fence_key(&H)),
-            concat!("53", "11111111111111111111111111111111", "47")
+            concat!("11111111111111111111111111111111", "53", "47")
         );
     }
 }
@@ -242,8 +242,8 @@ mod queue_keys {
         assert_eq!(
             hex(&cursor_key(&H, "c1", OFF)),
             concat!(
-                "53", // layout 6 stream segment tag
                 "11111111111111111111111111111111",
+                "53",               // layout 8 stream family byte
                 "63",               // 'c'
                 "6331",             // "c1"
                 "00",               // name/generation separator
@@ -257,8 +257,8 @@ mod queue_keys {
         assert_eq!(
             hex(&lease_key(&H, "c1", OFF, OFF2)),
             concat!(
-                "53", // layout 6 stream segment tag
                 "11111111111111111111111111111111",
+                "53", // layout 8 stream family byte
                 "6c", // 'l'
                 "6331",
                 "00",
@@ -273,8 +273,8 @@ mod queue_keys {
         assert_eq!(
             hex(&ack_key(&H, "c1", OFF, OFF2)),
             concat!(
-                "53", // layout 6 stream segment tag
                 "11111111111111111111111111111111",
+                "53", // layout 8 stream family byte
                 "78", // 'x'
                 "6331",
                 "00",
@@ -290,8 +290,8 @@ mod queue_keys {
         assert_eq!(
             hex(&config_key(&H, "c1")),
             concat!(
-                "53", // layout 6 stream segment tag
                 "11111111111111111111111111111111",
+                "53", // layout 8 stream family byte
                 "43", // 'C'
                 "6331"
             )
@@ -303,8 +303,8 @@ mod queue_keys {
         assert_eq!(
             hex(&fence_key(&H, "c1")),
             concat!(
-                "53", // layout 6 stream segment tag
                 "11111111111111111111111111111111",
+                "53", // layout 8 stream family byte
                 "46", // 'F'
                 "6331"
             )
@@ -322,7 +322,7 @@ mod billing {
         // <seg-hash16> 'B'
         assert_eq!(
             hex(&billing_meta_key(&H)),
-            concat!("53", "11111111111111111111111111111111", "42")
+            concat!("11111111111111111111111111111111", "53", "42")
         );
     }
 
@@ -334,7 +334,6 @@ mod billing {
         assert_eq!(
             hex(&usage_month_final_key(&H, 2026, 8)),
             concat!(
-                "53", // layout 6 stream segment tag
                 "ffffffffffffffffffffffffffffffff",
                 "56",
                 "11111111111111111111111111111111",
@@ -487,7 +486,7 @@ mod descriptor_json {
         }
     }
 
-    const FULL_JSON: &str = r#"{"name":"orders","account_id":"acct-1","project_id":"proj-test","stream_epoch":"00112233445566778899aabbccddeeff","key_fingerprint":"fp-abc","created_ms":1700000000123,"expires_at_ms":1800000000000,"deleted":true,"soft_deleted":true,"logical_close_ms":1700100000000,"forked_from":{"source":"parent","source_epoch":"ffeeddccbbaa99887766554433221100","fork_offset":42,"fork_sub":3,"fork_id":"fork-1"},"fork_children":["child-1","child-2"],"init":{"request_hash":"rh-1","key_fingerprint":"kfp-1","claimed_ms":5},"content_type":"application/json","ttl_secs":3600,"segments":{"version":1,"next_seg_id":1,"segments":[{"seg_id":0,"lo":0,"hi":18446744073709551615,"shard_prefix":"shard-0","route_hash":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"created_ms":1700000000000,"predecessors":[],"sealed_ms":null,"sealed_next_offset":null}]},"sealed":true,"seal_gen_counter":7,"sealing":{"operation_id":"op-1","intent":{"kind":"final","routing_key":"rk","request_hash":"rq","final_committed":true},"claimed_ms":9,"claim_generation":2},"seal_op":"op-0","watch_definitions":[{"name":"w1","fields":["/a","/b"]}],"parent_ref_pending":true,"watch_sig_key":"wsk-1","layout_version":7}"#;
+    const FULL_JSON: &str = r#"{"name":"orders","account_id":"acct-1","project_id":"proj-test","stream_epoch":"00112233445566778899aabbccddeeff","key_fingerprint":"fp-abc","created_ms":1700000000123,"expires_at_ms":1800000000000,"deleted":true,"soft_deleted":true,"logical_close_ms":1700100000000,"forked_from":{"source":"parent","source_epoch":"ffeeddccbbaa99887766554433221100","fork_offset":42,"fork_sub":3,"fork_id":"fork-1"},"fork_children":["child-1","child-2"],"init":{"request_hash":"rh-1","key_fingerprint":"kfp-1","claimed_ms":5},"content_type":"application/json","ttl_secs":3600,"segments":{"version":1,"next_seg_id":1,"segments":[{"seg_id":0,"lo":0,"hi":18446744073709551615,"shard_prefix":"shard-0","route_hash":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"created_ms":1700000000000,"predecessors":[],"sealed_ms":null,"sealed_next_offset":null}]},"sealed":true,"seal_gen_counter":7,"sealing":{"operation_id":"op-1","intent":{"kind":"final","routing_key":"rk","request_hash":"rq","final_committed":true},"claimed_ms":9,"claim_generation":2},"seal_op":"op-0","watch_definitions":[{"name":"w1","fields":["/a","/b"]}],"parent_ref_pending":true,"watch_sig_key":"wsk-1","layout_version":8}"#;
 
     /// All optional/empty/defaultable fields at their defaults.
     fn minimal_desc() -> crate::registry::PersistedDescriptor {
@@ -527,10 +526,10 @@ mod descriptor_json {
     /// soft_deleted, logical_close_ms, forked_from, fork_children, init,
     /// segments, sealing, seal_op, watch_definitions, parent_ref_pending,
     /// watch_sig_key.
-    const MINIMAL_JSON: &str = r#"{"name":"min","project_id":"proj-test","stream_epoch":"00000000000000000000000000000001","key_fingerprint":"fp","created_ms":1,"expires_at_ms":null,"deleted":false,"content_type":"application/octet-stream","ttl_secs":null,"sealed":false,"seal_gen_counter":0,"layout_version":7}"#;
+    const MINIMAL_JSON: &str = r#"{"name":"min","project_id":"proj-test","stream_epoch":"00000000000000000000000000000001","key_fingerprint":"fp","created_ms":1,"expires_at_ms":null,"deleted":false,"content_type":"application/octet-stream","ttl_secs":null,"sealed":false,"seal_gen_counter":0,"layout_version":8}"#;
 
     #[test]
-    fn golden_layout7_descriptor_full_json() {
+    fn golden_layout8_descriptor_full_json() {
         let d = full_desc();
         let json = serde_json::to_string(&d).unwrap();
         assert_eq!(json, FULL_JSON);
@@ -546,7 +545,7 @@ mod descriptor_json {
     }
 
     #[test]
-    fn golden_layout7_descriptor_minimal_json() {
+    fn golden_layout8_descriptor_minimal_json() {
         assert_eq!(
             serde_json::to_string(&minimal_desc()).unwrap(),
             MINIMAL_JSON
@@ -554,7 +553,7 @@ mod descriptor_json {
     }
 
     #[test]
-    fn golden_layout7_descriptor_decode_defaults() {
+    fn golden_layout8_descriptor_decode_defaults() {
         // Only the mandatory fields present (name, project_id,
         // stream_epoch, key_fingerprint, created_ms): every other field
         // takes its documented serde default. layout_version defaults to
@@ -585,10 +584,10 @@ mod descriptor_json {
     }
 
     #[test]
-    fn golden_layout7_descriptor_foreign_layout_rejected() {
+    fn golden_layout8_descriptor_foreign_layout_rejected() {
         // The production fail-closed path (registry::decode_desc): any
-        // layout_version != 7 is refused as unsupported_storage_layout,
-        // layout 6 (the segmented shard log, the layout before 7) included.
+        // layout_version != 8 is refused as unsupported_storage_layout,
+        // layout 7 (tag-first keys, the layout before 8) included.
         let with_layout = |layout: &str| {
             format!(
                 r#"{{"name":"min","project_id":"proj-test","stream_epoch":"00000000000000000000000000000001","key_fingerprint":"fp","created_ms":1{layout}}}"#
@@ -599,7 +598,8 @@ mod descriptor_json {
             with_layout(r#","layout_version":4"#),
             with_layout(r#","layout_version":5"#),
             with_layout(r#","layout_version":6"#),
-            with_layout(r#","layout_version":8"#),
+            with_layout(r#","layout_version":7"#),
+            with_layout(r#","layout_version":9"#),
             // No layout_version at all: serde default 0, also refused.
             with_layout(""),
         ] {
@@ -610,18 +610,18 @@ mod descriptor_json {
                 "wrong refusal: {msg}"
             );
         }
-        // The precise operator-facing text for the layout before 7.
-        let err = decode_desc(with_layout(r#","layout_version":6"#).as_bytes(), None)
-            .expect_err("layout 6 refused");
+        // The precise operator-facing text for the layout before 8.
+        let err = decode_desc(with_layout(r#","layout_version":7"#).as_bytes(), None)
+            .expect_err("layout 7 refused");
         assert!(
             err.to_string()
-                .contains("has layout 6 (this binary reads only 7)"),
+                .contains("has layout 7 (this binary reads only 8)"),
             "wrong refusal: {err}"
         );
     }
 
     #[test]
-    fn golden_layout7_descriptor_corrupt_json_errors_never_panics() {
+    fn golden_layout8_descriptor_corrupt_json_errors_never_panics() {
         // Garbage and truncation are parse errors, never panics.
         let garbage = decode_desc(b"{\"name\":", None).expect_err("garbage refused");
         assert!(garbage.to_string().contains("descriptor parse"));

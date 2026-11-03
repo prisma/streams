@@ -24,7 +24,7 @@ use crate::crypto_page::page_extent;
 /// it: `B C F G c l q s t x`).
 pub(crate) const PENDING_TAG: u8 = b'P';
 
-/// `'S' ‖ hash ‖ 'P'`: a stream's pending pages.
+/// `hash ‖ 'S' ‖ 'P'`: a stream's pending pages.
 pub(crate) fn pending_key(hash: &[u8; 16]) -> Vec<u8> {
     let mut k = crate::keyspace::stream_row(hash, 1);
     k.push(PENDING_TAG);
@@ -34,7 +34,7 @@ pub(crate) fn pending_key(hash: &[u8; 16]) -> Vec<u8> {
 /// Whether `key` is a pending row's.
 fn is_pending(key: &[u8]) -> bool {
     key.len() == 18
-        && key.first() == Some(&crate::keyspace::STREAM)
+        && key.get(16) == Some(&crate::keyspace::STREAM)
         && key.last() == Some(&PENDING_TAG)
 }
 

@@ -77,7 +77,6 @@ fn the_row_and_key_bytes_are_pinned() {
     assert_eq!(
         crate::crypto::hex(&directory_key(OBJECT)),
         concat!(
-            "53",
             "ffffffffffffffffffffffffffffffff",
             "4b",
             "0000000000000003",

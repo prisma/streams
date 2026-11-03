@@ -429,18 +429,18 @@ pub(crate) fn billing_meta_key(hash: &[u8; 16]) -> Vec<u8> {
     k
 }
 
-/// The usage outbox's sentinel (`'S' ‖ FF×16`): the month-final rows sort
+/// The usage outbox's sentinel (`FF×16`): the month-final rows sort
 /// after every stream's rows, scanned by the drainer and deleted through
 /// the committer so acknowledgment serializes with concurrent appends. The
 /// usage dirty set itself is in memory since layout 6 (`shard::layout`).
-pub(crate) const USAGE_DIRTY_SENTINEL: [u8; 17] = crate::keyspace::SENTINEL;
+pub(crate) const USAGE_DIRTY_SENTINEL: [u8; 16] = crate::keyspace::SENTINEL;
 
 /// Closed-month final snapshots awaiting emission:
 /// `<0xFF sentinel>'V'<seg-hash><"YYYY-MM">` → SegmentSnapshot (JSON,
 /// self-contained). Rare — one per segment-month — and deleted after
 /// the ledger acknowledges.
 pub(crate) fn usage_month_final_key(hash: &[u8; 16], year: i32, month: u32) -> Vec<u8> {
-    let mut k = Vec::with_capacity(41);
+    let mut k = Vec::with_capacity(40);
     k.extend_from_slice(&USAGE_DIRTY_SENTINEL);
     k.push(b'V');
     k.extend_from_slice(hash);

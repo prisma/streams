@@ -3,14 +3,14 @@
 //! consults, rebuilt at open from the `'K'` range. Package 5 folds the rows
 //! into run-index objects; the row format is final for it.
 //!
-//! Key: `'S' ‖ 0xFF×16 ‖ 'K' ‖ epoch BE ‖ seq BE` (34 B; the sentinel sorts
+//! Key: `0xFF×16 ‖ 'K' ‖ epoch BE ‖ seq BE` (33 B; the sentinel sorts
 //! after every stream's rows). The object the row describes is named by the
 //! same epoch and seq (`object::object_path`).
 //!
 //! Value: the row codec in `row`, a leaf the seal-directory fuzz target
 //! compiles unchanged (`fuzz/fuzz_targets/seal_directory.rs`).
 //!
-//! The refcount row (`'S' ‖ 0xFF×16 ‖ 'R' ‖ epoch BE ‖ seq BE`, codec in
+//! The refcount row (`0xFF×16 ‖ 'R' ‖ epoch BE ‖ seq BE`, codec in
 //! `spill::gc`) rides the same commit; garbage collection keeps it exact.
 
 use std::collections::HashMap;
@@ -29,9 +29,9 @@ pub(crate) use row::{
 pub(crate) const DIRECTORY_TAG: u8 = b'K';
 pub(crate) const REFCOUNT_TAG: u8 = b'R';
 
-/// `'S' ‖ 0xFF×16 ‖ tag ‖ epoch BE ‖ seq BE`: a row about one object.
+/// `0xFF×16 ‖ tag ‖ epoch BE ‖ seq BE`: a row about one object.
 pub(crate) fn sentinel_key(tag: u8, id: ObjectId) -> Vec<u8> {
-    let mut k = Vec::with_capacity(34);
+    let mut k = Vec::with_capacity(33);
     k.extend_from_slice(&crate::keyspace::SENTINEL);
     k.push(tag);
     k.extend_from_slice(&id.epoch.to_be_bytes());
@@ -43,7 +43,7 @@ pub(crate) fn directory_key(id: ObjectId) -> Vec<u8> {
     sentinel_key(DIRECTORY_TAG, id)
 }
 
-/// `'S' ‖ 0xFF×16 ‖ 'K'`: every directory row of the shard.
+/// `0xFF×16 ‖ 'K'`: every directory row of the shard.
 pub(crate) fn directory_prefix() -> Vec<u8> {
     let mut k = crate::keyspace::SENTINEL.to_vec();
     k.push(DIRECTORY_TAG);

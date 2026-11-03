@@ -79,15 +79,9 @@ impl ShardEngine {
     /// the scan (and the open retries).
     async fn scan_tails(&self) -> anyhow::Result<Vec<[u8; 16]>> {
         let mut unsealed = Vec::new();
-        let mut rows = self
-            .db
-            .scan_prefix(&[crate::keyspace::STREAM][..], ..)
-            .await?;
+        let mut rows = self.db.scan(..).await?;
         while let Some(row) = rows.next().await? {
-            let Some((b't', hash)) = row.key.get(1..).and_then(|k| k.split_last()) else {
-                continue;
-            };
-            let Ok(hash) = <[u8; 16]>::try_from(hash) else {
+            let Some(hash) = crate::keyspace::tail_hash(&row.key) else {
                 continue;
             };
             let tail = match stored_tail(&row.value) {

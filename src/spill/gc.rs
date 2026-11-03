@@ -4,7 +4,7 @@
 //! The engine's side (the refcount lock, reader pins, the purge, the
 //! garbage deletes and the orphan sweep) is `shard::seal::gc`.
 //!
-//! Rows, all under the sentinel (`'S' ‖ 0xFF×16 ‖ tag ‖ ...`, 34 B keys):
+//! Rows, all under the sentinel (`0xFF×16 ‖ tag ‖ ...`, 33 B keys):
 //! - `'R' ‖ epoch BE ‖ seq BE`, one per segment object with a live chunk →
 //!   `ver:u8=1 live_bytes:varint live_chunks:varint created_ms:varint
 //!   object_len:varint`. `live_bytes` sums the encoded lengths of the
@@ -171,7 +171,7 @@ impl Head {
     }
 }
 
-/// `'S' ‖ 0xFF×16 ‖ 'H' ‖ hash`.
+/// `0xFF×16 ‖ 'H' ‖ hash`.
 pub(crate) fn head_key(hash: &[u8; 16]) -> Vec<u8> {
     let mut k = crate::keyspace::SENTINEL.to_vec();
     k.push(HEAD_TAG);
@@ -217,7 +217,7 @@ pub(crate) fn decode_head(raw: &[u8]) -> Option<Head> {
     (valid && input.is_empty()).then_some(h)
 }
 
-/// `'S' ‖ 0xFF×16 ‖ 'L' ‖ kind`: the orphan sweep's cursor for `kind`.
+/// `0xFF×16 ‖ 'L' ‖ kind`: the orphan sweep's cursor for `kind`.
 pub(crate) fn sweep_key(kind: ObjectKind) -> Vec<u8> {
     let mut k = crate::keyspace::SENTINEL.to_vec();
     k.push(SWEEP_TAG);

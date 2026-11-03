@@ -186,9 +186,9 @@ pub(crate) struct PersistedDescriptor {
 }
 
 /// The storage-layout generation this binary writes and the ONLY one it
-/// reads; no layout bridges (pre-launch hard cutover). Layout 7 keeps the
-/// tagged keys in one tree (`crate::keyspace`, #233); layout 6 is refused.
-pub(crate) const LAYOUT_VERSION: u32 = 7;
+/// reads; no layout bridges (pre-launch hard cutover). Layout 8 puts the
+/// hash first in every key (`crate::keyspace`, S3a); layout 7 is refused.
+pub(crate) const LAYOUT_VERSION: u32 = 8;
 
 /// Seal-in-progress marker (audit P0). Present = Sealing: normal
 /// appends are refused, only the matching seal operation may write its

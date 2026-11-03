@@ -88,7 +88,7 @@ fn rows_round_trip_and_refuse_every_other_byte_string() {
 fn head_keys_name_their_stream() {
     let hash = [9u8; 16];
     assert_eq!(parse_head_key(&head_key(&hash)), Some(hash));
-    assert_eq!(head_key(&hash).len(), 34);
+    assert_eq!(head_key(&hash).len(), 33);
     assert_eq!(parse_head_key(&garbage_key(id(1))), None);
 }
 
@@ -149,7 +149,7 @@ fn decrements_sum_per_object_and_never_go_below_zero() {
 
 #[test]
 fn every_gc_tag_sorts_below_the_usage_finals() {
-    // The drain scans 'S' ‖ 0xFF×16 ‖ 'V' ‖ hash per billed segment; a
+    // The drain scans 0xFF×16 ‖ 'V' ‖ hash per billed segment; a
     // sentinel key above 'V' would make each scan read a data block of
     // every SST that holds one (package 5's S10 finding).
     for tag in [

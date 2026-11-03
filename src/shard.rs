@@ -94,9 +94,9 @@ pub(crate) struct ShardMaintenance {
 /// store error fails the open.
 pub(crate) async fn load_or_rebuild_maintenance(db: &Db) -> anyhow::Result<ShardMaintenance> {
     let mut total = 0u64;
-    let mut rows = db.scan_prefix(&[crate::keyspace::STREAM][..], ..).await?;
+    let mut rows = db.scan(..).await?;
     while let Some(row) = rows.next().await? {
-        if row.key.len() != 18 || row.key.last() != Some(&b't') {
+        if crate::keyspace::tail_hash(&row.key).is_none() {
             continue;
         }
         let unsealed = match stored_tail(&row.value) {
