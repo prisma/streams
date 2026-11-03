@@ -68,6 +68,17 @@ async fn never_read(cell: &Cell, i: usize, method: &str, path: &str, body: &[u8]
     stream
 }
 
+/// Wait, at most 10 s, until `stream`'s answer has begun to arrive: the
+/// request's page is rendered and its read hold settled to it.
+async fn answered(stream: &TcpStream) {
+    let mut byte = [0u8; 1];
+    let peeked = tokio::time::timeout(Duration::from_secs(10), stream.peek(&mut byte)).await;
+    assert!(
+        matches!(peeked, Ok(Ok(1))),
+        "the unread request was never answered: {peeked:?}"
+    );
+}
+
 /// Start a POST of `declared` body bytes as project `i`: the head only.
 async fn upload_head(cell: &Cell, i: usize, path: &str, declared: u64) -> TcpStream {
     let mut stream = TcpStream::connect(cell.addr).await.unwrap();
@@ -644,11 +655,9 @@ async fn a_catalog_page_is_held_to_its_projects_memory_line_as_a_read_is() {
         .set_project_memory_pressure_bytes(PAGE_BUDGET);
     let page = "/v1/streams/page/records";
     let unread = never_read(&cell, 0, "GET", page, b"").await;
-    // The page's reservation, then the rendered page itself.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while matches!(read_held(&cell, 0), 0 | PAGE_BUDGET) && Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    // Once its answer has begun the page is rendered and its hold settled
+    // to it (its reservation grows with its chunks until then, edge #240).
+    answered(&unread).await;
     let held = read_held(&cell, 0);
     let line = held + 64 * 1024;
     cell.state.admission.set_project_memory_pressure_bytes(line);
@@ -807,8 +816,9 @@ async fn held_at_append<T>(
 /// the first pull after it expires hands the record off under the pull's
 /// own coverage. Here project 0's stream holds 72 records of 64 KiB, its
 /// consumer dead-letters at the first retry, and one pull leases two of
-/// them for 1 s. Pass: with nothing else held, a settle poisoning record 0
-/// holds exactly the coverage while its dead-letter copy is appended, then
+/// them for 5 s (the settles below run inside it: none is stale). Pass:
+/// with nothing else held, a settle poisoning record 0 holds exactly the
+/// coverage while its dead-letter copy is appended, then
 /// nothing; beside an unread page of 96 records under a line of 8 MiB, a
 /// settle poisoning record 1 dead-letters nothing and the project's read
 /// bytes never pass the line; the page released, the first pull after the
@@ -829,7 +839,7 @@ async fn a_poisoning_settle_reads_only_what_its_project_can_hold() {
         .admission
         .set_project_memory_pressure_bytes(PAGE_BUDGET);
     let (pull, settle) = (format!("{consumer}:pull"), format!("{consumer}:settle"));
-    let (status, leased) = posted(&cell, 0, &pull, br#"{"max":2,"visibilityMs":1000}"#).await;
+    let (status, leased) = posted(&cell, 0, &pull, br#"{"max":2,"visibilityMs":5000}"#).await;
     let leased_at = Instant::now();
     let tokens: Vec<String> = leased["messages"]
         .as_array()
@@ -855,10 +865,7 @@ async fn a_poisoning_settle_reads_only_what_its_project_can_hold() {
     );
 
     let unread = never_read(&cell, 0, "GET", "/v1/streams/page/records", b"").await;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while matches!(read_held(&cell, 0), 0 | PAGE_BUDGET) && Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    answered(&unread).await;
     let held = read_held(&cell, 0);
     let body = retry(1);
     let deferred = posted(&cell, 0, &settle, body.as_bytes());
@@ -867,10 +874,14 @@ async fn a_poisoning_settle_reads_only_what_its_project_can_hold() {
         peak <= PAGE_BUDGET,
         "the project held {peak} read bytes under a line of {PAGE_BUDGET} while the settle ran"
     );
-    let counts = (deferred["dlq"].as_u64(), deferred["dlqBlocked"].as_u64());
+    let counts = (
+        deferred["dlq"].as_u64(),
+        deferred["dlqBlocked"].as_u64(),
+        deferred["stale"].as_u64(),
+    );
     assert_eq!(
         (status, counts),
-        (200, (Some(0), Some(0))),
+        (200, (Some(0), Some(0), Some(0))),
         "beside {held} bytes of unread page held under a line of {PAGE_BUDGET}, a settle \
          poisoning a record dead-lettered it from an unreserved read: {deferred}"
     );
@@ -878,7 +889,7 @@ async fn a_poisoning_settle_reads_only_what_its_project_can_hold() {
     drop(unread);
     let released = at_rest(|| read_held(&cell, 0)).await;
     assert_eq!(released, 0, "the page released");
-    tokio::time::sleep(Duration::from_millis(1100).saturating_sub(leased_at.elapsed())).await;
+    tokio::time::sleep(Duration::from_millis(5100).saturating_sub(leased_at.elapsed())).await;
     let (status, _) = posted(&cell, 0, &pull, br#"{"max":1}"#).await;
     assert_eq!(status, 200, "the first pull after the lease expired");
     let dead = cell
