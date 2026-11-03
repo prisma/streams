@@ -178,6 +178,38 @@ function sameShape(a, b, label, warnings) {
   });
 }
 
+/** run-ab.sh's QUEUE_SHARDS for an arm (its arm.json), or null when unrecorded. */
+const armShards = (dir) => {
+  const n = readJson(join(dir, 'arm.json'))?.shards;
+  return Number.isInteger(n) ? n : null;
+};
+
+/**
+ * The shard count the priced figure ran on. B - A across two counts is not a
+ * marginal cost (void); a standalone pair on another count is reported apart
+ * (warned); an arm without the record is unknown (warned).
+ */
+function shardCount(f, reasons, warnings) {
+  const by = { a: armShards(f.a), b: armShards(f.b), sa: f.sa ? armShards(f.sa) : null, sb: f.sb ? armShards(f.sb) : null };
+  const pair = (x, y, label) => {
+    if (x === null || y === null) {
+      warnings.push(`${label}: shard count unknown (no arm.json shards)`);
+      return null;
+    }
+    if (x !== y) {
+      reasons.push(`${label}: arm A ran on ${x} shards, arm B on ${y}`);
+      return null;
+    }
+    return x;
+  };
+  const shards = pair(by.a, by.b, 'A/B');
+  if (f.sa && f.sb) {
+    const sa = pair(by.sa, by.sb, 'standalone');
+    if (sa !== null && shards !== null && sa !== shards) warnings.push(`standalone: ran on ${sa} shards, the A/B pair on ${shards}`);
+  }
+  return { shards, shards_by_arm: by };
+}
+
 function replayValidity(arm, label, reasons) {
   const s = arm.summary;
   if (!s) reasons.push(`${label}: no replay-summary.json`);
@@ -220,6 +252,7 @@ export function price(f) {
       arms: { a: resolve(f.a), b: resolve(f.b), sa: f.sa ? resolve(f.sa) : null, sb: f.sb ? resolve(f.sb) : null },
     },
   });
+  Object.assign(costs, shardCount(f, reasons, warnings));
   costs.void = reasons.length > 0;
   costs.void_reasons = reasons;
   costs.warnings = warnings;
@@ -264,7 +297,7 @@ export function idle(f) {
 function printCosts(c) {
   const usd = (x) => (x === null ? 'n/a' : `$${x.toFixed(2)}`);
   const lines = [
-    `costs (30-day month, scale ${c.scale}${c.void ? ', VOID' : ''})`,
+    `costs (30-day month, scale ${c.scale}, ${c.shards ?? 'unknown'} shards${c.void ? ', VOID' : ''})`,
     `  fully loaded ${usd(c.month_usd.fully_loaded)}  marginal ${usd(c.month_usd.marginal)}  standalone ${usd(c.month_usd.standalone)}`,
     `  at Tigris list: fully loaded ${usd(c.month_usd_list.fully_loaded)}  marginal ${usd(c.month_usd_list.marginal)}`,
     `  per million messages (fully loaded): ${usd(c.per_million_messages_usd.fully_loaded)} over the scenario's month; ` +

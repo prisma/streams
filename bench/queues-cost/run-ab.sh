@@ -35,6 +35,9 @@
 #   STANDALONE_DIR [] a standalone run's out dir, priced into costs.json
 #   CELL_VCPUS [1]  CELL_MEM_GIB [1]  UTILIZATION [0.6]  IDLE_TOLERANCE [0]
 #   ARMS ["A B"]
+#   QUEUE_SHARDS [2] the server's INITIAL_SHARDS, recorded in each arm's
+#     arm.json and in costs.json: the queue product is priced on 2 shards
+#     per instance; 1 is the ceiling probe, 4 the earlier Mac figures
 # One run per machine at a time; no builds or other load during a run.
 set -euo pipefail
 
@@ -78,6 +81,7 @@ CELL_MEM_GIB=${CELL_MEM_GIB:-1}
 UTILIZATION=${UTILIZATION:-0.6}
 IDLE_TOLERANCE=${IDLE_TOLERANCE:-0}
 ARMS=${ARMS:-A B}
+QUEUE_SHARDS=${QUEUE_SHARDS:-2}
 S3=http://127.0.0.1:$S3_PORT
 SRV=http://127.0.0.1:$SRV_PORT
 
@@ -99,7 +103,12 @@ for port in "$S3_PORT" "$SRV_PORT"; do
     echo "run-ab: port $port is in use (another run?)" >&2; exit 2
   fi
 done
+case "$QUEUE_SHARDS" in ''|*[!0-9]*|0*) echo "run-ab: QUEUE_SHARDS must be a positive integer" >&2; exit 2 ;; esac
 read -r -a EXTRA_ENV <<< "$SERVER_ENV_EXTRA"
+# The shard count is QUEUE_SHARDS alone, so arm.json records what ran.
+for kv in ${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}; do
+  case "$kv" in INITIAL_SHARDS=*) echo "run-ab: set QUEUE_SHARDS, not INITIAL_SHARDS in SERVER_ENV_EXTRA" >&2; exit 2 ;; esac
+done
 read -r -a EXTRA_REPLAY <<< "$REPLAY_ARGS"
 
 mkdir -p "$OUT"
@@ -155,9 +164,9 @@ run_arm() { # arm baseline(0|1) load(none|replay|idle)
   local dir=$OUT/$arm
   rm -rf "$dir"
   mkdir -p "$dir"
-  log "arm $arm: baseline=$baseline load=$load"
-  printf '{"arm":"%s","mode":"%s","baseline":%s,"load":"%s","label":"%s","server_bin":"%s","s3lite_bin":"%s"}\n' \
-    "$arm" "$MODE" "$baseline" "$load" "$LABEL" "$SERVER_BIN" "$S3LITE_BIN" > "$dir/arm.json"
+  log "arm $arm: baseline=$baseline load=$load shards=$QUEUE_SHARDS"
+  printf '{"arm":"%s","mode":"%s","baseline":%s,"load":"%s","label":"%s","shards":%s,"server_bin":"%s","s3lite_bin":"%s"}\n' \
+    "$arm" "$MODE" "$baseline" "$load" "$LABEL" "$QUEUE_SHARDS" "$SERVER_BIN" "$S3LITE_BIN" > "$dir/arm.json"
 
   "$S3LITE_BIN" --listen "127.0.0.1:$S3_PORT" --latency-ms "$S3LITE_LATENCY_MS" \
     > "$dir/s3lite.log" 2>&1 < /dev/null &
@@ -169,7 +178,7 @@ run_arm() { # arm baseline(0|1) load(none|replay|idle)
   ( AUTH_TOKEN=$(cat "$SECRETS/auth"); export AUTH_TOKEN
     exec env SLATE_S3_ENDPOINT="$S3" SLATE_S3_BUCKET=qcost \
       SLATE_S3_REGION=local SLATE_S3_ACCESS_KEY_ID=test SLATE_S3_SECRET_ACCESS_KEY=test \
-      PATH_PREFIX="$LABEL-$arm" INSTANCE_NAME=streams-1 INITIAL_SHARDS=4 \
+      PATH_PREFIX="$LABEL-$arm" INSTANCE_NAME=streams-1 INITIAL_SHARDS="$QUEUE_SHARDS" \
       WAL_GROUP_COMMIT=1 WAL_FLUSH_GAP_MS=100 FLUSH_INTERVAL_MS=25 \
       WAL_POST_ACK_GATHER_MS=6 TAIL_RING_BYTES=33554432 STREAMS_DEBUG_TIMING=0 \
       FRAME_COMPRESS=1 L0_SST_SIZE_BYTES=16777216 MAX_UNFLUSHED_BYTES=33554432 \

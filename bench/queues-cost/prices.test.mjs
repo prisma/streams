@@ -146,8 +146,10 @@ test('costs.json: fully loaded is marginal plus the floor share; standalone carr
 
 // ---- price and idle over synthetic arm directories --------------------------
 
-function writeArm(dir, { classA, cpuPerH, rssKb, liveBytes, burst = false, summary = null, deliveredPerS = 0 }) {
+function writeArm(dir, { classA, cpuPerH, rssKb, liveBytes, burst = false, summary = null, deliveredPerS = 0, shards = null }) {
   mkdirSync(join(dir, 'snaps'), { recursive: true });
+  // run-ab.sh's arm.json; null leaves it out, as a run before QUEUE_SHARDS.
+  if (shards !== null) writeFileSync(join(dir, 'arm.json'), JSON.stringify({ arm: 'X', shards }));
   const tags = burst ? ['t0', 'start', 'burst_end', 'end'] : ['t0', 'start', 'end'];
   const step = 3_600_000;
   const lines = [];
@@ -222,6 +224,30 @@ test('price: a burst pair counts the burst once; a void replay voids the verdict
   } catch (e) {
     if (e.code !== 'ENOENT') throw e;
   }
+});
+
+test('price: costs.json records the arms\' shard count, and refuses a pair run on different counts', () => {
+  const root = mkdtempSync(join(tmpdir(), 'qcost-'));
+  const arm = (name, shards, summary = null) => writeArm(join(root, name), { classA: 1000, cpuPerH: 360, rssKb: 400_000, liveBytes: 1e9, summary, shards });
+  arm('A', 2);
+  arm('B', 2, okSummary);
+  const c = price({ a: join(root, 'A'), b: join(root, 'B'), scale: '1' });
+  assert.deepEqual([c.shards, c.shards_by_arm, c.void], [2, { a: 2, b: 2, sa: null, sb: null }, false]);
+  // A standalone pair on another count is priced, with a warning.
+  arm('SA', 4);
+  arm('SB', 4, okSummary);
+  const s = price({ a: join(root, 'A'), b: join(root, 'B'), sa: join(root, 'SA'), sb: join(root, 'SB'), scale: '1' });
+  assert.deepEqual([s.shards, s.shards_by_arm, s.void], [2, { a: 2, b: 2, sa: 4, sb: 4 }, false]);
+  assert.ok(s.warnings.includes('standalone: ran on 4 shards, the A/B pair on 2'), JSON.stringify(s.warnings));
+  // B - A across two shard counts is not a marginal cost.
+  arm('B4', 4, okSummary);
+  const d = price({ a: join(root, 'A'), b: join(root, 'B4'), scale: '1' });
+  assert.deepEqual([d.shards, d.void, d.void_reasons], [null, true, ['A/B: arm A ran on 2 shards, arm B on 4']]);
+  // An arm without arm.json (a run before QUEUE_SHARDS): unknown, warned.
+  arm('A0', null);
+  const u = price({ a: join(root, 'A0'), b: join(root, 'B'), scale: '1' });
+  assert.deepEqual([u.shards, u.void], [null, false]);
+  assert.ok(u.warnings.includes('A/B: shard count unknown (no arm.json shards)'), JSON.stringify(u.warnings));
 });
 
 test('idle: requests over the baseline fail the idle verdict', () => {

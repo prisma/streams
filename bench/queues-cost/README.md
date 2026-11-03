@@ -80,6 +80,15 @@ replay's drain, mark `final`, teardown. Only `start`..`end` is priced.
 - **The invoice burst.** The month-start burst is replayed only when
   `BURST_WINDOW_S` is set. Without a burst window, a rate-scaled window would
   count the burst in every hour of the month.
+- **Shard count.** `QUEUE_SHARDS` (default 2) is the server's
+  `INITIAL_SHARDS`. The queue product is priced on 2 shards per instance,
+  so the gated runs use the default. `QUEUE_SHARDS=1` is the ceiling probe
+  (what one shard holds). `QUEUE_SHARDS=4` reproduces the shape of every
+  figure in `docs/QUEUES-PRICING-BENCHMARK.md` up to §11; report it apart,
+  as a cross-check only. `run-ab.sh` records the count in each arm's
+  `arm.json`, and `collect.mjs price` copies it into `costs.json`. It
+  refuses `INITIAL_SHARDS` in `SERVER_ENV_EXTRA`, so the record is what
+  ran.
 - **Other settings.** `ARMS="B"` reruns one arm. `REPLAY_ARGS` passes extra
   flags to `replay.mjs`. `SERVER_ENV_EXTRA="K=V ..."` adds server
   environment, for example a queue feature flag or a commit window.
@@ -108,6 +117,7 @@ S3_PORT=9591 SRV_PORT=9592 BASELINE=0 WARMUP_S=5 DURATION_S=20 DRAIN_S=30 \
 
 | File | Content |
 |---|---|
+| `arm.json` | the arm, mode, label, `shards` (`QUEUE_SHARDS`) and the binaries |
 | `marks.jsonl`, `snaps/<tag>-{stats2,stats,store}.json` | at each mark: the s3lite ledger (Class A/B per tier and kind, `put_bytes`, `live_bytes`), the server's `/v1/debug/store`, the server process's CPU-seconds and RSS |
 | `samples.jsonl` | every 10 s: CPU-seconds and RSS; every 60 s: the bucket's live bytes |
 | `replay-summary.json` | arm B: the replay's counts, latencies, per-queue server stats and its validity |
@@ -131,6 +141,11 @@ At the top of `<out>/`:
   - `terms.floor_share`: the CPU share, the memory share, the larger of the
     two, and its dollars.
   - `months` and `windows`: the raw quantities per arm.
+  - `shards`: the shard count both arms ran on, from their `arm.json`
+    (null when unknown), and `shards_by_arm {a, b, sa, sb}`. Arms on
+    different counts void the figure. A standalone pair on another count
+    than the A/B pair gets a warning. An arm without the record (a run
+    before `QUEUE_SHARDS`; those ran 4 shards) gets a warning.
   - `void` and `void_reasons`, and `warnings`.
 - **`costs.txt`**: the same costs as a table.
 - **`verdict.txt`**: `cf_bill.py`'s bill, its ceiling and `goal MET`,
@@ -250,6 +265,7 @@ At the top of `<out>/`:
   hour.
 - The reference cell for the floor share is one 1 vCPU / 1 GiB instance at
   60% planned utilization (the local rig is one server instance).
-- The server posture is costab's soak7 environment, not the `shared-cell`
+- The server posture is costab's soak7 environment, except for the shard
+  count (`QUEUE_SHARDS`, 2, where soak7 has 4). It is not the `shared-cell`
   profile on `compute-1g`. The shared-cell profile needs the platform
   emulator's authentication, as `bench/k2cost` does.
