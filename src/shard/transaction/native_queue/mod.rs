@@ -8,6 +8,7 @@ use crate::native_queue::{NqOp, NqOut, NqRefusal, NqResult, keys};
 mod admin;
 mod claim;
 mod deliveries;
+mod lane;
 mod send;
 mod settle;
 pub(super) mod stage;
@@ -104,14 +105,20 @@ impl CommitTransaction<'_> {
                 max,
                 max_bytes,
                 lease_ms,
-            } => self.nq_claim(hash, st, (max, max_bytes, lease_ms), t).await,
+            } => {
+                self.nq_claim(hash, st, (max, max_bytes, lease_ms), (t, local.fields.next))
+                    .await
+            }
             NqOp::Settle { items } => self.nq_settle(hash, st, items, t).await,
             NqOp::Pause { paused } => {
                 st.state.paused = paused;
                 st.state_dirty = true;
                 Ok(NqOut::Paused(paused))
             }
-            NqOp::Cancel { offsets } => self.nq_cancel(hash, st, offsets, t).await,
+            NqOp::Cancel { offsets } => {
+                self.nq_cancel(hash, st, offsets, (t, local.fields.next))
+                    .await
+            }
             NqOp::Redrive {
                 offsets,
                 all,
@@ -119,9 +126,15 @@ impl CommitTransaction<'_> {
             } => self.nq_redrive(hash, st, (offsets, all, limit), t).await,
             NqOp::Discard { offsets } => self.nq_discard(hash, st, offsets, t).await,
             NqOp::ListFailed { after, limit } => self.nq_list_failed(hash, st, after, limit).await,
-            NqOp::Peek { after, limit } => self.nq_peek(hash, st, after, limit).await,
-            NqOp::Message { offset } => self.nq_message(hash, st, offset).await,
-            NqOp::Sweep => self.nq_sweep(hash, st, t).await,
+            NqOp::Peek { after, limit } => {
+                self.nq_peek(hash, st, (after, limit), local.fields.next)
+                    .await
+            }
+            NqOp::Message { offset } => {
+                self.nq_message(hash, st, offset, local.fields.next)
+                    .await
+            }
+            NqOp::Sweep => self.nq_sweep(hash, st, (t, local.fields.next)).await,
             NqOp::ClearDebt {
                 generation,
                 bytes,
@@ -232,6 +245,7 @@ impl CommitTransaction<'_> {
             };
             from.saturating_add(s.cfg.retention_ms)
         });
+        let lane = (s.lane_expire_at != 0).then_some(s.lane_expire_at);
         let parked = |at: i64| {
             if sweep.is_some() && at <= t {
                 t + 60_000
@@ -245,6 +259,7 @@ impl CommitTransaction<'_> {
             Some(f.fail_expiry),
             Some(f.dedup_expiry),
             untaken,
+            lane,
             Self::nq_next_notify(st).map(parked),
         ];
         let next = terms

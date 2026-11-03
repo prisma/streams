@@ -189,10 +189,11 @@ async fn a_sent_message_is_claimed_decrypted_and_acked() {
         engine.db.get(page).await.unwrap().is_none(),
         "the acked page is deleted"
     );
-    let meta = crate::native_queue::keys::by_offset(&hash, crate::native_queue::keys::META, 0);
+    let row =
+        crate::native_queue::keys::by_offset(&hash, crate::native_queue::keys::DELIVERY, 0);
     assert!(
-        engine.db.get(meta).await.unwrap().is_none(),
-        "and its metadata row"
+        engine.db.get(row).await.unwrap().is_none(),
+        "and its delivery row"
     );
     engine_shutdown(&state).await;
 }

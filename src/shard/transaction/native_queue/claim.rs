@@ -1,45 +1,90 @@
-//! Claim (docs/QUEUES-DESIGN.md §6.1): lease the due deliveries in
-//! availability order from the merge of the availability index past the
-//! cursor and the retry index, within `maxInFlight` and the byte limit. An
-//! untaken message past its retention end is skipped into the retention
-//! gap and deleted (§8.1). An empty claim writes nothing.
+//! Claim (docs/QUEUES-DESIGN.md §6.1; S3b-DESIGN §5.3): lease the due work
+//! of three sources in (due, offset) order, within `maxInFlight` and the
+//! byte limit: due retries (`R`), due scheduled messages (`A_s`, from the
+//! scheduled cursor) and the lane, the immediate messages from the
+//! frontier, each due at its send. The frontier passes the scheduled and
+//! cancelled offsets it meets, expires an untaken message past its
+//! retention end into the gap (§8.1), and never passes a live untaken
+//! message without leasing it. Every claim of a group takes the lane from
+//! the frontier the group's earlier claims left. An empty claim writes
+//! nothing.
 //!
-//! A family whose floor is past the claim's clock has nothing due
+//! An index whose floor is past the claim's clock has nothing due
 //! (invariant F) and is not read. A read stops at the first entry past the
-//! clock, and the claim then raises each family's floor to the first entry
+//! clock, and the claim then raises each index's floor to the first entry
 //! it left: the first due one it did not consume, else that later entry.
-use super::deliveries::view;
+use super::deliveries::{first_delivery, view};
+use super::lane::{AtFrontier, LanePage, at_frontier};
 use super::stage::NativeStage;
 use super::*;
 use crate::native_queue::DeliveryView;
-use crate::native_queue::rows::{Cause, DState, DeliveryRow, decode_avail};
+use crate::native_queue::rows::{Cause, DState, decode_scheduled};
 
-/// A due candidate: (due time, offset, its availability entry's value, or
-/// `None` from the retry index).
-type Candidate = (i64, u64, Option<Vec<u8>>);
+/// A due candidate.
+enum Candidate {
+    /// An entry of the scheduled index: its time, offset and value.
+    Scheduled(i64, u64, Vec<u8>),
+    /// An entry of the retry index.
+    Retry(i64, u64),
+    /// A page at or past the frontier.
+    Lane(LanePage),
+}
 
-/// The families a claim reads, in the order of [`family_of`].
+impl Candidate {
+    fn key(&self) -> (i64, u64) {
+        match self {
+            Candidate::Scheduled(at, off, _) | Candidate::Retry(at, off) => (*at, *off),
+            Candidate::Lane(p) => (p.ts, p.offset),
+        }
+    }
+}
+
+/// The indexes a claim reads, in the order of [`family_of`].
 pub(super) const FAMILIES: [u8; 2] = [keys::AVAIL, keys::RETRIES];
 
-/// The index into [`FAMILIES`] of a candidate's family.
-fn family_of(c: &Candidate) -> usize {
-    usize::from(c.2.is_none())
+/// How many rows a claim of `max` reads from each source: enough to step
+/// past what it skips (consumed, expired, cancelled) and still fill `max`.
+pub(super) fn due_want(max: usize) -> usize {
+    max.saturating_mul(2).saturating_add(16)
 }
 
-/// Whether the claim consumed a candidate, so that no later read of its
-/// family finds it: the cursor passed an availability entry, or a retry
+/// A due entry of an index as a candidate.
+fn index_candidate(fam: u8, at: (i64, u64), value: Vec<u8>) -> Candidate {
+    let (at, off) = at;
+    if fam == keys::AVAIL {
+        Candidate::Scheduled(at, off, value)
+    } else {
+        Candidate::Retry(at, off)
+    }
+}
+
+/// The index into [`FAMILIES`] of an index candidate.
+fn family_of(c: &Candidate) -> Option<usize> {
+    match c {
+        Candidate::Scheduled(..) => Some(0),
+        Candidate::Retry(..) => Some(1),
+        Candidate::Lane(_) => None,
+    }
+}
+
+/// Whether the claim consumed an index candidate, so that no later read of
+/// its index finds it: the cursor passed a scheduled entry, or a retry
 /// entry was deleted.
 fn consumed(hash: &[u8; 16], st: &NativeStage, c: &Candidate) -> bool {
-    let (at, off, entry) = c;
-    if entry.is_some() {
-        let s = &st.state;
-        return s.cursor_started && (*at, *off) <= (s.cursor_at, s.cursor_off);
+    match c {
+        Candidate::Scheduled(at, off, _) => {
+            let s = &st.state;
+            s.cursor_started && (*at, *off) <= (s.cursor_at, s.cursor_off)
+        }
+        Candidate::Retry(at, off) => {
+            st.rows.get(&keys::by_time(hash, keys::RETRIES, *at, *off)) == Some(&None)
+        }
+        Candidate::Lane(_) => true,
     }
-    st.rows.get(&keys::by_time(hash, keys::RETRIES, *at, *off)) == Some(&None)
 }
 
-/// Raise each family's floor to the first entry the claim left (invariant
-/// F holds: every live entry of the family is at or past it): its first
+/// Raise each index's floor to the first entry the claim left (invariant
+/// F holds: every live entry of the index is at or past it): its first
 /// due candidate not consumed, else `next`, the first entry its read found
 /// past the clock (`None`: unknown, no raise).
 fn raise_floors(
@@ -50,8 +95,10 @@ fn raise_floors(
 ) {
     let mut left = [None; 2];
     for c in candidates {
-        if !consumed(hash, st, c) {
-            left[family_of(c)].get_or_insert(c.0);
+        if let Some(fam) = family_of(c)
+            && !consumed(hash, st, c)
+        {
+            left[fam].get_or_insert(c.key().0);
         }
     }
     for (fam, (left, next)) in FAMILIES.into_iter().zip(left.into_iter().zip(next)) {
@@ -59,13 +106,6 @@ fn raise_floors(
             st.raise_floor(fam, Some(at));
         }
     }
-}
-
-/// The stored rows a claim of at most `max` messages reads of each index
-/// it walks: twice as many as it may lease, and some, so entries it skips
-/// (cancelled, retired, past their cycle) do not starve it.
-pub(super) fn due_want(max: usize) -> usize {
-    max.saturating_mul(2).saturating_add(16)
 }
 
 struct ClaimBudget {
@@ -77,15 +117,28 @@ struct ClaimBudget {
     t: i64,
 }
 
+impl ClaimBudget {
+    /// Whether a message of `bytes` still fits; a claim always takes its
+    /// first message.
+    fn fits(&mut self, bytes: u32) -> bool {
+        if self.bytes > 0 && self.bytes + u64::from(bytes) > self.max_bytes {
+            self.max = 0;
+            return false;
+        }
+        true
+    }
+}
+
 impl CommitTransaction<'_> {
     pub(super) async fn nq_claim(
         &mut self,
         hash: [u8; 16],
         st: &mut NativeStage,
         args: (usize, u64, i64),
-        t: i64,
+        clock: (i64, u64),
     ) -> NqResult {
         let (max, max_bytes, lease_ms) = args;
+        let (t, next) = clock;
         if st.state.paused {
             return Ok(NqOut::Claimed {
                 deliveries: Vec::new(),
@@ -105,7 +158,7 @@ impl CommitTransaction<'_> {
                 paused: false,
             });
         }
-        let (candidates, next) = self.nq_candidates(&hash, st, max, t).await?;
+        let (candidates, after) = self.nq_candidates(&hash, st, max, t).await?;
         let mut budget = ClaimBudget {
             max,
             max_bytes,
@@ -113,30 +166,18 @@ impl CommitTransaction<'_> {
             lease_until: t + lease_ms,
             t,
         };
-        let mut out: Vec<DeliveryView> = Vec::new();
-        for (due, offset, entry) in &candidates {
-            if out.len() >= budget.max {
-                break;
-            }
-            let leased = match entry {
-                None => self.nq_claim_retry(&hash, st, *offset, &mut budget).await?,
-                Some(entry) => self.nq_claim_new(&hash, st, (*due, *offset, entry), &mut budget)?,
-            };
-            if let Some(v) = leased {
-                out.push(v);
-            }
-            if budget.bytes >= budget.max_bytes {
-                break;
-            }
-        }
-        raise_floors(&hash, st, &candidates, next);
+        let out = self
+            .nq_take(&hash, st, &candidates, (&mut budget, next))
+            .await?;
+        raise_floors(&hash, st, &candidates, after);
         if !out.is_empty() {
             st.state.last_useful_claim_at = t;
             st.state.notify_backoff_ms = 1_000;
         }
-        // A claim that moved the cursor past expired or cancelled entries
-        // changed state even if it leased nothing; it advances the clock
-        // so no later send can sort below the cursor (§5.5).
+        // A claim that moved the cursor or the frontier past expired,
+        // cancelled or scheduled offsets changed state even if it leased
+        // nothing; it advances the clock so no later send can sort below
+        // the cursor (§5.5).
         if st.state_dirty || !out.is_empty() {
             Self::nq_tick(st, t);
         }
@@ -146,10 +187,50 @@ impl CommitTransaction<'_> {
         })
     }
 
-    /// Due entries of both sources, merged in (time, offset) order, each
-    /// read from its floor (the availability index from the cursor), with
-    /// each family's first entry past `t` as [`Self::nq_due_scan`] found it
-    /// (`None` for a family not read).
+    /// Take the candidates in order until the claim is full.
+    async fn nq_take(
+        &mut self,
+        hash: &[u8; 16],
+        st: &mut NativeStage,
+        candidates: &[Candidate],
+        claim: (&mut ClaimBudget, u64),
+    ) -> Result<Vec<DeliveryView>, NqRefusal> {
+        let (budget, next) = claim;
+        let mut out: Vec<DeliveryView> = Vec::new();
+        for (i, c) in candidates.iter().enumerate() {
+            if out.len() >= budget.max {
+                break;
+            }
+            let leased = match c {
+                Candidate::Retry(_, offset) => self.nq_claim_retry(hash, st, *offset, budget).await?,
+                Candidate::Scheduled(at, offset, entry) => {
+                    self.nq_claim_scheduled(hash, st, (*at, *offset, entry), budget)
+                        .await?
+                }
+                Candidate::Lane(page) => {
+                    let following = candidates[i + 1..].iter().find_map(|c| match c {
+                        Candidate::Lane(p) => Some(p.ts),
+                        _ => None,
+                    });
+                    self.nq_claim_lane(hash, st, page, (budget, following, next))
+                        .await?
+                }
+            };
+            if let Some(v) = leased {
+                out.push(v);
+            }
+            if budget.bytes >= budget.max_bytes {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Due entries of both indexes and the lane's pages from the frontier,
+    /// merged in (time, offset) order, each index read from its floor (the
+    /// scheduled index from the cursor), with each index's first entry past
+    /// `t` as [`Self::nq_due_scan`] found it (`None` for an index not
+    /// read).
     async fn nq_candidates(
         &self,
         hash: &[u8; 16],
@@ -172,18 +253,105 @@ impl CommitTransaction<'_> {
             *found = after;
             let due = rows.into_iter().map_while(|(k, v)| {
                 let (at, off) = keys::decode_time_key(prefix, &k)?;
-                (at <= t).then(|| (at, off, (fam == keys::AVAIL).then_some(v)))
+                (at <= t).then(|| index_candidate(fam, (at, off), v))
             });
             out.extend(due);
         }
-        out.sort_unstable_by_key(|c| (c.0, c.1));
+        let lane = self
+            .nq_lane_pages(hash, st, st.state.frontier, want)
+            .await?;
+        out.extend(lane.into_iter().map(Candidate::Lane));
+        out.sort_unstable_by_key(Candidate::key);
         Ok((out, next))
     }
 
-    /// Lease an untaken message from its availability entry, which holds
-    /// its metadata as sent (an untaken message's metadata row never
-    /// changes, and a cancel deletes the entry) and maybe its page.
-    fn nq_claim_new(
+    /// The frontier's step at one of the lane's pages: pass a scheduled or
+    /// cancelled offset, expire a dead one, lease a live one (or stop when
+    /// it does not fit). A page an earlier claim of the group already
+    /// passed is left alone.
+    async fn nq_claim_lane(
+        &mut self,
+        hash: &[u8; 16],
+        st: &mut NativeStage,
+        page: &LanePage,
+        claim: (&mut ClaimBudget, Option<i64>, u64),
+    ) -> Result<Option<DeliveryView>, NqRefusal> {
+        let (budget, following, next) = claim;
+        if page.offset != st.state.frontier {
+            return Ok(None);
+        }
+        let t = budget.t;
+        let mut range = self.nq_range(hash, st, page.offset).await?;
+        let step = at_frontier(&range, page, st.state.cfg.retention_ms, t);
+        if step == AtFrontier::Live && !budget.fits(page.bytes()) {
+            return Ok(None);
+        }
+        self.nq_frontier_step(hash, st, page, (step, &mut range, t));
+        Self::nq_advance(st, page, following, next);
+        if step != AtFrontier::Live {
+            Self::nq_set_range(st, page.offset, range);
+            return Ok(None);
+        }
+        budget.bytes += u64::from(page.bytes());
+        let facts = crate::native_queue::rows::MessageFacts {
+            enqueued_at: page.ts,
+            available_at: page.ts,
+            bytes: page.bytes(),
+        };
+        let mut row = first_delivery(&facts, (false, false), t, &st.state.cfg);
+        let until = budget.lease_until.min(facts.hard_expires_at(&st.state.cfg));
+        self.nq_lease(hash, st, (page.offset, &mut row), until);
+        range.open += 1;
+        Self::nq_set_range(st, page.offset, range);
+        let mut leased = view(page.offset, &facts, Some(&row));
+        leased.page = Some(page.raw.clone());
+        Ok(Some(leased))
+    }
+
+    /// What passing a page that is not leased does: a resolved scheduled
+    /// message's page goes; a cancelled one's page and bytes go; an expired
+    /// one enters the gap.
+    pub(super) fn nq_frontier_step(
+        &mut self,
+        hash: &[u8; 16],
+        st: &mut NativeStage,
+        page: &LanePage,
+        at: (AtFrontier, &mut crate::native_queue::range::RangeRow, i64),
+    ) {
+        let (step, range, t) = at;
+        match step {
+            AtFrontier::Scheduled { resolved } => {
+                range.skip.clear(page.offset);
+                if resolved {
+                    self.nq_delete_page(hash, st, (page.offset, page.bytes()), t);
+                }
+            }
+            AtFrontier::Cancelled => {
+                range.cancel.clear(page.offset);
+                st.state.queued_bytes = st
+                    .state
+                    .queued_bytes
+                    .saturating_sub(u64::from(page.bytes()));
+                self.nq_delete_page(hash, st, (page.offset, page.bytes()), t);
+            }
+            AtFrontier::Expired => {
+                st.state.gap_count += 1;
+                st.state.counters.expired += 1;
+                st.state.queued_messages = st.state.queued_messages.saturating_sub(1);
+                st.state.queued_bytes = st
+                    .state
+                    .queued_bytes
+                    .saturating_sub(u64::from(page.bytes()));
+                self.nq_delete_page(hash, st, (page.offset, page.bytes()), t);
+            }
+            AtFrontier::Live => {}
+        }
+    }
+
+    /// Lease a scheduled message from its entry, which holds its facts as
+    /// sent and maybe its page; the entry and its bits stay until the
+    /// message ends. One past its retention end is resolved into the gap.
+    async fn nq_claim_scheduled(
         &mut self,
         hash: &[u8; 16],
         st: &mut NativeStage,
@@ -192,44 +360,27 @@ impl CommitTransaction<'_> {
     ) -> Result<Option<DeliveryView>, NqRefusal> {
         let (due, offset, entry) = at;
         let t = budget.t;
-        let (mut meta, page) = decode_avail(entry).map_err(NqRefusal::Internal)?;
-        if budget.bytes > 0 && budget.bytes + u64::from(meta.bytes) > budget.max_bytes {
+        let (facts, page) = decode_scheduled(due, entry).map_err(NqRefusal::Internal)?;
+        if !budget.fits(facts.bytes) {
             // Not taken: the cursor stays before it.
-            budget.max = 0;
             return Ok(None);
         }
         st.state.cursor_at = due;
         st.state.cursor_off = offset;
         st.state.cursor_started = true;
         st.state_dirty = true;
-        if meta.retention_end <= t {
+        if facts.retention_end(&st.state.cfg) <= t {
             st.state.gap_count += 1;
             st.state.counters.expired += 1;
-            self.nq_delete_message(hash, st, (offset, &meta), (true, t));
+            self.nq_end_scheduled(hash, st, (offset, &facts), t).await?;
             return Ok(None);
         }
-        budget.bytes += u64::from(meta.bytes);
-        meta.taken = true;
-        meta.open = 1;
-        self.nq_put_meta(hash, st, offset, &meta);
-        let mut row = DeliveryRow {
-            state: DState::Leased,
-            cycle: 1,
-            cycle_deadline: meta.retention_end,
-            attempts: 0,
-            releases: 0,
-            lease_gen: 0,
-            lease_deadline: 0,
-            due_at: 0,
-            first_delivered_at: t,
-            failed_at: 0,
-            failure_expires_at: 0,
-            cause: None,
-            code: None,
-        };
-        let until = budget.lease_until.min(meta.hard_expires_at);
+        budget.bytes += u64::from(facts.bytes);
+        let mut row = first_delivery(&facts, (true, !page.is_empty()), t, &st.state.cfg);
+        let until = budget.lease_until.min(facts.hard_expires_at(&st.state.cfg));
         self.nq_lease(hash, st, (offset, &mut row), until);
-        let mut leased = view(offset, &meta, Some(&row));
+        self.nq_open(hash, st, offset).await?;
+        let mut leased = view(offset, &facts, Some(&row));
         leased.page = (!page.is_empty()).then(|| bytes::Bytes::copy_from_slice(page));
         Ok(Some(leased))
     }
@@ -242,33 +393,22 @@ impl CommitTransaction<'_> {
         budget: &mut ClaimBudget,
     ) -> Result<Option<DeliveryView>, NqRefusal> {
         let t = budget.t;
-        let (Some(meta), Some(mut row)) = (
-            self.nq_meta(hash, st, offset).await?,
-            self.nq_delivery(hash, st, offset).await?,
-        ) else {
+        let Some(mut row) = self.nq_delivery(hash, st, offset).await? else {
             return Ok(None);
         };
-        if row.state != DState::Retrying {
-            return Ok(None);
-        }
-        if budget.bytes > 0 && budget.bytes + u64::from(meta.bytes) > budget.max_bytes {
-            budget.max = 0;
+        if row.state != DState::Retrying || !budget.fits(row.bytes) {
             return Ok(None);
         }
         self.nq_unindex(hash, st, offset, &row);
         if t >= row.cycle_deadline {
-            self.nq_fail(
-                hash,
-                st,
-                (offset, &mut row, &meta),
-                (Cause::Retention, None, t),
-            );
+            self.nq_fail(hash, st, (offset, &mut row), (Cause::Retention, None, t));
             Self::nq_tick(st, t);
             return Ok(None);
         }
-        budget.bytes += u64::from(meta.bytes);
-        let until = budget.lease_until.min(meta.hard_expires_at);
+        budget.bytes += u64::from(row.bytes);
+        let facts = row.facts();
+        let until = budget.lease_until.min(facts.hard_expires_at(&st.state.cfg));
         self.nq_lease(hash, st, (offset, &mut row), until);
-        Ok(Some(view(offset, &meta, Some(&row))))
+        Ok(Some(view(offset, &facts, Some(&row))))
     }
 }

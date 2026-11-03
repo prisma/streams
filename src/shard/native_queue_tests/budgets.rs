@@ -2,8 +2,10 @@
 //! queue whose clock the test sets: each limit is probed at its exact
 //! boundary and each count and stored row is asserted by value.
 #![cfg(test)]
-use super::{HASH, claim, clocked, create, engine, msg, op, send_op, set_clock, settle, state};
-use crate::native_queue::rows::{DState, DeliveryRow, MetaRow};
+use super::{
+    HASH, claim, clocked, create, engine, msg, op, send_op, set_clock, settle, state, stored,
+};
+use crate::native_queue::rows::{DState, DeliveryRow};
 use crate::native_queue::{
     DAY_MS, HOUR_MS, NqOp, NqOut, NqRefusal, QueueConfig, SendMessage, SettleKind, keys,
 };
@@ -29,6 +31,17 @@ async fn page(e: &super::ShardEngine, listing: NqOp) -> (Vec<u64>, Option<u64>) 
         NqOut::Deliveries { items, next } => (items.iter().map(|v| v.offset).collect(), next),
         other => panic!("a listing answered {other:?}"),
     }
+}
+
+/// Set the queue's byte budget, its other settings as they are.
+async fn set_max_bytes(e: &super::ShardEngine, max_queued_bytes: u64) {
+    let cfg = QueueConfig::default();
+    let update = NqOp::Update {
+        group: cfg.group,
+        max_queued_bytes,
+        max_queued_messages: cfg.max_queued_messages,
+    };
+    op(e, update).await.unwrap();
 }
 
 async fn redrive(e: &super::ShardEngine, offset: u64) -> (u64, u64, bool) {
@@ -60,15 +73,14 @@ async fn a_queue_seeds_its_jitter_from_its_hash_and_a_change_advances_its_clock(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_send_fills_the_byte_budget_exactly_and_no_further() {
-    let cfg = QueueConfig {
-        max_queued_bytes: 10,
-        ..QueueConfig::default()
-    };
-    let (e, db, c) = clocked("nq-send-bytes", cfg).await;
+    let (e, db, c) = clocked("nq-send-bytes", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("abc")])).await.unwrap();
     op(&e, send_op(vec![msg("1234567")])).await.unwrap();
+    // The budget counts stored pages: set it to exactly the two sent.
+    let full = stored(&db, 0).await + stored(&db, 1).await;
+    set_max_bytes(&e, full).await;
     let s = state(&db).await;
-    assert_eq!((s.queued_bytes, s.counters.sent), (10, 2));
+    assert_eq!((s.queued_bytes, s.counters.sent), (full, 2));
     let tail = db
         .get(crate::shard::queue_tail_key(&HASH))
         .await
@@ -143,22 +155,20 @@ async fn a_redrive_reserves_a_message_slot_and_stops_at_a_full_queue() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_redrive_fills_the_byte_budget_exactly() {
-    let cfg = QueueConfig {
-        max_queued_bytes: 10,
-        ..QueueConfig::default()
-    };
-    let (e, db, _c) = clocked("nq-redrive-bytes", cfg).await;
+    let (e, db, _c) = clocked("nq-redrive-bytes", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("1234567"), msg("abc")]))
         .await
         .unwrap();
+    let (first, second) = (stored(&db, 0).await, stored(&db, 1).await);
+    set_max_bytes(&e, first + second).await;
     let d = claim(&e, 1).await;
     op(&e, settle(vec![(0, d[0].lease_gen, SettleKind::Fail)]))
         .await
         .unwrap();
-    assert_eq!(state(&db).await.queued_bytes, 3);
-    assert_eq!(redrive(&e, 0).await, (1, 0, false), "3 + 7 bytes fit 10");
+    assert_eq!(state(&db).await.queued_bytes, second);
+    assert_eq!(redrive(&e, 0).await, (1, 0, false), "both pages fit exactly");
     let s = state(&db).await;
-    assert_eq!((s.queued_messages, s.queued_bytes), (2, 10));
+    assert_eq!((s.queued_messages, s.queued_bytes), (2, first + second));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
@@ -179,11 +189,16 @@ async fn failed_and_peeked_messages_page_by_offset_with_a_cursor_only_on_a_full_
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_claim_takes_due_retries_within_the_byte_limit_and_never_early_ones() {
-    let (e, _db, _c) = clocked("nq-claim-retries", QueueConfig::default()).await;
+    let (e, db, _c) = clocked("nq-claim-retries", QueueConfig::default()).await;
     let body = |n: usize| msg(&"x".repeat(n));
     op(&e, send_op(vec![body(100), body(100), body(200)]))
         .await
         .unwrap();
+    // One small page fits `one`; both small ones fit `two` exactly; the
+    // large one is bigger than `one`.
+    let one = stored(&db, 0).await;
+    let two = one + stored(&db, 1).await;
+    assert!(stored(&db, 2).await > one);
     let take = |max_bytes: u64| NqOp::Claim {
         max: 10,
         max_bytes,
@@ -204,14 +219,14 @@ async fn a_claim_takes_due_retries_within_the_byte_limit_and_never_early_ones() 
     };
     let all = offsets(op(&e, take(1 << 20)).await.unwrap());
     op(&e, retry(&all, 0)).await.unwrap();
-    let got = offsets(op(&e, take(150)).await.unwrap());
+    let got = offsets(op(&e, take(one)).await.unwrap());
     assert_eq!(got.iter().map(|g| g.0).collect::<Vec<_>>(), vec![0]);
     op(&e, retry(&got, 0)).await.unwrap();
-    let got = offsets(op(&e, take(200)).await.unwrap());
+    let got = offsets(op(&e, take(two)).await.unwrap());
     assert_eq!(got.iter().map(|g| g.0).collect::<Vec<_>>(), vec![0, 1]);
     op(&e, retry(&got, 10)).await.unwrap();
-    // Only the 200-byte retry is due: alone, it passes a smaller limit.
-    let got = offsets(op(&e, take(150)).await.unwrap());
+    // Only the large retry is due: alone, it passes a smaller limit.
+    let got = offsets(op(&e, take(one)).await.unwrap());
     assert_eq!(got.iter().map(|g| g.0).collect::<Vec<_>>(), vec![2]);
     op(&e, retry(&got, 10)).await.unwrap();
     assert!(offsets(op(&e, take(1 << 20)).await.unwrap()).is_empty());
@@ -232,52 +247,61 @@ async fn claim_within(e: &super::ShardEngine, max_bytes: u64) -> Vec<u64> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_claim_leases_a_first_untaken_message_larger_than_its_byte_limit_alone() {
-    let (e, _db, _c) = clocked("nq-claim-first-big", QueueConfig::default()).await;
+    let (e, db, _c) = clocked("nq-claim-first-big", QueueConfig::default()).await;
     let body = |n: usize| msg(&"x".repeat(n));
     op(&e, send_op(vec![body(300), body(1)])).await.unwrap();
+    let limit = stored(&db, 0).await - 1;
     assert_eq!(
-        claim_within(&e, 200).await,
+        claim_within(&e, limit).await,
         vec![0],
         "one message is always leased, and it fills the limit"
     );
-    assert_eq!(claim_within(&e, 200).await, vec![1]);
+    assert_eq!(claim_within(&e, limit).await, vec![1]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_claim_of_untaken_messages_fills_its_byte_limit_exactly_and_no_further() {
-    let (e, _db, _c) = clocked("nq-claim-new-bytes", QueueConfig::default()).await;
+    let (e, db, _c) = clocked("nq-claim-new-bytes", QueueConfig::default()).await;
     let body = |n: usize| msg(&"x".repeat(n));
     let sizes = [100, 100, 100, 99, 2];
     op(&e, send_op(sizes.into_iter().map(body).collect()))
         .await
         .unwrap();
-    assert_eq!(claim_within(&e, 200).await, vec![0, 1], "exactly the limit");
+    let limit = stored(&db, 0).await + stored(&db, 1).await;
     assert_eq!(
-        claim_within(&e, 200).await,
-        vec![2, 3],
-        "199 bytes; the third would pass the limit by one"
+        stored(&db, 2).await + stored(&db, 3).await,
+        limit - 1,
+        "the next two pages are one byte short of the limit"
     );
-    assert_eq!(claim_within(&e, 200).await, vec![4], "the cursor stayed");
+    assert_eq!(claim_within(&e, limit).await, vec![0, 1], "exactly the limit");
+    assert_eq!(
+        claim_within(&e, limit).await,
+        vec![2, 3],
+        "a byte short; the third would pass the limit"
+    );
+    assert_eq!(claim_within(&e, limit).await, vec![4], "the frontier stayed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
-async fn a_claim_marks_the_message_taken_and_skips_one_past_its_retention_end() {
+async fn a_claim_takes_the_message_at_the_frontier_and_skips_one_past_its_retention_end() {
     let (e, db, c) = clocked("nq-claim-meta", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), msg("b")])).await.unwrap();
     assert_eq!(claim(&e, 1).await.len(), 1);
-    let raw = db.get(keys::by_offset(&HASH, keys::META, 0)).await.unwrap();
-    let meta = MetaRow::decode(&raw.unwrap()).unwrap();
-    assert_eq!((meta.taken, meta.open), (true, 1));
+    assert_eq!(delivery(&db, 0).await.state, DState::Leased);
+    assert_eq!(state(&db).await.frontier, 1);
     // The second message's retention ends: a claim skips it into the gap.
     set_clock(&db, c + RETENTION).await;
     assert!(claim(&e, 1).await.is_empty());
     let s = state(&db).await;
     assert_eq!(
-        (s.gap_count, s.counters.expired, s.queued_messages),
-        (1, 1, 1)
+        (s.gap_count, s.counters.expired, s.queued_messages, s.frontier),
+        (1, 1, 1, 2)
     );
-    let gone = db.get(keys::by_offset(&HASH, keys::META, 1)).await.unwrap();
-    assert!(gone.is_none(), "the expired message is deleted");
+    let page = crate::native_queue::keys::page(&HASH, 1);
+    assert!(
+        db.get(page).await.unwrap().is_none(),
+        "the expired message's page is deleted"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
@@ -343,31 +367,35 @@ async fn a_policy_retry_waits_its_jittered_backoff_and_fails_once_attempts_are_s
 async fn debt_ages_from_its_first_deletion_and_a_pass_clears_what_it_captured() {
     let (e, db, c) = clocked("nq-debt", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), msg("bb")])).await.unwrap();
+    // An ack deletes the page and the rows: the page's bytes and the row
+    // charge.
+    let a = stored(&db, 0).await + 256;
+    let bb = stored(&db, 1).await + 256;
     let d = claim(&e, 2).await;
     op(&e, settle(vec![(0, d[0].lease_gen, SettleKind::Ack)]))
         .await
         .unwrap();
     let first = state(&db).await;
-    assert_eq!((first.debt_bytes, first.debt_oldest_at), (1 + 256, c));
+    assert_eq!((first.debt_bytes, first.debt_oldest_at), (a, c));
     set_clock(&db, c + 1_000).await;
     op(&e, settle(vec![(1, d[1].lease_gen, SettleKind::Ack)]))
         .await
         .unwrap();
     let both = state(&db).await;
-    assert_eq!((both.debt_bytes, both.debt_oldest_at), (257 + 258, c));
+    assert_eq!((both.debt_bytes, both.debt_oldest_at), (a + bb, c));
     // A pass that captured only the first deletion leaves the second, aged
     // from no earlier than the capture.
     let partial = NqOp::ClearDebt {
         generation: first.debt_generation,
-        bytes: 257,
+        bytes: a,
         captured_at: c + 500,
     };
-    assert_eq!(op(&e, partial).await.unwrap().count(), 258);
+    assert_eq!(op(&e, partial).await.unwrap().count(), bb);
     let s = state(&db).await;
-    assert_eq!((s.debt_bytes, s.debt_oldest_at), (258, c + 500));
+    assert_eq!((s.debt_bytes, s.debt_oldest_at), (bb, c + 500));
     let whole = NqOp::ClearDebt {
         generation: both.debt_generation,
-        bytes: 258,
+        bytes: bb,
         captured_at: c + 2_000,
     };
     assert_eq!(op(&e, whole).await.unwrap().count(), 0);

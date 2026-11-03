@@ -348,6 +348,8 @@ OWNERS = (
     owner('nq_claim', 'src/shard/transaction/native_queue/claim.rs', 'native_queue'),
     owner('nq_deliveries', 'src/shard/transaction/native_queue/deliveries.rs', 'native_queue'),
     owner('nq_dispatch', 'src/shard/transaction/native_queue/mod.rs', 'native_queue'),
+    owner('nq_lane', 'src/shard/transaction/native_queue/lane.rs', 'native_queue'),
+    owner('nq_range', 'src/native_queue/range.rs', 'native_queue'),
     owner('nq_send', 'src/shard/transaction/native_queue/send.rs', 'native_queue'),
     owner('nq_settle', 'src/shard/transaction/native_queue/settle.rs', 'native_queue'),
     owner('nq_stage', 'src/shard/transaction/native_queue/stage.rs', 'native_queue'),

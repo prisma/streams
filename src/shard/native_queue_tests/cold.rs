@@ -161,7 +161,21 @@ async fn a_group_walks_its_cold_queues_indexes_together() {
     let held = hold_native_index_reads("nq-cold-index");
     let claims = (0..QUEUES).map(|_| claim_one()).collect();
     let (together, answers) = held_group(&e, &held, claims).await;
-    assert_eq!(together, TOGETHER, "the claims' index walks run together");
+    assert_eq!(together, TOGETHER, "the claims' lane walks run together");
+    assert_eq!(leased(answers).len(), usize::from(QUEUES));
+}
+
+/// A group of claims of cold queues each holding one untaken message reads
+/// the range row at each lane's frontier together: the row a claim reads
+/// to step the frontier.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_group_reads_its_cold_claims_range_rows_together() {
+    let (e, _db) = engine("nq-cold-range").await;
+    queues_with_a_message(&e).await;
+    let held = hold_native_row_reads("nq-cold-range");
+    let claims = (0..QUEUES).map(|_| claim_one()).collect();
+    let (together, answers) = held_group(&e, &held, claims).await;
+    assert_eq!(together, TOGETHER, "the claims' range rows load together");
     assert_eq!(leased(answers).len(), usize::from(QUEUES));
 }
 
@@ -182,7 +196,13 @@ async fn a_group_reads_its_cold_settles_rows_together() {
         })
         .collect();
     let (together, answers) = held_group(&e, &held, acks).await;
-    assert_eq!(together, TOGETHER, "the settles' rows load together");
+    // Each queue's delivery and range rows, read ahead and read again by
+    // the settle.
+    assert_eq!(
+        (together, held.total()),
+        (TOGETHER, 4 * usize::from(QUEUES)),
+        "the settles' rows load together"
+    );
     for answer in answers {
         let Ok(NqOut::Settled(results)) = answer else {
             panic!("a settle answers results");
@@ -203,11 +223,13 @@ async fn a_group_reads_its_cold_settles_rows_together() {
 
 /// A group of sweeps (the roster brings each queue with collection debt
 /// back an hour after its touch, all of them cold) walks their indexes
-/// together, and each sweep leaves its untaken message where it was.
+/// together, and each sweep leaves its untaken message where it was: one
+/// scheduled message a queue, the scheduled index's one entry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_group_sweeps_its_cold_queues_together() {
     let (e, db) = engine("nq-cold-sweep").await;
-    queues_with_a_message(&e).await;
+    queues(&e).await;
+    on_each(&e, |_| send_at(crate::shard::now_ms() + 60_000)).await;
     let held = hold_native_index_reads("nq-cold-sweep");
     let sweeps = (0..QUEUES).map(|_| NqOp::Sweep).collect();
     let (together, answers) = held_group(&e, &held, sweeps).await;
@@ -273,21 +295,24 @@ async fn a_group_without_a_claim_or_a_sweep_walks_no_index() {
 }
 
 /// A claim's read-ahead walks an index only once its floor says an entry
-/// is due: a queue whose one message is available in a minute is walked by
-/// neither the warm-up nor the claim, and the claim leases nothing.
+/// is due: a queue whose one message is available in a minute has its
+/// scheduled index walked by neither the warm-up nor the claim, only its
+/// lane, the message's one page (which the frontier passes), and the claim
+/// leases nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_claim_reads_ahead_no_walk_of_an_index_first_due_later() {
     let (e, _db) = engine("nq-cold-later").await;
     let later = crate::shard::now_ms() + 60_000;
     queues(&e).await;
     on_each(&e, |_| send_at(later)).await;
+    let rows = count_native_index_rows("nq-cold-later");
     let held = hold_native_index_reads("nq-cold-later");
     let claims = (0..QUEUES).map(|_| claim_one()).collect();
     let (together, answers) = held_group(&e, &held, claims).await;
     assert_eq!(
-        (together, held.total()),
-        (0, 0),
-        "nothing due, nothing walked"
+        (together, rows.total()),
+        (TOGETHER, usize::from(QUEUES)),
+        "nothing due: the lane's one page walked ahead, no index entry"
     );
     for answer in answers {
         assert!(
@@ -298,26 +323,32 @@ async fn a_claim_reads_ahead_no_walk_of_an_index_first_due_later() {
 }
 
 /// An entry due exactly at the queue's clock is due: the warm-up walks its
-/// index for the claim, 64 queues at once, and each claim leases it.
+/// index for the claim, 64 queues at once, and each claim leases it. The
+/// entry is a scheduled message's, due a millisecond after its send, with
+/// the queue's clock then moved to it: two rows a queue, the entry and the
+/// lane's page.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_claim_reads_ahead_the_walk_of_an_index_due_at_its_clock_exactly() {
     let (e, db) = engine("nq-cold-exact").await;
     let clock = crate::shard::now_ms() + crate::native_queue::DAY_MS;
     queues(&e).await;
     edit_states(&db, |s| s.clock = clock).await;
-    // Sent at the pinned clock: available, and the floor, at it.
-    on_each(&e, |_| send_op(vec![msg("m")])).await;
+    // Sent at the pinned clock for a millisecond later: the floor is there.
+    on_each(&e, |_| send_at(clock + 1)).await;
     for n in 0..QUEUES {
         let raw = db.get(keys::state(&hash(n))).await.unwrap().unwrap();
         let s = StateRow::decode(&raw).unwrap();
-        assert_eq!((s.clock, s.floors.avail), (clock, clock));
+        assert_eq!((s.clock, s.floors.avail), (clock, clock + 1));
     }
+    edit_states(&db, |s| s.clock = clock + 1).await;
+    let rows = count_native_index_rows("nq-cold-exact");
     let held = hold_native_index_reads("nq-cold-exact");
     let claims = (0..QUEUES).map(|_| claim_one()).collect();
     let (together, answers) = held_group(&e, &held, claims).await;
     assert_eq!(
-        together, TOGETHER,
-        "due at the clock: walked ahead together"
+        (together, rows.total()),
+        (TOGETHER, 2 * usize::from(QUEUES)),
+        "due at the clock: walked ahead together, the entry and the page"
     );
     assert_eq!(leased(answers).len(), usize::from(QUEUES));
 }
@@ -365,16 +396,30 @@ async fn a_sweep_reads_ahead_the_retry_index_only_once_a_cycle_deadline_came() {
 }
 
 /// A claim's read-ahead reads the rows its claim reads: every entry due,
-/// through the first one past the clock, and no further. Three messages
-/// available now and two in a minute: four rows a queue.
+/// through the first one past the clock, and no further, and the lane's
+/// pages. Three scheduled messages due at the queue's clock and two in a
+/// minute: four rows of the scheduled index and five pages a queue.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_claims_read_ahead_stops_at_the_first_entry_past_its_clock() {
-    let (e, _db) = engine("nq-cold-stop").await;
-    let later = crate::shard::now_ms() + 60_000;
+    let (e, db) = engine("nq-cold-stop").await;
+    let clock = crate::shard::now_ms() + crate::native_queue::DAY_MS;
     queues(&e).await;
-    on_each(&e, |_| send_op(vec![msg("a"), msg("b"), msg("c")])).await;
-    on_each(&e, |_| send_at(later)).await;
-    on_each(&e, |_| send_at(later + 1)).await;
+    edit_states(&db, |s| s.clock = clock).await;
+    let at = |at: i64, body: &str| SendMessage {
+        deliver_at: Some(at),
+        ..msg(body)
+    };
+    on_each(&e, |_| {
+        send_op(vec![
+            at(clock + 1, "a"),
+            at(clock + 1, "b"),
+            at(clock + 1, "c"),
+        ])
+    })
+    .await;
+    on_each(&e, |_| send_at(clock + 60_000)).await;
+    on_each(&e, |_| send_at(clock + 60_001)).await;
+    edit_states(&db, |s| s.clock = clock + 1).await;
     let rows = count_native_index_rows("nq-cold-stop");
     let held = hold_native_state_reads("nq-cold-stop");
     let claims = (0..QUEUES).map(|_| claim_one()).collect();
@@ -382,7 +427,35 @@ async fn a_claims_read_ahead_stops_at_the_first_entry_past_its_clock() {
     assert_eq!(leased(answers).len(), usize::from(QUEUES));
     assert_eq!(
         rows.total(),
-        4 * usize::from(QUEUES),
-        "three due and the next"
+        (4 + 5) * usize::from(QUEUES),
+        "three due and the next, and the lane's five pages"
     );
+}
+
+/// A sweep's read-ahead walks the lane only once the lane's expiry is due,
+/// as the sweep does: a group of sweeps of queues holding one untaken
+/// message (expiring in a day) walks nothing, and walks every lane together
+/// once its expiry is due.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_sweep_reads_ahead_the_lane_only_once_its_expiry_is_due() {
+    let (e, db) = engine("nq-cold-lane").await;
+    queues_with_a_message(&e).await;
+    let held = hold_native_index_reads("nq-cold-lane");
+    let sweeps = (0..QUEUES).map(|_| NqOp::Sweep).collect();
+    let (together, answers) = held_group(&e, &held, sweeps).await;
+    assert_eq!(
+        (together, held.total()),
+        (0, 0),
+        "the lane's expiry is ahead"
+    );
+    assert!(answers.iter().all(|a| matches!(a, Ok(NqOut::Swept { .. }))));
+    edit_states(&db, |s| s.lane_expire_at = 1).await;
+    let held = hold_native_index_reads("nq-cold-lane");
+    let sweeps = (0..QUEUES).map(|_| NqOp::Sweep).collect();
+    let (together, answers) = held_group(&e, &held, sweeps).await;
+    assert_eq!(
+        together, TOGETHER,
+        "the lane's expiry came: walked ahead together"
+    );
+    assert!(answers.iter().all(|a| matches!(a, Ok(NqOut::Swept { .. }))));
 }

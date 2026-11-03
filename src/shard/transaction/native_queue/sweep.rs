@@ -1,25 +1,29 @@
 //! The maintenance sweep (docs/QUEUES-DESIGN.md §6.8): keyless, bounded
 //! steps that move a queue forward on time alone — expired leases back to
-//! retry, retries past their cycle into failure, untaken messages past
-//! retention into the gap, failed messages past their failure expiry
-//! deleted, and dedup entries past their window deleted. It writes only
-//! when something moved.
+//! retry, retries past their cycle into failure, untaken scheduled messages
+//! past retention into the gap, the lane's untaken messages past retention
+//! into the gap (the frontier passing them, S3b-DESIGN §5.5), failed
+//! messages past their failure expiry deleted, and dedup entries past their
+//! window deleted. It writes only when something moved.
+use super::lane::{AtFrontier, at_frontier};
 use super::stage::{NativeStage, key_time};
 use super::*;
 use crate::native_queue::SWEEP_STEP;
-use crate::native_queue::rows::{Cause, DState, decode_avail, decode_dedup};
+use crate::native_queue::rows::{Cause, DState, decode_dedup, decode_scheduled};
 
 impl CommitTransaction<'_> {
     pub(super) async fn nq_sweep(
         &mut self,
         hash: [u8; 16],
         st: &mut NativeStage,
-        t: i64,
+        clock: (i64, u64),
     ) -> NqResult {
+        let (t, next) = clock;
         let steps = [
             self.nq_sweep_leases(&hash, st, t).await?,
             self.nq_sweep_retries(&hash, st, t).await?,
             self.nq_sweep_untaken(&hash, st, t).await?,
+            self.nq_sweep_lane(&hash, st, (t, next)).await?,
             self.nq_sweep_failures(&hash, st, t).await?,
             self.nq_sweep_dedup(&hash, st, t).await?,
         ];
@@ -67,10 +71,7 @@ impl CommitTransaction<'_> {
     ) -> Result<usize, NqRefusal> {
         let due = self.nq_due(hash, st, keys::LEASES, t).await?;
         for (at, off) in &due {
-            let (Some(meta), Some(mut row)) = (
-                self.nq_meta(hash, st, *off).await?,
-                self.nq_delivery(hash, st, *off).await?,
-            ) else {
+            let Some(mut row) = self.nq_delivery(hash, st, *off).await? else {
                 self.nq_delete(st, keys::by_time(hash, keys::LEASES, *at, *off));
                 continue;
             };
@@ -83,7 +84,7 @@ impl CommitTransaction<'_> {
             self.nq_retry_or_fail(
                 hash,
                 st,
-                (*off, &mut row, &meta),
+                (*off, &mut row),
                 (Some("lease_expired".into()), t),
             );
         }
@@ -120,10 +121,7 @@ impl CommitTransaction<'_> {
                 floor = floor.min(at);
                 break;
             }
-            let (Some(meta), Some(mut row)) = (
-                self.nq_meta(hash, st, off).await?,
-                self.nq_delivery(hash, st, off).await?,
-            ) else {
+            let Some(mut row) = self.nq_delivery(hash, st, off).await? else {
                 continue;
             };
             if row.state != DState::Retrying {
@@ -131,12 +129,7 @@ impl CommitTransaction<'_> {
             }
             if t >= row.cycle_deadline {
                 self.nq_unindex(hash, st, off, &row);
-                self.nq_fail(
-                    hash,
-                    st,
-                    (off, &mut row, &meta),
-                    (Cause::Retention, None, t),
-                );
+                self.nq_fail(hash, st, (off, &mut row), (Cause::Retention, None, t));
                 moved += 1;
             } else {
                 floor = floor.min(row.cycle_deadline);
@@ -150,9 +143,9 @@ impl CommitTransaction<'_> {
         Ok(moved)
     }
 
-    /// Untaken messages past retention: the cursor skips them into the
-    /// gap and they are deleted (§8.1). Retention is fixed per queue, so
-    /// the availability order past the cursor is the expiry order.
+    /// Untaken scheduled messages past retention: the cursor skips them
+    /// into the gap and they end (§8.1). Retention is fixed per queue, so
+    /// the scheduled order past the cursor is the expiry order.
     async fn nq_sweep_untaken(
         &mut self,
         hash: &[u8; 16],
@@ -176,10 +169,51 @@ impl CommitTransaction<'_> {
             st.state.cursor_at = at;
             st.state.cursor_off = off;
             st.state.cursor_started = true;
-            let (meta, _) = decode_avail(&v).map_err(NqRefusal::Internal)?;
+            let (facts, _) = decode_scheduled(at, &v).map_err(NqRefusal::Internal)?;
             st.state.gap_count += 1;
             st.state.counters.expired += 1;
-            self.nq_delete_message(hash, st, (off, &meta), (true, t));
+            self.nq_end_scheduled(hash, st, (off, &facts), t).await?;
+            moved += 1;
+        }
+        Ok(moved)
+    }
+
+    /// The lane's untaken messages past retention (§8.1): when the lane's
+    /// expiry is due, the frontier walks on from where it stands, at most
+    /// `SWEEP_STEP` pages, passing scheduled and cancelled offsets and
+    /// expiring every untaken message whose own time says so, and stops at
+    /// the first live one, whose expiry it records.
+    async fn nq_sweep_lane(
+        &mut self,
+        hash: &[u8; 16],
+        st: &mut NativeStage,
+        clock: (i64, u64),
+    ) -> Result<usize, NqRefusal> {
+        let (t, next) = clock;
+        let due = st.state.lane_expire_at;
+        if due == 0 || due > t {
+            return Ok(0);
+        }
+        let pages = self
+            .nq_lane_pages(hash, st, st.state.frontier, SWEEP_STEP)
+            .await?;
+        if pages.is_empty() {
+            st.state.lane_expire_at = 0;
+            st.state_dirty = true;
+            return Ok(0);
+        }
+        let mut moved = 0;
+        for (i, page) in pages.iter().enumerate() {
+            let mut range = self.nq_range(hash, st, page.offset).await?;
+            let step = at_frontier(&range, page, st.state.cfg.retention_ms, t);
+            if step == AtFrontier::Live {
+                st.state.lane_expire_at = page.ts.saturating_add(st.state.cfg.retention_ms);
+                st.state_dirty = true;
+                return Ok(moved);
+            }
+            self.nq_frontier_step(hash, st, page, (step, &mut range, t));
+            Self::nq_set_range(st, page.offset, range);
+            Self::nq_advance(st, page, pages.get(i + 1).map(|p| p.ts), next);
             moved += 1;
         }
         Ok(moved)
@@ -194,12 +228,10 @@ impl CommitTransaction<'_> {
     ) -> Result<usize, NqRefusal> {
         let due = self.nq_due(hash, st, keys::FAIL_EXPIRY, t).await?;
         for (_, off) in &due {
-            if let (Some(meta), Some(row)) = (
-                self.nq_meta(hash, st, *off).await?,
-                self.nq_delivery(hash, st, *off).await?,
-            ) {
+            if let Some(row) = self.nq_delivery(hash, st, *off).await? {
                 self.nq_unindex(hash, st, *off, &row);
-                self.nq_delete_message(hash, st, (*off, &meta), (false, t));
+                self.nq_end_message(hash, st, (*off, &row), (false, t))
+                    .await?;
                 st.state.counters.discarded += 1;
             }
         }
@@ -306,7 +338,12 @@ impl CommitTransaction<'_> {
         st: &mut NativeStage,
         t: i64,
     ) -> Result<Option<i64>, NqRefusal> {
-        let mut oldest: Option<i64> = None;
+        // The lane's oldest untaken message is no older than its expiry
+        // bound says (S3b-DESIGN §5.5): an upper bound on its age.
+        let lane = st.state.lane_expire_at;
+        let mut oldest: Option<i64> = (lane != 0)
+            .then(|| lane.saturating_sub(st.state.cfg.retention_ms))
+            .filter(|at| *at <= t);
         for fam in [keys::AVAIL, keys::RETRIES] {
             let head = self
                 .nq_index_scan(hash, st, fam, 1)

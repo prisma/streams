@@ -109,6 +109,13 @@ async fn create(e: &ShardEngine, cfg: QueueConfig) {
     assert!(matches!(out, NqOut::Config { created: true, .. }));
 }
 
+/// The stored length of the page at `offset`: what the queued gauges and a
+/// claim's byte limit count (S3b-DESIGN §14.3).
+async fn stored(db: &Db, offset: u64) -> u64 {
+    let page = db.get(crate::native_queue::keys::page(&HASH, offset)).await;
+    page.unwrap().expect("a page").len() as u64
+}
+
 async fn state(db: &Db) -> StateRow {
     StateRow::decode(&db.get(keys::state(&HASH)).await.unwrap().unwrap()).unwrap()
 }
@@ -184,7 +191,7 @@ async fn a_sent_message_is_claimed_acked_and_its_rows_and_page_are_deleted() {
             .is_none()
     );
     assert!(
-        db.get(keys::by_offset(&HASH, keys::META, 0))
+        db.get(keys::by_offset(&HASH, keys::DELIVERY, 0))
             .await
             .unwrap()
             .is_none()
@@ -600,7 +607,7 @@ async fn cancel_deletes_untaken_and_held_messages_and_discard_deletes_only_faile
     );
     for off in 0..3u64 {
         assert!(
-            db.get(keys::by_offset(&HASH, keys::META, off))
+            db.get(keys::by_offset(&HASH, keys::DELIVERY, off))
                 .await
                 .unwrap()
                 .is_none()

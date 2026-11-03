@@ -1,6 +1,6 @@
 //! Codec and arithmetic tests for the native queue vocabulary.
 use super::keys::{jitter_seed, lease_token, message_id, parse_lease_token, parse_message_id};
-use super::rows::{Cause, DState, DeliveryRow, MetaRow, StateRow};
+use super::rows::{Cause, DState, DeliveryRow, MessageFacts, StateRow};
 use super::*;
 
 #[test]
@@ -72,20 +72,26 @@ fn ids_receipts_and_dedup_entries_carry_lane_zero() {
 
 #[test]
 fn rows_round_trip_exactly() {
-    let meta = MetaRow {
-        enqueued_at: 1,
-        available_at: 2,
-        retention_end: 3,
-        hard_expires_at: 4,
-        bytes: 5,
-        open: 1,
-        cancelled: true,
-        taken: true,
-        dedup_tag: Some([6; 16]),
-    };
-    assert_eq!(MetaRow::decode(&meta.encode()).unwrap(), meta);
+    let raw = rows::encode_scheduled(1, 5, b"page");
+    assert_eq!(
+        rows::decode_scheduled(2, &raw).unwrap(),
+        (
+            MessageFacts {
+                enqueued_at: 1,
+                available_at: 2,
+                bytes: 5,
+            },
+            &b"page"[..]
+        )
+    );
+    assert!(rows::decode_scheduled(2, &raw[..11]).is_err());
     let row = DeliveryRow {
         state: DState::Failed,
+        enqueued_at: 16,
+        available_at: 17,
+        bytes: 18,
+        scheduled: true,
+        inline: true,
         cycle: 2,
         cycle_deadline: 10,
         attempts: 3,
@@ -100,9 +106,17 @@ fn rows_round_trip_exactly() {
         code: Some("provider_down".into()),
     };
     assert_eq!(DeliveryRow::decode(&row.encode()).unwrap(), row);
+    assert_eq!(
+        row.encode().len(),
+        1 + 8 + 8 + 4 + 1 + 4 + 8 + 4 + 1 + 4 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 13,
+        "state, the facts, flags, cycle .. failure expiry, cause, code"
+    );
     let mut truncated = row.encode();
     truncated.pop();
     assert!(DeliveryRow::decode(&truncated).is_err());
+    let mut unknown = row.encode();
+    unknown[21] |= 4;
+    assert!(DeliveryRow::decode(&unknown).is_err(), "an unknown flag");
     let st = StateRow {
         clock: 77,
         ..StateRow::default()
@@ -131,6 +145,8 @@ fn populated_state() -> StateRow {
     s.clock = 1_760_000_000_007;
     s.cursor_at = 1_760_000_000_008;
     s.cursor_off = 1_000_004;
+    s.frontier = 1_000_012;
+    s.lane_expire_at = 1_760_000_000_018;
     s.cursor_started = true;
     s.queued_messages = 1_000_005;
     s.queued_bytes = 1_000_006;
@@ -139,6 +155,7 @@ fn populated_state() -> StateRow {
     s.failed = 1_000_009;
     s.dedup_entries = 1_000_010;
     s.gap_count = 1_000_011;
+    s.scheduled = 1_000_013;
     s.counters = rows::Counters {
         sent: 2_000_001,
         delivered: 2_000_002,
@@ -182,15 +199,16 @@ fn the_state_row_is_a_fixed_binary_layout_that_round_trips_exactly() {
     let raw = row.encode();
     assert_eq!(
         raw.len(),
-        456,
-        "4 version + 88 cfg + 24 clock/cursor + 1 flags + 56 counts + 88 counters \
-         + 24 debt + (4 + 40) url + (4 + 31) name + 4 wakeup version \
-         + 24 notify + 8 jitter + 48 floors + 8 roster = 456"
+        480,
+        "4 version + 88 cfg + 40 clock/cursor/frontier/lane expiry + 1 flags + 64 counts \
+         + 88 counters + 24 debt + (4 + 40) url + (4 + 31) name + 4 wakeup version \
+         + 24 notify + 8 jitter + 48 floors + 8 roster = 480"
     );
-    assert_eq!(raw[..4], [3, 0, 0, 0], "the layout's version leads the row");
+    assert_eq!(raw[..4], [4, 0, 0, 0], "the layout's version leads the row");
     assert_eq!(
-        raw[116], 0b1_1001,
-        "flags after version, cfg, clock and cursor: cursor started, roster, url"
+        raw[132], 0b1_1001,
+        "flags after version, cfg, clock, cursor, frontier and lane expiry: cursor \
+         started, roster, url"
     );
     assert_eq!(StateRow::decode(&raw).unwrap(), row);
     for n in 0..raw.len() {
@@ -202,21 +220,21 @@ fn the_state_row_is_a_fixed_binary_layout_that_round_trips_exactly() {
         StateRow::decode(&trailing),
         Err("queue row: trailing bytes".to_owned())
     );
-    let mut v2 = raw.clone();
-    v2[..4].copy_from_slice(&2u32.to_le_bytes());
+    let mut v3 = raw.clone();
+    v3[..4].copy_from_slice(&3u32.to_le_bytes());
     assert_eq!(
-        StateRow::decode(&v2),
-        Err("queue state row: version 2".to_owned())
+        StateRow::decode(&v3),
+        Err("queue state row: version 3".to_owned())
     );
     let mut not_utf8 = raw.clone();
-    not_utf8[285 + 4 + 40 + 4] = 0xFF;
+    not_utf8[309 + 4 + 40 + 4] = 0xFF;
     assert_eq!(
         StateRow::decode(&not_utf8),
         Err("queue row: not UTF-8".to_owned()),
         "the name's first byte, after the debt and the URL"
     );
     let mut unknown_flag = raw;
-    unknown_flag[116] |= 0b10_0000;
+    unknown_flag[132] |= 0b10_0000;
     assert_eq!(
         StateRow::decode(&unknown_flag),
         Err("queue state row: flags 0x39".to_owned())
@@ -240,10 +258,10 @@ fn state_row_flags_and_optional_fields_round_trip_distinctly() {
     deleting.deleting = true;
     variants.extend([paused, deleting]);
     let encoded: Vec<Vec<u8>> = variants.iter().map(StateRow::encode).collect();
-    let flags: Vec<u8> = encoded.iter().map(|raw| raw[116]).collect();
+    let flags: Vec<u8> = encoded.iter().map(|raw| raw[132]).collect();
     assert_eq!(flags, [0, 0b1_1000, 0b10, 0b100]);
     let lens: Vec<usize> = encoded.iter().map(Vec::len).collect();
-    assert_eq!(lens, [373 + 31, 373 + 31 + 4 + 8, 404, 404]);
+    assert_eq!(lens, [397 + 31, 397 + 31 + 4 + 8, 428, 428]);
     for (s, raw) in variants.iter().zip(&encoded) {
         assert_eq!(&StateRow::decode(raw).unwrap(), s);
     }
@@ -309,11 +327,11 @@ fn queue_scans_cache_their_blocks() {
     );
 }
 
-/// Every queue family's byte (S3a-DESIGN rev 3 §2.3), the reserved ones included: `'x'` the range row
-/// and `'k'` the released interval, whose writers are S3b's.
+/// Every queue family's byte (S3a-DESIGN rev 3 §2.3), the reserved one included: `'k'` the
+/// released interval, whose writer is S3b's.
 const QUEUE_FAMILIES: [u8; 14] = [
     keys::STATE,
-    keys::META,
+    keys::SCHEDULED_AT,
     keys::AVAIL,
     keys::DELIVERY,
     keys::LEASES,
@@ -324,7 +342,7 @@ const QUEUE_FAMILIES: [u8; 14] = [
     keys::DEDUP_EXPIRY,
     keys::PAGE,
     b't', // the queue stream's tail (`shard::queue_tail_key`)
-    b'x', // range row (S3b)
+    keys::RANGE,
     b'k', // released interval (S3b)
 ];
 
@@ -350,8 +368,12 @@ fn every_queue_key_is_pinned() {
     let pinned = [
         (hex(keys::state(&hash)), format!("{h}5173")),
         (
-            hex(keys::by_offset(&hash, keys::META, off)),
+            hex(keys::by_offset(&hash, keys::SCHEDULED_AT, off)),
             format!("{h}516d{o}"),
+        ),
+        (
+            hex(keys::range(&hash, off)),
+            format!("{h}5178{}", "0000102030405060"),
         ),
         (
             hex(keys::by_offset(&hash, keys::DELIVERY, off)),

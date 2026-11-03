@@ -2,10 +2,11 @@
 //! group staged, readable by the group's later operations before the batch
 //! is written (read-your-writes inside the group). Rows not staged are read
 //! from the shard log, which already holds every earlier group's write.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
 use crate::native_queue::keys;
+use crate::native_queue::range::RangeRow;
 use crate::native_queue::rows::StateRow;
 
 pub(in crate::shard::transaction) struct NativeStage {
@@ -15,6 +16,10 @@ pub(in crate::shard::transaction) struct NativeStage {
     pub state_dirty: bool,
     /// Staged rows: `Some` put, `None` delete.
     pub rows: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
+    /// Range rows read or changed this group, by index (S3b-DESIGN §3.3);
+    /// the dirty ones are written with the state row.
+    pub ranges: BTreeMap<u64, RangeRow>,
+    pub ranges_dirty: BTreeSet<u64>,
 }
 
 impl NativeStage {
@@ -52,6 +57,8 @@ impl NativeStage {
             exists: false,
             state_dirty: false,
             rows: BTreeMap::new(),
+            ranges: BTreeMap::new(),
+            ranges_dirty: BTreeSet::new(),
         }
     }
 
@@ -67,8 +74,7 @@ impl NativeStage {
             Ok(Some(raw)) => Ok(Self {
                 state: StateRow::decode(&raw)?,
                 exists: true,
-                state_dirty: false,
-                rows: BTreeMap::new(),
+                ..NativeStage::absent()
             }),
             Ok(None) => Ok(Self::absent()),
             Err(e) => Err(e.to_string()),
@@ -243,8 +249,21 @@ impl super::super::CommitTransaction<'_> {
         Ok((rows, next.or(ended.then_some(i64::MAX))))
     }
 
-    /// Writes the state row if anything changed it.
+    /// Writes the changed range rows (deleted when empty), then the state
+    /// row if anything changed it.
     pub(super) fn nq_flush_state(&mut self, hash: &[u8; 16], st: &mut NativeStage) {
+        for index in std::mem::take(&mut st.ranges_dirty) {
+            let key = keys::by_offset(hash, keys::RANGE, index);
+            let value = st
+                .ranges
+                .get(&index)
+                .filter(|r| !r.is_empty())
+                .map(RangeRow::encode);
+            match value {
+                Some(value) => self.nq_put(st, key, value),
+                None => self.nq_delete(st, key),
+            }
+        }
         if st.state_dirty {
             let raw = st.state.encode();
             self.engine.gc_state().gate.mark_touched(hash);

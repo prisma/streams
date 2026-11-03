@@ -8,10 +8,12 @@
 //! max_queued_messages u64, dedup_window_ms i64, max_dedup_entries u64,
 //! group.max_attempts u32, backoff.initial_ms, backoff.max_ms i64,
 //! backoff.multiplier u32, group.lease_ms i64, group.max_in_flight,
-//! group.max_batch u32; clock, cursor_at i64, cursor_off u64; a flags byte
+//! group.max_batch u32; clock, cursor_at i64, cursor_off u64, frontier u64,
+//! lane_expire_at i64; a flags byte
 //! (bit 0 cursor_started, 1 paused, 2 deleting, 3 roster_at present,
 //! 4 wakeup_url present, others zero); queued_messages, queued_bytes,
-//! leased, retrying, failed, dedup_entries, gap_count u64; the 11 counters
+//! leased, retrying, failed, dedup_entries, gap_count, scheduled u64; the 11
+//! counters
 //! u64 in struct order; debt_bytes u64, debt_oldest_at i64,
 //! debt_generation u64; wakeup_url (u32 length + UTF-8) when present;
 //! wakeup_name (u32 length + UTF-8); wakeup_version u32;
@@ -24,10 +26,10 @@ use super::{Backoff, GroupConfig, QueueConfig};
 
 /// The state row's layout version: the first four bytes of every state
 /// row, and the only one `StateRow::decode` accepts.
-pub(crate) const STATE_ROW_VERSION: u32 = 3;
+pub(crate) const STATE_ROW_VERSION: u32 = 4;
 /// The state row's length without its variable parts (the wake-up URL and
 /// name bytes, the URL's length, `roster_at`).
-const STATE_ROW_FIXED: usize = 373;
+const STATE_ROW_FIXED: usize = 397;
 const FLAG_CURSOR_STARTED: u8 = 1;
 const FLAG_PAUSED: u8 = 1 << 1;
 const FLAG_DELETING: u8 = 1 << 2;
@@ -95,12 +97,21 @@ pub(crate) struct StateRow {
     pub cfg: QueueConfig,
     /// The queue clock (§5.5): monotone, written with every state change.
     pub clock: i64,
-    /// The default group's cursor `C` over the availability index.
+    /// The default group's cursor `C` over the scheduled index (`'a'`).
     pub cursor_at: i64,
     pub cursor_off: u64,
     /// Whether any message was ever taken past `C` (a fresh cursor is
     /// before everything).
     pub cursor_started: bool,
+    /// The lane's frontier (S3b-DESIGN §4): every immediate message below
+    /// it was leased, cancelled or expired; every offset below it is
+    /// resolved or referenced (an open delivery, an unresolved scheduled
+    /// message).
+    pub frontier: u64,
+    /// No untaken immediate message at the frontier expires before this
+    /// (a lower bound; 0: the lane is empty, a real deadline is a send time
+    /// plus the retention). The sweep's lane expiry is due here.
+    pub lane_expire_at: i64,
     pub paused: bool,
     pub deleting: bool,
     /// Live undone messages and their record bytes (the admission budget,
@@ -112,6 +123,8 @@ pub(crate) struct StateRow {
     pub failed: u64,
     pub dedup_entries: u64,
     pub gap_count: u64,
+    /// Unresolved scheduled messages (their `'a'` entries).
+    pub scheduled: u64,
     pub counters: Counters,
     /// Deletion debt (§8.2 stage 2): bytes deleted and not yet collected.
     pub debt_bytes: u64,
@@ -226,6 +239,8 @@ impl StateRow {
                 self.clock.to_le_bytes(),
                 self.cursor_at.to_le_bytes(),
                 self.cursor_off.to_le_bytes(),
+                self.frontier.to_le_bytes(),
+                self.lane_expire_at.to_le_bytes(),
             ]
             .as_flattened(),
         );
@@ -239,6 +254,7 @@ impl StateRow {
                 self.failed,
                 self.dedup_entries,
                 self.gap_count,
+                self.scheduled,
             ]
             .map(u64::to_le_bytes)
             .as_flattened(),
@@ -300,6 +316,8 @@ impl StateRow {
         let clock = r.i64()?;
         let cursor_at = r.i64()?;
         let cursor_off = r.u64()?;
+        let frontier = r.u64()?;
+        let lane_expire_at = r.i64()?;
         let flags = r.u8()?;
         if flags & !FLAGS_KNOWN != 0 {
             return Err(format!("queue state row: flags {flags:#04x}"));
@@ -311,6 +329,7 @@ impl StateRow {
         let failed = r.u64()?;
         let dedup_entries = r.u64()?;
         let gap_count = r.u64()?;
+        let scheduled = r.u64()?;
         let counters = Counters::read(&mut r)?;
         let debt_bytes = r.u64()?;
         let debt_oldest_at = r.i64()?;
@@ -338,6 +357,8 @@ impl StateRow {
             clock,
             cursor_at,
             cursor_off,
+            frontier,
+            lane_expire_at,
             cursor_started: flags & FLAG_CURSOR_STARTED != 0,
             paused: flags & FLAG_PAUSED != 0,
             deleting: flags & FLAG_DELETING != 0,
@@ -348,6 +369,7 @@ impl StateRow {
             failed,
             dedup_entries,
             gap_count,
+            scheduled,
             counters,
             debt_bytes,
             debt_oldest_at,
@@ -448,85 +470,60 @@ fn put_str(v: &mut Vec<u8>, s: &str) {
     v.extend_from_slice(s.as_bytes());
 }
 
-/// An availability entry's value (§5.2): the message's metadata as sent
-/// (everything a claim of an untaken message needs) and, when it is at
-/// most `INLINE_PAGE_MAX` long, its sealed page.
-pub(crate) fn encode_avail(meta: &MetaRow, page: &[u8]) -> Vec<u8> {
-    let meta = meta.encode();
-    let mut v = Vec::with_capacity(1 + meta.len() + page.len());
-    v.push(u8::try_from(meta.len()).unwrap_or(u8::MAX));
-    v.extend_from_slice(&meta);
+/// What the committer knows of a message, wherever it finds it: its open
+/// delivery row, its scheduled entry, or its page header (an untaken
+/// immediate message has no row, S3b-DESIGN §4). Its deadlines follow from
+/// the queue's fixed retention, exactly as a send computes them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MessageFacts {
+    pub enqueued_at: i64,
+    pub available_at: i64,
+    /// The stored page's length (what the queued gauges count).
+    pub bytes: u32,
+}
+
+impl MessageFacts {
+    /// When an untaken message expires into the retention gap.
+    pub(crate) fn retention_end(&self, cfg: &QueueConfig) -> i64 {
+        self.available_at.saturating_add(cfg.retention_ms)
+    }
+    /// The message's hard lifetime: no lease or failure outlives it.
+    pub(crate) fn hard_expires_at(&self, cfg: &QueueConfig) -> i64 {
+        self.retention_end(cfg)
+            .saturating_add(cfg.failure_retention_ms)
+    }
+}
+
+/// A scheduled message's entry in the scheduled index `'a'`, keyed by
+/// (availableAt, offset): its send time, its page's length and, when the
+/// page is at most `INLINE_PAGE_MAX` long and the queue's inline budget
+/// allows, the sealed page itself.
+pub(crate) fn encode_scheduled(enqueued_at: i64, bytes: u32, page: &[u8]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(12 + page.len());
+    v.extend_from_slice(&enqueued_at.to_le_bytes());
+    v.extend_from_slice(&bytes.to_le_bytes());
     v.extend_from_slice(page);
     v
 }
 
-/// The metadata and the inline page (empty when not inline) of an
-/// availability entry's value.
-pub(crate) fn decode_avail(raw: &[u8]) -> Result<(MetaRow, &[u8]), String> {
-    let (&len, rest) = raw.split_first().ok_or("empty availability entry")?;
-    let at = usize::from(len).min(rest.len());
-    let (meta, page) = rest.split_at(at);
-    Ok((MetaRow::decode(meta)?, page))
-}
-
-/// The per-message metadata row (§5.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct MetaRow {
-    pub enqueued_at: i64,
-    pub available_at: i64,
-    pub retention_end: i64,
-    pub hard_expires_at: i64,
-    pub bytes: u32,
-    /// Open deliveries (leased, retrying, failed) of the message.
-    pub open: u16,
-    pub cancelled: bool,
-    /// Whether the default group has taken it (its cursor passed it).
-    pub taken: bool,
-    pub dedup_tag: Option<[u8; 16]>,
-}
-
-impl MetaRow {
-    pub(crate) fn encode(&self) -> Vec<u8> {
-        let mut v = Vec::with_capacity(54);
-        v.extend_from_slice(&self.enqueued_at.to_le_bytes());
-        v.extend_from_slice(&self.available_at.to_le_bytes());
-        v.extend_from_slice(&self.retention_end.to_le_bytes());
-        v.extend_from_slice(&self.hard_expires_at.to_le_bytes());
-        v.extend_from_slice(&self.bytes.to_le_bytes());
-        v.extend_from_slice(&self.open.to_le_bytes());
-        let flags = u8::from(self.cancelled)
-            | (u8::from(self.taken) << 1)
-            | (u8::from(self.dedup_tag.is_some()) << 2);
-        v.push(flags);
-        if let Some(tag) = &self.dedup_tag {
-            v.extend_from_slice(tag);
-        }
-        v
-    }
-    pub(crate) fn decode(raw: &[u8]) -> Result<Self, String> {
-        let r = Reader::new(raw);
-        let mut r = r;
-        let enqueued_at = r.i64()?;
-        let available_at = r.i64()?;
-        let retention_end = r.i64()?;
-        let hard_expires_at = r.i64()?;
-        let bytes = r.u32()?;
-        let open = r.u16()?;
-        let flags = r.u8()?;
-        let dedup_tag = if flags & 4 != 0 { Some(r.tag()?) } else { None };
-        r.end()?;
-        Ok(Self {
+/// The facts of a scheduled entry at `available_at`, and its inline page
+/// (empty when not inline).
+pub(crate) fn decode_scheduled(
+    available_at: i64,
+    raw: &[u8],
+) -> Result<(MessageFacts, &[u8]), String> {
+    let mut r = Reader::new(raw);
+    let enqueued_at = r.i64()?;
+    let bytes = r.u32()?;
+    let page = &raw[r.at..];
+    Ok((
+        MessageFacts {
             enqueued_at,
             available_at,
-            retention_end,
-            hard_expires_at,
             bytes,
-            open,
-            cancelled: flags & 1 != 0,
-            taken: flags & 2 != 0,
-            dedup_tag,
-        })
-    }
+        },
+        page,
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -564,10 +561,20 @@ impl Cause {
     }
 }
 
-/// The default group's delivery row for one message (§5.3).
+/// The default group's delivery row for one message (§5.3). It carries
+/// the message's facts (S3b-DESIGN §3.2): no metadata row exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DeliveryRow {
     pub state: DState,
+    pub enqueued_at: i64,
+    pub available_at: i64,
+    /// The stored page's length.
+    pub bytes: u32,
+    /// Sent with a future `deliverAt`: its scheduled entry stays until the
+    /// message ends.
+    pub scheduled: bool,
+    /// Its page rides in its scheduled entry (else in its page row).
+    pub inline: bool,
     pub cycle: u32,
     pub cycle_deadline: i64,
     pub attempts: u32,
@@ -584,9 +591,22 @@ pub(crate) struct DeliveryRow {
 }
 
 impl DeliveryRow {
+    /// The message's facts as its delivery row carries them.
+    pub(crate) fn facts(&self) -> MessageFacts {
+        MessageFacts {
+            enqueued_at: self.enqueued_at,
+            available_at: self.available_at,
+            bytes: self.bytes,
+        }
+    }
+
     pub(crate) fn encode(&self) -> Vec<u8> {
-        let mut v = Vec::with_capacity(64);
+        let mut v = Vec::with_capacity(85);
         v.push(self.state as u8);
+        v.extend_from_slice(&self.enqueued_at.to_le_bytes());
+        v.extend_from_slice(&self.available_at.to_le_bytes());
+        v.extend_from_slice(&self.bytes.to_le_bytes());
+        v.push(u8::from(self.scheduled) | (u8::from(self.inline) << 1));
         v.extend_from_slice(&self.cycle.to_le_bytes());
         v.extend_from_slice(&self.cycle_deadline.to_le_bytes());
         v.extend_from_slice(&self.attempts.to_le_bytes());
@@ -612,6 +632,13 @@ impl DeliveryRow {
             3 => DState::Failed,
             other => return Err(format!("queue delivery row: state {other}")),
         };
+        let enqueued_at = r.i64()?;
+        let available_at = r.i64()?;
+        let bytes = r.u32()?;
+        let flags = r.u8()?;
+        if flags & !3 != 0 {
+            return Err(format!("queue delivery row: flags {flags:#04x}"));
+        }
         let cycle = r.u32()?;
         let cycle_deadline = r.i64()?;
         let attempts = r.u32()?;
@@ -628,6 +655,11 @@ impl DeliveryRow {
         r.end()?;
         Ok(Self {
             state,
+            enqueued_at,
+            available_at,
+            bytes,
+            scheduled: flags & 1 != 0,
+            inline: flags & 2 != 0,
             cycle,
             cycle_deadline,
             attempts,
@@ -688,11 +720,6 @@ impl<'a> Reader<'a> {
     fn u8(&mut self) -> Result<u8, String> {
         Ok(self.bytes(1)?[0])
     }
-    fn u16(&mut self) -> Result<u16, String> {
-        Ok(u16::from_le_bytes(
-            self.bytes(2)?.try_into().map_err(|_| "queue row")?,
-        ))
-    }
     fn u32(&mut self) -> Result<u32, String> {
         Ok(u32::from_le_bytes(
             self.bytes(4)?.try_into().map_err(|_| "queue row")?,
@@ -712,11 +739,6 @@ impl<'a> Reader<'a> {
     fn string(&mut self) -> Result<String, String> {
         let len = usize::try_from(self.u32()?).map_err(|_| "queue row: length")?;
         String::from_utf8(self.bytes(len)?.to_vec()).map_err(|_| "queue row: not UTF-8".to_owned())
-    }
-    fn tag(&mut self) -> Result<[u8; 16], String> {
-        self.bytes(16)?
-            .try_into()
-            .map_err(|_| "queue row: tag".to_owned())
     }
     fn end(&self) -> Result<(), String> {
         if self.at == self.raw.len() {

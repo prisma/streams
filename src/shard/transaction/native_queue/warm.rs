@@ -8,7 +8,7 @@
 //! index blocks and its settled rows have left the memtable and the cache.
 use std::collections::BTreeSet;
 
-use super::stage::{NativeStage, index_range, key_time};
+use super::stage::{NativeStage, family_range, index_range, key_time};
 use crate::native_queue::{NqOp, keys};
 use crate::shard::transaction::CommitTransaction;
 use crate::shard::{ShardEngine, now_ms};
@@ -51,8 +51,7 @@ impl NativeReads {
 impl CommitTransaction<'_> {
     /// Read what the group's operations on the native queue `hash` will
     /// read: its state row, the stored rows a claim's or a sweep's walk of
-    /// each index reads, and each settled delivery's metadata and delivery
-    /// rows. The
+    /// each index reads, and each settled delivery's delivery row. The
     /// reads are the operations' own, from the same shard log, so the
     /// operations stage exactly as they would without them; a read that
     /// fails here is read again, and refuses its own operation, when the
@@ -87,26 +86,33 @@ impl CommitTransaction<'_> {
                 Self::warm_index(engine, hash, st, fam, (want, Some(t))).await;
             }
         }
+        Self::warm_lane(engine, hash, st, want).await;
     }
 
     /// The stored rows a sweep walks: every family it sweeps, the retry
     /// index only once a retry's cycle deadline has come (`nq_sweep`).
     async fn warm_sweep(engine: &ShardEngine, hash: &[u8; 16], st: &mut NativeStage) {
         let t = now_ms().max(st.state.clock);
+        let step = crate::native_queue::SWEEP_STEP;
         for fam in SWEPT {
             if fam != keys::RETRIES || st.state.floors.retry_cycle <= t {
-                let step = crate::native_queue::SWEEP_STEP;
                 Self::warm_index(engine, hash, st, fam, (step, None)).await;
             }
         }
+        let lane_due = st.state.lane_expire_at;
+        if lane_due != 0 && lane_due <= t {
+            Self::warm_lane(engine, hash, st, step).await;
+        }
     }
 
-    /// The metadata and delivery rows of each settled delivery
-    /// (`nq_settle_one`).
+    /// The delivery row of each settled delivery (`nq_settle_one`), which
+    /// carries the message's facts, and the range rows holding them.
     async fn warm_settles(engine: &ShardEngine, hash: &[u8; 16], offsets: &BTreeSet<u64>) {
-        let keys = offsets.iter().flat_map(|offset| {
-            [keys::META, keys::DELIVERY].map(|fam| keys::by_offset(hash, fam, *offset))
-        });
+        let ranges: BTreeSet<Vec<u8>> = offsets.iter().map(|o| keys::range(hash, *o)).collect();
+        let keys = offsets
+            .iter()
+            .map(|offset| keys::by_offset(hash, keys::DELIVERY, *offset))
+            .chain(ranges);
         for key in keys {
             #[cfg(test)]
             crate::shard::test_support::held_native_row_read(&engine.prefix).await;
@@ -114,6 +120,38 @@ impl CommitTransaction<'_> {
                 return;
             }
         }
+    }
+
+    /// The lane a claim or a sweep walks (`nq_lane_pages`): at most `want`
+    /// pages from the frontier, and the range row holding the first.
+    async fn warm_lane(engine: &ShardEngine, hash: &[u8; 16], st: &NativeStage, want: usize) {
+        let from = keys::page(hash, st.state.frontier);
+        let (prefix, to) = (
+            keys::family(hash, keys::PAGE).len(),
+            family_range(hash, keys::PAGE).1,
+        );
+        #[cfg(test)]
+        crate::shard::test_support::held_native_index_read(&engine.prefix).await;
+        let options = crate::native_queue::scan_options();
+        let Ok(mut rows) = engine.db.scan_with_options(from..to, &options).await else {
+            return;
+        };
+        let mut first = None;
+        for _ in 0..want {
+            let Ok(Some(row)) = rows.next().await else {
+                break;
+            };
+            #[cfg(test)]
+            crate::shard::test_support::counted_native_index_row(&engine.prefix);
+            first = first.or_else(|| keys::decode_offset_key(prefix, &row.key));
+        }
+        let Some(offset) = first else {
+            return;
+        };
+        #[cfg(test)]
+        crate::shard::test_support::held_native_row_read(&engine.prefix).await;
+        // A read that fails here is read again when the operation stages.
+        engine.db.get(keys::range(hash, offset)).await.ok();
     }
 
     /// The stored rows a walk of `fam` reads: from where it starts

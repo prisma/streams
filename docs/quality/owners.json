@@ -137,6 +137,14 @@
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/native_queue/range.rs",
+      "reason": "The range-row codec's test module imports its enclosing owner (super::*); the compiler checks the names. An explicit unresolved syntax inventory, not a claim of syntax-level resolution.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
       "category": "exception",
       "count": 1,
       "owner": "crate::read_history2_keyed_cached",

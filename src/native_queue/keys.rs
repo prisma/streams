@@ -5,12 +5,18 @@
 //! message per page, and the queue stream's tail is `shard::queue_tail_key`.
 //! The shard-wide roster is under the sentinel (`roster`).
 
-/// The queue's state row: configuration, clock, cursor, counters, debt.
+/// The queue's state row: configuration, clock, cursor, frontier,
+/// counters, debt.
 pub(crate) const STATE: u8 = b's';
-/// Per-message metadata row.
-pub(crate) const META: u8 = b'm';
-/// The availability index `A`: (availableAt, offset).
+/// A scheduled message's `availableAt`, by offset: how a cancel or a read
+/// by id finds its scheduled entry. Only scheduled messages have one.
+pub(crate) const SCHEDULED_AT: u8 = b'm';
+/// The scheduled index `A_s`: (availableAt, offset) of every unresolved
+/// message sent with a future `deliverAt`. Immediate messages have no
+/// entry: the lane's frontier walks their pages (S3b-DESIGN §4).
 pub(crate) const AVAIL: u8 = b'a';
+/// A range row (`range::RangeRow`), by `offset >> range::SHIFT`.
+pub(crate) const RANGE: u8 = b'x';
 /// Per-message delivery row of the default group.
 pub(crate) const DELIVERY: u8 = b'd';
 /// Lease index `L`: (leaseDeadline, offset).
@@ -25,7 +31,8 @@ pub(crate) const FAIL_EXPIRY: u8 = b'e';
 pub(crate) const DEDUP: u8 = b'u';
 /// Dedup expiry index: (expiresAt, tag).
 pub(crate) const DEDUP_EXPIRY: u8 = b'v';
-/// A message page: the page layout, keyed by its last offset.
+/// A message's sealed page, by its last offset (`page`): one message per
+/// page, so the page's last offset is the message's.
 pub(crate) const PAGE: u8 = b'p';
 
 /// Where a queue row's family byte sits: after the queue's hash and the
@@ -66,6 +73,11 @@ pub(crate) fn by_time(hash: &[u8; 16], fam: u8, at: i64, offset: u64) -> Vec<u8>
     k.extend_from_slice(&u64::try_from(at).unwrap_or(0).to_be_bytes());
     k.extend_from_slice(&offset.to_be_bytes());
     k
+}
+
+/// The range row holding `offset`.
+pub(crate) fn range(hash: &[u8; 16], offset: u64) -> Vec<u8> {
+    by_offset(hash, RANGE, super::range::index_of(offset))
 }
 
 pub(crate) fn dedup(hash: &[u8; 16], tag: &[u8; 16]) -> Vec<u8> {

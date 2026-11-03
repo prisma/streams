@@ -8,7 +8,7 @@ use tokio::sync::oneshot;
 use super::{
     HASH, REPLY_WITHIN, claim, clocked, msg, op, roster, send_op, set_clock, settle, state, swept,
 };
-use crate::native_queue::rows::{Floors, MetaRow, encode_avail};
+use crate::native_queue::rows::{Floors, encode_scheduled};
 use crate::native_queue::{
     DAY_MS, DeliveryView, HOUR_MS, NqOp, NqOut, NqResult, QueueConfig, SendMessage, SettleKind,
     keys,
@@ -116,20 +116,7 @@ async fn a_claim_reads_no_availability_entry_below_a_future_floor() {
     // An entry below the floor breaks invariant F on purpose: only a claim
     // that reads the index can find it.
     let key = keys::by_time(&HASH, keys::AVAIL, c + 1_000, 7);
-    let planted = encode_avail(
-        &MetaRow {
-            enqueued_at: c,
-            available_at: c + 1_000,
-            retention_end: c + RETENTION,
-            hard_expires_at: c + 2 * RETENTION,
-            bytes: 1,
-            open: 0,
-            cancelled: false,
-            taken: false,
-            dedup_tag: None,
-        },
-        &[],
-    );
+    let planted = encode_scheduled(c, 1, &[]);
     db.put(&key, &planted).await.unwrap();
     set_clock(&db, c + 30_000).await;
     assert!(
@@ -146,13 +133,15 @@ async fn a_put_below_a_raised_floor_lowers_it_and_the_next_claim_takes_it() {
         .await
         .unwrap();
     claim(&e, 10).await;
+    assert_eq!(state(&db).await.floors.avail, c + 60_000);
     set_clock(&db, c + 1_000).await;
-    op(&e, send_op(vec![msg("c")])).await.unwrap();
+    op(&e, send_op(vec![due_at("c", c + 2_000)])).await.unwrap();
     assert_eq!(
         state(&db).await.floors.avail,
-        c + 1_000,
+        c + 2_000,
         "the send lowered it"
     );
+    set_clock(&db, c + 2_000).await;
     let d = claim(&e, 10).await;
     assert_eq!(offsets(&d), vec![2]);
     assert_eq!(state(&db).await.floors.avail, c + 60_000);
@@ -162,7 +151,7 @@ async fn a_put_below_a_raised_floor_lowers_it_and_the_next_claim_takes_it() {
         .unwrap();
     assert_eq!(
         state(&db).await.floors.retries,
-        c + 1_000,
+        c + 2_000,
         "the retry lowered it"
     );
     let d = claim(&e, 10).await;
@@ -174,18 +163,19 @@ async fn a_put_below_a_raised_floor_lowers_it_and_the_next_claim_takes_it() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_claim_cut_short_leaves_the_floor_at_the_first_entry_it_did_not_take() {
     let (e, db, c) = clocked("nq-floor-cut", QueueConfig::default()).await;
+    // Four scheduled messages, due one each millisecond from c + 1.
     for i in 0..4_i64 {
-        set_clock(&db, c + i).await;
-        op(&e, send_op(vec![msg(&format!("{i:0>100}"))]))
+        op(&e, send_op(vec![due_at(&format!("{i:0>100}"), c + 1 + i)]))
             .await
             .unwrap();
     }
+    set_clock(&db, c + 4).await;
     let mut held = claim(&e, 2).await;
     assert_eq!(offsets(&held), vec![0, 1]);
-    assert_eq!(state(&db).await.floors.avail, c + 2, "stopped by max");
+    assert_eq!(state(&db).await.floors.avail, c + 3, "stopped by max");
     let d = deliveries(op(&e, claim_op(10, 150)).await);
     assert_eq!(offsets(&d), vec![2]);
-    assert_eq!(state(&db).await.floors.avail, c + 3, "stopped by bytes");
+    assert_eq!(state(&db).await.floors.avail, c + 4, "stopped by bytes");
     held.extend(d);
     held.extend(claim(&e, 10).await);
     assert_eq!(state(&db).await.floors.avail, i64::MAX);
@@ -208,6 +198,9 @@ async fn a_claim_raises_the_floor_past_an_entry_its_group_cancelled() {
     let (e, db, c) = clocked("nq-floor-cancel", QueueConfig::default()).await;
     let later = vec![msg("a"), due_at("b", c + 60_000), due_at("c", c + 120_000)];
     op(&e, send_op(later)).await.unwrap();
+    // Offset 1 is due: the claim reads the scheduled index, and its group
+    // cancelled the entry first.
+    set_clock(&db, c + 60_000).await;
     let d = claim_after(&e, NqOp::Cancel { offsets: vec![1] }, 10).await;
     assert_eq!(offsets(&d), vec![0]);
     assert_eq!(
@@ -278,15 +271,15 @@ async fn a_claim_cut_short_by_expired_entries_never_passes_an_entry_it_did_not_r
     .await
     .unwrap();
     set_clock(&db, c + RETENTION).await;
-    // A claim of one reads 18 stored entries, and one more for the send its
-    // group staged: all 19 have expired, and the send lies past them.
+    // A claim of one reads 18 pages from the frontier: all have expired,
+    // and the send its group staged lies past them.
     let d = claim_after(&e, send_op(vec![msg("late")]), 1).await;
-    assert!(d.is_empty(), "the claim passed entries it never read");
+    assert!(d.is_empty(), "the claim passed pages it never read");
     let s = state(&db).await;
-    assert_eq!((s.counters.expired, s.floors.avail), (19, c));
+    assert_eq!((s.counters.expired, s.frontier), (18, 18));
     assert_eq!(offsets(&claim(&e, 1).await), vec![25]);
     let s = state(&db).await;
-    assert_eq!((s.counters.expired, s.floors.avail), (25, i64::MAX));
+    assert_eq!((s.counters.expired, s.frontier), (25, 26));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
@@ -339,7 +332,11 @@ async fn floors_fall_with_every_put_and_rise_with_the_scans_that_find_the_heads(
     let (e, db, c) = clocked("nq-floor-exact", QueueConfig::default()).await;
     assert_eq!(state(&db).await.floors, Floors::EMPTY, "a new queue");
     op(&e, send_op(vec![msg("a"), msg("b")])).await.unwrap();
-    assert_eq!(state(&db).await.floors.avail, c);
+    assert_eq!(
+        state(&db).await.floors.avail,
+        i64::MAX,
+        "immediate messages have no scheduled entry"
+    );
     let d = claim(&e, 1).await;
     assert_eq!(state(&db).await.floors.leases, c + LEASE);
     op(&e, settle(vec![(0, d[0].lease_gen, SettleKind::Ack)]))
@@ -355,7 +352,7 @@ async fn floors_fall_with_every_put_and_rise_with_the_scans_that_find_the_heads(
     let f = state(&db).await.floors;
     assert_eq!(
         (f.leases, f.avail),
-        (i64::MAX, c),
+        (i64::MAX, i64::MAX),
         "the sweep raised the lease floor past the acked lease"
     );
     let retry = SettleKind::Retry {

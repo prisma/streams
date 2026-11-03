@@ -532,7 +532,10 @@ async fn a_claim_reserves_read_memory_only_for_what_it_returns() {
         ask(&cell, 0, "PUT", "/v1/queues/reserving", "").await.0,
         201
     );
-    let message = format!("{{\"body\":\"{}\"}}", "x".repeat(10 * 1024));
+    // Text zstd keeps at about three quarters of its size: the claim
+    // reserves the stored page (S3b-DESIGN §14.3), about 7.5 KiB.
+    let text = super::fixture_storage::noise_text(10 * 1024, 1);
+    let message = format!("{{\"body\":\"{text}\"}}");
     let sent = ask(&cell, 0, "POST", "/v1/queues/reserving/messages", &message).await;
     assert_eq!(sent, SENT);
     let other = ReadHold::reserve(admission, None, 0, READ_MEMORY - 4 * 1024).await;
