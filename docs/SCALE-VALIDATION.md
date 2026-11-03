@@ -220,7 +220,16 @@ curl -sf -H @"$AUTH_HDR" "$U/operator/data.json" | jq '.local | {instance, open_
 snap() { curl -sf -H @"$AUTH_HDR" "$U/v1/debug/timings" | jq -c 'with_entries(.value = .value.pump.flushes)'; }
 a=$(snap); sleep 60; b=$(snap)
 jq -n --argjson a "$a" --argjson b "$b" '$b | with_entries(.value = ((.value - ($a[.key] // 0)) / 60))'
+# beside it, all WAL PUTs per shard per second over the same 60 s: the instance's
+# put:wal delta divided by its shard count S (the keys of /v1/debug/timings)
+walp() { curl -sf -H @"$AUTH_HDR" "$U/v1/debug/store" | jq '.totals.ops["put:wal"] // {} | (.ok // 0) + (.not_found // 0) + (.err // 0)'; }
+w1=$(walp); sleep 60; w2=$(walp); echo "($w2 - $w1) / 60 / $S" | bc -l
 ```
+
+`put:wal` counts every WAL object the instance writes, other databases'
+beside the shards' included, so the quotient is an upper bound on a shard's
+own. Divide it by the summed pump flushes per shard: the ratio is §6's
+single-WAL-writer bar.
 
 From the boot log (`compute logs <version>` streams forever: run it in the
 background and stop it after about 45 s, `bench/k2cost/field/README.md`):
@@ -592,9 +601,15 @@ a second, and fewer when the PUT takes longer than the gap (RUNBOOK §3.2).
 |---:|---:|---:|---:|---|
 | 10.0 (planning figure) | 25,920,000 | **$48.60** | $97.20 | 10 × 86,400 × 30 |
 | 9.90 (the cap) | 25,663,366 | $48.12 | $96.24 | RUNBOOK §3.2 |
-| 9.67 (pump flushes, one shard, 200 S tenants) | 25,064,640 | $47.00 | $93.99 | 11,604 in 1,200 s (measured 2026-10-31, program notes) |
-| 10.71 (all shard WAL PUTs, same run) | 27,762,480 | $52.05 | $104.11 | 12,853 in 1,200 s (measured 2026-10-31, program notes) |
+| 9.67 (pump flushes, one shard, 200 S tenants; pre-`e1e7a45f4`/`da3008f56`; now expected equal) | 25,064,640 | $47.00 | $93.99 | 11,604 in 1,200 s (measured 2026-10-31, program notes) |
+| 10.71 (all shard WAL PUTs, same run; pre-`e1e7a45f4`/`da3008f56`; now expected equal) | 27,762,480 | $52.05 | $104.11 | 12,853 in 1,200 s (measured 2026-10-31, program notes) |
 | 9.71 (4 shards, queue 100x) | 25,174,260 | $47.20 | $94.40 | 139,857 an hour over 4 shards (`docs/QUEUES-PRICING-BENCHMARK.md` §11) |
+
+The 9.67 and 10.71 rows were measured before `e1e7a45f4` (a seal and a
+forced flush take no WAL flush of their own) and `da3008f56` (the fork's
+explicit flush freezes exactly once; its test asserts WAL objects equal
+pump flushes, 20/20, on a loaded Linux container). One WAL object per pump
+flush is now the contract (§6). The planning figure stays 10.0 a second.
 
 A shard is "busy" when most 101 ms windows hold a write. That happens long
 before it is loaded: the WAL tier ran at its ceiling from 70 S tenants on one
@@ -632,7 +647,8 @@ notes):
 The instance's whole month was $159.40 at ab50: Class A $63.49, Class B
 $24.00, transfer $28.98, CPU $18.16 (Mac), storage $11.82, egress $8.63,
 memory $4.32 (the owner-price terms in results-sgap-step2, program notes,
-with Class A and B halved).
+with Class A and B halved). Its 10.71 WAL PUTs a second predate
+`da3008f56`; on today's tree expect them equal to the pump flushes.
 
 ### 4.4 Fixed floors (derived, to compare with ST-4)
 
@@ -734,19 +750,19 @@ first and dollars second.
 
 | Claim | Confirms | Refutes |
 |---|---|---|
-| The posture holds | every shard ≤ 9.9 pump flushes a second; every instance at the planned shard count (or the count reported, §1.3); no §1.5 setting | any shard above 9.9 pump flushes a second: the gap is overridden and the posture is wrong |
-| WAL cost is per busy shard | all WAL PUTs per busy shard 9.3-11 a second (measured 9.67 pump, 10.71 all, §4.3) | above 11 a second sustained over 10 minutes: another WAL writer exists, or the posture is wrong |
+| The posture holds (hard: a miss voids the run) | every shard ≤ 9.9 pump flushes a second over a 10-minute window; every instance at the planned shard count (or the count reported, §1.3); no §1.5 setting | any shard above 9.9 pump flushes a second: the gap is overridden and the posture is wrong |
+| WAL cost is per busy shard (single WAL writer) | per shard over a 10-minute window: all WAL PUTs ≤ 10.1 a second, and WAL PUTs ÷ pump flushes ≤ 1.02 (the 2% covers a fresh shard's open-time WALs) | a ratio above 1.02: the run is not void and its counts price as measured, but this claim fails; report the finding by name, a WAL writer besides the pump |
 | Fleet scales linearly | ST-2 Class A and B per instance, and cost per tenant, at N = 8 and 16 within ±10% of N = 1 at the same per-instance load | more than ±10%: name the term (heartbeats, forwarding, moves) |
 | The cell anchors hold on Compute | ST-1 Class A and B per tenant within ±10% of the Mac run; ab50 per tenant at most the Mac figure plus its CPU term scaled by the measured factor (S: $0.797 + $0.091 × (factor − 1)) | counts off by more than 10% |
 | The queue costs hold | 100x at most $0.0960 per million sent at ab50; 10x at most $71.61; 1x at most $19.06 (missed by 6.2% on the Mac until slatedb#2208 is in the pin) | 100x above $0.241 per million (the 80% margin line) |
 | The hot queue keeps up | drain at or above the due rate | drain below the due rate for 5 minutes: report the ceiling |
 | Correctness | zero lost, duplicated or foreign records; zero lost messages | any loss voids every cost claim of the run |
 
-**TODO (owner)**: the brief asked for "PUTs per shard per second above 10
-means the posture is wrong". The correct posture measured 9.67 pump flushes
-but 10.71 shard WAL PUTs a second (the seal's WAL flush and SlateDB's own
-WAL writes beside the pump). The bars above therefore put the hard limit on
-pump flushes (9.9) and the total at 11. Confirm or set the bar.
+The two WAL bars were decided on 2026-11-03 (§8 item 1). The planning
+figure stays 10.0 a second ($48.60 per busy shard-month at ab50); the
+earlier 9.3-11 band and the 10.71 figure are retired (§4.3). The ratio is
+reported, not assumed: the double-freeze defect `da3008f56` fixed showed
+only under scheduling delay, which a 1-vCPU microVM has in abundance.
 
 ## 7. Reporting template
 
@@ -774,7 +790,7 @@ Boot log: gap_ms=<..> gather_ms=<..> per shard; effective configuration excerpt
 | Run | Test | N | shards | tenants or scale | window (s) | VALID / VOID (reason) |
 
 ### Per-shard WAL (every run)
-| Run | shard | pump flushes/s | all WAL PUTs/s | PUT p50/p99 ms (put:wal) |
+| Run | shard | pump flushes/s | all WAL PUTs/s | WAL PUTs ÷ pump flushes | PUT p50/p99 ms (put:wal) |
 
 ### Store operations and cost (every valid run)
 | Run | Class A | Class B | unbilled | err | put GB | stored GiB | CPU s | RSS max MB |
@@ -792,12 +808,18 @@ Boot log: gap_ms=<..> gather_ms=<..> per shard; effective configuration excerpt
 ### Deviations, forwarded share, shard moves, open questions
 ```
 
-## 8. Open items for the owner
+## 8. Open items, and their decisions
 
-Collected from the sections above:
+Collected from the sections above. Fable 5.1 decided them on 2026-11-03
+under the owner's delegation of that day ("Please have Fable 5.1 make
+decisions on those"); the decision record is kept outside the tree
+(`~/.streams-k2/analysis/decisions-fable-2026-11-03.md`, items B1-B8), and
+the hardening README's "Owner decisions" table lists them.
 
-1. The WAL bar: pump flushes (9.9) or all shard WAL PUTs (measured 10.71
-   with the correct posture), §6.
+1. **Closed** (decision B1). The WAL bar: two bars per shard over a
+   10-minute window, pump flushes ≤ 9.9 a second (hard) and all WAL PUTs
+   ≤ 10.1 a second with WAL PUTs ÷ pump flushes ≤ 1.02 (reported, not
+   void); §6, §1.7, §4.3.
 2. Whether Tigris bills 304s, and a Tigris-side request count to reconcile
    the server's counters against (§4.2).
 3. The $10 access fee: on top of usage, or instead of it (§5.3).
