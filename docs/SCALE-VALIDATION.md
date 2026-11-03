@@ -98,7 +98,7 @@ each from a file (AGENTS.md §1; `bench/k2cost/field/README.md`, "Rules").
 |---|---|---|
 | Wrapper | `SERVER_BINARY_S3_KEY`, `BIN_S3_ENDPOINT`, `BIN_S3_BUCKET`, `BIN_S3_REGION=auto`, `BIN_S3_ACCESS_KEY_ID`, `BIN_S3_SECRET_ACCESS_KEY`, `RESOLV_OVERRIDE` | `bench/fleet/deploy-fleet.sh` |
 | Keep-awake | `KEEP_AWAKE=1` with `KEEP_AWAKE_UNTIL_MS=<run end + 15 min>` | bills every hour; the expiry releases it (`bench/k2cost/field/README.md`) |
-| CPU samples | `CPU_LOG_SECS=15` | the wrapper logs `cpu sample:` lines (`bench/k2cost/field/README.md`, "Changes outside this directory") |
+| CPU samples | `CPU_LOG_SECS=15`, on queue instances too | the wrapper logs `cpu sample:` lines (`bench/k2cost/field/README.md`, "Changes outside this directory"); the queue rig's field mode reads them (§3.2) |
 | Store | `SLATE_S3_ENDPOINT`, `SLATE_S3_BUCKET`, `SLATE_S3_REGION` (`auto` for Tigris), `SLATE_S3_ACCESS_KEY_ID`, `SLATE_S3_SECRET_ACCESS_KEY` | RUNBOOK §3.1 |
 | Memory profile | every line of `deploy/profiles/compute-1g.env`, verbatim | the 1 GiB survival posture; deploy scripts pass each line as `--env` |
 | Topology | `PATH_PREFIX`, `INITIAL_SHARDS`, `INSTANCE_NAME=streams-<i>`; fleet only: `FLEET_PREFIX`, `FLEET_MAX`, `FLEET_MIN`, `FLEET_PEER_DOMAINS=prisma.build` | §1.3 |
@@ -474,15 +474,37 @@ messages, 3.018 operations a message (`docs/QUEUES-PRICING-BENCHMARK.md` §3;
   costab rig, s3lite at 25 ms, 4 shards on one server
   (`bench/queues-cost/README.md`, "The runs").
 - **On Compute**: one instance per queue run, never a fleet target (§1.6,
-  queues are not forwarded). The rig has no field mode: `collect.mjs mark`
-  and `sample` read a local process. Run the replay from an in-region host
-  and take the snapshots of §2.3 by hand:
+  queues are not forwarded), with `CPU_LOG_SECS=15` (§1.4). Run the replay
+  from an in-region host. The rig's field mode (decision B6) replaces
+  `--pid`: `collect.mjs mark` and `sample` take `--cpu-log FILE`, the
+  wrapper's `cpu sample:` lines (`proc_cpu_s`, cumulative per boot) from
+  `compute logs` tailed to a file, and `--server URL --auth-file F` for RSS
+  from `/v1/debug/load` `rss_mb`; `price` is unchanged. The field mode
+  lands in a separate bench commit (`bench/queues-cost/collect.mjs`, its
+  README's "Field mode"); check that the commit under test has it. Without
+  it, sample by hand and mark the report "CPU by hand".
 
 ```bash
+compute logs <version> > $OUT/B/cpu.log 2>&1 &     # streams forever: stop it after the last mark
+LOGS_PID=$!
+F="--cpu-log $OUT/B/cpu.log --server $U --auth-file $SECRETS/auth"
+node bench/queues-cost/collect.mjs mark   --dir $OUT/B --tag t0 $F
+node bench/queues-cost/collect.mjs sample --dir $OUT/B $F > $OUT/B/sampler.log 2>&1 &
+SAMPLER_PID=$!
 node bench/queues-cost/replay.mjs --base $U --auth-file $SECRETS/auth --key-file $SECRETS/key \
     --scale 100 --profile peak --no-invoice-burst --duration-s 3600 --drain-s 900 \
-    --out $OUT/replay-summary.json --timeline $OUT/replay-timeline.jsonl
+    --out $OUT/replay-summary.json --timeline $OUT/replay-timeline.jsonl > $OUT/B/replay.log 2>&1 &
+REPLAY_PID=$!
+sleep $WARMUP_S;   node bench/queues-cost/collect.mjs mark --dir $OUT/B --tag start $F   # §3.1's lengths
+sleep $DURATION_S; node bench/queues-cost/collect.mjs mark --dir $OUT/B --tag end $F
+wait $REPLAY_PID;  node bench/queues-cost/collect.mjs mark --dir $OUT/B --tag final $F
+kill $SAMPLER_PID $LOGS_PID
 ```
+
+  These are `run-ab.sh`'s marks (`t0`, `start`, `end`, `final`). Every
+  other arm takes the same marks in its own directory, and `collect.mjs
+  price` prices them as `run-ab.sh` does for that run
+  (`bench/queues-cost/README.md`, "The runs").
 
 - **Shard count: the queue product is priced on 2 shards per instance**
   (decision B5, §8 item 5; `docs/QUEUES-PRICING-BENCHMARK.md` §12). Every
@@ -914,7 +936,10 @@ the hardening README's "Owner decisions" table lists them.
    instance: the gated arm is 100x at 2 shards, 1 shard a ceiling probe, 4
    shards the Mac cross-check only (§3.2, §6;
    `docs/QUEUES-PRICING-BENCHMARK.md` §12).
-6. The queue rig has no field mode; its CPU sampler reads a local process.
+6. **Closed** (decision B6). The queue rig gets a minimal field mode (bench
+   code only, bounded to one day): `collect.mjs mark|sample --cpu-log FILE
+   --server URL --auth-file F` in place of `--pid`; by-hand sampling is the
+   fallback, marked "CPU by hand" (§1.4, §3.2).
 7. Re-read the K2 and Cloudflare Queues price pages before the margins are
    used (§5.1).
 8. The tolerances in §6 (±10%) are proposals.
