@@ -455,6 +455,35 @@ fn layout6_index_and_read_budgets_fit_under_the_shed_line() {
     assert!(fixed_mb + index_mb + 100 <= c.cli.admit_rss_shed_mb);
 }
 
+/// The descriptor cache's retained tier (tuning P1 item 1): an eighth of
+/// the shed line unless `REGISTRY_RETAIN_MB` sets it (64 MiB with no shed
+/// line), in the effective configuration; beside the fixed caches, layout
+/// 6's index and read budgets and the boot check's 100 MiB of headroom it
+/// stays under the shed line: 144 + 120 + 62 + 100 = 426 <= 500.
+#[test]
+fn the_registry_retain_budget_is_an_eighth_of_the_shed_line_unless_set() {
+    let c = load_with(&[]);
+    assert_eq!(c.cli.registry_retain_mb, None);
+    assert_eq!(c.registry_retain_bytes(), 62 << 20);
+    assert_eq!(
+        c.redacted_summary()["registry"]["retain_bytes"],
+        62u64 << 20
+    );
+    let mut cli = test_cli();
+    cli.registry_retain_mb = Some(128);
+    let set = ServerConfig::load(cli, &MapEnvironment::empty());
+    assert_eq!(set.registry_retain_bytes(), 128 << 20);
+    let mut cli = test_cli();
+    cli.admit_rss_shed_mb = 0;
+    let off = ServerConfig::load(cli, &MapEnvironment::empty());
+    assert_eq!(off.registry_retain_bytes(), 64 << 20);
+    let fixed_mb = shipped_fixed_memory_budget_bytes(&c) / (1024 * 1024);
+    let index_mb = crate::spill::budget::INDEX_AND_READ_BYTES / (1024 * 1024);
+    let retain_mb = c.registry_retain_bytes() as u64 / (1024 * 1024);
+    assert_eq!(fixed_mb + index_mb + retain_mb + 100, 426);
+    assert!(fixed_mb + index_mb + retain_mb + 100 <= c.cli.admit_rss_shed_mb);
+}
+
 #[test]
 fn env_overlay_applies_with_legacy_parse_semantics() {
     let c = load_with(&[
@@ -518,6 +547,7 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
     ("s3-endpoint", "SLATE_S3_ENDPOINT", ""),
     ("bucket", "SLATE_S3_BUCKET", "streams"),
     ("region", "SLATE_S3_REGION", "us-east-1"),
+    ("registry-retain-mb", "REGISTRY_RETAIN_MB", ""),
     ("access-key-id", "SLATE_S3_ACCESS_KEY_ID", "test"),
     ("secret-access-key", "SLATE_S3_SECRET_ACCESS_KEY", "test"),
     ("initial-shards", "INITIAL_SHARDS", ""),

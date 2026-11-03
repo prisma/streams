@@ -287,3 +287,42 @@ async fn past_its_budget_the_tier_sheds_the_least_recently_kept() {
         "the newest revalidates"
     );
 }
+
+/// Sized at boot (`REGISTRY_RETAIN_MB`, `Registry::set_retain_budget`), the
+/// tier sheds its least recently kept entries down to the new budget: of
+/// 400 kept, a budget of about 50 entries keeps at most 50, and the newest
+/// still revalidates with a 304 while the oldest pays a GET.
+#[tokio::test(crate = "crate::test_rt")]
+async fn a_lower_retain_budget_sheds_the_least_recently_kept() {
+    let (reg, store) = rig();
+    let n = names("s", 400);
+    for name in &n {
+        reg.create(desc(name, EPOCH, false)).await.unwrap();
+    }
+    for name in &n {
+        reg.expire_cache_for_tests(&ts(name));
+        reg.sweep_cache();
+    }
+    assert_eq!(
+        reg.retained_for_tests().0,
+        400,
+        "all kept under the default budget"
+    );
+    reg.set_retain_budget(50 * super::retained::entry_size());
+    let held = reg.retained_for_tests();
+    assert!(held.0 > 0 && held.0 <= 50, "entries {held:?}");
+    let before = store.reads();
+    assert!(reg.get(&ts(&n[399])).await.unwrap().is_some());
+    assert_eq!(
+        delta(store.reads(), before),
+        (1, 1, 1),
+        "the newest revalidates"
+    );
+    let before = store.reads();
+    assert!(reg.get(&ts(&n[0])).await.unwrap().is_some());
+    assert_eq!(
+        delta(store.reads(), before),
+        (1, 0, 0),
+        "the oldest was shed"
+    );
+}

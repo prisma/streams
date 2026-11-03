@@ -13,6 +13,9 @@ impl ServerConfig {
     /// deliberate, reviewed inclusion.
     pub fn redacted_summary(&self) -> serde_json::Value {
         serde_json::json!({
+            "registry": {
+                "retain_bytes": self.registry_retain_bytes(),
+            },
             "storage": {
                 "pool_idle_secs": self.storage.pool_idle_secs,
                 "http2_only": self.storage.http2_only,

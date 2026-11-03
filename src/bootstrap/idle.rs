@@ -154,6 +154,11 @@ impl IdlePolicy {
 /// admission, shards and runtime. Losing it costs memory hygiene, not
 /// service; a refused spawn (only while stopping) is logged.
 pub(crate) fn start(state: &AppState, tasks: &TaskSupervisor) {
+    // The idle release owns the descriptor cache's memory: it sizes the
+    // retained tier its sweeps fill (`REGISTRY_RETAIN_MB`) before it runs.
+    state
+        .registry
+        .set_retain_budget(state.config.registry_retain_bytes());
     let admission = state.admission.clone();
     let shards = state.shards.clone();
     let runtime = state.runtime.clone();

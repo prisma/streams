@@ -73,7 +73,8 @@ COMPUTE_SCRIPTS = ['bench/fleet/deploy-fleet.sh', 'bench/soak/deploy-region.sh',
 # tool fails until the pin is updated deliberately. 139 -> 127: layout 6A
 # package 4 retired the absorber, history, postings-cache and trim knobs
 # (edge change #208). 127 -> 128: STORE_HTTP2 (storage.http2_only).
-PIN_OLD_LEAVES, PIN_NEW_LEAVES = 156, 128
+# 128 -> 129: REGISTRY_RETAIN_MB (cli.registry_retain_mb, tuning P1 item 1).
+PIN_OLD_LEAVES, PIN_NEW_LEAVES = 156, 129
 PIN_ARGS_LINES = 522
 PIN_RC4_NAMES, PIN_ENV_KNOBS, PIN_HELPERS = 72, 70, 6
 

@@ -86,6 +86,12 @@
       "old_semantics": "the server spoke HTTP/1.1 to the object store, one connection per request in flight",
       "commit": "the commit that adds STORE_HTTP2",
       "edge_record": null
+    },
+    {
+      "new": "cli.registry_retain_mb",
+      "old_semantics": "the descriptor cache kept nothing past its hot tier: a stream read after its slot was swept or evicted paid an unconditional GET",
+      "commit": "the commit that adds REGISTRY_RETAIN_MB",
+      "edge_record": null
     }
   ],
   "removed": [

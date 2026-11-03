@@ -492,6 +492,12 @@ impl Registry {
         self.cache.len()
     }
 
+    /// Size the retained tier to `bytes` (`REGISTRY_RETAIN_MB`), shedding its
+    /// least recently kept entries if it holds more.
+    pub(crate) fn set_retain_budget(&self, bytes: usize) {
+        self.cache.slots().retained.set_budget(bytes);
+    }
+
     /// Purges every descriptor slot untouched for a TTL and gives back the
     /// table they held (the idle and pressure releases): the slots purged.
     pub(crate) fn sweep_cache(&self) -> usize {

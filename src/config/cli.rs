@@ -360,6 +360,14 @@ pub struct CliArgs {
     #[arg(long, env = "ADMIT_RSS_SHED_MB", default_value_t = 500)]
     pub(crate) admit_rss_shed_mb: u64,
 
+    /// The descriptor cache's retained tier, in MiB (tuning P1 item 1):
+    /// the compact descriptors and ETags hot slots leave behind, so a
+    /// stream read past its TTL revalidates with an unbilled 304. Unset:
+    /// an eighth of `ADMIT_RSS_SHED_MB` (62 at the 500 default), or 64
+    /// when the shed line is off. An ordinary entry is charged 249 bytes.
+    #[arg(long, env = "REGISTRY_RETAIN_MB")]
+    pub(crate) registry_retain_mb: Option<u64>,
+
     /// Instance cap on live SSE subscriptions (#267): new subscriptions
     /// past the cap get a typed 503 subscription_capacity instead of
     /// subscriber RSS pushing UNRELATED appends over the write shed
@@ -529,6 +537,7 @@ impl CliArgs {
             project_memory_pressure_bytes: 0,
             project_memory_release_pct: 75,
             admit_rss_shed_mb: 500,
+            registry_retain_mb: None,
             sse_max_connections: 1_200,
             admit_max_inflight_per_stream: 256,
             admit_max_inflight: 4_096,

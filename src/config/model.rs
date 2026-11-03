@@ -358,6 +358,19 @@ impl RuntimeConfig {
 }
 
 impl ServerConfig {
+    /// The descriptor cache's retained tier in bytes: `REGISTRY_RETAIN_MB`,
+    /// or an eighth of the RSS shed line, or 64 MiB with no shed line.
+    pub(crate) fn registry_retain_bytes(&self) -> usize {
+        let mib = self
+            .cli
+            .registry_retain_mb
+            .unwrap_or(match self.cli.admit_rss_shed_mb {
+                0 => 64,
+                shed => shed / 8,
+            });
+        usize::try_from(mib.saturating_mul(1 << 20)).unwrap_or(usize::MAX)
+    }
+
     /// The no-environment knob posture over `cli` (whose compactor poll
     /// interval and compaction concurrency it carries). `load()` overlays
     /// the environment on top of this, so `load(cli, empty_env)` is

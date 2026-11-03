@@ -292,6 +292,15 @@ impl Retained {
         Some((entry.etag.text(), desc))
     }
 
+    /// Hold at most `budget` bytes from now on, shedding the least recently
+    /// kept entries while over it.
+    pub(super) fn set_budget(&mut self, budget: usize) {
+        self.budget = budget;
+        while self.bytes > self.budget && !self.by_route.is_empty() {
+            self.shed();
+        }
+    }
+
     /// Drop what is retained for `sref` (a write, or a hot slot taking the
     /// stream over).
     pub(super) fn forget(&mut self, sref: &TenantStreamRef) {
