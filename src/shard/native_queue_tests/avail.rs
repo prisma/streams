@@ -69,11 +69,24 @@ async fn a_claim_leases_the_lane_from_its_page_and_moves_the_frontier() {
     let page = db.get(shard_page_key(&HASH, 0)).await.unwrap().unwrap();
     let d = claim(&e, 1).await;
     assert_eq!(d.len(), 1);
-    assert_eq!((d[0].offset, d[0].enqueued_at, d[0].available_at), (0, c, c));
-    assert_eq!(d[0].page.as_deref(), Some(&page[..]), "the claim returns it");
+    assert_eq!(
+        (d[0].offset, d[0].enqueued_at, d[0].available_at),
+        (0, c, c)
+    );
+    assert_eq!(
+        d[0].page.as_deref(),
+        Some(&page[..]),
+        "the claim returns it"
+    );
     let row = delivery(&db, 0).await;
     assert_eq!(
-        (row.state, row.facts(), row.scheduled, row.inline, row.attempts),
+        (
+            row.state,
+            row.facts(),
+            row.scheduled,
+            row.inline,
+            row.attempts
+        ),
         (
             DState::Leased,
             MessageFacts {
@@ -86,7 +99,9 @@ async fn a_claim_leases_the_lane_from_its_page_and_moves_the_frontier() {
             1
         )
     );
-    let r = range(&db, 0).await.expect("the range row counts the delivery");
+    let r = range(&db, 0)
+        .await
+        .expect("the range row counts the delivery");
     assert_eq!((r.open, r.sched), (1, 0));
     let s = state(&db).await;
     assert_eq!(s.frontier, 1, "past the leased message only");
@@ -120,11 +135,18 @@ async fn a_small_scheduled_message_rides_in_its_scheduled_entry() {
     let s = state(&db).await;
     assert_eq!((s.frontier, s.scheduled), (1, 1), "the frontier passed it");
     let r = range(&db, 0).await.unwrap();
-    assert!(!r.skip.contains(0) && r.sbits.contains(0), "unresolved still");
+    assert!(
+        !r.skip.contains(0) && r.sbits.contains(0),
+        "unresolved still"
+    );
     set_clock(&db, at).await;
     let d = claim(&e, 1).await;
     assert_eq!(d.len(), 1, "taken from the scheduled entry when due");
-    assert_eq!(d[0].page.as_deref(), Some(&page[..]), "with its inline page");
+    assert_eq!(
+        d[0].page.as_deref(),
+        Some(&page[..]),
+        "with its inline page"
+    );
     let row = delivery(&db, 0).await;
     assert!(row.scheduled && row.inline);
     assert_eq!(row.available_at, at);
@@ -150,9 +172,12 @@ async fn a_page_rides_inline_up_to_the_limit_exactly_and_not_a_byte_past_it() {
     // One send of every body size around the limit; each is its own page.
     let text = noise(2 * INLINE_PAGE_MAX);
     let sizes = INLINE_PAGE_MAX * 3 / 4..INLINE_PAGE_MAX * 5 / 4;
-    op(&e, send_op(sizes.map(|n| scheduled(&text[..n], at)).collect()))
-        .await
-        .unwrap();
+    op(
+        &e,
+        send_op(sizes.map(|n| scheduled(&text[..n], at)).collect()),
+    )
+    .await
+    .unwrap();
     let (mut at_limit, mut past) = (false, false);
     for off in 0..u64::try_from(INLINE_PAGE_MAX / 2).unwrap() {
         let page = db.get(shard_page_key(&HASH, off)).await.unwrap().unwrap();
@@ -177,9 +202,12 @@ async fn a_page_rides_inline_up_to_the_limit_exactly_and_not_a_byte_past_it() {
 async fn a_claim_of_a_large_scheduled_message_leaves_its_page_to_the_page_key() {
     let (e, db, c) = clocked("nq-avail-large", QueueConfig::default()).await;
     let at = c + 60_000;
-    op(&e, send_op(vec![scheduled(&noise(2 * INLINE_PAGE_MAX), at)]))
-        .await
-        .unwrap();
+    op(
+        &e,
+        send_op(vec![scheduled(&noise(2 * INLINE_PAGE_MAX), at)]),
+    )
+    .await
+    .unwrap();
     let page = db.get(shard_page_key(&HASH, 0)).await.unwrap().unwrap();
     assert!(page.len() > INLINE_PAGE_MAX);
     set_clock(&db, at).await;

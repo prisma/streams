@@ -37,7 +37,10 @@ fn ids_receipts_and_dedup_entries_carry_lane_zero() {
         lease_gen: 9,
     };
     assert_eq!(lease_token(&hash, tok), "lt_0w3ge1r0000000000002m000004g");
-    assert_eq!(parse_message_id(&hash, "msg_0w3ge1r0000000000002m"), Some(42));
+    assert_eq!(
+        parse_message_id(&hash, "msg_0w3ge1r0000000000002m"),
+        Some(42)
+    );
     assert_eq!(
         parse_message_id(&hash, "msg_0w3ge1r00000000000n0"),
         None,

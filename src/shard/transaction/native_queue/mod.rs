@@ -133,10 +133,7 @@ impl CommitTransaction<'_> {
                 self.nq_peek(hash, st, (after, limit), local.fields.next)
                     .await
             }
-            NqOp::Message { offset } => {
-                self.nq_message(hash, st, offset, local.fields.next)
-                    .await
-            }
+            NqOp::Message { offset } => self.nq_message(hash, st, offset, local.fields.next).await,
             NqOp::Sweep => self.nq_sweep(hash, st, (t, local.fields.next)).await,
             NqOp::ClearDebt {
                 generation,

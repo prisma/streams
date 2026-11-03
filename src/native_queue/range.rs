@@ -236,7 +236,12 @@ mod tests {
             open: 3,
             ..RangeRow::default()
         };
-        for off in [4_096 * 7 + 1, 4_096 * 7 + 2, 4_096 * 7 + 3, 4_096 * 7 + 4_095] {
+        for off in [
+            4_096 * 7 + 1,
+            4_096 * 7 + 2,
+            4_096 * 7 + 3,
+            4_096 * 7 + 4_095,
+        ] {
             row.skip.set(off);
         }
         row.sbits.set(4_096 * 7 + 2);
@@ -244,7 +249,10 @@ mod tests {
         let raw = row.encode();
         // ver, open, sched; skip: runs [1, 3) and [4095, 1); cancel: none;
         // sbits: run [2, 1).
-        assert_eq!(raw.len(), 1 + 4 + 4 + (1 + 2 + 2 * 4) + (1 + 2) + (1 + 2 + 4));
+        assert_eq!(
+            raw.len(),
+            1 + 4 + 4 + (1 + 2 + 2 * 4) + (1 + 2) + (1 + 2 + 4)
+        );
         assert_eq!(RangeRow::decode(&raw).unwrap(), row);
         // Every other bit: runs would be 8 KiB, so the raw form.
         let mut dense = RangeRow::default();
@@ -263,13 +271,19 @@ mod tests {
         row.sbits.set(9);
         row.sched = 1;
         let raw = row.encode();
-        assert!(RangeRow::decode(&raw[..raw.len() - 1]).is_err(), "truncated");
+        assert!(
+            RangeRow::decode(&raw[..raw.len() - 1]).is_err(),
+            "truncated"
+        );
         let mut long = raw.clone();
         long.push(0);
         assert!(RangeRow::decode(&long).is_err(), "trailing");
         let mut miscount = raw.clone();
         miscount[5] = 2;
-        assert!(RangeRow::decode(&miscount).is_err(), "count and bits disagree");
+        assert!(
+            RangeRow::decode(&miscount).is_err(),
+            "count and bits disagree"
+        );
         let mut version = raw;
         version[0] = 2;
         assert!(RangeRow::decode(&version).is_err(), "version");

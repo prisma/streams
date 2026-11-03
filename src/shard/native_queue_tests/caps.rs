@@ -31,7 +31,10 @@ fn scheduled(body: &str, at: i64) -> SendMessage {
 #[test]
 fn the_queued_guards_have_no_default_and_the_echo_omits_them() {
     let cfg = QueueConfig::default();
-    assert_eq!((cfg.max_queued_bytes, cfg.max_queued_messages), (None, None));
+    assert_eq!(
+        (cfg.max_queued_bytes, cfg.max_queued_messages),
+        (None, None)
+    );
     let echo = serde_json::to_value(&cfg).unwrap();
     assert_eq!(echo.get("maxQueuedBytes"), None);
     assert_eq!(echo.get("maxQueuedMessages"), None);
@@ -47,13 +50,19 @@ fn the_queued_guards_have_no_default_and_the_echo_omits_them() {
             &serde_json::json!(1_000_000)
         )
     );
-    let set: QueueConfig = serde_json::from_value(serde_json::json!({ "maxQueuedBytes": 5 })).unwrap();
+    let set: QueueConfig =
+        serde_json::from_value(serde_json::json!({ "maxQueuedBytes": 5 })).unwrap();
     assert_eq!(set.max_queued_bytes, Some(5));
 }
 
 #[test]
 fn the_caps_are_clamped_to_a_thousand_through_ten_million() {
-    for (cap, ok) in [(999, false), (1_000, true), (10_000_000, true), (10_000_001, false)] {
+    for (cap, ok) in [
+        (999, false),
+        (1_000, true),
+        (10_000_000, true),
+        (10_000_001, false),
+    ] {
         for which in 0..3 {
             let mut cfg = QueueConfig::default();
             *[
@@ -88,7 +97,11 @@ async fn a_claim_leases_nothing_new_at_the_failed_cap_and_a_fail_is_never_refuse
     op(&e, settle(vec![(0, d[0].lease_gen, SettleKind::Fail)]))
         .await
         .unwrap();
-    assert_eq!(state(&db).await.failed, 1_000, "the fail at the cap is taken");
+    assert_eq!(
+        state(&db).await.failed,
+        1_000,
+        "the fail at the cap is taken"
+    );
     assert!(claim(&e, 1).await.is_empty(), "1,000 failed: nothing new");
 }
 
@@ -98,9 +111,12 @@ async fn a_scheduled_send_past_the_scheduled_cap_is_refused_and_an_immediate_one
     edit_state(&db, |s| s.scheduled = 999).await;
     let later = c + 60_000;
     assert_eq!(
-        op(&e, send_op(vec![scheduled("a", later), scheduled("b", later)]))
-            .await
-            .unwrap_err(),
+        op(
+            &e,
+            send_op(vec![scheduled("a", later), scheduled("b", later)])
+        )
+        .await
+        .unwrap_err(),
         NqRefusal::ScheduledFull
     );
     let s = state(&db).await;
@@ -126,10 +142,18 @@ async fn a_scheduled_page_rides_inline_only_under_the_inline_budget() {
         .await
         .unwrap()
         .unwrap();
-    assert!(decode_scheduled(at, &entry).unwrap().1.is_empty(), "not inline");
-    assert_eq!(state(&db).await.inline_bytes, SCHEDULED_INLINE_BUDGET_BYTES - 10);
+    assert!(
+        decode_scheduled(at, &entry).unwrap().1.is_empty(),
+        "not inline"
+    );
+    assert_eq!(
+        state(&db).await.inline_bytes,
+        SCHEDULED_INLINE_BUDGET_BYTES - 10
+    );
     edit_state(&db, |s| s.inline_bytes = 0).await;
-    op(&e, send_op(vec![scheduled("under it", at)])).await.unwrap();
+    op(&e, send_op(vec![scheduled("under it", at)]))
+        .await
+        .unwrap();
     let page = super::stored(&db, 1).await;
     assert_eq!(state(&db).await.inline_bytes, page, "counted inline");
     set_clock(&db, at).await;

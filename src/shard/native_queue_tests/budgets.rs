@@ -166,7 +166,11 @@ async fn a_redrive_fills_the_byte_budget_exactly() {
         .await
         .unwrap();
     assert_eq!(state(&db).await.queued_bytes, second);
-    assert_eq!(redrive(&e, 0).await, (1, 0, false), "both pages fit exactly");
+    assert_eq!(
+        redrive(&e, 0).await,
+        (1, 0, false),
+        "both pages fit exactly"
+    );
     let s = state(&db).await;
     assert_eq!((s.queued_messages, s.queued_bytes), (2, first + second));
 }
@@ -273,13 +277,21 @@ async fn a_claim_of_untaken_messages_fills_its_byte_limit_exactly_and_no_further
         limit - 1,
         "the next two pages are one byte short of the limit"
     );
-    assert_eq!(claim_within(&e, limit).await, vec![0, 1], "exactly the limit");
+    assert_eq!(
+        claim_within(&e, limit).await,
+        vec![0, 1],
+        "exactly the limit"
+    );
     assert_eq!(
         claim_within(&e, limit).await,
         vec![2, 3],
         "a byte short; the third would pass the limit"
     );
-    assert_eq!(claim_within(&e, limit).await, vec![4], "the frontier stayed");
+    assert_eq!(
+        claim_within(&e, limit).await,
+        vec![4],
+        "the frontier stayed"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
@@ -294,7 +306,12 @@ async fn a_claim_takes_the_message_at_the_frontier_and_skips_one_past_its_retent
     assert!(claim(&e, 1).await.is_empty());
     let s = state(&db).await;
     assert_eq!(
-        (s.gap_count, s.counters.expired, s.queued_messages, s.frontier),
+        (
+            s.gap_count,
+            s.counters.expired,
+            s.queued_messages,
+            s.frontier
+        ),
         (1, 1, 1, 2)
     );
     let page = crate::native_queue::keys::page(&HASH, 1);

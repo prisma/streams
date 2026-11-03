@@ -232,8 +232,12 @@ pub(crate) struct Token {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SettleKind {
     Ack,
-    Retry { delay_ms: Option<i64> },
-    Extend { lease_ms: i64 },
+    Retry {
+        delay_ms: Option<i64>,
+    },
+    Extend {
+        lease_ms: i64,
+    },
     Fail,
     Discard,
     Release,

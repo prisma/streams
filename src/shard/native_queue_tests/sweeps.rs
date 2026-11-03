@@ -195,7 +195,10 @@ async fn an_untaken_message_enters_the_gap_at_its_retention_end_exactly() {
         (1, 1, 0)
     );
     let page = crate::native_queue::keys::page(&HASH, 0);
-    assert!(!has(&db, page).await, "the expired message's page is deleted");
+    assert!(
+        !has(&db, page).await,
+        "the expired message's page is deleted"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
@@ -219,7 +222,10 @@ async fn a_failed_message_is_discarded_at_its_failure_expiry_exactly() {
     let s = state(&db).await;
     assert_eq!((s.failed, s.counters.discarded), (0, 1));
     let row = keys::by_offset(&HASH, keys::DELIVERY, 0);
-    assert!(!has(&db, row).await, "the discarded message's delivery ends");
+    assert!(
+        !has(&db, row).await,
+        "the discarded message's delivery ends"
+    );
     let page = crate::native_queue::keys::page(&HASH, 0);
     assert!(!has(&db, page).await, "and its page is deleted");
 }

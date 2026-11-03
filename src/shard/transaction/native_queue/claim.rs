@@ -18,8 +18,8 @@ use super::lane::{AtFrontier, LanePage, at_frontier};
 use super::stage::NativeStage;
 use super::*;
 use crate::native_queue::DeliveryView;
-use crate::shard::layout::queue_gauges;
 use crate::native_queue::rows::{Cause, DState, decode_scheduled};
+use crate::shard::layout::queue_gauges;
 
 /// A due candidate.
 enum Candidate {
@@ -220,7 +220,9 @@ impl CommitTransaction<'_> {
                 break;
             }
             let leased = match c {
-                Candidate::Retry(_, offset) => self.nq_claim_retry(hash, st, *offset, budget).await?,
+                Candidate::Retry(_, offset) => {
+                    self.nq_claim_retry(hash, st, *offset, budget).await?
+                }
                 Candidate::Scheduled(at, offset, entry) => {
                     self.nq_claim_scheduled(hash, st, (*at, *offset, entry), budget)
                         .await?

@@ -256,10 +256,7 @@ impl CommitTransaction<'_> {
             self.nq_delete_page(hash, st, (offset, facts.bytes), t);
         }
         st.state.queued_messages = st.state.queued_messages.saturating_sub(1);
-        st.state.queued_bytes = st
-            .state
-            .queued_bytes
-            .saturating_sub(u64::from(facts.bytes));
+        st.state.queued_bytes = st.state.queued_bytes.saturating_sub(u64::from(facts.bytes));
         Self::nq_debt(st, ROW_CHARGE, t);
         Ok(())
     }
@@ -302,7 +299,12 @@ impl CommitTransaction<'_> {
 }
 
 /// A new delivery row for a message's first lease.
-pub(super) fn first_delivery(facts: &MessageFacts, flags: (bool, bool), t: i64, cfg: &crate::native_queue::QueueConfig) -> DeliveryRow {
+pub(super) fn first_delivery(
+    facts: &MessageFacts,
+    flags: (bool, bool),
+    t: i64,
+    cfg: &crate::native_queue::QueueConfig,
+) -> DeliveryRow {
     let (scheduled, inline) = flags;
     DeliveryRow {
         state: DState::Leased,

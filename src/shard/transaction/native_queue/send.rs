@@ -142,7 +142,9 @@ impl CommitTransaction<'_> {
                 .seal_request(&lane, offset, &record)
                 .map_err(|e| NqRefusal::Internal(format!("page seal refused: {e:?}")))?;
             let (Some(page), true) = (pages.pop(), pages.is_empty()) else {
-                return Err(NqRefusal::Internal("a message sealed to several pages".into()));
+                return Err(NqRefusal::Internal(
+                    "a message sealed to several pages".into(),
+                ));
             };
             out.push(page);
         }
@@ -191,11 +193,7 @@ impl CommitTransaction<'_> {
             // the lane's first, and expires here.
             st.state.lane_expire_at = t + cfg.retention_ms;
         }
-        self.nq_put(
-            st,
-            keys::page(&hash, page.last),
-            page.bytes,
-        );
+        self.nq_put(st, keys::page(&hash, page.last), page.bytes);
         if let Some(tag) = &m.dedup_tag {
             let expires = t + cfg.dedup_window_ms;
             self.nq_put(st, keys::dedup(&hash, tag), encode_dedup(offset, expires));

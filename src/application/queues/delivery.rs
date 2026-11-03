@@ -328,7 +328,11 @@ impl QueueService {
                 Ok(env) => env,
                 Err(envelope::ReadFailure::Unreadable(_)) => None,
                 Err(e @ envelope::ReadFailure::Store(_)) => {
-                    return Err(fail(FailureClass::Unavailable, "read_failed", e.to_string()));
+                    return Err(fail(
+                        FailureClass::Unavailable,
+                        "read_failed",
+                        e.to_string(),
+                    ));
                 }
             };
             let Some(mut env) = env else {

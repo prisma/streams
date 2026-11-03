@@ -189,8 +189,7 @@ async fn a_sent_message_is_claimed_decrypted_and_acked() {
         engine.db.get(page).await.unwrap().is_none(),
         "the acked page is deleted"
     );
-    let row =
-        crate::native_queue::keys::by_offset(&hash, crate::native_queue::keys::DELIVERY, 0);
+    let row = crate::native_queue::keys::by_offset(&hash, crate::native_queue::keys::DELIVERY, 0);
     assert!(
         engine.db.get(row).await.unwrap().is_none(),
         "and its delivery row"
@@ -335,7 +334,10 @@ async fn the_config_echo_omits_unset_guards_and_the_stats_count_scheduled_messag
     let (st, v) = q(addr, "PUT", "/v1/queues/plain", Value::Null).await;
     assert_eq!(st, 201, "{v}");
     let cfg = &v["config"];
-    assert_eq!((cfg.get("maxQueuedBytes"), cfg.get("maxQueuedMessages")), (None, None));
+    assert_eq!(
+        (cfg.get("maxQueuedBytes"), cfg.get("maxQueuedMessages")),
+        (None, None)
+    );
     assert_eq!(
         (
             &cfg["maxOpenDeliveries"],
@@ -348,13 +350,22 @@ async fn the_config_echo_omits_unset_guards_and_the_stats_count_scheduled_messag
     let (st, v) = q(addr, "PUT", "/v1/queues/guarded", guarded).await;
     assert_eq!(st, 201, "{v}");
     assert_eq!(
-        (&v["config"]["maxQueuedBytes"], &v["config"]["maxScheduledMessages"]),
+        (
+            &v["config"]["maxQueuedBytes"],
+            &v["config"]["maxScheduledMessages"]
+        ),
         (&json!(50_000), &json!(2_000))
     );
     let later = json!({ "body": { "n": 1 }, "delayMs": 3_600_000 });
-    assert_eq!(q(addr, "POST", "/v1/queues/plain/messages", later).await.0, 201);
+    assert_eq!(
+        q(addr, "POST", "/v1/queues/plain/messages", later).await.0,
+        201
+    );
     let now = json!({ "body": { "n": 2 } });
-    assert_eq!(q(addr, "POST", "/v1/queues/plain/messages", now).await.0, 201);
+    assert_eq!(
+        q(addr, "POST", "/v1/queues/plain/messages", now).await.0,
+        201
+    );
     let (_, v) = q(addr, "GET", "/v1/queues/plain", Value::Null).await;
     let s = &v["stats"];
     assert_eq!(
@@ -373,10 +384,16 @@ async fn the_config_echo_omits_unset_guards_and_the_stats_count_scheduled_messag
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_message_whose_envelope_will_not_open_fails_alone_and_never_holds_the_queue() {
     let (state, addr) = http_rig(mem()).await;
-    assert_eq!(q(addr, "PUT", "/v1/queues/poison", Value::Null).await.0, 201);
+    assert_eq!(
+        q(addr, "PUT", "/v1/queues/poison", Value::Null).await.0,
+        201
+    );
     for n in 0..3 {
         let body = json!({ "body": { "n": n } });
-        assert_eq!(q(addr, "POST", "/v1/queues/poison/messages", body).await.0, 201);
+        assert_eq!(
+            q(addr, "POST", "/v1/queues/poison/messages", body).await.0,
+            201
+        );
     }
     let (engine, hash) = queue_engine(&state, "poison").await;
     let page = crate::native_queue::keys::page(&hash, 1);
@@ -415,7 +432,12 @@ async fn a_message_whose_envelope_will_not_open_fails_alone_and_never_holds_the_
             &failed[0]["body"],
             &failed[0]["attempt"]
         ),
-        (&json!("unreadable"), &json!("unreadable"), &Value::Null, &json!(1))
+        (
+            &json!("unreadable"),
+            &json!("unreadable"),
+            &Value::Null,
+            &json!(1)
+        )
     );
     let (_, v) = q(addr, "GET", "/v1/queues/poison", Value::Null).await;
     let s = &v["stats"];

@@ -124,12 +124,7 @@ impl CommitTransaction<'_> {
 
     /// Delete one row of a deleting queue; a page records its bytes as
     /// debt.
-    fn nq_delete_any(
-        &mut self,
-        st: &mut NativeStage,
-        family: (u8, i64),
-        row: (Vec<u8>, Vec<u8>),
-    ) {
+    fn nq_delete_any(&mut self, st: &mut NativeStage, family: (u8, i64), row: (Vec<u8>, Vec<u8>)) {
         let (fam, t) = family;
         let (k, v) = row;
         if fam == keys::PAGE {
@@ -333,7 +328,10 @@ impl CommitTransaction<'_> {
         let from = after.map_or(0, |a| a.saturating_add(1));
         let mut items: std::collections::BTreeMap<u64, DeliveryView> =
             std::collections::BTreeMap::new();
-        for (off, row) in self.nq_rows_from(&hash, st, (keys::DELIVERY, from), limit).await? {
+        for (off, row) in self
+            .nq_rows_from(&hash, st, (keys::DELIVERY, from), limit)
+            .await?
+        {
             let row = crate::native_queue::rows::DeliveryRow::decode(&row)
                 .map_err(NqRefusal::Internal)?;
             items.insert(off, view(off, &row.facts(), Some(&row)));
