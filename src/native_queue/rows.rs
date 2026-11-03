@@ -14,7 +14,7 @@
 //! 4 wakeup_url present, others zero); queued_messages, queued_bytes,
 //! leased, retrying, failed, dedup_entries, gap_count, scheduled u64; the 11
 //! counters
-//! u64 in struct order; debt_bytes u64, debt_oldest_at i64,
+//! (13) u64 in struct order; debt_bytes u64, debt_oldest_at i64,
 //! debt_generation u64; wakeup_url (u32 length + UTF-8) when present;
 //! wakeup_name (u32 length + UTF-8); wakeup_version u32;
 //! last_useful_claim_at, last_notified_at, notify_backoff_ms i64; jitter
@@ -29,7 +29,7 @@ use super::{Backoff, GroupConfig, QueueConfig};
 pub(crate) const STATE_ROW_VERSION: u32 = 4;
 /// The state row's length without its variable parts (the wake-up URL and
 /// name bytes, the URL's length, `roster_at`).
-const STATE_ROW_FIXED: usize = 397;
+const STATE_ROW_FIXED: usize = 413;
 const FLAG_CURSOR_STARTED: u8 = 1;
 const FLAG_PAUSED: u8 = 1 << 1;
 const FLAG_DELETING: u8 = 1 << 2;
@@ -51,6 +51,10 @@ pub(crate) struct Counters {
     pub redriven: u64,
     pub stale: u64,
     pub duplicates: u64,
+    /// Deliveries failed because their envelope would not open.
+    pub unreadable: u64,
+    /// Leases the server gave back after a transient failure of its own.
+    pub internal_unleases: u64,
 }
 
 impl Counters {
@@ -68,6 +72,8 @@ impl Counters {
                 self.redriven,
                 self.stale,
                 self.duplicates,
+                self.unreadable,
+                self.internal_unleases,
             ]
             .map(u64::to_le_bytes)
             .as_flattened(),
@@ -86,6 +92,8 @@ impl Counters {
             redriven: r.u64()?,
             stale: r.u64()?,
             duplicates: r.u64()?,
+            unreadable: r.u64()?,
+            internal_unleases: r.u64()?,
         })
     }
 }
@@ -539,6 +547,9 @@ pub(crate) enum Cause {
     Exhausted = 2,
     Retention = 3,
     LeaseExpired = 4,
+    /// The envelope would not open, or the server gave the lease back
+    /// `INTERNAL_UNLEASES` times (S3b-DESIGN §6.5).
+    Unreadable = 5,
 }
 
 impl Cause {
@@ -548,6 +559,7 @@ impl Cause {
             Cause::Exhausted => "exhausted",
             Cause::Retention => "retention",
             Cause::LeaseExpired => "lease_expired",
+            Cause::Unreadable => "unreadable",
         }
     }
     fn from_u8(v: u8) -> Option<Self> {
@@ -556,6 +568,7 @@ impl Cause {
             2 => Cause::Exhausted,
             3 => Cause::Retention,
             4 => Cause::LeaseExpired,
+            5 => Cause::Unreadable,
             _ => return None,
         })
     }
@@ -579,6 +592,8 @@ pub(crate) struct DeliveryRow {
     pub cycle_deadline: i64,
     pub attempts: u32,
     pub releases: u8,
+    /// Leases the server gave back after a transient failure of its own.
+    pub internal_unleases: u8,
     pub lease_gen: u32,
     pub lease_deadline: i64,
     /// When it is due again (retrying), or 0.
@@ -611,6 +626,7 @@ impl DeliveryRow {
         v.extend_from_slice(&self.cycle_deadline.to_le_bytes());
         v.extend_from_slice(&self.attempts.to_le_bytes());
         v.push(self.releases);
+        v.push(self.internal_unleases);
         v.extend_from_slice(&self.lease_gen.to_le_bytes());
         v.extend_from_slice(&self.lease_deadline.to_le_bytes());
         v.extend_from_slice(&self.due_at.to_le_bytes());
@@ -643,6 +659,7 @@ impl DeliveryRow {
         let cycle_deadline = r.i64()?;
         let attempts = r.u32()?;
         let releases = r.u8()?;
+        let internal_unleases = r.u8()?;
         let lease_gen = r.u32()?;
         let lease_deadline = r.i64()?;
         let due_at = r.i64()?;
@@ -664,6 +681,7 @@ impl DeliveryRow {
             cycle_deadline,
             attempts,
             releases,
+            internal_unleases,
             lease_gen,
             lease_deadline,
             due_at,

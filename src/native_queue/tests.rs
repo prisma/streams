@@ -96,6 +96,7 @@ fn rows_round_trip_exactly() {
         cycle_deadline: 10,
         attempts: 3,
         releases: 1,
+        internal_unleases: 2,
         lease_gen: 4,
         lease_deadline: 11,
         due_at: 12,
@@ -108,7 +109,7 @@ fn rows_round_trip_exactly() {
     assert_eq!(DeliveryRow::decode(&row.encode()).unwrap(), row);
     assert_eq!(
         row.encode().len(),
-        1 + 8 + 8 + 4 + 1 + 4 + 8 + 4 + 1 + 4 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 13,
+        1 + 8 + 8 + 4 + 1 + 4 + 8 + 4 + 1 + 1 + 4 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 13,
         "state, the facts, flags, cycle .. failure expiry, cause, code"
     );
     let mut truncated = row.encode();
@@ -168,6 +169,8 @@ fn populated_state() -> StateRow {
         redriven: 2_000_009,
         stale: 2_000_010,
         duplicates: 2_000_011,
+        unreadable: 2_000_012,
+        internal_unleases: 2_000_013,
     };
     s.debt_bytes = 3_000_001;
     s.debt_oldest_at = 1_760_000_000_009;
@@ -199,10 +202,10 @@ fn the_state_row_is_a_fixed_binary_layout_that_round_trips_exactly() {
     let raw = row.encode();
     assert_eq!(
         raw.len(),
-        480,
+        496,
         "4 version + 88 cfg + 40 clock/cursor/frontier/lane expiry + 1 flags + 64 counts \
-         + 88 counters + 24 debt + (4 + 40) url + (4 + 31) name + 4 wakeup version \
-         + 24 notify + 8 jitter + 48 floors + 8 roster = 480"
+         + 104 counters + 24 debt + (4 + 40) url + (4 + 31) name + 4 wakeup version \
+         + 24 notify + 8 jitter + 48 floors + 8 roster = 496"
     );
     assert_eq!(raw[..4], [4, 0, 0, 0], "the layout's version leads the row");
     assert_eq!(
@@ -227,7 +230,7 @@ fn the_state_row_is_a_fixed_binary_layout_that_round_trips_exactly() {
         Err("queue state row: version 3".to_owned())
     );
     let mut not_utf8 = raw.clone();
-    not_utf8[309 + 4 + 40 + 4] = 0xFF;
+    not_utf8[325 + 4 + 40 + 4] = 0xFF;
     assert_eq!(
         StateRow::decode(&not_utf8),
         Err("queue row: not UTF-8".to_owned()),
@@ -261,7 +264,7 @@ fn state_row_flags_and_optional_fields_round_trip_distinctly() {
     let flags: Vec<u8> = encoded.iter().map(|raw| raw[132]).collect();
     assert_eq!(flags, [0, 0b1_1000, 0b10, 0b100]);
     let lens: Vec<usize> = encoded.iter().map(Vec::len).collect();
-    assert_eq!(lens, [397 + 31, 397 + 31 + 4 + 8, 428, 428]);
+    assert_eq!(lens, [413 + 31, 413 + 31 + 4 + 8, 444, 444]);
     for (s, raw) in variants.iter().zip(&encoded) {
         assert_eq!(&StateRow::decode(raw).unwrap(), s);
     }

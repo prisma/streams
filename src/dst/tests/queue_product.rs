@@ -326,6 +326,68 @@ async fn dedup_answers_the_original_and_refusals_are_exact() {
 
 /// A failed delivery is listed with its envelope and cause, redriven into
 /// a new cycle, and reclaimed once acked.
+/// A message whose envelope will not open (its stored page damaged past its
+/// header) fails alone, cause `unreadable`, and the claim that met it
+/// answers the others: no claim of the queue answers 503 for it, and the
+/// dead letter is listed without a body (S3b-DESIGN §6.5, review F1).
+/// Before: every claim that leased it gave every lease back and answered
+/// `503 claim_read_failed`, until its free releases and attempts ran out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_message_whose_envelope_will_not_open_fails_alone_and_never_holds_the_queue() {
+    let (state, addr) = http_rig(mem()).await;
+    assert_eq!(q(addr, "PUT", "/v1/queues/poison", Value::Null).await.0, 201);
+    for n in 0..3 {
+        let body = json!({ "body": { "n": n } });
+        assert_eq!(q(addr, "POST", "/v1/queues/poison/messages", body).await.0, 201);
+    }
+    let (engine, hash) = queue_engine(&state, "poison").await;
+    let page = crate::native_queue::keys::page(&hash, 1);
+    let mut raw = engine.db.get(&page).await.unwrap().unwrap().to_vec();
+    *raw.last_mut().unwrap() ^= 0xFF;
+    engine.db.put(&page, &raw).await.unwrap();
+    let (st, v) = q(
+        addr,
+        "POST",
+        "/v1/queues/poison/groups/default:claim",
+        json!({ "max": 3, "leaseMs": 30_000 }),
+    )
+    .await;
+    assert_eq!(st, 200, "{v}");
+    let bodies: Vec<&Value> = v["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| &m["body"]["n"])
+        .collect();
+    assert_eq!(bodies, [&json!(0), &json!(2)], "the others are answered");
+    let (st, v) = q(
+        addr,
+        "GET",
+        "/v1/queues/poison/groups/default/failed?limit=10",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(st, 200, "{v}");
+    let failed = v["messages"].as_array().unwrap();
+    assert_eq!(failed.len(), 1, "{v}");
+    assert_eq!(
+        (
+            &failed[0]["failure"]["cause"],
+            &failed[0]["failure"]["code"],
+            &failed[0]["body"],
+            &failed[0]["attempt"]
+        ),
+        (&json!("unreadable"), &json!("unreadable"), &Value::Null, &json!(1))
+    );
+    let (_, v) = q(addr, "GET", "/v1/queues/poison", Value::Null).await;
+    let s = &v["stats"];
+    assert_eq!(
+        (&s["failed"], &s["leased"], &s["counters"]["unreadable"]),
+        (&json!(1), &json!(2), &json!(1))
+    );
+    engine_shutdown(&state).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_failed_message_is_listed_and_redriven() {
     let (state, addr) = http_rig(mem()).await;

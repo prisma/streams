@@ -262,20 +262,55 @@ fn dedup_tag(key: &QueueKey, dedup_key: &str) -> [u8; 16] {
     tag
 }
 
+/// Why a message's envelope could not be read (S3b-DESIGN §6.5).
+#[derive(Debug)]
+pub(super) enum ReadFailure {
+    /// The store did not answer: a transient failure of the server's.
+    Store(String),
+    /// The page is there and will not open: a property of the message.
+    Unreadable(String),
+}
+
+impl std::fmt::Display for ReadFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Store(e) | Self::Unreadable(e) => f.write_str(e),
+        }
+    }
+}
+
+impl Envelope {
+    /// What a listing or a read by id shows of a message whose envelope
+    /// will not open: no body, no headers.
+    pub(super) fn unreadable() -> Self {
+        Self {
+            deliver_at: None,
+            key: None,
+            dedup_key: None,
+            content_type: String::new(),
+            headers: BTreeMap::new(),
+            lineage: StoredLineage::default(),
+            body: None,
+            body_base64: None,
+        }
+    }
+}
+
 /// The envelope of the message at `offset`, by a point get of its page
 /// (§6.1): `None` once the page is gone.
 pub(super) async fn read(
     t: &QueueTarget,
     key: &QueueKey,
     offset: u64,
-) -> Result<Option<Envelope>, String> {
+) -> Result<Option<Envelope>, ReadFailure> {
     let raw = t
         .engine
         .db
         .get(crate::native_queue::keys::page(&t.hash, offset))
         .await
-        .map_err(|e| e.to_string())?;
-    raw.map(|raw| open(t, key, offset, raw)).transpose()
+        .map_err(|e| ReadFailure::Store(e.to_string()))?;
+    raw.map(|raw| open(t, key, offset, raw).map_err(ReadFailure::Unreadable))
+        .transpose()
 }
 
 /// The envelope in the sealed page of the message at `offset`, as stored

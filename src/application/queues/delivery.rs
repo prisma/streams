@@ -196,15 +196,16 @@ impl QueueService {
         };
         let items = deliveries
             .iter()
-            .map(|d| release(d.offset, d.lease_gen))
+            .map(|d| internal(d, SettleKind::Unlease))
             .collect();
         give_back(t, items).await?;
         Err(memory_refused(refusal))
     }
 
-    /// The messages of a claim's leases. A read that fails releases every
-    /// lease of the claim with its attempt given back and answers 503
-    /// (§6.1).
+    /// The messages of a claim's leases (S3b-DESIGN §6.5). A message whose
+    /// envelope will not open fails alone as `unreadable` and the others
+    /// are answered. A read the store does not answer gives every lease
+    /// back without spending an attempt or a release and answers 503 (§6.1).
     async fn leased_messages(
         &self,
         t: &QueueTarget,
@@ -216,23 +217,34 @@ impl QueueService {
             ..Shown::default()
         };
         let mut messages = Vec::with_capacity(deliveries.len());
+        let mut unreadable = Vec::new();
         for view in deliveries {
             let read = match &view.page {
-                Some(raw) => envelope::open(t, key, view.offset, raw.clone()).map(Some),
+                Some(raw) => envelope::open(t, key, view.offset, raw.clone())
+                    .map(Some)
+                    .map_err(envelope::ReadFailure::Unreadable),
                 None => envelope::read(t, key, view.offset).await,
             };
             match read {
                 Ok(Some(env)) => messages.push(envelope::message(t, view, env, shown)),
                 Ok(None) => {}
-                Err(error) => {
-                    let items = deliveries
-                        .iter()
-                        .map(|d| release(d.offset, d.lease_gen))
-                        .collect();
-                    give_back(t, items).await?;
+                Err(envelope::ReadFailure::Unreadable(why)) => {
+                    tracing::warn!(offset = view.offset, "queue message unreadable: {why}");
+                    unreadable.push(view.offset);
+                }
+                Err(envelope::ReadFailure::Store(error)) => {
+                    give_back(t, unserved(deliveries, &unreadable)).await?;
                     return Err(fail(FailureClass::Unavailable, "claim_read_failed", error));
                 }
             }
+        }
+        if !unreadable.is_empty() {
+            let items = deliveries
+                .iter()
+                .filter(|d| unreadable.contains(&d.offset))
+                .map(|d| internal(d, SettleKind::Unreadable))
+                .collect();
+            give_back(t, items).await?;
         }
         Ok(messages)
     }
@@ -298,10 +310,16 @@ impl QueueService {
         let mut from = Vec::new();
         let mut messages = Vec::new();
         for offset in t.offsets(ids) {
-            let Some(mut env) = envelope::read(t, key, offset)
-                .await
-                .map_err(|e| fail(FailureClass::Unavailable, "read_failed", e))?
-            else {
+            // A message whose envelope will not open cannot be republished:
+            // it is left out of the answer, as a reclaimed one is.
+            let env = match envelope::read(t, key, offset).await {
+                Ok(env) => env,
+                Err(envelope::ReadFailure::Unreadable(_)) => None,
+                Err(e @ envelope::ReadFailure::Store(_)) => {
+                    return Err(fail(FailureClass::Unavailable, "read_failed", e.to_string()));
+                }
+            };
+            let Some(mut env) = env else {
                 continue;
             };
             let id = t.id(offset);
@@ -370,11 +388,11 @@ fn memory_refused(refusal: crate::admission::read_memory::ReadRefusal) -> QueueF
     }
 }
 
-/// Release a claim's leases with their attempts given back, waiting for
-/// room in the committer's queue (`ShardEngine::submit_native_queue`): the
-/// claim's last act before it answers, which must not be refused `Busy`
-/// after its claim was committed, or the leases would stay held until they
-/// expire under an answer that says nothing was written.
+/// Settle a claim's leases the server could not serve, waiting for room in
+/// the committer's queue (`ShardEngine::submit_native_queue`): the claim's
+/// last act before it answers, which must not be refused `Busy` after its
+/// claim was committed, or the leases would stay held until they expire
+/// under an answer that says nothing was written.
 async fn give_back(t: &QueueTarget, items: Vec<SettleItem>) -> Result<(), QueueFailure> {
     t.engine
         .submit_native_queue(t.hash, NqOp::Settle { items })
@@ -382,10 +400,29 @@ async fn give_back(t: &QueueTarget, items: Vec<SettleItem>) -> Result<(), QueueF
     Ok(())
 }
 
-fn release(offset: u64, lease_gen: u32) -> SettleItem {
+/// Every lease of a claim the server could not finish serving: those whose
+/// envelope would not open fail, the rest are given back.
+fn unserved(deliveries: &[DeliveryView], unreadable: &[u64]) -> Vec<SettleItem> {
+    let kind = |d: &DeliveryView| {
+        if unreadable.contains(&d.offset) {
+            SettleKind::Unreadable
+        } else {
+            SettleKind::Unlease
+        }
+    };
+    deliveries.iter().map(|d| internal(d, kind(d))).collect()
+}
+
+/// An internal settle of a lease the server could not serve: `Unlease`
+/// after a transient failure of its own, `Unreadable` for an envelope that
+/// will not open. Neither spends the customer's attempts or releases.
+fn internal(view: &DeliveryView, kind: SettleKind) -> SettleItem {
     SettleItem {
-        token: Token { offset, lease_gen },
-        kind: SettleKind::Release,
+        token: Token {
+            offset: view.offset,
+            lease_gen: view.lease_gen,
+        },
+        kind,
         code: None,
     }
 }

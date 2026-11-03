@@ -516,8 +516,8 @@ const READ_MEMORY: u64 = 64 * 1024;
 /// reserves before it materializes: with 60 KiB of the cell's 64 KiB read
 /// memory held elsewhere, a claim that leases a 10 KiB message waits for
 /// room and is refused `503 read_memory_busy`, Retry-After 1, its lease
-/// given back with its attempt (due again a second later, the next claim
-/// takes it as attempt 1); with room
+/// given back by the server with its attempt and without spending a release
+/// (due again at once, the next claim takes it as attempt 1); with room
 /// for the message but not for the claim's 1 MiB budget it is served, so
 /// it reserves what it returns, never its budget; and a claim waiting for
 /// work holds nothing. Before: claims reserved nothing, so the first claim

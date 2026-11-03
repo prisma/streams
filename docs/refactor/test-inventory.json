@@ -1962,6 +1962,17 @@
     "scenarios": []
   },
   {
+    "name": "a_message_whose_envelope_will_not_open_fails_alone_and_never_holds_the_queue",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "82d9b5fc3fc19d7b4569fde1c83d8f97f9602c957e6255b3caf9ac73df0a98c2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_product.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_mixed_cell_under_pressure_sheds_its_flooder_and_starves_no_class",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

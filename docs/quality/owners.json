@@ -706,6 +706,14 @@
     },
     {
       "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::a_message_whose_envelope_will_not_open_fails_alone_and_never_holds_the_queue",
+      "path": "src/dst/tests/queue_product.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes (docs/QUEUES-DESIGN.md section 11, S3b part 1's edge change #247); serde macro output is compiled and asserted by the queue DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
       "count": 3,
       "owner": "crate::retry_and_an_expired_lease_redeliver_with_the_next_attempt",
       "path": "src/dst/tests/queue_product.rs",

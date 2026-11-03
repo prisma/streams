@@ -321,14 +321,22 @@ impl QueueService {
     }
 }
 
+/// The envelope a listing or a read by id shows: a message whose envelope
+/// will not open is shown without a body (S3b-DESIGN §6.5).
 async fn read(
     t: &QueueTarget,
     key: &QueueKey,
     view: &DeliveryView,
 ) -> Result<Option<envelope::Envelope>, QueueFailure> {
-    envelope::read(t, key, view.offset)
-        .await
-        .map_err(|e| fail(FailureClass::Unavailable, "read_failed", e))
+    match envelope::read(t, key, view.offset).await {
+        Ok(env) => Ok(env),
+        Err(envelope::ReadFailure::Unreadable(_)) => Ok(Some(envelope::Envelope::unreadable())),
+        Err(e @ envelope::ReadFailure::Store(_)) => Err(fail(
+            FailureClass::Unavailable,
+            "read_failed",
+            e.to_string(),
+        )),
+    }
 }
 
 /// Merge `patch` into `target`: objects field by field, anything else

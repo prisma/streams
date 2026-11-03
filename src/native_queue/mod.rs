@@ -40,6 +40,10 @@ pub(crate) const MAX_ATTEMPTS: u32 = 100;
 /// A release of a never-started message gives the attempt back this many
 /// times in a row; the next counts as a retry (§6.2).
 pub(crate) const FREE_RELEASES: u8 = 2;
+/// Transient give-backs a delivery may take (a refused read hold, a reply
+/// that could not be sent): the next fails it as `unreadable`, so no
+/// message holds a queue's claims forever (S3b-DESIGN §6.5).
+pub(crate) const INTERNAL_UNLEASES: u8 = 8;
 /// Entries the sweep moves in one step (§6.8).
 pub(crate) const SWEEP_STEP: usize = 256;
 /// A sealed page at most this long also rides in the message's
@@ -196,6 +200,12 @@ pub(crate) enum SettleKind {
     Fail,
     Discard,
     Release,
+    /// The server gives the lease back after a transient failure of its own
+    /// (internal; no client sends it): its attempt back, its releases
+    /// untouched, at most `INTERNAL_UNLEASES` times.
+    Unlease,
+    /// The message's envelope will not open (internal): it fails alone.
+    Unreadable,
 }
 
 #[derive(Debug, Clone)]

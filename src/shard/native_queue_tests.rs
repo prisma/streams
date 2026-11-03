@@ -17,6 +17,7 @@ mod reads;
 mod roster;
 mod sweeps;
 mod touched;
+mod unlease;
 
 const HASH: [u8; 16] = [9; 16];
 /// How long a test waits for a committer reply: one that never comes fails
