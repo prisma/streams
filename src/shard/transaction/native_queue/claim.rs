@@ -152,7 +152,12 @@ impl CommitTransaction<'_> {
         let max = max
             .min(room)
             .min(usize::try_from(st.state.cfg.group.max_batch).unwrap_or(usize::MAX));
-        if max == 0 {
+        // At the open-delivery or the failed cap a claim leases nothing new
+        // (S3b-DESIGN §8.1): any new lease could become either.
+        let s = &st.state;
+        let capped = s.leased + s.retrying >= s.cfg.max_open_deliveries
+            || s.failed >= s.cfg.max_failed_messages;
+        if max == 0 || capped {
             return Ok(NqOut::Claimed {
                 deliveries: Vec::new(),
                 paused: false,
@@ -372,7 +377,8 @@ impl CommitTransaction<'_> {
         if facts.retention_end(&st.state.cfg) <= t {
             st.state.gap_count += 1;
             st.state.counters.expired += 1;
-            self.nq_end_scheduled(hash, st, (offset, &facts), t).await?;
+            self.nq_end_scheduled(hash, st, (offset, &facts, !page.is_empty()), t)
+                .await?;
             return Ok(None);
         }
         budget.bytes += u64::from(facts.bytes);

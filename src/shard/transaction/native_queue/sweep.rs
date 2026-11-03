@@ -169,10 +169,11 @@ impl CommitTransaction<'_> {
             st.state.cursor_at = at;
             st.state.cursor_off = off;
             st.state.cursor_started = true;
-            let (facts, _) = decode_scheduled(at, &v).map_err(NqRefusal::Internal)?;
+            let (facts, page) = decode_scheduled(at, &v).map_err(NqRefusal::Internal)?;
             st.state.gap_count += 1;
             st.state.counters.expired += 1;
-            self.nq_end_scheduled(hash, st, (off, &facts), t).await?;
+            self.nq_end_scheduled(hash, st, (off, &facts, !page.is_empty()), t)
+                .await?;
             moved += 1;
         }
         Ok(moved)

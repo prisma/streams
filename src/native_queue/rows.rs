@@ -29,7 +29,7 @@ use super::{Backoff, GroupConfig, QueueConfig};
 pub(crate) const STATE_ROW_VERSION: u32 = 4;
 /// The state row's length without its variable parts (the wake-up URL and
 /// name bytes, the URL's length, `roster_at`).
-const STATE_ROW_FIXED: usize = 413;
+const STATE_ROW_FIXED: usize = 445;
 const FLAG_CURSOR_STARTED: u8 = 1;
 const FLAG_PAUSED: u8 = 1 << 1;
 const FLAG_DELETING: u8 = 1 << 2;
@@ -133,6 +133,8 @@ pub(crate) struct StateRow {
     pub gap_count: u64,
     /// Unresolved scheduled messages (their `'a'` entries).
     pub scheduled: u64,
+    /// Bytes of the scheduled pages riding inline in their entries.
+    pub inline_bytes: u64,
     pub counters: Counters,
     /// Deletion debt (§8.2 stage 2): bytes deleted and not yet collected.
     pub debt_bytes: u64,
@@ -263,6 +265,7 @@ impl StateRow {
                 self.dedup_entries,
                 self.gap_count,
                 self.scheduled,
+                self.inline_bytes,
             ]
             .map(u64::to_le_bytes)
             .as_flattened(),
@@ -338,6 +341,7 @@ impl StateRow {
         let dedup_entries = r.u64()?;
         let gap_count = r.u64()?;
         let scheduled = r.u64()?;
+        let inline_bytes = r.u64()?;
         let counters = Counters::read(&mut r)?;
         let debt_bytes = r.u64()?;
         let debt_oldest_at = r.i64()?;
@@ -378,6 +382,7 @@ impl StateRow {
             dedup_entries,
             gap_count,
             scheduled,
+            inline_bytes,
             counters,
             debt_bytes,
             debt_oldest_at,
@@ -405,17 +410,20 @@ impl StateRow {
     }
 }
 
-/// The queue configuration's 88 bytes of the state row.
+/// The queue configuration's 112 bytes of the state row.
 fn put_config(v: &mut Vec<u8>, c: &QueueConfig) {
     let g = &c.group;
     v.extend_from_slice(
         [
             c.retention_ms.to_le_bytes(),
             c.failure_retention_ms.to_le_bytes(),
-            c.max_queued_bytes.to_le_bytes(),
-            c.max_queued_messages.to_le_bytes(),
+            c.max_queued_bytes.unwrap_or(0).to_le_bytes(),
+            c.max_queued_messages.unwrap_or(0).to_le_bytes(),
             c.dedup_window_ms.to_le_bytes(),
             c.max_dedup_entries.to_le_bytes(),
+            c.max_open_deliveries.to_le_bytes(),
+            c.max_failed_messages.to_le_bytes(),
+            c.max_scheduled_messages.to_le_bytes(),
         ]
         .as_flattened(),
     );
@@ -439,10 +447,14 @@ fn put_config(v: &mut Vec<u8>, c: &QueueConfig) {
 fn read_config(r: &mut Reader<'_>) -> Result<QueueConfig, String> {
     let retention_ms = r.i64()?;
     let failure_retention_ms = r.i64()?;
-    let max_queued_bytes = r.u64()?;
-    let max_queued_messages = r.u64()?;
+    // An absent guard is stored as 0 (a set one is positive).
+    let max_queued_bytes = Some(r.u64()?).filter(|n| *n > 0);
+    let max_queued_messages = Some(r.u64()?).filter(|n| *n > 0);
     let dedup_window_ms = r.i64()?;
     let max_dedup_entries = r.u64()?;
+    let max_open_deliveries = r.u64()?;
+    let max_failed_messages = r.u64()?;
+    let max_scheduled_messages = r.u64()?;
     let max_attempts = r.u32()?;
     let initial_ms = r.i64()?;
     let max_ms = r.i64()?;
@@ -457,6 +469,9 @@ fn read_config(r: &mut Reader<'_>) -> Result<QueueConfig, String> {
         max_queued_messages,
         dedup_window_ms,
         max_dedup_entries,
+        max_open_deliveries,
+        max_failed_messages,
+        max_scheduled_messages,
         group: GroupConfig {
             max_attempts,
             backoff: Backoff {

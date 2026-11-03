@@ -38,7 +38,7 @@ async fn set_max_bytes(e: &super::ShardEngine, max_queued_bytes: u64) {
     let cfg = QueueConfig::default();
     let update = NqOp::Update {
         group: cfg.group,
-        max_queued_bytes,
+        max_queued_bytes: Some(max_queued_bytes),
         max_queued_messages: cfg.max_queued_messages,
     };
     op(e, update).await.unwrap();
@@ -136,7 +136,7 @@ async fn a_send_fills_the_dedup_budget_and_schedules_up_to_retention_exactly() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_redrive_reserves_a_message_slot_and_stops_at_a_full_queue() {
     let cfg = QueueConfig {
-        max_queued_messages: 2,
+        max_queued_messages: Some(2),
         ..QueueConfig::default()
     };
     let (e, db, _c) = clocked("nq-redrive-count", cfg).await;

@@ -715,6 +715,22 @@
     {
       "category": "macro-dsl",
       "count": 3,
+      "owner": "crate::the_config_echo_omits_unset_guards_and_the_stats_count_scheduled_messages",
+      "path": "src/dst/tests/queue_product.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes (docs/QUEUES-DESIGN.md section 11, S3b part 1's edge change #247); serde macro output is compiled and asserted by the queue DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::the_queued_guards_have_no_default_and_the_echo_omits_them",
+      "path": "src/shard/native_queue_tests/caps.rs",
+      "reason": "The expected caps of a queue's configuration echo (S3b-DESIGN section 14.2, edge change #247); serde macro output is compiled and asserted by the test.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
       "owner": "crate::retry_and_an_expired_lease_redeliver_with_the_next_attempt",
       "path": "src/dst/tests/queue_product.rs",
       "reason": "Exact request documents and expected wire answers of the queue routes (docs/QUEUES-DESIGN.md section 11, edge change #186); serde macro output is compiled and asserted by the queue DST.",

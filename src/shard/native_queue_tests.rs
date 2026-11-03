@@ -11,6 +11,7 @@ use crate::native_queue::{
 
 mod avail;
 mod budgets;
+mod caps;
 mod cold;
 mod floors;
 mod reads;
@@ -273,7 +274,7 @@ async fn an_empty_claim_writes_nothing() {
 async fn a_duplicate_dedup_key_returns_the_original_and_the_budget_refuses_past_it() {
     let (e, _db) = engine("nq-dedup").await;
     let cfg = QueueConfig {
-        max_queued_messages: 2,
+        max_queued_messages: Some(2),
         ..QueueConfig::default()
     };
     create(&e, cfg).await;

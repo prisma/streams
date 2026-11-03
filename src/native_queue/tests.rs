@@ -132,10 +132,13 @@ fn populated_state() -> StateRow {
     let mut s = StateRow::default();
     s.cfg.retention_ms = 1_760_000_000_001;
     s.cfg.failure_retention_ms = 1_760_000_000_002;
-    s.cfg.max_queued_bytes = 1_000_001;
-    s.cfg.max_queued_messages = 1_000_002;
+    s.cfg.max_queued_bytes = Some(1_000_001);
+    s.cfg.max_queued_messages = Some(1_000_002);
     s.cfg.dedup_window_ms = 1_760_000_000_003;
     s.cfg.max_dedup_entries = 1_000_003;
+    s.cfg.max_open_deliveries = 1_000_014;
+    s.cfg.max_failed_messages = 1_000_015;
+    s.cfg.max_scheduled_messages = 1_000_016;
     s.cfg.group.max_attempts = 11;
     s.cfg.group.backoff.initial_ms = 1_760_000_000_004;
     s.cfg.group.backoff.max_ms = 1_760_000_000_005;
@@ -157,6 +160,7 @@ fn populated_state() -> StateRow {
     s.dedup_entries = 1_000_010;
     s.gap_count = 1_000_011;
     s.scheduled = 1_000_013;
+    s.inline_bytes = 1_000_017;
     s.counters = rows::Counters {
         sent: 2_000_001,
         delivered: 2_000_002,
@@ -202,14 +206,14 @@ fn the_state_row_is_a_fixed_binary_layout_that_round_trips_exactly() {
     let raw = row.encode();
     assert_eq!(
         raw.len(),
-        496,
-        "4 version + 88 cfg + 40 clock/cursor/frontier/lane expiry + 1 flags + 64 counts \
+        528,
+        "4 version + 112 cfg + 40 clock/cursor/frontier/lane expiry + 1 flags + 72 counts \
          + 104 counters + 24 debt + (4 + 40) url + (4 + 31) name + 4 wakeup version \
-         + 24 notify + 8 jitter + 48 floors + 8 roster = 496"
+         + 24 notify + 8 jitter + 48 floors + 8 roster = 528"
     );
     assert_eq!(raw[..4], [4, 0, 0, 0], "the layout's version leads the row");
     assert_eq!(
-        raw[132], 0b1_1001,
+        raw[156], 0b1_1001,
         "flags after version, cfg, clock, cursor, frontier and lane expiry: cursor \
          started, roster, url"
     );
@@ -230,14 +234,14 @@ fn the_state_row_is_a_fixed_binary_layout_that_round_trips_exactly() {
         Err("queue state row: version 3".to_owned())
     );
     let mut not_utf8 = raw.clone();
-    not_utf8[325 + 4 + 40 + 4] = 0xFF;
+    not_utf8[357 + 4 + 40 + 4] = 0xFF;
     assert_eq!(
         StateRow::decode(&not_utf8),
         Err("queue row: not UTF-8".to_owned()),
         "the name's first byte, after the debt and the URL"
     );
     let mut unknown_flag = raw;
-    unknown_flag[132] |= 0b10_0000;
+    unknown_flag[156] |= 0b10_0000;
     assert_eq!(
         StateRow::decode(&unknown_flag),
         Err("queue state row: flags 0x39".to_owned())
@@ -261,10 +265,10 @@ fn state_row_flags_and_optional_fields_round_trip_distinctly() {
     deleting.deleting = true;
     variants.extend([paused, deleting]);
     let encoded: Vec<Vec<u8>> = variants.iter().map(StateRow::encode).collect();
-    let flags: Vec<u8> = encoded.iter().map(|raw| raw[132]).collect();
+    let flags: Vec<u8> = encoded.iter().map(|raw| raw[156]).collect();
     assert_eq!(flags, [0, 0b1_1000, 0b10, 0b100]);
     let lens: Vec<usize> = encoded.iter().map(Vec::len).collect();
-    assert_eq!(lens, [413 + 31, 413 + 31 + 4 + 8, 444, 444]);
+    assert_eq!(lens, [445 + 31, 445 + 31 + 4 + 8, 476, 476]);
     for (s, raw) in variants.iter().zip(&encoded) {
         assert_eq!(&StateRow::decode(raw).unwrap(), s);
     }

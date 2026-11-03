@@ -17,6 +17,8 @@ pub(super) const ROW_CHARGE: u64 = 256;
 /// A scheduled message as its entry holds it.
 pub(super) struct Scheduled {
     pub facts: MessageFacts,
+    /// Whether its page rides inline in the entry.
+    pub inline: bool,
 }
 
 impl CommitTransaction<'_> {
@@ -57,8 +59,11 @@ impl CommitTransaction<'_> {
             .await
             .map_err(NqRefusal::Internal)?
             .ok_or_else(|| NqRefusal::Internal(format!("scheduled entry {offset} missing")))?;
-        let (facts, _) = decode_scheduled(at, &entry).map_err(NqRefusal::Internal)?;
-        Ok(Some(Scheduled { facts }))
+        let (facts, page) = decode_scheduled(at, &entry).map_err(NqRefusal::Internal)?;
+        Ok(Some(Scheduled {
+            facts,
+            inline: !page.is_empty(),
+        }))
     }
 
     pub(super) fn nq_put_delivery(
@@ -219,7 +224,7 @@ impl CommitTransaction<'_> {
         let mut range = self.nq_range(hash, st, offset).await?;
         range.open = range.open.saturating_sub(1);
         if row.scheduled {
-            self.nq_unschedule(hash, st, (offset, &row.facts()), &mut range);
+            self.nq_unschedule(hash, st, (offset, &row.facts(), row.inline), &mut range);
         }
         Self::nq_set_range(st, offset, range);
         if offset < st.state.frontier {
@@ -240,12 +245,12 @@ impl CommitTransaction<'_> {
         &mut self,
         hash: &[u8; 16],
         st: &mut NativeStage,
-        message: (u64, &MessageFacts),
+        message: (u64, &MessageFacts, bool),
         t: i64,
     ) -> Result<(), NqRefusal> {
-        let (offset, facts) = message;
+        let (offset, facts, inline) = message;
         let mut range = self.nq_range(hash, st, offset).await?;
-        self.nq_unschedule(hash, st, (offset, facts), &mut range);
+        self.nq_unschedule(hash, st, (offset, facts, inline), &mut range);
         Self::nq_set_range(st, offset, range);
         if offset < st.state.frontier {
             self.nq_delete_page(hash, st, (offset, facts.bytes), t);
@@ -265,10 +270,13 @@ impl CommitTransaction<'_> {
         &mut self,
         hash: &[u8; 16],
         st: &mut NativeStage,
-        message: (u64, &MessageFacts),
+        message: (u64, &MessageFacts, bool),
         range: &mut crate::native_queue::range::RangeRow,
     ) {
-        let (offset, facts) = message;
+        let (offset, facts, inline) = message;
+        if inline {
+            st.state.inline_bytes = st.state.inline_bytes.saturating_sub(u64::from(facts.bytes));
+        }
         self.nq_delete(
             st,
             keys::by_time(hash, keys::AVAIL, facts.available_at, offset),

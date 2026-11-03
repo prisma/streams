@@ -109,6 +109,14 @@ impl From<NqRefusal> for QueueFailure {
                 "dedup_full",
                 "the queue holds maxDedupEntries dedup keys; retry",
             ),
+            NqRefusal::ScheduledFull => QueueFailure {
+                retry_after: Some(5),
+                ..fail(
+                    C::Exhausted,
+                    "scheduled_full",
+                    "the queue holds maxScheduledMessages scheduled messages; retry",
+                )
+            },
             NqRefusal::DeliverAtBeyondRetention => fail(
                 C::Invalid,
                 "deliver_at_beyond_retention",

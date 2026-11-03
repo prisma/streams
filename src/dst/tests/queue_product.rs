@@ -326,6 +326,44 @@ async fn dedup_answers_the_original_and_refusals_are_exact() {
 
 /// A failed delivery is listed with its envelope and cause, redriven into
 /// a new cycle, and reclaimed once acked.
+/// A queue's configuration echo carries no queued guard unless one was set,
+/// and its three caps (S3b-DESIGN §14.2, E5); its stats count the scheduled
+/// messages apart from the due ones.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn the_config_echo_omits_unset_guards_and_the_stats_count_scheduled_messages() {
+    let (state, addr) = http_rig(mem()).await;
+    let (st, v) = q(addr, "PUT", "/v1/queues/plain", Value::Null).await;
+    assert_eq!(st, 201, "{v}");
+    let cfg = &v["config"];
+    assert_eq!((cfg.get("maxQueuedBytes"), cfg.get("maxQueuedMessages")), (None, None));
+    assert_eq!(
+        (
+            &cfg["maxOpenDeliveries"],
+            &cfg["maxFailedMessages"],
+            &cfg["maxScheduledMessages"]
+        ),
+        (&json!(1_000_000), &json!(1_000_000), &json!(1_000_000))
+    );
+    let guarded = json!({ "maxQueuedBytes": 50_000, "maxScheduledMessages": 2_000 });
+    let (st, v) = q(addr, "PUT", "/v1/queues/guarded", guarded).await;
+    assert_eq!(st, 201, "{v}");
+    assert_eq!(
+        (&v["config"]["maxQueuedBytes"], &v["config"]["maxScheduledMessages"]),
+        (&json!(50_000), &json!(2_000))
+    );
+    let later = json!({ "body": { "n": 1 }, "delayMs": 3_600_000 });
+    assert_eq!(q(addr, "POST", "/v1/queues/plain/messages", later).await.0, 201);
+    let now = json!({ "body": { "n": 2 } });
+    assert_eq!(q(addr, "POST", "/v1/queues/plain/messages", now).await.0, 201);
+    let (_, v) = q(addr, "GET", "/v1/queues/plain", Value::Null).await;
+    let s = &v["stats"];
+    assert_eq!(
+        (&s["scheduled"], &s["due"], &s["queuedMessages"]),
+        (&json!(1), &json!(1), &json!(2))
+    );
+    engine_shutdown(&state).await;
+}
+
 /// A message whose envelope will not open (its stored page damaged past its
 /// header) fails alone, cause `unreadable`, and the claim that met it
 /// answers the others: no claim of the queue answers 503 for it, and the

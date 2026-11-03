@@ -10819,6 +10819,17 @@
     "scenarios": []
   },
   {
+    "name": "the_config_echo_omits_unset_guards_and_the_stats_count_scheduled_messages",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "ad0cbedd2464444933fdc3b375d8a145e11032c96e26edaafcff7ed76b45e481",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_product.rs",
+    "scenarios": []
+  },
+  {
     "name": "the_entry_dispatches_exactly_the_resolved_operations",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

@@ -49,12 +49,19 @@ impl CommitTransaction<'_> {
                 return Err(NqRefusal::DeliverAtBeyondRetention);
             }
         }
+        let scheduled = new
+            .iter()
+            .filter(|m| m.deliver_at.is_some_and(|at| at > t))
+            .count() as u64;
+        if scheduled > 0 && st.state.scheduled + scheduled > cfg.max_scheduled_messages {
+            return Err(NqRefusal::ScheduledFull);
+        }
         // Seal before the budget checks: the gauges count stored pages.
         let pages = self.nq_seal(local, hash, &new, (&subkey, key_version, t))?;
         let bytes: u64 = pages.iter().map(|p| p.bytes.len() as u64).sum();
         let s = &st.state;
-        if s.queued_messages + new.len() as u64 > cfg.max_queued_messages
-            || s.queued_bytes + bytes > cfg.max_queued_bytes
+        if s.queued_messages + new.len() as u64 > cfg.max_queued_messages.unwrap_or(u64::MAX)
+            || s.queued_bytes + bytes > cfg.max_queued_bytes.unwrap_or(u64::MAX)
         {
             return Err(NqRefusal::QueueFull);
         }
@@ -146,11 +153,14 @@ impl CommitTransaction<'_> {
         let available_at = m.deliver_at.unwrap_or(t).max(t);
         let bytes = u32::try_from(page.bytes.len()).unwrap_or(u32::MAX);
         if available_at > t {
-            let inline: &[u8] = if page.bytes.len() <= crate::native_queue::INLINE_PAGE_MAX {
-                &page.bytes
-            } else {
-                &[]
-            };
+            // Inline while small and under the queue's inline budget.
+            let fits = page.bytes.len() <= crate::native_queue::INLINE_PAGE_MAX
+                && st.state.inline_bytes + u64::from(bytes)
+                    <= crate::native_queue::SCHEDULED_INLINE_BUDGET_BYTES;
+            let inline: &[u8] = if fits { &page.bytes } else { &[] };
+            if fits {
+                st.state.inline_bytes += u64::from(bytes);
+            }
             self.nq_put(
                 st,
                 keys::by_time(&hash, keys::AVAIL, available_at, offset),

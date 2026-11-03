@@ -49,6 +49,13 @@ pub(crate) const SWEEP_STEP: usize = 256;
 /// A sealed page at most this long also rides in the message's
 /// availability entry, so a claim returns it without a page read (§6.1).
 pub(crate) const INLINE_PAGE_MAX: usize = 2_048;
+/// A queue's scheduled pages ride inline only while their bytes stay under
+/// this (S3b-DESIGN §8.1); beyond it a scheduled page is read by its key.
+pub(crate) const SCHEDULED_INLINE_BUDGET_BYTES: u64 = 64 << 20;
+/// The three per-queue caps' default and clamp (S3b-DESIGN §8.1, Q12).
+pub(crate) const CAP_DEFAULT: u64 = 1_000_000;
+pub(crate) const CAP_MIN: u64 = 1_000;
+pub(crate) const CAP_MAX: u64 = 10_000_000;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -95,10 +102,21 @@ impl Default for GroupConfig {
 pub(crate) struct QueueConfig {
     pub retention_ms: i64,
     pub failure_retention_ms: i64,
-    pub max_queued_bytes: u64,
-    pub max_queued_messages: u64,
+    /// Optional guards: absent means none (Q12, R-S).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_queued_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_queued_messages: Option<u64>,
     pub dedup_window_ms: i64,
     pub max_dedup_entries: u64,
+    /// Leased plus retrying deliveries: at the cap a claim leases nothing
+    /// new.
+    pub max_open_deliveries: u64,
+    /// Failed deliveries (the queue's dead letters): at the cap a claim
+    /// leases nothing new, since any new lease could fail.
+    pub max_failed_messages: u64,
+    /// Unresolved scheduled messages: a send past it is `scheduled_full`.
+    pub max_scheduled_messages: u64,
     pub group: GroupConfig,
 }
 
@@ -107,10 +125,13 @@ impl Default for QueueConfig {
         Self {
             retention_ms: 4 * DAY_MS,
             failure_retention_ms: 14 * DAY_MS,
-            max_queued_bytes: 256 << 20,
-            max_queued_messages: 1_000_000,
+            max_queued_bytes: None,
+            max_queued_messages: None,
             dedup_window_ms: DAY_MS,
             max_dedup_entries: 1_000_000,
+            max_open_deliveries: CAP_DEFAULT,
+            max_failed_messages: CAP_DEFAULT,
+            max_scheduled_messages: CAP_DEFAULT,
             group: GroupConfig::default(),
         }
     }
@@ -120,7 +141,8 @@ impl QueueConfig {
     /// The configuration's clamps (§11), or what is out of range.
     pub(crate) fn validate(&self) -> Result<(), String> {
         let g = &self.group;
-        let checks: [(bool, &str); 10] = [
+        let cap = |n: u64| (CAP_MIN..=CAP_MAX).contains(&n);
+        let checks: [(bool, &str); 13] = [
             (
                 (HOUR_MS..=MAX_RETENTION_MS).contains(&self.retention_ms),
                 "retentionMs must be 1 h to 14 d",
@@ -135,10 +157,25 @@ impl QueueConfig {
                     && self.dedup_window_ms <= self.retention_ms,
                 "dedupWindowMs must be 0 to 7 d and at most retentionMs",
             ),
-            (self.max_queued_bytes > 0, "maxQueuedBytes must be positive"),
             (
-                self.max_queued_messages > 0,
+                self.max_queued_bytes != Some(0),
+                "maxQueuedBytes must be positive",
+            ),
+            (
+                self.max_queued_messages != Some(0),
                 "maxQueuedMessages must be positive",
+            ),
+            (
+                cap(self.max_open_deliveries),
+                "maxOpenDeliveries must be 1,000 to 10,000,000",
+            ),
+            (
+                cap(self.max_failed_messages),
+                "maxFailedMessages must be 1,000 to 10,000,000",
+            ),
+            (
+                cap(self.max_scheduled_messages),
+                "maxScheduledMessages must be 1,000 to 10,000,000",
             ),
             (
                 (1..=MAX_ATTEMPTS).contains(&g.max_attempts),
@@ -224,8 +261,8 @@ pub(crate) enum NqOp {
     Get,
     Update {
         group: GroupConfig,
-        max_queued_bytes: u64,
-        max_queued_messages: u64,
+        max_queued_bytes: Option<u64>,
+        max_queued_messages: Option<u64>,
     },
     BeginDelete,
     DeleteStep {
@@ -358,6 +395,8 @@ pub(crate) enum NqRefusal {
     InvalidConfig(String),
     QueueFull,
     DedupFull,
+    /// The queue holds `maxScheduledMessages` scheduled messages.
+    ScheduledFull,
     DeliverAtBeyondRetention,
     Reclaimed,
     /// The shard committer's queue was full: the operation was not

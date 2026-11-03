@@ -181,7 +181,9 @@ async fn stats(c: &Call<'_>) -> Answer {
     if s.deleting {
         c.svc.resume_cleanup(&t);
     }
+    // Due: queued and not open nor scheduled for later (S3b-DESIGN §14.2).
     let open = s.leased.saturating_add(s.retrying);
+    let waiting = open.saturating_add(s.scheduled);
     Ok(json(
         StatusCode::OK,
         &json!({
@@ -189,8 +191,8 @@ async fn stats(c: &Call<'_>) -> Answer {
             "config": s.cfg,
             "deleting": s.deleting,
             "stats": {
-                "due": s.queued_messages.saturating_sub(open),
-                "scheduled": null,
+                "due": s.queued_messages.saturating_sub(waiting),
+                "scheduled": s.scheduled,
                 "leased": s.leased,
                 "retrying": s.retrying,
                 "failed": s.failed,

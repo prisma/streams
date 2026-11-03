@@ -60,10 +60,17 @@ export interface QueueGroupConfig {
 export interface QueueConfig {
   retentionMs?: number;
   failureRetentionMs?: number;
+  /** Optional guards with no default: absent means none. */
   maxQueuedBytes?: number;
   maxQueuedMessages?: number;
   dedupWindowMs?: number;
   maxDedupEntries?: number;
+  /** Leased plus retrying deliveries (default 1,000,000; 1,000 to 10,000,000). */
+  maxOpenDeliveries?: number;
+  /** Failed deliveries kept for listing and redrive (default 1,000,000). */
+  maxFailedMessages?: number;
+  /** Scheduled messages not yet due (default 1,000,000). */
+  maxScheduledMessages?: number;
   group?: QueueGroupConfig;
 }
 
@@ -80,7 +87,17 @@ export interface QueueStats {
   queuedBytes: number;
   queuedMessages: number;
   counters: Record<
-    "sent" | "delivered" | "acked" | "retried" | "failed" | "expired" | "discarded" | "redriven" | "stale",
+    | "sent"
+    | "delivered"
+    | "acked"
+    | "retried"
+    | "failed"
+    | "expired"
+    | "discarded"
+    | "redriven"
+    | "stale"
+    | "unreadable"
+    | "internalUnleases",
     number
   >;
 }

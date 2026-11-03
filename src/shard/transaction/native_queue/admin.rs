@@ -63,8 +63,8 @@ impl CommitTransaction<'_> {
         &mut self,
         st: &mut NativeStage,
         group: GroupConfig,
-        max_queued_bytes: u64,
-        max_queued_messages: u64,
+        max_queued_bytes: Option<u64>,
+        max_queued_messages: Option<u64>,
     ) -> NqResult {
         let mut cfg = st.state.cfg.clone();
         cfg.group = group;
@@ -175,7 +175,7 @@ impl CommitTransaction<'_> {
             return Ok(true);
         }
         if let Some(sched) = self.nq_scheduled(hash, st, off).await? {
-            self.nq_end_scheduled(hash, st, (off, &sched.facts), t)
+            self.nq_end_scheduled(hash, st, (off, &sched.facts, sched.inline), t)
                 .await?;
             return Ok(true);
         }
@@ -217,8 +217,9 @@ impl CommitTransaction<'_> {
                 continue;
             }
             let cfg = st.state.cfg.clone();
-            if st.state.queued_messages + 1 > cfg.max_queued_messages
-                || st.state.queued_bytes + u64::from(row.bytes) > cfg.max_queued_bytes
+            if st.state.queued_messages + 1 > cfg.max_queued_messages.unwrap_or(u64::MAX)
+                || st.state.queued_bytes + u64::from(row.bytes)
+                    > cfg.max_queued_bytes.unwrap_or(u64::MAX)
             {
                 capacity = true;
                 break;
