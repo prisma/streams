@@ -11,8 +11,8 @@ use std::sync::atomic::Ordering;
 
 use super::AdmissionController;
 
-/// The forwards that may wait at once when no in-flight cap is set: the
-/// share of the default cap (512).
+/// The forwards that may wait at once when no in-flight cap is set: a
+/// quarter of 512.
 const UNCAPPED: i64 = 128;
 
 /// RAII place of one forward waiting for its owner's answer.

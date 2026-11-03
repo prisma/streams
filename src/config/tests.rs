@@ -596,7 +596,7 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
         "ADMIT_MAX_INFLIGHT_PER_STREAM",
         "256",
     ),
-    ("admit-max-inflight", "ADMIT_MAX_INFLIGHT", "512"),
+    ("admit-max-inflight", "ADMIT_MAX_INFLIGHT", "4096"),
     ("project-share-k", "PROJECT_SHARE_K", "1"),
     (
         "cell-envelope-requests-per-sec",

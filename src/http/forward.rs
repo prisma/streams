@@ -74,7 +74,8 @@ pub(super) const FORWARDED: &str = "streams-forwarded";
 const FORWARDED_TO: &str = "streams-forwarded-to";
 
 /// The most body bytes a request keeps for a forward once its handler has
-/// read them: 64 KiB, about 32 MiB at the default 512 requests in flight.
+/// read them: 64 KiB, sharing the handler's bytes; at most 256 MiB at the
+/// default 4,096 requests in flight, under the RSS shed line.
 const KEPT_BYTES: usize = 64 << 10;
 
 /// How long, past the owner's shard-open wait and the request's own wait, a

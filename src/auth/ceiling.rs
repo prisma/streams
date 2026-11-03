@@ -524,6 +524,8 @@ mod tests {
     fn boot_installs_the_ceiling_of_the_configured_cell() {
         let mut cli = crate::config::CliArgs::deterministic();
         cli.project_share_k = 8;
+        // shared-cell.env states its in-flight bound, as it states k.
+        cli.admit_max_inflight = 512;
         cli.cell_envelope_requests_per_sec = 1_411;
         cli.cell_envelope_append_bytes_per_sec = 2_060_000;
         cli.cell_envelope_read_bytes_per_sec = 30_000_000;
