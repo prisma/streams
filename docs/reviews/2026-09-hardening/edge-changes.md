@@ -4963,7 +4963,7 @@ None of these changes alters a status or code on a path that worked before, and 
   - `auth::ceiling::tests::boot_installs_the_ceiling_of_the_configured_cell` (it builds the shared-cell profile's ceiling and now sets that profile's explicit 512, as it sets its k; with the binary default it failed with `inflight: 4096` against `inflight: 512`).
   - unchanged and green: the rest of `security_routes`, and the forwarding and fair-shedding tests, which set their own caps.
 - **Risk reason:** medium. A deployment that relied on the binary default for its write shed now sheds eight times later; the evidence is one measured shape. The memory bounds that do not derive from the cap are unchanged, but the survival bound is, as stated above. The survival bound is decoupled from the cap as the review asked, derived from the shed line (the review's formula); a safer alternative for the default itself, if the owner prefers it, is 2,048, which Little's law at the measured 2,000/s for 512 (about 256 ms in flight each) puts near 8,000/s, unmeasured.
-- **Status:** awaits ratification (the owner's decision: it moves a production survival posture's default, though the deployed profiles pin 512; Fable 5.1 recommends ratifying with the memory-derived survival bound).
+- **Status:** ratified by Fable 5.1 on 2026-11-03 under the owner's delegation of 2026-11-03 (with the memory-derived survival bound; the shared-cell and dedicated-cell profiles keep 512 until a measured change of their own).
 - **Check against commit:** written with the change.
 
 ## Discrepancies
