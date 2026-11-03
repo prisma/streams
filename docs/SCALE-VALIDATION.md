@@ -71,8 +71,9 @@ git cat-file -e <commit>:src/http/forward.rs && echo forwarding-present
 - `INITIAL_SHARDS` must be a power of two (`src/config/validation.rs`). It is
   read only when the keyspace is created; the topology is stored with it
   (RUNBOOK §3.2). **Use a fresh `PATH_PREFIX` and a fresh `FLEET_PREFIX`
-  (or a fresh bucket) for every configuration.** Reusing a prefix keeps the
-  old shard count whatever the variable says.
+  for every configuration; on Tigris, a fresh bucket used by nothing else
+  (§4.2).** Reusing a prefix keeps the old shard count whatever the
+  variable says.
 - `INITIAL_SHARDS = 2N` logs `INITIAL_SHARDS=2N > FLEET_MAX=N: ...` at boot
   (`src/config/notice.rs`). That warning is expected here.
 - `FLEET_MIN = FLEET_MAX` holds the ring at N: the desired count is floored
@@ -545,7 +546,33 @@ Prefer the store's own counters over client estimates:
    `op:class` (`put`, `mpu`, `get`, `head`, `delete`, `list`, `copy` ×
    `wal`, `manifest`, `sst`, `fleet`, `other`), split `ok`, `not_found`,
    `unbilled` (304 and refusals) and `err` (`src/store_timing/observations.rs`).
-   **TODO (owner)**: a Tigris-side request count to reconcile against.
+   Reconcile them against Tigris's own counts (decision B2, §8 item 2):
+   - (a) **Run every configuration in a fresh bucket used by nothing
+     else.** The platform has no per-request export, but the console's
+     per-bucket usage then is a ledger of that configuration alone.
+   - (b) **The 304 probe, before any load.** Against an otherwise idle
+     bucket, send 100,000 conditional GETs (`If-None-Match` on one object)
+     that answer 304. The next day, read the bucket's request counts in the
+     Tigris console or usage export: if Class B moved by about 100,000,
+     304s are billed. It costs about $0.02. Until it answers, report every
+     margin on the conservative basis (304 billed as Class B) with the
+     optimistic figure beside it. Asking Tigris support is optional and the
+     owner's to send; the probe decides on its own.
+   - (c) **Reconcile after each run.** Sum the server's `/v1/debug/store`
+     Class A and Class B deltas over the instances on the bucket and
+     compare each with the bucket's Tigris-side count: tolerance ±5% per
+     class. A retry counts once on the server, so `err` is the
+     explanation for a gap.
+
+```bash
+# the 304 probe; $SECRETS/tigris.curlrc (0600) holds two lines:
+#   user = "<access key id>:<secret access key>"   and   aws-sigv4 = "aws:amz:auto:s3"
+O="$SLATE_S3_ENDPOINT/$PROBE_BUCKET/probe-304"
+echo probe | curl -sf -K "$SECRETS/tigris.curlrc" -T - "$O"
+ETAG=$(curl -sfI -K "$SECRETS/tigris.curlrc" "$O" | awk 'tolower($1)=="etag:" {print $2}' | tr -d '\r')
+seq 100000 | xargs -P 16 -I{} curl -s -o /dev/null -w '%{http_code}\n' -K "$SECRETS/tigris.curlrc" \
+    -H "If-None-Match: $ETAG" "$O" | sort | uniq -c       # must print: 100000 304
+```
 
 Billing rules (`docs/COST-METHODOLOGY.md`; `bench/k2cost/README.md`, "Pricing"):
 
@@ -558,7 +585,8 @@ Billing rules (`docs/COST-METHODOLOGY.md`; `bench/k2cost/README.md`, "Pricing"):
 - Whether Tigris bills 304s is unknown. Registry revalidations answer 304
   about once per long-poll re-arm; billed as Class B they would add 33-62% to
   T and S cells (`docs/STREAMS-COST-LEVERS-2026-10.md`). Report `unbilled`
-  separately so both can be priced.
+  separately so both can be priced; until the 304 probe (above) answers,
+  the conservative basis is the headline.
 
 ```bash
 # Class A, Class B, unbilled and err from one /v1/debug/store snapshot
@@ -757,6 +785,7 @@ first and dollars second.
 | The queue costs hold | 100x at most $0.0960 per million sent at ab50; 10x at most $71.61; 1x at most $19.06 (missed by 6.2% on the Mac until slatedb#2208 is in the pin) | 100x above $0.241 per million (the 80% margin line) |
 | The hot queue keeps up | drain at or above the due rate | drain below the due rate for 5 minutes: report the ceiling |
 | Correctness | zero lost, duplicated or foreign records; zero lost messages | any loss voids every cost claim of the run |
+| Counters reconcile with Tigris | ±5% per class per bucket (§4.2 (c)) | a gap over 5% not explained by `err` |
 
 The two WAL bars were decided on 2026-11-03 (§8 item 1). The planning
 figure stays 10.0 a second ($48.60 per busy shard-month at ab50); the
@@ -796,6 +825,10 @@ Boot log: gap_ms=<..> gather_ms=<..> per shard; effective configuration excerpt
 | Run | Class A | Class B | unbilled | err | put GB | stored GiB | CPU s | RSS max MB |
 | Run | month owner $ | month ab50 $ | per tenant ab50 $ | per M messages ab50 $ |
 
+### Tigris reconciliation (every Tigris run; §4.2)
+| Run | bucket | server Class A | Tigris Class A | delta % | server Class B | Tigris Class B | delta % | err |
+304 probe: billed | not billed | pending (probe date <..>, Class B moved by <n>); margins on the conservative basis until it answers
+
 ### Against the measured figures and revenue
 | Workload | ours ab50 | Mac figure | delta % | revenue | margin $ | margin % |
 
@@ -820,8 +853,10 @@ the hardening README's "Owner decisions" table lists them.
    10-minute window, pump flushes ≤ 9.9 a second (hard) and all WAL PUTs
    ≤ 10.1 a second with WAL PUTs ÷ pump flushes ≤ 1.02 (reported, not
    void); §6, §1.7, §4.3.
-2. Whether Tigris bills 304s, and a Tigris-side request count to reconcile
-   the server's counters against (§4.2).
+2. **Closed** (decision B2). Whether Tigris bills 304s, and a Tigris-side
+   request count to reconcile against: a fresh bucket per configuration,
+   the 304 probe before any load (conservative basis until it answers),
+   and reconciliation within ±5% per class after each run (§4.2, §6, §7).
 3. The $10 access fee: on top of usage, or instead of it (§5.3).
 4. M and L have only modelled costs; the owner's decision of 2026-11-01
    closes 6A by measuring them (ST-3). L's phase plan is not in the tree.
