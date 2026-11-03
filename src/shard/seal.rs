@@ -75,6 +75,7 @@ mod lifecycle_tests;
 #[cfg(test)]
 mod memory_tests;
 mod open;
+pub(crate) mod range;
 pub(crate) mod read;
 #[cfg(test)]
 mod read_tests;
