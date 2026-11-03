@@ -435,7 +435,10 @@ lives, encryption, retention, erasure as built, backups) is
   segment-object chunk whose routing-key summary admits the key; freshly
   appended, unsealed data is served from memory. Semantics are identical.
 - **C9 Limits (initial, stated AND enforced — enforcement mechanics in
-  COMPUTE-SPEC §12):**
+  COMPUTE-SPEC §12; the product statement of them, per project, stream and
+  queue, is docs/LIMITS.md):** storage is unlimited; throughput is capped;
+  a project that needs more throughput than a shared cell's share moves to
+  a dedicated cell (the owner's decision of 2026-11-03, edge change #244).
 
   | limit | value | enforcement |
   |---|---|---|
