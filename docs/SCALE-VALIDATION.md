@@ -1,18 +1,18 @@
 # Scale validation on Prisma Compute: streams and queues, cost and revenue
 
-Status: guide, written 2026-11-01 against slate `3a86e7e52`. It tells an
-agent that already runs Streams on Prisma Compute, as a multi-instance fleet
-against an S3-compatible store (s3lite or Tigris), how to check at scale what
-the local rigs measured: what streams and queues cost us per tenant and per
-message, and what they earn at Cloudflare's public prices. Follow it
-literally. It runs nothing by itself.
+Status: guide, written 2026-11-01 against slate `3a86e7e52`; its open items
+were decided on 2026-11-03 (§8). It tells an agent that already runs Streams
+on Prisma Compute, as a multi-instance fleet against an S3-compatible store
+(s3lite or Tigris), how to check at scale what the local rigs measured: what
+streams and queues cost us per tenant and per message, and what they earn at
+Cloudflare's public prices. Follow it literally. It runs nothing by itself.
 
 Every figure has a source. Repository paths are cited as they are. A figure
 that exists only in the program's working notes outside the tree is marked
 "(measured 2026-10-xx, program notes)". A question the sources do not answer
-is marked **TODO (owner)**. Acceptance of performance, cost and deployment
-stays with the owner (AGENTS.md §1, standing holds): this guide proposes
-bars; the owner accepts the result.
+is marked **TODO (owner)**; none is open now. Acceptance of performance,
+cost and deployment stays with the owner (AGENTS.md §1, standing holds):
+this guide sets the bars (§6); the owner accepts the result.
 
 Terms used below:
 
@@ -229,8 +229,8 @@ w1=$(walp); sleep 60; w2=$(walp); echo "($w2 - $w1) / 60 / $S" | bc -l
 
 `put:wal` counts every WAL object the instance writes, other databases'
 beside the shards' included, so the quotient is an upper bound on a shard's
-own. Divide it by the summed pump flushes per shard: the ratio is §6's
-single-WAL-writer bar.
+own. The instance's `put:wal` delta over the sum of its shards' pump-flush
+deltas in the same window is §6's single-WAL-writer ratio.
 
 From the boot log (`compute logs <version>` streams forever: run it in the
 background and stop it after about 45 s, `bench/k2cost/field/README.md`):
@@ -519,6 +519,7 @@ kill $SAMPLER_PID $LOGS_PID
     scan-fetch fix.
   - **4 shards: the Mac cross-check only**, reported apart; it breaks the
     posture.
+
   The decision asks for a Mac rerun of 100x at 2 shards before the field
   run, as its expected figure; while the 24 h soak holds the Mac it cannot
   run, so the field run's 2-shard arm provides the figure. `run-ab.sh`
@@ -542,8 +543,9 @@ kill $SAMPLER_PID $LOGS_PID
   the Stripe queue delivered 2,184,911 messages in the hour, up from
   1,158,197 (§11).
 - Measure: drain rate against due rate (replay timeline), the hot shard's
-  committer from `/v1/debug/timings` groups, CPU and RSS. A drain below the
-  due rate for 5 minutes is the ceiling: record it and stop.
+  committer from `/v1/debug/timings` groups, CPU and RSS. A drain under 95%
+  of the due rate over a 5-minute window is the ceiling (§6): record it and
+  stop.
 
 ```bash
 node bench/queues-cost/replay.mjs --base $U --auth-file $SECRETS/auth --key-file $SECRETS/key \
@@ -843,18 +845,20 @@ material for M and L; these margins hold within 5% either way.
 
 ## 6. Acceptance bars
 
-Proposed bars; the owner accepts the result. Counts do not move with host
-load (`docs/STREAMS-COST-LEVERS-2026-10.md`), so the bars compare counts
-first and dollars second.
+The bars and their tolerances were decided on 2026-11-03 (§8 items 1, 2,
+5 and 8); the owner still accepts the result (AGENTS.md §1, standing
+holds). Counts do not move with host load
+(`docs/STREAMS-COST-LEVERS-2026-10.md`), so the bars compare counts first
+and dollars second.
 
 | Claim | Confirms | Refutes |
 |---|---|---|
 | The posture holds (hard: a miss voids the run) | every shard ≤ 9.9 pump flushes a second over a 10-minute window; every instance at the planned shard count (or the count reported, §1.3); no §1.5 setting | any shard above 9.9 pump flushes a second: the gap is overridden and the posture is wrong |
 | WAL cost is per busy shard (single WAL writer) | per shard over a 10-minute window: all WAL PUTs ≤ 10.1 a second, and WAL PUTs ÷ pump flushes ≤ 1.02 (the 2% covers a fresh shard's open-time WALs) | a ratio above 1.02: the run is not void and its counts price as measured, but this claim fails; report the finding by name, a WAL writer besides the pump |
-| Fleet scales linearly | ST-2 Class A and B per instance, and cost per tenant, at N = 8 and 16 within ±10% of N = 1 at the same per-instance load | more than ±10%: name the term (heartbeats, forwarding, moves) |
-| The cell anchors hold on Compute | ST-1 Class A and B per tenant within ±10% of the Mac run; ab50 per tenant at most the Mac figure plus its CPU term scaled by the measured factor (S: $0.797 + $0.091 × (factor − 1)) | counts off by more than 10% |
+| Fleet scales linearly | ST-2 Class A and B per instance, and cost per tenant, at N = 8 and 16 within ±10% of N = 1 at the same per-instance load, after subtracting the fleet floor ST-4 measured at that N (heartbeat PUTs, tick reads) | more than ±10% after the floor: name the term (forwarding, moves) |
+| The cell anchors hold on Compute | ST-1 Class A and B per tenant within ±10% of the Mac run; ab50 per tenant at most the Mac figure plus its CPU term × (factor − 1), +10% (S: $0.797 + $0.091 × (factor − 1), +10%) | counts off by more than 10% |
 | The queue costs hold | at 2 shards, the priced shape (§3.2), with the bars unchanged as ceilings: 100x at most $0.0960 per million sent at ab50; 10x at most $71.61; 1x at most $19.06 (missed by 6.2% on the Mac until slatedb#2208 is in the pin). The 2-shard result becomes the reference | 100x above $0.241 per million (the 80% margin line) |
-| The hot queue keeps up | drain at or above the due rate | drain below the due rate for 5 minutes: report the ceiling |
+| The hot queue keeps up | drain ≥ 95% of the due rate over every 5-minute window | a 5-minute window under 95%: report the ceiling |
 | Correctness | zero lost, duplicated or foreign records; zero lost messages | any loss voids every cost claim of the run |
 | Counters reconcile with Tigris | ±5% per class per bucket (§4.2 (c)) | a gap over 5% not explained by `err` |
 
@@ -863,6 +867,25 @@ figure stays 10.0 a second ($48.60 per busy shard-month at ab50); the
 earlier 9.3-11 band and the 10.71 figure are retired (§4.3). The ratio is
 reported, not assumed: the double-freeze defect `da3008f56` fixed showed
 only under scheduling delay, which a 1-vCPU microVM has in abundance.
+
+The tolerances (decision B8, §8 item 8):
+
+| Claim | Tolerance |
+|---|---|
+| Posture | pump flushes ≤ 9.9/s per shard, exact (B1) |
+| Single WAL writer | ratio ≤ 1.02, total ≤ 10.1/s (B1) |
+| Linearity (N = 8, 16 vs 1) | Class A and B per instance ±10% **after subtracting the fleet floor measured by ST-4 at that N** (heartbeat PUTs, tick reads) |
+| Cell anchors (Compute vs Mac) | Class A and B per tenant ±10%; dollars per tenant ≤ Mac figure + CPU term × (factor − 1), +10% |
+| Tigris reconciliation | ±5% per class (B2) |
+| Queue dollars | the §6 ceilings, exact, at 2 shards (B5) |
+| Hot queue | drain ≥ 95% of the due rate over every 5-minute window |
+| Correctness, boot_id, RSS 450 | exact |
+
+Clock-paced terms (the WAL) are held tight. Load-paced terms (reads,
+pollers) and a store with a latency tail (one PUT in flight writes fewer
+WALs when the PUT outlasts the gap) get 10%. The fleet floor is subtracted
+so that heartbeats (about 4% of Class A per instance) do not consume the
+linearity budget.
 
 ## 7. Reporting template
 
@@ -950,7 +973,11 @@ the hardening README's "Owner decisions" table lists them.
    twice, before the first run and on the report's day, records fetch
    dates, prices and K2's billing state, and reports margins at both prices
    if one changed (§5.1, §7). Re-pricing is held below.
-8. The tolerances in §6 (±10%) are proposals.
+8. **Closed** (decision B8). The tolerances: exact for the posture,
+   correctness, `boot_id` and RSS 450; tight for the WAL (B1); ±10% for
+   linearity after the ST-4 fleet floor and for the cell anchors; ±5% for
+   the Tigris reconciliation; the queue ceilings exact at 2 shards; the hot
+   queue at 95% of the due rate per 5-minute window (§6 table).
 
 Held for the owner (not decided under the delegation):
 
