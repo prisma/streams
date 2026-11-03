@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use super::super::tests::{BOUND, get, http2, response_head, serve};
+use super::super::tests::{BOUND, DEADLINE, get, http2, response_head, serve, serve_app};
 
 /// The connection preface of an HTTP/2 client with prior knowledge and its
 /// empty SETTINGS frame.
@@ -174,5 +174,163 @@ async fn an_http2_connection_window_is_four_mib() {
         }
     }
     assert_eq!(increments, vec![(4 << 20) - 65_535]);
+    tasks.shutdown(Duration::from_secs(5)).await;
+}
+
+const HEADERS: u8 = 0x1;
+
+/// The rig's routes for the idle bound: `/drip` answers at once and sends
+/// its body over 2.5 deadlines, `/text` answers four bytes.
+fn dripping() -> axum::Router {
+    let drip = || async {
+        let parts = futures_util::stream::unfold(0u8, |sent| async move {
+            match sent {
+                0 => Some((
+                    Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"a")),
+                    1,
+                )),
+                1 => {
+                    tokio::time::sleep(DEADLINE * 5 / 2).await;
+                    Some((Ok(axum::body::Bytes::from_static(b"b")), 2))
+                }
+                _ => None,
+            }
+        });
+        axum::body::Body::from_stream(parts)
+    };
+    axum::Router::new()
+        .route("/fast", axum::routing::get(|| async {}))
+        .route("/drip", axum::routing::get(drip))
+        .route("/text", axum::routing::get(|| async { "text" }))
+}
+
+/// An HTTP/2 connection that serves no stream for the head deadline is
+/// shut down gracefully, one that never opened a stream and one whose
+/// stream has ended alike; its peer sees a clean close, as an idle
+/// HTTP/1.1 keep-alive closes at the deadline.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn an_http2_connection_with_no_stream_is_shut_down_at_the_deadline() {
+    let (addr, tasks) = serve(DEADLINE).await;
+    let started = tokio::time::Instant::now();
+    let (_never, never) = http2(addr).await;
+    let (mut send, mut served) = http2(addr).await;
+    let answer = tokio::time::timeout(
+        BOUND,
+        futures_util::future::select(Box::pin(send.send_request(get(addr, "/fast"))), &mut served),
+    )
+    .await
+    .expect("the answer within the bound");
+    let futures_util::future::Either::Left((Ok(answer), _)) = answer else {
+        panic!("the connection ended before its answer");
+    };
+    assert_eq!(answer.status(), 200);
+    let (never, served) = futures_util::future::join(
+        tokio::time::timeout(BOUND, never),
+        tokio::time::timeout(BOUND, served),
+    )
+    .await;
+    let held = started.elapsed();
+    assert_eq!(
+        (
+            never.map_err(|_| "still open").map(|c| c.is_ok()),
+            served.map_err(|_| "still open").map(|c| c.is_ok())
+        ),
+        (Ok(true), Ok(true)),
+        "both connections are closed cleanly"
+    );
+    assert!(
+        held >= DEADLINE / 2,
+        "closed on sight, not at the deadline: {held:?}"
+    );
+    tasks.shutdown(Duration::from_secs(5)).await;
+}
+
+/// A stream counts until its response body is done: a response that
+/// streams for 2.5 deadlines keeps its connection serving, which then
+/// answers its next request, and closes a deadline after that one.
+/// HTTP/1.1 responses keep their length on the way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn an_http2_connection_is_kept_while_a_response_streams_past_the_deadline() {
+    let (addr, tasks) = serve_app(DEADLINE, dripping()).await;
+    let (mut send, mut conn) = http2(addr).await;
+    let mut drip = send.clone();
+    let dripped = async move {
+        let answer = drip.send_request(get(addr, "/drip")).await.unwrap();
+        axum::body::to_bytes(axum::body::Body::new(answer.into_body()), 64)
+            .await
+            .unwrap()
+    };
+    let dripped = tokio::time::timeout(
+        BOUND,
+        futures_util::future::select(Box::pin(dripped), &mut conn),
+    )
+    .await
+    .expect("the body within the bound");
+    let futures_util::future::Either::Left((body, _)) = dripped else {
+        panic!("the connection ended before the body");
+    };
+    assert_eq!(&body[..], b"ab");
+    let next = tokio::time::timeout(
+        BOUND,
+        futures_util::future::select(Box::pin(send.send_request(get(addr, "/fast"))), &mut conn),
+    )
+    .await
+    .expect("the answer within the bound");
+    let futures_util::future::Either::Left((next, _)) = next else {
+        panic!("the connection ended before its next answer");
+    };
+    assert_eq!(
+        next.expect("served, not refused after a GOAWAY").status(),
+        200
+    );
+    let idle = tokio::time::Instant::now();
+    let closed = tokio::time::timeout(BOUND, conn).await;
+    assert!(
+        matches!(closed, Ok(Ok(()))),
+        "closed cleanly within the bound: {closed:?}"
+    );
+    let held = idle.elapsed();
+    assert!(
+        held >= DEADLINE / 2,
+        "closed on sight, not at the deadline: {held:?}"
+    );
+    let mut h1 = TcpStream::connect(addr).await.unwrap();
+    h1.write_all(b"GET /text HTTP/1.1\r\nhost: rig\r\n\r\n")
+        .await
+        .unwrap();
+    let head = response_head(&mut h1).await;
+    assert!(
+        head.to_ascii_lowercase().contains("content-length: 4\r\n"),
+        "{head}"
+    );
+    tasks.shutdown(Duration::from_secs(5)).await;
+}
+
+/// A response with no body ends its stream with its HEADERS frame: the
+/// count a stream keeps does not hide that its body is empty.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn an_empty_http2_answer_ends_its_stream_with_its_headers() {
+    let (addr, tasks) = serve(BOUND).await;
+    let mut sock = raw_http2(addr).await;
+    // HEADERS on stream 1, END_STREAM | END_HEADERS: GET http / (HPACK
+    // static table entries 2, 6 and 4), which the rig answers 404.
+    sock.write_all(b"\0\0\x03\x01\x05\0\0\0\x01\x82\x86\x84")
+        .await
+        .unwrap();
+    let mut answer = None;
+    for _ in 0..4 {
+        let Next::Frame(frame) = next_frame(&mut sock).await else {
+            break;
+        };
+        if frame.stream == 1 {
+            answer = Some((frame.kind, frame.flags));
+            break;
+        }
+    }
+    assert_eq!(
+        answer,
+        Some((HEADERS, 0x5)),
+        "HEADERS with END_STREAM and END_HEADERS"
+    );
     tasks.shutdown(Duration::from_secs(5)).await;
 }

@@ -234,7 +234,9 @@ async fn serve_connections(
 /// deadline (`opening`), so a socket that never sends one is closed at the
 /// deadline as before; an HTTP/1.1 connection's head deadline is what is
 /// left of it. An HTTP/2 connection past the listener's cap is refused
-/// (`http2_bounds::refuse`); one served holds its place until it ends.
+/// (`http2_bounds::refuse`); one served holds its place until it ends, and
+/// is shut down gracefully once it has served no stream for the head
+/// deadline (`http2_bounds::stop_or_idle`).
 async fn serve_one(
     sock: drain::DrainStream<tokio::net::TcpStream>,
     svc: hyper_util::service::TowerToHyperService<axum::Router>,
@@ -251,9 +253,9 @@ async fn serve_one(
         opened = tokio::time::timeout_at(deadline, opening(&sock)) => opened,
         () = stop.cancelled() => return,
     };
-    let (builder, _place) = match opened {
+    let (builder, _place, idle) = match opened {
         Ok(Ok(Opening::Http2)) => match http2.admit() {
-            Some(place) => (builder.http2_only(), Some(place)),
+            Some(place) => (builder.http2_only(), Some(place), Some(head)),
             None => return http2_bounds::refuse(sock, deadline).await,
         },
         Ok(Ok(Opening::Http1)) => {
@@ -261,7 +263,7 @@ async fn serve_one(
             builder.http1().header_read_timeout(
                 deadline.saturating_duration_since(tokio::time::Instant::now()),
             );
-            (builder.http1_only(), None)
+            (builder.http1_only(), None, None)
         }
         Ok(Err(error)) => {
             tracing::debug!("connection ended before its first request: {error}");
@@ -269,10 +271,12 @@ async fn serve_one(
         }
         Err(_elapsed) => return,
     };
+    let streams = http2_bounds::Streams::new();
+    let svc = http2_bounds::Counted::new(svc, &streams);
     let mut conn = Box::pin(builder.serve_connection(hyper_util::rt::TokioIo::new(sock), svc));
     let served = tokio::select! {
         served = conn.as_mut() => served,
-        () = stop.cancelled() => {
+        () = http2_bounds::stop_or_idle(&stop, &streams, idle) => {
             conn.as_mut().graceful_shutdown();
             conn.await
         }

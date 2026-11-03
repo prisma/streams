@@ -72,7 +72,7 @@
     "http_read": 106,
     "http_serve": 23,
     "http_serve_drain": 56,
-    "http_serve_http2_bounds": 6,
+    "http_serve_http2_bounds": 31,
     "http_telemetry_append": 3,
     "lane_rows": 6,
     "lifecycle_fence_relay": 5,
