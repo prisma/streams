@@ -89,8 +89,10 @@ impl Posture {
 /// The most requests one HTTP/2 connection carries at once.
 pub(crate) const HTTP2_STREAMS: u32 = 1_024;
 
-/// The receive window of each HTTP/2 connection.
-pub(crate) const HTTP2_CONNECTION_WINDOW: u32 = 16 << 20;
+/// The receive window of each HTTP/2 connection: request bodies its
+/// handlers have not read, at most 4 MiB, and h2's budget for small DATA
+/// frames held unread, half of it.
+pub(crate) const HTTP2_CONNECTION_WINDOW: u32 = 4 << 20;
 
 /// A reaped connection's verdict (item 37). hyper does not catch a panic in
 /// the service or its response body, so a panicking handler unwinds the
@@ -692,11 +694,12 @@ mod tests {
         tasks.shutdown(Duration::from_secs(5)).await;
     }
 
-    /// One-byte DATA frames a handler holds unread: 4,096 of them cost h2's
-    /// small-frame budget about 1 MiB, past half of hyper's default 1 MiB
-    /// connection window, where h2 sends GOAWAY ENHANCE_YOUR_CALM, and well
-    /// inside half of [`super::HTTP2_CONNECTION_WINDOW`].
-    const SMALL_FRAMES: usize = 4_096;
+    /// One-byte DATA frames a handler holds unread: h2 charges each 255
+    /// bytes of a small-frame budget of half the connection window, and
+    /// sends GOAWAY ENHANCE_YOUR_CALM past it. 8,192 of them cost 2,088,960
+    /// bytes, inside the 2 MiB of [`super::HTTP2_CONNECTION_WINDOW`]'s half
+    /// (8,224 frames) and past the half of any window under 4 MiB - 16 KiB.
+    const SMALL_FRAMES: usize = 8_192;
 
     /// A connection carrying thousands of small body frames its handlers
     /// have not read yet keeps serving: the connection window sets h2's

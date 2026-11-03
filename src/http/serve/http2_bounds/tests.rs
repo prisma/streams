@@ -152,3 +152,27 @@ async fn an_http2_connection_past_the_cap_is_refused_with_goaway_before_any_stre
     assert!(next.is_some(), "a closed connection's place is free");
     tasks.shutdown(Duration::from_secs(5)).await;
 }
+
+const WINDOW_UPDATE: u8 = 0x8;
+
+/// An HTTP/2 connection's receive window is 4 MiB: the server raises it
+/// from the protocol's 65,535 bytes with one WINDOW_UPDATE on the
+/// connection, so a peer may send at most 4 MiB of request bodies the
+/// handlers have not read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn an_http2_connection_window_is_four_mib() {
+    let (addr, tasks) = serve(BOUND).await;
+    let mut sock = raw_http2(addr).await;
+    let mut increments = Vec::new();
+    // The server's SETTINGS, its ACK of the client's and the update.
+    for _ in 0..3 {
+        let Next::Frame(frame) = next_frame(&mut sock).await else {
+            break;
+        };
+        if frame.kind == WINDOW_UPDATE && frame.stream == 0 {
+            increments.push(u32::from_be_bytes(frame.payload[..4].try_into().unwrap()));
+        }
+    }
+    assert_eq!(increments, vec![(4 << 20) - 65_535]);
+    tasks.shutdown(Duration::from_secs(5)).await;
+}
