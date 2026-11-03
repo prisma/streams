@@ -191,8 +191,10 @@ Limits that shape the tests:
   instances' shards.
 - The shard count balancer (edge change #236, §1.3) moves at most one
   shard per `REBALANCE_MOVE_COOLDOWN_SECS` (60 s) across the fleet, and
-  none in the first cooldown after a boot: a badly skewed 8-instance ring
-  takes about 25 minutes to even out. Wait for it before measuring.
+  none in the first cooldown after a boot. At this guide's posture (1-2
+  shards per instance) the excess over the share is a few shards, so a ring
+  evens out in minutes; the 25 minutes of edge change #236 is the retired
+  64-shards-on-8 shape. Wait for it before measuring (§1.7).
 - A new owner seals a moved shard's inherited backlog at once; before, a
   moved shard read as lag for 45 s, and in a 16-instance fleet 6 of 64
   shards kept moving with no load.
@@ -235,8 +237,11 @@ version holds. None of §1.5's names may appear.
 
 Ring gate before any load (RUNBOOK §7.4b): all N instances live and
 `ring_active` unchanged for 60 s. Load sent to a converging ring once lost
-371,900 acknowledged records (`docs/SCALING.md` §10). Also wait until every instance holds at most `ceil(shards / N)` shards and
-`fleet/overrides.json` has not changed for 60 s.
+371,900 acknowledged records (`docs/SCALING.md` §10). Also wait until every
+instance holds at most `ceil(shards / N)` shards and `fleet/overrides.json`
+has not changed for 60 s. Expect one move per 60 s, so a fresh 8- or
+16-member ring is gated within about 5 minutes; a longer wait is a finding
+to report (edge change #236, ratified 2026-11-03).
 
 ## 2. Streams scaling tests
 
