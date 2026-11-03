@@ -144,43 +144,52 @@ pub(crate) fn decode_offset_key(prefix_len: usize, key: &[u8]) -> Option<u64> {
     Some(u64::from_be_bytes(rest.try_into().ok()?))
 }
 
-/// Public message ids: `msg_` + base32 of (incarnation tag, offset). The
-/// incarnation tag is the low 32 bits of the queue's entity hash, all
+/// The lane a message lives on (SCALING-DESIGN §6.2): ids, lease receipts
+/// and dedup entries carry it, so a hot queue's later lanes need no new
+/// format. Only lane 0 exists; an id naming another lane resolves to
+/// nothing.
+pub(crate) const LANE: u8 = 0;
+
+/// Public message ids: `msg_` + base32 of (incarnation tag, lane, offset).
+/// The incarnation tag is the low 32 bits of the queue's entity hash, all
 /// identity bits (its leading bytes are route bits, the same for every
 /// incarnation of a name), so an id from an earlier incarnation of the same
 /// name does not resolve (§4).
 pub(crate) fn message_id(hash: &[u8; 16], offset: u64) -> String {
-    let mut raw = [0u8; 12];
+    let mut raw = [0u8; 13];
     raw[..4].copy_from_slice(&hash[12..]);
-    raw[4..].copy_from_slice(&offset.to_be_bytes());
+    raw[4] = LANE;
+    raw[5..].copy_from_slice(&offset.to_be_bytes());
     format!("msg_{}", base32(&raw))
 }
 
 pub(crate) fn parse_message_id(hash: &[u8; 16], id: &str) -> Option<u64> {
     let raw = unbase32(id.strip_prefix("msg_")?)?;
-    if raw.len() != 12 || raw[..4] != hash[12..] {
+    if raw.len() != 13 || raw[..4] != hash[12..] || raw[4] != LANE {
         return None;
     }
-    Some(u64::from_be_bytes(raw[4..].try_into().ok()?))
+    Some(u64::from_be_bytes(raw[5..].try_into().ok()?))
 }
 
-/// Lease tokens: `lt_` + base32 of (incarnation tag, offset, lease gen).
+/// Lease tokens: `lt_` + base32 of (incarnation tag, lane, offset, lease
+/// gen).
 pub(crate) fn lease_token(hash: &[u8; 16], token: super::Token) -> String {
-    let mut raw = [0u8; 16];
+    let mut raw = [0u8; 17];
     raw[..4].copy_from_slice(&hash[12..]);
-    raw[4..12].copy_from_slice(&token.offset.to_be_bytes());
-    raw[12..].copy_from_slice(&token.lease_gen.to_be_bytes());
+    raw[4] = LANE;
+    raw[5..13].copy_from_slice(&token.offset.to_be_bytes());
+    raw[13..].copy_from_slice(&token.lease_gen.to_be_bytes());
     format!("lt_{}", base32(&raw))
 }
 
 pub(crate) fn parse_lease_token(hash: &[u8; 16], s: &str) -> Option<super::Token> {
     let raw = unbase32(s.strip_prefix("lt_")?)?;
-    if raw.len() != 16 || raw[..4] != hash[12..] {
+    if raw.len() != 17 || raw[..4] != hash[12..] || raw[4] != LANE {
         return None;
     }
     Some(super::Token {
-        offset: u64::from_be_bytes(raw[4..12].try_into().ok()?),
-        lease_gen: u32::from_be_bytes(raw[12..].try_into().ok()?),
+        offset: u64::from_be_bytes(raw[5..13].try_into().ok()?),
+        lease_gen: u32::from_be_bytes(raw[13..].try_into().ok()?),
     })
 }
 

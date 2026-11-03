@@ -23,6 +23,53 @@ fn message_ids_and_lease_tokens_round_trip_and_refuse_another_incarnation() {
     assert_eq!(parse_lease_token(&hash, "msg_00"), None);
 }
 
+/// Ids, lease receipts and dedup entries carry the message's lane (only
+/// lane 0 exists until a hot queue's lanes are built, SCALING-DESIGN §6.2),
+/// so a later lane needs no new format: an id of the laneless layout, or
+/// one naming another lane, resolves to nothing.
+#[test]
+fn ids_receipts_and_dedup_entries_carry_lane_zero() {
+    use super::rows::{decode_dedup, encode_dedup};
+    let hash = [7u8; 16];
+    assert_eq!(message_id(&hash, 42), "msg_0w3ge1r0000000000002m");
+    let tok = Token {
+        offset: 42,
+        lease_gen: 9,
+    };
+    assert_eq!(lease_token(&hash, tok), "lt_0w3ge1r0000000000002m000004g");
+    assert_eq!(parse_message_id(&hash, "msg_0w3ge1r0000000000002m"), Some(42));
+    assert_eq!(
+        parse_message_id(&hash, "msg_0w3ge1r00000000000n0"),
+        None,
+        "the laneless layout"
+    );
+    assert_eq!(
+        parse_message_id(&hash, "msg_0w3ge1r1000000000002m"),
+        None,
+        "lane 1"
+    );
+    assert_eq!(
+        parse_lease_token(&hash, "lt_0w3ge1r00000000000n0000014"),
+        None,
+        "the laneless layout"
+    );
+    assert_eq!(
+        parse_lease_token(&hash, "lt_0w3ge1r1000000000002m000004g"),
+        None,
+        "lane 1"
+    );
+    let entry = encode_dedup(5, 6);
+    let mut want = 5u64.to_le_bytes().to_vec();
+    want.extend_from_slice(&6i64.to_le_bytes());
+    want.push(0);
+    assert_eq!(entry, want, "offset, expiry, lane 0");
+    assert_eq!(decode_dedup(&entry), Ok((5, 6)));
+    assert!(decode_dedup(&entry[..16]).is_err(), "the laneless layout");
+    let mut lane1 = entry;
+    lane1[16] = 1;
+    assert!(decode_dedup(&lane1).is_err(), "lane 1");
+}
+
 #[test]
 fn rows_round_trip_exactly() {
     let meta = MetaRow {

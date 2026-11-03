@@ -648,10 +648,13 @@ impl DeliveryRow {
     }
 }
 
-/// A dedup entry: the original offset and when the entry expires (§8.4).
+/// A dedup entry: the original offset, when the entry expires (§8.4), and
+/// the original's lane (`keys::LANE`), so a duplicate answers the id the
+/// original was given whatever lanes the queue has later.
 pub(crate) fn encode_dedup(offset: u64, expires_at: i64) -> Vec<u8> {
     let mut v = offset.to_le_bytes().to_vec();
     v.extend_from_slice(&expires_at.to_le_bytes());
+    v.push(super::keys::LANE);
     v
 }
 
@@ -659,7 +662,11 @@ pub(crate) fn decode_dedup(raw: &[u8]) -> Result<(u64, i64), String> {
     let mut r = Reader::new(raw);
     let off = r.u64()?;
     let at = r.i64()?;
+    let lane = r.u8()?;
     r.end()?;
+    if lane != super::keys::LANE {
+        return Err(format!("queue dedup row: lane {lane}"));
+    }
     Ok((off, at))
 }
 
