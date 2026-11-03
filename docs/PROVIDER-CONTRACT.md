@@ -94,6 +94,10 @@ Set any storage knob the deployment sets (`POOL_IDLE_SECS`, `STORE_HTTP2`,
 the server does. Old global buckets live on `fly.storage.tigris.dev`, and a
 global bucket is a different configuration from a single-region one:
 qualify each bucket kind, endpoint and client region the fleet uses.
+Whether Tigris negotiates HTTP/2 is unmeasured: without `STORE_HTTP2` the
+client is HTTP/1.1 only, over https too (object_store's default
+`http1_only`), and with it the client offers only `h2`, so set it against
+Tigris only after this runner has passed with it.
 
 A qualifying log contains `qualifying endpoint ... bucket ... prefix ...`
 and `real-provider: provider contract passed; Observations { ... }`, and
