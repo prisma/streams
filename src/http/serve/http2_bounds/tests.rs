@@ -136,6 +136,14 @@ async fn an_http2_connection_past_the_cap_is_refused_with_goaway_before_any_stre
         ),
         "the 257th connection is refused, then closed"
     );
+    // The server still reads the refused connection after its GOAWAY: what
+    // the peer sends then is drained, not answered with a reset, which
+    // would fail the second write.
+    let ping = b"\0\0\x08\x06\0\0\0\0\0pingpong";
+    let first = refused.write_all(ping).await.map_err(|e| e.kind());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let second = refused.write_all(ping).await.map_err(|e| e.kind());
+    assert_eq!((first, second), (Ok(()), Ok(())), "read during the linger");
     let mut h1 = TcpStream::connect(addr).await.unwrap();
     h1.write_all(b"GET /fast HTTP/1.1\r\nhost: rig\r\n\r\n")
         .await
