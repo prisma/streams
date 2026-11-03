@@ -271,6 +271,16 @@ L is not admitted on a shared cell; it gets a dedicated cell (k = 1): its
 measured on the final 6A tree (`results-ml`, tree `6ed91580b`, program
 notes; §5.2).
 
+cell-admin places them by these rules (decision C, 2026-11-03; it lands in
+`deploy/cell-admin`, whose README is its record): a k = 1 profile is a
+dedicated cell (`deploy/profiles/dedicated-cell.env`, `init --max-projects
+1`, one project, no `--weight`), not a refusal; `admit --class m` presets
+weights (2, 6) and `max_stored_bytes` 320 GiB; `admit --class l` sets
+`max_stored_bytes` 1.25 TiB and is admitted only on a dedicated cell. Until
+that change is in the commit under test, admit M with `--weight request=2
+--weight bytes=6 --quota max_stored_bytes=...` and run L's cell as
+`ML.env`'s `l-alone` does.
+
 ### 2.2 The tests
 
 | Test | Shape | Load | What it confirms |
