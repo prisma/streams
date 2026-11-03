@@ -879,6 +879,23 @@ mod tests {
         ));
     }
 
+    /// A feed whose list is not a list is refused, and the refusal names
+    /// what the feed should hold there.
+    #[test]
+    fn a_feed_whose_list_is_not_a_list_names_what_it_expected() {
+        let policies = parse_policies(r#"{"feed_version":1,"projects":5}"#).unwrap_err();
+        let grants = parse_grants(r#"{"feed_version":1,"credentials":"x"}"#).unwrap_err();
+        let (policies, grants) = (policies.to_string(), grants.to_string());
+        assert!(
+            policies.contains("expected a list of project policies"),
+            "{policies}"
+        );
+        assert!(
+            grants.contains("expected a list of credential grants"),
+            "{grants}"
+        );
+    }
+
     /// A feed of `n` projects, each with one credential, on one cell and
     /// one quota set, as the policy and grant documents.
     fn feed_of(n: usize) -> (String, String) {
