@@ -597,3 +597,53 @@ async fn a_create_survives_one_failed_registry_read() {
     assert_eq!(answers, created);
     engine_shutdown(&state).await;
 }
+
+/// Tuning item 5: a create whose registry read fails at the store, its
+/// retry included, answers 503 with `Retry-After: 1` and creates nothing:
+/// the product create as its descriptor reads answer (`temporarily_unavailable`,
+/// edge changes #58 and #64), the raw and queue creates
+/// `registry_unavailable`, where they answered 500 `internal`. Once the store
+/// reads again, the same create is 201.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_create_whose_registry_read_fails_is_503() {
+    let store = FailingGets::over(mem());
+    let (state, addr) = http_rig(store.clone()).await;
+    let mut answers = Vec::new();
+    for (surface, name) in SURFACES {
+        store.fail(&descriptor_suffix(name), u64::MAX);
+        let (st, headers, body) = create_on(addr, surface, name).await;
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+        store.fail(&descriptor_suffix(name), 0);
+        let sref = state.deployment.raw_adapter_sref(name);
+        answers.push((
+            surface,
+            st,
+            headers.get("retry-after").cloned(),
+            body["error"]["code"].clone(),
+            body["error"]["retryable"].clone(),
+            state.registry.get(&sref).await.unwrap().is_none(),
+            create_on(addr, surface, name).await.0,
+        ));
+    }
+    let unavailable = |surface, code: &str, retryable: serde_json::Value| {
+        let code = serde_json::Value::from(code);
+        (
+            surface,
+            503,
+            Some("1".to_string()),
+            code,
+            retryable,
+            true,
+            201,
+        )
+    };
+    assert_eq!(
+        answers,
+        [
+            unavailable("product", "temporarily_unavailable", true.into()),
+            unavailable("raw", "registry_unavailable", serde_json::Value::Null),
+            unavailable("queue", "registry_unavailable", true.into()),
+        ]
+    );
+    engine_shutdown(&state).await;
+}

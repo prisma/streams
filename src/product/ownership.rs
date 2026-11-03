@@ -88,13 +88,19 @@ pub(super) fn creation_error(
         F::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
         F::Overloaded => StatusCode::TOO_MANY_REQUESTS,
         F::Ambiguous => StatusCode::REQUEST_TIMEOUT,
-        F::Opening => StatusCode::SERVICE_UNAVAILABLE,
+        F::Opening | F::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
     };
     let retryable = matches!(
         error.kind,
         F::Storage | F::Overloaded | F::Ambiguous | F::Opening
     );
-    let mut response = perr(status, error.code, &error.message, None, retryable);
+    let mut response = if error.kind == F::Unavailable {
+        // A failed registry read is answered as the product's own descriptor
+        // reads answer it (edge changes #58, #64 and #242).
+        super::internal::descriptor_unavailable()
+    } else {
+        perr(status, error.code, &error.message, None, retryable)
+    };
     if error.kind == F::WrongKey {
         response = crate::audit::tag(response, "wrong_key");
     }
@@ -105,4 +111,40 @@ pub(super) fn creation_error(
         response = crate::audit::tag_project(response, &p.project_id);
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::creation_error;
+    use crate::application::creation::{CreationError, CreationFailure};
+
+    /// Edge change #242: a product create whose registry read failed answers
+    /// 503 `temporarily_unavailable`, retryable, `Retry-After: 1`, tagged
+    /// with no project when there is none, as a failed descriptor read.
+    #[tokio::test(crate = "crate::test_rt")]
+    async fn a_failed_registry_read_answers_as_a_failed_descriptor_read() {
+        let error = CreationError {
+            kind: CreationFailure::Unavailable,
+            code: "registry_unavailable",
+            message: "store".into(),
+            owner: None,
+            retry_after: Some(1),
+        };
+        let response = creation_error(error, None);
+        let status = response.status().as_u16();
+        let retry = response.headers().get("retry-after").cloned();
+        let body = axum::body::to_bytes(response.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let want: serde_json::Value = serde_json::from_str(
+            r#"{"error": {"code": "temporarily_unavailable",
+                "message": "stream metadata could not be read; retry", "retryable": true}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (status, retry, body),
+            (503, Some("1".parse().unwrap()), want)
+        );
+    }
 }

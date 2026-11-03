@@ -20,13 +20,7 @@ pub(super) async fn resolve(
     // Resolve existing.
     let existing = match state.registry.get(&plan.sref).await {
         Ok(v) => v,
-        Err(e) => {
-            return Err(CreationError::new(
-                CreationFailure::Storage,
-                "internal",
-                &e.to_string(),
-            ));
-        }
+        Err(e) => return Err(CreationError::registry_read(&e)),
     };
     let resume_init = resume_initialization(plan, existing.as_ref())?;
     // One instant judges the stored descriptor inside the CAS and the winner

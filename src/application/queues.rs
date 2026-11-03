@@ -366,7 +366,7 @@ fn creation_failure(e: super::creation::CreationError) -> QueueFailure {
         F::Storage => C::Internal,
         F::TooLarge => C::TooLarge,
         F::Overloaded => C::Exhausted,
-        F::Ambiguous | F::Opening => C::Unavailable,
+        F::Ambiguous | F::Opening | F::Unavailable => C::Unavailable,
     };
     let code = match e.code {
         "config_mismatch" => "queue_config_conflict",
@@ -374,6 +374,9 @@ fn creation_failure(e: super::creation::CreationError) -> QueueFailure {
     };
     let mut f = fail(class, code, e.message);
     f.owner = e.owner;
+    if e.kind == F::Unavailable {
+        f.retry_after = e.retry_after;
+    }
     f
 }
 

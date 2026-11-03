@@ -17,10 +17,6 @@ impl From<CreationError> for ProductCreateError {
     }
 }
 impl CreationService {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "create_product; the winner, retained-name and fresh-create branches are one decision over the product's name; splitting them would separate the decision from the write it guards"
-    )]
     pub(crate) async fn create_product(
         self: &Arc<Self>,
         sref: crate::tenant::TenantStreamRef,
@@ -34,9 +30,8 @@ impl CreationService {
         }
         // One fail-closed snapshot determines whether this attempt needs a
         // reservation. The reservation rolls back if an idempotent winner wins.
-        let existing = self.registry.get(&sref).await.map_err(|e| {
-            CreationError::new(CreationFailure::Storage, "internal", &e.to_string())
-        })?;
+        let existing =
+            (self.registry.get(&sref).await).map_err(|e| CreationError::registry_read(&e))?;
         let mut reservation = None;
         if let Some(quotas) = quotas.filter(|q| q.max_streams > 0)
             && !existing.as_ref().is_some_and(|d| desc_alive(d))

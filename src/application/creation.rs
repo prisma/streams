@@ -20,6 +20,9 @@ pub(crate) enum CreationFailure {
     Overloaded,
     Ambiguous,
     Opening,
+    /// The registry could not be read, its one retry included (tuning
+    /// item 5): nothing was decided or written; the client retries.
+    Unavailable,
 }
 #[derive(Debug)]
 pub(crate) struct CreationError {
@@ -37,6 +40,23 @@ impl CreationError {
             message: message.into(),
             owner: None,
             retry_after: None,
+        }
+    }
+    /// A create's failed registry read: a corrupt descriptor is the store's
+    /// 500, fail closed (a retry reads the same bytes); any other failure,
+    /// already read twice (`Registry::get`), is 503 `registry_unavailable`
+    /// with `Retry-After: 1`, where it was 500 `internal` (edge change #242).
+    fn registry_read(error: &object_store::Error) -> Self {
+        if crate::registry::cache::is_corrupt_descriptor(error) {
+            return Self::new(CreationFailure::Storage, "internal", &error.to_string());
+        }
+        Self {
+            retry_after: Some(1),
+            ..Self::new(
+                CreationFailure::Unavailable,
+                "registry_unavailable",
+                &error.to_string(),
+            )
         }
     }
     fn gone(desc: Option<&StreamDesc>) -> Self {

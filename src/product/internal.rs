@@ -68,13 +68,19 @@ impl DescriptorReadAnswer for object_store::Error {
                 false,
             );
         }
-        let (code, message) = (
-            "temporarily_unavailable",
-            "stream metadata could not be read; retry",
-        );
-        retry_unavailable(
-            code,
-            perr(StatusCode::SERVICE_UNAVAILABLE, code, message, None, true),
-        )
+        descriptor_unavailable()
     }
+}
+
+/// The product answer to a descriptor that could not be read: 503
+/// `temporarily_unavailable`, retryable, `Retry-After: 1`.
+pub(super) fn descriptor_unavailable() -> Response {
+    let (code, message) = (
+        "temporarily_unavailable",
+        "stream metadata could not be read; retry",
+    );
+    retry_unavailable(
+        code,
+        perr(StatusCode::SERVICE_UNAVAILABLE, code, message, None, true),
+    )
 }

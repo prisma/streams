@@ -2147,7 +2147,7 @@ pub(crate) fn creation_error_response(
         F::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
         F::Overloaded => StatusCode::TOO_MANY_REQUESTS,
         F::Ambiguous => StatusCode::REQUEST_TIMEOUT,
-        F::Opening => StatusCode::SERVICE_UNAVAILABLE,
+        F::Opening | F::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
     };
     let mut response = err_resp(status, error.code, &error.message);
     if let Some(owner) = error.owner.and_then(|v| v.parse().ok()) {

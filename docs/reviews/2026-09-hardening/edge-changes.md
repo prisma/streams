@@ -4994,6 +4994,21 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Status:** ratified by Fable 5.1 on 2026-11-03 under the owner's delegation of 2026-11-03.
 - **Check against commit:** written with the change.
 
+### #242 (this record's commit) — A create whose registry read the store fails answers 503 registry_unavailable with Retry-After 1, not 500
+
+- **Program item:** tuning program P2 item 5 (~/.streams-k2/analysis/tuning-2026-11-03/PLAN.md §1 item 5; the habanero bench's relay cut 1-3.5% of reply bodies, and every such create answered 500).
+- **Surface:** raw, queue and product: the raw and queue creates answer a new code; the product create's own read answers the product surface's existing descriptor-read 503 instead of 500.
+- **Endpoint:** `PUT /v1/stream/{name}` and `PUT /v1/queues/{name}`, and `PUT /v1/streams/{name}` where its create's own read is the one that fails. Owners: `CreationError::registry_read` and `CreationFailure::Unavailable` (`src/application/creation.rs`), the create's first read in `creation::claim::resolve` (raw) and `CreationService::create_product` (product and queue), and the three renderings: `http::creation_error_response` (raw), `queues::creation_failure` (queue) and `product::ownership::creation_error` (product, through `product::internal::descriptor_unavailable`).
+- **Condition:** the create's first registry read fails on the store twice (the first commit of item 5 reads a failed descriptor GET once more, 20 ms later), with any error but a corrupt descriptor.
+- **Before:** 500 `internal`, the store's error text as the message: the raw envelope with no `Retry-After`; the queue route `retryable: true` with no `Retry-After`. The product create's own read answered the same 500 (in practice the queue guard's earlier read answers first, 503 `temporarily_unavailable`, edge changes #58 and #64).
+- **After:** 503 `registry_unavailable`, the store's error text as the message, `Retry-After: 1`: the raw envelope (no `retryable` field), and the queue route with `retryable: true`. A product create whose own read fails answers its surface's descriptor-read failure: 503 `temporarily_unavailable`, "stream metadata could not be read; retry", `retryable: true`, `Retry-After: 1`. Nothing is created in any case. A corrupt descriptor still answers 500 `internal`, fail closed. Re-reads after a create's CAS, deletes and forks are unchanged.
+- **Retry semantics:** retry after 1 s (the SDK already retries 503). The create is idempotent, so a retried create is 201 or 200.
+- **Who is affected:** clients creating streams or queues while the store fails reads: a 500 they had to treat as unknown becomes a 503 that says nothing was done.
+- **Pinning tests:** src/dst/tests/lifecycle_creation.rs::a_create_whose_registry_read_fails_is_503 (a store failing every GET of the stream's descriptor: product 503 `temporarily_unavailable`, raw and queue 503 `registry_unavailable`, each `retry-after: 1`, the stream absent, and the same create 201 once the store reads again). Red before: `left: [("product", 503, Some("1"), String("temporarily_unavailable"), Bool(true), true, 201), ("raw", 500, None, String("internal"), Null, true, 201), ("queue", 500, None, String("internal"), Bool(true), true, 201)]`. Also src/product/ownership.rs::tests::a_failed_registry_read_answers_as_a_failed_descriptor_read.
+- **Risk reason:** low: a status, code and header change on a failure path, toward the code the queue routes already use for a failed registry read (`queues::target`). Reversal: map `Unavailable` back to `Storage`. Cost: every registry descriptor read the store fails is sent once more, so a store outage at most doubles the failing GETs (Class B), bounded at one retry.
+- **Status:** ratified with amendments by Fable 5.1 on 2026-11-03 under the owner's delegation of 2026-11-03.
+- **Check against commit:** written with the change.
+
 ## Discrepancies
 
 One record has verified=false: its commit did not match the recorded text.
