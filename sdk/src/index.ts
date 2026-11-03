@@ -153,9 +153,17 @@ export interface AppendResult {
   sealed: boolean;
 }
 
+/** The page a read or subscription names when its caller names none: 1 MiB.
+ * The server reserves a read's memory by its page, so an SDK read never
+ * asks for the server's 8 MiB default (edge change #240). */
+export const DEFAULT_READ_MAX_BYTES = 1 << 20;
+
 export interface ReadOptions {
   routingKey?: string;
   from?: "beginning" | "now" | string;
+  /** The page's size in bytes; 1 MiB (`DEFAULT_READ_MAX_BYTES`) when not
+   * given. A page may be shorter: the server ends it early under read-memory
+   * pressure, and the next read continues from its cursor. */
   maxBytes?: number;
   /**
    * Read visibility. `"durable"` (the default) serves only records that
@@ -1702,7 +1710,7 @@ export class Stream<T = unknown> {
     const q = new URLSearchParams();
     if (options?.routingKey) q.set("routingKey", options.routingKey);
     if (options?.from) q.set("cursor", options.from);
-    if (options?.maxBytes) q.set("maxBytes", String(options.maxBytes));
+    q.set("maxBytes", String(options?.maxBytes || DEFAULT_READ_MAX_BYTES));
     if (options?.deliver === "applied") q.set("deliver", "applied");
     const res = await req(
       this.ctx,
@@ -1785,7 +1793,7 @@ export class Stream<T = unknown> {
       const q = new URLSearchParams();
       if (options?.routingKey) q.set("routingKey", options.routingKey);
       q.set("cursor", cursor);
-      if (options?.maxBytes) q.set("maxBytes", String(options.maxBytes));
+      q.set("maxBytes", String(options?.maxBytes || DEFAULT_READ_MAX_BYTES));
       if (applied) q.set("deliver", "applied");
       if (live) q.set("waitMs", "25000");
       const path = this.path(

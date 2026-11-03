@@ -748,8 +748,9 @@ class SdkProbeOutput(unittest.TestCase):
         # The read in flight at SIGTERM is written as stopped, not failed.
         self.assertEqual((calls[-1].get("stopped"), "error" in calls[-1]), (True, False))
         gets = [(path, h) for m, path, h, _ in self.seen if m == "GET"]
-        self.assertEqual([path for path, _ in gets], ["/v1/streams/lc/sdk/records?cursor=now"] + [
-            f"/v1/streams/lc/sdk/records?cursor=c{n}" for n in (1, 1, 3)])
+        # The SDK names a 1 MiB page on every read (edge change #240).
+        self.assertEqual([path for path, _ in gets], ["/v1/streams/lc/sdk/records?cursor=now&maxBytes=1048576"] + [
+            f"/v1/streams/lc/sdk/records?cursor=c{n}&maxBytes=1048576" for n in (1, 1, 3)])
         self.assertEqual({(h["authorization"], h["streams-encryption-key"]) for _, _, h, _ in self.seen},
                          {("Bearer tok-1", "a2V5")})
         self.assertEqual({n for _, _, h, _ in self.seen for n in h if n.startswith("prisma-")}, set())

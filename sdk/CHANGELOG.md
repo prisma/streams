@@ -8,6 +8,12 @@ the same version, and published from that candidate's tarball.
 
 ### Changed
 
+- `read()` and `subscribe()` name a 1 MiB page (`maxBytes=1048576`,
+  exported as `DEFAULT_READ_MAX_BYTES`) when the caller names none, so an
+  SDK read never asks the server to reserve its 8 MiB default page. A page
+  may come back shorter under the server's read-memory pressure; the next
+  read continues from its cursor, as before (edge change #240).
+
 - A client with a `project` and a token (every `connect()` client) waits
   for all its subscriptions through ONE long-poll,
   `POST /v1/projects/{project}/live:wait`: every `subscribe()` tail past
