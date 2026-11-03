@@ -103,7 +103,8 @@ def fork_problems(name, pin, cache):
     every PR or issue it carries is listed there. Fetches into `cache`."""
     carries = pin.get('carries', [])
     try:
-        if not cache.exists():
+        # A restored CI cache can hold the directory without its repository.
+        if not (cache / 'HEAD').is_file():
             subprocess.run(['git', 'init', '--quiet', '--bare', str(cache)], check=True)
         prs = sorted({c['pr'] for c in carries if 'pr' in c})
         heads = [f"+refs/pull/{n}/head:refs/pr/{n}" for n in prs]

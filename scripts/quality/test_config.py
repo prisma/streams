@@ -122,6 +122,13 @@ class ForkPins(unittest.TestCase):
     def test_base_plus_the_named_pr_commit_passes(self):
         self.assertEqual(self.problems(self.good), [])
 
+    def test_an_empty_cache_directory_is_initialised(self):
+        # CI restores a target cache in which the fork cache can be an empty
+        # directory: the check initialises it instead of failing on it.
+        cache = self.dir / f'cache-{self.good[:8]}'
+        cache.mkdir()
+        self.assertEqual(self.problems(self.good), [])
+
     def test_a_commit_beyond_the_named_ones_fails(self):
         self.assertEqual(self.problems(self.extra), ['dep fork carries 2 commits over its base, not the 1 it names'])
 
