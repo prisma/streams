@@ -107,7 +107,10 @@ impl CreationService {
     /// absence read here before the refusal (the queue guards read every
     /// request's descriptor) would answer the next request `404` for the
     /// cache's 5 s.
-    fn foreign_create(&self, sref: &crate::tenant::TenantStreamRef) -> Option<CreationError> {
+    pub(crate) fn foreign_create(
+        &self,
+        sref: &crate::tenant::TenantStreamRef,
+    ) -> Option<CreationError> {
         let prefix = self
             .shards
             .prefix_for(&crate::crypto::RouteHash::for_stream(sref).0);

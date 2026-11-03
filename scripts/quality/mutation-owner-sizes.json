@@ -100,6 +100,7 @@
     "product_cursor_regressions": 0,
     "product_internal": 2,
     "product_operation": 21,
+    "product_ownership": 6,
     "product_read_cursor": 8,
     "product_read_failure": 5,
     "product_read_memory": 68,

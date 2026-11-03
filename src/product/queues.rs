@@ -342,6 +342,17 @@ async fn queue_entry_inner(
         Ok(p) => p,
         Err(r) => return *r,
     };
+    // A create of a shard the ring gives another instance is answered
+    // before project admission, as a product create is
+    // (`product::ownership`): the owner admits the project.
+    if let (Resource::Queue, &Method::PUT, Some(p)) = (&resource, method, principal.as_ref())
+        && let Some(f) = state
+            .queue_service()
+            // mt-lint: allow(stream-ref-construction): ingress — the queue create's name qualified with the verified principal's project, as the route's resolution below does
+            .foreign_create(&p.project_id.stream_ref(&name))
+    {
+        return crate::audit::tag_project(failure_response(f), &p.project_id);
+    }
     let _admission = match super::project_admission(state, principal.as_ref()) {
         Ok(g) => g,
         Err(r) => return r,

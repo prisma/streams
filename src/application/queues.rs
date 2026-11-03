@@ -344,6 +344,15 @@ impl QueueService {
     }
 }
 
+impl QueueService {
+    /// The refusal of a create of `sref` whose shard the ring gives another
+    /// instance (`CreationService::foreign_create`), answered before the
+    /// project is admitted: `None` when this instance may create it.
+    pub(crate) fn foreign_create(&self, sref: &TenantStreamRef) -> Option<QueueFailure> {
+        self.creation.foreign_create(sref).map(creation_failure)
+    }
+}
+
 /// A creation failure as a queue refusal: a stream of another kind under
 /// the name is the queue's configuration conflict.
 fn creation_failure(e: super::creation::CreationError) -> QueueFailure {

@@ -1363,34 +1363,7 @@ async fn product_create(
             }
         }
         Err(crate::application::creation::ProductCreateError::Creation(error)) => {
-            use crate::application::creation::CreationFailure as F;
-            let status = match error.kind {
-                F::Invalid => StatusCode::BAD_REQUEST,
-                F::Conflict => StatusCode::CONFLICT,
-                F::Missing => StatusCode::NOT_FOUND,
-                F::Gone => StatusCode::GONE,
-                F::WrongKey => StatusCode::FORBIDDEN,
-                F::Storage => StatusCode::INTERNAL_SERVER_ERROR,
-                F::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
-                F::Overloaded => StatusCode::TOO_MANY_REQUESTS,
-                F::Ambiguous => StatusCode::REQUEST_TIMEOUT,
-                F::Opening => StatusCode::SERVICE_UNAVAILABLE,
-            };
-            let retryable = matches!(
-                error.kind,
-                F::Storage | F::Overloaded | F::Ambiguous | F::Opening
-            );
-            let mut response = perr(status, error.code, &error.message, None, retryable);
-            if error.kind == F::WrongKey {
-                response = crate::audit::tag(response, "wrong_key");
-            }
-            if let Some(owner) = error.owner.and_then(|v| v.parse().ok()) {
-                response.headers_mut().insert("streams-replay-to", owner);
-            }
-            if let Some(p) = principal {
-                response = crate::audit::tag_project(response, &p.project_id);
-            }
-            response
+            ownership::creation_error(error, principal)
         }
     }
 }
@@ -3537,6 +3510,7 @@ use consumer_pull::product_consumer_pull;
 mod internal;
 pub(crate) mod live_wait;
 mod operation;
+pub(crate) mod ownership;
 pub(crate) use operation::{ProductOperation, VERBS};
 pub(crate) mod queues;
 mod read_cursor;

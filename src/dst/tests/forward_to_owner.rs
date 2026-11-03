@@ -704,3 +704,90 @@ async fn a_non_owner_forwards_a_live_feed_connect_to_the_owner() {
     drop(feed);
     engine_shutdown(&p.b).await;
 }
+
+/// An enforce-mode instance named `instance` over `store` that serves the
+/// cell fixture's project 0 (its key, policy and credential).
+async fn enforce_rig(
+    store: Arc<dyn object_store::ObjectStore>,
+    instance: &str,
+    runtime: RigRuntime,
+) -> (State, Addr) {
+    use super::fixture_cell::{cell_keys, credential, grant, policy, project};
+    let now = crate::shard::now_ms() / 1000;
+    let svc = Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    svc.publish_jwks(cell_keys(now)).unwrap();
+    let pid = crate::tenant::ProjectId::new(&project(0)).unwrap();
+    let quotas = crate::project_policy::ProjectQuotas::default();
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects: HashMap::from([(pid, policy(0, quotas))]),
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials: HashMap::from([(Arc::from(credential(0).as_str()), grant(0, 1))]),
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let options = super::fixture_http::HttpRigOptions {
+        instance: Some(instance.to_string()),
+        auth_service: Some(svc),
+        ..Default::default()
+    };
+    super::fixture_http::http_rig_build(store, runtime, options)
+        .await
+        .parts()
+}
+
+/// A project's creates at the instance that does not own their shards are
+/// answered there without admitting the project (tuning P2 item 3a): the
+/// product create is forwarded to its owner, the queue create is answered
+/// `409 not_ring_owner` naming it; the receiving instance's tracker holds
+/// no entry and the owner's holds one, so a fleet of N instances tracks each project once, not on
+/// every instance that receives its creates. Before: the forwarding
+/// instance admitted the project too, so 100,000 tenants on 4 instances
+/// passed each one's 32,768-entry tracker within the create burst.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_forwarded_create_is_admitted_only_at_the_owner() {
+    use super::fixture_cell::{CREATE, Token};
+    let store = mem();
+    let (a, addr_a) = enforce_rig(store.clone(), "inst-a", RigRuntime::first()).await;
+    let (b, addr_b) = enforce_rig(store, "inst-b", RigRuntime::incarnation(1)).await;
+    ring(&a, "inst-b");
+    ring(&b, "inst-b");
+    a.peer.set_peer("inst-b", &format!("http://{addr_b}"));
+    let bearer = Token::of(0).bearer();
+    let headers = [
+        ("authorization", bearer.as_str()),
+        ("prisma-encryption-key", PRISMA_KEY),
+    ];
+    let (status, h, body) = preq(addr_a, "PUT", "/v1/streams/orders", &headers, CREATE).await;
+    assert_eq!(
+        (status, h.get("streams-forwarded-to").map(String::as_str)),
+        (201, Some("inst-b")),
+        "the product create is forwarded: {}",
+        String::from_utf8_lossy(&body)
+    );
+    // Queue routes are not forwarded: the client replays to the owner.
+    let (status, h, _) = preq(addr_a, "PUT", "/v1/queues/jobs", &headers, b"").await;
+    assert_eq!(
+        (status, h.get("streams-replay-to").map(String::as_str)),
+        (409, Some("inst-b")),
+        "the queue create names its owner"
+    );
+    assert_eq!(
+        (a.quotas.stats().0, b.quotas.stats().0),
+        (0, 1),
+        "the project is tracked at its owner only"
+    );
+    engine_shutdown(&a).await;
+    engine_shutdown(&b).await;
+}

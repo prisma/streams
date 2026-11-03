@@ -1624,9 +1624,9 @@ pub(crate) async fn product_entry_axum_inner(
     // §17.3: acquire project admission BEFORE reading the body. Only
     // enforce-mode requests carry a verified project; the guard holds
     // the inflight slot for the handler's lifetime.
-    let _quota_guard = match crate::product::project_admission(&state, principal) {
+    let _quota_guard = match crate::product::ownership::admit(&state, principal, &method, &name) {
         Ok(g) => g,
-        Err(r) => return crate::product::with_product_cors(r),
+        Err(r) => return crate::product::with_product_cors(*r),
     };
     crate::admission::park::bind_principal(&state.quotas, principal);
     // Round-13 and H3: the memory backstops, after ordinary project
