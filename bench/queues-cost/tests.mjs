@@ -3,3 +3,4 @@
 import './schedule.test.mjs';
 import './prices.test.mjs';
 import './replay.test.mjs';
+import './collect.test.mjs';

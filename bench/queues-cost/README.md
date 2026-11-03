@@ -17,7 +17,8 @@ default ports are 9500 and 8090.
 | `schedule.mjs` | the replay's schedule, rate and fate math (pure functions) |
 | `replay.mjs` | the generator: creates the queues, produces, consumes, verifies, writes the summary |
 | `prices.mjs` | the pricing math (pure functions): windows, months, terms, the floor share, `costs.json` |
-| `collect.mjs` | the instruments (`mark`, `sample`) and the pricing (`price`, `idle`) |
+| `collect.mjs` | the instruments (`mark`, `sample`; a local process, or a Compute instance in field mode) and the pricing (`price`, `idle`) |
+| `fixtures/cpu-log.txt` | a Compute wrapper CPU log for the field-mode tests |
 | `run-ab.sh` | the orchestration: `ab`, `idle` and `standalone` modes |
 | `fake-server.mjs` | an in-memory `/v1/queues` used by the tests and the rig self-test; never measured |
 | `*.test.mjs`, `tests.mjs`, `package.json` | `node --test bench/queues-cost/` (the package's `main` runs every test) |
@@ -110,6 +111,64 @@ S3_PORT=9591 SRV_PORT=9592 BASELINE=0 WARMUP_S=5 DURATION_S=20 DRAIN_S=30 \
   REPLAY_ARGS="--delay-scale 0.001 --handler-ms 1,5 --wait-ms 500" \
   bench/queues-cost/run-ab.sh ab selftest /tmp/fake-slate /tmp/qcost-selftest
 ```
+
+## Field mode
+
+On a Compute instance there is no local server process to read and no
+s3lite. Field mode lets `collect.mjs mark` and `sample` read the instance
+instead. Pass `--cpu-log FILE --server URL --auth-file PATH` in place of
+`--pid`. `price` and `idle` are unchanged. Run one queue instance per arm
+(`docs/SCALE-VALIDATION.md` §3.2).
+
+- **CPU** comes from the Compute wrapper's `cpu sample:` lines
+  (`deploy/app-server/index.ts`; set `CPU_LOG_SECS=15` on the instance).
+  Each line carries `boot_ms`, `t_ms` and `proc_cpu_s`, the cumulative
+  CPU-seconds of the instance's processes since that boot. A reboot starts
+  a new `boot_ms` from zero. The collector sums each boot's latest line, so
+  a reboot inside a window adds the new boot's CPU instead of going
+  negative. The dead boot loses only its CPU after its last line, at most
+  `CPU_LOG_SECS` of it. Repeated lines from overlapping tails, cut-off
+  lines and other log lines are skipped. One file holds one instance.
+- **RSS** comes from `GET /v1/debug/load`, field `local.rss_mb`, with the
+  bearer token read from `--auth-file`. The token never goes on a command
+  line. The same token reads `/v1/debug/store` into `snaps/<tag>-store.json`
+  at each mark, as before.
+- **The tail.** `compute logs` streams until it is killed (the CLI that
+  `bench/k2cost/field` pins). Keep only the CPU lines; the raw platform log
+  is never stored. Run the tail for the whole arm, and always append (`>>`),
+  never truncate:
+
+```bash
+compute logs "$VERSION" --tail 300 | grep --line-buffered 'cpu sample:' >> "$ARM/cpu.log" &
+F=(--cpu-log "$ARM/cpu.log" --server "$U" --auth-file "$SECRETS/auth")
+node bench/queues-cost/collect.mjs sample --dir "$ARM" "${F[@]}" &
+node bench/queues-cost/collect.mjs mark --dir "$ARM" --tag start "${F[@]}"
+# ... the replay (docs/SCALE-VALIDATION.md §3.2) ...
+node bench/queues-cost/collect.mjs mark --dir "$ARM" --tag end "${F[@]}"
+```
+
+- **A mark** adds `cpu_source: "log"`, `cpu_t` (the newest line's
+  `t_ms`), `cpu_boots` (`{boot_ms: proc_cpu_s}`) and `boot_id` (the
+  server's, from `/v1/debug/load`). In two cases a mark refuses its CPU:
+  `cpu_s` is null and `cpu_error` says why, and `price` then refuses the
+  window ("no CPU sample"):
+  - the newest line is older than `--cpu-max-age-s` (default 60, four
+    15-second lines): the tail died, the instance slept, or the platform's
+    log delay is longer (raise the flag);
+  - the log lost a boot that the last mark with boots saw, or a boot's CPU
+    went back: the file was cut or replaced. The window would read short or
+    negative.
+- **A sample** writes `cpu_s` and `rss_kb` when they could be read, and
+  leaves out a field that could not. It never stops on a failed read; stop
+  it with SIGTERM. It reads live bytes only with `--s3`.
+- **Object-store terms.** Without `--s3`, a field mark records
+  `ledger: false` and writes no s3lite snapshot. `price` needs the s3lite
+  ledger at every mark, so it prices local arms only. In the field, Class A
+  and Class B come from the `/v1/debug/store` snapshots
+  (`docs/SCALE-VALIDATION.md` §4.2).
+
+The unit tests (`collect.test.mjs`) use `fixtures/cpu-log.txt`, a log with
+a reboot, a repeated line and a cut-off line.
 
 ## Outputs
 

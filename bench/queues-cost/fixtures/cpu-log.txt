@@ -1,0 +1,13 @@
+instance shape: {"cpus":1,"mem_total_kb":1015808}
+binary sha256: 0000000000000000000000000000000000000000000000000000000000000000
+cpu sample: {"boot_ms":1762160000000,"t_ms":1762160015000,"proc_cpu_s":1.5,"vm_busy_s":2.25}
+cpu sample: {"boot_ms":1762160000000,"t_ms":1762160030000,"proc_cpu_s":4.25,"vm_busy_s":5}
+2026-11-03T09:00:31Z WARN streams_slate: an unrelated server line
+cpu sample: {"boot_ms":1762160000000,"t_ms":1762160045000,"proc_cpu_s":9.5,"vm_busy_s":10.75}
+cpu sample: {"boot_ms":1762160000000,"t_ms":1762160030000,"proc_cpu_s":4.25,"vm_busy_s":5}
+cpu sample: {"boot_ms":1762160000000,"t_ms":1762160060000,"proc_cpu_s":12,"vm_busy_s":13.5}
+cpu sample: {"boot_ms":1762160000000,"t_ms":1762160060000,"proc_cpu_s":12,"vm_busy_s":13.5}
+cpu sample: {"boot_ms":17621600
+instance shape: {"cpus":1,"mem_total_kb":1015808}
+cpu sample: {"boot_ms":1762160071000,"t_ms":1762160086000,"proc_cpu_s":0.75,"vm_busy_s":1.25}
+cpu sample: {"boot_ms":1762160071000,"t_ms":1762160101000,"proc_cpu_s":3.5,"vm_busy_s":4}

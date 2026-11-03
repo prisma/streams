@@ -10,6 +10,12 @@
 //       until SIGTERM (or the process exits): the server's CPU-seconds and
 //       RSS every interval, and the bucket's live bytes every live-every
 //       samples, to ARM/samples.jsonl
+//   Field mode (a Compute instance): `--cpu-log FILE --server URL --auth-file F`
+//       in place of --pid. CPU comes from the wrapper's `cpu sample:` lines
+//       in FILE (cpuFromLog), RSS from /v1/debug/load `local.rss_mb`; the
+//       s3lite ledger is read only when --s3 is given. A mark refuses its
+//       CPU (cpu_s null) when the newest line is older than
+//       --cpu-max-age-s [60] or the log lost a boot an earlier mark saw.
 //   collect.mjs price  --a ARM --b ARM [--sa ARM --sb ARM] --scale S --out costs.json
 //       [--scenario P] [--cell-vcpus 1] [--cell-mem-gib 1] [--utilization 0.6] [--floor-usd 95.3]
 //       prices the A/B pair (and the standalone pair: an empty cell, then
@@ -73,6 +79,56 @@ export function procSample(pid) {
   }
 }
 
+const CPU_LINE = /cpu sample: (\{.*\})/;
+/**
+ * The instance's cumulative CPU-seconds from the Compute wrapper's `cpu
+ * sample:` lines (deploy/app-server/index.ts, CPU_LOG_SECS). proc_cpu_s is
+ * cumulative per boot (boot_ms), so the instance's CPU is the sum over boots
+ * of each boot's latest line: a reboot adds a boot instead of resetting the
+ * figure. Lines repeated by overlapping tails, cut off or of other kinds are
+ * skipped. Returns { cpu_s, boots: { boot_ms: proc_cpu_s }, t_ms (newest
+ * line) }, or null without a line. One instance per log.
+ */
+export function cpuFromLog(text) {
+  const latest = new Map();
+  for (const line of text.split('\n')) {
+    const m = CPU_LINE.exec(line);
+    if (!m) continue;
+    let s;
+    try {
+      s = JSON.parse(m[1]);
+    } catch {
+      continue;
+    }
+    if (![s.boot_ms, s.t_ms, s.proc_cpu_s].every(Number.isFinite)) continue;
+    const b = latest.get(s.boot_ms);
+    if (!b || s.t_ms > b.t_ms) latest.set(s.boot_ms, s);
+  }
+  if (!latest.size) return null;
+  const boots = {};
+  let cpu = 0;
+  let t = 0;
+  for (const [k, s] of [...latest].sort((x, y) => x[0] - y[0])) {
+    boots[k] = s.proc_cpu_s;
+    cpu += s.proc_cpu_s;
+    t = Math.max(t, s.t_ms);
+  }
+  return { cpu_s: Math.round(cpu * 1000) / 1000, boots, t_ms: t };
+}
+
+/**
+ * Why a mark's CPU cannot follow an earlier mark's boots, or null: a boot
+ * that mark saw is gone from the log, or its CPU went back (the log was cut
+ * or replaced). Its window would read short or negative CPU.
+ */
+export function cpuRegression(prevBoots, boots) {
+  for (const [k, v] of Object.entries(prevBoots ?? {})) {
+    if (!(k in boots)) return `boot ${k} of the previous mark is missing from the CPU log`;
+    if (boots[k] < v) return `boot ${k} went back from ${v} to ${boots[k]} CPU-seconds`;
+  }
+  return null;
+}
+
 async function getJson(url, headers = {}) {
   try {
     const r = await fetch(url, { headers, signal: AbortSignal.timeout(30_000) });
@@ -83,30 +139,90 @@ async function getJson(url, headers = {}) {
   }
 }
 
+const bearer = (f) => ({ authorization: `Bearer ${readFileSync(f['auth-file'], 'utf8').trim()}` });
+
+/** The field source: --cpu-log with --server and --auth-file; else --pid. */
+function source(f, cmd) {
+  const field = f['cpu-log'] !== undefined;
+  if (field ? !(f.server && f['auth-file']) : !f.pid) {
+    throw new Error(`${cmd} needs --dir${cmd === 'mark' ? ' --tag' : ''} and --pid, or --cpu-log with --server --auth-file`);
+  }
+  return field;
+}
+
+/**
+ * Field mode's reading: the CPU log's figure and the server's RSS and boot
+ * id. Fields that cannot be read are null.
+ */
+async function fieldSample(f) {
+  let text = '';
+  try {
+    text = readFileSync(f['cpu-log'], 'utf8');
+  } catch {
+    // not written yet: no CPU
+  }
+  const cpu = cpuFromLog(text);
+  const load = await getJson(`${f.server}/v1/debug/load`, bearer(f));
+  const rssMb = load?.local?.rss_mb;
+  return {
+    cpu_s: cpu?.cpu_s ?? null, cpu_boots: cpu?.boots ?? null, cpu_t: cpu?.t_ms ?? null,
+    rss_kb: Number.isFinite(rssMb) ? rssMb * 1024 : null, boot_id: load?.boot?.id ?? null,
+  };
+}
+
+/**
+ * A field mark's CPU fields. The CPU is refused (null, with cpu_error) when
+ * the newest line is older than --cpu-max-age-s, or when the log lost a
+ * boot or CPU the last mark with boots recorded.
+ */
+function fieldMarkCpu(f, dir, t, s) {
+  const maxAge = Number(f['cpu-max-age-s'] ?? 60);
+  const prev = readJsonl(join(dir, 'marks.jsonl')).filter((m) => m.cpu_boots).at(-1);
+  let error = null;
+  if (s.cpu_s === null) error = `no cpu sample in ${f['cpu-log']}`;
+  else if (t - s.cpu_t > maxAge * 1000) error = `newest cpu sample is ${Math.round((t - s.cpu_t) / 1000)} s old (--cpu-max-age-s ${maxAge})`;
+  else error = cpuRegression(prev?.cpu_boots, s.cpu_boots);
+  if (error) return { cpu_s: null, cpu_source: 'log', cpu_t: s.cpu_t, cpu_boots: null, cpu_error: error };
+  return { cpu_s: s.cpu_s, cpu_source: 'log', cpu_t: s.cpu_t, cpu_boots: s.cpu_boots };
+}
+
 async function mark(f) {
   const dir = f.dir;
   const tag = f.tag;
-  if (!dir || !tag || !f.pid) throw new Error('mark needs --dir --tag --pid');
-  const s3 = f.s3 ?? 'http://127.0.0.1:9500';
+  if (!dir || !tag) throw new Error('mark needs --dir --tag and --pid, or --cpu-log with --server --auth-file');
+  const field = source(f, 'mark');
+  // In the field there is no s3lite unless --s3 names one.
+  const s3 = f.s3 ?? (field ? null : 'http://127.0.0.1:9500');
   mkdirSync(join(dir, 'snaps'), { recursive: true });
   const t = Date.now();
-  const [stats2, stats] = await Promise.all([getJson(`${s3}/_s3lite/stats2`), getJson(`${s3}/_s3lite/stats`)]);
-  const proc = procSample(f.pid);
-  writeFileSync(join(dir, 'snaps', `${tag}-stats2.json`), `${JSON.stringify(stats2)}\n`);
-  writeFileSync(join(dir, 'snaps', `${tag}-stats.json`), `${JSON.stringify(stats)}\n`);
+  const [stats2, stats] = s3 ? await Promise.all([getJson(`${s3}/_s3lite/stats2`), getJson(`${s3}/_s3lite/stats`)]) : [null, null];
+  let line;
+  if (field) {
+    const s = await fieldSample(f);
+    line = { tag, t, ...fieldMarkCpu(f, dir, t, s), rss_kb: s.rss_kb, boot_id: s.boot_id };
+  } else {
+    const proc = procSample(f.pid);
+    line = { tag, t, cpu_s: proc?.cpu_s ?? null, rss_kb: proc?.rss_kb ?? null };
+  }
+  line.ledger = stats2 !== null && stats !== null;
+  if (s3) {
+    writeFileSync(join(dir, 'snaps', `${tag}-stats2.json`), `${JSON.stringify(stats2)}\n`);
+    writeFileSync(join(dir, 'snaps', `${tag}-stats.json`), `${JSON.stringify(stats)}\n`);
+  }
   if (f.server && f['auth-file']) {
-    const token = readFileSync(f['auth-file'], 'utf8').trim();
-    const store = await getJson(`${f.server}/v1/debug/store`, { authorization: `Bearer ${token}` });
+    const store = await getJson(`${f.server}/v1/debug/store`, bearer(f));
     writeFileSync(join(dir, 'snaps', `${tag}-store.json`), `${JSON.stringify(store)}\n`);
   }
-  const line = { tag, t, cpu_s: proc?.cpu_s ?? null, rss_kb: proc?.rss_kb ?? null, ledger: stats2 !== null && stats !== null };
   appendFileSync(join(dir, 'marks.jsonl'), `${JSON.stringify(line)}\n`);
-  process.stdout.write(`mark ${tag}: cpu_s=${line.cpu_s} rss_kb=${line.rss_kb} class_a=${stats2?.total?.class_a ?? '?'}\n`);
+  const boots = line.cpu_boots ? ` boots=${Object.keys(line.cpu_boots).length}` : '';
+  const err = line.cpu_error ? ` cpu_error="${line.cpu_error}"` : '';
+  process.stdout.write(`mark ${tag}: cpu_s=${line.cpu_s}${boots} rss_kb=${line.rss_kb} class_a=${stats2?.total?.class_a ?? '?'}${err}\n`);
 }
 
 async function sample(f) {
-  if (!f.dir || !f.pid) throw new Error('sample needs --dir --pid');
-  const s3 = f.s3 ?? 'http://127.0.0.1:9500';
+  if (!f.dir) throw new Error('sample needs --dir and --pid, or --cpu-log with --server --auth-file');
+  const field = source(f, 'sample');
+  const s3 = f.s3 ?? (field ? null : 'http://127.0.0.1:9500');
   const every = Number(f['interval-s'] ?? 10) * 1000;
   const liveEvery = Number(f['live-every'] ?? 6);
   let stop = false;
@@ -114,10 +230,19 @@ async function sample(f) {
   process.on('SIGINT', () => { stop = true; });
   for (let i = 0; !stop; i++) {
     const t = Date.now();
-    const proc = procSample(f.pid);
-    if (!proc) break;
-    const line = { t, cpu_s: proc.cpu_s, rss_kb: proc.rss_kb };
-    if (i % liveEvery === 0) {
+    let line;
+    if (field) {
+      // A field sample never stops on a failed read: unread fields are left out.
+      const s = await fieldSample(f);
+      line = { t };
+      if (s.cpu_s !== null) line.cpu_s = s.cpu_s;
+      if (s.rss_kb !== null) line.rss_kb = s.rss_kb;
+    } else {
+      const proc = procSample(f.pid);
+      if (!proc) break;
+      line = { t, cpu_s: proc.cpu_s, rss_kb: proc.rss_kb };
+    }
+    if (s3 && i % liveEvery === 0) {
       const s2 = await getJson(`${s3}/_s3lite/stats2`);
       const live = s2?.live_bytes?.total?.bytes;
       if (Number.isFinite(live)) line.live_bytes = live;
