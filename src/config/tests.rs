@@ -649,6 +649,7 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
         "PROJECT_STORED_BYTES_DEFAULT",
         "0",
     ),
+    ("project-tracker-max", "PROJECT_TRACKER_MAX", "32768"),
     ("scale-edge-slots", "SCALE_EDGE_SLOTS", "140"),
     ("shared-cache-bytes", "SHARED_CACHE_BYTES", "134217728"),
     ("scale-in-secs", "SCALE_IN_SECS", "60"),

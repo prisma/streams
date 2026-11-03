@@ -67,6 +67,7 @@ OWNERS = (
     owner('sweep_custody', 'src/billing/sweep_custody.rs', 'billing::sweep_custody:: dst_tests::runtime_sweep::'),
     owner('system_append', 'src/billing/system_append.rs', 'security_workload:: security_audit:: runtime_journals:: reserved_streams_append'),
     owner('admission_limits', 'src/config/admission_limits.rs', 'config::admission_limits:: usage::runtime_tests:: validation_rejects_a_limit_posture'),
+    owner('config_project_tracker', 'src/config/project_tracker.rs', 'config::project_tracker::'),
     # Body buffering left src/http.rs (a critical prefix) for the admission
     # module; the row keeps it under mutation selection.
     owner('admission_body', 'src/admission/body.rs', 'admission::body:: dst_tests::shared_cell_capacity::concurrent_uploads'),
@@ -107,7 +108,8 @@ OWNERS = (
     owner('product_read_failure', 'src/product/read_failure.rs',
           'dst_tests::read_reserve:: product::tests:: dst_tests::read_application::'),
     owner('product_ownership', 'src/product/ownership.rs',
-          'dst_tests::forward_to_owner:: dst_tests::queue_product:: dst_tests::product_lifecycle::'),
+          'dst_tests::forward_to_owner:: dst_tests::queue_product:: dst_tests::product_lifecycle::'
+          ' dst_tests::quota_tracker::'),
     owner('product_read_memory', 'src/product/read_memory.rs',
           'dst_tests::read_reserve:: product::read_memory:: dst_tests::read_memory:: dst_tests::shared_cell_capacity:: '
           'dst_tests::weighted_shares:: '
@@ -245,6 +247,10 @@ OWNERS = (
     # The stream-count seed walk, once per project (the landing-4 review's L2).
     owner('quota_stream_seed', 'src/quota/stream_seed.rs',
           'quota::stream_seed:: dst_tests::quota_stream_seed::'),
+    # The tracker's entries and size, PROJECT_TRACKER_MAX at project
+    # admission (tuning 3b); quota::tests holds the eviction churn test.
+    owner('quota_tracker', 'src/quota/tracker.rs',
+          'quota:: dst_tests::quota_tracker::'),
     owner('registry_cache', 'src/registry/cache.rs', 'registry::'),
     owner('registry_cache_retained', 'src/registry/cache/retained.rs', 'registry::cache::'),
     # The catalog page's byte bounds (phase B item B5); the owner decided the

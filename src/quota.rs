@@ -48,7 +48,8 @@ use crate::tenant::ProjectId;
 /// 49/s (estimates, not benchmarks). Still a deliberate HARD ceiling: refusing
 /// to track (never merging strangers into shared buckets) remains the
 /// fail-closed choice; the churn test pins evict-idle-first,
-/// never-evict-active, and the typed refusal at true saturation.
+/// never-evict-active, and the typed refusal at true saturation. It is the
+/// default an instance's PROJECT_TRACKER_MAX replaces (`tracker`).
 pub(crate) const MAX_TRACKED_PROJECTS: usize = 32_768;
 
 /// A tracked project with no admission attempts for this long, and
@@ -71,6 +72,7 @@ mod pin;
 pub(crate) mod read_reservation;
 pub(crate) mod stored;
 mod stream_seed;
+mod tracker;
 use pin::AdmissionCounters;
 
 pub(crate) struct ProjectAdmission {
@@ -540,15 +542,15 @@ pub(crate) struct QuotaRegistry {
     stored: stored::StoredTable,
     /// The cell's recently offered requests, which fair shedding judges.
     load: Arc<crate::admission::fair_shed::InstanceLoad>,
+    /// The most projects tracked at once (`tracker`, tuning item 3b).
+    tracker: tracker::TrackerCap,
 }
 
 impl QuotaRegistry {
     pub(crate) fn new(ops: Arc<crate::ops::OpsService>) -> Self {
         Self {
             ops,
-            projects: Default::default(),
-            stored: Default::default(),
-            load: Default::default(),
+            ..Self::default()
         }
     }
 
@@ -598,10 +600,6 @@ impl QuotaRegistry {
         clippy::unwrap_used,
         reason = "QuotaRegistry::admit; a poisoned entry or project map may be partially updated; recovery could mint fresh request credit or orphan charged state"
     )]
-    #[expect(
-        clippy::excessive_nesting,
-        reason = "QuotaRegistry::admit; admission nests the idle eviction inside the untracked-project branch of the tracker lookup; flattening it would separate the eviction from the refusal it forestalls"
-    )]
     pub(crate) fn admit(
         &self,
         project: &ProjectId,
@@ -612,23 +610,7 @@ impl QuotaRegistry {
             let mut m = self.projects.lock().unwrap();
             match m.get(project) {
                 Some(a) => a.pin(),
-                None => {
-                    if m.len() >= MAX_TRACKED_PROJECTS {
-                        // Review item 5: EVICT idle entries before
-                        // refusing — a tracker that filled once must
-                        // not refuse project 1,025 until restart.
-                        m.retain(|_, a| a.in_use(now_ms));
-                        if m.len() >= MAX_TRACKED_PROJECTS {
-                            // Refuse to TRACK, never to merge: an
-                            // untracked project sharing a bucket with
-                            // strangers would couple their fates.
-                            return Err(QuotaRefusal::TrackerCapacity);
-                        }
-                    }
-                    let a = self.new_admission(quotas, now_ms);
-                    m.insert(project.clone(), a.clone());
-                    a.pin()
-                }
+                None => self.track(&mut m, project, quotas, now_ms)?.pin(),
             }
         };
 

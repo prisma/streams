@@ -193,6 +193,9 @@ mod quota_stored_cap;
 #[path = "tests/quota_stream_seed.rs"]
 mod quota_stream_seed;
 
+#[path = "tests/quota_tracker.rs"]
+mod quota_tracker;
+
 #[path = "tests/reads_applied.rs"]
 mod reads_applied;
 

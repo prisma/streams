@@ -2875,6 +2875,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::quota_tracker",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Project tracker size scenario (tuning item 3b): a rig booted with PROJECT_TRACKER_MAX=65536 admits 40,000 distinct projects through product::project_admission, each still held, and its tracker holds exactly 40,000; compiled and executed with DST.",
+      "syntax": "path = \"tests/quota_tracker.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::reads_applied_history",
       "path": "src/dst/dst_tests.rs",
       "reason": "TLA-018-F3 continuation scenarios; a held shard WAL PUT, a fencing replacement instance and real HTTP product, raw and relay reads of the stale and durable cursors; compiled and executed with DST.",

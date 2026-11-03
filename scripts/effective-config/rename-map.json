@@ -92,6 +92,12 @@
       "old_semantics": "the descriptor cache kept nothing past its hot tier: a stream read after its slot was swept or evicted paid an unconditional GET",
       "commit": "the commit that adds REGISTRY_RETAIN_MB",
       "edge_record": null
+    },
+    {
+      "new": "cli.project_tracker_max",
+      "old_semantics": "the project tracker held a compile-time 32,768 projects (MAX_TRACKED_PROJECTS) on every instance",
+      "commit": "the commit that adds PROJECT_TRACKER_MAX",
+      "edge_record": null
     }
   ],
   "removed": [

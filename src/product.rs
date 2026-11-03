@@ -697,8 +697,7 @@ pub(crate) fn project_admission(
     // Review item 5: the quotas rode in on the principal — the exact
     // snapshot this request verified against, never a second read.
     state
-        .quotas
-        .admit_counted(&p.project_id, &p.quotas, crate::shard::now_ms())
+        .admit_project(p)
         .map(Some)
         .map_err(|r| crate::audit::tag_project(quota_refusal_response(&r), &p.project_id))
 }

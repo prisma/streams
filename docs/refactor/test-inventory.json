@@ -1168,6 +1168,17 @@
     ]
   },
   {
+    "name": "a_larger_tracker_admits_more_projects_than_the_default",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "7125487cd36fe77147eb4ce5dbcd7bf4a3b98bc29b6628247f203ae3411f2137",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/quota_tracker.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_listing_holds_its_reservation_until_it_has_answered",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

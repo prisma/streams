@@ -19,7 +19,7 @@ use axum::response::Response;
 use super::{AppState, ProductOperation, classify_route, perr, project_admission, strip_verb};
 use crate::application::creation::CreationError;
 use crate::auth::RequestPrincipal;
-use crate::quota::QuotaGuard;
+use crate::quota::{QuotaGuard, QuotaRefusal};
 
 /// Project admission for a product request on `path`, after a create of a
 /// shard another instance owns is refused without it.
@@ -58,6 +58,17 @@ fn foreign_create(
         // mt-lint: allow(stream-ref-construction): ingress — the product create's collection name qualified with the verified principal's project, as the product entry resolves its path
         .foreign_create(&p.project_id.stream_ref(&name))?;
     Some(creation_error(error, Some(p)))
+}
+
+impl AppState {
+    /// Project admission of verified principal `p`, under the quotas it
+    /// verified against (`project_admission`): its request counted, its
+    /// project tracked in a tracker this instance's PROJECT_TRACKER_MAX
+    /// sizes (tuning item 3b).
+    pub(super) fn admit_project(&self, p: &RequestPrincipal) -> Result<QuotaGuard, QuotaRefusal> {
+        let quotas = self.quotas.sized_to(self.config.cli.project_tracker_max);
+        quotas.admit_counted(&p.project_id, &p.quotas, crate::shard::now_ms())
+    }
 }
 
 /// A creation failure on the product surface: the product error shape, the

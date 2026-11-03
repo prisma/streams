@@ -674,6 +674,8 @@ impl crate::config::ServerConfig {
             .extend(super::admission_limits::validate_admission_limits(
                 &self.admission,
             ));
+        f.errors
+            .extend(super::project_tracker::validate_project_tracker(&self.cli));
         self.validate_billing_prerequisites(&mut f);
         let (auth_mode, catalog_cursor_key) = self.validate_auth_and_keys(&mut f);
         let configured_capacity = self.validate_posture(&mut f);

@@ -429,6 +429,15 @@ pub struct CliArgs {
     /// a value the policy sets stands. Default 0: no stored-bytes limit.
     #[arg(long, env = "PROJECT_STORED_BYTES_DEFAULT", default_value_t = 0)]
     pub(crate) project_stored_bytes_default: u64,
+    /// The most projects this instance tracks at once, at about 500 B
+    /// each: past it, once its idle entries are evicted, a first-seen
+    /// project is refused 503 `project_tracker_capacity`. Default 32,768
+    /// (~16 MiB). At most an eighth of the RSS shed line at 500 B each,
+    /// ADMIT_RSS_SHED_MB x 1 MiB / 8 / 500 (131,072 at 500), and the
+    /// default while the shed line is off; boot refuses a larger value.
+    #[arg(long, env = "PROJECT_TRACKER_MAX", default_value_t = 32_768,
+          value_parser = clap::value_parser!(u64).range(1..))]
+    pub(crate) project_tracker_max: u64,
 
     /// Measured per-instance ingress-concurrency capacity through the
     /// platform front door. Two-layer model confirmed by the platform team
@@ -546,6 +555,7 @@ impl CliArgs {
             cell_envelope_append_bytes_per_sec: 0,
             cell_envelope_read_bytes_per_sec: 0,
             project_stored_bytes_default: 0,
+            project_tracker_max: 32_768,
             scale_edge_slots: 140,
             shared_cache_bytes: 128 * 1024 * 1024,
             scale_in_secs: 60,

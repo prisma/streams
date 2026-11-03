@@ -16,6 +16,7 @@
 //! - [`environment`]: the environment source trait + process/map impls;
 //! - [`model`]: `ServerConfig` and the 13 knob sub-configs;
 //! - [`admission_limits`]: the boot-time proof of the token-bucket posture;
+//! - [`project_tracker`]: the boot-time bound on the project tracker;
 //! - [`load`]: environment parsing (defaults + overlay);
 //! - [`summary`]: the explicit redacted diagnostics projection.
 
@@ -26,6 +27,7 @@ pub(crate) mod load;
 pub(crate) mod model;
 pub(crate) mod notice;
 pub(crate) mod profile;
+pub(crate) mod project_tracker;
 pub(crate) mod summary;
 pub(crate) mod validation;
 
