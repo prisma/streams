@@ -762,13 +762,21 @@ enough now. These will either be considered a marketing expense by us, or be
 operated by a customer paying 10$/ month in access fee."
 (`docs/reviews/2026-09-hardening/README.md`, Owner decisions.)
 
-| Tenant | Marketing expense: loss a month per 1,000 tenants | With a $10 monthly access fee: margin per tenant |
-|---|---:|---:|
-| T at 1,000 per cell | $28.85 | $9.97 (99.7%) |
-| S at 200 per cell | $296 | $9.70 (92.4%) |
+The model, decided on 2026-11-03 (§8 item 3): usage is priced at K2
+parity; the paid plan carries a **$10 per month minimum spend per
+workspace**, and the fee counts as the first $10 of usage, so a tenant pays
+max($10, usage). The free tier is the T profile and is the marketing
+expense. The published price list (the $10 figure, the free tier's limits,
+K2 parity itself) is held by the owner; this fixes the model only.
 
-The fee column assumes the fee is paid on top of the K2-priced usage.
-**TODO (owner)**: whether the fee is in addition to usage or replaces it.
+| Tenant | Marketing expense: loss a month per 1,000 tenants | Minimum spend $10: revenue | Minimum spend $10: margin |
+|---|---:|---:|---:|
+| T at 1,000 per cell (the free tier; on the paid plan) | $28.85 | $10 | $9.97 (99.7%) |
+| S at 200 per cell (cost $0.797) | $296 | $10.00 | $9.20 (92%) |
+| M, L | | their usage ($404-530, $483), no fee on top | §5.2 |
+
+"On top" against "minimum" differs by $0.50 for an S tenant and by nothing
+material for M and L; these margins hold within 5% either way.
 
 ## 6. Acceptance bars
 
@@ -857,7 +865,10 @@ the hardening README's "Owner decisions" table lists them.
    request count to reconcile against: a fresh bucket per configuration,
    the 304 probe before any load (conservative basis until it answers),
    and reconciliation within ±5% per class after each run (§4.2, §6, §7).
-3. The $10 access fee: on top of usage, or instead of it (§5.3).
+3. **Closed** (decision B3). The $10 access fee is a minimum spend: the
+   paid plan's $10 a month per workspace counts as the first $10 of usage
+   (a tenant pays max($10, usage)); the free tier (T) is the marketing
+   expense (§5.3). The model only: publication is held below.
 4. M and L have only modelled costs; the owner's decision of 2026-11-01
    closes 6A by measuring them (ST-3). L's phase plan is not in the tree.
 5. The queue product's shard count: every measured queue figure ran 4
@@ -866,3 +877,9 @@ the hardening README's "Owner decisions" table lists them.
 7. Re-read the K2 and Cloudflare Queues price pages before the margins are
    used (§5.1).
 8. The tolerances in §6 (±10%) are proposals.
+
+Held for the owner (not decided under the delegation):
+
+- **Price publication** (from item 3): the price page and terms (the $10
+  figure, the free tier's limits, K2 parity) are customer-facing and
+  financially binding; the decision fixes only the model.
