@@ -18,7 +18,10 @@
 //! caller rather than refused.
 //!
 //! A request's hold (`ReadHold`) lives in its request scope
-//! (`admission::park`): it reserves `min(maxBytes, 8 MiB)` at admission,
+//! (`admission::park`): it reserves `min(maxBytes, READ_INITIAL_RESERVE)`
+//! at admission and grows, without waiting, as its read claims the chunks
+//! it fetches from the store (`ReadHold::claim`; a claim that finds no room
+//! ends the page there, a shorter page rather than a refusal),
 //! releases the reservation while the request waits for data (a waiting
 //! long-poll materializes nothing), takes it again before a woken wait
 //! renders (`ReadHold::resume_with`, waiting for room until the wait's own
@@ -47,6 +50,12 @@ use crate::quota::read_reservation::ProjectReadBytes;
 /// read burst alone stays inside the line from the certified 1 GiB
 /// baseline (362 MB + 125 MiB < 500 MB).
 const READ_MEMORY_SHARE_OF_SHED: u64 = 4;
+
+/// What a page read reserves at admission, at most: 256 KiB, so the
+/// instance's read memory admits 500 reads waiting on the store where an
+/// 8 MiB default page admitted 15 (tuning P1 item 2). A read grows its hold
+/// past it chunk by chunk as it fetches (`ReadHold::claim`).
+pub(crate) const READ_INITIAL_RESERVE: u64 = 256 << 10;
 
 /// How long a read waits for room under its project's line and in the
 /// instance's read memory before it is refused (429
@@ -135,6 +144,15 @@ impl AdmissionController {
     }
 }
 
+/// What a read claims as it takes data into its page (`ReadHold::claim`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Claim {
+    /// Stored chunk bytes it is about to fetch from the store.
+    Fetched,
+    /// Plaintext it is about to admit to its page.
+    Decoded,
+}
+
 /// Why a read's reservation was refused after its wait.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReadRefusal {
@@ -166,6 +184,11 @@ pub(crate) struct ReadHold {
     /// renders. 0 for a hold no admission reserved.
     budget: u64,
     bytes: AtomicU64,
+    /// What the read has claimed since it was last reserved, of stored
+    /// chunks it fetched and of plaintext it decoded: its hold grows to
+    /// cover the larger (`claim`).
+    fetched: AtomicU64,
+    decoded: AtomicU64,
     rendered: AtomicBool,
 }
 
@@ -229,8 +252,48 @@ impl ReadHold {
             byte_weight: 1,
             budget: bytes,
             bytes: AtomicU64::new(bytes),
+            fetched: AtomicU64::new(0),
+            decoded: AtomicU64::new(0),
             rendered: AtomicBool::new(false),
         }
+    }
+
+    /// The read is about to hold `bytes` more of `claim` (stored chunks it
+    /// fetches, or plaintext it admits to its page): what it has claimed of
+    /// that kind so far plus these, or of the other kind if larger, must fit
+    /// in its hold, which grows, without waiting, in both ledgers to cover
+    /// it. False when it cannot: the read takes nothing more and its page
+    /// ends there. `forced` takes the bytes whatever the room (a read's
+    /// first chunk or record: one read always makes progress, as one read
+    /// always fits). A rendered hold claims nothing: its page's exact size
+    /// replaced the reservation.
+    pub(crate) fn claim(&self, claim: Claim, bytes: u64, forced: bool) -> bool {
+        if self.rendered.load(Ordering::Relaxed) {
+            return true;
+        }
+        let (mine, other) = match claim {
+            Claim::Fetched => (&self.fetched, &self.decoded),
+            Claim::Decoded => (&self.decoded, &self.fetched),
+        };
+        let claimed = mine.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        let short = claimed
+            .max(other.load(Ordering::Relaxed))
+            .saturating_sub(self.bytes());
+        if short == 0 {
+            return true;
+        }
+        if forced {
+            self.resize(self.bytes() + short);
+            return true;
+        }
+        let line = self.ctl.project_memory_line(self.byte_weight);
+        let memory = &self.ctl.inner.read_memory;
+        if Self::take(memory, self.project.as_ref(), line, short).is_ok() {
+            self.bytes.fetch_add(short, Ordering::Relaxed);
+            return true;
+        }
+        mine.fetch_sub(bytes, Ordering::Relaxed);
+        false
     }
 
     /// A woken wait is about to render: take again what its page may
@@ -327,6 +390,8 @@ impl ReadHold {
             byte_weight: 1,
             budget: 0,
             bytes: AtomicU64::new(0),
+            fetched: AtomicU64::new(0),
+            decoded: AtomicU64::new(0),
             rendered: AtomicBool::new(true),
         }
     }
@@ -368,6 +433,8 @@ impl ReadHold {
     /// so an unrendered reservation is released.
     pub(crate) fn unreserve(&self) {
         if !self.rendered.load(Ordering::Relaxed) {
+            self.fetched.store(0, Ordering::Relaxed);
+            self.decoded.store(0, Ordering::Relaxed);
             self.resize(0);
         }
     }

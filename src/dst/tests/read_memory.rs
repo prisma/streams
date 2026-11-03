@@ -287,10 +287,11 @@ async fn a_page_is_held_until_its_client_reads_it_or_leaves() {
 /// A project whose bodies hold its memory line waits for its own memory
 /// and is refused its next read after 2 s (429 `project_memory_pressure`,
 /// retryable), while its neighbour reads at once; a read waiting when one
-/// of its unread pages is released is admitted then. With the line at two
-/// pages plus one page budget, a project's third unread page still fits
-/// and its fourth read does not. Before: every read was admitted at once,
-/// whatever its project's bodies held.
+/// of its unread pages is released is admitted then. With the line at three
+/// pages and 64 KiB, a project's third unread page still fits and its
+/// fourth read's initial reservation (256 KiB, `READ_INITIAL_RESERVE`) does
+/// not. Before: every read was admitted at once, whatever its project's
+/// bodies held.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_project_at_its_memory_line_waits_and_is_refused_and_its_neighbour_is_not() {
     let cell = open_cell(CellSpec::open(2)).await;
@@ -298,7 +299,7 @@ async fn a_project_at_its_memory_line_waits_and_is_refused_and_its_neighbour_is_
     assert_eq!(big_stream(&cell, 1).await, page);
     cell.state
         .admission
-        .set_project_memory_pressure_bytes(2 * page + PAGE_BUDGET);
+        .set_project_memory_pressure_bytes(3 * page + 64 * 1024);
     let mut unread = Vec::new();
     for held in 1..=3 {
         unread.push(never_read(&cell, 0, "GET", RECORDS, b"").await);
@@ -351,11 +352,11 @@ async fn a_project_at_its_memory_line_waits_and_is_refused_and_its_neighbour_is_
 }
 
 /// The instance's read memory is waited for, then refused: with room for
-/// one page budget beside one unread page, a read beside two unread pages
-/// waits 2 s and is refused (503 `read_memory_busy`, retryable), a read
-/// asking for 4 KiB fits beside them at once, and a read that is waiting
-/// when a page is released is admitted then. Before: every read was
-/// admitted at once.
+/// two pages and 64 KiB, a read beside two unread pages waits 2 s for its
+/// initial reservation (256 KiB) and is refused (503 `read_memory_busy`,
+/// retryable), a read asking for 4 KiB fits beside them at once, and a read
+/// that is waiting when a page is released is admitted then. Before: every
+/// read was admitted at once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_read_waits_for_the_instance_read_memory_and_is_refused_after_the_wait() {
     let cell = open_cell(CellSpec::open(2)).await;
@@ -363,7 +364,7 @@ async fn a_read_waits_for_the_instance_read_memory_and_is_refused_after_the_wait
     big_stream(&cell, 1).await;
     cell.state
         .admission
-        .set_read_memory_capacity(page + PAGE_BUDGET);
+        .set_read_memory_capacity(2 * page + 64 * 1024);
     let first = never_read(&cell, 0, "GET", RECORDS, b"").await;
     assert_eq!(settle_at(&cell, 0, (page, page)).await, (page, page));
     let second = never_read(&cell, 0, "GET", RECORDS, b"").await;

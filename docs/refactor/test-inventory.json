@@ -116,7 +116,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "3ec3ba78e08c629c56edbff6eb72f6fb3774038130b74965bbe5c27274a88945",
+    "function_sha256": "13f1059c961ddf4ff257f775714e3d2cfd45bf7b1ae36b8382ab531ab5738ffc",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_capacity.rs",
@@ -1734,7 +1734,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "d8dd72ad5bc7ee41dd06e387cf6acfb84a13384c78dd31e2da744a675953f927",
+    "function_sha256": "c2db5fc53962aa5103c8f0c0eda8656f3a3d4956055a6e2f94707eba62981fe0",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_memory.rs",
@@ -1967,11 +1967,22 @@
     "scenarios": []
   },
   {
+    "name": "a_read_under_pressure_is_served_a_shorter_page_and_continues_from_its_cursor",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "5712d9429e229ba2206a9d216673c7ecda495375a1dc09de28fcc5d2fe8c0224",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_reserve.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_read_waits_for_the_instance_read_memory_and_is_refused_after_the_wait",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "3f6c6abfc3862f9cc3b987dc9700fd6e4b73020948e08aed62c5beadd8ce1049",
+    "function_sha256": "f9656775cfa455cb721ae1ee0aa32ba56b61ca146d1056ca28a7d2786f790a4c",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_memory.rs",
@@ -3201,7 +3212,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "3116f1759f90c343812ebb7e71f8d315d41e4b299c92fb0efa7d04437ef3c685",
+    "function_sha256": "9e97429ca8a5534c3d00b20d85b6a3818be434311d62c8828f867f787b1f85ae",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_memory_wakes.rs",
@@ -9810,6 +9821,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_lineage.rs",
+    "scenarios": []
+  },
+  {
+    "name": "two_hundred_cold_reads_of_tiny_streams_are_all_served",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "dfd0cf6e39a82452d9529da2165d0158a78e01117e232ddb328651cbee6f9ed2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_reserve.rs",
     "scenarios": []
   },
   {

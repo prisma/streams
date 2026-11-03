@@ -239,6 +239,7 @@ impl ShardEngine {
             }
             .into());
         }
+        let steps = within_read_memory(steps);
         let gets: Vec<_> = steps
             .iter()
             .filter_map(|step| match step {
@@ -615,6 +616,29 @@ impl Reach {
             || self.picks >= MAX_CHUNKS_PER_READ
             || self.bytes >= scan.max_bytes as u64
     }
+}
+
+/// The steps whose stored chunks the served request's read memory covers
+/// while it fetches them: each chunk is claimed before its GET
+/// (`admission::park::claim_read`), the first whatever the room, and the
+/// plan ends before the first chunk the hold cannot grow to cover, so the
+/// page ends there (tuning P1 item 2). The decoded page is claimed again
+/// as it is admitted (`application::read_decode`).
+fn within_read_memory(steps: Vec<Step>) -> Vec<Step> {
+    let mut first = true;
+    let mut kept = Vec::with_capacity(steps.len());
+    for step in steps {
+        if let Step::Fetch(plan) = &step {
+            let bytes = u64::from(plan.end - plan.start);
+            let fetched = crate::admission::read_memory::Claim::Fetched;
+            if !crate::admission::park::claim_read(fetched, bytes, first) {
+                break;
+            }
+            first = false;
+        }
+        kept.push(step);
+    }
+    kept
 }
 
 /// The read's steps over the candidates (sorted by first offset), in the

@@ -255,6 +255,15 @@ async fn answer(stream: &mut TcpStream) -> (u16, Vec<u8>) {
         .unwrap_or((0, Vec::new()))
 }
 
+/// Whether `body` is a page of the first `k` records appended, in order,
+/// for some `k` from 1 to `at_most`.
+fn first_records(body: &[u8], at_most: usize) -> bool {
+    (1..=at_most).any(|k| {
+        let page: Vec<String> = (0..k).map(padded).collect();
+        body == format!("[{}]", page.join(",")).as_bytes()
+    })
+}
+
 /// The response `bytes` hold once it is whole, read by its
 /// `content-length` (a 204 has none and no body): (its status, its body).
 fn response(bytes: &[u8]) -> Option<(u16, Vec<u8>)> {
@@ -280,8 +289,10 @@ fn response(bytes: &[u8]) -> Option<(u16, Vec<u8>)> {
 /// its line but for 64 KiB, less than any woken take. They take nothing,
 /// answer no byte and stay parked, and project 1 reads at once beside
 /// them. Once the pages leave, project 0 holds at most its line, project
-/// 1 still reads at once, and each waiter answers the first 15 appended
-/// (`tail_max_bytes` cuts the 16th). The waiters are observed on their
+/// 1 still reads at once, and each waiter answers the first of the
+/// appended records in order, at most 15 (`tail_max_bytes` cuts the 16th),
+/// and fewer when its claims meet the line beside the others' pages: a
+/// shorter page, never a refusal (tuning P1 item 2). The waiters are observed on their
 /// sockets and in the parked count, which Linux keeps: it takes a woken
 /// page whole from the server, ending its hold, and leaves at rest only
 /// what a page larger than that holds.
@@ -322,16 +333,14 @@ pub(super) async fn woken_at_a_full_line(polls: usize, query: &str, appended: us
          its neighbour's read: {neighbour:?}"
     );
     let answers = futures_util::future::join_all(waiters.iter_mut().map(answer)).await;
-    let woken: Vec<String> = (0..15).map(padded).collect();
-    let woken = format!("[{}]", woken.join(","));
     let statuses: Vec<(u16, usize)> = answers.iter().map(|(s, b)| (*s, b.len())).collect();
     let served = answers
         .iter()
-        .filter(|(status, body)| *status == 200 && *body == woken.as_bytes())
+        .filter(|(status, body)| *status == 200 && first_records(body, 15))
         .count();
     assert_eq!(
         served, polls,
-        "each waiter answers the first 15 appended: {statuses:?}"
+        "each waiter answers the first of the appended, at most 15: {statuses:?}"
     );
     assert_eq!(settle_at(&cell, 0, (0, 0)).await, (0, 0));
     engine_shutdown(&cell.state).await;
@@ -490,22 +499,23 @@ async fn peak_while<T>(cell: &Cell, work: impl Future<Output = T>) -> (T, (u64, 
     futures_util::future::join(working, sampling).await
 }
 
-/// A woken fork long-poll takes its whole page budget again (the owner's
-/// round-3 call 3): its page is read from the tail once its fork chain is
-/// resolved (`read_stitched`, a registry read for each ancestor), after
-/// its wait, so what was appended while it waited cannot bound it. Eight
+/// A woken fork long-poll takes its page budget again (the owner's round-3
+/// call 3): its page is read from the tail once its fork chain is resolved
+/// (`read_stitched`, a registry read for each ancestor), after its wait, so
+/// what was appended while it waited cannot bound it; it takes its initial
+/// reservation again and grows its hold as it admits records, so under
+/// pressure its page is shorter, never refused (tuning P1 item 2). Eight
 /// never-read long-polls of project 0 on its fork `fk` are woken by a
 /// 1 KiB record while the read of `fk`'s source descriptor is held at the
 /// store (its cache slot expired), and 96 records of 64 KiB are appended
 /// before the read is released. With the read memory at a page budget and
-/// 1 MiB, one waiter takes its 8 MiB and answers the record and the 96, a
-/// page of 6 MiB its client leaves unread (more than either kernel takes,
-/// so it stays held, exactly, in both ledgers), and the seven others, with
-/// no room beside it, answer 204 at their deadline. Neither the project's
-/// read bytes nor the read memory ever passes its line or its capacity.
-/// Before (D′ on forks): each waiter took 5 KiB, the record and its
-/// framing, and all eight rendered the 6 MiB: the ledgers held 50,353,536 B
-/// against the 32 MiB line and the 9 MiB read memory.
+/// 1 MiB, every waiter answers 200 with the record and the first of the
+/// 96 in order, together no more than the read memory, its client leaving
+/// it unread (held, exactly, in both ledgers). Neither the project's read
+/// bytes nor the read memory ever passes its line or its capacity. Before
+/// (D′ on forks): each waiter took 5 KiB, the record and its framing, and
+/// all eight rendered the 6 MiB: the ledgers held 50,353,536 B against the
+/// 32 MiB line and the 9 MiB read memory.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_woken_fork_long_poll_takes_its_whole_page_budget_again() {
     let store = FaultStore::new(mem(), 808, FaultProfile::clean());
@@ -533,11 +543,12 @@ async fn a_woken_fork_long_poll_takes_its_whole_page_budget_again() {
         hex("src")
     );
     let engaged = store.hold_class_under(StoreOp::Get, ObjClass::Other, &descriptor, 8);
-    let page: Vec<String> = std::iter::once(kib_record())
-        .chain((0..96).map(padded))
-        .collect();
-    let page = format!("[{}]", page.join(","));
-    let held = u64::try_from(page.len()).unwrap();
+    let prefix = |k: usize| {
+        let page: Vec<String> = std::iter::once(kib_record())
+            .chain((0..k).map(padded))
+            .collect();
+        format!("[{}]", page.join(","))
+    };
     let scenario = async {
         let records = format!("{FK}/records");
         let woke = cell
@@ -548,7 +559,7 @@ async fn a_woken_fork_long_poll_takes_its_whole_page_budget_again() {
         store.release_hold();
         until(|| cell.state.admission.parked() == 0).await;
         let waited = started.elapsed();
-        let rest = settle_at(&cell, 0, (held, held)).await;
+        let rest = at_rest(&cell, 0).await;
         let mut answers = Vec::new();
         for waiter in &mut waiters {
             answers.push(answer(waiter).await);
@@ -564,20 +575,16 @@ async fn a_woken_fork_long_poll_takes_its_whole_page_budget_again() {
     );
     let served = answers
         .iter()
-        .filter(|(status, body)| *status == 200 && *body == page.as_bytes())
-        .count();
-    let timeouts = answers
-        .iter()
-        .filter(|(status, body)| *status == 204 && body.is_empty())
+        .filter(|(status, body)| *status == 200 && (0..=96).any(|k| *body == prefix(k).as_bytes()))
         .count();
     assert_eq!(
-        (woke, appended, rest, served, timeouts),
-        (200, 200, (held, held), 1, 7),
-        "the woken fork long-polls answered {statuses:?}, the ledgers then at rest"
+        (woke, appended, served, rest.0 == rest.1, rest.0 <= capacity),
+        (200, 200, 8, true, true),
+        "the woken fork long-polls answered {statuses:?}, the ledgers then at rest {rest:?}"
     );
     assert!(
-        waited >= Duration::from_millis(4900),
-        "the waits ended after {waited:?}"
+        waited < Duration::from_millis(4900),
+        "no wait ran to its deadline: the waits ended after {waited:?}"
     );
     drop(waiters);
     assert_eq!(settle_at(&cell, 0, (0, 0)).await, (0, 0));

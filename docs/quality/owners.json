@@ -291,6 +291,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::read_reserve",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Read reservation DSTs (tuning P1 item 2, edge #240): a page read reserves 256 KiB and grows its hold as it takes data, so 200 cold reads of tiny streams on a slow store are all served where 8 MiB reservations refused most 503 read_memory_busy, and a read under pressure is served a shorter page that continues from its cursor; the compiler and the DST suite exercise the module.",
+      "syntax": "path = \"tests/read_reserve.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::shared_cell_capacity",
       "path": "src/dst/dst_tests.rs",
       "reason": "Shared-cell capacity DSTs (the capacity review of 2026-10-07): what one project inside its quotas can hold of what a shared cell's projects share besides read memory, one bound per test; the compiler and the DST suite exercise the module.",

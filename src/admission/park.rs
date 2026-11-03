@@ -44,7 +44,7 @@ use std::sync::{Arc, OnceLock};
 use axum::response::Response;
 
 use super::fair_shed::Verdict;
-use super::read_memory::{ReadHold, ReadRefusal};
+use super::read_memory::{Claim, ReadHold, ReadRefusal};
 use super::{InflightTicket, ParkedTicket};
 use crate::auth::RequestPrincipal;
 use crate::quota::QuotaRegistry;
@@ -296,6 +296,22 @@ pub(crate) async fn reserve_read_until(
         .map_or(ReadReservation::NoRoom, |hold| {
             ReadReservation::Reserved(hold.weighted(weight))
         })
+}
+
+/// The served request is about to take `bytes` of `claim` into its page
+/// (stored chunks it fetches, plaintext it admits): its read hold grows to
+/// cover them without waiting (`ReadHold::claim`). False when it cannot:
+/// the page ends before them. True outside a served request or for a
+/// request no admission reserved for.
+pub(crate) fn claim_read(claim: Claim, bytes: u64, forced: bool) -> bool {
+    REQUEST
+        .try_with(|request| {
+            request
+                .read
+                .get()
+                .is_none_or(|hold| hold.claim(claim, bytes, forced))
+        })
+        .unwrap_or(true)
 }
 
 /// The served request waits again with its read reservation taken back: it

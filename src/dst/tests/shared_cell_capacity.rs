@@ -621,8 +621,10 @@ async fn a_parked_pull_of_a_project_in_read_debt_does_not_walk_again() {
 /// read reserves its page, and releases it once it has answered (it
 /// renders names only). Here 60 descriptors of about 65 KB (creation
 /// documents of 63 KiB) make one page of about 3.9 MB, and project 0 holds
-/// an unread page of 96 records (about 6.3 MB) under a line of 8 MiB.
-/// Pass: the listing is refused as the read is (429
+/// an unread page of 96 records (about 6.3 MB) read under a line of 8 MiB,
+/// which is then lowered to what it holds and 64 KiB, less than a read's
+/// initial reservation (256 KiB, edge #240). Pass: the listing is refused
+/// as the read is (429
 /// `project_memory_pressure`, `Retry-After: 1`), and once the unread page
 /// is released it lists all 61 streams, in two pages since a page counts
 /// its descriptors decoded (about 98 KB each here), and leaves nothing
@@ -648,6 +650,8 @@ async fn a_catalog_page_is_held_to_its_projects_memory_line_as_a_read_is() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let held = read_held(&cell, 0);
+    let line = held + 64 * 1024;
+    cell.state.admission.set_project_memory_pressure_bytes(line);
     let read = refusal(cell.call(0, "GET", page, b"").await);
     let started = Instant::now();
     let listed = refusal(cell.call(0, "GET", "/v1/streams?limit=1000", b"").await);
@@ -660,7 +664,7 @@ async fn a_catalog_page_is_held_to_its_projects_memory_line_as_a_read_is() {
     );
     assert_eq!(
         listed, read,
-        "with {held} bytes of unread page held under a line of {PAGE_BUDGET}, a catalog page of \
+        "with {held} bytes of unread page held under a line of {line}, a catalog page of \
          {STREAMS} descriptors answered as a read, in {took:?}"
     );
     drop(unread);

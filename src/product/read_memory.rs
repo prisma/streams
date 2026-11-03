@@ -87,7 +87,8 @@ pub(crate) async fn refusal(
     {
         return Some(refusal);
     }
-    let bytes = page_bytes(method, path, query)?;
+    let bytes =
+        page_bytes(method, path, query)?.min(crate::admission::read_memory::READ_INITIAL_RESERVE);
     reserve(state, project_of(principal), weight_of(principal), bytes).await
 }
 

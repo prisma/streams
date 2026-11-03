@@ -8,7 +8,7 @@ use axum::response::Response;
 use bytes::Bytes;
 use hyper::body::Body as _;
 
-use super::{READ_MEMORY_WAIT, ReadHold, ReadRefusal};
+use super::{Claim, READ_MEMORY_WAIT, ReadHold, ReadRefusal};
 use crate::admission::{AdmissionController, AdmissionKnobs, SubscriptionCapacity};
 use crate::project_policy::ProjectQuotas;
 use crate::quota::QuotaRegistry;
@@ -395,4 +395,66 @@ async fn the_shared_cell_line_admits_four_default_reads_of_one_project_at_once()
         "a fifth default read"
     );
     drop(held);
+}
+
+/// A hold grows to cover what its read claims, without waiting: the larger
+/// of what it fetched and what it decoded, in both ledgers, its initial
+/// reservation counting toward it; a claim that does not fit is refused and
+/// leaves both ledgers and its claims as they were; a forced claim is taken
+/// whatever the room; a wait releases the hold and its claims start again;
+/// a rendered hold claims nothing; the drop releases everything.
+#[test]
+fn a_hold_grows_to_cover_its_claims_without_waiting() {
+    let ctl = ctl(4);
+    assert_eq!(ctl.read_memory(), (0, MIB));
+    let registry = QuotaRegistry::default();
+    let id = project(&registry);
+    let entry = registry.pressure_handle(&id).unwrap();
+    let ledgers = || (ctl.read_memory().0, entry.estimated_pressure_bytes());
+    let both = |bytes: u64| (bytes, bytes);
+    let hold = ReadHold::try_reserve(&ctl, registry.read_bytes(&id), 0, 256 * KIB).unwrap();
+    assert_eq!(ledgers(), both(256 * KIB), "the initial reservation");
+    assert!(hold.claim(Claim::Fetched, 100 * KIB, false));
+    assert_eq!(ledgers(), both(256 * KIB), "fetched within the reservation");
+    assert!(hold.claim(Claim::Decoded, 300 * KIB, false));
+    assert_eq!(ledgers(), both(300 * KIB), "decoded past it: grown");
+    assert!(hold.claim(Claim::Fetched, 150 * KIB, false));
+    assert_eq!(
+        ledgers(),
+        both(300 * KIB),
+        "fetched 250 KiB under decoded 300 KiB"
+    );
+    assert!(hold.claim(Claim::Decoded, 600 * KIB, false));
+    assert_eq!(ledgers(), both(900 * KIB), "decoded 900 KiB");
+    assert!(
+        !hold.claim(Claim::Decoded, 200 * KIB, false),
+        "1,100 KiB in 1 MiB"
+    );
+    assert_eq!(ledgers(), both(900 * KIB), "a refused claim takes nothing");
+    assert!(
+        hold.claim(Claim::Decoded, 100 * KIB, false),
+        "the refused claim was undone"
+    );
+    assert_eq!(ledgers(), both(1000 * KIB));
+    assert!(
+        !hold.claim(Claim::Fetched, 1100 * KIB, false),
+        "fetched past decoded and the room"
+    );
+    assert_eq!(ledgers(), both(1000 * KIB));
+    assert!(hold.claim(Claim::Decoded, 200 * KIB, true), "forced");
+    assert_eq!(
+        ledgers(),
+        both(1200 * KIB),
+        "a forced claim passes the room"
+    );
+    hold.unreserve();
+    assert_eq!(ledgers(), both(0), "a wait releases the hold");
+    assert!(hold.claim(Claim::Fetched, 64 * KIB, false));
+    assert_eq!(ledgers(), both(64 * KIB), "claims start again after a wait");
+    hold.settle(10 * KIB);
+    assert_eq!(ledgers(), both(10 * KIB), "the rendered page");
+    assert!(hold.claim(Claim::Decoded, 900 * KIB, false));
+    assert_eq!(ledgers(), both(10 * KIB), "a rendered hold claims nothing");
+    drop(hold);
+    assert_eq!(ledgers(), both(0));
 }

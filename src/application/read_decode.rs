@@ -65,7 +65,7 @@ impl Decoded {
             .records()
             .filter(|record| record.offset >= slice.first());
         for record in records.take_while(|record| record.offset <= slice.last()) {
-            if !budget.admit(record.payload.len(), key) {
+            if !self.claims(record.payload.len(), out) || !budget.admit(record.payload.len(), key) {
                 out.last = record.offset.checked_sub(1);
                 return Ok(false);
             }
@@ -76,6 +76,18 @@ impl Decoded {
             out.last = Some(record.offset);
         }
         Ok(true)
+    }
+
+    /// Whether the served request's read memory covers admitting a record
+    /// of `bytes` plaintext: it is claimed (`admission::park::claim_read`),
+    /// the page's first record whatever the room, so a read always makes
+    /// progress; a record it cannot cover ends the page before it, a shorter
+    /// page rather than a refusal (tuning P1 item 2).
+    fn claims(&self, bytes: usize, out: &ReadPage) -> bool {
+        let first = self.pending.is_empty() && out.recs.is_empty();
+        let decoded = crate::admission::read_memory::Claim::Decoded;
+        let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+        crate::admission::park::claim_read(decoded, bytes, first)
     }
 
     fn publish(self, out: &mut ReadPage, budget: &PageBudget) {

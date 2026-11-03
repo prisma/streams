@@ -356,6 +356,8 @@ mod read_page_assembly;
 mod read_memory;
 #[path = "tests/read_memory_wakes.rs"]
 mod read_memory_wakes;
+#[path = "tests/read_reserve.rs"]
+mod read_reserve;
 
 #[path = "tests/runtime_engine_lifecycle.rs"]
 mod runtime_engine_lifecycle;
