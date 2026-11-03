@@ -28,6 +28,16 @@
 //! exactly as before. A drain's poll and the operator view still list the
 //! heartbeats (`read_population`): they are rare, and they must see every
 //! beat in the namespace.
+//!
+//! The members a read finds are read again on one read in `PEER_READ_TICKS`
+//! (item 8): a heartbeat is rewritten at every beat, so each such GET is a
+//! billed 200, while liveness is judged at 30 s and every scale decision
+//! sustains 20 s. The reads between GET the desired document, this runtime's
+//! own beat, every counted ordinal not yet held (so a count rise, a booting
+//! ordinal and a joining instance are read as soon as before) and the drain
+//! marker (`drains`), and keep every other copy. A runtime the marker names
+//! as draining is read at every read until a draining beat of the named boot
+//! is held, so a planned drain's peers read it within a tick, as before.
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
@@ -35,9 +45,10 @@ use bytes::Bytes;
 use futures_util::{StreamExt, TryStreamExt};
 use object_store::{GetOptions, ObjectStore, path::Path as ObjPath};
 
+use super::drains::Drains;
 use super::{
-    DESIRED_DOC, DOCUMENT_DEADLINE, Desired, Heartbeat, MAX_DOCUMENT_BYTES, MAX_MEMBERS,
-    MAX_OBJECT_BYTES, MAX_TOTAL_BYTES, OVERRIDES_DOC, URLS_DOC, validate_desired,
+    DESIRED_DOC, DOCUMENT_DEADLINE, DRAINS_DOC, Desired, Heartbeat, MAX_DOCUMENT_BYTES,
+    MAX_MEMBERS, MAX_OBJECT_BYTES, MAX_TOTAL_BYTES, OVERRIDES_DOC, URLS_DOC, validate_desired,
 };
 
 /// A listing rediscovers a population on this many reads: once a minute at
@@ -47,10 +58,13 @@ const LIST_EVERY: u32 = 30;
 /// and a listing is priced as ten GETs, so from ten on a listing finds the
 /// members that exist at no greater cost.
 const MAX_PROBES: usize = 9;
-/// The heartbeat namespace's objects: its members and the three
+/// The heartbeat namespace's objects: its members and the four
 /// coordination documents beside them. A listing past it fails, and a read
 /// that would name more by name lists instead.
-const MAX_OBJECTS: usize = MAX_MEMBERS + 3;
+pub(super) const MAX_OBJECTS: usize = MAX_MEMBERS + 4;
+/// The members a read found are read again on one read in this many: every
+/// 6 s at the tick's period.
+pub(super) const PEER_READ_TICKS: u32 = 3;
 /// Member documents read at once.
 const READS_AT_ONCE: usize = 8;
 
@@ -65,14 +79,40 @@ struct Held {
 type Copies = BTreeMap<ObjPath, Held>;
 
 /// Whom the tick reads, and the copies it revalidates.
-#[derive(Default)]
 pub(super) struct Members {
     /// This runtime's own heartbeat, once it has joined.
     own: Mutex<Option<ObjPath>>,
     /// The desired document as last read: its count names the ordinals.
     desired: Mutex<Option<Held>>,
+    /// The drain marker as last read: the draining runtimes read at every
+    /// read.
+    drains: Mutex<Option<Held>>,
     heartbeats: Mutex<Found>,
     routers: Mutex<Found>,
+    /// Every member is read on one read in this many: `PEER_READ_TICKS`.
+    peer_read_ticks: u32,
+}
+
+impl Default for Members {
+    fn default() -> Self {
+        Members {
+            own: Mutex::default(),
+            desired: Mutex::default(),
+            drains: Mutex::default(),
+            heartbeats: Mutex::default(),
+            routers: Mutex::default(),
+            peer_read_ticks: PEER_READ_TICKS,
+        }
+    }
+}
+
+/// Which members a read read: a listing's (and so every member), every
+/// member by name, or only those a read between every-member reads names.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    Listed,
+    Every,
+    Between,
 }
 
 /// What a population's reads found, and when it was last listed.
@@ -81,6 +121,8 @@ struct Found {
     copies: Copies,
     /// Reads since the last listing; `None` until a listing has succeeded.
     since_listing: Option<u32>,
+    /// Reads since every member was last read; `None` until one has.
+    since_peers: Option<u32>,
 }
 
 impl Found {
@@ -91,13 +133,24 @@ impl Found {
             .is_none_or(|reads| reads + 1 >= LIST_EVERY)
     }
 
-    /// A read found `copies`, by a listing when `listed`.
-    fn found(&mut self, copies: Copies, listed: bool) {
+    /// Whether the next read reads every member: the first does, and so
+    /// does every `every`th after the last that did.
+    fn peers_due(&self, every: u32) -> bool {
+        self.since_peers.is_none_or(|reads| reads + 1 >= every)
+    }
+
+    /// A read of `pass` found `copies`.
+    fn found(&mut self, copies: Copies, pass: Pass) {
         self.copies = copies;
-        self.since_listing = if listed {
+        self.since_listing = if pass == Pass::Listed {
             Some(0)
         } else {
             self.since_listing.map(|reads| reads + 1)
+        };
+        self.since_peers = if pass == Pass::Between {
+            self.since_peers.map(|reads| reads + 1)
+        } else {
+            Some(0)
         };
     }
 }
@@ -117,13 +170,10 @@ impl Members {
         store: &dyn ObjectStore,
     ) -> anyhow::Result<Vec<Heartbeat>> {
         let own = self.own.lock().map(|own| own.clone()).unwrap_or_default();
-        let desired = self
-            .desired
-            .lock()
-            .map(|desired| desired.clone())
-            .unwrap_or_default();
-        let (held, due) = snapshot(&self.heartbeats);
-        let (desired, read, listed) = within_deadline(async {
+        let desired = held_copy(&self.desired);
+        let drains = held_copy(&self.drains);
+        let (held, due, peers_due) = snapshot(&self.heartbeats, self.peer_read_ticks);
+        let (desired, drains, read, pass) = within_deadline(async {
             let desired = read_one(
                 store,
                 ObjPath::from(DESIRED_DOC),
@@ -132,24 +182,42 @@ impl Members {
             )
             .await?
             .map(|(_, copy)| copy);
-            let named = named(counted(desired.as_ref()), own);
+            let drains = read_one(store, ObjPath::from(DRAINS_DOC), drains, MAX_DOCUMENT_BYTES)
+                .await?
+                .map(|(_, copy)| copy);
+            let named = named(counted(desired.as_ref()), own.clone());
             let absent = named.iter().filter(|path| !held.contains_key(*path));
             let probes = absent.count();
-            let by_name: BTreeSet<ObjPath> = held.keys().cloned().chain(named).collect();
-            let listed = due || probes > MAX_PROBES || by_name.len() > MAX_OBJECTS;
-            let paths = if listed {
-                list(store, "fleet", MAX_OBJECTS, is_heartbeat).await?
+            let by_name: BTreeSet<ObjPath> = held.keys().cloned().chain(named.clone()).collect();
+            let pass = if due || probes > MAX_PROBES || by_name.len() > MAX_OBJECTS {
+                Pass::Listed
+            } else if peers_due {
+                Pass::Every
             } else {
-                by_name
+                Pass::Between
             };
-            Ok((desired, read_each(store, paths, &held).await?, listed))
+            let read = match pass {
+                Pass::Listed => {
+                    let paths = list(store, "fleet", MAX_OBJECTS, is_heartbeat).await?;
+                    read_each(store, paths, &held).await?
+                }
+                Pass::Every => read_each(store, by_name, &held).await?,
+                Pass::Between => {
+                    let paths = between(&named, own, &held, drains.as_ref());
+                    let read = read_each(store, paths.clone(), &held).await?;
+                    kept(held.clone(), &paths, read)
+                }
+            };
+            Ok((desired, drains, read, pass))
         })
         .await?;
         let beats = parsed(&read)?;
-        if let Ok(mut held) = self.desired.lock() {
-            *held = desired;
+        for (population, copy) in [(&self.desired, desired), (&self.drains, drains)] {
+            if let Ok(mut held) = population.lock() {
+                *held = copy;
+            }
         }
-        found(&self.heartbeats, read, listed);
+        found(&self.heartbeats, read, pass);
         Ok(beats)
     }
 
@@ -159,7 +227,7 @@ impl Members {
         &self,
         store: &dyn ObjectStore,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
-        let (held, listed) = snapshot(&self.routers);
+        let (held, listed, _) = snapshot(&self.routers, 1);
         let read = within_deadline(async {
             let paths = if listed {
                 list(store, "routers", MAX_MEMBERS, |_| true).await?
@@ -170,24 +238,73 @@ impl Members {
         })
         .await?;
         let reports = parsed(&read)?;
-        found(&self.routers, read, listed);
+        let pass = if listed { Pass::Listed } else { Pass::Every };
+        found(&self.routers, read, pass);
         Ok(reports)
     }
 }
 
-/// The copies a population holds, and whether its next read lists.
-fn snapshot(population: &Mutex<Found>) -> (Copies, bool) {
+/// The copies a population holds, whether its next read lists, and whether
+/// it reads every member.
+fn snapshot(population: &Mutex<Found>, every: u32) -> (Copies, bool, bool) {
     population
         .lock()
-        .map(|found| (found.copies.clone(), found.listing_due()))
-        .unwrap_or_else(|_| (Copies::new(), true))
+        .map(|found| {
+            let copies = found.copies.clone();
+            (copies, found.listing_due(), found.peers_due(every))
+        })
+        .unwrap_or_else(|_| (Copies::new(), true, true))
 }
 
-/// A population's read found `copies`, by a listing when `listed`.
-fn found(population: &Mutex<Found>, copies: Copies, listed: bool) {
+/// A population's read of `pass` found `copies`.
+fn found(population: &Mutex<Found>, copies: Copies, pass: Pass) {
     if let Ok(mut population) = population.lock() {
-        population.found(copies, listed);
+        population.found(copies, pass);
     }
+}
+
+/// A single document's copy as last read.
+fn held_copy(document: &Mutex<Option<Held>>) -> Option<Held> {
+    document.lock().map(|copy| copy.clone()).unwrap_or_default()
+}
+
+/// What a read between the reads of every member names: this runtime's own
+/// beat, every counted ordinal not held, and every runtime the drain marker
+/// names whose held beat is of the named boot and not yet draining. A marker
+/// entry for a boot the held beat does not carry is stale and names nothing;
+/// one for a member not held names nothing either (a counted ordinal is read
+/// as one not held, any other by the next listing).
+fn between(
+    named: &BTreeSet<ObjPath>,
+    own: Option<ObjPath>,
+    held: &Copies,
+    drains: Option<&Held>,
+) -> BTreeSet<ObjPath> {
+    let marker = drains
+        .and_then(|copy| serde_json::from_slice::<Drains>(&copy.body).ok())
+        .unwrap_or_default();
+    let draining = marker.entries.iter().filter_map(|entry| {
+        let path = heartbeat_path(&entry.instance);
+        let beat = held
+            .get(&path)
+            .and_then(|copy| serde_json::from_slice::<Heartbeat>(&copy.body).ok())?;
+        (beat.boot_id == entry.boot_id && !beat.draining).then_some(path)
+    });
+    named
+        .iter()
+        .filter(|path| !held.contains_key(*path))
+        .cloned()
+        .chain(own)
+        .chain(draining)
+        .collect()
+}
+
+/// `held` with each of `asked` replaced by what `read` found of it: one the
+/// read found absent is gone.
+fn kept(mut held: Copies, asked: &BTreeSet<ObjPath>, read: Copies) -> Copies {
+    held.retain(|path, _| !asked.contains(path));
+    held.extend(read);
+    held
 }
 
 /// `instance`'s heartbeat document.
@@ -215,10 +332,10 @@ fn named(count: u64, own: Option<ObjPath>) -> BTreeSet<ObjPath> {
 }
 
 /// Whether a document under `fleet/` is a member's heartbeat: a JSON
-/// document other than the three coordination documents.
-fn is_heartbeat(path: &ObjPath) -> bool {
+/// document other than the four coordination documents.
+pub(super) fn is_heartbeat(path: &ObjPath) -> bool {
     let path = path.as_ref();
-    path.ends_with(".json") && ![DESIRED_DOC, OVERRIDES_DOC, URLS_DOC].contains(&path)
+    path.ends_with(".json") && ![DESIRED_DOC, OVERRIDES_DOC, URLS_DOC, DRAINS_DOC].contains(&path)
 }
 
 async fn within_deadline<T>(read: impl Future<Output = anyhow::Result<T>>) -> anyhow::Result<T> {
@@ -333,6 +450,18 @@ fn parsed<T: serde::de::DeserializeOwned>(read: &Copies) -> anyhow::Result<Vec<T
                 .map_err(|error| anyhow::anyhow!("invalid fleet member {path}: {error}"))
         })
         .collect()
+}
+
+#[cfg(test)]
+impl Members {
+    /// Members that read every member at every read: the reads the tests of
+    /// listing, probing and ceilings describe, apart from the cadence.
+    fn reading_every_member() -> Self {
+        Members {
+            peer_read_ticks: 1,
+            ..Members::default()
+        }
+    }
 }
 
 #[cfg(test)]

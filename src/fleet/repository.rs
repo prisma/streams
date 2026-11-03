@@ -18,6 +18,7 @@ use object_store::{
 
 use super::{Desired, Heartbeat, Overrides};
 
+mod drains;
 mod members;
 
 /// Coordination documents this instance may address. Naming them here
@@ -26,6 +27,8 @@ mod members;
 const DESIRED_DOC: &str = "fleet/desired.json";
 const OVERRIDES_DOC: &str = "fleet/overrides.json";
 const URLS_DOC: &str = "fleet/urls.json";
+/// The drain marker (`drains`): the runtimes that began a planned drain.
+const DRAINS_DOC: &str = "fleet/drains.json";
 // Single coordination documents are read sequentially. The same ceiling applies
 // to streamed bodies and writes, independent of provider metadata accuracy.
 const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
@@ -38,6 +41,8 @@ const MAX_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 )]
 pub(super) const MAX_MEMBERS: usize = crate::config::FleetConfig::MAX_MEMBERS as usize;
 pub(super) const DOCUMENT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+/// CAS attempts a drain's announcement makes against concurrent ones.
+const ANNOUNCE_ATTEMPTS: u32 = 3;
 
 #[derive(Clone, Default)]
 pub(crate) struct FleetRepository {
@@ -142,9 +147,9 @@ impl FleetRepository {
         reason = "FleetRepository::read_population; the population read nests the per-document byte guard inside the chunk stream of each fetched path; flattening it would separate the guard from the document it bounds"
     )]
     async fn read_population(&self) -> anyhow::Result<Vec<Heartbeat>> {
-        // The heartbeat namespace also contains the three coordination
-        // documents. They consume provider work, not member capacity.
-        let max_objects = MAX_MEMBERS + 3;
+        // The heartbeat namespace also contains the coordination documents.
+        // They consume provider work, not member capacity.
+        let max_objects = members::MAX_OBJECTS;
         let Some(store) = self.store.as_ref() else {
             return Ok(Vec::new());
         };
@@ -159,11 +164,7 @@ impl FleetRepository {
                     "fleet population exceeds {max_objects} objects"
                 );
                 let loc = meta.location.as_ref();
-                if !loc.ends_with(".json")
-                    || ["desired.json", "overrides.json", "urls.json"]
-                        .iter()
-                        .any(|n| loc.ends_with(n))
-                {
+                if !members::is_heartbeat(&meta.location) {
                     continue;
                 }
                 anyhow::ensure!(
@@ -278,6 +279,57 @@ impl FleetRepository {
         )
         .await
         .is_ok_and(|result| result.is_ok())
+    }
+
+    /// Create the drain marker empty when it is absent, so the tick's
+    /// revalidation of it never answers a billed 404 (`drains`). One
+    /// conditional PUT as the runtime starts; one that finds it present is
+    /// refused by the store, which is the expected answer.
+    pub(crate) async fn create_drain_marker(&self) {
+        let created = self
+            .replace_document(FleetDocument::Drains, b"{\"entries\":[]}".to_vec(), None)
+            .await;
+        tracing::debug!(created, "fleet drain marker ensured");
+    }
+
+    /// Name this runtime (`instance`, `boot_id`) in the drain marker as its
+    /// planned drain begins, so every peer's tick reads its draining beat
+    /// at the next tick (`drains`). A CAS replace from the version read,
+    /// retried on a lost race within the drain's announcement deadline.
+    /// Returns whether it committed.
+    pub(crate) async fn announce_drain(&self, instance: &str, boot_id: &str) -> bool {
+        let entry = drains::Announced {
+            instance: instance.to_string(),
+            boot_id: boot_id.to_string(),
+            at_ms: crate::shard::now_ms(),
+        };
+        for _ in 0..ANNOUNCE_ATTEMPTS {
+            let read = match self.read_bytes(DRAINS_DOC).await {
+                Ok(read) => read,
+                Err(error) => {
+                    tracing::warn!(%error, "fleet drain marker unreadable");
+                    continue;
+                }
+            };
+            let (marker, version) = match read {
+                Some((body, version)) => (
+                    serde_json::from_slice::<drains::Drains>(&body).unwrap_or_default(),
+                    Some(version),
+                ),
+                None => (drains::Drains::default(), None),
+            };
+            let marker = marker.announcing(entry.clone(), entry.at_ms);
+            let Ok(body) = serde_json::to_vec(&marker) else {
+                return false;
+            };
+            if self
+                .replace_document(FleetDocument::Drains, body, version)
+                .await
+            {
+                return true;
+            }
+        }
+        false
     }
 
     /// One document's bytes with the version a CAS clear needs — the
@@ -395,6 +447,7 @@ fn validate_write(doc: FleetDocument, body: &[u8]) -> anyhow::Result<()> {
     match doc {
         FleetDocument::Desired => validate_desired(&serde_json::from_slice(body)?),
         FleetDocument::Overrides => validate_overrides(&serde_json::from_slice(body)?),
+        FleetDocument::Drains => Ok(serde_json::from_slice::<drains::Drains>(body).map(drop)?),
     }
 }
 
@@ -404,6 +457,7 @@ fn validate_write(doc: FleetDocument, body: &[u8]) -> anyhow::Result<()> {
 pub(crate) enum FleetDocument {
     Desired,
     Overrides,
+    Drains,
 }
 
 impl FleetDocument {
@@ -411,6 +465,7 @@ impl FleetDocument {
         match self {
             FleetDocument::Desired => DESIRED_DOC,
             FleetDocument::Overrides => OVERRIDES_DOC,
+            FleetDocument::Drains => DRAINS_DOC,
         }
     }
 }
@@ -489,13 +544,13 @@ mod population_tests {
     }
 
     /// The heartbeat namespace holds at most MAX_MEMBERS beats and the
-    /// three coordination documents: a full fleet reads all its beats,
+    /// four coordination documents: a full fleet reads all its beats,
     /// and one object more fails the pass.
     #[tokio::test(crate = "crate::test_rt")]
     async fn a_full_fleet_reads_and_one_object_more_fails() {
         let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         let repository = FleetRepository::new(Some(store.clone()));
-        for doc in ["desired", "overrides", "urls"] {
+        for doc in ["desired", "overrides", "urls", "drains"] {
             store
                 .put(
                     &ObjPath::from(format!("fleet/{doc}.json")),
@@ -531,7 +586,7 @@ mod population_tests {
                 .await
                 .unwrap_err()
                 .to_string(),
-            "fleet population exceeds 4099 objects"
+            "fleet population exceeds 4100 objects"
         );
     }
 }

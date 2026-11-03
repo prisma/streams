@@ -237,10 +237,11 @@ fn passes_before_read(trace: &TraceStore, member: &str) -> usize {
 /// ten GETs). It now lists both once, on its first pass, to discover its
 /// members, and names them at every pass after it: the ordinals the desired
 /// count names, and the members a read found before (a woken spare above the
-/// count, an asleep one, and the router report). Each is read every pass, a
-/// member whose document has not changed answers 304 at every pass after the
-/// one that first read it, and a FLEET_MAX of 4096 with four members booted
-/// asks for no other heartbeat.
+/// count, an asleep one, and the router report). The router report is read
+/// every pass and each member's heartbeat on one pass in three (item 8: the
+/// first pass, the fourth, the seventh); a document that has not changed
+/// answers 304 at every read after the first, and a FLEET_MAX of 4096 with
+/// four members booted asks for no other heartbeat.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_tick_lists_its_members_only_to_discover_them() {
     let (inner, _, trace) = Gated::over_mem();
@@ -260,13 +261,13 @@ async fn the_tick_lists_its_members_only_to_discover_them() {
         .await
         .unwrap();
     let rig = tick_over(trace.clone(), |cli| cli.fleet_max = 4096).await;
-    settled(Duration::from_secs(20), || {
-        reads(&trace, PASS_MARKER).len() >= 5
+    settled(Duration::from_secs(30), || {
+        reads(&trace, PASS_MARKER).len() >= 7
     })
     .await;
     assert!(
-        reads(&trace, PASS_MARKER).len() >= 5,
-        "five passes must complete their reads"
+        reads(&trace, PASS_MARKER).len() >= 7,
+        "seven passes must complete their reads"
     );
     let present = BTreeSet::from(
         ["streams-1", "streams-2", "streams-3", "streams-4"]
@@ -297,31 +298,35 @@ async fn the_tick_lists_its_members_only_to_discover_them() {
         ["fleet", "routers"],
         "the tick lists its members and the router reports once, on its first pass, to discover them"
     );
-    for member in [
-        "fleet/streams-2.json",
-        "fleet/streams-3.json",
-        "fleet/streams-4.json",
-        "routers/router-1.json",
-    ] {
-        let outcomes = reads(&trace, member);
-        assert!(
-            outcomes.len() >= 5,
-            "{member} is read every pass: {outcomes:?}"
-        );
-        assert_eq!(outcomes[0], TraceOutcome::Ok, "{member}: {outcomes:?}");
-        assert!(
-            outcomes[1..]
-                .iter()
-                .all(|outcome| *outcome == TraceOutcome::NotModified),
-            "an unchanged member answers 304 at every later pass: {member} {outcomes:?}"
-        );
-    }
     assert_eq!(
         rig.state.ownership.ring_active(),
         ["streams-1", "streams-2"],
         "the ring is the desired count's ordinals"
     );
     stop(rig).await;
+    // The trace is final: a pass the stop cut short may have read its
+    // members and not yet the URL map that marks it.
+    let passes = reads(&trace, PASS_MARKER).len();
+    for (member, every) in [
+        ("fleet/streams-2.json", 3),
+        ("fleet/streams-3.json", 3),
+        ("fleet/streams-4.json", 3),
+        ("routers/router-1.json", 1),
+    ] {
+        let outcomes = reads(&trace, member);
+        let expected = [passes.div_ceil(every), (passes + 1).div_ceil(every)];
+        assert!(
+            expected.contains(&outcomes.len()),
+            "{member} is read on one pass in {every} of {passes}: {outcomes:?}"
+        );
+        assert_eq!(outcomes[0], TraceOutcome::Ok, "{member}: {outcomes:?}");
+        assert!(
+            outcomes[1..]
+                .iter()
+                .all(|outcome| *outcome == TraceOutcome::NotModified),
+            "an unchanged member answers 304 at every later read: {member} {outcomes:?}"
+        );
+    }
 }
 
 /// A desired count beyond this runtime's FLEET_MAX (a peer configured larger

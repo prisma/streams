@@ -123,6 +123,23 @@ controller scaling from segment-container balancing the same way):
   shard on fence, the gaining host opens it lazily on first routed
   request. Move budget: one shard per host per minute (churn guard).
 
+**Fleet reads (item 8).** Each instance's tick reads the desired document,
+its own heartbeat, every counted ordinal it does not yet hold and the
+drain marker `fleet/drains.json` at every tick (2 s), and every other
+member's heartbeat on one tick in three (`PEER_READ_TICKS`, 6 s).
+Liveness is judged at 30 s and every scale decision sustains 20 s, so the
+slower peer read changes no decision; a heartbeat is rewritten every beat,
+so each peer GET is a billed 200, and the cadence cuts them to a third
+((N-1)/6 per second per instance instead of (N-1)/2: about $6 a month per
+instance at 64 instances, from $18, at Class B $0.1875/M). A planned drain
+names its instance and boot in the marker as it begins; a peer reads a
+member the marker names at every tick until it holds a draining beat of
+that boot (an entry for another boot is stale and reads nothing), so the
+drain's 144 s bound is unchanged. The marker is created empty as a runtime
+joins and costs one conditional GET per tick per instance, answered 304
+while unchanged: unbilled, pending the 304 probe of the measurement plan.
+If 304s prove billed, the aggregate document (item 8 step 2) replaces it.
+
 Scale-out vs rebalance decision: if a HOST is hot but its segments are
 individually under 75 % of per-segment limits → rebalance (spread
 shards). If a SEGMENT is hot → split it. Both loops read the same

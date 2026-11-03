@@ -721,3 +721,59 @@ async fn a_drain_beyond_the_count_is_read_by_its_peer() {
         engine_shutdown(&rig.state).await;
     }
 }
+
+/// The fleet's drain marker (`fleet/drains.json`, item 8): it exists, empty,
+/// once the runtimes have joined, so the ticks' revalidation of it never pays
+/// a billed 404; a planned drain names its instance and boot in it as it
+/// begins, which makes every peer read its beat at every tick (the peers read
+/// each other on one tick in three) until a draining beat is held, so the
+/// drain completes within its unchanged bound.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_planned_drain_names_its_boot_in_the_drain_marker() {
+    let (data, fleet) = (mem(), mem());
+    seed_ring(&fleet, 2).await;
+    let draining = start(&data, &fleet, 0, "streams-1").await;
+    let peer = start(&data, &fleet, 1, "streams-2").await;
+    let both = ["streams-1".to_string(), "streams-2".to_string()];
+    let converged = settled(Duration::from_secs(20), || {
+        [&draining, &peer]
+            .iter()
+            .all(|rig| rig.state.ownership.ring_active() == both)
+    })
+    .await;
+    assert!(converged, "both rings must hold both instances first");
+    let marker = Path::from("fleet/drains.json");
+    let read_marker = || async {
+        let bytes = fleet.get(&marker).await.unwrap().bytes().await.unwrap();
+        serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+    };
+    assert_eq!(read_marker().await, serde_json::json!({"entries": []}));
+
+    let outcome = drain(&draining.state, "streams-1", Duration::from_secs(30)).await;
+    assert_eq!(outcome, DrainOutcome::HandedOff);
+    let entries = read_marker().await["entries"].clone();
+    let named: Vec<(&str, &str)> = entries
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                entry["instance"].as_str().unwrap(),
+                entry["boot_id"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    let boot = draining.state.runtime.identity.boot_id.as_str();
+    assert_eq!(named, [("streams-1", boot)]);
+    assert_eq!(peer.state.ownership.ring_active(), ["streams-2"]);
+    for rig in [&draining, &peer] {
+        assert!(
+            rig.tasks
+                .shutdown(Duration::from_secs(5))
+                .await
+                .aborted
+                .is_empty()
+        );
+        engine_shutdown(&rig.state).await;
+    }
+}

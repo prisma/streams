@@ -446,7 +446,10 @@ async fn fleet_instance_docs(store: &Arc<dyn ObjectStore>) -> Vec<String> {
     while let Some(meta) = listing.next().await {
         let Ok(meta) = meta else { continue };
         let loc = meta.location.as_ref().to_string();
-        if loc.ends_with(".json") && !loc.ends_with("desired.json") {
+        // Heartbeats only: the desired count and the drain marker (item 8)
+        // are fleet documents of their own.
+        let shared = loc.ends_with("desired.json") || loc.ends_with("drains.json");
+        if loc.ends_with(".json") && !shared {
             names.push(loc);
         }
     }

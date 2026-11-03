@@ -102,8 +102,17 @@ impl ObjectStore for Recording {
 }
 
 impl Recording {
-    /// The GETs since the last call, in path order, and the listings.
+    /// The GETs since the last call but the drain marker's, in path order,
+    /// and the listings: the reads the tests of listing, probing and
+    /// ceilings describe (the cadence's test reads the marker too).
     fn asked(&self) -> (Vec<Get>, Vec<String>) {
+        let (mut gets, lists) = self.asked_all();
+        gets.retain(|(path, ..)| path != DRAINS);
+        (gets, lists)
+    }
+
+    /// Every GET since the last call, in path order, and the listings.
+    fn asked_all(&self) -> (Vec<Get>, Vec<String>) {
         let mut gets = std::mem::take(&mut *self.gets.lock().unwrap());
         gets.sort();
         (gets, std::mem::take(&mut *self.lists.lock().unwrap()))
@@ -131,6 +140,7 @@ impl Recording {
 }
 
 const DESIRED: &str = "fleet/desired.json";
+const DRAINS: &str = "fleet/drains.json";
 
 /// `instance`'s heartbeat document.
 fn hb(instance: &str) -> String {
@@ -165,7 +175,7 @@ fn names(beats: &[Heartbeat]) -> Vec<(&str, i64)> {
 #[tokio::test(crate = "crate::test_rt")]
 async fn the_tick_names_the_counted_ordinals_and_itself_and_revalidates_each_copy() {
     let store = Recording::default();
-    let members = Members::default();
+    let members = Members::reading_every_member();
     members.join("streams-9");
     store.desired(3).await;
     for instance in ["streams-1", "streams-2"] {
@@ -267,13 +277,9 @@ async fn the_repository_reads_the_instance_that_joined_it() {
     assert_eq!(
         names(&beats),
         [("streams-1", 1), ("streams-9", 1)],
-        "the joined instance is read by the read after its first beat"
+        "the joined instance is read by the read after its first beat (a read between the every-member reads keeps streams-1's copy)"
     );
-    let joined = vec![
-        get(DESIRED, true, 304),
-        get(&hb("streams-1"), true, 304),
-        get(&hb("streams-9"), false, 200),
-    ];
+    let joined = vec![get(DESIRED, true, 304), get(&hb("streams-9"), false, 200)];
     assert_eq!(store.asked(), (joined, vec![]));
 }
 
@@ -284,7 +290,7 @@ async fn the_repository_reads_the_instance_that_joined_it() {
 #[tokio::test(crate = "crate::test_rt")]
 async fn the_count_a_read_finds_names_its_members_in_that_read() {
     let store = Recording::default();
-    let members = Members::default();
+    let members = Members::reading_every_member();
     store.beat("streams-1", 1).await;
     let beats = members.heartbeats(&store).await.unwrap();
     assert_eq!(names(&beats), [("streams-1", 1)]);
@@ -335,7 +341,7 @@ async fn the_count_a_read_finds_names_its_members_in_that_read() {
 #[tokio::test(crate = "crate::test_rt")]
 async fn absent_members_never_cost_more_than_a_listing() {
     let store = Recording::default();
-    let members = Members::default();
+    let members = Members::reading_every_member();
     members.join("streams-1");
     store.desired(4096).await;
     for ordinal in 1..=4 {
@@ -382,7 +388,7 @@ async fn absent_members_never_cost_more_than_a_listing() {
 #[tokio::test(crate = "crate::test_rt")]
 async fn a_member_no_count_names_is_found_by_the_next_listing() {
     let store = Recording::default();
-    let members = Members::default();
+    let members = Members::reading_every_member();
     members.join("streams-1");
     store.desired(1).await;
     for path in ["fleet/overrides.json", "fleet/urls.json"] {
@@ -430,7 +436,7 @@ async fn a_member_no_count_names_is_found_by_the_next_listing() {
 #[tokio::test(crate = "crate::test_rt")]
 async fn router_reports_are_listed_once_every_list_every_reads() {
     let store = Recording::default();
-    let members = Members::default();
+    let members = Members::reading_every_member();
     store
         .write("routers/router-1.json", r#"{"n":1}"#.into())
         .await;
@@ -481,7 +487,7 @@ async fn router_reports_are_listed_once_every_list_every_reads() {
 #[tokio::test(crate = "crate::test_rt")]
 async fn ceilings_and_corruption_fail_the_read_instead_of_dropping_a_member() {
     let store = Recording::default();
-    let members = Members::default();
+    let members = Members::reading_every_member();
     store.desired(65).await;
     let padded = |instance: &str, bytes: usize| {
         let doc = format!(
@@ -534,7 +540,7 @@ async fn ceilings_and_corruption_fail_the_read_instead_of_dropping_a_member() {
 #[tokio::test(crate = "crate::test_rt")]
 async fn a_read_asks_for_no_more_documents_than_the_namespace_holds() {
     let store = Recording::default();
-    let members = Members::default();
+    let members = Members::reading_every_member();
     store.desired(1).await;
     for index in 0..MAX_OBJECTS - 1 {
         store.beat(&format!("peer-{index:04}"), 1).await;
@@ -563,9 +569,9 @@ async fn a_read_asks_for_no_more_documents_than_the_namespace_holds() {
         );
     }
     store.beat("streams-1", 1).await;
-    for members in [&members, &Members::default()] {
+    for members in [&members, &Members::reading_every_member()] {
         let error = members.heartbeats(&store).await.unwrap_err();
-        assert!(error.to_string().contains("4099 objects"), "{error}");
+        assert!(error.to_string().contains("4100 objects"), "{error}");
     }
     store
         .inner
@@ -585,7 +591,7 @@ async fn a_read_asks_for_no_more_documents_than_the_namespace_holds() {
 #[tokio::test(crate = "crate::test_rt")]
 async fn a_namespace_over_its_bound_fails_every_read_from_its_next_listing() {
     let store = Recording::default();
-    let members = Members::default();
+    let members = Members::reading_every_member();
     store.desired(1).await;
     store.beat("streams-1", 1).await;
     for index in 0..MAX_OBJECTS - 3 {
@@ -606,7 +612,7 @@ async fn a_namespace_over_its_bound_fails_every_read_from_its_next_listing() {
     }
     for _ in 0..2 {
         let error = members.heartbeats(&store).await.unwrap_err();
-        assert!(error.to_string().contains("4099 objects"), "{error}");
+        assert!(error.to_string().contains("4100 objects"), "{error}");
         assert_eq!(store.asked().1, ["fleet"], "every read from then on lists");
     }
 
@@ -621,7 +627,7 @@ async fn a_namespace_over_its_bound_fails_every_read_from_its_next_listing() {
 #[tokio::test(start_paused = true, crate = "crate::test_rt")]
 async fn a_read_the_store_never_answers_fails_at_the_document_deadline() {
     let store = Arc::new(Recording::default());
-    let members = Members::default();
+    let members = Members::reading_every_member();
     store.beat("streams-1", 1).await;
     store.write("routers/router-1.json", "{}".into()).await;
     store.hang.store(true, Ordering::SeqCst);
@@ -631,4 +637,194 @@ async fn a_read_the_store_never_answers_fails_at_the_document_deadline() {
     assert_eq!(started.elapsed(), super::DOCUMENT_DEADLINE);
     let error = members.router_reports(store.as_ref()).await.unwrap_err();
     assert!(error.to_string().contains("timed out"), "{error}");
+}
+
+/// Each read's GETs by kind: (the desired document, the drain marker, this
+/// runtime's own beat, every other member's beat).
+fn by_kind(gets: &[Get], own: &str) -> (usize, usize, usize, usize) {
+    let count = |path: &str| gets.iter().filter(|(asked, ..)| asked == path).count();
+    let (desired, drains, mine) = (count(DESIRED), count(DRAINS), count(&hb(own)));
+    (desired, drains, mine, gets.len() - desired - drains - mine)
+}
+
+impl Recording {
+    /// The drain marker, naming `entries` (instance, boot).
+    async fn drains(&self, entries: &[(&str, &str)]) {
+        let entries: Vec<String> = entries
+            .iter()
+            .map(|(instance, boot)| {
+                format!(r#"{{"instance":"{instance}","boot_id":"{boot}","at_ms":1}}"#)
+            })
+            .collect();
+        self.write(DRAINS, format!(r#"{{"entries":[{}]}}"#, entries.join(",")))
+            .await;
+    }
+
+    /// `instance`'s beat under `boot`, draining or not.
+    async fn beat_of(&self, instance: &str, ts_ms: i64, boot: &str, draining: bool) {
+        let body = format!(
+            r#"{{"instance":"{instance}","ts_ms":{ts_ms},"rps":0.0,"owned_shards":[],"draining":{draining},"boot_id":"{boot}"}}"#
+        );
+        self.write(&hb(instance), body).await;
+    }
+}
+
+/// `instance`'s beat in `beats`: (`ts_ms`, draining).
+fn beat_in(beats: &[Heartbeat], instance: &str) -> Option<(i64, bool)> {
+    beats
+        .iter()
+        .find(|beat| beat.instance == instance)
+        .map(|beat| (beat.ts_ms, beat.draining))
+}
+
+/// The peers' heartbeats are read on one read in three (item 8): liveness is
+/// judged at 30 s and every scale decision sustains 20 s, so a peer read
+/// every 6 s at the tick's period loses nothing. Over six reads (12 s) a
+/// fleet of eight peers costs 16 peer GETs, not 48; the desired document,
+/// the drain marker (an unchanged copy: 304, unbilled) and this runtime's own
+/// beat are read at every read. A peer's newer beat is read at the next peer
+/// read, and a counted ordinal not yet held is read by the read that finds
+/// it, whichever read that is.
+#[tokio::test(crate = "crate::test_rt")]
+async fn peers_are_read_on_one_read_in_three_and_the_rest_at_every_read() {
+    let store = Recording::default();
+    let members = Members::default();
+    members.join("streams-1");
+    store.desired(9).await;
+    store.drains(&[]).await;
+    for ordinal in 1..=9 {
+        store.beat(&format!("streams-{ordinal}"), 1).await;
+    }
+    let mut counts = Vec::new();
+    for read in 1..=6 {
+        if read == 2 {
+            store.beat("streams-5", 2).await;
+        }
+        let beats = members.heartbeats(&store).await.unwrap();
+        let fresh = beat_in(&beats, "streams-5").map(|(ts_ms, _)| ts_ms);
+        counts.push((by_kind(&store.asked_all().0, "streams-1"), fresh));
+    }
+    assert_eq!(
+        counts,
+        [
+            ((1, 1, 1, 8), Some(1)),
+            ((1, 1, 1, 0), Some(1)),
+            ((1, 1, 1, 0), Some(1)),
+            ((1, 1, 1, 8), Some(2)),
+            ((1, 1, 1, 0), Some(2)),
+            ((1, 1, 1, 0), Some(2)),
+        ],
+        "(desired, marker, own, peers) GETs and streams-5's beat, per read"
+    );
+
+    store.desired(10).await;
+    store.beat("streams-10", 1).await;
+    let beats = members.heartbeats(&store).await.unwrap();
+    assert_eq!(beats.len(), 10, "the rise's ordinal is read at once");
+    let gets = store.asked_all().0;
+    assert_eq!(by_kind(&gets, "streams-1"), (1, 1, 1, 9), "a peer read");
+    store.desired(11).await;
+    store.beat("streams-11", 1).await;
+    let beats = members.heartbeats(&store).await.unwrap();
+    assert_eq!(beats.len(), 11);
+    assert_eq!(
+        store.asked_all().0,
+        vec![
+            get(DESIRED, true, 200),
+            get(DRAINS, true, 304),
+            get(&hb("streams-1"), true, 304),
+            get(&hb("streams-11"), false, 200),
+        ],
+        "between peer reads: the desired document, the marker, its own beat and the new ordinal"
+    );
+}
+
+/// A planned drain's peers read its draining beat within a tick (the
+/// drain's bound counts one tick period): a runtime the drain marker names
+/// is read at every read, between the every-member reads too, until a
+/// draining beat of the named boot is held, and from then on with the other
+/// peers.
+#[tokio::test(crate = "crate::test_rt")]
+async fn a_runtime_the_drain_marker_names_is_read_at_every_read_until_its_draining_beat() {
+    let store = Recording::default();
+    let members = Members::default();
+    members.join("streams-1");
+    store.desired(3).await;
+    store.drains(&[]).await;
+    store.beat_of("streams-1", 1, "a", false).await;
+    store.beat_of("streams-2", 1, "b", false).await;
+    store.beat_of("streams-3", 1, "c", false).await;
+    members.heartbeats(&store).await.unwrap();
+    store.asked_all();
+
+    store.beat_of("streams-2", 2, "b", true).await;
+    store.drains(&[("streams-2", "b")]).await;
+    let beats = members.heartbeats(&store).await.unwrap();
+    assert_eq!(
+        beat_in(&beats, "streams-2"),
+        Some((2, true)),
+        "the read after the announcement holds the draining beat"
+    );
+    assert_eq!(
+        store.asked_all().0,
+        vec![
+            get(DESIRED, true, 304),
+            get(DRAINS, true, 200),
+            get(&hb("streams-1"), true, 304),
+            get(&hb("streams-2"), true, 200),
+        ],
+        "a read between the every-member reads, which reads the announced runtime"
+    );
+    members.heartbeats(&store).await.unwrap();
+    assert_eq!(
+        by_kind(&store.asked_all().0, "streams-1"),
+        (1, 1, 1, 0),
+        "once its draining beat is held, it waits for the every-member read"
+    );
+
+    store.drains(&[("streams-3", "c")]).await;
+    let beats = members.heartbeats(&store).await.unwrap();
+    assert_eq!(by_kind(&store.asked_all().0, "streams-1"), (1, 1, 1, 2));
+    assert_eq!(beat_in(&beats, "streams-3"), Some((1, false)));
+    store.beat_of("streams-3", 2, "c", true).await;
+    let beats = members.heartbeats(&store).await.unwrap();
+    assert_eq!(
+        store.asked_all().0,
+        vec![
+            get(DESIRED, true, 304),
+            get(DRAINS, true, 304),
+            get(&hb("streams-1"), true, 304),
+            get(&hb("streams-3"), true, 200),
+        ],
+        "an announced runtime whose draining beat has not landed is read again at the next read"
+    );
+    assert_eq!(beat_in(&beats, "streams-3"), Some((2, true)));
+}
+
+/// An entry names a boot: one whose instance now beats under another boot
+/// is stale, so it reads nothing extra and never makes a live member read
+/// as draining; whether a member drains is only its own beat's word.
+#[tokio::test(crate = "crate::test_rt")]
+async fn a_stale_drain_marker_entry_never_makes_a_live_member_read_as_draining() {
+    let store = Recording::default();
+    let members = Members::default();
+    members.join("streams-1");
+    store.desired(2).await;
+    store.drains(&[("streams-2", "old-boot")]).await;
+    store.beat_of("streams-1", 1, "a", false).await;
+    store.beat_of("streams-2", 1, "new-boot", false).await;
+    for read in 1..=3 {
+        let beats = members.heartbeats(&store).await.unwrap();
+        assert_eq!(
+            beat_in(&beats, "streams-2"),
+            Some((1, false)),
+            "read {read}"
+        );
+        let peers = by_kind(&store.asked_all().0, "streams-1").3;
+        assert_eq!(
+            peers,
+            usize::from(read == 1),
+            "read {read}: only the every-member read"
+        );
+    }
 }

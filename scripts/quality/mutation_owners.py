@@ -334,6 +334,9 @@ OWNERS = (
     owner('fleet_members', 'src/fleet/repository/members.rs', 'fleet:: dst_tests::fleet_controller::'),
     # The drain's handoff is proven by the two-instance rigs.
     owner('fleet_drain', 'src/fleet/drain.rs', 'fleet:: dst_tests::fleet_drain::'),
+    # The drain marker's entries are module tests; the tick's reads of the
+    # runtimes it names are the members tests, its write by a drain the rig.
+    owner('fleet_drains', 'src/fleet/repository/drains.rs', 'fleet:: dst_tests::fleet_drain::'),
     owner('fleet_document_tests', 'src/fleet/repository/document_tests.rs', 'fleet::'),
     owner('fleet_planning', 'src/fleet/planning.rs', 'fleet::'),
     owner('fleet_count_balance', 'src/fleet/count_balance.rs',

@@ -1637,6 +1637,17 @@
     "scenarios": []
   },
   {
+    "name": "a_planned_drain_names_its_boot_in_the_drain_marker",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "3acdf03fa9a745b8d0b741d8336171dfeb0e63e60eee3570853a60aecf66f9e7",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_drain.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_poisoning_settle_reads_only_what_its_project_can_hold",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -9745,7 +9756,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "62950d2edc9e0d375394f524a47879e7657830fc76fc3dbfb8731717a5664958",
+    "function_sha256": "1e1ca38ea13c41c990450218ba2977f920f64ec72f7a2a0766d228076bad0d1f",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_reads.rs",

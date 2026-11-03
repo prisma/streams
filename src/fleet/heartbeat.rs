@@ -162,8 +162,13 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
     let mut beats = tokio::time::interval(PERIOD);
     beats.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // The interval's first tick is immediate; the first beat waits a period
-    // so its rates cover one.
+    // so its rates cover one. Meanwhile the drain marker every tick
+    // revalidates is created if absent (`repository::drains`).
     beats.tick().await;
+    tokio::select! {
+        _ = cancel.cancelled() => return TaskResult::Done,
+        () = state.fleet.create_drain_marker() => {}
+    }
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,

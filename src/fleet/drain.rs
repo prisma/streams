@@ -31,12 +31,15 @@ use crate::shard::now_ms;
 
 /// The drain's bound, derived from what it waits for, each at its own bound:
 /// its draining beat (a heartbeat PUT already in flight, then its own: two
-/// document deadlines); a peer's view that read it (a pass in flight when
-/// the beat landed, a tick period, and the next pass up to its publication:
-/// two pass deadlines and a period, the same reasoning as the progress
-/// deadline); that view's echo (a beat in flight, a beat period, then its
-/// own PUT: two document deadlines and a period); and the closes of the
-/// shards it yields (the ordered stop's close grace): 144 s.
+/// document deadlines), and beside it its announcement in the drain marker
+/// (a read and a CAS PUT: the same two); a peer's view that read it (a pass
+/// in flight when the beat landed, a tick period, and the next pass up to its
+/// publication: two pass deadlines and a period, the same reasoning as the
+/// progress deadline; a peer reads a runtime the marker names at every tick,
+/// though it reads its other peers on one tick in three, item 8); that
+/// view's echo (a beat in flight, a beat period, then its own PUT: two
+/// document deadlines and a period); and the closes of the shards it yields
+/// (the ordered stop's close grace): 144 s.
 pub(crate) const BUDGET: Duration = repository::DOCUMENT_DEADLINE
     .saturating_add(repository::DOCUMENT_DEADLINE)
     .saturating_add(planning::PASS_DEADLINE)
@@ -56,6 +59,11 @@ const SHARD_CLOSE_GRACE: Duration = Duration::from_secs(10);
 
 /// How often the drain looks again.
 const POLL: Duration = Duration::from_millis(250);
+
+/// The drain marker announcement's bound: a read and a CAS PUT, the two
+/// document deadlines the draining beat's own term allows.
+const ANNOUNCE_DEADLINE: Duration =
+    repository::DOCUMENT_DEADLINE.saturating_add(repository::DOCUMENT_DEADLINE);
 
 /// How a planned drain ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,6 +135,7 @@ pub(crate) async fn drain(state: &AppState, instance: &str, budget: Duration) ->
     let deadline = started + budget;
     let announce_by = started + repository::DOCUMENT_DEADLINE;
     let standing = state.fleet.standing();
+    let mut announced = false;
     loop {
         let pending = match observe(state, deadline).await {
             Ok((beats, count)) => {
@@ -143,6 +152,9 @@ pub(crate) async fn drain(state: &AppState, instance: &str, budget: Duration) ->
                 }
                 if !standing.draining() {
                     standing.begin_draining();
+                }
+                if !announced {
+                    announced = announce(state, instance).await;
                 }
                 let drained = ViewedBeat {
                     boot_id: state.runtime.identity.boot_id.clone(),
@@ -176,6 +188,24 @@ pub(crate) async fn drain(state: &AppState, instance: &str, budget: Duration) ->
         }
         tokio::time::sleep(POLL.min(deadline.saturating_duration_since(now))).await;
     }
+}
+
+/// Name this runtime in the drain marker within `ANNOUNCE_DEADLINE`, so its
+/// peers read its draining beat at their next tick; whether it committed. A
+/// drain whose announcement fails tries again at its next look, and its
+/// peers meanwhile read it on their every-member reads.
+async fn announce(state: &AppState, instance: &str) -> bool {
+    let boot_id = &state.runtime.identity.boot_id;
+    let announced = tokio::time::timeout(
+        ANNOUNCE_DEADLINE,
+        state.fleet.announce_drain(instance, boot_id),
+    )
+    .await
+    .unwrap_or(false);
+    if !announced {
+        tracing::warn!(%instance, "planned drain: drain marker not written; retrying");
+    }
+    announced
 }
 
 /// The heartbeat set and the desired count, each read within the deadline.
