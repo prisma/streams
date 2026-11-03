@@ -5042,6 +5042,35 @@ None of these changes alters a status or code on a path that worked before, and 
 
 One record has verified=false: its commit did not match the recorded text.
 
+
+### #243 (this record's commit) — The fleet heartbeat carries what fills an instance, and the desired count's reason names the dimensions that read it
+
+- **Program item:** tuning program P4 item 6, extended to prisma/streams#149 half 1 (the lead, 2026-11-03).
+- **Surface:** operator only.
+- **Endpoint:** `GET /operator/data.json` `fleet.heartbeats` (the published `fleet/<instance>.json` documents, relayed as stored) and `fleet.desired.reason`.
+- **Condition:** a fleet-mode cell (`fleet` coordination enabled); always.
+- **Before:** each heartbeat carried the load vector (`rps`, `ack_p50_ms`, `cpu_pct`, `inflight`, `inflight_peak`, `rss_mb`, WAL PUT latency, out-inflight, lag and wedge) and the planning fields. `desired.reason` read `cores_used=… util->… inflight=… slots->… hot_cpu=…% (…) ack_p50=…ms (…) edge_p50=…ms (…) rps=… live=…`.
+- **After:**
+  - Each heartbeat also carries:
+    - `refusals`: refusals since the previous beat that another instance could relieve (read memory, the project tracker, in-flight/RSS/survival sheds);
+    - `refusal_beats`: the publisher's streak of beats that counted one;
+    - `cached_streams`: descriptor-cache entries;
+    - `resident_streams` and `resident_streams_max_shard`: resident stream handles, summed and in the fullest shard;
+    - `tracked_projects`;
+    - `store_read_p50_ms` and `store_read_p99_ms`: the touch path's GETs over 15 s, 0 below 20 reads;
+    - `split_demand`: how far the publisher's last planned demand (the maximum over the dimensions, within `FLEET_MAX`, before the clamp to the shards) ran past the topology's shards; 0 while the shards cover it or the topology is unknown.
+  - `desired.reason` reads `cores_used=… util->… inflight=… slots->… hot_cpu=…% refusal_beats=… rss_max=…MB (…) ack_p50=…ms (…) edge_p50=…ms (…) cached=… projects=… (…) shards=… split->… rps=… live=…`. The ack-latency reading is the larger of the ack p50 and a loaded member's store-read p50.
+  - The fields default to 0 when absent and an older build ignores them when present, so a mixed-version fleet reads every beat in both directions.
+- **Retry semantics:** none (read-only).
+- **Who is affected:** operators and the cell watch reading `/operator/data.json`. No cell-watch rule reads these fields. A parser of `desired.reason` that split it on fixed positions sees the new segments; it still ends `rps=… live=…`.
+- **Pinning tests:**
+  - `dst::dst_tests::fleet_controller::desired::{a_member_refusing_reads_three_beats_running_scales_the_fleet_out, a_member_near_its_rss_shed_line_scales_the_fleet_out_and_idle_ones_do_not, the_fleets_filling_caches_and_trackers_ask_for_their_occupancy, a_sustained_store_read_wait_scales_the_fleet_out, a_one_shard_cell_publishes_its_demand_as_split_demand}` (the reason's segments and the published `split_demand`);
+  - `fleet::controller` DSTs asserting the reason ends with the rate and the live count;
+  - `fleet::heartbeat::tests::each_beat_counts_its_refusals_and_their_streak`.
+- **Risk reason:** low. Additive operator fields and an operator-read reason string. Nothing a client sees changes.
+- **Status:** ratified with amendments by Fable 5.1 on 2026-11-03 under the owner's delegation of 2026-11-03 (operator-only, additive counts and latencies; the split-demand and mixed-version wording amended).
+- **Check against commit:** written with the change.
+
 ### #45 07db91a7 — Scaler cooldown and merge patience saturate instead of wrapping
 
 - **Risk:** low

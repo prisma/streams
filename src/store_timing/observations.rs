@@ -810,5 +810,38 @@ pub(crate) fn heartbeat_summary() -> (u64, u64, i64, i64) {
     )
 }
 
+/// The store reads a touch waits on, over the trailing 15 s: GETs of data
+/// objects (SSTs, segments, registry objects), not WAL, manifest or fleet
+/// documents, HEADs left out. A window with fewer reads than this reports
+/// none: a handful of reads is no sustained wait.
+const STORE_READ_MIN_SAMPLES: usize = 20;
+
+/// The touch path's store-read latency (ms, p50 and p99) over the trailing
+/// 15 s, (0, 0) below `STORE_READ_MIN_SAMPLES` reads: the heartbeat's store
+/// wait (fleet item 6). A poisoned ring reads as no samples.
+pub(crate) fn store_read_summary() -> (u64, u64) {
+    let cutoff = now_ms().saturating_sub(15_000);
+    stats()
+        .ring
+        .lock()
+        .map(|ring| store_read_percentiles(ring.iter(), cutoff))
+        .unwrap_or_default()
+}
+
+/// The p50 and p99 (ms) of the touch path's reads among `events` at or after
+/// `cutoff`: GETs (op 2) of data objects (class 2, SSTs; class 4, segments
+/// and registry objects). (0, 0) below `STORE_READ_MIN_SAMPLES`.
+fn store_read_percentiles<'a>(events: impl Iterator<Item = &'a Ev>, cutoff: u64) -> (u64, u64) {
+    let mut reads: Vec<u32> = events
+        .filter(|ev| ev.ts_ms >= cutoff && ev.op == 2 && matches!(ev.class, 2 | 4))
+        .map(|ev| ev.dur_us)
+        .collect();
+    if reads.len() < STORE_READ_MIN_SAMPLES {
+        return (0, 0);
+    }
+    reads.sort_unstable();
+    (pct(&reads, 50), pct(&reads, 99))
+}
+
 #[cfg(test)]
 mod tests;

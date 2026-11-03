@@ -44,6 +44,9 @@ pub(crate) struct Standing {
     viewed: Mutex<Viewed>,
     /// How this runtime's planned drain ended, once it has.
     drained: Mutex<Option<super::drain::DrainOutcome>>,
+    /// How far the tick's last desired count ran past the topology's
+    /// shards (`planning::Demand`): the split demand its beat publishes.
+    split_demand: AtomicU64,
 }
 
 impl Default for Standing {
@@ -58,6 +61,7 @@ impl Default for Standing {
             read: Mutex::new(Viewed::new()),
             viewed: Mutex::new(Viewed::new()),
             drained: Mutex::new(None),
+            split_demand: AtomicU64::new(0),
         }
     }
 }
@@ -97,6 +101,17 @@ impl Standing {
             .lock()
             .map(|viewed| viewed.clone())
             .unwrap_or_default()
+    }
+
+    /// The tick's latest desired count ran `demand` instances past the
+    /// topology's shards.
+    pub(crate) fn set_split_demand(&self, demand: u64) {
+        self.split_demand.store(demand, Ordering::Relaxed);
+    }
+
+    /// The split demand the next beat publishes.
+    pub(crate) fn split_demand(&self) -> u64 {
+        self.split_demand.load(Ordering::Relaxed)
     }
 
     /// The next beat's sequence number. A beat takes it before it reads

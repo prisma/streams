@@ -318,12 +318,16 @@ async fn an_unreadable_router_report_defers_only_the_desired_publication() {
             .unwrap();
     }
     peer_heartbeat(&inner, "streams-2", 300, 0.0).await;
+    // Four shards: the count this test plans (three) is within the
+    // topology, which clamps it (item 6). "00" goes to streams-2 as with
+    // one shard: the ring scores each shard on its own.
     let rig = http_rig_build(
         mem(),
         RigRuntime::first(),
         HttpRigOptions {
             fleet_store: Some(inner.clone()),
             instance: Some("streams-1".into()),
+            prefixes: ["00", "01", "02", "03"].map(String::from).to_vec(),
             ..Default::default()
         },
     )

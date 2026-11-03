@@ -327,6 +327,29 @@ struct FleetCfg {
     /// event triggers the next one).
     latency_sustain: Duration,
     max: u64,
+    /// This instance's RSS shed line (`ADMIT_RSS_SHED_MB`; 0 = none): a
+    /// member at 80 % of it counts as hot (item 6).
+    rss_shed_mb: u64,
+}
+
+impl FleetCfg {
+    /// The desired-count planner's thresholds (`planning::Demand::plan`).
+    fn thresholds(&self) -> planning::Thresholds {
+        planning::Thresholds {
+            target_util: self.target_util,
+            scale_in_util: self.scale_in_util,
+            edge_slots: self.edge_slots,
+            latency_ms: self.latency_ms,
+            latency_sustain: self.latency_sustain,
+            edge_latency_ms: self.edge_latency_ms,
+            hot_cpu_pct: self.hot_cpu_pct,
+            cpu_sustain: self.cpu_sustain,
+            max: self.max,
+            rss_shed_mb: self.rss_shed_mb,
+            cache_capacity: crate::registry::cache::REGISTRY_CACHE_MAX as u64,
+            tracker_capacity: crate::quota::MAX_TRACKED_PROJECTS as u64,
+        }
+    }
 }
 
 /// The PRODUCTION assembly: derive this runtime's fleet-loop posture
@@ -361,6 +384,7 @@ pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskS
             edge_latency_ms: cli.scale_edge_latency_ms,
             latency_sustain: Duration::from_secs(cli.scale_lat_sustain_secs),
             max: cli.fleet_max,
+            rss_shed_mb: state.admission.rss_shed_mb(),
         }
     };
     state.fleet.standing().mark_progress();
@@ -391,15 +415,11 @@ pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskS
 )]
 #[expect(
     clippy::unwrap_used,
-    reason = "start; a poisoned timing ring may hold a half-recorded wait, the fleet documents serialise infallibly as plain data, an unreadable router snapshot is a typed deferral of the desired CAS, and the move target and the eager move-in are ring decisions over the view this tick published rather than panic sites; recovering the ring, handling the serialisation or aborting the tick on the snapshot would add branches no tick reaches"
+    reason = "start; the fleet documents serialise infallibly as plain data, an unreadable router snapshot is a typed deferral of the desired CAS, and the move target and the eager move-in are ring decisions over the view this tick published rather than panic sites; handling the serialisation or aborting the tick on the snapshot would add branches no tick reaches"
 )]
 #[expect(
     clippy::cast_sign_loss,
-    reason = "start; the desired counts are ceilings of non-negative ratios bounded by the fleet maximum and the wedge seconds are clamped at zero; checked conversions would only restate those bounds"
-)]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "start; the desired counts are ceilings of ratios bounded by the fleet maximum, far below u64; checked conversions would only restate that bound"
+    reason = "start; the wedge seconds are clamped at zero before the cast; a checked conversion would only restate that bound"
 )]
 #[expect(
     clippy::let_underscore_must_use,
@@ -412,8 +432,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
         let repository = state.fleet.clone();
         let mut eager_after: Option<String> = None;
         let mut below_since: Option<Instant> = None;
-        let mut lat_breach_since: Option<Instant> = None;
-        let mut cpu_breach_since: Option<Instant> = None;
+        let mut demand = planning::Demand::default();
         // Rebalancer (SCALING.md §4): consecutive ticks with absorb lag
         // over threshold, and the churn guard on shard moves.
         let mut lag_hot_ticks: u32 = 0;
@@ -457,12 +476,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
             let (wedge_prefix, wedge_max_ms, my_lag) = state.fleet_pressure();
 
             // 2. Live set + fleet load.
-            let mut total_rps = 0.0f64;
-            let mut total_cores_used = 0.0f64;
-            let mut total_inflight = 0.0f64;
-            let mut live = 0u64;
-            let mut max_loaded_p50 = 0.0f64;
-            let mut max_loaded_cpu = 0.0f64;
+            let mut loads = planning::Loads::default();
             // Each published heartbeat's candidacy: its liveness and
             // controller-progress ages and its withdrawal.
             let mut hb_age_ms = std::collections::HashMap::new();
@@ -495,21 +509,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                             );
                         }
                     }
-                    live += 1;
-                    total_rps += other.rps;
-                    total_cores_used += other.cpu_pct / 100.0;
-                    total_inflight += other.inflight.max(0) as f64;
-                    // Load-gated dims count only for instances doing real
-                    // work (≥5 rps) so idle blips and cold starts (binary
-                    // download, shard replay burn CPU) don't scale us.
-                    if other.rps >= 5.0 {
-                        if other.ack_p50_ms > max_loaded_p50 {
-                            max_loaded_p50 = other.ack_p50_ms;
-                        }
-                        if other.cpu_pct > max_loaded_cpu {
-                            max_loaded_cpu = other.cpu_pct;
-                        }
-                    }
+                    loads.fold(&other);
                 }
             }
 
@@ -517,79 +517,13 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
             // is invisible to acks). Unreadable reports defer ONLY the desired CAS.
             let reports = fleet_io!(repository.read_router_reports())
                 .inspect_err(|error| tracing::warn!(%error, "router snapshot unreadable; desired publication deferred"));
-            let edge_p50 = fresh_edge_p50(reports.as_deref().unwrap_or(&[]), now_ms());
+            loads.edge_p50 = fresh_edge_p50(reports.as_deref().unwrap_or(&[]), now_ms());
+            loads.shards = state.shards.prefixes().len() as u64;
 
-            // 3. Desired count — max over dimensions (§4.1/§4.2):
-            //    utilization (primary): ceil(cores-in-use / target_util) —
-            //    scale-out begins when the fleet nears 75 % of maximum.
-            //    hot instance: one instance sustaining ≥ hot_cpu_pct wants
-            //    +1 even when fleet-average is low (shard skew). Damped.
-            //    latency: sustained ack-p50 breach wants +1 (congestion
-            //    that doesn't show as CPU — e.g. object-store slowness).
-            let need_util = (total_cores_used / cfg.target_util).ceil() as u64;
-            // Edge-slot dimension: in-flight requests vs the measured
-            // per-instance admission budget. This is the resource that
-            // actually bound runs 6-8 (servers at 16-25 % CPU): once
-            // offered concurrency exceeds slots × live, clients queue at
-            // the edge. Scaling at 75 % of the slot budget adds capacity
-            // BEFORE the queue forms.
-            let need_slots = if cfg.edge_slots > 0 {
-                (total_inflight / (cfg.target_util * cfg.edge_slots as f64).max(1.0)).ceil() as u64
-            } else {
-                0
-            };
-            let breaching = max_loaded_p50 > cfg.latency_ms as f64;
-            let need_latency = if breaching {
-                let since = *lat_breach_since.get_or_insert_with(Instant::now);
-                if since.elapsed() >= cfg.latency_sustain {
-                    live + 1
-                } else {
-                    0
-                }
-            } else {
-                lat_breach_since = None;
-                0
-            };
-            let edge_hot = edge_p50 > cfg.edge_latency_ms as f64 && total_rps >= 5.0;
-            let need_edge = if edge_hot { live + 1 } else { 0 };
-            let cpu_hot = max_loaded_cpu >= cfg.hot_cpu_pct;
-            let need_hot = if cpu_hot {
-                let since = *cpu_breach_since.get_or_insert_with(Instant::now);
-                if since.elapsed() >= cfg.cpu_sustain {
-                    live + 1
-                } else {
-                    0
-                }
-            } else {
-                cpu_breach_since = None;
-                0
-            };
-            let need = need_util
-                .max(need_slots)
-                .max(need_latency)
-                .max(need_hot)
-                .max(need_edge)
-                .clamp(1, cfg.max);
-            // Scale-in target uses the conservative divisor, and edge
-            // congestion BLOCKS shrink outright: measured rps falls during
-            // client-side queueing, and shrinking on that signal removes
-            // capacity mid-collapse (observed in run 7: desired 4→2 while
-            // client p50 was 1.6-2 s).
-            let need_shrink = if edge_hot {
-                cfg.max // sentinel: never below current -> shrink blocked
-            } else {
-                let slots_shrink = if cfg.edge_slots > 0 {
-                    (total_inflight / (cfg.scale_in_util * cfg.edge_slots as f64).max(1.0)).ceil()
-                        as u64
-                } else {
-                    0
-                };
-                ((total_cores_used / cfg.scale_in_util).ceil() as u64)
-                    .max(slots_shrink)
-                    .max(need_latency)
-                    .max(need_hot)
-                    .clamp(1, cfg.max)
-            };
+            // 3. Desired count (`planning::Demand::plan`).
+            let planned = demand.plan(&loads, &cfg.thresholds(), Instant::now());
+            state.fleet.standing().set_split_demand(planned.split_demand);
+            let (need, need_shrink) = (planned.need, planned.shrink);
 
             let (cur, version): (Option<Desired>, Option<UpdateVersion>) =
                 match fleet_io!(repository.read_desired_state()) {
@@ -956,9 +890,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                 }
                 let next = Desired {
                     count: publish_count,
-                    reason: format!(
-                        "cores_used={total_cores_used:.2} util->{need_util} inflight={total_inflight:.0} slots->{need_slots} hot_cpu={max_loaded_cpu:.0}% ({need_hot}) ack_p50={max_loaded_p50:.0}ms ({need_latency}) edge_p50={edge_p50:.0}ms ({need_edge}) rps={total_rps:.0} live={live}",
-                    ),
+                    reason: planned.reason.clone(),
                     epoch,
                     computed_at_ms: now_ms(),
                     pending_events,

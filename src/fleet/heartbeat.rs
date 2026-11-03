@@ -85,6 +85,45 @@ pub(crate) struct Heartbeat {
     pub out_inflight: i64,
     #[serde(default)]
     pub out_inflight_peak: i64,
+    /// Refusals more instances could relieve since the previous beat (item
+    /// 6, #149): reads refused for read memory (429
+    /// `project_memory_pressure`, 503 `read_memory_busy`), projects the
+    /// tracker refused (503 `project_tracker_capacity`), and admission's
+    /// in-flight, RSS and survival sheds. A quota, per-stream, wedged-shard
+    /// or fair shed is not one: another instance would not relieve it. The
+    /// resources the tiny-stream ramp exhausted while CPU stayed low.
+    #[serde(default)]
+    pub refusals: u64,
+    /// Consecutive beats, this one included, that each counted a refusal.
+    /// The publisher counts them, so a peer that reads one beat in three
+    /// judges the streak whole (`planning::Demand`).
+    #[serde(default)]
+    pub refusal_beats: u32,
+    /// Stream descriptors this instance's descriptor cache holds (of
+    /// `REGISTRY_CACHE_MAX`): an instance resource the fleet scales on.
+    #[serde(default)]
+    pub cached_streams: u64,
+    /// Stream handles resident across the owned shards, and in the fullest
+    /// one (of `HANDLE_MAX_RESIDENT`, a per-shard limit): a shard's fill,
+    /// which shard split (item 7) reads.
+    #[serde(default)]
+    pub resident_streams: u64,
+    #[serde(default)]
+    pub resident_streams_max_shard: u64,
+    /// Active projects the quota tracker holds (of `MAX_TRACKED_PROJECTS`).
+    #[serde(default)]
+    pub tracked_projects: u64,
+    /// The touch path's store-read latency over the last 15 s (ms): GETs
+    /// of data objects, 0 below a sustained sample.
+    #[serde(default)]
+    pub store_read_p50_ms: u64,
+    #[serde(default)]
+    pub store_read_p99_ms: u64,
+    /// How far the publisher's last desired count ran past the topology's
+    /// shards: the split demand shard split (item 7) reads; 0 while the
+    /// shards cover the fleet.
+    #[serde(default)]
+    pub split_demand: u64,
     pub owned_shards: Vec<String>,
     /// The publisher is handing its ownership off in a planned drain: every
     /// ring drops it while it keeps beating (`fleet::drain`).
@@ -157,8 +196,12 @@ pub(super) fn start(state: Arc<AppState>, instance: String, tasks: &TaskSupervis
 /// Publish a beat every period until cancelled, then a last, withdrawing
 /// one.
 async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> TaskResult {
-    let mut sampler =
-        Sampler::starting(Instant::now(), state.admission.fleet_ops(), cpu_time_secs());
+    let mut sampler = Sampler::starting(
+        Instant::now(),
+        state.admission.fleet_ops(),
+        cpu_time_secs(),
+        instance_refusals(&state),
+    );
     let mut beats = tokio::time::interval(PERIOD);
     beats.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // The interval's first tick is immediate; the first beat waits a period
@@ -175,7 +218,12 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
             _ = beats.tick() => {}
             () = state.fleet.standing().beat_requested() => {}
         }
-        sampler.observe(Instant::now(), state.admission.fleet_ops(), cpu_time_secs());
+        sampler.observe(
+            Instant::now(),
+            state.admission.fleet_ops(),
+            cpu_time_secs(),
+            instance_refusals(&state),
+        );
         let heartbeat = sampler.heartbeat(&state, &instance);
         let published = tokio::select! {
             _ = cancel.cancelled() => break,
@@ -200,8 +248,9 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
     TaskResult::Done
 }
 
-/// The smoothed request and CPU rates, and the previous reading, so each
-/// beat's rates span exactly one beat.
+/// The smoothed request and CPU rates, the last beat's read-memory
+/// refusals and their streak, and the previous reading, so each beat's
+/// rates and refusals span exactly one beat.
 #[derive(Debug)]
 struct Sampler {
     at: Instant,
@@ -209,29 +258,45 @@ struct Sampler {
     cpu_secs: f64,
     rps: f64,
     cpu_pct: f64,
+    /// The read-memory refusal counter at the previous reading.
+    refusals: u64,
+    /// Refusals since the previous reading.
+    refused: u64,
+    /// Consecutive readings that each counted a refusal.
+    refusal_beats: u32,
 }
 
 impl Sampler {
-    fn starting(at: Instant, ops: u64, cpu_secs: f64) -> Self {
+    fn starting(at: Instant, ops: u64, cpu_secs: f64, refusals: u64) -> Self {
         Sampler {
             at,
             ops,
             cpu_secs,
             rps: 0.0,
             cpu_pct: 0.0,
+            refusals,
+            refused: 0,
+            refusal_beats: 0,
         }
     }
 
-    /// Fold the reading taken at `at` (the admitted-operation counter and
-    /// the process CPU seconds) into the smoothed rates.
-    fn observe(&mut self, at: Instant, ops: u64, cpu_secs: f64) {
+    /// Fold the reading taken at `at` (the admitted-operation counter, the
+    /// process CPU seconds and the read-memory refusal counter) into the
+    /// smoothed rates and the refusal streak.
+    fn observe(&mut self, at: Instant, ops: u64, cpu_secs: f64, refusals: u64) {
         let secs = at.duration_since(self.at).as_secs_f64().max(0.001);
         self.rps = ewma(self.rps, ops.saturating_sub(self.ops) as f64 / secs);
         self.cpu_pct = ewma(
             self.cpu_pct,
             ((cpu_secs - self.cpu_secs) / secs * 100.0).max(0.0),
         );
-        (self.at, self.ops, self.cpu_secs) = (at, ops, cpu_secs);
+        self.refused = refusals.saturating_sub(self.refusals);
+        self.refusal_beats = if self.refused > 0 {
+            self.refusal_beats.saturating_add(1)
+        } else {
+            0
+        };
+        (self.at, self.ops, self.cpu_secs, self.refusals) = (at, ops, cpu_secs, refusals);
     }
 
     fn heartbeat(&self, state: &AppState, instance: &str) -> Heartbeat {
@@ -257,6 +322,11 @@ impl Sampler {
         let (inflight, inflight_peak) = state.admission.swap_active_peak();
         let (wal_put_p50_ms, wal_put_p99_ms, out_inflight, out_inflight_peak) =
             crate::store_timing::heartbeat_summary();
+        let (store_read_p50_ms, store_read_p99_ms) = crate::store_timing::store_read_summary();
+        let residents: Vec<u64> = engines
+            .iter()
+            .map(|(_, engine)| engine.resident_streams() as u64)
+            .collect();
         let ts_ms = now_ms();
         // The sequence first: a beat numbered from the drain's first on
         // reads the drain that began before its number was taken.
@@ -274,6 +344,15 @@ impl Sampler {
             wal_put_p99_ms,
             out_inflight,
             out_inflight_peak,
+            refusals: self.refused,
+            refusal_beats: self.refusal_beats,
+            cached_streams: state.registry.cache_len() as u64,
+            resident_streams: residents.iter().sum(),
+            resident_streams_max_shard: residents.iter().copied().max().unwrap_or(0),
+            tracked_projects: state.quotas.stats().0 as u64,
+            store_read_p50_ms,
+            store_read_p99_ms,
+            split_demand: state.fleet.standing().split_demand(),
             owned_shards: engines.into_iter().map(|(prefix, _)| prefix).collect(),
             draining: state.fleet.standing().draining(),
             absorb_lag_max_secs: state.shards.stall_max_secs(),
@@ -364,6 +443,15 @@ fn ewma(previous: f64, reading: f64) -> f64 {
     }
 }
 
+/// The refusals more instances could relieve, since boot: admission's and
+/// the project tracker's.
+fn instance_refusals(state: &AppState) -> u64 {
+    state
+        .admission
+        .instance_refusals()
+        .saturating_add(state.quotas.tracker_refusals())
+}
+
 fn megabytes(bytes: u64) -> f64 {
     tenths(bytes as f64 / 1_048_576.0)
 }
@@ -383,11 +471,26 @@ mod tests {
     #[test]
     fn each_beat_rates_one_beat_and_smooths_after_the_first() {
         let start = Instant::now();
-        let mut sampler = Sampler::starting(start, 1_000, 10.0);
-        sampler.observe(start + Duration::from_secs(2), 1_100, 11.0);
+        let mut sampler = Sampler::starting(start, 1_000, 10.0, 0);
+        sampler.observe(start + Duration::from_secs(2), 1_100, 11.0, 0);
         assert_eq!((sampler.rps, sampler.cpu_pct), (50.0, 50.0));
-        sampler.observe(start + Duration::from_secs(4), 1_300, 11.0);
+        sampler.observe(start + Duration::from_secs(4), 1_300, 11.0, 0);
         assert_eq!((sampler.rps, sampler.cpu_pct), (70.0, 30.0));
+    }
+
+    /// Each beat publishes the refusals since the previous one, and how many
+    /// beats in a row each counted one: the streak a peer that reads one beat
+    /// in three judges whole.
+    #[test]
+    fn each_beat_counts_its_refusals_and_their_streak() {
+        let start = Instant::now();
+        let mut sampler = Sampler::starting(start, 0, 0.0, 5);
+        let mut beats = Vec::new();
+        for (beat, refusals) in [(1, 5), (2, 7), (3, 8), (4, 12), (5, 12), (6, 13)] {
+            sampler.observe(start + Duration::from_secs(2 * beat), 0, 0.0, refusals);
+            beats.push((sampler.refused, sampler.refusal_beats));
+        }
+        assert_eq!(beats, [(0, 0), (2, 1), (1, 2), (4, 3), (0, 0), (1, 1)]);
     }
 
     #[test]

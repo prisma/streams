@@ -28,7 +28,9 @@ use std::time::Instant;
 mod observations;
 mod sentinels;
 use observations::{OpGuard, Outcome};
-pub(crate) use observations::{SniffConnector, classify, heartbeat_summary, snapshot, stats};
+pub(crate) use observations::{
+    SniffConnector, classify, heartbeat_summary, snapshot, stats, store_read_summary,
+};
 pub(crate) use sentinels::spawn_sentinels;
 
 /// Cumulative object-store GET count and bytes fetched.

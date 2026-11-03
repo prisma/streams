@@ -1301,6 +1301,31 @@
     "scenarios": []
   },
   {
+    "name": "a_member_near_its_rss_shed_line_scales_the_fleet_out_and_idle_ones_do_not",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "e45f2839f46f242307315c3c0f3818a7c603a77f086ed5bb4df95fcab6a3b1e4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_desired.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_member_refusing_reads_three_beats_running_scales_the_fleet_out",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "4fb2defbd82a71cc0332a45f7fe64a685bbc368b47ac79f4fb0d0d2cb5edffd5",
+    "mechanisms": [],
+    "configuration": [
+      "let seed = r#\"{\"count\":3,\"epoch\":1,\"reason\":\"seed\",\"computed_at_ms\":0}\"#;",
+      ".put(&Path::from(\"fleet/desired.json\"), PutPayload::from(seed))"
+    ],
+    "file": "src/dst/tests/fleet_desired.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_member_that_boots_or_stops_is_read_by_the_next_pass",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -1454,6 +1479,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/seal_fence_relay.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_one_shard_cell_publishes_its_demand_as_split_demand",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "86239e7cb3ae54a73d4113dfb7ac4c0d50f81ae0e17f1237b573f72d57c199c2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_desired.rs",
     "scenarios": []
   },
   {
@@ -3080,6 +3116,17 @@
     "scenarios": []
   },
   {
+    "name": "a_sustained_store_read_wait_scales_the_fleet_out",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "945e21725aab6e83917de828bc18a3ab5393224df5829f627a0aba7a044ec6cd",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_desired.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_sweep_eviction_arms_only_the_base_holdoff",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2, crate = \"crate::test_rt\")]"
@@ -4140,7 +4187,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "0fccbb92cd883e3d71a09b51315f8b4e7622746206e4a3b9a98fe9bfc047a07d",
+    "function_sha256": "cb453c1fd3b5098640366949f8eeb631a6f84d9d7d56b51f1370cc5e0f3e25f5",
     "mechanisms": [],
     "configuration": [
       "r#\"{\"count\":2,\"epoch\":1,\"reason\":\"seed\",\"computed_at_ms\":0}\"#.to_string(),"
@@ -9578,6 +9625,17 @@
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
     "function_sha256": "2e86326e8425fed067e5098dbaff9d777a92cd79bb2a9eaec916b4035f1aa180",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_desired.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_fleets_filling_caches_and_trackers_ask_for_their_occupancy",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "82eca0a0864a286e1a439f611c6d3c3880a1dc1d6894bcc64e94bf7c1286bee2",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_desired.rs",

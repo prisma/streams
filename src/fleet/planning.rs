@@ -154,6 +154,247 @@ pub(super) fn trusted_urls(
         .collect()
 }
 
+/// A member whose beats report refusals this many beats in a row counts as
+/// hot (item 6, #149): the tiny-stream ramp refused reads and new projects
+/// for minutes while every instance's CPU stayed under the cpu-hot line.
+pub(super) const REFUSAL_BEATS_HOT: u32 = 3;
+/// A member whose RSS is at this share of its shed line counts as hot (the
+/// lead's ruling, 2026-11-03): an RSS sum would count every instance's idle
+/// floor, so RSS is a per-member signal, like CPU.
+pub(super) const RSS_HOT_SHARE: f64 = 0.8;
+
+/// What the desired count is planned from: the tick's fold of its fresh,
+/// non-draining peers' beats, the routers' edge latency, and the topology.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Loads {
+    pub(super) cores_used: f64,
+    pub(super) inflight: f64,
+    pub(super) rps: f64,
+    pub(super) live: u64,
+    /// The highest latency (ack p50, or the touch path's store-read p50)
+    /// and CPU of the members doing real work (≥ 5 rps).
+    pub(super) max_loaded_p50: f64,
+    pub(super) max_loaded_cpu: f64,
+    pub(super) edge_p50: f64,
+    /// The longest refusal streak any member reports, and the highest RSS
+    /// (MB), whatever its rate.
+    pub(super) max_refusal_beats: u32,
+    pub(super) max_rss_mb: f64,
+    /// The members' descriptor-cache entries and tracked projects, summed:
+    /// the instance resources a fleet fills (occupancy).
+    pub(super) cached_streams: u64,
+    pub(super) tracked_projects: u64,
+    /// The topology's shards: a fleet larger than them adds nothing.
+    pub(super) shards: u64,
+}
+
+impl Loads {
+    /// Fold one fresh, non-draining member's beat. The load-gated
+    /// dimensions count only members doing real work (≥ 5 rps), so idle
+    /// blips and cold starts (binary download, shard replay burn CPU) do not
+    /// scale the fleet; refusals, RSS and occupancy count whatever the rate:
+    /// a cell full of tiny streams fills at a low rate.
+    pub(super) fn fold(&mut self, beat: &super::Heartbeat) {
+        self.live += 1;
+        self.rps += beat.rps;
+        self.cores_used += beat.cpu_pct / 100.0;
+        self.inflight += beat.inflight.max(0) as f64;
+        self.max_refusal_beats = self.max_refusal_beats.max(beat.refusal_beats);
+        self.max_rss_mb = self.max_rss_mb.max(beat.rss_mb);
+        self.cached_streams = self.cached_streams.saturating_add(beat.cached_streams);
+        self.tracked_projects = self.tracked_projects.saturating_add(beat.tracked_projects);
+        if beat.rps >= 5.0 {
+            let store = beat.store_read_p50_ms as f64;
+            self.max_loaded_p50 = self.max_loaded_p50.max(beat.ack_p50_ms).max(store);
+            self.max_loaded_cpu = self.max_loaded_cpu.max(beat.cpu_pct);
+        }
+    }
+}
+
+/// The planning thresholds: `fleet::FleetCfg`'s, this instance's RSS shed
+/// line, and the per-instance capacities every member of one build shares.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Thresholds {
+    pub(super) target_util: f64,
+    pub(super) scale_in_util: f64,
+    pub(super) edge_slots: u64,
+    pub(super) latency_ms: u64,
+    pub(super) latency_sustain: Duration,
+    pub(super) edge_latency_ms: u64,
+    pub(super) hot_cpu_pct: f64,
+    pub(super) cpu_sustain: Duration,
+    pub(super) max: u64,
+    /// `ADMIT_RSS_SHED_MB`; 0 = no shed line, no RSS signal.
+    pub(super) rss_shed_mb: u64,
+    /// `REGISTRY_CACHE_MAX` and `MAX_TRACKED_PROJECTS`.
+    pub(super) cache_capacity: u64,
+    pub(super) tracker_capacity: u64,
+}
+
+/// A pass's plan: the count to grow to, the conservative count to shrink
+/// to, how far the demand runs past the topology's shards, and the reason a
+/// published count records.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Need {
+    pub(super) need: u64,
+    pub(super) shrink: u64,
+    /// The demand, within `FLEET_MAX`, past the shards: published on the
+    /// heartbeat for shard split (item 7) to read; 0 while the shards cover
+    /// it.
+    pub(super) split_demand: u64,
+    /// Each dimension's reading and what it wanted.
+    pub(super) reason: String,
+}
+
+/// The desired-count planner's state across passes: when the sustained
+/// dimensions began to breach.
+#[derive(Debug, Default)]
+pub(super) struct Demand {
+    latency_since: Option<std::time::Instant>,
+    hot_since: Option<std::time::Instant>,
+}
+
+impl Demand {
+    /// The pass's plan at `now`, the maximum over the dimensions (§4.1/§4.2):
+    /// - utilization (primary): ceil(cores in use / target_util), so scale-out
+    ///   begins when the fleet nears 75 % of its maximum;
+    /// - edge slots: in-flight requests against the per-instance admission
+    ///   budget at target_util of it, before the edge queue forms;
+    /// - latency: a sustained ack-p50 or store-read-p50 breach of a loaded
+    ///   member wants one more (congestion that does not show as CPU, and a
+    ///   slow or refused read is not an ack);
+    /// - edge: a router-observed p50 breach wants one more;
+    /// - hot (sustained): a loaded member at the cpu-hot line, one reporting
+    ///   `REFUSAL_BEATS_HOT` beats of refusals in a row, or one whose RSS is
+    ///   at `RSS_HOT_SHARE` of its shed line wants one more (item 6);
+    /// - occupancy: the descriptor cache's and the tracker's fill over the
+    ///   fleet, ceil(total / (target_util × capacity)) (item 6).
+    ///
+    /// The count is clamped to the topology's shards and to the fleet's
+    /// maximum, and what the demand runs past the shards is the split
+    /// demand. The shrink target uses the conservative divisor, and keeps
+    /// the sustained dimensions, so a sustained refusal, RSS or latency
+    /// breach blocks a shrink; edge congestion blocks it outright, since rps
+    /// falls while clients queue at the edge.
+    pub(super) fn plan(&mut self, loads: &Loads, at: &Thresholds, now: std::time::Instant) -> Need {
+        let live_plus_one = loads.live + 1;
+        let need_util = ceil_count(loads.cores_used / at.target_util);
+        let slots = |util: f64| {
+            if at.edge_slots > 0 {
+                ceil_count(loads.inflight / (util * at.edge_slots as f64).max(1.0))
+            } else {
+                0
+            }
+        };
+        let latency = loads.max_loaded_p50 > at.latency_ms as f64;
+        let need_latency = if sustained(&mut self.latency_since, latency, at.latency_sustain, now) {
+            live_plus_one
+        } else {
+            0
+        };
+        let edge_hot = loads.edge_p50 > at.edge_latency_ms as f64 && loads.rps >= 5.0;
+        let need_edge = if edge_hot { live_plus_one } else { 0 };
+        let rss_hot =
+            at.rss_shed_mb > 0 && loads.max_rss_mb >= RSS_HOT_SHARE * at.rss_shed_mb as f64;
+        let hot = loads.max_loaded_cpu >= at.hot_cpu_pct
+            || loads.max_refusal_beats >= REFUSAL_BEATS_HOT
+            || rss_hot;
+        let need_hot = if sustained(&mut self.hot_since, hot, at.cpu_sustain, now) {
+            live_plus_one
+        } else {
+            0
+        };
+        let need_slots = slots(at.target_util);
+        let need_occupancy = occupancy(loads, at, at.target_util);
+        let wanted = need_util
+            .max(need_slots)
+            .max(need_latency)
+            .max(need_hot)
+            .max(need_edge)
+            .max(need_occupancy);
+        let shards = if loads.shards == 0 {
+            u64::MAX
+        } else {
+            loads.shards
+        };
+        let need = wanted.min(shards).clamp(1, at.max);
+        let shrink = if edge_hot {
+            at.max // sentinel: never below the current count, so no shrink
+        } else {
+            ceil_count(loads.cores_used / at.scale_in_util)
+                .max(slots(at.scale_in_util))
+                .max(need_latency)
+                .max(need_hot)
+                .max(occupancy(loads, at, at.scale_in_util))
+                .min(shards)
+                .clamp(1, at.max)
+        };
+        let split_demand = wanted.min(at.max).saturating_sub(shards);
+        let l = loads;
+        let reason = format!(
+            "cores_used={:.2} util->{need_util} inflight={:.0} slots->{need_slots} hot_cpu={:.0}% refusal_beats={} rss_max={:.0}MB ({need_hot}) ack_p50={:.0}ms ({need_latency}) edge_p50={:.0}ms ({need_edge}) cached={} projects={} ({need_occupancy}) shards={} split->{split_demand} rps={:.0} live={}",
+            l.cores_used,
+            l.inflight,
+            l.max_loaded_cpu,
+            l.max_refusal_beats,
+            l.max_rss_mb,
+            l.max_loaded_p50,
+            l.edge_p50,
+            l.cached_streams,
+            l.tracked_projects,
+            l.shards,
+            l.rps,
+            l.live,
+        );
+        Need {
+            need,
+            shrink,
+            split_demand,
+            reason,
+        }
+    }
+}
+
+/// The instances the fleet's filling resources want at `util` of each
+/// instance's capacity: its descriptor-cache entries and its tracked
+/// projects, each ceil(total / (util × capacity)), the larger.
+fn occupancy(loads: &Loads, at: &Thresholds, util: f64) -> u64 {
+    let over = |total: u64, capacity: u64| {
+        if capacity == 0 {
+            0
+        } else {
+            ceil_count(total as f64 / (util * capacity as f64))
+        }
+    };
+    over(loads.cached_streams, at.cache_capacity)
+        .max(over(loads.tracked_projects, at.tracker_capacity))
+}
+
+/// A desired count from a non-negative ratio: its ceiling.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "ceil_count; the desired counts are ceilings of non-negative ratios bounded by the fleet maximum, far below u64, and Rust float conversion saturates; checked conversions would only restate that bound"
+)]
+fn ceil_count(ratio: f64) -> u64 {
+    ratio.ceil() as u64
+}
+
+/// Whether a breach (`breaching` now) has lasted `sustain`: `since` holds
+/// when it began, and a pass that finds no breach clears it.
+fn sustained(
+    since: &mut Option<std::time::Instant>,
+    breaching: bool,
+    sustain: Duration,
+    now: std::time::Instant,
+) -> bool {
+    if !breaching {
+        *since = None;
+        return false;
+    }
+    now.duration_since(*since.get_or_insert(now)) >= sustain
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -324,6 +565,202 @@ mod tests {
             ring(0, &[]),
             ["streams-1"],
             "a ring has at least one ordinal"
+        );
+    }
+}
+
+#[cfg(test)]
+mod demand_tests {
+    use super::{Demand, Loads, Need, REFUSAL_BEATS_HOT, Thresholds};
+    use std::time::{Duration, Instant};
+
+    fn thresholds() -> Thresholds {
+        Thresholds {
+            target_util: 0.75,
+            scale_in_util: 0.5,
+            edge_slots: 0,
+            latency_ms: 250,
+            latency_sustain: Duration::from_secs(20),
+            edge_latency_ms: 400,
+            hot_cpu_pct: 75.0,
+            cpu_sustain: Duration::from_secs(20),
+            max: 64,
+            rss_shed_mb: 500,
+            cache_capacity: 65_536,
+            tracker_capacity: 32_768,
+        }
+    }
+
+    /// Four members at 30 % CPU: utilization alone wants two, and shrinks
+    /// to three.
+    fn quiet(shards: u64) -> Loads {
+        Loads {
+            cores_used: 1.2,
+            rps: 400.0,
+            live: 4,
+            max_loaded_cpu: 30.0,
+            max_rss_mb: 200.0,
+            shards,
+            ..Loads::default()
+        }
+    }
+
+    /// A plan's numbers: (need, shrink, split demand).
+    type Numbers = (u64, u64, u64);
+
+    fn n(plan: &Need) -> Numbers {
+        (plan.need, plan.shrink, plan.split_demand)
+    }
+
+    /// `loads` planned at the start and once the sustain has passed.
+    fn sustained(loads: &Loads) -> (Numbers, Numbers) {
+        let at = thresholds();
+        let start = Instant::now();
+        let mut demand = Demand::default();
+        let first = n(&demand.plan(loads, &at, start));
+        (first, n(&demand.plan(loads, &at, start + at.cpu_sustain)))
+    }
+
+    /// A member refusing work on three beats in a row, or one whose RSS is
+    /// at 80 % of its shed line, counts as hot like a cpu-hot one: once
+    /// sustained the fleet wants one more than it has and will not shrink,
+    /// though its CPU is at 30 %. Just under either line, nothing moves.
+    #[test]
+    fn refusals_or_rss_near_its_shed_line_count_as_hot_once_sustained() {
+        let refusing = Loads {
+            max_refusal_beats: REFUSAL_BEATS_HOT,
+            ..quiet(64)
+        };
+        let full = Loads {
+            max_rss_mb: 400.0,
+            ..quiet(64)
+        };
+        for hot in [refusing, full] {
+            assert_eq!(sustained(&hot), ((2, 3, 0), (5, 5, 0)));
+        }
+        let near = Loads {
+            max_refusal_beats: REFUSAL_BEATS_HOT - 1,
+            max_rss_mb: 399.0,
+            ..quiet(64)
+        };
+        assert_eq!(sustained(&near), ((2, 3, 0), (2, 3, 0)));
+        let unbounded = Thresholds {
+            rss_shed_mb: 0,
+            ..thresholds()
+        };
+        let mut demand = Demand::default();
+        let start = Instant::now();
+        demand.plan(&full, &unbounded, start);
+        assert_eq!(
+            n(&demand.plan(&full, &unbounded, start + unbounded.cpu_sustain)),
+            (2, 3, 0)
+        );
+    }
+
+    /// A fleet of idle members at 40 % of the shed line each is not full: RSS
+    /// is judged per member, never summed.
+    #[test]
+    fn idle_members_rss_is_never_summed() {
+        let idle = Loads {
+            max_rss_mb: 200.0,
+            live: 8,
+            ..quiet(64)
+        };
+        assert_eq!(sustained(&idle).1, (2, 3, 0));
+    }
+
+    /// The fleet's descriptor-cache entries and tracked projects ask for
+    /// ceil(total / (target × capacity)) whatever the rate, and shrink only
+    /// below ceil(total / (scale-in × capacity)).
+    #[test]
+    fn filling_resources_ask_for_their_occupancy() {
+        let caching = Loads {
+            cached_streams: 180_000,
+            rps: 0.0,
+            ..quiet(64)
+        };
+        // 180,000 / (0.75 × 65,536) = 3.7; / (0.5 × 65,536) = 5.5.
+        assert_eq!(sustained(&caching).0, (4, 6, 0));
+        let tracking = Loads {
+            tracked_projects: 100_000,
+            ..quiet(64)
+        };
+        // 100,000 / (0.75 × 32,768) = 4.1; / (0.5 × 32,768) = 6.1.
+        assert_eq!(sustained(&tracking).0, (5, 7, 0));
+    }
+
+    /// A loaded member whose touch-path store reads wait past the latency
+    /// line, sustained, wants one more: a slow read is not an ack.
+    #[test]
+    fn a_sustained_store_wait_wants_one_more() {
+        let mut slow = quiet(64);
+        let mut beat: crate::fleet::Heartbeat = serde_json::from_str(
+            r#"{"instance":"streams-2","ts_ms":0,"rps":40.0,"cpu_pct":30.0,"owned_shards":[],"draining":false,"store_read_p50_ms":300}"#,
+        )
+        .unwrap();
+        slow.fold(&beat);
+        assert_eq!(slow.max_loaded_p50, 300.0);
+        assert_eq!(sustained(&slow), ((2, 3, 0), (6, 6, 0)));
+        beat.rps = 1.0;
+        let mut idle = quiet(64);
+        idle.fold(&beat);
+        assert_eq!(
+            idle.max_loaded_p50, 0.0,
+            "an idle member's reads are compaction's"
+        );
+    }
+
+    /// A pass that finds no breach restarts the sustain.
+    #[test]
+    fn a_pass_without_the_breach_restarts_its_sustain() {
+        let at = thresholds();
+        let start = Instant::now();
+        let mut demand = Demand::default();
+        let hot = Loads {
+            max_refusal_beats: 3,
+            ..quiet(64)
+        };
+        demand.plan(&hot, &at, start);
+        demand.plan(&quiet(64), &at, start + Duration::from_secs(10));
+        let resumed = start + Duration::from_secs(11);
+        assert_eq!(demand.plan(&hot, &at, resumed).need, 2);
+        assert_eq!(demand.plan(&hot, &at, resumed + at.cpu_sustain).need, 5);
+    }
+
+    /// A fleet past its shards adds nothing: the count is clamped to the
+    /// topology's shards, and what the demand runs past them, within the
+    /// fleet's maximum, is the split demand.
+    #[test]
+    fn the_count_is_clamped_to_the_shards_and_the_rest_is_split_demand() {
+        let hot = Loads {
+            max_refusal_beats: 3,
+            ..quiet(4)
+        };
+        assert_eq!(sustained(&hot).1, (4, 4, 1));
+        let at = thresholds();
+        let mut demand = Demand::default();
+        let now = Instant::now();
+        let busy = Loads {
+            cores_used: 6.0,
+            ..quiet(4)
+        };
+        assert_eq!(
+            n(&demand.plan(&busy, &at, now)),
+            (4, 4, 4),
+            "8 wanted, 4 shards"
+        );
+        let one_shard = Loads {
+            cached_streams: 10_000_000,
+            shards: 1,
+            ..quiet(1)
+        };
+        // 10M / 49,152 = 204 instances wanted; FLEET_MAX 64 bounds the split.
+        assert_eq!(n(&demand.plan(&one_shard, &at, now)), (1, 1, 63));
+        let unknown = Loads { shards: 0, ..busy };
+        assert_eq!(
+            n(&demand.plan(&unknown, &at, now)),
+            (8, 12, 0),
+            "no topology: no clamp"
         );
     }
 }

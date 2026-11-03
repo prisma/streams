@@ -125,6 +125,11 @@ async fn a_read_is_refused_for_the_ledger_that_stayed_full_for_the_wait() {
     assert_eq!(ledgers(), (768 * KIB, 768 * KIB));
     let shed = &registry.memory_pressure_json(1, 8)["project_memory_shed_total"];
     assert_eq!(shed.as_u64(), Some(1));
+    assert_eq!(
+        (ctl.read_memory_refusals(), ctl.instance_refusals()),
+        (2, 2),
+        "both refusals count as the instance's, which the fleet scales on"
+    );
     drop(own);
 }
 

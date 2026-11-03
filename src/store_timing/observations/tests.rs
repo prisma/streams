@@ -1,6 +1,6 @@
 use super::{
-    CellSamples, Ev, HttpEv, HttpStats, Outcome, RING_CAP, SLOW_CAP, StoreStats, Totals,
-    parse_server_timing_us, pct, percentile_index,
+    CellSamples, Ev, HttpEv, HttpStats, Outcome, RING_CAP, SLOW_CAP, STORE_READ_MIN_SAMPLES,
+    StoreStats, Totals, parse_server_timing_us, pct, percentile_index, store_read_percentiles,
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, atomic::AtomicI64};
@@ -335,4 +335,34 @@ fn totals_count_every_operation_once_by_billed_outcome() {
         ]
     );
     assert_eq!(store().totals.to_json(0)["ops"], serde_json::json!({}));
+}
+
+/// The heartbeat's store wait (fleet item 6) is the touch path's reads only:
+/// GETs of SSTs and of segments and registry objects, inside the window. WAL,
+/// manifest and fleet GETs, HEADs and older reads are left out, and a window
+/// with fewer reads than the floor reports none.
+#[test]
+fn the_store_wait_is_the_touch_paths_reads_within_the_window() {
+    let read = |ts_ms: u64, op: u8, class: u8, ms: u32| Ev {
+        ts_ms,
+        op,
+        class,
+        dur_us: ms * 1000,
+        ok: true,
+    };
+    let cutoff = 1_000;
+    let mut events: Vec<Ev> = (0..u32::try_from(STORE_READ_MIN_SAMPLES).unwrap())
+        .map(|n| read(cutoff, 2, if n % 2 == 0 { 2 } else { 4 }, 10 + n))
+        .collect();
+    for (op, class) in [(2, 0), (2, 1), (2, 3), (3, 2), (0, 2)] {
+        events.push(read(cutoff, op, class, 9_000));
+    }
+    events.push(read(cutoff - 1, 2, 2, 9_000));
+    assert_eq!(store_read_percentiles(events.iter(), cutoff), (20, 29));
+    events.retain(|ev| ev.dur_us != 29_000);
+    assert_eq!(
+        store_read_percentiles(events.iter(), cutoff),
+        (0, 0),
+        "one read under the floor: none"
+    );
 }

@@ -73,6 +73,9 @@ pub(crate) struct ReadMemory {
     capacity: AtomicU64,
     held: AtomicU64,
     released: tokio::sync::Notify,
+    /// Reads refused after their wait, at either line, since boot: the
+    /// heartbeat's read-memory refusals (fleet item 6).
+    refused: AtomicU64,
 }
 
 impl ReadMemory {
@@ -83,6 +86,7 @@ impl ReadMemory {
             ),
             held: AtomicU64::new(0),
             released: tokio::sync::Notify::new(),
+            refused: AtomicU64::new(0),
         }
     }
 
@@ -132,6 +136,22 @@ impl AdmissionController {
             memory.held.load(Ordering::Relaxed),
             memory.capacity.load(Ordering::Relaxed),
         )
+    }
+
+    /// Reads refused after their wait, at the project's line or the
+    /// instance's, since boot.
+    pub(crate) fn read_memory_refusals(&self) -> u64 {
+        self.inner.read_memory.refused.load(Ordering::Relaxed)
+    }
+
+    /// Refusals that more instances could relieve, since boot (fleet item
+    /// 6): reads refused for read memory and the instance-wide sheds (in
+    /// flight, RSS, survival: `shed.total`). A per-stream shed (one stream's
+    /// cap is no instance's), a wedged shard's (it wants a rebalance) and a
+    /// fair shed (it blames one project on purpose) are left out.
+    pub(crate) fn instance_refusals(&self) -> u64 {
+        self.read_memory_refusals()
+            .saturating_add(self.inner.shed_snapshot().total)
     }
 
     /// Rigs size the instance's read memory (the rig sheds no RSS).
@@ -352,6 +372,7 @@ impl ReadHold {
                 Err(refusal) => refusal,
             };
             if tokio::time::timeout_at(deadline, released).await.is_err() {
+                memory.refused.fetch_add(1, Ordering::Relaxed);
                 return Err(refusal.counted(project));
             }
         }

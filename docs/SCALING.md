@@ -140,6 +140,45 @@ joins and costs one conditional GET per tick per instance, answered 304
 while unchanged: unbilled, pending the 304 probe of the measurement plan.
 If 304s prove billed, the aggregate document (item 8 step 2) replaces it.
 
+**Autoscale on what fills (item 6, prisma/streams#149 half 1).** A
+heartbeat also carries what the tiny-stream ramp exhausted while CPU stayed
+low:
+- **Refusals** since its previous beat, and how many beats in a row
+  counted one (`refusals`, `refusal_beats`). Counted: reads refused for read
+  memory (429 `project_memory_pressure`, 503 `read_memory_busy`), projects
+  the tracker refused (503 `project_tracker_capacity`), and admission's
+  in-flight, RSS and survival sheds. A quota, per-stream, wedged-shard or
+  fair shed is not counted: another instance would not relieve it. The
+  publisher counts the streak, so a peer reading one beat in three judges it
+  whole.
+- **Occupancy**: its descriptor-cache entries (`cached_streams`, of
+  `REGISTRY_CACHE_MAX`) and the projects its quota tracker holds
+  (`tracked_projects`, of 32,768); its resident handles, summed and in the
+  fullest shard (`resident_streams`, `resident_streams_max_shard`, of the
+  per-shard `HANDLE_MAX_RESIDENT`), which are a shard's fill for split.
+- **Store wait**: the touch path's store-read p50/p99 over 15 s
+  (`store_read_p50_ms`; GETs of SSTs, segments and registry objects, not WAL,
+  manifest or fleet documents; 0 below 20 reads).
+
+The planner (`planning::Demand::plan`) adds three dimensions to the others:
+- **hot**, sustained like the cpu-hot line: a member reporting three refusal
+  beats in a row, or one whose RSS is at 80 % of its `ADMIT_RSS_SHED_MB`,
+  wants live + 1. RSS is judged per member, never summed: every instance's
+  idle floor would make a large fleet look full.
+- **occupancy**, at any request rate: ceil(total / (target × capacity)) for
+  the fleet's cached descriptors and tracked projects (scale-in at the
+  conservative divisor).
+- **store wait**: a loaded member's store-read p50 joins the ack p50 in the
+  latency dimension (`SCALE_LATENCY_MS`, sustained): a slow or refused read
+  is not an ack.
+
+A sustained hot or latency breach also holds the shrink target up, so the
+fleet does not scale in while it lasts. The desired count is clamped to the
+topology's shards as well as to `FLEET_MAX`: a fleet past its shards adds
+nothing. The demand past the shards, within `FLEET_MAX`, is the split demand,
+published on every beat (`split_demand`) for shard split (item 7) to
+consume; the clamp stays until split lands.
+
 Scale-out vs rebalance decision: if a HOST is hot but its segments are
 individually under 75 % of per-segment limits → rebalance (spread
 shards). If a SEGMENT is hot → split it. Both loops read the same

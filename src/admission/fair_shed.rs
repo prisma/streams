@@ -160,9 +160,10 @@ impl Totals {
     }
 }
 
-/// The cell's recent load: held by the project tracker.
+/// The cell's recent load, and the projects the tracker refused to track
+/// since boot (fleet item 6): held by the project tracker.
 #[derive(Debug, Default)]
-pub(crate) struct InstanceLoad(Mutex<Totals>);
+pub(crate) struct InstanceLoad(Mutex<Totals>, std::sync::atomic::AtomicU64);
 
 /// What fair shedding makes of one request over the line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,6 +179,17 @@ pub(crate) enum Verdict {
 }
 
 impl InstanceLoad {
+    /// The tracker refused to track a project (503
+    /// `project_tracker_capacity`).
+    pub(crate) fn note_tracker_refusal(&self) {
+        self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The tracker's refusals since boot.
+    pub(crate) fn tracker_refusals(&self) -> u64 {
+        self.1.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Count one request `project`, of request weight `weight`, offered
     /// the cell at `now_ms`.
     pub(crate) fn count(&self, project: &ProjectLoad, weight: u64, now_ms: i64) {
