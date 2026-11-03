@@ -5,9 +5,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
-use crate::native_queue::keys;
 use crate::native_queue::range::RangeRow;
-use crate::native_queue::rows::StateRow;
+use crate::native_queue::rows::{STATE_ROW_VERSION, StateRow};
+use crate::native_queue::{NqRefusal, keys};
 
 pub(in crate::shard::transaction) struct NativeStage {
     pub state: StateRow,
@@ -63,27 +63,43 @@ impl NativeStage {
     }
 
     /// The queue's stage as `engine`'s shard log holds it: its stored state
-    /// row and no staged row; [`Self::absent`] when it has no state row.
+    /// row and no staged row; [`Self::absent`] when it has no state row, and
+    /// a `Format` refusal for a row of an earlier format (S3b-DESIGN §14.4):
+    /// never misread.
     pub(in crate::shard::transaction) async fn load(
         engine: &crate::shard::ShardEngine,
         hash: &[u8; 16],
-    ) -> Result<Self, String> {
+    ) -> Result<Self, NqRefusal> {
         #[cfg(test)]
         crate::shard::test_support::held_native_state_read(&engine.prefix).await;
-        match engine.db.get(keys::state(hash)).await {
-            Ok(Some(raw)) => Ok(Self {
-                state: StateRow::decode(&raw)?,
-                exists: true,
-                ..NativeStage::absent()
-            }),
-            Ok(None) => Ok(Self::absent()),
-            Err(e) => Err(e.to_string()),
+        let raw = match engine.db.get(keys::state(hash)).await {
+            Ok(Some(raw)) => raw,
+            Ok(None) => return Ok(Self::absent()),
+            Err(e) => return Err(NqRefusal::Internal(e.to_string())),
+        };
+        let version = raw
+            .get(..4)
+            .and_then(|v| <[u8; 4]>::try_from(v).ok())
+            .map(u32::from_le_bytes);
+        if version.is_some_and(|v| v != STATE_ROW_VERSION) {
+            let why = format!(
+                "queue state row: version {}; this binary reads version {STATE_ROW_VERSION}, \
+                 and a cell holding queues of the earlier format is recreated (RUNBOOK section 11)",
+                version.unwrap_or_default()
+            );
+            tracing::error!(queue = %crate::crypto::hex(&hash[..4]), "{why}");
+            return Err(NqRefusal::Format(why));
         }
+        Ok(Self {
+            state: StateRow::decode(&raw).map_err(NqRefusal::Internal)?,
+            exists: true,
+            ..Self::absent()
+        })
     }
 }
 
 impl super::super::CommitTransaction<'_> {
-    pub(super) async fn nq_load(&self, hash: &[u8; 16]) -> Result<NativeStage, String> {
+    pub(super) async fn nq_load(&self, hash: &[u8; 16]) -> Result<NativeStage, NqRefusal> {
         NativeStage::load(self.engine, hash).await
     }
 

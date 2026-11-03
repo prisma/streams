@@ -42,10 +42,8 @@ impl CommitTransaction<'_> {
             Some(st) => st,
             None => match self.nq_load(&hash).await {
                 Ok(st) => st,
-                Err(e) => {
-                    self.effects
-                        .native_acks
-                        .push((resp, Err(NqRefusal::Internal(e))));
+                Err(refusal) => {
+                    self.effects.native_acks.push((resp, Err(refusal)));
                     return;
                 }
             },

@@ -353,6 +353,9 @@ pub(crate) enum NqRefusal {
     /// The shard committer's queue was full: the operation was not
     /// submitted, so nothing was written (layout 6A package 1).
     Busy,
+    /// The queue's rows are of an earlier format, which this binary does
+    /// not read (S3b-DESIGN §14.4): its cell is recreated.
+    Format(String),
     Internal(String),
 }
 

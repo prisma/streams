@@ -852,3 +852,30 @@ async fn assert_queue_tail_sealed(db: &Db, when: &str) {
         .unwrap();
     assert_eq!(row, None, "no unsealed-index row names the queue {when}");
 }
+
+/// A queue whose state row is of an earlier format (part 1 changed the
+/// queue rows on layout 8 without a version bump, S3b-DESIGN §14.4) answers
+/// `Format` on every operation, its row's version named: never misread,
+/// never a retryable unavailability, and its cell is recreated.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_queue_of_an_earlier_row_format_is_refused_as_such() {
+    let (e, db) = engine("nq-format").await;
+    create(&e, QueueConfig::default()).await;
+    let mut raw = db.get(keys::state(&HASH)).await.unwrap().unwrap().to_vec();
+    raw[..4].copy_from_slice(&3u32.to_le_bytes());
+    db.put(keys::state(&HASH), &raw).await.unwrap();
+    // A fresh engine on the same log: the stage loads the row from the store.
+    drop(e);
+    let e = ShardEngine::start(
+        "nq-format".to_owned(),
+        db.clone(),
+        Arc::new(object_store::memory::InMemory::new()),
+        ShardConfig::default(),
+        None,
+        Default::default(),
+    );
+    match op(&e, NqOp::Get).await {
+        Err(NqRefusal::Format(why)) => assert!(why.contains("version 3"), "{why}"),
+        other => panic!("an earlier format answered {other:?}"),
+    }
+}

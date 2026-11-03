@@ -123,6 +123,10 @@ impl From<NqRefusal> for QueueFailure {
                     "the queue's shard is at its committer capacity; nothing was written; retry",
                 )
             },
+            NqRefusal::Format(m) => QueueFailure {
+                retryable: false,
+                ..fail(C::Internal, "queue_format", m)
+            },
             NqRefusal::Internal(m) => fail(C::Unavailable, "queue_unavailable", m),
         }
     }

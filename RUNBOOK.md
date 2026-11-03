@@ -937,6 +937,12 @@ anything listed in `$SOAK_HOME/preserve.txt`.
   publish, and one shard fewer after. Both halves must be this instance's: the
   topology policy moves a split pair onto one instance itself and merges it
   once the move's cooldown has passed.
+- **Queue rows (2026-11, S3b part 1)**: a queue's rows changed format (the
+  state row's version 4, its lane frontier and range rows) on layout 8
+  without a layout bump. A queue created by an earlier binary answers
+  `500 queue_format` on every route, its row's version in the log; a cell
+  holding queues is recreated (a fresh `PATH_PREFIX`), never upgraded in
+  place. Streams are unaffected.
 - **Decommission**: stop generators, redeploy without `KEEP_AWAKE`, let the
   platform sleep the fleet; delete the prefix when the data is disposable.
 
