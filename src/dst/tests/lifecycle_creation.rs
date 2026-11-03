@@ -4,6 +4,7 @@ use super::fixture_failpoints::gap_lock;
 use super::fixture_http::{engine_shutdown, http_rig};
 use super::fixture_requests::{PRISMA_KEY, RIG_KEY_B64, hreq, preq};
 use super::fixture_storage::mem;
+use crate::registry::cache::failing_gets::{FailingGets, descriptor_suffix};
 
 /// Readiness is not a stopwatch. An abandoned initialization used to
 /// stop blocking reads once its claim aged past 15 s, so a stream whose
@@ -544,5 +545,55 @@ async fn a_fork_inheriting_a_legacy_window_is_born_alive() {
     );
     let (st, _, _) = hreq(addr, "HEAD", "/v1/stream/ttl-legacy-child", &[], b"").await;
     assert_eq!(st, 200);
+    engine_shutdown(&state).await;
+}
+
+/// One create of `name` on `surface`: the product collection, the raw
+/// stream or the queue, each with a body its surface accepts.
+async fn create_on(
+    addr: std::net::SocketAddr,
+    surface: &str,
+    name: &str,
+) -> (u16, std::collections::HashMap<String, String>, Vec<u8>) {
+    let product = [("prisma-encryption-key", PRISMA_KEY)];
+    match surface {
+        "product" => {
+            let cfg = br#"{"format":{"kind":"json"}}"#;
+            preq(addr, "PUT", &format!("/v1/streams/{name}"), &product, cfg).await
+        }
+        "raw" => {
+            let ct = [("content-type", "application/json")];
+            hreq(addr, "PUT", &format!("/v1/stream/{name}"), &ct, b"").await
+        }
+        _ => {
+            let key = [("streams-encryption-key", PRISMA_KEY)];
+            preq(addr, "PUT", &format!("/v1/queues/{name}"), &key, b"").await
+        }
+    }
+}
+
+const SURFACES: [(&str, &str); 3] = [
+    ("product", "regunav-p"),
+    ("raw", "regunav-r"),
+    ("queue", "regunav-q"),
+];
+
+/// Tuning item 5: a store that fails one GET of a stream's descriptor no
+/// longer fails its create: the registry reads it again, and the product,
+/// raw and queue creates are each 201 with the stream created.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_create_survives_one_failed_registry_read() {
+    let store = FailingGets::over(mem());
+    let (state, addr) = http_rig(store.clone()).await;
+    let mut answers = Vec::new();
+    for (surface, name) in SURFACES {
+        store.fail(&descriptor_suffix(name), 1);
+        let st = create_on(addr, surface, name).await.0;
+        let sref = state.deployment.raw_adapter_sref(name);
+        let created = state.registry.get(&sref).await.unwrap().is_some();
+        answers.push((surface, st, created));
+    }
+    let created = SURFACES.map(|(surface, _)| (surface, 201, true));
+    assert_eq!(answers, created);
     engine_shutdown(&state).await;
 }

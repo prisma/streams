@@ -422,6 +422,17 @@
     "scenarios": []
   },
   {
+    "name": "a_create_survives_one_failed_registry_read",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "60454952c1528e9d15340f883024bfb3cc879d481aac01a75c9775a8001c8c21",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/lifecycle_creation.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_critical_loop_failure_withdraws_the_instance_from_every_ring",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

@@ -54,6 +54,9 @@ const REGISTRY_CACHE_MAX_BYTES: usize = 64 << 20;
 /// filling to the count cap with expired ones.
 const SWEEP_FLOOR: usize = 4_096;
 
+/// How long a failed descriptor read waits before its one retry.
+const DESCRIPTOR_RETRY_DELAY: Duration = Duration::from_millis(20);
+
 /// What every slot is charged before its descriptor's variable parts: the
 /// slot itself, inline (an emptied, claimed or absent slot is as large as
 /// a filled one), and its key. A descriptor's fixed strings (its name,
@@ -595,9 +598,30 @@ impl Registry {
             .remove(sref.name().as_str())
     }
 
+    /// The descriptor object's read, retried once `DESCRIPTOR_RETRY_DELAY`
+    /// later when the store fails it (tuning item 5): a GET whose reply
+    /// broke, which the store client's own retries do not cover, no longer
+    /// fails the read. A corrupt descriptor is final (a retry reads the
+    /// same bytes); an absent one and a 304 are answers.
+    async fn fetch_descriptor(
+        &self,
+        path: &ObjPath,
+        sref: &crate::tenant::TenantStreamRef,
+        if_none_match: Option<String>,
+    ) -> Result<Option<Fetched>, object_store::Error> {
+        let first = self.fetch_descriptor_once(path, sref, if_none_match.clone());
+        match first.await {
+            Err(error) if !is_corrupt_descriptor(&error) => {
+                tokio::time::sleep(DESCRIPTOR_RETRY_DELAY).await;
+                self.fetch_descriptor_once(path, sref, if_none_match).await
+            }
+            answer => answer,
+        }
+    }
+
     /// One GET of the descriptor object (conditional when the cache
     /// holds an ETag), decoded fail-closed. `None` is the store's 304.
-    async fn fetch_descriptor(
+    async fn fetch_descriptor_once(
         &self,
         path: &ObjPath,
         sref: &crate::tenant::TenantStreamRef,
@@ -645,7 +669,11 @@ impl Registry {
 }
 
 #[cfg(test)]
+pub(crate) mod failing_gets;
+#[cfg(test)]
 mod retained_tests;
+#[cfg(test)]
+mod retry_tests;
 #[cfg(test)]
 mod tests;
 
