@@ -92,8 +92,9 @@ Limits, error answers and retry rules are in
   does (`docs/refactor/WIRE-MATRIX.md` §2.2). Per-stream retention is
   planned with the next storage layout's stage 3b (NEXT-WORK item 2,
   design B).
-- A project stores at most its stored-bytes limit, 10 GiB by default
-  ([BETA-REFERENCE.md](BETA-REFERENCE.md)).
+- Storage is unlimited: a project has no stored-bytes limit unless the
+  operator sets it one as a cost guard (edge change #244;
+  [LIMITS.md](LIMITS.md), [BETA-REFERENCE.md](BETA-REFERENCE.md)).
 
 ## Erasure, as built
 

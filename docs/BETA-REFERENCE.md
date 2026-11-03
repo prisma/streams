@@ -90,7 +90,7 @@ edge change #173.
 | Streams | 8,192 | `429 stream_limit`, not retryable |
 | Appended bytes queued, not yet stored | 64 MiB | `429 queued_bytes` |
 | Memory a project's requests hold | 32 MiB | `429 project_memory_pressure`, `Retry-After: 1` |
-| Stored bytes | 10 GiB by default; the operator can set more | `429 stored_bytes_limit`, not retryable |
+| Stored bytes | unlimited (edge change #244); the operator may set a project a cap as a cost guard | where a cap is set: `429 stored_bytes_limit`, not retryable |
 
 Notes:
 

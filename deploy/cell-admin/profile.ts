@@ -6,7 +6,8 @@
 // ceiling is max(1, floor(bound / k)); an axis with no shared bound has
 // none. The stored-bytes quota has no bound and no ceiling: the profile's
 // PROJECT_STORED_BYTES_DEFAULT is what `admit` gives a project that sets
-// none, as the server gives it to a 0 (`CellCeiling::effective`).
+// none, as the server gives it to a 0 (`CellCeiling::effective`); the
+// shipped profiles' 0 is no limit (edge change #244).
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { AdminError } from "./errors";
@@ -117,6 +118,16 @@ function positive(env: Map<string, string>, name: string): number {
   return Number(raw);
 }
 
+/// A byte count the profile must set, 0 included (0: no limit).
+function nonNegative(env: Map<string, string>, name: string): number {
+  const raw = env.get(name);
+  if (raw === undefined) throw new AdminError(`profile does not set ${name}`);
+  if (!/^[0-9]+$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
+    throw new AdminError(`profile ${name}=${raw} is not a non-negative integer`);
+  }
+  return Number(raw);
+}
+
 function requireValue(env: Map<string, string>, name: string, want: string): void {
   const got = env.get(name);
   if (got !== want) {
@@ -222,7 +233,7 @@ export function cellSizing(env: Map<string, string>): CellSizing {
     share_k: k,
     bounds,
     ceilings,
-    stored_default: positive(env, "PROJECT_STORED_BYTES_DEFAULT"),
+    stored_default: nonNegative(env, "PROJECT_STORED_BYTES_DEFAULT"),
     ...memory,
     dedicated: k === 1,
   };

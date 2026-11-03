@@ -60,7 +60,7 @@ describe("the shared-cell profile", () => {
         max_streams: 8192,
         queued_append_bytes: 67108864,
       },
-      stored_default: 10737418240,
+      stored_default: 0,
       memory_line: 33554432,
       read_memory: 131072000,
       dedicated: false,
@@ -120,7 +120,7 @@ describe("the shared-cell profile", () => {
     ["MAX_UNABSORBED_BYTES_PER_INSTANCE", undefined, "profile does not set MAX_UNABSORBED_BYTES_PER_INSTANCE"],
     ["ADMIT_MAX_INFLIGHT", "5e2", "ADMIT_MAX_INFLIGHT=5e2 is not a positive integer"],
     ["PROJECT_STORED_BYTES_DEFAULT", undefined, "profile does not set PROJECT_STORED_BYTES_DEFAULT"],
-    ["PROJECT_STORED_BYTES_DEFAULT", "0", "profile PROJECT_STORED_BYTES_DEFAULT=0 is not a positive integer"],
+    ["PROJECT_STORED_BYTES_DEFAULT", "-1", "profile PROJECT_STORED_BYTES_DEFAULT=-1 is not a non-negative integer"],
   ];
   test.each(breaks)("refuses %s=%s", (name, value, message) => {
     const env = readProfiles(DEFAULT_PROFILES);
@@ -160,7 +160,7 @@ describe("the dedicated-cell profile", () => {
       share_k: 1,
       bounds: shared.bounds,
       ceilings: shared.bounds,
-      stored_default: 10737418240,
+      stored_default: 0,
       memory_line: 268435456,
       read_memory: 131072000,
       dedicated: true,

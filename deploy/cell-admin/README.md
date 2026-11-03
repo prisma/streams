@@ -84,19 +84,24 @@ decision record of 2026-11-03, item C; no other setting names the kind):
   shared profile, refuses every create on a dedicated cell (its profile
   check fails), so a dedicated cell is admitted by `cell-admin` only.
 
-The stored bytes a project may own, `max_stored_bytes`, have no ceiling:
-the profile's `PROJECT_STORED_BYTES_DEFAULT` (10 GiB, the owner's answer
-S1 of 2026-10-12) is what `admit` and the issuer give a project that is
-given none, written explicitly, and the server gives the same default to a
-0 or absent value. `init`, and `admit`, which re-reads the profiles,
-refuse a profile without a positive `PROJECT_STORED_BYTES_DEFAULT`. The
-profile is fixed for a cell's life (its digest; `reprofile` changes only
-the block-cache sizes), so the default is too;
-`quota` changes one project's value. A project that stores its quota is
-refused appends `429 stored_bytes_limit` until it deletes or `quota`
-raises it; the RUNBOOK's `PROJECT_STORED_BYTES_DEFAULT` row says how fresh
-the figure is, and its "What to alert on" table watches the cell's stored
-growth and spend.
+The stored bytes a project may own, `max_stored_bytes`, have no ceiling,
+and by default no limit: storage is unlimited (the owner's decision of
+2026-11-03, edge change #244; docs/LIMITS.md). The profile's
+`PROJECT_STORED_BYTES_DEFAULT`, 0 in both shipped profiles, is what
+`admit` and the issuer give a project that is given none, written
+explicitly; the server reads 0 as no limit. `init`, and `admit`, which
+re-reads the profiles, refuse a profile that does not set
+`PROJECT_STORED_BYTES_DEFAULT` to a non-negative integer. The profile is
+fixed for a cell's life (its digest; `reprofile` changes only the
+block-cache sizes), so the default is too: a cell initialised with the
+10 GiB of answer S1 (2026-10-12) keeps it for its projects until it is
+replaced. `quota --project P --quota max_stored_bytes=N` still gives one
+project a cap, as a cost guard; a project that stores its cap is refused
+appends `429 stored_bytes_limit` until it deletes or `quota` raises it.
+The RUNBOOK's `PROJECT_STORED_BYTES_DEFAULT` row says how fresh the figure
+is, and its "What to alert on" table watches the cell's stored growth and
+spend, which billing still meters. Native queues keep their own per-queue
+`maxQueuedBytes` (default 256 MiB) until the queue-storage redesign.
 
 ## The signing key
 
@@ -180,7 +185,7 @@ A compromised key, in this order:
 | Command | What it does |
 |---|---|
 | `init --cell-id C --deployment-project P --account A (--key-file K \| --public-key FILE)` | Creates the state and the first bundle, refused while either exists (a bundle without a state is a lost state: recover it, or use a new cell id). It reads the profiles (by default the two above; `--profile` repeats, later wins), checks they describe a single-server cell, shared or dedicated (k = 1), and fixes the cell's ceilings at bound ÷ k. Also: `--workspace-cap N` (default 1), `--max-projects N` (default 1,000; on a dedicated cell 1, and any other value is refused), `--denylist FILE` (default `DIR/denylist.txt`; point several cells at one file), `--issuer URL` and `--cell-env FILE`: sets `CELL_ID`, `PROJECT_ID`, `ACCOUNT_ID` and `STREAMS_AUTH_ISSUER` in that cells file by key, once the state is saved, keeping every other line (the provisioning script writes the rest); a missing file is made, mode 0644 (it holds no secret). It refuses, before the cell exists, a file with a line that is not space-free `KEY=VALUE` or a key set twice, and an issuer that is not space-free |
-| `admit --project P --workspace W` | Places a project and creates its customer credential. Each bounded quota defaults to the cell's ceiling; `--quota field=value` sets a lower one. `--weight request=N` and `--weight bytes=N` (each 1 to k - 1, default 1; fixed for the project's life) give it weighted ceilings: the request axes (`requests_per_sec`, `max_inflight_requests`, `max_live_subscriptions`, `max_streams`) at their unit ceiling x the request weight, the append and read byte rates x the byte weight, `queued_append_bytes` unscaled, never above the server's ⌊bound x w ÷ k⌋ (see "Weights" below); a dedicated cell takes no weight. `--class m` or `--class l` admits profile M or L by its preset instead of `--weight` (never both; see "Size classes" below). `max_stored_bytes` defaults to the class's cap, else the profile's `PROJECT_STORED_BYTES_DEFAULT`, and `--quota max_stored_bytes=N` sets any positive N, larger included, over either. Also `--scopes "..."` (default: every scope), `--prefix p` (repeatable; a prefix the cell's grants parser takes: at most 256 UTF-8 bytes, no control character or space, no empty, `.` or `..` component, not under `__ds`, so `orders`, never `orders/`) and `--profile F` (repeatable; default the two shipped profiles for the cell's kind: `compute-1g.env` with `shared-cell.env`, or with `dedicated-cell.env` on a k = 1 cell), the profile it checks against the one `init` recorded |
+| `admit --project P --workspace W` | Places a project and creates its customer credential. Each bounded quota defaults to the cell's ceiling; `--quota field=value` sets a lower one. `--weight request=N` and `--weight bytes=N` (each 1 to k - 1, default 1; fixed for the project's life) give it weighted ceilings: the request axes (`requests_per_sec`, `max_inflight_requests`, `max_live_subscriptions`, `max_streams`) at their unit ceiling x the request weight, the append and read byte rates x the byte weight, `queued_append_bytes` unscaled, never above the server's ⌊bound x w ÷ k⌋ (see "Weights" below); a dedicated cell takes no weight. `--class m` or `--class l` admits profile M or L by its preset instead of `--weight` (never both; see "Size classes" below). `max_stored_bytes` defaults to the profile's `PROJECT_STORED_BYTES_DEFAULT` (0 in the shipped profiles: no limit, edge change #244), and `--quota max_stored_bytes=N` sets any positive N as a cost guard. Also `--scopes "..."` (default: every scope), `--prefix p` (repeatable; a prefix the cell's grants parser takes: at most 256 UTF-8 bytes, no control character or space, no empty, `.` or `..` component, not under `__ds`, so `orders`, never `orders/`) and `--profile F` (repeatable; default the two shipped profiles for the cell's kind: `compute-1g.env` with `shared-cell.env`, or with `dedicated-cell.env` on a k = 1 cell), the profile it checks against the one `init` recorded |
 | `check-sizing --profile F [--profile F]...` | Checks a release's profiles (the files it ships, given in full: `--profile` is required and repeats, later wins) against the cell, exactly as `admit` checks its own copy: the same k and ceilings as at `init`, and the layered profile `init` recorded. Exit 0, or 1 with `admit`'s refusal ("the profiles changed since init ..." or "the layered profile differs ..."). A cell's ceilings are fixed for its life, and the server installs its own from the profiles it boots with, so a release that moves one would make every later `admit` fail: run it before a release deploys to the cell. It changes neither the state nor the bundle (on an `s3://` state, the buckets' self-test that every command runs writes and deletes one probe object) |
 | `reprofile --recorded-profile F [--recorded-profile F]... --profile F [--profile F]...` | Takes a new layered profile for the cell when it changes only `SHARED_CACHE_BYTES`, `HISTORY_CACHE_BYTES`, `POSTINGS_CACHE_BYTES` or `TELEMETRY_CACHE_BYTES` (changed, added or removed): the block caches, which size the server's memory and no project's ceiling; no sizing rule reads them, which `reprofile.test.ts` pins. The state holds the profile's digest, not its values, so `--recorded-profile` gives the files the cell was initialised or last reprofiled with (the running release's `deploy/profiles/`), refused unless they give the recorded digest; `--profile` gives the new release's, in full. Any other changed key is refused, every one named ("the new profile changes K was -> now, ...: only ... change on a cell's life; any other change needs a new cell"), as is a cache size that is not a positive integer and a profile that is already the recorded one. Accepted: the new digest is recorded by compare-and-swap, the journal says `reprofile` with the digests and each key `was -> now`, and `check-sizing` and `admit` then take the new profile and refuse the old one. Nothing published changes (no new `feed_version`). Until the issuer runs a release with the new profile its `profile_ok` is false and it refuses every create `409 beta_at_capacity`, so run it just before `deploy-release.sh`, which names this command when it refuses a moved profile; a rollback reprofiles back the same way, the release's files as `--recorded-profile` (RUNBOOK "Reprofiling a shared cell") |
 | `token --credential C --key-file K --out FILE [--ttl SECS]` | Mints a customer token, valid at most 24 h (default 1 h; the first minute is backdated for clock skew). The token goes to FILE with mode 0600 and is never printed. Hand the file over; never paste the token |
@@ -250,24 +255,19 @@ other weights is an offboarding and a new id.
 ### Size classes
 
 `admit --class m|l` admits Fable's profiles M (medium CDC) and L (large
-sink) by preset (the decision record of 2026-11-03, item C). Each caps the
-project's stored bytes at
-
-    cap = (retention days + 1) x stored bytes per day, rounded up to 64 GiB
-
-(the extra day covers the purge delay and the cleaner's lag): M is 8 x
-36 GB = 288 GB, so 320 GiB; L is 31 x 44 GB = 1,364 GB, so 1.25 TiB
-(1,280 GiB). The cell's 10 GiB default fills within hours for either.
+sink) by preset (the decision record of 2026-11-03, item C). A class sets
+weights only. Its stored-bytes caps (320 GiB for M, 1.25 TiB for L) were
+dropped with edge change #244: storage is unlimited, so a class takes the
+profile's default like any project.
 
 | Class | Shared cell (k = 8) | Dedicated cell (k = 1) |
 |---|---|---|
-| `m` | `--weight request=2 --weight bytes=6`, 320 GiB; one per cell (the packing rule) | no weights, 320 GiB |
-| `l` | refused: L's 1.82 MB/s exceeds (k - 1)/k of the 2.06 MB/s envelope | no weights, 1.25 TiB |
+| `m` | `--weight request=2 --weight bytes=6`; one per cell (the packing rule) | no weights |
+| `l` | refused: L's 1.82 MB/s exceeds (k - 1)/k of the 2.06 MB/s envelope | no weights |
 
-`--class` and `--weight` are never given together (a usage error), and an
-explicit `--quota max_stored_bytes=N` overrides the class's cap. A class is
-not recorded: it is the weights and the stored bytes it sets, and `quota`
-changes the stored bytes as for any project.
+`--class` and `--weight` are never given together (a usage error). An
+explicit `--quota max_stored_bytes=N` gives a class's project a cost guard,
+as for any project. A class is not recorded: it is the weights it sets.
 
 `admit` refuses, and publishes nothing, when:
 - a quota is above its ceiling (at the project's weights), or is 0 (a binary without the cell ceiling reads 0 as "no limit"; for `max_stored_bytes`, omit the field to take the cell default);

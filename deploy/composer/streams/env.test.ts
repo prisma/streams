@@ -192,7 +192,7 @@ describe("refusals", () => {
     ["MAX_UNABSORBED_BYTES_PER_INSTANCE", undefined, "profile does not set MAX_UNABSORBED_BYTES_PER_INSTANCE"],
     ["ADMIT_MAX_INFLIGHT", "5e2", "ADMIT_MAX_INFLIGHT=5e2 is not a positive integer"],
     ["PROJECT_STORED_BYTES_DEFAULT", undefined, "profile does not set PROJECT_STORED_BYTES_DEFAULT"],
-    ["PROJECT_STORED_BYTES_DEFAULT", "0", "profile PROJECT_STORED_BYTES_DEFAULT=0 is not a positive integer"],
+    ["PROJECT_STORED_BYTES_DEFAULT", "-1", "profile PROJECT_STORED_BYTES_DEFAULT=-1 is not a non-negative integer"],
   ];
   test.each(breaks)("a profile with %s=%s fails cell-admin's posture check", (name, value, message) => {
     const r = refusal({ profiles: profilesWith(name, value) });

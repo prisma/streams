@@ -1796,6 +1796,17 @@
     "scenarios": []
   },
   {
+    "name": "a_project_without_a_stored_quota_is_never_refused_stored_bytes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "32a7197d48dde4bf7b09b4171c9313fb0b524fe1ff2fc41f5b2024955bc02436",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/quota_stored_cap.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_projects_pulls_reserve_their_coverage_inside_its_line_and_its_neighbour_reads",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

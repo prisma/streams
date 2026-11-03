@@ -542,6 +542,7 @@ These changes alter a status, error code or retry behaviour on an error case cli
   - Controls (hand-applied, reverted): `>` for `>=` fails T4 (`None` for `Some((1000, 1000))`); a charge before the check fails T4 ("a refused append charges nothing", 500 for 0); an event per refusal fails T4 (`(3, 0)` for `(1, 0)`) and T6 (2 events for 1); a quota of 0 that does not release the latch fails T4 (`(2, 1)` for `(2, 2)`); project usage answering 0 fails T6 (`(262624, 0)` for `(262624, 262624)`).
 - **Risk reason:** medium: a new refusal on the write path and a new fail-closed default on the shared-cell profile; a wrong figure would refuse a project's appends. Bounded: the figure is the stored index #157 pins against the `segment/` rows and each stream's usage; reads and deletes are never refused, so a refused project can always get under; the refusal charges nothing; and nothing changes where no default or quota is set.
 - **Check against commit:** written with the change, from the stored-cap triage's B4 spec. Not checked by an independent pass.
+- **Amendment (#244):** storage is unlimited by default: the shipped profiles set `PROJECT_STORED_BYTES_DEFAULT=0`, so this refusal now meets only a project an operator gave a `max_stored_bytes` cap.
 
 ### #143 d25cbb4b, 4e04b354 — A verified request pays for the registry store work its own task makes from its project's store budget, at the project's request rate a second, once it is served, and the project's creates, deletes, seals and catalog listings are refused 429 project_rate_limit while that budget is in debt
 
@@ -1960,6 +1961,7 @@ None of these changes alters a status or code on a path that worked before, and 
   - Controls (hand-applied, reverted): the default applied only at k > 1 (the design's E9) fails `a_cell_gives_an_absent_stored_quota_its_default`; boot ignoring the setting fails `boot_installs_the_ceiling_of_the_configured_cell`; `admittedQuotas` not writing the default fails 9 cell-admin and issuer tests.
 - **Risk reason:** low: no request is refused on the new value and no server answer changes. A feed that was refused whole now parses, and dedicated cells keep 0. The default it installs becomes a refusal only with item B4, whose record carries that risk.
 - **Check against commit:** written with the change, from the stored-cap triage's B2 spec. Not checked by an independent pass.
+- **Amendment (#244):** the shipped shared-cell and dedicated-cell profiles set `PROJECT_STORED_BYTES_DEFAULT=0` (no limit); `cell-admin` and the issuer still publish it explicitly, now as 0, and accept 0 where they required a positive value.
 
 ### #157 b454d923, amended by 49e3a78d — The rollup report's `stored` member states the stored figures admission holds: how many projects, their bytes stored now and written as the drain saw them, when the rollup last published them, and the ten projects that wrote the most
 
@@ -5007,6 +5009,33 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Pinning tests:** src/dst/tests/lifecycle_creation.rs::a_create_whose_registry_read_fails_is_503 (a store failing every GET of the stream's descriptor: product 503 `temporarily_unavailable`, raw and queue 503 `registry_unavailable`, each `retry-after: 1`, the stream absent, and the same create 201 once the store reads again). Red before: `left: [("product", 503, Some("1"), String("temporarily_unavailable"), Bool(true), true, 201), ("raw", 500, None, String("internal"), Null, true, 201), ("queue", 500, None, String("internal"), Bool(true), true, 201)]`. Also src/product/ownership.rs::tests::a_failed_registry_read_answers_as_a_failed_descriptor_read.
 - **Risk reason:** low: a status, code and header change on a failure path, toward the code the queue routes already use for a failed registry read (`queues::target`). Reversal: map `Unavailable` back to `Storage`. Cost: every registry descriptor read the store fails is sent once more, so a store outage at most doubles the failing GETs (Class B), bounded at one retry.
 - **Status:** ratified with amendments by Fable 5.1 on 2026-11-03 under the owner's delegation of 2026-11-03.
+- **Check against commit:** written with the change.
+
+### #244 (this record's commit) — Storage is unlimited: the shipped profiles give a project no stored-bytes limit, so a project with no stored quota is never refused 429 stored_bytes_limit
+
+- **Owner decision (2026-11-03, verbatim):** "Make storage unlimited. Document a hard cap on throughput, and specify dedicated cell as the soluton." The throughput caps are documented in docs/LIMITS.md, which names the dedicated cell as the way past a shared cell's share.
+- **Surface:** product (appends on a shared or dedicated cell), cell-admin, the interim issuer and the composer's profile check.
+- **Endpoint:** `POST /v1/streams/{name}/records` (and `:batch`) of a project whose policy sets no `max_stored_bytes`; `cell-admin init`, `admit` and `admit --class m|l`; the issuer's `POST /v1/workspaces/{w}/streams/projects`; the composer's env validation. Owners: `deploy/profiles/shared-cell.env` and `dedicated-cell.env` (`PROJECT_STORED_BYTES_DEFAULT=0`), `deploy/cell-admin/profile.ts` (`cellSizing` takes a non-negative default), `deploy/cell-admin/rules.ts` (`CLASSES` and `classPreset`: no stored caps), `deploy/cell-admin/commands.ts` (`admit`). The server is unchanged: it already read 0 as no limit (`auth::ceiling`, `quota::stored::StoredTable::admit`).
+- **Condition:** a cell initialised from the shipped profiles after this commit. A cell initialised before it keeps its recorded profile, and with it the 10 GiB default, for its life (the profile digest is fixed; `reprofile` changes only the block-cache sizes), and its projects keep the explicit 10 GiB their policies carry.
+- **Before:**
+  - The shipped profiles set `PROJECT_STORED_BYTES_DEFAULT=10737418240`, and cell-admin and the issuer published it as each project's `max_stored_bytes`.
+  - A project storing 10 GiB was refused appends `429 stored_bytes_limit`, not retryable (edge change #158).
+  - `--class m` capped a project at 320 GiB and `--class l` at 1.25 TiB.
+  - cell-admin, the issuer and the composer refused a profile whose `PROJECT_STORED_BYTES_DEFAULT` was 0.
+- **After:**
+  - The shipped profiles set 0, which cell-admin and the issuer publish explicitly and the server reads as no limit: a project whose policy sets no stored quota is never refused for what it stores.
+  - `--class m|l` set weights only.
+  - A profile's default may be 0, and is refused only when unset or not a non-negative integer.
+  - `cell-admin quota --quota max_stored_bytes=N` still gives one project a cap, as a cost guard; a project at its cap is refused as #158 says.
+  - Billing still meters retained bytes, the stored-bytes gauge and the RUNBOOK's growth and spend alerts stay, and native queues keep their own per-queue `maxQueuedBytes` (default 256 MiB) until the queue-storage redesign.
+- **Retry semantics:** unchanged; the refusal it removes was not retryable.
+- **Who is affected:** projects on cells made from the shipped profiles after this commit: none is refused for its stored bytes unless an operator caps it. The cell's own guard is the RUNBOOK's `r23_stored_growth` and `r24_daily_spend` alerts.
+- **Pinning tests:**
+  - src/dst/tests/quota_stored_cap.rs::a_project_without_a_stored_quota_is_never_refused_stored_bytes (a cell at the shipped shared-cell profile's default, a project whose feed sets no stored quota, 20 GiB published as its stored bytes: the append answers 200, the figure stays 20 GiB, no cap event). Red before: `left: (429, 21474836480, 1) right: (200, 21474836480, 0)`, the 429 naming `"limit":10737418240`.
+  - deploy/cell-admin (profile, cell-admin, owner and reprofile tests), deploy/issuer/projects.test.ts and deploy/composer/streams/env.test.ts: every project admitted from the shipped profiles publishes `max_stored_bytes: 0`, `--class m|l` publish no stored cap, and a default of -1 is refused as not a non-negative integer. Red before: 22 failures, among them `"stored_default": 10737418240` where 0 was expected and `"max_stored_bytes": 10737418240` in the issuer's created project.
+  - src/config/validation_tests.rs pins the shipped shared-cell profile's 0.
+- **Risk reason:** medium: a project can now store without bound, and its cost is billed, not refused. The cell's stored growth and spend alerts are the guard, and an operator can still cap one project. Reversal: set `PROJECT_STORED_BYTES_DEFAULT` back to a positive value in the profiles, for new cells.
+- **Status:** decided by the owner on 2026-11-03: "Make storage unlimited. Document a hard cap on throughput, and specify dedicated cell as the soluton."
 - **Check against commit:** written with the change.
 
 ## Discrepancies

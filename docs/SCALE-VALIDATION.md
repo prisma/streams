@@ -275,11 +275,13 @@ cell-admin places them by these rules (decision C, 2026-11-03; it lands in
 `deploy/cell-admin`, whose README is its record): a k = 1 profile is a
 dedicated cell (`deploy/profiles/dedicated-cell.env`, `init --max-projects
 1`, one project, no `--weight`), not a refusal; `admit --class m` presets
-weights (2, 6) and `max_stored_bytes` 320 GiB; `admit --class l` sets
-`max_stored_bytes` 1.25 TiB and is admitted only on a dedicated cell. Until
-that change is in the commit under test, admit M with `--weight request=2
---weight bytes=6 --quota max_stored_bytes=...` and run L's cell as
-`ML.env`'s `l-alone` does.
+weights (2, 6); `admit --class l` is admitted only on a dedicated cell.
+Neither caps the stored bytes: storage is unlimited (the owner's decision
+of 2026-11-03, edge change #244; docs/LIMITS.md), so M's 100 GiB and L's
+150 GiB a day are never refused for what they store, and the classes'
+earlier 320 GiB and 1.25 TiB caps are gone. Until that change is in the
+commit under test, admit M with `--weight request=2 --weight bytes=6` and
+run L's cell as `ML.env`'s `l-alone` does.
 
 ### 2.2 The tests
 
@@ -832,7 +834,11 @@ parity; the paid plan carries a **$10 per month minimum spend per
 workspace**, and the fee counts as the first $10 of usage, so a tenant pays
 max($10, usage). The free tier is the T profile and is the marketing
 expense. The published price list (the $10 figure, the free tier's limits,
-K2 parity itself) is held by the owner; this fixes the model only.
+K2 parity itself) is held by the owner; this fixes the model only. Storage
+is unlimited on every cell (edge change #244) and billing still meters
+retained bytes, so a tenant's limits are throughput (docs/LIMITS.md); how
+retained bytes are priced, the free tier's included, is part of that price
+list.
 
 | Tenant | Marketing expense: loss a month per 1,000 tenants | Minimum spend $10: revenue | Minimum spend $10: margin |
 |---|---:|---:|---:|

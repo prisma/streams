@@ -40,8 +40,8 @@ afterEach(cleanup);
 /// The quotas a project is admitted with when none is given: each bounded
 /// axis at its ceiling, append records/s 0 (no project limit, as the
 /// server reads it), and the stored bytes at the profile's
-/// PROJECT_STORED_BYTES_DEFAULT (10 GiB), which has no ceiling, and weight 1
-/// on both weights.
+/// PROJECT_STORED_BYTES_DEFAULT, 0: no stored-bytes limit (the owner's
+/// decision of 2026-11-03, edge change #244), and weight 1 on both weights.
 const CEILINGS = {
   requests_per_sec: 176,
   append_bytes_per_sec: 257500,
@@ -51,7 +51,7 @@ const CEILINGS = {
   max_live_subscriptions: 150,
   max_streams: 8192,
   queued_append_bytes: 67108864,
-  max_stored_bytes: 10737418240,
+  max_stored_bytes: 0,
   request_weight: 1,
   byte_weight: 1,
 };
@@ -71,19 +71,15 @@ const BOUNDS = {
   max_live_subscriptions: 1200,
   max_streams: 65536,
   queued_append_bytes: 536870912,
-  max_stored_bytes: 10737418240,
+  max_stored_bytes: 0,
   request_weight: 1,
   byte_weight: 1,
 };
 
-/// The size classes' stored-bytes caps: (retention days + 1) x stored
-/// bytes per day, rounded up to 64 GiB (README "Size classes").
-const M_STORED = 320 * 1024 ** 3;
-const L_STORED = 1280 * 1024 ** 3;
 /// `--class m` on the shared cell: request weight 2, byte weight 6.
 const M_SHARED = {
   ...CEILINGS, requests_per_sec: 352, append_bytes_per_sec: 1545000, read_bytes_per_sec: 22500000,
-  max_inflight_requests: 128, max_live_subscriptions: 300, max_streams: 16384, max_stored_bytes: M_STORED,
+  max_inflight_requests: 128, max_live_subscriptions: 300, max_streams: 16384, max_stored_bytes: 0,
   request_weight: 2, byte_weight: 6,
 };
 const L_ON_SHARED =
@@ -485,7 +481,7 @@ for (const kind of STORES) {
         expect(Object.keys(readState(c.state).projects).sort()).toEqual(["proj_a", "sp_canary_cell_sc1"]);
       });
 
-      test("--class m on a shared cell is weights (2, 6) and 320 GiB stored, one per cell", async () => {
+      test("--class m on a shared cell is weights (2, 6), unlimited storage, one per cell", async () => {
         const c = await initCell();
         const m = await run("admit", "--state", c.state, "--project", "proj_m", "--workspace", "w1", "--class", "m");
         expect([m.code, m.err]).toEqual([0, ""]);
@@ -520,8 +516,8 @@ for (const kind of STORES) {
         expect(Object.keys(readState(c.state).projects)).toEqual(["sp_canary_cell_sc1"]);
       });
 
-      test("on a dedicated cell --class m takes no weights and 320 GiB, --class l 1.25 TiB", async () => {
-        for (const [cls, stored] of [["m", M_STORED], ["l", L_STORED]] as const) {
+      test("on a dedicated cell --class m and --class l take no weights and unlimited storage", async () => {
+        for (const [cls, stored] of [["m", 0], ["l", 0]] as const) {
           const c = await initCell(DEDICATED);
           const r = await run("admit", "--state", c.state, "--project", `proj_${cls}`, "--workspace", "w1", "--class", cls);
           expect([r.code, r.err]).toEqual([0, ""]);
@@ -530,7 +526,7 @@ for (const kind of STORES) {
         }
       });
 
-      test("an explicit --quota max_stored_bytes overrides the class's", async () => {
+      test("an explicit --quota max_stored_bytes is a cost guard beside a class", async () => {
         const c = await initCell();
         const r = await run("admit", "--state", c.state, "--project", "proj_m", "--workspace", "w1", "--class", "m",
           "--quota", "max_stored_bytes=21474836480");

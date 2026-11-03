@@ -84,7 +84,8 @@
   may own (`contracts/streams-platform/v1/project-policies.schema.json`
   stays v1: the field is additive and optional). A 0 or absent value
   takes the cell's `PROJECT_STORED_BYTES_DEFAULT` at any k (default 0, no
-  limit; the shared-cell profile sets 10 GiB). Unknown quota keys still
+  limit; the shipped profiles set 0 too since edge change #244, storage
+  unlimited; they set 10 GiB before). Unknown quota keys still
   refuse the whole feed, so a binary before r9 refuses one carrying the
   field: deploy the binary first, then bundles that carry it. A project
   at its quota is refused new appends `429 stored_bytes_limit` (edge
@@ -1423,9 +1424,10 @@ bounds the stored bytes a project may own: its live segments' stored page
 bytes after compression, page headers included (the unit of a stream's
 usage `ownedStoredBytesNow`, edge change #125). It has no shared bound,
 so it is not divided by k: a 0 or absent value takes the cell's
-`PROJECT_STORED_BYTES_DEFAULT` at any k (default 0, no limit; the
-shared-cell profile sets 10 GiB, the owner's answer S1 of 2026-10-12),
-and a value the feed sets stands, above the default too.
+`PROJECT_STORED_BYTES_DEFAULT` at any k (default 0, no limit; the shipped
+profiles set 0 too since the owner's decision of 2026-11-03, edge change
+#244, storage unlimited, which replaced the 10 GiB of answer S1 of
+2026-10-12), and a value the feed sets stands, above the default too.
 `CellCeiling::effective` resolves it when a policy snapshot is published.
 A product append whose project stores at least its quota is refused
 `429 stored_bytes_limit`, not retryable, with the quota and the figure in

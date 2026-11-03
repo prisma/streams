@@ -592,7 +592,7 @@ for (const kind of STORES) {
       const r = await run("quota", "--state", c.state, "--project", "proj_a", "--quota", "requests_per_sec=10",
         "--quota", "append_records_per_sec=500", "--quota", "max_stored_bytes=21474836480");
       expect([r.code, r.err]).toEqual([0, ""]);
-      expect(before.max_stored_bytes).toBe(10737418240);
+      expect(before.max_stored_bytes).toBe(0);
       expect(policyOf(c.state, "proj_a")).toMatchObject({
         project_policy_version: 2,
         quotas: {

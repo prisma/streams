@@ -215,3 +215,45 @@ async fn freed(cell: &Cell, want: u64) {
     let figure = stored(cell, P);
     panic!("P's figure is {figure}, not {want}, after its delete");
 }
+
+/// The shipped shared-cell profile's `PROJECT_STORED_BYTES_DEFAULT`
+/// (`deploy/profiles/shared-cell.env`).
+fn shipped_stored_default() -> u64 {
+    include_str!("../../../deploy/profiles/shared-cell.env")
+        .lines()
+        .find_map(|line| line.strip_prefix("PROJECT_STORED_BYTES_DEFAULT="))
+        .expect("the shared-cell profile sets a stored-bytes default")
+        .parse()
+        .expect("the stored-bytes default is a byte count")
+}
+
+/// The owner's decision of 2026-11-03 (edge change #244), storage is
+/// unlimited: on a cell shared 8 ways at the shipped profile's stored-bytes
+/// default, a project whose feed sets no stored quota, with 20 GiB already
+/// published as its stored bytes, appends 200 and is refused nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_project_without_a_stored_quota_is_never_refused_stored_bytes() {
+    let cell = open_cell(CellSpec {
+        quotas: |_| ProjectQuotas::default(),
+        cli: |c| c.project_stored_bytes_default = shipped_stored_default(),
+        ..CellSpec::open(1)
+    })
+    .await;
+    let path = format!("/v1/streams/{}", NAMES[0]);
+    assert_eq!(cell.call(P, "PUT", &path, BYTES).await.0, 201);
+    let figure = crate::quota::stored::StoredFigure {
+        project: crate::tenant::ProjectId::new(&project(P)).unwrap(),
+        bytes: 20 << 30,
+        written: 20 << 30,
+    };
+    let table = cell.state.quotas.stored_table();
+    table.publish(&[figure], crate::shard::now_ms());
+    let answer = append(&cell, P, NAMES[0], 0, P_RECORD).await;
+    let text = String::from_utf8_lossy(&answer.2).to_string();
+    assert_eq!(
+        (answer.0, stored(&cell, P), reached(&cell, P)),
+        (200, 20 << 30, 0),
+        "{text}"
+    );
+    engine_shutdown(&cell.state).await;
+}

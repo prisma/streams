@@ -158,7 +158,7 @@ export async function admit(f: Flags, io: Io): Promise<void> {
     checkPlacement(first, project, workspace, denylist);
     const weights = weightValues(first, preset.weights);
     checkPacking(first, weights, sizing);
-    const quotas = admittedQuotas(first, f.all("quota"), preset.stored ?? sizing.stored_default, weights);
+    const quotas = admittedQuotas(first, f.all("quota"), sizing.stored_default, weights);
     const scopes = scopesOf(f.get("scopes"));
     const stream_prefixes = prefixesOf(f.all("prefix"));
     await burnId(store, project);
