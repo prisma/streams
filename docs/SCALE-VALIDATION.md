@@ -261,13 +261,15 @@ to report (edge change #236, ratified 2026-11-03).
 |---|---|---|
 | T, tiny | 3 streams, 200 appends a day of 400 B JSON singles, one long-poll tail always connected | `bench/k2cost/tenants/pack-t-1000.json` |
 | S, small | 20 streams, 2 appends a second of 1 KiB JSON singles (open-loop Poisson), a tail on every stream, one consumer group (pull 10, settle each) on 5 streams | `bench/k2cost/tenants/pack-s-0030.json`; multiplexed: `pack-s-mux-0200.json` |
-| M, medium CDC | 100 GiB a day batched, two consumer groups, tails. `SCR-M` is a quarter slice: 10 streams, 100 × 1 KiB per request under 64 routing keys at 3 requests a second | `docs/STREAMS-COST-LEVERS-2026-10.md`; `bench/k2cost/points/SCR-M.env` |
-| L, large sink | 150 GiB a day, one daily walk | `docs/STREAMS-COST-LEVERS-2026-10.md` |
+| M, medium CDC | 100 GiB a day batched: 10 streams, 100 × 1 KiB per request under 64 routing keys at 12.1 requests a second, two consumer groups, a tail per stream | `bench/k2cost/points/ML.env` (`m-shared`, `m-alone`); `bench/k2cost/tenants/ml-m-shared.json` |
+| L, large sink | 150 GiB a day: 50 streams, 1,000 × 1 KiB per request at 1.78 requests a second (1.82 MB/s), one daily walk | `bench/k2cost/points/ML.env` (`l-alone`) |
 
-M and L are not admitted on a k = 8 cell: its per-project append ceiling
-refuses about 79% and 86% of their writes (`docs/STREAMS-COST-LEVERS-2026-10.md`).
-Run them on the fleet shape or with `PROJECT_SHARE_K=1
-PROJECT_MEMORY_PRESSURE_BYTES=268435456`, as `SCR-M` does.
+M is admitted on a k = 8 cell at weights (request 2, bytes 6), one M per
+cell and no L beside it: at (2, 5) its ceiling refused 22% of its appends.
+L is not admitted on a shared cell; it gets a dedicated cell (k = 1): its
+1.82 MB/s exceeds (k − 1)/k of the 2.06 MB/s envelope for any k. Both were
+measured on the final 6A tree (`results-ml`, tree `6ed91580b`, program
+notes; §5.2).
 
 ### 2.2 The tests
 
@@ -275,7 +277,7 @@ PROJECT_MEMORY_PRESSURE_BYTES=268435456`, as `SCR-M` does.
 |---|---|---|---|
 | ST-1 cell anchor | N = 1, cell shape (`shared-cell.env`), fleet off, 1 shard | PACK-T-1000, then PACK-S-MUX-0200 | the two measured per-tenant costs on Compute and the real store (§5.2) |
 | ST-2 fleet WAL and linearity | N = 1, 8, 16; fleet shape; 1 shard per instance, then 2 | per instance: 20 S tenants with per-stream tails (`pack-s-0020.json`'s class), then 400 T tenants (`pack-t-0400.json`'s class) | WAL PUTs per shard stay at most about 10 a second; per-instance cost is flat as N grows |
-| ST-3 heavy profiles | N = 8; fleet shape; 1 shard per instance | 4 M tenants (four `SCR-M` slices = one M) and 4 L tenants; their streams spread over every shard, about 1.5 MB a second appended per instance | M and L, measured for the first time on the final tree (TODO (owner) in §5.2) |
+| ST-3 heavy profiles | N = 1, fleet off, as they are placed: (a) one shared cell (`shared-cell.env`, k = 8); (b) one dedicated L cell (k = 1) | (a) 48 S + one M at weights (2, 6) (`ML_CELL=m-shared`); (b) one L (`ML_CELL=l-alone`'s phases) | M and L confirmed on Compute + Tigris against the Mac measurement: M shared $68.10, L dedicated $87.88 (§5.2) |
 | ST-4 idle floor | each shape, no load, 60 min | none | the fixed per-instance and per-shard cost (§4.4) |
 
 Per-instance load must stay under the cell envelope: 1,411 requests, 2.06 MB
@@ -353,26 +355,30 @@ python3 bench/k2cost/scrape.py snapshot --run $OUT --label steady-start \
     --servers streams-1=$U1,streams-2=$U2 --s3lite $S3LITE_URL --auth-file $AUTH_HDR
 ```
 
-ST-3 phases (k2gen; one M is four slices of `SCR-M`'s phases on 40 streams):
+ST-3 runs `bench/k2cost/points/ML.env`'s cells (`bench/k2cost/README.md`,
+its `points/ML.env` row), each on a fresh single instance:
+
+- (a) `m-shared` is a tenants step as above, with
+  `bench/k2cost/tenants/ml-m-shared.json` (48 S and one M; the manifest
+  carries M's weights, request 2 and bytes 6). M's cost is its marginal
+  over `s-base`, `pack-s-mux-0048.json` alone, run the same day.
+- (b) `l-alone` is k2gen's phases on a dedicated cell
+  (`PROJECT_SHARE_K=1 PROJECT_MEMORY_PRESSURE_BYTES=268435456`, one
+  project): the load, then one walk of everything it wrote (the day's walk).
 
 ```bash
 H=$SECRETS/gen-headers.txt     # "authorization: Bearer ..." and the encryption key line
-bun bench/k2cost/k2gen.ts setup   --base $BASE --headers-file $H --streams 40 --prefix st3/m
-bun bench/k2cost/k2gen.ts group   --base $BASE --headers-file $H --streams 40 --prefix st3/m --group cdc-a \
-    --pull 100 --consumers 1 --settle every --wait-ms 20000 --duration 1800 --out $OUT/ga.jsonl &
-bun bench/k2cost/k2gen.ts group   --base $BASE --headers-file $H --streams 40 --prefix st3/m --group cdc-b \
-    --pull 100 --consumers 1 --settle every --wait-ms 20000 --duration 1800 --out $OUT/gb.jsonl &
-bun bench/k2cost/k2gen.ts tail    --base $BASE --headers-file $H --streams 40 --prefix st3/m --routing-keys 1 \
-    --via long-poll --readers 1 --duration 1800 --out $OUT/tail.jsonl &
-bun bench/k2cost/k2gen.ts produce --base $BASE --headers-file $H --streams 40 --prefix st3/m --rate 12 \
-    --records 100 --record-bytes 1024 --payload corpus --routing-keys 64 --duration 1800 \
+bun bench/k2cost/k2gen.ts setup   --base $BASE --headers-file $H --streams 50 --prefix st3/l
+bun bench/k2cost/k2gen.ts produce --base $BASE --headers-file $H --streams 50 --prefix st3/l --rate 1.78 \
+    --records 1000 --record-bytes 1024 --payload corpus --duration 1380 --seed 62 \
     --out $OUT/prod.jsonl --ledger $OUT/prod.ledger.json
+bun bench/k2cost/k2gen.ts walk    --base $BASE --headers-file $H --streams 50 --prefix st3/l --parallel 8 \
+    --out $OUT/walk.jsonl
 ```
 
-The L daily walk is `k2gen walk --from earliest` over the L streams
-(`bench/k2cost/k2gen.ts help`); L's exact phase plan is in the report kept
-outside the tree (`docs/STREAMS-COST-LEVERS-2026-10.md`): **TODO (owner)**:
-put L's phase plan in a point file.
+The measurement priced a dedicated L as continuous ingest plus one read of
+every byte: the produce window scaled to a month, plus its walk once per
+produce span (`results-ml`, program notes); price ST-3's L the same way.
 
 ### 2.4 What to measure
 
@@ -428,11 +434,13 @@ watch long runs live). For each step:
 - A ring or override change → abort the window; restart it after the gate.
 - A density step that fails rule 1 is the cell's limit, not an error: record
   N and stop the ladder there.
-- ST-3 sends batches of about 100 KiB. A non-owner keeps its 409 when the
-  handler read more than 64 KiB of the body before it found the owner
-  (§1.6), and k2gen does not replay a 409. If `409 not_ring_owner` appears
-  in the first minute, stop and route the generator to each stream's owner
-  (the pilot load balancer, `PILOT_MODE=lb`, RUNBOOK §6) before rerunning.
+- ST-3 sends requests of about 100 KiB (M) and 1 MB (L). Its cells run
+  fleet off, so nothing is forwarded. The Mac `m-shared` run passed every
+  check but rule 1: M met its memory line and rate limit on 376 of about
+  100,600 requests (0.37%), all retried, every append acked, and the S
+  tenants saw none. Report a matching run as the Mac run was reported
+  (valid but for M's retried refusals, priced); a refusal of an S tenant,
+  or any on the dedicated L cell (the Mac run had none), stays void.
 
 ## 3. Queues scaling tests
 
@@ -723,9 +731,17 @@ than today" (`docs/reviews/2026-09-hardening/README.md`, Owner decisions,
 | Queue 1x, marginal month beside a co-tenant | $20.24 (bar missed by 6.2%) | $19.06 | $27.06 | $6.82 | 25.2% | measured 2026-10-31, program notes |
 | Stream tenant S, at 200 per cell (PACK-S-MUX-0200) | $0.797 | $0.926 | $0.501 | −$0.296 | −59% | measured 2026-10-31, program notes |
 | Stream tenant T, at 1,000 per cell (PACK-T-1000) | $0.0290 | none | $0.00015 | −$0.02885 | cost 193× revenue | measured 2026-10-31, program notes |
-| Stream tenant M | $248-260 modelled, owner prices | | $530 | $270-282 | 51-53% | `docs/STREAMS-COST-LEVERS-2026-10.md` (model, not measured) |
-| Stream tenant L | $232-236 modelled, owner prices | | $483 | $247-251 | 51-52% | same |
-| Fleet of 1,000 tenants (700 T, 250 S, 40 M, 10 L), month 1 | $14.4k (owner prices) | | $26.2k | $11.8k | 45% (55% at ab50) | same; 89% of its cost is modelled |
+| Stream tenant M, shared cell at weights (2, 6), marginal over 48 S | $68.10 (dedicated: $126.21) | | $404.02 measured, $530 nominal | $335.92-461.90 | 83.1-87.2% | measured 2026-11-01 on `6ed91580b` (`results-ml`, program notes; `bench/k2cost/points/ML.env`) |
+| Stream tenant L, dedicated cell (k = 1) | $87.88 (shared marginal: $67.91) | | $483 | $395.12 | 81.8% | same |
+| Fleet of 1,000 tenants (700 T, 250 S, 40 M, 10 L), month 1, **derived** | $3.8k-6.1k | | $26.2k | $20.1k-22.4k | 77-85% | derived from the measured points above: 700 T $20 + 250 S $199 + 40 M $2,724-5,048 + 10 L $879 |
+
+M's measured K2 bill ($404) is below the nominal one ($530) because a
+tail follows one routing key of its stream; L's measured bill is its
+nominal one. The fleet row's M range runs from the shared marginal to the
+dedicated cell: one M per cell with few S neighbours sits nearer the
+dedicated figure than the shared marginal. The earlier model of M and L
+($248-260 and $232-236 at owner prices, and a $14.4k fleet) is superseded
+(`docs/STREAMS-COST-LEVERS-2026-10.md`).
 
 How to read the queue rows:
 
@@ -869,8 +885,11 @@ the hardening README's "Owner decisions" table lists them.
    paid plan's $10 a month per workspace counts as the first $10 of usage
    (a tenant pays max($10, usage)); the free tier (T) is the marketing
    expense (§5.3). The model only: publication is held below.
-4. M and L have only modelled costs; the owner's decision of 2026-11-01
-   closes 6A by measuring them (ST-3). L's phase plan is not in the tree.
+4. **Closed** (decision B4). M and L are measured (`results-ml`, tree
+   `6ed91580b`): M shared $68.10 (K2 $404 measured, $530 nominal), L
+   dedicated $87.88 (K2 $483); ST-3 now confirms them on Compute + Tigris,
+   one shared M cell and one dedicated L cell, and L's phase plan is
+   `ML.env`'s `l-alone` (§2.1-§2.3, §5.2).
 5. The queue product's shard count: every measured queue figure ran 4
    shards on one instance; the posture is 1 or 2 (§3.2).
 6. The queue rig has no field mode; its CPU sampler reads a local process.

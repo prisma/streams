@@ -8,6 +8,16 @@ sensitivities are kept outside the tree
 (`~/.streams-k2/analysis/streams-cost-2026-10-24/`: `REPORT.md`,
 `streams_cost_model.py`). This file records what was measured and landed.
 
+**Superseded for M and L (2026-11-03).** This file's M and L figures are a
+model; the measurement on the final 6A tree supersedes them (`results-ml`,
+tree `6ed91580b`, program notes; `bench/k2cost/points/ML.env`). At Class
+A/B -50%: M costs $68.10 a month on a shared cell at weights (2, 6) (K2
+bill $404 measured, $530 nominal) and $126.21 on a dedicated cell; L
+$87.88 on a dedicated cell (K2 $483) and $67.91 as a shared marginal. The
+1,000-tenant fleet, recomputed from measured points, costs $3.8k-6.1k a
+month against $26.2k of revenue, a 77-85% margin (derived;
+`docs/SCALE-VALIDATION.md` §5.2).
+
 ## The benchmark (summary of the report's section 4)
 
 Four one-tenant profiles on the launch shape (one single-server shared
