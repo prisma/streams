@@ -2606,6 +2606,28 @@ segment) are separate layers, as Pravega's containers and segments are.
   (tuning plan P3, rung 4), which needs either less resident state per
   queue (eviction of idle queues' handles) or a larger cell. The shed is
   unchanged.
+- Open check: P3's three CI-only mutant timeouts. rust-quality on
+  9e4021d5e (run 41801189686, shards 0, 3, 5) timed out three mutants of
+  owner transaction_prepare (filter `shard::`): prepare.rs:64 `needs` -> (),
+  and prepare.rs:101 `warm` -> Some(([0; 16], Ok(Some(..)))) and
+  -> Some(([1; 16], Ok(Some(..)))). The unmutated `shard::` baseline was
+  81-82 s of the driver's fixed 90 s, because P3's cold warm-up tests set up
+  80 queues one durable commit at a time. b197292e8 (test-only) runs each
+  setup round at once. Measured under the lock on the M1, release: the
+  `shard::` filter takes 12.4 s fixed against 35.8 s unfixed, so CI (2.3x
+  slower on the unfixed run) should take about 28 s, about 60 s under the
+  timeout. Locally each of the three is caught by assertion in 17.2 s
+  (baseline 12.5 s), about 40 s scaled. CI has not re-run them: b197292e8
+  selected no mutants. The nightly rotation holds transaction_prepare in
+  group 6 of 35 (with shard, transaction_append, transaction_overlay,
+  transaction_publish and nq_deliveries), next on 2026-12-09 at 03:43Z
+  (slot 20796). It was group 30 of 34, next 2026-11-13, until the fleet
+  hysteresis push re-measured the size ledger and added the owner
+  fleet_hysteresis (2026-11-09). The date holds only while the owner
+  table and the size ledger keep this packing; a re-measure or a new
+  owner can move it (`mutation_owners.scheduled_group`). Read that night's
+  transaction_prepare result; until then, nothing new lands on the owner
+  without a local leg.
 - After a load, RSS stays at 499-562 MB and never returns below the 500 MB
   shed line: the idle server refuses its own telemetry appends and a second
   load is shed from its first request. Needs a heap profile.
