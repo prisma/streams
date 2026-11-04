@@ -2510,6 +2510,17 @@ segment) are separate layers, as Pravega's containers and segments are.
 
 ### 14.7 Defects found on the way, not yet fixed
 
+- A resident tiny native queue costs a cell about 3 KB of RSS (P3's
+  rung-4 A/B, 2026-11-04, M1 rig, `compute-1g` profile, 100k queues on
+  one shard: RSS rose by 154 MB over 48.8k distinct queues touched on
+  slate and by 231 MB over 77.6k with P3, both about 3 KB each). So the
+  500 MB shed line caps a 1 GiB cell at about 150k resident tiny queues:
+  past it every send is refused `429 rate_limited` (379 of 60k touches in
+  P3's 100/s phase, 50 on slate, which touched fewer queues). An input to
+  the Compute-defaults proposal and to the 500k-queue step on Compute
+  (tuning plan P3, rung 4), which needs either less resident state per
+  queue (eviction of idle queues' handles) or a larger cell. The shed is
+  unchanged.
 - After a load, RSS stays at 499-562 MB and never returns below the 500 MB
   shed line: the idle server refuses its own telemetry appends and a second
   load is shed from its first request. Needs a heap profile.
