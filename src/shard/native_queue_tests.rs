@@ -14,6 +14,7 @@ mod budgets;
 mod cold;
 mod floors;
 mod reads;
+mod roster;
 mod sweeps;
 
 const HASH: [u8; 16] = [9; 16];

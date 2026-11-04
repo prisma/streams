@@ -100,6 +100,16 @@ fn shard_tree(manifest: &slatedb::VersionedManifest) -> Tree<'_> {
     }
 }
 
+/// The queue a roster row names.
+fn roster_hash(key: &[u8]) -> Option<[u8; 16]> {
+    key.get(keys::ROSTER_PREFIX.len()..)?.try_into().ok()
+}
+
+/// A roster row's deadline: when its queue is next due a sweep.
+fn roster_deadline(value: &[u8]) -> Option<i64> {
+    Some(i64::from_be_bytes(value.get(..8)?.try_into().ok()?))
+}
+
 /// The SST ids a set of L0 views and runs supersede.
 fn superseded_ids<'a>(
     l0: impl Iterator<Item = &'a slatedb::manifest::SsTableView>,
@@ -271,11 +281,15 @@ impl ShardEngine {
         !*closed.borrow() && !self.is_closed()
     }
 
+    /// Each tick sweeps the due queues of one roster page, the page after
+    /// the one the tick before read, from the start again once a page
+    /// reaches the roster's end.
     async fn sweeper_loop(self: Arc<Self>) {
         let mut interval = tokio::time::interval(SWEEP_TICK);
         let mut closed = self.close_tx.subscribe();
+        let mut after = None;
         while self.queue_tick(&mut interval, &mut closed).await {
-            self.sweep_due_queues().await;
+            after = self.sweep_due_queues(after).await;
         }
     }
 
@@ -289,40 +303,57 @@ impl ShardEngine {
         }
     }
 
-    /// The roster: (queue hash, next deadline).
+    /// The roster's first page: (queue hash, next deadline).
     async fn queue_roster(&self) -> Result<Vec<([u8; 16], i64)>, String> {
+        Ok(self.roster_page(None).await?.0)
+    }
+
+    /// One page of the roster: at most `ROSTER_PAGE` rows in hash order
+    /// after the queue `after` (from the start when `None`), and the hash
+    /// the next page starts after: `None` once this page reached the
+    /// roster's end. Paging, a sweeper examines every rostered queue within
+    /// ceil(rows / `ROSTER_PAGE`) + 1 ticks however many the roster holds,
+    /// where the first page alone left every queue past it unswept.
+    async fn roster_page(
+        &self,
+        after: Option<[u8; 16]>,
+    ) -> Result<(Vec<([u8; 16], i64)>, Option<[u8; 16]>), String> {
+        use std::ops::Bound;
+        let start = after.map_or(Bound::Unbounded, |hash| Bound::Excluded(hash.to_vec()));
         let mut it = self
             .db
             .scan_prefix_with_options(
                 &keys::ROSTER_PREFIX[..],
-                ..,
+                (start, Bound::Unbounded),
                 &crate::native_queue::scan_options(),
             )
             .await
             .map_err(|e| e.to_string())?;
         let mut out = Vec::new();
+        let mut last = None;
         while out.len() < ROSTER_PAGE {
             let Some(kv) = it.next().await.map_err(|e| e.to_string())? else {
-                break;
+                return Ok((out, None));
             };
-            let hash: Option<[u8; 16]> = kv
-                .key
-                .get(keys::ROSTER_PREFIX.len()..)
-                .and_then(|h| h.try_into().ok());
-            let at: Option<[u8; 8]> = kv.value.get(..8).and_then(|v| v.try_into().ok());
-            if let (Some(hash), Some(at)) = (hash, at) {
-                out.push((hash, i64::from_be_bytes(at)));
+            let Some(hash) = roster_hash(&kv.key) else {
+                continue;
+            };
+            last = Some(hash);
+            if let Some(at) = roster_deadline(&kv.value) {
+                out.push((hash, at));
             }
         }
-        Ok(out)
+        Ok((out, last))
     }
 
-    async fn sweep_due_queues(&self) {
-        let roster = match self.queue_roster().await {
-            Ok(r) => r,
+    /// Sweep the due queues of the roster page after `after`; where the
+    /// next tick's page starts.
+    async fn sweep_due_queues(&self, after: Option<[u8; 16]>) -> Option<[u8; 16]> {
+        let (roster, next) = match self.roster_page(after).await {
+            Ok(page) => page,
             Err(error) => {
                 tracing::warn!(shard = %self.prefix, "queue roster unreadable: {error}");
-                return;
+                return None;
             }
         };
         let now = now_ms();
@@ -337,6 +368,7 @@ impl ShardEngine {
                 }
             }
         }
+        next
     }
 
     /// Post a wake-up notification off the sweeper's path (§9.2): a hint,
