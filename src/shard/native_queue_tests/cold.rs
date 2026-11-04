@@ -15,11 +15,12 @@ use tokio::sync::oneshot;
 use super::{REPLY_WITHIN, engine, msg, send_op};
 use crate::native_queue::rows::StateRow;
 use crate::native_queue::{
-    DeliveryView, NqOp, NqOut, NqResult, QueueConfig, SettleItem, SettleKind, SettleOutcome, Token,
-    keys,
+    DeliveryView, NqOp, NqOut, NqResult, QueueConfig, SendMessage, SettleItem, SettleKind,
+    SettleOutcome, Token, keys,
 };
 use crate::shard::test_support::{
-    HeldReads, hold_native_index_reads, hold_native_row_reads, hold_native_state_reads,
+    HeldReads, count_native_index_rows, hold_native_index_reads, hold_native_row_reads,
+    hold_native_state_reads,
 };
 use crate::shard::{CommitOp, ShardEngine};
 
@@ -206,4 +207,191 @@ async fn a_group_sweeps_its_cold_queues_together() {
             "queue {n} keeps its message"
         );
     }
+}
+
+/// Rewrite queue `n`'s stored state row; its next group loads it.
+async fn edit_state(db: &slatedb::Db, n: u8, edit: impl FnOnce(&mut StateRow)) {
+    let key = keys::state(&hash(n));
+    let mut s = StateRow::decode(&db.get(&key).await.unwrap().unwrap()).unwrap();
+    edit(&mut s);
+    db.put(&key, s.encode()).await.unwrap();
+}
+
+/// A send of one message available at `at`.
+fn send_at(at: i64) -> NqOp {
+    send_op(vec![SendMessage {
+        deliver_at: Some(at),
+        ..msg("later")
+    }])
+}
+
+/// What a group of sends reads ahead is their queues' state rows only: no
+/// index is walked for a group with no claim and no sweep.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_group_without_a_claim_or_a_sweep_walks_no_index() {
+    let (e, db) = engine("nq-cold-sends").await;
+    queues_with_a_message(&e).await;
+    let held = hold_native_index_reads("nq-cold-sends");
+    let sends = (0..QUEUES).map(|_| send_op(vec![msg("n")])).collect();
+    let (together, answers) = held_group(&e, &held, sends).await;
+    assert_eq!((together, held.total()), (0, 0), "no index walk read ahead");
+    for answer in answers {
+        assert!(
+            matches!(&answer, Ok(NqOut::Sent(sent)) if sent.len() == 1 && sent[0].offset == 1),
+            "{answer:?}"
+        );
+    }
+    for n in 0..QUEUES {
+        let raw = db.get(keys::state(&hash(n))).await.unwrap().unwrap();
+        assert_eq!(StateRow::decode(&raw).unwrap().queued_messages, 2);
+    }
+}
+
+/// A claim's read-ahead walks an index only once its floor says an entry
+/// is due: a queue whose one message is available in a minute is walked by
+/// neither the warm-up nor the claim, and the claim leases nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_claim_reads_ahead_no_walk_of_an_index_first_due_later() {
+    let (e, _db) = engine("nq-cold-later").await;
+    let later = crate::shard::now_ms() + 60_000;
+    for n in 0..QUEUES {
+        on(
+            &e,
+            hash(n),
+            NqOp::Create {
+                cfg: QueueConfig::default(),
+            },
+        )
+        .await;
+        on(&e, hash(n), send_at(later)).await;
+    }
+    let held = hold_native_index_reads("nq-cold-later");
+    let claims = (0..QUEUES).map(|_| claim_one()).collect();
+    let (together, answers) = held_group(&e, &held, claims).await;
+    assert_eq!(
+        (together, held.total()),
+        (0, 0),
+        "nothing due, nothing walked"
+    );
+    for answer in answers {
+        assert!(
+            matches!(&answer, Ok(NqOut::Claimed { deliveries, .. }) if deliveries.is_empty()),
+            "{answer:?}"
+        );
+    }
+}
+
+/// An entry due exactly at the queue's clock is due: the warm-up walks its
+/// index for the claim, 64 queues at once, and each claim leases it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_claim_reads_ahead_the_walk_of_an_index_due_at_its_clock_exactly() {
+    let (e, db) = engine("nq-cold-exact").await;
+    let clock = crate::shard::now_ms() + crate::native_queue::DAY_MS;
+    for n in 0..QUEUES {
+        on(
+            &e,
+            hash(n),
+            NqOp::Create {
+                cfg: QueueConfig::default(),
+            },
+        )
+        .await;
+        edit_state(&db, n, |s| s.clock = clock).await;
+        // Sent at the pinned clock: available, and the floor, at it.
+        on(&e, hash(n), send_op(vec![msg("m")])).await;
+        let raw = db.get(keys::state(&hash(n))).await.unwrap().unwrap();
+        let s = StateRow::decode(&raw).unwrap();
+        assert_eq!((s.clock, s.floors.avail), (clock, clock));
+    }
+    let held = hold_native_index_reads("nq-cold-exact");
+    let claims = (0..QUEUES).map(|_| claim_one()).collect();
+    let (together, answers) = held_group(&e, &held, claims).await;
+    assert_eq!(
+        together, TOGETHER,
+        "due at the clock: walked ahead together"
+    );
+    assert_eq!(leased(answers).len(), usize::from(QUEUES));
+}
+
+/// A sweep's read-ahead walks the retry index only once a retry's cycle
+/// deadline came, as the sweep does: with the queues' one retrying
+/// delivery the only indexed entry, a group of sweeps walks nothing while
+/// the cycle deadline is ahead, and the retry index of every queue once it
+/// is not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_sweep_reads_ahead_the_retry_index_only_once_a_cycle_deadline_came() {
+    let (e, db) = engine("nq-cold-retry").await;
+    queues_with_a_message(&e).await;
+    for n in 0..QUEUES {
+        let NqOut::Claimed { deliveries, .. } = on(&e, hash(n), claim_one()).await else {
+            panic!("a claim answers deliveries");
+        };
+        let retry = NqOp::Settle {
+            items: vec![SettleItem {
+                token: Token {
+                    offset: deliveries[0].offset,
+                    lease_gen: deliveries[0].lease_gen,
+                },
+                kind: SettleKind::Retry {
+                    delay_ms: Some(60_000),
+                },
+                code: None,
+            }],
+        };
+        on(&e, hash(n), retry).await;
+        // The availability and lease indexes are empty after the retry.
+        edit_state(&db, n, |s| {
+            (s.floors.avail, s.floors.leases) = (i64::MAX, i64::MAX);
+            assert!(s.floors.retry_cycle > crate::shard::now_ms() + 3_600_000);
+        })
+        .await;
+    }
+    let held = hold_native_index_reads("nq-cold-retry");
+    let sweeps = (0..QUEUES).map(|_| NqOp::Sweep).collect();
+    let (together, answers) = held_group(&e, &held, sweeps).await;
+    assert_eq!((together, held.total()), (0, 0), "no cycle deadline came");
+    assert!(answers.iter().all(|a| matches!(a, Ok(NqOut::Swept { .. }))));
+    for n in 0..QUEUES {
+        edit_state(&db, n, |s| s.floors.retry_cycle = 0).await;
+    }
+    let held = hold_native_index_reads("nq-cold-retry");
+    let sweeps = (0..QUEUES).map(|_| NqOp::Sweep).collect();
+    let (together, answers) = held_group(&e, &held, sweeps).await;
+    assert_eq!(
+        together, TOGETHER,
+        "a cycle deadline came: walked ahead together"
+    );
+    assert!(answers.iter().all(|a| matches!(a, Ok(NqOut::Swept { .. }))));
+}
+
+/// A claim's read-ahead reads the rows its claim reads: every entry due,
+/// through the first one past the clock, and no further. Three messages
+/// available now and two in a minute: four rows a queue.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_claims_read_ahead_stops_at_the_first_entry_past_its_clock() {
+    let (e, _db) = engine("nq-cold-stop").await;
+    let later = crate::shard::now_ms() + 60_000;
+    for n in 0..QUEUES {
+        on(
+            &e,
+            hash(n),
+            NqOp::Create {
+                cfg: QueueConfig::default(),
+            },
+        )
+        .await;
+        on(&e, hash(n), send_op(vec![msg("a"), msg("b"), msg("c")])).await;
+        on(&e, hash(n), send_at(later)).await;
+        on(&e, hash(n), send_at(later + 1)).await;
+    }
+    let rows = count_native_index_rows("nq-cold-stop");
+    let held = hold_native_state_reads("nq-cold-stop");
+    let claims = (0..QUEUES).map(|_| claim_one()).collect();
+    let (_, answers) = held_group(&e, &held, claims).await;
+    assert_eq!(leased(answers).len(), usize::from(QUEUES));
+    assert_eq!(
+        rows.total(),
+        4 * usize::from(QUEUES),
+        "three due and the next"
+    );
 }

@@ -160,6 +160,22 @@ pub(super) async fn held_native_index_read(prefix: &str) {
     held_billing_read(&format!("{prefix}#native-index")).await;
 }
 
+/// Count `prefix`'s native-queue index rows a warm-up walk reads from now
+/// on (`total`), holding none.
+pub(super) fn count_native_index_rows(prefix: &str) -> Arc<HeldReads> {
+    let counted = hold_billing_reads(&format!("{prefix}#native-index-row"));
+    counted.release();
+    counted
+}
+
+/// One native-queue index row a warm-up walk of `prefix` read.
+pub(super) fn counted_native_index_row(prefix: &str) {
+    let key = format!("{prefix}#native-index-row");
+    if let Some(counted) = held_reads().lock().unwrap().get(&key) {
+        counted.total.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 /// Hold `prefix`'s native-queue row reads (a settle's delivery and
 /// metadata rows) from now on.
 pub(super) fn hold_native_row_reads(prefix: &str) -> Arc<HeldReads> {

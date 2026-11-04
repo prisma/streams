@@ -384,7 +384,7 @@ impl ShardEngine {
 
     /// The wake-up a sweep asks for, if any; a refused sweep is retried at
     /// the queue's next roster turn.
-    fn wake_of(
+    pub(super) fn wake_of(
         &self,
         hash: [u8; 16],
         swept: crate::native_queue::NqResult,

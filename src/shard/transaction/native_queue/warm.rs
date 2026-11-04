@@ -138,10 +138,13 @@ impl CommitTransaction<'_> {
             return;
         };
         for _ in 0..want {
-            match rows.next().await {
-                Ok(Some(row))
-                    if stop.is_none_or(|t| key_time(&row.key).is_some_and(|at| at <= t)) => {}
-                _ => return,
+            let Ok(Some(row)) = rows.next().await else {
+                return;
+            };
+            #[cfg(test)]
+            crate::shard::test_support::counted_native_index_row(&engine.prefix);
+            if !stop.is_none_or(|t| key_time(&row.key).is_some_and(|at| at <= t)) {
+                return;
             }
         }
     }

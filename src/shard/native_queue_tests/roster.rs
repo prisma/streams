@@ -8,13 +8,16 @@ use std::time::{Duration, Instant};
 
 use super::engine;
 use crate::native_queue::rows::StateRow;
-use crate::native_queue::{NqOp, QueueConfig, keys};
+use crate::native_queue::{NqOp, NqOut, NqRefusal, QueueConfig, WakeRequest, keys};
 
 /// Roster rows of queues not yet due, ahead of the due ones in hash order:
 /// one page's worth (`ROSTER_PAGE`).
 const NOT_DUE: u16 = 4_096;
 /// Queues due now, after them.
 const DUE: u16 = 40;
+/// Of the undue rows, real queues: a sweep of one would take it off the
+/// roster.
+const REAL_NOT_DUE: u16 = 8;
 /// How long the sweeper may take: a handful of 1 s ticks.
 const SWEPT_WITHIN: Duration = Duration::from_secs(15);
 
@@ -35,16 +38,19 @@ fn due(n: u16) -> [u8; 16] {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_sweeper_reaches_every_rostered_queue_past_its_first_page() {
     let (e, db) = engine("nq-roster-pages").await;
-    let creates = (0..DUE).map(|n| {
+    let hashes = (0..DUE).map(due).chain((0..REAL_NOT_DUE).map(not_due));
+    let creates = hashes.map(|hash| {
         let cfg = QueueConfig::default();
-        e.submit_native_queue(due(n), NqOp::Create { cfg })
+        e.submit_native_queue(hash, NqOp::Create { cfg })
     });
     for created in futures_util::future::join_all(creates).await {
         created.expect("created");
     }
-    rostered_now(&db, (0..DUE).map(due)).await;
-    // A page of queues due in a thousand years, ahead of them in hash order.
-    for n in 0..NOT_DUE {
+    rostered_at(&db, (0..DUE).map(due), 0).await;
+    // A page of queues due in a thousand years, ahead of them in hash order,
+    // the first of them real queues.
+    rostered_at(&db, (0..REAL_NOT_DUE).map(not_due), i64::MAX).await;
+    for n in REAL_NOT_DUE..NOT_DUE {
         let later = i64::MAX.to_be_bytes();
         db.put(keys::roster(&not_due(n)), later).await.unwrap();
     }
@@ -74,21 +80,27 @@ async fn the_sweeper_reaches_every_rostered_queue_past_its_first_page() {
         assert_eq!(
             row.as_deref(),
             Some(&i64::MAX.to_be_bytes()[..]),
-            "an undue row stays"
+            "an undue row stays: {n}"
+        );
+    }
+    for n in 0..REAL_NOT_DUE {
+        let raw = db.get(keys::state(&not_due(n))).await.unwrap().unwrap();
+        assert_eq!(
+            StateRow::decode(&raw).unwrap().roster_at,
+            Some(i64::MAX),
+            "undue queue {n} was not swept"
         );
     }
 }
 
-/// Put `hashes`' queues on the roster, due now, their state rows agreeing.
-async fn rostered_now(db: &slatedb::Db, hashes: impl Iterator<Item = [u8; 16]>) {
+/// Put `hashes`' queues on the roster, due `at`, their state rows agreeing.
+async fn rostered_at(db: &slatedb::Db, hashes: impl Iterator<Item = [u8; 16]>, at: i64) {
     for hash in hashes {
         let key = keys::state(&hash);
         let mut s = StateRow::decode(&db.get(&key).await.unwrap().unwrap()).unwrap();
-        s.roster_at = Some(0);
+        s.roster_at = Some(at);
         db.put(&key, s.encode()).await.unwrap();
-        db.put(keys::roster(&hash), 0i64.to_be_bytes())
-            .await
-            .unwrap();
+        db.put(keys::roster(&hash), at.to_be_bytes()).await.unwrap();
     }
 }
 
@@ -109,7 +121,7 @@ async fn the_sweeper_sweeps_a_ticks_due_queues_together() {
         created.expect("created");
     }
     let held = crate::shard::test_support::hold_native_state_reads("nq-roster-together");
-    rostered_now(&db, (0..QUEUES).map(due)).await;
+    rostered_at(&db, (0..QUEUES).map(due), 0).await;
     let deadline = Instant::now() + SWEPT_WITHIN;
     while held.in_flight() < 64 && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -126,4 +138,47 @@ async fn the_sweeper_sweeps_a_ticks_due_queues_together() {
         }
     }
     assert_eq!(left, 0, "every due queue was swept");
+}
+
+/// The sweeper posts the wake-up a sweep asks for, to the queue it swept,
+/// and none for a sweep that asks for none or was refused. (The post
+/// itself goes only to https on 443 at a public address: the egress
+/// policy keeps it out of a test.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn the_sweeper_posts_the_wake_up_a_sweep_asks_for_and_no_other() {
+    let (e, _db) = engine("nq-roster-wake").await;
+    let wake = WakeRequest {
+        url: "https://example.com/hook".into(),
+        name: "jobs".into(),
+        version: 3,
+        due: 7,
+        oldest_due_age_ms: 1_500,
+    };
+    let asked = NqOut::Swept {
+        next_deadline: Some(9),
+        wake: Some(wake),
+    };
+    let Some((hash, posted)) = e.wake_of(due(1), Ok(asked)) else {
+        panic!("the wake-up the sweep asked for is posted");
+    };
+    assert_eq!(
+        (
+            hash,
+            posted.url.as_str(),
+            posted.name.as_str(),
+            posted.version,
+            posted.due,
+            posted.oldest_due_age_ms
+        ),
+        (due(1), "https://example.com/hook", "jobs", 3, 7, 1_500)
+    );
+    let none = NqOut::Swept {
+        next_deadline: Some(9),
+        wake: None,
+    };
+    assert!(e.wake_of(due(1), Ok(none)).is_none(), "none asked");
+    assert!(
+        e.wake_of(due(1), Err(NqRefusal::NotFound)).is_none(),
+        "a refused sweep posts none"
+    );
 }
