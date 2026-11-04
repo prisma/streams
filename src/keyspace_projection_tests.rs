@@ -509,3 +509,69 @@ async fn a_projected_clone_of_a_projected_clone_holds_its_range_of_both() {
     );
     grand.close().await.unwrap();
 }
+
+/// The fork's checkpoint-coverage wart (FORK.md, known issues), pinned so a
+/// pin that fixes it shows: a checkpoint of everything taken while writes
+/// are still buffered in the WAL writer stamps the frozen memtable with the
+/// WAL id from before its own flush, so those writes land in a WAL past the
+/// checkpoint's replay point and a projected clone of it is refused. With
+/// the WAL flushed first, the same clone succeeds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_checkpoint_of_everything_with_wal_writes_buffered_is_refused_for_projection() {
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+    // No background WAL flush, and writes that do not wait for one: they
+    // stay buffered in the WAL writer until something flushes it.
+    let quiet = || slatedb::config::Settings {
+        flush_interval: Some(Duration::from_secs(3600)),
+        ..Default::default()
+    };
+    let db = db_builder("p/buffered", store.clone())
+        .with_settings(quiet())
+        .build()
+        .await
+        .unwrap();
+    buffered_writes(&db).await;
+    let unflushed = db
+        .create_checkpoint(CheckpointScope::All, &CheckpointOptions::default())
+        .await
+        .unwrap();
+    let refused = clone_into(&store, "p/refused", spec("p/buffered", &unflushed, low())).await;
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains("WAL")),
+        "a checkpoint of everything with WAL writes buffered: {refused:?}"
+    );
+    let fresh = db_builder("p/flushed", store.clone())
+        .with_settings(quiet())
+        .build()
+        .await
+        .unwrap();
+    buffered_writes(&fresh).await;
+    fresh.flush().await.unwrap();
+    let flushed = fresh
+        .create_checkpoint(CheckpointScope::All, &CheckpointOptions::default())
+        .await
+        .unwrap();
+    clone_into(&store, "p/allowed", spec("p/flushed", &flushed, low()))
+        .await
+        .unwrap();
+    db.close().await.unwrap();
+    fresh.close().await.unwrap();
+}
+
+/// Merges on every stream's pending row, returning without waiting for the
+/// WAL to be durable (the default): with no background flush they stay
+/// buffered in the WAL writer.
+async fn buffered_writes(db: &Db) {
+    for i in 0..STREAMS {
+        db.merge_with_options(
+            pending_key(&hash(i)),
+            format!("a{i};"),
+            &slatedb::config::MergeOptions::default(),
+            &slatedb::config::WriteOptions::default(),
+        )
+        .await
+        .unwrap();
+    }
+}
