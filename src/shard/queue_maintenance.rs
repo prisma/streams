@@ -15,6 +15,7 @@
 use super::*;
 use crate::native_queue::rows::StateRow;
 use crate::native_queue::{NqOp, keys};
+use futures_util::StreamExt;
 
 /// How often the sweeper reads the roster.
 const SWEEP_TICK: std::time::Duration = std::time::Duration::from_secs(1);
@@ -36,6 +37,14 @@ const COMPACTION_WAIT: std::time::Duration = std::time::Duration::from_secs(600)
 const GC_WAIT: std::time::Duration = std::time::Duration::from_mins(45);
 /// Roster entries read per tick.
 const ROSTER_PAGE: usize = 4_096;
+/// Due queues a tick sweeps at once. Each sweep waits for its group's
+/// durable write, so one after another a shard swept about one queue per
+/// commit window; at once they share groups, which read their cold queues
+/// together (`prepare`, as many at once).
+const SWEEPS_AT_ONCE: usize = 64;
+/// Wake-up notifications a tick posts at once, so one receiver that takes
+/// its whole timeout holds back no other queue's notification.
+const NOTICES_AT_ONCE: usize = 16;
 /// The shard log's L0 line (`l0_max_ssts`, the CLI default the
 /// shard log runs with): a flush into a tree holding this many L0s stalls.
 const L0_LINE: usize = 32;
@@ -357,18 +366,39 @@ impl ShardEngine {
             }
         };
         let now = now_ms();
-        for (hash, _) in roster.into_iter().filter(|(_, at)| *at <= now) {
-            match self.submit_native_queue(hash, NqOp::Sweep).await {
-                Ok(crate::native_queue::NqOut::Swept {
-                    wake: Some(wake), ..
-                }) => self.notify(hash, wake).await,
-                Ok(_) => {}
-                Err(refusal) => {
-                    tracing::debug!(shard = %self.prefix, "queue sweep refused: {refusal:?}")
-                }
+        let due = roster.into_iter().filter(|(_, at)| *at <= now);
+        let wakes: Vec<_> =
+            futures_util::stream::iter(due)
+                .map(|(hash, _)| async move {
+                    (hash, self.submit_native_queue(hash, NqOp::Sweep).await)
+                })
+                .buffer_unordered(SWEEPS_AT_ONCE)
+                .filter_map(|(hash, swept)| async move { self.wake_of(hash, swept) })
+                .collect()
+                .await;
+        futures_util::stream::iter(wakes)
+            .for_each_concurrent(NOTICES_AT_ONCE, |(hash, wake)| self.notify(hash, wake))
+            .await;
+        next
+    }
+
+    /// The wake-up a sweep asks for, if any; a refused sweep is retried at
+    /// the queue's next roster turn.
+    fn wake_of(
+        &self,
+        hash: [u8; 16],
+        swept: crate::native_queue::NqResult,
+    ) -> Option<([u8; 16], crate::native_queue::WakeRequest)> {
+        match swept {
+            Ok(crate::native_queue::NqOut::Swept {
+                wake: Some(wake), ..
+            }) => Some((hash, wake)),
+            Ok(_) => None,
+            Err(refusal) => {
+                tracing::debug!(shard = %self.prefix, "queue sweep refused: {refusal:?}");
+                None
             }
         }
-        next
     }
 
     /// Post a wake-up notification off the sweeper's path (§9.2): a hint,

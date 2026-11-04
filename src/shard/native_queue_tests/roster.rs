@@ -91,3 +91,39 @@ async fn rostered_now(db: &slatedb::Db, hashes: impl Iterator<Item = [u8; 16]>) 
             .unwrap();
     }
 }
+
+/// A tick's due queues are swept together, not one after another: each
+/// sweep waits for its group's durable write, so one at a time a shard
+/// swept about one queue per commit window. With every state-row load
+/// held open, as many sweeps are in flight at once as a group loads cold
+/// queues together, and every one completes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn the_sweeper_sweeps_a_ticks_due_queues_together() {
+    const QUEUES: u16 = 80;
+    let (e, db) = engine("nq-roster-together").await;
+    let creates = (0..QUEUES).map(|n| {
+        let cfg = QueueConfig::default();
+        e.submit_native_queue(due(n), NqOp::Create { cfg })
+    });
+    for created in futures_util::future::join_all(creates).await {
+        created.expect("created");
+    }
+    let held = crate::shard::test_support::hold_native_state_reads("nq-roster-together");
+    rostered_now(&db, (0..QUEUES).map(due)).await;
+    let deadline = Instant::now() + SWEPT_WITHIN;
+    while held.in_flight() < 64 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let together = held.most_in_flight();
+    held.release();
+    assert_eq!(together, 64, "the due queues' sweeps run together");
+    let mut left = usize::from(QUEUES);
+    while left > 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        left = 0;
+        for n in 0..QUEUES {
+            left += usize::from(db.get(keys::roster(&due(n))).await.unwrap().is_some());
+        }
+    }
+    assert_eq!(left, 0, "every due queue was swept");
+}
