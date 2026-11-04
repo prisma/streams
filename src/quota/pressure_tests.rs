@@ -253,7 +253,7 @@ fn eviction_cannot_orphan_a_zero_debt_stream_binding() {
     );
 }
 
-/// Battery 12c (model version 2): held read bytes, a parked wait and a
+/// Battery 12c (model version 2, unchanged in 3): held read bytes, a parked wait and a
 /// live subscription each keep their entry through a sweep at the idle
 /// horizon by their holder alone, so each release lands on the project's
 /// live entry: the three read exactly their own charge, then 0.
@@ -349,13 +349,14 @@ fn parked_waits_weigh_48_kib_and_read_bytes_enter_exactly() {
             model["version"].as_u64(),
             model["parked_weight_bytes"].as_u64()
         ),
-        (Some(2), Some(48 * 1024))
+        (Some(3), Some(48 * 1024))
     );
 }
 
-/// Model version 2's estimate, one dimension at a time through each
+/// Model version 3's estimate, one dimension at a time through each
 /// dimension's own holder: a subscription weighs 32 KiB, a feed 16 KiB, a
-/// dirty stream 64 KiB and a parked wait 48 KiB; retained, body, queued,
+/// dirty stream 8 KiB (64 KiB in model 2, edge change #248) and a parked
+/// wait 48 KiB; retained, body, queued,
 /// frame and read bytes enter exactly. Each total is the sum so far.
 #[test]
 fn every_dimension_enters_the_estimate_at_its_own_weight() {
@@ -388,7 +389,7 @@ fn every_dimension_enters_the_estimate_at_its_own_weight() {
     assert_eq!(
         totals,
         [
-            65_536, 114_688, 114_693, 114_700, 114_711, 180_260, 180_277, 278_581
+            65_536, 114_688, 114_693, 114_700, 114_711, 122_916, 122_933, 221_237
         ]
     );
     drop((subscriptions, feeds, body, queued, stream, parked));

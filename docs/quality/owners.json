@@ -2891,6 +2891,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::latch_calibration",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The write latch's calibration (edge change #248, pressure model 3): an #[ignore] DST, run alone in release on the deployed class, that measures a tiny dirty stream's and a clean resident handle's heap on the process's allocator and prints the weight and HANDLE_MAX_RESIDENT rules' answers, with a unit test of the two rules; compiled with DST.",
+      "syntax": "path = \"tests/latch_calibration.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::quota_stored_cap",
       "path": "src/dst/dst_tests.rs",
       "reason": "Stored-cap scenario (stored-cap B4): two projects of one shared cell under required billing append over real HTTP while the test steps the drain and the rollup; the 429 stored_bytes_limit, the neighbour's appends, a restart over the same store and a delete; compiled and executed with DST.",

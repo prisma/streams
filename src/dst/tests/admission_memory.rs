@@ -541,3 +541,88 @@ async fn frame_debt_survives_restart_via_tail_seed() {
     assert!(zeroed, "the seal retires attributed debt to zero");
     engine_shutdown(&state2).await;
 }
+
+/// One project's tiny stream `i`: a create, then one 7-byte record. The
+/// first answer that is not a success (the create's or the append's), or
+/// the append's 200.
+async fn touch_tiny(
+    addr: std::net::SocketAddr,
+    bearer: &str,
+    i: u64,
+) -> (u16, std::collections::HashMap<String, String>, Vec<u8>) {
+    let (auth, ekey) = (
+        ("authorization", bearer),
+        ("prisma-encryption-key", PRISMA_KEY),
+    );
+    let path = format!("/v1/streams/tiny{i:05}");
+    let doc = br#"{"format":{"kind":"json"}}"#;
+    let created = preq(addr, "PUT", &path, &[ekey, auth], doc).await;
+    if created.0 != 201 {
+        return created;
+    }
+    let ct = ("content-type", "application/json");
+    let records = format!("{path}/records");
+    preq(addr, "POST", &records, &[ekey, auth, ct], br#"{"i":1}"#).await
+}
+
+/// Edge change #248 (pressure model 3): each dirty stream is charged
+/// 8,192 bytes on top of its exact unabsorbed frame bytes f, where model 2
+/// charged 65,536. One project at a 32 MiB line makes tiny streams dirty
+/// one at a time (a create and one append each), the sealer off: the first
+/// 1,000 are admitted with the latch clear and the modelled pressure
+/// exactly 1,000 x (8,192 + f). Its first refused write is stream k + 1,
+/// k = floor(line / (8,192 + f)) + 1 the first count whose pressure passes
+/// the line: 429 `project_memory_pressure`, `retry-after: 1`. The model
+/// reports version 3 at a weight of 8,192.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_dirty_tiny_stream_is_charged_eight_kib_above_its_frames() {
+    const LINE: u64 = 32 << 20;
+    const WEIGHT: u64 = 8_192;
+    let (state, addr, bearer, pid) =
+        pm_enforce_rig(mem(), RigRuntime::first(), Some(cold_sealer)).await;
+    state.admission.set_project_memory_pressure_bytes(LINE);
+    for i in 0..1_000 {
+        let (st, _, body) = touch_tiny(addr, &bearer, i).await;
+        let text = String::from_utf8_lossy(&body);
+        assert_eq!(st, 200, "tiny stream {} of 1,000: {text}", i + 1);
+    }
+    let adm = state.quotas.pressure_handle(&pid).unwrap();
+    let (dirty, frames) = (adm.dirty_streams_now(), adm.unabsorbed_frame_bytes_now());
+    assert_eq!(
+        frames % dirty,
+        0,
+        "every tiny stream holds the same frame bytes"
+    );
+    let f = frames / dirty;
+    let engaged = state.quotas.memory_pressure_json(LINE, 1)["projects_memory_engaged"].clone();
+    let pressure = adm.estimated_pressure_bytes();
+    let want = (1_000, 1_000 * (WEIGHT + f), serde_json::Value::from(0));
+    assert_eq!((dirty, pressure, engaged), want);
+    // The latch engages at the first write that finds the pressure past the
+    // line: after k dirty streams, k the first with k x (8,192 + f) > line.
+    let k = LINE / (WEIGHT + f) + 1;
+    let mut i = 1_000;
+    let (st, headers, body) = loop {
+        let answer = touch_tiny(addr, &bearer, i).await;
+        i += 1;
+        if answer.0 != 200 || i > k + 1 {
+            break answer;
+        }
+    };
+    let code = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["error"]["code"].clone();
+    let got = (i, st, headers.get("retry-after").cloned(), code);
+    let want = (
+        k + 1,
+        429,
+        Some("1".to_string()),
+        "project_memory_pressure".into(),
+    );
+    assert_eq!(got, want, "f = {f}");
+    let model = crate::quota::pressure_model_json();
+    let model = (
+        model["version"].clone(),
+        model["dirty_stream_weight_bytes"].clone(),
+    );
+    assert_eq!(model, (3.into(), WEIGHT.into()));
+    engine_shutdown(&state).await;
+}

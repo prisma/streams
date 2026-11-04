@@ -11,7 +11,10 @@ use super::ProjectAdmission;
 
 pub(crate) const PRESSURE_SUB_WEIGHT_BYTES: u64 = 32 * 1024;
 pub(crate) const PRESSURE_FEED_WEIGHT_BYTES: u64 = 16 * 1024;
-pub(crate) const PRESSURE_DIRTY_STREAM_WEIGHT_BYTES: u64 = 64 * 1024;
+/// Model 3 (edge change #248): the measured marginal of a tiny dirty stream,
+/// 5.7 KiB on Linux aarch64 release (`dst_tests::latch_calibration`), rounded
+/// up to 4 KiB with a 10% margin; model 2 charged 64 KiB.
+pub(crate) const PRESSURE_DIRTY_STREAM_WEIGHT_BYTES: u64 = 8 * 1024;
 /// One wait parked in the project's share (`parked`): a held connection
 /// and its request future, #269's ~44 KB per parked connection rounded
 /// up. A watch wait is a live subscription and weighs as one.

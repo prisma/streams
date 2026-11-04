@@ -477,7 +477,7 @@ async fn parked_waits_weigh_in_their_projects_pressure() {
     assert_eq!(parked, 3 * 48 * 1024);
     assert!(answers.iter().all(|(status, _, _)| *status == 204));
     assert_eq!(entry.estimated_pressure_bytes(), 0);
-    assert_eq!(crate::quota::pressure_model_json()["version"], 2);
+    assert_eq!(crate::quota::pressure_model_json()["version"], 3);
     engine_shutdown(&cell.state).await;
 }
 

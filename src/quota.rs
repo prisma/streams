@@ -143,7 +143,11 @@ pub(crate) struct ProjectAdmission {
 }
 
 /// Round-13 pressure model, version 2 since shared cells H3 (reserved
-/// read bytes enter exactly, parked waits by weight). The weights
+/// read bytes enter exactly, parked waits by weight), version 3 since edge
+/// change #248 (2026-11-04): a dirty stream weighs 8 KiB, the measured
+/// marginal of a tiny dirty stream (5.7 KiB slope, 5.2 KiB at +8,000;
+/// `dst_tests::latch_calibration`, Linux aarch64 release, memory-layout
+/// equivalent to AMD x86_64 Compute) rounded up, where 64 KiB was L1's. The weights
 /// (`pressure`) are SAFETY ESTIMATES rounded UP from the round-12
 /// certified memory model (26.28 KiB per connection, 7.95 KiB per feed,
 /// R^2 0.9987), the L1 resident-stream measurement (~45 KiB) and #269's
@@ -151,7 +155,7 @@ pub(crate) struct ProjectAdmission {
 /// Versioned IN CODE: a calibration campaign bumps the version, not a
 /// profile knob. Exact counters (retained/queued/body/frame/read bytes)
 /// enter unweighted.
-pub(crate) const PROJECT_PRESSURE_MODEL_VERSION: u32 = 2;
+pub(crate) const PROJECT_PRESSURE_MODEL_VERSION: u32 = 3;
 
 mod pressure;
 use pressure::{

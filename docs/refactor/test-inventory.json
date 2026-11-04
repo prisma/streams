@@ -554,6 +554,18 @@
     "scenarios": []
   },
   {
+    "name": "a_dirty_and_a_clean_stream_footprint",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]",
+      "#[ignore = \"calibration: run alone, in release, on the deployed class\"]"
+    ],
+    "function_sha256": "7e012851d657864a974bbf88a209d67dfe353ecf2cc92c2806bf54e234c80415",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/latch_calibration.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_dirty_row_of_a_replaced_incarnation_still_closes_at_its_expiry",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -562,6 +574,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_closure_debts.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_dirty_tiny_stream_is_charged_eight_kib_above_its_frames",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "f3408ac57d196a882db2bb532caa170d88967027dc4cbed54d14afd79070db97",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/admission_memory.rs",
     "scenarios": []
   },
   {
@@ -7182,7 +7205,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "241536be100ff7b3c841c57495269235165322540f18ae53bcd6956a052b1659",
+    "function_sha256": "ad468d1c4653dab9779713466236c8ea4f55e776ab0377f327792fcda5ecb987",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_memory.rs",
@@ -9840,6 +9863,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_usage.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_weight_and_cap_rules_are_the_ratified_ones",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "22c1ca68dbba1a5a196a79ae254bd2f5e5c1798a90e35c63b4e8508cf3682b98",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/latch_calibration.rs",
     "scenarios": []
   },
   {
