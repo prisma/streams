@@ -157,13 +157,14 @@ impl CommitTransaction<'_> {
     /// offset, in this group; its handle leaves the engine, and a later
     /// load of it fails. Refused, changing nothing, while the stream has
     /// another op in this group (it would put the tail back), while its
-    /// usage awaits the ledger (the counters live on the tail). A native
-    /// queue seals nothing: it is marked purged and its queue-segment rows
-    /// stay.
+    /// usage awaits the ledger (the counters live on the tail). Its
+    /// unsealed bytes leave the maintenance ledger with its pending row. A
+    /// native queue seals nothing: it is marked purged and its
+    /// queue-segment rows stay.
     pub(super) async fn stage_purge(&mut self, step: PurgeStep) {
         let PurgeStep { hash, prior, resp } = step;
         match self.purge_refusal(hash).await {
-            Ok((next, queue)) => {
+            Ok((next, unsealed, queue)) => {
                 let purged = crate::spill::gc::Head {
                     state: crate::spill::gc::HeadState::Purged,
                     head: next.max(prior.head),
@@ -172,6 +173,7 @@ impl CommitTransaction<'_> {
                 if !queue {
                     self.batch.delete(crate::shard::tail_key(&hash));
                     self.batch.delete(crate::spill::pending::pending_key(&hash));
+                    self.maintenance_retired = self.maintenance_retired.saturating_add(unsealed);
                 }
                 self.batch.put(
                     crate::spill::gc::head_key(&hash),
@@ -190,9 +192,9 @@ impl CommitTransaction<'_> {
         }
     }
 
-    /// The stream's live next offset and whether it is a native queue, or
-    /// why it cannot be purged now.
-    async fn purge_refusal(&mut self, hash: [u8; 16]) -> Result<(u64, bool), String> {
+    /// The stream's live next offset, its unsealed bytes and whether it is
+    /// a native queue, or why it cannot be purged now.
+    async fn purge_refusal(&mut self, hash: [u8; 16]) -> Result<(u64, u64, bool), String> {
         if self.streams.contains_key(&hash) {
             return Err("the stream has another op in this group".into());
         }
@@ -205,12 +207,13 @@ impl CommitTransaction<'_> {
             .await
             .map_err(|e| e.to_string())?;
         if handle.native_queue.load(Ordering::Relaxed) {
-            return Ok((0, true));
+            return Ok((0, 0, true));
         }
         let st = handle
             .state
             .lock()
             .map_err(|_| "a purged stream's state is poisoned".to_owned())?;
-        Ok((st.applied.next.max(st.durable.next), false))
+        let unsealed = st.applied.unabsorbed_bytes;
+        Ok((st.applied.next.max(st.durable.next), unsealed, false))
     }
 }

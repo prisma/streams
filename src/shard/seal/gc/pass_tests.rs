@@ -379,6 +379,30 @@ async fn a_purge_runs_from_its_instant() {
     rig.engine.begin_close();
 }
 
+/// A purge retires its stream's unsealed bytes from the shard's
+/// maintenance ledger in its own group, so the ledger is what a reopen
+/// rebuilds from the tails, not an over-count until the next open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_purge_retires_its_unsealed_bytes_from_the_ledger() {
+    let rig = gc_rig("gc-ledger").await;
+    let hash = [0x41; 16];
+    let records = vec![Bytes::from_static(b"unsealed")];
+    super::super::tests::append(&rig.engine, hash, records).await;
+    let before = rig.engine.maintenance_snapshot().unabsorbed_frame_bytes;
+    assert!(before > 0, "the append left unsealed bytes");
+    purge_now(&rig.engine, hash).await;
+    let rebuilt = crate::shard::load_or_rebuild_maintenance(&rig.engine.db)
+        .await
+        .unwrap();
+    assert_eq!(rebuilt.unabsorbed_frame_bytes, 0, "no tail is left");
+    assert_eq!(
+        rig.engine.maintenance_snapshot().unabsorbed_frame_bytes,
+        0,
+        "the ledger kept the purged stream's {before} unsealed bytes"
+    );
+    rig.engine.begin_close();
+}
+
 /// A shard with no `'H'` row reads none in its folds; an open finds a
 /// request's row, and a requested stream with no tail (its load reads the
 /// head row) still loads and appends.
