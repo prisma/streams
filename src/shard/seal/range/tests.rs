@@ -55,3 +55,12 @@ fn a_label_or_the_root_covers_every_hash() {
     assert_eq!(Range::of(""), Range::ALL);
     assert!(Range::ALL.contains(&[0x00; 16]) && Range::ALL.contains(&[0xFF; 16]));
 }
+
+/// A run of more than 128 bits parses (its leading zeros fit a `u128`) and a
+/// sign parses too, so neither may be read as a bit prefix.
+#[test]
+fn a_prefix_longer_than_a_hash_or_signed_covers_every_hash() {
+    assert_eq!(Range::of(&"0".repeat(129)), Range::ALL);
+    assert_eq!(Range::of("+1"), Range::ALL);
+    assert!(!Range::of(&"0".repeat(128)).contains(&[0x80; 16]));
+}
