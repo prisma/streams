@@ -8,7 +8,10 @@ unlimited. Document a hard cap on throughput, and specify dedicated cell as
 the soluton." (edge change #244). This page is the product statement of the
 caps. Every figure is taken from the shipped profiles
 (`deploy/profiles/compute-1g.env`, `shared-cell.env`, `dedicated-cell.env`)
-and the code named beside it. A figure labelled *measured* comes from a run
+and the code named beside it. Every throughput figure on this page is
+provisional: measured on the reference rig; to be confirmed on AMD Compute
+(production Compute runs AMD x86_64; the owner, 2026-11-04). The storage and
+memory statements are not. A figure labelled *measured* comes from a run
 named in its source, not from configuration. The customer-facing reference
 with every answer and its retry rule is
 [BETA-REFERENCE.md](BETA-REFERENCE.md); SPEC §6 (C9) links here.
@@ -38,21 +41,26 @@ with every answer and its retry rule is
 
 ## Throughput per project
 
+The rates below are provisional: measured on the reference rig; to be
+confirmed on AMD Compute.
+
 A cell is one 1 GiB Compute instance (`compute-1g.env`). Its measured
 envelope is the shared bound every project's ceilings divide:
 
 | Bound | Value | Profile key |
 |---|---:|---|
-| Requests a second | 1,411 | `CELL_ENVELOPE_REQUESTS_PER_SEC` |
-| Appended bytes a second | 2,060,000 (about 2.06 MB/s) | `CELL_ENVELOPE_APPEND_BYTES_PER_SEC` |
-| Read bytes a second | 30,000,000 (30 MB/s) | `CELL_ENVELOPE_READ_BYTES_PER_SEC` |
+| Requests a second | 1,411 (provisional) | `CELL_ENVELOPE_REQUESTS_PER_SEC` |
+| Appended bytes a second | 2,060,000 (about 2.06 MB/s; provisional) | `CELL_ENVELOPE_APPEND_BYTES_PER_SEC` |
+| Read bytes a second | 30,000,000 (30 MB/s; provisional) | `CELL_ENVELOPE_READ_BYTES_PER_SEC` |
 | Requests in flight | 512 | `ADMIT_MAX_INFLIGHT` |
 | Live subscriptions (SSE) | 1,200 | `SSE_MAX_CONNECTIONS` |
 | Streams | 65,536 | the per-stream maps (`REGISTRY_CACHE_MAX`) |
 | Appended bytes queued, not yet stored | 512 MiB | `MAX_UNABSORBED_BYTES_PER_INSTANCE` |
 
-The three envelope rates are *measured* on the 1 GiB class and marked in
-`shared-cell.env` as pending re-measurement on the one-shard shape.
+The three envelope rates are *measured* on the 1 GiB class on the reference
+rig, marked in `shared-cell.env` as pending re-measurement on the one-shard
+shape, and are to be confirmed on AMD Compute. Every project rate below
+derives from them, and is provisional with them.
 
 On a cell shared k ways, the server holds a project on each bounded axis to
 ⌊bound × w ÷ k⌋, where w is its weight on that axis (`src/auth/ceiling.rs`,
@@ -67,9 +75,9 @@ packing rule holds the cell's heavy projects to k − 1 units per axis
 
 | Ceiling, per project | Shared cell, k = 8, weight 1 | Shared cell, k = 8, weight 7 (the most) | Dedicated cell, k = 1 |
 |---|---:|---:|---:|
-| Requests a second | 176 | 1,232 (the server's ⌊bound × w ÷ k⌋: 1,234) | 1,411 |
-| Appended bytes a second | 257,500 | 1,802,500 | 2,060,000 |
-| Read bytes a second | 3,750,000 | 26,250,000 | 30,000,000 |
+| Requests a second (provisional) | 176 | 1,232 (the server's ⌊bound × w ÷ k⌋: 1,234) | 1,411 |
+| Appended bytes a second (provisional) | 257,500 | 1,802,500 | 2,060,000 |
+| Read bytes a second (provisional) | 3,750,000 | 26,250,000 | 30,000,000 |
 | Requests in flight | 64 | 448 | 512 |
 | Live subscriptions | 150 | 1,050 | 1,200 |
 | Streams | 8,192 | 57,344 | 65,536 |
@@ -89,12 +97,15 @@ packing rule holds the cell's heavy projects to k − 1 units per axis
 
 ## Throughput per stream and per queue
 
+The measured figures below are provisional: measured on the reference rig;
+to be confirmed on AMD Compute. The buckets and caps are configured values.
+
 | Limit | Value | Source |
 |---|---|---|
 | Appends to one stream | 1,000 requests, 5,000 records and 5,000,000 bytes a second, each a token bucket holding 2 s | `LIMIT_REQS_PER_SEC`, `LIMIT_RECS_PER_SEC`, `LIMIT_BYTES_PER_SEC`, `LIMIT_BURST_SECS` (RUNBOOK) |
 | Concurrent appends on one stream | 256 | `ADMIT_MAX_INFLIGHT_PER_STREAM` |
-| One ordered stream, measured | 662 requests, 13,256 events and 27.1 MB a second sustained (median of 20 s windows), on a 1 GiB instance in hot-log mode (history absorption deferred) on 2026-07-23; about 300 requests and 15 MB a second with live absorption | *measured*: `bench/sinmax-report.md`, on an earlier storage layout, not re-measured since |
-| One queue's drain, measured | at least 374 messages a second: the drain kept up with a 377 a second due rate at 13.1% of a core; its ceiling above that is not measured | *measured*: `docs/QUEUES-PRICING-BENCHMARK.md` §11 (2026-10-25) |
+| One ordered stream, measured | 662 requests, 13,256 events and 27.1 MB a second sustained (median of 20 s windows), on a 1 GiB instance in hot-log mode (history absorption deferred) on 2026-07-23; about 300 requests and 15 MB a second with live absorption | *measured*, provisional: `bench/sinmax-report.md`, on an earlier storage layout, not re-measured since; to be confirmed on AMD Compute |
+| One queue's drain, measured | at least 374 messages a second: the drain kept up with a 377 a second due rate at 13.1% of a core; its ceiling above that is not measured | *measured*, provisional: `docs/QUEUES-PRICING-BENCHMARK.md` §11 (2026-10-25); to be confirmed on AMD Compute |
 | One queue message | 131,072 B envelope; a batch 1-1,000 | WIRE-MATRIX §2.23 |
 
 On a 1 GiB cell the cell's own envelope binds before the per-stream
@@ -125,7 +136,8 @@ A project that needs more throughput than its share of a shared cell moves
 to a **dedicated cell** (k = 1, `deploy/profiles/dedicated-cell.env`):
 cell-admin places one project there, at the bounds themselves (the right
 column above). On compute-1g that is the full envelope: about 2.06 MB/s
-appended, 30 MB/s read, 1,411 requests a second, 512 in flight and 1,200
+appended, 30 MB/s read and 1,411 requests a second (provisional: measured on
+the reference rig; to be confirmed on AMD Compute), 512 in flight and 1,200
 live subscriptions.
 
 What a dedicated 1 GiB cell does **not** give: anything past its envelope.
