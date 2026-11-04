@@ -490,3 +490,115 @@ async fn a_woken_read_takes_an_unsealed_record_from_memory_without_a_store_get()
         "with the shared-cell profile's ring of {ring} bytes the woken read is served from memory"
     );
 }
+
+/// The ring-cap scenario's `i`th stream.
+fn capped_stream(i: u8) -> [u8; 16] {
+    let mut hash = [0xc5u8; 16];
+    hash[0] = i;
+    hash
+}
+
+/// Over streams `0..n`: the bytes their rings hold, and how many hold a
+/// batch. Each handle is dropped before the next is looked up.
+async fn ring_census(engine: &Arc<crate::shard::ShardEngine>, n: u8) -> (usize, usize) {
+    let (mut bytes, mut holding) = (0, 0);
+    for i in 0..n {
+        let handle = engine
+            .stream_handle(capped_stream(i))
+            .await
+            .expect("handle");
+        let ring = handle.ring.lock().unwrap();
+        bytes += ring.bytes;
+        holding += usize::from(!ring.batches.is_empty());
+    }
+    (bytes, holding)
+}
+
+/// The durable frames of streams `0..n`, each read through a handle that
+/// is dropped before the next.
+async fn capped_frames(
+    engine: &Arc<crate::shard::ShardEngine>,
+    n: u8,
+) -> Vec<crate::shard::FrameReadResult> {
+    let mut reads = Vec::new();
+    for i in 0..n {
+        let handle = engine
+            .stream_handle(capped_stream(i))
+            .await
+            .expect("handle");
+        reads.push(
+            durable_frames(engine, &handle, 0, 1, 1 << 20)
+                .await
+                .expect("read"),
+        );
+    }
+    reads
+}
+
+/// **The tail ring pins at most `handle_max_resident` handles.** The ring's
+/// FIFO holds a handle clone per published batch, and a handle with a clone
+/// is never evicted, so a FIFO bounded only by bytes kept every touched
+/// stream resident past the cap (2d, 2026-11-04: 55,836 handles on a shard
+/// capped at 16,384). 64 tiny streams on an engine capped at 16 with a ring
+/// far larger than their batches: the ring keeps the 16 newest, its byte
+/// budget is the bytes those rings hold (its peak one batch more, during the
+/// 17th publish), and once sealed the cap evicts the
+/// 48 others, which read back the same frames from their segment objects.
+/// A dirty handle stays whatever the ring holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn the_tail_ring_pins_no_more_handles_than_the_resident_cap() {
+    let cfg = crate::shard::ShardConfig {
+        tail_ring_bytes: 8 * 1024 * 1024,
+        handle_idle_evict: std::time::Duration::ZERO,
+        handle_max_resident: 16,
+        ..Default::default()
+    };
+    let engine = open_engine_cfg(mem(), "dst-ring-cap", cfg).await;
+    engine.pause_seal(true);
+    let key = skey();
+    for i in 0..64 {
+        append_sized(&engine, capped_stream(i), &key, "", 64).await;
+    }
+    let (ring_bytes, holding) = ring_census(&engine, 64).await;
+    let ring_evicted = engine.ring_evicted.load(Ordering::Relaxed);
+    let resident_ring = engine.ring_resident_bytes();
+    let peak = engine.ring_peak_bytes.load(Ordering::Relaxed);
+    while engine.seal_requested().await.expect("seal").streams > 0 {}
+    let before = capped_frames(&engine, 64).await;
+    engine.evict_idle_handles(std::time::Duration::ZERO, 16);
+    assert_eq!(
+        engine.resident_streams(),
+        16,
+        "the ring pins handles past the cap"
+    );
+    assert_eq!(
+        (holding, ring_evicted),
+        (16, 48),
+        "the ring keeps the 16 newest batches"
+    );
+    assert_eq!(
+        resident_ring, ring_bytes as u64,
+        "the budget is the bytes the rings hold"
+    );
+    assert_eq!(
+        peak * 16,
+        resident_ring * 17,
+        "the peak is 17 equal batches, before the evict"
+    );
+    let after = capped_frames(&engine, 64).await;
+    for (i, (a, b)) in before.iter().zip(&after).enumerate() {
+        assert_eq!(
+            (a.frames.len(), &a.frames),
+            (1, &b.frames),
+            "stream {i} reads back"
+        );
+    }
+    // Dirty handles: 64 more streams, left unsealed, stay resident.
+    engine.evict_idle_handles(std::time::Duration::ZERO, 16);
+    for i in 64..128 {
+        append_sized(&engine, capped_stream(i), &key, "", 64).await;
+    }
+    assert_eq!(engine.evict_idle_handles(std::time::Duration::ZERO, 16), 16);
+    assert_eq!(engine.resident_streams(), 64, "every dirty handle stays");
+    engine.begin_close();
+}

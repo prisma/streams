@@ -20,8 +20,9 @@ pub(crate) struct RingScan {
 impl ShardEngine {
     /// Publish one group's frames for one stream into its ring, then
     /// evict globally-oldest batches until the engine-wide budget is
-    /// non-negative. FIFO mirrors publish order across streams, so its
-    /// front IS the globally oldest batch.
+    /// non-negative and the FIFO pins no more handles than the shard keeps
+    /// resident (`ring_over_cap`). FIFO mirrors publish order across
+    /// streams, so its front IS the globally oldest batch.
     #[expect(
         clippy::unwrap_used,
         reason = "ShardEngine::ring_publish; a poisoned ring or eviction FIFO may hold a half-published batch; recovering it could serve a batch that was never fully retained or evict the wrong stream"
@@ -49,9 +50,8 @@ impl ShardEngine {
         self.ring_fifo.lock().unwrap().push_back(handle.clone());
         self.ring_published.fetch_add(1, Ordering::Relaxed);
         let after = self.ring_budget.fetch_sub(bytes as i64, Ordering::Relaxed) - bytes as i64;
-        let resident = u64::try_from((self.ring_cfg_bytes as i64 - after).max(0)).unwrap_or(0);
-        self.ring_peak_bytes.fetch_max(resident, Ordering::Relaxed);
-        while self.ring_budget.load(Ordering::Relaxed) < 0 {
+        self.note_ring_peak(after);
+        while self.ring_budget.load(Ordering::Relaxed) < 0 || self.ring_over_cap() {
             let Some(victim) = self.ring_fifo.lock().unwrap().pop_front() else {
                 break;
             };
@@ -63,6 +63,26 @@ impl ShardEngine {
                 self.ring_evicted.fetch_add(1, Ordering::Relaxed);
             }
         }
+    }
+
+    /// Record the ring's resident bytes once the budget reads `after`.
+    fn note_ring_peak(&self, after: i64) {
+        let resident = u64::try_from((self.ring_cfg_bytes as i64 - after).max(0)).unwrap_or(0);
+        self.ring_peak_bytes.fetch_max(resident, Ordering::Relaxed);
+    }
+
+    /// The FIFO holds more batches than the shard keeps resident handles
+    /// (`handle_max_resident`, 0 unbounded). Each entry pins its stream's
+    /// handle, and a pinned handle is never evicted, so the ring may pin at
+    /// most that many. A count, so a poisoned FIFO is still counted.
+    fn ring_over_cap(&self) -> bool {
+        self.handle_max_resident != 0
+            && self
+                .ring_fifo
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len()
+                > self.handle_max_resident
     }
 
     pub(crate) fn ring_resident_bytes(&self) -> u64 {

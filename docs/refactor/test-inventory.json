@@ -9844,6 +9844,17 @@
     "scenarios": []
   },
   {
+    "name": "the_tail_ring_pins_no_more_handles_than_the_resident_cap",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "355d4302256192612af0fe6224356fcf6b3e80b33c7fd25edf0849d23c608090",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_ring.rs",
+    "scenarios": []
+  },
+  {
     "name": "the_tick_lists_its_members_only_to_discover_them",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
