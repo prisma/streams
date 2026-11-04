@@ -17,7 +17,7 @@ use slatedb::db_cache::foyer::FoyerCacheOptions;
 use tokio::sync::watch;
 
 use super::{HASH, ShardConfig, ShardEngine, create, msg, send_op, set_clock};
-use crate::native_queue::{DAY_MS, DeliveryView, NqOp, NqOut, QueueConfig};
+use crate::native_queue::{DAY_MS, DeliveryView, NqOp, NqOut, QueueConfig, SettleKind};
 use crate::runtime::block_cache::BlockCache;
 
 /// Messages of the backlog: their availability entries span hundreds of
@@ -183,8 +183,17 @@ async fn claim_within(e: &ShardEngine) -> Option<Vec<DeliveryView>> {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
-async fn a_claim_on_a_cold_backlog_waits_for_no_block_its_predecessors_read() {
+/// A queue's shard log read through a [`HeldTables`] store and cached in
+/// a 64 MiB block cache, with no compactor (the table a test flushes is the
+/// table it reads), and its engine.
+struct ColdRig {
+    store: Arc<HeldTables>,
+    cache: Arc<BlockCache>,
+    db: Arc<slatedb::Db>,
+    e: Arc<ShardEngine>,
+}
+
+async fn cold_rig(name: &str) -> ColdRig {
     let store = Arc::new(HeldTables {
         inner: InMemory::new(),
         closed: watch::Sender::new(false),
@@ -197,28 +206,40 @@ async fn a_claim_on_a_cold_backlog_waits_for_no_block_its_predecessors_read() {
         shards: 1,
     }));
     // No compactor: the table the test flushes is the table the claims read.
-    let db = crate::keyspace::db_builder("nq-cold-walk", object_store.clone())
+    let db = crate::keyspace::db_builder(name, object_store.clone())
         .with_settings(Settings {
             compactor_options: None,
             ..Default::default()
         })
-        .with_db_cache(
-            cache.clone(),
-            crate::runtime::block_cache::scope_of("nq-cold-walk"),
-        )
+        .with_db_cache(cache.clone(), crate::runtime::block_cache::scope_of(name))
         .build()
         .await
         .unwrap();
     let db = Arc::new(db);
-    // A dropped absorber receiver closes the engine.
     let e = ShardEngine::start(
-        "nq-cold-walk".to_owned(),
+        name.to_owned(),
         db.clone(),
         object_store,
         ShardConfig::default(),
         None,
         Default::default(),
     );
+    ColdRig {
+        store,
+        cache,
+        db,
+        e,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_claim_on_a_cold_backlog_waits_for_no_block_its_predecessors_read() {
+    let ColdRig {
+        store,
+        cache,
+        db,
+        e,
+    } = cold_rig("nq-cold-walk").await;
     create(&e, QueueConfig::default()).await;
     set_clock(&db, super::now_ms() + DAY_MS).await;
     for batch in 0..BACKLOG / 1_000 {
@@ -254,5 +275,74 @@ async fn a_claim_on_a_cold_backlog_waits_for_no_block_its_predecessors_read() {
         taken,
         (0..all).collect::<Vec<_>>(),
         "every claim took the next messages in availability order"
+    );
+}
+
+/// The table reads one operation of a cold queue makes.
+async fn reads_of(store: &HeldTables, e: &ShardEngine, op: NqOp) -> (u64, NqOut) {
+    let before = store.started.load(Ordering::SeqCst);
+    let out = super::op(e, op).await.unwrap();
+    store.open_and_land().await;
+    (store.started.load(Ordering::SeqCst) - before, out)
+}
+
+/// A touch of a queue untouched since its rows left the memtable and the
+/// cache and its handle was evicted (a send, a claim of one, its ack) reads
+/// the store exactly so often, whether its commit groups read what they
+/// need before they stage (`native_queue::warm`) or while they stage: the
+/// warm-up moves reads off the serial commit path and adds none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_cold_touch_reads_the_store_a_pinned_number_of_times() {
+    let ColdRig {
+        store,
+        cache,
+        db,
+        e,
+    } = cold_rig("nq-cold-touch").await;
+    create(&e, QueueConfig::default()).await;
+    set_clock(&db, super::now_ms() + DAY_MS).await;
+    // An earlier touch, all of whose rows the shard log holds in a table.
+    super::op(&e, send_op(vec![msg("earlier")])).await.unwrap();
+    let earlier = super::claim(&e, 1).await;
+    let ack = |d: &DeliveryView| super::settle(vec![(d.offset, d.lease_gen, SettleKind::Ack)]);
+    super::op(&e, ack(&earlier[0])).await.unwrap();
+    let flush = FlushOptions {
+        flush_type: FlushType::MemTable,
+    };
+    db.flush_with_options(flush).await.unwrap();
+    cache.release();
+    store.open_and_land().await;
+    // An hour idle: the queue's handle is evicted too.
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    assert_eq!(
+        e.evict_idle_handles(Duration::from_millis(1), 0),
+        1,
+        "the handle is evicted"
+    );
+    let (send, _) = reads_of(&store, &e, send_op(vec![msg("now")])).await;
+    let claim = NqOp::Claim {
+        max: 1,
+        max_bytes: 1 << 20,
+        lease_ms: 30_000,
+    };
+    let (claimed, out) = reads_of(&store, &e, claim).await;
+    let NqOut::Claimed { deliveries, .. } = out else {
+        panic!("the claim answers deliveries");
+    };
+    assert_eq!(
+        deliveries
+            .iter()
+            .map(|d| (d.offset, d.attempt))
+            .collect::<Vec<_>>(),
+        [(1, 1)],
+        "the touch claims its own message"
+    );
+    let (settled, _) = reads_of(&store, &e, ack(&deliveries[0])).await;
+    // The table's index and the one block that holds the queue's rows: the
+    // send reads both, and its claim and ack find everything in the cache.
+    assert_eq!(
+        (send, claimed, settled),
+        (2, 0, 0),
+        "table reads per operation"
     );
 }

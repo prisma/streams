@@ -12,6 +12,7 @@ mod send;
 mod settle;
 pub(super) mod stage;
 mod sweep;
+pub(super) mod warm;
 
 use stage::NativeStage;
 

@@ -1,8 +1,10 @@
 use super::*;
 use futures_util::StreamExt;
 
-/// At most this many cold streams of a group load at once.
-const COLD_LOADS: usize = 16;
+/// At most this many cold streams of a group load at once. A cell of tiny
+/// queues touched once an hour holds every queue's rows cold, so its
+/// groups are wide.
+const COLD_LOADS: usize = 64;
 
 /// What a group needs of one stream before it stages.
 #[derive(Default)]
@@ -11,6 +13,8 @@ struct Cold {
     queue: bool,
     // mt-lint: allow(name-keyed-map): consumer names of the one tenant-qualified stream hash this entry is keyed by
     consumers: std::collections::BTreeSet<String>,
+    /// What the group's native-queue operations on the stream read.
+    native: Option<super::native_queue::warm::NativeReads>,
 }
 
 /// The consumer a queue op names.
@@ -65,7 +69,11 @@ impl CommitTransaction<'_> {
             CommitOp::Queue { hash, op, .. } => (*hash, false, Some(queue_consumer(op))),
             CommitOp::Close(r) => (r.hash, false, None),
             CommitOp::SealFence(r) => (r.hash, false, None),
-            CommitOp::NativeQueue { hash, .. } => (*hash, false, None),
+            CommitOp::NativeQueue { hash, op, .. } => {
+                let cold = streams.entry(*hash).or_default();
+                cold.native.get_or_insert_default().add(op);
+                return;
+            }
             // A seal's streams hold unsealed pages, so their handles are
             // resident (`LayoutState::hold_unsealed`).
             CommitOp::Seal(_) => return,
@@ -79,8 +87,9 @@ impl CommitTransaction<'_> {
     }
 
     /// Make `hash`'s handle resident, with its queue state and named
-    /// consumers' records when the group has queue ops on it, and read its
-    /// billing row when the group bills it.
+    /// consumers' records when the group has queue ops on it, read what its
+    /// native-queue ops will read beside the handle, and read its billing
+    /// row when the group bills it.
     async fn warm(
         engine: &ShardEngine,
         hash: [u8; 16],
@@ -89,7 +98,12 @@ impl CommitTransaction<'_> {
         [u8; 16],
         anyhow::Result<Option<crate::billing::SegmentBillingMetaV1>>,
     )> {
-        let handle = engine.stream_handle(hash).await;
+        let native = async {
+            if let Some(reads) = &cold.native {
+                Self::warm_native(engine, &hash, reads).await;
+            }
+        };
+        let (handle, ()) = futures_util::future::join(engine.stream_handle(hash), native).await;
         if cold.queue
             && let Ok(handle) = &handle
         {

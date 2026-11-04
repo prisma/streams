@@ -54,20 +54,31 @@ impl NativeStage {
             rows: BTreeMap::new(),
         }
     }
-}
 
-impl super::super::CommitTransaction<'_> {
-    pub(super) async fn nq_load(&self, hash: &[u8; 16]) -> Result<NativeStage, String> {
-        match self.engine.db.get(keys::state(hash)).await {
-            Ok(Some(raw)) => Ok(NativeStage {
+    /// The queue's stage as `engine`'s shard log holds it: its stored state
+    /// row and no staged row; [`Self::absent`] when it has no state row.
+    pub(in crate::shard::transaction) async fn load(
+        engine: &crate::shard::ShardEngine,
+        hash: &[u8; 16],
+    ) -> Result<Self, String> {
+        #[cfg(test)]
+        crate::shard::test_support::held_native_state_read(&engine.prefix).await;
+        match engine.db.get(keys::state(hash)).await {
+            Ok(Some(raw)) => Ok(Self {
                 state: StateRow::decode(&raw)?,
                 exists: true,
                 state_dirty: false,
                 rows: BTreeMap::new(),
             }),
-            Ok(None) => Ok(NativeStage::absent()),
+            Ok(None) => Ok(Self::absent()),
             Err(e) => Err(e.to_string()),
         }
+    }
+}
+
+impl super::super::CommitTransaction<'_> {
+    pub(super) async fn nq_load(&self, hash: &[u8; 16]) -> Result<NativeStage, String> {
+        NativeStage::load(self.engine, hash).await
     }
 
     pub(super) fn nq_put(&mut self, st: &mut NativeStage, key: Vec<u8>, value: Vec<u8>) {
@@ -91,6 +102,8 @@ impl super::super::CommitTransaction<'_> {
         if let Some(staged) = st.rows.get(key) {
             return Ok(staged.clone());
         }
+        #[cfg(test)]
+        crate::shard::test_support::held_native_row_read(&self.engine.prefix).await;
         self.engine
             .db
             .get(key)
@@ -113,6 +126,8 @@ impl super::super::CommitTransaction<'_> {
         // deleted rows cannot starve the page.
         let staged_in_range = st.rows.range(from.clone()..to.clone()).count();
         let want = limit.saturating_add(staged_in_range);
+        #[cfg(test)]
+        crate::shard::test_support::held_native_index_read(&self.engine.prefix).await;
         let mut it = self
             .engine
             .db
@@ -178,6 +193,8 @@ impl super::super::CommitTransaction<'_> {
             return Ok((Vec::new(), Some(i64::MAX)));
         };
         let want = limit.saturating_add(st.rows.range(from.clone()..to.clone()).count());
+        #[cfg(test)]
+        crate::shard::test_support::held_native_index_read(&self.engine.prefix).await;
         let mut it = self
             .engine
             .db
@@ -272,7 +289,11 @@ pub(super) fn floor_range(
 
 /// The key range an index scan reads: [`floor_range`], for `avail` from
 /// the later of the floor and the cursor.
-fn index_range(hash: &[u8; 16], fam: u8, st: &mut NativeStage) -> Option<(Vec<u8>, Vec<u8>)> {
+pub(super) fn index_range(
+    hash: &[u8; 16],
+    fam: u8,
+    st: &mut NativeStage,
+) -> Option<(Vec<u8>, Vec<u8>)> {
     let (mut from, to) = floor_range(hash, fam, st)?;
     let s = &st.state;
     if fam == keys::AVAIL && s.cursor_started {

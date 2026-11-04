@@ -289,6 +289,7 @@ OWNERS = (
     owner('nq_settle', 'src/shard/transaction/native_queue/settle.rs', 'native_queue'),
     owner('nq_stage', 'src/shard/transaction/native_queue/stage.rs', 'native_queue'),
     owner('nq_sweep', 'src/shard/transaction/native_queue/sweep.rs', 'native_queue'),
+    owner('nq_warm', 'src/shard/transaction/native_queue/warm.rs', 'native_queue'),
     owner('transaction_tests', 'src/shard/transaction_tests.rs', 'shard::'),
     owner('task_lifecycle_tests', 'src/shard/task_lifecycle_tests.rs', 'shard::'),
     owner('record_scan_tests', 'src/shard/record_scan_tests.rs', 'shard::'),

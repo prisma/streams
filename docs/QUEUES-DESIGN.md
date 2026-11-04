@@ -331,7 +331,12 @@ message was leased). The committer runs a shard's operations one at a
 time, so a claim must not wait for storage block by block: its walk of `A`
 keeps sixteen block fetches in flight ahead of it, and the claims that
 follow find their blocks read or in flight ([pricing benchmark
-§11](QUEUES-PRICING-BENCHMARK.md)).
+§11](QUEUES-PRICING-BENCHMARK.md)). Nor may a cold queue wait for storage
+on that path: before a commit group stages, it reads what its operations
+on cold queues will read (each queue's state row, a claim's and a sweep's
+walks of the indexes, a settle's rows), 64 queues at once, so a cell of
+many tiny queues touched once an hour waits for the store once per group,
+not once per operation (`shard/transaction/native_queue/warm.rs`).
 
 **After the commit is durable (with the key):** open each leased envelope
 from the page its `A` entry carried (§5.2), or else read it by a **point

@@ -19,7 +19,7 @@ use crate::native_queue::rows::{Cause, DState, DeliveryRow, decode_avail};
 type Candidate = (i64, u64, Option<Vec<u8>>);
 
 /// The families a claim reads, in the order of [`family_of`].
-const FAMILIES: [u8; 2] = [keys::AVAIL, keys::RETRIES];
+pub(super) const FAMILIES: [u8; 2] = [keys::AVAIL, keys::RETRIES];
 
 /// The index into [`FAMILIES`] of a candidate's family.
 fn family_of(c: &Candidate) -> usize {
@@ -59,6 +59,13 @@ fn raise_floors(
             st.raise_floor(fam, Some(at));
         }
     }
+}
+
+/// The stored rows a claim of at most `max` messages reads of each index
+/// it walks: twice as many as it may lease, and some, so entries it skips
+/// (cancelled, retired, past their cycle) do not starve it.
+pub(super) fn due_want(max: usize) -> usize {
+    max.saturating_mul(2).saturating_add(16)
 }
 
 struct ClaimBudget {
@@ -150,7 +157,7 @@ impl CommitTransaction<'_> {
         max: usize,
         t: i64,
     ) -> Result<(Vec<Candidate>, [Option<i64>; 2]), NqRefusal> {
-        let want = max.saturating_mul(2).saturating_add(16);
+        let want = due_want(max);
         let mut out: Vec<Candidate> = Vec::new();
         let mut next = [None; 2];
         for (fam, found) in FAMILIES.into_iter().zip(&mut next) {

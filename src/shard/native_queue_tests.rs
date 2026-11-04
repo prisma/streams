@@ -11,6 +11,7 @@ use crate::native_queue::{
 
 mod avail;
 mod budgets;
+mod cold;
 mod floors;
 mod reads;
 mod sweeps;

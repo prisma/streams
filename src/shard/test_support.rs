@@ -140,6 +140,37 @@ pub(super) async fn held_queue_read(prefix: &str) {
     held_billing_read(&format!("{prefix}#queue")).await;
 }
 
+/// Hold `prefix`'s native-queue state-row loads from now on.
+pub(super) fn hold_native_state_reads(prefix: &str) -> Arc<HeldReads> {
+    hold_billing_reads(&format!("{prefix}#native-state"))
+}
+
+/// One native-queue state-row load of `prefix`: held while its shard's are.
+pub(super) async fn held_native_state_read(prefix: &str) {
+    held_billing_read(&format!("{prefix}#native-state")).await;
+}
+
+/// Hold `prefix`'s native-queue index walks from now on.
+pub(super) fn hold_native_index_reads(prefix: &str) -> Arc<HeldReads> {
+    hold_billing_reads(&format!("{prefix}#native-index"))
+}
+
+/// One native-queue index walk of `prefix`: held while its shard's are.
+pub(super) async fn held_native_index_read(prefix: &str) {
+    held_billing_read(&format!("{prefix}#native-index")).await;
+}
+
+/// Hold `prefix`'s native-queue row reads (a settle's delivery and
+/// metadata rows) from now on.
+pub(super) fn hold_native_row_reads(prefix: &str) -> Arc<HeldReads> {
+    hold_billing_reads(&format!("{prefix}#native-row"))
+}
+
+/// One native-queue row read of `prefix`: held while its shard's are.
+pub(super) async fn held_native_row_read(prefix: &str) {
+    held_billing_read(&format!("{prefix}#native-row")).await;
+}
+
 /// Hold `prefix`'s consumer-record reads from now on.
 pub(super) fn hold_config_reads(prefix: &str) -> Arc<HeldReads> {
     hold_billing_reads(&format!("{prefix}#config"))
