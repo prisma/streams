@@ -943,3 +943,23 @@ fn store_http2_selects_http2_to_the_object_store() {
     assert!(load_with(&[("STORE_HTTP2", "1")]).storage.http2_only);
     assert!(!load_with(&[("STORE_HTTP2", "0")]).storage.http2_only);
 }
+
+/// Edge change #248's clean-handle bound (Fable's decisions 2c and 2d): a clean
+/// resident handle measured 5,669 and 5,687 B (`dst_tests::latch_calibration`,
+/// Linux aarch64 release), so both 1 GiB profiles hold a shard to 8,192
+/// handles, about 47 MB, not the binary's 65,536 (about 372 MB).
+#[test]
+fn the_1_gib_profiles_keep_a_shard_to_8_192_clean_handles() {
+    for profile in [
+        include_str!("../../deploy/profiles/shared-cell.env"),
+        include_str!("../../deploy/profiles/dedicated-cell.env"),
+    ] {
+        let cap = profile
+            .lines()
+            .find_map(|l| l.strip_prefix("HANDLE_MAX_RESIDENT="))
+            .map(|v| v.parse::<u64>().unwrap());
+        assert_eq!(cap, Some(8_192));
+    }
+    let shipped = shared_cell_profile(&[("SLATE_S3_ENDPOINT", "http://127.0.0.1:9500")]);
+    assert_eq!(shipped.cli.handle_max_resident, 8_192);
+}
