@@ -70,6 +70,10 @@ pub(crate) fn db_builder<P: Into<object_store::path::Path>>(
 }
 
 #[cfg(test)]
+#[path = "keyspace_projection_tests.rs"]
+mod projection_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{QUEUE, QUEUE_PREFIX_LEN, SENTINEL, STREAM, queue_row, stream_row};
 

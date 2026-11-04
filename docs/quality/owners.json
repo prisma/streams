@@ -195,6 +195,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::projection_tests",
+      "path": "src/keyspace.rs",
+      "reason": "S4's fork check (ASM-SLATEDB-PROJECTION): projected clones of an initialized shard log built with keyspace::db_builder, at depth 1 and 2, hold exactly their range's rows; a test-only module beside the keyspace it pins, so keyspace.rs stays its production size; the compiler and the lib suite exercise it.",
+      "syntax": "path = \"keyspace_projection_tests.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::fork_debt",
       "path": "src/dst/dst_tests.rs",
       "reason": "Fork-debt backfill and observability scenarios (TLA-019-F4): pre-index tombstones repaired without a client DELETE, the backfill resuming across a restart, and the fork_debt_stale alert; compiler and the full DST suite exercise the module.",
