@@ -28,14 +28,13 @@ impl Range {
         if !is_bits {
             return Self::ALL;
         }
-        let bits = prefix
-            .bytes()
-            .enumerate()
-            .filter(|(_, b)| *b == b'1')
-            .fold(0u128, |acc, (i, _)| acc | (1u128 << (127 - i)));
+        let Ok(value) = u128::from_str_radix(prefix, 2) else {
+            return Self::ALL;
+        };
+        let len = u32::try_from(prefix.len()).unwrap_or(128);
         Self {
-            bits,
-            len: u32::try_from(prefix.len()).unwrap_or(128),
+            bits: value.checked_shl(128 - len).unwrap_or(0),
+            len,
         }
     }
 
