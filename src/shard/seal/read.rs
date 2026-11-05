@@ -442,7 +442,10 @@ impl ShardEngine {
         }
         let body = self.get_chunk(plan).await?;
         if plan.whole && body.len() as u64 <= CHUNK_CACHE_MAX_ITEM {
-            cache.insert(&key, plan.entry.chunk_off, body.clone(), body.len() as u64);
+            // The cache's own copy: over HTTP the body is a slice of the
+            // connection's read buffer, whose whole 8 KiB the slice would pin.
+            let owned = Bytes::copy_from_slice(&body);
+            cache.insert(&key, plan.entry.chunk_off, owned, body.len() as u64);
         }
         Ok(body)
     }

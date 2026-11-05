@@ -969,6 +969,21 @@ async fn only_a_whole_chunk_is_cached() {
     assert_eq!(read(64 << 20).await.unwrap().last_offset, Some(11));
     assert_eq!(get(&c.sealed_gets) - gets, 1);
     assert_eq!(cached().map(|b| b.len()), Some(entry.chunk_len as usize));
+    // The store's answer is a slice of a larger buffer (over HTTP, of hyper's
+    // read buffer): the cache owns its copy, so it pins exactly the chunk.
+    let object = rig
+        .store
+        .get(&object_store::path::Path::from(path.clone()))
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    let chunk = cached().unwrap();
+    assert!(
+        !object.as_ptr_range().contains(&chunk.as_ptr()),
+        "the cached chunk is a slice of the store's buffer"
+    );
     let hits = get(&c.chunk_cache_hits);
     assert_eq!(read(64 << 20).await.unwrap().last_offset, Some(11));
     assert_eq!(
