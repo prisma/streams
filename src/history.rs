@@ -65,11 +65,57 @@ pub(crate) struct KeyEntry {
     pub key: StreamKey,
     pub epoch: [u8; 16],
     pub at: Instant,
+    /// This entry's place in `KeyMap::by_age`.
+    tick: u64,
+}
+
+/// The keys and the order they were last put in, which is `at`'s order: at
+/// the cap the key put longest ago leaves without a walk of the keys.
+#[derive(Default)]
+struct KeyMap {
+    entries: HashMap<[u8; 16], KeyEntry>,
+    by_age: std::collections::BTreeMap<u64, [u8; 16]>,
+    tick: u64,
+}
+
+impl KeyMap {
+    fn put(&mut self, hash: [u8; 16], key: StreamKey, epoch: [u8; 16]) {
+        if let Some(held) = self.entries.get(&hash) {
+            self.by_age.remove(&held.tick);
+        } else if self.entries.len() >= KEY_CACHE_MAX
+            && let Some((_, oldest)) = self.by_age.pop_first()
+        {
+            self.entries.remove(&oldest);
+        }
+        self.tick += 1;
+        self.by_age.insert(self.tick, hash);
+        let entry = KeyEntry {
+            key,
+            epoch,
+            at: Instant::now(),
+            tick: self.tick,
+        };
+        self.entries.insert(hash, entry);
+    }
+
+    fn get(&self, hash: &[u8; 16]) -> Option<&KeyEntry> {
+        self.entries.get(hash)
+    }
+
+    fn remove(&mut self, hash: &[u8; 16]) {
+        if let Some(gone) = self.entries.remove(hash) {
+            self.by_age.remove(&gone.tick);
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
 }
 
 #[derive(Default)]
 pub(crate) struct KeyCache {
-    map: Mutex<HashMap<[u8; 16], KeyEntry>>,
+    map: Mutex<KeyMap>,
 }
 
 const KEY_TTL: Duration = Duration::from_secs(900);
@@ -85,22 +131,7 @@ impl KeyCache {
     )]
     pub(crate) fn put(&self, hash: [u8; 16], key: StreamKey, epoch: [u8; 16]) {
         let mut map = self.map.lock().unwrap();
-        if map.len() >= KEY_CACHE_MAX && !map.contains_key(&hash) {
-            map.retain(|_, e| e.at.elapsed() <= KEY_TTL);
-            if map.len() >= KEY_CACHE_MAX
-                && let Some(oldest) = map.iter().min_by_key(|(_, e)| e.at).map(|(h, _)| *h)
-            {
-                map.remove(&oldest);
-            }
-        }
-        map.insert(
-            hash,
-            KeyEntry {
-                key,
-                epoch,
-                at: Instant::now(),
-            },
-        );
+        map.put(hash, key, epoch);
     }
 
     #[expect(
@@ -124,6 +155,14 @@ impl KeyCache {
     )]
     pub(crate) fn len(&self) -> usize {
         self.map.lock().unwrap().len()
+    }
+
+    /// Tests: as if `hash` was put `by` ago.
+    #[cfg(test)]
+    fn age_for_test(&self, hash: &[u8; 16], by: Duration) {
+        if let Some(e) = self.map.lock().unwrap().entries.get_mut(hash) {
+            e.at -= by;
+        }
     }
 }
 
@@ -400,5 +439,78 @@ mod tests {
             engine.oldest_inflight_ms() > 5_000,
             "the stale-durability component specifically must be the signal"
         );
+    }
+
+    /// `n` distinct hashes, the first eight bytes counting.
+    fn key_hash(n: u64) -> [u8; 16] {
+        let mut hash = [0u8; 16];
+        hash[..8].copy_from_slice(&n.to_le_bytes());
+        hash
+    }
+
+    fn filled_key_cache() -> KeyCache {
+        let cache = KeyCache::default();
+        for n in 0..KEY_CACHE_MAX as u64 {
+            cache.put(key_hash(n), StreamKey([7; 32]), [0; 16]);
+        }
+        assert_eq!(cache.len(), KEY_CACHE_MAX);
+        cache
+    }
+
+    /// At the cap a new key removes exactly the entry put longest ago: a
+    /// put again is newer (a read of the cache does not count), and a put
+    /// of a held key removes nothing.
+    #[test]
+    fn at_the_cap_the_key_put_longest_ago_leaves() {
+        let cache = filled_key_cache();
+        cache.put(key_hash(0), StreamKey([8; 32]), [0; 16]);
+        assert_eq!(
+            cache.len(),
+            KEY_CACHE_MAX,
+            "a put of a held key removes nothing"
+        );
+        assert!(cache.get(&key_hash(1)).is_some(), "a get does not refresh");
+        cache.put(key_hash(1_000_000), StreamKey([9; 32]), [0; 16]);
+        assert_eq!(cache.len(), KEY_CACHE_MAX);
+        assert!(cache.get(&key_hash(1)).is_none(), "1 was put longest ago");
+        assert_eq!(cache.get(&key_hash(0)).map(|(k, _)| k.0), Some([8; 32]));
+        assert!(cache.get(&key_hash(2)).is_some());
+        cache.put(key_hash(1_000_001), StreamKey([9; 32]), [0; 16]);
+        assert!(
+            cache.get(&key_hash(2)).is_none(),
+            "2 is next, not the re-put 0"
+        );
+        assert!(cache.get(&key_hash(0)).is_some());
+    }
+
+    /// A put at the cap costs no walk of the cache: it ran on the request
+    /// path under the cache's one lock, 2.48 ms each in release on the
+    /// 65,536 entries (733 ms of each second at 300 new keys a second, P2c's
+    /// 2d probes). A thousand puts of new keys take far under a second now.
+    #[test]
+    fn a_put_at_the_cap_walks_nothing() {
+        let cache = filled_key_cache();
+        let started = Instant::now();
+        for n in 0..1_000u64 {
+            cache.put(key_hash(1_000_000 + n), StreamKey([9; 32]), [0; 16]);
+        }
+        let took = started.elapsed();
+        assert!(
+            took < Duration::from_secs(1),
+            "1,000 puts at the cap took {took:?}"
+        );
+        assert_eq!(cache.len(), KEY_CACHE_MAX);
+    }
+
+    /// An expired key is gone on its next read, from the entries and the order.
+    #[test]
+    fn an_expired_key_reads_as_absent() {
+        let cache = KeyCache::default();
+        cache.put(key_hash(1), StreamKey([1; 32]), [0; 16]);
+        assert!(cache.get(&key_hash(1)).is_some());
+        cache.age_for_test(&key_hash(1), KEY_TTL + Duration::from_secs(1));
+        assert!(cache.get(&key_hash(1)).is_none());
+        assert_eq!(cache.len(), 0);
+        assert!(cache.map.lock().unwrap().by_age.is_empty());
     }
 }
