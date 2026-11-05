@@ -513,4 +513,15 @@ mod tests {
         assert_eq!(cache.len(), 0);
         assert!(cache.map.lock().unwrap().by_age.is_empty());
     }
+
+    /// A full key cache's heap, for the budget sum: entries and the order.
+    #[test]
+    fn a_full_key_cache_holds_about_fifteen_mib() {
+        let before = crate::test_alloc::live_bytes();
+        let cache = filled_key_cache();
+        let held = crate::test_alloc::live_bytes() - before;
+        println!("KEY_CACHE_BYTES {held}");
+        assert!(held <= 16 << 20, "{held} B");
+        drop(cache);
+    }
 }

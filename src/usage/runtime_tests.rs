@@ -181,3 +181,23 @@ proptest::proptest! {
         }
     }
 }
+
+/// A full tracker holds its budget line (`TRACKER_BUDGET_MIB`): its 65,536
+/// rows, each with its counters, measured on the allocator.
+#[test]
+fn a_full_usage_tracker_fits_its_budget_line() {
+    let usage = UsageService::new(
+        &crate::config::AdmissionConfig::default(),
+        Arc::new(ManualClock::at(0)),
+    );
+    let before = crate::test_alloc::live_bytes();
+    for n in 0..super::MAX_TRACKED as u64 {
+        let mut hash = [0u8; 16];
+        hash[..8].copy_from_slice(&n.to_le_bytes());
+        assert!(usage.admit_append(&hash, 1, 1).is_ok());
+    }
+    let held = u64::try_from(crate::test_alloc::live_bytes() - before).unwrap();
+    assert_eq!(usage.tracked_streams(), super::MAX_TRACKED);
+    println!("USAGE_TRACKER_BYTES {held}");
+    assert!(held <= super::TRACKER_BUDGET_MIB << 20, "{held} B");
+}

@@ -77,6 +77,11 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
 
+/// The bytes this thread holds (see `LIVE`).
+pub(crate) fn live_bytes() -> isize {
+    LIVE.with(Cell::get)
+}
+
 /// `step`'s value, and the most bytes this thread held at once while it
 /// ran beyond what it held when it began (what it returns included).
 pub(crate) fn peak_bytes<T>(step: impl FnOnce() -> T) -> (T, usize) {

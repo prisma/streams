@@ -699,6 +699,12 @@ mod tests {
     }
 }
 
+/// The usage tracker's line in the budget sum under the shed line
+/// (`config::tests`), in MiB: its 65,536 rows measured 13,238,344 B
+/// (`runtime_tests`), rounded up for the allocator's size classes.
+#[cfg(test)]
+pub(crate) const TRACKER_BUDGET_MIB: u64 = 14;
+
 #[cfg(test)]
 #[path = "usage/runtime_tests.rs"]
 mod runtime_tests;

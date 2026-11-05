@@ -118,7 +118,7 @@ fn the_process_caches_keep_their_largest_item_and_report_their_budgets() {
     assert_eq!(j["index_cache"]["budget"], INDEX_CACHE_BYTES);
     assert_eq!(
         (CHUNK_CACHE_BYTES, INDEX_CACHE_BYTES),
-        (32 << 20, 16 << 20),
+        (8 << 20, 32 << 20),
         "the budgets the memory budget lines (spill::budget) add up"
     );
 }

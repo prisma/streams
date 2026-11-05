@@ -442,16 +442,16 @@ fn shipped_shed_line_keeps_the_boot_checks_headroom() {
 }
 
 /// Layout 6's index and read structures (`spill::budget`: directories,
-/// index and chunk caches, merges, consolidations) have budget lines of 120
+/// index and chunk caches, merges, consolidations) have budget lines of 112
 /// MiB together; with the fixed caches and the boot check's 100 MiB of
-/// headroom they stay under the shed line: 144 + 120 + 100 = 364 <= 500.
+/// headroom they stay under the shed line: 144 + 112 + 100 = 356 <= 500.
 #[test]
 fn layout6_index_and_read_budgets_fit_under_the_shed_line() {
     let c = load_with(&[]);
     let fixed_mb = shipped_fixed_memory_budget_bytes(&c) / (1024 * 1024);
     let index_mb = crate::spill::budget::INDEX_AND_READ_BYTES / (1024 * 1024);
-    assert_eq!(index_mb, 120);
-    assert_eq!(fixed_mb + index_mb + 100, 364);
+    assert_eq!(index_mb, 112);
+    assert_eq!(fixed_mb + index_mb + 100, 356);
     assert!(fixed_mb + index_mb + 100 <= c.cli.admit_rss_shed_mb);
 }
 
@@ -459,7 +459,7 @@ fn layout6_index_and_read_budgets_fit_under_the_shed_line() {
 /// the shed line unless `REGISTRY_RETAIN_MB` sets it (64 MiB with no shed
 /// line), in the effective configuration; beside the fixed caches, layout
 /// 6's index and read budgets and the boot check's 100 MiB of headroom it
-/// stays under the shed line: 144 + 120 + 62 + 100 = 426 <= 500.
+/// stays under the shed line: 144 + 112 + 62 + 100 = 418 <= 500.
 #[test]
 fn the_registry_retain_budget_is_an_eighth_of_the_shed_line_unless_set() {
     let c = load_with(&[]);
@@ -480,8 +480,42 @@ fn the_registry_retain_budget_is_an_eighth_of_the_shed_line_unless_set() {
     let fixed_mb = shipped_fixed_memory_budget_bytes(&c) / (1024 * 1024);
     let index_mb = crate::spill::budget::INDEX_AND_READ_BYTES / (1024 * 1024);
     let retain_mb = c.registry_retain_bytes() as u64 / (1024 * 1024);
-    assert_eq!(fixed_mb + index_mb + retain_mb + 100, 426);
+    assert_eq!(fixed_mb + index_mb + retain_mb + 100, 418);
     assert!(fixed_mb + index_mb + retain_mb + 100 <= c.cli.admit_rss_shed_mb);
+}
+
+/// Every line under the shed line on a 1 GiB cell, with 100 MiB of headroom for
+/// bursts (Fable 5.1, 2026-11-05): fixed caches 144, index and read structures
+/// 112 (index cache 32, chunk cache 8), retained tier 62, clean handles at 6,000
+/// B each (the measured RSS slope) 47, tail ring 8, usage tracker 14: 487. On the
+/// 1 GiB profiles the fixed caches are 48, with the key cache's 15: 406.
+#[test]
+fn the_1_gib_budget_lines_add_up_under_the_shed_line() {
+    const MIB: u64 = 1 << 20;
+    let c = load_with(&[]);
+    let profile = shared_cell_profile(&[("SLATE_S3_ENDPOINT", "http://127.0.0.1:9500")]);
+    assert_eq!(
+        (
+            crate::spill::cache::INDEX_CACHE_BYTES / MIB,
+            crate::spill::cache::CHUNK_CACHE_BYTES / MIB,
+        ),
+        (32, 8)
+    );
+    let lines = [
+        crate::spill::budget::INDEX_AND_READ_BYTES / MIB,
+        c.registry_retain_bytes() as u64 / MIB,
+        (profile.cli.handle_max_resident as u64 * 6_000).div_ceil(MIB),
+        profile.cli.tail_ring_bytes as u64 / MIB,
+        crate::usage::TRACKER_BUDGET_MIB,
+        100,
+    ];
+    assert_eq!(lines, [112, 62, 47, 8, 14, 100]);
+    let sum: u64 = lines.iter().sum();
+    let fixed = shipped_fixed_memory_budget_bytes(&c) / MIB;
+    assert_eq!(fixed + sum, 487);
+    assert!(fixed + sum <= profile.cli.admit_rss_shed_mb);
+    let on_profile = shipped_fixed_memory_budget_bytes(&profile) / MIB;
+    assert_eq!(on_profile + sum + 15, 406);
 }
 
 #[test]

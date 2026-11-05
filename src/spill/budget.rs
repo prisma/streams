@@ -10,7 +10,7 @@
 //! | Merges (input objects and output) | `MERGE_BUFFER_BYTES` | one merge at a time per process, inputs within half of it |
 //! | Consolidations in flight | `CONSOLIDATION_BYTES` | a process-wide byte semaphore |
 //!
-//! Their sum, `INDEX_AND_READ_BYTES`, is 120 MiB; with the fixed caches
+//! Their sum, `INDEX_AND_READ_BYTES`, is 112 MiB; with the fixed caches
 //! (144 MiB) and the boot check's 100 MiB of headroom it stays under the
 //! shed line (`config::tests`).
 

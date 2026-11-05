@@ -21,12 +21,12 @@ use std::sync::{Mutex, PoisonError};
 use bytes::Bytes;
 
 /// The index cache's budget.
-pub(crate) const INDEX_CACHE_BYTES: u64 = 16 << 20;
+pub(crate) const INDEX_CACHE_BYTES: u64 = 32 << 20;
 /// The largest value the index cache keeps. A footer has one entry per
 /// stream in its object, and every sealed read consults it.
 pub(crate) const INDEX_CACHE_MAX_ITEM: u64 = INDEX_CACHE_BYTES / 2;
 /// The chunk cache's budget.
-pub(crate) const CHUNK_CACHE_BYTES: u64 = 32 << 20;
+pub(crate) const CHUNK_CACHE_BYTES: u64 = 8 << 20;
 /// What an entry holds beyond its value and key strings: its slots in the map
 /// and the order index, charged with the strings (the key is held twice).
 pub(crate) const ENTRY_OVERHEAD: u64 = 128;
