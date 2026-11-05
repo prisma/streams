@@ -397,3 +397,18 @@ fn every_dimension_enters_the_estimate_at_its_own_weight() {
     a.retained_sse_sub(5);
     assert_eq!(a.estimated_pressure_bytes(), 0);
 }
+
+/// The pressure row names the read bytes the estimate adds, so a refusal is
+/// explained from the scrape: with every other input zero, the row's
+/// `read_held_bytes` is the whole estimate.
+#[test]
+fn the_pressure_row_reports_the_read_bytes_it_holds() {
+    let r = QuotaRegistry::default();
+    let a = adm(&r, "p-read-held");
+    a.read_held.store(8 << 20, Ordering::Relaxed);
+    let load = r.memory_pressure_json(32 << 20, 8);
+    let row = &load["rows"][0];
+    assert_eq!(row["project"], "p-read-held");
+    assert_eq!(row["read_held_bytes"], 8u64 << 20);
+    assert_eq!(row["estimated_pressure_bytes"], 8u64 << 20);
+}

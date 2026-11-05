@@ -220,6 +220,7 @@ impl ProjectAdmission {
                     .fields(serde_json::json!({
                         "project": project.as_str(),
                         "estimated_pressure_bytes": p,
+                        "read_held_bytes": self.read_held.load(Ordering::Relaxed),
                         "high_water_bytes": high,
                         "model_version": PROJECT_PRESSURE_MODEL_VERSION,
                     })),
@@ -942,7 +943,7 @@ impl QuotaRegistry {
                         "buffered_body_bytes": a.buffered_body_bytes_now(),
                         "queued_append_bytes": a.queued_bytes.load(Ordering::Relaxed),
                         "unabsorbed_frame_bytes": a.unabsorbed_frame_bytes_now(),
-                        "dirty_streams": a.dirty_streams_now(),
+                        "dirty_streams": a.dirty_streams_now(), "read_held_bytes": a.read_held.load(Ordering::Relaxed),
                         "engage_count": a.memory_engage_count.load(Ordering::Relaxed),
                         "shed_count": a.memory_shed_count.load(Ordering::Relaxed),
                     }),
