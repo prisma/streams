@@ -47,7 +47,7 @@ async fn first_publication(
         tasks.iter().any(|t| t.name == "fleet"),
         "the fleet tick runs"
     );
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
+    let deadline = tokio::time::Instant::now() + PUBLISHES_WITHIN;
     let mut desired = desired_doc(&rig.state).await;
     while desired.epoch < 2 && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -178,7 +178,7 @@ async fn a_member_refusing_reads_three_beats_running_scales_the_fleet_out() {
         rig.state.clone(),
         &rig.tasks
     ));
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
+    let deadline = tokio::time::Instant::now() + PUBLISHES_WITHIN;
     let mut desired = desired_doc(&rig.state).await;
     while desired.epoch < 2 && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -202,18 +202,22 @@ fn wanted_by(desired: &crate::fleet::Desired, wanted: u64, marker: &str) -> bool
     desired.epoch == 2 && desired.count >= wanted && desired.reason.contains(marker)
 }
 
+/// The bound on a plan a test expects: it returns at once when it comes.
+const PUBLISHES_WITHIN: Duration = Duration::from_secs(8);
+
 /// One fleet tick's plan over a seeded count of `seed`, the peers `peers`
 /// (name, rps, the extra heartbeat fields) at 30 % CPU each, this
 /// instance's RSS shed line `shed_mb` (0 = off, as every rig's) and `shards`
 /// shards; every sustain at 0, and the scale-in window held at its default.
-/// Returns the desired document after the first publication, or as seeded
-/// when 12 s of ticks publish nothing, and this instance's beat once it
-/// carries a split demand (its last within the same 12 s otherwise).
+/// Returns as soon as the tick publishes a count or this instance's beat
+/// carries a split demand, with the desired document and that beat; as seeded
+/// when `within` passes with neither.
 async fn plan_once(
     seed: u64,
     peers: &[(&str, f64, &str)],
     shed_mb: u64,
     shards: usize,
+    within: Duration,
 ) -> (crate::fleet::Desired, serde_json::Value) {
     let fleet = mem();
     let doc = format!(r#"{{"count":{seed},"epoch":1,"reason":"seed","computed_at_ms":0}}"#);
@@ -255,22 +259,18 @@ async fn plan_once(
         rig.state.clone(),
         &rig.tasks
     ));
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
-    let mut desired = desired_doc(&rig.state).await;
-    while desired.epoch < 2 && tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        desired = desired_doc(&rig.state).await;
-    }
-    let beat = loop {
+    let deadline = tokio::time::Instant::now() + within;
+    let (desired, beat) = loop {
+        let desired = desired_doc(&rig.state).await;
         let beat: serde_json::Value = match fleet.get(&Path::from("fleet/streams-1.json")).await {
             Ok(got) => serde_json::from_slice(&got.bytes().await.unwrap()).unwrap(),
             Err(_) => serde_json::Value::Null,
         };
-        if beat["split_demand"].as_u64().unwrap_or(0) > 0 || tokio::time::Instant::now() >= deadline
-        {
-            break beat;
+        let split = beat["split_demand"].as_u64().unwrap_or(0) > 0;
+        if desired.epoch >= 2 || split || tokio::time::Instant::now() >= deadline {
+            break (desired, beat);
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     };
     let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
     assert!(report.aborted.is_empty(), "{report:?}");
@@ -287,7 +287,7 @@ async fn a_member_near_its_rss_shed_line_scales_the_fleet_out_and_idle_ones_do_n
         ("streams-2", 40.0, r#","rss_mb":85000.0"#),
         ("streams-3", 40.0, r#","rss_mb":1000.0"#),
     ];
-    let (desired, _) = plan_once(3, &near, 100_000, 16).await;
+    let (desired, _) = plan_once(3, &near, 100_000, 16, PUBLISHES_WITHIN).await;
     assert!(
         wanted_by(&desired, 4, " rss_max=85000MB (4) "),
         "{desired:?}"
@@ -296,7 +296,8 @@ async fn a_member_near_its_rss_shed_line_scales_the_fleet_out_and_idle_ones_do_n
         ("streams-2", 40.0, r#","rss_mb":40000.0"#),
         ("streams-3", 40.0, r#","rss_mb":40000.0"#),
     ];
-    let (desired, _) = plan_once(3, &idle, 100_000, 16).await;
+    // Three ticks of nothing: this waits out its bound, so the bound is short.
+    let (desired, _) = plan_once(3, &idle, 100_000, 16, Duration::from_secs(6)).await;
     assert!(
         desired.epoch == 1 || desired.reason.contains(" rss_max=40000MB (0) "),
         "idle members at 40 % want nothing: {desired:?}"
@@ -312,7 +313,7 @@ async fn the_fleets_filling_caches_and_trackers_ask_for_their_occupancy() {
         ("streams-2", 0.0, r#","cached_streams":100000"#),
         ("streams-3", 0.0, r#","cached_streams":100000"#),
     ];
-    let (desired, _) = plan_once(3, &caching, 0, 16).await;
+    let (desired, _) = plan_once(3, &caching, 0, 16, PUBLISHES_WITHIN).await;
     // 200,000 / 49,152 = 4.07: five instances.
     assert!(
         wanted_by(&desired, 5, " cached=200000 projects=0 (5) "),
@@ -322,7 +323,7 @@ async fn the_fleets_filling_caches_and_trackers_ask_for_their_occupancy() {
         ("streams-2", 40.0, r#","tracked_projects":40000"#),
         ("streams-3", 40.0, r#","tracked_projects":40000"#),
     ];
-    let (desired, _) = plan_once(3, &tracking, 0, 16).await;
+    let (desired, _) = plan_once(3, &tracking, 0, 16, PUBLISHES_WITHIN).await;
     // 80,000 / 24,576 = 3.26: four instances.
     assert!(
         wanted_by(&desired, 4, " projects=80000 (4) "),
@@ -338,7 +339,7 @@ async fn a_sustained_store_read_wait_scales_the_fleet_out() {
         ("streams-2", 40.0, r#","store_read_p50_ms":400"#),
         ("streams-3", 40.0, ""),
     ];
-    let (desired, _) = plan_once(3, &slow, 0, 16).await;
+    let (desired, _) = plan_once(3, &slow, 0, 16, PUBLISHES_WITHIN).await;
     assert!(wanted_by(&desired, 4, " ack_p50=400ms (4) "), "{desired:?}");
 }
 
@@ -352,7 +353,7 @@ async fn a_one_shard_cell_publishes_its_demand_as_split_demand() {
         ("streams-2", 0.0, r#","cached_streams":100000"#),
         ("streams-3", 0.0, r#","cached_streams":100000"#),
     ];
-    let (desired, beat) = plan_once(1, &caching, 0, 1).await;
+    let (desired, beat) = plan_once(1, &caching, 0, 1, PUBLISHES_WITHIN).await;
     assert_eq!(
         (desired.epoch, desired.count),
         (1, 1),

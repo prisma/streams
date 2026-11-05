@@ -348,7 +348,7 @@ async fn an_unreadable_router_report_defers_only_the_desired_publication() {
     // Tick 1 publishes the view, yields 00 and returns the aged override
     // home (CAS); tick 2 mirrors the emptied override map.
     let ring = vec!["streams-1".to_string(), "streams-2".to_string()];
-    settled(Duration::from_secs(20), || {
+    settled(Duration::from_secs(12), || {
         rig.state.ownership.ring_active() == ring
             && rig.state.shards.held_prefixes().is_empty()
             && rig.state.peer.has_peer("streams-2")
@@ -477,7 +477,7 @@ async fn an_override_the_ring_ignores_is_never_opened_by_its_target() {
         &rig.tasks
     ));
     let ring = vec!["streams-1".to_string(), "streams-2".to_string()];
-    settled(Duration::from_secs(20), || {
+    settled(Duration::from_secs(12), || {
         rig.state.ownership.ring_active() == ring
     })
     .await;
@@ -571,7 +571,7 @@ async fn a_lagging_owner_moves_its_shard_only_to_an_active_member() {
         rig.state.clone(),
         &rig.tasks
     ));
-    settled(Duration::from_secs(20), || {
+    settled(Duration::from_secs(12), || {
         rig.state.ownership.overrides().contains_key("00")
     })
     .await;
@@ -586,7 +586,7 @@ async fn a_lagging_owner_moves_its_shard_only_to_an_active_member() {
     );
     // HIS-011/FLT-008: the shard leaves the laggard, and with it its stall
     // report: stalls derive from the engines it still serves.
-    settled(Duration::from_secs(20), || !rig.state.shards.is_open("00")).await;
+    settled(Duration::from_secs(12), || !rig.state.shards.is_open("00")).await;
     assert!(
         !rig.state.shards.is_open("00"),
         "the moved shard closes on the laggard"
@@ -820,7 +820,7 @@ async fn a_store_brownout_slows_the_tick_without_churning_the_ring() {
         rigs.iter()
             .all(|rig| rig.state.ownership.ring_active() == ring)
     };
-    settled(Duration::from_secs(25), both).await;
+    settled(Duration::from_secs(16), both).await;
     assert!(
         both(),
         "both instances must converge on the two-member ring"
@@ -909,7 +909,7 @@ async fn a_critical_loop_failure_withdraws_the_instance_from_every_ring() {
         rigs.iter()
             .all(|rig| rig.state.ownership.ring_active() == ring)
     };
-    settled(Duration::from_secs(20), || {
+    settled(Duration::from_secs(12), || {
         rings_are(&["streams-1", "streams-2"])
     })
     .await;

@@ -30,7 +30,7 @@ const AGED_MS: i64 = 120_000;
 /// Four count-balance passes: twice the passes a move needs.
 const QUIET: Duration = Duration::from_secs(8);
 /// The bound on the move once nothing holds it.
-const MOVE_BUDGET: Duration = Duration::from_secs(20);
+const MOVE_BUDGET: Duration = Duration::from_secs(14);
 
 async fn put(store: &Arc<dyn ObjectStore>, path: &str, body: Vec<u8>) {
     store
@@ -137,7 +137,7 @@ async fn started(
         tasks.iter().any(|t| t.name == "fleet"),
         "the fleet tick runs"
     );
-    settled(Duration::from_secs(20), || {
+    settled(Duration::from_secs(10), || {
         rig.state.ownership.ring_active().len() == members
     })
     .await;
@@ -207,6 +207,7 @@ async fn a_count_move_waits_out_the_boot_cooldown_then_moves_one_shard() {
     while !entries(&rig).await.contains_key("00") && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    assert!(entries(&rig).await.contains_key("00"), "00 moves in time");
     let listed = fleet.fleet.load(Ordering::SeqCst);
     moves_00(&rig, &seeded).await;
     tokio::time::sleep(QUIET).await;

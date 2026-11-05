@@ -328,7 +328,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "3d790b937ae6ceabc0fefbd061c02953eee2437835a687b826776099675dfe38",
+    "function_sha256": "5b0b960447a5c9bf3157e188ab5654dfc4c8fe17d15aae0beba4b77c767a2dad",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_count_balance.rs",
@@ -1327,7 +1327,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "4fb2defbd82a71cc0332a45f7fe64a685bbc368b47ac79f4fb0d0d2cb5edffd5",
+    "function_sha256": "e84c99998d9c99e1e570e75304183a90366d222f71191feeaeeb304ac887e482",
     "mechanisms": [],
     "configuration": [
       "let seed = r#\"{\"count\":3,\"epoch\":1,\"reason\":\"seed\",\"computed_at_ms\":0}\"#;",
@@ -9825,7 +9825,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "1e1ca38ea13c41c990450218ba2977f920f64ec72f7a2a0766d228076bad0d1f",
+    "function_sha256": "57dbe480ed2e9f11f005256e0ea724c875b1d37b9838687f09d34c7ce65fbe89",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_reads.rs",

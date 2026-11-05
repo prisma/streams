@@ -123,7 +123,7 @@ impl Gated {
     /// the gate answered has published its view, and the next one waits.
     async fn asked(&self, reads: u64) {
         let asked = || self.asked.load(Ordering::SeqCst) >= reads;
-        settled(Duration::from_secs(20), asked).await;
+        settled(Duration::from_secs(12), asked).await;
         assert!(asked(), "the tick must reach overrides read {reads}");
     }
 }
@@ -261,6 +261,15 @@ async fn the_tick_lists_its_members_only_to_discover_them() {
         .await
         .unwrap();
     let rig = tick_over(trace.clone(), |cli| cli.fleet_max = 4096).await;
+    // A tick that stops passing fails here, not after seven passes' wait.
+    settled(Duration::from_secs(10), || {
+        reads(&trace, PASS_MARKER).len() >= 2
+    })
+    .await;
+    assert!(
+        reads(&trace, PASS_MARKER).len() >= 2,
+        "the first two passes must complete their reads"
+    );
     settled(Duration::from_secs(30), || {
         reads(&trace, PASS_MARKER).len() >= 7
     })
