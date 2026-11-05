@@ -342,7 +342,6 @@ impl Retained {
         self.by_route.len()
     }
 
-    #[cfg(test)]
     pub(super) fn bytes(&self) -> usize {
         self.bytes
     }

@@ -849,7 +849,7 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
             "resident_handles": resident_handles,
             "usage_tracked": state.runtime.usage.tracked_streams(),
             "keycache": state.keys.len(),
-            "registry_cache": state.registry.cache_len(),
+            "registry_cache": state.registry.cache_len(), "registry_retained_bytes": state.registry.retained_bytes(),
             "seal_fence_entries": fence_entries,
             "seal_fence_max_generation": fence_max_gen,
             "consumer_fence_entries": cfence_entries,

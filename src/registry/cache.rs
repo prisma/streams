@@ -495,6 +495,11 @@ impl Registry {
         self.cache.len()
     }
 
+    /// The retained tier's charged bytes, against its budget.
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self.cache.slots().retained.bytes()
+    }
+
     /// Size the retained tier to `bytes` (`REGISTRY_RETAIN_MB`), shedding its
     /// least recently kept entries if it holds more.
     pub(crate) fn set_retain_budget(&self, bytes: usize) {

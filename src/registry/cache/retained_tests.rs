@@ -308,6 +308,8 @@ async fn a_lower_retain_budget_sheds_the_least_recently_kept() {
         400,
         "all kept under the default budget"
     );
+    assert!(reg.retained_bytes() > 0, "the gauge reads the tier");
+    assert_eq!(reg.retained_bytes(), reg.retained_for_tests().1);
     reg.set_retain_budget(50 * super::retained::entry_size());
     let held = reg.retained_for_tests();
     assert!(held.0 > 0 && held.0 <= 50, "entries {held:?}");
