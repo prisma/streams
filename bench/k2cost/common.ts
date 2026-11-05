@@ -498,7 +498,7 @@ export class Reporter {
 const PRODUCER = ["rate", "mbps", "concurrency", "records", "record-bytes", "payload", "zipf", "routing-keys", "pool", "timeout-ms", "drain-secs"];
 const COMMON = ["base", "headers-file", "streams", "prefix", "duration", "seed", "out", "ledger", "key", "window", "port"];
 export const MODE_FLAGS: Record<string, string[]> = {
-  setup: [...COMMON, "format", "ttl", "parallel", "payload", "stagger"],
+  setup: [...COMMON, "format", "ttl", "parallel", "payload", "stagger", "abort-on-stream-limit"],
   drop: [...COMMON, "parallel"],
   produce: [...COMMON, ...PRODUCER],
   walk: [...COMMON, ...PRODUCER, "from", "readers", "stagger", "parallel", "max-bytes", "expect"],
@@ -508,7 +508,7 @@ export const MODE_FLAGS: Record<string, string[]> = {
   subs: [...COMMON, ...PRODUCER, "count", "via", "connect-rate", "wait-ms"],
   mux: [...COMMON, ...PRODUCER, "project", "wait-ms", "group", "group-streams", "pull", "settle", "visibility-ms"],
   audit: [...COMMON, "parallel", "max-bytes", "expect"],
-  touch: [...COMMON, "rate", "passes", "concurrency", "append", "record-bytes", "max-bytes"],
+  touch: [...COMMON, "rate", "passes", "concurrency", "append", "record-bytes", "max-bytes", "abort-on-refusal", "read-from"],
   "corpus-stats": ["seed", "samples", "sizes", "payloads", "out", "sample"],
 };
 

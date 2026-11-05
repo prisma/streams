@@ -27,7 +27,10 @@
 # quiescence after the last phase), IDLE_SECS. Optional: POINT_NAME,
 # QUIESCE_MIN_SECS (1800), QUIESCE_MAX_SECS (10800), QUIESCE_WINDOW_SECS
 # (300; three such windows of equal heavy-PUT counts end the tail),
-# USAGE_WAIT_SECS (330), SCRAPE_SECS (10). Every one of them, and anything
+# USAGE_WAIT_SECS (330), SCRAPE_SECS (10), SCRAPE_USAGE_SECS (how often the
+# loop reads /v1/debug/usage: every SCRAPE_SECS unset, never at 0),
+# SCRAPE_TIMINGS (1: the loop also reads /v1/debug/timings), LAUNCH_PROFILE
+# (POSTURE=launch's cell profile: shared, the default, or dedicated). Every one of them, and anything
 # a point reads as ${VAR:-default}, can come from the caller's environment.
 #
 # POSTURE=k2 (the default) is §6's: compute-1g.env, the pinned engine knobs
@@ -287,7 +290,7 @@ umask 022
 # cell's identity, where a deploy's cells file and secrets put them. Then
 # the point's SERVER_ENV_EXTRA ("-KEY" removes KEY).
 PROFILE_ENV=$ROOT/deploy/profiles/compute-1g.env
-SHARED_CELL_ENV=$ROOT/deploy/profiles/shared-cell.env
+SHARED_CELL_ENV=$ROOT/deploy/profiles/${LAUNCH_PROFILE:-shared}-cell.env
 ENGINE_ENV="WAL_GROUP_COMMIT=1 FLUSH_INTERVAL_MS=25 WAL_POST_ACK_GATHER_MS=6 FRAME_COMPRESS=1
 ADMIT_MAX_INFLIGHT=512 ADMIT_MAX_INFLIGHT_PER_STREAM=256
 LIMIT_BYTES_PER_SEC=5000000 LIMIT_REQS_PER_SEC=1000 LIMIT_RECS_PER_SEC=5000 INITIAL_SHARDS=4"
@@ -534,6 +537,8 @@ fi
 # the cell's live pool (SSE_MAX_CONNECTIONS) bounds.
 OPERATOR=()
 [ "$TENANTS" = 0 ] || OPERATOR=(--operator)
+[ -z "${SCRAPE_USAGE_SECS:-}" ] || OPERATOR+=(--usage-scrape-secs "$SCRAPE_USAGE_SECS")
+[ "${SCRAPE_TIMINGS:-0}" = 0 ] || OPERATOR+=(--timings)
 python3 "$HERE/scrape.py" loop "${SCRAPE_COMMON[@]}" --interval "$SCRAPE_SECS" \
   --quiesce-min-secs "$QUIESCE_MIN_SECS" --quiet-secs "$QUIESCE_WINDOW_SECS" ${OPERATOR[@]+"${OPERATOR[@]}"} \
   > "$RUN/scrape.log" 2>&1 < /dev/null &

@@ -49,6 +49,7 @@ export async function setup(ctx: Ctx): Promise<Record<string, unknown>> {
   const doc: Record<string, unknown> = { format: { kind: format } };
   if (ttl > 0) doc.expiry = { idle: `${ttl}s` };
   const body = JSON.stringify(doc);
+  const abortOnStreamLimit = o.has("abort-on-stream-limit");
   let created = 0, existing = 0, failed = 0;
   const names: string[] = [];
   let lastPut = -Infinity;
@@ -61,6 +62,13 @@ export async function setup(ctx: Ctx): Promise<Record<string, unknown>> {
       if (r.status === 201 || r.status === 200) names.push(name);
       if (r.status === 201) return void created++;
       if (r.status === 200) return void existing++;
+      if (r.status === 429 && abortOnStreamLimit && utf8(r.body).includes("stream_limit")) {
+        // A population over the project's stream ceiling never finishes.
+        process.stderr.write(`[k2gen setup] abort: ${name} answered 429 stream_limit\n`);
+        process.exitCode = 3;
+        stop.abort();
+        break;
+      }
       if (r.status === 429 || r.status === 503 || r.status === 0) {
         await sleep(backoffMs(r), stop.signal);
         continue;

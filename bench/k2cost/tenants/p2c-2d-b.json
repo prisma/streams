@@ -1,0 +1,45 @@
+{
+ "name": "p2c-2d-b",
+ "seed": 48,
+ "duration": 1430,
+ "comment": "Edge change #248's condition 2d, shape B (Fable 5.1, 2026-11-05, section 8.1): a shared 1 GiB cell at its documented capacity, 8 projects x 8,192 streams = 65,536, each touching at 75/s (150 of its 176 req/s), 6 passes. A project's creates are refused past about 16 a second (measured), so setup is paced at 13.3 a second one at a time and ends by about 655 s; the touches start at 680 s, and hold 48 in flight below the project's ceiling of 64. Both phases abort the run at the first refusal.",
+ "periods": {
+  "steady": [
+   700,
+   1370
+  ]
+ },
+ "classes": [
+  {
+   "class": "b",
+   "count": 8,
+   "role": "compliant",
+   "streams": 8192,
+   "prefix": "b/",
+   "pool": 512,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 40,
+     "args": {
+      "stagger": 0.075,
+      "abort-on-stream-limit": 1
+     }
+    },
+    {
+     "mode": "touch",
+     "at": 680,
+     "spread": 10,
+     "args": {
+      "rate": 75,
+      "record-bytes": 64,
+      "concurrency": 48,
+      "passes": 6,
+      "abort-on-refusal": 1
+     }
+    }
+   ]
+  }
+ ]
+}

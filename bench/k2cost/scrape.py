@@ -237,6 +237,7 @@ class Loop:
         # (t_ms, cumulative heavy PUTs, cumulative deletes, cumulative PUT bytes)
         self.heavy: list[tuple[int, int, int, int]] = []
         self.backlog_ok: dict[str, bool] = {}
+        self.usage_at: dict[str, float] = {}
 
     def emit(self, src: str, body, **extra) -> None:
         rec = {"t": now_ms(), "seq": self.seq, "src": src, **extra, "body": body}
@@ -273,6 +274,32 @@ class Loop:
                 self.boot[name] = boot
         else:
             self.emit("load", None, server=name, ok=False, status=st, error=err)
+        self.scrape_usage(name, url)
+        if self.args.timings:
+            st, body, err = get_json(f"{url}/v1/debug/timings", self.auth)
+            if body is not None and err is None:
+                self.emit("timings", {shard: {k: v.get(k) for k in ("seal", "tail_ring")}
+                                      for shard, v in body.items() if isinstance(v, dict)}, server=name)
+            else:
+                self.emit("timings", None, server=name, ok=False, status=st, error=err)
+        if self.args.operator:
+            st, body, err = get_json(f"{url}/operator/data.json", self.auth)
+            if body is not None and err is None:
+                self.emit("operator", body, server=name)
+            else:
+                self.emit("operator", None, server=name, ok=False, status=st, error=err)
+
+    def scrape_usage(self, name: str, url: str) -> None:
+        # --usage-scrape-secs 0 skips it: at 65,536 tracked streams one
+        # /v1/debug/usage answer is about 1.2M allocations on the server.
+        every = self.args.usage_scrape_secs
+        if every is not None:
+            if every <= 0:
+                self.backlog_ok[name] = True
+                return
+            if time.time() - self.usage_at.get(name, 0.0) < every:
+                return
+            self.usage_at[name] = time.time()
         st, body, err = get_json(f"{url}/v1/debug/usage", self.auth)
         if body is not None and err is None:
             shaped = shape_usage(body)
@@ -285,12 +312,6 @@ class Loop:
         else:
             self.emit("usage", None, server=name, ok=False, status=st, error=err)
             self.backlog_ok[name] = False
-        if self.args.operator:
-            st, body, err = get_json(f"{url}/operator/data.json", self.auth)
-            if body is not None and err is None:
-                self.emit("operator", body, server=name)
-            else:
-                self.emit("operator", None, server=name, ok=False, status=st, error=err)
 
     def scrape_s3(self) -> None:
         base = self.args.s3lite.rstrip("/")
@@ -565,7 +586,9 @@ def cmd_usage(args) -> int:
     auth = read_headers(args.auth_file)
     debug = {}
     for name, surl in parse_servers(args.servers):
+        print(f"[usage] GET {surl}/v1/debug/usage at {now_ms()}", flush=True)
         _, b, e = get_json(f"{surl}/v1/debug/usage", auth)
+        print(f"[usage] answered at {now_ms()}", flush=True)
         debug[name] = b if not e else {"error": e}
     doc = {
         "t_ms": now_ms(),
@@ -785,6 +808,10 @@ def main() -> int:
                    help="the posture's ABSORB_AGE_SECS: absorption is stuck past two of them")
     p.add_argument("--operator", action="store_true",
                    help="also /operator/data.json (the cell dashboard's data) every interval, as src operator")
+    p.add_argument("--usage-scrape-secs", type=float, default=None,
+                   help="/v1/debug/usage at most this often (default every interval; 0 never, for populations over 10k streams)")
+    p.add_argument("--timings", action="store_true",
+                   help="also /v1/debug/timings' seal and tail_ring every interval, as src timings")
     p = sub.add_parser("snapshot")
     common(p)
     p.add_argument("--pids", default="", help="name=pid[,name=pid]: processes whose CPU time to record")

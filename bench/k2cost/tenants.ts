@@ -42,6 +42,7 @@ import { Pools } from "./conn-pool.ts";
 import { churn } from "./churn.ts";
 import { mux } from "./mux.ts";
 import { group, subs, tail, walk } from "./consume.ts";
+import { touch } from "./touch.ts";
 import { HOSTILE_LEGS, HOSTILE_MODES } from "./hostile.ts";
 import { produce, setup, type Ctx } from "./produce.ts";
 import { resolve } from "./resolve.ts";
@@ -280,6 +281,7 @@ export const MODES: Record<string, Mode> = {
   churn,
   subs,
   mux,
+  touch,
   idle: async (_ctx, signal) => {
     await sleep(7 * 86_400_000, signal);
     return {};
@@ -689,7 +691,9 @@ if (import.meta.main) {
   await ensureHttpHeadroom();
   installSignals();
   try {
-    process.exit(await main(process.argv.slice(2)));
+    // A phase that aborted the run set the exit code itself (--abort-on-*).
+    const code = await main(process.argv.slice(2));
+    process.exit(code || process.exitCode || 0);
   } catch (e) {
     process.stderr.write(`tenants: ${(e as Error).message}\n`);
     process.exit(2);

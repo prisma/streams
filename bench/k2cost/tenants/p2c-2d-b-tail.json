@@ -1,0 +1,46 @@
+{
+ "name": "p2c-2d-b-tail",
+ "seed": 48,
+ "duration": 1430,
+ "comment": "As p2c-2d-b.json, with touches reading on from each stream's last cursor (--read-from tail), as a client holding its cursor does: a read's depth does not grow with the pass. Diagnosis of edge change #248's condition 2d; the catch-up reader from offset 0 stays the reported shape in p2c-2d-b.json.",
+ "periods": {
+  "steady": [
+   700,
+   1370
+  ]
+ },
+ "classes": [
+  {
+   "class": "b",
+   "count": 8,
+   "role": "compliant",
+   "streams": 8192,
+   "prefix": "b/",
+   "pool": 512,
+   "phases": [
+    {
+     "mode": "setup",
+     "at": 0,
+     "spread": 40,
+     "args": {
+      "stagger": 0.075,
+      "abort-on-stream-limit": 1
+     }
+    },
+    {
+     "mode": "touch",
+     "at": 680,
+     "spread": 10,
+     "args": {
+      "rate": 75,
+      "record-bytes": 64,
+      "concurrency": 48,
+      "passes": 6,
+      "abort-on-refusal": 1,
+      "read-from": "tail"
+     }
+    }
+   ]
+  }
+ ]
+}
