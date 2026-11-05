@@ -172,6 +172,17 @@ mod tests {
     use std::sync::atomic::AtomicU64;
     use std::time::{Duration, Instant};
 
+    /// The next beat publishes the split demand the latest tick set.
+    #[test]
+    fn the_latest_split_demand_is_what_the_next_beat_reads() {
+        let standing = Standing::default();
+        assert_eq!(standing.split_demand(), 0);
+        standing.set_split_demand(7);
+        assert_eq!(standing.split_demand(), 7);
+        standing.set_split_demand(0);
+        assert_eq!(standing.split_demand(), 0);
+    }
+
     #[test]
     fn progress_ages_from_its_last_mark_and_is_absent_before_the_first() {
         assert_eq!(Standing::default().progress_age_ms(), None);

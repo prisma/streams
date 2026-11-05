@@ -220,3 +220,14 @@ fn the_heaviest_load_is_the_heaviest_per_unit_of_weight() {
         "the same 40 at weight 1"
     );
 }
+
+/// The tracker's refusals are counted one by one since boot.
+#[test]
+fn the_cell_counts_the_trackers_refusals() {
+    let cell = InstanceLoad::default();
+    assert_eq!(cell.tracker_refusals(), 0);
+    for _ in 0..3 {
+        cell.note_tracker_refusal();
+    }
+    assert_eq!(cell.tracker_refusals(), 3);
+}

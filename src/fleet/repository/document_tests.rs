@@ -403,3 +403,34 @@ async fn r09_fleet_population_budget_includes_its_coordination_documents() {
         );
     }
 }
+
+/// The drain marker is created empty once, a second create leaves what it
+/// holds, an announcement names the runtime and its boot, and a repository
+/// with no store announces nothing.
+#[tokio::test(crate = "crate::test_rt")]
+async fn the_drain_marker_is_created_once_and_names_each_announcement() {
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let repository = FleetRepository::new(Some(store.clone()));
+    let stored = || {
+        let store = store.clone();
+        async move {
+            let got = store.get(&ObjPath::from(DRAINS_DOC)).await.unwrap();
+            got.bytes().await.unwrap()
+        }
+    };
+    repository.create_drain_marker().await;
+    assert_eq!(&stored().await[..], b"{\"entries\":[]}");
+    assert!(repository.announce_drain("streams-2", "boot-a").await);
+    let named = stored().await;
+    let marker: drains::Drains = serde_json::from_slice(&named).unwrap();
+    let names: Vec<_> = marker
+        .entries
+        .iter()
+        .map(|entry| (entry.instance.as_str(), entry.boot_id.as_str()))
+        .collect();
+    assert_eq!(names, [("streams-2", "boot-a")]);
+    repository.create_drain_marker().await;
+    assert_eq!(stored().await, named, "a second create changes nothing");
+    let storeless = FleetRepository::new(None);
+    assert!(!storeless.announce_drain("streams-2", "boot-a").await);
+}

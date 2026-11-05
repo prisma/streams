@@ -710,6 +710,81 @@ mod demand_tests {
         );
     }
 
+    /// A beat folds into the fleet's rate and in-flight sums exactly; a
+    /// negative in-flight reading (a racing decrement) counts as none.
+    #[test]
+    fn the_fold_sums_each_members_rate_and_in_flight() {
+        let beat = |rps: f64, inflight: i64| -> crate::fleet::Heartbeat {
+            serde_json::from_str(&format!(
+                r#"{{"instance":"streams-2","ts_ms":0,"rps":{rps},"cpu_pct":30.0,"inflight":{inflight},"owned_shards":[],"draining":false}}"#
+            ))
+            .unwrap()
+        };
+        let mut loads = Loads::default();
+        for (rps, inflight) in [(40.0, 6), (2.0, 3), (3.0, -1)] {
+            loads.fold(&beat(rps, inflight));
+        }
+        assert_eq!((loads.live, loads.rps, loads.inflight), (3, 45.0, 9.0));
+    }
+
+    /// In-flight requests ask for their share of the edge slots:
+    /// ceil(in flight / (util × slots)), and a build with no slot budget has
+    /// no such dimension.
+    #[test]
+    fn in_flight_asks_for_its_share_of_the_edge_slots() {
+        let busy = Loads {
+            inflight: 300.0,
+            ..quiet(64)
+        };
+        let slotted = Thresholds {
+            edge_slots: 64,
+            ..thresholds()
+        };
+        let now = Instant::now();
+        // 300 / (0.75 × 64) = 6.25; / (0.5 × 64) = 9.4.
+        assert_eq!(n(&Demand::default().plan(&busy, &slotted, now)), (7, 10, 0));
+        assert_eq!(
+            n(&Demand::default().plan(&busy, &thresholds(), now)),
+            (2, 3, 0)
+        );
+    }
+
+    /// The latency line is breached only past it: a loaded p50 of exactly
+    /// the line wants nothing, however long it lasts.
+    #[test]
+    fn the_latency_line_is_breached_only_past_it() {
+        let on_the_line = Loads {
+            max_loaded_p50: 250.0,
+            ..quiet(64)
+        };
+        assert_eq!(sustained(&on_the_line), ((2, 3, 0), (2, 3, 0)));
+        let past = Loads {
+            max_loaded_p50: 251.0,
+            ..quiet(64)
+        };
+        assert_eq!(sustained(&past), ((2, 3, 0), (5, 5, 0)));
+    }
+
+    /// The router's p50 past its line wants one more at once and blocks a
+    /// shrink, at a rate of 5 rps or more; on the line, or at a lower rate
+    /// (a blip), it does nothing.
+    #[test]
+    fn the_edge_line_is_breached_past_it_at_a_real_rate() {
+        let at = thresholds();
+        let now = Instant::now();
+        let plan = |edge_p50: f64, rps: f64| {
+            let loads = Loads {
+                edge_p50,
+                rps,
+                ..quiet(64)
+            };
+            n(&Demand::default().plan(&loads, &at, now))
+        };
+        assert_eq!(plan(401.0, 5.0), (5, 64, 0));
+        assert_eq!(plan(400.0, 5.0), (2, 3, 0));
+        assert_eq!(plan(401.0, 4.9), (2, 3, 0));
+    }
+
     /// A pass that finds no breach restarts the sustain.
     #[test]
     fn a_pass_without_the_breach_restarts_its_sustain() {

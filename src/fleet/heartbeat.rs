@@ -445,7 +445,7 @@ fn ewma(previous: f64, reading: f64) -> f64 {
 
 /// The refusals more instances could relieve, since boot: admission's and
 /// the project tracker's.
-fn instance_refusals(state: &AppState) -> u64 {
+pub(crate) fn instance_refusals(state: &AppState) -> u64 {
     state
         .admission
         .instance_refusals()

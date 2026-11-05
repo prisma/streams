@@ -777,3 +777,29 @@ async fn a_planned_drain_names_its_boot_in_the_drain_marker() {
         engine_shutdown(&rig.state).await;
     }
 }
+
+/// What a beat counts as refusals more instances could relieve includes the
+/// project tracker's: admission never sees a project the tracker refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_beats_refusals_add_the_trackers_to_admissions() {
+    let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
+    let now = 1_000;
+    let quotas = crate::project_policy::ProjectQuotas::default();
+    let admit = |project: &str| {
+        let project = crate::tenant::ProjectId::new(project).unwrap();
+        rig.state.quotas.admit_counted(&project, &quotas, now)
+    };
+    let held: Vec<_> = (0..crate::quota::MAX_TRACKED_PROJECTS)
+        .map(|n| admit(&format!("p{n}")).unwrap())
+        .collect();
+    let admission = rig.state.admission.instance_refusals();
+    for _ in 0..3 {
+        assert!(admit("late").is_err(), "the tracker is full");
+    }
+    assert_eq!(
+        crate::fleet::drain::instance_refusals(&rig.state),
+        admission + 3
+    );
+    drop(held);
+    engine_shutdown(&rig.state).await;
+}

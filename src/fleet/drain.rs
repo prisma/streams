@@ -20,6 +20,8 @@
 //! desired count and every peer it waits for honours a drain: a peer of an
 //! earlier version publishes no beat sequence and would keep routing here,
 //! so with one in the fleet the runtime stops without a handoff.
+#[cfg(test)]
+pub(crate) use super::heartbeat::instance_refusals;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -202,10 +204,11 @@ async fn announce(state: &AppState, instance: &str) -> bool {
     )
     .await
     .unwrap_or(false);
-    if !announced {
-        tracing::warn!(%instance, "planned drain: drain marker not written; retrying");
+    if announced {
+        return true;
     }
-    announced
+    tracing::warn!(%instance, "planned drain: drain marker not written; retrying");
+    false
 }
 
 /// The heartbeat set and the desired count, each read within the deadline.
