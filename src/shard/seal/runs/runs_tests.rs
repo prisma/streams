@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use rand::{SeedableRng, rngs::StdRng};
 
-use super::{GET_ATTEMPTS, run_heap};
+use super::{GET_ATTEMPTS, footer_heap, run_heap};
 use crate::dst::{FaultPlan, FaultProfile, FaultStore, ObjClass, StoreOp};
 use crate::shard::ShardEngine;
 use crate::shard::record::RangeReadError;
@@ -131,6 +131,63 @@ async fn a_failing_index_get_is_tried_three_times() {
     assert_eq!(GET_ATTEMPTS, 3);
     assert_eq!(store.count(StoreOp::Get, ObjClass::Other) - before, 3);
     fresh.begin_close();
+}
+
+/// Two reads missing one footer at once fetch it once and share it, and the
+/// cache charges the decoded footer exactly (its entries and blooms, plus
+/// the entry's keys and slots), not its length on the wire.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn concurrent_misses_fetch_a_footer_once_and_charge_it_decoded() {
+    let (rig, p, _) = folded("runs-one-footer").await;
+    rig.engine.begin_close();
+    // Every footer GET takes real time, so the second read misses while the
+    // first is still waiting on the store.
+    let profile = FaultProfile::clean().with_op_class(
+        StoreOp::Get,
+        ObjClass::Other,
+        FaultPlan::new(0, 0, 100),
+    );
+    let store = FaultStore::new(rig.store.clone(), 0x7E8, profile);
+    let fresh: Arc<ShardEngine> =
+        open(store, &rig.prefix, manual(), 0, Duration::from_millis(2)).await;
+    let gets = &fresh.layout.seal.fold.counters.footer_gets;
+    let before = gets.load(std::sync::atomic::Ordering::Relaxed);
+    let (a, b) = futures_util::future::join(fresh.fetch_footer(&p), fresh.fetch_footer(&p)).await;
+    let (a, b) = (a.unwrap(), b.unwrap());
+    assert_eq!(
+        gets.load(std::sync::atomic::Ordering::Relaxed) - before,
+        1,
+        "one GET for two concurrent misses"
+    );
+    assert!(
+        Arc::ptr_eq(&a, &b),
+        "both reads share the one decoded footer"
+    );
+    let path = fresh.run_index_path(p.id);
+    let key = fresh.layout.seal.fold.cache_scope.key(&path);
+    assert_eq!(
+        crate::spill::cache::index_cache().charged(&key, p.footer_off),
+        Some(footer_heap(&a) + 2 * key.len() as u64 + crate::spill::cache::ENTRY_OVERHEAD),
+        "the decoded footer, its keys and its slots"
+    );
+    fresh.begin_close();
+}
+
+#[test]
+fn a_decoded_footer_is_charged_its_entries_and_their_blooms() {
+    let entry = |bloom: usize| FooterEntry {
+        hash: [0; 16],
+        run_off: 0,
+        run_len: 0,
+        first: 0,
+        last: 0,
+        entries: 0,
+        flags: 0,
+        bloom: vec![0; bloom],
+    };
+    let per = size_of::<FooterEntry>() as u64;
+    assert_eq!(footer_heap(&[]), 0);
+    assert_eq!(footer_heap(&[entry(0), entry(10)]), 2 * per + 10);
 }
 
 #[test]

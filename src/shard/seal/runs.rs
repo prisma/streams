@@ -16,6 +16,7 @@ use object_store::ObjectStoreExt;
 
 use crate::shard::ShardEngine;
 use crate::shard::record::RangeReadError;
+use crate::spill::budget::footer_permit;
 use crate::spill::cache::{IndexValue, index_cache};
 use crate::spill::directory::DirEntry;
 use crate::spill::runindex::Pointer;
@@ -35,6 +36,14 @@ fn corrupt(what: &str) -> RangeReadError {
 fn run_heap(entries: &[DirEntry]) -> u64 {
     let per = size_of::<DirEntry>() as u64 + 64;
     entries.len() as u64 * per
+}
+
+/// What a decoded footer holds on the heap: each entry and its bloom.
+fn footer_heap(entries: &[FooterEntry]) -> u64 {
+    entries
+        .iter()
+        .map(|e| (size_of::<FooterEntry>() + e.bloom.capacity()) as u64)
+        .sum()
 }
 
 impl ShardEngine {
@@ -85,6 +94,14 @@ impl ShardEngine {
         if let Some(IndexValue::Footer(f)) = index_cache().get(&key, p.footer_off) {
             return Ok(f);
         }
+        let Ok(_one_at_a_time) = footer_permit().acquire().await else {
+            return Err(RangeReadError::Store(slatedb::Error::unavailable(
+                "the footer permit closed".to_string(),
+            )));
+        };
+        if let Some(IndexValue::Footer(f)) = index_cache().get(&key, p.footer_off) {
+            return Ok(f);
+        }
         self.layout
             .seal
             .fold
@@ -106,14 +123,16 @@ impl ShardEngine {
                 "{path}: the trailer disagrees with its pointer row"
             )));
         }
-        let entries = format::checked_footer(footer, &trailer, crc)
+        let mut entries = format::checked_footer(footer, &trailer, crc)
             .ok_or_else(|| corrupt(&format!("{path}: footer")))?;
+        entries.shrink_to_fit();
+        let size = footer_heap(&entries);
         let entries = Arc::new(entries);
         index_cache().insert(
             &key,
             p.footer_off,
             IndexValue::Footer(entries.clone()),
-            u64::from(p.footer_len),
+            size,
         );
         Ok(entries)
     }

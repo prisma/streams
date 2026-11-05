@@ -4427,6 +4427,14 @@
     {
       "category": "global",
       "count": 1,
+      "owner": "crate::footer_permit::ONE",
+      "path": "src/spill/budget.rs",
+      "reason": "One run-index footer fetch at a time per instance (spill::budget::footer_permit, Fable 5.1's decision of 2026-11-05): a footer has one entry per stream in its object and every sealed read consults it, so concurrent misses must share one GET and at most one uncacheable footer is in memory; a static is the process-wide bound, as merge_permit's is.",
+      "syntax": "tokio :: sync :: Semaphore"
+    },
+    {
+      "category": "global",
+      "count": 1,
       "owner": "crate::merge_permit::ONE",
       "path": "src/spill/budget.rs",
       "reason": "One run-index merge at a time per instance (spill::budget::MERGE_BUFFER_BYTES, REVIEW-6A F15 budget line): a merge holds its inputs and output in memory, so every shard's merges share this one permit to keep the line process-wide.",

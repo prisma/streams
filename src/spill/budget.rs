@@ -5,7 +5,7 @@
 //! | Structure | Bound | Enforced by |
 //! |---|---:|---|
 //! | Seal directories (all shards) | `PROCESS_DIRECTORY_BYTES` | a fold of the largest directory once the sum passes it, and of any shard past `DIRECTORY_FOLD_BYTES` |
-//! | Index cache (run-index footers, runs) | `cache::INDEX_CACHE_BYTES` | LRU eviction |
+//! | Index cache (run-index footers, runs) | `cache::INDEX_CACHE_BYTES`, with one footer fetch in flight (`footer_permit`) | LRU eviction |
 //! | Chunk cache (whole sealed chunks) | `cache::CHUNK_CACHE_BYTES` | LRU eviction |
 //! | Merges (input objects and output) | `MERGE_BUFFER_BYTES` | one merge at a time per process, inputs within half of it |
 //! | Consolidations in flight | `CONSOLIDATION_BYTES` | a process-wide byte semaphore |
@@ -30,6 +30,14 @@ pub(crate) const INDEX_AND_READ_BYTES: u64 = PROCESS_DIRECTORY_BYTES
     + super::cache::CHUNK_CACHE_BYTES
     + MERGE_BUFFER_BYTES
     + CONSOLIDATION_BYTES;
+
+/// One footer fetch at a time in the process: a footer has one entry per
+/// stream in its object (5.3 MB at 100,000 streams), and each read waiting
+/// for it finds it in the index cache once the fetch ends.
+pub(crate) fn footer_permit() -> &'static tokio::sync::Semaphore {
+    static ONE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+    &ONE
+}
 
 /// One merge at a time in the process.
 pub(crate) fn merge_permit() -> &'static tokio::sync::Semaphore {

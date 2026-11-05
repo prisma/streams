@@ -6,10 +6,13 @@
 //! - **Chunk cache**: whole sealed chunks of at most `CHUNK_CACHE_MAX_ITEM`
 //!   bytes, by segment object path and chunk offset, `CHUNK_CACHE_BYTES`.
 //!
-//! Both are budget lines under the 500 MB shed line (`spill::budget`). A
-//! value larger than an eighth of its cache's budget is not kept, so one
-//! large item never empties a cache. Every value is immutable (objects are
-//! written once, `PutMode::Create`), so a cached value is never stale.
+//! Both are budget lines under the 500 MB shed line (`spill::budget`). An
+//! entry is charged what it holds: its value's bytes, its key twice and
+//! `ENTRY_OVERHEAD`. A value over its cache's largest item is not kept, so
+//! one large item never empties a cache: an eighth of the chunk cache's
+//! budget, half of the index cache's, whose footers every sealed read
+//! consults. Every value is immutable (objects are written once,
+//! `PutMode::Create`), so a cached value is never stale.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,8 +22,14 @@ use bytes::Bytes;
 
 /// The index cache's budget.
 pub(crate) const INDEX_CACHE_BYTES: u64 = 16 << 20;
+/// The largest value the index cache keeps. A footer has one entry per
+/// stream in its object, and every sealed read consults it.
+pub(crate) const INDEX_CACHE_MAX_ITEM: u64 = INDEX_CACHE_BYTES / 2;
 /// The chunk cache's budget.
 pub(crate) const CHUNK_CACHE_BYTES: u64 = 32 << 20;
+/// What an entry holds beyond its value and key strings: its slots in the map
+/// and the order index, charged with the strings (the key is held twice).
+pub(crate) const ENTRY_OVERHEAD: u64 = 128;
 /// The largest chunk the chunk cache keeps.
 pub(crate) const CHUNK_CACHE_MAX_ITEM: u64 = 1 << 20;
 
@@ -42,13 +51,19 @@ struct Inner<V> {
 pub(crate) struct ByteLru<V> {
     inner: Mutex<Inner<V>>,
     budget: u64,
+    max_item: u64,
     hits: AtomicU64,
     misses: AtomicU64,
     evictions: AtomicU64,
 }
 
 impl<V: Clone> ByteLru<V> {
+    /// A cache whose largest item is an eighth of its budget.
     pub(crate) fn new(budget: u64) -> Self {
+        Self::with_max_item(budget, budget / 8)
+    }
+
+    pub(crate) fn with_max_item(budget: u64, max_item: u64) -> Self {
         Self {
             inner: Mutex::new(Inner {
                 map: HashMap::new(),
@@ -57,6 +72,7 @@ impl<V: Clone> ByteLru<V> {
                 bytes: 0,
             }),
             budget,
+            max_item,
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
             evictions: AtomicU64::new(0),
@@ -86,12 +102,13 @@ impl<V: Clone> ByteLru<V> {
         Some(slot.value.clone())
     }
 
-    /// Keep `value` (of `size` bytes) unless it is over an eighth of the
-    /// budget; evict the least recently used until the cache fits.
+    /// Keep `value` (of `size` bytes) unless it is over the largest item;
+    /// evict the least recently used until the cache fits.
     pub(crate) fn insert(&self, path: &str, offset: u64, value: V, size: u64) {
-        if size > self.budget / 8 {
+        if size > self.max_item {
             return;
         }
+        let size = size + 2 * path.len() as u64 + ENTRY_OVERHEAD;
         let mut g = self.lock();
         let inner = &mut *g;
         inner.tick += 1;
@@ -116,6 +133,19 @@ impl<V: Clone> ByteLru<V> {
 
     pub(crate) fn bytes(&self) -> u64 {
         self.lock().bytes
+    }
+
+    /// The largest value this cache keeps.
+    #[cfg(test)]
+    pub(crate) fn max_item(&self) -> u64 {
+        self.max_item
+    }
+
+    /// What the entry at (`path`, `offset`) is charged.
+    #[cfg(test)]
+    pub(crate) fn charged(&self, path: &str, offset: u64) -> Option<u64> {
+        let key = (path.to_string(), offset);
+        self.lock().map.get(&key).map(|slot| slot.size)
     }
 
     pub(crate) fn json(&self) -> serde_json::Value {
@@ -160,8 +190,9 @@ pub(crate) enum IndexValue {
 
 /// The process's index cache.
 pub(crate) fn index_cache() -> &'static ByteLru<IndexValue> {
-    static CACHE: std::sync::LazyLock<ByteLru<IndexValue>> =
-        std::sync::LazyLock::new(|| ByteLru::new(INDEX_CACHE_BYTES));
+    static CACHE: std::sync::LazyLock<ByteLru<IndexValue>> = std::sync::LazyLock::new(|| {
+        ByteLru::with_max_item(INDEX_CACHE_BYTES, INDEX_CACHE_MAX_ITEM)
+    });
     &CACHE
 }
 
