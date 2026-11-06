@@ -1657,6 +1657,41 @@ before marking it complete."
   mutation owner exists (`shard:: dst_tests::reads_ring::`); no formal
   receipt is staled; `serve` is outside both `#[expect]` scopes of the
   file; no edge record, since no result changes.
+- **What one admission costs, and the decision before `max_projects` nears
+  10,000 (measured 2026-11-06, M1 Ultra, one bun process).** The state and the
+  bundle are whole documents, and `mutate` and `BundlePublisher` read,
+  re-validate and rewrite them on every change, so one `cell-admin admit` or
+  issuer create costs about 42 us per project the cell holds (375 ms at 10,001,
+  4.2 s at 100,001). At 100,001 held, 64% is `guard` run twice (about 39%
+  `unversionedChanges`/`canonical`, about 25% `bundleOf`'s sort and schema
+  validation), the rest the document reads and writes. On S3 (the rig's in-process
+  fake: requests and bytes exact, its CPU inside the wall time) an issuer create
+  makes 9 requests:
+
+  | Held | CPU | Moved |
+  |---|---|---|
+  | 1,001 | 35 ms | 4.2 MB |
+  | 10,001 | 352 ms | 41 MB |
+  | 100,001 | 3.8 s | 414 MB |
+
+  At today's caps (gate `n_max` 50, default `max_projects` 1,000) this does not
+  matter. It starts to at about 10,000 projects on one cell: each create takes
+  about 0.35 s of the issuer's one event loop, in blocks between its store
+  requests (the longest a `guard`, about 125 ms), and moves about 41 MB, and each
+  new generation has every wrapper fetch 9.2 MB again. At 100,000 one object is
+  128 MB against the store's 10 s per request (`REQUEST_TIMEOUT_MS`; not measured
+  on a real bucket). **Owner decision, before raising `max_projects` anywhere near
+  10,000:** near-constant cost needs the state and bundle to stop being whole
+  documents, a stored-format change and a change to the feed contract's snapshots.
+  Recommendation: decide nothing until a cell is planned past about 10,000; until
+  then the whole-document format stays, because it is what the version rules and
+  stale-restore refusal are written against. Cutting `guard` alone saves at most
+  about half, with the same slope, so it does not move the decision.
+  Filling a cell in bulk is solved apart from this: `admitMany`
+  (`deploy/cell-admin/commands.ts`, used by `bench/k2cost/tenants-admit.ts`) is one
+  change, one state write, one generation. Fill times, old against new: 1,000
+  projects 22.7 s -> 0.06 s, 10,000 33.2 min -> 0.27 s, 100,000 61.7 h (the earlier
+  niced run) -> 2.48 s, peak RSS 1.4 GB.
 
 ---
 
