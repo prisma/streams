@@ -1,0 +1,80 @@
+# The ramp rig (P5.0): 1 GiB, 1 vCPU servers as Prisma Compute's 1 GiB
+# class, beside s3lite at 20 ms a request. Built by build.sh; driven by
+# footprint.py (one server, fixed INITIAL_SHARDS) and ramp.py (a fleet of
+# up to FLEET_MAX servers). s3lite is the stand-in store and gets the
+# memory it needs; the servers carry Compute's limits.
+name: streams-ramp
+x-server: &server
+  image: streams-ramp:latest
+  command: ["streams-slate", "--listen", "0.0.0.0:8080"]
+  # AUTH_ENV: the run's posture file from rig.Posture (auth, billing, the
+  # rollup, and the fleet's peer identity when more than one server runs).
+  env_file: [../../deploy/profiles/compute-1g.env, "${AUTH_ENV:-./auth-off.env}"]
+  volumes: ["${FEEDS_DIR:-./bin}:/feeds:ro"]
+  extra_hosts: ["host.docker.internal:host-gateway"]  # the host store (rig.HostStore)
+  environment: &env
+    SLATE_S3_ENDPOINT: ${S3_ENDPOINT:-http://s3lite:9500}
+    SLATE_S3_BUCKET: ramp
+    SLATE_S3_REGION: local
+    PATH_PREFIX: ramp
+    FLEET_PREFIX: ramp-fleet
+    INSTANCE_NAME: streams-1
+    INITIAL_SHARDS: ${INITIAL_SHARDS:-1}
+    FLEET_MIN: ${FLEET_MIN:-1}
+    FLEET_MAX: ${FLEET_MAX:-1}
+    WAL_GROUP_COMMIT: "1"
+    FLUSH_INTERVAL_MS: "25"
+    WAL_POST_ACK_GATHER_MS: "6"
+    FRAME_COMPRESS: "1"
+    ADMIT_MAX_INFLIGHT: "512"
+    RUST_LOG: warn
+  # The instance size (rig.Posture: --size VCPU/GB; Compute's 1 GiB class by default).
+  mem_limit: ${SERVER_MEM:-1g}
+  memswap_limit: ${SERVER_MEM:-1g}
+  cpus: ${SERVER_CPUS:-1}
+  depends_on: [s3lite]
+services:
+  s3lite:
+    image: streams-ramp:latest
+    command: ["s3lite", "--listen", "0.0.0.0:9500", "--latency-ms", "${S3LITE_LATENCY_MS:-20}"]
+    mem_limit: 12g
+    ports: ["127.0.0.1:8299:9500"]  # /_s3lite/stats2: requests and live bytes per object class
+  streams-1:
+    <<: *server
+    environment: { <<: *env, INSTANCE_NAME: streams-1, SELF_URL: "http://streams-1:8080" }
+    ports: ["127.0.0.1:8201:8080"]
+  streams-2:
+    <<: *server
+    environment: { <<: *env, INSTANCE_NAME: streams-2, SELF_URL: "http://streams-2:8080" }
+    ports: ["127.0.0.1:8202:8080"]
+  streams-3:
+    <<: *server
+    environment: { <<: *env, INSTANCE_NAME: streams-3, SELF_URL: "http://streams-3:8080" }
+    ports: ["127.0.0.1:8203:8080"]
+  streams-4:
+    <<: *server
+    environment: { <<: *env, INSTANCE_NAME: streams-4, SELF_URL: "http://streams-4:8080" }
+    ports: ["127.0.0.1:8204:8080"]
+  streams-5:
+    <<: *server
+    environment: { <<: *env, INSTANCE_NAME: streams-5, SELF_URL: "http://streams-5:8080" }
+    ports: ["127.0.0.1:8205:8080"]
+  streams-6:
+    <<: *server
+    environment: { <<: *env, INSTANCE_NAME: streams-6, SELF_URL: "http://streams-6:8080" }
+    ports: ["127.0.0.1:8206:8080"]
+  streams-7:
+    <<: *server
+    environment: { <<: *env, INSTANCE_NAME: streams-7, SELF_URL: "http://streams-7:8080" }
+    ports: ["127.0.0.1:8207:8080"]
+  streams-8:
+    <<: *server
+    environment: { <<: *env, INSTANCE_NAME: streams-8, SELF_URL: "http://streams-8:8080" }
+    ports: ["127.0.0.1:8208:8080"]
+  # The edge: a request carrying `compute-instance: k` goes to streams-(k+1),
+  # as Compute's edge pins it; any other is spread over the live servers.
+  # ramp.py writes nginx.conf for the servers a step runs.
+  router:
+    image: nginx:1.27-alpine
+    volumes: ["${ROUTER_CONF:-./router.conf}:/etc/nginx/nginx.conf:ro"]
+    ports: ["127.0.0.1:8200:8080"]

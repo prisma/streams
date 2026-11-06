@@ -1,0 +1,900 @@
+diff --git a/bench/population_mode.rs b/bench/population_mode.rs
+new file mode 100644
+index 000000000..c85089147
+--- /dev/null
++++ b/bench/population_mode.rs
+@@ -0,0 +1,411 @@
++//! `--mode population`: many tiny streams or queues for Habanero's services
++//! bench. Not part of Streams: the bench applies it to a clone.
++//!
++//! It creates `--streams` entities, `{prefix}-{i}` for i from
++//! BENCH_POP_START, then touches them for the measured window at
++//! BENCH_POP_RATE touches a second in total, each touch on an entity chosen
++//! by a fixed-step walk so every entity is touched once before any twice:
++//! - kind `stream`: one append of `--payload-bytes` JSON, then a read of the
++//!   stream from its start, on the product surface (`/v1/streams/`), which
++//!   takes a tenant's token as the raw surface does not;
++//! - kind `queue`: one send, one claim of at most one message, and its ack.
++//!
++//! Tenancy: with BENCH_POP_TOKENS naming a file of one bearer token per
++//! line, entity i uses token i (modulo the file's length); without it every
++//! request carries none. Streams are pinned to the instance their create
++//! named (`Streams-Forwarded-To` or `Streams-Origin`, or a 409's
++//! `Streams-Replay-To`); queue i goes to instance i modulo
++//! BENCH_POP_CELLS when that is set, as separate cells take them.
++//!
++//! With BENCH_POP_CREATED_FILE set, the bench writes its creation counts
++//! there as JSON once every entity is created, so the caller can measure
++//! the window after creation. BENCH_POP_NO_READ makes a stream touch the
++//! append alone; BENCH_POP_CREATE_FROM skips creating the entities below it
++//! (an earlier run's). With BENCH_POP_GO_FILE set, it then waits
++//! for that file to exist before touching, so clients that create at
++//! different speeds touch over the same window.
++
++use std::sync::Arc;
++use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
++use std::time::{Duration, Instant};
++
++use hdrhistogram::Histogram;
++use tokio::sync::Mutex;
++use tokio::task::JoinSet;
++
++const UNKNOWN: u16 = u16::MAX;
++
++pub(crate) struct PopRun {
++    pub(crate) url: String,
++    pub(crate) key: Option<String>,
++    pub(crate) prefix: String,
++    pub(crate) label: String,
++    pub(crate) queue: bool,
++    pub(crate) count: usize,
++    pub(crate) start: usize,
++    pub(crate) rate: f64,
++    pub(crate) creators: usize,
++    /// Entities below this index exist already (an earlier step created
++    /// them): counted created, not created again, touched like the rest.
++    pub(crate) create_from: usize,
++    pub(crate) workers: usize,
++    pub(crate) cells: Option<u16>,
++    pub(crate) tokens: Vec<String>,
++    pub(crate) payload: String,
++    pub(crate) warmup: Duration,
++    pub(crate) duration: Duration,
++}
++
++fn env<T: std::str::FromStr>(name: &str, default: T) -> T {
++    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
++}
++
++impl PopRun {
++    #[expect(clippy::too_many_arguments, reason = "the bench's shared arguments, passed as parsed")]
++    pub(crate) fn from_args(
++        url: &str,
++        key: &Option<String>,
++        prefix: &str,
++        label: &str,
++        count: usize,
++        workers: usize,
++        payload_bytes: usize,
++        warmup_secs: u64,
++        duration_secs: u64,
++    ) -> anyhow::Result<Self> {
++        let tokens = match std::env::var("BENCH_POP_TOKENS") {
++            Ok(path) => std::fs::read_to_string(&path)?
++                .lines()
++                .filter(|line| !line.is_empty())
++                .map(str::to_owned)
++                .collect(),
++            Err(_) => Vec::new(),
++        };
++        let filler = "x".repeat(payload_bytes.saturating_sub(16).max(1));
++        Ok(Self {
++            url: url.to_owned(),
++            key: key.clone(),
++            prefix: prefix.to_owned(),
++            label: label.to_owned(),
++            queue: std::env::var("BENCH_POP_KIND").is_ok_and(|kind| kind == "queue"),
++            count,
++            start: env("BENCH_POP_START", 0),
++            rate: env("BENCH_POP_RATE", 1.0),
++            creators: env("BENCH_POP_CREATORS", 256),
++            create_from: env("BENCH_POP_CREATE_FROM", 0),
++            workers,
++            cells: std::env::var("BENCH_POP_CELLS").ok().and_then(|v| v.parse().ok()),
++            tokens,
++            payload: format!("{{\"v\":\"{filler}\"}}"),
++            warmup: Duration::from_secs(warmup_secs),
++            duration: Duration::from_secs(duration_secs),
++        })
++    }
++}
++
++#[derive(Default)]
++struct Counts {
++    created: AtomicU64,
++    create_errors: AtomicU64,
++    touches: AtomicU64,
++    touch_errors: AtomicU64,
++    late: AtomicU64,
++}
++
++struct State {
++    run: PopRun,
++    client: reqwest::Client,
++    owners: Vec<AtomicU16>,
++    counts: Counts,
++    hist: Mutex<Histogram<u64>>,
++    errors: Mutex<std::collections::BTreeMap<String, u64>>,
++}
++
++/// The Habanero instance number of `streams-<k>` in `header`.
++fn instance_of(response: &reqwest::Response, header: &str) -> Option<u16> {
++    let name = response.headers().get(header)?.to_str().ok()?;
++    let ordinal: u16 = name.strip_prefix("streams-")?.parse().ok()?;
++    ordinal.checked_sub(1)
++}
++
++impl State {
++    fn name(&self, i: usize) -> String {
++        format!("{}-{}", self.run.prefix, self.run.start + i)
++    }
++
++    fn path(&self, i: usize) -> String {
++        if self.run.queue {
++            format!("{}/v1/queues/{}", self.run.url, self.name(i))
++        } else {
++            format!("{}/v1/streams/{}", self.run.url, self.name(i))
++        }
++    }
++
++    /// The request with entity `i`'s token, key, and instance.
++    fn dress(&self, i: usize, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
++        let mut rb = rb;
++        if let Some(k) = &self.run.key {
++            rb = rb.header("streams-encryption-key", k.as_str());
++        }
++        if !self.run.tokens.is_empty() {
++            let token = &self.run.tokens[(self.run.start + i) % self.run.tokens.len()];
++            rb = rb.bearer_auth(token);
++        }
++        let owner = match self.run.cells {
++            Some(cells) => u16::try_from((self.run.start + i) % usize::from(cells)).unwrap_or(UNKNOWN),
++            None => self.owners[i].load(Ordering::Relaxed),
++        };
++        if owner != UNKNOWN {
++            rb = rb.header("compute-instance", owner.to_string());
++        }
++        rb
++    }
++
++    async fn error(&self, what: String) {
++        let kind: String = what.chars().take(120).collect();
++        *self.errors.lock().await.entry(kind).or_default() += 1;
++    }
++
++    /// Create entity `i`, learning its owner. Whether it exists after.
++    async fn create(&self, i: usize) -> bool {
++        for _ in 0..5 {
++            let rb = self.dress(i, reqwest::Client::put(&self.client, self.path(i)));
++            let rb = if self.run.queue {
++                rb.json(&serde_json::json!({}))
++            } else {
++                rb.json(&serde_json::json!({ "format": { "kind": "json" } }))
++            };
++            match rb.send().await {
++                Ok(r) => {
++                    if let Some(owner) = instance_of(&r, "streams-forwarded-to")
++                        .or_else(|| instance_of(&r, "streams-origin"))
++                        .or_else(|| instance_of(&r, "streams-replay-to"))
++                    {
++                        self.owners[i].store(owner, Ordering::Relaxed);
++                    }
++                    let status = r.status();
++                    if status.is_success() {
++                        return true;
++                    }
++                    if status == reqwest::StatusCode::CONFLICT && self.owners[i].load(Ordering::Relaxed) != UNKNOWN {
++                        continue;
++                    }
++                    let body = r.text().await.unwrap_or_default();
++                    self.error(format!("create {status}: {body}")).await;
++                    if status.as_u16() == 429 || status.as_u16() == 503 {
++                        tokio::time::sleep(Duration::from_millis(500)).await;
++                        continue;
++                    }
++                    return false;
++                }
++                Err(e) => {
++                    self.error(format!("create: {e}")).await;
++                    tokio::time::sleep(Duration::from_millis(200)).await;
++                }
++            }
++        }
++        false
++    }
++
++    /// One touch of entity `i`.
++    async fn touch(&self, i: usize) -> Result<(), String> {
++        if self.run.queue {
++            let send = self
++                .dress(i, self.client.post(format!("{}/messages", self.path(i))))
++                .json(&serde_json::json!({ "body": { "p": self.run.payload } }));
++            let r = send.send().await.map_err(|e| format!("send: {e}"))?;
++            if !r.status().is_success() {
++                return Err(format!("send {}: {}", r.status(), r.text().await.unwrap_or_default()));
++            }
++            let claim = self
++                .dress(i, self.client.post(format!("{}/groups/default:claim", self.path(i))))
++                .json(&serde_json::json!({ "max": 1, "waitMs": 0 }));
++            let r = claim.send().await.map_err(|e| format!("claim: {e}"))?;
++            if !r.status().is_success() {
++                return Err(format!("claim {}: {}", r.status(), r.text().await.unwrap_or_default()));
++            }
++            let v: serde_json::Value = r.json().await.map_err(|e| format!("claim body: {e}"))?;
++            let ops: Vec<_> = v
++                .get("messages")
++                .and_then(serde_json::Value::as_array)
++                .into_iter()
++                .flatten()
++                .filter_map(|m| m.get("token").cloned())
++                .map(|token| serde_json::json!({ "token": token, "op": "ack" }))
++                .collect();
++            if !ops.is_empty() {
++                let settle = self
++                    .dress(i, self.client.post(format!("{}/groups/default:settle", self.path(i))))
++                    .json(&serde_json::json!({ "ops": ops }));
++                let r = settle.send().await.map_err(|e| format!("settle: {e}"))?;
++                if !r.status().is_success() {
++                    return Err(format!("settle {}: {}", r.status(), r.text().await.unwrap_or_default()));
++                }
++            }
++            return Ok(());
++        }
++        let append = self
++            .dress(i, self.client.post(format!("{}/records", self.path(i))))
++            .header("content-type", "application/json")
++            .body(self.run.payload.clone());
++        let r = append.send().await.map_err(|e| format!("append: {e}"))?;
++        let status = r.status();
++        if !status.is_success() {
++            return Err(format!("append {status}: {}", r.text().await.unwrap_or_default()));
++        }
++        // BENCH_POP_NO_READ: a touch is the append alone (an append-rate leg).
++        if std::env::var_os("BENCH_POP_NO_READ").is_some() {
++            return Ok(());
++        }
++        // A tiny stream holds a few records, so a read from its start
++        // consumes what the touches wrote.
++        let read_url = format!("{}/records", self.path(i));
++        let r = self.dress(i, self.client.get(read_url)).send().await.map_err(|e| format!("read: {e}"))?;
++        let status = r.status();
++        let bytes = r.bytes().await.map_err(|e| format!("read body: {e}"))?;
++        if !status.is_success() {
++            return Err(format!("read {status}: {}", String::from_utf8_lossy(&bytes)));
++        }
++        Ok(())
++    }
++}
++
++fn quantiles(h: &Histogram<u64>) -> serde_json::Value {
++    serde_json::json!({
++        "n": h.len(),
++        "p50": h.value_at_quantile(0.50) as f64 / 1000.0,
++        "p99": h.value_at_quantile(0.99) as f64 / 1000.0,
++        "max": h.max() as f64 / 1000.0,
++    })
++}
++
++#[expect(
++    clippy::disallowed_methods,
++    reason = "the population benchmark owns this finite worker group and joins every worker before it reports"
++)]
++pub(crate) async fn bench_population(run: PopRun, client: reqwest::Client, json: bool) -> anyhow::Result<()> {
++    let count = run.count;
++    let state = Arc::new(State {
++        owners: (0..count).map(|_| AtomicU16::new(UNKNOWN)).collect(),
++        counts: Counts::default(),
++        hist: Mutex::new(Histogram::new_with_bounds(1, 600_000_000, 3)?),
++        errors: Mutex::new(std::collections::BTreeMap::new()),
++        client,
++        run,
++    });
++    // Create every entity, a fixed number at once.
++    let created_at = Instant::now();
++    let next = Arc::new(AtomicUsize::new(state.run.create_from.min(count)));
++    state.counts.created.fetch_add(state.run.create_from.min(count) as u64, Ordering::Relaxed);
++    let mut creators = JoinSet::new();
++    for _ in 0..state.run.creators.min(count.max(1)) {
++        let (state, next) = (Arc::clone(&state), Arc::clone(&next));
++        creators.spawn(async move {
++            loop {
++                let i = next.fetch_add(1, Ordering::Relaxed);
++                if i >= state.run.count {
++                    return;
++                }
++                if state.create(i).await {
++                    state.counts.created.fetch_add(1, Ordering::Relaxed);
++                } else {
++                    state.counts.create_errors.fetch_add(1, Ordering::Relaxed);
++                }
++            }
++        });
++    }
++    while creators.join_next().await.is_some() {}
++    let create_secs = created_at.elapsed().as_secs_f64();
++    if let Ok(path) = std::env::var("BENCH_POP_CREATED_FILE") {
++        let created = serde_json::json!({
++            "created": state.counts.created.load(Ordering::Relaxed),
++            "create_errors": state.counts.create_errors.load(Ordering::Relaxed),
++            "create_secs": create_secs,
++        });
++        std::fs::write(&path, created.to_string())?;
++    }
++    if let Ok(go) = std::env::var("BENCH_POP_GO_FILE") {
++        while !std::path::Path::new(&go).exists() {
++            tokio::time::sleep(Duration::from_secs(1)).await;
++        }
++    }
++    // Touch them: an open-loop schedule of `rate` a second over `workers`
++    // senders, each walking the entities with a fixed step.
++    let total = state.run.warmup + state.run.duration;
++    let measuring_from = Instant::now() + state.run.warmup;
++    let mut workers = JoinSet::new();
++    let per = state.run.rate / state.run.workers as f64;
++    for w in 0..state.run.workers {
++        let state = Arc::clone(&state);
++        workers.spawn(async move {
++            if per <= 0.0 || state.run.count == 0 {
++                return;
++            }
++            let period = Duration::from_secs_f64(1.0 / per);
++            let mut ticks = tokio::time::interval_at(
++                tokio::time::Instant::now() + period.mul_f64(w as f64 / state.run.workers as f64),
++                period,
++            );
++            ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
++            let until = Instant::now() + total;
++            let deadline = tokio::time::Instant::from_std(until);
++            let step = state.run.workers;
++            let mut i = w % state.run.count;
++            while Instant::now() < until {
++                // At one touch an hour a worker's period can outlast the
++                // run, so the run's end also ends the wait.
++                let tick = tokio::select! {
++                    tick = ticks.tick() => tick,
++                    () = tokio::time::sleep_until(deadline) => break,
++                };
++                let measuring = Instant::now() >= measuring_from;
++                if measuring && tick.elapsed() > Duration::from_millis(100) {
++                    state.counts.late.fetch_add(1, Ordering::Relaxed);
++                }
++                let started = Instant::now();
++                let touched = state.touch(i).await;
++                if measuring {
++                    match touched {
++                        Ok(()) => {
++                            state.counts.touches.fetch_add(1, Ordering::Relaxed);
++                            state.hist.lock().await.saturating_record(started.elapsed().as_micros() as u64);
++                        }
++                        Err(what) => {
++                            state.counts.touch_errors.fetch_add(1, Ordering::Relaxed);
++                            state.error(what).await;
++                        }
++                    }
++                }
++                i = (i + step) % state.run.count;
++            }
++        });
++    }
++    while workers.join_next().await.is_some() {}
++    let c = &state.counts;
++    let get = |a: &AtomicU64| a.load(Ordering::Relaxed);
++    let secs = state.run.duration.as_secs_f64();
++    let summary = serde_json::json!({
++        "label": state.run.label,
++        "mode": "population",
++        "kind": if state.run.queue { "queue" } else { "stream" },
++        "count": state.run.count,
++        "start": state.run.start,
++        "tenants": if state.run.tokens.is_empty() { 0 } else { state.run.tokens.len() },
++        "created": get(&c.created),
++        "create_errors": get(&c.create_errors),
++        "create_per_sec": get(&c.created) as f64 / create_secs.max(0.001),
++        "create_secs": create_secs,
++        "target_per_sec": state.run.rate,
++        "touches_per_sec": get(&c.touches) as f64 / secs,
++        "touch_errors": get(&c.touch_errors),
++        "late": get(&c.late),
++        "latency_ms": quantiles(&*state.hist.lock().await),
++        "errors": &*state.errors.lock().await,
++    });
++    if json {
++        println!("{summary}");
++    } else {
++        println!("{}", serde_json::to_string_pretty(&summary)?);
++    }
++    Ok(())
++}
+diff --git a/bench/queue_mode.rs b/bench/queue_mode.rs
+new file mode 100644
+index 000000000..28ff6f312
+--- /dev/null
++++ b/bench/queue_mode.rs
+@@ -0,0 +1,423 @@
++//! `--mode queue`: a queue throughput driver for Habanero's services bench.
++//! Not part of Streams: the bench applies it to a clone.
++//!
++//! Wiring, in the clone's `src/bin/bench.rs`:
++//!
++//! ```text
++//! #[path = "../../bench/queue_mode.rs"]
++//! mod queue_mode;
++//! ...
++//!     "queue" => {
++//!         let run = queue_mode::QueueRun::from_args(
++//!             &args.url, &args.key, &args.prefix, &args.label,
++//!             args.streams.get(), args.concurrency.get(), args.entries.get(),
++//!             args.payload_bytes, args.warmup_secs, args.duration_secs.get(),
++//!         );
++//!         let connections = run.producers + run.queues * run.consumers;
++//!         queue_mode::bench_queue(run, make_client(connections)?, args.json).await
++//!     }
++//! ```
++//!
++//! It creates QUEUES queues and drives them with plain loops, no simulated
++//! work: open-loop producers send batches of BATCH messages at RATE messages
++//! a second in total (closed loop at RATE 0), and CONSUMERS loops per queue
++//! claim up to CLAIM_MAX messages and ack them at once. Each message carries
++//! its send time, so the claim measures delivery lag. The summary gives the
++//! rates held in the measured window, the latency of each call, the errors,
++//! and the queues' backlog at the window's edges: a backlog that grows means
++//! the consumers do not keep up.
++
++use std::sync::Arc;
++use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
++use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
++
++use hdrhistogram::Histogram;
++use tokio::sync::Mutex;
++use tokio::task::JoinSet;
++
++pub(crate) struct QueueRun {
++    pub(crate) url: String,
++    pub(crate) key: Option<String>,
++    pub(crate) prefix: String,
++    pub(crate) label: String,
++    pub(crate) queues: usize,
++    pub(crate) producers: usize,
++    pub(crate) batch: usize,
++    pub(crate) payload_bytes: usize,
++    pub(crate) rate: f64,
++    pub(crate) consumers: usize,
++    pub(crate) claim_max: usize,
++    /// With BENCH_QUEUE_CELLS set, queue q goes to instance q modulo it,
++    /// as separate cells take their queues.
++    pub(crate) cells: Option<usize>,
++    pub(crate) warmup: Duration,
++    pub(crate) duration: Duration,
++}
++
++fn env_usize(name: &str, default: usize) -> usize {
++    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
++}
++
++/// A pool of random alphanumerics (xorshift, seeded per producer).
++fn random_pool(len: usize, seed: u64) -> String {
++    const ALNUM: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
++    let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
++    (0..len)
++        .map(|_| {
++            x ^= x << 13;
++            x ^= x >> 7;
++            x ^= x << 17;
++            ALNUM[(x % 62) as usize] as char
++        })
++        .collect()
++}
++
++impl QueueRun {
++    /// The run from the shared arguments and the BENCH_QUEUE_* environment:
++    /// `--streams` is the queue count, `--concurrency` the producer count,
++    /// `--entries` the batch size.
++    pub(crate) fn from_args(
++        url: &str,
++        key: &Option<String>,
++        prefix: &str,
++        label: &str,
++        queues: usize,
++        producers: usize,
++        batch: usize,
++        payload_bytes: usize,
++        warmup_secs: u64,
++        duration_secs: u64,
++    ) -> Self {
++        Self {
++            url: url.to_owned(),
++            key: key.clone(),
++            prefix: prefix.to_owned(),
++            label: label.to_owned(),
++            queues,
++            producers,
++            batch,
++            payload_bytes,
++            rate: std::env::var("BENCH_QUEUE_RATE").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
++            consumers: env_usize("BENCH_QUEUE_CONSUMERS", 4),
++            claim_max: env_usize("BENCH_QUEUE_CLAIM_MAX", 100),
++            cells: std::env::var("BENCH_QUEUE_CELLS").ok().and_then(|v| v.parse().ok()),
++            warmup: Duration::from_secs(warmup_secs),
++            duration: Duration::from_secs(duration_secs),
++        }
++    }
++}
++
++struct Hists {
++    send: Histogram<u64>,
++    claim: Histogram<u64>,
++    settle: Histogram<u64>,
++    lag: Histogram<u64>,
++}
++
++#[derive(Default)]
++struct Counts {
++    sent: AtomicU64,
++    send_requests: AtomicU64,
++    send_errors: AtomicU64,
++    claims: AtomicU64,
++    empty_claims: AtomicU64,
++    claimed: AtomicU64,
++    claim_errors: AtomicU64,
++    acked: AtomicU64,
++    settle_errors: AtomicU64,
++}
++
++struct State {
++    run: QueueRun,
++    client: reqwest::Client,
++    hists: Mutex<Hists>,
++    counts: Counts,
++    measuring: AtomicBool,
++    stop: AtomicBool,
++    first_error: Mutex<Option<String>>,
++}
++
++fn now_ms() -> u64 {
++    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
++}
++
++impl State {
++    fn path(&self, q: usize) -> String {
++        format!("{}/v1/queues/{}-{q}", self.run.url, self.run.prefix)
++    }
++
++    /// The queue routes read the key from `Streams-Encryption-Key`. With
++    /// cells, queue `q`'s request names its cell's instance.
++    fn keyed(&self, q: usize, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
++        let rb = match self.run.cells {
++            Some(cells) => rb.header("compute-instance", (q % cells).to_string()),
++            None => rb,
++        };
++        let rb = match std::env::var("BENCH_QUEUE_TOKEN") {
++            Ok(token) => rb.bearer_auth(token),
++            Err(_) => rb,
++        };
++        match &self.run.key {
++            Some(k) => rb.header("streams-encryption-key", k.as_str()),
++            None => rb,
++        }
++    }
++
++    fn on(&self) -> bool {
++        self.measuring.load(Ordering::Relaxed)
++    }
++
++    async fn error(&self, counter: &AtomicU64, what: String) {
++        if self.on() {
++            counter.fetch_add(1, Ordering::Relaxed);
++        }
++        let mut first = self.first_error.lock().await;
++        if first.is_none() {
++            *first = Some(what);
++        }
++    }
++
++    async fn create(&self, q: usize) -> anyhow::Result<()> {
++        let config = serde_json::json!({
++            "maxQueuedMessages": 10_000_000u64,
++            "maxQueuedBytes": env_usize("BENCH_QUEUE_MAX_BYTES", 1 << 30),
++            "group": {
++                "maxAttempts": 3,
++                "backoff": { "initialMs": 1000, "maxMs": 1000, "multiplier": 1 },
++                "leaseMs": 30_000,
++                "maxInFlight": 10_000,
++                "maxBatch": 1000,
++            },
++        });
++        let r = self.keyed(q, self.client.put(self.path(q))).json(&config).send().await?;
++        let status = r.status();
++        anyhow::ensure!(status.is_success(), "create queue {q}: {status} {}", r.text().await.unwrap_or_default());
++        Ok(())
++    }
++
++    /// Messages the queue holds that are not yet acked.
++    async fn backlog(&self) -> u64 {
++        let mut total = 0;
++        for q in 0..self.run.queues {
++            let Ok(r) = self.keyed(q, self.client.get(self.path(q))).send().await else { continue };
++            let Ok(v) = r.json::<serde_json::Value>().await else { continue };
++            let s = v.get("stats").unwrap_or(&v);
++            total += s.get("queuedMessages").and_then(serde_json::Value::as_u64).unwrap_or(0);
++        }
++        total
++    }
++
++    async fn produce(self: Arc<Self>, index: usize) -> anyhow::Result<()> {
++        // Incompressible bodies, each message a different window of a random
++        // pool: zstd frames would squeeze a repeated filler to nothing.
++        let pool = random_pool(self.run.payload_bytes * 2 + 4096, index as u64 + 1);
++        let mut offset = 0usize;
++        let period = (self.run.rate > 0.0)
++            .then(|| Duration::from_secs_f64(self.run.batch as f64 * self.run.producers as f64 / self.run.rate));
++        let mut ticks = period.map(|p| {
++            let mut t = tokio::time::interval_at(
++                tokio::time::Instant::now() + p.mul_f64(index as f64 / self.run.producers as f64),
++                p,
++            );
++            t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
++            t
++        });
++        let mut k = index;
++        while !self.stop.load(Ordering::Relaxed) {
++            if let Some(t) = ticks.as_mut() {
++                t.tick().await;
++            }
++            let q = k % self.run.queues;
++            k += self.run.producers;
++            let at = now_ms();
++            let messages: Vec<_> = (0..self.run.batch)
++                .map(|_| {
++                    offset = (offset + 1009) % (pool.len() - self.run.payload_bytes);
++                    serde_json::json!({ "body": { "t": at, "p": &pool[offset..offset + self.run.payload_bytes] } })
++                })
++                .collect();
++            let started = Instant::now();
++            let sent = self
++                .keyed(q, self.client.post(format!("{}/messages:batch", self.path(q))))
++                .json(&serde_json::json!({ "messages": messages }))
++                .send()
++                .await;
++            let ms = started.elapsed();
++            match sent {
++                Ok(r) if r.status().is_success() => {
++                    if self.on() {
++                        self.counts.sent.fetch_add(self.run.batch as u64, Ordering::Relaxed);
++                        self.counts.send_requests.fetch_add(1, Ordering::Relaxed);
++                        self.hists.lock().await.send.saturating_record(ms.as_micros() as u64);
++                    }
++                }
++                Ok(r) => {
++                    let what = format!("send {}: {}", r.status(), r.text().await.unwrap_or_default());
++                    self.error(&self.counts.send_errors, what).await;
++                }
++                Err(e) => self.error(&self.counts.send_errors, format!("send: {e}")).await,
++            }
++        }
++        Ok(())
++    }
++
++    async fn consume(self: Arc<Self>, q: usize) -> anyhow::Result<()> {
++        let claim_url = format!("{}/groups/default:claim", self.path(q));
++        let settle_url = format!("{}/groups/default:settle", self.path(q));
++        let body = serde_json::json!({ "max": self.run.claim_max, "leaseMs": 30_000, "waitMs": 1000 });
++        while !self.stop.load(Ordering::Relaxed) {
++            let started = Instant::now();
++            let claimed = self.keyed(q, self.client.post(&claim_url)).json(&body).send().await;
++            let response = match claimed {
++                Ok(r) if r.status().is_success() => r,
++                Ok(r) => {
++                    let what = format!("claim {}: {}", r.status(), r.text().await.unwrap_or_default());
++                    self.error(&self.counts.claim_errors, what).await;
++                    tokio::time::sleep(Duration::from_millis(200)).await;
++                    continue;
++                }
++                Err(e) => {
++                    self.error(&self.counts.claim_errors, format!("claim: {e}")).await;
++                    tokio::time::sleep(Duration::from_millis(200)).await;
++                    continue;
++                }
++            };
++            let v: serde_json::Value = match response.json().await {
++                Ok(v) => v,
++                Err(e) => {
++                    self.error(&self.counts.claim_errors, format!("claim body: {e}")).await;
++                    continue;
++                }
++            };
++            let claim_ms = started.elapsed();
++            let messages = v.get("messages").and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
++            if self.on() {
++                self.counts.claims.fetch_add(1, Ordering::Relaxed);
++            }
++            if messages.is_empty() {
++                if self.on() {
++                    self.counts.empty_claims.fetch_add(1, Ordering::Relaxed);
++                }
++                continue;
++            }
++            let now = now_ms();
++            let ops: Vec<_> = messages
++                .iter()
++                .filter_map(|m| m.get("token").cloned())
++                .map(|token| serde_json::json!({ "token": token, "op": "ack" }))
++                .collect();
++            if self.on() {
++                self.counts.claimed.fetch_add(messages.len() as u64, Ordering::Relaxed);
++                let mut h = self.hists.lock().await;
++                h.claim.saturating_record(claim_ms.as_micros() as u64);
++                for m in &messages {
++                    if let Some(t) = m.pointer("/body/t").and_then(serde_json::Value::as_u64) {
++                        h.lag.saturating_record(now.saturating_sub(t).max(1) * 1000);
++                    }
++                }
++            }
++            let started = Instant::now();
++            let settled = self
++                .keyed(q, self.client.post(&settle_url))
++                .json(&serde_json::json!({ "ops": ops }))
++                .send()
++                .await;
++            match settled {
++                Ok(r) if r.status().is_success() => {
++                    if self.on() {
++                        self.counts.acked.fetch_add(ops.len() as u64, Ordering::Relaxed);
++                        self.hists.lock().await.settle.saturating_record(started.elapsed().as_micros() as u64);
++                    }
++                }
++                Ok(r) => {
++                    let what = format!("settle {}: {}", r.status(), r.text().await.unwrap_or_default());
++                    self.error(&self.counts.settle_errors, what).await;
++                }
++                Err(e) => self.error(&self.counts.settle_errors, format!("settle: {e}")).await,
++            }
++        }
++        Ok(())
++    }
++}
++
++fn quantiles(h: &Histogram<u64>) -> serde_json::Value {
++    serde_json::json!({
++        "n": h.len(),
++        "p50": h.value_at_quantile(0.50) as f64 / 1000.0,
++        "p90": h.value_at_quantile(0.90) as f64 / 1000.0,
++        "p99": h.value_at_quantile(0.99) as f64 / 1000.0,
++        "max": h.max() as f64 / 1000.0,
++    })
++}
++
++#[expect(
++    clippy::disallowed_methods,
++    reason = "the queue benchmark owns this finite worker group and joins every worker before it reports"
++)]
++pub(crate) async fn bench_queue(run: QueueRun, client: reqwest::Client, json: bool) -> anyhow::Result<()> {
++    let hist = || Histogram::new_with_bounds(1, 600_000_000, 3);
++    let state = Arc::new(State {
++        hists: Mutex::new(Hists { send: hist()?, claim: hist()?, settle: hist()?, lag: hist()? }),
++        counts: Counts::default(),
++        measuring: AtomicBool::new(false),
++        stop: AtomicBool::new(false),
++        first_error: Mutex::new(None),
++        client,
++        run,
++    });
++    for q in 0..state.run.queues {
++        state.create(q).await?;
++    }
++    let mut workers = JoinSet::new();
++    for q in 0..state.run.queues {
++        for _ in 0..state.run.consumers {
++            workers.spawn(Arc::clone(&state).consume(q));
++        }
++    }
++    for i in 0..state.run.producers {
++        workers.spawn(Arc::clone(&state).produce(i));
++    }
++    tokio::time::sleep(state.run.warmup).await;
++    let backlog_start = state.backlog().await;
++    state.measuring.store(true, Ordering::Relaxed);
++    let started = Instant::now();
++    tokio::time::sleep(state.run.duration).await;
++    state.measuring.store(false, Ordering::Relaxed);
++    let secs = started.elapsed().as_secs_f64();
++    let backlog_end = state.backlog().await;
++    state.stop.store(true, Ordering::Relaxed);
++    while let Some(joined) = workers.join_next().await {
++        joined??;
++    }
++    let c = &state.counts;
++    let get = |a: &AtomicU64| a.load(Ordering::Relaxed);
++    let h = state.hists.lock().await;
++    let summary = serde_json::json!({
++        "label": state.run.label,
++        "mode": "queue",
++        "queues": state.run.queues,
++        "producers": state.run.producers,
++        "batch": state.run.batch,
++        "payload_bytes": state.run.payload_bytes,
++        "consumers_per_queue": state.run.consumers,
++        "claim_max": state.run.claim_max,
++        "target_per_sec": state.run.rate,
++        "duration_secs": secs,
++        "sent_per_sec": get(&c.sent) as f64 / secs,
++        "acked_per_sec": get(&c.acked) as f64 / secs,
++        "send_requests_per_sec": get(&c.send_requests) as f64 / secs,
++        "claims_per_sec": get(&c.claims) as f64 / secs,
++        "empty_claims": get(&c.empty_claims),
++        "claimed": get(&c.claimed),
++        "errors": { "send": get(&c.send_errors), "claim": get(&c.claim_errors), "settle": get(&c.settle_errors) },
++        "first_error": state.first_error.lock().await.clone(),
++        "backlog": { "start": backlog_start, "end": backlog_end, "growth_per_sec": (backlog_end as f64 - backlog_start as f64) / secs },
++        "latency_ms": { "send": quantiles(&h.send), "claim": quantiles(&h.claim), "settle": quantiles(&h.settle), "delivery_lag": quantiles(&h.lag) },
++    });
++    if json {
++        println!("{summary}");
++    } else {
++        println!("{}", serde_json::to_string_pretty(&summary)?);
++    }
++    Ok(())
++}
+diff --git a/src/bin/bench.rs b/src/bin/bench.rs
+index 36e306f0a..912b1cde5 100644
+--- a/src/bin/bench.rs
++++ b/src/bin/bench.rs
+@@ -19,6 +19,11 @@ use hdrhistogram::Histogram;
+ use tokio::sync::Mutex;
+ use tokio::task::JoinSet;
+ 
++#[path = "../../bench/population_mode.rs"]
++mod population_mode;
++#[path = "../../bench/queue_mode.rs"]
++mod queue_mode;
++
+ #[derive(Parser, Debug, Clone)]
+ #[command(name = "bench")]
+ struct Args {
+@@ -79,6 +84,37 @@ async fn main() -> anyhow::Result<()> {
+         "append" => bench_append(args).await,
+         "read" => bench_read(args).await,
+         "durability" => bench_durability(args).await,
++        "queue" => {
++            let run = queue_mode::QueueRun::from_args(
++                &args.url,
++                &args.key,
++                &args.prefix,
++                &args.label,
++                args.streams.get(),
++                args.concurrency.get(),
++                args.entries.get(),
++                args.payload_bytes,
++                args.warmup_secs,
++                args.duration_secs.get(),
++            );
++            let connections = run.producers + run.queues * run.consumers;
++            queue_mode::bench_queue(run, make_client(connections)?, args.json).await
++        }
++        "population" => {
++            let run = population_mode::PopRun::from_args(
++                &args.url,
++                &args.key,
++                &args.prefix,
++                &args.label,
++                args.streams.get(),
++                args.concurrency.get(),
++                args.payload_bytes,
++                args.warmup_secs,
++                args.duration_secs.get(),
++            )?;
++            let connections = run.creators.max(run.workers);
++            population_mode::bench_population(run, make_client(connections)?, args.json).await
++        }
+         other => anyhow::bail!("unknown mode: {other}"),
+     }
+ }
