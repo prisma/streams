@@ -266,6 +266,7 @@ These may support future packaging, abuse detection, and support investigations 
 | consumer pull | — | delivered payload sum | — | pull |
 | consumer redelivery | — | delivered payload sum again | — | pull/redelivery |
 | settle/extend | — | 0 | — | queue op |
+| queue wake-up notification attempt (proposed, [QUEUES-IDLE.md](QUEUES-IDLE.md) §3.6) | — | 0 | — | queue op, plus `queue_wakeup_attempts` |
 | empty long-poll/HEAD | — | 0 | — | read op |
 | watch notification | — | 0 in v1 | — | watch op |
 | fork creation | 0 | — | 0 owned bytes | fork |

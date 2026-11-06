@@ -15,7 +15,11 @@ shard, all proven by Q0 before Q1 starts. Revision 7 specifies the
 transitions a review of revision 6 found open: retirement into collection
 (a coverage rule), auxiliary-row lifetimes, failure into redrive, active
 queues into deletion, drains into later wake-ups, timers with no debt, and
-capacity reservations. §15 maps every review point. Every client-visible
+capacity reservations. §15 maps every review point. Revision 9 (2026-11-03,
+proposed, not implemented) is [QUEUES-IDLE.md](QUEUES-IDLE.md): sweeps only
+at real deadlines, a roster ordered by deadline, catch-up on access, parking
+after 24 h without a request, dormant wake-ups and billed wake-up attempts
+(D23-D28); it amends §6.8, §8.1, §9.2, §10 and §14. Every client-visible
 change becomes an edge record when it lands.
 
 ## 1. What we are building and why
@@ -519,6 +523,14 @@ waits for a claim, not for the sweep, so after a sweep those terms look
 again a minute on. An active queue is thus swept when something can be due
 (about once per lease duration under load), not after every operation.
 
+**Idle queues (revision 9, proposed).** [QUEUES-IDLE.md](QUEUES-IDLE.md)
+removes the fallback of an hour out: a queue is on the roster only for a
+real deadline, and deletion debt gets its own index for the collector (D23).
+The roster is keyed by deadline, so a tick reads only due queues (D24). An
+operation on an overdue queue runs one sweep step first (D25). A queue with
+no request for 24 h is parked and swept at most once a day until nothing is
+pending (D26).
+
 **Timers are a maintenance obligation of their own.** A queue can have a
 scheduled message, a retry, a lease deadline or a dedup expiry with zero
 reclamation debt. What actually closes a shard today: fleet eviction or a
@@ -587,7 +599,9 @@ from `availableAt`; `deliverAt` at most `maxAge` ahead (400 beyond).
 `maxAge` and `failureRetention` are fixed at creation, so availability order
 is expiry order; updatable retention (epochs or an expiry index) is later
 work. Expiry is keyless, costs no rows, and needs no consumer (§6.8). A queue
-nobody consumes within `maxAge` loses what it did not take, counted.
+nobody consumes within `maxAge` loses what it did not take, counted. A parked
+queue's expired data is retired, and its gap counted, up to 24 h late (D26,
+[QUEUES-IDLE.md](QUEUES-IDLE.md) §3.4).
 
 ### 8.2 The reclamation lifecycle
 
@@ -941,6 +955,12 @@ subscription and at most 10 a second per project. The fan-out a receiver
 starts is its own choice, bounded by `maxInFlight`. A restart or move re-arms
 from the rows. A lost notification costs latency only.
 
+**Dormancy and billing (revision 9, proposed).** A subscription with no
+useful claim for 24 h goes dormant and is not notified until the next useful
+claim or send (D27). Each attempted notification is a billed queue operation,
+whatever the receiver answers (D28). See [QUEUES-IDLE.md](QUEUES-IDLE.md)
+§3.5-§3.6.
+
 **Secret custody.** The signing secret is `HMAC(cell wake key version k,
 project ‖ subscriptionId ‖ rotation)`, returned once at creation or rotation;
 the subscription records `k`. Rotating the cell key adds version `k+1` for
@@ -975,7 +995,10 @@ worker** is the pilot's simplest option, with its idle cost stated.
   debt age, physical size, sweep lag, collection passes; cell-watch rules for
   failed growth, due work near `maxAge`, gaps, sweep lag and debt past its
   deadline, calibrated after the pilot.
-- Usage: queue operations metered as today, plus read and stored bytes.
+- Usage: queue operations metered as today, plus read and stored bytes, and
+  wake-up attempts (D28).
+- Idle queues: `parkedAt`, `wakeup.dormantSince`, and the operator view's
+  parked and overdue counts ([QUEUES-IDLE.md](QUEUES-IDLE.md) §4).
 
 ## 11. HTTP surface
 
@@ -1050,7 +1073,7 @@ The verification plan (TLA+, Kani, DSTs, SDK, Layer B, pilot) is in
 | D11 | Overload | A separate settle bucket; #184's append rules |
 | D12 | Batches | Atomic ≤ 1,000 messages within the body limit |
 | D13 | Dedup | 24 h default, 7 days maximum, never above retention |
-| D14 | Billing | Cloudflare parity: $0.40 per million logical operations per message per 64 KB (send a write, each delivery a read, ack or discard a delete), one million a month included; empty claims free; bandwidth and standard retention included; live bytes count against capacity (a message's until retirement, dedup entries until their window ends) |
+| D14 | Billing | Cloudflare parity: $0.40 per million logical operations per message per 64 KB (send a write, each delivery a read, ack or discard a delete, each attempted wake-up notification an operation under D28), one million a month included; empty claims free; bandwidth and standard retention included; live bytes count against capacity (a message's until retirement, dedup entries until their window ends) |
 | D15 | Sequencing | Q0 gates Q1; the first release gates the beta if queues are a beta requirement |
 | D16 | Wake-up egress | §9.2 egress policy with a versioned derived secret |
 | D17 | Queue storage | Queue pages in the shard database, never sealed into segment objects, under queue storage mode |
@@ -1059,6 +1082,19 @@ The verification plan (TLA+, Kani, DSTs, SDK, Layer B, pilot) is in
 | D20 | Collection | The compaction trigger in the shared shard database; segments, then a separate queue database, only if Q0 shows shared compaction too costly |
 | D21 | Shard capacity | Reserve each queue's budgets at creation, no overcommit; smaller defaults with an opt-up, sized from Q0's per-shard bound; overcommit with a borrowing rule later |
 | D22 | Quiet-shard GC completion | Accept one residual L0 file per shard; a SlateDB patch only if Q0 shows it matters |
+
+Revision 9 adds D23-D28, proposed in [QUEUES-IDLE.md](QUEUES-IDLE.md). The owner
+approved their direction on 2026-11-03 and decided D28; the details of
+D23-D27 are for review.
+
+| # | Decision | Recommendation |
+|---|---|---|
+| D23 | Sweep schedule | Only real deadlines put a queue on the roster; no fallback of an hour out; deletion debt in its own index |
+| D24 | Roster order | Keyed by deadline, so a tick reads only due queues, the earliest first |
+| D25 | Catch-up | An operation on an overdue queue runs one sweep step first, never more than one |
+| D26 | Parking | After 24 h without a client request, swept at most once a day; expired data retired up to 24 h late |
+| D27 | Wake-up dormancy | Dormant after 24 h without a useful claim; active again on the next useful claim or send |
+| D28 | Wake-up billing | Each attempted notification is one billed queue operation at D14's rate, whatever the receiver answers; one the project budget refuses is not billed |
 
 ## 15. Review responses
 
