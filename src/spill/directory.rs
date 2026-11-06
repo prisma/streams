@@ -13,7 +13,7 @@
 //! The refcount row (`'S' ‖ 0xFF×16 ‖ 'R' ‖ epoch BE ‖ seq BE`, codec in
 //! `spill::gc`) rides the same commit; garbage collection keeps it exact.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use super::object::{ChunkInput, ObjectId};
 
@@ -104,15 +104,16 @@ pub(crate) fn fingerprint(routing_key: &str) -> u64 {
 /// object (a consolidated chunk may end where one of the chunks it copied
 /// ends). The fold keeps it to the seals of at most one fold period
 /// (`shard::seal::fold`).
-/// One stream's entries, by (last offset, object).
-type StreamEntries = BTreeMap<(u64, ObjectId), DirEntry>;
+/// One stream's entries, sorted by (last offset, object). A `BTreeMap` here
+/// allocates a whole 1.5 KiB leaf node for a stream's one chunk.
+type StreamEntries = Vec<DirEntry>;
 
 #[derive(Default)]
 pub(crate) struct Directory {
     streams: HashMap<[u8; 16], StreamEntries>,
     entries: u64,
-    /// The entries' memory, by `entry_heap` (the seal stats' gauge, and
-    /// this directory's share of `process_bytes`).
+    /// What the streams allocate, by `stream_charge` and `entry_own_heap` (the
+    /// seal stats' gauge, and this directory's share of `process_bytes`).
     bytes: u64,
 }
 
@@ -131,17 +132,22 @@ impl Drop for Directory {
     }
 }
 
-/// One entry's memory, an upper estimate: the entry, its map key, its key
-/// summary's and anchors' heap.
-fn entry_heap(e: &DirEntry) -> u64 {
+/// What a stream holds beyond its entries' own heap: its slot in the map (key,
+/// `Vec` header, a control byte) and its entries' capacity.
+pub(crate) fn stream_charge(capacity: usize) -> u64 {
+    u64::try_from(
+        size_of::<[u8; 16]>() + size_of::<StreamEntries>() + 1 + capacity * size_of::<DirEntry>(),
+    )
+    .unwrap_or(u64::MAX)
+}
+
+/// An entry's own heap: its key summary and anchors.
+pub(crate) fn entry_own_heap(e: &DirEntry) -> u64 {
     let summary = match &e.keys {
         KeySummary::Keys(keys) => keys.len() * size_of::<u64>(),
         KeySummary::Bloom(bits) => bits.len(),
     };
-    let bytes = size_of::<DirEntry>()
-        + size_of::<u64>()
-        + summary
-        + e.anchors.len() * size_of::<super::object::Anchor>();
+    let bytes = summary + e.anchors.len() * size_of::<super::object::Anchor>();
     u64::try_from(bytes).unwrap_or(u64::MAX)
 }
 
@@ -157,37 +163,63 @@ impl Directory {
     }
 
     pub(crate) fn insert(&mut self, hash: [u8; 16], entry: DirEntry) {
-        let added = entry_heap(&entry);
+        let added = entry_own_heap(&entry);
         let key = (entry.last, entry.object);
-        match self.streams.entry(hash).or_default().insert(key, entry) {
-            None => self.entries += 1,
-            Some(replaced) => self.shrink(entry_heap(&replaced)),
+        let stream = self.streams.entry(hash).or_default();
+        // A stream is new exactly when it has no capacity: it keeps its
+        // capacity until its last entry leaves.
+        let before = match stream.capacity() {
+            0 => 0,
+            capacity => stream_charge(capacity),
+        };
+        let mut replaced = 0;
+        match stream.binary_search_by_key(&key, |e| (e.last, e.object)) {
+            Ok(at) => {
+                if let Some(held) = stream.get_mut(at) {
+                    replaced = entry_own_heap(held);
+                    *held = entry;
+                }
+            }
+            Err(at) => {
+                // From one entry, doubling: most streams hold one chunk
+                // between folds, and `Vec`'s own first allocation is four.
+                if stream.len() == stream.capacity() {
+                    stream.reserve_exact(stream.capacity().max(1));
+                }
+                stream.insert(at, entry);
+                self.entries += 1;
+            }
         }
-        self.grow(added);
+        let after = stream_charge(stream.capacity());
+        self.grow(added + after - before);
+        self.shrink(replaced);
     }
 
     /// Remove the entry of `hash` ending at `last` in `object`, if present
     /// (a failed seal's, or one the fold moved into a run-index object).
     pub(crate) fn remove(&mut self, hash: &[u8; 16], last: u64, object: ObjectId) {
-        let Some(m) = self.streams.get_mut(hash) else {
+        let Some(stream) = self.streams.get_mut(hash) else {
             return;
         };
-        let Some(removed) = m.remove(&(last, object)) else {
+        let Ok(at) = stream.binary_search_by_key(&(last, object), |e| (e.last, e.object)) else {
             return;
         };
-        if m.is_empty() {
+        let removed = stream.remove(at);
+        let mut released = entry_own_heap(&removed);
+        if stream.is_empty() {
+            released += stream_charge(stream.capacity());
             self.streams.remove(hash);
         }
         self.entries -= 1;
-        self.shrink(entry_heap(&removed));
+        self.shrink(released);
     }
 
     /// The chunks of `hash` ending at or after `from`, by last offset, at
     /// most `max` of them.
     pub(crate) fn from(&self, hash: &[u8; 16], from: u64, max: usize) -> Vec<DirEntry> {
-        let start = (from, ObjectId { epoch: 0, seq: 0 });
-        self.streams.get(hash).map_or_else(Vec::new, |m| {
-            m.range(start..).take(max).map(|(_, e)| e.clone()).collect()
+        self.streams.get(hash).map_or_else(Vec::new, |stream| {
+            let start = stream.partition_point(|e| e.last < from);
+            stream.iter().skip(start).take(max).cloned().collect()
         })
     }
 
@@ -203,12 +235,18 @@ impl Directory {
         self.bytes
     }
 
-    /// Tests: each entry's memory (`entry_heap`).
+    /// Tests: the gauge recomputed from what the streams hold.
+    #[cfg(test)]
+    pub(crate) fn recounted_bytes(&self) -> u64 {
+        let streams = self.streams.values();
+        streams
+            .map(|s| stream_charge(s.capacity()) + s.iter().map(entry_own_heap).sum::<u64>())
+            .sum()
+    }
+
+    /// Tests: each entry's own heap.
     #[cfg(test)]
     pub(crate) fn entry_bytes(&self) -> impl Iterator<Item = u64> + '_ {
-        self.streams
-            .values()
-            .flat_map(BTreeMap::values)
-            .map(entry_heap)
+        self.streams.values().flatten().map(entry_own_heap)
     }
 }

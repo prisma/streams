@@ -189,7 +189,7 @@ fn a_bloom_is_capped_and_its_false_positive_rate_is_about_one_percent() {
     );
 }
 
-/// The directory's memory gauge is the sum of its entries' through inserts,
+/// The directory's memory gauge is what its streams hold through inserts,
 /// a re-insert of the same chunk, a removal and a removal that names another
 /// object (which removes nothing); a bloom entry counts its bloom.
 #[test]
@@ -206,7 +206,7 @@ fn the_memory_gauge_is_the_sum_of_the_entries_through_inserts_and_removals() {
         .map(|(c, input)| DirEntry::of(OBJECT, c, KeySummary::of(input).unwrap()))
         .collect();
     let mut directory = Directory::default();
-    let sum = |d: &Directory| d.entry_bytes().sum::<u64>();
+    let sum = |d: &Directory| d.recounted_bytes();
     directory.insert([1; 16], entries[0].clone());
     let one = directory.bytes();
     assert!(one > 0);
@@ -238,8 +238,8 @@ fn the_memory_gauge_is_the_sum_of_the_entries_through_inserts_and_removals() {
     assert_eq!((directory.entries(), directory.bytes()), (0, 0));
 }
 
-/// One entry's memory is the entry, its map key, eight bytes per summary
-/// key or one per bloom byte, and its anchors.
+/// One stream's memory is its slot and capacity, eight bytes per summary key
+/// or one per bloom byte, and its anchors.
 #[test]
 fn an_entrys_memory_counts_its_summary_and_anchors_exactly() {
     use super::object::Anchor;
@@ -260,7 +260,7 @@ fn an_entrys_memory_counts_its_summary_and_anchors_exactly() {
             anchors
         ],
     };
-    let base = size_of::<DirEntry>() + size_of::<u64>();
+    let base = usize::try_from(super::directory::stream_charge(1)).unwrap();
     let memory = |e: DirEntry| {
         let mut d = Directory::default();
         d.insert([7; 16], e);
@@ -271,4 +271,108 @@ fn an_entrys_memory_counts_its_summary_and_anchors_exactly() {
         base + 3 * 8 + 2 * size_of::<Anchor>()
     );
     assert_eq!(memory(entry(KeySummary::Bloom(vec![0; 64]), 0)), base + 64);
+}
+
+/// One tiny entry, as a seal of one record makes.
+fn tiny(last: u64) -> DirEntry {
+    DirEntry {
+        object: OBJECT,
+        chunk_off: 0,
+        chunk_len: 0,
+        first: last,
+        last,
+        page_count: 1,
+        keys: KeySummary::Keys(vec![1]),
+        anchors: Vec::new(),
+    }
+}
+
+/// A stream is charged what it allocates: its map slot, its entries' capacity
+/// and each entry's own heap, exactly, through a capacity's growth and until
+/// its last entry leaves.
+#[test]
+fn a_stream_is_charged_its_slot_its_capacity_and_its_entries_heap() {
+    use super::directory::{entry_own_heap, stream_charge};
+    // A slot is its 16-byte key, its 24-byte `Vec` header and a control byte.
+    let entry = size_of::<DirEntry>() as u64;
+    assert_eq!(
+        [stream_charge(0), stream_charge(1), stream_charge(4)],
+        [41, 41 + entry, 41 + 4 * entry]
+    );
+    let mut d = Directory::default();
+    let own = entry_own_heap(&tiny(0));
+    assert_eq!(own, 8, "one summary key");
+    d.insert([1; 16], tiny(0));
+    assert_eq!(d.bytes(), stream_charge(1) + own, "one entry");
+    d.insert([1; 16], tiny(1));
+    assert_eq!(d.bytes(), stream_charge(2) + 2 * own, "two entries");
+    d.insert([1; 16], tiny(2));
+    assert_eq!(d.bytes(), stream_charge(4) + 3 * own, "three, capacity 4");
+    d.insert([1; 16], tiny(1));
+    assert_eq!(
+        d.bytes(),
+        stream_charge(4) + 3 * own,
+        "a re-insert replaces"
+    );
+    d.remove(&[1; 16], 1, OBJECT);
+    assert_eq!(d.bytes(), stream_charge(4) + 2 * own, "capacity is kept");
+    d.remove(&[1; 16], 0, OBJECT);
+    d.remove(&[1; 16], 2, OBJECT);
+    assert_eq!((d.entries(), d.streams(), d.bytes()), (0, 0, 0));
+}
+
+/// A stream's chunks read in order of (last offset, object) wherever they
+/// were inserted, from an offset, at most `max`.
+#[test]
+fn a_streams_entries_read_by_last_offset_and_object() {
+    let mut d = Directory::default();
+    let hash = [2; 16];
+    for last in [5, 1, 9, 3] {
+        d.insert(hash, tiny(last));
+    }
+    let mut other = tiny(5);
+    other.object = ObjectId { epoch: 3, seq: 8 };
+    d.insert(hash, other);
+    let lasts = |d: &Directory, from, max| -> Vec<(u64, u64)> {
+        d.from(&hash, from, max)
+            .iter()
+            .map(|e| (e.last, e.object.seq))
+            .collect()
+    };
+    assert_eq!(lasts(&d, 0, 9), [(1, 9), (3, 9), (5, 8), (5, 9), (9, 9)]);
+    assert_eq!(
+        lasts(&d, 3, 2),
+        [(3, 9), (5, 8)],
+        "from includes an entry ending there"
+    );
+    assert_eq!(lasts(&d, 4, 9), [(5, 8), (5, 9), (9, 9)]);
+    assert_eq!(lasts(&d, 10, 9), []);
+    d.remove(&hash, 5, OBJECT);
+    assert_eq!(
+        lasts(&d, 5, 9),
+        [(5, 8), (9, 9)],
+        "only that object's entry left"
+    );
+    assert!(d.from(&[9; 16], 0, 9).is_empty(), "an unknown stream");
+}
+
+/// 10,000 single-chunk streams, the shape a population of tiny streams seals:
+/// charged under 200 B each, and the charge within 1.5x of what the allocator
+/// holds (a BTreeMap per stream was a 1.5 KiB leaf node charged 116 B).
+#[test]
+fn single_chunk_streams_are_charged_what_they_allocate() {
+    let mut d = Directory::default();
+    let before = crate::test_alloc::live_bytes();
+    for n in 0..10_000u64 {
+        let mut hash = [0u8; 16];
+        hash[..8].copy_from_slice(&n.to_le_bytes());
+        d.insert(hash, tiny(0));
+    }
+    let held = u64::try_from(crate::test_alloc::live_bytes() - before).unwrap();
+    assert!(d.bytes() <= 10_000 * 200, "charged {} B", d.bytes());
+    assert!(
+        held * 2 <= d.bytes() * 3,
+        "the allocator holds {held} B against a charge of {} B",
+        d.bytes()
+    );
 }

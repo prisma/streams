@@ -825,6 +825,35 @@ async fn a_gap_a_corrupt_index_row_leaves_answers_corruption_and_nothing_else_do
     rig.engine.begin_close();
 }
 
+/// A shard's line holds what the directory really allocates: single-chunk
+/// streams reach `DIRECTORY_FOLD_BYTES` of true charge at 27,414 entries (a
+/// fold every 91 s at 300 appends a second), not the 34,953 they took when a
+/// leaf node per stream went uncharged.
+#[test]
+fn a_fold_is_due_at_the_entry_count_the_line_really_holds() {
+    use crate::spill::budget::DIRECTORY_FOLD_BYTES;
+    use crate::spill::directory::{DirEntry, Directory, KeySummary};
+    let tiny = || DirEntry {
+        object: crate::spill::object::ObjectId { epoch: 1, seq: 1 },
+        chunk_off: 0,
+        chunk_len: 0,
+        first: 0,
+        last: 0,
+        page_count: 1,
+        keys: KeySummary::Keys(vec![1]),
+        anchors: Vec::new(),
+    };
+    let mut d = Directory::default();
+    let mut n = 0u64;
+    while !fold_rule(false, d.bytes(), 0, DIRECTORY_FOLD_BYTES) {
+        let mut hash = [0u8; 16];
+        hash[..8].copy_from_slice(&n.to_le_bytes());
+        d.insert(hash, tiny());
+        n += 1;
+    }
+    assert_eq!(n, 27_414);
+}
+
 #[test]
 fn a_fold_is_due_by_its_period_its_directory_or_the_processs() {
     use crate::spill::budget::{DIRECTORY_FOLD_BYTES, PROCESS_DIRECTORY_BYTES};

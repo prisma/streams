@@ -221,11 +221,11 @@ async fn check_directories(engines: &[Arc<ShardEngine>]) {
         let entries = directory.entries();
         let sizes: Vec<u64> = directory.entry_bytes().collect();
         let largest = sizes.iter().copied().max().unwrap_or(0);
-        let bytes: u64 = sizes.iter().sum();
+        let bytes = directory.bytes();
         assert_eq!(
-            directory.bytes(),
             bytes,
-            "engine {i}: the gauge is the entries' sum"
+            directory.recounted_bytes(),
+            "engine {i}: the gauge is what the streams hold"
         );
         total += bytes;
         eprintln!(
