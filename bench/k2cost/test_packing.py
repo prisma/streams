@@ -90,6 +90,19 @@ class Price(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def test_an_instance_size_prices_its_memory(self):
+        # K2_INSTANCE_GB: the packing points per instance size (bench/ramp/k2-server.sh)
+        import importlib
+        import os
+        import packing
+        os.environ["K2_INSTANCE_GB"] = "8"
+        try:
+            importlib.reload(packing)
+            self.assertAlmostEqual(packing.price(pack_run(self.tmp, "s10"))["terms_month"]["memory"], 8 * 720 * 0.006)
+        finally:
+            del os.environ["K2_INSTANCE_GB"]
+            importlib.reload(packing)
+
     def test_the_instance_month_per_tenant_and_the_k2_bill(self):
         import packing
         s = packing.price(pack_run(self.tmp, "s10"))

@@ -60,6 +60,11 @@
 #       screening pair: ref and cand).
 #   K2_BASELINE  a priced run directory (e.g. an L6 idle point), passed to
 #       price.py --baseline: its per-cell idle floor rates.
+#   K2_SERVER_DOCKER=1  the servers run in sized Linux containers: set
+#       K2_SERVER_BIN=bench/ramp/k2-server.sh and its K2_DOCKER_CPUS /
+#       K2_DOCKER_MEM in SERVER_ENV_EXTRA; CPU time is then the container's
+#       cgroup usage (scrape.py), and K2_INSTANCE_GB prices the memory
+#       (packing.py; default 1).
 #
 # With QUIESCE=1 the deferred window ends at the `quiesced` snapshot; the
 # IDLE_SECS that follow are an idle tail (quiesced -> end) that price.py
@@ -362,7 +367,9 @@ start_server() { # ordinal
   local n=$1 port=$((SRV_BASE_PORT + $1 - 1))
   # env -i: the server sees exactly the posture file, nothing from this
   # shell; the values never appear on a command line.
-  env -i PATH=/usr/bin:/bin HOME="$HOME" /bin/bash -c \
+  # K2_DOCKER_NAME: a containerised K2_SERVER_BIN (bench/ramp/k2-server.sh)
+  # names its container after the server's port; a native binary ignores it.
+  env -i PATH=/usr/bin:/bin HOME="$HOME" K2_DOCKER_NAME="k2srv-$port" /bin/bash -c \
     'set -a; . "$1"; set +a; exec "$2" --listen "$3"' _ \
     "$SECRETS/server-$n.env" "$SERVER_BIN" "127.0.0.1:$port" \
     >> "$RUN/server-$n.log" 2>&1 < /dev/null &
@@ -548,7 +555,15 @@ sleep 1
 # ---- phases -------------------------------------------------------------
 pid_spec() { # the live servers' and router's pids, for CPU time (D1 compute)
   local n spec=
-  for n in $(seq 1 "$SERVERS"); do spec="${spec:+$spec,}streams-$n=${SRV_PIDS[$n]}"; done
+  # K2_SERVER_DOCKER=1: the servers run in containers (bench/ramp/k2-server.sh),
+  # whose CPU time scrape.py reads from the container's cgroup.
+  for n in $(seq 1 "$SERVERS"); do
+    if [ "${K2_SERVER_DOCKER:-0}" = 1 ]; then
+      spec="${spec:+$spec,}streams-$n=docker:k2srv-$((SRV_BASE_PORT + n - 1))"
+    else
+      spec="${spec:+$spec,}streams-$n=${SRV_PIDS[$n]}"
+    fi
+  done
   [ -z "$PID_LB" ] || spec="$spec,router=$PID_LB"
   echo "$spec"
 }

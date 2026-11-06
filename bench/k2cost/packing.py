@@ -57,7 +57,9 @@ GIB = float(1 << 30)
 PRICES = {"class_a": 3.75e-6, "class_b": 0.375e-6, "storage_gib_month": 0.015, "transfer_gb": 0.01,
           "egress_gb": 0.005, "mem_gb_h": 0.006, "cpu_vcpu_h": 0.064}
 CASES = {"owner": 1.0, "ab50": 0.5}  # the multiplier on Class A and B
-INSTANCE_GB = 1.0
+# The priced instance's memory (GB): Compute's 1 GiB class unless the run
+# set another size (K2_INSTANCE_GB, the packing points per instance size).
+INSTANCE_GB = float(os.environ.get("K2_INSTANCE_GB", "1.0"))
 K2 = {"produce_gb": 0.04, "consume_gb": 0.04, "retain_gb_month": 0.02}
 CEILING = 0.20  # our cost at most 20% of the K2 bill: an 80% margin
 # Retention days by the manifest class (Fable's profiles, report section 4.1); None keeps everything.

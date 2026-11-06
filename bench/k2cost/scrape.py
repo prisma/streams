@@ -480,14 +480,33 @@ def cpu_secs(text: str) -> float | None:
     return days * 86400 + secs
 
 
+def container_stats(text: str) -> dict:
+    """cpu_s and rss_kb from a container's `grep usage_usec cpu.stat; cat
+    /proc/1/statm` (cgroup v2 CPU microseconds, resident pages of 4 KiB)."""
+    lines = text.split("\n")
+    usec = int(lines[0].split()[1])
+    return {"cpu_s": usec / 1e6, "rss_kb": int(lines[1].split()[1]) * 4}
+
+
 def proc_stats(spec: str) -> dict:
     """CPU seconds and RSS of the rig's processes (name=pid[,name=pid]),
-    read with ps: the local stand-in for D1's active-CPU meter."""
+    read with ps: the local stand-in for D1's active-CPU meter. A value
+    docker:NAME is a container (bench/ramp/k2-server.sh): its cgroup's CPU
+    time and its server's resident set."""
     out = {}
     for part in (spec or "").split(","):
         if "=" not in part:
             continue
         name, pid = part.split("=", 1)
+        if pid.startswith("docker:"):
+            try:
+                r = subprocess.run(["docker", "exec", pid[len("docker:"):], "sh", "-c",
+                                    "grep usage_usec /sys/fs/cgroup/cpu.stat; cat /proc/1/statm"],
+                                   capture_output=True, text=True, timeout=10)
+                out[name] = {"container": pid[len("docker:"):], **container_stats(r.stdout)}
+            except (OSError, ValueError, IndexError, subprocess.SubprocessError) as e:
+                out[name] = {"container": pid, "error": str(e)}
+            continue
         try:
             r = subprocess.run(["ps", "-o", "time=,rss=", "-p", pid], capture_output=True, text=True, timeout=5)
             fields = r.stdout.split()
