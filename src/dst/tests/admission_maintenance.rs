@@ -706,6 +706,14 @@ async fn debug_load_reports_typed_limiter_and_frame_totals() {
     assert_eq!(st, 200);
     let before = load(&body);
     assert_eq!(
+        (
+            &before["admit_shed_rss_blamed"],
+            &before["admit_shed_inflight_blamed"]
+        ),
+        (&serde_json::json!(0), &serde_json::json!(0)),
+        "the fair shed's refusals reach /v1/debug/load: {before}"
+    );
+    assert_eq!(
         before["tasks"]["connection_panics"], 1,
         "item 37: the runtime's own panicked connections reach /v1/debug/load: {before}"
     );

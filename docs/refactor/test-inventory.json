@@ -4822,7 +4822,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "26dd425ef9d07bf5528fd951a27badb1fc31df46995cedde2be944fda61a7cb6",
+    "function_sha256": "25e7070daf0ec146452694a7f5cada12349f2476650ce0ba9fcf17fdd30a5e77",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/admission_maintenance.rs",

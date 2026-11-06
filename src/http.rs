@@ -766,7 +766,7 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
         "admit_shed": adm.shed.total,
         "admit_shed_inflight": adm.shed.inflight,
         "admit_shed_rss": adm.shed.rss,
-        "admit_shed_survival": adm.shed.survival,
+        "admit_shed_survival": adm.shed.survival, "admit_shed_rss_blamed": adm.shed.blamed, "admit_shed_inflight_blamed": adm.shed.blamed_inflight,
         "project_memory": state.quotas.memory_pressure_json(
             adm.project_memory_pressure_bytes,
             32,

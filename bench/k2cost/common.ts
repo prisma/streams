@@ -648,6 +648,11 @@ export class Http {
       if (res.status === 401) this.hdrs.reloadSoon();
       const r: Resp = { status: res.status, headers: res.headers, body, ms: performance.now() - t0 };
       if (res.status >= 400) this.meter.errorCode(`${res.status}:${errCode(r) || "-"}`);
+      // One code, two refusals: the project's latch answers retry-after 1,
+      // the cell's fair shed 2.
+      if (res.status === 429 && errCode(r) === "project_memory_pressure") {
+        this.meter.add(`memory_pressure_retry_after_${res.headers?.get("retry-after") ?? "none"}`);
+      }
       return r;
     } catch (e) {
       const code = opt.signal?.aborted ? "cancelled" : timeout.aborted ? "timeout" : "err";
