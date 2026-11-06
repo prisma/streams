@@ -56,6 +56,15 @@ envelope is the shared bound every project's ceilings divide:
 | Live subscriptions (SSE) | 1,200 | `SSE_MAX_CONNECTIONS` |
 | Streams | 65,536 | the per-stream maps (`REGISTRY_CACHE_MAX`) |
 | Appended bytes queued, not yet stored | 512 MiB | `MAX_UNABSORBED_BYTES_PER_INSTANCE` |
+| Resident stream handles per shard (the hot working set) | 8,192 | `HANDLE_MAX_RESIDENT` |
+
+Resident stream handles are the hot working set: a stream beyond them reloads
+its tail from the shard on its next touch (one store GET of the tail row), and
+the 65,536 is the per-stream maps' bound, not a hot-set guarantee. Footers are read
+whole: streams per shard are comfortable to about 100k on a 1 GiB cell. Past about
+200k streams in one object a footer is no longer cached, and sealed reads fetch it
+one at a time, slowly. Measured 2026-11-06: 100,000 tiny streams touched at 300/s on a
+1 GiB dedicated cell, peak 356 MiB, no shed.
 
 The three envelope rates are *measured* on the 1 GiB class on the reference
 rig, marked in `shared-cell.env` as pending re-measurement on the one-shard
@@ -83,6 +92,20 @@ packing rule holds the cell's heavy projects to k − 1 units per axis
 | Streams | 8,192 | 57,344 | 65,536 |
 | Appended bytes queued | 64 MiB | 64 MiB | 512 MiB |
 | Memory its requests hold (memory line) | 32 MiB | 63,963,135 B (about 61 MiB) | 256 MiB |
+
+**Reads and memory.** A read from a held
+cursor costs no store round trip while its records are in the cell's ring or
+log, and about 0.2 a read on average at the documented capacity (measured
+2026-11-06). A read from offset 0 of a stream with n sealed chunks costs about
+n + 2 store round trips (the descriptor, the run index, one per chunk) and holds
+its page (1 MiB on a shared cell) and its request state in memory while it runs;
+the cell bounds that memory by the project's read reservation against its memory
+line, its read capacity (131 MB), and its 512 requests in flight, and past its
+memory shed line refuses the heaviest project first and then every write. Measured
+on a 1 GiB shared cell at documented capacity (8 tenants, 65,536 streams, 1,200
+requests a second): cursor reads, 373 MiB, 0 refusals; every tenant replaying
+six-chunk streams from offset 0 at full rate, 457 MiB, 8.4 round trips a read, 0
+refusals, 43 MiB under the shed line.
 
 - A project created through self-serve (the interim issuer) gets
   **10 requests a second**, unless its workspace's allow-list entry names

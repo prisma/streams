@@ -9,6 +9,7 @@ previous session.
 
 Contents:
 
+- [Next: a deep read charges its request state](#next-a-deep-read-charges-its-request-state)
 - [Public beta (decided 2026-10-11)](#public-beta-decided-2026-10-11)
 - [0. How work is done in this repository](#0-how-work-is-done-in-this-repository)
 - [1. Composed test: a refused chain's overlapping pages read exactly](#1-composed-test-a-refused-chains-overlapping-pages-read-exactly)
@@ -25,8 +26,42 @@ Contents:
 - [12. Formal verification: new obligations and what blocks them](#12-formal-verification-new-obligations-and-what-blocks-them)
 - [13. Configuration: fewer settings, and defaults that are what production runs](#13-configuration-fewer-settings-and-defaults-that-are-what-production-runs)
 - [14. K2 parity: storage layout 5, fewer uploads, shared cells](#14-k2-parity-storage-layout-5-fewer-uploads-shared-cells)
+- [15. Follow-ups from edge change #248's 2d (2026-11-05)](#15-follow-ups-from-edge-change-248s-2d-2026-11-05)
 
 ---
+
+## Next: a deep read charges its request state
+
+Decided by Fable 5.1 on 2026-11-06 (`P2C-2D-DECISION-2.md`, section 10.b); an edge change, with
+its own red DST and the owner's ratification.
+
+**The exposure: 43 MiB.** Eight tenants at their ceilings replaying from offset 0 hold a 1 GiB
+shared cell at 457 MiB, 43 MiB under the 500 MiB shed line, so a +129 MiB usage report during
+that replay would cross it. Over the line with eight equal replayers the fair shed's verdict is
+`Even` (nobody is over its share), and `admit_write_memory` refuses every append on the cell,
+a ninth tenant's included. The fair shed protects a cell only when one tenant is over its
+share.
+
+**Measured:** bytes in flight on requests 104 -> 201 MiB over six passes (instrumented; about 65-80
+MiB of live bytes went when the load ended), requests in flight 56 -> 141, about 1 MB a request all
+in. The 1 MiB page is charged; the rest (about 0.4 MB: mpsc blocks, hyper buffers and connection
+state, SlateDB blocks under the scan) is in no line. `ADMIT_MAX_INFLIGHT` 512 bounds their count,
+not their memory.
+
+**The fix:** charge about 512 KiB of request state into the read reservation beside the page, so a
+project's line bounds its deep reads (32 MiB / 1.5 MiB, about 21 in flight at K = 8) and a replaying
+tenant waits, then is refused 429 `project_memory_pressure` with `retry-after: 1`, on its own reads
+before the cell nears 400. Nobody else's write is touched.
+
+**Acceptance, on the offset-0 B shape (`P2C_SHAPE=B`, a ninth tenant added):** admission <= 400; all
+eight tenants' writes 0 refusals; reads refused only as 429 `project_memory_pressure` `retry-after: 1`
+(the reservation, never the shed); the ninth, a small writer at 10 appends/s, 0 refusals throughout;
+round trips per touch reported.
+
+**The retention trigger rides with it if still needed.** RSS minus live was 81-128 MiB on the
+instrumented offset-0 tree, against a limit of 64. Measured in the same leg; only if it is still over
+64 MiB there, the purge-on-pressure sampler gets a second trigger at 400 MiB, one constant on the
+existing path. Rejected: mimalloc options, and `mi_collect` after a fold.
 
 ## Public beta (decided 2026-10-11)
 
@@ -2653,3 +2688,27 @@ without LIST) is implemented: the fleet tick reads its members by name with
 conditional GETs and lists only to discover (edge record #124, ratified on
 2026-10-08, landing call C3; the owner accepted its edit of the R09
 mechanism test on 2026-10-08, T6).
+
+## 15. Follow-ups from edge change #248's 2d (2026-11-05)
+
+Fable 5.1's decisions of 2026-11-05 and 2026-11-06 (`P2C-2D-DECISION-2.md`, sections 5, 6, 9 and 10). None
+blocks that stack.
+
+- **A paged run-index footer (a `LAYOUT_VERSION` bump), before any cell is sized for more than 100k
+  streams per shard.** `runs_of` reads every live object's footer whole: 53 B a stream on the wire, 82 B
+  decoded. The index cache keeps one up to 16 MiB decoded (about 200k streams), and two fit beside the runs to
+  about 100k streams per shard (the merge window). Above that, every sealed read GETs the footer behind
+  `spill::budget::footer_permit`, one at a time: slow, not OOM. A paged footer reads only the page holding the
+  stream. `spill::cache_tests::a_footer_of_the_documented_stream_bound_fits_the_index_cache` pins the
+  documented bound against the cache.
+- **`/v1/debug/usage` renders its rows streaming or paged.** At 65,536 tracked streams one call is about 1.2M
+  allocations (2.7M in the settle poll's tick) and about +129 MiB of RSS in one 2 s tick. On a loaded 1 GiB cell
+  near its 400 MiB bar that crosses the 500 MiB shed line, and every project's writes are refused for the tick:
+  an operator's call can shed a cell. Operator surface, not an edge change. Consumers to keep working:
+  `bench/k2cost/{k2store,k2valid,scrape}.py`, which read `frame_bytes` and `absorb_backlog`. The rig leaves it
+  out of its loop on large populations (`SCRAPE_USAGE_SECS=0`).
+- **The usage tracker and the key cache become byte lines.** Both are count caps (65,536 rows; 13,238,344 B and
+  14,873,400 B full), the same rule the seal directory now follows: a per-stream structure charges what it
+  allocates. The tracker's overflow admits writes untracked, so its cap is an owner-class decision.
+- **A fold need not read back the footer it wrote.** Each object's footer is fetched once at its write
+  (`fold.rs` -> `fetch_footer`): one 20 ms GET a fold. The writer holds the entries it wrote.
