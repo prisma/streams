@@ -352,7 +352,7 @@ class Operator(unittest.TestCase):
             url = f"http://127.0.0.1:{srv.server_address[1]}"
             for operator in (False, True):
                 args = types.SimpleNamespace(run=d, servers=f"streams-1={url}", auth_file=auth, interval=10.0, absorb_age_secs=60.0,
-                                             s3lite=url, operator=operator)
+                                             s3lite=url, operator=operator, usage_scrape_secs=None, timings=False)
                 loop = scrape.Loop(args)
                 loop.scrape_server("streams-1", url)
                 loop.out.close()
