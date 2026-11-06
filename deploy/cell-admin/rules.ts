@@ -419,6 +419,23 @@ export class PlacementRefused extends AdminError {
   }
 }
 
+/// What a placement's caps count: the projects on the cell not offboarded,
+/// and each workspace's active ones. Counting walks the state, so a change
+/// placing many keeps one tally and counts each placement into it.
+export interface PlacementTally {
+  placed: number;
+  active: Map<string, number>;
+}
+
+export function placementTally(state: CellState): PlacementTally {
+  const tally: PlacementTally = { placed: 0, active: new Map() };
+  for (const [, p] of placedProjects(state)) {
+    tally.placed += 1;
+    if (p.phase === "active") tally.active.set(p.workspace_id, (tally.active.get(p.workspace_id) ?? 0) + 1);
+  }
+  return tally;
+}
+
 /// Where a project may be placed: not a reserved id, not the cell's
 /// ACCOUNT_ID as workspace, an id never used before (`denylist` is the
 /// denylist as read before this placement burns the id), and within the
@@ -429,13 +446,14 @@ export class PlacementRefused extends AdminError {
 /// writer): a project being offboarded has its credentials revoked, so its
 /// workspace may place the next one at once. The workspace's cap is the
 /// cell's unless `opts.workspaceCap` names the workspace's own (the
-/// issuer's allow-list entry).
+/// issuer's allow-list entry). `opts.tally` is what the caps count, kept by
+/// a caller placing many in one change; without one they count the state.
 export function checkPlacement(
   state: CellState,
   project: string,
   workspace: string,
   denylist: Set<string>,
-  opts: { workspaceCap?: number } = {},
+  opts: { workspaceCap?: number; tally?: PlacementTally } = {},
 ): void {
   checkId("--project", project);
   checkId("--workspace", workspace);
@@ -456,12 +474,12 @@ export function checkPlacement(
     throw new PlacementRefused("id_used", `project id ${project} was used before: an id is never placed twice`);
   }
   checkDedicated(state);
-  const placed = placedProjects(state).map(([, p]) => p);
-  if (placed.length >= cell.max_projects) {
+  const tally = opts.tally ?? placementTally(state);
+  if (tally.placed >= cell.max_projects) {
     throw new PlacementRefused("cell_full", `cell ${cell.cell_id} already holds its ${cell.max_projects} projects`);
   }
   const cap = opts.workspaceCap ?? cell.workspace_cap;
-  const mine = placed.filter((p) => p.workspace_id === workspace && p.phase === "active").length;
+  const mine = tally.active.get(workspace) ?? 0;
   if (mine >= cap) {
     throw new PlacementRefused(
       "workspace_full",
@@ -515,9 +533,12 @@ export const nextCredentialSeq = (state: CellState): number =>
 
 /// A new customer credential's identity and, for one with a secret, the
 /// secret's hash (secrets.ts); the CLI's `admit` makes one without. It
-/// expires at `expires_at` (epoch seconds) when given, else never.
+/// expires at `expires_at` (epoch seconds) when given, else never. `seq` is
+/// nextCredentialSeq's answer from a caller making many in one change, for
+/// which asking it each time walks every credential each time.
 export interface NewCredential {
   id: string;
+  seq?: number;
   expires_at?: number | null;
   secret_hash?: string;
   hv?: number;
@@ -529,7 +550,7 @@ export interface NewCredential {
 
 /// Place a project with its first customer credential: the mutation the
 /// CLI's `admit` and the issuer's project create both make, after
-/// checkSizing and checkPlacement and after the id is burned (burnId).
+/// checkSizing and checkPlacement and after the id is burned (burnIds).
 export function admitProject(
   state: CellState,
   a: {
@@ -607,7 +628,7 @@ function addCredentialRecord(
     omitted: false,
     ...rest,
     created_at: now,
-    seq: nextCredentialSeq(state),
+    seq: cred.seq ?? nextCredentialSeq(state),
   };
   bumpFeed(state);
 }

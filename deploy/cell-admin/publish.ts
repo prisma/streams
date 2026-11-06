@@ -179,14 +179,16 @@ export async function mutate<T>(
   }
 }
 
-/// Burn `id` for good before anything publishes it: refused when the
-/// denylist already holds it, appended by compare-and-swap otherwise.
-export async function burnId(store: StateStore, id: string): Promise<void> {
+/// Burn `burned` for good before anything publishes them, in one write:
+/// refused when the denylist already holds any, appended by compare-and-swap
+/// otherwise.
+export async function burnIds(store: StateStore, burned: readonly string[]): Promise<void> {
   for (let attempt = 1; ; attempt++) {
     const { ids, etag } = await store.readDenylist();
-    if (ids.has(id)) throw new AdminError(`project id ${id} was used before: an id is never placed twice`);
+    const used = burned.find((id) => ids.has(id));
+    if (used !== undefined) throw new AdminError(`project id ${used} was used before: an id is never placed twice`);
     try {
-      await store.appendDenylist(id, etag);
+      await store.appendDenylist(burned, etag);
       return;
     } catch (e) {
       if (!(e instanceof Conflict)) throw e;

@@ -12,6 +12,7 @@ import type { Bundle } from "./feeds";
 import {
   BUNDLE_FILE,
   type CellState,
+  denylistLines,
   parseDenylist,
   parseState,
   STATE_FILE,
@@ -85,8 +86,8 @@ export interface StateStore {
   publishBundle(text: string, etag: string | null): Promise<string>;
   /// The denylist named by the loaded state (or by the one being created).
   readDenylist(): Promise<{ ids: Set<string>; etag: string | null }>;
-  /// Append `id` to the denylist if it still has `etag`, durably.
-  appendDenylist(id: string, etag: string | null): Promise<string>;
+  /// Append `ids` to the denylist if it still has `etag`, in one durable write.
+  appendDenylist(ids: readonly string[], etag: string | null): Promise<string>;
   /// The allow-list and its ETag, or null when there is none.
   readAllowlist(): Promise<{ doc: Allowlist; etag: string } | null>;
   /// Replace the allow-list if it still has `etag`, or create it when null.
@@ -205,11 +206,11 @@ export class DirStore implements StateStore {
   }
 
   /// An append, not a rewrite: other cells' tools may share the file.
-  async appendDenylist(id: string, etag: string | null): Promise<string> {
+  async appendDenylist(ids: readonly string[], etag: string | null): Promise<string> {
     const path = this.denylistPath();
     const current = readText(path);
     if ((current === null ? null : etagOf(current)) !== etag) throw new Conflict(`${path} changed`);
-    appendFileSync(path, `${id}\n`, { mode: 0o600 });
+    appendFileSync(path, denylistLines(ids), { mode: 0o600 });
     const fd = openSync(path, "r");
     try {
       fsyncSync(fd);

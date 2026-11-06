@@ -24,7 +24,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { S3Client } from "bun";
 import { AdminError, StoreUnavailable } from "./errors";
-import { BUNDLE_FILE, type CellState, parseDenylist, parseState, STATE_FILE, stateText } from "./state";
+import { BUNDLE_FILE, type CellState, denylistLines, parseDenylist, parseState, STATE_FILE, stateText } from "./state";
 import {
   type Allowlist,
   allowlistText,
@@ -312,10 +312,11 @@ export class S3Store implements StateStore {
     await new S3Object(this.control, this.targets.control, key).put(`${JSON.stringify(json)}\n`, null);
   }
 
-  async appendDenylist(id: string, etag: string | null): Promise<string> {
+  async appendDenylist(ids: readonly string[], etag: string | null): Promise<string> {
     const got = await this.denylist.get();
     if ((got?.etag ?? null) !== etag) throw new Conflict(`${this.denylist.where} changed`);
-    const text = got === null || got.text === "" || got.text.endsWith("\n") ? `${got?.text ?? ""}${id}\n` : `${got.text}\n${id}\n`;
+    const lines = denylistLines(ids);
+    const text = got === null || got.text === "" || got.text.endsWith("\n") ? `${got?.text ?? ""}${lines}` : `${got.text}\n${lines}`;
     return this.denylist.put(text, etag);
   }
 }

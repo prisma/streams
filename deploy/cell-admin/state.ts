@@ -237,6 +237,9 @@ export function parseDenylist(text: string): Set<string> {
   );
 }
 
+/// `ids` as the lines a denylist holds them in.
+export const denylistLines = (ids: readonly string[]) => ids.map((id) => `${id}\n`).join("");
+
 export function journal(state: CellState, command: string, detail: string): void {
   state.journal.push({ at: new Date().toISOString(), command, detail });
 }

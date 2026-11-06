@@ -5,8 +5,16 @@ import { join, resolve } from "node:path";
 import type { Flags } from "./args";
 import { CELL_ENV_KEYS, stageCellEnv } from "./cell-env";
 import { AdminError } from "./errors";
-import { BOUNDED_FIELDS, cellSizing, profileDigest, QUOTA_FIELDS, readProfiles } from "./profile";
-import { BundlePublisher, burnId, loadChecked, mutate } from "./publish";
+import {
+  BOUNDED_FIELDS,
+  type CellSizing,
+  cellSizing,
+  profileDigest,
+  QUOTA_FIELDS,
+  type Quotas,
+  readProfiles,
+} from "./profile";
+import { BundlePublisher, burnIds, loadChecked, mutate } from "./publish";
 import {
   admitProject,
   admittedQuotas,
@@ -19,11 +27,15 @@ import {
   classPreset,
   isCanary,
   newCredentialId,
+  nextCredentialSeq,
+  type PlacementTally,
   placeCanary,
   placedProjects,
+  placementTally,
   prefixesOf,
   SYSTEM_PROJECT,
   scopesOf,
+  type Weights,
   weightValues,
 } from "./rules";
 import { type CellState, GATE_DEFAULT, journal, STATE_FORMAT, writeDurable } from "./state";
@@ -53,7 +65,7 @@ export async function init(f: Flags, io: Io): Promise<void> {
   if (deployment === "proj_local" || deployment === SYSTEM_PROJECT || account === "acct_local") {
     throw new AdminError("a shared cell needs a real PROJECT_ID and ACCOUNT_ID, not a placeholder");
   }
-  const profiles = profilesOf(f);
+  const profiles = profilesOf(f.all("profile"));
   const env = readProfiles(profiles);
   const sizing = cellSizing(env);
   if (f.has("key-file") === f.has("public-key")) {
@@ -141,10 +153,38 @@ async function createCell(store: StateStore, state: CellState, detail: string): 
 /// The profile files a command reads: `--profile` (repeatable, later
 /// wins), or the two this tool ships with for the cell's kind: the shared
 /// ones, or the dedicated ones for a cell of k = 1.
-const profilesOf = (f: Flags, shareK?: number) =>
-  (f.all("profile").length > 0 ? f.all("profile") : shareK === 1 ? DEDICATED_PROFILES : DEFAULT_PROFILES).map((p) =>
-    resolve(p),
-  );
+const profilesOf = (given: readonly string[], shareK?: number) =>
+  (given.length > 0 ? given : shareK === 1 ? DEDICATED_PROFILES : DEFAULT_PROFILES).map((p) => resolve(p));
+
+/// One project going onto the cell, all that its placement decides from.
+interface Placement {
+  project: string;
+  workspace: string;
+  weights: Weights;
+  quotas: Quotas;
+  scopes: string;
+  stream_prefixes?: string[];
+}
+
+/// The placement `admit` and `admitMany` both make: the checks, the project
+/// with its first credential, its journal entry. The id is burned already.
+/// `kept` is what a change placing many carries from one placement to the
+/// next, so that this one need not walk the state.
+function place(
+  state: CellState,
+  p: Placement,
+  sizing: CellSizing,
+  denylist: Set<string>,
+  kept: { tally?: PlacementTally; seq?: number } = {},
+): string {
+  checkPlacement(state, p.project, p.workspace, denylist, { tally: kept.tally });
+  checkPacking(state, p.weights, sizing);
+  const credential = newCredentialId(state);
+  const { project, workspace, quotas, scopes, stream_prefixes } = p;
+  admitProject(state, { project, workspace, quotas, scopes, stream_prefixes, credential: { id: credential, seq: kept.seq } });
+  journal(state, "admit", `${project} workspace=${workspace} credential=${credential}`);
+  return credential;
+}
 
 export async function admit(f: Flags, io: Io): Promise<void> {
   const store = await openStore(f);
@@ -152,7 +192,7 @@ export async function admit(f: Flags, io: Io): Promise<void> {
   const workspace = f.must("workspace");
   await store.exclusive(async () => {
     const { state: first } = await loadChecked(store);
-    const sizing = checkSizing(first, readProfiles(profilesOf(f, first.cell.share_k)));
+    const sizing = checkSizing(first, readProfiles(profilesOf(f.all("profile"), first.cell.share_k)));
     const { ids: denylist } = await store.readDenylist();
     const preset = classPreset(first, f.get("class"), f.all("weight"));
     checkPlacement(first, project, workspace, denylist);
@@ -161,18 +201,79 @@ export async function admit(f: Flags, io: Io): Promise<void> {
     const quotas = admittedQuotas(first, f.all("quota"), sizing.stored_default, weights);
     const scopes = scopesOf(f.get("scopes"));
     const stream_prefixes = prefixesOf(f.all("prefix"));
-    await burnId(store, project);
-    const { result: credential, state } = await mutate(store, (state) => {
-      checkPlacement(state, project, workspace, denylist);
-      checkPacking(state, weights, sizing);
-      const credential = newCredentialId(state);
-      admitProject(state, { project, workspace, quotas, scopes, stream_prefixes, credential: { id: credential } });
-      journal(state, "admit", `${project} workspace=${workspace} credential=${credential}`);
-      return credential;
-    });
+    await burnIds(store, [project]);
+    const placement = { project, workspace, weights, quotas, scopes, stream_prefixes };
+    const { result: credential, state } = await mutate(store, (state) => place(state, placement, sizing, denylist));
     io.out(`admitted ${project} (workspace ${workspace}) with credential ${credential}`);
     io.out(`quotas: ${QUOTA_FIELDS.map((q) => `${q}=${quotas[q]}`).join(" ")}`);
     io.out(`bundle: ${store.bundlePath} (feed_version ${state.feed_version}); ${publishNote(store)}`);
+  });
+}
+
+/// A project of `admitMany`, as `admit`'s flags name it.
+export interface Admission {
+  project: string;
+  workspace: string;
+  quota: readonly string[];
+  weight: readonly string[];
+}
+
+export interface AdmitManyResult {
+  placed: Admission[];
+  failed: { project: string; why: string }[];
+}
+
+/// Place each of `wanted` on `state`, in order, by `admit`'s rules at the
+/// cell's default profile and scopes; one refused is reported and the next
+/// tried. Whole-state walks happen once here, not per project.
+function placeEach(
+  state: CellState,
+  wanted: readonly Admission[],
+  sizing: CellSizing,
+  denylist: Set<string>,
+): AdmitManyResult {
+  const result: AdmitManyResult = { placed: [], failed: [] };
+  const tally = placementTally(state);
+  const scopes = scopesOf(undefined);
+  let seq = nextCredentialSeq(state);
+  for (const a of wanted) {
+    try {
+      const weights = weightValues(state, a.weight);
+      const quotas = admittedQuotas(state, a.quota, sizing.stored_default, weights);
+      const { project, workspace } = a;
+      place(state, { project, workspace, weights, quotas, scopes }, sizing, denylist, { tally, seq });
+      seq += 1;
+      tally.placed += 1;
+      tally.active.set(workspace, (tally.active.get(workspace) ?? 0) + 1);
+      result.placed.push(a);
+    } catch (e) {
+      if (!(e instanceof AdminError)) throw e;
+      result.failed.push({ project: a.project, why: e.message });
+    }
+  }
+  return result;
+}
+
+/// Many projects as one change: one denylist write, one state write, one
+/// new generation, so the cost per project does not grow with the cell, where
+/// one `admit` per project rewrites the whole state and bundle each time. For
+/// an operator filling a cell (bench/k2cost/tenants-admit.ts); `admit` stays
+/// the one-project command and takes the same path through `place`. As in
+/// `admit`, the ids burn before the commit: a crash between the two leaves
+/// them all burned, so a cell being filled that crashes is started again.
+export async function admitMany(store: StateStore, wanted: readonly Admission[]): Promise<AdmitManyResult> {
+  if (wanted.length === 0) return { placed: [], failed: [] };
+  return store.exclusive(async () => {
+    // The first pass runs on this call's own parse of the state, which goes
+    // no further: it finds who is placed, so only they burn.
+    const { state: first } = await loadChecked(store);
+    const sizing = checkSizing(first, readProfiles(profilesOf([], first.cell.share_k)));
+    const { ids: denylist } = await store.readDenylist();
+    const { placed, failed } = placeEach(first, wanted, sizing, denylist);
+    if (placed.length === 0) return { placed, failed };
+    await burnIds(store, placed.map((a) => a.project));
+    const { result } = await mutate(store, (state) => placeEach(state, placed, sizing, denylist));
+    return { placed: result.placed, failed: [...failed, ...result.failed] };
   });
 }
 
@@ -183,7 +284,7 @@ export async function admit(f: Flags, io: Io): Promise<void> {
 export async function sizingCheck(f: Flags, io: Io): Promise<void> {
   const store = await openStore(f);
   const { state } = await loadChecked(store);
-  checkSizing(state, readProfiles(profilesOf(f)));
+  checkSizing(state, readProfiles(profilesOf(f.all("profile"))));
   const c = state.cell;
   io.out(
     `cell ${c.cell_id}: the profiles give its fixed sizing (k=${c.share_k}, the ceilings init fixed, ` +

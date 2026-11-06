@@ -28,7 +28,7 @@
 import { randomBytes } from "node:crypto";
 import { AdminError } from "../cell-admin/errors";
 import { revoke } from "../cell-admin/offboard";
-import { burnId } from "../cell-admin/publish";
+import { burnIds } from "../cell-admin/publish";
 import {
   admitProject,
   admittedQuotas,
@@ -239,7 +239,7 @@ export class Projects {
     const before = this.deps.cache.state.feed_version;
     const rps = c.entry.requests_per_sec ?? FREE_TIER_REQUESTS_PER_SEC;
     try {
-      await burnId(this.deps.store, a.id);
+      await burnIds(this.deps.store, [a.id]);
     } catch (e) {
       const refusal = refusalOf(e);
       if (refusal === null) throw e;

@@ -25,7 +25,7 @@ ratchet here is 1,000 lines per file; the s3lite census it reads (C2) is
 | `shared_verdict.py` (+ `test_shared_verdict.py`) | the Q5 arms' bars and the arm manifest the single-cell RC gate reads (below) |
 | `layer_b_summary.py` (+ `test_layer_b_summary.py`) | a Layer B run's public summary (each bar, the RSS line, the driver pools, the verdict) for the `layer-b` workflow, whose raw evidence stays on its runner (below) |
 | `run-shared.sh` (+ `../docker/Dockerfile.rig`, `test_run_shared.py`) | the Layer B rig: one shared cell from a release directory in a linux/amd64 container at 1 vCPU / 1 GiB, s3lite at 20 ms, a tenants manifest, the verdict (below) |
-| `tenants-admit.ts` | the manifest's projects onto a cell-admin cell (its own CLI's `init` and `admit`, each with its class's quota set), the token map (12 h tokens, re-minted every 8 h, optionally uploaded), the bundle's publication, and its three feed files for a natively run cell (`feeds`) |
+| `tenants-admit.ts` | the manifest's projects onto a cell-admin cell (its CLI's `init`, then its `admitMany`: `admit`'s rules with each class's quota set, as one change, so the cost per project does not grow with the cell), the token map (12 h tokens, re-minted every 8 h, optionally uploaded), the bundle's publication, and its three feed files for a natively run cell (`feeds`) |
 | `packing.py price RUN` / `packing.py curve RUN...` (+ `points/PACK-{T,S}.env`, `tenants/pack-*.json`) | the packing measurement: N tenants of one profile on one launch cell, the instance's month and each tenant's share at the owner's prices against the K2 bill, the cell's limits, and the steps side by side (below) |
 | `fake-cell.ts`, `*.test.ts` | the harness's tests, against a product-surface fake: `bun test ./bench/k2cost` |
 

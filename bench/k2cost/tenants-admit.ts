@@ -11,13 +11,18 @@
 //       --upload s3://BUCKET/KEY
 //   bun bench/k2cost/tenants-admit.ts feeds --state DIR --out FEEDS_DIR
 //
-// admit runs cell-admin's own CLI (deploy/cell-admin/cell-admin.ts main):
-// `init` when DIR holds no cell yet (with the ids given), then `admit`
+// admit runs cell-admin's own CLI (deploy/cell-admin/cell-admin.ts main) to
+// `init` when DIR holds no cell yet (with the ids given), then its admitMany
 // for every project of the manifest the state does not hold, with its
-// workspace, its class's quota set as --quota flags (none: the cell's
-// ceilings) and its class's weights as --weight flags (edge #196). A rerun admits only what is missing; no cell-admin command
-// grows for this. Publish the bundle afterwards (publish, or the operator's
-// own upload): a project is served once the cell has its policy.
+// workspace, its class's quota set (none: the cell's ceilings) and its
+// class's weights (edge #196): `admit`'s rules, as one change, one state
+// write and one new generation (100,000 projects 2.5 s), where one `admit`
+// per project rewrites the whole state and bundle each time (61.7 h). A rerun
+// admits only what is missing, and with nothing missing does not read the
+// profiles, so a cell cached from an older tree still re-mints. A crash inside
+// the one change can leave the ids burned and unplaced: remove DIR and start
+// again. Publish the bundle afterwards (publish, or the operator's own
+// upload): a project is served once the cell has its policy.
 //
 // tokens mints one customer token per project with deploy/cell-admin's
 // tokens.ts (12 h, TOKEN_TTL_SECS) into a token map, the JSON list
@@ -43,6 +48,7 @@ import { S3Client } from "bun";
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { main as cellAdmin } from "../../deploy/cell-admin/cell-admin.ts";
+import { admitMany } from "../../deploy/cell-admin/commands.ts";
 import { loadChecked } from "../../deploy/cell-admin/publish.ts";
 import { BUNDLE_FILE, type CellState, STATE_FILE, writeDurable } from "../../deploy/cell-admin/state.ts";
 import { DirStore } from "../../deploy/cell-admin/store.ts";
@@ -92,18 +98,12 @@ export async function admit(plan: Plan, o: Opts, say: Say): Promise<{ admitted: 
     say(`initialised cell ${ids[0]} in ${dir}`);
   }
   const held = new Set(Object.keys((await readCell(dir)).projects));
-  let admitted = 0;
-  const failed: string[] = [];
-  for (const p of plan.projects) {
-    if (held.has(p.id)) continue;
-    const argv = ["admit", "--state", dir, "--project", p.id, "--workspace", p.workspace];
-    for (const q of p.quotaFlags) argv.push("--quota", q);
-    for (const w of p.weightFlags) argv.push("--weight", w);
-    if ((await cli(argv, say)) === 0) admitted++;
-    else failed.push(p.id);
-    if (stop.signal.aborted) break;
-  }
-  return { admitted, present: plan.projects.filter((p) => held.has(p.id)).length, failed };
+  const missing = plan.projects.filter((p) => !held.has(p.id));
+  const r = await admitMany(new DirStore(dir), missing.map((p) => ({
+    project: p.id, workspace: p.workspace, quota: p.quotaFlags, weight: p.weightFlags,
+  })));
+  for (const f of r.failed) say(`cell-admin admit ${f.project}: ${f.why}`);
+  return { admitted: r.placed.length, present: plan.projects.length - missing.length, failed: r.failed.map((f) => f.project) };
 }
 
 // ---------------------------------------------------------------- tokens

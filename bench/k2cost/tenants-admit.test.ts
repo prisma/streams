@@ -122,7 +122,7 @@ test("tokens writes one verifiable 12 h token per project, re-mints them on its 
     .rejects.toThrow("leaves under a third of the 120 s token life");
   const pub = await cmd("publish", "--state", w.state, "--upload", "s3://feeds/cells/cell_t/feeds-bundle.json",
     "--s3-endpoint", w.endpoint, "--s3-creds", w.creds);
-  expect(pub).toEqual({ code: 0, out: ["published feed_version 7 to cells/cell_t/feeds-bundle.json"] });
+  expect(pub).toEqual({ code: 0, out: ["published feed_version 2 to cells/cell_t/feeds-bundle.json"] });
   expect(new TextDecoder().decode(objects.get("/feeds/cells/cell_t/feeds-bundle.json"))).toBe(readFileSync(join(w.state, "feeds-bundle.json"), "utf8"));
 }, 30_000);
 
@@ -156,4 +156,73 @@ test("feeds writes the bundle's three feeds as a native cell reads them, and ref
   writeFileSync(join(bad, "feeds-bundle.json"), JSON.stringify(doc));
   expect(() => writeFeeds(bad, torn)).toThrow("feeds-bundle.json has no grants feed");
   expect(existsSync(torn)).toBe(false);
+}, 30_000);
+
+test("admit publishes a whole manifest as one generation, and a rerun that admits nothing publishes none", async () => {
+  const w = world();
+  const ids = ["--cell-id", "cell_t", "--deployment-project", "proj_dep", "--account", "acct_sink"];
+  await cmd("admit", "--manifest", w.file, "--state", w.state, "--key-file", w.key, ...ids);
+  const plan = expand(manifest, "");
+  const st = readState(w.state);
+  const canary = canaryProjectId("cell_t");
+  expect([st.feed_version, readBundle(w.state).keys.feed_version]).toEqual([2, 2]);
+  // The denylist burns each id once, in the plan's order; each project's one
+  // credential comes in that order after the canary's, journalled per project.
+  expect(readFileSync(st.cell.denylist, "utf8")).toBe(plan.projects.map((p) => `${p.id}\n`).join(""));
+  const byProject = Object.fromEntries(Object.values(st.credentials).map((c) => [c.project_id, c.seq]));
+  expect(byProject).toEqual(Object.fromEntries([[canary, 1], ...plan.projects.map((p, i) => [p.id, i + 2])]));
+  expect(st.journal.filter((j) => j.command === "admit").map((j) => j.detail.split(" ")[0])).toEqual(plan.projects.map((p) => p.id));
+  await cmd("admit", "--manifest", w.file, "--state", w.state, "--key-file", w.key);
+  expect(readState(w.state)).toEqual(st);
+}, 30_000);
+
+test("admit's cost per project does not grow with the cell: 3,000 projects within 30 s, where one admission per project took minutes", async () => {
+  const w = world();
+  const big: Manifest = { name: "big", seed: 1, duration: 10, classes: [{ class: "r", count: 3000, role: "compliant", phases: [] }] };
+  const file = join(w.root, "big.json");
+  writeFileSync(file, JSON.stringify(big));
+  const started = Date.now();
+  const r = await cmd("admit", "--manifest", file, "--state", w.state, "--key-file", w.key,
+    "--cell-id", "cell_t", "--deployment-project", "proj_dep", "--account", "acct_sink");
+  expect([r.code, r.out.at(-1)]).toEqual([0, "admit: 3000 admitted, 0 already held, 0 failed of 3000"]);
+  expect(Date.now() - started).toBeLessThan(30_000);
+  expect(readBundle(w.state).policies.projects.length).toBe(3001);
+}, 600_000);
+
+test("a rerun with nothing to admit takes a cell made on another profile, as a cached rig cell is; one with something to admit is refused", async () => {
+  const w = world();
+  const ids = ["--cell-id", "cell_t", "--deployment-project", "proj_dep", "--account", "acct_sink"];
+  await cmd("admit", "--manifest", w.file, "--state", w.state, "--key-file", w.key, ...ids);
+  const moved = readState(w.state);
+  moved.cell.profile_digest = "0".repeat(64);
+  writeFileSync(join(w.state, "cell-state.json"), `${JSON.stringify(moved, null, 2)}\n`);
+  const again = await cmd("admit", "--manifest", w.file, "--state", w.state, "--key-file", w.key);
+  expect([again.code, again.out.at(-1)]).toEqual([0, "admit: 0 admitted, 6 already held, 0 failed of 6"]);
+  expect(readState(w.state)).toEqual(moved);
+  const more = join(w.root, "more.json");
+  writeFileSync(more, JSON.stringify({ ...manifest, classes: [...manifest.classes, { class: "new", count: 1, role: "idle", phases: [] }] }));
+  await expect(cmd("admit", "--manifest", more, "--state", w.state, "--key-file", w.key))
+    .rejects.toThrow("the layered profile differs from the one init recorded");
+  expect(readState(w.state)).toEqual(moved);
+}, 30_000);
+
+test("admit reports a project cell-admin refuses and places the others", async () => {
+  const w = world();
+  const bad: Manifest = {
+    ...manifest, quota_sets: { "q-over": { requests_per_sec: 1_000_000_000 } },
+    classes: [
+      { class: "app", count: 2, role: "compliant", phases: [] },
+      { class: "over", count: 1, role: "hostile", quotas: "q-over", phases: [] },
+    ],
+  };
+  const file = join(w.root, "bad.json");
+  writeFileSync(file, JSON.stringify(bad));
+  const r = await cmd("admit", "--manifest", file, "--state", w.state, "--key-file", w.key,
+    "--cell-id", "cell_t", "--deployment-project", "proj_dep", "--account", "acct_sink");
+  expect([r.code, r.out.at(-1)]).toEqual([1, "admit: 2 admitted, 0 already held, 1 failed of 3"]);
+  expect(r.out.join("\n")).toContain("requests_per_sec=1000000000 exceeds the cell's ceiling");
+  const st = readState(w.state);
+  expect(Object.keys(st.projects).sort()).toEqual(["proj_adm_app_0000", "proj_adm_app_0001", canaryProjectId("cell_t")].sort());
+  // The refused id is not burned: fixed, the same id admits.
+  expect(readFileSync(st.cell.denylist, "utf8")).toBe("proj_adm_app_0000\nproj_adm_app_0001\n");
 }, 30_000);

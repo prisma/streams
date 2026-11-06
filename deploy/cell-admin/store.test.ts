@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { BundlePublisher, burnId, mutate, unversionedChanges } from "./publish";
+import { BundlePublisher, burnIds, mutate, unversionedChanges } from "./publish";
 import { stateText } from "./state";
 import { readS3Credentials, S3Store } from "./s3store";
 import { Conflict, DirStore, type StateStore } from "./store";
@@ -193,13 +193,13 @@ describe("the bundle publisher", () => {
   });
 });
 
-describe("burnId", () => {
+describe("burnIds", () => {
   test("appends an id once and refuses it ever after", async () => {
     const c = await initCell();
     const store = new DirStore(c.state);
     await store.load();
-    await burnId(store, "proj_x");
-    await expect(burnId(store, "proj_x")).rejects.toThrow("project id proj_x was used before: an id is never placed twice");
+    await burnIds(store, ["proj_x"]);
+    await expect(burnIds(store, ["proj_x"])).rejects.toThrow("project id proj_x was used before: an id is never placed twice");
     expect(readFileSync(join(c.state, "denylist.txt"), "utf8")).toBe("proj_x\n");
   });
 });
