@@ -82,6 +82,20 @@ test("admit places every project with its workspace and quota set through cell-a
     .rejects.toThrow("holds no cell: give --cell-id, --deployment-project and --account to init it");
 }, 30_000);
 
+test("admit inits a dedicated cell (k = 1) for one project when given --max-projects 1, and only then", async () => {
+  const w = world();
+  const one: Manifest = { name: "ded", seed: 1, duration: 10, classes: [{ class: "solo", count: 1, role: "compliant", phases: [] }] };
+  const file = join(w.root, "one.json");
+  writeFileSync(file, JSON.stringify(one));
+  const profiles = ["deploy/profiles/compute-1g.env", "deploy/profiles/dedicated-cell.env"].join(",");
+  const ids = ["--cell-id", "cell_d", "--deployment-project", "proj_dep", "--account", "acct_sink", "--profile", profiles];
+  await expect(cmd("admit", "--manifest", file, "--state", join(w.root, "refused"), "--key-file", w.key, ...ids))
+    .rejects.toThrow("cell-admin init failed");
+  const ok = await cmd("admit", "--manifest", file, "--state", w.state, "--key-file", w.key, ...ids, "--max-projects", "1");
+  expect([ok.code, ok.out.at(-1)]).toEqual([0, "admit: 1 admitted, 0 already held, 0 failed of 1"]);
+  expect(readState(w.state).projects["proj_ded_solo_0000"]).toBeDefined();
+}, 30_000);
+
 test("tokens writes one verifiable 12 h token per project, re-mints them on its period and uploads each map", async () => {
   const w = world();
   await cmd("admit", "--manifest", w.file, "--state", w.state, "--key-file", w.key,
