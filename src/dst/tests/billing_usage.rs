@@ -729,7 +729,7 @@ async fn ops_metrics_and_alerts_flow() {
     for i in 0..crate::billing::READ_SEALED_MAX_BATCHES + 2 {
         let id = crate::billing::BillingIdentity {
             account_id: "a".into(),
-            project_id: "p".into(),
+            container_id: "p".into(),
             stream_id: format!("{i:032x}"),
             stream_name: format!("s{i}"),
         };

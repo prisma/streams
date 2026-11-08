@@ -22,7 +22,7 @@ pub(super) const READ_ROUND_BYTES: usize = 4 << 20;
 /// The encoded size of a read row whose identity strings are empty and whose
 /// five counters are all `u64::MAX`, plus the comma that separates it from
 /// the next row.
-const ROW_FIXED_MAX: usize = 262;
+const ROW_FIXED_MAX: usize = 264;
 
 impl BillingIdentity {
     /// An upper bound on the encoded size of this identity's read row,
@@ -31,7 +31,7 @@ impl BillingIdentity {
     pub(crate) fn read_row_bound(&self) -> usize {
         let strings = [
             &self.account_id,
-            &self.project_id,
+            &self.container_id,
             &self.stream_id,
             &self.stream_name,
         ];

@@ -18,7 +18,7 @@ fn accumulator() -> ReadUsageAccumulator {
 fn identity(stream: u8) -> BillingIdentity {
     BillingIdentity {
         account_id: "account".into(),
-        project_id: "project".into(),
+        container_id: "project".into(),
         stream_id: stream.to_string(),
         stream_name: format!("stream-{stream}"),
     }
@@ -276,9 +276,9 @@ fn positive_age_waits_for_the_window_and_zero_age_forces_sealing() {
 fn wide_identity(stream: u32) -> BillingIdentity {
     let id = BillingIdentity {
         account_id: "account".into(),
-        project_id: "project".into(),
+        container_id: "project".into(),
         stream_id: format!("{stream:032x}"),
-        stream_name: format!("{stream:0>204}"),
+        stream_name: format!("{stream:0>202}"),
     };
     assert_eq!(id.read_row_bound(), 512);
     id

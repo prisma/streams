@@ -406,6 +406,24 @@ mod billing {
             serde_json::to_value(&m).unwrap()
         );
     }
+
+    /// Layout 8, edge #253: a month final (`'V'`) and a `_usage` segment
+    /// snapshot name their tenant by `container_id`.
+    #[test]
+    fn golden_layout8_segment_snapshot_names_the_container() {
+        let m = SegmentBillingMetaV1 {
+            account_id: "acct-1".into(),
+            project_id: "ct-1".into(),
+            stream_id: "00112233445566778899aabbccddeeff".into(),
+            stream_name: "default".into(),
+            segment_id: 3,
+            ..SegmentBillingMetaV1::default()
+        };
+        let json = serde_json::to_string(&m.to_snapshot(true)).unwrap();
+        assert_eq!(json, SNAPSHOT_JSON);
+    }
+
+    const SNAPSHOT_JSON: &str = r#"{"account_id":"acct-1","container_id":"ct-1","stream_id":"00112233445566778899aabbccddeeff","stream_name":"default","segment_id":3,"usage_version":0,"month":"0000-00","month_final":true,"ingest_payload_bytes_month":0,"ingest_records_month":0,"owned_frame_bytes_current":0,"storage_byte_ms_month":"","storage_accounted_through_ms":0,"retained_by_forks":false}"#;
 }
 
 mod routing_key_hash {

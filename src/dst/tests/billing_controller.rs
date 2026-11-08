@@ -273,7 +273,7 @@ async fn graceful_stop_seals_and_drains_the_active_read_window() {
     .expect("the first round ends with the metrics emission");
     let identity = crate::billing::BillingIdentity {
         account_id: "acct".into(),
-        project_id: "proj".into(),
+        container_id: "proj".into(),
         stream_id: "ab".repeat(8),
         stream_name: "orders".into(),
     };
@@ -288,7 +288,7 @@ async fn graceful_stop_seals_and_drains_the_active_read_window() {
     );
     assert_eq!(
         state.billing.unflushed_reads(),
-        (1, 292, 0),
+        (1, 294, 0),
         "the window is younger than the flush interval: nothing seals before the stop"
     );
     let report = rig.tasks.shutdown(Duration::from_secs(5)).await;
@@ -675,7 +675,7 @@ fn cancellation_read_envelope(at_ms: i64) -> crate::billing::UsageEnvelope {
             rows: vec![ReadRow {
                 identity: BillingIdentity {
                     account_id: "acct".into(),
-                    project_id: "proj".into(),
+                    container_id: "proj".into(),
                     stream_id: "ab".repeat(8),
                     stream_name: "orders".into(),
                 },

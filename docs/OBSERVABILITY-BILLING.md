@@ -424,7 +424,7 @@ A read batch carries absolute source-batch identity and deltas:
   "rows": [
     {
       "account_id": "...",
-      "project_id": "...",
+      "container_id": "...",
       "stream_id": "...",
       "stream_name": "orders",
       "read_payload_bytes": 123456,
@@ -495,7 +495,7 @@ struct UsageEnvelope<T> {
 
 ```text
 account_id
-project_id
+container_id
 stream_id
 stream_name
 segment_id

@@ -3213,7 +3213,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "fdb45256da3208e7f24ecb61f38d4c088f0ce733c8140497619477beb0b7a8ba",
+    "function_sha256": "82286d5dcecca427aa43f529043a2bfcf64ae9b295ec1341a0ef2502957ab66f",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fence_yield.rs",
@@ -5609,7 +5609,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "d3b737be7a3448951366a16cf3a4ec299231b53eb36ed23fd0c361eb252e1ad0",
+    "function_sha256": "e1a53a2346e1b0d895961076b675e9884bb3456cf7074b343cc55f6be69c962b",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_controller.rs",
@@ -7050,7 +7050,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "3830f12d5936572514a9ccbe50f72912abf728ccecac9f5019ba3e78facbdaa7",
+    "function_sha256": "5f6b62c0b6a3c7f3ed2016863446daa0125ca2b5b7353615598dee94996a7015",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_usage.rs",
@@ -8587,7 +8587,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "8f20986939c563d5e43a8d4a26ce71c0464beb0a485528151f1cfccb448ae094",
+    "function_sha256": "598ba1bc9c353ddf302d10aeb29bd3b60384fa0af2c96d43d1197b80e51bdcc2",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_drain_bounds.rs",

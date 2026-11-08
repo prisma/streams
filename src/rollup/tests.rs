@@ -67,7 +67,7 @@ async fn mem_rollup(name: &str) -> UsageRollup {
 fn id() -> BillingIdentity {
     BillingIdentity {
         account_id: "acct".into(),
-        project_id: "proj".into(),
+        container_id: "proj".into(),
         stream_id: "aa".repeat(8),
         stream_name: "orders".into(),
     }

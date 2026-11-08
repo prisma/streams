@@ -847,7 +847,7 @@
         {
           "file": "src/shard/retirement_tests.rs",
           "name": "r17b_late_successful_write_settles_without_publishing_retired_effects",
-          "sha256": "261122336709d1840855e5f48d16032168dca8a2b6fbe2cd6adf7943275b5419"
+          "sha256": "27e0505e8fb8bea001e846240861cb8e74e708d82716ea02c3941cdabcc5feb0"
         }
       ],
       "support_functions": [

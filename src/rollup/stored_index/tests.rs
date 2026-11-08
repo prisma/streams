@@ -43,7 +43,7 @@ impl Seg {
         SegmentSnapshot {
             identity: BillingIdentity {
                 account_id: self.account.into(),
-                project_id: self.project.into(),
+                container_id: self.project.into(),
                 stream_id: self.stream.into(),
                 stream_name: format!("name-{}", self.stream),
             },

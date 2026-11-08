@@ -410,7 +410,7 @@ async fn r17b_late_successful_write_settles_without_publishing_retired_effects()
     request.billing = Some(Arc::new(crate::billing::BillingRef {
         identity: crate::billing::BillingIdentity {
             account_id: "account".into(),
-            project_id: "project".into(),
+            container_id: "project".into(),
             stream_id: "incarnation".into(),
             stream_name: "stream".into(),
         },

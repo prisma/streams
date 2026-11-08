@@ -576,7 +576,7 @@ fn account_rows(
     let mut rows: Vec<_> = state.billing.reads().snapshot_active();
     rows.retain(|(id, _)| id.account_id == account);
     rows.sort_by(|(a, _), (b, _)| {
-        (&a.project_id, &a.stream_id).cmp(&(&b.project_id, &b.stream_id))
+        (&a.container_id, &a.stream_id).cmp(&(&b.container_id, &b.stream_id))
     });
     rows
 }

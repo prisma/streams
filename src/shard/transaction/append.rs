@@ -277,7 +277,7 @@ impl CommitTransaction<'_> {
             if bm.stream_id.is_empty() {
                 bm.v = 1;
                 bm.account_id = bref.identity.account_id.clone();
-                bm.project_id = bref.identity.project_id.clone();
+                bm.project_id = bref.identity.container_id.clone();
                 bm.stream_id = bref.identity.stream_id.clone();
                 bm.stream_name = bref.identity.stream_name.clone();
                 bm.segment_id = bref.segment_id;

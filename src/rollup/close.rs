@@ -287,14 +287,14 @@ impl CarryPage<'_, '_> {
         }
         let identity = BillingIdentity {
             account_id: state.account_id.clone(),
-            project_id: parts[2].to_owned(),
+            container_id: parts[2].to_owned(),
             stream_id: parts[3].to_owned(),
             stream_name: state.stream_name.clone(),
         };
         let month_key = k_month(
             &self.close.month,
             &identity.account_id,
-            &identity.project_id,
+            &identity.container_id,
             &identity.stream_id,
         );
         let mut row = match self.months.get(&month_key) {
@@ -349,7 +349,7 @@ impl CarryPage<'_, '_> {
         let name_key = k_name(
             &self.close.month,
             &identity.account_id,
-            &identity.project_id,
+            &identity.container_id,
             &identity.stream_name,
         );
         let name = self.aggregate(name_key).await?;
@@ -360,7 +360,7 @@ impl CarryPage<'_, '_> {
         let project_key = k_project(
             &self.close.month,
             &identity.account_id,
-            &identity.project_id,
+            &identity.container_id,
         );
         self.aggregate(project_key).await?.add_storage(amount);
         Ok(())

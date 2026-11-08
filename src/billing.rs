@@ -74,7 +74,7 @@ pub(crate) fn is_reserved_stream(name: &str) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) struct BillingIdentity {
     pub account_id: String,
-    pub project_id: String,
+    pub container_id: String,
     /// Immutable resource incarnation: hex stream_epoch.
     pub stream_id: String,
     /// Display and lookup metadata only.
@@ -259,7 +259,7 @@ impl SegmentBillingMetaV1 {
         SegmentSnapshot {
             identity: BillingIdentity {
                 account_id: self.account_id.clone(),
-                project_id: self.project_id.clone(),
+                container_id: self.project_id.clone(),
                 stream_id: self.stream_id.clone(),
                 stream_name: self.stream_name.clone(),
             },
@@ -516,7 +516,7 @@ pub(crate) fn identity_with_capabilities(
         account_id,
         // Layout 4: the descriptor's project is MANDATORY — the
         // deployment-global fallback is gone (MULTITENANCY §20).
-        project_id: desc.project_id.as_str().to_string(),
+        container_id: desc.project_id.as_str().to_string(),
         stream_id: desc.stream_epoch.clone(),
         stream_name: desc.name.clone(),
     }
@@ -924,7 +924,7 @@ pub(crate) async fn drain_once(
                         let lc = StreamLifecycle {
                             identity: BillingIdentity {
                                 account_id: meta.account_id.clone(),
-                                project_id: meta.project_id.clone(),
+                                container_id: meta.project_id.clone(),
                                 stream_id: meta.stream_id.clone(),
                                 stream_name: meta.stream_name.clone(),
                             },

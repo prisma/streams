@@ -79,7 +79,7 @@ impl<'a> Page<'a> {
         let key = k_month(
             &c.month,
             &c.identity.account_id,
-            &c.identity.project_id,
+            &c.identity.container_id,
             &c.identity.stream_id,
         );
         let mut row: MonthRow = match self.months.get(&key) {
@@ -156,13 +156,13 @@ impl<'a> Page<'a> {
                 k_name(
                     &c.month,
                     &c.identity.account_id,
-                    &c.identity.project_id,
+                    &c.identity.container_id,
                     &c.identity.stream_name,
                 ),
                 true,
             ),
             (
-                k_project(&c.month, &c.identity.account_id, &c.identity.project_id),
+                k_project(&c.month, &c.identity.account_id, &c.identity.container_id),
                 false,
             ),
         ] {
@@ -181,7 +181,7 @@ impl<'a> Page<'a> {
                 "corr-pending/{}/{}/{}/{}/{}",
                 c.month,
                 c.identity.account_id,
-                c.identity.project_id,
+                c.identity.container_id,
                 c.identity.stream_id,
                 c.correction_id.replace('/', "~"),
             );
@@ -266,7 +266,7 @@ impl<'a> Page<'a> {
         let mkey = k_month(
             month,
             &row.identity.account_id,
-            &row.identity.project_id,
+            &row.identity.container_id,
             &row.identity.stream_id,
         );
         let mut mr: MonthRow = match self.months.get(&mkey) {
@@ -317,13 +317,13 @@ impl<'a> Page<'a> {
                 k_name(
                     month,
                     &row.identity.account_id,
-                    &row.identity.project_id,
+                    &row.identity.container_id,
                     &row.identity.stream_name,
                 ),
                 true,
             ),
             (
-                k_project(month, &row.identity.account_id, &row.identity.project_id),
+                k_project(month, &row.identity.account_id, &row.identity.container_id),
                 false,
             ),
         ] {
@@ -348,7 +348,7 @@ impl<'a> Page<'a> {
         let id = &snap.identity;
         let skey = k_segment(
             &id.account_id,
-            &id.project_id,
+            &id.container_id,
             &id.stream_id,
             snap.segment_id,
         );
@@ -356,7 +356,7 @@ impl<'a> Page<'a> {
             Some(r) => r.clone(),
             None => get_json(self.db, &skey).await?,
         };
-        let mkey = k_month(&snap.month, &id.account_id, &id.project_id, &id.stream_id);
+        let mkey = k_month(&snap.month, &id.account_id, &id.container_id, &id.stream_id);
         let mut mr: MonthRow = match self.months.get(&mkey) {
             Some(r) => r.clone(),
             None => get_json(self.db, &mkey).await?,
@@ -412,11 +412,16 @@ impl<'a> Page<'a> {
         self.advance_segment_state(skey, st, snap, snap.storage_accounted_through_ms);
         for (key, is_name) in [
             (
-                k_name(&snap.month, &id.account_id, &id.project_id, &id.stream_name),
+                k_name(
+                    &snap.month,
+                    &id.account_id,
+                    &id.container_id,
+                    &id.stream_name,
+                ),
                 true,
             ),
             (
-                k_project(&snap.month, &id.account_id, &id.project_id),
+                k_project(&snap.month, &id.account_id, &id.container_id),
                 false,
             ),
         ] {
@@ -512,7 +517,7 @@ impl<'a> Page<'a> {
     ) -> anyhow::Result<()> {
         let id = &snap.identity;
         let month = crate::billing::month_str(year, number);
-        let key = k_month(&month, &id.account_id, &id.project_id, &id.stream_id);
+        let key = k_month(&month, &id.account_id, &id.container_id, &id.stream_id);
         let mut row: MonthRow = match self.months.get(&key) {
             Some(r) => r.clone(),
             None => get_json(self.db, &key).await?,
@@ -566,10 +571,10 @@ impl<'a> Page<'a> {
             k_name(
                 month,
                 &identity.account_id,
-                &identity.project_id,
+                &identity.container_id,
                 &identity.stream_name,
             ),
-            k_project(month, &identity.account_id, &identity.project_id),
+            k_project(month, &identity.account_id, &identity.container_id),
         ] {
             let mut a: AggRow = match self.aggregates.get(&key) {
                 Some(r) => r.clone(),

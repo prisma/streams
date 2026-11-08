@@ -85,7 +85,7 @@ impl crate::rollup::UsageRollup {
             id.stream_id.clone_from(sid);
         }
         let row = self
-            .month_row(month, &id.account_id, &id.project_id, &id.stream_id)
+            .month_row(month, &id.account_id, &id.container_id, &id.stream_id)
             .await
             .map_err(UsageRefusal::Unavailable)?;
         Ok((id, row.unwrap_or_default()))
@@ -105,7 +105,7 @@ impl crate::rollup::UsageRollup {
         id: &crate::billing::BillingIdentity,
         sid: &str,
     ) -> anyhow::Result<bool> {
-        let (account, project, name) = (&id.account_id, &id.project_id, &id.stream_name);
+        let (account, project, name) = (&id.account_id, &id.container_id, &id.stream_name);
         let listed = self.name_row(month, account, project, name).await?;
         if listed.is_some_and(|aggregate| aggregate.incarnations.iter().any(|i| i == sid)) {
             return Ok(true);
@@ -187,7 +187,7 @@ pub(super) async fn product_usage(
     // its gauge, so provisional storage never reads as zero.
     let (fallback_byte_ms, fallback_owned) = if is_current && row.segments.is_empty() {
         let states = match rollup
-            .stream_segment_states(&id.account_id, &id.project_id, &id.stream_id)
+            .stream_segment_states(&id.account_id, &id.container_id, &id.stream_id)
             .await
         {
             Ok(states) => states,
@@ -219,7 +219,7 @@ pub(super) async fn product_usage(
     let avg_bytes = byte_ms / month_ms.max(1);
     let gb_month = byte_ms as f64 / month_ms as f64 / 1e9;
     let name_agg = match rollup
-        .name_row(&month, &id.account_id, &id.project_id, &id.stream_name)
+        .name_row(&month, &id.account_id, &id.container_id, &id.stream_name)
         .await
     {
         Ok(row) => row,
@@ -235,7 +235,7 @@ pub(super) async fn product_usage(
         "provisional"
     };
     json_ok(&json!({
-        "projectId": id.project_id,
+        "projectId": id.container_id,
         "streamId": id.stream_id,
         "streamName": id.stream_name,
         "month": month,

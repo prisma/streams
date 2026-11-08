@@ -82,12 +82,12 @@ impl Pending {
     /// no project id is reported and not indexed.
     pub(super) fn advanced(&mut self, snap: &SegmentSnapshot, through: i64) {
         let id = &snap.identity;
-        let project = match ProjectId::new(&id.project_id) {
+        let project = match ProjectId::new(&id.container_id) {
             Ok(project) => project,
             Err(error) => {
                 tracing::error!(
                     %error,
-                    project = %id.project_id,
+                    project = %id.container_id,
                     stream_id = %id.stream_id,
                     segment = snap.segment_id,
                     "a segment snapshot whose project is no project id is not in the stored index"

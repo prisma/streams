@@ -38,7 +38,7 @@ fn live(version: u64, month: &str, byte_ms: u128, gauge: u64, through: i64) -> S
     SegmentSnapshot {
         identity: BillingIdentity {
             account_id: "a".into(),
-            project_id: "p".into(),
+            container_id: "p".into(),
             stream_id: "s".into(),
             stream_name: "orders".into(),
         },

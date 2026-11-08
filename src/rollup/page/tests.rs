@@ -24,7 +24,7 @@ fn batch(seq: u64, stream_id: &str) -> UsageEnvelope {
             rows: vec![ReadRow {
                 identity: BillingIdentity {
                     account_id: "a".into(),
-                    project_id: "p".into(),
+                    container_id: "p".into(),
                     stream_id: stream_id.into(),
                     stream_name: "orders".into(),
                 },
@@ -135,7 +135,7 @@ async fn a_later_envelope_failure_discards_all_earlier_staged_rows() {
         unreachable!()
     };
     read.source.boot = "later-boot".into();
-    read.rows[0].identity.project_id = "later-project".into();
+    read.rows[0].identity.container_id = "later-project".into();
     for key in [
         k_source("later-boot"),
         k_month("2026-07", "a", "later-project", "late"),

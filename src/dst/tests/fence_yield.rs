@@ -276,7 +276,7 @@ async fn a_superseded_boots_last_read_window_is_billed_once() {
     let (year, month) = crate::billing::utc_year_month(crate::shard::now_ms());
     let month = crate::billing::month_str(year, month);
     let rollup = b.state.rollup.get().unwrap();
-    let (account, project) = (&identity.account_id, &identity.project_id);
+    let (account, project) = (&identity.account_id, &identity.container_id);
     let row = rollup.month_row(&month, account, project, &identity.stream_id);
     let row = row.await.unwrap().expect("A's reads reached the rollup");
     let billed = (

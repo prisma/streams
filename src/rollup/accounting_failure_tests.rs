@@ -28,7 +28,7 @@ fn batch(seq: u64) -> UsageEnvelope {
             rows: vec![ReadRow {
                 identity: crate::billing::BillingIdentity {
                     account_id: "a".into(),
-                    project_id: "p".into(),
+                    container_id: "p".into(),
                     stream_id: "s".into(),
                     stream_name: "orders".into(),
                 },
@@ -256,7 +256,7 @@ fn an_unwritten_byte_time_keeps_its_empty_wire() {
     let snapshot = serde_json::to_value(meta.to_snapshot(false)).unwrap();
     assert_eq!(snapshot["storage_byte_ms_month"], "");
     let correction: crate::billing::UsageCorrection = serde_json::from_str(concat!(
-        r#"{"account_id":"a","project_id":"p","stream_id":"s","#,
+        r#"{"account_id":"a","container_id":"p","stream_id":"s","#,
         r#""stream_name":"orders","month":"2026-07","reason":"r"}"#,
     ))
     .unwrap();
@@ -307,7 +307,7 @@ fn late_snapshot(usage_version: u64, storage_byte_ms_month: String) -> UsageEnve
         payload: UsagePayload::SegmentSnapshot(crate::billing::SegmentSnapshot {
             identity: crate::billing::BillingIdentity {
                 account_id: "a".into(),
-                project_id: "p".into(),
+                container_id: "p".into(),
                 stream_id: "s".into(),
                 stream_name: "orders".into(),
             },
