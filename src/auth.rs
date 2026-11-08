@@ -639,14 +639,9 @@ impl AuthService {
         }
     }
 
-    /// Stage 7: the workspace that owns `project` in the CURRENT
-    /// policy snapshot — billing's workspace-at-event resolution.
-    pub(crate) fn workspace_for(&self, project: &crate::tenant::ProjectId) -> Option<WorkspaceId> {
-        self.projects
-            .load()
-            .projects
-            .get(project)
-            .map(|p| p.workspace_id.clone())
+    /// Whether `project` is in the CURRENT policy snapshot (`UNOWNED_METER_EVENTS`).
+    pub(crate) fn knows_project(&self, project: &crate::tenant::ProjectId) -> bool {
+        self.projects.load().projects.contains_key(project)
     }
 
     /// CURRENT status + quotas for a project — the policy a verified

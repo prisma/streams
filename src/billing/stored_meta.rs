@@ -133,15 +133,10 @@ impl UsageCounters {
 
 /// The static row of `meta`: `[1][v u16][segment u32][month_year i32]`,
 /// little-endian, then minimal LEB128 varints: the month, the flags (bit 0:
-/// retained by forks), and the account, container, stream id and stream
-/// name, each as its length and its UTF-8 bytes.
+/// retained by forks), and the container, stream id and stream name, each
+/// as its length and its UTF-8 bytes.
 pub(crate) fn encode_static(meta: &SegmentBillingMetaV1) -> Vec<u8> {
-    let names = [
-        &meta.account_id,
-        &meta.project_id,
-        &meta.stream_id,
-        &meta.stream_name,
-    ];
+    let names = [&meta.project_id, &meta.stream_id, &meta.stream_name];
     let mut out = Vec::with_capacity(15 + names.iter().map(|s| 2 + s.len()).sum::<usize>());
     out.push(STATIC_VERSION);
     out.extend_from_slice(&meta.v.to_le_bytes());
@@ -176,10 +171,9 @@ pub(crate) fn decode_static(raw: &[u8]) -> Option<SegmentBillingMetaV1> {
         rest = tail;
         String::from_utf8(bytes.to_vec()).ok()
     };
-    let (account_id, container_id, stream_id, stream_name) = (name()?, name()?, name()?, name()?);
+    let (container_id, stream_id, stream_name) = (name()?, name()?, name()?);
     rest.is_empty().then_some(SegmentBillingMetaV1 {
         v: u16::from_le_bytes([v0, v1]),
-        account_id,
         project_id: container_id,
         stream_id,
         stream_name,

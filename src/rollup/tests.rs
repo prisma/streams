@@ -66,7 +66,6 @@ async fn mem_rollup(name: &str) -> UsageRollup {
 
 fn id() -> BillingIdentity {
     BillingIdentity {
-        account_id: "acct".into(),
         container_id: "proj".into(),
         stream_id: "aa".repeat(8),
         stream_name: "orders".into(),
@@ -148,7 +147,7 @@ async fn multi_segment_idle_carry_sums_all_segments() {
     // July: 17 idle days x 600 B across the three segments.
     assert_eq!(r.close_month(2026, 7, 0).await.unwrap(), 1);
     let jul = r
-        .month_row("2026-07", "acct", "proj", &id().stream_id)
+        .month_row("2026-07", "proj", &id().stream_id)
         .await
         .unwrap()
         .unwrap();
@@ -157,20 +156,16 @@ async fn multi_segment_idle_carry_sums_all_segments() {
     // must SUM, not last-put-win.
     assert_eq!(r.close_month(2026, 8, 0).await.unwrap(), 1);
     let aug = r
-        .month_row("2026-08", "acct", "proj", &id().stream_id)
+        .month_row("2026-08", "proj", &id().stream_id)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(aug.storage_byte_ms(), 31 * day * total_gauge);
     assert_eq!(aug.segments.len(), 3, "every segment carried");
-    let agg = r
-        .project_row("2026-08", "acct", "proj")
-        .await
-        .unwrap()
-        .unwrap();
+    let agg = r.container_row("2026-08", "proj").await.unwrap().unwrap();
     assert_eq!(agg.storage_byte_ms, (31 * day * total_gauge).to_string());
     let name = r
-        .name_row("2026-08", "acct", "proj", "orders")
+        .name_row("2026-08", "proj", "orders")
         .await
         .unwrap()
         .unwrap();
@@ -224,7 +219,7 @@ async fn same_version_live_snapshot_advances_segment_state() {
     .await
     .unwrap();
     let st = &r
-        .stream_segment_states("acct", "proj", &id().stream_id)
+        .stream_segment_states("proj", &id().stream_id)
         .await
         .unwrap()[0];
     assert_eq!(
@@ -235,7 +230,7 @@ async fn same_version_live_snapshot_advances_segment_state() {
     // Close August: gauge 400 from Aug 2 to Sep 1 (30 more days).
     assert_eq!(r.close_month(2026, 8, 0).await.unwrap(), 1);
     let aug = r
-        .month_row("2026-08", "acct", "proj", &id().stream_id)
+        .month_row("2026-08", "proj", &id().stream_id)
         .await
         .unwrap()
         .unwrap();
@@ -286,12 +281,12 @@ async fn read_batch_month_split_is_exact() {
     };
     r.apply_page(&[env], "c1").await.unwrap();
     let jul = r
-        .month_row("2026-07", "acct", "proj", &id().stream_id)
+        .month_row("2026-07", "proj", &id().stream_id)
         .await
         .unwrap()
         .unwrap_or_default();
     let aug = r
-        .month_row("2026-08", "acct", "proj", &id().stream_id)
+        .month_row("2026-08", "proj", &id().stream_id)
         .await
         .unwrap()
         .unwrap_or_default();
@@ -332,7 +327,7 @@ async fn read_batch_month_split_is_exact() {
     let mut sums = [0u64; 5];
     for m in ["2026-01", "2026-02", "2026-03", "2026-04"] {
         let row = r
-            .month_row(m, "acct", "proj", &id().stream_id)
+            .month_row(m, "proj", &id().stream_id)
             .await
             .unwrap()
             .unwrap_or_default();
@@ -384,7 +379,7 @@ fn one_read(boot: &str, from_ms: i64, to_ms: i64) -> UsageEnvelope {
 
 /// The read operations `id()` holds in `month` (0 with no row).
 async fn read_operations(r: &UsageRollup, month: &str) -> u64 {
-    r.month_row(month, "acct", "proj", &id().stream_id)
+    r.month_row(month, "proj", &id().stream_id)
         .await
         .unwrap()
         .unwrap_or_default()
@@ -412,7 +407,7 @@ async fn a_read_batch_spanning_more_months_than_the_close_cap_fails_its_page() {
     assert_eq!(refused.to_string(), "read batch spans more than 600 months");
     assert_eq!(r.cursor().await.unwrap().as_deref(), Some("c1"));
     let stream = id().stream_id;
-    let past = r.month_row("2020-01", "acct", "proj", &stream).await;
+    let past = r.month_row("2020-01", "proj", &stream).await;
     assert!(past.unwrap().is_none(), "nothing of the batch committed");
     assert_eq!(read_operations(&r, "2019-12").await, 1);
 }
@@ -465,7 +460,7 @@ async fn missed_months_catch_up_in_order() {
     );
     let day = 86_400_000u128;
     let nov = r
-        .month_row("2026-11", "acct", "proj", &id().stream_id)
+        .month_row("2026-11", "proj", &id().stream_id)
         .await
         .unwrap()
         .unwrap();
@@ -530,7 +525,7 @@ async fn idle_retained_months_accrue_storage() {
     assert_eq!(pending_storage(&r, "2026-09").await, Some(30 * day * 100));
     // The durable segment state still knows the gauge.
     let states = r
-        .stream_segment_states("acct", "proj", &id().stream_id)
+        .stream_segment_states("proj", &id().stream_id)
         .await
         .unwrap();
     assert_eq!(states.len(), 1);
@@ -538,11 +533,7 @@ async fn idle_retained_months_accrue_storage() {
     // Replays are no-ops.
     assert_eq!(r.close_month(2026, 8, 0).await.unwrap(), 0);
     // Aggregates carried the idle storage too.
-    let aug_proj = r
-        .project_row("2026-08", "acct", "proj")
-        .await
-        .unwrap()
-        .unwrap();
+    let aug_proj = r.container_row("2026-08", "proj").await.unwrap().unwrap();
     assert_eq!(aug_proj.storage_byte_ms, (31 * day * 100).to_string());
 }
 
@@ -572,21 +563,17 @@ async fn rollup_applies_deltas_and_closes_months() {
         .await
         .unwrap();
     let row = r
-        .month_row("2026-07", "acct", "proj", &id().stream_id)
+        .month_row("2026-07", "proj", &id().stream_id)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(row.ingest_bytes(), 250, "absolute, not summed");
     assert_eq!(row.storage_byte_ms(), 9000);
-    let proj = r
-        .project_row("2026-07", "acct", "proj")
-        .await
-        .unwrap()
-        .unwrap();
+    let proj = r.container_row("2026-07", "proj").await.unwrap().unwrap();
     assert_eq!(proj.ingest_bytes, 250, "aggregate absorbed deltas once");
     assert_eq!(proj.storage_byte_ms, "9000");
     let name = r
-        .name_row("2026-07", "acct", "proj", "orders")
+        .name_row("2026-07", "proj", "orders")
         .await
         .unwrap()
         .unwrap();
@@ -626,7 +613,7 @@ async fn rollup_applies_deltas_and_closes_months() {
         .await
         .unwrap();
     let row = r
-        .month_row("2026-07", "acct", "proj", &id().stream_id)
+        .month_row("2026-07", "proj", &id().stream_id)
         .await
         .unwrap()
         .unwrap();
@@ -649,7 +636,7 @@ async fn rollup_applies_deltas_and_closes_months() {
         "idle extrapolation to the boundary"
     );
     let closed = r
-        .month_row("2026-07", "acct", "proj", &id().stream_id)
+        .month_row("2026-07", "proj", &id().stream_id)
         .await
         .unwrap()
         .unwrap();
@@ -685,7 +672,7 @@ async fn rollup_applies_deltas_and_closes_months() {
     };
     r.apply_page(&[corr], "c6").await.unwrap();
     let corrected = r
-        .month_row("2026-07", "acct", "proj", &id().stream_id)
+        .month_row("2026-07", "proj", &id().stream_id)
         .await
         .unwrap()
         .unwrap();
@@ -701,7 +688,7 @@ async fn rollup_applies_deltas_and_closes_months() {
         .await
         .unwrap();
     let after_snap = r
-        .month_row("2026-07", "acct", "proj", &id().stream_id)
+        .month_row("2026-07", "proj", &id().stream_id)
         .await
         .unwrap()
         .unwrap();
@@ -728,7 +715,7 @@ async fn rollup_applies_deltas_and_closes_months() {
         .await
         .unwrap();
     let replay = r
-        .month_row("2026-07", "acct", "proj", &id().stream_id)
+        .month_row("2026-07", "proj", &id().stream_id)
         .await
         .unwrap()
         .unwrap();
@@ -763,7 +750,7 @@ async fn rollup_applies_deltas_and_closes_months() {
     };
     r.apply_page(&[late_env], "c9").await.unwrap();
     let after_read = r
-        .month_row("2026-07", "acct", "proj", &id().stream_id)
+        .month_row("2026-07", "proj", &id().stream_id)
         .await
         .unwrap()
         .unwrap();
@@ -793,7 +780,7 @@ async fn rollup_applies_deltas_and_closes_months() {
     );
     use object_store::ObjectStoreExt;
     let path = object_store::path::Path::from(format!(
-        "t1/telemetry/usage-monthly/acct/proj/{}/2026-07.json",
+        "t1/telemetry/usage-monthly/proj/{}/2026-07.json",
         id().stream_id
     ));
     let got = store.get(&path).await.expect("artifact object exists");
@@ -806,7 +793,7 @@ async fn rollup_applies_deltas_and_closes_months() {
     // the same sums, effective = frozen + corrections, and each
     // correction is its own immutable object.
     let row = r
-        .month_row("2026-07", "acct", "proj", &id().stream_id)
+        .month_row("2026-07", "proj", &id().stream_id)
         .await
         .unwrap()
         .unwrap();
@@ -825,18 +812,14 @@ async fn rollup_applies_deltas_and_closes_months() {
         frozen_b + 12 + 9,
         "effective = frozen base + corrections"
     );
-    let agg = r
-        .project_row("2026-07", "acct", "proj")
-        .await
-        .unwrap()
-        .unwrap();
+    let agg = r.container_row("2026-07", "proj").await.unwrap().unwrap();
     assert_eq!(
         agg.corr.read_payload_bytes_delta,
         12 + 9,
         "project aggregate carries correction sums"
     );
     let cpath = object_store::path::Path::from(format!(
-        "t1/telemetry/usage-monthly/acct/proj/{}/2026-07.corrections/corr~1.json",
+        "t1/telemetry/usage-monthly/proj/{}/2026-07.corrections/corr~1.json",
         id().stream_id
     ));
     let cbody = store
@@ -851,8 +834,7 @@ async fn rollup_applies_deltas_and_closes_months() {
 
     // Content verification (round-22 item 8a): an AlreadyExists
     // whose bytes DIFFER is a mismatch — never marked published.
-    let clash =
-        object_store::path::Path::from("t2/telemetry/usage-monthly/acct/proj/x/2026-01.json");
+    let clash = object_store::path::Path::from("t2/telemetry/usage-monthly/proj/x/2026-01.json");
     store
         .put(&clash, object_store::PutPayload::from(b"tampered".to_vec()))
         .await
@@ -861,7 +843,7 @@ async fn rollup_applies_deltas_and_closes_months() {
     {
         let mut wb = WriteBatch::new();
         wb.put(
-            b"artifact-pending/2026-01/acct/proj/x",
+            b"artifact-pending/2026-01/proj/x",
             serde_json::to_vec(&MonthRow::default()).unwrap(),
         );
         r.db.write(wb).await.unwrap();
@@ -922,17 +904,14 @@ async fn a_correction_that_writes_a_month_row_first_names_its_incarnation() {
         .await
         .unwrap();
     let row = r
-        .month_row("2026-06", "acct", "proj", &id().stream_id)
+        .month_row("2026-06", "proj", &id().stream_id)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        (row.account_id.as_str(), row.stream_name.as_str()),
-        ("acct", "orders")
-    );
+    assert_eq!(row.stream_name, "orders");
     assert_eq!(row.corrections.len(), 1);
     let name = r
-        .name_row("2026-06", "acct", "proj", "orders")
+        .name_row("2026-06", "proj", "orders")
         .await
         .unwrap()
         .unwrap();
@@ -940,7 +919,7 @@ async fn a_correction_that_writes_a_month_row_first_names_its_incarnation() {
     // A replay lists it once.
     r.apply_page(&[corr], "c2").await.unwrap();
     let name = r
-        .name_row("2026-06", "acct", "proj", "orders")
+        .name_row("2026-06", "proj", "orders")
         .await
         .unwrap()
         .unwrap();

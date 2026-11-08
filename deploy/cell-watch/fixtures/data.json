@@ -272,7 +272,6 @@
       "ingest_bytes_total": 0,
       "ops_events_dropped_total": 0,
       "read_meter_seal_deferrals_total": 0,
-      "segment_identity_drift_total": 0,
       "unowned_meter_events_total": 0
     },
     "gauges": {

@@ -568,13 +568,11 @@ async fn consumed_ledgers() -> std::sync::Arc<crate::http::AppState> {
     state
 }
 
-/// The deployment account's rows in the active read window, in a stable order.
-fn account_rows(
+/// The rows in the active read window, in a stable order.
+fn window_rows(
     state: &crate::http::AppState,
 ) -> Vec<(crate::billing::BillingIdentity, crate::billing::RowDelta)> {
-    let account = state.deployment.account_id();
     let mut rows: Vec<_> = state.billing.reads().snapshot_active();
-    rows.retain(|(id, _)| id.account_id == account);
     rows.sort_by(|(a, _), (b, _)| {
         (&a.container_id, &a.stream_id).cmp(&(&b.container_id, &b.stream_id))
     });
@@ -584,8 +582,8 @@ fn account_rows(
 /// Owner decision 2026-10-14 (round 4, item 2; alerting #1): the server's
 /// reads of its own ledgers are no one's usage. On an enforce rig, an idle
 /// rollup step and an idle ops rollup step read a page of `_usage` and of
-/// `_ops_metrics` and count no unowned meter event, and the deployment
-/// account's read rows stay as they were. `UNOWNED_METER_EVENTS` is
+/// `_ops_metrics` and count no unowned meter event, and the read window's
+/// rows stay as they were. `UNOWNED_METER_EVENTS` is
 /// process-wide, and a scenario running beside this one may count a feed
 /// miss of its own, so the pair is taken again, 10 ms apart, until one runs
 /// in a window nothing else counted in: a pair that meters its two reads
@@ -596,7 +594,7 @@ async fn idle_rollup_steps_count_no_unowned_meter_event() {
     use std::sync::atomic::Ordering::Relaxed;
     let _clock = crate::billing::billing_clock_lock().read().await;
     let state = consumed_ledgers().await;
-    let (rows, unflushed) = (account_rows(&state), state.billing.reads().unflushed());
+    let (rows, unflushed) = (window_rows(&state), state.billing.reads().unflushed());
     let mut counted = Vec::new();
     while counted.len() < 50 && counted.last() != Some(&0) {
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -607,7 +605,7 @@ async fn idle_rollup_steps_count_no_unowned_meter_event() {
         assert_eq!(
             (
                 (usage, ops),
-                account_rows(&state),
+                window_rows(&state),
                 state.billing.reads().unflushed()
             ),
             ((0, 0), rows.clone(), unflushed),

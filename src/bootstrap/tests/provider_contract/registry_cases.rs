@@ -42,7 +42,6 @@ pub(super) fn descriptor(
 ) -> PersistedDescriptor {
     PersistedDescriptor {
         seal_gen_counter: 0,
-        account_id: None,
         project_id: ProjectId::new(&b.project).unwrap(),
         name: name.into(),
         stream_epoch: epoch.into(),

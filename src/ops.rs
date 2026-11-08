@@ -432,10 +432,6 @@ pub(crate) fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) ->
         crate::billing::UNOWNED_METER_EVENTS.load(Ordering::Relaxed),
     );
     counters.insert(
-        "segment_identity_drift_total".into(),
-        crate::billing::SEGMENT_IDENTITY_DRIFT.load(Ordering::Relaxed),
-    );
-    counters.insert(
         "read_meter_seal_deferrals_total".into(),
         state.billing.read_seal_deferrals(),
     );

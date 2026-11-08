@@ -50,7 +50,6 @@ pub(crate) struct AppendService {
     pub(crate) lifecycle: crate::application::lifecycle::LifecycleService,
     pub(crate) creation: Arc<crate::application::creation::CreationService>,
     pub(crate) auth: Arc<crate::auth::AuthService>,
-    pub(crate) deployment: crate::deployment::DeploymentIdentity,
     pub(crate) admission_config: crate::config::AdmissionConfig,
 }
 impl AppendService {
@@ -417,12 +416,7 @@ async fn execute_once(
         seal_gen: close_plan.generation,
         billing: (!crate::billing::is_reserved_stream(&desc.name)).then(|| {
             std::sync::Arc::new(crate::billing::BillingRef {
-                identity: crate::billing::identity_with_capabilities(
-                    &state.auth,
-                    &state.deployment,
-                    &desc,
-                    true,
-                ),
+                identity: crate::billing::identity_with_capabilities(&state.auth, &desc, true),
                 segment_id: seg.seg_id,
             })
         }),

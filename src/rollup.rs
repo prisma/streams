@@ -27,10 +27,11 @@ use serde::{Deserialize, Serialize};
 use slatedb::{Db, WriteBatch};
 use std::sync::Arc;
 
-// v2: every key carries the ACCOUNT (round-21 multi-tenant identity —
-// project ids are not assumed globally unique). Fresh namespace; the
-// preview's v1 rollup data is disposable pre-launch.
-pub(crate) const ROLLUP_PATH: &str = "telemetry/usage-rollup/v2/p0";
+// v3 (layout 8, edge #253): every key names its container and no account;
+// a container id is unique across cells, minted by the control plane, and
+// Console maps it to its project and workspace. A fresh namespace in
+// layout 8's single reset.
+pub(crate) const ROLLUP_PATH: &str = "telemetry/usage-rollup/v3/p0";
 
 // ---------------------------------------------------------------------
 // Keyspace (§9.2)
@@ -39,28 +40,28 @@ pub(crate) const ROLLUP_PATH: &str = "telemetry/usage-rollup/v2/p0";
 fn k_source(boot: &str) -> Vec<u8> {
     format!("source/{boot}").into_bytes()
 }
-fn k_segment(account: &str, project: &str, stream_id: &str, seg: u32) -> Vec<u8> {
-    format!("segment/{account}/{project}/{stream_id}/{seg}").into_bytes()
+fn k_segment(container: &str, stream_id: &str, seg: u32) -> Vec<u8> {
+    format!("segment/{container}/{stream_id}/{seg}").into_bytes()
 }
-fn k_month(month: &str, account: &str, project: &str, stream_id: &str) -> Vec<u8> {
-    format!("month/{month}/{account}/{project}/{stream_id}").into_bytes()
+fn k_month(month: &str, container: &str, stream_id: &str) -> Vec<u8> {
+    format!("month/{month}/{container}/{stream_id}").into_bytes()
 }
 fn k_month_prefix(month: &str) -> Vec<u8> {
     format!("month/{month}/").into_bytes()
 }
-// mt-lint: allow(name-param-shared-core): rollup row-key builder; the project is an explicit sibling parameter
-fn k_name(month: &str, account: &str, project: &str, name: &str) -> Vec<u8> {
+// mt-lint: allow(name-param-shared-core): rollup row-key builder; the container is an explicit sibling parameter
+fn k_name(month: &str, container: &str, name: &str) -> Vec<u8> {
     // Bare (non-tenant-qualified) hash is safe here: the key path already
-    // embeds account+project, so equal names in different projects land in
+    // embeds the container, so equal names in different containers land in
     // disjoint rows. The hash only canonicalizes the name segment.
     format!(
-        "name/{month}/{account}/{project}/{}",
+        "name/{month}/{container}/{}",
         crate::crypto::hex(&crate::crypto::stream_hash(name))
     )
     .into_bytes()
 }
-fn k_project(month: &str, account: &str, project: &str) -> Vec<u8> {
-    format!("project/{month}/{account}/{project}").into_bytes()
+fn k_container(month: &str, container: &str) -> Vec<u8> {
+    format!("container/{month}/{container}").into_bytes()
 }
 const K_CURSOR: &[u8] = b"meta/usage-cursor";
 const K_OLDEST_UNCLOSED: &[u8] = b"meta/oldest-unclosed-month";
@@ -81,8 +82,6 @@ pub(crate) struct SegmentState {
     pub storage_accounted_through_ms: i64,
     #[serde(default)]
     pub stream_name: String,
-    #[serde(default)]
-    pub account_id: String,
 }
 
 /// Per-segment contribution recorded inside a month row: the ABSOLUTE
@@ -111,8 +110,6 @@ pub(crate) struct SegMonth {
 /// One (month, project, stream incarnation): the invoice row.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(crate) struct MonthRow {
-    #[serde(default)]
-    pub account_id: String,
     #[serde(default)]
     pub stream_name: String,
     /// Absolute per-segment ingest/storage state for delta application.
@@ -518,16 +515,16 @@ fn decode_json<T: for<'a> Deserialize<'a>>(raw: &[u8]) -> anyhow::Result<T> {
 }
 
 /// One `artifact-pending/` row as the publisher reads it: (month,
-/// "account/project", stream-id, row). A row whose key or body does not
+/// container, stream-id, row). A row whose key or body does not
 /// decode is logged and gives `None`: it is never published and stays in
 /// the outbox for an operator, and the readiness report counts it blocked.
 fn pending_artifact_row(key: &[u8], value: &[u8]) -> Option<(String, String, String, MonthRow)> {
     let k = std::str::from_utf8(key).unwrap_or("");
-    let parts: Vec<&str> = k.splitn(5, '/').collect();
-    let [_, month, account, project, stream_id] = parts.as_slice() else {
+    let parts: Vec<&str> = k.splitn(4, '/').collect();
+    let [_, month, container, stream_id] = parts.as_slice() else {
         tracing::error!(
             key = %String::from_utf8_lossy(key),
-            error = "the key does not name a month, account, project and stream",
+            error = "the key does not name a month, container and stream",
             "pending monthly artifact stays unpublished"
         );
         return None;
@@ -535,7 +532,7 @@ fn pending_artifact_row(key: &[u8], value: &[u8]) -> Option<(String, String, Str
     match serde_json::from_slice::<MonthRow>(value) {
         Ok(row) => Some((
             (*month).to_owned(),
-            format!("{account}/{project}"),
+            (*container).to_owned(),
             (*stream_id).to_owned(),
             row,
         )),
@@ -649,31 +646,28 @@ impl UsageRollup {
     pub(crate) async fn month_row(
         &self,
         month: &str,
-        account: &str,
-        project: &str,
+        container: &str,
         stream_id: &str,
     ) -> anyhow::Result<Option<MonthRow>> {
-        read_json(&self.db, &k_month(month, account, project, stream_id)).await
+        read_json(&self.db, &k_month(month, container, stream_id)).await
     }
 
-    // mt-lint: allow(name-param-shared-core): rollup lookup; project is an explicit sibling parameter
+    // mt-lint: allow(name-param-shared-core): rollup lookup; the container is an explicit sibling parameter
     pub(crate) async fn name_row(
         &self,
         month: &str,
-        account: &str,
-        project: &str,
+        container: &str,
         name: &str,
     ) -> anyhow::Result<Option<AggRow>> {
-        read_json(&self.db, &k_name(month, account, project, name)).await
+        read_json(&self.db, &k_name(month, container, name)).await
     }
 
-    pub(crate) async fn project_row(
+    pub(crate) async fn container_row(
         &self,
         month: &str,
-        account: &str,
-        project: &str,
+        container: &str,
     ) -> anyhow::Result<Option<AggRow>> {
-        read_json(&self.db, &k_project(month, account, project)).await
+        read_json(&self.db, &k_container(month, container)).await
     }
 
     /// All persistent segment states for one stream (bounded by its
@@ -681,11 +675,10 @@ impl UsageRollup {
     /// exists yet (round-21 blocker 2).
     pub(crate) async fn stream_segment_states(
         &self,
-        account: &str,
-        project: &str,
+        container: &str,
         stream_id: &str,
     ) -> anyhow::Result<Vec<SegmentState>> {
-        let pfx = format!("segment/{account}/{project}/{stream_id}/").into_bytes();
+        let pfx = format!("segment/{container}/{stream_id}/").into_bytes();
         let mut out = Vec::new();
         let mut iter = self
             .db
@@ -755,7 +748,7 @@ impl UsageRollup {
     }
 
     /// Pending correction artifacts (round-22 item 8): (pending key,
-    /// month, "account/project", stream-id, correction id, body).
+    /// month, container, stream-id, correction id, body).
     pub(crate) async fn pending_correction_artifacts(
         &self,
         max: usize,
@@ -768,16 +761,16 @@ impl UsageRollup {
             .await?;
         while let Some(kv) = iter.next().await? {
             let k = std::str::from_utf8(&kv.key).unwrap_or("").to_string();
-            let parts: Vec<&str> = k.splitn(6, '/').collect();
-            if parts.len() == 6 {
+            let parts: Vec<&str> = k.splitn(5, '/').collect();
+            if parts.len() == 5 {
                 let cid = serde_json::from_slice::<UsageCorrection>(&kv.value)
                     .map(|c| c.correction_id)
-                    .unwrap_or_else(|_| parts[5].to_string());
+                    .unwrap_or_else(|_| parts[4].to_string());
                 out.push((
                     kv.key.to_vec(),
                     parts[1].to_string(),
-                    format!("{}/{}", parts[2], parts[3]),
-                    parts[4].to_string(),
+                    parts[2].to_string(),
+                    parts[3].to_string(),
                     cid,
                     kv.value.to_vec(),
                 ));

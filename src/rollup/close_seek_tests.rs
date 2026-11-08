@@ -56,9 +56,8 @@ async fn r23_close_visits_scale_linearly_across_chunk_restart() {
         let mut wb = WriteBatch::new();
         for segment in 0..n {
             wb.put(
-                k_segment("a", "p", "s", u32::try_from(segment).unwrap()),
+                k_segment("p", "s", u32::try_from(segment).unwrap()),
                 serde_json::to_vec(&SegmentState {
-                    account_id: "a".into(),
                     stream_name: "orders".into(),
                     owned_frame_bytes_current: 1,
                     storage_accounted_through_ms: month_start_ms(2026, 7),
@@ -85,7 +84,7 @@ async fn r23_close_visits_scale_linearly_across_chunk_restart() {
             "one visit per segment plus one shared monthly row"
         );
         let month = reopened
-            .month_row("2026-07", "a", "p", "s")
+            .month_row("2026-07", "p", "s")
             .await
             .unwrap()
             .unwrap();

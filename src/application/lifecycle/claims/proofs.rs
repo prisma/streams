@@ -149,7 +149,6 @@ fn descriptor() -> crate::registry::PersistedDescriptor {
     });
     crate::registry::PersistedDescriptor {
         seal_gen_counter: counter,
-        account_id: None,
         project_id: crate::tenant::ProjectId::new("proj").unwrap_or_else(|_| unreachable!()),
         name: "stream".into(),
         stream_epoch: String::new(),

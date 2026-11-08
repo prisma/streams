@@ -139,8 +139,8 @@ async fn reads_of_a_thousand_streams_in_one_window_bill_once_each() {
     let (year, month) = crate::billing::utc_year_month(crate::shard::now_ms());
     let month = crate::billing::month_str(year, month);
     let rollup = state.rollup.get().unwrap();
-    let (account, project) = (&bystander.account_id, &bystander.container_id);
-    let row = rollup.month_row(&month, account, project, &bystander.stream_id);
+    let project = &bystander.container_id;
+    let row = rollup.month_row(&month, project, &bystander.stream_id);
     let row = row
         .await
         .unwrap()
@@ -202,7 +202,6 @@ async fn billed_rig(instance: &str) -> super::fixture_http::HttpRig {
 
 fn audit_identity(i: u32) -> crate::billing::BillingIdentity {
     crate::billing::BillingIdentity {
-        account_id: "acct_billcap".into(),
         container_id: "proj-billcap".into(),
         stream_id: format!("{i:032x}"),
         stream_name: format!("audit/s{i:05}"),
@@ -241,7 +240,7 @@ async fn assert_billed_once(state: &std::sync::Arc<crate::http::AppState>, strea
     for i in 0..streams {
         let id = audit_identity(i);
         let row = rollup
-            .month_row(&month, &id.account_id, &id.container_id, &id.stream_id)
+            .month_row(&month, &id.container_id, &id.stream_id)
             .await
             .unwrap()
             .unwrap_or_else(|| panic!("stream {i} has no month row"));

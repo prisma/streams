@@ -5,7 +5,6 @@ use crate::billing::SegmentBillingMetaV1;
 fn meta() -> SegmentBillingMetaV1 {
     SegmentBillingMetaV1 {
         v: 1,
-        account_id: "acct".into(),
         project_id: "proj".into(),
         stream_id: "sid".into(),
         stream_name: "orders".into(),
@@ -54,9 +53,8 @@ fn the_static_row_holds_no_counter_and_its_golden_bytes_are_pinned() {
     let row = encode_static(&m);
     assert_eq!(
         crate::crypto::hex(&row),
-        // version, v, segment, year, month, retained, then four names
-        "01 0100 03000000 ea070000 0a 01 0461636374 0470726f6a 03736964 066f7264657273"
-            .replace(' ', "")
+        // version, v, segment, year, month, retained, then three names
+        "01 0100 03000000 ea070000 0a 01 0470726f6a 03736964 066f7264657273".replace(' ', "")
     );
 }
 

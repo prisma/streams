@@ -17,7 +17,6 @@ fn batch(seq: u64) -> ReadBatch {
         to_ms: 1,
         rows: vec![ReadRow {
             identity: BillingIdentity {
-                account_id: "account".into(),
                 container_id: "project".into(),
                 stream_id: seq.to_string(),
                 stream_name: "orders".into(),

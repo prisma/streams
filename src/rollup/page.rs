@@ -5,8 +5,8 @@
 //! A failed read or validation drops the entire pending transaction.
 
 use super::{
-    AggRow, K_CURSOR, MONTH_CLOSE_CAP, MonthRow, SegmentState, decode_json, get_json, k_month,
-    k_name, k_project, k_segment, k_source, month_spans, month_start_ms, next_month, parse_month,
+    AggRow, K_CURSOR, MONTH_CLOSE_CAP, MonthRow, SegmentState, decode_json, get_json, k_container,
+    k_month, k_name, k_segment, k_source, month_spans, month_start_ms, next_month, parse_month,
     read_bytes, stored_index,
 };
 use crate::billing::{
@@ -76,12 +76,7 @@ impl<'a> Page<'a> {
         env: &UsageEnvelope,
         c: &UsageCorrection,
     ) -> anyhow::Result<()> {
-        let key = k_month(
-            &c.month,
-            &c.identity.account_id,
-            &c.identity.container_id,
-            &c.identity.stream_id,
-        );
+        let key = k_month(&c.month, &c.identity.container_id, &c.identity.stream_id);
         let mut row: MonthRow = match self.months.get(&key) {
             Some(row) => row.clone(),
             None => get_json(self.db, &key).await?,
@@ -148,23 +143,14 @@ impl<'a> Page<'a> {
         // identity like every other writer, and list the incarnation on
         // its name, since the correction is its contribution to the month.
         if mr.stream_name.is_empty() {
-            mr.account_id.clone_from(&c.identity.account_id);
             mr.stream_name.clone_from(&c.identity.stream_name);
         }
         for (key, is_name) in [
             (
-                k_name(
-                    &c.month,
-                    &c.identity.account_id,
-                    &c.identity.container_id,
-                    &c.identity.stream_name,
-                ),
+                k_name(&c.month, &c.identity.container_id, &c.identity.stream_name),
                 true,
             ),
-            (
-                k_project(&c.month, &c.identity.account_id, &c.identity.container_id),
-                false,
-            ),
+            (k_container(&c.month, &c.identity.container_id), false),
         ] {
             let mut a: AggRow = match self.aggregates.get(&key) {
                 Some(r) => r.clone(),
@@ -178,9 +164,8 @@ impl<'a> Page<'a> {
         }
         if mr.finalized_at_ms.is_some() {
             let pk = format!(
-                "corr-pending/{}/{}/{}/{}/{}",
+                "corr-pending/{}/{}/{}/{}",
                 c.month,
-                c.identity.account_id,
                 c.identity.container_id,
                 c.identity.stream_id,
                 c.correction_id.replace('/', "~"),
@@ -263,12 +248,7 @@ impl<'a> Page<'a> {
         row: &ReadRow,
         month: &str,
     ) -> anyhow::Result<()> {
-        let mkey = k_month(
-            month,
-            &row.identity.account_id,
-            &row.identity.container_id,
-            &row.identity.stream_id,
-        );
+        let mkey = k_month(month, &row.identity.container_id, &row.identity.stream_id);
         let mut mr: MonthRow = match self.months.get(&mkey) {
             Some(r) => r.clone(),
             None => get_json(self.db, &mkey).await?,
@@ -304,7 +284,6 @@ impl<'a> Page<'a> {
             self.months.insert(mkey, mr);
             return Ok(());
         }
-        mr.account_id = row.identity.account_id.clone();
         mr.stream_name = row.identity.stream_name.clone();
         mr.read_payload_bytes += row.read_payload_bytes;
         mr.read_records += row.read_records;
@@ -314,18 +293,10 @@ impl<'a> Page<'a> {
         self.months.insert(mkey, mr);
         for (key, agg) in [
             (
-                k_name(
-                    month,
-                    &row.identity.account_id,
-                    &row.identity.container_id,
-                    &row.identity.stream_name,
-                ),
+                k_name(month, &row.identity.container_id, &row.identity.stream_name),
                 true,
             ),
-            (
-                k_project(month, &row.identity.account_id, &row.identity.container_id),
-                false,
-            ),
+            (k_container(month, &row.identity.container_id), false),
         ] {
             let mut a: AggRow = match self.aggregates.get(&key) {
                 Some(r) => r.clone(),
@@ -346,17 +317,12 @@ impl<'a> Page<'a> {
 
     async fn apply_snapshot(&mut self, snap: &SegmentSnapshot) -> anyhow::Result<()> {
         let id = &snap.identity;
-        let skey = k_segment(
-            &id.account_id,
-            &id.container_id,
-            &id.stream_id,
-            snap.segment_id,
-        );
+        let skey = k_segment(&id.container_id, &id.stream_id, snap.segment_id);
         let st: SegmentState = match self.segs.get(&skey) {
             Some(r) => r.clone(),
             None => get_json(self.db, &skey).await?,
         };
-        let mkey = k_month(&snap.month, &id.account_id, &id.container_id, &id.stream_id);
+        let mkey = k_month(&snap.month, &id.container_id, &id.stream_id);
         let mut mr: MonthRow = match self.months.get(&mkey) {
             Some(r) => r.clone(),
             None => get_json(self.db, &mkey).await?,
@@ -406,24 +372,12 @@ impl<'a> Page<'a> {
         sm.gauge_bytes = snap.owned_frame_bytes_current;
         sm.accounted_through_ms = snap.storage_accounted_through_ms;
         sm.final_seen |= snap.month_final;
-        mr.account_id = id.account_id.clone();
         mr.stream_name = id.stream_name.clone();
         self.months.insert(mkey, mr);
         self.advance_segment_state(skey, st, snap, snap.storage_accounted_through_ms);
         for (key, is_name) in [
-            (
-                k_name(
-                    &snap.month,
-                    &id.account_id,
-                    &id.container_id,
-                    &id.stream_name,
-                ),
-                true,
-            ),
-            (
-                k_project(&snap.month, &id.account_id, &id.container_id),
-                false,
-            ),
+            (k_name(&snap.month, &id.container_id, &id.stream_name), true),
+            (k_container(&snap.month, &id.container_id), false),
         ] {
             let mut a: AggRow = match self.aggregates.get(&key) {
                 Some(r) => r.clone(),
@@ -463,7 +417,6 @@ impl<'a> Page<'a> {
             st.owned_frame_bytes_current = snap.owned_frame_bytes_current;
             st.storage_accounted_through_ms = through;
             st.stream_name = id.stream_name.clone();
-            st.account_id = id.account_id.clone();
             self.segs.insert(skey, st);
             self.stored.advanced(snap, through);
         }
@@ -517,7 +470,7 @@ impl<'a> Page<'a> {
     ) -> anyhow::Result<()> {
         let id = &snap.identity;
         let month = crate::billing::month_str(year, number);
-        let key = k_month(&month, &id.account_id, &id.container_id, &id.stream_id);
+        let key = k_month(&month, &id.container_id, &id.stream_id);
         let mut row: MonthRow = match self.months.get(&key) {
             Some(r) => r.clone(),
             None => get_json(self.db, &key).await?,
@@ -568,13 +521,8 @@ impl<'a> Page<'a> {
         amount: u128,
     ) -> anyhow::Result<()> {
         for key in [
-            k_name(
-                month,
-                &identity.account_id,
-                &identity.container_id,
-                &identity.stream_name,
-            ),
-            k_project(month, &identity.account_id, &identity.container_id),
+            k_name(month, &identity.container_id, &identity.stream_name),
+            k_container(month, &identity.container_id),
         ] {
             let mut a: AggRow = match self.aggregates.get(&key) {
                 Some(r) => r.clone(),

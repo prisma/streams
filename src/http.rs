@@ -251,7 +251,6 @@ impl AppState {
             lifecycle: self.lifecycle_service(),
             creation: self.creation_service(),
             auth: self.auth.clone(),
-            deployment: self.deployment.clone(),
             admission_config: self.config.admission.clone(),
         }
     }
@@ -301,7 +300,6 @@ impl AppState {
                     reads: self.read_service(),
                     keys: self.keys.clone(),
                     runtime: self.runtime.clone(),
-                    deployment: self.deployment.clone(),
                     auth: self.auth.clone(),
                     quotas: self.quotas.clone(),
                     admission: self.admission.clone(),

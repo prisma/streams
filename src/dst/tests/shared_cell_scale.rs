@@ -8,9 +8,9 @@
 
 use super::fixture_auth::rig_sse;
 use super::fixture_cell::{
-    Answers, CREATE, Cell, CellSpec, KEYS, Ledger, NAMES, WORKSPACES, append_all, burst,
-    cell_scale, error_code, for_each, hold_subscriptions, journal, key_query, marker, open_cell,
-    padded, project, record, roll_up, seed, workspace,
+    Answers, CREATE, Cell, CellSpec, KEYS, Ledger, NAMES, append_all, burst, cell_scale,
+    error_code, for_each, hold_subscriptions, journal, key_query, marker, open_cell, padded,
+    project, record, roll_up, seed,
 };
 use super::fixture_http::engine_shutdown;
 use super::fixture_livefeed::hub_sse_collect;
@@ -385,12 +385,12 @@ async fn read_every_key_once(cell: &Cell, i: usize) {
 /// A3: after the A1 workload and one read of every key, drain and roll
 /// up. Every project's usage equals its ledger exactly (ingest records
 /// and payload bytes, append requests, read records and payload bytes)
-/// under its own workspace; a neighbour's usage path is `404
-/// unknown_project`; each workspace's rows sum exactly its projects'
-/// ledgers and hold no other project's row; nothing bills to the
-/// deployment account; and the month reconciles.
+/// under its own container; a neighbour's usage path is `404
+/// unknown_project`; each container's one row holds exactly its ledger;
+/// no other container has a row (edge #253: no workspace, and no
+/// deployment account to bill); and the month reconciles.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
-async fn books_are_exact_per_project_and_workspace() {
+async fn books_are_exact_per_container() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let cell = open_cell(CellSpec::open(cell_scale())).await;
     cell.create_everywhere().await;
@@ -404,40 +404,16 @@ async fn books_are_exact_per_project_and_workspace() {
     let (y, m) = crate::billing::utc_year_month(crate::billing::billing_now_ms());
     let month = crate::billing::month_str(y, m);
     let rollup = cell.state.rollup.get().unwrap();
-    let mut sums = vec![(0u64, 0u64); WORKSPACES];
-    let mut want = vec![(0u64, 0u64); WORKSPACES];
     for p in 0..cell.projects {
-        let (records, bytes) = ledger.totals(p);
-        want[p % WORKSPACES].0 += records;
-        want[p % WORKSPACES].1 += bytes;
-        for (w, sum) in sums.iter_mut().enumerate() {
-            let row = rollup
-                .project_row(&month, &workspace(w), &project(p))
-                .await
-                .unwrap();
-            assert_eq!(
-                row.is_some(),
-                w == p % WORKSPACES,
-                "{} row under {}",
-                project(p),
-                workspace(w)
-            );
-            let row = row.unwrap_or_default();
-            sum.0 += row.ingest_records;
-            sum.1 += row.ingest_bytes;
-        }
-        let deployment = cell.state.deployment.account_id();
-        let row = rollup
-            .project_row(&month, deployment, &project(p))
-            .await
-            .unwrap();
-        assert!(
-            row.is_none(),
-            "{} billed the deployment account",
+        let row = rollup.container_row(&month, &project(p)).await.unwrap();
+        let row = row.unwrap_or_else(|| panic!("{} has no container row", project(p)));
+        assert_eq!(
+            (row.ingest_records, row.ingest_bytes),
+            ledger.totals(p),
+            "{}",
             project(p)
         );
     }
-    assert_eq!(sums, want, "workspace sums");
     let rep = rollup.reconcile_month(&month).await.unwrap();
     assert!(rep.ok, "books must balance: {:?}", rep.mismatches);
     assert_eq!(rep.projects, cell.projects, "{rep:?}");
@@ -451,9 +427,8 @@ async fn usage_matches_the_ledger(cell: &Cell, ledger: &Ledger, i: usize) {
         .json(i, "GET", &format!("/v1/projects/{}/usage", project(i)))
         .await;
     let (records, bytes) = ledger.totals(i);
-    let own = workspace(i);
     let got = (
-        v["accountId"].as_str(),
+        v.get("accountId"),
         v["ingestRecords"].as_u64(),
         v["ingestPayloadBytes"].as_u64(),
         v["appendRequests"].as_u64(),
@@ -461,7 +436,7 @@ async fn usage_matches_the_ledger(cell: &Cell, ledger: &Ledger, i: usize) {
         v["readPayloadBytes"].as_u64(),
     );
     let want = (
-        Some(own.as_str()),
+        None,
         Some(records),
         Some(bytes),
         Some(ledger.append_requests(i)),

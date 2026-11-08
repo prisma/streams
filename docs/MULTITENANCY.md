@@ -1690,26 +1690,23 @@ deletion sagas and the Control-Plane feed remain platform-side.)*
 
 ### Stage 7 — Billing and audit
 
-* [ ] Remove workspace/account fallbacks from billing identity.
-      *(Partial: identity is workspace-at-event with a COUNTED
-      deployment fallback on feed misses — unowned_meter_events_total
-      + segment_identity_drift_total exported; segment identity
-      re-stamps split-safe at month boundaries. Full removal rides
-      the platform feed + transfer-split work below.)*
-* [ ] Emit ownership-change events. *(Platform feed.)*
-* [ ] Split stored byte-time at transfer. *(Platform feed; mid-month
-      account switches without a split would double-count absolute
-      rollup deltas, so the cell heals identity only at month
-      boundaries until then.)*
+* [x] Remove workspace/account fallbacks from billing identity.
+      *(Edge #253: usage names the container and records no workspace
+      or account; a container missing from the policy feed under
+      enforce still meters and counts unowned_meter_events_total.
+      Containers do not move between workspaces (owner, 2026-11-08),
+      and Console splits an invoice by its container → workspace link
+      history, so the cell emits no ownership-change event and splits
+      no stored byte-time.)*
 * [x] Authorize usage through the project principal.
 * [x] Add `_audit_events`. *(§10.4.1; fleet relay path included.)*
 * [x] Run same-name cross-project invoice tests. *(Two foreign
-      projects, exact ingest attribution, workspace-at-event
-      accountIds, live-stream storage-gauge invariants.)*
+      projects, exact ingest attribution, no workspace in usage,
+      live-stream storage-gauge invariants.)*
 * [x] Run invoice reconciliation. *(rollup reconcile_month +
       GET /v1/debug/usage-reconcile + corruption-detecting DST.)*
 
-**Exit:** every billable unit belongs to exactly one project and one workspace-at-event.
+**Exit:** every billable unit belongs to exactly one container.
 
 ### Stage 8 — Shared-cell certification
 

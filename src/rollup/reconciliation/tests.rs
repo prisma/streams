@@ -16,7 +16,6 @@ fn comparison() -> Reconciliation {
 #[test]
 fn frozen_base_and_corrections_match_served_meters() {
     let row = MonthRow {
-        account_id: "a".into(),
         segments: [(
             0,
             SegMonth {
@@ -60,9 +59,9 @@ fn frozen_base_and_corrections_match_served_meters() {
         ..Default::default()
     };
     let mut check = comparison();
-    check.stream(b"month/2026-07/a/p/s", &serde_json::to_vec(&row).unwrap());
+    check.stream(b"month/2026-07/a/s", &serde_json::to_vec(&row).unwrap());
     check.project(
-        b"project/2026-07/a/p",
+        b"container/2026-07/a",
         &serde_json::to_vec(&aggregate).unwrap(),
     );
     assert!(check.finish().ok);
@@ -76,21 +75,20 @@ fn frozen_base_and_corrections_match_served_meters() {
 }
 
 #[test]
-fn account_qualified_comparison_reports_missing_and_drifted_rows() {
-    let row = |account: &str| MonthRow {
-        account_id: account.into(),
+fn container_qualified_comparison_reports_missing_and_disagreeing_rows() {
+    let row = MonthRow {
         read_payload_bytes: 5,
         ..Default::default()
     };
     let mut check = comparison();
-    for account in ["a", "b"] {
+    for container in ["a", "b"] {
         check.stream(
-            format!("month/2026-07/{account}/p/s").as_bytes(),
-            &serde_json::to_vec(&row(account)).unwrap(),
+            format!("month/2026-07/{container}/s").as_bytes(),
+            &serde_json::to_vec(&row).unwrap(),
         );
     }
     check.project(
-        b"project/2026-07/a/p",
+        b"container/2026-07/a",
         &serde_json::to_vec(&AggRow {
             read_payload_bytes: 5,
             ..Default::default()
@@ -98,7 +96,7 @@ fn account_qualified_comparison_reports_missing_and_drifted_rows() {
         .unwrap(),
     );
     check.project(
-        b"project/2026-07/c/p",
+        b"container/2026-07/c",
         &serde_json::to_vec(&AggRow::default()).unwrap(),
     );
     let report = check.finish();
@@ -108,33 +106,29 @@ fn account_qualified_comparison_reports_missing_and_drifted_rows() {
     assert_eq!(
         report.mismatches,
         [
-            "aggregate without stream rows: c/p",
-            "stream rows without an aggregate: b/p"
+            "aggregate without stream rows: c",
+            "stream rows without an aggregate: b"
         ]
     );
 
     let mut check = comparison();
-    check.stream(
-        b"month/2026-07/a/p/s",
-        &serde_json::to_vec(&row("wrong")).unwrap(),
-    );
+    check.stream(b"month/2026-07/a/s", &serde_json::to_vec(&row).unwrap());
     check.project(
-        b"project/2026-07/a/p",
+        b"container/2026-07/a",
         &serde_json::to_vec(&AggRow::default()).unwrap(),
     );
     let report = check.finish();
-    assert_eq!(report.mismatches.len(), 2);
-    assert!(report.mismatches[0].starts_with("row account drift"));
-    assert!(report.mismatches[1].starts_with("totals disagree"));
+    assert_eq!(report.mismatches.len(), 1);
+    assert!(report.mismatches[0].starts_with("totals disagree for a:"));
 }
 
 #[test]
 fn malformed_keys_and_rows_remain_reported() {
     let mut check = comparison();
     check.stream(b"month/2026-07", b"{}");
-    check.stream(b"month/2026-07/a/p/s", b"[");
-    check.project(b"project/2026-07", b"{}");
-    check.project(b"project/2026-07/a/p", b"[");
+    check.stream(b"month/2026-07/a/s", b"[");
+    check.project(b"container/2026-07", b"{}");
+    check.project(b"container/2026-07/a", b"[");
     let report = check.finish();
     assert!(!report.ok);
     assert_eq!(report.stream_rows, 0);
@@ -143,9 +137,9 @@ fn malformed_keys_and_rows_remain_reported() {
         report.mismatches,
         [
             "unparseable month key: month/2026-07",
-            "undecodable month row: month/2026-07/a/p/s",
-            "unparseable project key: project/2026-07",
-            "undecodable project aggregate: project/2026-07/a/p"
+            "undecodable month row: month/2026-07/a/s",
+            "unparseable container key: container/2026-07",
+            "undecodable container aggregate: container/2026-07/a"
         ]
     );
 }

@@ -356,7 +356,6 @@ mod billing {
     fn golden_layout6_billing_meta_static_row_and_counters_bytes() {
         let m = SegmentBillingMetaV1 {
             v: 1,
-            account_id: "acct-1".into(),
             project_id: "proj-test".into(),
             stream_id: "sid".into(),
             stream_name: "orders".into(),
@@ -383,7 +382,6 @@ mod billing {
                 "ea070000",             // month_year LE
                 "08",                   // month (varint)
                 "01",                   // flags: retained by forks
-                "06616363742d31",       // "acct-1"
                 "0970726f6a2d74657374", // "proj-test"
                 "03736964",             // "sid"
                 "066f7264657273",       // "orders"
@@ -416,11 +414,10 @@ mod billing {
     }
 
     /// Layout 8, edge #253: a month final (`'V'`) and a `_usage` segment
-    /// snapshot name their tenant by `container_id`.
+    /// snapshot name their tenant by `container_id` alone, with no account.
     #[test]
     fn golden_layout8_segment_snapshot_names_the_container() {
         let m = SegmentBillingMetaV1 {
-            account_id: "acct-1".into(),
             project_id: "ct-1".into(),
             stream_id: "00112233445566778899aabbccddeeff".into(),
             stream_name: "default".into(),
@@ -431,7 +428,7 @@ mod billing {
         assert_eq!(json, SNAPSHOT_JSON);
     }
 
-    const SNAPSHOT_JSON: &str = r#"{"account_id":"acct-1","container_id":"ct-1","stream_id":"00112233445566778899aabbccddeeff","stream_name":"default","segment_id":3,"usage_version":0,"month":"0000-00","month_final":true,"ingest_payload_bytes_month":0,"ingest_records_month":0,"owned_frame_bytes_current":0,"storage_byte_ms_month":"","storage_accounted_through_ms":0,"retained_by_forks":false}"#;
+    const SNAPSHOT_JSON: &str = r#"{"container_id":"ct-1","stream_id":"00112233445566778899aabbccddeeff","stream_name":"default","segment_id":3,"usage_version":0,"month":"0000-00","month_final":true,"ingest_payload_bytes_month":0,"ingest_records_month":0,"owned_frame_bytes_current":0,"storage_byte_ms_month":"","storage_accounted_through_ms":0,"retained_by_forks":false}"#;
 }
 
 mod routing_key_hash {
@@ -464,7 +461,6 @@ mod descriptor_json {
     fn full_desc() -> crate::registry::PersistedDescriptor {
         crate::registry::PersistedDescriptor {
             name: "orders".into(),
-            account_id: Some("acct-1".into()),
             project_id: proj(),
             stream_epoch: "00112233445566778899aabbccddeeff".into(),
             key_fingerprint: "fp-abc".into(),
@@ -512,13 +508,12 @@ mod descriptor_json {
         }
     }
 
-    const FULL_JSON: &str = r#"{"name":"orders","account_id":"acct-1","container_id":"proj-test","stream_epoch":"00112233445566778899aabbccddeeff","key_fingerprint":"fp-abc","created_ms":1700000000123,"expires_at_ms":1800000000000,"deleted":true,"soft_deleted":true,"logical_close_ms":1700100000000,"forked_from":{"source":"parent","source_epoch":"ffeeddccbbaa99887766554433221100","fork_offset":42,"fork_sub":3,"fork_id":"fork-1"},"fork_children":["child-1","child-2"],"init":{"request_hash":"rh-1","key_fingerprint":"kfp-1","claimed_ms":5},"content_type":"application/json","ttl_secs":3600,"segments":{"version":1,"next_seg_id":1,"segments":[{"seg_id":0,"lo":0,"hi":18446744073709551615,"shard_prefix":"shard-0","route_hash":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"created_ms":1700000000000,"predecessors":[],"sealed_ms":null,"sealed_next_offset":null}]},"sealed":true,"seal_gen_counter":7,"sealing":{"operation_id":"op-1","intent":{"kind":"final","routing_key":"rk","request_hash":"rq","final_committed":true},"claimed_ms":9,"claim_generation":2},"seal_op":"op-0","watch_definitions":[{"name":"w1","fields":["/a","/b"]}],"parent_ref_pending":true,"watch_sig_key":"wsk-1","layout_version":8}"#;
+    const FULL_JSON: &str = r#"{"name":"orders","container_id":"proj-test","stream_epoch":"00112233445566778899aabbccddeeff","key_fingerprint":"fp-abc","created_ms":1700000000123,"expires_at_ms":1800000000000,"deleted":true,"soft_deleted":true,"logical_close_ms":1700100000000,"forked_from":{"source":"parent","source_epoch":"ffeeddccbbaa99887766554433221100","fork_offset":42,"fork_sub":3,"fork_id":"fork-1"},"fork_children":["child-1","child-2"],"init":{"request_hash":"rh-1","key_fingerprint":"kfp-1","claimed_ms":5},"content_type":"application/json","ttl_secs":3600,"segments":{"version":1,"next_seg_id":1,"segments":[{"seg_id":0,"lo":0,"hi":18446744073709551615,"shard_prefix":"shard-0","route_hash":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"created_ms":1700000000000,"predecessors":[],"sealed_ms":null,"sealed_next_offset":null}]},"sealed":true,"seal_gen_counter":7,"sealing":{"operation_id":"op-1","intent":{"kind":"final","routing_key":"rk","request_hash":"rq","final_committed":true},"claimed_ms":9,"claim_generation":2},"seal_op":"op-0","watch_definitions":[{"name":"w1","fields":["/a","/b"]}],"parent_ref_pending":true,"watch_sig_key":"wsk-1","layout_version":8}"#;
 
     /// All optional/empty/defaultable fields at their defaults.
     fn minimal_desc() -> crate::registry::PersistedDescriptor {
         crate::registry::PersistedDescriptor {
             name: "min".into(),
-            account_id: None,
             project_id: proj(),
             stream_epoch: "00000000000000000000000000000001".into(),
             key_fingerprint: "fp".into(),
@@ -548,8 +543,8 @@ mod descriptor_json {
     /// `ttl_secs`, `sealed`, `seal_gen_counter`, `layout_version` and
     /// `content_type` have NO skip_serializing_if — a minimal descriptor
     /// still carries them (`expires_at_ms`/`ttl_secs` as explicit nulls,
-    /// `deleted: false` present). The skip-able set is: account_id,
-    /// soft_deleted, logical_close_ms, forked_from, fork_children, init,
+    /// `deleted: false` present). The skip-able set is: soft_deleted,
+    /// logical_close_ms, forked_from, fork_children, init,
     /// segments, sealing, seal_op, watch_definitions, parent_ref_pending,
     /// watch_sig_key.
     const MINIMAL_JSON: &str = r#"{"name":"min","container_id":"proj-test","stream_epoch":"00000000000000000000000000000001","key_fingerprint":"fp","created_ms":1,"expires_at_ms":null,"deleted":false,"content_type":"application/octet-stream","ttl_secs":null,"sealed":false,"seal_gen_counter":0,"layout_version":8}"#;
@@ -591,7 +586,6 @@ mod descriptor_json {
         // Layout 8 names the tenant `container_id` (edge #253): the old key decodes nowhere.
         let old = r#"{"name":"min","project_id":"proj-test","stream_epoch":"00000000000000000000000000000001","key_fingerprint":"fp","created_ms":1}"#;
         assert!(serde_json::from_str::<crate::registry::PersistedDescriptor>(old).is_err());
-        assert_eq!(d.account_id, None);
         assert_eq!(d.expires_at_ms, None);
         assert!(!d.deleted);
         assert!(!d.soft_deleted);

@@ -60,13 +60,6 @@ fn retryable_cas_error(error: &anyhow::Error) -> bool {
 )]
 pub(crate) struct PersistedDescriptor {
     pub name: String,
-    /// Billing tenant boundary (docs/OBSERVABILITY-BILLING.md §3.2):
-    /// captured from the deployment's authenticated context at creation
-    /// and immutable for the incarnation. `None` only on descriptors
-    /// created before the telemetry cutover (pre-launch data; billed
-    /// under the deployment default at meter time).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub account_id: Option<String>,
     /// MANDATORY stable tenant identity (MULTITENANCY §10.2): an input
     /// to the registry path and every layout-4 identity hash, verified
     /// against the path at decode. The mutable workspace_id is

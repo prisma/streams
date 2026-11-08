@@ -3,10 +3,9 @@
 use super::{READ_BATCH_ROW_BYTES, READ_ROUND_BYTES, ReadEmission, split_rows};
 use crate::billing::{BillingIdentity, MeterSource, ReadBatch, ReadRow, UsagePayload};
 
-fn identity(account: &str, name: &str) -> BillingIdentity {
+fn identity(container: &str, name: &str) -> BillingIdentity {
     BillingIdentity {
-        account_id: account.into(),
-        container_id: "p".into(),
+        container_id: container.into(),
         stream_id: "0".repeat(32),
         stream_name: name.into(),
     }
@@ -25,7 +24,7 @@ fn max_row(identity: BillingIdentity) -> ReadRow {
 
 /// An identity whose read row is bounded at exactly 512 bytes.
 fn wide(stream: u32) -> BillingIdentity {
-    identity("account", &format!("{stream:0>208}"))
+    identity("p", &format!("{stream:0>231}"))
 }
 
 fn batch(rows: u32) -> ReadBatch {
@@ -49,7 +48,6 @@ fn record_bytes(envelope: &crate::billing::UsageEnvelope) -> usize {
 #[test]
 fn a_read_row_bound_is_the_fixed_row_plus_each_escaped_identity_string() {
     let empty = BillingIdentity {
-        account_id: String::new(),
         container_id: String::new(),
         stream_id: String::new(),
         stream_name: String::new(),
@@ -59,12 +57,9 @@ fn a_read_row_bound_is_the_fixed_row_plus_each_escaped_identity_string() {
     // A space and a non-ASCII character are not escaped; a quote, a
     // backslash, a newline and a unit separator are, in at most six bytes.
     let plain = identity("a b", "ü");
-    assert_eq!(plain.read_row_bound(), encoded + 1 + 3 + 1 + 32 + 2);
+    assert_eq!(plain.read_row_bound(), encoded + 1 + 3 + 32 + 2);
     let escaped = identity("a\"b\\", "x\n\u{1f}");
-    assert_eq!(
-        escaped.read_row_bound(),
-        encoded + 1 + 4 + 1 + 32 + 3 + 4 * 5
-    );
+    assert_eq!(escaped.read_row_bound(), encoded + 1 + 4 + 32 + 3 + 4 * 5);
 }
 
 #[test]

@@ -265,7 +265,6 @@ async fn stored_references_bind_inside_the_referring_project() {
     };
     let foreign_desc = |name: &str, epoch: &str| crate::registry::PersistedDescriptor {
         seal_gen_counter: 0,
-        account_id: None,
         project_id: po.clone(),
         name: name.to_string(),
         stream_epoch: epoch.to_string(),

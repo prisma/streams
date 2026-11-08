@@ -276,8 +276,8 @@ async fn a_superseded_boots_last_read_window_is_billed_once() {
     let (year, month) = crate::billing::utc_year_month(crate::shard::now_ms());
     let month = crate::billing::month_str(year, month);
     let rollup = b.state.rollup.get().unwrap();
-    let (account, project) = (&identity.account_id, &identity.container_id);
-    let row = rollup.month_row(&month, account, project, &identity.stream_id);
+    let project = &identity.container_id;
+    let row = rollup.month_row(&month, project, &identity.stream_id);
     let row = row.await.unwrap().expect("A's reads reached the rollup");
     let billed = (
         row.read_operations,
@@ -290,7 +290,7 @@ async fn a_superseded_boots_last_read_window_is_billed_once() {
         owed.read_records,
     );
     assert_eq!(billed, owed, "A's metered reads, billed once");
-    let named = rollup.name_row(&month, account, project, &identity.stream_name);
+    let named = rollup.name_row(&month, project, &identity.stream_name);
     let named = named.await.unwrap().expect("the stream's ingest");
     assert_eq!(named.ingest_records, 2, "A's and B's appends, once each");
 }

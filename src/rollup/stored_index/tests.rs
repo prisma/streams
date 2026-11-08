@@ -1,4 +1,4 @@
-//! T3 (stored-cap B3): the rollup's account-free stored index. Each test
+//! T3 (stored-cap B3): the rollup's stored index. Each test
 //! applies real ledger pages of segment snapshots; the figures a page
 //! answers are what the rollup step publishes to admission's table.
 #![cfg(test)]
@@ -15,34 +15,27 @@ use slatedb::Db;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// One segment of one stream of one project, as an account stamps it.
+/// One segment of one stream of one container.
 #[derive(Clone, Copy)]
 struct Seg {
-    account: &'static str,
     project: &'static str,
     stream: &'static str,
     segment: u32,
 }
 
-/// Segment 0 of project p's stream s, under account a.
+/// Segment 0 of container p's stream s.
 const P0: Seg = Seg {
-    account: "a",
     project: "p",
     stream: "s",
     segment: 0,
 };
 
 impl Seg {
-    fn under(self, account: &'static str) -> Self {
-        Self { account, ..self }
-    }
-
     /// The live July snapshot `version`: its storage clock `through` ms
     /// into July and its gauge.
     fn at(self, version: u64, through: i64, gauge: u64) -> SegmentSnapshot {
         SegmentSnapshot {
             identity: BillingIdentity {
-                account_id: self.account.into(),
                 container_id: self.project.into(),
                 stream_id: self.stream.into(),
                 stream_name: format!("name-{}", self.stream),
@@ -142,7 +135,7 @@ async fn segment_rows(db: &Db) -> Vec<(String, String, String, SegmentState)> {
     let mut scan = db.scan_prefix(&b"segment/"[..], ..).await.unwrap();
     while let Some(kv) = scan.next().await.unwrap() {
         let key = String::from_utf8(kv.key.to_vec()).unwrap();
-        let [_, _, project, stream, segment] = key.splitn(5, '/').collect::<Vec<_>>()[..] else {
+        let [_, project, stream, segment] = key.splitn(4, '/').collect::<Vec<_>>()[..] else {
             panic!("{key}");
         };
         let state: SegmentState = decode_json(&kv.value).unwrap();
@@ -212,33 +205,28 @@ async fn the_figure_is_the_latest_gauge_of_each_live_segment() {
     r.db.close().await.unwrap();
 }
 
-/// T3(b): a workspace change re-stamps a segment's account. The segment
-/// rows, keyed by account, then hold the segment twice; the index counts it
-/// once, by its latest snapshot, in order and in one page out of order. A
-/// snapshot under another account that is not later than the one the index
-/// holds (the same version and clock) moves nothing.
+/// T3(b): the index counts a segment once, by its latest snapshot, in
+/// order and in one page out of order, and so do the segment rows. A
+/// snapshot that is not later than the one the index holds (the same
+/// version and clock) moves nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
-async fn a_workspace_change_counts_a_segment_once() {
-    let r = rollup("stored-workspace").await;
-    let under_a = apply(&r, [P0.at(3, 30, 300)], "c1").await.unwrap();
-    assert_eq!(under_a, [figure("p", 300, 300)]);
-    let under_b = apply(&r, [P0.under("b").at(4, 40, 400)], "c2").await;
-    assert_eq!(under_b.unwrap(), [figure("p", 400, 400)], "400, not 700");
+async fn a_segment_counts_once_by_its_latest_snapshot() {
+    let r = rollup("stored-latest").await;
+    let first = apply(&r, [P0.at(3, 30, 300)], "c1").await.unwrap();
+    assert_eq!(first, [figure("p", 300, 300)]);
+    let later = apply(&r, [P0.at(4, 40, 400)], "c2").await;
+    assert_eq!(later.unwrap(), [figure("p", 400, 400)], "400, not 700");
     let summed: u64 = segment_rows(&r.db)
         .await
         .iter()
         .map(|(.., state)| state.owned_frame_bytes_current)
         .sum();
-    assert_eq!(summed, 700, "the account-keyed rows hold it twice");
+    assert_eq!(summed, 400, "one segment row");
     let q0 = Seg { project: "q", ..P0 };
-    let reordered = [q0.under("b").at(4, 40, 400), q0.at(3, 30, 300)];
+    let reordered = [q0.at(4, 40, 400), q0.at(3, 30, 300)];
     let page = apply(&r, reordered, "c3").await.unwrap();
-    assert_eq!(
-        page,
-        [figure("q", 400, 400)],
-        "the older account's arrives last"
-    );
-    let repeated = apply(&r, [P0.under("c").at(4, 40, 999)], "c4").await;
+    assert_eq!(page, [figure("q", 400, 400)], "the older arrives last");
+    let repeated = apply(&r, [P0.at(4, 40, 999)], "c4").await;
     let nothing = Vec::<StoredFigure>::new();
     assert_eq!(
         repeated.unwrap(),
@@ -276,18 +264,13 @@ async fn a_close_gives_its_bytes_back_and_written_keeps_them() {
 /// T3(g): `written` adds each gauge increase among the snapshots one page
 /// holds of a segment (a rollup behind its ledger reads several drain
 /// rounds at once), in the segment state's order: a growth and its close,
-/// one arriving after the other across a workspace change, and a fall
-/// between two growths.
+/// and a fall between two growths.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn written_adds_each_increase_one_page_holds() {
     let r = rollup("stored-in-page").await;
     let grown_and_closed = apply(&r, [P0.at(1, 10, 100), P0.at(2, 20, 0)], "c1");
     assert_eq!(grown_and_closed.await.unwrap(), [figure("p", 0, 100)]);
     assert_eq!(row(&r, "p").await, (0, 100));
-    let q0 = Seg { project: "q", ..P0 };
-    let reordered = [q0.under("b").at(2, 20, 0), q0.at(1, 10, 40)];
-    let page = apply(&r, reordered, "c2").await.unwrap();
-    assert_eq!(page, [figure("q", 0, 40)], "the close arrives first");
     let r0 = Seg { project: "r", ..P0 };
     let page = [r0.at(1, 10, 50), r0.at(2, 20, 30), r0.at(3, 30, 80)];
     let fell = apply(&r, page, "c3").await.unwrap();
@@ -296,21 +279,18 @@ async fn written_adds_each_increase_one_page_holds() {
 }
 
 /// One segment's ledger as its drain rounds emit it: versions 1 to n in
-/// order, each with its gauge (0 a close), its account moving from a to b
-/// at a random version. Answers it, the last gauge and the sum of the
-/// gauge's increases.
+/// order, each with its gauge (0 a close). Answers it, the last gauge and
+/// the sum of the gauge's increases.
 fn random_history(rng: &mut rand::rngs::StdRng, seg: Seg) -> (Vec<SegmentSnapshot>, u64, u64) {
     let versions = rng.random_range(1..=6u64);
-    let moves_at = rng.random_range(1..=versions + 1);
     let (mut gauge, mut written) = (0, 0);
     let mut history = Vec::new();
     for version in 1..=versions {
-        let account = if version < moves_at { "a" } else { "b" };
         let now = rng.random_range(0..50u64);
         written += now.saturating_sub(gauge);
         gauge = now;
         let through = i64::try_from(version).unwrap() * 1000;
-        history.push(seg.under(account).at(version, through, now));
+        history.push(seg.at(version, through, now));
     }
     (history, gauge, written)
 }
@@ -352,7 +332,6 @@ fn random_ledger(rng: &mut rand::rngs::StdRng) -> (Vec<SegmentSnapshot>, Figures
             project,
             stream,
             segment,
-            ..P0
         };
         let (history, last, written) = random_history(rng, seg);
         let figures = expected.entry(project.to_owned()).or_default();
@@ -473,17 +452,15 @@ async fn a_snapshot_of_no_project_id_is_reported_and_not_indexed() {
 }
 
 /// A version determines its snapshot: one gauge (0 is a close) and one
-/// storage clock per segment and version, whichever account stamps it.
+/// storage clock per segment and version.
 fn random_snapshot(rng: &mut rand::rngs::StdRng) -> SegmentSnapshot {
     let project = ["p", "q"][rng.random_range(0..2)];
     let stream = ["s", "t"][rng.random_range(0..2)];
     let segment = rng.random_range(0..2u32);
-    let account = ["a", "b"][rng.random_range(0..2)];
     let version = rng.random_range(1..=8u64);
     let salt = u64::from(segment) * 11 + u64::from(project == "q") * 5 + u64::from(stream == "t");
     let gauge = (version * 37 + salt) % 50;
     let seg = Seg {
-        account,
         project,
         stream,
         segment,
@@ -491,8 +468,8 @@ fn random_snapshot(rng: &mut rand::rngs::StdRng) -> SegmentSnapshot {
     seg.at(version, i64::try_from(version).unwrap() * 1000, gauge)
 }
 
-/// T3(e): over seeded random snapshot sequences across two accounts
-/// (replays, older versions, closes, pages of one to five snapshots), each
+/// T3(e): over seeded random snapshot sequences (replays, older versions,
+/// closes, pages of one to five snapshots), each
 /// project's durable and last published figure equals the derivation from
 /// the segment rows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
@@ -556,7 +533,7 @@ async fn a_database_that_predates_the_index_is_reported_never_backfilled() {
         owned_frame_bytes_current: 100,
         ..Default::default()
     };
-    let key = k_segment("a", "p", "s", 0);
+    let key = k_segment("p", "s", 0);
     r.db.put(key, serde_json::to_vec(&state).unwrap())
         .await
         .unwrap();
@@ -589,7 +566,7 @@ async fn an_index_of_closes_alone_is_not_reported_as_predating_it() {
     assert_eq!(closed, Vec::<StoredFigure>::new());
     let keys: Vec<Vec<u8>> = rows(&first.db).await.into_iter().map(|(k, _)| k).collect();
     assert!(keys.contains(&k_stored_seg("p", "s", 0)));
-    assert!(keys.contains(&k_segment("a", "p", "s", 0)));
+    assert!(keys.contains(&k_segment("p", "s", 0)));
     assert!(!keys.contains(&k_stored("p")));
     first.db.close().await.unwrap();
     let reopened = rollup_on(store, "stored-closes-only").await;

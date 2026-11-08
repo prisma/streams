@@ -204,7 +204,6 @@ fn the_compaction_round_trips_every_field() {
     use base64::Engine;
     let sref = ts("rt");
     let mut base = desc("rt", EPOCH, false);
-    base.account_id = Some("acct-1".into());
     base.key_fingerprint = crate::crypto::hex(&[7u8; 16]);
     base.watch_sig_key = Some(base64::engine::general_purpose::STANDARD.encode([9u8; 32]));
     base.expires_at_ms = Some(99);
@@ -214,7 +213,6 @@ fn the_compaction_round_trips_every_field() {
     odd.key_fingerprint = "fp".into();
     odd.watch_sig_key = Some("wsk-1".into());
     odd.content_type = "text/plain; charset=utf-8".into();
-    odd.account_id = None;
     let mut tomb = base.clone();
     tomb.deleted = true;
     tomb.parent_ref_pending = true;
@@ -237,13 +235,12 @@ fn the_compaction_round_trips_every_field() {
 }
 
 /// A production-shaped ordinary entry (hex epoch and fingerprint, base64
-/// verifier, quoted MD5 ETag, an account) is charged at most 256 bytes, so
+/// verifier, quoted MD5 ETag) is charged at most 256 bytes, so
 /// the 64 MiB tier holds at least 262,144 of them.
 #[test]
 fn an_ordinary_entry_is_charged_at_most_256_bytes() {
     use base64::Engine;
     let mut d = desc("sz", EPOCH, false);
-    d.account_id = Some("acct-1".into());
     d.key_fingerprint = crate::crypto::hex(&[7u8; 16]);
     d.watch_sig_key = Some(base64::engine::general_purpose::STANDARD.encode([9u8; 32]));
     let charged = super::retained::charged(&d, "\"0123456789abcdef0123456789abcdef\"");

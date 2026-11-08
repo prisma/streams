@@ -56,14 +56,13 @@ async fn reserved_namespace_refuses_customer_credentials() {
     )
     .await;
     assert_eq!(st, 201, "inner underscore segments are customer names");
-    // Billing identity is persisted at creation.
+    // The billing container is persisted at creation.
     let desc = state
         .registry
         .get(&state.deployment.raw_adapter_sref("customers/_acme/orders"))
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(desc.account_id.as_deref(), Some("acct_test"));
     assert_eq!(desc.project_id.as_str(), "proj-test");
     engine_shutdown(&state).await;
 }
@@ -245,7 +244,7 @@ async fn read_meter_covers_the_matrix_exactly() {
             .rows
             .iter()
             .any(|r| r.identity.stream_name == "meter1"
-                && r.identity.account_id == "acct_test"
+                && r.identity.container_id == "proj-test"
                 && !r.identity.stream_id.is_empty()),
         "sealed rows carry the full billing identity"
     );
@@ -329,7 +328,6 @@ async fn billing_meta_is_exact_durable_and_ackable() {
     );
     assert_eq!(bm.ingest_payload_bytes_total, p1.len() as u64);
     assert_eq!(bm.usage_version, 1);
-    assert_eq!(bm.account_id, "acct_test");
     let frame1 = bm.owned_frame_bytes_current;
     assert!(frame1 > p1.len() as u64);
     assert_eq!(
@@ -721,7 +719,6 @@ async fn ops_metrics_and_alerts_flow() {
     // sealed queue beyond its cap, evaluate, then drain and re-evaluate.
     for i in 0..crate::billing::READ_SEALED_MAX_BATCHES + 2 {
         let id = crate::billing::BillingIdentity {
-            account_id: "a".into(),
             container_id: "p".into(),
             stream_id: format!("{i:032x}"),
             stream_name: format!("s{i}"),

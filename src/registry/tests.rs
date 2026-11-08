@@ -193,7 +193,6 @@ pub(super) fn ts(name: &str) -> crate::tenant::TenantStreamRef {
 pub(super) fn desc(name: &str, epoch: &str, deleted: bool) -> PersistedDescriptor {
     PersistedDescriptor {
         seal_gen_counter: 0,
-        account_id: None,
         project_id: tp(),
         name: name.into(),
         stream_epoch: epoch.into(),

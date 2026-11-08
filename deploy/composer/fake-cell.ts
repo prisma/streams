@@ -116,7 +116,7 @@ export class FakeStreamsCell {
     if (url.pathname === `/v1/projects/${this.project}/usage` && req.method === "GET") {
       const lagging = this.lagLeft > 0;
       if (lagging) this.lagLeft -= 1;
-      return this.json(200, { accountId: "acct", projectId: this.project, ingestPayloadBytes: lagging ? 0 : this.ingest });
+      return this.json(200, { projectId: this.project, ingestPayloadBytes: lagging ? 0 : this.ingest });
     }
     const m = url.pathname.match(/^\/v1\/streams\/([^/]+)(\/records)?$/);
     if (!m) return this.refuse(404, "not_found");

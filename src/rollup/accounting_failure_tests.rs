@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::{
-    K_CURSOR, K_OPS_CURSOR, SegmentState, UsageRollup, k_month, k_name, k_project, k_source,
+    K_CURSOR, K_OPS_CURSOR, SegmentState, UsageRollup, k_container, k_month, k_name, k_source,
     month_start_ms, read_faults,
 };
 use crate::billing::UsageEnvelope;
@@ -27,7 +27,6 @@ fn batch(seq: u64) -> UsageEnvelope {
             to_ms: month_start_ms(2026, 7) + 100,
             rows: vec![ReadRow {
                 identity: crate::billing::BillingIdentity {
-                    account_id: "a".into(),
                     container_id: "p".into(),
                     stream_id: "s".into(),
                     stream_name: "orders".into(),
@@ -64,9 +63,9 @@ async fn r14_required_read_failures_leave_every_row_and_checkpoint_unchanged() {
     let before = snapshot(&db).await;
     for key in [
         k_source("boot"),
-        k_month("2026-07", "a", "p", "s"),
-        k_name("2026-07", "a", "p", "orders"),
-        k_project("2026-07", "a", "p"),
+        k_month("2026-07", "p", "s"),
+        k_name("2026-07", "p", "orders"),
+        k_container("2026-07", "p"),
     ] {
         read_faults()
             .lock()
@@ -86,7 +85,7 @@ async fn r14_required_read_failures_leave_every_row_and_checkpoint_unchanged() {
     r.apply_page(&[batch(1)], "c1").await.unwrap();
     assert_eq!(snapshot(&db).await, after, "replay must be exact");
     assert_eq!(
-        r.month_row("2026-07", "a", "p", "s")
+        r.month_row("2026-07", "p", "s")
             .await
             .unwrap()
             .unwrap()
@@ -119,7 +118,7 @@ async fn r14_corrupt_watermarks_rows_and_close_keys_block_progress() {
         assert_eq!(snapshot(&db).await, before);
     }
     db.put(k_source("boot"), 0u64.to_le_bytes()).await.unwrap();
-    db.put(k_month("2026-07", "a", "p", "s"), b"malformed json")
+    db.put(k_month("2026-07", "p", "s"), b"malformed json")
         .await
         .unwrap();
     let before = snapshot(&db).await;
@@ -127,9 +126,8 @@ async fn r14_corrupt_watermarks_rows_and_close_keys_block_progress() {
     assert!(r.close_month(2026, 7, 0).await.is_err());
     assert_eq!(snapshot(&db).await, before);
     db.put(
-        b"segment/a/p/s/not-a-number",
+        b"segment/p/s/not-a-number",
         serde_json::to_vec(&SegmentState {
-            account_id: "a".into(),
             ..Default::default()
         })
         .unwrap(),
@@ -256,7 +254,7 @@ fn an_unwritten_byte_time_keeps_its_empty_wire() {
     let snapshot = serde_json::to_value(meta.to_snapshot(false)).unwrap();
     assert_eq!(snapshot["storage_byte_ms_month"], "");
     let correction: crate::billing::UsageCorrection = serde_json::from_str(concat!(
-        r#"{"account_id":"a","container_id":"p","stream_id":"s","#,
+        r#"{"container_id":"p","stream_id":"s","#,
         r#""stream_name":"orders","month":"2026-07","reason":"r"}"#,
     ))
     .unwrap();
@@ -275,8 +273,8 @@ async fn a_late_read_correction_carries_a_written_zero_byte_time() {
             .unwrap(),
     );
     let r = UsageRollup::over(db.clone());
-    let finalized = br#"{"account_id":"a","finalized_at_ms":1}"#;
-    db.put(k_month("2026-07", "a", "p", "s"), finalized)
+    let finalized = br#"{"finalized_at_ms":1}"#;
+    db.put(k_month("2026-07", "p", "s"), finalized)
         .await
         .unwrap();
     r.apply_page(&[batch(0)], "c0").await.unwrap();
@@ -287,10 +285,10 @@ async fn a_late_read_correction_carries_a_written_zero_byte_time() {
             serde_json::from_slice::<serde_json::Value>(&value).unwrap()
         }
     };
-    let month = raw(k_month("2026-07", "a", "p", "s")).await;
+    let month = raw(k_month("2026-07", "p", "s")).await;
     assert_eq!(month["corrections"][0]["storage_byte_ms_delta"], "0");
     assert_eq!(month["corr"]["storage_byte_ms_delta"], "0");
-    let project = raw(k_project("2026-07", "a", "p")).await;
+    let project = raw(k_container("2026-07", "p")).await;
     assert_eq!(project["storage_byte_ms"], "");
     assert_eq!(project["corr"]["storage_byte_ms_delta"], "0");
     db.close().await.unwrap();
@@ -306,7 +304,6 @@ fn late_snapshot(usage_version: u64, storage_byte_ms_month: String) -> UsageEnve
         cell: "c".into(),
         payload: UsagePayload::SegmentSnapshot(crate::billing::SegmentSnapshot {
             identity: crate::billing::BillingIdentity {
-                account_id: "a".into(),
                 container_id: "p".into(),
                 stream_id: "s".into(),
                 stream_name: "orders".into(),
@@ -339,10 +336,10 @@ async fn a_late_byte_time_no_correction_can_carry_fails_its_page() {
     );
     let r = UsageRollup::over(db.clone());
     let finalized = concat!(
-        r#"{"account_id":"a","finalized_at_ms":1,"#,
+        r#"{"finalized_at_ms":1,"#,
         r#""segments":{"0":{"usage_version":1,"storage_byte_ms":"5"}}}"#,
     );
-    db.put(k_month("2026-07", "a", "p", "s"), finalized)
+    db.put(k_month("2026-07", "p", "s"), finalized)
         .await
         .unwrap();
     let before = snapshot(&db).await;
@@ -352,7 +349,7 @@ async fn a_late_byte_time_no_correction_can_carry_fails_its_page() {
         "a byte-time difference no correction can carry must fail its page"
     );
     assert_eq!(snapshot(&db).await, before);
-    let month = r.month_row("2026-07", "a", "p", "s").await;
+    let month = r.month_row("2026-07", "p", "s").await;
     month.expect("the finalized row stays readable");
     db.close().await.unwrap();
 }
@@ -372,9 +369,9 @@ async fn an_undecodable_pending_artifact_is_logged_and_stays_pending() {
         .unwrap(),
     );
     let r = UsageRollup::over(db.clone());
-    let not_json = "artifact-pending/2026-07/a/p/not-json";
+    let not_json = "artifact-pending/2026-07/p/not-json";
     for (key, body) in [
-        ("artifact-pending/2026-07/a/p/good", "{}"),
+        ("artifact-pending/2026-07/p/good", "{}"),
         (not_json, "not json"),
         ("artifact-pending/2026-07/short", "{}"),
     ] {
@@ -419,10 +416,10 @@ async fn the_outbox_count_stops_where_the_publisher_scan_stops() {
     );
     let r = UsageRollup::over(db.clone());
     for (key, body) in [
-        ("artifact-pending/2026-07/a/p/s1", "{}"),
-        ("artifact-pending/2026-07/a/p/s2", "not json"),
-        ("artifact-pending/2026-07/a/p/s3", "{}"),
-        ("artifact-pending/2026-07/a/p/s4", "{}"),
+        ("artifact-pending/2026-07/p/s1", "{}"),
+        ("artifact-pending/2026-07/p/s2", "not json"),
+        ("artifact-pending/2026-07/p/s3", "{}"),
+        ("artifact-pending/2026-07/p/s4", "{}"),
         ("artifact-pending/2026-07/short", "{}"),
     ] {
         db.put(key, body).await.unwrap();

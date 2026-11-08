@@ -37,7 +37,6 @@ fn expiry() -> i64 {
 fn live(version: u64, month: &str, byte_ms: u128, gauge: u64, through: i64) -> SegmentSnapshot {
     SegmentSnapshot {
         identity: BillingIdentity {
-            account_id: "a".into(),
             container_id: "p".into(),
             stream_id: "s".into(),
             stream_name: "orders".into(),
@@ -121,7 +120,7 @@ async fn closed_through_february(name: &str) -> UsageRollup {
 }
 
 async fn row(r: &UsageRollup, month: &str) -> MonthRow {
-    let row = r.month_row(month, "a", "p", "s").await.unwrap();
+    let row = r.month_row(month, "p", "s").await.unwrap();
     row.expect("a month row")
 }
 
@@ -144,8 +143,8 @@ async fn invoiced(r: &UsageRollup, month: &str) -> u128 {
 
 /// The (name, project) aggregates' storage, each base plus corrections.
 async fn aggregates(r: &UsageRollup, month: &str) -> (u128, u128) {
-    let name = r.name_row(month, "a", "p", "orders").await.unwrap();
-    let project = r.project_row(month, "a", "p").await.unwrap();
+    let name = r.name_row(month, "p", "orders").await.unwrap();
+    let project = r.container_row(month, "p").await.unwrap();
     let effective = |row: Option<crate::rollup::AggRow>| {
         let row = row.unwrap_or_default();
         eff_u128(
@@ -158,7 +157,7 @@ async fn aggregates(r: &UsageRollup, month: &str) -> (u128, u128) {
 
 /// Segment 0's state as every later carry reads it: (version, gauge, through).
 async fn state(r: &UsageRollup) -> (u64, u64, i64) {
-    let key = k_segment("a", "p", "s", 0);
+    let key = k_segment("p", "s", 0);
     let st: SegmentState = read_json(&r.db, &key).await.unwrap().unwrap();
     (
         st.usage_version,
@@ -189,7 +188,7 @@ async fn assert_books(r: &UsageRollup, month: &str, owed: u128) {
         (invoiced(r, month).await, name, project),
         (owed, owed, owed)
     );
-    if r.project_row(month, "a", "p").await.unwrap().is_some() {
+    if r.container_row(month, "p").await.unwrap().is_some() {
         let report = r.reconcile_month(month).await.unwrap();
         assert!(report.ok, "{month}: {report:?}");
     }
@@ -453,10 +452,7 @@ async fn a_carried_month_the_page_cannot_read_fails_the_late_close_whole() {
     let _clock = crate::billing::billing_clock_lock().read().await;
     let r = closed_through_february("late-read-fault").await;
     let before = database_rows(&r.db).await;
-    let fault = (
-        Arc::as_ptr(&r.db) as usize,
-        k_month("2026-02", "a", "p", "s"),
-    );
+    let fault = (Arc::as_ptr(&r.db) as usize, k_month("2026-02", "p", "s"));
     read_faults().lock().unwrap().insert(fault.clone());
     let failed = apply(&r, [closed(2)], "closed").await;
     let unread = read_faults().lock().unwrap().remove(&fault);
@@ -558,9 +554,8 @@ async fn a_carried_span_beyond_the_month_close_cap_fails_the_late_close() {
         owned_frame_bytes_current: 81,
         storage_accounted_through_ms: month_start_ms(2076, 3),
         stream_name: "orders".into(),
-        account_id: "a".into(),
     };
-    let key = k_segment("a", "p", "s", 0);
+    let key = k_segment("p", "s", 0);
     r.db.put(&key, serde_json::to_vec(&far).unwrap())
         .await
         .unwrap();
@@ -580,7 +575,7 @@ async fn a_carried_month_whose_floor_the_carry_did_not_bill_fails_the_late_close
     let mut feb = row(&r, "2026-02").await;
     let segment = feb.segments.get_mut(&0).unwrap();
     segment.storage_byte_ms = (FEB_CARRIED + 1).to_string();
-    let key = k_month("2026-02", "a", "p", "s");
+    let key = k_month("2026-02", "p", "s");
     r.db.put(&key, serde_json::to_vec(&feb).unwrap())
         .await
         .unwrap();

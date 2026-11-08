@@ -5,7 +5,8 @@
 
 use super::{
     AggRow, FrozenTotals, MonthRow, SegmentState, UsageRollup, close_scan_range, decode_json,
-    get_json, k_month, k_month_prefix, k_name, k_project, month_start_ms, next_month, parse_month,
+    get_json, k_container, k_month, k_month_prefix, k_name, month_start_ms, next_month,
+    parse_month,
 };
 use crate::billing::BillingIdentity;
 use serde::de::DeserializeOwned;
@@ -215,15 +216,11 @@ impl MonthClose<'_> {
     ) -> anyhow::Result<usize> {
         let parts: Vec<&str> = std::str::from_utf8(key)?.split('/').collect();
         anyhow::ensure!(
-            parts.len() == 5
+            parts.len() == 4
                 && parts[0] == "month"
                 && parts[1] == self.month
                 && parts.iter().all(|p| !p.is_empty()),
             "invalid month accounting key"
-        );
-        anyhow::ensure!(
-            row.account_id == parts[2],
-            "month accounting identity mismatch"
         );
         if row.finalized_at_ms.is_some() {
             return Ok(0);
@@ -252,10 +249,7 @@ impl MonthClose<'_> {
         });
         // The immutable invoice and its publication outbox use identical bytes
         // in this page's durable batch. Failed publication retries the outbox.
-        let pending = format!(
-            "artifact-pending/{}/{}/{}/{}",
-            self.month, parts[2], parts[3], parts[4]
-        );
+        let pending = format!("artifact-pending/{}/{}/{}", self.month, parts[2], parts[3]);
         let value = serde_json::to_vec(&row)?;
         batch.put(pending.into_bytes(), value.clone());
         batch.put(key, value);
@@ -274,26 +268,20 @@ impl CarryPage<'_, '_> {
     async fn segment(&mut self, key: Vec<u8>, mut state: SegmentState) -> anyhow::Result<()> {
         let parts: Vec<&str> = std::str::from_utf8(&key)?.split('/').collect();
         anyhow::ensure!(
-            parts.len() == 5 && parts[0] == "segment" && parts.iter().all(|p| !p.is_empty()),
+            parts.len() == 4 && parts[0] == "segment" && parts.iter().all(|p| !p.is_empty()),
             "invalid segment accounting key"
         );
-        let segment: u32 = parts[4].parse()?;
-        anyhow::ensure!(
-            state.account_id == parts[1],
-            "segment accounting identity mismatch"
-        );
+        let segment: u32 = parts[3].parse()?;
         if state.storage_accounted_through_ms >= self.close.boundary {
             return Ok(());
         }
         let identity = BillingIdentity {
-            account_id: state.account_id.clone(),
-            container_id: parts[2].to_owned(),
-            stream_id: parts[3].to_owned(),
+            container_id: parts[1].to_owned(),
+            stream_id: parts[2].to_owned(),
             stream_name: state.stream_name.clone(),
         };
         let month_key = k_month(
             &self.close.month,
-            &identity.account_id,
             &identity.container_id,
             &identity.stream_id,
         );
@@ -319,7 +307,6 @@ impl CarryPage<'_, '_> {
             month_segment.gauge_bytes = state.owned_frame_bytes_current;
             month_segment.accounted_through_ms = self.close.boundary;
             month_segment.final_seen = true;
-            row.account_id = state.account_id.clone();
             if row.stream_name.is_empty() {
                 row.stream_name = state.stream_name.clone();
             }
@@ -348,7 +335,6 @@ impl CarryPage<'_, '_> {
     ) -> anyhow::Result<()> {
         let name_key = k_name(
             &self.close.month,
-            &identity.account_id,
             &identity.container_id,
             &identity.stream_name,
         );
@@ -357,12 +343,8 @@ impl CarryPage<'_, '_> {
         if !name.incarnations.contains(&identity.stream_id) {
             name.incarnations.push(identity.stream_id.clone());
         }
-        let project_key = k_project(
-            &self.close.month,
-            &identity.account_id,
-            &identity.container_id,
-        );
-        self.aggregate(project_key).await?.add_storage(amount);
+        let container_key = k_container(&self.close.month, &identity.container_id);
+        self.aggregate(container_key).await?.add_storage(amount);
         Ok(())
     }
 

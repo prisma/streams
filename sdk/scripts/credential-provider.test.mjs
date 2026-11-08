@@ -831,7 +831,7 @@ test("generateEncryptionKey encodes the bytes WebCrypto fills, URL-safe and with
 
 // ---- client.usage ---------------------------------------------------------
 
-const PROJECT_USAGE = { accountId: "acct-1", projectId: "proj 1", month: "2026-10", ingestPayloadBytes: 10, effective: { storageByteSeconds: "0" } };
+const PROJECT_USAGE = { projectId: "proj 1", month: "2026-10", ingestPayloadBytes: 10, effective: { storageByteSeconds: "0" } };
 
 function usageClient(answers, options = {}) {
   const sent = [];

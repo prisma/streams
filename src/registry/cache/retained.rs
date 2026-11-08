@@ -127,7 +127,6 @@ struct Entry {
     epoch: [u8; 16],
     key_fingerprint: Token,
     watch_sig_key: Option<Verifier>,
-    account_id: Option<Arc<str>>,
     content_type: Arc<str>,
     seal_op: Option<Box<str>>,
     created_ms: i64,
@@ -179,7 +178,6 @@ impl Entry {
             epoch,
             key_fingerprint: Token::of(&d.key_fingerprint),
             watch_sig_key: d.watch_sig_key.as_deref().map(Verifier::of),
-            account_id: d.account_id.as_deref().map(&mut intern),
             content_type: intern(&d.content_type),
             seal_op: d.seal_op.as_deref().map(Into::into),
             created_ms: d.created_ms,
@@ -196,7 +194,6 @@ impl Entry {
     fn rebuild(&self, sref: &TenantStreamRef) -> PersistedDescriptor {
         PersistedDescriptor {
             name: sref.name().as_str().to_string(),
-            account_id: self.account_id.as_deref().map(str::to_string),
             project_id: sref.project_id().clone(),
             stream_epoch: crate::crypto::hex(&self.epoch),
             key_fingerprint: self.key_fingerprint.text(),

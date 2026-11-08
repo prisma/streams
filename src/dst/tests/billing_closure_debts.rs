@@ -372,10 +372,7 @@ pub(super) async fn closed_months(state: &State, at: i64) -> Vec<String> {
 /// byte-ms plus corrections (zero without a row).
 pub(super) async fn invoiced(state: &State, month: &str, epoch: &str) -> u128 {
     let rollup = state.rollup.get().expect("the rig's rollup");
-    let row = rollup
-        .month_row(month, "acct_test", "proj-test", epoch)
-        .await
-        .unwrap();
+    let row = rollup.month_row(month, "proj-test", epoch).await.unwrap();
     row.map_or(0, |row| {
         let frozen = row.frozen.expect("a finalized month").storage_byte_ms;
         crate::rollup::eff_u128(frozen.parse().unwrap(), &row.corr.storage_byte_ms_delta)
@@ -386,7 +383,7 @@ pub(super) async fn invoiced(state: &State, month: &str, epoch: &str) -> u128 {
 pub(super) async fn carried_gauge(state: &State, epoch: &str) -> u64 {
     let rollup = state.rollup.get().expect("the rig's rollup");
     let segments = rollup
-        .stream_segment_states("acct_test", "proj-test", epoch)
+        .stream_segment_states("proj-test", epoch)
         .await
         .unwrap();
     segments.iter().map(|s| s.owned_frame_bytes_current).sum()

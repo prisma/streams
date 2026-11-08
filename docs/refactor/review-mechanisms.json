@@ -131,12 +131,12 @@
         {
           "file": "src/rollup/accounting_failure_tests.rs",
           "name": "r14_required_read_failures_leave_every_row_and_checkpoint_unchanged",
-          "sha256": "968f735488e749fca1bdceb0831923f4764cc004f770ba6a799d696f833f0ab9"
+          "sha256": "9f54956e18f45d665355962a627b105bf3af5b0759b8e688d3adfff607866787"
         },
         {
           "file": "src/rollup/accounting_failure_tests.rs",
           "name": "r14_corrupt_watermarks_rows_and_close_keys_block_progress",
-          "sha256": "ef17fe93bbf42ffd361aeafc3d26a3492407659a20384788d77dcb90ccc21470"
+          "sha256": "ee0cde57f1065ab3d8c26a5817d3fea8f06a11e94baef3161eb0f6d71821a2c3"
         }
       ]
     },
@@ -642,7 +642,7 @@
         {
           "file": "src/dst/tests/billing_controller.rs",
           "name": "r09_active_rollup_cancels_entered_read_and_replays_ledger_once",
-          "sha256": "0cdd14242dac1065817fbfb85da3967057a5f4c1bf7aeb8a8f18d11ccc84060f"
+          "sha256": "3a2700d8d524bf0bffbb72aa582cd7168c8f06919e0d14a07c6035a3a576d527"
         },
         {
           "file": "src/dst/tests/billing_controller.rs",
@@ -847,7 +847,7 @@
         {
           "file": "src/shard/retirement_tests.rs",
           "name": "r17b_late_successful_write_settles_without_publishing_retired_effects",
-          "sha256": "27e0505e8fb8bea001e846240861cb8e74e708d82716ea02c3941cdabcc5feb0"
+          "sha256": "3ddf48d04a7a6982a73081b59d162bb04ac050b193ad85f6fe93a43c3c157989"
         }
       ],
       "support_functions": [

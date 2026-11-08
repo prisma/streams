@@ -130,12 +130,7 @@ pub(super) async fn seed(
             seal_gen: None,
             billing: (!crate::billing::is_reserved_stream(&desc.name)).then(|| {
                 std::sync::Arc::new(crate::billing::BillingRef {
-                    identity: crate::billing::identity_with_capabilities(
-                        &state.auth,
-                        &state.deployment,
-                        desc,
-                        true,
-                    ),
+                    identity: crate::billing::identity_with_capabilities(&state.auth, desc, true),
                     segment_id: 0,
                 })
             }),

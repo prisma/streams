@@ -48,7 +48,7 @@ async fn a_close_that_reaches_the_rollup_after_february_closed_reverses_february
     );
     let rollup = case.state.rollup.get().expect("the rig's rollup");
     for month in ["2026-01", "2026-02"] {
-        let row = rollup.month_row(month, "acct_test", "proj-test", epoch);
+        let row = rollup.month_row(month, "proj-test", epoch);
         let row = row.await.unwrap().expect("a corrected month");
         assert_eq!(row.corrections.len(), 1, "{month}");
         row.assert_storage_telescopes();

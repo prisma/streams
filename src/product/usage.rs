@@ -85,14 +85,14 @@ impl crate::rollup::UsageRollup {
             id.stream_id.clone_from(sid);
         }
         let row = self
-            .month_row(month, &id.account_id, &id.container_id, &id.stream_id)
+            .month_row(month, &id.container_id, &id.stream_id)
             .await
             .map_err(UsageRefusal::Unavailable)?;
         Ok((id, row.unwrap_or_default()))
     }
 
     /// Whether `sid` is an incarnation of `id`'s name, as the rollup
-    /// recorded it under `id`'s own account and project: the month's
+    /// recorded it under `id`'s own container: the month's
     /// aggregate for the name lists it, or its month row or any of its
     /// segment states carries the name. Every writer stamps a row with
     /// its own identity's name, so a foreign id's rows carry the foreign
@@ -105,16 +105,16 @@ impl crate::rollup::UsageRollup {
         id: &crate::billing::BillingIdentity,
         sid: &str,
     ) -> anyhow::Result<bool> {
-        let (account, project, name) = (&id.account_id, &id.container_id, &id.stream_name);
-        let listed = self.name_row(month, account, project, name).await?;
+        let (container, name) = (&id.container_id, &id.stream_name);
+        let listed = self.name_row(month, container, name).await?;
         if listed.is_some_and(|aggregate| aggregate.incarnations.iter().any(|i| i == sid)) {
             return Ok(true);
         }
-        let row = self.month_row(month, account, project, sid).await?;
+        let row = self.month_row(month, container, sid).await?;
         if row.is_some_and(|row| row.stream_name == *name) {
             return Ok(true);
         }
-        let states = self.stream_segment_states(account, project, sid).await?;
+        let states = self.stream_segment_states(container, sid).await?;
         Ok(states.iter().any(|state| state.stream_name == *name))
     }
 }
@@ -187,7 +187,7 @@ pub(super) async fn product_usage(
     // its gauge, so provisional storage never reads as zero.
     let (fallback_byte_ms, fallback_owned) = if is_current && row.segments.is_empty() {
         let states = match rollup
-            .stream_segment_states(&id.account_id, &id.container_id, &id.stream_id)
+            .stream_segment_states(&id.container_id, &id.stream_id)
             .await
         {
             Ok(states) => states,
@@ -219,7 +219,7 @@ pub(super) async fn product_usage(
     let avg_bytes = byte_ms / month_ms.max(1);
     let gb_month = byte_ms as f64 / month_ms as f64 / 1e9;
     let name_agg = match rollup
-        .name_row(&month, &id.account_id, &id.container_id, &id.stream_name)
+        .name_row(&month, &id.container_id, &id.stream_name)
         .await
     {
         Ok(row) => row,
@@ -348,24 +348,12 @@ pub(crate) async fn project_usage(
             false,
         );
     }
-    // Stage 7: rows land under the workspace-at-event; query and
-    // report under the SAME resolution the meter used.
-    let account = if state.auth.mode != crate::auth::AuthMode::Off {
-        state
-            .auth
-            .workspace_for(authority)
-            .map(|w| w.as_str().to_string())
-            .unwrap_or_else(|| state.deployment.account_id().to_string())
-    } else {
-        state.deployment.account_id().to_string()
-    };
-    let agg = match rollup.project_row(&month, &account, &project).await {
+    let agg = match rollup.container_row(&month, &project).await {
         Ok(row) => row.unwrap_or_default(),
         Err(error) => return usage_unavailable(&error),
     };
     let byte_ms: u128 = agg.storage_byte_ms.parse().unwrap_or(0);
     json_ok(&json!({
-        "accountId": account,
         "projectId": project,
         "month": month,
         "ingestPayloadBytes": agg.ingest_bytes,

@@ -10,7 +10,6 @@ use crate::sketch::KeyDistribution;
 pub(super) fn test_desc(name: &str) -> StreamDesc {
     crate::registry::PersistedDescriptor {
         seal_gen_counter: 0,
-        account_id: None,
         project_id: crate::tenant::ProjectId::new("proj-test").unwrap(),
         name: name.into(),
         stream_epoch: "00000000000000000000000000000000".into(),

@@ -12,11 +12,11 @@ use super::fixture_storage::mem;
 
 // ---- #274 hub promotion + teardown (Søren review F8+F9) ------------
 
-/// Review round 3 F3 replacement (1): the billing resolver uses the
-/// CURRENT workspace-at-event state — a valid transfer (ownership
-/// bump) moves the billed workspace; nothing else can.
+/// Edge #253: the billing identity names the container and no workspace,
+/// so neither a refused hostile policy nor a valid transfer (ownership
+/// bump) moves what a stream's usage is billed to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
-async fn identity_of_resolves_the_workspace_at_event() {
+async fn identity_of_names_the_container_whatever_its_workspace() {
     let (svc, state, addr) = auth_rig("proj-idw", "ws_ida", &["c1"], None).await;
     let tok = mint_token("c1", "proj-idw", "ws_ida", 1, 1, "idw", 600);
     rig_create(addr, "idw", &tok).await;
@@ -26,30 +26,22 @@ async fn identity_of_resolves_the_workspace_at_event() {
         crate::tenant::CanonicalStreamName::new("idw").unwrap(),
     );
     let desc = state.registry.get(&sref).await.unwrap().expect("desc");
-    assert_eq!(
-        crate::billing::identity_of(&state, &desc).account_id,
-        "ws_ida"
-    );
+    let billed = crate::billing::identity_of(&state, &desc);
+    assert_eq!(billed.container_id, "proj-idw");
     // Hostile shape is refused and leaves attribution untouched.
     assert!(rig_publish_policy(&svc, rig_policy("proj-idw", "ws_idb", 1, 2), 2).is_err());
-    assert_eq!(
-        crate::billing::identity_of(&state, &desc).account_id,
-        "ws_ida"
-    );
-    // The valid transfer moves it.
+    assert_eq!(crate::billing::identity_of(&state, &desc), billed);
+    // A valid transfer does not move it either.
     rig_publish_policy(&svc, rig_policy("proj-idw", "ws_idb", 2, 3), 3).unwrap();
-    assert_eq!(
-        crate::billing::identity_of(&state, &desc).account_id,
-        "ws_idb"
-    );
+    assert_eq!(crate::billing::identity_of(&state, &desc), billed);
 }
 
 /// Review round 3 F3 replacement (2): a VALID transfer end to end —
-/// pre-transfer delivery bills workspace A, the ownership version
-/// increments and the old subscription terminates, a new credential
-/// opens a new subscription, post-transfer delivery bills workspace B.
+/// pre-transfer delivery, the ownership version increments and the old
+/// subscription terminates, a new credential opens a new subscription,
+/// post-transfer delivery; both sides bill the one container (edge #253).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
-async fn valid_transfer_bills_each_workspace_on_its_own_side() {
+async fn valid_transfer_bills_one_container_on_both_sides() {
     let _xr = crate::billing::billing_clock_lock().read().await;
     let (svc, state, addr) = auth_rig("proj-vtx", "ws_vta", &["c1"], None).await;
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
@@ -116,8 +108,8 @@ async fn valid_transfer_bills_each_workspace_on_its_own_side() {
         "post-transfer delivery:\n{d2}"
     );
 
-    // Books: reads under BOTH workspaces for this project, each side
-    // attributed to the owner at event time.
+    // Books: the reads of BOTH sides of the transfer are the container's,
+    // in its one row; no other row names it.
     state.billing.reads().seal_if_aged(0);
     for _ in 0..100 {
         if crate::billing::drain_once(&state).await.expect("drain") == 0 {
@@ -132,30 +124,23 @@ async fn valid_transfer_bills_each_workspace_on_its_own_side() {
     let (y, m) = crate::billing::utc_year_month(crate::billing::billing_now_ms());
     let month = crate::billing::month_str(y, m);
     let rollup = state.rollup.get().unwrap();
-    let mut per_ws: std::collections::HashMap<String, u64> = Default::default();
+    let mut rows: Vec<(String, u64)> = Vec::new();
     let mut iter = rollup
         .db
-        .scan_prefix(format!("project/{month}/").as_bytes(), ..)
+        .scan_prefix(format!("container/{month}/").as_bytes(), ..)
         .await
         .unwrap();
     while let Some(kv) = iter.next().await.unwrap() {
-        let k = String::from_utf8_lossy(&kv.key).to_string();
-        if !k.ends_with("/proj-vtx") {
-            continue;
-        }
         let row: crate::rollup::AggRow = serde_json::from_slice(&kv.value).unwrap();
-        per_ws.insert(
-            k.split('/').nth(2).unwrap_or("?").to_string(),
+        rows.push((
+            String::from_utf8_lossy(&kv.key).into_owned(),
             row.read_records,
-        );
+        ));
     }
+    let key = format!("container/{month}/proj-vtx");
     assert!(
-        per_ws.get("ws_vta").copied().unwrap_or(0) > 0,
-        "pre-transfer reads bill A: {per_ws:?}"
-    );
-    assert!(
-        per_ws.get("ws_vtb").copied().unwrap_or(0) > 0,
-        "post-transfer reads bill B: {per_ws:?}"
+        rows.iter().any(|(k, reads)| *k == key && *reads >= 2),
+        "one delivery on each side, both the container's: {rows:?}"
     );
 }
 

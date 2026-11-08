@@ -272,7 +272,6 @@ async fn graceful_stop_seals_and_drains_the_active_read_window() {
     .await
     .expect("the first round ends with the metrics emission");
     let identity = crate::billing::BillingIdentity {
-        account_id: "acct".into(),
         container_id: "proj".into(),
         stream_id: "ab".repeat(8),
         stream_name: "orders".into(),
@@ -288,7 +287,7 @@ async fn graceful_stop_seals_and_drains_the_active_read_window() {
     );
     assert_eq!(
         state.billing.unflushed_reads(),
-        (1, 294, 0),
+        (1, 274, 0),
         "the window is younger than the flush interval: nothing seals before the stop"
     );
     let report = rig.tasks.shutdown(Duration::from_secs(5)).await;
@@ -674,7 +673,6 @@ fn cancellation_read_envelope(at_ms: i64) -> crate::billing::UsageEnvelope {
             to_ms: at_ms + 1,
             rows: vec![ReadRow {
                 identity: BillingIdentity {
-                    account_id: "acct".into(),
                     container_id: "proj".into(),
                     stream_id: "ab".repeat(8),
                     stream_name: "orders".into(),
@@ -747,7 +745,7 @@ async fn r09_active_rollup_cancels_entered_read_and_replays_ledger_once() {
     assert_eq!(rollup.cursor().await.unwrap(), None);
     assert!(
         rollup
-            .month_row(&month, "acct", "proj", &"ab".repeat(8))
+            .month_row(&month, "proj", &"ab".repeat(8))
             .await
             .unwrap()
             .is_none()
@@ -767,7 +765,7 @@ async fn r09_active_rollup_cancels_entered_read_and_replays_ledger_once() {
     assert_eq!(after, before);
     rollup.apply_page(&[envelope], &after.1).await.unwrap();
     let row = rollup
-        .month_row(&month, "acct", "proj", &"ab".repeat(8))
+        .month_row(&month, "proj", &"ab".repeat(8))
         .await
         .unwrap()
         .unwrap();

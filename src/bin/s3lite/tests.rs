@@ -182,7 +182,7 @@ async fn storage_operations_feed_both_snapshots_and_current_object_census() {
 #[tokio::test]
 async fn live_bytes_census_sums_current_object_lengths_per_tier_and_kind() {
     let state = state(Duration::ZERO);
-    let monthly = "/b/p/telemetry/usage-monthly/acct/proj/0a/2026-10.json";
+    let monthly = "/b/p/telemetry/usage-monthly/proj/0a/2026-10.json";
     let part = "/b/p/shards/00/history2/compacted/2.sst";
     let steps = [
         (Method::PUT, "/b/p/shards/00/wal/1", "first", StatusCode::OK),
@@ -200,7 +200,7 @@ async fn live_bytes_census_sums_current_object_lengths_per_tier_and_kind() {
         ),
         (
             Method::PUT,
-            "/b/p/telemetry/usage-rollup/v2/p0/wal/1.sst",
+            "/b/p/telemetry/usage-rollup/v3/p0/wal/1.sst",
             "abc",
             StatusCode::OK,
         ),
@@ -234,7 +234,7 @@ async fn live_bytes_census_sums_current_object_lengths_per_tier_and_kind() {
         ),
         (
             Method::GET,
-            "/b?list-type=2&prefix=p%2Ftelemetry%2Fusage-rollup%2Fv2%2Fp0%2Fwal%2F",
+            "/b?list-type=2&prefix=p%2Ftelemetry%2Fusage-rollup%2Fv3%2Fp0%2Fwal%2F",
             "",
             StatusCode::OK,
         ),

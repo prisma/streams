@@ -553,5 +553,22 @@ impl AuthService {
     }
 }
 
+/// The workspace the CURRENT policy snapshot names for `project`. Usage no
+/// longer records it (edge #253 part 1); the feed carries it until part 3,
+/// and only the feed's transfer tests read it.
+#[cfg(test)]
+impl super::AuthService {
+    pub(crate) fn workspace_for(
+        &self,
+        project: &crate::tenant::ProjectId,
+    ) -> Option<super::WorkspaceId> {
+        self.projects
+            .load()
+            .projects
+            .get(project)
+            .map(|p| p.workspace_id.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests;

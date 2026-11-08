@@ -4,14 +4,13 @@ use super::fixture_http::{engine_shutdown, http_rig_with_auth_service, install_r
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_storage::mem;
 
-/// Stage 7 exit ("every billable unit belongs to exactly one project
-/// and one workspace-at-event"): the same-name cross-project INVOICE
+/// Every billable unit belongs to exactly one container (edge #253: the
+/// workspace is not recorded in usage): the same-name cross-project INVOICE
 /// test. Two projects on one enforce cell create the SAME stream
 /// name, append different volumes, and the whole pipeline — metering,
 /// _usage ledger, rollup, usage APIs — attributes each byte to
-/// exactly one project under its OWN workspace: A's invoice shows
-/// only A's volume under ws_a, B's only B's under ws_b, and the
-/// project-level rollups agree.
+/// exactly one project: A's invoice shows only A's volume, B's only
+/// B's, and the project-level rollups agree and name no workspace.
 #[expect(
     clippy::too_many_lines,
     reason = "cross-project attribution scenario; same-named streams in two projects are driven through append, read and rollup on one rig; helper phases would hide which project a row was attributed to"
@@ -216,12 +215,12 @@ async fn same_name_cross_project_usage_attributes_exactly() {
     assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
     let pva: serde_json::Value = serde_json::from_slice(&b).unwrap();
     assert_eq!(pva["ingestRecords"], 2, "{pva}");
-    assert_eq!(pva["accountId"], "ws_a", "workspace-at-event: {pva}");
+    assert_eq!(pva.get("accountId"), None, "no workspace in usage: {pva}");
     let (st, _, b) = preq(addr, "GET", "/v1/projects/proj-b/usage", &[auth_b], b"").await;
     assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
     let pvb: serde_json::Value = serde_json::from_slice(&b).unwrap();
     assert_eq!(pvb["ingestRecords"], 3, "{pvb}");
-    assert_eq!(pvb["accountId"], "ws_b", "workspace-at-event: {pvb}");
+    assert_eq!(pvb.get("accountId"), None, "no workspace in usage: {pvb}");
     engine_shutdown(&state).await;
 }
 
@@ -462,7 +461,7 @@ async fn invoice_reconciliation_balances_and_detects_corruption() {
     };
     let mut wb = slatedb::WriteBatch::new();
     wb.put(
-        format!("project/{month}/ws_recb/proj-recb").into_bytes(),
+        format!("container/{month}/proj-recb").into_bytes(),
         serde_json::to_vec(&bogus).unwrap(),
     );
     rollup.db.write(wb).await.unwrap();
@@ -472,7 +471,7 @@ async fn invoice_reconciliation_balances_and_detects_corruption() {
         dirty
             .mismatches
             .iter()
-            .any(|m| m.contains("ws_recb/proj-recb")),
+            .any(|m| m.contains("for proj-recb:")),
         "the corrupt aggregate must be named: {:?}",
         dirty.mismatches
     );

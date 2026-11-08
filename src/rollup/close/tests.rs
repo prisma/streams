@@ -141,7 +141,7 @@ fn storage_view(row: &MonthRow) -> Vec<(u32, String, i64, bool)> {
 
 /// The month row `month_row` reads back, which the test requires to exist.
 async fn stored_month(rollup: &UsageRollup, stream: &str) -> MonthRow {
-    let row = rollup.month_row("2026-07", "acct", "proj", stream).await;
+    let row = rollup.month_row("2026-07", "proj", stream).await;
     row.unwrap().expect("the close wrote the month row")
 }
 
@@ -163,14 +163,13 @@ async fn oldest_unclosed(rollup: &UsageRollup) -> Option<String> {
 /// An open invoice row of stream `s1` in `month`, with no segments.
 async fn put_open_row(rollup: &UsageRollup, month: &str) {
     let row = MonthRow {
-        account_id: "acct".into(),
         stream_name: "orders".into(),
         ..Default::default()
     };
     rollup
         .db
         .put(
-            format!("month/{month}/acct/proj/s1"),
+            format!("month/{month}/proj/s1"),
             serde_json::to_vec(&row).unwrap(),
         )
         .await
@@ -178,7 +177,7 @@ async fn put_open_row(rollup: &UsageRollup, month: &str) {
 }
 
 async fn finalized_at(rollup: &UsageRollup, month: &str) -> Option<i64> {
-    let row = rollup.month_row(month, "acct", "proj", "s1").await.unwrap();
+    let row = rollup.month_row(month, "proj", "s1").await.unwrap();
     row.unwrap().finalized_at_ms
 }
 
@@ -207,7 +206,7 @@ fn carried(gauge: u64, stored: &str) -> SegMonth {
     }
 }
 
-/// The durable state of a segment of account `acct` retaining `gauge` bytes,
+/// The durable state of a segment retaining `gauge` bytes,
 /// its storage accounted `through`.
 fn retained(name: &str, gauge: u64, through: i64) -> SegmentState {
     SegmentState {
@@ -215,7 +214,6 @@ fn retained(name: &str, gauge: u64, through: i64) -> SegmentState {
         owned_frame_bytes_current: gauge,
         storage_accounted_through_ms: through,
         stream_name: name.into(),
-        account_id: "acct".into(),
     }
 }
 
@@ -223,7 +221,7 @@ async fn put_segment(rollup: &UsageRollup, stream: &str, segment: u32, state: &S
     rollup
         .db
         .put(
-            k_segment("acct", "proj", stream, segment),
+            k_segment("proj", stream, segment),
             serde_json::to_vec(state).unwrap(),
         )
         .await
@@ -270,7 +268,7 @@ async fn the_walk_closes_a_month_only_after_the_grace_past_its_boundary() {
         rollup.close_months_due(GRACE_MS).await.unwrap(),
         Vec::<(String, usize)>::new()
     );
-    assert_eq!(keys(&rollup).await, ["month/2026-06/acct/proj/s1"]);
+    assert_eq!(keys(&rollup).await, ["month/2026-06/proj/s1"]);
     assert_eq!(finalized_at(&rollup, "2026-06").await, None);
     clock.set(boundary + GRACE_MS);
     assert_eq!(
@@ -280,9 +278,9 @@ async fn the_walk_closes_a_month_only_after_the_grace_past_its_boundary() {
     assert_eq!(
         keys(&rollup).await,
         [
-            "artifact-pending/2026-06/acct/proj/s1",
+            "artifact-pending/2026-06/proj/s1",
             "meta/oldest-unclosed-month",
-            "month/2026-06/acct/proj/s1",
+            "month/2026-06/proj/s1",
         ]
     );
     assert_eq!(oldest_unclosed(&rollup).await.as_deref(), Some("2026-07"));
@@ -302,16 +300,13 @@ async fn close_month_refuses_a_month_still_inside_its_grace() {
     let rollup = quick_rollup("close-grace").await;
     put_open_row(&rollup, "2026-06").await;
     assert_eq!(rollup.close_month(2026, 6, GRACE_MS).await.unwrap(), 0);
-    assert_eq!(keys(&rollup).await, ["month/2026-06/acct/proj/s1"]);
+    assert_eq!(keys(&rollup).await, ["month/2026-06/proj/s1"]);
     assert_eq!(finalized_at(&rollup, "2026-06").await, None);
     clock.set(boundary + GRACE_MS);
     assert_eq!(rollup.close_month(2026, 6, GRACE_MS).await.unwrap(), 1);
     assert_eq!(
         keys(&rollup).await,
-        [
-            "artifact-pending/2026-06/acct/proj/s1",
-            "month/2026-06/acct/proj/s1",
-        ]
+        ["artifact-pending/2026-06/proj/s1", "month/2026-06/proj/s1",]
     );
     assert_eq!(
         finalized_at(&rollup, "2026-06").await,
@@ -330,7 +325,6 @@ async fn finalize_extends_only_open_segments_to_the_boundary_and_freezes_the_sum
     let (start, boundary) = (month_start_ms(2026, 7), month_start_ms(2026, 8));
     let now = boundary + 5;
     let row = MonthRow {
-        account_id: "acct".into(),
         stream_name: "orders".into(),
         segments: [
             (0, month_segment(7, boundary - 1_000, "11", true)),
@@ -347,7 +341,7 @@ async fn finalize_extends_only_open_segments_to_the_boundary_and_freezes_the_sum
         ..Default::default()
     };
     let mut expected = row.clone();
-    let key = b"month/2026-07/acct/proj/s1";
+    let key = b"month/2026-07/proj/s1";
     let mut batch = WriteBatch::new();
     let close = july_close(&rollup, now);
     assert_eq!(close.finalize_row(&mut batch, key, row).unwrap(), 1);
@@ -380,7 +374,7 @@ async fn finalize_extends_only_open_segments_to_the_boundary_and_freezes_the_sum
         serde_json::from_slice::<serde_json::Value>(&stored).unwrap(),
         json(&expected)
     );
-    let outbox = rollup.db.get(b"artifact-pending/2026-07/acct/proj/s1");
+    let outbox = rollup.db.get(b"artifact-pending/2026-07/proj/s1");
     assert_eq!(outbox.await.unwrap(), Some(stored));
 }
 
@@ -405,7 +399,6 @@ async fn carry_bills_retained_segments_to_the_boundary_and_names_the_incarnation
     // 100 B x (July less its first second) + 50 B x all of July.
     let (first, second, total) = ("267839900000", "133920000000", "401759900000");
     let month = MonthRow {
-        account_id: "acct".into(),
         stream_name: "orders".into(),
         segments: [(0, carried(100, first)), (1, carried(50, second))].into(),
         updated_ms: now,
@@ -419,7 +412,7 @@ async fn carry_bills_retained_segments_to_the_boundary_and_names_the_incarnation
         incarnations: vec!["s1".into()],
         ..Default::default()
     };
-    let stored = rollup.name_row("2026-07", "acct", "proj", "orders").await;
+    let stored = rollup.name_row("2026-07", "proj", "orders").await;
     let stored = stored.unwrap().expect("carry wrote the name aggregate");
     assert_eq!(stored.incarnations, ["s1"], "the incarnation, named once");
     assert_eq!(json(&stored), json(&name));
@@ -427,13 +420,13 @@ async fn carry_bills_retained_segments_to_the_boundary_and_names_the_incarnation
         storage_byte_ms: total.into(),
         ..Default::default()
     };
-    let stored = rollup.project_row("2026-07", "acct", "proj").await;
+    let stored = rollup.container_row("2026-07", "proj").await;
     assert_eq!(json(&stored.unwrap()), json(&Some(project)));
     let carried_states = states.map(|state| SegmentState {
         storage_accounted_through_ms: boundary,
         ..state
     });
-    let stored = rollup.stream_segment_states("acct", "proj", "s1").await;
+    let stored = rollup.stream_segment_states("proj", "s1").await;
     assert_eq!(json(&stored.unwrap()), json(&carried_states));
 }
 
@@ -449,7 +442,6 @@ async fn carry_closes_an_empty_segment_without_billing_or_naming_it() {
     july_close(&rollup, now).carry(CARRY_CURSOR).await.unwrap();
 
     let month = MonthRow {
-        account_id: "acct".into(),
         stream_name: "idle".into(),
         segments: [(0, carried(0, ""))].into(),
         updated_ms: now,
@@ -462,8 +454,8 @@ async fn carry_closes_an_empty_segment_without_billing_or_naming_it() {
         keys(&rollup).await,
         [
             "meta/close-seg-cursor/2026-07",
-            "month/2026-07/acct/proj/s2",
-            "segment/acct/proj/s2/0",
+            "month/2026-07/proj/s2",
+            "segment/proj/s2/0",
         ]
     );
 }
@@ -476,7 +468,7 @@ async fn carry_leaves_a_segment_accounted_through_the_boundary_alone() {
     let rollup = quick_rollup("carry-accounted").await;
     let boundary = month_start_ms(2026, 8);
     put_segment(&rollup, "s1", 0, &retained("orders", 100, boundary)).await;
-    let key = k_segment("acct", "proj", "s1", 0);
+    let key = k_segment("proj", "s1", 0);
     let before = rollup.db.get(&key).await.unwrap();
     july_close(&rollup, boundary + 5)
         .carry(CARRY_CURSOR)
@@ -484,7 +476,7 @@ async fn carry_leaves_a_segment_accounted_through_the_boundary_alone() {
         .unwrap();
     assert_eq!(
         keys(&rollup).await,
-        ["meta/close-seg-cursor/2026-07", "segment/acct/proj/s1/0"]
+        ["meta/close-seg-cursor/2026-07", "segment/proj/s1/0"]
     );
     assert_eq!(rollup.db.get(&key).await.unwrap(), before);
 }

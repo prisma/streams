@@ -139,7 +139,6 @@ export interface StreamMetadata {
  * /v1/projects/{project}/usage`): the ingest, read and storage counters,
  * corrections and effective totals the server reports beside these. */
 export interface ProjectUsage {
-  accountId: string;
   projectId: string;
   /** `YYYY-MM`. */
   month: string;

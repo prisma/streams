@@ -908,12 +908,12 @@
       "scope": "function",
       "lint": "clippy::too_many_lines",
       "metrics": {
-        "scope_lines": 131,
+        "scope_lines": 127,
         "nested_items": 1,
-        "syntax_facts": 320
+        "syntax_facts": 311
       },
       "rationale": "The snapshot exports the fork-debt gauges the stale-debt alert reads (8a03e0d5).",
-      "approver": "the lead under the owner's delegation of 2026-10-27, layout 6A package 4 batch 4, S15: the snapshot shrank when the absorber gauges left it, so the row takes the gate's after value; the row was approved by Søren Bramer Schmidt (repository owner), approved 2026-09-30 for the removal of the residues of the configuration series (\"Please do the cleanup\")"
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-08 (edge #253 commit A2, ROW-DECISION-account-removal-2026-11-08): the snapshot shrank when segment_identity_drift_total left it with the account dimension, so the row takes the gate's after value; before that, the lead under the owner's delegation of 2026-10-27, layout 6A package 4 batch 4, S15: the snapshot shrank when the absorber gauges left it, so the row takes the gate's after value; the row was approved by Søren Bramer Schmidt (repository owner), approved 2026-09-30 for the removal of the residues of the configuration series (\"Please do the cleanup\")"
     },
     {
       "path": "src/ops.rs",
@@ -2668,19 +2668,6 @@
       "approver": "the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement, and ask Fable 5.1 if you are uncertain. Bring 6A to completion.\"), layout 6A package 4 batch 5, S16b, approved 2026-10-28"
     },
     {
-      "path": "src/application/creation.rs",
-      "owner": "crate::fresh_desc",
-      "scope": "function",
-      "lint": "clippy::too_many_arguments",
-      "metrics": {
-        "scope_lines": 37,
-        "nested_items": 1,
-        "syntax_facts": 69
-      },
-      "rationale": "S3a layout 8 (ROUTE-HASH-DECISION-2026-11-08 §3; S3a-DESIGN §1.1, F12): a fresh incarnation's epoch is drawn again while segment 0's entity hash would be the sentinel's FF×16, which no entity may have. The re-draw lives outside the scope (CreationService::fresh_epoch, entity_epoch, segment_zero); fresh_desc reaches it as service.fresh_epoch(sref) in place of service.runtime.epoch(). The one new syntax fact is the sref argument (68 -> 69); scope_lines (37) and nested_items (1) are unchanged. The two claim.rs callers sit in resolve's frozen too_many_lines scope and a draw there would hand fresh_desc a seventh argument. Metrics are the gate's after values, reproduced independently with scripts/quality/source_rules.exception_contracts (S3A-ROWS-DECISION-2026-11-08).",
-      "approver": "Fable 5.1 under the owner's delegation, 2026-11-08"
-    },
-    {
       "path": "fuzz/fuzz_targets/run_index.rs",
       "owner": "crate::object",
       "scope": "module",
@@ -2768,6 +2755,18 @@
       },
       "rationale": "S3a layout 8 §3.4 (commit 6): a sealed chunk's 'K' value and run-index entry carry max_ts_ms (varint; 0 is unknown, never \"old\") so S3b's expiry can answer without reading the chunk's pages. DirEntry in src/spill/directory/row.rs is the one in-memory description of a chunk for both codecs, so the field lives there: the field and its doc, DirEntry::of copying the chunk table's max_ts (u64::try_from(..).unwrap_or(0)), one put_varint in encode_row, one get_varint and the literal field in decode_row (scope_lines 168 -> 173, nested_items 32 -> 33, syntax_facts 498 -> 519, fields 10 -> 11, the DirEntry::max_ts_ms site). The run_index fuzz target compiles row.rs by path under a module-wide dead_code allow; its encode mode draws max_ts_ms from four input bytes, so the canonical-encoding and truncation properties cover the new varint. A parallel map or a by-path helper module would move the growth, not remove it (S3A-ROWS-DECISION-2026-11-08 §2, Commit 6). Metrics are the gate's after values, reproduced independently.",
       "approver": "Fable 5.1 under the owner's delegation, 2026-11-09"
+    },
+    {
+      "path": "src/application/creation/initialization.rs",
+      "owner": "crate::seed",
+      "scope": "function",
+      "lint": "clippy::unwrap_used",
+      "metrics": {
+        "unwrap_site:ordinary-call::7cb38c47d6e5586c": 1,
+        "unwrap_site:ordinary-call::a51aa225b33eefa9": 1
+      },
+      "rationale": "Edge #253 stage 0, commit A2 (CONTAINER-VALIDATION §2/§4, ACCOUNT-REMOVAL-PLAN): usage stops recording the workspace, so billing::identity_with_capabilities no longer takes the deployment identity. seed's call loses its &state.deployment argument, which respells two ordinary-call fingerprints the unwrap_used contract pins: the call itself (a51aa225b33eefa9) and its enclosing std::sync::Arc::new(BillingRef { .. }) (7cb38c47d6e5586c); the old spellings vanish. No unwrap is added or moved (unwrap_sites stays 1: the fail-stop h.state.lock().unwrap() the reason documents), and scope_lines, nested_items and syntax_facts all shrink. Metrics are the gate's after values, reproduced independently (ROW-DECISION-account-removal-2026-11-08).",
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-08"
     }
   ],
   "schema": 1

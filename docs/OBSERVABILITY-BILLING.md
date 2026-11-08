@@ -113,8 +113,7 @@ Every billing and customer-usage row carries explicit identity. No identity is i
 
 ```rust
 struct BillingIdentity {
-    account_id: AccountId,
-    project_id: ProjectId,
+    container_id: ContainerId,
     stream_id: StreamEpoch,   // immutable resource incarnation
     stream_name: String,      // display and lookup metadata
 }
@@ -148,7 +147,7 @@ Deleting and recreating `orders` creates a new `stream_id`.
 
 ### 3.2 Tenant boundary
 
-The tenant boundary is explicit `account_id` and `project_id`, supplied by the control plane or authenticated token context and persisted in the descriptor.
+The tenant boundary is the container: an explicit `container_id`, supplied by the control plane or authenticated token context and persisted in the descriptor. Usage records no workspace or account (edge #253): a container id is unique, minted by the control plane, and Console maps a container to its project and workspace, keeping the link history that splits an invoice across a move.
 
 A stream naming convention is not a tenant boundary.
 
@@ -423,7 +422,6 @@ A read batch carries absolute source-batch identity and deltas:
   "to_ms": 1786000010000,
   "rows": [
     {
-      "account_id": "...",
       "container_id": "...",
       "stream_id": "...",
       "stream_name": "orders",
@@ -494,7 +492,6 @@ struct UsageEnvelope<T> {
 ### 8.3 Required fields in a segment snapshot
 
 ```text
-account_id
 container_id
 stream_id
 stream_name
@@ -527,7 +524,7 @@ Do not write one JSON object per active stream every 5–15 minutes.
 Use one partitioned SlateDB rollup database:
 
 ```text
-telemetry/usage-rollup/v1/<partition>
+telemetry/usage-rollup/v3/<partition>
 ```
 
 The active writer is fenced by SlateDB. Read replicas use `DbReader` and a shared cache.
@@ -536,24 +533,23 @@ The active writer is fenced by SlateDB. Read replicas use `DbReader` and a share
 
 ```text
 source/<boot-id>                                     → last processed read-batch seq
-segment/<account>/<project>/<stream-id>/<segment-id> → latest absolute segment state
-month/<YYYY-MM>/<account>/<project>/<stream-id>      → per-incarnation monthly rollup
-name/<YYYY-MM>/<account>/<project>/<name-hash>       → aggregate across incarnations
-project/<YYYY-MM>/<account>/<project>                → project aggregate
-stored-seg/<project>/<stream-id>/<segment-id>        → the segment snapshot the stored index counts
-stored/<project>                                     → the project's stored bytes now and written
+segment/<container>/<stream-id>/<segment-id>         → latest absolute segment state
+month/<YYYY-MM>/<container>/<stream-id>              → per-incarnation monthly rollup
+name/<YYYY-MM>/<container>/<name-hash>               → aggregate across incarnations
+container/<YYYY-MM>/<container>                      → container aggregate
+stored-seg/<container>/<stream-id>/<segment-id>      → the segment snapshot the stored index counts
+stored/<container>                                   → the container's stored bytes now and written
 corr-pending/... , corr-done/...                     → correction-artifact outbox
 meta/usage-cursor                                    → consumed `_usage` cursor
 meta/oldest-unclosed-month                           → ordered month-close marker
 ```
 
 The two `stored` families are the stored index (stored-cap, edge change
-#157; `src/rollup/stored_index.rs`). They are keyed by
-project without the account, so a segment a workspace change re-stamped
-counts once, by its latest snapshot (the greater usage version, or the same
-version accounted through a later instant). Each page's batch walks each
+#157; `src/rollup/stored_index.rs`). They count each segment once, by its
+latest snapshot (the greater usage version, or the same version accounted
+through a later instant). Each page's batch walks each
 advanced segment's snapshots in that order from the one the index held:
-`stored/<project>.bytes` moves by each step and `written` adds each
+`stored/<container>.bytes` moves by each step and `written` adds each
 increase, so a page holding several drain rounds of a segment (a rollup
 behind its ledger) writes what one page a round would. A drain round emits
 a segment as it then stands, so bytes stored and freed between two rounds
@@ -614,7 +610,7 @@ At month close, the closer advances every active gauge to the exact UTC boundary
 At finalization, write one immutable object per billable stream incarnation:
 
 ```text
-telemetry/usage-monthly/<account>/<project>/<stream-id>/<YYYY-MM>.json
+telemetry/usage-monthly/<container>/<stream-id>/<YYYY-MM>.json
 ```
 
 This is one PUT per active stream per month, not per telemetry tick.
@@ -654,7 +650,7 @@ GET /v1/streams/{name}/usage/current
 GET /v1/projects/{project}/usage?month=YYYY-MM
 ```
 
-Authorization uses the account/project bearer context. The customer encryption key is not required because usage is control-plane metadata, not record content.
+Authorization uses the container's bearer context. The customer encryption key is not required because usage is control-plane metadata, not record content.
 
 ### 10.2 Response
 
@@ -1039,7 +1035,7 @@ In production billing mode, readiness fails when any of these is unavailable bey
 - `_usage` append path;
 - rollup writer lease/fencing;
 - usage-rollup database;
-- project/account identity source.
+- container identity source.
 
 Customer data operations continue through brief telemetry outages because the durable shard outbox accumulates ingest/storage state. Read responses may backpressure when the read accumulator cannot rotate safely; they never silently discard attribution.
 
@@ -1074,7 +1070,7 @@ Invoices are generated only after reconciliation passes or a correction is recor
 
 - `_usage`, `_ops_metrics`, and `_ops_events` use a separate fleet-internal credential and mandatory system encryption keys.
 - They are not reachable through the customer catalog or standard stream APIs.
-- Customer usage APIs require project/account authorization but not the customer record-encryption key.
+- Customer usage APIs require the container's authorization but not the customer record-encryption key.
 - Per-stream usage and names are not exposed on the unsecured operator page.
 - Ops metrics are low-cardinality and exclude customer identifiers.
 - Ops events may contain stream names only on authenticated operator surfaces; a deployment may store only stream IDs/hashes if policy requires.
@@ -1140,7 +1136,7 @@ At public Tigris list prices, a 10-second active usage cadence is roughly $1.30 
 
 ### Phase 0 — schema and clean cutover
 
-1. Add `account_id`, `project_id`, and immutable stream identity to the descriptor context.
+1. Add the container and immutable stream identity to the descriptor context.
 2. Reserve and hide `_usage`, `_ops_metrics`, and `_ops_events`.
 3. Define schemas and versioned codecs.
 4. Remove `metrics.rs`, `__metrics__`, and the old `_billing` emitter.
@@ -1307,7 +1303,7 @@ Timelines:
 
 ## 21. Decisions made by this design
 
-1. **Tenant boundary:** explicit account/project identity, never stream-name prefixes.
+1. **Tenant boundary:** explicit container identity, never stream-name prefixes.
 2. **Ingest billing:** committed logical payload bytes before compression/encryption.
 3. **Read billing:** externally delivered logical payload bytes; zero-byte reads are free in the data dimension.
 4. **Storage billing:** canonical encrypted frame bytes owned by the stream; no WAL/index/compaction amplification.

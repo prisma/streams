@@ -3,9 +3,7 @@
 //! saw them, kept in the same `WriteBatch` as the ledger page that moved
 //! them and published into admission's table (`quota::stored`).
 //!
-//! The segment rows are keyed by account, so a workspace change, which
-//! re-stamps a segment's account, leaves the segment there twice. The
-//! index is keyed by project, stream and segment alone, and counts each
+//! The index is keyed by container, stream and segment, and counts each
 //! segment once, by its latest snapshot:
 //!
 //! ```text

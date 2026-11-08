@@ -115,7 +115,6 @@ fn reserved_namespace_is_the_underscore_prefix() {
 #[test]
 fn snapshot_event_ids_are_deterministic() {
     let id = BillingIdentity {
-        account_id: "a".into(),
         container_id: "p".into(),
         stream_id: "11".repeat(8),
         stream_name: "orders".into(),
@@ -151,7 +150,6 @@ fn test_batch(seq: u64) -> ReadBatch {
         to_ms: 1000,
         rows: vec![ReadRow {
             identity: BillingIdentity {
-                account_id: "a".into(),
                 container_id: "p".into(),
                 stream_id: "22".repeat(8),
                 stream_name: "orders".into(),

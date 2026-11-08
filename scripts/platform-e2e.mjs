@@ -524,7 +524,7 @@ for (let i = 0; i < 15; i++) {
   await sleep(1500);
 }
 check("usage rollup reconciles the project's ingest (billing surface)",
-  usage !== null && usage.projectId === "proj-b" && usage.accountId === "ws-b",
+  usage !== null && usage.projectId === "proj-b" && !("accountId" in usage),
   lastProbe);
 const foreignUsage = await sfetch(`${bBase}/v1/projects/proj-e2e/usage`, { headers: { authorization: `Bearer ${tokU.body.accessToken}` } });
 check("foreign-project usage probe answers 404 (no grammar oracle)", foreignUsage.status === 404, `status ${foreignUsage.status}`);

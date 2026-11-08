@@ -276,7 +276,6 @@ impl CommitTransaction<'_> {
             let bm = local.billing.meta.as_mut().unwrap();
             if bm.stream_id.is_empty() {
                 bm.v = 1;
-                bm.account_id = bref.identity.account_id.clone();
                 bm.project_id = bref.identity.container_id.clone();
                 bm.stream_id = bref.identity.stream_id.clone();
                 bm.stream_name = bref.identity.stream_name.clone();
@@ -284,13 +283,9 @@ impl CommitTransaction<'_> {
             }
             let finals = &mut local.billing.month_finals;
             let bts = crate::billing::billing_now_ms();
-            let finals_before = finals.len();
             bm.advance_storage_clock(bts, |closed| {
                 finals.push(closed.to_snapshot(true));
             });
-            if finals.len() > finals_before && bm.account_id != bref.identity.account_id {
-                bm.account_id = bref.identity.account_id.clone();
-            }
             bm.ingest_payload_bytes_total += pt_sum;
             bm.ingest_records_total += req.entries.len() as u64;
             bm.month_ingest_payload_bytes += pt_sum;

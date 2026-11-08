@@ -192,9 +192,9 @@ mod tests {
         let r = UsageRollup::over(db.clone());
         for (key, body) in [
             ("meta/oldest-unclosed-month", "2026-08"),
-            ("corr-pending/2026-07/a/p/s/c1", "{}"),
-            ("artifact-pending/2026-07/a/p/s", "{}"),
-            ("artifact-pending/2026-07/a/p/t", "not json"),
+            ("corr-pending/2026-07/p/s/c1", "{}"),
+            ("artifact-pending/2026-07/p/s", "{}"),
+            ("artifact-pending/2026-07/p/t", "not json"),
         ] {
             db.put(key, body).await.unwrap();
         }

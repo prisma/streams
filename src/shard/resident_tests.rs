@@ -141,7 +141,6 @@ fn append_op_to(hash: [u8; 16], payload: &'static [u8]) -> (CommitOp, AppendRepl
         finish: AppendFinish::Open,
         billing: Some(Arc::new(crate::billing::BillingRef {
             identity: crate::billing::BillingIdentity {
-                account_id: "acct".into(),
                 container_id: "proj".into(),
                 stream_id: "epoch-1".into(),
                 stream_name: "orders".into(),
@@ -176,7 +175,6 @@ fn queue_op(op: QueueOp) -> (CommitOp, oneshot::Receiver<Result<QueueOut, String
 fn planted_row() -> crate::billing::SegmentBillingMetaV1 {
     crate::billing::SegmentBillingMetaV1 {
         v: 1,
-        account_id: "acct".into(),
         project_id: "proj".into(),
         stream_id: "epoch-1".into(),
         stream_name: "orders".into(),

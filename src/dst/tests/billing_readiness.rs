@@ -148,9 +148,9 @@ async fn the_rollup_report_splits_pending_artifacts_by_publishability() {
         .await
         .unwrap();
     for (key, body) in [
-        ("artifact-pending/2026-07/a/p/s1", "{}"),
-        ("artifact-pending/2026-07/a/p/s2", "{}"),
-        ("artifact-pending/2026-07/a/p/not-json", "not json"),
+        ("artifact-pending/2026-07/p/s1", "{}"),
+        ("artifact-pending/2026-07/p/s2", "{}"),
+        ("artifact-pending/2026-07/p/not-json", "not json"),
         ("artifact-pending/2026-07/short", "{}"),
     ] {
         rollup.db.put(key, body).await.unwrap();

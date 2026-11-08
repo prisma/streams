@@ -73,7 +73,6 @@ pub(crate) fn is_reserved_stream(name: &str) -> bool {
 /// can never mutate the new stream's rollup.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) struct BillingIdentity {
-    pub account_id: String,
     pub container_id: String,
     /// Immutable resource incarnation: hex stream_epoch.
     pub stream_id: String,
@@ -192,8 +191,6 @@ pub(crate) struct SegmentBillingMetaV1 {
     pub v: u16,
     // Identity, captured at first append and immutable for the life of
     // the incarnation (a recreation is a different segment identity).
-    #[serde(default)]
-    pub account_id: String,
     #[serde(default, rename = "container_id")]
     pub project_id: String,
     #[serde(default)]
@@ -258,7 +255,6 @@ impl SegmentBillingMetaV1 {
     pub(crate) fn to_snapshot(&self, month_final: bool) -> SegmentSnapshot {
         SegmentSnapshot {
             identity: BillingIdentity {
-                account_id: self.account_id.clone(),
                 container_id: self.project_id.clone(),
                 stream_id: self.stream_id.clone(),
                 stream_name: self.stream_name.clone(),
@@ -478,42 +474,27 @@ fn identity_inner(
     desc: &crate::registry::StreamDesc,
     count_miss: bool,
 ) -> BillingIdentity {
-    identity_with_capabilities(&state.auth, &state.deployment, desc, count_miss)
+    identity_with_capabilities(&state.auth, desc, count_miss)
 }
 
 pub(crate) fn identity_with_capabilities(
     auth: &crate::auth::AuthService,
-    deployment: &crate::deployment::DeploymentIdentity,
     desc: &crate::registry::StreamDesc,
     count_miss: bool,
 ) -> BillingIdentity {
-    // Stage 7 (workspace-at-event): under shadow/enforce the billable
-    // owner is the WORKSPACE the policy snapshot names for the
-    // descriptor's project AT METERING TIME — invoices attach to the
-    // owner-at-event, which is what makes transfer splits possible.
-    // A project absent from the snapshot (feed lag, removal mid-sweep)
-    // falls to the deployment account and is COUNTED under enforce so
-    // reconciliation sees it (shadow's deployment project is absent
-    // from the platform feed by construction — counting there would
-    // drown the signal in noise); in Off mode the deployment account
-    // is the single-tenant truth.
-    let account_id = if auth.mode != crate::auth::AuthMode::Off {
-        match auth.workspace_for(&desc.project_id) {
-            Some(ws) => ws.as_str().to_string(),
-            None => {
-                if count_miss && auth.mode == crate::auth::AuthMode::Enforce {
-                    UNOWNED_METER_EVENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-                deployment.account_id().to_string()
-            }
-        }
-    } else {
-        desc.account_id
-            .clone()
-            .unwrap_or_else(|| deployment.account_id().to_string())
-    };
+    // Edge #253: usage names its container and nothing above it; Console
+    // maps a container to its project and workspace. A container absent
+    // from the policy snapshot under enforce (feed lag, removal mid-sweep)
+    // still meters, and is COUNTED so reconciliation sees the lag
+    // (shadow's deployment container is absent from the platform feed by
+    // construction, so counting there would drown the signal in noise).
+    if count_miss
+        && auth.mode == crate::auth::AuthMode::Enforce
+        && !auth.knows_project(&desc.project_id)
+    {
+        UNOWNED_METER_EVENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     BillingIdentity {
-        account_id,
         // Layout 4: the descriptor's project is MANDATORY — the
         // deployment-global fallback is gone (MULTITENANCY §20).
         container_id: desc.project_id.as_str().to_string(),
@@ -522,20 +503,11 @@ pub(crate) fn identity_with_capabilities(
     }
 }
 
-/// Metering events whose project had NO owner in the policy snapshot
-/// (attributed to the deployment account) — exported in the ops
-/// snapshot as unowned_meter_events_total; a nonzero steady rate means
-/// the feed is lying or lagging.
+/// Metering events under enforce whose container is absent from the
+/// policy snapshot — exported in the ops snapshot as
+/// unowned_meter_events_total; a nonzero steady rate means the feed is
+/// lying or lagging.
 pub(crate) static UNOWNED_METER_EVENTS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
-/// Segment rows whose STORED workspace disagrees with the current
-/// policy resolution at emission time (feed-lag first-append capture,
-/// or a transfer awaiting the §12.1 split). Detection only — mutating
-/// the stored identity mid-month would double-count (rollup deltas are
-/// absolute per account row); the committer heals at the next month
-/// boundary. Exported as segment_identity_drift_total.
-pub(crate) static SEGMENT_IDENTITY_DRIFT: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
 /// Meter one externally delivered read page (op + payload bytes).
@@ -923,7 +895,6 @@ pub(crate) async fn drain_once(
                         }
                         let lc = StreamLifecycle {
                             identity: BillingIdentity {
-                                account_id: meta.account_id.clone(),
                                 container_id: meta.project_id.clone(),
                                 stream_id: meta.stream_id.clone(),
                                 stream_name: meta.stream_name.clone(),
@@ -964,20 +935,6 @@ pub(crate) async fn drain_once(
             // Emit the CURRENT row at ITS version (>= the marker's) —
             // acking the emitted version keeps anything newer dirty.
             let ver = meta.usage_version;
-            // Stage 7 review: DETECT drift between the row's stored
-            // workspace and the current policy resolution. No mutation
-            // here — that would double-count the month; the committer
-            // re-stamps at the next month boundary, and this counter
-            // makes the interim visible to reconciliation.
-            if state.auth.mode == crate::auth::AuthMode::Enforce
-                && !meta.project_id.is_empty()
-                && !is_reserved_stream(&meta.stream_name)
-                && let Ok(p) = crate::tenant::ProjectId::new(&meta.project_id)
-                && let Some(ws) = state.auth.workspace_for(&p)
-                && ws.as_str() != meta.account_id
-            {
-                SEGMENT_IDENTITY_DRIFT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
             let snap = meta.to_snapshot(false);
             let mut final_keys = Vec::new();
             for (k, fs) in row_finals {
@@ -1234,13 +1191,12 @@ pub(crate) async fn publish_artifacts(
         .await
         .map_err(|e| e.to_string())?;
     let mut published = 0usize;
-    for (pkey, month, project, stream_id, row) in pending {
-        // `project` here is "{account}/{project}" — the artifact path
-        // carries the account dimension (doc item D2).
+    for (pkey, month, container, stream_id, row) in pending {
+        // Edge #253: the artifact path names the container and no account.
         let path = if prefix.is_empty() {
-            format!("telemetry/usage-monthly/{project}/{stream_id}/{month}.json")
+            format!("telemetry/usage-monthly/{container}/{stream_id}/{month}.json")
         } else {
-            format!("{prefix}/telemetry/usage-monthly/{project}/{stream_id}/{month}.json")
+            format!("{prefix}/telemetry/usage-monthly/{container}/{stream_id}/{month}.json")
         };
         let body = serde_json::to_vec(&row).map_err(|e| e.to_string())?;
         if create_verified(store, &path, &body).await {
@@ -1258,15 +1214,15 @@ pub(crate) async fn publish_artifacts(
         .pending_correction_artifacts(64)
         .await
         .map_err(|e| e.to_string())?;
-    for (pkey, month, acct_proj, stream_id, cid, body) in corr {
+    for (pkey, month, container, stream_id, cid, body) in corr {
         let safe = cid.replace('/', "~");
         let path = if prefix.is_empty() {
             format!(
-                "telemetry/usage-monthly/{acct_proj}/{stream_id}/{month}.corrections/{safe}.json"
+                "telemetry/usage-monthly/{container}/{stream_id}/{month}.corrections/{safe}.json"
             )
         } else {
             format!(
-                "{prefix}/telemetry/usage-monthly/{acct_proj}/{stream_id}/{month}.corrections/{safe}.json"
+                "{prefix}/telemetry/usage-monthly/{container}/{stream_id}/{month}.corrections/{safe}.json"
             )
         };
         if create_verified(store, &path, &body).await {

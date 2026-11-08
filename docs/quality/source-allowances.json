@@ -1655,13 +1655,6 @@
     {
       "category": "global",
       "count": 1,
-      "owner": "crate::SEGMENT_IDENTITY_DRIFT",
-      "path": "src/billing.rs",
-      "syntax": "std :: sync :: atomic :: AtomicU64"
-    },
-    {
-      "category": "global",
-      "count": 1,
       "owner": "crate::UNOWNED_METER_EVENTS",
       "path": "src/billing.rs",
       "syntax": "std :: sync :: atomic :: AtomicU64"

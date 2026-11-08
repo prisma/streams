@@ -1,7 +1,7 @@
 use crate::billing::{
     BillingIdentity, MeterSource, ReadBatch, ReadRow, UsageEnvelope, UsagePayload, month_start_ms,
 };
-use crate::rollup::{UsageRollup, k_month, k_name, k_project, k_source, read_faults};
+use crate::rollup::{UsageRollup, k_container, k_month, k_name, k_source, read_faults};
 use slatedb::Db;
 use std::sync::Arc;
 
@@ -23,7 +23,6 @@ fn batch(seq: u64, stream_id: &str) -> UsageEnvelope {
             to_ms: month_start_ms(2026, 7) + 100,
             rows: vec![ReadRow {
                 identity: BillingIdentity {
-                    account_id: "a".into(),
                     container_id: "p".into(),
                     stream_id: stream_id.into(),
                     stream_name: "orders".into(),
@@ -68,12 +67,12 @@ async fn one_page_shares_dedupe_month_and_aggregate_state() {
     rollup.apply_page(&envelopes, "all-three").await.unwrap();
     assert_eq!(rollup.cursor().await.unwrap().as_deref(), Some("all-three"));
     let first = rollup
-        .month_row("2026-07", "a", "p", "first")
+        .month_row("2026-07", "p", "first")
         .await
         .unwrap()
         .unwrap();
     let second = rollup
-        .month_row("2026-07", "a", "p", "second")
+        .month_row("2026-07", "p", "second")
         .await
         .unwrap()
         .unwrap();
@@ -82,15 +81,11 @@ async fn one_page_shares_dedupe_month_and_aggregate_state() {
         (202, 101)
     );
     let name = rollup
-        .name_row("2026-07", "a", "p", "orders")
+        .name_row("2026-07", "p", "orders")
         .await
         .unwrap()
         .unwrap();
-    let project = rollup
-        .project_row("2026-07", "a", "p")
-        .await
-        .unwrap()
-        .unwrap();
+    let project = rollup.container_row("2026-07", "p").await.unwrap().unwrap();
     for row in [&name, &project] {
         assert_eq!(
             (
@@ -138,9 +133,9 @@ async fn a_later_envelope_failure_discards_all_earlier_staged_rows() {
     read.rows[0].identity.container_id = "later-project".into();
     for key in [
         k_source("later-boot"),
-        k_month("2026-07", "a", "later-project", "late"),
-        k_name("2026-07", "a", "later-project", "orders"),
-        k_project("2026-07", "a", "later-project"),
+        k_month("2026-07", "later-project", "late"),
+        k_name("2026-07", "later-project", "orders"),
+        k_container("2026-07", "later-project"),
     ] {
         read_faults()
             .lock()
@@ -161,7 +156,7 @@ async fn a_later_envelope_failure_discards_all_earlier_staged_rows() {
     assert_eq!(rollup.cursor().await.unwrap().as_deref(), Some("after"));
     assert_eq!(
         rollup
-            .month_row("2026-07", "a", "p", "original")
+            .month_row("2026-07", "p", "original")
             .await
             .unwrap()
             .unwrap()

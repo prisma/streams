@@ -453,7 +453,6 @@ async fn the_largest_creatable_descriptor_with_a_full_segment_map_fits_the_catal
     let mut desc = stored.to_persisted();
     let created = serde_json::to_vec(&desc).unwrap().len();
     desc.project_id = ProjectId::new(&"p".repeat(ID_MAX_BYTES)).unwrap();
-    desc.account_id = Some("a".repeat(ID_MAX_BYTES));
     desc.segments = Some(longest_map(SEGMENT_BUDGET));
     let written = serde_json::to_vec(&desc).unwrap().len();
     assert!(

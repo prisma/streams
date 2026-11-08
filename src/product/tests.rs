@@ -149,7 +149,6 @@ fn idle_durations_stop_at_the_service_maximum() {
 fn desc_with(name: &str, epoch_hex: &str) -> StreamDesc {
     crate::registry::PersistedDescriptor {
         name: name.to_string(),
-        account_id: None,
         project_id: crate::tenant::ProjectId::new("proj-test").unwrap(),
         stream_epoch: epoch_hex.to_string(),
         seal_gen_counter: 0,

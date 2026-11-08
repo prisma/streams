@@ -11,7 +11,6 @@ use std::sync::atomic::AtomicBool;
 pub(crate) fn test_desc(name: &str) -> crate::registry::StreamDesc {
     crate::registry::PersistedDescriptor {
         seal_gen_counter: 0,
-        account_id: None,
         project_id: crate::tenant::ProjectId::new("proj-feed-test").unwrap(),
         name: name.into(),
         stream_epoch: "0123456789abcdef0123456789abcdef".into(),

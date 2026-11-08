@@ -632,7 +632,6 @@ async fn catalog_pages_without_scanning_the_world() {
         let name = format!("cat-{i:05}");
         let d = crate::registry::PersistedDescriptor {
             seal_gen_counter: 0,
-            account_id: None,
             project_id: crate::tenant::ProjectId::new("proj-test").unwrap(),
             name: name.clone(),
             stream_epoch: format!("{:032x}", i),

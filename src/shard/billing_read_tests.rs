@@ -152,7 +152,6 @@ const LATER: i64 = CLOSED + HOUR;
 
 fn identity() -> crate::billing::BillingIdentity {
     crate::billing::BillingIdentity {
-        account_id: "acct".into(),
         container_id: "proj".into(),
         stream_id: "epoch-1".into(),
         stream_name: "orders".into(),
@@ -164,7 +163,6 @@ fn open_row() -> Meta {
     let id = identity();
     Meta {
         v: 1,
-        account_id: id.account_id,
         project_id: id.container_id,
         stream_id: id.stream_id,
         stream_name: id.stream_name,

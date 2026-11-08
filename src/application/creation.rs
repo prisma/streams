@@ -101,7 +101,6 @@ pub(crate) struct CreationService {
     pub reads: Arc<crate::application::read::ReadService>,
     pub keys: Arc<crate::history::KeyCache>,
     pub runtime: crate::runtime::RuntimeCaps,
-    pub deployment: crate::deployment::DeploymentIdentity,
     pub auth: Arc<crate::auth::AuthService>,
     pub quotas: crate::quota::QuotaRegistry,
     pub admission: crate::admission::AdmissionController,
@@ -296,7 +295,6 @@ pub(crate) fn fresh_desc(
     let epoch = service.fresh_epoch(sref);
     let desc = crate::registry::PersistedDescriptor {
         name: sref.name().as_str().to_string(),
-        account_id: Some(service.deployment.account_id().to_string()),
         project_id: sref.project_id().clone(),
         stream_epoch: hex(&epoch),
         seal_gen_counter: 0,
@@ -523,7 +521,6 @@ mod tests {
         let at = 1_000;
         let base = crate::registry::PersistedDescriptor {
             seal_gen_counter: 0,
-            account_id: None,
             project_id: crate::tenant::ProjectId::new("creation-test").unwrap(),
             name: "verdict".into(),
             stream_epoch: "0123456789abcdef0123456789abcdef".into(),

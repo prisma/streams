@@ -216,7 +216,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "e9e05b10f6003dee94ad4da47eb4f5c4392469aa0cb297baf7fb47aee0364a36",
+    "function_sha256": "5ebb24e105de54763598fb9f594924b4d0f8c2fe66b5a867dc2bd6790cda22e3",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_late_close.rs",
@@ -3213,7 +3213,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "82286d5dcecca427aa43f529043a2bfcf64ae9b295ec1341a0ef2502957ab66f",
+    "function_sha256": "b9cf2a09e8d507937b1f79526e7af9b3e8896f43960fef38167469c95269945f",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fence_yield.rs",
@@ -4458,7 +4458,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "c4403b2d2a20843904aff43af572e2b6fc21a5b0716fc770aa0d3e3c13df1215",
+    "function_sha256": "293b9e6fed7f66d931e52abfbe029ac6d9b4bc4f12e704002dcfdf73b2a5d68b",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_usage.rs",
@@ -4476,11 +4476,11 @@
     "scenarios": []
   },
   {
-    "name": "books_are_exact_per_project_and_workspace",
+    "name": "books_are_exact_per_container",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "33d4f431d162bf089662086aa68f06afbdeaa588e3fb6df009a168f225ca0b85",
+    "function_sha256": "9e9a29a7a433b07698a575c5f1b20603216484018a11c0e3a27354a42c831ec0",
     "mechanisms": [],
     "configuration": [
       "let ledger = seed(&cell).await;"
@@ -4540,7 +4540,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "5351071f918ff0e8bce1f4f071fb02b284ede953f2519abaf9beea5858eefac2",
+    "function_sha256": "8624be4501ddc3965243d87d1d97e72ccea347694b49fd72632cdcf8bfab06e3",
     "mechanisms": [],
     "configuration": [
       "let counting = FaultStore::uniform(inner, 7, FaultPlan::new(0, 0, 0));"
@@ -5620,7 +5620,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "e1a53a2346e1b0d895961076b675e9884bb3456cf7074b343cc55f6be69c962b",
+    "function_sha256": "867670a43f6fd3cabbf2d1e756a49375efc485b81dbf84dd53823efe665125f3",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_controller.rs",
@@ -5698,11 +5698,11 @@
     ]
   },
   {
-    "name": "identity_of_resolves_the_workspace_at_event",
+    "name": "identity_of_names_the_container_whatever_its_workspace",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "6aba5fab5536db702ce0709416e4bf6b7379c807b601fb0607e02969c19f3c16",
+    "function_sha256": "c03c6c8695d335758231d870bed3b97199ccaef56592a3038cde75c140a6ee8a",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_subscription.rs",
@@ -5731,7 +5731,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "17646094fe044268e808516649b492a579ecfafa0e984afabca7cda4da074223",
+    "function_sha256": "73bf3f1362bb41138298a40938fa29056798aa46fdbdcde9d43d04f61512552b",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_operation_counts.rs",
@@ -5806,7 +5806,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "6e8f6ff897f9decffef27104c3feae330e69ff8815d1ecca4a7209f9b0eb34d1",
+    "function_sha256": "d74b81b649a6c6b5522c660f28121186d6337c016a5c62ea3698060a01339880",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_attribution.rs",
@@ -7061,7 +7061,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "5f6b62c0b6a3c7f3ed2016863446daa0125ca2b5b7353615598dee94996a7015",
+    "function_sha256": "7c36ee99ddebb543faa8690e41d8d00f9f6618a31250a8329fabcb0506d06346",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_usage.rs",
@@ -8218,7 +8218,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "0cdd14242dac1065817fbfb85da3967057a5f4c1bf7aeb8a8f18d11ccc84060f",
+    "function_sha256": "3a2700d8d524bf0bffbb72aa582cd7168c8f06919e0d14a07c6035a3a576d527",
     "mechanisms": [],
     "configuration": [
       "let source_store = FaultStore::uniform(mem(), 911, FaultPlan::CLEAN);"
@@ -8576,7 +8576,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "8e86c9a68483fe7e531758af8488b6b2742c478bec55194c5851d3bd3dadde07",
+    "function_sha256": "89fdb1091e9e505b192902b4a83064822069d0d5c516341b57e21e9b09538085",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_usage.rs",
@@ -8598,7 +8598,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "598ba1bc9c353ddf302d10aeb29bd3b60384fa0af2c96d43d1197b80e51bdcc2",
+    "function_sha256": "73eb9cccf3f224851d4bcc88de28c031a427d16e2d5a84a995dbc36bd2fadf02",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_drain_bounds.rs",
@@ -8693,7 +8693,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "586fa683c218b3ada4143ef6bf1c854c5d7bbe48edcb9e10815a01de99bde0f5",
+    "function_sha256": "1e0d64f8e6cb2c9287b0f292b3d3f1c51b10295c0c17409231fe2d1bb2c5d0ef",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_usage.rs",
@@ -8914,7 +8914,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "a3a272121612e4224cbc42f118685474556238c04b66a7f7f9432bd4ebe36075",
+    "function_sha256": "f818e06c83bad221e820c68f29ab95842718ca4f4b20b0d4b1ea1ebdfe65b062",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_attribution.rs",
@@ -9489,7 +9489,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "04a8cca7dbaabd84e5737bd06da3d026a56922a73e9f9cb34c26c18f883914c8",
+    "function_sha256": "7206853d607e81afc2b8d1a001f52d7459015396784c2ab62f8772ad2e1e4b5a",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_policy.rs",
@@ -9827,7 +9827,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "7bc30598cfd7ba75af665bf09fd38ad70163e1105852897842f57598218a478f",
+    "function_sha256": "c4dfa968ff82db1de53ecf43d59e57caf2576adc03f3168262f2f351c5f9cac6",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_capacity.rs",
@@ -9947,7 +9947,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "1a03bf57ba8aeaa035428de919207a4ae36e70438e7c6432f5c27245e1976eba",
+    "function_sha256": "f6803b74141310d524dfb07cd0533ce79bff51152e8ba87abb8fb8a4f38b937c",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_readiness.rs",
@@ -10329,11 +10329,11 @@
     ]
   },
   {
-    "name": "valid_transfer_bills_each_workspace_on_its_own_side",
+    "name": "valid_transfer_bills_one_container_on_both_sides",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "0a3a220a3d28a860232771fdf69d657b47f4c5cebb81fa370337c8ed1082fbf0",
+    "function_sha256": "2188f92ea078965950ed446d649ec36f3e805a55be38f0bec0564b5081ff6c85",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_subscription.rs",
