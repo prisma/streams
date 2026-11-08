@@ -54,12 +54,6 @@ pub(crate) use varint::{get_varint, put_varint};
 pub(crate) const PAGE_VER: u8 = 6;
 /// Version byte of a page whose body is zstd level 1 (compress-then-encrypt).
 pub(crate) const PAGE_VER_Z: u8 = 7;
-/// The row-key tag between a shard-log page row's namespace and its last
-/// offset.
-pub(crate) const SHARD_PAGE_TAG: u8 = b'p';
-/// The width of a shard-log queue page prefix: the queue segment prefix
-/// (tag and generation), hash16 and the page tag (layout 6).
-const QUEUE_PAGE_PREFIX_LEN: usize = crate::keyspace::QUEUE_PREFIX_LEN + 17;
 /// The body cap of a page that holds more than one record, and the size at
 /// which a request is cut into pages.
 pub(crate) const PAGE_TARGET_PLAINTEXT: usize = 64 << 10;
@@ -93,25 +87,6 @@ pub(crate) const fn body_cap(count: usize) -> usize {
 pub(crate) fn last_offset(first: u64, count: usize) -> Option<u64> {
     let extra = u64::try_from(count.checked_sub(1)?).ok()?;
     first.checked_add(extra)
-}
-
-/// Shard-log row key of a native queue's message page whose last offset is
-/// `last`: the page layout under the queue segment (layout 6).
-pub(crate) fn queue_page_key(hash: &[u8; 16], last: u64) -> Vec<u8> {
-    let mut key = Vec::with_capacity(QUEUE_PAGE_PREFIX_LEN + 8);
-    key.extend_from_slice(&queue_page_prefix(hash));
-    key.extend_from_slice(&last.to_be_bytes());
-    key
-}
-
-/// The canonical prefix of a native queue's page keys.
-pub(crate) fn queue_page_prefix(hash: &[u8; 16]) -> [u8; QUEUE_PAGE_PREFIX_LEN] {
-    let mut prefix = [SHARD_PAGE_TAG; QUEUE_PAGE_PREFIX_LEN];
-    let (namespace, _) = prefix.split_at_mut(QUEUE_PAGE_PREFIX_LEN - 1);
-    let (segment, hash_part) = namespace.split_at_mut(crate::keyspace::QUEUE_PREFIX_LEN);
-    segment.copy_from_slice(&crate::keyspace::QUEUE);
-    hash_part.copy_from_slice(hash);
-    prefix
 }
 
 /// The lane fields every page of one request carries in its clear header.

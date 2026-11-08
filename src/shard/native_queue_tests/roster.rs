@@ -1,8 +1,9 @@
 //! The roster-driven sweeper (docs/QUEUES-DESIGN.md §6.8) reads the roster a
 //! page at a time, each tick the page after the last, so a shard with more
-//! queues on its roster than one page holds sweeps every one of them: the
-//! first page alone held the rest unswept for as long as its queues stayed
-//! on the roster (prisma/streams#150, findings).
+//! due rows on its roster than one page holds sweeps every one of them: the
+//! first page alone held the rest unswept for as long as its rows stayed on
+//! the roster (prisma/streams#150, findings). The roster is in deadline order
+//! (layout 8), so the rows a page fills with are due ones.
 #![cfg(test)]
 use std::time::{Duration, Instant};
 
@@ -10,13 +11,13 @@ use super::engine;
 use crate::native_queue::rows::StateRow;
 use crate::native_queue::{NqOp, NqOut, NqRefusal, QueueConfig, WakeRequest, keys};
 
-/// Roster rows of queues not yet due, ahead of the due ones in hash order:
-/// one page's worth (`ROSTER_PAGE`).
+/// Due roster rows naming no queue, ahead of the real due queues in deadline
+/// order: one page's worth (`ROSTER_PAGE`). A sweep of one is refused, so
+/// they stay.
 const NOT_DUE: u16 = 4_096;
 /// Queues due now, after them.
 const DUE: u16 = 40;
-/// Of the undue rows, real queues: a sweep of one would take it off the
-/// roster.
+/// Real queues not yet due, at the roster's end.
 const REAL_NOT_DUE: u16 = 8;
 /// How long the sweeper may take: a handful of 1 s ticks.
 const SWEPT_WITHIN: Duration = Duration::from_secs(15);
@@ -46,22 +47,19 @@ async fn the_sweeper_reaches_every_rostered_queue_past_its_first_page() {
     for created in futures_util::future::join_all(creates).await {
         created.expect("created");
     }
-    rostered_at(&db, (0..DUE).map(due), 0).await;
-    // A page of queues due in a thousand years, ahead of them in hash order,
-    // the first of them real queues.
+    rostered_at(&db, (0..DUE).map(due), 1).await;
+    // Real queues due in a thousand years, last; ahead of the due queues, a
+    // page of due rows that name no queue.
     rostered_at(&db, (0..REAL_NOT_DUE).map(not_due), i64::MAX).await;
     for n in REAL_NOT_DUE..NOT_DUE {
-        let later = i64::MAX.to_be_bytes();
-        db.put(keys::roster(&not_due(n)), later).await.unwrap();
+        db.put(keys::roster(0, &not_due(n)), []).await.unwrap();
     }
     let deadline = Instant::now() + SWEPT_WITHIN;
     let mut left = usize::from(DUE);
     while left > 0 && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        left = 0;
-        for n in 0..DUE {
-            left += usize::from(db.get(keys::roster(&due(n))).await.unwrap().is_some());
-        }
+        let rows = keys::roster_rows(&db).await;
+        left = (0..DUE).filter(|n| rows.contains_key(&due(*n))).count();
     }
     assert_eq!(
         left, 0,
@@ -75,12 +73,13 @@ async fn the_sweeper_reaches_every_rostered_queue_past_its_first_page() {
             "queue {n} is off the roster"
         );
     }
+    let rows = keys::roster_rows(&db).await;
     for n in 0..NOT_DUE {
-        let row = db.get(keys::roster(&not_due(n))).await.unwrap();
+        let want = if n < REAL_NOT_DUE { i64::MAX } else { 0 };
         assert_eq!(
-            row.as_deref(),
-            Some(&i64::MAX.to_be_bytes()[..]),
-            "an undue row stays: {n}"
+            rows.get(&not_due(n)).copied(),
+            Some(want),
+            "an undue queue's row, and a row naming no queue, stay: {n}"
         );
     }
     for n in 0..REAL_NOT_DUE {
@@ -100,7 +99,7 @@ async fn rostered_at(db: &slatedb::Db, hashes: impl Iterator<Item = [u8; 16]>, a
         let mut s = StateRow::decode(&db.get(&key).await.unwrap().unwrap()).unwrap();
         s.roster_at = Some(at);
         db.put(&key, s.encode()).await.unwrap();
-        db.put(keys::roster(&hash), at.to_be_bytes()).await.unwrap();
+        db.put(keys::roster(at, &hash), []).await.unwrap();
     }
 }
 
@@ -132,10 +131,8 @@ async fn the_sweeper_sweeps_a_ticks_due_queues_together() {
     let mut left = usize::from(QUEUES);
     while left > 0 && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        left = 0;
-        for n in 0..QUEUES {
-            left += usize::from(db.get(keys::roster(&due(n))).await.unwrap().is_some());
-        }
+        let rows = keys::roster_rows(&db).await;
+        left = (0..QUEUES).filter(|n| rows.contains_key(&due(*n))).count();
     }
     assert_eq!(left, 0, "every due queue was swept");
 }

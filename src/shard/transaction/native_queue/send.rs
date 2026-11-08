@@ -123,7 +123,7 @@ impl CommitTransaction<'_> {
         };
         for page in pages {
             self.batch.put(
-                crate::crypto_page::queue_page_key(&hash, page.last),
+                crate::native_queue::keys::page(&hash, page.last),
                 page.bytes,
             );
         }

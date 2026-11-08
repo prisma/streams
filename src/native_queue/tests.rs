@@ -262,6 +262,103 @@ fn queue_scans_cache_their_blocks() {
     );
 }
 
+/// Every queue family's byte (S3a-DESIGN rev 3 §2.3), the reserved ones included: `'x'` the range row
+/// and `'k'` the released interval, whose writers are S3b's.
+const QUEUE_FAMILIES: [u8; 14] = [
+    keys::STATE,
+    keys::META,
+    keys::AVAIL,
+    keys::DELIVERY,
+    keys::LEASES,
+    keys::RETRIES,
+    keys::FAILED,
+    keys::FAIL_EXPIRY,
+    keys::DEDUP,
+    keys::DEDUP_EXPIRY,
+    keys::PAGE,
+    b't', // the queue stream's tail (`shard::queue_tail_key`)
+    b'x', // range row (S3b)
+    b'k', // released interval (S3b)
+];
+
+#[test]
+fn the_queue_families_are_distinct() {
+    let mut families = QUEUE_FAMILIES.to_vec();
+    families.sort_unstable();
+    families.dedup();
+    assert_eq!(families.len(), QUEUE_FAMILIES.len());
+}
+
+/// Every queue row's key, byte for byte: `hash ‖ 'Q' ‖ family ‖ suffix`, and the roster row's,
+/// `FF×16 ‖ 'Q' ‖ deadline ‖ hash`.
+#[test]
+fn every_queue_key_is_pinned() {
+    let hash = [0xaa; 16];
+    let h = "aa".repeat(16);
+    let off = 0x0102_0304_0506_0708;
+    let at = 0x0a0b_0c0d_0e0f_1011;
+    let (o, t) = ("0102030405060708", "0a0b0c0d0e0f1011");
+    let tag = [0x22; 16];
+    let hex = |k: Vec<u8>| crate::crypto::hex(&k);
+    let pinned = [
+        (hex(keys::state(&hash)), format!("{h}5173")),
+        (
+            hex(keys::by_offset(&hash, keys::META, off)),
+            format!("{h}516d{o}"),
+        ),
+        (
+            hex(keys::by_offset(&hash, keys::DELIVERY, off)),
+            format!("{h}5164{o}"),
+        ),
+        (
+            hex(keys::by_time(&hash, keys::AVAIL, at, off)),
+            format!("{h}5161{t}{o}"),
+        ),
+        (
+            hex(keys::by_time(&hash, keys::LEASES, at, off)),
+            format!("{h}516c{t}{o}"),
+        ),
+        (
+            hex(keys::by_time(&hash, keys::RETRIES, at, off)),
+            format!("{h}5172{t}{o}"),
+        ),
+        (
+            hex(keys::by_time(&hash, keys::FAILED, at, off)),
+            format!("{h}5166{t}{o}"),
+        ),
+        (
+            hex(keys::by_time(&hash, keys::FAIL_EXPIRY, at, off)),
+            format!("{h}5165{t}{o}"),
+        ),
+        (
+            hex(keys::dedup(&hash, &tag)),
+            format!("{h}5175{}", "22".repeat(16)),
+        ),
+        (
+            hex(keys::dedup_expiry(&hash, at, &tag)),
+            format!("{h}5176{t}{}", "22".repeat(16)),
+        ),
+        (hex(keys::page(&hash, off)), format!("{h}5170{o}")),
+        (hex(crate::shard::queue_tail_key(&hash)), format!("{h}5174")),
+        (
+            hex(keys::roster(at, &hash)),
+            format!("{}51{t}{h}", "ff".repeat(16)),
+        ),
+    ];
+    for (key, want) in pinned {
+        assert_eq!(key, want);
+    }
+    assert_eq!(
+        keys::decode_roster(&keys::roster(at, &hash)),
+        Some((at, hash))
+    );
+    assert_eq!(
+        keys::roster(-5, &hash),
+        keys::roster(0, &hash),
+        "a negative time sorts as zero"
+    );
+}
+
 /// An id or a token minted under one incarnation never resolves under another of the same name,
 /// whose entity hash shares its route's leading bytes (S3a-DESIGN §1.1): the incarnation tag is
 /// the hash's last four bytes, all identity.

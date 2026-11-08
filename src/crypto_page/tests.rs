@@ -14,7 +14,6 @@ use super::{
 use crate::crypto::{MAX_RECORD_PLAINTEXT, StreamKey, derive_subkey, hex};
 
 pub(super) const SEGMENT: [u8; 16] = [0x22; 16];
-pub(super) const HASH: [u8; 16] = [0x44; 16];
 pub(super) const TS: i64 = 1_760_000_000_000;
 
 /// One record as a page returns it: offset, timestamp, payload.
@@ -472,20 +471,6 @@ fn every_page_gets_a_fresh_nonce() {
         panic!("two pages")
     };
     assert_ne!(first, second);
-}
-
-/// A window's scan reaches, exclusive, 4,095 offsets past its last record:
-/// the page holding that record ends below there whatever its size.
-#[test]
-fn row_keys_are_namespace_tag_and_last_offset() {
-    // Layout 6 keeps per-page rows only for native queues; a stream's
-    // pages live in its pending row and its segment objects.
-    let last = 0x0102_0304_0506_0708;
-    let queue = crate::crypto_page::queue_page_key(&HASH, last);
-    assert_eq!(
-        queue,
-        [&b"Q\0\0\0\0"[..], &HASH[..], b"p", &last.to_be_bytes()].concat()
-    );
 }
 
 /// The writer's bytes are pinned at every width from one group to ten.

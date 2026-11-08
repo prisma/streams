@@ -110,7 +110,9 @@ impl CommitTransaction<'_> {
         st.exists = false;
         st.state_dirty = false;
         local.fields.absorbed = local.fields.next;
-        self.batch.delete(keys::roster(&hash));
+        if let Some(at) = st.state.roster_at {
+            self.batch.delete(keys::roster(at, &hash));
+        }
         Ok(NqOut::DeleteStepped { remaining: false })
     }
 
@@ -130,7 +132,7 @@ impl CommitTransaction<'_> {
             .flatten()
         {
             self.batch
-                .delete(crate::crypto_page::queue_page_key(hash, off));
+                .delete(crate::native_queue::keys::page(hash, off));
             let bytes = MetaRow::decode(&v).map_or(0, |m| u64::from(m.bytes));
             Self::nq_debt(st, bytes, t);
         }

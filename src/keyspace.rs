@@ -5,8 +5,8 @@
 //! - `hash16 ‖ 'S'`: stream state — tails, producers and sequences, seal
 //!   fences, pending rows (unsealed pages), consumer-group rows and billing
 //!   rows;
-//! - `'Q' ‖ gen u32 ‖ hash16` (layout 7's order until the queue keys move):
-//!   every native-queue row;
+//! - `hash16 ‖ 'Q'`: every native-queue row (state, metadata, the indexes,
+//!   dedup, message pages, the queue stream's tail);
 //! - `FF×16 ‖ tag`: the sentinel, the shard's own rows (the seal directory,
 //!   refcounts, garbage, purge heads, the usage outbox). The hash `FF×16`
 //!   names no entity, so the sentinel sorts after every entity's rows and
@@ -23,13 +23,8 @@ pub(crate) mod range;
 
 /// The stream-state family byte, after the stream's hash.
 pub(crate) const STREAM: u8 = b'S';
-/// The queue family's tag.
+/// The queue family byte, after the queue's hash.
 pub(crate) const QUEUE_TAG: u8 = b'Q';
-/// The queue family prefix of generation 0: the tag and the generation,
-/// big-endian.
-pub(crate) const QUEUE: [u8; QUEUE_PREFIX_LEN] = [QUEUE_TAG, 0, 0, 0, 0];
-/// The width of a queue family prefix.
-pub(crate) const QUEUE_PREFIX_LEN: usize = 5;
 /// The sentinel: sixteen 0xFF bytes, the hash no entity has. Its rows (the
 /// seal directory and refcount rows, the usage outbox) sort after every
 /// entity's rows, so each of its tags is one range scan.
@@ -97,6 +92,8 @@ pub(crate) mod tag {
     pub(crate) const HEAD: u8 = b'H';
     /// A background scan's cursor (the orphan sweep's, per object kind).
     pub(crate) const CURSOR: u8 = b'L';
+    /// The queue roster: one row per queue with pending work, by deadline.
+    pub(crate) const ROSTER: u8 = b'Q';
 }
 
 /// A stream-state row key: the stream's hash and the `'S'` family byte,
@@ -115,12 +112,12 @@ pub(crate) fn tail_hash(key: &[u8]) -> Option<[u8; 16]> {
     (rest == [STREAM, TAIL_TAG] && *hash != SENTINEL).then_some(*hash)
 }
 
-/// A queue row key: the generation-0 queue prefix and the queue's hash,
-/// with room for `extra` more bytes.
+/// A queue row key: the queue's hash and the `'Q'` family byte, with room
+/// for `extra` more bytes.
 pub(crate) fn queue_row(hash: &[u8; 16], extra: usize) -> Vec<u8> {
-    let mut k = Vec::with_capacity(QUEUE_PREFIX_LEN + 16 + extra);
-    k.extend_from_slice(&QUEUE);
+    let mut k = Vec::with_capacity(17 + extra);
     k.extend_from_slice(hash);
+    k.push(QUEUE_TAG);
     k
 }
 
@@ -144,7 +141,7 @@ mod projection_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::{QUEUE, QUEUE_PREFIX_LEN, SENTINEL, STREAM, queue_row, stream_row, tail_hash};
+    use super::{QUEUE_TAG, SENTINEL, STREAM, queue_row, stream_row, tail_hash};
 
     /// Every sentinel tag of layout 8 (S3a-DESIGN rev 3 §2.4), the reserved ones included: the seal's
     /// and the gc's (`tag`), and those whose writers land later in 4a, in S3b, S4 and S6. The usage
@@ -158,11 +155,11 @@ mod tests {
         super::tag::GARBAGE,
         super::tag::HEAD,
         super::tag::CURSOR,
+        super::tag::ROSTER,
         b'U', // usage debt index (4a commit 3)
         b'Y', // the log's layout and home (4a commit 4)
         b'W', // unsealed streams (4a commit 7)
         b'M', // usage awaiting the ledger (4a commit 7)
-        b'Q', // queue roster, by deadline (4a commit 2; #150 adopts it)
         b'D', // queue debt index (reserved for #150)
         b'Z', // queue trim hints (S3b)
         b'N', // queue-state gauges (S3b)
@@ -262,10 +259,9 @@ mod tests {
         );
         assert_eq!(
             queue_row(&[7; 16], 1)[..],
-            [&QUEUE[..], &[7; 16]].concat()[..]
+            [&[7; 16][..], &[QUEUE_TAG]].concat()[..]
         );
-        assert_eq!(QUEUE, [b'Q', 0, 0, 0, 0]);
-        assert_eq!(QUEUE_PREFIX_LEN, QUEUE.len());
+        assert_eq!(QUEUE_TAG, b'Q');
         assert_eq!(
             stream_row(&[0xFF; 16], 0)[..16],
             SENTINEL[..],

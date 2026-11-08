@@ -109,16 +109,6 @@ fn shard_tree(manifest: &slatedb::VersionedManifest) -> Tree<'_> {
     }
 }
 
-/// The queue a roster row names.
-fn roster_hash(key: &[u8]) -> Option<[u8; 16]> {
-    key.get(keys::ROSTER_PREFIX.len()..)?.try_into().ok()
-}
-
-/// A roster row's deadline: when its queue is next due a sweep.
-fn roster_deadline(value: &[u8]) -> Option<i64> {
-    Some(i64::from_be_bytes(value.get(..8)?.try_into().ok()?))
-}
-
 /// The SST ids a set of L0 views and runs supersede.
 fn superseded_ids<'a>(
     l0: impl Iterator<Item = &'a slatedb::manifest::SsTableView>,
@@ -317,22 +307,22 @@ impl ShardEngine {
         Ok(self.roster_page(None).await?.0)
     }
 
-    /// One page of the roster: at most `ROSTER_PAGE` rows in hash order
-    /// after the queue `after` (from the start when `None`), and the hash
-    /// the next page starts after: `None` once this page reached the
-    /// roster's end. Paging, a sweeper examines every rostered queue within
+    /// One page of the roster: at most `ROSTER_PAGE` rows in deadline
+    /// order after the row whose key suffix (deadline ‖ hash) is `after`
+    /// (from the start when `None`), and the suffix the next page starts
+    /// after: `None` once this page reached the roster's end. Paging, a sweeper examines every rostered queue within
     /// ceil(rows / `ROSTER_PAGE`) + 1 ticks however many the roster holds,
     /// where the first page alone left every queue past it unswept.
     async fn roster_page(
         &self,
-        after: Option<[u8; 16]>,
-    ) -> Result<(Vec<([u8; 16], i64)>, Option<[u8; 16]>), String> {
+        after: Option<Vec<u8>>,
+    ) -> Result<(Vec<([u8; 16], i64)>, Option<Vec<u8>>), String> {
         use std::ops::Bound;
-        let start = after.map_or(Bound::Unbounded, |hash| Bound::Excluded(hash.to_vec()));
+        let start = after.map_or(Bound::Unbounded, Bound::Excluded);
         let mut it = self
             .db
             .scan_prefix_with_options(
-                &keys::ROSTER_PREFIX[..],
+                &keys::roster_prefix()[..],
                 (start, Bound::Unbounded),
                 &crate::native_queue::scan_options(),
             )
@@ -344,20 +334,23 @@ impl ShardEngine {
             let Some(kv) = it.next().await.map_err(|e| e.to_string())? else {
                 return Ok((out, None));
             };
-            let Some(hash) = roster_hash(&kv.key) else {
+            let Some((at, hash)) = keys::decode_roster(&kv.key) else {
                 continue;
             };
-            last = Some(hash);
-            if let Some(at) = roster_deadline(&kv.value) {
-                out.push((hash, at));
-            }
+            // The scan's bounds are suffixes after the prefix: deadline ‖ hash.
+            last = kv
+                .key
+                .get(keys::roster_prefix().len()..)
+                .map(<[u8]>::to_vec);
+            out.push((hash, at));
         }
         Ok((out, last))
     }
 
     /// Sweep the due queues of the roster page after `after`; where the
-    /// next tick's page starts.
-    async fn sweep_due_queues(&self, after: Option<[u8; 16]>) -> Option<[u8; 16]> {
+    /// next tick's page starts: from the front again once this page holds a
+    /// queue not yet due, since every row after it falls due later.
+    async fn sweep_due_queues(&self, after: Option<Vec<u8>>) -> Option<Vec<u8>> {
         let (roster, next) = match self.roster_page(after).await {
             Ok(page) => page,
             Err(error) => {
@@ -366,6 +359,7 @@ impl ShardEngine {
             }
         };
         let now = now_ms();
+        let next = next.filter(|_| roster.iter().all(|(_, at)| *at <= now));
         let due = roster.into_iter().filter(|(_, at)| *at <= now);
         let wakes: Vec<_> =
             futures_util::stream::iter(due)

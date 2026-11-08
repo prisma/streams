@@ -172,12 +172,12 @@ impl CommitTransaction<'_> {
 
     /// The queue's roster row (§6.8): present while it has work that time
     /// alone moves on or debt to collect, so the sweep and the collector
-    /// find it after a restart or move. Its value is when the sweep should
-    /// look next. A sweep sets it to the deadline it computed; any other
-    /// operation only brings it forward (a new earlier deadline), takes
-    /// the queue off when nothing is pending, or puts it on. The state row
-    /// records the value (`roster_at`) in the same batch, so no read of
-    /// the roster row is needed.
+    /// find it after a restart or move. Its key carries when the sweep
+    /// should look next. A sweep sets it to the deadline it computed; any
+    /// other operation only brings it forward (a new earlier deadline),
+    /// takes the queue off when nothing is pending, or puts it on. The state
+    /// row records the deadline (`roster_at`) in the same batch, so a move
+    /// deletes the row at the old deadline without reading it.
     fn nq_roster(&mut self, hash: &[u8; 16], st: &mut NativeStage, by: RosterBy, t: i64) {
         let stored = st.state.roster_at;
         let desired = match by {
@@ -189,9 +189,11 @@ impl CommitTransaction<'_> {
         if desired == stored {
             return;
         }
-        match desired {
-            Some(at) => self.batch.put(keys::roster(hash), at.to_be_bytes()),
-            None => self.batch.delete(keys::roster(hash)),
+        if let Some(at) = stored {
+            self.batch.delete(keys::roster(at, hash));
+        }
+        if let Some(at) = desired {
+            self.batch.put(keys::roster(at, hash), []);
         }
         st.state.roster_at = desired;
         st.state_dirty = true;

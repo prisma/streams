@@ -400,7 +400,7 @@ async fn a_waiting_retry_is_swept_only_at_its_cycle_deadline() {
         (0, 1, i64::MAX)
     );
     assert!(
-        db.get(keys::roster(&HASH)).await.unwrap().is_some(),
+        keys::rostered(&db, &HASH).await.is_some(),
         "the failed message keeps the queue on the roster"
     );
     op(&e, NqOp::Get).await.unwrap();

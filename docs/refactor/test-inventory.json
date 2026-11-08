@@ -547,7 +547,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "81507a49269253819030602de3411a808df2d1cde6af5e33f8fcb6b925135740",
+    "function_sha256": "d3b2f429fbaf3735e00e4cc0f78d204d224fdf9a8e70f019a6c6860e3be32056",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_product.rs",
@@ -2803,7 +2803,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "7cc3908dfe2e3d5b0c3eed1bf9582623fed46c90942c913919ddc7c7c074160a",
+    "function_sha256": "70519a78a35802c223361b1833d5b725a11ea9cd61e34be2225498edf2b7e79b",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_product.rs",

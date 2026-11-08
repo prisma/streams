@@ -184,7 +184,7 @@ async fn a_sent_message_is_claimed_decrypted_and_acked() {
         (&json!(1), &json!(1), &json!(0), &json!(0))
     );
     let (engine, hash) = queue_engine(&state, "jobs").await;
-    let page = crate::crypto_page::queue_page_key(&hash, 0);
+    let page = crate::native_queue::keys::page(&hash, 0);
     assert!(
         engine.db.get(page).await.unwrap().is_none(),
         "the acked page is deleted"
@@ -574,7 +574,7 @@ async fn a_deleted_queue_is_fenced_then_gone_without_rows() {
     assert!(gone, "the cleanup finishes");
     assert_eq!(queue_rows(&engine, &hash).await, 0, "no queue row remains");
     for offset in 0..3 {
-        let page = crate::crypto_page::queue_page_key(&hash, offset);
+        let page = crate::native_queue::keys::page(&hash, offset);
         assert!(
             engine.db.get(page).await.unwrap().is_none(),
             "page {offset}"

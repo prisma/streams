@@ -110,16 +110,6 @@ fn a_compressed_page_is_pinned_and_decodes() {
     );
 }
 
-#[test]
-fn row_keys_are_pinned() {
-    let last = 0x0102_0304_0506_0708;
-    // Layout 6 keeps per-page rows only for native queues.
-    assert_eq!(
-        hex(&crate::crypto_page::queue_page_key(&[0xaa; 16], last)),
-        "5100000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa700102030405060708"
-    );
-}
-
 /// The stamped vector's lane: a stream key, epoch, UTF-8 routing key and
 /// key version run through `derive_subkey` to the page key.
 const STAMPED_KEY: [u8; 32] = [0x42; 32];

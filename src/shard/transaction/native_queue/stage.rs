@@ -25,7 +25,7 @@ impl NativeStage {
         let (Some(&fam), Some(at)) = (key.get(keys::FAMILY_AT), key_time(key)) else {
             return;
         };
-        if !key.starts_with(&crate::keyspace::QUEUE) {
+        if key.get(16) != Some(&crate::keyspace::QUEUE_TAG) {
             return;
         }
         if let Some(floor) = self.state.floors.of(fam) {

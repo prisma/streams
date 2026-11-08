@@ -21,9 +21,9 @@ const HOUR: i64 = crate::native_queue::HOUR_MS;
 /// How long a test waits on a collector step that should finish quickly.
 const STEP_WITHIN: Duration = Duration::from_secs(30);
 
-/// A raw queue-family key (layout 7: one tree).
+/// A raw queue-family key (a queue's hash, then the family byte).
 fn qk(name: &[u8]) -> Vec<u8> {
-    [&crate::keyspace::QUEUE[..], name].concat()
+    [&crate::keyspace::queue_row(&[7; 16], 0)[..], name].concat()
 }
 
 /// A raw stream-family key (a stream's hash, then the family byte).
@@ -141,8 +141,8 @@ async fn native_queue_collection_captures_every_roster_queue_with_debt_and_only_
     // Three roster rows the sweeper never finds due; the third queue has no
     // state row.
     for tag in [1u8, 2, 3] {
-        let key = keys::roster(&[tag; 16]);
-        r.db.put(key, i64::MAX.to_be_bytes()).await.unwrap();
+        let key = keys::roster(i64::MAX, &[tag; 16]);
+        r.db.put(key, []).await.unwrap();
     }
     let got = r.engine.capture_debt().await.unwrap();
     let got: Vec<_> = got
@@ -379,7 +379,7 @@ async fn indebted(r: &Rig, hash: [u8; 16], debt: u64) -> StateRow {
     r.db.put(keys::state(&hash), s.encode()).await.unwrap();
     let change = NqOp::Pause { paused: false };
     r.engine.submit_native_queue(hash, change).await.unwrap();
-    let roster = r.db.get(keys::roster(&hash)).await.unwrap();
+    let roster = keys::rostered(&r.db, &hash).await;
     assert!(roster.is_some(), "debt puts the queue on the roster");
     stored(r, hash).await
 }
@@ -427,7 +427,7 @@ async fn native_queue_collection_of_due_debt_compacts_the_log_and_clears_the_deb
         (0, 0),
         "the debt is cleared"
     );
-    let roster = r.db.get(keys::roster(&hash)).await.unwrap();
+    let roster = keys::rostered(&r.db, &hash).await;
     assert!(roster.is_none(), "nothing pending: off the roster");
     let m = manifest(&r).await;
     assert!(log_l0(&m).is_empty(), "the flushed L0 SST was compacted");

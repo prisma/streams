@@ -188,7 +188,7 @@ impl CommitTransaction<'_> {
         let (offset, meta) = message;
         let (undone, t) = undone;
         self.batch
-            .delete(crate::crypto_page::queue_page_key(hash, offset));
+            .delete(crate::native_queue::keys::page(hash, offset));
         self.nq_delete(st, keys::by_offset(hash, keys::META, offset));
         self.nq_delete(
             st,

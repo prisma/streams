@@ -73,10 +73,7 @@ async fn set_clock(db: &Db, at: i64) {
 
 /// The queue's roster deadline, if it is on the roster.
 async fn roster(db: &Db) -> Option<i64> {
-    db.get(keys::roster(&HASH))
-        .await
-        .unwrap()
-        .map(|v| i64::from_be_bytes(v[..8].try_into().unwrap()))
+    keys::rostered(db, &HASH).await
 }
 
 /// A sweep's next deadline and wake-up.
@@ -180,7 +177,7 @@ async fn a_sent_message_is_claimed_acked_and_its_rows_and_page_are_deleted() {
     assert!(r.iter().all(|r| r.outcome == SettleOutcome::Ok));
     // The acked message's page and rows are gone; the others stay.
     assert!(
-        db.get(crate::crypto_page::queue_page_key(&HASH, 0))
+        db.get(crate::native_queue::keys::page(&HASH, 0))
             .await
             .unwrap()
             .is_none()
@@ -192,7 +189,7 @@ async fn a_sent_message_is_claimed_acked_and_its_rows_and_page_are_deleted() {
             .is_none()
     );
     assert!(
-        db.get(crate::crypto_page::queue_page_key(&HASH, 2))
+        db.get(crate::native_queue::keys::page(&HASH, 2))
             .await
             .unwrap()
             .is_some()
@@ -443,13 +440,13 @@ async fn a_deleted_queue_leaves_no_row_and_no_page() {
     }
     for off in 0..20u64 {
         assert!(
-            db.get(crate::crypto_page::queue_page_key(&HASH, off))
+            db.get(crate::native_queue::keys::page(&HASH, off))
                 .await
                 .unwrap()
                 .is_none()
         );
     }
-    assert!(db.get(keys::roster(&HASH)).await.unwrap().is_none());
+    assert!(keys::rostered(&db, &HASH).await.is_none());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
@@ -472,7 +469,7 @@ async fn the_roster_driven_sweeper_moves_an_expired_lease_without_any_request() 
         other => panic!("{other:?}"),
     }
     assert!(
-        db.get(keys::roster(&HASH)).await.unwrap().is_some(),
+        keys::rostered(&db, &HASH).await.is_some(),
         "a queue with work is on the roster"
     );
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -796,12 +793,9 @@ async fn a_sweep_with_nothing_due_parks_the_roster_at_the_next_deadline() {
     create(&e, QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
     op(&e, NqOp::Sweep).await.unwrap();
-    let raw = db
-        .get(keys::roster(&HASH))
+    let at = keys::rostered(&db, &HASH)
         .await
-        .unwrap()
         .expect("a queue with a message is on the roster");
-    let at = i64::from_be_bytes(raw[..8].try_into().unwrap());
     // The only deadline is the untaken message's retention end (4 days):
     // the sweeper must not look at this queue again every second.
     assert!(

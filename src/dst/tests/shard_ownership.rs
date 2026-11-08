@@ -61,12 +61,7 @@ async fn foreign_rows(engine: &crate::shard::ShardEngine) -> (usize, Vec<String>
     let mut rows = engine.db.scan(..).await.unwrap();
     let (mut entity_rows, mut foreign) = (0, Vec::new());
     while let Some(row) = rows.next().await.unwrap() {
-        // A queue row leads with the queue prefix, then the queue's hash.
-        let lead = row
-            .key
-            .strip_prefix(&crate::keyspace::QUEUE)
-            .unwrap_or(&row.key);
-        let Some(hash) = lead.first_chunk::<16>() else {
+        let Some(hash) = row.key.first_chunk::<16>() else {
             continue;
         };
         if *hash == crate::keyspace::SENTINEL {

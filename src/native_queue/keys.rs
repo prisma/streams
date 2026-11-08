@@ -1,11 +1,9 @@
-//! Queue row keys (docs/QUEUES-DESIGN.md §5; layout 6A): every row of a
-//! queue lives in the queue segment, under `'Q' ‖ gen ‖ hash ‖ family`,
-//! big-endian so key order is numeric order. The message pages keep the
-//! stream page layout under the same segment
-//! (`crypto_page::queue_page_key`), one message per page, and the queue
-//! stream's tail is `shard::queue_tail_key`.
-
-use crate::keyspace::{QUEUE, QUEUE_PREFIX_LEN};
+//! Queue row keys (docs/QUEUES-DESIGN.md §5; layout 8, S3a-DESIGN §2.3):
+//! every row of a queue is `hash ‖ 'Q' ‖ family ‖ suffix`, big-endian so key
+//! order is numeric order, and a queue's rows are one range beside its
+//! hash's other rows. The message pages are the `'p'` family (`page`), one
+//! message per page, and the queue stream's tail is `shard::queue_tail_key`.
+//! The shard-wide roster is under the sentinel (`roster`).
 
 /// The queue's state row: configuration, clock, cursor, counters, debt.
 pub(crate) const STATE: u8 = b's';
@@ -27,25 +25,23 @@ pub(crate) const FAIL_EXPIRY: u8 = b'e';
 pub(crate) const DEDUP: u8 = b'u';
 /// Dedup expiry index: (expiresAt, tag).
 pub(crate) const DEDUP_EXPIRY: u8 = b'v';
+/// A message page: the page layout, keyed by its last offset.
+pub(crate) const PAGE: u8 = b'p';
 
-/// Where a queue row's family byte sits: after the segment prefix and the
-/// queue's hash.
-pub(crate) const FAMILY_AT: usize = QUEUE_PREFIX_LEN + 16;
+/// Where a queue row's family byte sits: after the queue's hash and the
+/// `'Q'` family byte.
+pub(crate) const FAMILY_AT: usize = 17;
 
-/// The shard-wide queue roster: one row per queue with pending work,
-/// keyed under an all-0xFF sentinel hash in the queue segment so a new
-/// owner finds it by one prefix scan (§6.8). Value: the next deadline,
-/// i64 big-endian. Its tag `R` is no queue row family.
-pub(crate) const ROSTER_PREFIX: [u8; FAMILY_AT + 1] = {
-    let mut k = [0xFFu8; FAMILY_AT + 1];
-    let mut i = 0;
-    while i < QUEUE_PREFIX_LEN {
-        k[i] = QUEUE[i];
-        i += 1;
-    }
-    k[FAMILY_AT] = b'R';
+/// The shard-wide queue roster (§6.8): one row per queue with pending work,
+/// `SENTINEL ‖ 'Q' ‖ deadline i64 BE ‖ hash`, empty, so one prefix scan reads
+/// the queues in the order they fall due. A new owner finds them by it; the
+/// state row records the deadline (`roster_at`), so a move of the row needs
+/// no read of it.
+pub(crate) fn roster_prefix() -> Vec<u8> {
+    let mut k = crate::keyspace::SENTINEL.to_vec();
+    k.push(crate::keyspace::tag::ROSTER);
     k
-};
+}
 
 pub(crate) fn family(hash: &[u8; 16], family: u8) -> Vec<u8> {
     let mut k = crate::keyspace::queue_row(hash, 17);
@@ -85,10 +81,50 @@ pub(crate) fn dedup_expiry(hash: &[u8; 16], at: i64, tag: &[u8; 16]) -> Vec<u8> 
     k
 }
 
-pub(crate) fn roster(hash: &[u8; 16]) -> Vec<u8> {
-    let mut k = ROSTER_PREFIX.to_vec();
+/// The roster row of the queue `hash` due at `at` (a negative time sorts
+/// as zero).
+pub(crate) fn roster(at: i64, hash: &[u8; 16]) -> Vec<u8> {
+    let mut k = roster_prefix();
+    k.extend_from_slice(&u64::try_from(at).unwrap_or(0).to_be_bytes());
     k.extend_from_slice(hash);
     k
+}
+
+/// The (deadline, queue) a roster row's key names.
+pub(crate) fn decode_roster(key: &[u8]) -> Option<(i64, [u8; 16])> {
+    let rest = key.strip_prefix(&roster_prefix()[..])?;
+    let (at, hash) = rest.split_first_chunk::<8>()?;
+    Some((
+        i64::try_from(u64::from_be_bytes(*at)).ok()?,
+        hash.try_into().ok()?,
+    ))
+}
+
+/// Tests: the deadline of the queue `hash`'s roster row, if it has one (a
+/// test knows its hash, not its deadline).
+#[cfg(test)]
+pub(crate) async fn rostered(db: &slatedb::Db, hash: &[u8; 16]) -> Option<i64> {
+    roster_rows(db).await.get(hash).copied()
+}
+
+/// Tests: every roster row, by queue: its deadline.
+#[cfg(test)]
+pub(crate) async fn roster_rows(db: &slatedb::Db) -> std::collections::BTreeMap<[u8; 16], i64> {
+    let mut out = std::collections::BTreeMap::new();
+    let Ok(mut rows) = db.scan_prefix(roster_prefix(), ..).await else {
+        return out;
+    };
+    while let Ok(Some(row)) = rows.next().await {
+        if let Some((at, hash)) = decode_roster(&row.key) {
+            out.insert(hash, at);
+        }
+    }
+    out
+}
+
+/// The message page of the queue `hash` whose last offset is `last`.
+pub(crate) fn page(hash: &[u8; 16], last: u64) -> Vec<u8> {
+    by_offset(hash, PAGE, last)
 }
 
 /// (time, offset) of a time-ordered index key under `prefix`.
