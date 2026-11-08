@@ -618,23 +618,16 @@ Corrections applied after finalization publish as their own immutable
 objects under `<YYYY-MM>.corrections/<correction-id>.json`, next to the
 monthly artifact; the monthly object itself is never rewritten.
 
-### Tenancy decision (round-22 item 1, FORMAL)
+### Tenancy
 
-**One project per cell is the deployment contract.** A cell (one
-Compute service + its bucket set) serves exactly one `ACCOUNT_ID` /
-`PROJECT_ID` pair, injected as environment at deploy time; the
-platform provisioner owns that mapping. Under this contract the
-deployment-global identity is correct by construction: billing
-identity comes ONLY from cell configuration plus the per-stream
-identity persisted at creation — never from stream names, client
-headers, or any request-derived value. `BILLING_MODE=required`
-refuses to boot on placeholder identities, and
-`GET /v1/projects/{project}/usage` answers only for the cell's own
-project. **Precondition for ever sharing a cell across projects:**
-per-request authenticated principals persisted at stream creation and
-carried through the meter, ledger, and rollup keyspace (already
-account/project-scoped). Until that authentication layer exists,
-shared cells are out of contract.
+A cell serves many containers (a shared cell) or one (a dedicated cell).
+Billing identity comes ONLY from the container persisted in the stream's
+descriptor at creation, from the authenticated principal, never from
+stream names, client headers, or any other request-derived value, and
+usage records no workspace or account (edge #253): Console maps a
+container to its project and workspace. The deployment's own
+`PROJECT_ID` is reserved and never placed. `BILLING_MODE=required`
+refuses to boot on the placeholder `PROJECT_ID` and `CELL_ID`.
 
 It is the invoice/audit artifact. The live dashboard reads the rollup DB; historical finalized months may be served from the immutable object or cache.
 

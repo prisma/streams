@@ -17,7 +17,7 @@ import { allow, disallow, gate, quota, resume, suspend } from "./owner";
 import { reprofile } from "./reprofile";
 
 const USAGE = `usage: cell-admin <command> --state DIR|s3://BUCKET/cells/CELL [--s3-credentials FILE] [flags]
-  init      --cell-id C --deployment-project P --account A (--key-file K | --public-key FILE)
+  init      --cell-id C --deployment-project P (--key-file K | --public-key FILE)
             [--profile F]... [--issuer URL] [--workspace-cap N] [--max-projects N] [--denylist FILE]
             [--cell-env FILE]
   admit     --project P --workspace W [--quota field=value]... [--weight request=N|bytes=N]... [--class m|l]
@@ -46,11 +46,11 @@ const COMMANDS = {
     run: init,
     spec: {
       single: [
-        "state", "s3-credentials", "cell-id", "deployment-project", "account", "key-file", "public-key", "issuer",
+        "state", "s3-credentials", "cell-id", "deployment-project", "key-file", "public-key", "issuer",
         "workspace-cap", "max-projects", "denylist", "cell-env",
       ],
       multi: ["profile"],
-      required: ["state", "cell-id", "deployment-project", "account"],
+      required: ["state", "cell-id", "deployment-project"],
     },
   },
   admit: {

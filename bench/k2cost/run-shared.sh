@@ -85,7 +85,6 @@ cd "$ROOT"
 RIG_STAGE=scratch
 CELL_ID=cell_rig
 DEPLOY_PROJECT=proj_rig_deploy
-ACCOUNT=acct_rig_sink
 S3_PORT=9591
 CELL_PORT=9592
 S3LITE_LATENCY_MS=20
@@ -304,7 +303,6 @@ cat > "$CONTEXT/$CELL_ENV" <<EOF
 CELL_STAGE=$RIG_STAGE
 CELL_ID=$CELL_ID
 PROJECT_ID=$DEPLOY_PROJECT
-ACCOUNT_ID=$ACCOUNT
 STREAMS_AUTH_ISSUER=https://auth.prisma.io
 PATH_PREFIX=rig
 REGION=local
@@ -366,7 +364,7 @@ openssl genpkey -algorithm ed25519 -out "$SECRETS/cell.pem" 2>/dev/null
 chmod 600 "$SECRETS/cell.pem"
 log "admitting $(basename "$MANIFEST")'s projects into $CELL_ID"
 "${ADMIT[@]}" admit --manifest "$MANIFEST" --state "$SECRETS/cell" --key-file "$SECRETS/cell.pem" \
-  --cell-id "$CELL_ID" --deployment-project "$DEPLOY_PROJECT" --account "$ACCOUNT" \
+  --cell-id "$CELL_ID" --deployment-project "$DEPLOY_PROJECT" \
   --profile "$CONTEXT/deploy/profiles/compute-1g.env,$CONTEXT/deploy/profiles/shared-cell.env" | tail -1
 "${ADMIT[@]}" tokens --manifest "$MANIFEST" --state "$SECRETS/cell" --key-file "$SECRETS/cell.pem" \
   --out "$SECRETS/tokens.json" --every 28800 > "$RUN/tokens.log" 2>&1 < /dev/null &

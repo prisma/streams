@@ -630,7 +630,6 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
         "MAX_RECORD_PAYLOAD_BYTES",
         "131072",
     ),
-    ("account-id", "ACCOUNT_ID", "acct_local"),
     ("project-id", "PROJECT_ID", "proj_local"),
     ("cell-id", "CELL_ID", "local"),
     ("telemetry-region", "REGION", ""),

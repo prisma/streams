@@ -77,7 +77,7 @@ export async function issuerCell(initArgs: string[] = []): Promise<IssuerCell> {
   const pepper = pepperFile(root).path;
   const state = freshState(root, CELL);
   const r = await run(
-    "init", "--state", state, "--cell-id", CELL, "--deployment-project", "proj_deploy", "--account", "acct_sink",
+    "init", "--state", state, "--cell-id", CELL, "--deployment-project", "proj_deploy",
     "--key-file", key, ...initArgs,
   );
   if (r.code !== 0) throw new Error(`init failed: ${r.err}`);

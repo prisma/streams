@@ -64,7 +64,7 @@ async function cmd(...argv: string[]): Promise<{ code: number; out: string[] }> 
 
 test("admit places every project with its workspace and quota set through cell-admin, once", async () => {
   const w = world();
-  const ids = ["--cell-id", "cell_t", "--deployment-project", "proj_dep", "--account", "acct_sink"];
+  const ids = ["--cell-id", "cell_t", "--deployment-project", "proj_dep"];
   const first = await cmd("admit", "--manifest", w.file, "--state", w.state, "--key-file", w.key, ...ids);
   expect([first.code, first.out.at(-1)]).toEqual([0, "admit: 6 admitted, 0 already held, 0 failed of 6"]);
   const st = readState(w.state);
@@ -79,7 +79,7 @@ test("admit places every project with its workspace and quota set through cell-a
   const again = await cmd("admit", "--manifest", w.file, "--state", w.state, "--key-file", w.key);
   expect([again.code, again.out.at(-1)]).toEqual([0, "admit: 0 admitted, 6 already held, 0 failed of 6"]);
   await expect(cmd("admit", "--manifest", w.file, "--state", join(w.root, "other"), "--key-file", w.key))
-    .rejects.toThrow("holds no cell: give --cell-id, --deployment-project and --account to init it");
+    .rejects.toThrow("holds no cell: give --cell-id and --deployment-project to init it");
 }, 30_000);
 
 test("admit inits a dedicated cell (k = 1) for one project when given --max-projects 1, and only then", async () => {
@@ -88,7 +88,7 @@ test("admit inits a dedicated cell (k = 1) for one project when given --max-proj
   const file = join(w.root, "one.json");
   writeFileSync(file, JSON.stringify(one));
   const profiles = ["deploy/profiles/compute-1g.env", "deploy/profiles/dedicated-cell.env"].join(",");
-  const ids = ["--cell-id", "cell_d", "--deployment-project", "proj_dep", "--account", "acct_sink", "--profile", profiles];
+  const ids = ["--cell-id", "cell_d", "--deployment-project", "proj_dep", "--profile", profiles];
   await expect(cmd("admit", "--manifest", file, "--state", join(w.root, "refused"), "--key-file", w.key, ...ids))
     .rejects.toThrow("cell-admin init failed");
   const ok = await cmd("admit", "--manifest", file, "--state", w.state, "--key-file", w.key, ...ids, "--max-projects", "1");
@@ -99,7 +99,7 @@ test("admit inits a dedicated cell (k = 1) for one project when given --max-proj
 test("tokens writes one verifiable 12 h token per project, re-mints them on its period and uploads each map", async () => {
   const w = world();
   await cmd("admit", "--manifest", w.file, "--state", w.state, "--key-file", w.key,
-    "--cell-id", "cell_t", "--deployment-project", "proj_dep", "--account", "acct_sink");
+    "--cell-id", "cell_t", "--deployment-project", "proj_dep");
   const map = join(w.root, "tokens.json");
   const r = await cmd("tokens", "--manifest", w.file, "--state", w.state, "--key-file", w.key, "--out", map);
   expect(r.code).toBe(0);
@@ -146,7 +146,7 @@ test("feeds writes the bundle's three feeds as a native cell reads them, and ref
   // deploy/app-server's poller would have written them from the bundle.
   const w = world();
   await cmd("admit", "--manifest", w.file, "--state", w.state, "--key-file", w.key,
-    "--cell-id", "cell_t", "--deployment-project", "proj_dep", "--account", "acct_sink");
+    "--cell-id", "cell_t", "--deployment-project", "proj_dep");
   const feeds = join(w.root, "feeds");
   const r = await cmd("feeds", "--state", w.state, "--out", feeds);
   const bundle = readBundle(w.state);
@@ -164,7 +164,7 @@ test("feeds writes the bundle's three feeds as a native cell reads them, and ref
   const torn = join(w.root, "torn");
   const bad = join(w.root, "bad-state");
   await cmd("admit", "--manifest", w.file, "--state", bad, "--key-file", w.key,
-    "--cell-id", "cell_u", "--deployment-project", "proj_dep", "--account", "acct_sink");
+    "--cell-id", "cell_u", "--deployment-project", "proj_dep");
   const doc = JSON.parse(readFileSync(join(bad, "feeds-bundle.json"), "utf8"));
   delete doc.grants;
   writeFileSync(join(bad, "feeds-bundle.json"), JSON.stringify(doc));
@@ -174,7 +174,7 @@ test("feeds writes the bundle's three feeds as a native cell reads them, and ref
 
 test("admit publishes a whole manifest as one generation, and a rerun that admits nothing publishes none", async () => {
   const w = world();
-  const ids = ["--cell-id", "cell_t", "--deployment-project", "proj_dep", "--account", "acct_sink"];
+  const ids = ["--cell-id", "cell_t", "--deployment-project", "proj_dep"];
   await cmd("admit", "--manifest", w.file, "--state", w.state, "--key-file", w.key, ...ids);
   const plan = expand(manifest, "");
   const st = readState(w.state);
@@ -197,7 +197,7 @@ test("admit's cost per project does not grow with the cell: 3,000 projects withi
   writeFileSync(file, JSON.stringify(big));
   const started = Date.now();
   const r = await cmd("admit", "--manifest", file, "--state", w.state, "--key-file", w.key,
-    "--cell-id", "cell_t", "--deployment-project", "proj_dep", "--account", "acct_sink");
+    "--cell-id", "cell_t", "--deployment-project", "proj_dep");
   expect([r.code, r.out.at(-1)]).toEqual([0, "admit: 3000 admitted, 0 already held, 0 failed of 3000"]);
   expect(Date.now() - started).toBeLessThan(30_000);
   expect(readBundle(w.state).policies.projects.length).toBe(3001);
@@ -205,7 +205,7 @@ test("admit's cost per project does not grow with the cell: 3,000 projects withi
 
 test("a rerun with nothing to admit takes a cell made on another profile, as a cached rig cell is; one with something to admit is refused", async () => {
   const w = world();
-  const ids = ["--cell-id", "cell_t", "--deployment-project", "proj_dep", "--account", "acct_sink"];
+  const ids = ["--cell-id", "cell_t", "--deployment-project", "proj_dep"];
   await cmd("admit", "--manifest", w.file, "--state", w.state, "--key-file", w.key, ...ids);
   const moved = readState(w.state);
   moved.cell.profile_digest = "0".repeat(64);
@@ -232,7 +232,7 @@ test("admit reports a project cell-admin refuses and places the others", async (
   const file = join(w.root, "bad.json");
   writeFileSync(file, JSON.stringify(bad));
   const r = await cmd("admit", "--manifest", file, "--state", w.state, "--key-file", w.key,
-    "--cell-id", "cell_t", "--deployment-project", "proj_dep", "--account", "acct_sink");
+    "--cell-id", "cell_t", "--deployment-project", "proj_dep");
   expect([r.code, r.out.at(-1)]).toEqual([1, "admit: 2 admitted, 0 already held, 1 failed of 3"]);
   expect(r.out.join("\n")).toContain("requests_per_sec=1000000000 exceeds the cell's ceiling");
   const st = readState(w.state);

@@ -115,7 +115,7 @@ if [ "$STEP" = servers ]; then
       --env FLEET_INTERNAL_TOKEN="$FLEET_TOKEN" \
       --env FLEET_PEER_DOMAINS=prisma.build \
       --env USAGE_STREAM_KEY="$USAGE_KEY" --env BILLING_MODE=required \
-      --env ACCOUNT_ID=acct_fleet_soak --env PROJECT_ID=proj_fleet_soak --env CELL_ID="fra-fleet-$i" \
+      --env PROJECT_ID=proj_fleet_soak --env CELL_ID="fra-fleet-$i" \
       $([ "$i" = 1 ] && echo "--env ROLLUP=1") \
       --env PATH_PREFIX="${FLEET_DATA_PREFIX:-fleetd2}" --env INSTANCE_NAME="streams-$i" \
       ${SELFARG[@]+"${SELFARG[@]}"} \

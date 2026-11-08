@@ -26,8 +26,6 @@ export interface CellConfig {
   cell_id: string;
   /// The deployment's PROJECT_ID: reserved, never placed.
   deployment_project_id: string;
-  /// The deployment's ACCOUNT_ID: the unowned-event sink, never a workspace.
-  account_id: string;
   issuer: string;
   share_k: number;
   ceilings: Ceilings;

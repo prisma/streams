@@ -160,7 +160,6 @@ function cellLines(stage: string, s3: string, extra: string[] = []): string[] {
     `CELL_STAGE=${stage}`,
     "CELL_ID=cell_e2e",
     "PROJECT_ID=proj_deploy",
-    "ACCOUNT_ID=acct_sink",
     "STREAMS_AUTH_ISSUER=https://auth.prisma.io",
     "PATH_PREFIX=e2e",
     "REGION=local",
@@ -357,7 +356,7 @@ describe("a good boot", () => {
     const creds = join(admin, "s3.json");
     writeFileSync(creds, JSON.stringify({ ...target("ctl"), feeds: target("feeds") }), { mode: 0o600 });
     const init = await run("init", "--state", "s3://ctl/cells/cell_e2e", "--s3-credentials", creds, "--cell-id", "cell_e2e",
-      "--deployment-project", "proj_deploy", "--account", "acct_sink", "--key-file", keyFile(admin));
+      "--deployment-project", "proj_deploy", "--key-file", keyFile(admin));
     expect([init.code, init.err]).toEqual([0, ""]);
 
     const binary = readFileSync(SERVER);

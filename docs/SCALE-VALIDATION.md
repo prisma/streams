@@ -103,7 +103,7 @@ each from a file (AGENTS.md §1; `bench/k2cost/field/README.md`, "Rules").
 | Memory profile | every line of `deploy/profiles/compute-1g.env`, verbatim | the 1 GiB survival posture; deploy scripts pass each line as `--env` |
 | Topology | `PATH_PREFIX`, `INITIAL_SHARDS`, `INSTANCE_NAME=streams-<i>`; fleet only: `FLEET_PREFIX`, `FLEET_MAX`, `FLEET_MIN`, `FLEET_PEER_DOMAINS=prisma.build` | §1.3 |
 | Debug access | `AUTH_TOKEN` (the deployment bearer; it gates every `/v1/debug` route) | `bench/k2cost/README.md`, "Auth and debug access" |
-| Billing | `BILLING_MODE=required`, `USAGE_STREAM_KEY`, `ACCOUNT_ID`, `PROJECT_ID`, `CELL_ID`; `ROLLUP=1` on `streams-1` only | `bench/k2cost/field/README.md`, "The server environment" |
+| Billing | `BILLING_MODE=required`, `USAGE_STREAM_KEY`, `PROJECT_ID`, `CELL_ID`; `ROLLUP=1` on `streams-1` only | `bench/k2cost/field/README.md`, "The server environment" |
 | Auth | whatever the fleet already runs (`STREAMS_AUTH_MODE=enforce` with feeds; fleet auth static or workload) | unchanged by this guide |
 
 For the cell shape (§2.2, test ST-1) add every line of

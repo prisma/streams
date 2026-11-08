@@ -31,7 +31,7 @@ test("a single-file bundle of cell-admin initialises a cell away from the reposi
   const run = Bun.spawnSync(
     [
       process.execPath, join(dir, "cell-admin.js"), "init", "--state", state, "--cell-id", "cell_b1",
-      "--deployment-project", "proj_deploy", "--account", "acct_sink", "--key-file", keyFile(dir, "ed25519"),
+      "--deployment-project", "proj_deploy", "--key-file", keyFile(dir, "ed25519"),
       ...profiles.flatMap((p) => ["--profile", p]),
     ],
     { cwd: dir },

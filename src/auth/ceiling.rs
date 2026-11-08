@@ -19,10 +19,9 @@
 //! The setting's own default, 0, leaves such a project without a limit.
 //!
 //! No customer project may take an identity the cell reserves: the system
-//! project, the deployment's `PROJECT_ID` (the raw surface's tenant, open
-//! to fleet credentials) and, on a cell shared more than one way, its
-//! `ACCOUNT_ID` (the account every unowned meter event bills to; on a
-//! dedicated cell it may be the customer's own workspace). A policy naming
+//! project and the deployment's `PROJECT_ID` (the raw surface's tenant,
+//! open to fleet credentials). No workspace is reserved: usage records
+//! none, and the deployment has no account (edge #253). A policy naming
 //! one is dropped before publication, so the cell answers its tokens as
 //! for a project it does not serve, and the number the published snapshot
 //! dropped is reported (`/v1/debug/auth`, `policies.reservedDropped`).
@@ -77,7 +76,6 @@ pub(crate) struct CellCeiling {
     /// The `max_stored_bytes` a 0 or absent feed value takes (0: none).
     stored_default: u64,
     deployment_project: Option<ProjectId>,
-    deployment_account: Option<Box<str>>,
     /// Policies the last published snapshot dropped as reserved.
     reserved_dropped: AtomicU64,
 }
@@ -97,7 +95,6 @@ impl CellCeiling {
             bounds,
             stored_default: 0,
             deployment_project: None,
-            deployment_account: None,
             reserved_dropped: AtomicU64::new(0),
         }
     }
@@ -134,12 +131,10 @@ impl CellCeiling {
         self
     }
 
-    /// The same cell, also reserving its deployment's `PROJECT_ID` and,
-    /// when it is shared more than one way, its `ACCOUNT_ID`.
+    /// The same cell, also reserving its deployment's `PROJECT_ID`.
     pub(crate) fn reserving(mut self, deployment: &DeploymentIdentity) -> Self {
         // mt-lint: allow(state-tenant-read): read only to refuse it — a policy naming the deployment tenant is dropped (#101); no request adopts this identity
         self.deployment_project = Some(deployment.deployment_tenant().clone());
-        self.deployment_account = (self.share_k > 1).then(|| deployment.account_id().into());
         self
     }
 
@@ -209,7 +204,6 @@ impl CellCeiling {
     fn reserves(&self, policy: &ProjectPolicy) -> bool {
         policy.project_id.is_system()
             || self.deployment_project.as_ref() == Some(&policy.project_id)
-            || self.deployment_account.as_deref() == Some(policy.workspace_id.as_str())
     }
 
     /// The snapshot this cell publishes, and how many policies it dropped:
@@ -474,17 +468,16 @@ mod tests {
     fn deployment() -> DeploymentIdentity {
         DeploymentIdentity::new(
             ProjectId::new("proj-deploy").unwrap(),
-            "acct-deploy".to_string(),
             CellId::new("cell").unwrap(),
             "test".to_string(),
         )
     }
 
-    /// L2: every cell drops a policy naming the system project; a cell
-    /// that knows its deployment also drops one naming its `PROJECT_ID`,
-    /// and, shared more than one way, every project in its `ACCOUNT_ID`
-    /// workspace (a dedicated cell's `ACCOUNT_ID` may be its customer's).
-    /// Each drop is counted; the rest publish at their effective quotas.
+    /// L2: every cell drops a policy naming the system project, and a cell
+    /// that knows its deployment also drops one naming its `PROJECT_ID`. No
+    /// workspace is reserved (edge #253 part 2: the deployment has no
+    /// account). Each drop is counted; the rest publish at their effective
+    /// quotas.
     #[test]
     fn reserved_identities_are_dropped_and_counted() {
         let deployment = deployment();
@@ -507,9 +500,13 @@ mod tests {
         assert_eq!(dedicated, want, "dedicated: the system project only");
         let own_cell = CellCeiling::shared(1, BOUNDS).reserving(&deployment);
         let want = (vec!["proj-a".into(), "proj-b".into()], 2);
-        assert_eq!(served(&own_cell, &snapshot), want, "k = 1: not the account");
+        assert_eq!(served(&own_cell, &snapshot), want, "k = 1");
         let shared = CellCeiling::shared(8, BOUNDS).reserving(&deployment);
-        assert_eq!(served(&shared, &snapshot), (vec!["proj-b".into()], 3));
+        assert_eq!(
+            served(&shared, &snapshot),
+            want,
+            "k = 8: no workspace reserved"
+        );
         let (published, _) = shared.apply(snapshot);
         let quotas = &published.projects[&ProjectId::new("proj-b").unwrap()].quotas;
         assert_eq!(quotas.max_inflight_requests, 64, "the rest at the share");
@@ -546,7 +543,7 @@ mod tests {
             fetched_at_unix: 0,
             feed_version: 1,
         });
-        assert_eq!(dropped, 2, "PROJECT_ID and ACCOUNT_ID reserved");
+        assert_eq!(dropped, 1, "PROJECT_ID reserved, no workspace");
         let plain = ServerConfig::load(
             crate::config::CliArgs::deterministic(),
             &MapEnvironment::empty(),

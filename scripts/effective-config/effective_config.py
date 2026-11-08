@@ -75,7 +75,8 @@ COMPUTE_SCRIPTS = ['bench/fleet/deploy-fleet.sh', 'bench/soak/deploy-region.sh',
 # (edge change #208). 127 -> 128: STORE_HTTP2 (storage.http2_only).
 # 128 -> 129: REGISTRY_RETAIN_MB (cli.registry_retain_mb, tuning P1 item 1).
 # 129 -> 130: PROJECT_TRACKER_MAX (cli.project_tracker_max, tuning P2 item 3b).
-PIN_OLD_LEAVES, PIN_NEW_LEAVES = 156, 130
+# 130 -> 129: ACCOUNT_ID (cli.account_id) left with the account (edge #253 part 2).
+PIN_OLD_LEAVES, PIN_NEW_LEAVES = 156, 129
 PIN_ARGS_LINES = 522
 PIN_RC4_NAMES, PIN_ENV_KNOBS, PIN_HELPERS = 72, 70, 6
 

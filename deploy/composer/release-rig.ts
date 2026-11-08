@@ -90,7 +90,6 @@ export function cellsText(stage: string, cellId = "cell_sc1", region = "eu-centr
     `CELL_STAGE=${stage}`,
     `CELL_ID=${cellId}`,
     "PROJECT_ID=proj_deploy",
-    "ACCOUNT_ID=acct_sink",
     "STREAMS_AUTH_ISSUER=https://auth.prisma.io",
     `PATH_PREFIX=cells/${cellId}`,
     `REGION=${region}`,

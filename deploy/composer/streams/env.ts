@@ -43,7 +43,6 @@ export const CHILD_NAMES: Readonly<Record<string, Source>> = {
   CELL_STAGE: cell,
   CELL_ID: cell,
   PROJECT_ID: cell,
-  ACCOUNT_ID: cell,
   STREAMS_AUTH_ISSUER: cell,
   PATH_PREFIX: cell,
   REGION: cell,

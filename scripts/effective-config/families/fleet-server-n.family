@@ -63,7 +63,6 @@ env FLEET_PEER_DOMAINS=prisma.build
 # minted by the script: head -c 32 /dev/urandom | base64 (a 32-byte key)
 env USAGE_STREAM_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
 env BILLING_MODE=required
-env ACCOUNT_ID=acct_fleet_soak
 env PROJECT_ID=proj_fleet_soak
 env CELL_ID=fra-fleet-2
 env PATH_PREFIX=fleetd2

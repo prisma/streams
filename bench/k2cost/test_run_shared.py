@@ -198,7 +198,7 @@ class Rig(unittest.TestCase):
         with open(os.path.join(ctx, "deploy", "cells", "scratch.env")) as f:
             env = f.read()
         self.assertRegex(env, re.compile(
-            r"\ACELL_STAGE=scratch\nCELL_ID=cell_rig\nPROJECT_ID=proj_rig_deploy\nACCOUNT_ID=acct_rig_sink\n"
+            r"\ACELL_STAGE=scratch\nCELL_ID=cell_rig\nPROJECT_ID=proj_rig_deploy\n"
             r"STREAMS_AUTH_ISSUER=https://auth.prisma.io\nPATH_PREFIX=rig\nREGION=local\n"
             r"SLATE_S3_ENDPOINT=http://host.docker.internal:9591\nSLATE_S3_BUCKET=rig-data-\d{8}t\d{6}z\nSLATE_S3_REGION=us-east-1\n"
             r"FEEDS_S3_ENDPOINT=http://host.docker.internal:9591\nFEEDS_S3_BUCKET=rig-feeds-\d{8}t\d{6}z\nFEEDS_S3_REGION=us-east-1\n"

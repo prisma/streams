@@ -320,7 +320,6 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
     // WP-02 / PR 6-D: the deployment identity, from the PROVEN parts.
     let deployment = crate::deployment::DeploymentIdentity::new(
         tenant,
-        config.cli.account_id.clone(),
         cell_id.clone(),
         config.cli.telemetry_region.clone(),
     );

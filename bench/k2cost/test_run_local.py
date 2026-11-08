@@ -247,11 +247,11 @@ class DryRun(unittest.TestCase):
         out = self.ok(self.point(f"POINT_NAME=PACK\nPOSTURE=launch\nTENANTS_MANIFEST={m}\nPHASES='idle 1\ntenants'\n"))
         self.assertEqual(self.line(out, "DRY_RUN tenants:"),
                          f'{m} (manifest unit-pack, 3 projects, periods {{"steady": [20, 80]}}); cell cell-k2, '
-                         "deployment project proj-k2cost-deploy, account acct-k2cost")
+                         "deployment project proj-k2cost-deploy")
         env = self.server_env(out, 1)
         # The ids cell-admin's init is given: its policies name this cell.
-        self.assertEqual((env["CELL_ID"], env["PROJECT_ID"], env["ACCOUNT_ID"]),
-                         ("cell-k2", "proj-k2cost-deploy", "acct-k2cost"))
+        self.assertEqual((env["CELL_ID"], env["PROJECT_ID"], env.get("ACCOUNT_ID")),
+                         ("cell-k2", "proj-k2cost-deploy", None))
         self.assertEqual(env["STREAMS_AUTH_POLICY_FILE"], "<secrets>/feeds/policies.json")
         self.assertEqual(env["PROJECT_SHARE_K"], profile("shared-cell.env")["PROJECT_SHARE_K"])
         # A manifest path relative to the checkout is the checkout's.

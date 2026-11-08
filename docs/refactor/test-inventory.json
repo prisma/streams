@@ -8682,7 +8682,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "8944f7979979fdd1f24698775877706a12cee4e228725c6680c1af81d085c68e",
+    "function_sha256": "21170a590b626821d56db6356b90cf4ef59516c27d211e6abc05070efdff5c1c",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_hostile.rs",

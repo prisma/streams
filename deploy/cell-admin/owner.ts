@@ -94,9 +94,6 @@ async function updateAllowlist(store: StateStore, change: (doc: Allowlist) => vo
 /// reserves.
 function checkWorkspace(state: CellState, workspace: string): void {
   checkId("--workspace", workspace);
-  if (workspace === state.cell.account_id) {
-    throw new AdminError(`workspace ${workspace} is the cell's ACCOUNT_ID, the unowned-event sink`);
-  }
   if (workspace === CANARY_WORKSPACE) throw new AdminError(`workspace ${workspace} is the issuer's canary workspace`);
 }
 

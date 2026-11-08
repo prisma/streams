@@ -207,7 +207,7 @@ describe("burnIds", () => {
 describe("the S3 store", () => {
   const init = (state: string, key: string, extra: string[] = []) =>
     run("init", "--state", state, "--cell-id", "cell_sc1", "--deployment-project", "proj_deploy",
-      "--account", "acct_sink", "--key-file", key, ...extra);
+      "--key-file", key, ...extra);
 
   test("refuses to run on a bucket that does not honour conditional writes, and leaves nothing", async () => {
     useStore("s3");

@@ -92,7 +92,6 @@ maybe("the canary exchanges at the real issuer and appends and reads back on the
     STREAMS_AUTH_GRANTS_FILE: join(feeds, "grants.json"),
     CELL_ID: "cell_sc1",
     PROJECT_ID: "proj_deploy",
-    ACCOUNT_ID: "acct_sink",
     USAGE_STREAM_KEY: randomBytes(32).toString("base64url"),
     AUTH_TOKEN: randomBytes(24).toString("hex"),
   };

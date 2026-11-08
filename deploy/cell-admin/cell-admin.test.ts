@@ -140,14 +140,14 @@ for (const kind of STORES) {
         const open = keyFile(root, "rsa", 0o640, "open.pem");
         const state = freshState(root, "c1");
         let r = await run("init", "--state", state, "--cell-id", "c1", "--deployment-project", "proj_d",
-          "--account", "acct_s", "--key-file", open);
+          "--key-file", open);
         expect([r.code, r.err.split("\n")[0]]).toEqual([
           1, `cell-admin init: key file ${open} has mode 0640: group or others can read the cell's signing key; chmod 600 it`,
         ]);
         const junk = join(root, "junk.pem");
         writeFileSync(junk, "not a key but a secret-looking line 7f3a", { mode: 0o600 });
         r = await run("init", "--state", state, "--cell-id", "c1", "--deployment-project", "proj_d",
-          "--account", "acct_s", "--key-file", junk);
+          "--key-file", junk);
         expect([r.code, r.err]).toEqual([1, `cell-admin init: key file ${junk} does not hold a PEM private key`]);
         expect(stateExists(state)).toBe(false);
       });
@@ -157,7 +157,7 @@ for (const kind of STORES) {
         const key = keyFile(root, "ed25519");
         const state = freshState(root);
         const init = (...flags: string[]) => run("init", "--state", state, "--cell-id", "cell_sc1",
-          "--deployment-project", "proj_deploy", "--account", "acct_sink", ...flags);
+          "--deployment-project", "proj_deploy", ...flags);
         expect((await init("--public-key", key)).err).toBe(
           `cell-admin init: --public-key ${key} holds a private key: give the public half (openssl pkey -pubout)`);
         expect((await init("--public-key", publicKeyFile(key), "--key-file", key)).code).toBe(2);
@@ -176,10 +176,10 @@ for (const kind of STORES) {
       test("refuses placeholder identities and a second init", async () => {
         const c = await initCell();
         let r = await run("init", "--state", freshState(c.root, "c1"), "--cell-id", "c1", "--deployment-project",
-          "proj_local", "--account", "acct_s", "--key-file", c.key);
-        expect(r.err).toBe("cell-admin init: a shared cell needs a real PROJECT_ID and ACCOUNT_ID, not a placeholder");
+          "proj_local", "--key-file", c.key);
+        expect(r.err).toBe("cell-admin init: a shared cell needs a real PROJECT_ID, not a placeholder");
         r = await run("init", "--state", c.state, "--cell-id", "cell_sc1", "--deployment-project", "proj_d",
-          "--account", "acct_s", "--key-file", c.key);
+          "--key-file", c.key);
         expect(r.err).toBe(`cell-admin init: ${statePathOf(c.state)} exists: a cell is initialised once`);
       });
 
@@ -189,7 +189,7 @@ for (const kind of STORES) {
         const published = readBundleText(c.state);
         deleteState(c.state);
         const r = await run("init", "--state", c.state, "--cell-id", "cell_sc1", "--deployment-project", "proj_deploy",
-          "--account", "acct_sink", "--key-file", c.key);
+          "--key-file", c.key);
         const bundlePath = statePathOf(c.state).replace("cell-state.json", "feeds-bundle.json")
           .replace(/^s3:\/\/ctl-(\d+)\//, "s3://feeds-$1/");
         expect([r.code, r.err]).toEqual([1, `cell-admin init: ${bundlePath} exists at feed_version 2: this cell has ` +
@@ -203,30 +203,30 @@ for (const kind of STORES) {
       describe("--cell-env", () => {
         const initInto = (c: { root: string; state: string; key: string }, ...flags: string[]) =>
           run("init", "--state", c.state, "--cell-id", "cell_sc1", "--deployment-project", "proj_deploy",
-            "--account", "acct_sink", "--key-file", c.key, ...flags);
+            "--key-file", c.key, ...flags);
         const fresh = () => {
           const root = scratchDir();
           return { root, state: freshState(root), key: keyFile(root) };
         };
         const staged = (dir: string) => readdirSync(dir).filter((n) => n.includes(".staged-"));
 
-        test("sets the four values by key in the stage's cells file and keeps every other line as it was", async () => {
+        test("sets the three values by key in the stage's cells file and keeps every other line as it was", async () => {
           const c = fresh();
           const cells = join(c.root, "scratch.env");
           writeFileSync(cells, "# the scratch cell\nCELL_STAGE=scratch\nCELL_ID=cell_old\n\n  REGION=fra\n" +
-            "ACCOUNT_ID=acct_old\nRUST_LOG=info", { mode: 0o640 });
+            "PROJECT_ID=proj_old\nRUST_LOG=info", { mode: 0o640 });
           const r = await initInto(c, "--issuer", "https://issuer.example/streams", "--cell-env", cells);
           expect([r.code, r.err, r.out.split("\n").at(-1)]).toEqual([0, "",
-            `cells file: ${cells} (CELL_ID, PROJECT_ID, ACCOUNT_ID, STREAMS_AUTH_ISSUER)`]);
+            `cells file: ${cells} (CELL_ID, PROJECT_ID, STREAMS_AUTH_ISSUER)`]);
           expect(readFileSync(cells, "utf8")).toBe("# the scratch cell\nCELL_STAGE=scratch\nCELL_ID=cell_sc1\n\n" +
-            "  REGION=fra\nACCOUNT_ID=acct_sink\nRUST_LOG=info\nPROJECT_ID=proj_deploy\n" +
+            "  REGION=fra\nPROJECT_ID=proj_deploy\nRUST_LOG=info\n" +
             "STREAMS_AUTH_ISSUER=https://issuer.example/streams\n");
           expect(readState(c.state).cell).toMatchObject({ cell_id: "cell_sc1", deployment_project_id: "proj_deploy",
-            account_id: "acct_sink", issuer: "https://issuer.example/streams" });
+            issuer: "https://issuer.example/streams" });
           expect(statSync(cells).mode & 0o777).toBe(0o640);
           expect(staged(c.root)).toEqual([]);
-          // The Composer entry takes exactly these four from the cells file.
-          for (const key of ["CELL_ID", "PROJECT_ID", "ACCOUNT_ID", "STREAMS_AUTH_ISSUER"]) {
+          // The Composer entry takes exactly these three from the cells file.
+          for (const key of ["CELL_ID", "PROJECT_ID", "STREAMS_AUTH_ISSUER"]) {
             expect(CHILD_NAMES[key]).toEqual({ from: "cells", required: true });
           }
         });
@@ -236,7 +236,7 @@ for (const kind of STORES) {
           const cells = join(c.root, "cert.env");
           expect((await initInto(c, "--cell-env", cells)).code).toBe(0);
           expect(readFileSync(cells, "utf8")).toBe(
-            "CELL_ID=cell_sc1\nPROJECT_ID=proj_deploy\nACCOUNT_ID=acct_sink\nSTREAMS_AUTH_ISSUER=https://auth.prisma.io\n");
+            "CELL_ID=cell_sc1\nPROJECT_ID=proj_deploy\nSTREAMS_AUTH_ISSUER=https://auth.prisma.io\n");
           expect(statSync(cells).mode & 0o777).toBe(0o644);
         });
 
@@ -272,7 +272,7 @@ for (const kind of STORES) {
           const cells = join(c.root, "scratch.env");
           writeFileSync(cells, "CELL_STAGE=scratch\n");
           const again = () => run("init", "--state", c.state, "--cell-id", "cell_sc1", "--deployment-project",
-            "proj_other", "--account", "acct_other", "--key-file", c.key, "--cell-env", cells);
+            "proj_other", "--key-file", c.key, "--cell-env", cells);
           let r = await again();
           expect([r.code, r.err]).toEqual([1, `cell-admin init: ${statePathOf(c.state)} exists: a cell is initialised once`]);
           expect(readFileSync(cells, "utf8")).toBe("CELL_STAGE=scratch\n");
@@ -371,8 +371,6 @@ for (const kind of STORES) {
           "--quota byte_weight: a weight is not a quota; admit sets it with --weight"],
         ["the system project", ["--project", "system"], "project system is reserved on cell cell_sc1"],
         ["the deployment's PROJECT_ID", ["--project", "proj_deploy"], "project proj_deploy is reserved on cell cell_sc1"],
-        ["the cell's ACCOUNT_ID as workspace", ["--workspace", "acct_sink"],
-          "workspace acct_sink is the cell's ACCOUNT_ID, the unowned-event sink"],
         ["an id outside the grammar", ["--project", "proj/a"], '--project "proj/a" is not a valid id'],
       ];
       test.each(refusals)("refuses %s and publishes nothing", async (_what, flags, message) => {
@@ -740,7 +738,7 @@ for (const kind of STORES) {
         const key = keyFile(root, "ed25519");
         const state = freshState(root, "c2");
         expect((await run("init", "--state", state, "--cell-id", "c2", "--deployment-project", "proj_d",
-          "--account", "acct_s", "--key-file", key)).code).toBe(0);
+          "--key-file", key)).code).toBe(0);
         await run("admit", "--state", state, "--project", "proj_a", "--workspace", "w");
         const out = join(root, "t.jwt");
         await run("token", "--state", state, "--credential", customerCredential(state, "proj_a"), "--key-file", key,

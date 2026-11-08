@@ -272,11 +272,6 @@ pub struct CliArgs {
     #[arg(long, env = "MAX_RECORD_PAYLOAD_BYTES", default_value = "131072")]
     pub(crate) max_record_payload_bytes: Option<usize>,
 
-    /// Billing tenant boundary: the account every stream created on
-    /// this deployment bills to (docs/OBSERVABILITY-BILLING.md §3.2).
-    #[arg(long, env = "ACCOUNT_ID", default_value = "acct_local")]
-    pub(crate) account_id: String,
-
     /// Billing tenant boundary: the project.
     #[arg(long, env = "PROJECT_ID", default_value = "proj_local")]
     pub(crate) project_id: String,
@@ -532,7 +527,6 @@ impl CliArgs {
             workload_token_file: None,
             release_posture: false,
             max_record_payload_bytes: Some(131_072),
-            account_id: "acct_local".into(),
             project_id: "proj_local".into(),
             cell_id: "local".into(),
             telemetry_region: "".into(),

@@ -95,7 +95,6 @@ async function boot(c: Cell, feeds: string): Promise<{ cell: string; operator: s
     STREAMS_AUTH_REFRESH_SECS: "1",
     CELL_ID: "cell_sc1",
     PROJECT_ID: "proj_deploy",
-    ACCOUNT_ID: "acct_sink",
     USAGE_STREAM_KEY: randomBytes(32).toString("base64url"),
     AUTH_TOKEN: operator,
   };
@@ -283,7 +282,7 @@ maybe("the S3 store's preconditions hold on s3lite, and concurrent writers lose 
   writeFileSync(creds, JSON.stringify({ ...target("ctl"), feeds: target("feeds") }), { mode: 0o600 });
   const at = ["--state", "s3://ctl/cells/cell_e2e", "--s3-credentials", creds];
   const init = await run("init", ...at, "--cell-id", "cell_e2e", "--deployment-project", "proj_deploy",
-    "--account", "acct_sink", "--key-file", keyFile(root));
+    "--key-file", keyFile(root));
   expect([init.code, init.err]).toEqual([0, ""]);
   const admitted = await Promise.all(["a", "b", "c"].map((x) =>
     run("admit", ...at, "--project", `proj_${x}`, "--workspace", `w_${x}`)));

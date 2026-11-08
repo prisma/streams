@@ -4,7 +4,7 @@
 // it runs where the cell's signing key is, never inside a generator.
 //
 //   bun bench/k2cost/tenants-admit.ts admit --manifest M --state DIR --key-file K
-//       [--cell-id C --deployment-project P --account A [--issuer URL] [--profile F]...
+//       [--cell-id C --deployment-project P [--issuer URL] [--profile F]...
 //        [--max-projects N]]
 //   bun bench/k2cost/tenants-admit.ts tokens --manifest M --state DIR --key-file K --out MAP
 //       [--ttl 43200] [--every 28800] [--upload s3://BUCKET/KEY --s3-endpoint URL --s3-creds FILE]
@@ -89,9 +89,9 @@ export async function admit(plan: Plan, o: Opts, say: Say): Promise<{ admitted: 
     fresh = true;
   }
   if (fresh) {
-    const ids = ["cell-id", "deployment-project", "account"].map((k) => o.str(k));
-    if (ids.some((v) => !v)) throw new Error(`${dir} holds no cell: give --cell-id, --deployment-project and --account to init it`);
-    const argv = ["init", "--state", dir, "--cell-id", ids[0]!, "--deployment-project", ids[1]!, "--account", ids[2]!,
+    const ids = ["cell-id", "deployment-project"].map((k) => o.str(k));
+    if (ids.some((v) => !v)) throw new Error(`${dir} holds no cell: give --cell-id and --deployment-project to init it`);
+    const argv = ["init", "--state", dir, "--cell-id", ids[0]!, "--deployment-project", ids[1]!,
       "--key-file", o.str("key-file")!,
       // --max-projects: the cell's project cap (a dedicated cell, k = 1, takes 1).
       "--max-projects", o.has("max-projects") ? o.str("max-projects")! : String(Math.max(1000, plan.projects.length))];
@@ -197,7 +197,7 @@ export function writeFeeds(stateDir: string, outDir: string): number {
 // ---------------------------------------------------------------- main
 
 const USAGE = `usage: tenants-admit.ts <admit|tokens|publish|feeds> [flags]
-  admit    --manifest M --state DIR --key-file K [--cell-id C --deployment-project P --account A
+  admit    --manifest M --state DIR --key-file K [--cell-id C --deployment-project P
            [--issuer URL] [--profile F,F] [--max-projects N]]
   tokens   --manifest M --state DIR --key-file K --out MAP [--ttl ${TOKEN_TTL_SECS}] [--every ${REFRESH_SECS}]
            [--upload s3://BUCKET/KEY --s3-endpoint URL --s3-creds FILE]

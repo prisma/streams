@@ -459,7 +459,6 @@ pub(super) async fn http_rig_build(
         fleet: crate::fleet::FleetRepository::new(fleet_store.clone()),
         deployment: crate::deployment::DeploymentIdentity::new(
             crate::tenant::ProjectId::new("proj-test").unwrap(),
-            "acct_test".to_string(),
             crate::tenant::CellId::new("cell_test").unwrap(),
             "test".to_string(),
         ),

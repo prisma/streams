@@ -185,12 +185,11 @@ async fn a_crowd_without_subscription_quotas_holds_exactly_its_share_of_live_con
     engine_shutdown(&cell.state).await;
 }
 
-/// A12 (L2): a policy naming the system project, one naming the
-/// deployment's own `PROJECT_ID`, and a project whose workspace is the
-/// deployment's `ACCOUNT_ID` are dropped from the feed and counted (the
-/// cell serves its 2 projects and reports 3 dropped): the deployment and
-/// account tokens are refused as for a project the cell does not serve
-/// (`421 wrong_cell`).
+/// A12 (L2): a policy naming the system project and one naming the
+/// deployment's own `PROJECT_ID` are dropped from the feed and counted (the
+/// cell serves its 2 projects and reports 2 dropped): the deployment's token
+/// is refused as for a project the cell does not serve (`421 wrong_cell`).
+/// No workspace is reserved (edge #253 part 2).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn reserved_ids_are_dropped_from_the_feed() {
     let mut cell = open_cell(CellSpec::open(2)).await;
@@ -200,27 +199,22 @@ async fn reserved_ids_are_dropped_from_the_feed() {
         .deployment_tenant()
         .as_str()
         .to_string();
-    let account = cell.state.deployment.account_id().to_string();
     let mut tokens = Vec::new();
-    for (pid, ws) in [
-        (deployment.as_str(), "ws-sc00"),
-        ("proj-scacct", account.as_str()),
-    ] {
-        let mut p = policy(0, ProjectQuotas::default());
-        p.project_id = ProjectId::new(pid).unwrap();
-        p.workspace_id = crate::tenant::WorkspaceId::new(ws).unwrap();
-        cell.policies.insert(p.project_id.clone(), p);
-        let mut g = grant(0, 1);
-        let cred = format!("c-{pid}");
-        g.credential_id = Arc::from(cred.as_str());
-        g.project_id = ProjectId::new(pid).unwrap();
-        cell.grants.insert(Arc::from(cred.as_str()), g);
-        let mut token = Token::of(0);
-        token.project_id = pid.to_string();
-        token.workspace_id = ws.to_string();
-        token.credential_id = cred;
-        tokens.push((pid.to_string(), token.bearer()));
-    }
+    let (pid, ws) = (deployment.as_str(), "ws-sc00");
+    let mut p = policy(0, ProjectQuotas::default());
+    p.project_id = ProjectId::new(pid).unwrap();
+    p.workspace_id = crate::tenant::WorkspaceId::new(ws).unwrap();
+    cell.policies.insert(p.project_id.clone(), p);
+    let mut g = grant(0, 1);
+    let cred = format!("c-{pid}");
+    g.credential_id = Arc::from(cred.as_str());
+    g.project_id = ProjectId::new(pid).unwrap();
+    cell.grants.insert(Arc::from(cred.as_str()), g);
+    let mut token = Token::of(0);
+    token.project_id = pid.to_string();
+    token.workspace_id = ws.to_string();
+    token.credential_id = cred;
+    tokens.push((pid.to_string(), token.bearer()));
     let mut system = policy(0, ProjectQuotas::default());
     system.project_id = crate::tenant::system_project();
     cell.policies.insert(system.project_id.clone(), system);
@@ -230,7 +224,7 @@ async fn reserved_ids_are_dropped_from_the_feed() {
         feed["policies"]["projects"].as_u64(),
         feed["policies"]["reservedDropped"].as_u64(),
     );
-    assert_eq!(counted, (Some(2), Some(3)), "(served, dropped as reserved)");
+    assert_eq!(counted, (Some(2), Some(2)), "(served, dropped as reserved)");
     for (pid, bearer) in tokens {
         let (st, _, b) = cell
             .call_with(&bearer, "PUT", "/v1/streams/reserved", CREATE)

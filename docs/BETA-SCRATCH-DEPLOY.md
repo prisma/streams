@@ -105,7 +105,7 @@ credentials come from `cell-admin` (section 7).
 ```bash
 CA="bun deploy/cell-admin/cell-admin.ts"    # zsh does not split it: write ${=CA}
 STATE=s3://$(jq -r .bucket $S/secrets/cell-admin-s3.json)/cells/$CELL
-$CA init --cell-id $CELL --deployment-project <the cell's system project id> --account <the account sink> \
+$CA init --cell-id $CELL --deployment-project <the cell's system project id> \
   --public-key $S/sign.pub --issuer https://auth.prisma.io --cell-env $S/cells/scratch.env \
   --state $STATE --s3-credentials $S/secrets/cell-admin-s3.json
 echo "PATH_PREFIX=cells/$CELL" >> $S/cells/scratch.env
@@ -113,9 +113,9 @@ echo "PATH_PREFIX=cells/$CELL" >> $S/cells/scratch.env
 
 It publishes the first bundle (without it the cell answers 503
 `feeds_unpublished`) and places the canary project `sp_canary_$CELL`.
-The two ids are the cell's own reserved identities, any id but the
-placeholders `proj_local`/`acct_local` (the scratch rehearsal used
-`proj_beta_scratch_1_system` and `acct_beta_scratch_1_sink`).
+The project id is the cell's own reserved identity, any id but the
+placeholder `proj_local` (the scratch rehearsal used
+`proj_beta_scratch_1_system`).
 `PATH_PREFIX` is the operator's line of the cells file (neither tool
 writes it); without it `deploy-release.sh` refuses the release before
 it deploys (`scratch.env does not set PATH_PREFIX`), and a release is

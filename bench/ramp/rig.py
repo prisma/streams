@@ -185,7 +185,7 @@ class Posture:
                 "STREAMS_AUTH_KEYS_FILE=/feeds/keys.json", "STREAMS_AUTH_POLICY_FILE=/feeds/policies.json",
                 "STREAMS_AUTH_GRANTS_FILE=/feeds/grants.json",
                 # the cell's identity as tenants.sh admitted it
-                "PROJECT_ID=proj_ramp_deploy", "ACCOUNT_ID=acct_ramp", "CELL_ID=ramp-cell",
+                "PROJECT_ID=proj_ramp_deploy", "CELL_ID=ramp-cell",
                 f"USAGE_STREAM_KEY={base64.b64encode(os.urandom(32)).decode()}",
                 f"AUTH_TOKEN={self.bearer}",
             ]

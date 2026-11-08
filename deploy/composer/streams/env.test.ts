@@ -15,7 +15,6 @@ const SCRATCH_LINES = [
   "CELL_STAGE=scratch",
   "CELL_ID=cell_e1",
   "PROJECT_ID=proj_deploy",
-  "ACCOUNT_ID=acct_sink",
   "STREAMS_AUTH_ISSUER=https://auth.prisma.io",
   "PATH_PREFIX=cells/cell_e1",
   "REGION=eu-central-1",

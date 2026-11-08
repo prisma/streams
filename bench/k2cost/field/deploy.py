@@ -198,7 +198,7 @@ def cell_state(run: str, cell: str) -> dict:
     if not st:
         st = {
             "run": run, "cell": cell,
-            "account_id": F.rand_id("acct_"), "deploy_project_id": F.rand_id("proj_"),
+            "deploy_project_id": F.rand_id("proj_"),
             "cell_id": F.rand_id("cell_"), "customer_project_id": F.rand_id("proj_"),
             "workspace_id": F.rand_id("wksp_"), "credential_id": F.rand_id("strcred_"),
             "path_prefix": F.PATH_PREFIX, "fleet_prefix": F.FLEET_PREFIX, "created": F.utc(),
@@ -269,7 +269,7 @@ def server_env(run, cell, cfg, st, sec, bins, feeds_key, i) -> dict:
         "STREAMS_AUTH_KEYS_FILE": f"{FEEDS_DIR}/keys.json", "STREAMS_AUTH_POLICY_FILE": f"{FEEDS_DIR}/policies.json",
         "STREAMS_AUTH_GRANTS_FILE": f"{FEEDS_DIR}/grants.json", "STREAMS_AUTH_REFRESH_SECS": "60",
         "FEEDS_S3_KEY": feeds_key, "FLEET_AUTH_MODE": "static",
-        "BILLING_MODE": "required", "ACCOUNT_ID": st["account_id"], "PROJECT_ID": st["deploy_project_id"],
+        "BILLING_MODE": "required", "PROJECT_ID": st["deploy_project_id"],
         "CELL_ID": st["cell_id"], "REGION": F.REGION, "CPU_LOG_SECS": CPU_LOG_SECS, **sec,
     })
     if i == 1:

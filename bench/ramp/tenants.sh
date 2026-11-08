@@ -36,7 +36,7 @@ profile=shared-cell.env max=""; [ "$count" = 1 ] && profile=dedicated-cell.env m
 admit=$root/bench/k2cost/tenants-admit.ts
 # A rerun keeps the admitted cell and re-mints what expires (12 h).
 [ -f "$dir/admitted" ] || bun "$admit" admit --manifest "$manifest" --state "$dir/cell" --key-file "$dir/cell.pem" \
-  --cell-id ramp-cell --deployment-project proj_ramp_deploy --account acct_ramp $max \
+  --cell-id ramp-cell --deployment-project proj_ramp_deploy $max \
   --profile "$root/deploy/profiles/compute-1g.env,$root/deploy/profiles/$profile" > "$dir/admit.log" 2>&1
 touch "$dir/admitted"
 bun "$admit" tokens --manifest "$manifest" --state "$dir/cell" --key-file "$dir/cell.pem" \

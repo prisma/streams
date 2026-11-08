@@ -135,7 +135,6 @@ CUSTOMER_PROJECT=proj-k2
 CUSTOMER_WORKSPACE=ws-k2
 CELL=cell-k2
 DEPLOY_PROJECT=proj-k2cost-deploy
-ACCOUNT=acct-k2cost
 
 # ---- point --------------------------------------------------------------
 # Defaults; a value from the caller's environment survives into the point
@@ -315,7 +314,6 @@ feeds_env() { # the emulator's feed files
 }
 identity_env() { # the billing identity (cell-admin's init takes the same ids in tenants mode)
   echo "USAGE_STREAM_KEY=$(cat "$SECRETS/usage_key")"
-  echo "ACCOUNT_ID=$ACCOUNT"
   echo "PROJECT_ID=$DEPLOY_PROJECT"
   echo "CELL_ID=$CELL"
 }
@@ -402,7 +400,7 @@ if [ "$DRY_RUN" = 1 ]; then
 m = json.load(open(sys.argv[1]))
 print("manifest %s, %d projects, periods %s" % (m["name"], sum(c["count"] for c in m["classes"]),
                                                json.dumps(m.get("periods") or {}, sort_keys=True)))' \
-      "$TENANTS_MANIFEST")); cell $CELL, deployment project $DEPLOY_PROJECT, account $ACCOUNT"
+      "$TENANTS_MANIFEST")); cell $CELL, deployment project $DEPLOY_PROJECT"
   fi
   for n in $(seq 1 "$SERVERS"); do
     server_env_file "$n"
@@ -434,7 +432,7 @@ if [ "$TENANTS" = 1 ]; then
   cp "$TENANTS_MANIFEST" "$RUN/tenants-manifest.json"
   log "admitting $(basename "$TENANTS_MANIFEST")'s projects into $CELL (cell-admin, the launch profiles)"
   bun "$HERE/tenants-admit.ts" admit --manifest "$TENANTS_MANIFEST" --state "$SECRETS/cell" \
-    --key-file "$SECRETS/cell.pem" --cell-id "$CELL" --deployment-project "$DEPLOY_PROJECT" --account "$ACCOUNT" \
+    --key-file "$SECRETS/cell.pem" --cell-id "$CELL" --deployment-project "$DEPLOY_PROJECT" \
     --profile "$PROFILE_ENV,$SHARED_CELL_ENV" > "$RUN/admit.log" 2>&1 < /dev/null \
     || die 1 "admission failed; see $RUN/admit.log"
   bun "$HERE/tenants-admit.ts" tokens --manifest "$TENANTS_MANIFEST" --state "$SECRETS/cell" \

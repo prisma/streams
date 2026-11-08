@@ -17,22 +17,15 @@ pub(crate) struct DeploymentIdentity {
 #[derive(Debug)]
 struct Inner {
     tenant: ProjectId,
-    account_id: String,
     cell_id: CellId,
     region: String,
 }
 
 impl DeploymentIdentity {
-    pub(crate) fn new(
-        tenant: ProjectId,
-        account_id: String,
-        cell_id: CellId,
-        region: String,
-    ) -> Self {
+    pub(crate) fn new(tenant: ProjectId, cell_id: CellId, region: String) -> Self {
         Self {
             inner: Arc::new(Inner {
                 tenant,
-                account_id,
                 cell_id,
                 region,
             }),
@@ -72,10 +65,6 @@ impl DeploymentIdentity {
         &self.inner.tenant
     }
 
-    pub(crate) fn account_id(&self) -> &str {
-        &self.inner.account_id
-    }
-
     pub(crate) fn cell_id(&self) -> &CellId {
         &self.inner.cell_id
     }
@@ -92,7 +81,6 @@ mod tests {
     fn identity() -> DeploymentIdentity {
         DeploymentIdentity::new(
             ProjectId::new("proj-x").unwrap(),
-            "acct-x".into(),
             CellId::new("cell-x").unwrap(),
             "eu".into(),
         )
@@ -106,7 +94,6 @@ mod tests {
         let sref = d.raw_adapter_sref("a/b");
         assert_eq!(sref.project_id(), d.deployment_tenant());
         assert_eq!(sref.name().as_str(), "a/b");
-        assert_eq!(d.account_id(), "acct-x");
         assert_eq!(d.cell_id().as_str(), "cell-x");
         assert_eq!(d.region(), "eu");
     }

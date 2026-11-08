@@ -153,7 +153,7 @@ Two product rules shape the read and queue points:
      emulator's feed files, `FLEET_AUTH_MODE=workload` with its rotating
      `WORKLOAD_TOKEN_FILE`, `STREAMS_RELEASE_POSTURE=1`,
      `BILLING_MODE=required`, `USAGE_STREAM_KEY`,
-     `ACCOUNT_ID=acct-k2cost`, `PROJECT_ID=proj-k2cost-deploy`,
+     `PROJECT_ID=proj-k2cost-deploy`,
      `CELL_ID=cell-k2`, `ROLLUP=1` on streams-1 only, and `AUTH_TOKEN`
      (see below);
    - finally the point's `SERVER_ENV_EXTRA`.
@@ -614,7 +614,7 @@ Admission and tokens (operator side, where the cell's signing key is):
 
 ```bash
 bun bench/k2cost/tenants-admit.ts admit  --manifest M --state DIR --key-file K \
-    --cell-id C --deployment-project P --account A       # init once, then admit what is missing
+    --cell-id C --deployment-project P                   # init once, then admit what is missing
 bun bench/k2cost/tenants-admit.ts tokens --manifest M --state DIR --key-file K --out MAP --every 28800 \
     [--upload s3://BUCKET/KEY --s3-endpoint URL --s3-creds FILE]
 bun bench/k2cost/tenants-admit.ts publish --state DIR --upload s3://BUCKET/KEY --s3-endpoint URL --s3-creds FILE

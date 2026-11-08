@@ -854,14 +854,11 @@ impl crate::config::ServerConfig {
                  billing refuses to run without the usage ledger (§14.1)",
             );
         }
-        if self.cli.account_id == "acct_local"
-            || self.cli.project_id == "proj_local"
-            || self.cli.cell_id == "local"
-        {
+        if self.cli.project_id == "proj_local" || self.cli.cell_id == "local" {
             f.err(
-                "BILLING_MODE=required needs explicit ACCOUNT_ID, PROJECT_ID \
-                 and CELL_ID — refusing to bill production traffic to the \
-                 local placeholders",
+                "BILLING_MODE=required needs explicit PROJECT_ID and CELL_ID \
+                 — refusing to bill production traffic to the local \
+                 placeholders",
             );
         }
     }

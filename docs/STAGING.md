@@ -130,8 +130,7 @@ SERVER_BINARY_S3_KEY=bin/streams-stg1-x64
 AUTH_TOKEN=<staging bearer>         # gates the API
 USAGE_STREAM_KEY=<32B base64url>    # `_usage`/`_ops_*` system-ledger key
 BILLING_MODE=required               # staging runs the production gate
-ACCOUNT_ID=<acct_...>               # real identities; placeholders refused
-PROJECT_ID=<proj_...>
+PROJECT_ID=<proj_...>               # real identities; placeholders refused
 CELL_ID=<cell tag>
 ROLLUP=1                            # exactly one instance per cell
 

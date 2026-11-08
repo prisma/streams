@@ -431,7 +431,7 @@ In each of these changes, a request that used to succeed can now fail permanentl
 - **Risk reason:** high: a request that used to succeed can fail permanently. It is narrow: only servers that set no ceiling, which excludes production and every release-posture deployment; and accepting such a record was unsafe for shared feeds, because a record whose prepared frame (up to 6 x its size) exceeds the 1 MiB ring disconnects every subscriber of the feed at once. RATIFIED by the owner on 2026-09-30.
 - **Check against commit:** written with the change.
 
-### #253 (this record's commit, part 1 of 3) — The data plane's tenant is a container, and the workspace leaves the server, tokens and access rules
+### #253 (5263d590b + 6c7ac12c9 part 1; this commit part 2; part 3 pending) — The data plane's tenant is a container, and the workspace leaves the server, tokens and access rules
 
 - **Program item:** millions of containers per Streams cell, design rev 3, stage 0 (`~/.streams-k2/analysis/mproj/MILLIONS-OF-PROJECTS-DESIGN.md` §10). The validation is `CONTAINER-VALIDATION.md`, and the plan for the account removal is `ACCOUNT-REMOVAL-PLAN.md`.
 - **Owner decision (2026-11-08, verbatim):** "This sounds exactly right! Let's use the term Container rather than Project. Please validate that this will work. You have my approval for this change in the edge." The model, verbatim: "a user is part of a Workspace, they create a project, and inside that project, they can create Postgres databases, as well as Streams and Queue containers. Initially, I think we are going to expose these as having only a single queue or Stream in them - perhaps called `default` [...] I don't think we will ever want a single container to hold both Streams and Queues."
@@ -440,12 +440,16 @@ In each of these changes, a request that used to succeed can now fail permanentl
   - On caps: "We currently only limit on the workspace level. And this is handled by control plane. Let's set a single relatively high level: 1000." So there is one cap, 1,000 containers per workspace, enforced by the control plane. The beta's cell-admin and issuer default `workspace_cap` goes from 1 to 1,000 in part 3.
 - **One record, three parts (the lead, 2026-11-08):** the owner approved #253 as one change, so it keeps one number. Each part's commit says "Edge change #253 (part N of 3)", and each part amends **Landed in** and **Status**.
 - **Landed in:**
-  1. Part 1, this record's commit: usage records no workspace or account.
-  2. Part 2, pending: `ACCOUNT_ID` leaves the configuration: the server, `deployment.rs`, the auth ceiling's account check, cell-admin, the shipped profiles, composer and the bench scripts.
+  1. Part 1, 5263d590b (the record's first commit) and its test 6c7ac12c9: usage records no workspace or account.
+  2. Part 2, this commit: `ACCOUNT_ID` leaves the configuration: the server, `deployment.rs`, the auth ceiling's account check, cell-admin, the shipped profiles, composer, cell-watch, the bench and effective-config scripts.
   3. Part 3, pending: the project → container rename: paths, codes, claims, feed v2, kind and single-name rules, issuer, cell-admin, SDK and docs.
 - **Status (which parts are live at a commit):**
   - From part 1's commit on: no usage answer carries `accountId`, the rollup is `telemetry/usage-rollup/v3/p0`, the artifacts are `telemetry/usage-monthly/{container}/…`, and the ops snapshot has no `segment_identity_drift_total`.
-  - Until part 2: the server still reads `ACCOUNT_ID` (only the auth ceiling's reserved-workspace check uses it), and `BILLING_MODE=required` still asks for it.
+  - From part 2's commit on:
+    - the server reads no `ACCOUNT_ID`, and `BILLING_MODE=required` asks for a real `PROJECT_ID` and `CELL_ID` only;
+    - the auth ceiling reserves no workspace on any cell, so a policy whose workspace was once a cell's `ACCOUNT_ID` is served like any other (the system project and the deployment's `PROJECT_ID` stay reserved);
+    - cell-admin's `init` takes no `--account`, its state holds no `account_id`, `--cell-env` sets `CELL_ID`, `PROJECT_ID` and `STREAMS_AUTH_ISSUER`, and no placement or allow-list refuses a workspace as the account sink;
+    - the Composer entry takes no `ACCOUNT_ID` from the cells file.
   - Until part 3: every path, error code, claim, feed field, env name and SDK option still says project, the token and feed still carry `workspace_id`, and `403 workspace_mismatch` still exists.
   - Between pushes the wire is half renamed exactly this way. The owner ratified the whole change; the parts are recorded as they land.
 - **Surface:** both.
@@ -511,7 +515,12 @@ In each of these changes, a request that used to succeed can now fail permanentl
   - src/rollup/reconciliation/tests.rs::container_qualified_comparison_reports_missing_and_disagreeing_rows;
   - src/rollup/stored_index/tests.rs::a_segment_counts_once_by_its_latest_snapshot;
   - src/dst/tests/billing_operation_counts.rs::idle_rollup_steps_count_no_unowned_meter_event.
-- **Pinning tests, parts 2 and 3 (red first, each before its change):**
+- **Pinning tests, part 2:**
+  - src/config/validation_tests.rs::required_billing_needs_no_account (red first: required billing refused without `ACCOUNT_ID`);
+  - src/auth/ceiling.rs::reserved_identities_are_dropped_and_counted and ::boot_installs_the_ceiling_of_the_configured_cell (red first: a k = 8 cell dropped the account's workspace);
+  - src/dst/tests/shared_cell_hostile.rs::reserved_ids_are_dropped_from_the_feed (A12: 2 served, 2 dropped);
+  - deploy/cell-admin's init, cells-file and placement tests, and bench/k2cost's tenants-admit and run-script tests.
+- **Pinning tests, part 3 (red first, each before its change):**
   - a token without `workspace_id` verifies, and one with `container_id` of another container is refused `credential_container_mismatch`;
   - every renamed code's response, by golden;
   - `container_kind_mismatch` on each of the three create paths;
@@ -527,7 +536,8 @@ In each of these changes, a request that used to succeed can now fail permanentl
   - WIRE-MATRIX rows rewritten.
 - **Risk reason:** high: every client, the token contract, the feed contract, and a `404` on every old path. The mechanism is a rename and a removal, with storage bytes unchanged in derivation. Reversal: a rename back, and another layout reset. Cost: one release in lockstep.
 - **Ledgers, part 1:** exception-growth: seed row added, collect_snapshot re-recorded, fresh_desc row deleted; source-allowances pruned of SEGMENT_IDENTITY_DRIFT; four mechanism tests re-pinned; all under the owner's exception-row delegation, ROW-DECISION-account-removal-2026-11-08 (`~/.streams-k2/analysis/mproj/`), for the owner's review.
-- **Check against commit:** written with part 1; parts 2 and 3 amend it as they land.
+- **Ledgers, part 2:** exception-growth: crate::run's six rows take the gate's after values with the DeploymentIdentity::new fingerprint respelled; the http_rig_build fixture is re-pinned; the mt-audit baseline is regenerated and effective-config's leaf pin is 129; under the owner's exception-row delegation, ROW-DECISION-account-removal-2026-11-08 §A1, for the owner's review.
+- **Check against commit:** written with part 1 and amended by part 2; part 3 amends it as they land.
 
 ## Medium risk (51)
 

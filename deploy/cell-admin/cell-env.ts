@@ -1,9 +1,8 @@
-// `init --cell-env FILE` (public-beta deploy-q5 triage B4): the four
+// `init --cell-env FILE` (public-beta deploy-q5 triage B4): the three
 // per-cell values a cell's stage file (cells/<stage>.env, which the
 // Composer entry reads, deploy/composer/streams/env.ts) takes from the
 // state `init` makes, so the cell's identity and the `iss` its tokens must
-// carry have one source: CELL_ID, PROJECT_ID, ACCOUNT_ID and
-// STREAMS_AUTH_ISSUER. They are set by key, in place, and every other line
+// carry have one source: CELL_ID, PROJECT_ID and STREAMS_AUTH_ISSUER. They are set by key, in place, and every other line
 // stays as it was; the provisioning script writes the rest of the file.
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { AdminError } from "./errors";
@@ -16,13 +15,12 @@ import { type CellConfig, stageFile } from "./state";
 const NEW_FILE_MODE = 0o644;
 
 /// The keys `init` sets, in the order it appends the missing ones.
-export const CELL_ENV_KEYS = ["CELL_ID", "PROJECT_ID", "ACCOUNT_ID", "STREAMS_AUTH_ISSUER"] as const;
+export const CELL_ENV_KEYS = ["CELL_ID", "PROJECT_ID", "STREAMS_AUTH_ISSUER"] as const;
 type Values = Record<(typeof CELL_ENV_KEYS)[number], string>;
 
 const valuesOf = (cell: CellConfig): Values => ({
   CELL_ID: cell.cell_id,
   PROJECT_ID: cell.deployment_project_id,
-  ACCOUNT_ID: cell.account_id,
   STREAMS_AUTH_ISSUER: cell.issuer,
 });
 

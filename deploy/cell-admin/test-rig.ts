@@ -235,8 +235,7 @@ export async function initCell(extra: string[] = []): Promise<Cell> {
   const key = keyFile(root);
   const state = freshState(root);
   const r = await run(
-    "init", "--state", state, "--cell-id", "cell_sc1", "--deployment-project", "proj_deploy",
-    "--account", "acct_sink", "--key-file", key, ...extra,
+    "init", "--state", state, "--cell-id", "cell_sc1", "--deployment-project", "proj_deploy", "--key-file", key, ...extra,
   );
   if (r.code !== 0) throw new Error(`init failed: ${r.err}`);
   return { root, state, key };

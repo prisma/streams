@@ -298,7 +298,7 @@ scale values, stated explicitly; the WAL posture; binary poll defaults (no
 read from the artifact bucket by the `FEEDS_S3_*` names only and
 materialized by app-server into `/tmp/feeds/{keys,policies,grants}.json`,
 refresh 60 s), `BILLING_MODE=required`, `USAGE_STREAM_KEY`, real-shaped
-`ACCOUNT_ID`/`PROJECT_ID`/`CELL_ID` (`acct_`/`proj_`/`cell_` + 24 chars,
+`PROJECT_ID`/`CELL_ID` (`proj_`/`cell_` + 24 chars,
 minted once per cell), `REGION=eu-central-1`, `ROLLUP=1` on `streams-1`,
 `STREAMS_CURSOR_KEY`, a deployment bearer `AUTH_TOKEN` (it gates every
 `/v1/debug` route, `src/http/debug.rs`) and `FLEET_AUTH_MODE=static` with

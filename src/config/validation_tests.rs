@@ -675,6 +675,26 @@ mod validate_boundary_tests {
         );
     }
 
+    /// Edge #253 part 2: usage records no account, so production billing
+    /// needs its container (`PROJECT_ID`) and cell, and no `ACCOUNT_ID`.
+    #[test]
+    fn required_billing_needs_no_account() {
+        let checked = validate_with(
+            |c| {
+                c.billing_mode = "required".into();
+                c.usage_stream_key = Some("k".into());
+                c.project_id = "proj_real".into();
+                c.cell_id = "cell-real".into();
+            },
+            &[],
+        );
+        assert!(
+            checked.is_ok(),
+            "{:?}",
+            checked.err().map(|e| e.to_string())
+        );
+    }
+
     #[test]
     fn validation_rejects_invalid_project_id_and_reserved_tenant() {
         rejects(|c| c.project_id = "bad id!".into(), &[], "PROJECT_ID");
@@ -827,9 +847,8 @@ mod validate_boundary_tests {
             ("PATH_PREFIX", "sc1/"),
         ];
         let mut deployed = shared_cell_profile(&per_cell);
-        // The deployment's own identities, which the deploy also sets.
+        // The deployment's own identity, which the deploy also sets.
         deployed.cli.project_id = "proj_sc1_operator".into();
-        deployed.cli.account_id = "acct_sc1_sink".into();
         let validated = deployed.validate().unwrap_or_else(|e| panic!("{e}"));
         let cli = &validated.config().cli;
         assert!(cli.release_posture);

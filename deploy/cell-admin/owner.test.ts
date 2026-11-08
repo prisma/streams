@@ -450,7 +450,6 @@ for (const kind of STORES) {
       const refused: [string[], string][] = [
         [["--workspace", "wksp_c", "--requests-per-sec", "177"],
           "--requests-per-sec 177 exceeds the cell's ceiling 176"],
-        [["--workspace", "acct_sink"], "workspace acct_sink is the cell's ACCOUNT_ID, the unowned-event sink"],
         [["--workspace", "streams-issuer-canary"], "workspace streams-issuer-canary is the issuer's canary workspace"],
         [["--workspace", "w/x"], '--workspace "w/x" is not a valid id'],
       ];

@@ -46,8 +46,7 @@ export const CUSTOMER_SCOPES = [
 ] as const;
 
 /// The issuer's canary (B1.9; alerting correction 4): one reserved project
-/// per cell, `sp_canary_<cell id>` in its own workspace (never ACCOUNT_ID,
-/// which placement refuses), at 5 requests/s and 1 stream, hidden from
+/// per cell, `sp_canary_<cell id>` in its own workspace, at 5 requests/s and 1 stream, hidden from
 /// every listing. Its catalog-read credential (no secret) lets the issuer
 /// and `cell-admin canary` prove the cell serves a key or a generation,
 /// and offboarding a suspended project prove the cell holds its
@@ -436,8 +435,8 @@ export function placementTally(state: CellState): PlacementTally {
   return tally;
 }
 
-/// Where a project may be placed: not a reserved id, not the cell's
-/// ACCOUNT_ID as workspace, an id never used before (`denylist` is the
+/// Where a project may be placed: not a reserved id, not the issuer's canary
+/// workspace, an id never used before (`denylist` is the
 /// denylist as read before this placement burns the id), and within the
 /// cell's and the workspace's caps. Every project not offboarded counts
 /// toward the cell's max_projects: a project being offboarded still holds
@@ -460,12 +459,6 @@ export function checkPlacement(
   const cell = state.cell;
   if (project === SYSTEM_PROJECT || project === cell.deployment_project_id || isCanary(project)) {
     throw new PlacementRefused("reserved_project", `project ${project} is reserved on cell ${cell.cell_id}`);
-  }
-  if (workspace === cell.account_id) {
-    throw new PlacementRefused(
-      "reserved_workspace",
-      `workspace ${workspace} is the cell's ACCOUNT_ID, the unowned-event sink`,
-    );
   }
   if (workspace === CANARY_WORKSPACE) {
     throw new PlacementRefused("reserved_workspace", `workspace ${workspace} is the issuer's canary workspace`);
