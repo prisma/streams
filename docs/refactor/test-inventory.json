@@ -10216,6 +10216,17 @@
     "scenarios": []
   },
   {
+    "name": "unowned_meter_events_count_the_containers_the_feed_does_not_know",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "4b936c653f9e21a30d71e10aeed537eadb4b35793fab51c0c51aa18225730fcb",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_attribution.rs",
+    "scenarios": []
+  },
+  {
     "name": "unpolled_point_operation_records_nothing",
     "attributes": [
       "#[tokio::test(crate = \"crate::test_rt\")]"

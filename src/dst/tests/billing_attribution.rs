@@ -1,5 +1,6 @@
 //! Billing attribution.
 
+use super::fixture_auth::{auth_rig, mint_token, rig_create};
 use super::fixture_http::{engine_shutdown, http_rig_with_auth_service, install_rollup};
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_storage::mem;
@@ -476,4 +477,46 @@ async fn invoice_reconciliation_balances_and_detects_corruption() {
         dirty.mismatches
     );
     engine_shutdown(&state).await;
+}
+
+/// Under enforce, an unowned meter event is a metered container the feed
+/// does not know (feed lag, a removal mid-sweep), and only that: a known
+/// container counts none, an unknown one counts once per metered call. The
+/// counter is process-wide, so other scenarios may add a few to either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn unowned_meter_events_count_the_containers_the_feed_does_not_know() {
+    let (_svc, state, addr) = auth_rig("proj-known", "ws_known", &["c1"], None).await;
+    let tok = mint_token("c1", "proj-known", "ws_known", 1, 1, "known", 600);
+    rig_create(addr, "known", &tok).await;
+    let sref = crate::tenant::TenantStreamRef::new(
+        crate::tenant::ProjectId::new("proj-known").unwrap(),
+        crate::tenant::CanonicalStreamName::new("known").unwrap(),
+    );
+    let desc = state.registry.get(&sref).await.unwrap().expect("desc");
+    let unowned =
+        || crate::billing::UNOWNED_METER_EVENTS.load(std::sync::atomic::Ordering::Relaxed);
+    let before = unowned();
+    for _ in 0..10_000 {
+        assert_eq!(
+            crate::billing::identity_of(&state, &desc).container_id,
+            "proj-known"
+        );
+    }
+    let grew = unowned() - before;
+    assert!(
+        grew < 10_000,
+        "a known container counted {grew} unowned meter events"
+    );
+    let mut persisted = desc.to_persisted();
+    persisted.project_id = crate::tenant::ProjectId::new("proj-gone").unwrap();
+    let gone = crate::registry::StreamDesc::try_from(persisted).expect("a valid descriptor");
+    let before = unowned();
+    for _ in 0..10_000 {
+        crate::billing::identity_of(&state, &gone);
+    }
+    let counted = unowned() - before;
+    assert!(
+        counted >= 10_000,
+        "a container the feed does not know counted {counted} of 10000"
+    );
 }

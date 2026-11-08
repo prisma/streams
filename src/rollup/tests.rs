@@ -925,3 +925,33 @@ async fn a_correction_that_writes_a_month_row_first_names_its_incarnation() {
         .unwrap();
     assert_eq!(name.incarnations, vec![id().stream_id]);
 }
+
+/// A month-final snapshot marks its segment's month final, and a later live
+/// snapshot of the same month (another drain round of the segment) leaves it
+/// so: the month close extends only a segment no final has reached.
+#[tokio::test(crate = "crate::test_rt")]
+async fn a_month_final_snapshot_marks_its_segment_final_for_good() {
+    let r = mem_rollup("final-seen").await;
+    let aug1 = crate::billing::month_start_ms(2026, 8);
+    let july = |version: u64, final_: bool| {
+        let mut env = snap(version, "2026-07", 10, 5, 100, final_);
+        if let UsagePayload::SegmentSnapshot(s) = &mut env.payload {
+            s.storage_accounted_through_ms = aug1;
+            env.event_id = s.deterministic_event_id();
+        }
+        env
+    };
+    let final_seen = |row: Option<MonthRow>| row.unwrap().segments[&0].final_seen;
+    r.apply_page(&[july(5, true)], "c1").await.unwrap();
+    let row = r
+        .month_row("2026-07", "proj", &id().stream_id)
+        .await
+        .unwrap();
+    assert!(final_seen(row), "the final marks the segment's month");
+    r.apply_page(&[july(6, false)], "c2").await.unwrap();
+    let row = r
+        .month_row("2026-07", "proj", &id().stream_id)
+        .await
+        .unwrap();
+    assert!(final_seen(row), "a later live snapshot leaves it final");
+}
