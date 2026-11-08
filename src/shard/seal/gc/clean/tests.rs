@@ -22,6 +22,7 @@ use std::time::Duration;
 use bytes::Bytes;
 
 use super::super::super::gc_tests::{audit, gc_rig, purge_now, stored, unnamed, whole_chunks};
+use super::super::super::minted;
 use super::super::super::test_hooks::Hold;
 use super::super::super::tests::{Oracle, Rig, append_recorded, read_back, reopen};
 use super::super::CleanHook;
@@ -569,9 +570,6 @@ async fn a_restart_finds_its_candidates_at_the_recount() {
     rig.engine.begin_close();
 }
 
-/// The sibling half's stream: bits `1101…`, outside a child of range `"0"`.
-const SIBLING: [u8; 16] = [0xD0; 16];
-
 /// Turn the rig into a split child of range `"0"`: each object's row counts
 /// only its chunks of streams in the range, as S4's copy rule writes it.
 async fn as_child_of_range_0(rig: &Rig) {
@@ -607,9 +605,13 @@ async fn as_child_of_range_0(rig: &Rig) {
 /// that also hold its sibling's live stream. Once the dead stream is purged,
 /// a pass copies exactly the child's ledger chunks and its decrement equals
 /// the child's count, so every object is released (L2 per range,
-/// S6-DESIGN rev 4 §3.1).
+/// S6-DESIGN rev 6 §3.1). The three streams' hashes are the registry's
+/// entity hashes of streams it routes inside and outside the range.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_child_rewrites_exactly_its_half_of_a_shared_object() {
+    let own = minted::stream_routed("0", true, "ledger");
+    let dead_hash = minted::stream_routed("0", true, "dead");
+    let sibling_hash = minted::stream_routed("0", false, "sibling");
     let oracle = Mutex::new(Oracle::new());
     let sibling = Mutex::new(Oracle::new());
     let small = |i: usize| vec![Bytes::from(vec![u8::try_from(i).unwrap(); 32])];
@@ -621,17 +623,17 @@ async fn a_child_rewrites_exactly_its_half_of_a_shared_object() {
     });
     let dead = Mutex::new(Oracle::new());
     for i in 0..3 {
-        append_recorded(&rig.engine, &oracle, LEDGER, small(i)).await;
-        append_recorded(&rig.engine, &dead, DEAD, big(i)).await;
+        append_recorded(&rig.engine, &oracle, own, small(i)).await;
+        append_recorded(&rig.engine, &dead, dead_hash, big(i)).await;
         let other = vec![Bytes::from(vec![0xAA; 64])];
-        append_recorded(&rig.engine, &sibling, SIBLING, other).await;
+        append_recorded(&rig.engine, &sibling, sibling_hash, other).await;
         rig.engine
             .seal_once(crate::shard::seal::Trigger::Requested)
             .await
             .expect("seal");
     }
     as_child_of_range_0(&rig).await;
-    purge_now(&rig.engine, DEAD).await;
+    purge_now(&rig.engine, dead_hash).await;
     assert_eq!(rig.engine.gc_state().clean.len(), 3, "each a candidate");
     let report = rig.engine.clean_pass().await.unwrap();
     assert_eq!(
@@ -649,7 +651,13 @@ async fn a_child_rewrites_exactly_its_half_of_a_shared_object() {
         .inexact
         .load(std::sync::atomic::Ordering::Relaxed);
     assert_eq!(inexact, 0);
-    read_back(&rig.engine, LEDGER, &ledger(&oracle), Deliver::Durable)
+    let acked = oracle
+        .lock()
+        .unwrap()
+        .get(&own)
+        .cloned()
+        .unwrap_or_default();
+    read_back(&rig.engine, own, &acked, Deliver::Durable)
         .await
         .unwrap();
     rig.engine.begin_close();

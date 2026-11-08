@@ -267,11 +267,13 @@ fn a_fold_and_a_merge_keep_the_newer_of_two_chunks_of_one_span() {
 
 /// A split child (range `"0"`) merges run-index objects that also list its
 /// sibling's streams: the merged object keeps only the child's own streams
-/// (S6-DESIGN rev 4 §3.1), so it never carries the other half's entries.
+/// (S6-DESIGN rev 6 §3.1), so it never carries the other half's entries.
+/// The streams' hashes are the registry's entity hashes of a stream it
+/// routes inside the range and one it routes outside.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_childs_merge_keeps_only_its_own_ranges_streams() {
-    const OWN: [u8; 16] = [0x3E; 16];
-    const SIBLING: [u8; 16] = [0xD0; 16];
+    let own = crate::shard::seal::minted::stream_routed("0", true, "own");
+    let sibling = crate::shard::seal::minted::stream_routed("0", false, "sibling");
     let rig = rig_with("merge-range", manual(), 0, Duration::from_millis(2)).await;
     rig.engine.layout.seal.fold.configure(|s| {
         s.fan_in = [2, 2];
@@ -280,14 +282,14 @@ async fn a_childs_merge_keeps_only_its_own_ranges_streams() {
     let oracle = std::sync::Mutex::new(crate::shard::seal::tests::Oracle::new());
     let mut rng = StdRng::seed_from_u64(0x3E7);
     for _ in 0..2 {
-        for hash in [OWN, SIBLING] {
+        for hash in [own, sibling] {
             let records = vec![random_bytes(&mut rng, 300)];
             append_recorded(&rig.engine, &oracle, hash, records).await;
         }
         rig.engine.seal_once(Trigger::Requested).await.unwrap();
         rig.engine.fold_once().await.unwrap();
     }
-    assert_eq!(rig.engine.index_entries(SIBLING).await.unwrap().len(), 2);
+    assert_eq!(rig.engine.index_entries(sibling).await.unwrap().len(), 2);
     *rig.engine.gc_state().range_override.lock().unwrap() =
         Some(crate::keyspace::range::Range::of("0"));
     rig.engine
@@ -300,9 +302,9 @@ async fn a_childs_merge_keeps_only_its_own_ranges_streams() {
         1,
         "one merged object"
     );
-    assert_eq!(rig.engine.index_entries(OWN).await.unwrap().len(), 2);
+    assert_eq!(rig.engine.index_entries(own).await.unwrap().len(), 2);
     assert_eq!(
-        rig.engine.index_entries(SIBLING).await.unwrap(),
+        rig.engine.index_entries(sibling).await.unwrap(),
         Vec::<DirEntry>::new(),
         "the sibling's entries are not carried"
     );

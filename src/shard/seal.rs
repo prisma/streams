@@ -74,6 +74,8 @@ mod gc_tests;
 mod lifecycle_tests;
 #[cfg(test)]
 mod memory_tests;
+#[cfg(test)]
+mod minted;
 mod open;
 #[cfg(test)]
 mod range_tests;
