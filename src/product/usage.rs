@@ -123,10 +123,6 @@ impl crate::rollup::UsageRollup {
 /// Control-plane metadata: bearer-authorized, NO record key required,
 /// answered from the rollup with a point read (never a ledger scan).
 #[expect(
-    clippy::unwrap_used,
-    reason = "product_usage; the month was parsed once at admission, so parsing it again cannot fail; a fallible re-parse would turn an already accepted request into a spurious error"
-)]
-#[expect(
     clippy::too_many_lines,
     clippy::cast_sign_loss,
     clippy::cast_possible_truncation,
@@ -165,7 +161,7 @@ pub(super) async fn product_usage(
     let (cy, cm) = crate::billing::utc_year_month(now);
     let current = crate::billing::month_str(cy, cm);
     let month = q.get("month").cloned().unwrap_or_else(|| current.clone());
-    if crate::billing::parse_month(&month).is_none() {
+    let Some((year, mon)) = crate::billing::parse_month(&month) else {
         return perr(
             StatusCode::BAD_REQUEST,
             "invalid_month",
@@ -173,7 +169,7 @@ pub(super) async fn product_usage(
             None,
             false,
         );
-    }
+    };
     let (id, row) = match rollup
         .usage_row(
             &month,
@@ -197,10 +193,7 @@ pub(super) async fn product_usage(
             Ok(states) => states,
             Err(error) => return usage_unavailable(&error),
         };
-        let mstart = {
-            let (y, m) = crate::billing::parse_month(&month).unwrap();
-            crate::billing::month_start_ms(y, m)
-        };
+        let mstart = crate::billing::month_start_ms(year, mon);
         let bms: u128 = states
             .iter()
             .map(|s| {
@@ -220,9 +213,8 @@ pub(super) async fn product_usage(
         row.storage_byte_ms()
     };
     let month_ms = {
-        let (y, m) = crate::billing::parse_month(&month).unwrap();
-        let (ny, nm) = crate::billing::next_month(y, m);
-        (crate::billing::month_start_ms(ny, nm) - crate::billing::month_start_ms(y, m)) as u128
+        let (ny, nm) = crate::billing::next_month(year, mon);
+        (crate::billing::month_start_ms(ny, nm) - crate::billing::month_start_ms(year, mon)) as u128
     };
     let avg_bytes = byte_ms / month_ms.max(1);
     let gb_month = byte_ms as f64 / month_ms as f64 / 1e9;
