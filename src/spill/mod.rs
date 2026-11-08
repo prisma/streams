@@ -12,8 +12,7 @@ pub(crate) mod crc32c;
 pub(crate) mod directory;
 pub(crate) mod estimate;
 pub(crate) mod gc;
-// The lineage objects' paths are production (the split's claimant deletes an abandoned split's
-// lists); the codec and the release logs build for their tests until S6's collector writes them.
+// The lineage bodies: S6's collector writes the release logs, S4's split the reference lists.
 pub(crate) mod lineage;
 pub(crate) mod metrics;
 pub(crate) mod object;

@@ -26,6 +26,9 @@ use crate::spill::gc::ObjectKind;
 const VERSION: u8 = 1;
 const ENTRY: usize = 17;
 
+/// Most entries in one release log.
+pub(crate) const RELEASE_LOG_MAX: usize = 4096;
+
 /// One of an ancestor's objects: its kind, epoch and seq.
 pub(crate) type Entry = (ObjectKind, u64, u64);
 
@@ -48,8 +51,8 @@ pub(crate) fn encode(entries: &[Entry]) -> Vec<u8> {
     body
 }
 
-#[cfg(test)]
 /// A body's entries; `None` for a body that is not one `encode` wrote.
+#[cfg(test)]
 pub(crate) fn decode(body: &[u8]) -> Option<Vec<Entry>> {
     let (head, crc) = body.split_last_chunk::<4>()?;
     if crc32c(head) != u32::from_be_bytes(*crc) {
@@ -79,7 +82,6 @@ pub(crate) fn decode(body: &[u8]) -> Option<Vec<Entry>> {
     Some(out)
 }
 
-#[cfg(test)]
 /// The release log `<seq>` of opening `epoch` of `holder` under `root`.
 pub(crate) fn release_log_path(root: &str, holder: u32, epoch: u64, seq: u64) -> String {
     format!("{root}/lineage/rel/{holder}/{epoch:020}-{seq:020}")
@@ -97,7 +99,6 @@ pub(crate) fn supplementary_list_path(root: &str, holder: u32) -> String {
     format!("{root}/lineage/refs/{holder}-d")
 }
 
-#[cfg(test)]
 /// `holder`'s released-all marker under `root`.
 pub(crate) fn released_all_path(root: &str, holder: u32) -> String {
     format!("{root}/lineage/rel/{holder}/all")

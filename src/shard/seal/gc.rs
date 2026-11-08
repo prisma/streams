@@ -42,6 +42,7 @@ mod gate_tests;
 #[cfg(test)]
 mod pass_tests;
 pub(crate) mod purge;
+mod release;
 #[cfg(test)]
 mod release_tests;
 #[cfg(test)]
@@ -184,6 +185,8 @@ pub(crate) struct GcState {
     /// When this opening's collector started: a `'G'` row found then is
     /// due no sooner than one grace later (a fenced owner's reads).
     opened_ms: AtomicU64,
+    /// The next release log's sequence in this opening (`release`).
+    release_seq: AtomicU64,
     pub(crate) counters: GcCounters,
     /// The cleaner's candidates (`clean`).
     pub(crate) clean: clean::Candidates,
@@ -671,10 +674,13 @@ impl ShardEngine {
         }
         let garbage = gc.garbage_signal.load(Ordering::SeqCst);
         if garbage > 0 {
-            match self.collect_counted().await {
-                Ok((_, 0)) => lower(&gc.garbage_signal, garbage),
-                Ok(_) => {}
-                Err(e) => tracing::warn!(shard = %self.prefix, "garbage pass stopped: {e}"),
+            let collected = self.collect_counted().await;
+            let released = self.log_releases().await;
+            match (collected, released) {
+                (Ok((_, 0)), Ok((_, 0))) => lower(&gc.garbage_signal, garbage),
+                (Err(e), _) => tracing::warn!(shard = %self.prefix, "garbage pass stopped: {e}"),
+                (_, Err(e)) => tracing::warn!(shard = %self.prefix, "release pass stopped: {e}"),
+                _ => {}
             }
         }
         if let Err(e) = self.clean_pass().await {

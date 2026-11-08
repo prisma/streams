@@ -183,7 +183,6 @@ pub(crate) fn release_prefix(home: u32) -> Vec<u8> {
 }
 
 /// The object an `'E'` key names (`release_key`'s inverse).
-#[cfg(test)]
 pub(crate) fn parse_release_key(key: &[u8]) -> Option<(ObjectKind, ObjectId)> {
     let rest = key.strip_prefix(&crate::spill::runindex::sentinel_prefix(RELEASE_TAG)[..])?;
     let (home, rest) = rest.split_first_chunk::<4>()?;
@@ -205,7 +204,6 @@ pub(crate) fn encode_release(r: &Release) -> Vec<u8> {
     v
 }
 
-#[cfg(test)]
 pub(crate) fn decode_release(raw: &[u8]) -> Option<Release> {
     let (&ver, mut input) = raw.split_first()?;
     let mut next = || get_varint(&mut input);
