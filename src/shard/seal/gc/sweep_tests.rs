@@ -184,7 +184,7 @@ async fn a_decrement_that_zeroes_another_homes_row_stages_no_garbage() {
     let decrements: gc::Decrements = [(own, (1, 1)), (other, (1, 1))].into();
     let mut batch = WriteBatch::new();
     let zeroed = rig.engine.stage_decrements(&mut batch, &decrements).await;
-    assert_eq!(zeroed.unwrap(), [own]);
+    assert_eq!(zeroed.unwrap(), [own, other], "a read pins both");
     rig.engine.db.write(batch).await.unwrap();
     let garbage = rig.engine.garbage_rows().await.unwrap();
     assert_eq!(garbage.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [own]);

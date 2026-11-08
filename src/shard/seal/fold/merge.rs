@@ -145,9 +145,11 @@ impl ShardEngine {
         let inputs: Vec<ObjectId> = read.iter().map(|i| i.pointer.id).collect();
         for i in &read {
             batch.delete(runindex::pointer_key(i.pointer.id));
-            batch.put(
-                crate::spill::gc::garbage_key(i.pointer.id),
-                self.retired_index_garbage(i.pointer.len),
+            self.stage_unreferenced(
+                &mut batch,
+                crate::spill::gc::ObjectKind::RunIndex,
+                i.pointer.id,
+                i.pointer.len,
             );
         }
         self.retiring_index(&inputs);

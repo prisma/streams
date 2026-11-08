@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 use slatedb::WriteBatch;
 
 use crate::shard::ShardEngine;
-use crate::spill::gc::{self, Decrements, Garbage, ObjectKind, Refcount};
+use crate::spill::gc::{self, Decrements, Garbage, ObjectKind, Refcount, Release};
 use crate::spill::object::ObjectId;
 
 pub(crate) mod clean;
@@ -42,6 +42,8 @@ mod gate_tests;
 #[cfg(test)]
 mod pass_tests;
 pub(crate) mod purge;
+#[cfg(test)]
+mod release_tests;
 #[cfg(test)]
 mod root_tests;
 mod sweep;
@@ -459,17 +461,15 @@ impl ShardEngine {
     }
 
     /// Stage `decrements` of `'R'` rows into `batch` (the caller holds
-    /// `refs`): each row less its decrement, or deleted with a `'G'` row
-    /// when it reaches zero. Returns the objects zeroed. A row that is
+    /// `refs`): each row less its decrement, or deleted when it reaches zero,
+    /// with a `'G'` or `'E'` row (`stage_unreferenced`). Returns the objects
+    /// zeroed. A row that is
     /// missing or would go below zero refuses the whole batch.
     pub(crate) async fn stage_decrements(
         &self,
         batch: &mut WriteBatch,
         decrements: &Decrements,
     ) -> Result<Vec<ObjectId>, GcError> {
-        let due = crate::shard::now_ms()
-            .unsigned_abs()
-            .saturating_add(duration_ms(self.gc_state().settings().grace));
         let mut zeroed = Vec::new();
         for (id, by) in decrements {
             let key = gc::refcount_key(*id);
@@ -490,20 +490,10 @@ impl ShardEngine {
                 )));
             };
             let gc = self.gc_state();
-            if next.live_chunks == 0 && id.home != self.home() {
-                // Another home's object is never this shard's garbage: its last reference here
-                // goes, and its lineage releases the object (S3a §3.2, S6's 'E').
+            if next.live_chunks == 0 {
                 gc.clean.forget(*id);
                 batch.delete(&key);
-            } else if next.live_chunks == 0 {
-                gc.clean.forget(*id);
-                batch.delete(&key);
-                let g = Garbage {
-                    kind: ObjectKind::Segment,
-                    object_len: next.object_len,
-                    due_ms: due,
-                };
-                batch.put(gc::garbage_key(*id), gc::encode_garbage(&g));
+                self.stage_unreferenced(batch, ObjectKind::Segment, *id, next.object_len);
                 zeroed.push(*id);
             } else {
                 let now = crate::shard::now_ms().unsigned_abs();
@@ -550,16 +540,35 @@ impl ShardEngine {
         self.gc_state().counters.inexact.load(Ordering::Relaxed)
     }
 
-    /// The `'G'` row a merge writes for a run-index object it merged away.
-    pub(crate) fn retired_index_garbage(&self, object_len: u64) -> Vec<u8> {
-        let due = crate::shard::now_ms()
-            .unsigned_abs()
-            .saturating_add(duration_ms(self.gc_state().settings().grace));
-        gc::encode_garbage(&Garbage {
-            kind: ObjectKind::RunIndex,
-            object_len,
-            due_ms: due,
-        })
+    /// Stage what follows the loss of `id`'s last reference here (S6-DESIGN
+    /// §3.2), due after the grace: an own object becomes `'G'` garbage, another
+    /// home's (an ancestor's) a pending release `'E'`, never this shard's
+    /// garbage (L1). The caller reports `id` as zeroed either way, so a read
+    /// that may hold it pins it.
+    pub(crate) fn stage_unreferenced(
+        &self,
+        batch: &mut WriteBatch,
+        kind: ObjectKind,
+        id: ObjectId,
+        object_len: u64,
+    ) {
+        let now = crate::shard::now_ms().unsigned_abs();
+        let due_ms = now.saturating_add(duration_ms(self.gc_state().settings().grace));
+        if id.home == self.home() {
+            let g = Garbage {
+                kind,
+                object_len,
+                due_ms,
+            };
+            batch.put(gc::garbage_key(id), gc::encode_garbage(&g));
+        } else {
+            let r = Release {
+                object_len,
+                zero_ms: now,
+                due_ms,
+            };
+            batch.put(gc::release_key(kind, id), gc::encode_release(&r));
+        }
     }
 
     /// A merge is about to retire `ids`: any running read pins them.

@@ -20,6 +20,11 @@
 //!   stream ending below `head` is dead; every dead chunk starting below
 //!   `reclaimed` was decremented already.
 //! - `'L' ‖ kind:u8` → the orphan sweep's LIST cursor for that prefix.
+//! - `'E' ‖ home BE ‖ kind:u8 ‖ epoch BE ‖ seq BE`, one per object of another
+//!   home (an ancestor's) whose last reference here is gone, until the
+//!   collector logs its release under that home (S6-DESIGN §3.2) → `ver:u8=1
+//!   object_len:varint zero_ms:varint due_ms:varint`. Never garbage: only the
+//!   ancestor's lineage sweeper deletes it (L1).
 
 // S4's split is its caller (S6's merge sums the same type) (S3a §2.8).
 pub(crate) mod recompute;
@@ -32,6 +37,7 @@ use crate::spill::runindex::tiling::{Span, drop_covered, sort_for_drop};
 pub(crate) const GARBAGE_TAG: u8 = crate::keyspace::tag::GARBAGE;
 pub(crate) const HEAD_TAG: u8 = crate::keyspace::tag::HEAD;
 pub(crate) const SWEEP_TAG: u8 = crate::keyspace::tag::CURSOR;
+pub(crate) const RELEASE_TAG: u8 = crate::keyspace::tag::RELEASE;
 const VERSION: u8 = 1;
 
 /// A segment object's unreclaimed chunks.
@@ -147,6 +153,68 @@ pub(crate) fn decode_garbage(raw: &[u8]) -> Option<Garbage> {
         due_ms: get_varint(&mut input)?,
     };
     (ver == VERSION && input.is_empty()).then_some(g)
+}
+
+/// An ancestor object this shard no longer references, awaiting its logged
+/// release once `due_ms` passed and no read that may hold it is running.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Release {
+    pub(crate) object_len: u64,
+    /// When the last reference went (wall clock, for the operator's age).
+    pub(crate) zero_ms: u64,
+    pub(crate) due_ms: u64,
+}
+
+/// `'E'`'s key: the object's home first, so one home's pending releases are
+/// one prefix (`release_prefix`).
+pub(crate) fn release_key(kind: ObjectKind, id: ObjectId) -> Vec<u8> {
+    let mut k = release_prefix(id.home);
+    k.push(kind.byte());
+    k.extend_from_slice(&id.epoch.to_be_bytes());
+    k.extend_from_slice(&id.seq.to_be_bytes());
+    k
+}
+
+/// The prefix of every `'E'` row of `home`'s objects.
+pub(crate) fn release_prefix(home: u32) -> Vec<u8> {
+    let mut k = crate::spill::runindex::sentinel_prefix(RELEASE_TAG);
+    k.extend_from_slice(&home.to_be_bytes());
+    k
+}
+
+/// The object an `'E'` key names (`release_key`'s inverse).
+#[cfg(test)]
+pub(crate) fn parse_release_key(key: &[u8]) -> Option<(ObjectKind, ObjectId)> {
+    let rest = key.strip_prefix(&crate::spill::runindex::sentinel_prefix(RELEASE_TAG)[..])?;
+    let (home, rest) = rest.split_first_chunk::<4>()?;
+    let (&kind, rest) = rest.split_first()?;
+    let (epoch, seq) = rest.split_first_chunk::<8>()?;
+    let id = ObjectId {
+        home: u32::from_be_bytes(*home),
+        epoch: u64::from_be_bytes(*epoch),
+        seq: u64::from_be_bytes(seq.try_into().ok()?),
+    };
+    Some((ObjectKind::of(kind)?, id))
+}
+
+pub(crate) fn encode_release(r: &Release) -> Vec<u8> {
+    let mut v = vec![VERSION];
+    for n in [r.object_len, r.zero_ms, r.due_ms] {
+        put_varint(&mut v, n);
+    }
+    v
+}
+
+#[cfg(test)]
+pub(crate) fn decode_release(raw: &[u8]) -> Option<Release> {
+    let (&ver, mut input) = raw.split_first()?;
+    let mut next = || get_varint(&mut input);
+    let r = Release {
+        object_len: next()?,
+        zero_ms: next()?,
+        due_ms: next()?,
+    };
+    (ver == VERSION && input.is_empty()).then_some(r)
 }
 
 /// Where a dead stream's purge stands.

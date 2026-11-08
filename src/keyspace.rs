@@ -109,6 +109,8 @@ pub(crate) mod tag {
     pub(crate) const USAGE_DIRTY: u8 = b'M';
     /// The repair marker: the next open recomputes `'W'` and `'M'` from every tail.
     pub(crate) const REPAIR: u8 = b'X';
+    /// An ancestor object whose last reference here is gone, until its release is logged (S6).
+    pub(crate) const RELEASE: u8 = b'E';
 }
 
 /// The home of the shard at `prefix` (S3a-DESIGN §3.1): a static topology's shards are its
@@ -198,7 +200,7 @@ mod tests {
         b'D', // queue debt index (reserved for #150)
         b'Z', // queue trim hints (S3b)
         b'N', // queue-state gauges (S3b)
-        b'E', // lineage pending release (S6)
+        super::tag::RELEASE,
         b'C', // lineage-sweep cursor (S6)
         b'T', // retired parent (S4)
     ];
@@ -342,6 +344,10 @@ mod tests {
                 hex(gc::sweep_key(gc::ObjectKind::RunIndex)),
                 format!("{ff}4c01"),
             ),
+            (
+                hex(gc::release_key(gc::ObjectKind::RunIndex, id)),
+                format!("{ff}450000000201{own}"),
+            ),
         ];
         for (key, want) in pinned {
             assert_eq!(key, want);
@@ -357,6 +363,12 @@ mod tests {
         let garbage = gc::garbage_key(id);
         assert_eq!(gc::parse_garbage_key(2, &garbage), Some(id));
         assert_eq!(gc::parse_garbage_key(5, &garbage).map(|o| o.home), Some(5));
+        let release = gc::release_key(gc::ObjectKind::Segment, id);
+        assert_eq!(
+            gc::parse_release_key(&release),
+            Some((gc::ObjectKind::Segment, id))
+        );
+        assert!(release.starts_with(&gc::release_prefix(2)));
     }
 
     #[test]
