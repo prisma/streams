@@ -113,3 +113,13 @@ test("a stream refused past the budget is unresolved, with its reason class coun
   const rg = await resolve(g.http, ledger(5, 5), new Map(), FAST(60_000));
   expect([g.seen.reads, rg!.reasons]).toEqual([1, { "404 stream_not_found": 1 }]);
 }, 30_000);
+
+test("a failed read's detail carries the server's message when it says more than the code", async () => {
+  const { failureDetail } = await import("./common.ts");
+  const body = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
+  const r500 = { status: 500, headers: null, ms: 1, body: body({ error: { code: "internal", message: "storage: manifest read failed" } }) };
+  expect(failureDetail(r500)).toBe("500 internal: storage: manifest read failed");
+  const r429 = { status: 429, headers: null, ms: 1, body: body({ error: { code: "project_rate_limit", message: "project_rate_limit" } }) };
+  expect(failureDetail(r429)).toBe("429 project_rate_limit");
+  expect(failureDetail({ status: 0, headers: null, ms: 1, body: new Uint8Array(), error: "timeout: x" })).toBe("transport timeout");
+});

@@ -36,7 +36,7 @@
 // read latency per page), so the rig's meter checks apply unchanged.
 
 import { readFileSync } from "node:fs";
-import { READ_BACK, Rng, Zipf, encName, failureClass, pool, productHeader, readRefused, sleep, streamName, type ReadBack, type StreamTally } from "./common.ts";
+import { READ_BACK, Rng, Zipf, encName, failureClass, failureDetail, pool, productHeader, readRefused, sleep, streamName, type ReadBack, type StreamTally } from "./common.ts";
 import { PayloadGen, payloadKind } from "./corpus.ts";
 import { countOracle, type Owner } from "./oracle.ts";
 import type { Ctx } from "./produce.ts";
@@ -293,7 +293,7 @@ async function auditStream(
       if (++failures === 1) since = performance.now();
       const spent = performance.now() - since;
       if (spent >= rb.budgetMs || signal.aborted) {
-        throw new AuditReadError(name, `${failures} failed reads over ${(spent / 1000).toFixed(1)}s, last ${cls}`, cls);
+        throw new AuditReadError(name, `${failures} failed reads over ${(spent / 1000).toFixed(1)}s, last ${failureDetail(r)}`, cls);
       }
       await sleep(rb.delayMs(r, failures), signal);
       continue;

@@ -756,6 +756,19 @@ export function failureClass(r: Resp): string {
   return r.status === 0 ? `transport ${(r.error ?? "").split(":", 1)[0] || "failed"}` : `${r.status} ${errCode(r) || "-"}`;
 }
 
+/** failureClass plus the server's message when it says more than the code
+ * (a 500's message names the storage error behind it), at most 200 chars. */
+export function failureDetail(r: Resp): string {
+  const cls = failureClass(r);
+  if (r.status === 0) return cls;
+  try {
+    const m = (JSON.parse(utf8(r.body)) as { error?: { code?: string; message?: string } }).error;
+    return m?.message && m.message !== m.code ? `${cls}: ${m.message.slice(0, 200)}` : cls;
+  } catch {
+    return cls;
+  }
+}
+
 /** A refused read the cell will answer the same again: a 4xx other than
  * 408 and 429. Everything else (408, 429, 5xx, a transport failure) is
  * asked again within the budget. */
