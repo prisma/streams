@@ -120,6 +120,48 @@ pub(super) async fn billing_clock_past(at: i64) {
     }
 }
 
+/// A usage answer's storage is above zero, and its average and GB-month are
+/// that storage over its month's millisecond length. The answer reports
+/// whole byte-seconds `s`, so the exact byte-ms lies in
+/// `[s * 1000, s * 1000 + 999]` and each figure in that range over the month.
+pub(super) fn storage_over_month(v: &serde_json::Value) {
+    let seconds = v["storageByteSeconds"]
+        .as_str()
+        .expect("storageByteSeconds");
+    let byte_s: u128 = seconds.parse().expect("whole byte-seconds");
+    assert!(
+        byte_s > 0,
+        "provisional storage extrapolates from the gauge"
+    );
+    let month = v["month"].as_str().expect("month");
+    let (year, mon) = crate::billing::parse_month(month).expect("YYYY-MM");
+    let (ny, nm) = crate::billing::next_month(year, mon);
+    let span = crate::billing::month_start_ms(ny, nm) - crate::billing::month_start_ms(year, mon);
+    let month_ms = u32::try_from(span).expect("a month's ms fit in u32");
+    assert!(
+        (28 * 86_400_000..=31 * 86_400_000).contains(&month_ms),
+        "{month}: {month_ms} ms"
+    );
+    let (lo, hi) = (byte_s * 1000, byte_s * 1000 + 999);
+    let avg = u128::from(
+        v["averageStoredBytes"]
+            .as_u64()
+            .expect("averageStoredBytes"),
+    );
+    let wide = u128::from(month_ms);
+    assert!(
+        (lo / wide..=hi / wide).contains(&avg),
+        "averageStoredBytes {avg} outside [{lo}, {hi}] / {month_ms}"
+    );
+    let gb = v["gbMonth"].as_f64().expect("gbMonth");
+    let lo_gb = seconds.parse::<f64>().expect("byte-seconds") * 1000.0 / f64::from(month_ms) / 1e9;
+    let hi_gb = lo_gb + 999.0 / f64::from(month_ms) / 1e9;
+    assert!(
+        gb >= lo_gb * (1.0 - 1e-9) && gb <= hi_gb * (1.0 + 1e-9),
+        "gbMonth {gb} outside [{lo_gb}, {hi_gb}]"
+    );
+}
+
 /// Drains until none of `ids` is dirty on `engine`. A row acked CLEAN is
 /// never revisited by the dirty-row reconciler: only the walk or the debt
 /// pass can close it.

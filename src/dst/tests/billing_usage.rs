@@ -1,5 +1,6 @@
 //! Billing usage.
 
+use super::fixture_billing::storage_over_month;
 use super::fixture_http::{engine_shutdown, http_rig, install_read_spool, install_rollup};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_storage::mem;
@@ -527,15 +528,7 @@ async fn usage_pipeline_end_to_end_exactly_once() {
     assert_eq!(v["appendRequests"], 2);
     assert_eq!(v["status"], "provisional");
     assert!(v["ownedStoredBytesNow"].as_u64().unwrap() > 2 * p1.len() as u64);
-    assert!(
-        v["storageByteSeconds"]
-            .as_str()
-            .unwrap()
-            .parse::<u128>()
-            .unwrap()
-            > 0,
-        "provisional storage extrapolates from the gauge"
-    );
+    storage_over_month(&v);
 
     // REPLAY the rollup from cursor zero — the design's §16 crash case
     // (rows written, cursor lost). Re-application must be a no-op.

@@ -10246,7 +10246,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "6d8e238d525b0fb5b15f536947614006b350c5847647f222c822bf658382f107",
+    "function_sha256": "033c526f20c75df77734ac2cf836cdbd623bb78c30551a366130dcf785696486",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_usage.rs",
