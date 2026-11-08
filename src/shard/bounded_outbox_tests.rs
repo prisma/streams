@@ -87,3 +87,68 @@ async fn r09_dirty_and_final_pages_are_bounded_and_partial_ack_preserves_debt() 
     engine.begin_close();
     let _ = db.close().await;
 }
+
+/// The usage debt index follows a stream's month finals (S3a-DESIGN rev 3 §2.5): an ack keeps the
+/// stream on it while another final remains, even one written after the drain read its page, and
+/// the ack of the last takes it off, so the debt probe answers no only when no final is left.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn the_usage_debt_index_follows_the_finals() {
+    let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let db = Arc::new(
+        crate::keyspace::db_builder("debt-index", store.clone())
+            .build()
+            .await
+            .unwrap(),
+    );
+    let hash = [0x5a; 16];
+    let finals = [7, 8, 9].map(|m| crate::billing::usage_month_final_key(&hash, 2026, m));
+    let mut batch = WriteBatch::new();
+    for key in &finals[..2] {
+        batch.put(key, b"{}");
+    }
+    batch.put(crate::billing::usage_debt_key(&hash), b"");
+    db.write(batch).await.unwrap();
+    let engine = ShardEngine::start(
+        "debt-index".into(),
+        db.clone(),
+        store,
+        ShardConfig::default(),
+        None,
+        Default::default(),
+    );
+    let ack = |keys: &[Vec<u8>]| CommitOp::UsageAck {
+        hash,
+        scope: UsageAckScope::FinalRowsOnly,
+        month_final_keys: keys.to_vec(),
+    };
+    assert_eq!(engine.usage_debt_index().await.unwrap(), [hash]);
+    engine.commit_group(vec![ack(&finals[..1])]).await;
+    assert_eq!(
+        engine.usage_debt_index().await.unwrap(),
+        [hash],
+        "July's ack: August remains"
+    );
+    // September closes after the drain read its page of August alone.
+    let mut late = WriteBatch::new();
+    late.put(&finals[2], b"{}");
+    late.put(crate::billing::usage_debt_key(&hash), b"");
+    db.write(late).await.unwrap();
+    engine.commit_group(vec![ack(&finals[1..2])]).await;
+    assert_eq!(
+        engine.usage_debt_index().await.unwrap(),
+        [hash],
+        "August's ack: September remains"
+    );
+    assert!(engine.has_billing_debt().await.unwrap());
+    engine.commit_group(vec![ack(&finals[2..])]).await;
+    assert_eq!(
+        engine.usage_debt_index().await.unwrap(),
+        Vec::<[u8; 16]>::new()
+    );
+    assert!(engine.usage_month_finals().await.unwrap().is_empty());
+    assert!(
+        !engine.has_billing_debt().await.unwrap(),
+        "no final left: no debt"
+    );
+    engine.begin_close();
+}

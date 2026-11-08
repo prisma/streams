@@ -27,14 +27,15 @@ impl ShardEngine {
     }
 
     /// Presence probe for residency decisions: the usage dirty set, then
-    /// at most one month-final row, including orphaned ones.
+    /// at most one row of the usage debt index (a stream holding a month
+    /// final, orphaned ones included).
     pub(crate) async fn has_billing_debt(&self) -> anyhow::Result<bool> {
         self.seal_ready().await?;
         if self.layout.usage_dirty() {
             return Ok(true);
         }
-        let mut prefix = crate::billing::USAGE_DIRTY_SENTINEL.to_vec();
-        prefix.push(b'V');
+        let mut prefix = crate::keyspace::SENTINEL.to_vec();
+        prefix.push(crate::keyspace::tag::USAGE_DEBT);
         Ok(self
             .db
             .scan_prefix(prefix, ..)
@@ -56,6 +57,25 @@ impl ShardEngine {
         Ok(self.layout.usage_page(after, limit))
     }
 
+    /// Whether `hash` holds a month final other than `besides`, the keys an
+    /// ack deletes in this group: its debt index row stays while it does
+    /// (S3a-DESIGN §2.5). A read error keeps the row: a stale row costs a
+    /// probe, a missing one parks a shard that still owes the ledger.
+    pub(crate) async fn holds_finals_besides(&self, hash: [u8; 16], besides: &[Vec<u8>]) -> bool {
+        let prefix = crate::keyspace::finals_row(&hash, 0);
+        let Ok(mut rows) = self.db.scan_prefix(&prefix, ..).await else {
+            return true;
+        };
+        loop {
+            match rows.next().await {
+                Ok(Some(kv)) if !besides.iter().any(|k| k[..] == kv.key[..]) => return true,
+                Ok(Some(_)) => {}
+                Ok(None) => return false,
+                Err(_) => return true,
+            }
+        }
+    }
+
     /// Bounded finals for a single dirty segment. More finals keep it in the
     /// usage dirty set even after this page's exact keys are acked.
     pub(crate) async fn usage_month_finals_page(
@@ -64,9 +84,7 @@ impl ShardEngine {
         limit: usize,
     ) -> anyhow::Result<(Vec<(Vec<u8>, crate::billing::SegmentSnapshot)>, bool)> {
         anyhow::ensure!(limit > 0, "final page limit must be positive");
-        let mut prefix = crate::billing::USAGE_DIRTY_SENTINEL.to_vec();
-        prefix.push(b'V');
-        prefix.extend_from_slice(&hash);
+        let prefix = crate::keyspace::finals_row(&hash, 0);
         let mut scan = self.db.scan_prefix(&prefix, ..).await?;
         let mut rows = Vec::new();
         while let Some(kv) = scan.next().await? {
@@ -196,19 +214,38 @@ impl ShardEngine {
             .expect("valid billing metadata in fixture")
     }
 
-    /// Closed-month final snapshots awaiting ledger acknowledgment
-    /// (sentinel-'V' rows): (exact key, snapshot).
+    /// Closed-month final snapshots awaiting ledger acknowledgment, of every
+    /// stream on the debt index: (exact key, snapshot).
     #[cfg(test)]
     pub(crate) async fn usage_month_finals(
         &self,
     ) -> anyhow::Result<Vec<(Vec<u8>, crate::billing::SegmentSnapshot)>> {
-        let mut pfx = Vec::with_capacity(18);
-        pfx.extend_from_slice(&crate::billing::USAGE_DIRTY_SENTINEL);
-        pfx.push(b'V');
         let mut out = Vec::new();
-        let mut iter = self.db.scan_prefix(&pfx[..], ..).await?;
+        for hash in self.usage_debt_index().await? {
+            let mut iter = self
+                .db
+                .scan_prefix(crate::keyspace::finals_row(&hash, 0), ..)
+                .await?;
+            while let Some(kv) = iter.next().await? {
+                out.push((kv.key.to_vec(), serde_json::from_slice(&kv.value)?));
+            }
+        }
+        Ok(out)
+    }
+
+    /// The streams on the usage debt index.
+    #[cfg(test)]
+    pub(crate) async fn usage_debt_index(&self) -> anyhow::Result<Vec<[u8; 16]>> {
+        let prefix = crate::billing::usage_debt_key(&[0; 16])[..17].to_vec();
+        let mut out = Vec::new();
+        let mut iter = self.db.scan_prefix(&prefix, ..).await?;
         while let Some(kv) = iter.next().await? {
-            out.push((kv.key.to_vec(), serde_json::from_slice(&kv.value)?));
+            out.push(
+                kv.key
+                    .get(17..)
+                    .and_then(|h| h.try_into().ok())
+                    .unwrap_or([0; 16]),
+            );
         }
         Ok(out)
     }

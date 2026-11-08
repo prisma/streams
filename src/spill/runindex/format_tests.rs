@@ -293,26 +293,6 @@ fn an_orphan_row_round_trips() {
     );
 }
 
-/// Every seal-index row tag in the sentinel range sorts below the usage
-/// month-finals' `'V'`: the drain scans `'V' ‖ hash` for each billed segment
-/// many times a second, SlateDB scans do not fill the block cache, and an SST
-/// whose keys reach past `'V'` overlaps every such scan, which then pays a
-/// GET (the S10 rig's SST GET climb, package 5 round 1: about 25 scans a
-/// second, each a data-block GET, once the first pointer row existed).
-#[test]
-fn every_index_tag_sorts_below_the_usage_finals() {
-    use crate::spill::directory::{DIRECTORY_TAG, REFCOUNT_TAG};
-    let finals = crate::billing::usage_month_final_key(&[0; 16], 2026, 10)[16];
-    assert_eq!(finals, b'V');
-    for tag in [DIRECTORY_TAG, REFCOUNT_TAG, POINTER_TAG, ORPHAN_TAG] {
-        assert!(
-            tag < finals,
-            "tag {:?} sorts at or after the usage finals' 'V'",
-            tag as char
-        );
-    }
-}
-
 // ---- refusal of every malformed layer (mutation coverage, package 5) ----
 
 use super::format::{bloom_holds, decode_trailer};

@@ -1,6 +1,6 @@
 use super::*;
 impl CommitTransaction<'_> {
-    pub(super) fn usage_ack(
+    pub(super) async fn usage_ack(
         &mut self,
         local: &mut StreamOverlay,
         hash: [u8; 16],
@@ -14,9 +14,22 @@ impl CommitTransaction<'_> {
         if decide_billing_ack(cur, scope) == BillingAckDecision::ClearDirty {
             self.engine.layout.clear_usage(hash, cur);
         }
-        for k in month_final_keys {
+        for k in &month_final_keys {
             self.batch.delete(k);
             self.extra_writes = true;
+        }
+        // The debt index row goes with the stream's last final (§2.5): decided
+        // here, in the committer, after the deletes it rides with. A final this
+        // group closes for the stream is staged later in the batch with its
+        // index row, so that put wins.
+        let acked = !month_final_keys.is_empty();
+        if acked
+            && !self
+                .engine
+                .holds_finals_besides(hash, &month_final_keys)
+                .await
+        {
+            self.batch.delete(crate::billing::usage_debt_key(&hash));
         }
     }
     /// Close the segment's storage at `close_ms`, or at the billing clock

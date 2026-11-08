@@ -429,21 +429,21 @@ pub(crate) fn billing_meta_key(hash: &[u8; 16]) -> Vec<u8> {
     k
 }
 
-/// The usage outbox's sentinel (`FF×16`): the month-final rows sort
-/// after every stream's rows, scanned by the drainer and deleted through
-/// the committer so acknowledgment serializes with concurrent appends. The
-/// usage dirty set itself is in memory since layout 6 (`shard::layout`).
-pub(crate) const USAGE_DIRTY_SENTINEL: [u8; 16] = crate::keyspace::SENTINEL;
-
-/// Closed-month final snapshots awaiting emission:
-/// `<0xFF sentinel>'V'<seg-hash><"YYYY-MM">` → SegmentSnapshot (JSON,
-/// self-contained). Rare — one per segment-month — and deleted after
-/// the ledger acknowledges.
-pub(crate) fn usage_month_final_key(hash: &[u8; 16], year: i32, month: u32) -> Vec<u8> {
-    let mut k = Vec::with_capacity(40);
-    k.extend_from_slice(&USAGE_DIRTY_SENTINEL);
-    k.push(b'V');
+/// The usage debt index's row of `hash` (S3a-DESIGN §2.5): present whenever
+/// the stream holds a month final, so one first-row read finds a shard's
+/// debt. The month finals are in their stream's range, deleted through the
+/// committer so acknowledgment serializes with concurrent appends.
+pub(crate) fn usage_debt_key(hash: &[u8; 16]) -> Vec<u8> {
+    let mut k = crate::spill::runindex::sentinel_prefix(crate::keyspace::tag::USAGE_DEBT);
     k.extend_from_slice(hash);
+    k
+}
+
+/// Closed-month final snapshots awaiting emission: `hash ‖ 'V' ‖ "YYYY-MM"`
+/// → SegmentSnapshot (JSON, self-contained). Rare — one per segment-month —
+/// and deleted after the ledger acknowledges.
+pub(crate) fn usage_month_final_key(hash: &[u8; 16], year: i32, month: u32) -> Vec<u8> {
+    let mut k = crate::keyspace::finals_row(hash, 7);
     k.extend_from_slice(month_str(year, month).as_bytes());
     k
 }

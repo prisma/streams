@@ -712,6 +712,12 @@ async fn a_close_across_a_month_boundary_stages_the_closed_months_final() {
         .unwrap()
         .unwrap();
     assert_eq!(staged.as_ref(), serde_json::to_vec(&september).unwrap());
+    let indexed = rig.engine.usage_debt_index().await.unwrap();
+    assert_eq!(
+        indexed,
+        [SEGMENT],
+        "the closed month puts the stream on the debt index"
+    );
     rig.stop().await;
 }
 

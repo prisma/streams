@@ -284,6 +284,8 @@ fn stage_billing_rows(
                 crate::billing::usage_month_final_key(hash, y, m),
                 serde_json::to_vec(snap).unwrap_or_default(),
             );
+            // Every final puts its stream on the debt index (idempotent).
+            batch.put(crate::billing::usage_debt_key(hash), []);
             staged = true;
         }
     }

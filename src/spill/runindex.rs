@@ -33,10 +33,6 @@ mod format_tests;
 #[cfg(test)]
 mod tiling_tests;
 
-/// Every tag here sorts below the usage month-finals' `'V'`: the drain
-/// scans `'V' ‖ hash` for each billed segment, and a key past it would make
-/// every SST holding one overlap all those scans (each then a GET; SlateDB
-/// scans do not fill the block cache).
 pub(crate) const POINTER_TAG: u8 = crate::keyspace::tag::POINTER;
 pub(crate) const ORPHAN_TAG: u8 = crate::keyspace::tag::ORPHAN;
 const VERSION: u8 = 1;

@@ -328,16 +328,24 @@ mod billing {
 
     #[test]
     fn golden_layout4_usage_month_final_key_ascii_month() {
-        // <0xFF*16 sentinel> 'V' <seg-hash16> <"YYYY-MM" ASCII> — the
-        // month is DECIMAL TEXT ("2026-08"), not a binary i32/u32 pair,
-        // so there is no endianness; pin the zero-padded format.
+        // <seg-hash16> 'V' <"YYYY-MM" ASCII> in the stream's own range (layout
+        // 8) — the month is DECIMAL TEXT ("2026-08"), not a binary i32/u32
+        // pair, so there is no endianness; pin the zero-padded format.
         assert_eq!(
             hex(&usage_month_final_key(&H, 2026, 8)),
             concat!(
-                "ffffffffffffffffffffffffffffffff",
-                "56",
                 "11111111111111111111111111111111",
+                "56",
                 "323032362d3038" // "2026-08"
+            )
+        );
+        // The debt index row: <0xFF*16 sentinel> 'U' <seg-hash16>.
+        assert_eq!(
+            hex(&crate::billing::usage_debt_key(&H)),
+            concat!(
+                "ffffffffffffffffffffffffffffffff",
+                "55",
+                "11111111111111111111111111111111"
             )
         );
     }

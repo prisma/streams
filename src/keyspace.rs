@@ -25,6 +25,9 @@ pub(crate) mod range;
 pub(crate) const STREAM: u8 = b'S';
 /// The queue family byte, after the queue's hash.
 pub(crate) const QUEUE_TAG: u8 = b'Q';
+/// The usage month finals' family byte, after the stream's hash: its own
+/// family, so a purge's `hash ‖ 'S'` scan never reaches them.
+pub(crate) const FINALS: u8 = b'V';
 /// The sentinel: sixteen 0xFF bytes, the hash no entity has. Its rows (the
 /// seal directory and refcount rows, the usage outbox) sort after every
 /// entity's rows, so each of its tags is one range scan.
@@ -94,6 +97,8 @@ pub(crate) mod tag {
     pub(crate) const CURSOR: u8 = b'L';
     /// The queue roster: one row per queue with pending work, by deadline.
     pub(crate) const ROSTER: u8 = b'Q';
+    /// The usage debt index: a stream that holds at least one month final.
+    pub(crate) const USAGE_DEBT: u8 = b'U';
 }
 
 /// A stream-state row key: the stream's hash and the `'S'` family byte,
@@ -102,6 +107,15 @@ pub(crate) fn stream_row(hash: &[u8; 16], extra: usize) -> Vec<u8> {
     let mut k = Vec::with_capacity(17 + extra);
     k.extend_from_slice(hash);
     k.push(STREAM);
+    k
+}
+
+/// A usage month final's key: the stream's hash and the `'V'` family byte,
+/// with room for `extra` more bytes.
+pub(crate) fn finals_row(hash: &[u8; 16], extra: usize) -> Vec<u8> {
+    let mut k = Vec::with_capacity(17 + extra);
+    k.extend_from_slice(hash);
+    k.push(FINALS);
     k
 }
 
@@ -145,8 +159,7 @@ mod tests {
 
     /// Every sentinel tag of layout 8 (S3a-DESIGN rev 3 §2.4), the reserved ones included: the seal's
     /// and the gc's (`tag`), and those whose writers land later in 4a, in S3b, S4 and S6. The usage
-    /// month finals' `'V'` is not one: it leaves the sentinel for its stream's own range in 4a's
-    /// commit 3.
+    /// month finals' `'V'` is not one: they live in their stream's own range (`finals_row`).
     pub(crate) const SENTINEL_TAGS: [u8; 18] = [
         super::tag::DIRECTORY,
         super::tag::REFCOUNT,
@@ -156,7 +169,7 @@ mod tests {
         super::tag::HEAD,
         super::tag::CURSOR,
         super::tag::ROSTER,
-        b'U', // usage debt index (4a commit 3)
+        super::tag::USAGE_DEBT,
         b'Y', // the log's layout and home (4a commit 4)
         b'W', // unsealed streams (4a commit 7)
         b'M', // usage awaiting the ledger (4a commit 7)

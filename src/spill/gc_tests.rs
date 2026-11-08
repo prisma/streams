@@ -3,9 +3,9 @@
 
 use super::directory::{DirEntry, KeySummary};
 use super::gc::{
-    Decrements, GARBAGE_TAG, Garbage, HEAD_TAG, Head, HeadState, ObjectKind, Refcount, SWEEP_TAG,
-    decode_garbage, decode_head, decode_refcount, decrement, encode_garbage, encode_head,
-    encode_refcount, garbage_key, head_key, less, live_entries, parse_head_key,
+    Decrements, Garbage, Head, HeadState, ObjectKind, Refcount, decode_garbage, decode_head,
+    decode_refcount, decrement, encode_garbage, encode_head, encode_refcount, garbage_key,
+    head_key, less, live_entries, parse_head_key,
 };
 use super::object::ObjectId;
 
@@ -145,21 +145,6 @@ fn decrements_sum_per_object_and_never_go_below_zero() {
     );
     assert_eq!(less(r, (31, 2)), None);
     assert_eq!(less(r, (30, 3)), None);
-}
-
-#[test]
-fn every_gc_tag_sorts_below_the_usage_finals() {
-    // The drain scans 0xFF×16 ‖ 'V' ‖ hash per billed segment; a
-    // sentinel key above 'V' would make each scan read a data block of
-    // every SST that holds one (package 5's S10 finding).
-    for tag in [
-        GARBAGE_TAG,
-        HEAD_TAG,
-        SWEEP_TAG,
-        crate::spill::directory::REFCOUNT_TAG,
-    ] {
-        assert!(tag < b'V', "tag {} sorts at or above 'V'", tag as char);
-    }
 }
 
 /// A segment object's refcount row: the format version, then its live

@@ -168,9 +168,9 @@ impl<'a> CommitTransaction<'a> {
             }
             CommitOp::UsageAck {
                 scope,
-                month_final_keys,
+                month_final_keys: keys,
                 ..
-            } => self.usage_ack(&mut local, hash, scope, month_final_keys),
+            } => self.usage_ack(&mut local, hash, scope, keys).await,
             CommitOp::BillingClose { close_ms, resp, .. } => {
                 self.billing_close_answered(&mut local, close_ms, resp)
             }
