@@ -16,7 +16,7 @@ import { PayloadGen } from "./corpus.ts";
 import { FakeCell } from "./fake-cell.ts";
 import { ownerOf } from "./oracle.ts";
 import { type ClassSpec, type Manifest, checkManifest, expand, phaseFlags, phaseStart, readManifest } from "./tenant-plan.ts";
-import { TokenMap, auditAll, run, usage } from "./tenants.ts";
+import { TokenMap, auditAll, run, usage, usageWorkers } from "./tenants.ts";
 
 let cell: FakeCell;
 const dir = mkdtempSync(join(tmpdir(), "k2-tenants-"));
@@ -607,3 +607,12 @@ test("a mux phase reads every record its project appended through one multiplexe
   const longPolls = trace.filter(([, , path]) => path.includes(":long-poll") || path.endsWith(":pull")).length;
   expect([waits > 0, longPolls]).toEqual([true, 0]);
 }, 30_000);
+
+test("the usage read's workers poll every project twice within its wait, however many projects", () => {
+  expect(usageWorkers(1_000, 330_000, 5_000)).toBe(31);
+  expect(usageWorkers(8_000, 330_000, 5_000)).toBe(243);
+  // Each project takes about one poll interval, so a worker gets through
+  // wait / poll projects: twice the projects' share leaves the wait a margin.
+  expect((8_000 / usageWorkers(8_000, 330_000, 5_000)) * 5_000).toBeLessThan(330_000);
+  expect(usageWorkers(10, 330_000, 5_000)).toBe(16);
+});

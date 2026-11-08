@@ -484,6 +484,13 @@ function readLedger(out: string, p: Project): Record<string, unknown> | null {
   }
 }
 
+/** Workers for the usage read: a project takes two polls, one interval apart,
+ * so a fixed pool leaves the projects past (workers x wait / poll) on one poll
+ * and unsettled, however right their meters. */
+export function usageWorkers(projects: number, waitMs: number, pollMs: number): number {
+  return Math.max(16, Math.ceil((2 * projects * pollMs) / waitMs));
+}
+
 /** Every project's meters, polled until they reach its ledger and two
  * polls agree, or until the wait runs out. */
 export async function usage(plan: Plan, base: string, tokenMap: string, out: string, o: Opts): Promise<Record<string, unknown>> {
@@ -492,7 +499,8 @@ export async function usage(plan: Plan, base: string, tokenMap: string, out: str
   const pollMs = o.num("poll-secs", 5) * 1000;
   const projects: Record<string, unknown> = {};
   const deadline = Date.now() + maxWaitMs;
-  await pool(plan.projects.length, o.int("parallel", 16), async (i) => {
+  const workers = o.int("parallel", usageWorkers(plan.projects.length, maxWaitMs, pollMs));
+  await pool(plan.projects.length, workers, async (i) => {
     const p = plan.projects[i]!;
     const t = (readLedger(out, p)?.totals ?? {}) as Record<string, number>;
     const expected = { ingestRecords: t.acked_records ?? 0, readPayloadBytes: t.delivered_payload_bytes ?? 0, readRecords: t.delivered_records ?? 0 };
