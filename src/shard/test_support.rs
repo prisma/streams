@@ -23,6 +23,24 @@ pub(super) fn seal_open_faults() -> &'static Mutex<HashMap<String, u32>> {
     M.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Test-only: per shard prefix, how many of the sealer open's stream loads
+/// meet a fence (the next owner opened the log, so the store closed) before
+/// one is served. A fence cannot be timed to land between the open's tail
+/// scan and its loads, which are exactly the code under test.
+pub(super) fn seal_open_load_fences() -> &'static Mutex<HashMap<String, u32>> {
+    static M: std::sync::OnceLock<Mutex<HashMap<String, u32>>> = std::sync::OnceLock::new();
+    M.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Arrange for the next `n` stream loads of the sealer's opens on `prefix`
+/// to meet a fence.
+pub(crate) fn inject_seal_open_load_fences(prefix: &str, n: u32) {
+    seal_open_load_fences()
+        .lock()
+        .unwrap()
+        .insert(prefix.to_string(), n);
+}
+
 /// Arrange for the next `n` sealer opens on `prefix` to fail.
 pub(crate) fn inject_seal_open_faults(prefix: &str, n: u32) {
     seal_open_faults()

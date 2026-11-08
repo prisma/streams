@@ -146,6 +146,42 @@ async fn a_corrupt_pending_row_fails_only_its_stream_at_the_open() {
     rig.engine.begin_close();
 }
 
+/// A fence the open's stream loads meet fails the open, which retries; no
+/// stream is counted corrupt. Two streams hold unsealed pages; the reopened
+/// engine's first load meets a fence (the next owner opened the log): the
+/// open fails once, the retry loads both, the open counts no corrupt
+/// stream, and both read back. Before: the fenced load was counted as a
+/// corrupt stream and skipped (109 of them on one D-ramp instance).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_fence_the_opens_loads_meet_fails_the_open_not_a_stream() {
+    let mut rig = rig("fence-open", manual(), Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0xFE7C);
+    let streams = hashes(&mut rng, 2);
+    let oracle = std::sync::Mutex::new(Oracle::new());
+    for hash in &streams {
+        for _ in 0..3 {
+            let records = vec![random_bytes(&mut rng, 300)];
+            append_recorded(&rig.engine, &oracle, *hash, records).await;
+        }
+    }
+    settle(&rig.engine).await;
+    crate::shard::test_support::inject_seal_open_load_fences(&rig.prefix, 1);
+    rig = reopen(rig).await;
+    let counters = &rig.engine.layout.seal.counters;
+    let counts = (
+        counters.corrupt_streams.load(Ordering::Relaxed),
+        counters.open_failures.load(Ordering::Relaxed),
+    );
+    assert_eq!(counts, (0, 1), "(corrupt streams, failed opens)");
+    let oracle = oracle.into_inner().unwrap();
+    for hash in &streams {
+        read_back(&rig.engine, *hash, &oracle[hash], Deliver::Durable)
+            .await
+            .unwrap();
+    }
+    rig.engine.begin_close();
+}
+
 /// A close does not wait for a seal in flight. The sealer's seal parks
 /// before its commit (as one parks in a forced memtable flush while the
 /// log is at its L0 cap) and the engine closes: the sealer and deadline

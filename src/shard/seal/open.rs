@@ -10,6 +10,15 @@
 use crate::shard::{ShardEngine, stored_tail};
 use crate::spill::directory::{self, Directory};
 
+/// A load failure that is the store's, not the stream's: the store closed
+/// (a fence among them) or is unavailable.
+fn store_failed(error: &slatedb::Error) -> bool {
+    matches!(
+        error.kind(),
+        slatedb::ErrorKind::Closed(_) | slatedb::ErrorKind::Unavailable
+    )
+}
+
 impl ShardEngine {
     /// The open's rebuild. Until it finishes (the sealer's loop marks the
     /// state ready once it returns), sealed reads and the usage drain wait
@@ -24,10 +33,13 @@ impl ShardEngine {
         let unsealed = self.scan_tails().await?;
         // Each stream the scan found with unsealed pages is held through
         // the handle the engine serves it from (a request's load may have
-        // put it there first).
+        // put it there first). A store that closed (a fence: the next owner
+        // opened the log) or is unavailable fails the open, which retries,
+        // as the scan's store errors do; any other failure is the stream's.
         for hash in unsealed {
-            match self.stream_handle(hash).await {
+            match self.open_load(hash).await {
                 Ok(handle) => self.layout.hold_unsealed(&handle),
+                Err(e) if store_failed(&e) => return Err(e.into()),
                 Err(e) => self.note_corrupt_stream(&hash, &e.to_string()),
             }
         }
@@ -107,6 +119,35 @@ impl ShardEngine {
             stream = %crate::crypto::hex(&hash[..4]),
             "the sealer's open skipped a stream it cannot load: {why}"
         );
+    }
+
+    /// One stream's load at the open (tests: a fence injected for the
+    /// shard meets it first).
+    async fn open_load(
+        &self,
+        hash: [u8; 16],
+    ) -> Result<std::sync::Arc<crate::shard::StreamHandle>, slatedb::Error> {
+        #[cfg(test)]
+        self.injected_load_fence()?;
+        self.stream_handle(hash).await
+    }
+
+    /// Tests: this load meets a fence if one is injected for the shard.
+    #[cfg(test)]
+    fn injected_load_fence(&self) -> Result<(), slatedb::Error> {
+        let mut fences = crate::shard::test_support::seal_open_load_fences()
+            .lock()
+            .unwrap();
+        if let Some(n) = fences.get_mut(&self.prefix)
+            && *n > 0
+        {
+            *n -= 1;
+            return Err(slatedb::Error::closed(
+                "detected newer DB client (test hook)".into(),
+                slatedb::CloseReason::Fenced,
+            ));
+        }
+        Ok(())
     }
 
     /// Tests: fail this open if a fault is injected for the shard.

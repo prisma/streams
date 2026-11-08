@@ -2747,6 +2747,14 @@
     {
       "category": "global",
       "count": 1,
+      "owner": "crate::seal_open_load_fences::M",
+      "path": "src/shard/test_support.rs",
+      "reason": "Test-only: per shard prefix, how many of the sealer open's stream loads meet an injected fence before one is served (a fence fails the open, not a stream); keyed by prefix so concurrent tests cannot see each other's faults; production never compiles it.",
+      "syntax": "std :: sync :: OnceLock < Mutex < HashMap < String , u32 > > >"
+    },
+    {
+      "category": "global",
+      "count": 1,
       "owner": "crate::BILLING_CLOCK_OVERRIDE",
       "path": "src/billing/test_clock.rs",
       "reason": "Test-only billing clock override the month-sensitive tests inject; nothing outside cfg(test) reads it.",
