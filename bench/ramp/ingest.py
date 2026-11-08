@@ -110,7 +110,8 @@ def run_step(posture, size, batch, mb, a, tag):
         benv.append(f"BENCH_QUEUE_TOKEN={token}")
     res = rig.bench("--mode", "queue", "--streams", "1", "--concurrency", str(a.producers),
                     "--entries", str(batch), "--payload-bytes", str(size), "--prefix", tag, "--label", tag,
-                    "--warmup-secs", "5", "--duration-secs", str(a.secs), env=benv, url=URL)
+                    "--warmup-secs", "5", "--duration-secs", str(a.secs), env=benv, url=URL,
+                    timeout=a.secs + 600)
     sent = res.get("sent_per_sec") or 0
     errors = sum((res.get("errors") or {}).values())
     return res, sent, errors, rate
@@ -186,10 +187,11 @@ def main():
     ap.add_argument("--size", default="1/1", help="the instance, VCPU/GB (memory knobs scale with GB: rig.SCALED)")
     ap.add_argument("--out", default=os.path.join(rig.HERE, "results",
                                                   time.strftime("ingest-%Y%m%dT%H%M%SZ", time.gmtime())))
+    ap.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE", help="server settings on top of the size's (recorded)")
     ap.add_argument("--dry-run", action="store_true", help="print the plan (DRY lines), start nothing")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
-    posture = rig.Posture(a.posture, a.out, size=a.size, shards=1)
+    posture = rig.Posture(a.posture, a.out, size=a.size, shards=1, overrides=a.set)
     if a.dry_run:
         for size in a.sizes:
             print(f"DRY ingest posture {a.posture} size {a.size} message {size} B batch {max(1, min(1000, MIB // size))} "

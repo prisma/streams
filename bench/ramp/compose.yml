@@ -26,8 +26,7 @@ x-server: &server
     FLUSH_INTERVAL_MS: "25"
     WAL_POST_ACK_GATHER_MS: "6"
     FRAME_COMPRESS: "1"
-    ADMIT_MAX_INFLIGHT: "512"
-    RUST_LOG: warn
+    RUST_LOG: ${RUST_LOG:-warn}
   # The instance size (rig.Posture: --size VCPU/GB; Compute's 1 GiB class by default).
   mem_limit: ${SERVER_MEM:-1g}
   memswap_limit: ${SERVER_MEM:-1g}

@@ -26,6 +26,7 @@ was built from (run-local checks the server's commit).
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -46,7 +47,7 @@ def scaled_manifest(base, factor, out_dir, tag):
     for c in m["classes"]:
         c["count"] = min(9999, max(1, round(c["count"] * factor)))
         if "pool" in c:
-            c["pool"] = max(c["pool"], round(c["pool"] * factor))
+            c["pool"] = min(8192, max(c["pool"], round(c["pool"] * factor)))  # k2's limit on a class's sockets
     path = os.path.join(out_dir, f"manifest-{tag}.json")
     json.dump(m, open(path, "w"), indent=1)
     return path, sum(c["count"] for c in m["classes"])
@@ -64,11 +65,15 @@ def run_point(a, size, key, out_dir, port_base):
     cpus, gb = rig.parse_size(size)
     point_file, base, sel = POINTS[key]
     factor = cpus * a.density
-    tag = f"{key}-{size.replace('/', 'x')}-d{a.density:g}"
+    tag = f"{key}-{size.replace('/', 'x')}-d{a.density:g}" + ("-sv" if a.shard_a_vcpu else "")
     manifest, tenants = scaled_manifest(base, factor, out_dir, tag)
     point = point_copy(point_file, manifest, out_dir, tag)
     # The points run the profile's one shard, so the per-shard lines scale too.
-    knobs = rig.scaled_knobs(rig.profile_lines(["compute-1g.env", "shared-cell.env"]), gb, shards=1)
+    shards = max(1, int(cpus)) if a.shard_a_vcpu else 1
+    knobs = rig.scaled_knobs(rig.profile_lines(["compute-1g.env", "shared-cell.env"]), gb, shards=shards)
+    if a.shard_a_vcpu:  # the instance's cap and shard count follow the vCPUs (the project ceilings stay)
+        knobs.update(INITIAL_SHARDS=str(shards), ADMIT_MAX_INFLIGHT=str(512 * shards))
+    knobs.update(dict(o.split("=", 1) for o in a.set))  # recorded with the point's knobs
     extra = " ".join([f"TOKIO_WORKERS={max(1, int(cpus))}", f"K2_DOCKER_CPUS={cpus:g}",
                       f"K2_DOCKER_MEM={int(gb * 1024)}m"] + [f"{k}={v}" for k, v in knobs.items()])
     env = dict(os.environ, **sel, K2_SERVER_DOCKER="1", K2_SERVER_BIN=os.path.join(rig.HERE, "k2-server.sh"),
@@ -87,8 +92,20 @@ def run_point(a, size, key, out_dir, port_base):
     started = time.time()
     console = os.path.join(out_dir, f"console-{tag}.log")
     with open(console, "w") as f:
-        rc = subprocess.run(["bench/k2cost/run-local.sh", point], cwd=rig.ROOT, env=env,
-                            stdout=f, stderr=subprocess.STDOUT).returncode
+        proc = subprocess.Popen(["bench/k2cost/run-local.sh", point], cwd=rig.ROOT, env=env,
+                                stdout=f, stderr=subprocess.STDOUT, start_new_session=True)
+        try:
+            rc = proc.wait(timeout=a.point_timeout_mins * 60)
+        except subprocess.TimeoutExpired:
+            # Past its bound the point is stopped whole (run-local tears down on TERM) and the leg fails.
+            os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                proc.wait(timeout=120)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait()
+            subprocess.run(["docker", "rm", "-f", f"k2srv-{port_base + 2}"], capture_output=True)
+            rc = "timeout"
     run_dir = next((ln.split(" -> ")[1].split(" (")[0] for ln in open(console)
                     if "] point " in ln and " -> " in ln), None)
     row = {"size": size, "point": key, "density": a.density, "tenants": tenants, "rc": rc,
@@ -108,8 +125,7 @@ def run_point(a, size, key, out_dir, port_base):
             "rss_mb": (lim.get("rss_mb") or {}).get("value"),
             "shed_line_mb": int(knobs["ADMIT_RSS_SHED_MB"]),
             "vcpu_used": (lim.get("vcpu") or {}).get("value"),
-            "shards": next((ln.split("=", 1)[1] for ln in open(os.path.join(run_dir, "point.env"))
-                            if ln.startswith("INITIAL_SHARDS=")), "profile"),
+            "shards": shards,
             "terms_month": p.get("terms_month"),
         })
     return row
@@ -121,6 +137,11 @@ def main():
     ap.add_argument("--points", nargs="+", choices=sorted(POINTS), default=["t", "s", "m"])
     ap.add_argument("--density", type=float, default=1.0, help="tenants x vCPUs x DENSITY")
     ap.add_argument("--first-only", action="store_true", help="fail early: the first point per size only")
+    ap.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE", help="server settings on top (recorded)")
+    ap.add_argument("--point-timeout-mins", type=float, default=75,
+                    help="a point past this is stopped and the leg fails (a full point takes 40-45 min)")
+    ap.add_argument("--shard-a-vcpu", action="store_true",
+                    help="one shard a vCPU and ADMIT_MAX_INFLIGHT 512 a vCPU (default: the profile's one shard and 512)")
     ap.add_argument("--smoke", action="store_true", help="the points' smoke shape (0.15 time scale)")
     ap.add_argument("--k2-home", default=os.path.expanduser("~/.streams-k2/p5-sizes-bench"))
     ap.add_argument("--port-base", type=int, default=9780)
@@ -130,6 +151,7 @@ def main():
     ap.add_argument("--out", default=os.path.join(rig.HERE, "results",
                                                   time.strftime("sizes-%Y%m%dT%H%M%SZ", time.gmtime())))
     a = ap.parse_args()
+    a.out = os.path.abspath(a.out)  # run-local runs from the repository's root
     os.makedirs(a.out, exist_ok=True)
     rows = []
     for size in a.sizes:
@@ -141,6 +163,9 @@ def main():
             print(json.dumps({k: row.get(k) for k in ("size", "point", "tenants", "valid", "ab50_per_tenant",
                                                       "append_p99_ms", "rss_mb", "shed_line_mb", "vcpu_used",
                                                       "failed_checks", "rc")}), flush=True)
+            if row.get("rc") == "timeout":
+                print("STOP", size, key, f"ran past {a.point_timeout_mins:g} min", flush=True)
+                return 3
     print("SIZES_DONE", a.out, flush=True)
 
 

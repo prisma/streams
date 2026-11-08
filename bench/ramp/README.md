@@ -52,12 +52,20 @@ are made per run or per tenant set outside the repository, mode 0600.
 Compute scales to 8 vCPU / 16 GB. `footprint.py`, `ingest.py` and
 `envelope.py` take `--size`, which sets the container's limits and scales the
 profile's per-instance memory budgets with GB (`rig.SCALED`, recorded in the
-run's `size-*.json`): the shed line, the two caches, the feed and bulk
-budgets, the unabsorbed and project-pressure lines, the SSE connection cap.
+run's `size-*.json`): the shed line, the two caches, the bulk budget, the
+unabsorbed and project-pressure lines, the SSE connection cap. The feed budgets
+stay, since the release posture refuses a feed above the 64 MiB a campaign
+certified, on every profile.
 The per-shard budget lines (`rig.PER_SHARD`: clean handles, tail ring) scale
 with GB per shard where the shard count is known; the footprint leg keeps
 the profile's, since it measures what a shard costs. Per-database and CPU
 knobs stay.
+
+Off 1 GiB the server runs without `MEMPROFILE_CERT=compute-1g`, which refuses to
+start on any other bulk or compactor setting. `ingest.py` and `envelope.py` take
+`--set KEY=VALUE` to vary a knob on top of the size (recorded), for instance the
+compactor's, which stay at the profile's one fetch task and 1 MiB read-ahead
+unless set.
 
 ## footprint.py: memory per resident shard
 

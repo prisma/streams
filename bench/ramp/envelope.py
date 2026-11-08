@@ -80,11 +80,12 @@ def main():
     ap.add_argument("--secs", type=int, default=120, help="seconds a rung")
     ap.add_argument("--out", default=os.path.join(rig.HERE, "results",
                                                   time.strftime("envelope-%Y%m%dT%H%M%SZ", time.gmtime())))
+    ap.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE", help="server settings on top of the size's (recorded)")
     ap.add_argument("--dry-run", action="store_true", help="print the plan (DRY lines), start nothing")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     shards = a.shards or max(1, int(rig.parse_size(a.size)[0]))
-    posture = rig.Posture("on", a.out, size=a.size, shards=shards)
+    posture = rig.Posture("on", a.out, size=a.size, shards=shards, overrides=a.set)
     if a.dry_run:
         print(f"DRY envelope size {a.size} shards {shards} rates {a.rates} payload {a.payload_bytes} B, "
               f"{a.secs} s a rung, knobs {posture.knobs}")

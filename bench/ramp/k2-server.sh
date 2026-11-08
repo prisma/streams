@@ -23,8 +23,11 @@ trap 'rm -f "$envfile"' EXIT
 env | grep -E '^[A-Z][A-Z0-9_]*=' | grep -vE '^(K2_DOCKER_[A-Z_]+|PATH|HOME|PWD|SHLVL|_)=' \
   | sed -E 's#(http://)(127\.0\.0\.1|localhost):#\1host.docker.internal:#' > "$envfile"
 mounts=()
-for d in $(grep -oE '=/[^ ]+' "$envfile" | cut -c2- | xargs -n1 dirname 2>/dev/null | sort -u); do
-  [ -d "$d" ] && mounts+=(-v "$d:$d:ro")
+# A value is a path only if it exists there: a base64 secret can begin with "/".
+for d in $(sed -nE 's#^[A-Z0-9_]+=(/[^ ]*)$#\1#p' "$envfile" | while read -r v; do
+  [ -e "$v" ] && dirname "$v"
+done | sort -u); do
+  mounts+=(-v "$d:$d:ro")
 done
 docker=${K2_DOCKER_BIN:-/usr/local/bin/docker}
 "$docker" rm -f "$name" >/dev/null 2>&1 || true

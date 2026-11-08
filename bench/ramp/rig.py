@@ -25,12 +25,18 @@ PROJECT = "streams-ramp"
 NETWORK = f"{PROJECT}_default"
 TENANTS_CACHE = os.path.expanduser("~/.streams-k2/ramp-tenants")
 # The raw and product surfaces encrypt every stream under its caller's key.
-KEY = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
+KEY = "-"
+while KEY.startswith("-"):  # the bench's argument parser reads a leading dash as a flag
+    KEY = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
 
 
-def sh(*cmd, env=None, check=True):
-    r = subprocess.run(cmd, cwd=HERE, env=env, text=True,
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+def sh(*cmd, env=None, check=True, timeout=None):
+    """CMD's output; past TIMEOUT seconds it is killed and the run stops (a leg never hangs)."""
+    try:
+        r = subprocess.run(cmd, cwd=HERE, env=env, text=True, timeout=timeout,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except subprocess.TimeoutExpired:
+        raise SystemExit(f"{' '.join(cmd[:4])} ... ran past its {timeout} s bound")
     if check and r.returncode != 0:
         raise SystemExit(f"{' '.join(cmd)} failed ({r.returncode}): {r.stdout[-800:]}")
     return r.stdout
@@ -45,18 +51,24 @@ def server(k=1):
 
 
 # The profile's per-instance memory budgets, scaled with the instance's RAM
-# (GB / 1): the shed line, the caches, the feed and bulk budgets, the
-# unabsorbed and project-pressure lines, the SSE connection cap. Per-database
+# (GB / 1): the shed line, the caches, the bulk budget, the unabsorbed and
+# project-pressure lines, the SSE connection cap. The feed budgets stay: the
+# release posture refuses a feed above the 64 MiB a campaign certified, on every
+# profile (config::validation::profile_feed_budget_max). Per-database
 # knobs (memtable, L0 size, the per-shard unabsorbed line) and the CPU knobs
 # (SLATEDB_RT_THREADS, the compactor's concurrency) stay; tokio sizes its
 # workers from the container's CPU quota. PER_SHARD holds the two budget lines
 # set per shard (clean handles, tail ring): with the shard count known they
 # scale with GB per shard, never below the profile's, so the instance's lines
 # keep their share of the shed line; with it unknown (the footprint leg, which
-# measures what a shard costs) they stay the profile's.
+# measures what a shard costs) they stay the profile's. Off the profile's values
+# the server must not claim compute-1g's certificate: MEMPROFILE_CERT=compute-1g
+# refuses to start on any other bulk or compactor setting, so a scaled or
+# overridden posture sets OFF_CERT, which names no certificate.
+OFF_CERT = "rig-uncertified"
 SCALED = {
     "ADMIT_RSS_SHED_MB": 500, "SHARED_CACHE_BYTES": None, "TELEMETRY_CACHE_BYTES": None,
-    "SSE_FEED_TOTAL_BYTES": None, "SSE_FEED_PROJECT_BYTES": None, "STORE_BULK_INFLIGHT_MAX_BYTES": None,
+    "STORE_BULK_INFLIGHT_MAX_BYTES": None,
     "MAX_UNABSORBED_BYTES_PER_INSTANCE": None, "PROJECT_MEMORY_PRESSURE_BYTES": None, "SSE_MAX_CONNECTIONS": None,
 }
 PER_SHARD = ("HANDLE_MAX_RESIDENT", "TAIL_RING_BYTES")
@@ -92,6 +104,8 @@ def scaled_knobs(base, gb, shards=None):
         for k in PER_SHARD:
             if k in base:
                 out[k] = str(int(int(base[k]) * max(1.0, gb / shards)))
+    if gb != 1:
+        out["MEMPROFILE_CERT"] = OFF_CERT
     return out
 
 
@@ -146,7 +160,8 @@ class Posture:
     token with auth off, the workload JWT (tenants.sh) with auth on (the
     release posture refuses the static token)."""
 
-    def __init__(self, name, out_dir, tenant_count=1, cache=TENANTS_CACHE, fleet=False, size="1/1", shards=None):
+    def __init__(self, name, out_dir, tenant_count=1, cache=TENANTS_CACHE, fleet=False, size="1/1", shards=None,
+                 overrides=None):
         self.name = name
         self.cpus, self.gb = parse_size(size)
         self.bearer = None
@@ -154,7 +169,7 @@ class Posture:
         self.feeds = os.path.join(HERE, "bin")
         if name == "off":
             base = profile_lines(["compute-1g.env"])
-            lines = ["STREAMS_AUTH_MODE=off"]
+            lines = ["STREAMS_AUTH_MODE=off", "ADMIT_MAX_INFLIGHT=512"]
             if fleet:
                 lines += [f"FLEET_INTERNAL_TOKEN={secrets.token_hex(24)}", "FLEET_ALLOW_HTTP_PEERS=1"]
         else:
@@ -178,7 +193,10 @@ class Posture:
                 lines += ["FLEET_AUTH_MODE=workload", "WORKLOAD_TOKEN_FILE=/feeds/workload.jwt",
                           "FLEET_ALLOW_HTTP_PEERS=1"]
         # The instance size's memory budgets (recorded beside the env file).
+        # OVERRIDES: KEY=VALUE settings on top, for a run that varies a knob.
         self.knobs = scaled_knobs(base, self.gb, shards)
+        if overrides:
+            self.knobs.update(dict(o.split("=", 1) for o in overrides), MEMPROFILE_CERT=OFF_CERT)
         lines += [f"{k}={v}" for k, v in self.knobs.items()]
         tag = f"{name}-{tenant_count}-{self.cpus:g}x{self.gb:g}"
         json.dump({"size": {"vcpus": self.cpus, "gb": self.gb}, "scaled": self.knobs},
@@ -186,7 +204,8 @@ class Posture:
         self.env_file = os.path.abspath(os.path.join(out_dir, f"posture-{tag}.env"))
         fd = os.open(self.env_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
-            f.write("\n".join(lines) + "\n")
+            # One line a key, the last setting winning, so the file reads as what the server runs.
+            f.write("\n".join(f"{k}={v}" for k, v in dict(ln.split("=", 1) for ln in lines).items()) + "\n")
 
     def compose_env(self, **extra):
         env = dict(os.environ, AUTH_ENV=self.env_file, FEEDS_DIR=self.feeds,
@@ -213,14 +232,20 @@ def wait_healthy(port, what, tries=120):
     raise SystemExit(f"{what} did not become healthy")
 
 
-def bench(*args, env=(), mounts=(), url="http://router:8080"):
-    """One bench run in a container on the rig's network; its JSON summary."""
-    cmd = ["docker", "run", "--rm", "--network", NETWORK, "--ulimit", "nofile=65536:65536"]
+def bench(*args, env=(), mounts=(), url="http://router:8080", timeout=None):
+    """One bench run in a container on the rig's network; its JSON summary.
+    TIMEOUT: seconds past which the container is removed and the run stops."""
+    name = f"{PROJECT}-bench-{secrets.token_hex(4)}"
+    cmd = ["docker", "run", "--rm", "--name", name, "--network", NETWORK, "--ulimit", "nofile=65536:65536"]
     for host, inside in mounts:
         cmd += ["-v", f"{host}:{inside}:ro"]
     for kv in env:
         cmd += ["-e", kv]
-    out = sh(*cmd, "streams-ramp:latest", "bench", "--url", url, "--key", KEY, "--json", *args, check=False)
+    try:
+        out = sh(*cmd, "streams-ramp:latest", "bench", "--url", url, "--key", KEY, "--json", *args, check=False,
+                 timeout=timeout)
+    finally:
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
     lines = [ln for ln in out.splitlines() if ln.startswith("{")]
     return json.loads(lines[-1]) if lines else {"error": out[-800:]}
 
@@ -243,4 +268,4 @@ def population(count, rate, secs, label, tokens=None, warmup=0, url="http://rout
         env.append(f"BENCH_POP_TOKENS=/tokens/{os.path.basename(tokens)}")
     return bench("--mode", "population", "--streams", str(count), "--concurrency", str(workers),
                  "--payload-bytes", str(payload_bytes), "--warmup-secs", str(warmup), "--duration-secs", str(secs),
-                 "--prefix", label, "--label", label, env=env, mounts=mounts, url=url)
+                 "--prefix", label, "--label", label, env=env, mounts=mounts, url=url, timeout=secs + warmup + 600)

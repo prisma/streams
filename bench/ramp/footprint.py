@@ -148,6 +148,8 @@ def run_point(posture, shards, out_dir, scale, phases):
             rate = rate * shards if kind == "per_shard" else rate
             loads[name] = rig.population(per_shard_streams * shards, rate, secs, f"fp-{tag}-{name}",
                                          tokens=posture.tokens, url=URL)
+            if loads[name].get("error"):  # no load: the phase measured nothing
+                raise SystemExit(f"{tag} {name}: {loads[name]['error'][:200]}")
     finally:
         sampler.stop.set()
         sampler.join()
