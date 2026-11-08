@@ -871,6 +871,15 @@ pub(crate) fn shard_db_path(prefix: &str) -> String {
     }
 }
 
+/// The topology prefix of a shard-DB path `shard_db_path` made; an explicit root is its own.
+pub(crate) fn prefix_of_db_path(path: &str) -> &str {
+    match path.strip_prefix("shards/") {
+        Some("root") => "",
+        Some(prefix) => prefix,
+        None => path,
+    }
+}
+
 #[expect(
     clippy::unwrap_used,
     reason = "publish_open; a poisoned gate state or serving map may hold a half-recorded open, retirement or holdoff; recovering either could serve, reopen or reap the wrong incarnation"

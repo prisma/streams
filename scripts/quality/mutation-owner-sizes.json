@@ -182,6 +182,7 @@
     "shard_l0_watermark": 39,
     "shard_layout": 16,
     "shard_lifecycle": 25,
+    "shard_open_index": 16,
     "shard_resident": 10,
     "shard_rows": 66,
     "shard_seal": 94,

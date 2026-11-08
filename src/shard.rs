@@ -87,37 +87,8 @@ pub(crate) struct ShardMaintenance {
     pub last_progress_ms: i64,
 }
 
-/// This shard's maintenance ledger, rebuilt from its tails before the
-/// engine starts serving (layout 6: the ledger lives in memory only): the
-/// unsealed bytes every stream's durable tail holds. A tail that does not
-/// decode is left out and logged (its stream fails alone when loaded); a
-/// store error fails the open.
-pub(crate) async fn load_or_rebuild_maintenance(db: &Db) -> anyhow::Result<ShardMaintenance> {
-    let mut total = 0u64;
-    let mut rows = db.scan(..).await?;
-    while let Some(row) = rows.next().await? {
-        if crate::keyspace::tail_hash(&row.key).is_none() {
-            continue;
-        }
-        let unsealed = match stored_tail(&row.value) {
-            Ok(tail) => tail.unabsorbed_bytes,
-            Err(e) => {
-                tracing::error!("maintenance rebuild skipped a tail it cannot decode: {e}");
-                continue;
-            }
-        };
-        total = total
-            .checked_add(unsealed)
-            .ok_or_else(|| anyhow::anyhow!("maintenance rebuild overflow"))?;
-    }
-    let now = now_ms();
-    Ok(ShardMaintenance {
-        version: 1,
-        unabsorbed_frame_bytes: total,
-        backlog_started_ms: if total > 0 { now } else { 0 },
-        last_progress_ms: if total > 0 { now } else { 0 },
-    })
-}
+mod open_index;
+pub(crate) use open_index::{check_identity, load_or_rebuild_maintenance};
 
 /// Read visibility level. `Durable` (the pinned default everywhere)
 /// serves only storage-durable records. `Applied` additionally serves

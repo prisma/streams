@@ -99,6 +99,19 @@ pub(crate) mod tag {
     pub(crate) const ROSTER: u8 = b'Q';
     /// The usage debt index: a stream that holds at least one month final.
     pub(crate) const USAGE_DEBT: u8 = b'U';
+    /// The shard log's identity: its layout and its home (`shard::check_identity`).
+    pub(crate) const IDENTITY: u8 = b'Y';
+}
+
+/// The home of the shard at `prefix` (S3a-DESIGN §3.1): a static topology's shards are its
+/// `2^n` prefixes of `n` bits in numeric order, so a shard's home is its prefix read as a number,
+/// and the root's is 0. `None` for a prefix that is no shard's (a label, or past the route bits).
+pub(crate) fn home_of(prefix: &str) -> Option<u32> {
+    range::Range::parse(prefix)?;
+    if prefix.is_empty() {
+        return Some(0);
+    }
+    u32::from_str_radix(prefix, 2).ok()
 }
 
 /// A stream-state row key: the stream's hash and the `'S'` family byte,

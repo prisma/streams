@@ -227,6 +227,7 @@ OWNERS = (
     owner('record_pages', 'src/shard/record/pages.rs', 'shard::'),
     owner('lane_rows', 'src/shard/lane_rows.rs', 'shard::'),
     owner('maintenance_row', 'src/shard/maintenance_row.rs', 'shard::'),
+    owner('shard_open_index', 'src/shard/open_index.rs', 'shard::open_index::'),
     owner('tasks_shutdown', 'src/tasks/shutdown.rs', 'tasks::'),
     owner('tasks_exits', 'src/tasks/exits.rs', 'tasks::'),
     owner('tasks_drain', 'src/tasks/drain.rs', 'tasks::'),

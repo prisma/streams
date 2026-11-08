@@ -190,7 +190,7 @@ async fn a_production_shard_log_seals_at_three_quarters_of_its_l0_size() {
     };
     let db =
         crate::native_queue::compaction_guard::shard_log_builder(&path, store.clone(), settings)
-            .build()
+            .build_without_identity()
             .await
             .unwrap();
     let engine = crate::shard::ShardEngine::start(

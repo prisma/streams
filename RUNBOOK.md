@@ -866,6 +866,10 @@ anything listed in `$SOAK_HOME/preserve.txt`.
   answer uncompressed version 4 frames on every deployment. A binary refuses any
   namespace written under another layout (`unsupported_storage_layout`),
   so an earlier deployment moves to a fresh `PATH_PREFIX` or bucket.
+  Since layout 8 each shard log also records its layout and its home (the
+  shard's number in the topology) in its own identity row, and a log of
+  another layout or home fails its open ("this cell must be recreated"):
+  recreate the cell the same way, on a fresh `PATH_PREFIX` or bucket.
 - **Decommission**: stop generators, redeploy without `KEEP_AWAKE`, let the
   platform sleep the fleet; delete the prefix when the data is disposable.
 

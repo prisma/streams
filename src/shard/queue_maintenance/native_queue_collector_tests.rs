@@ -68,7 +68,7 @@ async fn rig_over(
     let settings = settings.unwrap_or_default();
     let builder =
         crate::native_queue::compaction_guard::shard_log_builder(name, store.clone(), settings);
-    let db = Arc::new(builder.build().await.unwrap());
+    let db = Arc::new(builder.build_without_identity().await.unwrap());
     let engine = ShardEngine::start(
         name.to_owned(),
         db.clone(),

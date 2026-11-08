@@ -21,6 +21,7 @@ pub(crate) fn shard_log_builder(
     ShardLogBuilder {
         builder: crate::keyspace::db_builder(path, store).with_settings(settings),
         scope: crate::runtime::block_cache::scope_of(path),
+        path: path.to_string(),
     }
 }
 
@@ -29,6 +30,7 @@ pub(crate) fn shard_log_builder(
 pub(crate) struct ShardLogBuilder {
     builder: slatedb::DbBuilder<object_store::path::Path>,
     scope: u64,
+    path: String,
 }
 
 impl ShardLogBuilder {
@@ -36,12 +38,27 @@ impl ShardLogBuilder {
     pub(crate) fn with_db_cache(self, cache: Arc<dyn slatedb::db_cache::DbCache>) -> Self {
         Self {
             builder: self.builder.with_db_cache(cache, self.scope),
-            scope: self.scope,
+            ..self
         }
     }
 
-    /// Opens the shard log.
+    /// Opens the shard log and checks its identity (`shard::check_identity`): a log of another
+    /// layout or home is closed again and refused, before any engine reads it.
     pub(crate) async fn build(self) -> Result<slatedb::Db, slatedb::Error> {
+        let db = self.builder.build().await?;
+        if let Err(refusal) = crate::shard::check_identity(&db, &self.path).await {
+            if let Err(error) = db.close().await {
+                tracing::warn!(path = %self.path, %error, "closing a refused shard log failed");
+            }
+            return Err(refusal);
+        }
+        Ok(db)
+    }
+
+    /// Tests: opens a log at a path that is no shard's (a label or an explicit root), without the
+    /// identity check, for tests of the builder's scheduler and freeze size.
+    #[cfg(test)]
+    pub(crate) async fn build_without_identity(self) -> Result<slatedb::Db, slatedb::Error> {
         self.builder.build().await
     }
 }
