@@ -565,7 +565,7 @@ impl ShardEngine {
     }
 
     pub(crate) fn run_index_path(&self, id: ObjectId) -> String {
-        runindex::run_index_path(&crate::sharddir::shard_db_path(&self.prefix), id)
+        runindex::run_index_path(&self.object_root(id.home), id)
     }
 
     /// One shard-log batch outside the committer (a fold, a merge, a

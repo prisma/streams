@@ -493,8 +493,7 @@ async fn a_corrupt_sealed_chunk_surfaces_as_corruption() {
         .unwrap()
         .from(&hash, 0, 1)[0]
         .clone();
-    let path =
-        object_store::path::Path::from(crate::spill::object::object_path(&rig.path, entry.object));
+    let path = object_store::path::Path::from(crate::spill::object_path(&rig.path, entry.object));
     let mut body = rig
         .store
         .get(&path)
@@ -949,7 +948,7 @@ async fn only_a_whole_chunk_is_cached() {
     let [entry] = &entry[..] else {
         panic!("one chunk: {entry:?}")
     };
-    let path = crate::spill::object::object_path(&rig.path, entry.object);
+    let path = crate::spill::object_path(&rig.path, entry.object);
     let key = rig.engine.layout.seal.fold.cache_scope.key(&path);
     let cached = || crate::spill::cache::chunk_cache().get(&key, entry.chunk_off);
     let handle = rig.engine.stream_handle(hash).await.unwrap();

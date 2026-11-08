@@ -433,6 +433,7 @@ impl ShardEngine {
         let gc = self.gc_state();
         let mut in_flight = lock(&gc.in_flight);
         let id = ObjectId {
+            home: self.home(),
             epoch: self.writer_epoch,
             seq: self.layout.seal.next_object_seq(),
         };
@@ -480,7 +481,12 @@ impl ShardEngine {
                 )));
             };
             let gc = self.gc_state();
-            if next.live_chunks == 0 {
+            if next.live_chunks == 0 && id.home != self.home() {
+                // Another home's object is never this shard's garbage: its last reference here
+                // goes, and its lineage releases the object (S3a §3.2, S6's 'E').
+                gc.clean.forget(*id);
+                batch.delete(&key);
+            } else if next.live_chunks == 0 {
                 gc.clean.forget(*id);
                 batch.delete(&key);
                 let g = Garbage {
@@ -728,7 +734,7 @@ impl ShardEngine {
         let mut rows = self.db.scan_prefix(&prefix[..], ..).await.map_err(store)?;
         let mut out = Vec::new();
         while let Some(kv) = rows.next().await.map_err(store)? {
-            let decoded = crate::spill::runindex::parse_sentinel_key(gc::GARBAGE_TAG, &kv.key)
+            let decoded = gc::parse_garbage_key(self.home(), &kv.key)
                 .and_then(|id| Some((id, gc::decode_garbage(&kv.value)?)));
             match decoded {
                 Some(row) => out.push(row),
@@ -758,12 +764,27 @@ impl ShardEngine {
         Ok(out)
     }
 
-    /// An object's store path.
+    /// An object's store path, under its home's root.
     pub(crate) fn object_path_of(&self, kind: ObjectKind, id: ObjectId) -> String {
-        let shard = crate::sharddir::shard_db_path(&self.prefix);
+        let root = self.object_root(id.home);
         match kind {
-            ObjectKind::Segment => crate::spill::object::object_path(&shard, id),
-            ObjectKind::RunIndex => crate::spill::runindex::run_index_path(&shard, id),
+            ObjectKind::Segment => crate::spill::object_path(&root, id),
+            ObjectKind::RunIndex => crate::spill::runindex::run_index_path(&root, id),
+        }
+    }
+
+    /// This shard's home (S3a §3.1), from its log's `'Y'` row.
+    pub(crate) fn home(&self) -> u32 {
+        self.layout.seal.home()
+    }
+
+    /// The root of `home`'s objects: this shard's own path for its own home; in S3a's static
+    /// topology another home is the prefix of this shard's width that it numbers.
+    pub(crate) fn object_root(&self, home: u32) -> String {
+        if home == self.home() {
+            crate::sharddir::shard_db_path(&self.prefix)
+        } else {
+            crate::sharddir::object_root(home, self.prefix.len())
         }
     }
 

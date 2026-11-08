@@ -286,6 +286,7 @@ impl Input<'_> {
         };
         Some(DirEntry {
             object: ObjectId {
+                home: u32::from(self.byte()?),
                 epoch: u64::from(self.byte()?),
                 seq: u64::from(self.u32()?),
             },

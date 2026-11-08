@@ -8,7 +8,7 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 use super::crc32c::{crc32c, single_bit, zero_byte};
 use super::object::{
     ANCHOR_BYTES, CHUNK_CRC_LEN, CHUNK_HEADER_LEN, ChunkInput, DIR_ENTRY_LEN, ObjectError,
-    ObjectId, TABLE_ENTRY_LEN, TRAILER_LEN, decode, decode_chunk, encode, object_path,
+    ObjectId, TABLE_ENTRY_LEN, TRAILER_LEN, decode, decode_chunk, encode,
 };
 use super::test_pages::{opaque_object, opaque_pages, pool, sealed_pages};
 use crate::crypto_page::CheckedPage;
@@ -233,11 +233,12 @@ fn anchors_mark_every_256_kib_of_pages() {
 #[test]
 fn object_names_sit_under_the_shard_db_path() {
     let id = ObjectId {
+        home: 0,
         epoch: 3,
         seq: 0x2A,
     };
     assert_eq!(
-        object_path("shards/0", id),
+        crate::spill::object_path("shards/0", id),
         "shards/0/hseg/0000000000000003/000000000000002a"
     );
 }

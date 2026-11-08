@@ -103,7 +103,11 @@ fn always(_: u64, _: u64, _: u64) -> bool {
 }
 
 fn id(seq: u64) -> ObjectId {
-    ObjectId { epoch: 1, seq }
+    ObjectId {
+        home: 0,
+        epoch: 1,
+        seq,
+    }
 }
 
 /// At its cap the candidate set drops the one with the fewest dead bytes
@@ -505,10 +509,11 @@ async fn a_copy_never_overwrites_an_object_at_its_path() {
         .load(std::sync::atomic::Ordering::Relaxed)
         + 1;
     let taken = ObjectId {
+        home: 0,
         epoch: rig.engine.writer_epoch,
         seq,
     };
-    let path = object_store::path::Path::from(crate::spill::object::object_path(&rig.path, taken));
+    let path = object_store::path::Path::from(crate::spill::object_path(&rig.path, taken));
     let squatter = Bytes::from_static(b"not a segment object");
     rig.store.put(&path, squatter.clone().into()).await.unwrap();
     assert!(rig.engine.clean_pass().await.is_err(), "the PUT is refused");

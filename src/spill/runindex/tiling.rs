@@ -30,12 +30,16 @@
 pub(crate) struct Span {
     pub(crate) first: u64,
     pub(crate) last: u64,
-    pub(crate) rank: u128,
+    pub(crate) rank: Rank,
 }
 
-/// A chunk's rank: its object's (epoch, seq), newer larger.
-pub(crate) fn rank_of(id: crate::spill::object::ObjectId) -> u128 {
-    (u128::from(id.epoch) << 64) + u128::from(id.seq)
+/// A chunk's rank: its object's `(home, epoch, seq)`, compared in that order (S3a §3.2,
+/// `ASM-HOME-ORDER`: a child's home is greater than its parent's), newer larger.
+pub(crate) type Rank = (u32, u64, u64);
+
+/// A chunk's rank (`Rank`).
+pub(crate) fn rank_of(id: crate::spill::object::ObjectId) -> Rank {
+    (id.home, id.epoch, id.seq)
 }
 
 /// Whether `a` is the better pick than `b` for an offset both hold.

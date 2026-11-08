@@ -379,7 +379,7 @@ impl ShardEngine {
                 candidates.push(Candidate::Skip(Span {
                     first: footer.first,
                     last: footer.last,
-                    rank: 0,
+                    rank: (0, 0, 0),
                 }));
                 continue;
             }
@@ -423,10 +423,8 @@ impl ShardEngine {
     /// A plan's bytes: from the chunk cache when it holds the whole chunk,
     /// else one ranged GET (a whole chunk small enough is then cached).
     async fn fetch_chunk(&self, plan: &Plan) -> Result<Bytes, RangeReadError> {
-        let path = object::object_path(
-            &crate::sharddir::shard_db_path(&self.prefix),
-            plan.entry.object,
-        );
+        let path =
+            crate::spill::object_path(&self.object_root(plan.entry.object.home), plan.entry.object);
         let key = self.layout.seal.fold.cache_scope.key(&path);
         let cache = chunk_cache();
         if let Some(chunk) = cache.get(&key, plan.entry.chunk_off) {
@@ -454,10 +452,8 @@ impl ShardEngine {
     /// the caller (the directory holds the chunk).
     async fn get_chunk(&self, plan: &Plan) -> Result<Bytes, RangeReadError> {
         let sp = &self.layout.seal;
-        let path = object::object_path(
-            &crate::sharddir::shard_db_path(&self.prefix),
-            plan.entry.object,
-        );
+        let path =
+            crate::spill::object_path(&self.object_root(plan.entry.object.home), plan.entry.object);
         let path = object_store::path::Path::from(path);
         let at = plan.entry.chunk_off;
         let range = at + u64::from(plan.start)..at + u64::from(plan.end);

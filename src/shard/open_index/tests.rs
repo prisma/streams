@@ -121,3 +121,29 @@ fn a_shards_home_is_its_prefix_read_as_a_number() {
         assert_eq!(crate::sharddir::prefix_of_db_path(&path), prefix);
     }
 }
+
+/// An engine reads its home from its log's `'Y'` row and names every object it claims with it,
+/// under its own path; another home's root is that home's prefix of the shard's width.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn an_engine_names_its_objects_with_its_logs_home() {
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let db = open(&store, &crate::sharddir::shard_db_path("10"))
+        .await
+        .unwrap();
+    let engine = crate::shard::ShardEngine::start(
+        "10".to_string(),
+        Arc::new(db),
+        store,
+        crate::shard::ShardConfig::default(),
+        None,
+        Default::default(),
+    );
+    engine.seal_ready().await.unwrap();
+    assert_eq!(engine.home(), 2);
+    let id = engine.claim_object().id;
+    assert_eq!((id.home, id.epoch), (2, engine.writer_epoch));
+    let path = engine.object_path_of(crate::spill::gc::ObjectKind::Segment, id);
+    assert!(path.starts_with("shards/10/hseg/"), "{path}");
+    assert_eq!(engine.object_root(3), "shards/11");
+    engine.begin_close();
+}

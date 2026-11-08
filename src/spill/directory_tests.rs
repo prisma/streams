@@ -10,7 +10,11 @@ use super::directory::{
 use super::object::{ChunkInput, ObjectId, encode};
 use super::test_pages::keyed_page;
 
-const OBJECT: ObjectId = ObjectId { epoch: 3, seq: 9 };
+const OBJECT: ObjectId = ObjectId {
+    home: 2,
+    epoch: 3,
+    seq: 9,
+};
 
 /// A chunk of `hash` from `first` with one record per routing key in `keys`.
 fn chunk(hash: [u8; 16], first: u64, keys: &[String]) -> ChunkInput {
@@ -79,6 +83,7 @@ fn the_row_and_key_bytes_are_pinned() {
         concat!(
             "ffffffffffffffffffffffffffffffff",
             "4b",
+            "00000002",
             "0000000000000003",
             "0000000000000009"
         )
@@ -225,7 +230,15 @@ fn the_memory_gauge_is_the_sum_of_the_entries_through_inserts_and_removals() {
         (2, sum(&directory)),
         "a re-insert replaces"
     );
-    directory.remove(&[2; 16], entries[1].last, ObjectId { epoch: 3, seq: 10 });
+    directory.remove(
+        &[2; 16],
+        entries[1].last,
+        ObjectId {
+            home: 0,
+            epoch: 3,
+            seq: 10,
+        },
+    );
     assert_eq!(
         directory.entries(),
         2,
@@ -330,7 +343,11 @@ fn a_streams_entries_read_by_last_offset_and_object() {
         d.insert(hash, tiny(last));
     }
     let mut other = tiny(5);
-    other.object = ObjectId { epoch: 3, seq: 8 };
+    other.object = ObjectId {
+        home: 0,
+        epoch: 3,
+        seq: 8,
+    };
     d.insert(hash, other);
     let lasts = |d: &Directory, from, max| -> Vec<(u64, u64)> {
         d.from(&hash, from, max)

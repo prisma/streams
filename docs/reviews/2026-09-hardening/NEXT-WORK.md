@@ -1744,6 +1744,7 @@ before marking it complete."
   `target/quality-tools` before the install. The install already skips a
   tool whose pinned build is present ("Kani … bundle already set up"). A
   workflow change, so the lead or the owner decides when.
+- **`fresh_desc` at five parameters (candidate, S3A-ROWS-DECISION-2026-11-08 §1).** Its `content_type`, `ttl_secs` and `expires_at_ms` are the immutable configuration `validate_live` already compares as one unit; one typed value for them brings `fresh_desc` to the `clippy.toml` threshold and removes its `too_many_arguments` exception (and its growth row), which also shrinks `creation::claim::resolve`. Touches CreatePlan, ProductCreateConfig and four DST call sites; one behaviour per commit.
 
 ## 11. Deployment gates (need the owner or the Compute owner)
 

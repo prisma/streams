@@ -8,8 +8,12 @@ fn s(first: u64, last: u64) -> Span {
     r(first, last, 0)
 }
 
-fn r(first: u64, last: u64, rank: u128) -> Span {
-    Span { first, last, rank }
+fn r(first: u64, last: u64, rank: u64) -> Span {
+    Span {
+        first,
+        last,
+        rank: (0, 0, rank),
+    }
 }
 
 #[test]
@@ -101,34 +105,29 @@ fn of_identical_spans_the_first_is_picked() {
 fn of_two_equal_spans_the_newer_objects_is_picked_and_kept() {
     for spans in [vec![r(0, 9, 1), r(0, 9, 2)], vec![r(0, 9, 2), r(0, 9, 1)]] {
         let picks = tile(&spans, 0, 10, 4);
-        let picked: Vec<u128> = picks.iter().map(|&i| spans[i].rank).collect();
-        assert_eq!(picked, [2], "tile of {spans:?}");
+        let picked: Vec<_> = picks.iter().map(|&i| spans[i].rank).collect();
+        assert_eq!(picked, [(0, 0, 2)], "tile of {spans:?}");
         let mut sorted = spans.clone();
         sort_for_drop(&mut sorted, |x| *x);
-        let kept: Vec<u128> = drop_covered(&sorted)
+        let kept: Vec<_> = drop_covered(&sorted)
             .iter()
             .map(|&i| sorted[i].rank)
             .collect();
-        assert_eq!(kept, [2], "drop_covered of {spans:?}");
+        assert_eq!(kept, [(0, 0, 2)], "drop_covered of {spans:?}");
     }
 }
 
-/// A rank orders objects by (epoch, seq): a newer epoch outranks every seq
-/// of an older one.
+/// A rank orders objects by (home, epoch, seq) (S3a §3.2, ASM-HOME-ORDER): a later home
+/// outranks every object of an earlier one, and within a home a newer epoch every seq of an older
+/// one.
 #[test]
-fn a_rank_is_the_objects_epoch_then_seq() {
+fn a_rank_is_the_objects_home_then_epoch_then_seq() {
+    use super::tiling::rank_of;
     use crate::spill::object::ObjectId;
-    assert_eq!(
-        super::tiling::rank_of(ObjectId { epoch: 2, seq: 3 }),
-        (2u128 << 64) + 3
-    );
-    assert!(
-        super::tiling::rank_of(ObjectId { epoch: 1, seq: 0 })
-            > super::tiling::rank_of(ObjectId {
-                epoch: 0,
-                seq: u64::MAX
-            })
-    );
+    let id = |home, epoch, seq| ObjectId { home, epoch, seq };
+    assert_eq!(rank_of(id(4, 2, 3)), (4, 2, 3));
+    assert!(rank_of(id(0, 1, 0)) > rank_of(id(0, 0, u64::MAX)));
+    assert!(rank_of(id(1, 0, 0)) > rank_of(id(0, u64::MAX, u64::MAX)));
 }
 
 /// The rank breaks only a tie of both offsets: of two spans ending at one

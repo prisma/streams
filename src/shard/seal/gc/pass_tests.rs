@@ -98,6 +98,7 @@ async fn a_pass_acts_on_its_signals_only() {
 
     // A due 'G' row and a due request written behind the signals' back.
     let stray = ObjectId {
+        home: 0,
         epoch: rig.engine.writer_epoch,
         seq: 1 << 40,
     };

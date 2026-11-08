@@ -36,7 +36,8 @@ use crate::crypto_page::CheckedPage;
 use crate::shard::{Deliver, ShardConfig, ShardEngine};
 use crate::spill::directory::{DirEntry, decode_row, directory_prefix, parse_directory_key};
 use crate::spill::metrics::ShardLogMetrics;
-use crate::spill::object::{ObjectId, decode_chunk, object_path};
+use crate::spill::object::{ObjectId, decode_chunk};
+use crate::spill::object_path;
 use crate::spill::pending::{parse_pages, pending_key};
 
 pub(super) struct Rig {
@@ -386,7 +387,14 @@ pub(super) async fn objects(rig: &Rig) -> BTreeMap<ObjectId, u64> {
         let n = parts.len();
         let epoch = u64::from_str_radix(&parts[n - 2], 16).unwrap();
         let seq = u64::from_str_radix(&parts[n - 1], 16).unwrap();
-        out.insert(ObjectId { epoch, seq }, meta.size);
+        out.insert(
+            ObjectId {
+                home: 0,
+                epoch,
+                seq,
+            },
+            meta.size,
+        );
     }
     out
 }

@@ -39,12 +39,19 @@ async fn name(rig: &Rig, ids: &[ObjectId]) {
     rig.engine.db.write(batch).await.unwrap();
 }
 
+async fn exists(rig: &Rig, path: String) -> bool {
+    object_store::ObjectStoreExt::head(&*rig.store, &path.into())
+        .await
+        .is_ok()
+}
+
 async fn sweep(rig: &Rig) -> SweepReport {
     rig.engine.sweep_orphans().await.unwrap()
 }
 
 fn older(rig: &Rig, seq: u64) -> ObjectId {
     ObjectId {
+        home: 0,
         epoch: rig.engine.writer_epoch - 1,
         seq,
     }
@@ -98,7 +105,11 @@ async fn a_sweep_resumes_after_its_cursor_and_starts_over_when_its_wrap_is_due()
 async fn a_sweep_spares_young_objects_and_a_newer_owners() {
     let rig = gc_rig("sweep-age").await;
     let epoch = rig.engine.writer_epoch;
-    let at = |epoch, seq| ObjectId { epoch, seq };
+    let at = |epoch, seq| ObjectId {
+        home: 0,
+        epoch,
+        seq,
+    };
     put_object(&rig, at(epoch, 1 << 40), 5).await;
     rig.engine
         .gc_state()
@@ -125,5 +136,58 @@ async fn a_sweep_lists_at_most_its_pages() {
     rig.engine.gc_state().configure(|s| s.sweep_pages = 1);
     assert_eq!(sweep(&rig).await.listed, 1000);
     assert_eq!(sweep(&rig).await.listed, 1);
+    rig.engine.begin_close();
+}
+
+/// A sweep lists only its own home's root (S3a §3.2): an unnamed object of
+/// this shard's home goes, and another home's, under that home's root,
+/// stays, unlisted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_sweep_lists_only_its_own_homes_root() {
+    let rig = gc_rig("sweep-home").await;
+    let own = older(&rig, 1);
+    let other = ObjectId { home: 7, ..own };
+    put_object(&rig, own, 5).await;
+    put_object(&rig, other, 6).await;
+    let own_path = rig.engine.object_path_of(ObjectKind::Segment, own);
+    let other_path = rig.engine.object_path_of(ObjectKind::Segment, other);
+    assert!(
+        own_path.starts_with(&format!("{}/hseg/", rig.path)),
+        "{own_path}"
+    );
+    assert!(
+        !other_path.starts_with(&format!("{}/", rig.path)),
+        "{other_path}"
+    );
+    let report = SweepReport {
+        listed: 1,
+        orphans: 1,
+        orphan_bytes: 5,
+    };
+    assert_eq!(sweep(&rig).await, report);
+    assert!(!exists(&rig, own_path).await, "its own orphan goes");
+    assert!(
+        exists(&rig, other_path).await,
+        "another home's object stays"
+    );
+    rig.engine.begin_close();
+}
+
+/// A decrement that zeroes another home's `'R'` row deletes the row and
+/// stages no `'G'`: only this shard's own objects are ever its garbage.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_decrement_that_zeroes_another_homes_row_stages_no_garbage() {
+    let rig = gc_rig("zero-home").await;
+    let own = older(&rig, 1);
+    let other = ObjectId { home: 7, ..own };
+    name(&rig, &[own, other]).await;
+    let decrements: gc::Decrements = [(own, (1, 1)), (other, (1, 1))].into();
+    let mut batch = WriteBatch::new();
+    let zeroed = rig.engine.stage_decrements(&mut batch, &decrements).await;
+    assert_eq!(zeroed.unwrap(), [own]);
+    rig.engine.db.write(batch).await.unwrap();
+    let garbage = rig.engine.garbage_rows().await.unwrap();
+    assert_eq!(garbage.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [own]);
+    assert_eq!(rig.engine.refcount_rows().await.unwrap(), []);
     rig.engine.begin_close();
 }

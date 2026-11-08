@@ -47,17 +47,13 @@ pub(crate) const ANCHOR_BYTES: u64 = 256 << 10;
 /// The most records one directory entry can describe (a u16 of count − 1).
 const DIR_MAX_RECORDS: u64 = 1 << 16;
 
-/// A segment object's name within its shard DB's path: the writer epoch of
-/// the shard DB opening that sealed it, and its seal sequence.
+/// A segment object's name: the home of the shard that wrote it (S3a §3.1), the writer epoch
+/// of the shard DB opening that sealed it, and its seal sequence; ordered in that order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct ObjectId {
+    pub(crate) home: u32,
     pub(crate) epoch: u64,
     pub(crate) seq: u64,
-}
-
-/// `<shard_db_path>/hseg/<epoch:016x>/<seq:016x>`.
-pub(crate) fn object_path(shard_db_path: &str, id: ObjectId) -> String {
-    format!("{shard_db_path}/hseg/{:016x}/{:016x}", id.epoch, id.seq)
 }
 
 /// One stream's contiguous pages to seal: the first offset of its first

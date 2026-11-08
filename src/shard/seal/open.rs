@@ -27,6 +27,12 @@ impl ShardEngine {
         #[cfg(test)]
         self.injected_open_fault()?;
         self.gc_state().note_opened();
+        let home = crate::shard::open_index::recorded_home(&self.db).await?;
+        let home = home.unwrap_or_else(|| crate::keyspace::home_of(&self.prefix).unwrap_or(0));
+        self.layout
+            .seal
+            .home
+            .store(home, std::sync::atomic::Ordering::Relaxed);
         self.probe_heads().await?;
         let dir = self.rebuild_directory().await?;
         self.rebuild_run_index().await?;

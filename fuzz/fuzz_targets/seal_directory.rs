@@ -53,7 +53,11 @@ mod spill {
 use object::{Anchor, ChunkEntry, EncodedChunk, ObjectId};
 use row::{DirEntry, KeySummary, MAX_BLOOM_BYTES, MAX_SUMMARY_KEYS, decode_row, encode_row};
 
-const OBJECT: ObjectId = ObjectId { epoch: 3, seq: 9 };
+const OBJECT: ObjectId = ObjectId {
+    home: 1,
+    epoch: 3,
+    seq: 9,
+};
 
 libfuzzer_sys::fuzz_target!(|raw: &[u8]| {
     let Some((&mode, rest)) = raw.split_first() else {

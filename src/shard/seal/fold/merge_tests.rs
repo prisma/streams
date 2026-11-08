@@ -22,7 +22,11 @@ use crate::spill::runindex::format::{self, ObjectWriter, TRAILER_LEN};
 use crate::spill::runindex::{Orphans, Pointer};
 
 fn pointer(seq: u64, level: u8, len: u64) -> (ObjectId, Pointer) {
-    let id = ObjectId { epoch: 1, seq };
+    let id = ObjectId {
+        home: 0,
+        epoch: 1,
+        seq,
+    };
     let p = Pointer {
         id,
         level,
@@ -86,7 +90,11 @@ fn a_merge_takes_the_oldest_inputs_within_its_budget() {
 
 fn entry(seq: u64, first: u64, last: u64) -> DirEntry {
     DirEntry {
-        object: ObjectId { epoch: 1, seq },
+        object: ObjectId {
+            home: 0,
+            epoch: 1,
+            seq,
+        },
         chunk_off: 0,
         chunk_len: 100,
         first,
@@ -103,9 +111,19 @@ fn input(seq: u64, seals: u64, orphans: Orphans, streams: &[([u8; 16], Vec<DirEn
     for (hash, entries) in streams {
         writer.push(*hash, entries).unwrap();
     }
-    let built = finish(ObjectId { epoch: 1, seq }, writer, 0, seals, orphans)
-        .unwrap()
-        .unwrap();
+    let built = finish(
+        ObjectId {
+            home: 0,
+            epoch: 1,
+            seq,
+        },
+        writer,
+        0,
+        seals,
+        orphans,
+    )
+    .unwrap()
+    .unwrap();
     let body = Bytes::from(built.bytes);
     let split = body.len() - TRAILER_LEN;
     let (trailer, crc) = format::decode_trailer(&body[split..]).unwrap();
@@ -135,7 +153,11 @@ fn a_merge_drops_the_entries_a_later_chunk_contains_and_sums_its_inputs() {
         input(11, 3, o(2, 20), &[(a, vec![entry(4, 0, 7)])]),
     ];
     let built = merged(
-        ObjectId { epoch: 1, seq: 12 },
+        ObjectId {
+            home: 0,
+            epoch: 1,
+            seq: 12,
+        },
         1,
         &inputs,
         &Reclaimed::new(),
@@ -150,9 +172,18 @@ fn a_merge_drops_the_entries_a_later_chunk_contains_and_sums_its_inputs() {
     assert_eq!((p.level, p.runs, p.entries, p.seals), (1, 2, 2, 5));
     assert_eq!(p.orphans, o(3, 30));
     let reclaimed = Reclaimed::from([(a, 8)]);
-    let built = merged(ObjectId { epoch: 1, seq: 13 }, 1, &inputs, &reclaimed)
-        .unwrap()
-        .unwrap();
+    let built = merged(
+        ObjectId {
+            home: 0,
+            epoch: 1,
+            seq: 13,
+        },
+        1,
+        &inputs,
+        &reclaimed,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(
         (built.dropped, built.pointer.runs, built.pointer.entries),
         (3, 1, 1),
@@ -222,7 +253,11 @@ fn a_fold_and_a_merge_keep_the_newer_of_two_chunks_of_one_span() {
             input(20, 1, none, &[(a, vec![entry(x, 0, 7)])]),
             input(21, 1, none, &[(a, vec![entry(y, 0, 7)])]),
         ];
-        let id = ObjectId { epoch: 1, seq: 22 };
+        let id = ObjectId {
+            home: 0,
+            epoch: 1,
+            seq: 22,
+        };
         let built = merged(id, 1, &inputs, &Reclaimed::new()).unwrap().unwrap();
         let objects: Vec<u64> = run_of(&built, a).iter().map(|e| e.object.seq).collect();
         assert_eq!((objects, built.dropped), (vec![9], 1), "merge of {x}, {y}");

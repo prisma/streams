@@ -481,10 +481,11 @@ async fn a_seal_never_overwrites_an_existing_object() {
     settle(&rig.engine).await;
     let sp = &rig.engine.layout.seal;
     let id = crate::spill::object::ObjectId {
+        home: 0,
         epoch: rig.engine.writer_epoch,
         seq: sp.next_seq.load(Ordering::Relaxed) + 1,
     };
-    let path = object_store::path::Path::from(crate::spill::object::object_path(&rig.path, id));
+    let path = object_store::path::Path::from(crate::spill::object_path(&rig.path, id));
     rig.store
         .put(&path, Bytes::from_static(b"not this seal's").into())
         .await

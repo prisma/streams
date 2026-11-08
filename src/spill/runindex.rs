@@ -37,9 +37,9 @@ pub(crate) const POINTER_TAG: u8 = crate::keyspace::tag::POINTER;
 pub(crate) const ORPHAN_TAG: u8 = crate::keyspace::tag::ORPHAN;
 const VERSION: u8 = 1;
 
-/// `<shard_db_path>/ridx/<epoch:016x>/<seq:016x>`.
-pub(crate) fn run_index_path(shard_db_path: &str, id: ObjectId) -> String {
-    format!("{shard_db_path}/ridx/{:016x}/{:016x}", id.epoch, id.seq)
+/// A run-index object's path under its home's root: `<root>/ridx/<epoch:016x>/<seq:016x>`.
+pub(crate) fn run_index_path(root: &str, id: ObjectId) -> String {
+    format!("{root}/ridx/{:016x}/{:016x}", id.epoch, id.seq)
 }
 
 /// `0xFF×16 ‖ tag`: every row of that tag.
@@ -49,14 +49,9 @@ pub(crate) fn sentinel_prefix(tag: u8) -> Vec<u8> {
     k
 }
 
-/// The object a sentinel row of `tag` names.
+/// The object a sentinel row of `tag` names (`directory::sentinel_key`'s inverse).
 pub(crate) fn parse_sentinel_key(tag: u8, key: &[u8]) -> Option<ObjectId> {
-    let rest = key.strip_prefix(&sentinel_prefix(tag)[..])?;
-    let (epoch, seq) = rest.split_first_chunk::<8>()?;
-    Some(ObjectId {
-        epoch: u64::from_be_bytes(*epoch),
-        seq: u64::from_be_bytes(seq.try_into().ok()?),
-    })
+    crate::spill::directory::parse_object_key(tag, key)
 }
 
 pub(crate) fn pointer_key(id: ObjectId) -> Vec<u8> {

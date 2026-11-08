@@ -78,7 +78,11 @@ async fn index_objects(rig: &Rig) -> BTreeSet<ObjectId> {
         let n = parts.len();
         let epoch = u64::from_str_radix(&parts[n - 2], 16).unwrap();
         let seq = u64::from_str_radix(&parts[n - 1], 16).unwrap();
-        out.insert(ObjectId { epoch, seq });
+        out.insert(ObjectId {
+            home: 0,
+            epoch,
+            seq,
+        });
     }
     out
 }
@@ -657,11 +661,19 @@ async fn a_corrupt_index_row_is_skipped_and_counted() {
     rig.engine.fold_once().await.unwrap();
     let mut batch = slatedb::WriteBatch::new();
     batch.put(
-        crate::spill::runindex::pointer_key(ObjectId { epoch: 1, seq: 999 }),
+        crate::spill::runindex::pointer_key(ObjectId {
+            home: 0,
+            epoch: 1,
+            seq: 999,
+        }),
         b"\x09junk",
     );
     batch.put(
-        crate::spill::directory::directory_key(ObjectId { epoch: 1, seq: 998 }),
+        crate::spill::directory::directory_key(ObjectId {
+            home: 0,
+            epoch: 1,
+            seq: 998,
+        }),
         b"\x07",
     );
     let written = rig.engine.db.write(batch).await.unwrap();
@@ -826,15 +838,20 @@ async fn a_gap_a_corrupt_index_row_leaves_answers_corruption_and_nothing_else_do
 }
 
 /// A shard's line holds what the directory really allocates: single-chunk
-/// streams reach `DIRECTORY_FOLD_BYTES` of true charge at 27,414 entries (a
-/// fold every 91 s at 300 appends a second), not the 34,953 they took when a
-/// leaf node per stream went uncharged.
+/// streams reach `DIRECTORY_FOLD_BYTES` of true charge at 26,052 entries (a
+/// fold every 87 s at 300 appends a second; 27,414 before layout 8's ids
+/// carried their home), not the 34,953 they took when a leaf node per stream
+/// went uncharged.
 #[test]
 fn a_fold_is_due_at_the_entry_count_the_line_really_holds() {
     use crate::spill::budget::DIRECTORY_FOLD_BYTES;
     use crate::spill::directory::{DirEntry, Directory, KeySummary};
     let tiny = || DirEntry {
-        object: crate::spill::object::ObjectId { epoch: 1, seq: 1 },
+        object: crate::spill::object::ObjectId {
+            home: 0,
+            epoch: 1,
+            seq: 1,
+        },
         chunk_off: 0,
         chunk_len: 0,
         first: 0,
@@ -851,7 +868,7 @@ fn a_fold_is_due_at_the_entry_count_the_line_really_holds() {
         d.insert(hash, tiny());
         n += 1;
     }
-    assert_eq!(n, 27_414);
+    assert_eq!(n, 26_052);
 }
 
 #[test]

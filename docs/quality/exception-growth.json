@@ -2679,6 +2679,65 @@
       },
       "rationale": "S3a layout 8 (ROUTE-HASH-DECISION-2026-11-08 §3; S3a-DESIGN §1.1, F12): a fresh incarnation's epoch is drawn again while segment 0's entity hash would be the sentinel's FF×16, which no entity may have. The re-draw lives outside the scope (CreationService::fresh_epoch, entity_epoch, segment_zero); fresh_desc reaches it as service.fresh_epoch(sref) in place of service.runtime.epoch(). The one new syntax fact is the sref argument (68 -> 69); scope_lines (37) and nested_items (1) are unchanged. The two claim.rs callers sit in resolve's frozen too_many_lines scope and a draw there would hand fresh_desc a seventh argument. Metrics are the gate's after values, reproduced independently with scripts/quality/source_rules.exception_contracts (S3A-ROWS-DECISION-2026-11-08).",
       "approver": "Fable 5.1 under the owner's delegation, 2026-11-08"
+    },
+    {
+      "path": "fuzz/fuzz_targets/run_index.rs",
+      "owner": "crate::object",
+      "scope": "module",
+      "lint": "dead_code",
+      "metrics": {
+        "scope_lines": 428,
+        "nested_items": 85,
+        "syntax_facts": 1216,
+        "fields": 34,
+        "field_site:crate::ObjectId::home:68fbcf23da4098b2": 1
+      },
+      "rationale": "S3a layout 8 §3.2 (commit 5, the lineage home): ObjectId is {home, epoch, seq}; home is the writing shard's incarnation (§3.1) and names the root its object's path is derived from, so a merged or split shard's run addresses objects under their writers' roots and the tiling rank is (home, epoch, seq). The fuzz target compiles src/spill/object.rs by path under a module-wide dead_code allow, so the field counts here (fields 33 -> 34, the ObjectId::home site). The module shrank in the same commit (object_path moved to spill/mod.rs: scope_lines 430 -> 428, syntax_facts 1220 -> 1216). The run_index target's encode mode draws each entry's home from one input byte, so the fuzzer exercises the field. Metrics are the gate's after values, reproduced independently (S3A-ROWS-DECISION-2026-11-08).",
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-08"
+    },
+    {
+      "path": "fuzz/fuzz_targets/seal_directory.rs",
+      "owner": "crate::object",
+      "scope": "module",
+      "lint": "dead_code",
+      "metrics": {
+        "scope_lines": 428,
+        "nested_items": 85,
+        "syntax_facts": 1216,
+        "fields": 34,
+        "field_site:crate::ObjectId::home:68fbcf23da4098b2": 1
+      },
+      "rationale": "S3a layout 8 §3.2 (commit 5, the lineage home): ObjectId is {home, epoch, seq}; home is the writing shard's incarnation (§3.1) and names the root its object's path is derived from, so a merged or split shard's run addresses objects under their writers' roots and the tiling rank is (home, epoch, seq). The fuzz target compiles src/spill/object.rs by path under a module-wide dead_code allow, so the field counts here (fields 33 -> 34, the ObjectId::home site). The module shrank in the same commit (object_path moved to spill/mod.rs: scope_lines 430 -> 428, syntax_facts 1220 -> 1216). The seal_directory target builds its rows' entries with the constant OBJECT { home: 1, epoch: 3, seq: 9 }, so the row codec it fuzzes carries the field. Metrics are the gate's after values, reproduced independently (S3A-ROWS-DECISION-2026-11-08).",
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-08"
+    },
+    {
+      "path": "fuzz/fuzz_targets/segment_chunk.rs",
+      "owner": "crate::object",
+      "scope": "module",
+      "lint": "dead_code",
+      "metrics": {
+        "scope_lines": 428,
+        "nested_items": 85,
+        "syntax_facts": 1216,
+        "fields": 34,
+        "field_site:crate::ObjectId::home:68fbcf23da4098b2": 1
+      },
+      "rationale": "S3a layout 8 §3.2 (commit 5, the lineage home): ObjectId is {home, epoch, seq}; home is the writing shard's incarnation (§3.1) and names the root its object's path is derived from, so a merged or split shard's run addresses objects under their writers' roots and the tiling rank is (home, epoch, seq). The fuzz target compiles src/spill/object.rs by path under a module-wide dead_code allow, so the field counts here (fields 33 -> 34, the ObjectId::home site). The module shrank in the same commit (object_path moved to spill/mod.rs: scope_lines 430 -> 428, syntax_facts 1220 -> 1216). This target fuzzes the chunk codec and never builds an ObjectId; its allow already states that object naming is outside the decoder target. Metrics are the gate's after values, reproduced independently (S3A-ROWS-DECISION-2026-11-08).",
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-08"
+    },
+    {
+      "path": "fuzz/fuzz_targets/run_index.rs",
+      "owner": "crate::format",
+      "scope": "module",
+      "lint": "dead_code",
+      "metrics": {
+        "scope_lines": 421,
+        "nested_items": 66,
+        "syntax_facts": 1292,
+        "fields": 16
+      },
+      "rationale": "S3a layout 8 §3.2 (commit 5, the lineage home): a run-index entry carries its object's home as a varint ahead of epoch, so a run of a merged or split shard addresses each chunk under its writer's root. Two codec lines in src/spill/runindex/format.rs (put_entry: put_varint(home); get_entry: home through the existing get_u32), scope_lines 419 -> 421, syntax_facts 1283 -> 1292; fields (16) and nested_items (66) unchanged. The run_index fuzz target compiles format.rs by path under a module-wide dead_code allow (AGENTS.md §5's by-path list gains the file in the same commit); its encode mode draws the home from one input byte, so the canonical-encoding and truncation properties cover the new varint. Metrics are the gate's after values, reproduced independently (S3A-ROWS-DECISION-2026-11-08).",
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-08"
     }
   ],
   "schema": 1

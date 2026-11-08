@@ -83,6 +83,7 @@ pub(super) async fn stored(rig: &Rig, dir: &str) -> BTreeMap<ObjectId, u64> {
             .collect();
         let n = parts.len();
         let id = ObjectId {
+            home: 0,
             epoch: u64::from_str_radix(&parts[n - 2], 16).unwrap(),
             seq: u64::from_str_radix(&parts[n - 1], 16).unwrap(),
         };
@@ -265,7 +266,7 @@ async fn try_append(engine: &Arc<ShardEngine>, hash: [u8; 16]) -> Result<u64, St
 pub(super) async fn whole_chunks(rig: &Rig, hash: [u8; 16]) -> Vec<(DirEntry, Bytes)> {
     let mut out = Vec::new();
     for e in rig.engine.live_chunks(hash).await.unwrap() {
-        let path = crate::spill::object::object_path(&rig.path, e.object);
+        let path = crate::spill::object_path(&rig.path, e.object);
         let body = rig
             .store
             .get_range(

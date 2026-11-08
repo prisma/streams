@@ -148,10 +148,11 @@ async fn a_consolidation_never_overwrites_a_stored_object() {
         rig.engine.seal_once(Trigger::Requested).await.unwrap();
     }
     let next = ObjectId {
+        home: 0,
         epoch: rig.engine.writer_epoch,
         seq: rig.engine.layout.seal.next_seq.load(Ordering::Relaxed) + 1,
     };
-    let path = object_store::path::Path::from(crate::spill::object::object_path(&rig.path, next));
+    let path = object_store::path::Path::from(crate::spill::object_path(&rig.path, next));
     let planted = Bytes::from_static(b"another writer's object");
     rig.store.put(&path, planted.clone().into()).await.unwrap();
     let oracle = oracle.into_inner().unwrap();
@@ -287,6 +288,7 @@ async fn folder(engine: Arc<ShardEngine>, stop: Arc<AtomicBool>) {
 fn entry(first: u64, last: u64, len: u32) -> (DirEntry, Bytes) {
     let e = DirEntry {
         object: ObjectId {
+            home: 0,
             epoch: 1,
             seq: first,
         },
@@ -346,6 +348,7 @@ fn stored(hash: [u8; 16], first: u64, n: u64, claim: Option<(u64, u64)>) -> (Dir
     let body = body.slice(at..at + usize::try_from(c.entry.len).unwrap());
     let mut e = DirEntry::of(
         ObjectId {
+            home: 0,
             epoch: 1,
             seq: first,
         },

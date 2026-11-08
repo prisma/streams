@@ -325,6 +325,9 @@ pub(crate) struct SealState {
     /// consecutive failure.
     retry_after: Mutex<Option<(Instant, Duration)>>,
     next_seq: AtomicU64,
+    /// This shard's home (S3a §3.1), set by the open from the log's `'Y'` row before any seal,
+    /// fold, read or sweep names an object.
+    home: std::sync::atomic::AtomicU32,
     /// Set by a seal its budget cut short, or by an open that found pages a
     /// previous owner left unsealed: the loop seals again at its next
     /// evaluation, whatever the triggers say.
@@ -434,6 +437,11 @@ impl SealState {
         j["attribution"] = crate::spill::metrics::attribution();
         j["gc"] = self.gc.json();
         j
+    }
+
+    /// This shard's home (`home`).
+    pub(crate) fn home(&self) -> u32 {
+        self.home.load(Ordering::Relaxed)
     }
 
     /// The next object sequence of this opening (seals, folds, merges and

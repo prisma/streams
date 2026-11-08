@@ -15,7 +15,11 @@ use crate::spill::object::{Anchor, ObjectId};
 
 fn entry(seq: u64, first: u64, last: u64, keys: KeySummary) -> DirEntry {
     DirEntry {
-        object: ObjectId { epoch: 2, seq },
+        object: ObjectId {
+            home: 5,
+            epoch: 2,
+            seq,
+        },
         chunk_off: seq * 100,
         chunk_len: 90,
         first,
@@ -82,12 +86,12 @@ fn an_object_round_trips_its_runs_and_footer() {
 /// The pinned bytes of `sample()`: any change to the format changes them,
 /// and the format is final under one `LAYOUT_VERSION`.
 const GOLDEN: &str = concat!(
-    "020201645a00090a010000000000000005000202c8015a0a02030200000000000000050000000000",
-    "000009008b95ff9d020203ac025a000304010000000000000001000207bc055a28b004b1040003a5",
-    "a5a50103840246c9b151000101010101010101010101010101010100000000000000003000000000",
-    "000000000000000c00000000000000020000000103003acfe1090909090909090909090909090909",
-    "0930000000000000002b00000000000000000000005802000000000000020000000000005b000000",
-    "000000006900000002000000040000000000000001000100fd9c21af2de099924c367269",
+    "02050201645a00090a01000000000000000500050202c8015a0a0203020000000000000005000000",
+    "000000000900996da3c302050203ac025a00030401000000000000000100050207bc055a28b004b1",
+    "040003a5a5a50103840246b3cb3e4101010101010101010101010101010101000000000000000032",
+    "00000000000000000000000c00000000000000020000000103003acfe10909090909090909090909",
+    "090909090932000000000000002d0000000000000000000000580200000000000002000000000000",
+    "5f0000000000000069000000020000000400000000000000010001003364dd7406cdae974c367269",
 );
 
 #[test]
@@ -212,7 +216,11 @@ fn the_trailer_is_forty_bytes_with_its_magic_last() {
 
 fn pointer() -> Pointer {
     Pointer {
-        id: ObjectId { epoch: 4, seq: 11 },
+        id: ObjectId {
+            home: 3,
+            epoch: 4,
+            seq: 11,
+        },
         level: 2,
         len: 1000,
         footer_off: 900,
@@ -248,7 +256,7 @@ fn a_pointer_row_round_trips_and_is_pinned() {
     bad.level = 3;
     assert!(decode_pointer(p.id, &encode_pointer(&bad)).is_none());
     let key = pointer_key(p.id);
-    assert_eq!(key.len(), 33);
+    assert_eq!(key.len(), 37);
     assert_eq!(parse_sentinel_key(POINTER_TAG, &key), Some(p.id));
     assert_eq!(parse_sentinel_key(ORPHAN_TAG, &key), None);
     assert_eq!(
@@ -288,8 +296,19 @@ fn an_orphan_row_round_trips() {
         "counters add, saturating"
     );
     assert_eq!(
-        parse_sentinel_key(ORPHAN_TAG, &orphan_key(ObjectId { epoch: 1, seq: 2 })),
-        Some(ObjectId { epoch: 1, seq: 2 })
+        parse_sentinel_key(
+            ORPHAN_TAG,
+            &orphan_key(ObjectId {
+                home: 0,
+                epoch: 1,
+                seq: 2
+            })
+        ),
+        Some(ObjectId {
+            home: 0,
+            epoch: 1,
+            seq: 2
+        })
     );
 }
 
@@ -477,3 +496,19 @@ fn a_run_bloom_is_pinned_byte_for_byte() {
 }
 
 const PINNED_BLOOM: &str = "ffffffffff9d0c3116abb1f14670ab38806f8b1e268c724a9ac5c1d5a5507d35050d6f12c0709dc823a8ea0ef2152eb3359c";
+
+/// A run keeps each entry's home: a merged shard's run holds chunks of its
+/// sources' homes, and each decodes under its own (S3a §3.2).
+#[test]
+fn a_run_keeps_each_entrys_home() {
+    let mut other = entry(2, 10, 12, fps(&[5]));
+    other.object.home = 9;
+    let run = vec![entry(1, 0, 9, fps(&[5])), other];
+    let mut w = ObjectWriter::new();
+    w.push([1; 16], &run).unwrap();
+    let (bytes, _) = w.finish(1).unwrap().unwrap();
+    let (_, decoded) = decode_object(&bytes).unwrap();
+    let homes: Vec<u32> = decoded[0].1.iter().map(|e| e.object.home).collect();
+    assert_eq!(homes, [5, 9]);
+    assert_eq!(decoded[0].1, run);
+}

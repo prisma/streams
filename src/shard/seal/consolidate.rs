@@ -205,7 +205,7 @@ impl ShardEngine {
         let encoded = object::encode(std::slice::from_ref(&input)).map_err(|e| format!("{e:?}"))?;
         let claim = self.claim_object();
         let id = claim.id;
-        let path = object::object_path(&crate::sharddir::shard_db_path(&self.prefix), id);
+        let path = crate::spill::object_path(&self.object_root(id.home), id);
         self.data_store
             .put_opts(
                 &object_store::path::Path::from(path),

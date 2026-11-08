@@ -283,6 +283,7 @@ async fn applied(engine: &ShardEngine, hash: [u8; 16]) -> TailFields {
 /// The object a hand-built seal names: none was PUT.
 fn made_up_object(engine: &ShardEngine) -> crate::spill::object::ObjectId {
     crate::spill::object::ObjectId {
+        home: 0,
         epoch: engine.writer_epoch,
         seq: u64::MAX,
     }

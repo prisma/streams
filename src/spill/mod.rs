@@ -38,3 +38,9 @@ mod object_tests;
 mod pending_tests;
 #[cfg(test)]
 pub(crate) mod test_pages;
+
+/// A segment object's path under its home's root (`ShardEngine::object_root`):
+/// `<root>/hseg/<epoch:016x>/<seq:016x>`.
+pub(crate) fn object_path(root: &str, id: object::ObjectId) -> String {
+    format!("{root}/hseg/{:016x}/{:016x}", id.epoch, id.seq)
+}

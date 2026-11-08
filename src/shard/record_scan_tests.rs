@@ -126,7 +126,7 @@ async fn corrupt_sealed_page(
         .unwrap()
         .from(&STREAM, 0, 1)[0]
         .clone();
-    let path = crate::spill::object::object_path(
+    let path = crate::spill::object_path(
         &crate::sharddir::shard_db_path(&engine.prefix),
         entry.object,
     );

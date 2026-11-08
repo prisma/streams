@@ -193,7 +193,11 @@ fn a_decoded_footer_is_charged_its_entries_and_their_blooms() {
 #[test]
 fn a_cached_run_is_charged_its_entries_and_their_heap() {
     let e = DirEntry {
-        object: crate::spill::object::ObjectId { epoch: 1, seq: 1 },
+        object: crate::spill::object::ObjectId {
+            home: 0,
+            epoch: 1,
+            seq: 1,
+        },
         chunk_off: 0,
         chunk_len: 1,
         first: 0,

@@ -228,6 +228,7 @@ fn get_summary(input: &mut &[u8]) -> Option<KeySummary> {
 }
 
 fn put_entry(v: &mut Vec<u8>, e: &DirEntry) {
+    put_varint(v, u64::from(e.object.home));
     put_varint(v, e.object.epoch);
     put_varint(v, e.object.seq);
     put_varint(v, e.chunk_off);
@@ -250,6 +251,7 @@ fn get_u32(input: &mut &[u8]) -> Option<u32> {
 
 fn get_entry(input: &mut &[u8]) -> Option<DirEntry> {
     let object = ObjectId {
+        home: get_u32(input)?,
         epoch: get_varint(input)?,
         seq: get_varint(input)?,
     };

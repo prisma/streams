@@ -183,7 +183,7 @@ The gates enforce these; plan for them before writing
   `src/quota/bucket.rs`, `src/rollup/{allocation,storage}.rs` and
   `src/application/read_{batch,budget,retention_probe}.rs` are compiled by
   `#[path]` into `tools/quality-invariants`, and `src/spill/{object,crc32c}.rs`,
-  `src/spill/directory/row.rs` and `src/crypto_page/varint.rs` into the `fuzz`
+  `src/spill/directory/row.rs`, `src/spill/runindex/format.rs` and `src/crypto_page/varint.rs` into the `fuzz`
   targets, most under module-wide allows: **any net code growth there is
   exception growth** (owner decision). Put new logic in a new module they do
   not include.

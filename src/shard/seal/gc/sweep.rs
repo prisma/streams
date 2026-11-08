@@ -38,12 +38,12 @@ pub(crate) struct SweepReport {
 /// LIST results one page holds (the store's page size).
 const PAGE: usize = 1000;
 
-/// An object's id from its path's last two segments.
-fn id_of(location: &object_store::path::Path) -> Option<ObjectId> {
+/// The id of `home`'s object from its path's last two segments.
+fn id_of(home: u32, location: &object_store::path::Path) -> Option<ObjectId> {
     let mut parts = location.parts().collect::<Vec<_>>().into_iter().rev();
     let seq = u64::from_str_radix(parts.next()?.as_ref(), 16).ok()?;
     let epoch = u64::from_str_radix(parts.next()?.as_ref(), 16).ok()?;
-    Some(ObjectId { epoch, seq })
+    Some(ObjectId { home, epoch, seq })
 }
 
 impl ShardEngine {
@@ -77,8 +77,9 @@ impl ShardEngine {
     async fn sweep_kind(&self, kind: ObjectKind, wrap: bool) -> Result<SweepReport, GcError> {
         let store = |e: object_store::Error| GcError::Store(e.to_string());
         let s = self.gc_state().settings();
-        let shard = crate::sharddir::shard_db_path(&self.prefix);
-        let prefix = object_store::path::Path::from(format!("{shard}/{}", kind.dir()));
+        // Only this shard's own home's root: no other home's path is listed (S3a §3.2).
+        let root = self.object_root(self.home());
+        let prefix = object_store::path::Path::from(format!("{root}/{}", kind.dir()));
         let cursor = self.sweep_cursor(kind).await?;
         let mut listing = match &cursor {
             Some(after) => self.data_store.list_with_offset(
@@ -109,7 +110,7 @@ impl ShardEngine {
         let mut advance = None;
         let mut decided = 0;
         for meta in &listed {
-            let Some(id) = id_of(&meta.location) else {
+            let Some(id) = id_of(self.home(), &meta.location) else {
                 advance = Some(meta.location.to_string());
                 continue;
             };

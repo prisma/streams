@@ -20,6 +20,7 @@ const LEN: u32 = 1000;
 fn entry(first: u64, last: u64, len: u32, keys: Vec<u64>) -> Candidate {
     Candidate::Chunk(DirEntry {
         object: ObjectId {
+            home: 0,
             epoch: 1,
             seq: first,
         },
@@ -115,7 +116,7 @@ fn a_skip_consumes_offsets_only_up_to_the_windows_end() {
     let run = Candidate::Skip(Span {
         first: 0,
         last: 100,
-        rank: 0,
+        rank: (0, 0, 0),
     });
     assert_eq!(
         plan(&[run], window, Some("k")),
@@ -133,7 +134,11 @@ fn a_skip_consumes_offsets_only_up_to_the_windows_end() {
 #[test]
 fn the_directory_cut_never_splits_a_chunk_from_its_copy() {
     let at = |seq, last| DirEntry {
-        object: ObjectId { epoch: 1, seq },
+        object: ObjectId {
+            home: 0,
+            epoch: 1,
+            seq,
+        },
         chunk_off: 0,
         chunk_len: 10,
         first: last - 9,
@@ -167,7 +172,11 @@ fn the_directory_cut_never_splits_a_chunk_from_its_copy() {
 #[test]
 fn the_directory_window_drops_a_group_its_cap_would_split() {
     let at = |seq, last| DirEntry {
-        object: ObjectId { epoch: 1, seq },
+        object: ObjectId {
+            home: 0,
+            epoch: 1,
+            seq,
+        },
         chunk_off: 0,
         chunk_len: 10,
         first: last - 9,
@@ -199,7 +208,11 @@ fn the_directory_window_drops_a_group_its_cap_would_split() {
 fn a_plan_from_an_anchor_fetches_and_claims_exactly_its_span() {
     let pages_end = 9_000 - u32::try_from(crate::spill::object::CHUNK_CRC_LEN).unwrap();
     let entry = DirEntry {
-        object: ObjectId { epoch: 1, seq: 1 },
+        object: ObjectId {
+            home: 0,
+            epoch: 1,
+            seq: 1,
+        },
         chunk_off: 0,
         chunk_len: 9_000,
         first: 0,

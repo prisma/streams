@@ -871,6 +871,15 @@ pub(crate) fn shard_db_path(prefix: &str) -> String {
     }
 }
 
+/// The root of `home`'s objects in a static topology of `width`-bit prefixes (S3a §3.1: a home
+/// is its prefix read as a number). S4's versioned topology maps homes to paths instead.
+pub(crate) fn object_root(home: u32, width: usize) -> String {
+    if width == 0 {
+        return shard_db_path("");
+    }
+    shard_db_path(&format!("{home:0width$b}"))
+}
+
 /// The topology prefix of a shard-DB path `shard_db_path` made; an explicit root is its own.
 pub(crate) fn prefix_of_db_path(path: &str) -> &str {
     match path.strip_prefix("shards/") {

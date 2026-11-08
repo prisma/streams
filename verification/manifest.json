@@ -1277,7 +1277,8 @@
       ],
       "assumptions": [
         "ASM-KANI-SCOPE",
-        "ASM-KANI-COMPILER"
+        "ASM-KANI-COMPILER",
+        "ASM-HOME-ORDER"
       ],
       "input_scope": "tile over up to 4 spans with offsets below 8 (any overlap, nesting or gap) and ranks below 4 (a chunk's object id: of two equal spans the newer wins) sorted by first offset, any window [from, to) with to <= 8 and any pick cap up to 5; drop_covered over up to 4 such spans in sort_for_drop's order (first ascending, last descending, rank descending), checked at every offset below 8 and for the newest of every group of equal spans. The candidates' gathering from the directory and the run-index objects (seal::read::sealed_candidates, its directory cut by whole last-offset groups) and the run format's order check are outside the proof; sort_for_drop's own order, the fold, merge and live_entries tests and the brute-force regression pin them",
       "regressions": [

@@ -29,14 +29,30 @@ pub(crate) use row::{
 pub(crate) const DIRECTORY_TAG: u8 = crate::keyspace::tag::DIRECTORY;
 pub(crate) const REFCOUNT_TAG: u8 = crate::keyspace::tag::REFCOUNT;
 
-/// `0xFF×16 ‖ tag ‖ epoch BE ‖ seq BE`: a row about one object.
+/// `0xFF×16 ‖ tag ‖ home BE ‖ epoch BE ‖ seq BE`: a row about one object (S3a §3.2), fixed-width
+/// so one home's rows of a tag are one range.
 pub(crate) fn sentinel_key(tag: u8, id: ObjectId) -> Vec<u8> {
-    let mut k = Vec::with_capacity(33);
+    let mut k = Vec::with_capacity(37);
     k.extend_from_slice(&crate::keyspace::SENTINEL);
     k.push(tag);
+    k.extend_from_slice(&id.home.to_be_bytes());
     k.extend_from_slice(&id.epoch.to_be_bytes());
     k.extend_from_slice(&id.seq.to_be_bytes());
     k
+}
+
+/// The object a row of `tag` names (`sentinel_key`'s inverse); `None` for another key.
+pub(crate) fn parse_object_key(tag: u8, key: &[u8]) -> Option<ObjectId> {
+    let rest = key
+        .strip_prefix(&crate::keyspace::SENTINEL)?
+        .strip_prefix(&[tag])?;
+    let (home, rest) = rest.split_first_chunk::<4>()?;
+    let (epoch, seq) = rest.split_first_chunk::<8>()?;
+    Some(ObjectId {
+        home: u32::from_be_bytes(*home),
+        epoch: u64::from_be_bytes(*epoch),
+        seq: u64::from_be_bytes(seq.try_into().ok()?),
+    })
 }
 
 pub(crate) fn directory_key(id: ObjectId) -> Vec<u8> {
@@ -52,12 +68,7 @@ pub(crate) fn directory_prefix() -> Vec<u8> {
 
 /// The object a directory key names.
 pub(crate) fn parse_directory_key(key: &[u8]) -> Option<ObjectId> {
-    let rest = key.strip_prefix(&directory_prefix()[..])?;
-    let (epoch, seq) = rest.split_first_chunk::<8>()?;
-    Some(ObjectId {
-        epoch: u64::from_be_bytes(*epoch),
-        seq: u64::from_be_bytes(seq.try_into().ok()?),
-    })
+    parse_object_key(DIRECTORY_TAG, key)
 }
 
 impl KeySummary {

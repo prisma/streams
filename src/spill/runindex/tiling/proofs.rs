@@ -20,18 +20,19 @@ fn spans(len: usize) -> [Span; N] {
     let mut out = [Span {
         first: 0,
         last: 0,
-        rank: 0,
+        rank: (0, 0, 0),
     }; N];
     for s in out.iter_mut().take(len) {
         let first: u64 = kani::any_where(|f: &u64| *f < D);
         let last: u64 = kani::any_where(|l: &u64| *l < D && *l >= first);
-        // A small rank, widened: the comparisons keep their u128 width, the
-        // solver only the bits a rank below `N` can set.
+        // A small rank in the seq place: the comparisons keep the full
+        // `(home, epoch, seq)` width, the solver only the bits a rank below
+        // `N` can set; the tuple's order is the standard lexicographic one.
         let rank: u8 = kani::any_where(|r: &u8| usize::from(*r) < N);
         *s = Span {
             first,
             last,
-            rank: u128::from(rank),
+            rank: (0, 0, u64::from(rank)),
         };
     }
     out

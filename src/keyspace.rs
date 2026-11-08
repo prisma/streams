@@ -249,8 +249,15 @@ mod tests {
     #[test]
     fn every_sentinel_key_is_pinned() {
         use crate::spill::{directory, gc, object::ObjectId, runindex};
-        let id = ObjectId { epoch: 3, seq: 9 };
-        let object = "00000000000000030000000000000009";
+        let id = ObjectId {
+            home: 2,
+            epoch: 3,
+            seq: 9,
+        };
+        // Every object row's key carries the object's home ahead of its epoch and seq; the
+        // garbage row's names an own object and carries none (S3a §3.2).
+        let own = "00000000000000030000000000000009";
+        let object = format!("00000002{own}");
         let ff = "ffffffffffffffffffffffffffffffff";
         let hex = |k: Vec<u8>| crate::crypto::hex(&k);
         let pinned = [
@@ -258,7 +265,7 @@ mod tests {
             (hex(gc::refcount_key(id)), format!("{ff}52{object}")),
             (hex(runindex::pointer_key(id)), format!("{ff}49{object}")),
             (hex(runindex::orphan_key(id)), format!("{ff}4f{object}")),
-            (hex(gc::garbage_key(id)), format!("{ff}47{object}")),
+            (hex(gc::garbage_key(id)), format!("{ff}47{own}")),
             (
                 hex(gc::head_key(&[0x11; 16])),
                 format!("{ff}48{}", "11".repeat(16)),
@@ -275,6 +282,17 @@ mod tests {
         for (key, want) in pinned {
             assert_eq!(key, want);
         }
+        let tags = [directory::DIRECTORY_TAG, directory::REFCOUNT_TAG];
+        for tag in tags
+            .into_iter()
+            .chain([runindex::POINTER_TAG, runindex::ORPHAN_TAG])
+        {
+            let key = directory::sentinel_key(tag, id);
+            assert_eq!(runindex::parse_sentinel_key(tag, &key), Some(id));
+        }
+        let garbage = gc::garbage_key(id);
+        assert_eq!(gc::parse_garbage_key(2, &garbage), Some(id));
+        assert_eq!(gc::parse_garbage_key(5, &garbage).map(|o| o.home), Some(5));
     }
 
     #[test]

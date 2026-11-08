@@ -4,15 +4,17 @@
 //! The engine's side (the refcount lock, reader pins, the purge, the
 //! garbage deletes and the orphan sweep) is `shard::seal::gc`.
 //!
-//! Rows, all under the sentinel (`0xFF×16 ‖ tag ‖ ...`, 33 B keys):
-//! - `'R' ‖ epoch BE ‖ seq BE`, one per segment object with a live chunk →
+//! Rows, all under the sentinel (`0xFF×16 ‖ tag ‖ ...`):
+//! - `'R' ‖ home BE ‖ epoch BE ‖ seq BE`, one per segment object with a live chunk →
 //!   `ver:u8=1 live_bytes:varint live_chunks:varint created_ms:varint
 //!   object_len:varint`. `live_bytes` sums the encoded lengths of the
 //!   object's unreclaimed chunks (the unit a directory entry carries, so a
 //!   decrement is exact).
-//! - `'G' ‖ epoch BE ‖ seq BE`, one per object awaiting its DELETE →
-//!   `ver:u8=1 kind:u8 object_len:varint due_ms:varint`, written in the
-//!   batch that removed the object's last reference.
+//! - `'G' ‖ epoch BE ‖ seq BE`, one per object of this shard's own home
+//!   awaiting its DELETE (no other home's object is ever this shard's
+//!   garbage, so the key carries no home) → `ver:u8=1 kind:u8
+//!   object_len:varint due_ms:varint`, written in the batch that removed the
+//!   object's last reference.
 //! - `'H' ‖ hash[16]`, one per dead stream → `ver:u8=1 state:u8
 //!   not_before_ms:varint head:varint reclaimed:varint`: every chunk of the
 //!   stream ending below `head` is dead; every dead chunk starting below
@@ -108,8 +110,23 @@ pub(crate) struct Garbage {
     pub(crate) due_ms: u64,
 }
 
+/// `'G'`'s key: an own object's epoch and seq, without its home.
 pub(crate) fn garbage_key(id: ObjectId) -> Vec<u8> {
-    sentinel_key(GARBAGE_TAG, id)
+    let mut k = crate::spill::runindex::sentinel_prefix(GARBAGE_TAG);
+    k.extend_from_slice(&id.epoch.to_be_bytes());
+    k.extend_from_slice(&id.seq.to_be_bytes());
+    k
+}
+
+/// The own object of `home` a `'G'` key names (`garbage_key`'s inverse).
+pub(crate) fn parse_garbage_key(home: u32, key: &[u8]) -> Option<ObjectId> {
+    let rest = key.strip_prefix(&crate::spill::runindex::sentinel_prefix(GARBAGE_TAG)[..])?;
+    let (epoch, seq) = rest.split_first_chunk::<8>()?;
+    Some(ObjectId {
+        home,
+        epoch: u64::from_be_bytes(*epoch),
+        seq: u64::from_be_bytes(seq.try_into().ok()?),
+    })
 }
 
 pub(crate) fn encode_garbage(g: &Garbage) -> Vec<u8> {

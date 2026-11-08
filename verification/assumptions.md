@@ -271,6 +271,27 @@ actions to these contracts.
   than the delay.
 - **Standing:** a timing assumption.
 
+### ASM-HOME-ORDER
+
+- **Scope:** KANI-105 (`spill::runindex::tiling`).
+- **Statement:** of two chunks of one span, the one in the object of greater
+  rank `(home, epoch, seq)` is the newer, which holds across a split or a
+  merge only because a child's home is greater than its parent's, a merged
+  incarnation's is greater than both sources', the parent writes nothing
+  after its child's birth, and both siblings write nothing after a merged
+  leaf's birth (S3a-DESIGN §3.2).
+- **Origin:** `src/spill/runindex/tiling.rs` (`rank_of`), the homes S4's
+  topology allocates (`next_home`), S4's retirement (`'T'`) and S6's
+  `SourcesRetired`.
+- **Enforcement / evidence:** `ObjectId`'s field order (`home`, `epoch`,
+  `seq`) is the rank; `spill::runindex::tiling_tests::
+  a_rank_is_the_objects_home_then_epoch_then_seq`. In S3a the topology is
+  static and every object an engine ranks is its own home's; S4 and S6 bring
+  the writers it constrains.
+- **Invalidation:** a home allocated below an existing one, or a write by a
+  parent after its child's birth.
+- **Standing:** a design rule carried by S4 and S6.
+
 ### ASM-SEAL-COMMITTER-SERIAL
 
 - **Scope:** TLA-016.

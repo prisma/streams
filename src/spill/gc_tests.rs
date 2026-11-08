@@ -10,7 +10,11 @@ use super::gc::{
 use super::object::ObjectId;
 
 fn id(seq: u64) -> ObjectId {
-    ObjectId { epoch: 3, seq }
+    ObjectId {
+        home: 0,
+        epoch: 3,
+        seq,
+    }
 }
 
 fn entry(object: u64, off: u64, first: u64, last: u64, len: u32) -> DirEntry {
