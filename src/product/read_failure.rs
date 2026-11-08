@@ -12,7 +12,9 @@ use super::perr;
 pub(crate) fn render_product_read_failure(
     error: crate::application::read::ReadFailure,
 ) -> Response {
-    if matches!(error, crate::application::read::ReadFailure::Storage(_))
+    use crate::application::read::{ReadFailure, StorageFailure};
+    // A closed engine (edge #259) is never a read-memory refusal.
+    if matches!(error, ReadFailure::Storage(StorageFailure::Other(_)))
         && let Some(refusal) = crate::admission::park::read_refused()
     {
         return super::read_memory::refusal_response(refusal);
@@ -94,7 +96,10 @@ fn failure_response(error: crate::application::read::ReadFailure) -> Response {
             true,
             Some(owner),
         ),
-        E::Resolve(_) | E::Remote(_) => (
+        // Edge change #259: the shard's engine stopped serving under the read.
+        E::Resolve(_)
+        | E::Remote(_)
+        | E::Storage(crate::application::read::StorageFailure::EngineClosed(_)) => (
             StatusCode::SERVICE_UNAVAILABLE,
             "temporarily_unavailable",
             "read service unavailable; retry",

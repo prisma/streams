@@ -2712,3 +2712,27 @@ blocks that stack.
   allocates. The tracker's overflow admits writes untracked, so its cap is an owner-class decision.
 - **A fold need not read back the footer it wrote.** Each object's footer is fetched once at its write
   (`fold.rs` -> `fetch_footer`): one 20 ms GET a fold. The writer holds the entries it wrote.
+
+## 16. Follow-ups from edge change #259 (2026-11-09)
+
+A read whose shard engine stopped serving under it answers a retryable 503
+(#259) on the raw and product reads, `:scan`, the SSE connect and a live
+wait's tails. Three readers still answer the old way:
+
+- **A long-poll parked on a fenced engine.** `wait_tail_measuring`
+  (`src/application/read_request.rs`) selects only on the tail notifies
+  and the deadline. `begin_close` wakes the handle, but the long-poll
+  re-parks and answers its ordinary 204 at its cursor when `waitMs` runs
+  out (at most 25 s). It is not a 500, but it is a latency gap. Option (an
+  owner decision, edge-class): select on the engine's `close_tx` too and
+  answer #259's 503 at once.
+- **The consumer pull.** Its deliveries read through `read_merged`'s
+  `String` boundary (`src/application/consumer/delivery.rs`), so a closed
+  engine still answers `500 internal`. Type `read_merged`'s error, which is
+  a `too_many_arguments` exception scope, and answer the consumer's
+  `Opening` rendering, `503 shard_closing` (#137).
+- **A forked stream's stitched read.** The free `read_stitched`
+  (`src/application/read.rs`, under an `unwrap_used` contract whose path
+  fingerprints cover its signature) keeps its `String` error, so a closed
+  engine met while it reads an ancestor answers 500. Return
+  `StorageFailure`, with the owner's row refresh for that contract.

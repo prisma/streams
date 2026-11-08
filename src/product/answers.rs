@@ -164,6 +164,17 @@ mod tests {
         assert_eq!(wire(response).await, (503, None, "creating".into()));
     }
 
+    /// Edge change #259: a read its shard's engine stopped serving under is
+    /// the product's 503 `temporarily_unavailable` with `Retry-After: 1`.
+    #[tokio::test(crate = "crate::test_rt")]
+    async fn a_read_its_engine_stopped_under_asks_for_a_retry_after_one_second() {
+        let closed = crate::application::read::StorageFailure::EngineClosed("closed".into());
+        let failure = ReadFailure::Storage(closed);
+        let response = super::super::render_product_read_failure(failure);
+        let want = (503, Some("1".to_string()), "temporarily_unavailable".into());
+        assert_eq!(wire(response).await, want);
+    }
+
     /// An append refused `temporarily_unavailable` with no delay of its own
     /// asks for one second; a stated delay is kept.
     #[tokio::test(crate = "crate::test_rt")]

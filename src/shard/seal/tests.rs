@@ -328,6 +328,7 @@ pub(super) async fn merged(
         deliver,
     )
     .await
+    .map_err(String::from)
 }
 
 /// Read every record of `hash` from 0 through the production reader and

@@ -3,6 +3,7 @@
 use super::*;
 use crate::application::read::{
     ReadCommand, ReadFailure, ReadMode, ReadOutcome, ReadPosition, ReadResultKind, ReadStart,
+    StorageFailure,
 };
 
 pub(crate) fn read_failure_response(error: ReadFailure) -> Response {
@@ -52,23 +53,31 @@ pub(crate) fn read_failure_response(error: ReadFailure) -> Response {
             "deliver_unsupported_fork",
             "deliver=applied is not supported on forked streams",
         ),
+        // Edge change #259: the shard's engine stopped serving under the read
+        // (a move, a fence or its sealer gone), the directory's own
+        // `shard_closing`; the retry reaches the shard's next engine.
+        E::Storage(StorageFailure::EngineClosed(_)) => retry_after_1s(
+            "shard_closing",
+            "the shard's engine closed under the read; retry",
+        ),
         E::Storage(message) => match crate::admission::park::read_refused() {
             Some(refusal) => crate::product::read_memory::refusal_response(refusal),
             None => err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &message),
         },
-        E::Remote(error) => {
-            // Edge change #178: a failed peer read asks for a retry after 1 s.
-            let mut response = err_resp(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "temporarily_unavailable",
-                &format!("peer read failed: {error:?}"),
-            );
-            response
-                .headers_mut()
-                .insert("retry-after", axum::http::HeaderValue::from_static("1"));
-            response
-        }
+        // Edge change #178: a failed peer read asks for a retry after 1 s.
+        E::Remote(error) => retry_after_1s(
+            "temporarily_unavailable",
+            &format!("peer read failed: {error:?}"),
+        ),
     }
+}
+/// A 503 `code` that asks for a retry after 1 s.
+fn retry_after_1s(code: &str, message: &str) -> Response {
+    let mut response = err_resp(StatusCode::SERVICE_UNAVAILABLE, code, message);
+    response
+        .headers_mut()
+        .insert("retry-after", axum::http::HeaderValue::from_static("1"));
+    response
 }
 #[expect(
     clippy::unwrap_used,
@@ -196,7 +205,7 @@ pub(crate) async fn read_inner(
     let desc = match state.registry.get(&sref).await {
         Ok(Some(desc)) => desc,
         Ok(None) => return read_failure_response(ReadFailure::Missing),
-        Err(error) => return read_failure_response(ReadFailure::Storage(error.to_string())),
+        Err(error) => return read_failure_response(ReadFailure::Storage(error.into())),
     };
     let live = match params.live.as_deref() {
         None => None,
@@ -607,7 +616,7 @@ pub(crate) async fn serve_read_sse(
         };
         let handle = match engine.stream_handle(route.identity).await {
             Ok(handle) => handle,
-            Err(error) => return failure(ReadFailure::Storage(error.to_string())),
+            Err(error) => return failure(ReadFailure::Storage(error.into())),
         };
         let start = match command.start {
             ReadStart::Beginning => StartPos::At(0),
@@ -706,5 +715,33 @@ mod tests {
         assert_eq!(response.status().as_u16(), 503);
         let retry = response.headers().get("retry-after");
         assert_eq!(retry.map(|v| v.as_bytes()), Some(b"1".as_slice()));
+    }
+
+    /// Edge change #259: a read its shard's engine stopped serving under
+    /// answers the directory's own refusal for a closing shard, 503
+    /// `shard_closing` with `Retry-After: 1`.
+    #[tokio::test(crate = "crate::test_rt")]
+    async fn a_read_its_engine_stopped_under_answers_shard_closing() {
+        let closed = super::StorageFailure::EngineClosed("closed".into());
+        let failure = super::ReadFailure::Storage(closed);
+        let response = super::read_failure_response(failure);
+        let status = response.status().as_u16();
+        let retry = response.headers().get("retry-after").cloned();
+        let body = axum::body::to_bytes(response.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            (
+                status,
+                retry.as_ref().map(axum::http::HeaderValue::as_bytes),
+                &body["error"]["code"]
+            ),
+            (
+                503,
+                Some(b"1".as_slice()),
+                &serde_json::Value::from("shard_closing")
+            )
+        );
     }
 }

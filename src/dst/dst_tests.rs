@@ -364,6 +364,8 @@ mod read_memory;
 mod read_memory_wakes;
 #[path = "tests/read_reserve.rs"]
 mod read_reserve;
+#[path = "tests/reads_engine_closed.rs"]
+mod reads_engine_closed;
 #[path = "tests/reads_merged.rs"]
 mod reads_merged;
 

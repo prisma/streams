@@ -116,7 +116,9 @@ pub(crate) enum ReadFailure {
     KeylessLive,
     AppliedFork,
     Resolve(crate::shard_directory::ResolveError),
-    Storage(String),
+    /// The read's storage step failed; an engine that stopped serving under
+    /// it is typed inside (edge #259).
+    Storage(super::StorageFailure),
     Remote(crate::application::read_remote::RemoteSpanError),
 }
 impl std::fmt::Display for ReadFailure {
@@ -234,7 +236,7 @@ impl ReadService {
             .registry
             .get(&original.sref())
             .await
-            .map_err(|e| ReadFailure::Storage(e.to_string()))?
+            .map_err(|e| ReadFailure::Storage(e.into()))?
             .ok_or(ReadFailure::Missing)?;
         if fresh.epoch() != original.epoch() {
             return Err(ReadFailure::ChangedIncarnation);
@@ -327,7 +329,7 @@ impl ReadService {
             let handle = engine
                 .stream_handle(identity)
                 .await
-                .map_err(|e| ReadFailure::Storage(e.to_string()))?;
+                .map_err(|e| ReadFailure::Storage(e.into()))?;
             if let Some(key) = &command.key {
                 self.keys.put(identity, key.clone(), desc.epoch());
             }
@@ -871,7 +873,7 @@ impl ReadService {
         let handle = engine
             .stream_handle(desc.dynamic_segment_identity(at.segment))
             .await
-            .map_err(|e| ReadFailure::Storage(e.to_string()))?;
+            .map_err(|e| ReadFailure::Storage(e.into()))?;
         verify_continuation(command, &engine, &handle, at, &continuation).await?;
         command.start = ReadStart::Position(at);
         Ok(())

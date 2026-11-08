@@ -108,7 +108,7 @@ OWNERS = (
           'dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull '
           'dst_tests::fair_shed:: dst_tests::live_wait:: dst_tests::queue_overload:: dst_tests::weighted_shares::'),
     owner('product_read_failure', 'src/product/read_failure.rs',
-          'dst_tests::read_reserve:: product::tests:: product::read_failure:: dst_tests::read_application::'),
+          'dst_tests::read_reserve:: product::tests:: product::read_failure:: dst_tests::read_application:: dst_tests::reads_engine_closed::'),
     owner('product_ownership', 'src/product/ownership.rs',
           'product::ownership:: dst_tests::forward_to_owner:: dst_tests::queue_product::'
           ' dst_tests::product_lifecycle:: dst_tests::quota_tracker:: dst_tests::lifecycle_creation::'),
@@ -213,11 +213,11 @@ OWNERS = (
     owner('bootstrap_s3_store', 'src/bootstrap/s3_store.rs', 'bootstrap::'),
     owner('bootstrap_service_runtime', 'src/bootstrap/service_runtime.rs', 'bootstrap::service_runtime::'),
     owner('bootstrap_tests', 'src/bootstrap/tests.rs', 'bootstrap::'),
-    owner('read_request', 'src/application/read_request.rs', 'dst_tests::read_application:: dst_tests::reads_applied:: dst_tests::reads_applied_history:: dst_tests::read_memory::a_woken_long_poll dst_tests::read_memory_wakes::'),
+    owner('read_request', 'src/application/read_request.rs', 'dst_tests::read_application:: dst_tests::reads_applied:: dst_tests::reads_applied_history:: dst_tests::read_memory::a_woken_long_poll dst_tests::read_memory_wakes:: dst_tests::reads_engine_closed::'),
     owner('http_serve', 'src/http/serve.rs', 'http::serve::'),
     owner('http_serve_drain', 'src/http/serve/drain.rs', 'http::serve::drain::'),
     owner('http_serve_http2_bounds', 'src/http/serve/http2_bounds.rs', 'http::serve::'),
-    owner('http_read', 'src/http/read.rs', 'dst_tests::reads_raw:: dst_tests::reads_history:: dst_tests::read_application:: dst_tests::read_page_limits:: dst_tests::reads_applied_history:: dst_tests::sse_delivery::'),
+    owner('http_read', 'src/http/read.rs', 'dst_tests::reads_raw:: dst_tests::reads_history:: dst_tests::read_application:: dst_tests::read_page_limits:: dst_tests::reads_applied_history:: dst_tests::sse_delivery:: dst_tests::reads_engine_closed::'),
     owner('http_telemetry_append', 'src/http/telemetry_append.rs', 'security_workload:: reserved_streams_append'),
     owner('http_forward', 'src/http/forward.rs', 'http::forward:: dst_tests::forward_to_owner:: dst_tests::seal_fence_relay:: dst_tests::livefeed_ownership::'),
     owner('queue_cleanup', 'src/shard/transaction/queue/cleanup.rs', 'shard::'),
@@ -309,7 +309,8 @@ OWNERS = (
     # r06a page assembly, o2a's retained owners and the product scans).
     owner('read_scan', 'src/application/read_scan.rs',
           'application::read dst_tests::read_page_assembly:: '
-          'dst_tests::read_subset_retention::o2a_frozen_scan dst_tests::reads_product::product_scan_'),
+          'dst_tests::read_subset_retention::o2a_frozen_scan dst_tests::reads_product::product_scan_ '
+          'dst_tests::reads_engine_closed::'),
     owner('read_wire', 'src/application/read_wire.rs', 'application::read'),
     owner('read_wire_tests', 'src/application/read_wire_tests.rs', 'application::read'),
     owner('read_batch_tests', 'src/application/read_batch/tests.rs', 'application::read_batch::'),

@@ -321,6 +321,46 @@
       "syntax": "path = \"tests/reads_merged.rs\""
     },
     {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::reads_engine_closed",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Reads whose shard engine stopped serving under them (edge #259): a move's retirement or a gone sealer answers the raw read 503 shard_closing and the product read and a live wait's tail 503 temporarily_unavailable, Retry-After 1, and the retry reads the records; the compiler and the DST suite exercise the module.",
+      "syntax": "path = \"tests/reads_engine_closed.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::raw_refused",
+      "path": "src/dst/tests/reads_engine_closed.rs",
+      "reason": "The raw read's exact refusal for an engine that stopped serving under the read (edge #259); serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::product_refused",
+      "path": "src/dst/tests/reads_engine_closed.rs",
+      "reason": "The product read's exact refusal for an engine that stopped serving under the read (edge #259); serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::both_records",
+      "path": "src/dst/tests/reads_engine_closed.rs",
+      "reason": "The two records the retry must read back exactly (edge #259 DST); serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 5,
+      "owner": "crate::a_live_wait_tail_whose_engine_is_retired_under_its_read_answers_503",
+      "path": "src/dst/tests/reads_engine_closed.rs",
+      "reason": "A live wait's request documents and the exact refused entry of a tail whose engine is retired under its read (edge #259); serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
       "category": "macro-dsl",
       "count": 1,
       "owner": "crate::ledger_value",

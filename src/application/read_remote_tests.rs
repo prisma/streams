@@ -47,6 +47,9 @@ fn the_page_route_refusal_names_the_owner_verdict() {
         ReadFailure::AppliedFork,
         ReadFailure::Creating,
         ReadFailure::Storage("x".into()),
+        ReadFailure::Storage(crate::application::read::StorageFailure::EngineClosed(
+            "x".into(),
+        )),
         ReadFailure::Resolve(crate::shard_directory::ResolveError::NotOwner {
             prefix: "0".into(),
             owner: "b".into(),

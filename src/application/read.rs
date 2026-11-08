@@ -54,8 +54,93 @@ impl<'a> ReadPlan<'a> {
             visibility,
         }
     }
-    pub(crate) async fn execute(self) -> Result<ReadPage, String> {
-        execute_segment(self).await
+    /// The read, its failure typed by the engine's state, never by the
+    /// error: a read that failed on an engine that closed (a move retired
+    /// it, its next owner fenced it, or its sealer exited, since a required
+    /// task's exit closes the engine) is the move's, and the shard's next
+    /// engine serves its retry (edge #259).
+    pub(crate) async fn execute(self) -> Result<ReadPage, StorageFailure> {
+        #[cfg(test)]
+        crate::failpoints::pause_read_after_resolve(&crate::crypto::hex(&self.handle.hash)).await;
+        let engine = self.engine;
+        execute_segment(self).await.map_err(|error| {
+            if engine.is_closed() {
+                StorageFailure::EngineClosed(error)
+            } else {
+                StorageFailure::Other(error)
+            }
+        })
+    }
+}
+
+/// Why a read's storage step failed (edge #259): the shard's engine stopped
+/// serving under it, so the retry reaches the shard's next engine; or
+/// anything else. It reads as its message wherever a message is wanted.
+#[derive(Debug)]
+pub(crate) enum StorageFailure {
+    EngineClosed(String),
+    Other(String),
+}
+
+impl std::ops::Deref for StorageFailure {
+    type Target = str;
+    fn deref(&self) -> &str {
+        match self {
+            Self::EngineClosed(message) | Self::Other(message) => message,
+        }
+    }
+}
+
+impl std::fmt::Display for StorageFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self)
+    }
+}
+
+impl From<String> for StorageFailure {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
+impl From<&str> for StorageFailure {
+    fn from(message: &str) -> Self {
+        Self::Other(message.to_string())
+    }
+}
+
+impl From<object_store::Error> for StorageFailure {
+    fn from(error: object_store::Error) -> Self {
+        Self::Other(error.to_string())
+    }
+}
+
+/// A stream handle's load: a store that closed (its engine was fenced or
+/// retired) is the engine's close; any other failure is the store's.
+impl From<slatedb::Error> for StorageFailure {
+    fn from(error: slatedb::Error) -> Self {
+        match error.kind() {
+            slatedb::ErrorKind::Closed(_) => Self::EngineClosed(error.to_string()),
+            _ => Self::Other(error.to_string()),
+        }
+    }
+}
+
+impl From<StorageFailure> for String {
+    fn from(failure: StorageFailure) -> Self {
+        match failure {
+            StorageFailure::EngineClosed(message) | StorageFailure::Other(message) => message,
+        }
+    }
+}
+
+impl ShardEngine {
+    /// The stream handle a read loads, its failure typed (edge #259).
+    pub(crate) async fn read_handle(
+        &self,
+        identity: [u8; 16],
+    ) -> Result<Arc<crate::shard::StreamHandle>, StorageFailure> {
+        Ok(self.stream_handle(identity).await?)
     }
 }
 
@@ -73,7 +158,7 @@ pub(crate) async fn read_merged(
     selector: Option<&str>,
     max_bytes: usize,
     visibility: Deliver,
-) -> Result<ReadPage, String> {
+) -> Result<ReadPage, StorageFailure> {
     ReadPlan::segment(
         key,
         epoch,
@@ -258,24 +343,23 @@ impl ReadService {
         key: &StreamKey,
         range: ReadRange,
         max_bytes: usize,
-    ) -> Result<ReadPage, String> {
-        read_stitched(self, desc, key, range, max_bytes).await
+    ) -> Result<ReadPage, StorageFailure> {
+        read_stitched(self, desc, key, range, max_bytes)
+            .await
+            .map_err(StorageFailure::from)
     }
     /// (engine, handle) for a stream's sole segment identity.
     pub(crate) async fn handle_of(
         &self,
         desc: &StreamDesc,
-    ) -> Result<(Arc<ShardEngine>, Arc<crate::shard::StreamHandle>), String> {
+    ) -> Result<(Arc<ShardEngine>, Arc<crate::shard::StreamHandle>), StorageFailure> {
         let ro = desc.resolve_segment("");
         let engine = self
             .shards
             .resolve(&ro.shard_route, crate::shard_directory::Adoption::Internal)
             .await
             .map_err(|e| format!("engine unavailable: {e:?}"))?;
-        let handle = engine
-            .stream_handle(ro.identity)
-            .await
-            .map_err(|e| e.to_string())?;
+        let handle = engine.read_handle(ro.identity).await?;
         Ok((engine, handle))
     }
 }

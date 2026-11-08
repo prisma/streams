@@ -51,6 +51,7 @@ pub(crate) enum Fp {
     CreateBeforeReady,
     AppendBeforeEnqueue,
     AppendAfterResolve,
+    ReadAfterResolve,
     CloseBeforeEnqueue, // one-shot composite: consume arm, hold
     CloseBeforeMark,
     ProductSealBeforeClaim,
@@ -75,13 +76,14 @@ pub(crate) enum Fp {
 }
 
 impl Fp {
-    pub(crate) const ALL: [Fp; 26] = [
+    pub(crate) const ALL: [Fp; 27] = [
         Fp::StopAfterTombstone,
         Fp::StopBeforeMarkCommitted,
         Fp::StopAfterSealIntent,
         Fp::CreateBeforeReady,
         Fp::AppendBeforeEnqueue,
         Fp::AppendAfterResolve,
+        Fp::ReadAfterResolve,
         Fp::CloseBeforeEnqueue,
         Fp::CloseBeforeMark,
         Fp::ProductSealBeforeClaim,
@@ -139,6 +141,12 @@ impl Fp {
             Fp::AppendAfterResolve => {
                 "append: after the shard engine resolved, before the \
                  committer enqueue"
+            }
+            Fp::ReadAfterResolve => {
+                "read: after the shard engine resolved and the stream's \
+                 handle loaded, before the segment read executes \
+                 (`ReadPlan::read`); keyed by the segment identity's hex, \
+                 which is what the plan knows of the stream"
             }
             Fp::CloseBeforeEnqueue => {
                 "close: before its enqueue; ONE-SHOT — first arrival \
@@ -449,6 +457,16 @@ pub(crate) fn release_append_after_resolve(name: &str) {
 }
 pub(crate) async fn pause_append_after_resolve(name: &str) {
     pause(Fp::AppendAfterResolve, name).await;
+}
+
+pub(crate) fn park_read_after_resolve(name: &str) {
+    arm(Fp::ReadAfterResolve, name);
+}
+pub(crate) fn release_read_after_resolve(name: &str) {
+    release(Fp::ReadAfterResolve, name);
+}
+pub(crate) async fn pause_read_after_resolve(name: &str) {
+    pause(Fp::ReadAfterResolve, name).await;
 }
 
 pub(crate) fn park_close_before_enqueue(name: &str) {

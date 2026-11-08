@@ -5089,6 +5089,61 @@ One record has verified=false: its commit did not match the recorded text.
 - **Status:** ratified with amendments by Fable 5.1 on 2026-11-03 under the owner's delegation of 2026-11-03 (operator-only, additive counts and latencies; the split-demand and mixed-version wording amended).
 - **Check against commit:** written with the change.
 
+### #259 (this record's commit) — A read whose shard engine stopped serving under it (a move, a fence, its sealer gone) answers the directory's retryable 503 with `Retry-After: 1`, not 500: raw `shard_closing`, product `temporarily_unavailable`
+
+- **Program item:** P5.0's interim D ramp on 48597a882. It ran 8 shards on a fleet of 1 to 8 with the desired count flapping, and 10,000 tenants with one stream each.
+  - The bench counted 148 `read 500 Internal Server Error {"error":{"code":"internal"...}}`, beside 933 `409 not_stream_owner` and 514 read `503`.
+  - Package 2's rerun with diagnostic logging (dramp-each-r2) logged 672 read failures on the eight servers' read surfaces:
+    - 669 "no sealer task is running to open the sealer" (516 raw, 153 product);
+    - 2 "the engine closed before its sealer opened";
+    - 1 "the shard engine closed; retry";
+    - 0 corruption lines.
+  - Each burst landed within 1-4 ms of the same server's `shard retired reason="ownership moved"` or `shard db closed: Fenced`, the old owner's side. On server-1, shard 110 opened at 18:49:14.777, its sealer's open had not finished when the fleet moved the shard at 18:49:21.168, and 148 reads waiting for that open failed within 3 ms.
+  - The lead chose a 503 on 2026-11-09. Fable 5.1 ratified it with three amendments (EDGE-255-RATIFICATION.md; the brief's number was #255, which is reserved for the millions design's D6, so this record is #259).
+- **Surface:** both.
+- **Endpoint:**
+  - raw: `GET /v1/stream/{name}` (plain and long-poll) and the `live=sse` connect;
+  - product: `GET /v1/streams/{name}/records` and its long-poll, `POST /v1/streams/{name}:scan`, the `records` SSE connect, and the tail entries of `POST /v1/projects/{p}/live:wait`.
+- **Condition:** the read resolved a serving engine, and that engine stopped serving before or during the read's sealed or unsealed part, its stream handle's load, or its continuation check. The engine stops serving when:
+  - its next owner fences it;
+  - the directory or the fleet retires it;
+  - its sealer, which every sealed read waits for, exits.
+  The failure is typed inside the existing variant, `ReadFailure::Storage(StorageFailure)` (`src/application/read.rs`: `EngineClosed` or `Other`), so no variant is added and every frozen `.map_err(ReadFailure::Storage)` site is byte-identical (Fable's row decision, shape D). Two places decide:
+  - the segment read, by the engine's state, never the error: `ReadPlan::execute` answers `EngineClosed` when its engine `is_closed()` after the read failed. A retirement and a fence close the engine, and so does its sealer's exit: a required task's exit closes it (`RequiredExit`, `src/shard/lifecycle.rs`), so the field's "no sealer task is running" is a closed engine too;
+  - a stream handle's load, by the store's own kind (Fable accepted it for handle loads only): a store that closed (`slatedb::ErrorKind::Closed`, a fence or a retirement) is `EngineClosed` (`From<slatedb::Error> for StorageFailure`). This covers `execute_read`, `settle_continuation`, both `:scan` loads, `handle_of` (a fork's own handle) and the SSE connect.
+  Both renderers match `Storage(EngineClosed)` before `Storage`'s other answers, and the product's memory-refusal check sees only `Storage(Other)`. The classification sits at the plan's boundary rather than as a `RangeReadError` variant, because `read_frames_until` and `execute_segment` are under frozen exception contracts (`too_many_arguments`, `unwrap_used`).
+- **Before:**
+  - raw: `500 internal` with the engine's message;
+  - product: `500 internal "read failed"`, `retryable: true`, no `Retry-After`;
+  - the SDK threw, because it retries only 429 and 503, and a `live:wait` tail entry ended the subscription.
+- **After:**
+  - raw: `503 shard_closing` ("the shard's engine closed under the read; retry"), `Retry-After: 1`. This is the directory's own code for a closing shard, which the same read gets from the gate one instant later. WIRE-MATRIX gains no new code.
+  - product: `503 temporarily_unavailable` ("read service unavailable; retry"), `retryable: true`, `Retry-After: 1`. It is the row a shard opening here already has, and a closed engine is never taken for a memory refusal.
+  - a `live:wait` tail entry: `{"status": 503, "error": {"code": "temporarily_unavailable", ...}}`.
+  - the fleet-internal page route: the failure is not a verdict (`WireReadRefusal::of` is `None`). The coordinator classifies the owner's 503 as retryable and answers its client `503 temporarily_unavailable`, `Retry-After: 1` (#178, unchanged).
+- **Retry semantics:** nothing was read, and the retry is safe. It resolves the shard again and lands on its next engine, here or on the new owner, or it meets the holdoff's own answer (`shard_moving`, `shard_opening` with their own `Retry-After`) or `409 not_ring_owner` with `Streams-Replay-To`. The SDK replays after 1 s and, because the answer carries `Retry-After`, rides through for up to 15 s (#177).
+- **Who is affected:** every reader during a shard move: a fleet resize, a deploy or restart, a sweep eviction. Operators: these refusals leave the 5xx family that OPERATIONS.md's read SLO counts and join the 503 family beside `shard_closing` and `shard_moving`.
+- **Not changed:**
+  - SSE mid-stream: #16's `EngineRetired` cutoff ends the stream, and the client's resume may meet this 503.
+  - A long-poll parked on the fenced engine re-parks and answers its ordinary 204 at its cursor when `waitMs` runs out (25 s at most); the client's next poll resolves afresh. NEXT-WORK: select on the engine's close and answer this 503 at once.
+  - The consumer pull (`:pull`) stays out of scope: its deliveries read through `read_merged`'s `String` boundary (`src/application/consumer/delivery.rs`). A closed engine there stays `500 internal`. NEXT-WORK.
+  - A forked stream's stitched read: the free `read_stitched` keeps its `String` error (an `unwrap_used` contract fingerprints its signature's paths), so a closed engine met while it reads an ancestor is still `Other`, a 500; the fork's own handle load (`handle_of`) is typed. NEXT-WORK.
+  - The read path's other `unavailable(..)` failures keep their 500, since they are not the engine's state: an object missing under a directory entry, a chunk GET that failed after its attempts, run-index fetch failures (`src/shard/seal/read.rs`, `src/shard/seal/runs.rs`). The first-chunk memory refusal keeps `park::read_refused()`'s answer.
+  - The fleet-internal receivers' own answers.
+- **Pinning tests:**
+  - `dst::dst_tests::reads_engine_closed` (new). Each read is parked after its resolve (`Fp::ReadAfterResolve`), its engine stopped, then released; the retry reads exactly `[{"n":1},{"n":2}]` (one record sealed, one unsealed):
+    - `a_raw_read_whose_engine_is_retired_under_it_answers_shard_closing`, red on 48597a882: `left: (500, None, {"error": {"code": "internal", "message": "Closed error: db is closed"}})`;
+    - `a_product_read_whose_engine_is_retired_under_it_is_temporarily_unavailable`, red: `left: (500, None, {"error": {"code": "internal", "message": "read failed", "retryable": true}})`;
+    - `a_raw_read_whose_engines_sealer_is_gone_answers_shard_closing` and `a_product_read_whose_engines_sealer_is_gone_is_temporarily_unavailable` (the field's case: the sealer never opened, then exited), red: raw `left: (500, None, {"error": {"code": "internal", "message": "Unavailable error: the shard engine closed; retry"}})`, product `500 internal "read failed"`;
+    - `a_live_wait_tail_whose_engine_is_retired_under_its_read_answers_503`, red: the entry `{"id": "t", "status": 500, "error": {"code": "internal", "message": "read failed", "retryable": true}}`;
+    - `a_handle_loads_closed_store_is_the_engines_close`: a fenced or cleanly closed store's error is `EngineClosed`, an unavailable store's is `Other`. This is the conversion every handle load uses (`execute_read`, `settle_continuation`, `:scan`, `handle_of`, the SSE connect). No failpoint opens the SSE connect's resolve-to-load window, because `serve_read_sse` is under a frozen `too_many_lines` contract.
+  - `http::read_adapter::tests::a_read_its_engine_stopped_under_answers_shard_closing` and `product::answers::tests::a_read_its_engine_stopped_under_asks_for_a_retry_after_one_second` (new).
+  - `application::read_remote_tests::the_page_route_refusal_names_the_owner_verdict`, extended: `EngineClosed` is no verdict.
+  - Unchanged and green (dev profile): `application::`, `product::`, `http::`, `shard::seal::`, `dst_tests::read*`, `live_wait`, `append_application` (#136's closed-under-append pair), `fence_yield` (#179) and `livefeed` (#16): 486 passed, 1 ignored.
+- **Risk reason:** low. A 500 on a retryable condition becomes the 503 that its neighbours in time already give: the gate (`shard_closing`, #137, #179) and an append in the same window (`shard_moving`, #136). No new status, code or header on either surface, and no data path changes. Formal: digest-only re-records of TLA-016 and TLA-018.
+- **Status:** ratified before landing by Fable 5.1 under the owner's delegation (EDGE-255-RATIFICATION.md), with amendments 1-3. The owner may still overrule the raw code (amendment 1) and the consumer scope.
+- **Check against commit:** written with the change.
+
 ### #45 07db91a7 — Scaler cooldown and merge patience saturate instead of wrapping
 
 - **Risk:** low

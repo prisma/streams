@@ -113,9 +113,9 @@ impl ReadService {
                     Ok(engine) => {
                         let identity = desc.dynamic_segment_identity(span.seg_id);
                         let handle = engine
-                            .stream_handle(identity)
+                            .read_handle(identity)
                             .await
-                            .map_err(|e| ReadFailure::Storage(e.to_string()))?;
+                            .map_err(ReadFailure::Storage)?;
                         handle.state.lock().unwrap().durable.next
                     }
                     Err(ResolveError::NotOwner { owner, .. }) => {
@@ -174,7 +174,7 @@ impl ReadService {
         let handle = engine
             .stream_handle(identity)
             .await
-            .map_err(|e| ReadFailure::Storage(e.to_string()))?;
+            .map_err(|e| ReadFailure::Storage(e.into()))?;
         self.keys.put(identity, key.clone(), desc.epoch());
         ReadPlan::segment(
             key,

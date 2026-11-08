@@ -1119,6 +1119,17 @@
     ]
   },
   {
+    "name": "a_handle_loads_closed_store_is_the_engines_close",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "cce2a7fda773f2ef6bf33b54f190cf0776a6bb43c75e8a208500376f0a4a40f0",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_engine_closed.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_handoff_with_an_append_in_flight_resolves_safely",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2, crate = \"crate::test_rt\")]"
@@ -1276,6 +1287,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_hostile.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_live_wait_tail_whose_engine_is_retired_under_its_read_answers_503",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "5d6069ef6710c402479eb093ce7b793bd25f80d8a83ea9d35eb80499933f20f8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_engine_closed.rs",
     "scenarios": []
   },
   {
@@ -1870,6 +1892,28 @@
     "scenarios": []
   },
   {
+    "name": "a_product_read_whose_engine_is_retired_under_it_is_temporarily_unavailable",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "b74eb1bb1301256b9a72cce076abf4b98e615e89db50827e77409747e0cccea9",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_engine_closed.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_product_read_whose_engines_sealer_is_gone_is_temporarily_unavailable",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "68101fbf7a82ea190c9614dbf090ec101102675346d253917f5a2e66a17d5c35",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_engine_closed.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_product_seal_never_binds_to_a_recreated_incarnation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -2098,6 +2142,28 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/lifecycle_incarnation.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_raw_read_whose_engine_is_retired_under_it_answers_shard_closing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "4036dfc7a539addec55a0fe6eeef21e40b421864c96c9a6ef0b116644e7d0f90",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_engine_closed.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_raw_read_whose_engines_sealer_is_gone_answers_shard_closing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "245ab8130f9b16472af5e1dc3a230d4f7a186ebea13e7e008274c1351c8cf1b0",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_engine_closed.rs",
     "scenarios": []
   },
   {
@@ -5319,7 +5385,7 @@
     "attributes": [
       "#[test]"
     ],
-    "function_sha256": "15a1da6008eab503242a38c4bd9be2e4962482b833a87754dbece44526e95d87",
+    "function_sha256": "cf9ff5e9596abb20fb669b46af19912f5d618cffd315a1adf7a644a77459ba70",
     "mechanisms": [],
     "configuration": [
       "fn failpoint_registry_is_enumerable_and_described() {",
