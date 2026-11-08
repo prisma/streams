@@ -436,7 +436,7 @@
         {
           "file": "src/dst/tests/billing_controller.rs",
           "name": "r09_tombstone_walk_advances_one_catalog_page_per_pass",
-          "sha256": "0a32f4cca5106ab79ce23fca33595079c3690644fd412d92fba03caae8b9b58b"
+          "sha256": "2c37cfe957e3cd7c61451495cf751db6ea89b7360081fa55b7634b468086e74b"
         }
       ]
     },

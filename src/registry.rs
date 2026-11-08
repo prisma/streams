@@ -70,7 +70,9 @@ pub(crate) struct PersistedDescriptor {
     /// MANDATORY stable tenant identity (MULTITENANCY §10.2): an input
     /// to the registry path and every layout-4 identity hash, verified
     /// against the path at decode. The mutable workspace_id is
-    /// deliberately NOT persisted in the immutable descriptor.
+    /// deliberately NOT persisted in the immutable descriptor. Stored as
+    /// `container_id` (layout 8, edge #253).
+    #[serde(rename = "container_id")]
     pub project_id: crate::tenant::ProjectId,
     /// 16-byte hex; minted per creation, bound into HKDF (V9 mandate).
     pub stream_epoch: String,
@@ -790,7 +792,7 @@ fn desc_path(cell: &str, sref: &crate::tenant::TenantStreamRef) -> ObjPath {
         ))
     } else {
         ObjPath::from(format!(
-            "{PROJECTS_ROOT}{}/streams/{}.json",
+            "{CONTAINERS_ROOT}{}/streams/{}.json",
             hex(sref.project_id().as_bytes()),
             hex(sref.name().as_str().as_bytes())
         ))
@@ -799,12 +801,12 @@ fn desc_path(cell: &str, sref: &crate::tenant::TenantStreamRef) -> ObjPath {
 
 /// Root of every customer project's descriptors. Only the cell-wide
 /// reconciliation page lists from here; a project catalog lists its own prefix.
-const PROJECTS_ROOT: &str = "registry/v4/projects/";
+const CONTAINERS_ROOT: &str = "registry/v5/containers/";
 
 /// The catalog scan root for one project (§10.3): a project catalog
 /// never sees another project's keys, by prefix construction.
 fn project_streams_prefix(project: &crate::tenant::ProjectId) -> String {
-    format!("{PROJECTS_ROOT}{}/streams/", hex(project.as_bytes()))
+    format!("{CONTAINERS_ROOT}{}/streams/", hex(project.as_bytes()))
 }
 
 /// One page of the stream catalog.

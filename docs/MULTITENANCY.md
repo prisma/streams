@@ -817,7 +817,7 @@ and operate on `TenantStreamRef`, not bare names.
 Use:
 
 ```text
-registry/v4/projects/
+registry/v5/containers/
   <project-id-hex>/
   streams/
   <name-hex>.json
@@ -866,7 +866,7 @@ Remove all deployment-global tenant fallbacks.
 Project catalog scans only:
 
 ```text
-registry/v4/projects/<project>/streams/
+registry/v5/containers/<project>/streams/
 ```
 
 Catalog cursors bind:

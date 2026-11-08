@@ -538,7 +538,7 @@ async fn a_woken_fork_long_poll_takes_its_whole_page_budget_again() {
     cell.state.registry.expire_cache_for_tests(&src);
     let hex = |raw: &str| crate::crypto::hex(raw.as_bytes());
     let descriptor = format!(
-        "registry/v4/projects/{}/streams/{}.json",
+        "registry/v5/containers/{}/streams/{}.json",
         hex(&project(0)),
         hex("src")
     );

@@ -103,14 +103,14 @@ fn detailed_cost_ledger_preserves_classes_statuses_and_tiers() {
 }
 
 /// A stream descriptor lives under the registry
-/// (`registry/v4/projects/<hex>/streams/<hex>.json`, src/registry.rs), so
+/// (`registry/v5/containers/<hex>/streams/<hex>.json`, src/registry.rs), so
 /// its reads, writes and catalog LISTs are the registry tier, not history,
 /// although the key contains `streams/`.
 #[test]
 fn registry_descriptors_are_the_registry_tier() {
     let stats = Stats::default();
     let empty = HashMap::new();
-    let descriptor = "registry/v4/projects/70726f6a/streams/6f72.json";
+    let descriptor = "registry/v5/containers/70726f6a/streams/6f72.json";
     stats.record(&Method::PUT, descriptor, &empty, StatusCode::OK);
     stats.record(&Method::GET, descriptor, &empty, StatusCode::NOT_MODIFIED);
     stats.record(
@@ -118,7 +118,7 @@ fn registry_descriptors_are_the_registry_tier() {
         "",
         &HashMap::from([(
             "prefix".into(),
-            "registry/v4/projects/70726f6a/streams/".into(),
+            "registry/v5/containers/70726f6a/streams/".into(),
         )]),
         StatusCode::OK,
     );

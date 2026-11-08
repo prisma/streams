@@ -697,7 +697,7 @@ async fn a_recreation_that_loses_its_cas_to_a_ttl_renewal_leaves_a_debt_the_pass
     let engine = engine_of(&state, &d0, 0).await;
     let hex = crate::crypto::hex;
     let path = format!(
-        "registry/v4/projects/{}/streams/{}.json",
+        "registry/v5/containers/{}/streams/{}.json",
         hex(sref.project_id().as_bytes()),
         hex(sref.name().as_str().as_bytes())
     );

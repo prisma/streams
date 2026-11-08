@@ -460,7 +460,7 @@ async fn r02_a_first_read_the_store_fails_is_retryable_and_a_corrupt_descriptor_
 
     // Corrupt the stored descriptor itself: the same read is final.
     let path = format!(
-        "registry/v4/projects/{}/streams/{}.json",
+        "registry/v5/containers/{}/streams/{}.json",
         crate::crypto::hex(sref.project_id().as_bytes()),
         crate::crypto::hex(name.as_bytes())
     );

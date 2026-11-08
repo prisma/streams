@@ -504,7 +504,7 @@ mod descriptor_json {
         }
     }
 
-    const FULL_JSON: &str = r#"{"name":"orders","account_id":"acct-1","project_id":"proj-test","stream_epoch":"00112233445566778899aabbccddeeff","key_fingerprint":"fp-abc","created_ms":1700000000123,"expires_at_ms":1800000000000,"deleted":true,"soft_deleted":true,"logical_close_ms":1700100000000,"forked_from":{"source":"parent","source_epoch":"ffeeddccbbaa99887766554433221100","fork_offset":42,"fork_sub":3,"fork_id":"fork-1"},"fork_children":["child-1","child-2"],"init":{"request_hash":"rh-1","key_fingerprint":"kfp-1","claimed_ms":5},"content_type":"application/json","ttl_secs":3600,"segments":{"version":1,"next_seg_id":1,"segments":[{"seg_id":0,"lo":0,"hi":18446744073709551615,"shard_prefix":"shard-0","route_hash":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"created_ms":1700000000000,"predecessors":[],"sealed_ms":null,"sealed_next_offset":null}]},"sealed":true,"seal_gen_counter":7,"sealing":{"operation_id":"op-1","intent":{"kind":"final","routing_key":"rk","request_hash":"rq","final_committed":true},"claimed_ms":9,"claim_generation":2},"seal_op":"op-0","watch_definitions":[{"name":"w1","fields":["/a","/b"]}],"parent_ref_pending":true,"watch_sig_key":"wsk-1","layout_version":8}"#;
+    const FULL_JSON: &str = r#"{"name":"orders","account_id":"acct-1","container_id":"proj-test","stream_epoch":"00112233445566778899aabbccddeeff","key_fingerprint":"fp-abc","created_ms":1700000000123,"expires_at_ms":1800000000000,"deleted":true,"soft_deleted":true,"logical_close_ms":1700100000000,"forked_from":{"source":"parent","source_epoch":"ffeeddccbbaa99887766554433221100","fork_offset":42,"fork_sub":3,"fork_id":"fork-1"},"fork_children":["child-1","child-2"],"init":{"request_hash":"rh-1","key_fingerprint":"kfp-1","claimed_ms":5},"content_type":"application/json","ttl_secs":3600,"segments":{"version":1,"next_seg_id":1,"segments":[{"seg_id":0,"lo":0,"hi":18446744073709551615,"shard_prefix":"shard-0","route_hash":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"created_ms":1700000000000,"predecessors":[],"sealed_ms":null,"sealed_next_offset":null}]},"sealed":true,"seal_gen_counter":7,"sealing":{"operation_id":"op-1","intent":{"kind":"final","routing_key":"rk","request_hash":"rq","final_committed":true},"claimed_ms":9,"claim_generation":2},"seal_op":"op-0","watch_definitions":[{"name":"w1","fields":["/a","/b"]}],"parent_ref_pending":true,"watch_sig_key":"wsk-1","layout_version":8}"#;
 
     /// All optional/empty/defaultable fields at their defaults.
     fn minimal_desc() -> crate::registry::PersistedDescriptor {
@@ -544,7 +544,7 @@ mod descriptor_json {
     /// soft_deleted, logical_close_ms, forked_from, fork_children, init,
     /// segments, sealing, seal_op, watch_definitions, parent_ref_pending,
     /// watch_sig_key.
-    const MINIMAL_JSON: &str = r#"{"name":"min","project_id":"proj-test","stream_epoch":"00000000000000000000000000000001","key_fingerprint":"fp","created_ms":1,"expires_at_ms":null,"deleted":false,"content_type":"application/octet-stream","ttl_secs":null,"sealed":false,"seal_gen_counter":0,"layout_version":8}"#;
+    const MINIMAL_JSON: &str = r#"{"name":"min","container_id":"proj-test","stream_epoch":"00000000000000000000000000000001","key_fingerprint":"fp","created_ms":1,"expires_at_ms":null,"deleted":false,"content_type":"application/octet-stream","ttl_secs":null,"sealed":false,"seal_gen_counter":0,"layout_version":8}"#;
 
     #[test]
     fn golden_layout8_descriptor_full_json() {
@@ -572,14 +572,17 @@ mod descriptor_json {
 
     #[test]
     fn golden_layout8_descriptor_decode_defaults() {
-        // Only the mandatory fields present (name, project_id,
+        // Only the mandatory fields present (name, container_id,
         // stream_epoch, key_fingerprint, created_ms): every other field
         // takes its documented serde default. layout_version defaults to
         // 0 — precisely what the layout gate then refuses.
         let d: crate::registry::PersistedDescriptor = serde_json::from_str(
-            r#"{"name":"min","project_id":"proj-test","stream_epoch":"00000000000000000000000000000001","key_fingerprint":"fp","created_ms":1}"#,
+            r#"{"name":"min","container_id":"proj-test","stream_epoch":"00000000000000000000000000000001","key_fingerprint":"fp","created_ms":1}"#,
         )
         .unwrap();
+        // Layout 8 names the tenant `container_id` (edge #253): the old key decodes nowhere.
+        let old = r#"{"name":"min","project_id":"proj-test","stream_epoch":"00000000000000000000000000000001","key_fingerprint":"fp","created_ms":1}"#;
+        assert!(serde_json::from_str::<crate::registry::PersistedDescriptor>(old).is_err());
         assert_eq!(d.account_id, None);
         assert_eq!(d.expires_at_ms, None);
         assert!(!d.deleted);
@@ -608,7 +611,7 @@ mod descriptor_json {
         // layout 7 (tag-first keys, the layout before 8) included.
         let with_layout = |layout: &str| {
             format!(
-                r#"{{"name":"min","project_id":"proj-test","stream_epoch":"00000000000000000000000000000001","key_fingerprint":"fp","created_ms":1{layout}}}"#
+                r#"{{"name":"min","container_id":"proj-test","stream_epoch":"00000000000000000000000000000001","key_fingerprint":"fp","created_ms":1{layout}}}"#
             )
         };
         for bad in [

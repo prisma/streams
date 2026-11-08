@@ -102,7 +102,7 @@ impl Backend {
     /// Best-effort removal of everything this run wrote.
     async fn cleanup(&self) {
         let registry = format!(
-            "registry/v4/projects/{}/",
+            "registry/v5/containers/{}/",
             crate::crypto::hex(self.project.as_bytes())
         );
         for (store, prefix) in [

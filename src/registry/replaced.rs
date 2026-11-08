@@ -23,7 +23,7 @@ use object_store::{ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersio
 
 /// The root every closure debt lives under, apart from the descriptors the
 /// catalog scans (an unknown object under the projects root fails a scan).
-const REPLACED_ROOT: &str = "registry/v4/replaced/";
+const REPLACED_ROOT: &str = "registry/v5/replaced/";
 
 /// One replaced incarnation's closure debt: its descriptor as the
 /// recreation found it, the persisted instant its storage closes at, and

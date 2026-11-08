@@ -745,11 +745,11 @@ freshness p99 < 500 ms, …): [OPERATIONS.md §5](./OPERATIONS.md).
 
 **Fork cleanup debt** (TLA-019-F4). A deleted fork whose release of its
 source reference was inconclusive, or whose DELETE died after the tombstone,
-leaves a marker under `registry/v4/fork-debt/`; the `fork-debt-reconcile`
+leaves a marker under `registry/v5/fork-debt/`; the `fork-debt-reconcile`
 task pays it with no client retry. On first start after the upgrade it also
 walks the cell's descriptors once to index tombstones written before the
 index existed; progress and completion live in
-`registry/v4/fork-debt-backfill.json` (delete that object to walk again, for
+`registry/v5/fork-debt-backfill.json` (delete that object to walk again, for
 example after an instance on an older binary deleted forks during a rolling
 upgrade). `_ops_metrics` gauges, published after each completed circle:
 

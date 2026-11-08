@@ -60,7 +60,7 @@ fn level(cell: &Cell, rate: u64) -> f64 {
 /// Project 0's catalog prefix, under which its seed walk lists.
 fn catalog_prefix() -> String {
     let hex: String = project(0).bytes().map(|b| format!("{b:02x}")).collect();
-    format!("registry/v4/projects/{hex}/streams")
+    format!("registry/v5/containers/{hex}/streams")
 }
 
 /// Project 0 creates `name` once its budget has refilled whole: the status,

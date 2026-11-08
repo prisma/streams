@@ -337,8 +337,8 @@ async fn weigh_every_operation(
     };
     let refused = store.get_opts(doc, stale).await;
     assert!(matches!(refused, Err(Error::Precondition { .. })));
-    let registry = Path::from("cell/registry/v4/projects/70");
-    let copy = Path::from("cell/registry/v4/projects/70/copy.json");
+    let registry = Path::from("cell/registry/v5/containers/70");
+    let copy = Path::from("cell/registry/v5/containers/70/copy.json");
     store.copy(doc, &copy).await.unwrap();
     let create = object_store::PutOptions::from(object_store::PutMode::Create);
     let exists = store
@@ -349,7 +349,7 @@ async fn weigh_every_operation(
     assert!(matches!(taken, Err(Error::AlreadyExists { .. })));
     drop(store.list(Some(&registry)));
     store.list_with_delimiter(Some(&registry)).await.unwrap();
-    let missing = Path::from("cell/registry/v4/projects/70/missing.json");
+    let missing = Path::from("cell/registry/v5/containers/70/missing.json");
     let missing = store.get(&missing).await;
     assert!(matches!(missing, Err(Error::NotFound { .. })));
     let wal = Path::from("cell/shards/root-0/wal/00000001.sst");
@@ -374,7 +374,7 @@ async fn a_served_requests_registry_work_is_weighed_for_its_project() {
     let config = crate::config::StorageConfig::default();
     let resources = std::sync::Arc::new(StoreResources::new(&config));
     let store = super::TimingStore::new(object_store::memory::InMemory::new(), resources);
-    let doc = object_store::path::Path::from("cell/registry/v4/projects/70/streams/71.json");
+    let doc = object_store::path::Path::from("cell/registry/v5/containers/70/streams/71.json");
     let quotas = crate::quota::QuotaRegistry::default();
     let project = crate::tenant::ProjectId::new("proj-weigh").unwrap();
     let limits = crate::project_policy::ProjectQuotas {

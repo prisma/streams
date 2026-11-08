@@ -4,7 +4,7 @@
 #![cfg(test)]
 use super::sref_of_key;
 use crate::registry::tests::desc;
-use crate::registry::{PROJECTS_ROOT, PersistedDescriptor, Registry, desc_path};
+use crate::registry::{CONTAINERS_ROOT, PersistedDescriptor, Registry, desc_path};
 use object_store::path::Path as ObjPath;
 use object_store::{ObjectStore, ObjectStoreExt};
 use proptest::prelude::{ProptestConfig, Strategy};
@@ -77,7 +77,7 @@ async fn reconciliation_page_fails_closed_on_a_key_it_cannot_bind() {
     // stops the page instead of being skipped...
     let (store, reg) = registry();
     assert!(reg.create(filed("proj-a", "s", true)).await.unwrap().0);
-    let stray = ObjPath::from(format!("{PROJECTS_ROOT}zz/streams/00.json"));
+    let stray = ObjPath::from(format!("{CONTAINERS_ROOT}zz/streams/00.json"));
     store.put(&stray, "{}".into()).await.unwrap();
     assert!(reg.reconciliation_page(None, 10).await.is_err());
     // ...and never reaches a project's own catalog.
@@ -274,7 +274,7 @@ proptest::proptest! {
             1 => key.replacen(".json", "0.json", 1),
             2 => key.replacen("/streams/", "/stream/", 1),
             3 => key.replacen(".json", "", 1),
-            4 => key.replacen(PROJECTS_ROOT, "registry/v3/projects/", 1),
+            4 => key.replacen(CONTAINERS_ROOT, "registry/v3/projects/", 1),
             _ => noise,
         };
         proptest::prop_assume!(damaged != key);

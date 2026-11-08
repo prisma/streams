@@ -91,7 +91,7 @@ since 2026-09-29 (edge record #80).
 | prefix | holds | note |
 |---|---|---|
 | `shards/<id>/` | shard logs (`wal`, `manifest`, `compacted`) and, under `shards/<id>/hseg/`, that shard's segment objects (one per seal) | the log is the hot, ack-critical path (RUNBOOK §3.2); the segment objects are large, immutable, cold and read-heavy, and live inside the shard's prefix so that they travel with the shard |
-| `registry/` | the stream registry | one JSON descriptor per stream, under `registry/v4/projects/` |
+| `registry/` | the stream registry | one JSON descriptor per stream, under `registry/v5/containers/` |
 | `fleet/`, `routers/`, topology | fleet metadata | tiny, high-frequency |
 
 Binaries live in a **second, separate bucket** (`streams-artifacts`) that

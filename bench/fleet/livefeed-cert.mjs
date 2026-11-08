@@ -188,7 +188,7 @@ let TOK = await tokenOf();
 // project never is. A descriptor without a map is one live segment.
 const hex = (s) => Buffer.from(s, "utf8").toString("hex");
 const storedSegments = async (name) => {
-  const r = await sfetch(`http://127.0.0.1:${S3}/${BUCKET}/registry/v4/projects/${hex(CERT_PROJECT)}/streams/${hex(name)}.json`);
+  const r = await sfetch(`http://127.0.0.1:${S3}/${BUCKET}/registry/v5/containers/${hex(CERT_PROJECT)}/streams/${hex(name)}.json`);
   if (r.status !== 200) return { status: r.status, map: null };
   const map = (await r.json().catch(() => ({}))).segments;
   const segments = map?.segments ?? [{ seg_id: 0, sealed_ms: null }];

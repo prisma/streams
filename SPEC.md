@@ -97,7 +97,7 @@ Tigris's global namespace has no per-prefix limits, so a split over buckets
 or pools is deferred until a provider limit demands it, and is then a code
 change (D6). The key names in the block are the design's. One that was
 checked against the code differs: the binary writes stream descriptors under
-`registry/v4/projects/`. Layout 6 has no history tier: a stream's sealed
+`registry/v5/containers/`. Layout 6 has no history tier: a stream's sealed
 pages live in its shard's segment objects (§3.6).
 
 ### 3.2 Shard topology (dynamic)
@@ -455,7 +455,7 @@ lives, encryption, retention, erasure as built, backups) is
 
   Stream names are UTF-8 and unique **within a project**: the registry
   keeps each project's descriptors under its own prefix
-  (`registry/v4/projects/<project>/streams/`, `src/registry.rs`), so two
+  (`registry/v5/containers/<project>/streams/`, `src/registry.rs`), so two
   projects can use the same name and a create reveals nothing about
   another project's streams (O13).
 - **C10 Routing keys are metadata, not secrets**: they appear in read URLs,

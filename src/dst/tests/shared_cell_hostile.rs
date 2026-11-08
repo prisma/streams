@@ -730,7 +730,7 @@ async fn a_capability_naming_an_unserved_project_reads_no_descriptor() {
     .await;
     let unserved = project(2);
     let hex: String = unserved.bytes().map(|b| format!("{b:02x}")).collect();
-    let root = format!("registry/v4/projects/{hex}/");
+    let root = format!("registry/v5/containers/{hex}/");
     let (refused, spent, _) = garbage_round(&cell, &unserved, GARBAGE_KEY, 0).await;
     assert_eq!(
         (refused, spent),
@@ -889,7 +889,7 @@ fn registry_weight(trace: &TraceStore, i: usize, after: u64) -> u64 {
     trace
         .events()
         .into_iter()
-        .filter(|e| e.seq > after && e.path.starts_with("registry/v4/") && e.path.contains(&key))
+        .filter(|e| e.seq > after && e.path.starts_with("registry/v5/") && e.path.contains(&key))
         .map(|e| match (e.op, e.outcome) {
             (StoreOp::Get, TraceOutcome::Ok | TraceOutcome::NotFound) => 1,
             (StoreOp::Put | StoreOp::List | StoreOp::Copy, _) => 10,

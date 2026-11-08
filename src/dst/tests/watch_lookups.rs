@@ -97,7 +97,7 @@ async fn garbage(
 fn descriptor_gets(trace: &TraceStore, sref: &TenantStreamRef, after: u64) -> usize {
     let hex = |b: &[u8]| b.iter().map(|b| format!("{b:02x}")).collect::<String>();
     let path = format!(
-        "registry/v4/projects/{}/streams/{}.json",
+        "registry/v5/containers/{}/streams/{}.json",
         hex(sref.project_id().as_bytes()),
         hex(sref.name().as_str().as_bytes())
     );

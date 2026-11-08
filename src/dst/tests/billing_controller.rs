@@ -354,7 +354,7 @@ async fn r09_tombstone_walk_advances_one_catalog_page_per_pass() {
     let tenant = crate::crypto::hex(state.deployment.deployment_tenant().as_bytes());
     let key = |name: &str| {
         let name = crate::crypto::hex(name.as_bytes());
-        format!("registry/v4/projects/{tenant}/streams/{name}.json")
+        format!("registry/v5/containers/{tenant}/streams/{name}.json")
     };
     for expected in [Some(key("bounded-255")), Some(key("bounded-511")), None] {
         crate::billing::tombstone_walk(&state).await;

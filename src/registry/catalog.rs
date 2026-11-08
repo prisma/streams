@@ -61,7 +61,7 @@ fn sref_of_key(cell: &str, key: &ObjPath) -> Option<crate::tenant::TenantStreamR
         return None;
     }
     let (project_hex, name_hex) = text
-        .strip_prefix(PROJECTS_ROOT)?
+        .strip_prefix(CONTAINERS_ROOT)?
         .strip_suffix(".json")?
         .split_once("/streams/")?;
     let project = String::from_utf8(crate::crypto::unhex(project_hex)?).ok()?;
@@ -118,7 +118,7 @@ impl Registry {
     ) -> Result<CatalogPage, object_store::Error> {
         let offset = after.map(ObjPath::from);
         let (streams, last, exhausted) = self
-            .catalog_page(PROJECTS_ROOT, offset.as_ref(), limit, true)
+            .catalog_page(CONTAINERS_ROOT, offset.as_ref(), limit, true)
             .await?;
         Ok(CatalogPage {
             streams,

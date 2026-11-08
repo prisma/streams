@@ -206,7 +206,7 @@ fn tier_class(method: &Method, key: &str, query: &HashMap<String, String>) -> &'
     }
     // history2 lives UNDER the shard prefix (ownership travels with the
     // shard) — classify it as history, checked before the shards/ match.
-    // A stream descriptor (registry/v4/projects/<hex>/streams/<hex>.json)
+    // A stream descriptor (registry/v5/containers/<hex>/streams/<hex>.json)
     // is the registry's, checked before the streams/ match.
 
     (if key.contains("history2/") {

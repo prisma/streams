@@ -116,7 +116,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "e5de5a269baa71e27176aa9e88995ddaf7f1510dafbe10666f7e58a598bb4416",
+    "function_sha256": "adeb6606182c4104436468a24e9d8a0ba53a80d73374f951a6ca9813f326e381",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_hostile.rs",
@@ -1272,7 +1272,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "3b32835886ba6ab66755e794a07c3c78bc02324f66d9ff0210f2f69fc05b9db7",
+    "function_sha256": "d1d9a0c53b11702ae5e57de1c95bbd0562f06a5d1e7a4729834af290fee79b69",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_capacity.rs",
@@ -1834,7 +1834,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "94a77751031a47761c3e0e31944c8ccfa377e1613544c9caa27a9116259d4edb",
+    "function_sha256": "c8df8ba2a3ad5fe172ecb09d41c1c62fe42fb092ecc3d80e34bf76d13881bd2f",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/product_descriptor_reads.rs",
@@ -2322,7 +2322,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "d617b19ad57799c3ed89e84accbfe86eff076427e08fdd8345fb52206fb4f2b5",
+    "function_sha256": "45cdcea8905a2b9ea7e049e2490b39dfb290275bb9e012399701712abb1352e8",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_closure_debts.rs",
@@ -3480,7 +3480,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "9e97429ca8a5534c3d00b20d85b6a3818be434311d62c8828f867f787b1f85ae",
+    "function_sha256": "a63abc4833c9907fcfc047954621e5ad3d1cf0d94c480c0b9049327bfcaaaf9f",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_memory_wakes.rs",
@@ -8001,7 +8001,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "3650771ba9ca74fd3e2f9877594dcea8727b3f1b71ee186ce2012197dde7a3df",
+    "function_sha256": "256c37fd769e6b8d3c4ed62afc6831217b7b24bd24f3b3b131ee25d70ee6ef8b",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/append_application.rs",
@@ -8262,7 +8262,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "0a32f4cca5106ab79ce23fca33595079c3690644fd412d92fba03caae8b9b58b",
+    "function_sha256": "2c37cfe957e3cd7c61451495cf751db6ea89b7360081fa55b7634b468086e74b",
     "mechanisms": [],
     "configuration": [
       "let seed = state",

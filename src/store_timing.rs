@@ -252,7 +252,7 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
 /// replaced incarnations). Paths arrive fully prefixed; no SlateDB object
 /// is under it, so a shard's reads and writes, which can run inline in a
 /// request's task, are never charged.
-const REGISTRY_ROOT: &str = "registry/v4/";
+const REGISTRY_ROOT: &str = "registry/v5/";
 
 /// A PUT, a listing (charged once, however many provider pages it reads)
 /// or a COPY: the provider's class A, which Tigris and S3 price at ten

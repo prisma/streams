@@ -87,7 +87,7 @@ async fn a_product_descriptor_read_the_store_fails_is_retryable_and_corruption_i
     }
     let sref = state.deployment.raw_adapter_sref(name);
     let path = object_store::path::Path::from(format!(
-        "registry/v4/projects/{}/streams/{}.json",
+        "registry/v5/containers/{}/streams/{}.json",
         crate::crypto::hex(sref.project_id().as_bytes()),
         crate::crypto::hex(name.as_bytes())
     ));

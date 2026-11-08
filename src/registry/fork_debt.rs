@@ -23,15 +23,15 @@
 //! without a delete, indexes the release first (`Registry::recreate`).
 use super::*;
 
-/// Outside `PROJECTS_ROOT`: the catalog scans fail closed on any key under
+/// Outside `CONTAINERS_ROOT`: the catalog scans fail closed on any key under
 /// that root that is not a descriptor.
-const FORK_DEBT_ROOT: &str = "registry/v4/fork-debt/";
+const FORK_DEBT_ROOT: &str = "registry/v5/fork-debt/";
 /// A marker holds two names and two epochs; anything larger was not minted
 /// here.
 const MAX_MARKER_BYTES: u64 = 16 * 1024;
 /// The backfill's progress and completion. Beside the index root, never
 /// under it: the index pages must not list it.
-const BACKFILL_PATH: &str = "registry/v4/fork-debt-backfill.json";
+const BACKFILL_PATH: &str = "registry/v5/fork-debt-backfill.json";
 
 /// The persisted backfill progress: the last consumed catalog key, or done.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -382,10 +382,10 @@ mod tests {
         assert_eq!(back, sref);
         assert_eq!(epoch, "0123456789abcdef0123456789abcdef");
         for foreign in [
-            "registry/v4/fork-debt/zz/6f/e.json",
-            "registry/v4/fork-debt/70726f6a2d61/6f7264657273.json",
-            "registry/v4/fork-debt/70726f6a2d61/6f7264657273/e/x.json",
-            "registry/v4/projects/70726f6a2d61/streams/6f7264657273.json",
+            "registry/v5/fork-debt/zz/6f/e.json",
+            "registry/v5/fork-debt/70726f6a2d61/6f7264657273.json",
+            "registry/v5/fork-debt/70726f6a2d61/6f7264657273/e/x.json",
+            "registry/v5/containers/70726f6a2d61/streams/6f7264657273.json",
         ] {
             assert!(debt_of_key(&ObjPath::from(foreign)).is_none(), "{foreign}");
         }
@@ -410,7 +410,7 @@ mod tests {
         }
         store
             .put(
-                &ObjPath::from("registry/v4/fork-debt/not-minted.json"),
+                &ObjPath::from("registry/v5/fork-debt/not-minted.json"),
                 PutPayload::from_static(b"{}"),
             )
             .await

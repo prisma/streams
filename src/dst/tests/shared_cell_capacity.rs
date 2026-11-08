@@ -726,7 +726,7 @@ async fn a_listing_holds_its_reservation_until_it_has_answered() {
         assert_eq!(cell.call(0, "PUT", &path, CREATE).await.0, 201);
     }
     let hex = crate::crypto::hex(project(0).as_bytes());
-    let streams = format!("registry/v4/projects/{hex}/streams/");
+    let streams = format!("registry/v5/containers/{hex}/streams/");
     let engaged = store.hold_class_under(StoreOp::Get, ObjClass::Other, &streams, 1);
     let listing = cell.call(0, "GET", "/v1/streams?limit=1000", b"");
     let reading = async {

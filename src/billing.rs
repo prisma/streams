@@ -194,7 +194,7 @@ pub(crate) struct SegmentBillingMetaV1 {
     // the incarnation (a recreation is a different segment identity).
     #[serde(default)]
     pub account_id: String,
-    #[serde(default)]
+    #[serde(default, rename = "container_id")]
     pub project_id: String,
     #[serde(default)]
     pub stream_id: String,
