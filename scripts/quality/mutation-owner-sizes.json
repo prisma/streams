@@ -191,7 +191,6 @@
     "shard_seal_gc_purge": 64,
     "shard_seal_gc_sweep": 47,
     "shard_seal_open": 12,
-    "shard_seal_range": 21,
     "shard_seal_read": 168,
     "shard_seal_runs": 50,
     "shard_seal_steps": 85,

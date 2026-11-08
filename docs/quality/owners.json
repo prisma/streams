@@ -315,6 +315,30 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::reads_merged",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Sealed reads through merged run-index objects and cleaner copies on a four-shard cell: a shard's merge keeps every stream it serves and its cleaner copies every live chunk (the multi-shard read 500 of 2026-11-08); the compiler and the DST suite exercise the module.",
+      "syntax": "path = \"tests/reads_merged.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::ledger_value",
+      "path": "src/dst/tests/reads_merged.rs",
+      "reason": "A ledger record of the multi-shard read 500 DST: the JSON value it appends and the read must return exactly; serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_clean_pass_copies_every_live_chunk_its_shard_serves",
+      "path": "src/dst/tests/reads_merged.rs",
+      "reason": "A bulk record of the multi-shard read 500 DST: an incompressible pad beside its round, appended so a seal object is mostly dead once its stream is purged; serde macro output is compiled by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::shared_cell_capacity",
       "path": "src/dst/dst_tests.rs",
       "reason": "Shared-cell capacity DSTs (the capacity review of 2026-10-07): what one project inside its quotas can hold of what a shared cell's projects share besides read memory, one bound per test; the compiler and the DST suite exercise the module.",

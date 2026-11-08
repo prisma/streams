@@ -269,19 +269,17 @@ impl ShardEngine {
         Ok(out)
     }
 
-    /// What of `id` (whose row is `row`) still counts: its table's chunks of
-    /// streams in this shard's range, then per stream the reclaim's live set.
+    /// What of `id` (whose row is `row`) still counts: per stream of its
+    /// table, the reclaim's live set.
     async fn live_of(
         &self,
         id: ObjectId,
         row: Refcount,
         sets: &mut LiveSets,
     ) -> Result<Live, GcError> {
-        let range = self.range();
         let entries = self.table_of(id, row.object_len).await?;
         let (mut live, mut pinned) = (Vec::new(), 0usize);
-        // A child counts only its range's chunks of a shared object (L2).
-        for entry in entries.into_iter().filter(|e| range.contains(&e.hash)) {
+        for entry in entries {
             let Some(set) = self.live_set(entry.hash, sets).await? else {
                 pinned += 1;
                 continue;

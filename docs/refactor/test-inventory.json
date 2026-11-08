@@ -201,6 +201,17 @@
     "scenarios": []
   },
   {
+    "name": "a_clean_pass_copies_every_live_chunk_its_shard_serves",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "cad412623354a03dbdbd6123d2b5dd3947ff5708d4c7d916556125832566f8d4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_merged.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_close_that_reaches_the_rollup_after_february_closed_reverses_february",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -1379,6 +1390,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_count_balance.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_merge_keeps_every_stream_its_shard_serves",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "a7e8875e3a8aa336ccbede38ce2fa8f8c6ec362ec7c6f6521b1559ecdb59cc66",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_merged.rs",
     "scenarios": []
   },
   {
